@@ -14505,6 +14505,23 @@ class JiuWenSwarmDeepAdapter:
                             yield summary_chunk
                         continue
                     yield chunk
+                try:
+                    completion_chunks = await self._complete_skill_turbo_outer_todo(
+                        session_id=session_id,
+                        request_id=rid,
+                        channel_id=cid,
+                        resume_ctx=resume_ctx,
+                    )
+                except Exception:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] SkillTurbo resume outer todo "
+                        "completion hook failed; continue delivery session_id=%s",
+                        session_id,
+                        exc_info=True,
+                    )
+                    completion_chunks = []
+                for completion_chunk in completion_chunks:
+                    yield completion_chunk
                 await _clear_resume_ctx()
                 finish_text = _finish_text(True)
             except _SkillTurboAbortError as e:
@@ -14563,6 +14580,118 @@ class JiuWenSwarmDeepAdapter:
             )
 
         return _resume_impl()
+
+    async def _complete_skill_turbo_outer_todo(
+        self,
+        *,
+        session_id: str,
+        request_id: str,
+        channel_id: str,
+        resume_ctx: dict[str, Any],
+    ) -> list[AgentResponseChunk]:
+        """Close the outer Todo after a SkillTurbo HITL resume succeeds."""
+        modify_tool = self._get_todo_modify_tool(session_id)
+        if modify_tool is None:
+            return []
+
+        try:
+            todos = await modify_tool.load_todos(session_id)
+        except Exception:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] load todos for SkillTurbo resume completion failed: "
+                "session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            return []
+        if not todos:
+            return []
+
+        task_id = str(resume_ctx.get("outer_task_id") or "").removeprefix("todo:")
+        if not task_id:
+            active = [
+                todo
+                for todo in todos
+                if getattr(getattr(todo, "status", None), "value", None)
+                == TodoStatus.IN_PROGRESS.value
+            ]
+            if len(active) != 1:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] SkillTurbo resume completion skipped: "
+                    "outer_task_id missing and active_todos=%d session_id=%s",
+                    len(active),
+                    session_id,
+                )
+                return []
+            task_id = str(active[0].id)
+
+        target = next((todo for todo in todos if str(todo.id) == task_id), None)
+        if target is None:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] SkillTurbo resume outer todo missing: "
+                "task_id=%s session_id=%s",
+                task_id,
+                session_id,
+            )
+            return []
+
+        status = getattr(getattr(target, "status", None), "value", None)
+        if status != TodoStatus.IN_PROGRESS.value:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] SkillTurbo resume outer todo not in progress: "
+                "task_id=%s status=%s session_id=%s",
+                task_id,
+                status,
+                session_id,
+            )
+            return []
+
+        try:
+            await modify_tool._update_todos(  # pylint: disable=protected-access
+                session_id,
+                [{"id": task_id, "status": TodoStatus.COMPLETED.value}],
+                todos,
+            )
+        except Exception:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] complete SkillTurbo resume outer todo failed: "
+                "task_id=%s session_id=%s",
+                task_id,
+                session_id,
+                exc_info=True,
+            )
+            return []
+
+        task_rail = self._task_execution_rail
+        if task_rail is None:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] SkillTurbo resume outer todo persisted without "
+                "task rail event: task_id=%s session_id=%s",
+                task_id,
+                session_id,
+            )
+            return []
+        events = task_rail.external_todo_completion_events(
+            session_id,
+            task_id,
+            parent_request_id=request_id,
+        )
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] SkillTurbo resume outer todo finalized: "
+            "task_id=%s emitted=%s session_id=%s",
+            task_id,
+            bool(events),
+            session_id,
+        )
+        return [
+            AgentResponseChunk(
+                request_id=request_id,
+                channel_id=channel_id,
+                payload=self._parse_stream_chunk(event),
+                is_complete=False,
+            )
+            for event in events
+        ]
 
     @staticmethod
     def _derive_outer_call_id(params_request_id: str) -> str:

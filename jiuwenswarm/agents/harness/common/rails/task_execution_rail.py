@@ -2251,6 +2251,90 @@ class TaskExecutionRail(DeepAgentRail):
                 exc_info=True,
             )
 
+    def external_todo_completion_events(
+        self,
+        session_id: str,
+        task_id: str,
+        *,
+        parent_request_id: str = "",
+    ) -> list[OutputSchema]:
+        """Build task events for a completed todo outside the normal rail hooks."""
+        normalized_task_id = str(task_id or "").removeprefix("todo:")
+        if not normalized_task_id:
+            return []
+
+        todo_items = self._load_todo_from_json(session_id)
+        task = next(
+            (
+                item
+                for item in todo_items
+                if str(item.get("id", "")) == normalized_task_id
+            ),
+            None,
+        )
+        if task is None:
+            logger.warning(
+                "[TaskExecutionRail] external todo completion target missing: %s",
+                normalized_task_id,
+            )
+            return []
+
+        self._todo_map = self._build_map_from_todo_items(todo_items)
+        self._todo_map_before_tool = {}
+        full_task_id = f"todo:{normalized_task_id}"
+        context = self._active_tasks.pop(full_task_id, None)
+        timestamp = time.time()
+        if get_current_task_id() == full_task_id:
+            _ACTIVE_TASK_ID.set(None)
+        self._todo_complete_deferred.discard(normalized_task_id)
+        self._todo_start_deferred.discard(normalized_task_id)
+
+        tasks = self._format_tasks_for_update(
+            self._overlay_serial_todo_statuses(todo_items), source="todo"
+        )
+        complete = OutputSchema(
+            type="task.complete",
+            index=0,
+            payload={
+                "task_id": full_task_id,
+                "task_content": (
+                    context.task_content
+                    if context
+                    else str(task.get("content", ""))
+                ),
+                "status": "succeeded",
+                "duration_ms": (
+                    int((timestamp - context.start_time) * 1000)
+                    if context
+                    else 0
+                ),
+                "error": None,
+                "timestamp": timestamp,
+                "source": "todo",
+                "parent_request_id": parent_request_id,
+            },
+        )
+        update = OutputSchema(
+            type="task.update",
+            index=0,
+            payload={
+                "tasks": tasks,
+                "total_tasks": len(tasks),
+                "completed_tasks": sum(
+                    task["status"] == "completed" for task in tasks
+                ),
+                "in_progress_tasks": sum(
+                    task["status"] == "in_progress" for task in tasks
+                ),
+                "pending_tasks": sum(
+                    task["status"] == "pending" for task in tasks
+                ),
+                "timestamp": timestamp,
+                "parent_request_id": parent_request_id,
+            },
+        )
+        return [complete, update]
+
     async def _emit_task_update_event(
         self,
         session: Session,

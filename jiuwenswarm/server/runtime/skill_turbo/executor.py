@@ -34,6 +34,7 @@ from openjiuwen.core.single_agent.rail.base import (
 
 from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import NotifyingLLMRetryRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+from jiuwenswarm.agents.harness.common.rails.task_execution_rail import get_current_task_id
 from jiuwenswarm.server.runtime.agent_adapter.llm_io_trace import (
     begin_tool_trace_event,
     end_tool_trace_event,
@@ -1871,16 +1872,19 @@ class SkillTurboExecutor:
             # 同一 tool_call_id 恢复。透传给上层发 HITL 三件套。
             trace_status = "interrupted"
             try:
+                outer_task_id = get_current_task_id()
                 await save_resume_ctx(
                     _session_var.get(),
                     plan_code=self._current_plan_code,
                     inputs=self._execution_inputs,
                     pending_tool_call_id=tool_call_id,
                     task_states=self._snapshot_task_states(),
+                    outer_task_id=outer_task_id,
                 )
                 logger.info(
-                    "[SkillTurboExecutor] HITL interrupt resume_ctx saved tcid=%s",
+                    "[SkillTurboExecutor] HITL interrupt resume_ctx saved tcid=%s outer_task_id=%s",
                     tool_call_id,
+                    outer_task_id,
                 )
             except Exception as save_exc:
                 logger.warning(
