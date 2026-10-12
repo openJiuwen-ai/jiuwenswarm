@@ -2050,6 +2050,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
             : {}),
+          // 会话级 worktree 开关：仅用户显式拨过（非 undefined）才发送，
+          // 后端按 params > 会话持久化 > 团队模板配置 回退。
+          ...(sessionRt?.swarmflowWorktree !== undefined
+            ? { swarmflow_worktree: sessionRt.swarmflowWorktree }
+            : {}),
         });
         clearConnectionPresentationForUserAction(sessionId);
         if (sessionMetadata) {
