@@ -709,7 +709,8 @@ async def models_list_handler(
                 "model_id": entry.get("model_id", ""),
                 "model_name": model_name,
                 "api_base": mcc.get("api_base", ""),
-                # 凭据绝不能随列表下发到浏览器
+                # 保持旧设置页的编辑/测试/保存协议；登录模型凭据不可下发。
+                "api_key": "" if is_login_model(entry) else mcc.get("api_key", ""),
                 "has_api_key": bool(mcc.get("api_key")),
                 "model_provider": mcc.get("client_provider", ""),
                 "temperature": mco.get("temperature"),

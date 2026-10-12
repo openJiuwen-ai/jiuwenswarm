@@ -14,6 +14,43 @@ from jiuwenswarm.common.model_selection import ModelSelection
 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
 
+@pytest.mark.asyncio
+async def test_legacy_models_list_keeps_editable_key_but_hides_login_key(monkeypatch):
+    from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SOURCE
+    from jiuwenswarm.common.config_panel import models_handlers
+
+    models = [{
+        "model_id": "mdl_local",
+        "model_client_config": {
+            "model_name": "local", "api_base": "https://example.com/v1",
+            "api_key": "test-local-key", "client_provider": "OpenAI",
+        },
+    }, {
+        "model_id": "mdl_login", "source": LOGIN_MODEL_SOURCE,
+        "model_client_config": {
+            "model_name": "login", "api_base": "https://example.com/v1",
+            "api_key": "test-login-key", "client_provider": "OpenAI",
+        },
+    }]
+    monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {"defaults": [], "groups": []}})
+    monkeypatch.setattr(models_handlers, "get_default_models", lambda config: models)
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await models_handlers.models_list_handler(channel, SimpleNamespace(), "r", {}, "s")
+    response = channel.send_response.call_args.kwargs
+    assert response["ok"]
+    local, login = response["payload"]["models"]
+    # Fields consumed by the unchanged frontend parser and connection-test payload.
+    for row in (local, login):
+        for field in ("model_name", "api_base", "api_key", "model_provider", "reasoning_level"):
+            assert isinstance(row[field], str)
+    assert local["api_key"] == "test-local-key"
+    assert local["model_id"] == "mdl_local"
+    assert local["has_api_key"]
+    assert login["api_key"] == ""
+    assert login["read_only"]
+    assert "test-login-key" not in str(response)
+
+
 @pytest.fixture
 def catalog_state(monkeypatch):
     state = {"models": {
