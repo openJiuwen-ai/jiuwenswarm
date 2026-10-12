@@ -9,6 +9,7 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -26,7 +27,7 @@ import httpx
 from jiuwenswarm.common.log_context import NO_SESSION_ID, current_log_session_id
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server.agent_http_routes import build_http_app
+from jiuwenswarm.server.agent_http_routes import _event_frames, build_http_app
 from jiuwenswarm.server.agent_http_server import resolve_http_server_settings
 from jiuwenswarm.server.app_services import AppServices
 from jiuwenswarm.server.context import RequestContext
@@ -89,6 +90,9 @@ def test_http_modules_do_not_use_the_websocket_dispatch() -> None:
         assert "dispatch_parsed_request" not in text
         assert "agent_ws_server" not in text
         assert "server.dispatch" not in text
+    rpc_text = (_HTTP_DIR / "http_rpc.py").read_text(encoding="utf-8")
+    assert "dispatch_parsed_request" not in rpc_text
+    assert "agent_ws_server" not in rpc_text
 
 
 @pytest.mark.asyncio
@@ -240,3 +244,162 @@ async def test_stream_cancel_is_reraised() -> None:
     )
     with pytest.raises(asyncio.CancelledError):
         await invoke_stream(ctx, _cancel)
+
+
+def _app_client():
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=build_http_app(AppServices())),
+        base_url="http://test",
+    )
+
+
+@pytest.mark.asyncio
+async def test_health_reports_ok() -> None:
+    async with _app_client() as client:
+        response = await client.get("/api/v1/health")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_reads_headers_and_wraps_data(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _chat(ctx: RequestContext) -> None:
+        seen["method"] = ctx.request.req_method.value if ctx.request.req_method else ""
+        seen["query"] = (ctx.request.params or {}).get("query")
+        seen["session"] = ctx.request.session_id
+        await ctx.sink.send_response(
+            AgentResponse(
+                request_id=ctx.request.request_id,
+                channel_id=ctx.request.channel_id,
+                ok=True,
+                payload={"echo": True},
+            )
+        )
+
+    monkeypatch.setattr("jiuwenswarm.server.http_chat.handle_http_chat", _chat)
+    async with _app_client() as client:
+        response = await client.post(
+            "/api/v1/chat/completions",
+            headers={
+                "x-request-id": "req-c",
+                "x-channel-id": "web",
+                "x-session-id": "sess-c",
+            },
+            json={"query": "你好"},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"] == {"echo": True}
+    assert body["request_id"] == "req-c"
+    assert "payload" not in body
+    assert seen == {"method": "chat.send", "query": "你好", "session": "sess-c"}
+
+
+@pytest.mark.asyncio
+async def test_chat_resume_uses_the_same_adapter(monkeypatch) -> None:
+    seen: list[str] = []
+
+    async def _chat(ctx: RequestContext) -> None:
+        seen.append(ctx.request.req_method.value if ctx.request.req_method else "")
+        await ctx.sink.send_response(
+            AgentResponse(
+                request_id=ctx.request.request_id,
+                channel_id=ctx.request.channel_id,
+                ok=True,
+                payload={},
+            )
+        )
+
+    monkeypatch.setattr("jiuwenswarm.server.http_chat.handle_http_chat", _chat)
+    async with _app_client() as client:
+        response = await client.post(
+            "/api/v1/chat/resume",
+            headers={"x-request-id": "req-resume"},
+            json={"query": "继续"},
+        )
+    assert response.status_code == 200
+    assert response.json()["data"] == {}
+    assert seen == ["chat.resume"]
+
+
+@pytest.mark.asyncio
+async def test_events_stream_starts_with_push_ready() -> None:
+    frames: list[str] = []
+    async for frame in _event_frames(SimpleNamespace()):
+        frames.append(frame)
+        break
+    assert frames == ['data: {"event_type": "gateway.push_ready"}\n\n']
+
+
+@pytest.mark.asyncio
+async def test_events_stream_stays_open_until_the_client_leaves(monkeypatch) -> None:
+    state = {"asleep": 0}
+
+    async def _sleep(_seconds: float) -> None:
+        state["asleep"] += 1
+
+    async def _gone() -> bool:
+        return state["asleep"] >= 2
+
+    monkeypatch.setattr("jiuwenswarm.server.agent_http_routes.asyncio.sleep", _sleep)
+    request = SimpleNamespace(is_disconnected=_gone)
+    frames = [frame async for frame in _event_frames(request)]
+    assert "gateway.push_ready" in frames[0]
+    assert frames[1:] == [": keepalive\n\n"]
+
+
+@pytest.mark.asyncio
+async def test_events_route_is_an_sse_stream(monkeypatch) -> None:
+    async def _frames(_request) -> Any:
+        yield 'data: {"event_type": "gateway.push_ready"}\n\n'
+
+    monkeypatch.setattr("jiuwenswarm.server.agent_http_routes._event_frames", _frames)
+    async with _app_client() as client:
+        response = await client.get("/api/v1/events/stream")
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+    assert "gateway.push_ready" in response.text
+
+
+@pytest.mark.asyncio
+async def test_rpc_unknown_method_stays_http_200() -> None:
+    async with _app_client() as client:
+        response = await client.post("/api/v1/rpc/not.a.method", json={})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "UNKNOWN_METHOD"
+
+
+@pytest.mark.asyncio
+async def test_rpc_known_method_calls_the_handler_table(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _dispatch(ctx: RequestContext) -> bool:
+        seen["method"] = ctx.request.req_method
+        seen["limit"] = (ctx.request.params or {}).get("limit")
+        await ctx.sink.send_response(
+            AgentResponse(
+                request_id=ctx.request.request_id,
+                channel_id=ctx.request.channel_id,
+                ok=True,
+                payload={"agents": ["a"]},
+            )
+        )
+        return True
+
+    monkeypatch.setattr("jiuwenswarm.server.dispatch.try_dispatch", _dispatch)
+    async with _app_client() as client:
+        response = await client.post(
+            "/api/v1/rpc/agents.list",
+            headers={"x-request-id": "req-r", "x-session-id": "sess-r"},
+            json={"limit": 1},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"] == {"agents": ["a"]}
+    assert body["request_id"] == "req-r"
+    assert seen == {"method": ReqMethod.AGENTS_LIST, "limit": 1}

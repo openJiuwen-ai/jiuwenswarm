@@ -1,8 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""HTTP 路由。每条路径直接调用一个处理函数，不查 WebSocket 的分发表。
+"""HTTP 路由。每条路径直接调用一个处理函数，不查 WebSocket 的消息流水线。
 
-第一期只开放列 Agent 和聊天。别的命令还走 WebSocket。
+runtime 客户端按路径表来：探活、聊天、事件流，以及没有单独网址时的 /rpc/{方法名}。
+原先的列 Agent 和 /chat 仍保留。
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from jiuwenswarm.common.log_context import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server import http_chat
+from jiuwenswarm.server import http_chat, http_rpc
 from jiuwenswarm.server.app_services import AppServices
 from jiuwenswarm.server.context import AgentServerServices, RequestContext
 from jiuwenswarm.server.handlers import agents as agent_handlers
@@ -58,6 +59,10 @@ def build_http_app(app_services: AppServices) -> FastAPI:
     """造出 HTTP 应用。业务函数通过工具箱拿服务，不接触 WebSocket 服务器。"""
     app = FastAPI(title="JiuwenSwarm HTTP", docs_url=None, redoc_url=None)
     app.add_middleware(SessionLogMiddleware)
+
+    @app.get(f"{API_PREFIX}/health")
+    async def health() -> JSONResponse:
+        return JSONResponse({"ok": True})
 
     @app.post(f"{API_PREFIX}/agents/list")
     async def agents_list(request: Request) -> JSONResponse:
@@ -105,7 +110,166 @@ def build_http_app(app_services: AppServices) -> FastAPI:
         await invoke_unary(ctx, http_chat.handle_http_chat)
         return JSONResponse(ctx.sink.body or {}, status_code=ctx.sink.status_code)
 
+    @app.post(f"{API_PREFIX}/chat/completions")
+    async def chat_completions(request: Request):
+        return await _runtime_chat(app_services, request, ReqMethod.CHAT_SEND)
+
+    @app.post(f"{API_PREFIX}/chat/resume")
+    async def chat_resume(request: Request):
+        return await _runtime_chat(app_services, request, ReqMethod.CHAT_RESUME)
+
+    @app.get(f"{API_PREFIX}/events/stream")
+    async def events_stream(request: Request) -> StreamingResponse:
+        return StreamingResponse(
+            _event_frames(request),
+            media_type="text/event-stream",
+        )
+
+    @app.post(f"{API_PREFIX}/rpc/{{method}}")
+    async def rpc(method: str, request: Request):
+        body = await _read_json(request)
+        try:
+            req_method = ReqMethod(method)
+        except ValueError:
+            return JSONResponse(
+                {
+                    "request_id": _header(request, "x-request-id", "http"),
+                    "ok": False,
+                    "error": {
+                        "code": "UNKNOWN_METHOD",
+                        "message": method,
+                        "details": {},
+                    },
+                }
+            )
+        is_stream = _wants_stream(request)
+        sink = SSESink() if is_stream else UnaryHTTPSink()
+        ctx = _context_from_runtime(
+            app_services,
+            request,
+            body,
+            req_method=req_method,
+            sink=sink,
+            is_stream=is_stream,
+        )
+        if is_stream:
+
+            async def _run(current: RequestContext) -> None:
+                await http_rpc.handle_http_rpc(current, is_stream=True)
+
+            return _stream_response(ctx, _run)
+        await invoke_unary(
+            ctx,
+            lambda current: http_rpc.handle_http_rpc(current, is_stream=False),
+        )
+        return JSONResponse(
+            _client_json(ctx.sink.body or {}),
+            status_code=ctx.sink.status_code,
+        )
+
     return app
+
+
+async def _runtime_chat(app_services: AppServices, request: Request, req_method: ReqMethod):
+    """runtime 客户端的聊天。请求体是业务参数，身份在请求头里。"""
+    body = await _read_json(request)
+    is_stream = _wants_stream(request)
+    sink = SSESink() if is_stream else UnaryHTTPSink()
+    ctx = _context_from_runtime(
+        app_services,
+        request,
+        body,
+        req_method=req_method,
+        sink=sink,
+        is_stream=is_stream,
+    )
+    if is_stream:
+        return _stream_response(ctx, http_chat.handle_http_chat)
+    await invoke_unary(ctx, http_chat.handle_http_chat)
+    return JSONResponse(_client_json(ctx.sink.body or {}), status_code=ctx.sink.status_code)
+
+
+def _stream_response(ctx: RequestContext, handler) -> StreamingResponse:
+    async def _frames():
+        task = asyncio.create_task(invoke_stream(ctx, handler))
+        try:
+            async for frame in ctx.sink.frames():
+                yield frame
+        finally:
+            await task
+
+    return StreamingResponse(_frames(), media_type="text/event-stream")
+
+
+async def _event_frames(request: Request):
+    """先告诉 Gateway 这条推送流已经接上，然后一直留着，直到对方断开。"""
+    yield _sse_frame({"event_type": "gateway.push_ready"})
+    while True:
+        await asyncio.sleep(15)
+        if await request.is_disconnected():
+            break
+        yield ": keepalive\n\n"
+
+
+def _sse_frame(payload: dict[str, Any]) -> str:
+    return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+def _wants_stream(request: Request) -> bool:
+    accept = request.headers.get("accept") or ""
+    return "text/event-stream" in accept
+
+
+def _header(request: Request, name: str, default: str) -> str:
+    text = str(request.headers.get(name) or "").strip()
+    return text or default
+
+
+def _client_json(body: dict[str, Any]) -> dict[str, Any]:
+    """收成 runtime 客户端认识的 ``{ok, data, error}``。"""
+    ok = bool(body.get("ok"))
+    result: dict[str, Any] = {"request_id": body.get("request_id"), "ok": ok}
+    if body.get("metadata") is not None:
+        result["metadata"] = body.get("metadata")
+    if ok:
+        payload = body.get("payload")
+        result["data"] = payload if isinstance(payload, dict) else {"content": payload}
+        return result
+    payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+    result["error"] = {
+        "code": payload.get("code") or "ERROR",
+        "message": str(payload.get("error") or payload.get("message") or ""),
+        "details": payload,
+    }
+    return result
+
+
+def _context_from_runtime(
+    app_services: AppServices,
+    request: Request,
+    body: dict[str, Any],
+    *,
+    req_method: ReqMethod,
+    sink: Any,
+    is_stream: bool,
+) -> RequestContext:
+    session_id = _header(request, "x-session-id", "")
+    if not session_id:
+        session_id = str(body.get("session_id") or "").strip()
+    agent_request = AgentRequest(
+        request_id=_header(request, "x-request-id", "http"),
+        channel_id=_header(request, "x-channel-id", "http"),
+        session_id=session_id or None,
+        req_method=req_method,
+        params=body,
+        is_stream=is_stream,
+    )
+    return RequestContext(
+        request=agent_request,
+        sink=sink,
+        connection_id=HTTP_CONNECTION_ID,
+        services=AgentServerServices(app_services),
+    )
 
 
 def _chat_method(body: dict[str, Any]) -> ReqMethod:
