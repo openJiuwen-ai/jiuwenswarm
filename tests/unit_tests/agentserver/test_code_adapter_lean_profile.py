@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 from jiuwenswarm.agents.harness.code.lean_profile import (
@@ -43,6 +45,20 @@ _DEFAULT_FIXED_RAILS = [
     "_design_rail",
     "_subagent_rail",
 ]
+
+_CODE_EXECUTION_DISCIPLINE_AVAILABLE = (
+    importlib.util.find_spec(
+        "jiuwenswarm.agents.harness.code.rails.code_execution_discipline_rail"
+    )
+    is not None
+)
+if not _CODE_EXECUTION_DISCIPLINE_AVAILABLE:
+    _DEFAULT_FIXED_RAILS = [
+        name
+        for name in _DEFAULT_FIXED_RAILS
+        if name != "_code_execution_discipline_rail"
+    ]
+
 
 
 @pytest.fixture

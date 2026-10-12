@@ -18,12 +18,16 @@ from openjiuwen.core.single_agent.rail.base import (
 from jiuwenswarm.agents.harness.code.implementation_state import (
     ImplementationStateMachine,
 )
-from jiuwenswarm.agents.harness.code.rails.code_execution_discipline_rail import (
-    CodeExecutionDisciplineRail,
-)
 from jiuwenswarm.agents.harness.code.rails.implement_completeness_rail import (
     ImplementCompletenessRail,
 )
+
+try:
+    from jiuwenswarm.agents.harness.code.rails.code_execution_discipline_rail import (
+        CodeExecutionDisciplineRail,
+    )
+except ModuleNotFoundError:  # prep stack A lands before coding-policy rail (B)
+    CodeExecutionDisciplineRail = None  # type: ignore[misc, assignment]
 
 from .conftest import write
 
@@ -99,6 +103,8 @@ async def test_completeness_rail_records_run_tests_evidence(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_discipline_rail_treats_run_tests_as_verification():
+    if CodeExecutionDisciplineRail is None:
+        pytest.skip("coding-policy rail lands in prep stack B")
     builder = _Builder()
     agent = SimpleNamespace(system_prompt_builder=builder)
     rail = CodeExecutionDisciplineRail()

@@ -11,7 +11,7 @@ import secrets
 import shutil
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -65,20 +65,32 @@ def _zero_stats() -> dict[str, int]:
     return {"target": 0, "ready": 0, "warming": 0, "failed": 0, "stale": 0}
 
 
-def _normalize_project_dir(value: str | None) -> str:
+def _resolve_project_dir(value: str | None) -> str:
+    """Absolute project path with the user's spelling (case) preserved."""
     raw = str(value or "").strip()
     if not raw:
         return ""
-    return os.path.normcase(os.path.abspath(os.path.expanduser(raw))).casefold()
+    return os.path.abspath(os.path.expanduser(raw))
+
+
+def _normalize_project_dir(value: str | None) -> str:
+    """Case-insensitive identity of a project path (key only, never a path to use)."""
+    resolved = _resolve_project_dir(value)
+    if not resolved:
+        return ""
+    return os.path.normcase(resolved).casefold()
 
 
 @dataclass(frozen=True, slots=True)
 class WarmKey:
     channel_id: str
     project_id: str
-    project_dir: str
+    project_dir: str  # case-folded identity; use ``project_path`` as the path
     work_mode: str
     is_swarm: bool = False
+    # The real path (case preserved) handed to the agent and session. Not part
+    # of the key's identity, so spellings differing only in case share a slot.
+    project_path: str = field(default="", compare=False)
 
     @property
     def agent_mode(self) -> str:
@@ -183,6 +195,7 @@ class AgentWarmPool:
             project_dir=_normalize_project_dir(project_dir),
             work_mode="code" if str(work_mode).strip().lower() == "code" else "work",
             is_swarm=bool(is_swarm),
+            project_path=_resolve_project_dir(project_dir),
         )
 
     @staticmethod
@@ -221,6 +234,7 @@ class AgentWarmPool:
                 "channel_id": key.channel_id,
                 "project_id": key.project_id,
                 "project_dir": key.project_dir,
+                "project_path": key.project_path,
                 "work_mode": key.work_mode,
                 "is_swarm": key.is_swarm,
             },
@@ -525,7 +539,7 @@ class AgentWarmPool:
                     agent = await self._manager.get_agent(
                         channel_id=key.channel_id,
                         mode=key.agent_mode,
-                        project_dir=key.project_dir or None,
+                        project_dir=key.project_path or key.project_dir or None,
                         sub_mode=key.agent_sub_mode,
                     )
                     if agent is None:
@@ -544,7 +558,7 @@ class AgentWarmPool:
                             session_id=session_id,
                             channel_id=key.channel_id,
                             mode=("code.normal" if key.work_mode == "code" else "agent"),
-                            project_dir=key.project_dir or None,
+                            project_dir=key.project_path or key.project_dir or None,
                         )
             logger.info(
                 "Agent prepare completed: session_id=%s foreground=%s duration_ms=%.1f",

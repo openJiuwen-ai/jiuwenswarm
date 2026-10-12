@@ -633,7 +633,7 @@ def build_code_system_prompt(
     profile: str | Collection[str] | None = "default",
     tool_names: Collection[str] | None = None,
     *,
-    policy_enabled: bool = True,
+    policy_enabled: bool = False,
     policy_headless: bool = False,
     code_graph_profile: str = "off",
 ) -> str:
@@ -670,10 +670,11 @@ def build_code_system_prompt(
     )
     for generator in generators:
         builder.add_section(generator())
-    if policy_enabled:
-        builder.add_section(_code_policy_prompt())
-    if policy_headless:
-        builder.add_section(_code_headless_policy_prompt())
+    if policy_enabled or policy_headless:
+        # PR-B restores _code_policy_prompt / _code_headless_policy_prompt.
+        raise RuntimeError(
+            "coding policy prompt sections are not on prep/a; enable them on prep/b"
+        )
     if tool_names and "run_tests" in tool_names:
         builder.add_section(_code_verification_guidance_prompt())
 
