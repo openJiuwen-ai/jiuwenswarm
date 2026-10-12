@@ -270,8 +270,6 @@ _DEEPRESEARCH_CHECKPOINT_UNCERTAIN = "DEEPRESEARCH_CHECKPOINT_UNCERTAIN"
 _DEEPRESEARCH_CHECKPOINT_UNCERTAIN_MESSAGE = (
     "会话检查点状态不确定，请重试以重新加载会话。"
 )
-_SKILL_TURBO_MODEL_IDENTITY_KEY = "__skill_turbo_model_identity__"
-
 from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import (
     init_a2x_client,
     register_blank_agent_if_teammate,
@@ -633,6 +631,7 @@ from jiuwenswarm.agents.harness.common.auto_harness.service import _HARNESS_PACK
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
 from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
+    SKILL_TURBO_MODEL_IDENTITY_KEY as _SKILL_TURBO_MODEL_IDENTITY_KEY,
     build_interaction_output_from_abort as _skill_turbo_build_interaction_output,
     clear_resume_in_flight as _skill_turbo_clear_resume_in_flight,
     extract_tool_interrupt as _skill_turbo_extract_tool_interrupt,

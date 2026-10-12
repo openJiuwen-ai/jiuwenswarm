@@ -39,6 +39,8 @@ from jiuwenswarm.server.runtime.skill_turbo.resume_context import (  # noqa: F40
     set_skill_turbo_id,
 )
 
+SKILL_TURBO_MODEL_IDENTITY_KEY = "__skill_turbo_model_identity__"
+
 logger = logging.getLogger(__name__)
 
 
