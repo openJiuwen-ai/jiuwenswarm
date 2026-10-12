@@ -15,6 +15,10 @@ YuanRong 部署脚本在 systemd 和 nohup 两种 Gateway 启动方式中设置
 内部启动的 JiuwenBox 子进程得到 `JIUWENBOX_RUNTIME_PROFILE=agentos`。
 外部 JiuwenBox 服务需自行设置该标识及 `JIUWENBOX_ETCD_ENDPOINTS`。
 
+AgentOS 运行期跳过包内 `resources/config.yaml` 的配置模板迁移，使用部署脚本
+从 `gateway-config-yuanrong.template.yaml` 生成的配置。MCP 预置包补齐或升级时
+也保留已有配置文件；新增配置项由部署模板管理。个人版继续执行既有版本迁移。
+
 Gateway 的 Web mode 兼容和数据面监听还以实际使用 AgentOS Router 为条件；
 个人版选择本地 AgentClient 时不会启用。运行标识由部署设置，不接受客户端请求参数。
 第三方 Agent 的运行配置沿用注册中心定义，不注入内置 Agent 的扩展配置。
