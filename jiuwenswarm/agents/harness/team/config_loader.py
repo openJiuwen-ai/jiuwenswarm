@@ -30,23 +30,29 @@ from jiuwenswarm.common.team_template_config import (
 logger = logging.getLogger(__name__)
 
 
-def _prepare_custom_external_cli_agents(spec_dict: dict[str, Any]) -> None:
-    """Make enabled custom agents resolvable and give them the team MCP server.
+def _prepare_external_cli_agents(spec_dict: dict[str, Any]) -> None:
+    """Finish the external CLI agent entries before the team spec is built.
 
-    A custom agent is a user-uploaded harness provider extracted into its own
-    ``site-packages``; openjiuwen resolves it only once that directory is on
-    ``sys.path``. Its team tools come from the ``openjiuwen-team-mcp`` stdio
-    server, whose location depends on whether this is a frozen build.
+    Each catalog of built-in models is reconciled with what its CLI last
+    reported (the configuration keeps the policy, the CLI owns the facts).
+    Enabled custom agents (user-uploaded harness providers, each extracted
+    into its own ``site-packages``) become resolvable once that directory is
+    on ``sys.path``, and get the ``openjiuwen-team-mcp`` stdio server for their
+    team tools, whose location depends on whether this is a frozen build.
     """
     from jiuwenswarm.common.custom_agent_runtime import (
         activate_custom_agent_paths,
         custom_agent_names,
         team_mcp_server_command,
     )
+    from jiuwenswarm.common.external_cli_catalog import apply_reported_models
 
-    custom_names = set(custom_agent_names())
     entries = spec_dict.get("external_cli_agents")
-    if not custom_names or not isinstance(entries, list):
+    if not isinstance(entries, list):
+        return
+    apply_reported_models(entries)
+    custom_names = set(custom_agent_names())
+    if not custom_names:
         return
     activate_custom_agent_paths()
     for entry in entries:
@@ -594,7 +600,7 @@ def load_team_spec_dict(
     )
     spec_dict = deepcopy(team_raw)
     spec_dict.pop("enable_team_plan", None)
-    _prepare_custom_external_cli_agents(spec_dict)
+    _prepare_external_cli_agents(spec_dict)
 
     spec_dict["team_name"] = str(team_raw.get("team_name") or resolved_template_id or "team").strip() or "team"
     spec_dict["lifecycle"] = team_raw.get("lifecycle", "persistent")

@@ -15,7 +15,7 @@ from jiuwenswarm.channels.web.custom_agent_upload_http import handle_custom_agen
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common import custom_agent_runtime as runtime
 from jiuwenswarm.common.config_panel import config_set_handlers as handlers
-from jiuwenswarm.agents.harness.team.config_loader import _prepare_custom_external_cli_agents
+from jiuwenswarm.agents.harness.team.config_loader import _prepare_external_cli_agents
 
 
 def _wheel(directory: Path, *, entry_points: tuple[str, ...] = ("acme",), summary: str = "Acme agent") -> Path:
@@ -36,8 +36,11 @@ def _wheel(directory: Path, *, entry_points: tuple[str, ...] = ("acme",), summar
 
 @pytest.fixture
 def workspace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    from jiuwenswarm.common import external_cli_catalog
+
     home = tmp_path / "home"
     monkeypatch.setattr(runtime, "get_user_workspace_dir", lambda: home)
+    monkeypatch.setattr(external_cli_catalog, "get_user_workspace_dir", lambda: home)
     return home
 
 
@@ -193,7 +196,7 @@ def test_team_spec_gets_the_custom_agent_paths_and_team_mcp_server(
     monkeypatch.setattr(sys, "path", list(sys.path))
     spec = {"external_cli_agents": [{"cli_agent": "acme"}, {"cli_agent": "claude"}]}
 
-    _prepare_custom_external_cli_agents(spec)
+    _prepare_external_cli_agents(spec)
 
     assert spec["external_cli_agents"][0]["mcp_server_command"] == runtime.team_mcp_server_command()
     assert "mcp_server_command" not in spec["external_cli_agents"][1]

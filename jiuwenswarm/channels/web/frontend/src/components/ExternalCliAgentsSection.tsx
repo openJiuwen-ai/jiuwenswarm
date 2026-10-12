@@ -280,7 +280,7 @@ export function ExternalCliAgentsSection({
         if (detectRequestIdsRef.current[cliAgent] !== requestId) return;
         const message = error instanceof Error ? error.message : String(error);
         setResults((prev) => {
-          const next = {
+          const next: Partial<Record<string, ExternalCliDetectResult>> = {
             ...prev,
             [cliAgent]: { cli_agent: cliAgent, status: 'unavailable', message },
           };
