@@ -744,10 +744,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         async def _rebind_from_shared_dir() -> None:
             """Pre-AgentOS behavior, valid only when both processes share one dir."""
-            from jiuwenswarm.server.runtime.session.project_store import (
+            from jiuwenswarm.gateway.embedded.runtime.session.project_store import (
                 find_or_create_code_project_for_tui_params,
             )
-            from jiuwenswarm.server.runtime.session.session_metadata import (
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import (
                 get_session_metadata,
                 rebind_session_project,
             )
@@ -1579,7 +1579,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         "execution: %s",
                         exc,
                     )
-                    from jiuwenswarm.server.runtime.harmonyos.harmonyos_dev import (
+                    from jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev import (
                         run_harmonyos_dev_init,
                     )
 

@@ -2638,8 +2638,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             and not getattr(real_client, "server_ready", True)
         ):
             from jiuwenswarm.gateway.embedded.runtime.parse_int import parse_int_param
-            from jiuwenswarm.server.runtime.session.session_info import to_session_info
-            from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata
+            from jiuwenswarm.gateway.embedded.runtime.session.session_info import to_session_info
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_all_sessions_metadata
 
             raw_params = params if isinstance(params, dict) else {}
             limit = parse_int_param(raw_params, "limit", 20, minimum=1, maximum=200)
@@ -2798,7 +2798,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             is_legacy_shared_directory_client(real_client)
             and not getattr(real_client, "server_ready", True)
         ):
-            from jiuwenswarm.server.runtime.session.session_rename import apply_session_rename
+            from jiuwenswarm.gateway.embedded.runtime.session.session_rename import apply_session_rename
 
             ok, payload, error, code = apply_session_rename(
                 params if isinstance(params, dict) else {},
@@ -2850,7 +2850,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if not isinstance(pinned, bool):
                 await channel.send_response(ws, req_id, ok=False, error="pinned must be boolean", code="BAD_REQUEST")
                 return
-            from jiuwenswarm.server.runtime.session.session_metadata import set_session_pinned
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import set_session_pinned
 
             result = await asyncio.to_thread(set_session_pinned, sid.strip(), pinned)
             if result is None:
