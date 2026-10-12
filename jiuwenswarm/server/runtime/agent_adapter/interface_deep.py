@@ -2111,6 +2111,7 @@ class JiuWenSwarmDeepAdapter:
         self._model_name_to_keys: dict[str, list[str]] = {}
         self._model_id_to_key: dict[str, str] = {}
         self._model_group_cache: dict[str, Model] = {}
+        self._stable_selection_cache: dict[str, tuple[str, Model]] = {}
         # 全局列表下标 → cache_key。通道侧（Web）用全局 origin_index 拼请求 key，
         # 与后端 per-name 的 cache_key 序号语义分叉；此映射在 _resolve_model_by_name
         # 回退分支把通道传入的全局序号换算成真实 cache_key，避免同名条目

@@ -83,7 +83,7 @@ async def _resource_payload(operation, params, *, user_id=""):
 
 
 async def model_resource_handler(
-    channel, ws, req_id, params, session_id, operation, *, on_config_saved=None, agent_client=None, user_id="",
+    channel, ws, req_id, params, session_id, *, operation, on_config_saved=None, agent_client=None, user_id="",
 ):
     """Mutate once, reload through the existing config boundary, then acknowledge."""
     from jiuwenswarm.common.config_panel.models_handlers import _apply_models_change
@@ -93,7 +93,8 @@ async def model_resource_handler(
         payload = await _resource_payload(operation, params or {}, user_id=user_id)
         if operation.endswith((".upsert", ".delete")):
             applied = await _apply_models_change(
-                on_config_saved, agent_client, changed_keys=["models.groups" if operation.startswith("groups") else "models.defaults"],
+                on_config_saved, agent_client,
+                changed_keys=["models.groups" if operation.startswith("groups") else "models.defaults"],
             )
             payload["applied_without_restart"] = applied
         await channel.send_response(ws, req_id, ok=True, payload=payload)

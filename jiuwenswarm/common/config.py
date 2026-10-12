@@ -1819,7 +1819,9 @@ def _require_unreferenced_model(
 
     is_etcd = load_cron_store_settings(data).backend == "etcd"
     if is_etcd and not cron_references_checked:
-        raise ModelSelectionError(MODEL_SELECTION_REFERENCED, "use the resource API to check etcd references before deletion")
+        raise ModelSelectionError(
+            MODEL_SELECTION_REFERENCED, "use the resource API to check etcd references before deletion",
+        )
     refs = ModelCatalog(data).find_references(
         ModelSelection(type=resource_type, id=resource_id), include_cron=not is_etcd,
     )
@@ -1840,6 +1842,7 @@ def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
     for route in saved.get("routes") or []:
         if isinstance(route, dict):
             route.setdefault("route_id", _new_business_id("rte"))
+
     def _mutate(data):
         candidate = data.setdefault("models", {})
         groups = candidate.setdefault("groups", [])
@@ -1982,7 +1985,9 @@ def get_available_models(
     return [*configured, *extra]
 
 
-def update_default_models_in_config(models_list: list[dict[str, Any]], *, cron_references_checked: bool = False) -> None:
+def update_default_models_in_config(
+    models_list: list[dict[str, Any]], *, cron_references_checked: bool = False,
+) -> None:
     def _mutate(data):
         if "models" not in data:
             data["models"] = {}

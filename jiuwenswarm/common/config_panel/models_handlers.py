@@ -917,7 +917,9 @@ def register_models_handlers(
 
     from jiuwenswarm.common.config_panel.model_resource_handlers import register_model_resource_handlers
 
-    register_model_resource_handlers(channel, on_config_saved=on_config_saved, agent_client=agent_client, user_id=user_id)
+    register_model_resource_handlers(
+        channel, on_config_saved=on_config_saved, agent_client=agent_client, user_id=user_id,
+    )
 
     async def _config_validate_model(ws, req_id, params, session_id):
         await config_validate_model_handler(channel, ws, req_id, params)
