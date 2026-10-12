@@ -1,0 +1,92 @@
+{
+  "version": "1.0.0",
+  "packageType": "agent_template",
+  "agentCard": {
+    "id": "health-life-advisor",
+    "name": "康安",
+    "description": "依托现代健康科学体系，提供营养膳食、作息睡眠、情绪调养咨询，生成个性化长期健康生活规划方案"
+  },
+  "persona": {
+    "dir": "./persona"
+  },
+  "skills": [
+    {
+      "dir": "./skills/health-life-planning",
+      "mode": "all"
+    }
+  ],
+  "tools": [
+    {
+      "file": "tools/health_profile_tool.py",
+      "class": "HealthProfileTool",
+      "displayName": {
+        "en": "health_profile_tool",
+        "zh": "health_profile_tool"
+      },
+      "displayDescription": {
+        "en": "User health profile management: create/update profiles, generate/iterate plans, log progress, and review.",
+        "zh": "用户健康档案管理：建档、更新档案、生成/迭代健康方案、记录执行、阶段性复盘。"
+      }
+    }
+  ],
+  "rails": [
+    {
+      "file": "rails/safety_guard_rail.py",
+      "class": "SafetyGuardRail",
+      "displayName": {
+        "en": "safety_guard",
+        "zh": "safety_guard"
+      },
+      "displayDescription": {
+        "en": "Safety boundary rail: detects high-risk keywords and triggers emergency guidance to seek professional help.",
+        "zh": "安全边界拦截：检测高危关键词，触发紧急安全提示，引导寻求专业医疗/心理帮助。"
+      }
+    }
+  ],
+  "mcps": [
+    { "connector": "amap" }
+  ],
+  "displayName": {
+    "en": "Health Life Advisor",
+    "zh": "健康生活顾问"
+  },
+  "displayDescription": {
+    "en": "Evidence-based health advisor for nutrition, sleep, emotional wellness, and personalized long-term lifestyle planning.",
+    "zh": "依托现代健康科学，提供营养膳食、作息睡眠、情绪调养咨询，生成个性化可迭代的长期健康生活规划方案。"
+  },
+  "category": "Life",
+  "avatar": "",
+  "source": "local",
+  "defaultInitInput": {
+    "zh": "帮我评估饮食、睡眠和情绪状况，制定个性化的健康生活方案。",
+    "en": "Help me to assess my diet, sleep, and emotional wellness, and craft a personalized lifestyle plan."
+  },
+  "tags": [
+    {
+      "en": "Nutrition",
+      "zh": "营养膳食"
+    },
+    {
+      "en": "Sleep & Stress",
+      "zh": "睡眠与压力"
+    },
+    {
+      "en": "Local Wellness",
+      "zh": "本地健康生活"
+    }
+  ],
+  "quickInputs": [
+    {
+      "en": "Help me to assess my diet, sleep, and emotional wellness, and craft a personalized lifestyle plan.",
+      "zh": "帮我评估饮食、睡眠和情绪状况，制定个性化的健康生活方案。"
+    },
+    {
+      "en": "Create a 2-week personalized health plan for me",
+      "zh": "给我制定一个两周的个性化健康生活方案"
+    },
+    {
+      "en": "Design an after-work walking or light exercise plan based on nearby places.",
+      "zh": "根据我附近的环境，帮我设计一个下班后的散步或轻运动计划。"
+    }
+  ]
+}
