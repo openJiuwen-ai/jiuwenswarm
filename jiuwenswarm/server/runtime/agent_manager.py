@@ -69,14 +69,34 @@ def _normalize_sub_mode(sub_mode: str | None) -> str:
     return str(sub_mode or "").strip()
 
 
-def _normalize_project_dir(project_dir: str | None) -> str:
+def _resolve_project_dir(project_dir: str | None) -> str:
+    """Absolute project path with the user's spelling (case) preserved.
+
+    This is the path handed to the agent and its sessions. Tools, rails and
+    stores compare it with paths the model produces (``/Users/...``), so it
+    must keep the real case; only the cache key below is case-folded.
+    """
     raw = str(project_dir or "").strip()
     if not raw:
         return ""
     try:
-        return os.path.normcase(os.path.abspath(os.path.expanduser(raw))).casefold()
-    except Exception:
+        return os.path.abspath(os.path.expanduser(raw))
+    except (OSError, ValueError, TypeError, KeyError):
         return raw
+
+
+def _normalize_project_dir(project_dir: str | None) -> str:
+    """Case-insensitive identity of a project path, for cache keys only.
+
+    Two spellings of the same directory on a case-insensitive filesystem map
+    to one agent. Never pass this value to an agent as its working path: it
+    is lower-cased, and case-sensitive path checks downstream would reject
+    every real path the model uses.
+    """
+    resolved = _resolve_project_dir(project_dir)
+    if not resolved:
+        return ""
+    return os.path.normcase(resolved).casefold()
 
 
 def _auto_permission_request_workspace(request: Any) -> str | None:
@@ -692,7 +712,8 @@ class AgentManager:
             )
         # 用并轨后的子模式装配实例，和缓存键保持同一套语义。
         sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
-        project_dir = _normalize_project_dir((config or {}).get("project_dir"))
+        # Keep the user's spelling for the agent; the cache key folds case.
+        project_dir = _resolve_project_dir((config or {}).get("project_dir"))
         if project_dir:
             config = dict(config or {})
             config["project_dir"] = project_dir
@@ -1383,7 +1404,9 @@ class AgentManager:
 
             config = {}
             if project_key:
-                config["project_dir"] = project_key
+                # First spelling seen for this directory wins; later spellings
+                # that differ only in case reuse this agent via ``cache_key``.
+                config["project_dir"] = _resolve_project_dir(project_dir)
             # Surface the channel id to the adapter so session-scoped children
             # can branch their MCP load strategy (TUI = global config.yaml ∪
             # state.json enabled; web = session-level via chat.send's mcp field,
@@ -1523,7 +1546,9 @@ class AgentManager:
                 continue
             if requested_sub_mode and getattr(agent, "_jiuwenswarm_agent_sub_mode", "") != requested_sub_mode:
                 continue
-            if requested_project_dir and getattr(agent, "_jiuwenswarm_agent_project_dir", "") != requested_project_dir:
+            if requested_project_dir and _normalize_project_dir(
+                getattr(agent, "_jiuwenswarm_agent_project_dir", "")
+            ) != requested_project_dir:
                 continue
             return self._borrow_agent(agent)
 
