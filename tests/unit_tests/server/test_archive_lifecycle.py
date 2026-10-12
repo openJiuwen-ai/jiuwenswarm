@@ -512,7 +512,10 @@ async def test_chat_admission_does_not_mark_session_busy_before_team_binding(arc
         await release.wait()
 
     server._ensure_auto_team_binding_for_chat = wait_for_binding
-    server._handle_stream = AsyncMock()
+    monkeypatch.setattr(
+        "jiuwenswarm.server.handlers._default.handle_stream",
+        AsyncMock(),
+    )
     task = asyncio.create_task(server._handle_message(object(), "{}", asyncio.Lock()))
     try:
         await asyncio.wait_for(entered.wait(), 3)

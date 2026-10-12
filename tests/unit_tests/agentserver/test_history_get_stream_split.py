@@ -14,13 +14,16 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
+from jiuwenswarm.server.context import build_ws_request_context
+from jiuwenswarm.server.handlers.session import handle_history_get_stream
+from jiuwenswarm.server.runtime.session.session_history import HistorySnapshotChanged
 from jiuwenswarm.server.wire_truncate import _HISTORY_WIRE_RECORD_MAX_BYTES
 
 
@@ -46,9 +49,13 @@ def fake_encode_agent_chunk_for_wire(chunk: Any, *, response_id: str, sequence: 
 @pytest.fixture(autouse=True)
 def patch_wire_encoder(monkeypatch):
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_chunk_for_wire",
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_chunk_for_wire",
         fake_encode_agent_chunk_for_wire,
+    )
+    # 这组测试只看历史怎么切片。待办快照是另一件事，而且本机导入它会绊在 pysbd 上。
+    monkeypatch.setattr(
+        "jiuwenswarm.server.handlers.session.load_todo_snapshot_for_frontend",
+        lambda *_args, **_kwargs: [],
     )
 
 
@@ -81,11 +88,19 @@ def _make_history_records() -> list[dict]:
 
 
 def _patch_history(monkeypatch, records: list[dict]) -> None:
-    monkeypatch.setattr(agent_ws_server_module, "history_exists", lambda session_id, **_kwargs: True)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "load_history_records",
+        "jiuwenswarm.server.handlers.session.history_exists",
+        lambda session_id, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.handlers.session.load_history_records",
         lambda session_id, **_kwargs: records,
+    )
+
+
+async def _read_stream(ws, request) -> None:
+    await handle_history_get_stream(
+        build_ws_request_context(SimpleNamespace(), ws, request, asyncio.Lock())
     )
 
 
@@ -93,9 +108,6 @@ def _patch_history(monkeypatch, records: list[dict]) -> None:
 async def test_web_channel_splits_chat_final_and_leaves_others_unsplit(monkeypatch):
     """web 通道：chat.final 切片，reasoning / tool_call 单帧不切"""
     _patch_history(monkeypatch, _make_history_records())
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
-    )
     ws = FakeWebSocket()
     request = AgentRequest(
         request_id="req-web-split",
@@ -104,7 +116,7 @@ async def test_web_channel_splits_chat_final_and_leaves_others_unsplit(monkeypat
         params={"session_id": "sess-web", "page_idx": 1},
     )
 
-    await server._handle_history_get_stream(ws, request, asyncio.Lock())
+    await _read_stream(ws, request)
 
     record_frames = [
         f for f in ws.sent
@@ -145,12 +157,8 @@ async def test_web_channel_splits_chat_final_and_leaves_others_unsplit(monkeypat
 
 @pytest.mark.asyncio
 async def test_web_cursor_stream_emits_exact_snapshot_metadata(monkeypatch):
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
-    )
     monkeypatch.setattr(
-        server,
-        "get_conversation_history_cursor",
+        "jiuwenswarm.server.handlers.session.get_conversation_history_cursor",
         lambda session_id, cursor, **_kwargs: {
             "messages": [{"id": "m-2", "role": "user", "content": "two"}],
             "next_cursor": "cursor-2",
@@ -167,7 +175,7 @@ async def test_web_cursor_stream_emits_exact_snapshot_metadata(monkeypatch):
         params={"session_id": "sess-web", "cursor": None, "limit": 50},
     )
 
-    await server._handle_history_get_stream(ws, request, asyncio.Lock())
+    await _read_stream(ws, request)
 
     history_payloads = [
         frame["payload"]
@@ -184,10 +192,6 @@ async def test_web_cursor_stream_emits_exact_snapshot_metadata(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_web_cursor_read_does_not_block_event_loop(monkeypatch):
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
-    )
-
     def _slow_cursor_read(*_args, **_kwargs):
         time.sleep(0.15)
         return {
@@ -198,7 +202,10 @@ async def test_web_cursor_read_does_not_block_event_loop(monkeypatch):
             "snapshot_end": 1,
         }
 
-    monkeypatch.setattr(server, "get_conversation_history_cursor", _slow_cursor_read)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.handlers.session.get_conversation_history_cursor",
+        _slow_cursor_read,
+    )
     ws = FakeWebSocket()
     request = AgentRequest(
         request_id="req-web-off-thread",
@@ -207,9 +214,7 @@ async def test_web_cursor_read_does_not_block_event_loop(monkeypatch):
         params={"session_id": "sess-web", "cursor": None, "limit": 50},
     )
 
-    handler = asyncio.create_task(
-        server._handle_history_get_stream(ws, request, asyncio.Lock())
-    )
+    handler = asyncio.create_task(_read_stream(ws, request))
     await asyncio.sleep(0.02)
     assert handler.done() is False
     await handler
@@ -217,14 +222,13 @@ async def test_web_cursor_read_does_not_block_event_loop(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_web_cursor_stream_reports_snapshot_rewrite(monkeypatch):
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
-    )
-
     def _changed(*_args, **_kwargs):
-        raise agent_ws_server_module.HistorySnapshotChanged("rewritten")
+        raise HistorySnapshotChanged("rewritten")
 
-    monkeypatch.setattr(server, "get_conversation_history_cursor", _changed)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.handlers.session.get_conversation_history_cursor",
+        _changed,
+    )
     ws = FakeWebSocket()
     request = AgentRequest(
         request_id="req-web-invalidated",
@@ -233,7 +237,7 @@ async def test_web_cursor_stream_reports_snapshot_rewrite(monkeypatch):
         params={"session_id": "sess-web", "cursor": "cursor-1", "limit": 50},
     )
 
-    await server._handle_history_get_stream(ws, request, asyncio.Lock())
+    await _read_stream(ws, request)
 
     assert len(ws.sent) == 1
     assert ws.sent[0]["payload"]["event_type"] == "history.message"

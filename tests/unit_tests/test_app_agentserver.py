@@ -78,7 +78,7 @@ async def test_run_does_not_delete_agent_teams_directory(
 
         return asyncio.create_task(_noop())
 
-    async def _fake_backend(front, host, port):
+    async def _fake_backend(front, host, port, **_kwargs):
         _ = host, port
         await fake_server.start(bind_transport=False)
         front.attach_runtime_backend(fake_server)

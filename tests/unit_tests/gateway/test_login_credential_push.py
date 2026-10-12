@@ -95,24 +95,18 @@ async def test_other_pushes_are_not_touched():
 
 
 @pytest.mark.asyncio
-async def test_agent_server_applies_the_pushed_update(monkeypatch):
-    from jiuwenswarm.server import agent_ws_server as module
+async def test_agent_server_applies_the_pushed_update():
+    from jiuwenswarm.server.context import RequestContext
+    from jiuwenswarm.server.handlers.ops import handle_auth_credentials_update
 
     lc.login_auth_from_params(
         {E2A_MODEL_AUTH_PARAM_KEY: {"api_base": "https://apig.example.com/v1", "api_key": "id-old", "credential_ref": REF}}
     )
     sent: list = []
 
-    async def _capture(_ws, wire):
-        sent.append(wire)
-
-    monkeypatch.setattr(module, "send_wire_payload", _capture)
-    monkeypatch.setattr(
-        module,
-        "encode_agent_response_for_wire",
-        lambda response, *, response_id: {"response_id": response_id, "ok": response.ok, "payload": response.payload},
-    )
-    server = module.AgentWebSocketServer.__new__(module.AgentWebSocketServer)
+    class _Sink:
+        async def send_response(self, response):
+            sent.append(response)
 
     async def _call(params):
         request = AgentRequest(
@@ -122,16 +116,23 @@ async def test_agent_server_applies_the_pushed_update(monkeypatch):
             timestamp=time.time(),
             params=params,
         )
-        await server._handle_auth_credentials_update(object(), request, asyncio.Lock())
+        await handle_auth_credentials_update(
+            RequestContext(
+                request=request,
+                sink=_Sink(),
+                connection_id="1",
+                services=SimpleNamespace(),
+            )
+        )
         return sent[-1]
 
-    assert (await _call({"credential_ref": REF, "api_key": "id-new"}))["ok"] is True
+    assert (await _call({"credential_ref": REF, "api_key": "id-new"})).ok is True
     assert lc._lookup(REF).token == "id-new"
 
     unknown = "ef765dc40dd691dc34f6567937da5449"
-    assert (await _call({"credential_ref": unknown, "api_key": "x"}))["ok"] is False
+    assert (await _call({"credential_ref": unknown, "api_key": "x"})).ok is False
 
-    assert (await _call({"credential_ref": REF, "revoked": True}))["ok"] is True
+    assert (await _call({"credential_ref": REF, "revoked": True})).ok is True
     assert lc._lookup(REF) is None
 
 

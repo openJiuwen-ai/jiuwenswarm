@@ -1,0 +1,439 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""HTTP 入口：默认关闭，路由直调处理函数，不经过 WebSocket 分发。"""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+_KV_CACHE_MOD = "openjiuwen.core.kv_cache"
+if _KV_CACHE_MOD not in sys.modules:
+    try:
+        __import__(_KV_CACHE_MOD)
+    except ModuleNotFoundError:
+        _stub = types.ModuleType(_KV_CACHE_MOD)
+        _stub.KVCacheAffinityConfig = type("KVCacheAffinityConfig", (), {})
+        sys.modules[_KV_CACHE_MOD] = _stub
+
+import httpx
+
+from jiuwenswarm.common.log_context import NO_SESSION_ID, current_log_session_id
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server.agent_http_routes import _event_frames, build_http_app
+from jiuwenswarm.server.agent_http_server import resolve_http_server_settings
+from jiuwenswarm.server.app_services import AppServices
+from jiuwenswarm.server.context import RequestContext
+from jiuwenswarm.server.http_chat import handle_http_chat
+from jiuwenswarm.server.http_invoke import invoke_stream
+from jiuwenswarm.server.transports.http_sink import SSESink
+
+_HTTP_DIR = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server"
+
+
+def test_websocket_door_stays_open_unless_asked() -> None:
+    from jiuwenswarm.server.startup_switches import resolve_websocket_enabled
+
+    assert resolve_websocket_enabled(env={}, config_section={}) is True
+    assert resolve_websocket_enabled(env={}, config_section={"enabled": False}) is False
+    assert (
+        resolve_websocket_enabled(
+            env={"AGENT_WS_ENABLED": "false"},
+            config_section={"enabled": True},
+        )
+        is False
+    )
+    assert resolve_websocket_enabled(env={"AGENT_WS_ENABLED": "true"}, config_section={}) is True
+
+
+def test_websocket_door_off_skips_listen_and_heartbeat() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    app = (root / "jiuwenswarm/server/app_agentserver.py").read_text(encoding="utf-8")
+    server = (root / "jiuwenswarm/server/agent_ws_server.py").read_text(encoding="utf-8")
+    assert "if websocket_enabled:" in app
+    assert "await front.start()" in app
+    assert "websocket_enabled=websocket_enabled" in app
+    assert "if self._websocket_enabled:" in server
+    assert "await self._heartbeat_runtime.start()" in server
+
+
+def test_http_is_off_unless_asked() -> None:
+    assert resolve_http_server_settings(env={}, config_section={}) == (
+        False,
+        "127.0.0.1",
+        8766,
+    )
+    enabled, host, port = resolve_http_server_settings(
+        env={"AGENT_HTTP_ENABLED": "true", "AGENT_HTTP_PORT": "9001"},
+        config_section={"enabled": False, "host": "0.0.0.0"},
+    )
+    assert (enabled, host, port) == (True, "0.0.0.0", 9001)
+
+
+def test_http_modules_do_not_use_the_websocket_dispatch() -> None:
+    for name in (
+        "agent_http_server.py",
+        "agent_http_routes.py",
+        "http_chat.py",
+        "http_invoke.py",
+    ):
+        text = (_HTTP_DIR / name).read_text(encoding="utf-8")
+        assert "dispatch_parsed_request" not in text
+        assert "agent_ws_server" not in text
+        if name != "agent_http_routes.py":
+            assert "server.dispatch" not in text
+    routes_text = (_HTTP_DIR / "agent_http_routes.py").read_text(encoding="utf-8")
+    assert "http_rpc" not in routes_text
+
+
+@pytest.mark.asyncio
+async def test_agents_list_skips_chat_steps(monkeypatch, caplog) -> None:
+    called: list[str] = []
+
+    async def _list(ctx: RequestContext) -> None:
+        called.append(current_log_session_id())
+        await ctx.sink.send_response(
+            AgentResponse(
+                request_id=ctx.request.request_id,
+                channel_id=ctx.request.channel_id,
+                ok=True,
+                payload={"agents": []},
+            )
+        )
+
+    def _forbid(*_args, **_kwargs):
+        raise AssertionError("列 Agent 不应跑聊天前的步骤")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.handlers.agents.handle_agents_list",
+        _list,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.http_chat.trigger_before_chat_request",
+        _forbid,
+    )
+    app = build_http_app(AppServices())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        with caplog.at_level("INFO"):
+            response = await client.post(
+                "/api/v1/agents/list",
+                headers={"x-session-id": "sess-9"},
+                json={"request_id": "req-1", "channel_id": "http", "params": {}},
+            )
+    assert response.status_code == 200
+    assert response.json()["payload"] == {"agents": []}
+    assert called == ["sess-9"]
+    assert any("session_id=sess-9" in record.message for record in caplog.records)
+    assert current_log_session_id() == NO_SESSION_ID
+
+
+@pytest.mark.asyncio
+async def test_chat_route_uses_the_chat_adapter(monkeypatch) -> None:
+    seen: list[str] = []
+
+    async def _chat(ctx: RequestContext) -> None:
+        seen.append(ctx.request.req_method.value if ctx.request.req_method else "")
+        await ctx.sink.send_response(
+            AgentResponse(
+                request_id=ctx.request.request_id,
+                channel_id=ctx.request.channel_id,
+                ok=True,
+                payload={"echo": True},
+            )
+        )
+
+    monkeypatch.setattr("jiuwenswarm.server.http_chat.handle_http_chat", _chat)
+    app = build_http_app(AppServices())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/chat",
+            json={
+                "request_id": "req-2",
+                "session_id": "sess-2",
+                "req_method": "chat.send",
+                "params": {"query": "你好"},
+            },
+        )
+    assert response.status_code == 200
+    assert seen == ["chat.send"]
+
+
+@pytest.mark.asyncio
+async def test_chat_adapter_runs_prelude_before_the_reply(monkeypatch) -> None:
+    order: list[str] = []
+
+    async def _hook(_request) -> None:
+        order.append("hook")
+
+    async def _bind(_request) -> None:
+        order.append("bind")
+
+    async def _feedback(_request) -> None:
+        order.append("feedback")
+
+    async def _unary(ctx: RequestContext) -> None:
+        order.append("unary")
+        await ctx.sink.send_response(
+            AgentResponse(request_id="req-3", channel_id="http", ok=True, payload={})
+        )
+
+    monkeypatch.setattr("jiuwenswarm.server.http_chat.trigger_before_chat_request", _hook)
+    monkeypatch.setattr("jiuwenswarm.server.http_chat.ensure_auto_team_binding", _bind)
+    monkeypatch.setattr("jiuwenswarm.server.http_chat.try_record_implicit_feedback", _feedback)
+    monkeypatch.setattr("jiuwenswarm.server.http_chat.chat_default.handle_unary", _unary)
+
+    class _Runtime:
+        def begin_chat_request(self, session_id: str, request_id: str) -> None:
+            order.append("begin")
+
+        def end_chat_request(self, session_id: str, request_id: str) -> None:
+            order.append("end")
+
+    sink = SSESink()
+    ctx = RequestContext(
+        request=AgentRequest(
+            request_id="req-3",
+            channel_id="http",
+            session_id="sess-3",
+            req_method=ReqMethod.CHAT_SEND,
+            params={"query": "你好"},
+        ),
+        sink=sink,
+        connection_id="http",
+        services=SimpleNamespace(execution_runtime=lambda: _Runtime()),
+    )
+    await handle_http_chat(ctx)
+    assert order == ["begin", "hook", "bind", "feedback", "unary", "end"]
+
+
+@pytest.mark.asyncio
+async def test_escaped_error_becomes_http_500(monkeypatch) -> None:
+    async def _boom(_ctx: RequestContext) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("jiuwenswarm.server.handlers.agents.handle_agents_list", _boom)
+    app = build_http_app(AppServices())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/v1/agents/list", json={"request_id": "req-4"})
+    assert response.status_code == 500
+    assert response.json()["payload"]["code"] == "INTERNAL_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_stream_cancel_is_reraised() -> None:
+    async def _cancel(_ctx: RequestContext) -> None:
+        raise asyncio.CancelledError()
+
+    ctx = RequestContext(
+        request=AgentRequest(request_id="req-5", channel_id="http", req_method=ReqMethod.CHAT_SEND),
+        sink=SSESink(),
+        connection_id="http",
+        services=SimpleNamespace(),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await invoke_stream(ctx, _cancel)
+
+
+def _app_client():
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=build_http_app(AppServices())),
+        base_url="http://test",
+    )
+
+
+@pytest.mark.asyncio
+async def test_health_reports_ok() -> None:
+    async with _app_client() as client:
+        response = await client.get("/api/v1/health")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_reads_headers_and_wraps_data(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _chat(ctx: RequestContext) -> None:
+        seen["method"] = ctx.request.req_method.value if ctx.request.req_method else ""
+        seen["query"] = (ctx.request.params or {}).get("query")
+        seen["session"] = ctx.request.session_id
+        await ctx.sink.send_response(
+            AgentResponse(
+                request_id=ctx.request.request_id,
+                channel_id=ctx.request.channel_id,
+                ok=True,
+                payload={"echo": True},
+            )
+        )
+
+    monkeypatch.setattr("jiuwenswarm.server.http_chat.handle_http_chat", _chat)
+    async with _app_client() as client:
+        response = await client.post(
+            "/api/v1/chat/completions",
+            headers={
+                "x-request-id": "req-c",
+                "x-channel-id": "web",
+                "x-session-id": "sess-c",
+            },
+            json={"query": "你好"},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"] == {"echo": True}
+    assert body["request_id"] == "req-c"
+    assert "payload" not in body
+    assert seen == {"method": "chat.send", "query": "你好", "session": "sess-c"}
+
+
+@pytest.mark.asyncio
+async def test_chat_resume_uses_the_same_adapter(monkeypatch) -> None:
+    seen: list[str] = []
+
+    async def _chat(ctx: RequestContext) -> None:
+        seen.append(ctx.request.req_method.value if ctx.request.req_method else "")
+        await ctx.sink.send_response(
+            AgentResponse(
+                request_id=ctx.request.request_id,
+                channel_id=ctx.request.channel_id,
+                ok=True,
+                payload={},
+            )
+        )
+
+    monkeypatch.setattr("jiuwenswarm.server.http_chat.handle_http_chat", _chat)
+    async with _app_client() as client:
+        response = await client.post(
+            "/api/v1/chat/resume",
+            headers={"x-request-id": "req-resume"},
+            json={"query": "继续"},
+        )
+    assert response.status_code == 200
+    assert response.json()["data"] == {}
+    assert seen == ["chat.resume"]
+
+
+@pytest.mark.asyncio
+async def test_events_stream_starts_with_push_ready() -> None:
+    frames: list[str] = []
+    async for frame in _event_frames(SimpleNamespace()):
+        frames.append(frame)
+        break
+    assert frames == ['data: {"event_type": "gateway.push_ready"}\n\n']
+
+
+@pytest.mark.asyncio
+async def test_events_stream_stays_open_until_the_client_leaves(monkeypatch) -> None:
+    state = {"asleep": 0}
+
+    async def _sleep(_seconds: float) -> None:
+        state["asleep"] += 1
+
+    async def _gone() -> bool:
+        return state["asleep"] >= 2
+
+    monkeypatch.setattr("jiuwenswarm.server.agent_http_routes.asyncio.sleep", _sleep)
+    request = SimpleNamespace(is_disconnected=_gone)
+    frames = [frame async for frame in _event_frames(request)]
+    assert "gateway.push_ready" in frames[0]
+    assert frames[1:] == [": keepalive\n\n"]
+
+
+@pytest.mark.asyncio
+async def test_events_route_is_an_sse_stream(monkeypatch) -> None:
+    async def _frames(_request) -> Any:
+        yield 'data: {"event_type": "gateway.push_ready"}\n\n'
+
+    monkeypatch.setattr("jiuwenswarm.server.agent_http_routes._event_frames", _frames)
+    async with _app_client() as client:
+        response = await client.get("/api/v1/events/stream")
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+    assert "gateway.push_ready" in response.text
+
+
+@pytest.mark.asyncio
+async def test_rpc_url_is_closed() -> None:
+    async with _app_client() as client:
+        unknown = await client.post("/api/v1/rpc/not.a.method", json={})
+        skills = await client.post("/api/v1/rpc/skills.list", json={})
+    assert unknown.status_code == 404
+    assert skills.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_dedicated_session_url_calls_the_same_handler(monkeypatch) -> None:
+    seen: list[dict[str, object]] = []
+
+    async def _dispatch(ctx: RequestContext) -> None:
+        params = ctx.request.params or {}
+        seen.append(
+            {
+                "method": ctx.request.req_method,
+                "session_id": params.get("session_id"),
+                "title": params.get("title"),
+            }
+        )
+        await ctx.sink.send_response(
+            AgentResponse(
+                request_id=ctx.request.request_id,
+                channel_id=ctx.request.channel_id,
+                ok=True,
+                payload={"session_id": "sess-new"},
+            )
+        )
+
+    from jiuwenswarm.server.dispatch import HANDLERS
+
+    monkeypatch.setitem(HANDLERS, ReqMethod.SESSION_CREATE, _dispatch)
+    monkeypatch.setitem(HANDLERS, ReqMethod.SESSION_DELETE, _dispatch)
+    async with _app_client() as client:
+        created = await client.post(
+            "/api/v1/sessions",
+            headers={"x-request-id": "req-c"},
+            json={"title": "你好"},
+        )
+        removed = await client.delete(
+            "/api/v1/sessions/sess-1",
+            headers={"x-request-id": "req-d"},
+        )
+    assert created.status_code == 200
+    assert created.json()["data"]["session_id"] == "sess-new"
+    assert removed.status_code == 200
+    assert seen[0]["method"] is ReqMethod.SESSION_CREATE
+    assert seen[0]["title"] == "你好"
+    assert seen[1]["method"] is ReqMethod.SESSION_DELETE
+    assert seen[1]["session_id"] == "sess-1"
+
+
+def test_unhandled_urls_are_not_registered() -> None:
+    app = build_http_app(AppServices())
+    routes = {
+        (method, route.path)
+        for route in app.routes
+        for method in (getattr(route, "methods", None) or set())
+    }
+    assert ("GET", "/api/v1/skills") not in routes
+    assert ("POST", "/api/v1/skills/install") not in routes
+    assert ("GET", "/api/v1/plugins") not in routes
+    assert ("POST", "/api/v1/plugins/install") not in routes
+    assert ("GET", "/api/v1/channels/feishu/config") not in routes
+    assert ("POST", "/api/v1/updater/actions/check") not in routes
+    assert ("GET", "/api/v1/heartbeat/config") not in routes
+    assert ("POST", "/api/v1/sessions") in routes
+    assert ("POST", "/api/v1/mcp/actions/list") in routes
+    assert ("POST", "/api/v1/sessions/{session_id}/swarmflow/actions/pause") in routes
+    assert ("POST", "/api/v1/proactive/actions/feedback") in routes
+    assert ("POST", "/api/v1/rpc/{method}") not in routes

@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace  # noqa: F401  (kept for parity with sibling tests)
-from unittest.mock import AsyncMock
 from typing import Any
+from unittest.mock import AsyncMock
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -94,16 +94,12 @@ def _decode_response(ws: _FakeWS) -> dict[str, Any]:
 
 
 async def _run_handler(server: Any, ws: _FakeWS, request: AgentRequest) -> None:
-    send_lock = asyncio.Lock()
-    req_method = request.req_method
-    if req_method == ReqMethod.SWARMFLOW_PAUSE:
-        await server._handle_swarmflow_pause(ws, request, send_lock)
-    elif req_method == ReqMethod.SWARMFLOW_RESUME:
-        await server._handle_swarmflow_resume(ws, request, send_lock)
-    elif req_method == ReqMethod.SWARMFLOW_STOP:
-        await server._handle_swarmflow_stop(ws, request, send_lock)
-    else:  # pragma: no cover - only reached on test misuse
-        raise AssertionError(f"unexpected req_method: {req_method}")
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.team import handle_swarmflow_control
+
+    await handle_swarmflow_control(
+        build_ws_request_context(server, ws, request, asyncio.Lock())
+    )
 
 
 class TestHandleSwarmflowControl:
@@ -207,7 +203,9 @@ class TestHandleSwarmflowControl:
         """Stopping a paused run (no engine event) must mark the snapshot stopped."""
         from unittest.mock import patch
 
-        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
+            WorkflowRunState,
+        )
         from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
         run = WorkflowRunState(status="paused")
@@ -285,10 +283,8 @@ class TestSwarmflowControlDispatch:
     """Structural test that Runtime dispatch routes the new req_methods."""
 
     async def test_dispatch_has_three_swarmflow_branches(self) -> None:
-        import inspect
+        from pathlib import Path
 
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        source = inspect.getsource(AgentWebSocketServer.dispatch_parsed_request)
+        source = Path("jiuwenswarm/server/dispatch.py").read_text(encoding="utf-8")
         for method in (ReqMethod.SWARMFLOW_PAUSE, ReqMethod.SWARMFLOW_RESUME, ReqMethod.SWARMFLOW_STOP):
-            assert f"ReqMethod.{method.name}" in source
+            assert f"ReqMethod.{method.name}: handle_swarmflow_control" in source

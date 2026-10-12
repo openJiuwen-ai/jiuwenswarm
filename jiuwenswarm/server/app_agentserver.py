@@ -230,7 +230,9 @@ def _preload_runtime_backend() -> None:
     import jiuwenswarm.server.agent_ws_server  # noqa: F401
 
 
-async def _start_runtime_backend(front: object, host: str, port: int) -> object:
+async def _start_runtime_backend(
+    front: object, host: str, port: int, *, websocket_enabled: bool = True
+) -> object:
     """Load OpenJiuwen / extensions / AgentWebSocketServer after Front listen."""
     await asyncio.sleep(0)
     startup_t0 = time.monotonic()
@@ -284,6 +286,7 @@ async def _start_runtime_backend(front: object, host: str, port: int) -> object:
             on_warmup_retry=getattr(readiness, "note_warmup_retry", None),
             on_failed=getattr(readiness, "mark_failed", None),
         )
+    server._websocket_enabled = websocket_enabled
     await server.start(bind_transport=False)
     attach = getattr(front, "attach_runtime_backend", None)
     if callable(attach):
@@ -343,7 +346,25 @@ async def _start_runtime_backend(front: object, host: str, port: int) -> object:
             if callable(mark_degraded):
                 mark_degraded()
     log_startup_stage("ready")
+    from jiuwenswarm.server.agent_http_server import start_http_if_enabled
+
+    try:
+        await start_http_if_enabled(server.app_services)
+    except Exception as exc:
+        logger.warning("[AgentHTTPServer] start failed: %s", exc)
     return server
+
+
+def _ws_server_config() -> dict:
+    """读 WebSocket 门的配置。读不到就当没写，门保持打开。"""
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        section = get_config().get("ws_server")
+    except Exception:
+        logger.debug("[AgentServer] 读取 ws_server 配置失败", exc_info=True)
+        return {}
+    return section if isinstance(section, dict) else {}
 
 
 async def _run(host: str, port: int) -> None:
@@ -365,26 +386,32 @@ async def _run(host: str, port: int) -> None:
     )
 
     front = AgentServerFront(host=host, port=port)
-    await front.start()
-    logger.info(
-        "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
-        host,
-        port,
-        time.monotonic() - startup_t0,
-    )
-    logger.info(
-        "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
-        "agent_ws_listening",
-        time.monotonic() - _PROCESS_START_T0,
-        time.monotonic() - startup_t0,
-        front.readiness.snapshot().get("control_ready"),
-    )
+    from jiuwenswarm.server.startup_switches import resolve_websocket_enabled
+
+    websocket_enabled = resolve_websocket_enabled(config_section=_ws_server_config())
+    if websocket_enabled:
+        await front.start()
+        logger.info(
+            "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
+            host,
+            port,
+            time.monotonic() - startup_t0,
+        )
+        logger.info(
+            "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
+            "agent_ws_listening",
+            time.monotonic() - _PROCESS_START_T0,
+            time.monotonic() - startup_t0,
+            front.readiness.snapshot().get("control_ready"),
+        )
+    else:
+        logger.info("[AgentServer] WebSocket 门关闭，不听端口")
 
     stop_event = asyncio.Event()
     teammate_bootstrap_task: asyncio.Task | None = None
     server: object | None = None
     backend_task = asyncio.create_task(
-        _start_runtime_backend(front, host, port),
+        _start_runtime_backend(front, host, port, websocket_enabled=websocket_enabled),
         name="runtime-backend",
     )
 
@@ -430,6 +457,12 @@ async def _run(host: str, port: int) -> None:
     finally:
         logger.info("[AgentServer] stopping…")
         stop_event.set()
+        try:
+            from jiuwenswarm.server.agent_http_server import stop_http_server
+
+            await stop_http_server()
+        except Exception as exc:
+            logger.warning("[AgentHTTPServer] stop failed: %s", exc)
         begin_drain = getattr(front, "begin_drain", None)
         if callable(begin_drain):
             begin_drain()

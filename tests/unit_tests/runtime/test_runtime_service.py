@@ -14,16 +14,19 @@ import pytest
 from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
     SessionRunAdmission,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.schema.agent import (
+    AgentRequest,
+    AgentResponse,
+    AgentResponseChunk,
+)
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime, RuntimeStateError
+from jiuwenswarm.runtime import service as runtime_service_module
 from jiuwenswarm.runtime.context import (
     get_current_agent_manager,
     get_current_runtime,
     get_runtime_context,
 )
-from jiuwenswarm.runtime import service as runtime_service_module
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.plan import PlanStateResult
 from jiuwenswarm.runtime.request import prepare_chat_turn
@@ -1965,10 +1968,11 @@ async def test_agent_server_cancel_delegates_to_runtime_public_api() -> None:
         params={"intent": "cancel"},
     )
 
-    response = await server._handle_cancel(
-        None,
-        request,
-        asyncio.Lock(),
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.chat import cancel_chat_request
+
+    response = await cancel_chat_request(
+        build_ws_request_context(server, None, request, asyncio.Lock()),
         send_response=False,
     )
 
@@ -2070,7 +2074,10 @@ async def test_agent_server_auto_fork_uses_runtime_public_api() -> None:
         params={"source_session_id": "fork-source", "title": "Forked session"},
     )
 
-    await server._handle_session_fork(ws, request, asyncio.Lock())
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.bootstrap import handle_session_fork
+
+    await handle_session_fork(build_ws_request_context(server, ws, request, asyncio.Lock()))
 
     runtime.start.assert_awaited_once_with()
     runtime.prepare_session_fork.assert_awaited_once_with(
@@ -2144,7 +2151,10 @@ async def test_agent_server_explicit_fork_waits_for_runtime() -> None:
         },
     )
 
-    await server._handle_session_fork(ws, request, asyncio.Lock())
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.bootstrap import handle_session_fork
+
+    await handle_session_fork(build_ws_request_context(server, ws, request, asyncio.Lock()))
 
     runtime.start.assert_awaited_once_with()
     runtime.prepare_session_fork.assert_awaited_once_with(
@@ -2686,6 +2696,7 @@ async def test_runtime_does_not_close_externally_owned_extensions(monkeypatch) -
 @pytest.mark.asyncio
 async def test_process_dependencies_are_reference_counted(monkeypatch) -> None:
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
     initialize = AsyncMock()
@@ -2730,6 +2741,7 @@ async def test_process_dependency_lease_rolls_back_on_start_failure(
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
     monkeypatch.setattr(
@@ -2764,6 +2776,7 @@ async def test_checkpointer_init_error_survives_close_error_and_allows_retry(
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
     initialize = AsyncMock(
@@ -2817,6 +2830,7 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     tmp_path,
 ) -> None:
     from openjiuwen.core.session.checkpointer import CheckpointerFactory
+
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
     dispose_error = RuntimeError("dispose failed")
@@ -2867,6 +2881,7 @@ async def test_runner_start_error_survives_checkpointer_rollback_error_and_retri
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
     initialize = AsyncMock()
@@ -2913,6 +2928,7 @@ async def test_runner_start_error_survives_checkpointer_rollback_error_and_retri
 @pytest.mark.asyncio
 async def test_runner_false_start_result_is_rolled_back(monkeypatch) -> None:
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
     runner_stop = AsyncMock(return_value=True)
@@ -2947,6 +2963,7 @@ async def test_runner_false_stop_result_closes_runtime_and_allows_retry(
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
     runner_start = AsyncMock(return_value=True)
@@ -3637,12 +3654,15 @@ async def test_stop_session_for_archive_cancels_requests_without_waiting_for_cac
 ) -> None:
     """Real cached adapters clean promptly, with or without a parked request."""
     from collections import Counter
+
     from jiuwenswarm.agents.harness import team as team_harness
-    from jiuwenswarm.server.runtime.agent_manager import AgentManager
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
-    from jiuwenswarm.server.runtime.session.session_manager import SessionManager
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+    from jiuwenswarm.server.runtime.agent_manager import AgentManager
     from jiuwenswarm.server.runtime.session import lifecycle as session_lifecycle
+    from jiuwenswarm.server.runtime.session.session_manager import SessionManager
 
     sid = "web_parked_3"
     other_sid = "web_other"
