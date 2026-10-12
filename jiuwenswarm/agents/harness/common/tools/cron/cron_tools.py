@@ -295,6 +295,8 @@ class CronTools:
     async def create_job(self, params: dict[str, Any]) -> Any:
         normalized = dict(params or {})
         normalized.pop("session_id", None)
+        # description 的时间词剥离与任务名「|一次性」后缀标记均由模型侧提示词
+        # 引导处理，后端按传入原样落库（Web RPC 路径仍保留 _normalize_description）。
         normalized["targets"] = self._normalize_targets_param(normalized.get("targets"))
         normalized["cron_expr"] = normalize_cron_expr(str(normalized.get("cron_expr") or "").strip())
         targets_str = normalized["targets"]
