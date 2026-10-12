@@ -17,16 +17,21 @@ import httpx
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
-
-from .agent_authorization import authorize_agent
-from .invoke_ids import apply_invoke_ids_to_envelope
-from .pod_http_client import HttpSseAgentServerClient
-from .session_route_client import (
+from jiuwenswarm.extensions.runtime_management_extension.agent_authorization import (
+    authorize_agent,
+)
+from jiuwenswarm.extensions.runtime_management_extension.invoke_ids import (
+    apply_invoke_ids_to_envelope,
+)
+from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import (
+    HttpSseAgentServerClient,
+)
+from jiuwenswarm.extensions.runtime_management_extension.session_route_client import (
     FatalRouteError,
     RetryableRouteError,
     RuntimeSessionRouteClient,
 )
+from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
 
 logger = logging.getLogger(__name__)
 

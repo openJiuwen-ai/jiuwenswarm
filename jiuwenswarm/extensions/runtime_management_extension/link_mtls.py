@@ -19,8 +19,8 @@ from urllib.parse import urlsplit
 
 from openjiuwen_runtime.foundation.security.link_mtls_config import (
     MODE_ENV,
-    MTLSDeploymentIdentity,
     LinkMTLSMode,
+    MTLSDeploymentIdentity,
 )
 from openjiuwen_runtime.foundation.security.link_profile import (
     LinkProfile,

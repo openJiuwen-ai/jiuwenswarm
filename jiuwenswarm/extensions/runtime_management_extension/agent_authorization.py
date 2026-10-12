@@ -4,9 +4,12 @@ import logging
 from datetime import datetime, timezone
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
-
-from .invoke_ids import routing_triple_from_envelope
-from .session_route_client import FatalRouteError
+from jiuwenswarm.extensions.runtime_management_extension.invoke_ids import (
+    routing_triple_from_envelope,
+)
+from jiuwenswarm.extensions.runtime_management_extension.session_route_client import (
+    FatalRouteError,
+)
 
 logger = logging.getLogger(__name__)
 _enterprise_absent_logged = False

@@ -76,7 +76,9 @@ def routing_triple_from_envelope(envelope: Any) -> tuple[str, str, str]:
     权威：``channel_context`` 上的顶层 ``user_id`` + ``routing``（见
     :func:`web_routing_identity`）；``envelope.user_id`` 为同字段协议镜像。
     """
-    from jiuwenswarm.common.request_identity import web_routing_identity
+    from jiuwenswarm.extensions.runtime_management_extension.request_identity import (
+        web_routing_identity,
+    )
 
     ctx = (
         envelope.channel_context

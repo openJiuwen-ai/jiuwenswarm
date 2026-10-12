@@ -283,12 +283,14 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
 
     ``gateway_id`` 仅透传保留；Agent 业务（如企业配置 ``RoutingContext``）当前不消费。
     """
-    from jiuwenswarm.common.request_ext import (
+    from jiuwenswarm.extensions.runtime_management_extension.request_ext import (
         INTERNAL_HEADER_NAME,
         METADATA_KEY,
         encode_internal_header,
     )
-    from jiuwenswarm.common.request_identity import web_routing_identity
+    from jiuwenswarm.extensions.runtime_management_extension.request_identity import (
+        web_routing_identity,
+    )
 
     headers = {
         "X-Request-Id": str(envelope.request_id or ""),
