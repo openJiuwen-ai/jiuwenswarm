@@ -23,6 +23,7 @@ from jiuwenswarm.channels.process_cli.live_input import (
     encode_forwarded_receipt,
     supports_live_session_input,
 )
+from jiuwenswarm.channels.process_cli.persistence import flush_session_writes
 from jiuwenswarm.channels.process_cli.render import EventRenderer
 from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -940,7 +941,15 @@ async def run(
             # Runtime close must run even when session cleanup itself is
             # cancelled.  The original cancellation still propagates after
             # this finally block; only resource ownership is made reliable.
-            await _bounded_cleanup(client.close())
+            try:
+                await _bounded_cleanup(client.close())
+            finally:
+                # close() shares its deadline with Runtime teardown. Give the
+                # writer barriers a fresh window even after close times out or
+                # is cancelled, matching the machine entry's final flush step.
+                await _bounded_cleanup(
+                    flush_session_writes(timeout_seconds=SHUTDOWN_STEP_TIMEOUT_SECONDS)
+                )
 
 
 async def _bounded_cleanup(awaitable: Any) -> None:
