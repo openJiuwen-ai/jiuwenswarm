@@ -257,7 +257,7 @@ class ConfigAdapter(GatewayAdapter):
                 channel,
                 on_config_saved=self._on_config_saved,
             )
-            register_models_handlers(channel)
+            register_models_handlers(channel, user_id=request.user_id)
         handler = channel.methods.get(request.req_method.value)
         if handler is None:
             return build_error_response(request, "unsupported config method", code="BAD_REQUEST")
