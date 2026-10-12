@@ -86,6 +86,11 @@
       <td width="50%">受控通道指令与命令行操作指南。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>进程式 CLI 会话查询</strong></td>
+      <td width="28%"><a href="zh/进程式CLI会话查询.md">进程式 CLI 会话查询</a></td>
+      <td width="50%">普通终端只读查询完整会话 ID、搜索翻页、获取最近会话与跨进程续接。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>定时任务</strong></td>
       <td width="28%"><a href="zh/定时任务.md">定时任务</a></td>
       <td width="50%">定时触发任务的配置、运行与管理。</td>

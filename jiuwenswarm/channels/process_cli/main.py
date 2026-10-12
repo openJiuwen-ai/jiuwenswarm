@@ -139,13 +139,51 @@ def build_parser() -> argparse.ArgumentParser:
     parser = ChineseArgumentParser(
         prog="jiuwenswarm-process",
         description="在独立的本地 Runtime 进程中运行 JiuwenSwarm 指令。",
+        add_help=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "常用命令：\n"
+            '  jiuwenswarm-process "只回复 CLI_OK" --timeout 120\n'
+            "  jiuwenswarm-process --list-sessions\n"
+            '  jiuwenswarm-process --list-sessions --search "项目名" --limit 20 --offset 0\n'
+            "  jiuwenswarm-process --latest-session\n"
+            '  jiuwenswarm-process "继续上一轮任务" --session "完整会话ID"\n'
+            "查询读取当前数据目录的 Process CLI 会话，不调用模型；"
+            "--latest-session 的 stdout 仅输出完整会话 ID。"
+        ),
+    )
+    parser.add_argument(
+        "-h", "--help", "-help", action="help", help="显示帮助信息并退出。"
     )
     parser.add_argument(
         "prompt",
         nargs="?",
         help="要执行的指令；省略后进入交互式 CLI。",
     )
-    parser.add_argument("--session", help="恢复已有的 Runtime 会话 ID。")
+    parser.add_argument(
+        "--session", help="恢复完整会话 ID；可先用 --list-sessions 查询。"
+    )
+    sessions = parser.add_argument_group("会话查询（只读，执行后退出）")
+    selectors = sessions.add_mutually_exclusive_group()
+    selectors.add_argument(
+        "--list-sessions",
+        action="store_true",
+        help="列出本地 Process CLI 的 Agent/Team 会话，显示完整 ID、时间、模式、标题和目录。",
+    )
+    selectors.add_argument(
+        "--latest-session",
+        action="store_true",
+        help="仅输出最近消息会话的完整 ID；无匹配会话时退出码为 1。",
+    )
+    sessions.add_argument(
+        "--search", help="查询关键词，匹配 ID、标题、项目及模式；最多 200 个字符。"
+    )
+    sessions.add_argument(
+        "--limit", type=int, help="会话列表每页条数，1 到 200；默认 20。"
+    )
+    sessions.add_argument(
+        "--offset", type=int, help="会话列表跳过的条数，非负整数；默认 0。"
+    )
     parser.add_argument(
         "--query-json",
         metavar="FILE|-",
@@ -249,9 +287,7 @@ def _activate_requested_cwd(
     args.cwd = str(target)
 
 
-def _report_machine_failure(
-    code: int, stderr: TextIO, log_path: Path | None
-) -> None:
+def _report_machine_failure(code: int, stderr: TextIO, log_path: Path | None) -> None:
     if code == 0:
         return
     detail = f"；诊断日志：{log_path}" if log_path else ""
@@ -271,6 +307,14 @@ def _write_stderr(stream: TextIO, message: str) -> None:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    if (
+        args.list_sessions
+        or args.latest_session
+        or any(value is not None for value in (args.search, args.limit, args.offset))
+    ):
+        from jiuwenswarm.channels.process_cli.session_entry import execute_session_query
+
+        sys.exit(execute_session_query(args, parser, sys.argv[1:]))
     _configure_forwarded_stdio(args)
     if args.query_json is not None:
         standalone = sys.argv[1:] in (

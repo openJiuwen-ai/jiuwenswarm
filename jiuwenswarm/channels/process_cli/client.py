@@ -303,6 +303,14 @@ class InProcessRuntimeClient:
             await self._runtime.close()
         except BaseException as exc:
             cleanup_errors.append(exc)
+        try:
+            from jiuwenswarm.channels.process_cli.persistence import (
+                flush_session_writes,
+            )
+
+            await flush_session_writes()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
         if cleanup_errors:
             raise cleanup_errors[0]
 
