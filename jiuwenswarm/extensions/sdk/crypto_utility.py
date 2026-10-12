@@ -1,17 +1,17 @@
-from abc import abstractmethod
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
-from jiuwenswarm.extensions.sdk.base import BaseExtension
-from jiuwenswarm.common.security.base_crypto import CryptoProvider
+"""
+转发别名（过渡形态）：已迁 ``gateway_protocol.sdk.crypto_utility``。
 
+CryptoProvider 协议随协议包内联（原 common/security/base_crypto.py 中的同名
+Protocol 副本亦为同一对象，见 base_crypto.py 转发说明）。
+"""
 
-class CryptoUtility(BaseExtension):
-    """扩展入口：持有真正的加解密实现，通过 `get_crypto()` 暴露。"""
+from __future__ import annotations
 
-    @abstractmethod
-    def get_crypto(self) -> CryptoProvider:
-        """返回实际执行 encrypt/decrypt 的实例。"""
-        ...
+from gateway_protocol.sdk.crypto_utility import (  # noqa: F401
+    CryptoProvider,
+    CryptoUtility,
+)
 
-    async def shutdown(self) -> None:
-        """扩展关闭"""
-        pass
+__all__ = ["CryptoProvider", "CryptoUtility"]

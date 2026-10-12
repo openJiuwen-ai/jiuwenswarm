@@ -3,21 +3,21 @@ import { openAssetPublish } from '../../features/assetPublishEvents';
 import { canShowAssetPublish } from '../../features/assetPublishState';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Unlink2, Trash2, Plus, Wrench, Terminal, Loader2, AlertCircle, Info, ExternalLink, Pencil } from 'lucide-react';
+import { Unlink2, Trash2, Wrench, Terminal, AlertCircle, Info, ExternalLink, Pencil } from 'lucide-react';
 // 2026-08-17：Trash2（原"卸载"按钮图标，按 source 分流 delete/disconnect）曾随彻底删除入口一起
 // 移除。2026-08-19 用户明确要求恢复：自定义 MCP 断联态（已经解绑过一次）的按钮要变成真正的
 // "卸载"（彻底删除，见 mcp.delete_custom），配图标也要换成垃圾桶——Unlink2 是"解绑"语义的图标，
 // 用在"删除"上不对，见下方按钮渲染处的 icon 条件。
 import { useConnectorStore } from '../../stores/connectorStore';
-import { NewConversationIcon } from './icons';
 import { DetailPromptChip, DetailSection, EntityHeader, PageCard } from '../ui';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
 import { ConfirmDialog } from './ConfirmDialog';
-import { IconAvatar, PillButton, DetailLinkButton } from './Buttons';
+import { IconAvatar } from './Buttons';
 import { deriveCardState, deriveMcpAvailability } from './mcpState';
 import type { ConnectorConnectResponse, ConnectorIntegrationType } from '../../types/connector';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
+import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
 
 // integrationType 决定了这个 MCP 的接入方式（要不要走 CLI OAuth、有没有"连接"按钮），之前
 // mcp.show 下发了这个字段但详情页完全没展示，用户看不出"为什么这个要跳浏览器授权""为什么那个
@@ -264,17 +264,34 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
             ) : undefined
           }
           actions={
-            <div className="flex items-center gap-3" data-testid="connector-market-mcp-detail-actions">
-              {canShowAssetPublish(connector.installed) && <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="connector-market-mcp-publish" onClick={() => openAssetPublish({ kind: 'mcp', local_id: connector.id, avatar_url: connector.icon || undefined })}>{t('skills.actions.publish')}</button>}
+            /* 对齐 PluginDetailPage 头部操作区：容器/按钮统一走共享类 .detail-actions /
+            .detail-action（见 index.css，发布/编辑/解绑为文字链接态、使用/安装为 28px 药丸），
+            不再各写一套内联 Tailwind，保证 MCP 与插件详情页操作区视觉一致。 */
+            <div className="detail-actions" data-testid="connector-market-mcp-detail-actions">
+              {canShowAssetPublish(connector.installed) && (
+                <button
+                  type="button"
+                  className="detail-action"
+                  data-testid="connector-market-mcp-publish"
+                  onClick={() => openAssetPublish({ kind: 'mcp', local_id: connector.id, avatar_url: connector.icon || undefined })}
+                >
+                  <PromptSendIcon aria-hidden="true" />
+                  {t('skills.actions.publish')}
+                </button>
+              )}
               {/* 自定义 MCP 才能编辑（source==='customize'，built_in 没有可改的连接配置）——放在
               解绑左边，和"卸载/解绑的左边一个小编辑按键"的产品要求对齐。 */}
               {isCustomize && onEdit && (
-                <DetailLinkButton
-                  icon={<Pencil size={14} />}
-                  label={t('connectorMarket.card.edit')}
+                <button
+                  type="button"
+                  className="detail-action"
                   onClick={onEdit}
                   disabled={busy}
-                />
+                  data-testid="connector-market-mcp-detail-edit"
+                >
+                  <Pencil size={14} />
+                  {t('connectorMarket.card.edit')}
+                </button>
               )}
               {installed && (
                 // 2026-08-19 用户明确要求：自定义 MCP 断联态（isDeleteMode，即已经解绑过一次）这个
@@ -282,45 +299,52 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                 // 要换成垃圾桶 Trash2——Unlink2 是"解绑"语义，用在"删除"上不对。只在 isDeleteMode 时
                 // 切换，built_in 走 error 态落进 installed&&!linked 时（"从没连上过"，不是"卸载"
                 // 语境）维持原来的解绑图标/文案/行为。
-                <DetailLinkButton
-                  icon={isDeleteMode ? <Trash2 size={14} /> : <Unlink2 size={14} />}
-                  label={isDeleteMode ? t('connectorMarket.card.uninstall') : t('connectorMarket.card.unbind')}
+                <button
+                  type="button"
+                  className="detail-action"
                   onClick={() => setConfirmUnbind(true)}
-                  danger
                   disabled={busy || installing || cardState === 'connecting' || (!isDeleteMode && !linked)}
-                />
+                  data-testid="connector-market-mcp-detail-unbind"
+                >
+                  {isDeleteMode ? <Trash2 size={14} /> : <Unlink2 size={14} />}
+                  {isDeleteMode ? t('connectorMarket.card.uninstall') : t('connectorMarket.card.unbind')}
+                </button>
               )}
               {installed && (
                 // 2026-08-19 用户明确要求：断联态（installed && !linked）"使用"按钮要置灰不可点——
-                // 之前只在 installing 时禁用，未连接时点击会静默触发一次后台连接（handleUse 里
-                // linked===false 分支），容易让用户误以为按钮坏了或者不清楚点了发生了什么。
+                // 未连接时点击会静默触发一次后台连接（handleUse 里 linked===false 分支）。收敛到
+                // .detail-action--use 后禁用态样式（not-allowed + 弱化）由共享类统一处理，该类
+                // hover 与底态同貌，不再有禁用态悬停变色问题。
                 <button
                   type="button"
                   onClick={handleUse}
                   disabled={installing || !linked}
-                  // disabled:hover:text-text 优先级比裸 hover: 高（多一层 :disabled 伪类，选择器更
-                  // 精确），专门用来盖掉禁用态下鼠标悬停仍然变蓝的问题——原生 disabled 属性不保证
-                  // 阻止 :hover 伪类生效，具体行为跟浏览器有关，不能只靠 disabled 属性本身。
-                  className="flex items-center gap-1 text-[13px] text-text hover:text-[color:var(--color-chat-accent)] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:text-text"
+                  className="detail-action detail-action--use"
                   data-testid="connector-market-mcp-detail-use"
                 >
-                  <NewConversationIcon size={14} />
                   {t('connectorMarket.card.use')}
                 </button>
               )}
               {!installed && !installing && (
-                <PillButton
-                  icon={<Plus size={14} />}
-                  label={cardState === 'error' ? t('connectorMarket.card.retry') : t('connectorMarket.card.install')}
+                <button
+                  type="button"
+                  className="detail-action detail-action--install"
                   onClick={handleInstall}
-                />
+                  data-testid="connector-market-mcp-detail-install"
+                >
+                  {cardState === 'error' ? t('connectorMarket.card.retry') : t('connectorMarket.card.install')}
+                </button>
               )}
               {installing && (
-                <PillButton
-                  icon={<Loader2 size={14} className="animate-spin" />}
-                  label={t('connectorMarket.card.installing')}
+                <button
+                  type="button"
+                  className="detail-action detail-action--install"
                   disabled
-                />
+                  aria-busy="true"
+                  data-testid="connector-market-mcp-detail-install"
+                >
+                  {t('connectorMarket.card.installing')}
+                </button>
               )}
             </div>
           }
@@ -392,7 +416,6 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                   <DetailPromptChip
                     key={example}
                     text={example}
-                    icon={<NewConversationIcon size={12} />}
                     onClick={() => onUseExample(example, runtimeName, connector.displayName)}
                     testId="connector-market-mcp-detail-example"
                     variant={example}

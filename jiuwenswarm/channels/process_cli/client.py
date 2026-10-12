@@ -223,17 +223,23 @@ class InProcessRuntimeClient:
             session_id=session_id,
         )
 
-    def stream(self, request: AgentRequest) -> AsyncIterator[RuntimeEvent]:
+    def stream(
+        self, request: AgentRequest, *, on_agent_ready: Any = None
+    ) -> AsyncIterator[RuntimeEvent]:
         _require_process_cli_channel(getattr(request, "channel_id", None))
-        return self._runtime.stream(request)
+        return self._runtime.stream(request, on_agent_ready=on_agent_ready)
 
     def stream_agent(
         self,
         request: AgentRequest,
         definition: RuntimeAgentDefinition | Mapping[str, Any],
+        *,
+        on_agent_ready: Any = None,
     ) -> AsyncIterator[RuntimeEvent]:
         _require_process_cli_channel(getattr(request, "channel_id", None))
-        return self._runtime.stream_agent(request, definition)
+        return self._runtime.stream_agent(
+            request, definition, on_agent_ready=on_agent_ready
+        )
 
     async def invoke(self, request: AgentRequest) -> list[RuntimeEvent]:
         """Invoke one non-streaming request through the shared Runtime."""

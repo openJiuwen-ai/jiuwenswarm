@@ -78,8 +78,12 @@ async def test_web_channel_routes_session_message_status_to_owner_only(owner_use
     WebChannel._resolve_connection_user_id(
         {"user_id": owner_user_id} if owner_user_id else {}, owner
     )
-    other.authenticated_user_id = "other"
-    WebChannel._resolve_connection_user_id({"user_id": owner_user_id or "local"}, other)
+    # Session identity comes from the declared username; the authenticated IAM
+    # ID is only an authentication gate and does not replace that username.
+    other.authenticated_user_id = "other-iam-id"
+    WebChannel._resolve_connection_user_id({"user_id": "other"}, other)
+    assert WebChannel.connection_user_id(owner) == owner_user_id
+    assert WebChannel.connection_user_id(other) == "other"
     for client, user_id in ((owner, owner_user_id or "local-peer"), (other, "other")):
         await channel.register_ws(
             client,
@@ -330,6 +334,37 @@ def test_web_channel_preserves_goal_structured_payloads():
 
     for event_name, msg, expected in messages:
         assert WebChannel._build_event_payload(msg, event_name) == expected
+
+
+def test_web_channel_preserves_organization_progress_payload():
+    """Organization milestones must retain their phase and target Team."""
+    msg = Message(
+        id="org-progress-summary_execution_delegated:0",
+        type="event",
+        channel_id="web",
+        session_id="session-1",
+        params={},
+        timestamp=0.0,
+        ok=True,
+        payload={
+            "event_type": "org.progress",
+            "phase": "summary_execution_delegated",
+            "root_task_id": "root-1",
+            "team_id": "root-team",
+            "team_name": "root-team",
+            "source": "org_root_progress",
+        },
+    )
+
+    assert WebChannel._build_event_payload(msg, "org.progress") == {
+        "event_type": "org.progress",
+        "phase": "summary_execution_delegated",
+        "root_task_id": "root-1",
+        "team_id": "root-team",
+        "team_name": "root-team",
+        "source": "org_root_progress",
+        "session_id": "session-1",
+    }
 
 
 @pytest.mark.asyncio

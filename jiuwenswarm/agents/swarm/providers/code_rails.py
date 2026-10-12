@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 # Provider name constants; namespaced under the shared "swarm." prefix.
 CODE_RUNTIME_PROMPT = "swarm.code_runtime_prompt"
 CODE_PROJECT_MEMORY = "swarm.code_project_memory"
+CODE_AGENT_MD = "swarm.code_agent_md"
 PERMISSION_INTERRUPT = "swarm.permission_interrupt"
 CODE_CODING_MEMORY = "swarm.code_coding_memory"
 CODE_AGENT_MODE = "swarm.code_agent_mode"
@@ -162,6 +163,38 @@ def build_code_runtime_prompt(params: dict[str, Any], ctx: SwarmBuildContext) ->
         return rail
     except Exception as exc:
         logger.warning("[swarm.code_runtime_prompt] create failed: %s", exc)
+        return None
+
+
+class CodeAgentMdInput(ConstructionInput):
+    """Construction inputs for the code member project-instruction rail."""
+
+    project_dir: str | None = context_field(
+        attr="project_dir",
+        description="Resolved user project directory (search root for instruction files).",
+    )
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=CODE_AGENT_MD,
+    description="Code-member project instruction attachment (agent.md / claude.md, "
+    "nearest hit from the session working directory upward within three levels).",
+    input_model=CodeAgentMdInput,
+)
+def build_code_agent_md(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
+    """Build the AgentMdPromptRail for code members (prompt attachment)."""
+    from jiuwenswarm.agents.harness.code.rails.agent_md_prompt_rail import (
+        AgentMdPromptRail,
+    )
+
+    try:
+        inp = CodeAgentMdInput.resolve(params, ctx)
+        rail = AgentMdPromptRail()
+        rail.set_runtime_paths(cwd=inp.project_dir)
+        return rail
+    except Exception as exc:
+        logger.warning("[swarm.code_agent_md] create failed: %s", exc)
         return None
 
 

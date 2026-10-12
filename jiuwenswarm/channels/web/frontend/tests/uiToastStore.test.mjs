@@ -74,3 +74,63 @@ test('open 透传 success/warning 变体', async () => {
   await waitForExit();
   assert.equal(toastStore.getSnapshot().length, 0);
 });
+
+test('open 携带同 id 时原地更新并复用原 key；closing 中的条目不复活', async () => {
+  const key1 = toast.open({ id: 'conn', content: 'a' });
+  const key2 = toast.open({ id: 'conn', content: 'b', variant: 'success' });
+
+  assert.equal(key2, key1);
+  const snapshot = toastStore.getSnapshot();
+  assert.equal(snapshot.length, 1);
+  assert.equal(snapshot[0].content, 'b');
+  assert.equal(snapshot[0].variant, 'success');
+  assert.equal(snapshot[0].closing, false);
+
+  toast.close(key1);
+  const key3 = toast.open({ id: 'conn', content: 'c' });
+  assert.notEqual(key3, key1);
+  const afterClose = toastStore.getSnapshot();
+  assert.equal(afterClose.length, 2);
+  assert.equal(afterClose.find((record) => record.key === key1).closing, true);
+  assert.equal(afterClose.find((record) => record.key === key3).content, 'c');
+
+  toast.close(key3);
+  await waitForExit();
+  assert.equal(toastStore.getSnapshot().length, 0);
+});
+
+test('同 id 原地更新递增 updatedAt（ToastItem 依据它复位计时器）', async () => {
+  const key1 = toast.open({ id: 'progress', content: 'a', duration: 5 });
+  const before = toastStore.getSnapshot().find((record) => record.key === key1).updatedAt;
+
+  const key2 = toast.open({ id: 'progress', content: 'b', duration: 5 });
+  const after = toastStore.getSnapshot().find((record) => record.key === key2).updatedAt;
+
+  assert.equal(key2, key1);
+  assert.ok(after > before, 'updatedAt 必须单调递增');
+
+  toast.closeAll();
+  await waitForExit();
+  assert.equal(toastStore.getSnapshot().length, 0);
+});
+
+test('closeAll 不波及 closable:false 的常驻条目；显式 close 仍可关闭', async () => {
+  const persistentKey = toast.open({ id: 'app-connection-toast-message', content: '连接已断开', duration: 0, closable: false });
+  const transientKey = toast.open({ content: '归档成功' });
+
+  toast.closeAll();
+
+  const afterCloseAll = toastStore.getSnapshot();
+  assert.equal(afterCloseAll.length, 2);
+  assert.equal(afterCloseAll.find((record) => record.key === persistentKey).closing, false, '常驻条目不应被 closeAll 关闭');
+  assert.equal(afterCloseAll.find((record) => record.key === transientKey).closing, true);
+
+  await waitForExit();
+  const afterExit = toastStore.getSnapshot();
+  assert.equal(afterExit.length, 1);
+  assert.equal(afterExit[0].key, persistentKey);
+
+  toast.close(persistentKey);
+  await waitForExit();
+  assert.equal(toastStore.getSnapshot().length, 0);
+});

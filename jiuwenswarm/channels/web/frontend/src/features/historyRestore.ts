@@ -21,6 +21,8 @@ import {
   isGoalCompletedContent,
 } from '../components/GoalBar/goalCompletedMessage';
 import { HistoryRecordReassembler } from './historyRecordReassembler';
+import { expertTeamId } from './teamOrganization/conversation';
+import { isTeamOrganizationUiEnabled } from './teamOrganization/featureConfig';
 import { readAgentTemplateName } from './agentIdentity';
 import {
   isSingleAgentContextUsageSnapshot,
@@ -1032,6 +1034,22 @@ function formatCompactBoundarySummary(record: Record<string, unknown>): string {
 }
 
 function parseHistoryTimelineEntry(
+  record: Record<string, unknown>,
+  sessionId: string,
+  subagentId?: string,
+): HistoryTimelineEntry | null {
+  const teamId = expertTeamId({ ...buildEventPayloadForRecord(record), ...record }, sessionId);
+  if (teamId && !isTeamOrganizationUiEnabled()) return null;
+  const entry = parseSessionHistoryTimelineEntry(record, sessionId, subagentId);
+  if (teamId && entry) {
+    // Expert history never replays tools or lifecycle into the owner's runtime.
+    if (entry.kind !== 'message') return null;
+    entry.message.teamId = teamId;
+  }
+  return entry;
+}
+
+function parseSessionHistoryTimelineEntry(
   record: Record<string, unknown>,
   sessionId: string,
   subagentId?: string,

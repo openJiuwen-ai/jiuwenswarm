@@ -1,3 +1,4 @@
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
@@ -14,7 +15,7 @@ import { isTeamLeaderMember, isUserMember } from '../../utils/teamMemberAvatar';
 import { contextCompressionRunningText } from '../../utils/contextCompression';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import teamIcon from '../../assets/team.svg';
-import PendingIcon from '../../assets/pending.svg?react';
+import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 
 import BackIcon from '../../assets/back.svg?react';
@@ -122,7 +123,7 @@ export function TeamMembersPanel({
   onDetailTabChange,
 }: TeamMembersPanelProps) {
   const { t } = useTranslation();
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
   const teamLeaderMemberIds = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
   const groupMessages = useMemo(() => buildGroupMessageItems(historyMessages, messages), [historyMessages, messages]);
@@ -459,7 +460,7 @@ const TeamMemberOverviewCard = memo(function TeamMemberOverviewCard({
   onClick?: () => void;
 }) {
   const { t } = useTranslation();
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const todos = useTodoStore((s) => s.runtimes[activeSessionId ?? '']?.todos ?? []);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
   const teamMemberExecutionEvents = useSessionStore(
@@ -489,7 +490,7 @@ const TeamMemberOverviewCard = memo(function TeamMemberOverviewCard({
   const statusIcon = isRunning && !showIdleStatus ? (
     <LoadingSpinner />
   ) : (
-    <PendingIcon className="w-4 h-4 shrink-0 text-text-muted" />
+    <FrameTimeIcon className="w-4 h-4 shrink-0 text-text-meta" />
   );
 
   return (
@@ -530,7 +531,7 @@ function MemberTaskDetail({
       document.removeEventListener('mousedown', handlePointerDown);
     };
   }, [taskListExpanded]);
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const todos = useTodoStore((s) => s.runtimes[activeSessionId ?? '']?.todos ?? []);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
   const teamMemberExecutionEvents = useSessionStore(
@@ -730,11 +731,11 @@ function FinalSummaryList({ events }: { events: TeamMemberExecutionEvent[] }) {
 
   return (
     <div className="mt-5 border-t border-[var(--color-team-detail-divider)] pt-4" data-testid="team-area-final-summary">
-      <div className="mt-4 space-y-6">
+      <div className="mt-4">
         {events.map((event) => (
           <section
             key={event.id}
-            className="space-y-3"
+            className="my-4 space-y-3"
             data-testid="team-area-final-summary-item"
             data-variant={event.id}
           >

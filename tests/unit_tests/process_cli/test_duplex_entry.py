@@ -56,6 +56,7 @@ import types
 from jiuwenswarm.channels.process_cli.machine_io import OneShotWriter
 
 lifecycle = []
+residual_tasks = []
 
 def note(stage):
     lifecycle.append(stage)
@@ -71,7 +72,7 @@ class FakeClient:
     async def start(self):
         note('start')
         os.write(1, b'NATIVE_START_DIAGNOSTIC\\n')
-        asyncio.create_task(residual_task())
+        residual_tasks.append(asyncio.create_task(residual_task()))
         await asyncio.sleep(0)
 
     def resolve_mode_capability(self, requested):
@@ -124,13 +125,26 @@ original_write_result = OneShotWriter.write_result
 def checked_write_result(self, result):
     assert lifecycle == [
         'start', 'session', 'stream', 'stream-closed', 'session-cleaned',
-        'runtime-closed', 'asyncio-shutdown',
+        'runtime-closed', 'session-writes', 'asyncio-shutdown',
     ], lifecycle
     assert threading.enumerate() == [threading.main_thread()]
     lifecycle.append('result-written')
     original_write_result(self, result)
 
 OneShotWriter.write_result = checked_write_result
+from jiuwenswarm.channels.process_cli import machine
+class FakeSessionLease:
+    def __init__(self, session_id):
+        self.session_id = session_id
+    def acquire(self):
+        pass
+    def release(self):
+        pass
+machine.SessionLease = FakeSessionLease
+machine.bind_agent = lambda *_args, **_kwargs: None
+async def fake_flush_session_writes():
+    note('session-writes')
+machine._flush_session_writes = fake_flush_session_writes
 from jiuwenswarm.channels.process_cli.main import main
 main()
 """
@@ -290,7 +304,9 @@ def test_invalid_first_line_has_one_result_without_runtime_initialization(
 
 
 @pytest.mark.asyncio
-async def test_first_line_starts_before_eof_and_result_follows_cleanup_with_stdin_open() -> (
+async def test_first_line_starts_before_eof_and_result_follows_cleanup_with_stdin_open(
+    tmp_path: Path,
+) -> (
     None
 ):
     process = subprocess.Popen(
@@ -299,7 +315,7 @@ async def test_first_line_starts_before_eof_and_result_follows_cleanup_with_stdi
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=PROJECT_ROOT,
-        env=_environment(),
+        env={**_environment(), "JIUWENSWARM_DATA_DIR": str(tmp_path)},
     )
     try:
         assert process.stdin is not None
@@ -341,9 +357,13 @@ async def test_first_line_starts_before_eof_and_result_follows_cleanup_with_stdi
         assert final.session_id == "entry-fake-session"
         assert final.output == "entry done"
         assert final.sequence == 3
-        assert b"FAKE_CLIENT:runtime-closed" in stderr
-        assert b"FAKE_CLIENT:asyncio-shutdown" in stderr
-        assert b"NATIVE_START_DIAGNOSTIC" in stderr
+        assert stderr == b""
+        logs = list((tmp_path / "agent" / "process_cli_logs").glob("*.log"))
+        assert len(logs) == 1
+        diagnostics = logs[0].read_bytes()
+        assert b"FAKE_CLIENT:runtime-closed" in diagnostics
+        assert b"FAKE_CLIENT:asyncio-shutdown" in diagnostics
+        assert b"NATIVE_START_DIAGNOSTIC" in diagnostics
         assert b"FAKE_CLIENT" not in b"\n".join(lines)
     finally:
         _finish_child(process)

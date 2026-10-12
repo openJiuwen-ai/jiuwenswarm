@@ -230,6 +230,11 @@ for package_root in DISPATCH_PACKAGE_ROOTS:
 # openjiuwen 使用动态导入，需要收集全部子模块
 openjiuwen_submodules = collect_submodules("openjiuwen")
 symphony_submodules = collect_submodules("jiuwenswarm.symphony")
+# Gateway adapters are re-exported through package-level __getattr__ and
+# import_module(), so PyInstaller cannot discover them from the import graph.
+gateway_adapter_submodules = collect_submodules(
+    "jiuwenswarm.server.runtime.gateway_adapter"
+)
 # TeamManager imports this lifecycle hook while its parent package is being
 # initialized.  Keep it explicit because PyInstaller cannot reliably infer
 # this package-attribute import from the frozen entry point.
@@ -276,7 +281,7 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
-] + openjiuwen_submodules + symphony_submodules + team_kv_cache_hiddenimports + dispatch_submodules
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + team_kv_cache_hiddenimports + dispatch_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [

@@ -1188,8 +1188,10 @@ class AgentRuntime:
             )
         params = dict(request.params)
         params["mode"] = execution.mode.value
-        params["work_mode"] = "code"
-        if execution.definition.model:
+        params["work_mode"] = (
+            "code" if execution.mode.value.startswith("agent.code.") else "work"
+        )
+        if execution.definition.model and not params.get("model_name"):
             selected_model = self.resolve_model_capability(
                 execution.definition.model
             )
@@ -3299,8 +3301,7 @@ class AgentRuntime:
     async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
         if request.req_method not in AgentRuntime._chat_turn_methods():
             return
-        from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-        from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
+        from gateway_protocol.hooks import AgentServerChatHookContext, AgentServerHookEvents
         from jiuwenswarm.extensions.registry import ExtensionRegistry
 
         params = request.params if isinstance(request.params, dict) else {}

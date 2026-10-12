@@ -72,6 +72,8 @@
   --color-border-success: rgba(22, 163, 74, 0.5);
   --color-border-warning: rgba(217, 119, 6, 0.5);
   --color-border-danger: rgba(220, 38, 38, 0.5);
+  /* 表单字段 invalid 态描边（Input/Textarea 校验失败）：2026-09-28 用户指定的精确色值 */
+  --color-field-invalid-border: #F23030;
   --color-border-input: #e4e4e7;
   --color-border-input-strong: #c2c2c2;
   --color-border-input-strong-rgb: 194, 194, 194;
@@ -112,6 +114,8 @@
   --color-feedback-danger-rgb: 220, 38, 38;
   --color-feedback-danger-subtle: rgba(220, 38, 38, 0.1);
   --color-feedback-danger-text: #fafafa;
+  /* 表单字段 invalid 态提醒文字：2026-09-28 用户指定的精确色值，与字段 invalid 描边同源 */
+  --color-field-invalid-text: #F23030;
   --color-feedback-info: #2563eb;
   --color-feedback-info-rgb: 37, 99, 235;
   --color-feedback-info-subtle: rgba(59, 130, 246, 0.08);
@@ -124,6 +128,9 @@
   --color-tag-neutral-surface: #f5f5f5;
   --color-feedback-success-toast: #d5f2dc;
   --color-feedback-danger-toast: #fce9e9;
+  /* 全局命令式 toast（ui/Toast）：2026-09-24 用户指定的精确色值，阴影色与描边同源 */
+  --color-toast-border: #deecff;
+  --color-toast-surface: #deecff;
   /* 断联警示横幅（connector detail）：2026-08-19 用户指定的精确色值，
      不用 danger-subtle（10% 透明红叠底换算值与它有肉眼可辨偏差） */
   --color-feedback-danger-banner: #fce3e1;
@@ -167,6 +174,7 @@
   --effect-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.04);
   --effect-shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04);
   --effect-shadow-xl: 0 24px 48px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --effect-toast-shadow: -2px 0 12px 0 var(--color-toast-border);
   --effect-card-hover: 0 8px 24px rgba(0, 0, 0, 0.16);
   --effect-shadow-glow: 0 0 24px var(--color-action-primary-glow);
   --effect-page-background: var(--color-surface-page);
@@ -308,6 +316,7 @@
   --color-team-status-running: #5e7ce0;
   --color-team-status-running-surface: #d1e6fa;
   --color-team-status-completed: #088c58;
+  --color-team-status-completed-icon: #17c456;
   --color-team-status-completed-surface: #d3f3e6;
   --color-team-status-cancelled: #c84646;
   --color-team-status-cancelled-surface: #fde2e2;
@@ -335,6 +344,7 @@
   --color-connector-tool-icon-surface: #f3f3f3;
   --color-connector-tool-icon-border: #dfdfdf;
   --color-connector-add-hover-surface: rgba(20, 118, 255, 0.06);
+  --color-connector-json-paste-surface: #fafafa;
   --color-agent-group-avatar-surface: var(--color-action-primary-subtle);
   --color-agent-group-avatar-text: var(--color-text-link);
   --color-agent-group-avatar-variant-1-surface: #edf3ff;

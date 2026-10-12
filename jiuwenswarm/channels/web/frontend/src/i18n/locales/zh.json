@@ -23,6 +23,7 @@
     "optional": "（可选）",
     "processing": "处理中…",
     "retry": "重试",
+    "selectedCount": "已选 {{count}} 个",
     "editMenu": {
       "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
@@ -364,6 +365,7 @@
       "rsi": "RSI 递归自我改进",
       "trajectoryUi": "轨迹界面",
       "kvCacheAffinity": "算力亲和",
+      "teamOrganization": "Team Organization",
       "skillPack": "技能包",
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
@@ -511,6 +513,10 @@
       "trajectory_ui_enabled": {
         "title": "启用轨迹界面",
         "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
+      },
+      "team_organization_ui_enabled": {
+        "title": "启用 Team Organization 界面",
+        "description": "显示实验性的多 Team 视图和组织任务池。此开关不关闭后端组织能力。"
       },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
@@ -710,7 +716,7 @@
       "skills": "技能",
       "files": "文件",
       "unassigned": "未分配",
-      "unassignedAvatar": "未分配 avatar",
+      "unassignedAvatar": "未分配头像",
       "views": {
         "list": "列表视图",
         "structure": "结构视图",
@@ -732,6 +738,42 @@
         "cancelled": "已取消",
         "failed": "任务失败"
       }
+    },
+    "org": {
+      "tab": "组织信息",
+      "title": "Task Pool 与组织",
+      "refresh": "刷新",
+      "loading": "加载中…",
+      "empty": "当前 Team 未绑定 organization",
+      "noOrganization": "未绑定组织",
+      "noTeam": "当前会话暂无可查询的 Team",
+      "loadFailed": "组织信息加载失败",
+      "organizationId": "Organization ID",
+      "displayName": "名称",
+      "description": "描述",
+      "ownerTeam": "Owner Team",
+      "teams": "Team 列表",
+      "leadTeam": "Team",
+      "leadMember": "Leader",
+      "metadata": "元数据",
+      "taskPool": "Task Pool",
+      "taskPoolEmpty": "任务池为空",
+      "taskId": "Task ID",
+      "taskTitle": "标题",
+      "taskStatus": "状态",
+      "taskAssignee": "执行者",
+      "taskTeam": "Team",
+      "taskType": "类型",
+      "taskUnclaimed": "待认领",
+      "taskParent": "父任务",
+      "pendingReviews": "待评审",
+      "pendingReviewsEmpty": "没有待评审的任务",
+      "reviewTask": "任务",
+      "reviewReviewer": "评审人",
+      "statsTotal": "任务总数",
+      "statsOpen": "进行中",
+      "statsUnclaimed": "待认领",
+      "statsPendingReviews": "待评审"
     }
   },
   "artifacts": {
@@ -863,6 +905,7 @@
     "resume": "继续执行",
     "queuePausedConfirm": "你即将发送一条消息，要清除正在排队的{{count}}条消息吗？\n\n点击「确定」清空队列并发送；点击「取消」保持队列（消息将加入队列）。",
     "goalAttachmentsBlocked": "设为目标时不支持附件，请先移除附件，或先单独发送附件消息。",
+    "commandRequiresSession": "该命令需在对话详情页使用，请先开始一个对话。",
     "editTaskDropAttachments": "编辑将移除该任务携带的 {{count}} 个附件，是否继续？",
     "holdToSpeak": "按住说话",
     "send": "发送 (Enter)",
@@ -898,6 +941,11 @@
       "noBreakdown": "后端未返回分类明细"
     },
     "modeSwitchDisabledProcessing": "当前对话运行中，请新建对话后选择模式",
+    "teamSelect": {
+      "tooltip": "切换当前查看的 Team",
+      "loadingLabel": "加载 Team…",
+      "fallbackLabel": "选择 Team"
+    },
     "configLockedHistory": "会话已有消息，请新建会话后更改配置",
     "modeSwitchTitle": "切换模式",
     "modeSwitchConfirm": "当前会话有历史消息，切换模式将新建会话。是否继续？",
@@ -998,6 +1046,9 @@
       }
     },
     "inputAttachment": {
+      "imageLimitTooltip": "图片：单张最大 {{limit}}M",
+      "fileLimitTooltip": "文件：单个最大 {{limit}}M",
+      "countLimitTooltip": "每条消息最多 {{limit}} 个附件",
       "unnamedFile": "未命名文件",
       "unsupportedFileType": "文件类型不支持：{{name}}",
       "fileSizeExceeded": "文件大小超出限制：{{name}}（最大{{limit}}）",
@@ -2763,6 +2814,7 @@
     "source": { "builtin": "官方", "local": "我的", "hub": "Hub" },
     "categoryLabel": "专家分类",
     "categoryAll": "全部",
+    "loadMore": "加载更多内容",
     "categoryOther": "其他",
     "categoryScrollPrev": "向左滚动分类",
     "categoryScrollNext": "向右滚动分类",
@@ -2841,13 +2893,6 @@
       "catalogEmpty": "暂无可展示的专家",
       "mineEmpty": "还没有我的专家",
       "noMatch": "没有找到匹配的专家"
-    },
-    "pagination": {
-      "label": "专家列表分页",
-      "range": "显示 {{start}}-{{end}}，共 {{total}} 个",
-      "page": "第 {{page}} / {{total}} 页",
-      "previous": "上一页",
-      "next": "下一页"
     },
     "detail": {
       "ability": "能力介绍",
@@ -2940,7 +2985,6 @@
       "skillSourceTabsLabel": "技能来源",
       "installSkill": "安装",
       "installingSkill": "安装中…",
-      "selectedCount": "已选 {{count}} 个",
       "refreshSkills": "刷新技能",
       "skillsError": "技能列表加载失败，请重试。",
       "skillsEmpty": "暂无可用技能",
@@ -2957,7 +3001,6 @@
       "connectConnector": "连接",
       "connectingConnector": "连接中…",
       "selectionSearchPlaceholder": "请输入关键字搜索",
-      "selectionPaginationLabel": "选择列表分页",
       "mcpError": "连接器列表加载失败，请重试。",
       "mcpEmpty": "暂无可用连接器",
       "promptsLabel": "这样问我试试看（可选）",
@@ -3064,7 +3107,6 @@
         "leaderTitle": "选择负责人",
         "memberTitle": "选择成员",
         "empty": "没有匹配的专家",
-        "selectedCount": "已选 {{count}} 个",
         "localTab": "本地",
         "marketTab": "广场",
         "sourceTabsLabel": "专家来源",
@@ -3095,6 +3137,13 @@
     "forkFromMessage": "从此消息新建会话分支",
     "forkFromMessageFailed": "新建会话分支失败，请重试。",
     "fileExpired": "已过期",
+    "fileTypeDocument": "文档",
+    "fileTypeSpreadsheet": "电子表格",
+    "fileTypePresentation": "演示文件",
+    "fileTypePdf": "PDF",
+    "fileTypeImage": "图片",
+    "fileTypeSkill": "技能",
+    "fileTypeFile": "文件",
     "agentProcessing": "Agent 处理中",
     "thinking": "正在思考...",
     "processing": "正在处理...",
@@ -3761,6 +3810,15 @@
       "fieldRequired": "该项为必填项，请填写",
       "withSkillNotWired": "该入口尚未接入聊天面板，需先在聊天输入框完成对接"
     },
+    "picker": {
+      "searchPlaceholder": "请输入关键字搜索",
+      "actionError": "操作未完成，请稍后重试。",
+      "mcpSourceTabsLabel": "连接器来源",
+      "mcpMarketTab": "连接器广场",
+      "mcpMineTab": "我的连接器",
+      "mcpError": "连接器列表加载失败，请重试。",
+      "mcpEmpty": "暂无可用连接器"
+    },
     "chatPrompts": {
       "createPlugin": "帮我创建一个xxx插件，擅长xxx"
     },
@@ -3768,6 +3826,7 @@
       "runtimeMissing": "该连接器依赖的运行环境缺失，请先安装对应运行环境后再使用",
       "runtimeMissingNamed": "该连接器依赖 {{runtime}} 运行环境，请先安装 {{runtime}} 后再使用",
       "installNetwork": "依赖下载失败，请检查网络连接后重试",
+      "installScriptDep": "CLI 安装脚本需要 PowerShell 环境，请先启用或恢复 PowerShell 后重试",
       "cliIncomplete": "CLI 安装不完整或版本过低，请重新连接以重试",
       "cliIncompleteNamed": "CLI 安装不完整或版本过低，请手动执行以下命令安装或升级后重试：{{command}}"
     },
@@ -3846,13 +3905,7 @@
       "loadingMyPlugin": "加载我的插件中...",
       "loadingMyMcp": "加载我的连接器中..."
     },
-    "pagination": {
-      "pageSize": "每页显示",
-      "all": "全部",
-      "rangeInfo": "{{start}}-{{end}} / 共 {{total}} 条",
-      "prev": "上一页",
-      "next": "下一页"
-    },
+    "loadMore": "加载更多内容",
     "toast": {
       "mcpConnected": "连接器已连接成功。",
       "mcpInstalled": "连接器安装成功，请连接后使用。",
@@ -3918,6 +3971,7 @@
       "confirm": "确定",
       "search": "搜索",
       "noResult": "没有匹配结果",
+      "noDescription": "暂无描述",
       "loadFailed": "详情加载失败，请重试"
     }
   },

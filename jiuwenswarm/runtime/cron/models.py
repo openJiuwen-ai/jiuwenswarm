@@ -236,7 +236,23 @@ CRON_MODEL_SOURCE_ZEN = "zen"
 CRON_MODEL_SOURCE_LOGIN = "login"
 
 
-def resolve_cron_model(raw: Any) -> tuple[str | None, str]:
+def _match_supplied_zen_entry(value: str, zen_entries: list[dict[str, Any]] | None) -> str | None:
+    """Match a caller-supplied Zen row (public list row or raw cache entry)."""
+    for row in zen_entries or []:
+        if not isinstance(row, dict):
+            continue
+        model_config = row.get("model_client_config") or {}
+        model_name = str(row.get("model_name") or model_config.get("model_name") or "").strip()
+        alias = str(row.get("alias") or "").strip()
+        if model_name and value in {model_name, alias}:
+            return model_name
+    return None
+
+
+def resolve_cron_model(
+    raw: Any,
+    zen_entries: list[dict[str, Any]] | None = None,
+) -> tuple[str | None, str]:
     """Resolve a cron model name/alias to ``(canonical_model_name, source)``.
 
     source ∈ ``{"", "config", "zen", "login"}``；``""`` 表示未指定模型（None/空）。
@@ -253,14 +269,14 @@ def resolve_cron_model(raw: Any) -> tuple[str | None, str]:
     AgentServer ``_model_cache`` can look up. An explicitly configured name that
     resolves to empty is rejected instead of being persisted.
 
-    Opencode Zen free models are in-memory only, so a configured-model miss
-    also checks the live free-model cache.  A cache failure never blocks the
-    normal configured-model validation path.
+    Opencode Zen free models live in the AgentServer process. This function
+    does not import that module. Callers that already hold the public rows
+    (Gateway fetches ``models.zen_entries``) pass them as ``zen_entries``.
+    AgentServer cron tools match the in-process cache after a miss here.
 
     登录送的免费模型（华为账号登录，``common/auth/model_catalog``）同样只在缓存里、
     永不写入 config.yaml（未登录/活动未生效时目录为空，与前端"未登录不展示
-    免费模型"一致）。Gateway 与 AgentServer 读同一份缓存，两个进程里的调用方
-    （controller / cron_tools）行为一致。
+    免费模型"一致）。两个进程里的调用方（controller / cron_tools）对登录模型行为一致。
     """
     if raw is None:
         return None, ""
@@ -288,21 +304,11 @@ def resolve_cron_model(raw: Any) -> tuple[str | None, str]:
             )
         return canonical, CRON_MODEL_SOURCE_CONFIG
 
-    try:
-        from jiuwenswarm.server.runtime.opencode_zen import (
-            get_zen_free_model_entries,
-        )
+    matched_zen = _match_supplied_zen_entry(value, zen_entries)
+    if matched_zen:
+        return matched_zen, CRON_MODEL_SOURCE_ZEN
 
-        for zen_entry in get_zen_free_model_entries():
-            model_config = zen_entry.get("model_client_config") or {}
-            model_name = str(model_config.get("model_name") or "").strip()
-            alias = str(zen_entry.get("alias") or "").strip()
-            if model_name and value in {model_name, alias}:
-                return model_name, CRON_MODEL_SOURCE_ZEN
-    except Exception as exc:  # noqa: BLE001 - optional cache must not break cron
-        logger.debug("[cron] zen free-model lookup failed for %r: %s", value, exc)
-
-    # 登录送的免费模型：Zen 停用后免费模型的唯一来源。名字可能带 "#index"
+    # 登录送的免费模型：名字可能带 "#index"
     # 通道侧全局序号后缀，取前半段再匹配（与 passthrough._build_model_auth 一致）。
     try:
         from jiuwenswarm.common.auth.login_credentials import bare_model_name
@@ -322,13 +328,17 @@ def resolve_cron_model(raw: Any) -> tuple[str | None, str]:
     raise ValueError(f"Unknown model {value!r}. Available models: {hint}")
 
 
-def validate_cron_model(raw: Any) -> str | None:
+def validate_cron_model(
+    raw: Any,
+    zen_entries: list[dict[str, Any]] | None = None,
+) -> str | None:
     """Validate model name/alias against configured models. Returns canonical model_name or raises.
 
     :func:`resolve_cron_model` 的封装：只返回规范名，不暴露来源。需要区分模型
     来源（如登录模型的凭据绑定捕获）的调用方请直接用 ``resolve_cron_model``。
+    ``zen_entries`` 是调用方已经从 AgentServer 取到的公开行；不传则不匹配 Zen。
     """
-    canonical, _source = resolve_cron_model(raw)
+    canonical, _source = resolve_cron_model(raw, zen_entries=zen_entries)
     return canonical
 
 

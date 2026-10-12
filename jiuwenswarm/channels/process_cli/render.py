@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from typing import Any, TextIO
 
@@ -27,6 +28,21 @@ def _event_text(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _human_error_summary(message: str) -> str:
+    translated = _HUMAN_ERROR_TRANSLATIONS.get(message, message)
+    if "model call failed" in translated.lower():
+        status = re.search(r"Error code:\s*(\d{3})", translated)
+        suffix = f"（HTTP {status.group(1)}）" if status else ""
+        if "access denied" in translated.lower():
+            return f"模型服务拒绝访问{suffix}；请检查模型账号或服务权限。"
+        if len(translated) > 240 or "\n" in translated:
+            return f"模型调用失败{suffix}；详细原因见诊断日志。"
+    first_line = translated.strip().splitlines()[0] if translated.strip() else "未知错误"
+    if len(first_line) > 240 or "\n" in translated:
+        return first_line[:240].rstrip() + "…"
+    return first_line
+
+
 class EventRenderer:
     """Render events without influencing Runtime execution."""
 
@@ -38,12 +54,14 @@ class EventRenderer:
         stderr: TextIO | None = None,
         show_reasoning: bool = False,
         show_tools: bool = False,
+        concise_errors: bool = False,
     ) -> None:
         self.output_format = output_format
         self.stdout = stdout or sys.stdout
         self.stderr = stderr or sys.stderr
         self.show_reasoning = show_reasoning
         self.show_tools = show_tools
+        self.concise_errors = concise_errors
         self.events: list[dict[str, Any]] = []
         self._wrote_delta = False
         self._pending_output_break = False
@@ -164,7 +182,11 @@ class EventRenderer:
             "team.error",
         }:
             message = str(text or payload.get("error") or payload)
-            self._human_ui.failed(_HUMAN_ERROR_TRANSLATIONS.get(message, message))
+            self._human_ui.failed(
+                _human_error_summary(message)
+                if self.concise_errors
+                else _HUMAN_ERROR_TRANSLATIONS.get(message, message)
+            )
         elif event_type == "plan.mode_exited":
             self._human_ui.clear_status()
             self.stderr.write(

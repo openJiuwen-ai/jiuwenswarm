@@ -116,6 +116,8 @@ import {
   withUploadDocumentBlock,
 } from '../utils/documentMessage';
 import { useSubagentStore } from '../stores/subagentStore';
+import { expertTeamId, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
+import { useOrganizationEvents } from '../features/teamOrganization/useOrganizationEvents';
 import {
   normalizeSubagentActivityEvent,
   normalizeSubagentToolStatusUpdates,
@@ -780,7 +782,7 @@ function slimPersistedMediaRecords(items: Record<string, unknown>[]): Record<str
   }));
 }
 
-function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unknown> {
+function buildPersistedMediaFiles(mediaItems: Record<string, unknown>[]): Record<string, unknown> {
   const files: Record<string, unknown> = {};
   const images = mediaItems.filter((item) => item.type === 'image');
   const documents = mediaItems.filter((item) => item.type === 'document');
@@ -788,7 +790,7 @@ function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unkno
     files.uploaded_images = images.map((item) => ({
       filename: item.filename,
       path: item.path,
-      mime_type: getMediaMimeType(item),
+      mime_type: item.mime_type ?? item.mimeType,
       size_bytes: item.size_bytes ?? item.sizeBytes,
     }));
   }
@@ -796,7 +798,7 @@ function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unkno
     files.uploaded_documents = documents.map((item) => ({
       filename: item.filename,
       path: item.path,
-      mime_type: getMediaMimeType(item),
+      mime_type: item.mime_type ?? item.mimeType,
       size_bytes: item.size_bytes ?? item.sizeBytes,
     }));
   }
@@ -971,6 +973,7 @@ type ArchiveResourceEventPayload = {
 const ARCHIVE_EVENT_REFRESH_DEBOUNCE_MS = 300;
 
 export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
+  useOrganizationEvents();
   const { t } = useTranslation();
   const {
     activeSessionId,
@@ -1140,7 +1143,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const resolveEventSessionId = useCallback(
     (payload: Record<string, unknown>): string | null => {
       const payloadSessionId = getPayloadSessionId(payload);
-      if (!payloadSessionId) return null;
+        if (!payloadSessionId) return null;
+        if (expertTeamId(payload, payloadSessionId)) return null;
       ensureSessionRuntimes(payloadSessionId);
       if (typeof payload.execution_id === 'string' && payload.execution_id) {
         useChatStore.getState().setActiveExecutionId(payloadSessionId, payload.execution_id);
@@ -1864,6 +1868,27 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   // 发送聊天消息
   const sendMessage = useCallback(
     async (content: string, sessionId: string, mediaItems: MediaItem[] = [], options?: ChatSendOptions): Promise<boolean> => {
+      if (!options?.queuedTaskId && selectedExpertTeamId(sessionId)) {
+        if (!content.trim() && !mediaItems.length) return false;
+        try {
+          const attachments: Record<string, unknown> = {};
+          let query = content;
+          if (mediaItems.length) {
+            const imageItems = mediaItems.filter((item) => item.type !== 'document');
+            const documentItems = mediaItems.filter((item) => item.type === 'document');
+            const persisted: PersistMediaResponse = imageItems.length ? await persistMedia(content, sessionId, imageItems) : {};
+            const documents: PersistMediaResponse = documentItems.length ? await persistDocuments(content, sessionId, documentItems) : {};
+            const items = [...(persisted.media_items ?? []), ...(documents.media_items ?? [])];
+            attachments.media_items = items;
+            attachments.files = { ...persisted.files, ...documents.files };
+            query = withUploadDocumentBlock(persisted.content ?? persisted.query ?? content, toUploadDocumentHints(documents.media_items));
+          }
+          return (await sendExpertMessage(query, sessionId, mediaItems, attachments)) ?? false;
+        } catch (error) {
+          onErrorRef.current?.((error as WebError).message || t('network.sendMessageFailed'));
+          return false;
+        }
+      }
       const taskId = options?.queuedTaskId;
       if (taskId) {
         const store = useChatStore.getState();
@@ -1984,44 +2009,28 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         let outgoingMediaItems: Record<string, unknown>[] | undefined;
         let outgoingFiles: Record<string, unknown> | undefined;
         if (hasMedia) {
-          if (mediaItems.every(isPersistedMediaItem)) {
-            outgoingMediaItems = mediaItems.map(toPersistedMediaRecord);
-            outgoingFiles = buildPersistedMediaFiles(mediaItems);
-          } else {
-            const imageItems = mediaItems.filter((item) => item.type !== 'document');
-            const documentItems = mediaItems.filter((item) => item.type === 'document');
-            const mergedItems: Record<string, unknown>[] = [];
-            const mergedFiles: Record<string, unknown> = {};
-            if (imageItems.length) {
-              const persisted = await persistMedia(content, sessionId, imageItems);
-              outgoingContent = persisted.content ?? persisted.query ?? content;
-              if (Array.isArray(persisted.media_items)) {
-                mergedItems.push(...persisted.media_items);
-              }
-              if (persisted.files && typeof persisted.files === 'object') {
-                Object.assign(mergedFiles, persisted.files);
-              }
+          const mergedItems: Record<string, unknown>[] = [];
+          // 新会话的附件尚未落盘。每次只上传一项，既不触发批量数量限制，
+          // 也不把多份大文件的 base64 拼进同一条 WebSocket 消息。
+          for (const item of mediaItems) {
+            if (isPersistedMediaItem(item)) {
+              mergedItems.push(toPersistedMediaRecord(item));
+              continue;
             }
-            if (documentItems.length) {
-              const persistedDocs = await persistDocuments(content, sessionId, documentItems);
-              if (Array.isArray(persistedDocs.media_items)) {
-                mergedItems.push(...persistedDocs.media_items);
-              }
-              if (persistedDocs.files && typeof persistedDocs.files === 'object') {
-                Object.assign(mergedFiles, persistedDocs.files);
-              }
-              // The composer could not persist these documents before send (a
-              // brand-new session has no id yet), so its hint block carries
-              // filenames without paths. Rewrite it now that paths exist —
-              // team mode reads paths from the message text only.
-              const documentHints = toUploadDocumentHints(persistedDocs.media_items);
-              if (documentHints.length) {
-                outgoingContent = withUploadDocumentBlock(outgoingContent, documentHints);
-              }
+            const persist = item.type === 'document' ? persistDocuments : persistMedia;
+            const persisted = await persist('', sessionId, [item]);
+            const stored = persisted.media_items?.[0];
+            if (persisted.media_items?.length !== 1 || typeof stored?.path !== 'string' || !stored.path.trim()) {
+              throw new Error(`${item.filename}: ${t('chat.inputAttachment.uploadFailed')}`);
             }
-            outgoingMediaItems = mergedItems.length ? slimPersistedMediaRecords(mergedItems) : undefined;
-            outgoingFiles = Object.keys(mergedFiles).length ? mergedFiles : undefined;
+            mergedItems.push(stored);
           }
+          const documentHints = toUploadDocumentHints(mergedItems);
+          if (documentHints.length) {
+            outgoingContent = withUploadDocumentBlock(outgoingContent, documentHints);
+          }
+          outgoingMediaItems = slimPersistedMediaRecords(mergedItems);
+          outgoingFiles = buildPersistedMediaFiles(mergedItems);
         }
         // Goal 处于 active 时，普通输入按文档 §5.1 作为补充约束插入当前 Goal，而不是覆盖它
         const activeGoal = useGoalStore.getState().getRuntime(sessionId)?.goal;
@@ -2218,6 +2227,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       options?: { newInput?: string }
     ) => {
       const newInput = options?.newInput;
+      const expertId = selectedExpertTeamId(sessionId);
+      if (expertId) {
+        if (intent === 'supplement' && newInput) {
+          return (await sendExpertMessage(newInput, sessionId)) ?? false;
+        }
+        const result = await request<{ success?: boolean }>('chat.interrupt', {
+          session_id: sessionId, target_team_id: expertId, mode: 'team', intent,
+        });
+        if (result?.success) {
+          useChatStore.getState().setProcessing(`${sessionId}::${expertId}`, false);
+        }
+        return result?.success === true;
+      }
       if (intent === 'supplement' && newInput) {
         resetContextCompressionTurn(sessionId);
         userInputVersionRef.current += 1;
@@ -4432,6 +4454,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
         if (!isProcessingNow) {
           useChatStore.getState().setThinking(sessionId, false);
+          // 轮次终态兜底：思考段若因「思考后无文本增量/无工具调用」而未关闭，
+          // 会一直挂着「思考中…」；此处统一收口（已关闭时为幂等空操作）。
+          useChatStore.getState().closeReasoning(sessionId, {
+            atMs: eventTimestampMs(payload),
+          });
           useChatStore.getState().stopStreaming(sessionId);
           useChatStore.getState().settleHistoricalToolExecutions(sessionId);
 

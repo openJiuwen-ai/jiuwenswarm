@@ -1,3 +1,4 @@
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import clsx from 'clsx';
 import { useMemo } from 'react';
 import { useChatStore } from '../../stores/chatStore';
@@ -24,7 +25,7 @@ interface TeamMemberAvatarProps {
  * 读 store，是为了名册更新时头像能跟着重渲染——成员刚建出来时 cli_agent 可能还没到。
  */
 function useTeamMemberIdentity(member?: string): TeamMemberIdentity | undefined {
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers);
   return useMemo(() => {
     const id = member?.trim();

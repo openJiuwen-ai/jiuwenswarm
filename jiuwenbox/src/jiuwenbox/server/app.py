@@ -319,6 +319,12 @@ async def lifespan(_application: FastAPI):
     if get_configured_token() is not None:
         logger.info("API authentication enabled")
     await _proxy_manager.start()
+    policy_sync = None
+    if _sandbox_manager is not None and os.getenv("JIUWENBOX_RUNTIME_PROFILE", "").strip().lower() == "agentos":
+        from jiuwenbox.server.etcd_sync.service import PolicySyncService
+
+        policy_sync = PolicySyncService.from_env(_sandbox_manager)
+        await policy_sync.start()
     # 在 proxy 起来之后、yield (接受请求) 之前给 UDS 打权限: 此刻 uvicorn 已
     # 经 bind 并 listen 完成, socket inode 必然存在; 改 mode 不会和首个请求
     # 抢时序。
@@ -332,6 +338,8 @@ async def lifespan(_application: FastAPI):
     try:
         yield
     finally:
+        if policy_sync is not None:
+            await policy_sync.stop()
         # Stop accepting MCP requests before tearing down managed resources.
         try:
             await _mcp_session_cm.__aexit__(None, None, None)

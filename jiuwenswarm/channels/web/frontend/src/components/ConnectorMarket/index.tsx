@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useConnectorStore } from '../../stores/connectorStore';
+import { useConnectorStore, CONNECTOR_ERROR_TOAST_ID } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { MarketplacePage, type TopTab, type MarketKind } from './MarketplacePage';
 import { PluginDetailPage } from './PluginDetailPage';
@@ -9,6 +9,7 @@ import { CreatePluginPage } from './CreatePluginPage';
 import { RegisterMcpPage } from './RegisterMcpPage';
 import { UploadFileCreateModal } from './UploadFileCreateModal';
 import { Toast } from './Toast';
+import { toast } from '../ui/Toast/toastStore';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
 
 // "管理我的插件/MCP" 一次性跳转握手：调用方（InputArea.tsx 的扩展面板）先把目标 tab 存进这个
@@ -113,19 +114,21 @@ export function ConnectorMarketPanel({
   const clearPluginNotice = usePluginPackageStore((s) => s.clearNotice);
   const pluginSuccess = usePluginPackageStore((s) => s.successMessage);
   const clearPluginSuccess = usePluginPackageStore((s) => s.clearSuccess);
-  const [errorToast, setErrorToast] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
 
   useEffect(() => {
     if (connectorError) {
-      setErrorToast(connectorError);
+      // 与 McpPickerDrawer 抽屉内的 error effect 共用 CONNECTOR_ERROR_TOAST_ID：抽屉挂载时
+      // 两处 effect 会对同一次失败各跑一遍，同 id 才会被 toast.open 原地合并成一条。
+      toast.open({ id: CONNECTOR_ERROR_TOAST_ID, content: connectorError, variant: 'error', duration: 5 });
       clearConnectorError();
     }
   }, [connectorError, clearConnectorError]);
 
   useEffect(() => {
     if (pluginError) {
-      setErrorToast(pluginError);
+      // 插件错误与连接器错误共用同一 id：页内任意操作失败都替换上一条，不叠两条。
+      toast.open({ id: CONNECTOR_ERROR_TOAST_ID, content: pluginError, variant: 'error', duration: 5 });
       clearPluginError();
     }
   }, [pluginError, clearPluginError]);
@@ -313,7 +316,6 @@ export function ConnectorMarketPanel({
         />
       )}
 
-      {errorToast && <Toast message={errorToast} variant="error" onClose={() => setErrorToast(null)} />}
       {successToast && <Toast message={successToast} variant="success" onClose={() => setSuccessToast(null)} />}
     </div>
   );

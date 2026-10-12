@@ -713,13 +713,15 @@ def test_runtime_start_defaults_to_no_transport_bind() -> None:
     assert "async def start(self, *, bind_transport: bool = False)" in text
 
 
-def test_runtime_construct_is_off_front_loop() -> None:
+def test_runtime_construct_is_off_front_process() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[3]
-    text = (root / "jiuwenswarm/server/app_agentserver.py").read_text(encoding="utf-8")
-    assert "server = await asyncio.to_thread(_construct_runtime_server)" in text
-    assert "AgentWebSocketServer.get_instance(host=host, port=port)" in text
+    front = (root / "jiuwenswarm/server/app_agentserver.py").read_text(encoding="utf-8")
+    worker = (root / "jiuwenswarm/server/worker/lifecycle.py").read_text(encoding="utf-8")
+    assert "AgentWebSocketServer" not in front
+    assert "await asyncio.to_thread(_construct_runtime_server)" in worker
+    assert "AgentWebSocketServer.get_instance(host=host, port=port)" in worker
 
 
 @pytest.mark.asyncio

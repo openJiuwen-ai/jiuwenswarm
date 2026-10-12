@@ -21,20 +21,15 @@
  */
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CircleAlert } from 'lucide-react';
 import { ApplicationTaskControls } from '../../applicationPlugins/ApplicationTaskControls';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import type { TeamTask as SessionTeamTask } from '../../stores/sessionStore';
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
-import statusSuccessIcon from '../../assets/work-mode/status-success.svg';
-import statusWaitingIcon from '../../assets/work-mode/status-waiting.svg';
+import StatusSuccessIcon from '../../assets/work-mode/status-success.svg?react';
+import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
+import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
-import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TaskColumnKey, type TeamMember } from './shared';
-
-const compactStatusIcons: Record<Exclude<TaskColumnKey, 'running' | 'cancelled'>, string> = {
-  completed: statusSuccessIcon,
-  waiting: statusWaitingIcon,
-};
+import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TeamMember } from './shared';
 
 export interface CompactTaskListProps {
   tasks: SessionTeamTask[];
@@ -101,14 +96,21 @@ export function CompactTaskList({
             className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
             data-testid="team-area-task-planning-task-status-icon"
           >
-            <CircleAlert className="h-4 w-4 shrink-0 text-warn" aria-hidden="true" />
+            <CancelledIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+          </span>
+        ) : columnKey === 'waiting' ? (
+          <span
+            className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
+            data-testid="team-area-task-planning-task-status-icon"
+          >
+            <FrameTimeIcon className="h-4 w-4 shrink-0 text-text-meta" aria-hidden="true" />
           </span>
         ) : (
           <span
             className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
             data-testid="team-area-task-planning-task-status-icon"
           >
-            <img src={compactStatusIcons[columnKey]} className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <StatusSuccessIcon className="h-4 w-4 shrink-0 text-[var(--color-team-status-completed-icon)]" aria-hidden="true" />
           </span>
         );
         return (

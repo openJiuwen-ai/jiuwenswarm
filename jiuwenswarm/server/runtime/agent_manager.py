@@ -16,6 +16,7 @@ from typing import Any, Callable, NamedTuple, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
+from jiuwenswarm.common.version import __version__
 from jiuwenswarm.agents.harness.team import get_team_manager
 from jiuwenswarm.common.config import get_available_models, get_config
 from jiuwenswarm.common.mode_matrix import (
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-ACP_DEFAULT_CAPABILITIES: dict[str, Any] = build_acp_initialize_result()
+ACP_DEFAULT_CAPABILITIES: dict[str, Any] = build_acp_initialize_result(agent_version=__version__)
 
 
 def _normalize_channel_id(channel_id: str | None) -> str:
@@ -1293,6 +1294,7 @@ class AgentManager:
             *,
             agent_definition: dict[str, Any] | None = None,
             agent_definition_fingerprint: str | None = None,
+            run_permissions_enabled: bool = False,
     ) -> "JiuWenSwarm | None":
         """获取 Agent 实例（自动创建）.
 
@@ -1327,6 +1329,8 @@ class AgentManager:
             if agent_definition is not None
             else _make_agent_cache_key(mode_key, sub_mode_key, project_key)
         )
+        if run_permissions_enabled:
+            cache_key += ":run-permissions"
         channel_agents = self.agents.get(channel_key, {})
         if cache_key in channel_agents:
             return self._borrow_agent(channel_agents[cache_key])
@@ -1345,6 +1349,8 @@ class AgentManager:
             # state.json enabled; web = session-level via chat.send's mcp field,
             # init loads nothing).
             config["channel_id"] = channel_key
+            if run_permissions_enabled:
+                config["run_permissions_enabled"] = True
             if channel_key == "acp":
                 config = {
                     **config,
@@ -2140,6 +2146,8 @@ class AgentManager:
             "project_dir": project_dir,
             "sub_mode": selected_sub_mode,
         }
+        if channel_id == "process_cli" and isinstance(params.get("run_permissions"), dict):
+            get_kwargs["run_permissions_enabled"] = True
         if agent_definition is not None:
             get_kwargs["agent_definition"] = agent_definition
             get_kwargs["agent_definition_fingerprint"] = (

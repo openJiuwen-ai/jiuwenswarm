@@ -168,7 +168,7 @@ def _is_allowed_image_data_url(value: str) -> bool:
 
 
 def _video_live_mode() -> str:
-    mode = os.environ.get("VIDEO_LIVE_MODE", "joyai").strip().casefold()
+    mode = os.environ.get("VIDEO_LIVE_MODE", "realtime").strip().casefold()
     return "realtime" if mode == "realtime" else "joyai"
 
 

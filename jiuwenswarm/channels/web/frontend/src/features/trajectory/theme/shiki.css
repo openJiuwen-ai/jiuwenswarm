@@ -1,5 +1,3 @@
-/* Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. */
-
 /* Syntax-highlight token palette: the values behind shiki's css-variables
    theme (--shiki-* custom properties emitted by the ui-primitives CodeBlock).
    Light values live on the trajectory roots, with local dark overrides — the

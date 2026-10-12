@@ -28,7 +28,6 @@ type DefinitionDetailPageProps = {
   fileContent: AgentFileContent | null;
   fileStatus: RequestStatus;
   fileError: string | null;
-  actionError: string | null;
   actionNotice: string | null;
   busy: boolean;
   onBack: () => void;
@@ -57,7 +56,6 @@ export function DefinitionDetailPage({
   fileContent,
   fileStatus,
   fileError,
-  actionError,
   actionNotice,
   busy,
   onBack,
@@ -147,11 +145,14 @@ export function DefinitionDetailPage({
             ...(detail.installed ? [t('agentManagement.states.installed')] : []),
           ]}
           actions={
-            <div className="agent-management-detail__actions">
+            /* 收敛到共享类 .detail-actions/.detail-action（index.css，与 plugin/MCP 详情页同款）：
+               发布/卸载/删除为文字链接态，连接/使用为 28px 药丸（detail-action--use），安装为实底
+               药丸（detail-action--install）。原 .agent-management-detail__actions 一套私有类已删除。 */
+            <div className="detail-actions">
               {canShowAssetPublish(detail.installed) && (
                 <button
                   type="button"
-                  className="agent-management-button agent-management-button--secondary"
+                  className="detail-action"
                   data-testid="agent-management-agent-template-publish"
                   onClick={() =>
                     openAssetPublish({
@@ -161,6 +162,7 @@ export function DefinitionDetailPage({
                     })
                   }
                 >
+                  <PromptSendIcon aria-hidden="true" />
                   {t('skills.actions.publish')}
                 </button>
               )}
@@ -169,7 +171,7 @@ export function DefinitionDetailPage({
                   {needsConnection ? (
                     <button
                       type="button"
-                      className="agent-management-button agent-management-button--secondary"
+                      className="detail-action detail-action--use"
                       disabled={busy}
                       aria-busy={busy}
                       onClick={() => onReconnect(detail.id)}
@@ -181,7 +183,7 @@ export function DefinitionDetailPage({
 
                   <button
                     type="button"
-                    className="agent-management-detail-action agent-management-detail-action--uninstall"
+                    className="detail-action"
                     disabled={busy}
                     aria-busy={busy}
                     onClick={() =>
@@ -202,7 +204,7 @@ export function DefinitionDetailPage({
                   </button>
                   <button
                     type="button"
-                    className="agent-management-button agent-management-button--secondary agent-management-detail-action--use"
+                    className="detail-action detail-action--use"
                     disabled={!canUse || busy}
                     aria-disabled={!canUse}
                     onClick={() => onUse(detail.id)}
@@ -216,7 +218,7 @@ export function DefinitionDetailPage({
                   {canDelete ? (
                     <button
                       type="button"
-                      className="agent-management-detail-action agent-management-detail-action--uninstall"
+                      className="detail-action"
                       disabled={busy}
                       aria-busy={busy}
                       onClick={() => onDelete(detail.id, detail.displayName)}
@@ -228,7 +230,7 @@ export function DefinitionDetailPage({
                   ) : null}
                   <button
                     type="button"
-                    className="agent-management-button agent-management-button--primary agent-management-detail-action--install"
+                    className="detail-action detail-action--install"
                     disabled={busy}
                     aria-busy={busy}
                     onClick={() => onInstall(detail.id)}
@@ -241,15 +243,6 @@ export function DefinitionDetailPage({
             </div>
           }
         />
-        {actionError ? (
-          <div
-            className="agent-management-inline-error"
-            role="alert"
-            data-testid="agent-management-detail-action-error"
-          >
-            {actionError}
-          </div>
-        ) : null}
 
         {actionNotice ? (
           <div
@@ -310,7 +303,6 @@ export function DefinitionDetailPage({
                 <DetailPromptChip
                   key={prompt}
                   text={prompt}
-                  icon={<PromptSendIcon width={16} height={16} />}
                   disabled={!canUse || busy || !onUsePrompt}
                   onClick={() => onUsePrompt?.(detail.runtimePackageName, prompt)}
                   testId="agent-management-detail-prompt-send"

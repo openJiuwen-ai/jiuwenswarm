@@ -46,20 +46,25 @@ import type {
  * 将技能文件预览数据映射为共享 FilePreviewContent 所需结构。
  * 以当前选中路径为准：加载中/失败时 content 为空，但 header 与错误态仍正常显示
  * （对齐 agent 侧 file.loading/file.error 行为）；图片回退 raw-file 地址。
+ * 例外：切换文件的 loading 期间沿用上一次的预览数据（含其自身 path），
+ * 让内容区继续渲染旧文件，避免预览面板高度塌缩引起页面跳动。
  */
 function buildSkillPreviewFile(
   filePreview: SkillFilePreview | null,
   selectedPath: string,
+  filePreviewStatus: LoadState,
   skillFilePath: string,
 ): FilePreviewContentFile {
-  const matched = filePreview && filePreview.path === selectedPath ? filePreview : null;
+  const matched =
+    filePreview && (filePreview.path === selectedPath || filePreviewStatus === 'loading') ? filePreview : null;
+  const sourcePath = matched?.path ?? selectedPath;
   const skillDir = (skillFilePath || '').replace(/[\\/][^\\/]+$/, '');
   const downloadUrl =
     matched?.download_url ||
-    (isPreviewableImagePath(selectedPath)
-      ? `/file-api/raw-file?path=${encodeURIComponent(`${skillDir}/${selectedPath}`)}`
+    (isPreviewableImagePath(sourcePath)
+      ? `/file-api/raw-file?path=${encodeURIComponent(`${skillDir}/${sourcePath}`)}`
       : null);
-  return { path: selectedPath, content: matched?.content ?? null, downloadUrl };
+  return { path: sourcePath, content: matched?.content ?? null, downloadUrl };
 }
 
 /** 技能包成员阻塞原因 → i18n key（用于"包含技能"页签成员卡片状态徽标） */
@@ -679,7 +684,9 @@ export function SkillDetailView(props: SkillDetailViewProps) {
                 selected={Boolean(filePreviewPath)}
                 selectedPreviewable={Boolean(filePreviewPath)}
                 file={
-                  filePreviewPath ? buildSkillPreviewFile(filePreview, filePreviewPath, selectedSkill.file_path) : null
+                  filePreviewPath
+                    ? buildSkillPreviewFile(filePreview, filePreviewPath, filePreviewStatus, selectedSkill.file_path)
+                    : null
                 }
                 status={filePreviewStatus}
                 labels={{

@@ -229,6 +229,44 @@ def test_human_renderer_ignores_none_terminal_sentinel() -> None:
     assert renderer.events[0]["payload"] is None
 
 
+def test_human_renderer_summarizes_provider_denial_without_dumping_response() -> None:
+    output = TtyBuffer()
+    renderer = EventRenderer(
+        "human", stdout=output, stderr=output, concise_errors=True
+    )
+    message = (
+        "[181001] model call failed: Error code: 400 - "
+        "{'error': {'message': 'Access denied, please check your account', "
+        "'details': '" + "x" * 500 + "'}}"
+    )
+
+    renderer.render(
+        RuntimeEvent(
+            request_id="denied-request",
+            channel_id="process_cli",
+            session_id="runtime-session",
+            payload={"event_type": "chat.error", "message": message},
+        )
+    )
+
+    assert "模型服务拒绝访问（HTTP 400）" in output.getvalue()
+    assert "please check your account" not in output.getvalue()
+    assert len(output.getvalue()) < 200
+
+    interactive_output = TtyBuffer()
+    EventRenderer(
+        "human", stdout=interactive_output, stderr=interactive_output
+    ).render(
+        RuntimeEvent(
+            request_id="interactive-denied-request",
+            channel_id="process_cli",
+            session_id="runtime-session",
+            payload={"event_type": "chat.error", "message": message},
+        )
+    )
+    assert "please check your account" in interactive_output.getvalue()
+
+
 def test_human_renderer_displays_skills_list_without_chat_completion(
     monkeypatch,
 ) -> None:

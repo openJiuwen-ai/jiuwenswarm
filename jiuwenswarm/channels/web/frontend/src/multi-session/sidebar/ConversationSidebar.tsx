@@ -542,7 +542,7 @@ function ProjectCreateDialog({
           onClick={onCancel}
           data-testid="multi-session-project-create-dialog-close"
         >
-          <CloseIcon aria-hidden />
+          <CloseIcon aria-hidden className="text-text-meta" />
         </button>
         <div className="conversation-path-dialog__title" data-testid="multi-session-project-create-dialog-title" data-variant={mode}>
           {mode === 'existing'

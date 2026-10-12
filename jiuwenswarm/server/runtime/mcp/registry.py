@@ -75,6 +75,14 @@ CODE_CLI_INCOMPLETE = "MCP_CLI_INCOMPLETE"     # version still unparseable/low
 # Custom MCP name conflicts with builtin marketplace package dir; 
 # builtin shadows custom on connect, so reject registration and prompt user to rename.
 CODE_NAME_CONFLICT = "MCP_NAME_CONFLICT"
+# Env-token CLI MCPs (auth: [] in cli.json, e.g. gitcode) authenticate via a
+# token-schema env var; the CLI's auth status rejected the stored token at
+# connect time. Frontend maps this to a "token invalid, re-enter" hint.
+CODE_CREDENTIALS_INVALID = "MCP_CREDENTIALS_INVALID"
+# CLI install script could not find PowerShell (npm postinstall spawn
+# powershell.exe ENOENT); frontend shows a friendly hint instead of the
+# misleading "version too low".
+CODE_INSTALL_SCRIPT_DEP = "MCP_INSTALL_SCRIPT_DEP"
 
 # Network-failure substrings matched (case-insensitively) against init command
 # stderr. Covers npm's common registry/connectivity errors; the token codes are
@@ -1025,10 +1033,28 @@ def _entry_missing_tokens(entry: dict[str, Any], store: Any) -> set[str]:
     return found - stored
 
 
+def _cli_cred_tokens_stored(name: str) -> bool:
+    """True when every token-schema required key is in the CredentialStore."""
+    try:
+        from jiuwenswarm.server.runtime.mcp.credential import (
+            CredentialStore,
+            required_tokens_from_schema,
+        )
+        keys = required_tokens_from_schema(name)
+        if not keys:
+            return False
+        store = CredentialStore()
+        stored = set(store.get_all(name).keys()) if name else set()
+        return all(k in stored for k in keys)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _classify_install_failure(n: str, inst: Any) -> CliConnectError:
     """Map a failed CliDriver.install() onto a CliConnectError by cause:
-    binary_not_found → MCP_RUNTIME_MISSING, network stderr → MCP_INSTALL_NETWORK,
-    else → MCP_CLI_INCOMPLETE. ``runtime``/``install_cmd`` are surfaced so the
+    binary_not_found → MCP_RUNTIME_MISSING, install_script_dep →
+    MCP_INSTALL_SCRIPT_DEP, network stderr → MCP_INSTALL_NETWORK, else →
+    MCP_CLI_INCOMPLETE. ``runtime``/``install_cmd`` are surfaced so the
     frontend hint can name the dependency / show the upgrade command.
     """
     runtime = inst.runtime or ""
@@ -1037,6 +1063,13 @@ def _classify_install_failure(n: str, inst: Any) -> CliConnectError:
         return CliConnectError(
             CODE_RUNTIME_MISSING,
             f"mcp '{n}' CLI runtime '{runtime or 'unknown'}' not found on PATH; {inst.error}",
+            runtime=runtime, install_cmd=install_cmd,
+        )
+    if inst.error_kind == "install_script_dep":
+        # Structured CliDriver signal; outranks the network-text heuristic.
+        return CliConnectError(
+            CODE_INSTALL_SCRIPT_DEP,
+            f"mcp '{n}' CLI install script requires PowerShell but none was found; {inst.error}",
             runtime=runtime, install_cmd=install_cmd,
         )
     err_lower = (inst.error or "").lower()
@@ -1081,8 +1114,29 @@ def _connect_cli(name: str, step_index: int, *, install_only: bool = False) -> d
     # ``dws auth login -y`` (pops a browser) even when the user is already
     # authenticated. Resume calls (idx > 0, from complete_cli_auth) already
     # checked status upstream and must not re-probe here.
-    if idx == 0 and drv.status().authenticated:
+    status = drv.status() if idx == 0 else None
+    if idx == 0 and status.authenticated:
         return _finalize_cli(n, inst, install_only=install_only)
+    # Zero-step env-token CLI MCPs (gitcode): the user provisioned the token
+    # but ``auth status`` still reports unauthenticated, so the token is
+    # invalid - wipe it and fail connect so the next attempt re-prompts.
+    # OAuth CLIs (steps_total > 0), resume calls (idx > 0) and install_only
+    # callers never reach this branch.
+    env_token_rejected = (
+        idx == 0
+        and not install_only
+        and steps_total == 0
+        and drv.manifest.status_cmd
+        and not status.authenticated
+        and _cli_cred_tokens_stored(n)
+    )
+    if env_token_rejected:
+        _wipe_stored_credentials(n)
+        raise CliConnectError(
+            CODE_CREDENTIALS_INVALID,
+            f"mcp '{n}' token rejected by CLI auth status: {status.output[:200]}",
+            runtime=inst.runtime or "",
+        )
     if idx < steps_total:
         step = drv.auth_step(idx)
         if step.needs_user_action:
@@ -1478,4 +1532,6 @@ __all__ = [
     "CODE_INSTALL_NETWORK",
     "CODE_CLI_INCOMPLETE",
     "CODE_NAME_CONFLICT",
+    "CODE_CREDENTIALS_INVALID",
+    "CODE_INSTALL_SCRIPT_DEP",
 ]

@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import enum
+import ipaddress
 import os
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _expand_path(value: str) -> str:
@@ -611,7 +612,6 @@ class InferencePrivacyProxyPolicy(BaseModel):
     @field_validator("listen_host", mode="after")
     @classmethod
     def validate_listen_host(cls, value: str | None, info) -> str | None:
-        import ipaddress
         listen_port = info.data.get("listen_port", 0)
         if listen_port <= 0:
             return value
@@ -632,8 +632,6 @@ class NetworkUplinkPolicy(BaseModel):
     @field_validator("subnet", mode="after")
     @classmethod
     def validate_subnet(cls, value: str) -> str:
-        import ipaddress
-
         if not value.strip():
             return ""
         try:
@@ -773,6 +771,227 @@ class TimeoutPolicy(BaseModel):
         return number
 
 
+CONCH_NETWORK_MAX_DESTINATIONS = 1024
+CONCH_INGRESS_DENY_ALL_CIDR = "0.0.0.0/0"
+
+
+def _normalize_conch_ipv4(value: object, *, field_name: str) -> str:
+    """Normalize a Conch network destination to IPv4 address or CIDR text."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} entries must be non-empty IPv4 addresses or CIDRs")
+    text = value.strip()
+    try:
+        if "/" in text:
+            network = ipaddress.ip_network(text, strict=False)
+            if network.version != 4:
+                raise ValueError(f"{field_name} only supports IPv4 addresses or CIDRs")
+            return str(network)
+        address = ipaddress.ip_address(text)
+        if address.version != 4:
+            raise ValueError(f"{field_name} only supports IPv4 addresses or CIDRs")
+        return str(address)
+    except ValueError as exc:
+        raise ValueError(
+            f"{field_name} contains unsupported destination {text!r}; "
+            "only IPv4 addresses and CIDRs are supported"
+        ) from exc
+
+
+class ConchFilesystemPolicy(BaseModel):
+    """Conch-only filesystem mounts (mapped to SDK volume_mounts)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bind_mounts: list[BindMount] = Field(default_factory=list)
+
+
+class ConchDirectionPolicy(BaseModel):
+    """IP-only direction policy; mirrors NetworkRulePolicy without domains/ports."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    default: Literal["allow", "deny"] = "allow"
+    allowed_ips: list[str] = Field(default_factory=list)
+    blocked_ips: list[str] = Field(default_factory=list)
+
+    @field_validator("allowed_ips", "blocked_ips", mode="before")
+    @classmethod
+    def normalize_ip_lists(cls, value: object, info) -> object:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError(f"{info.field_name} must be a list of IPv4 addresses or CIDRs")
+        return [
+            _normalize_conch_ipv4(item, field_name=info.field_name)
+            for item in value
+        ]
+
+
+class ConchNetworkPolicy(BaseModel):
+    """Conch network filter policy (mapped to Conch SandboxNetworkConfig)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ingress: ConchDirectionPolicy = Field(default_factory=ConchDirectionPolicy)
+    egress: ConchDirectionPolicy = Field(default_factory=ConchDirectionPolicy)
+
+    @model_validator(mode="after")
+    def enforce_destination_limit(self) -> ConchNetworkPolicy:
+        total = (
+            len(self.ingress.allowed_ips)
+            + len(self.ingress.blocked_ips)
+            + len(self.egress.allowed_ips)
+            + len(self.egress.blocked_ips)
+        )
+        # Account for the synthetic deny-all CIDR injected at mapping time.
+        if (
+            self.ingress.default == "deny"
+            and not self.ingress.allowed_ips
+            and CONCH_INGRESS_DENY_ALL_CIDR not in self.ingress.blocked_ips
+        ):
+            total += 1
+        if total > CONCH_NETWORK_MAX_DESTINATIONS:
+            raise ValueError(
+                f"conch.network supports at most {CONCH_NETWORK_MAX_DESTINATIONS} "
+                f"destinations across ingress/egress lists, got {total}"
+            )
+        return self
+
+
+class ConchPolicy(BaseModel):
+    """Conch backend policy; ignored by the bwrap ProcessRuntime path."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    template_name: str = ""
+    vcpu_num: int | None = None
+    vcpu_max: int | None = None
+    ram_mb: int | None = None
+    # Optional guest identity; resolved on the host to uid/gid at create time.
+    # Pair required: both set or both omitted. Distinct from process.run_as_*.
+    run_as_user: str | None = None
+    run_as_group: str | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    filesystem_policy: ConchFilesystemPolicy = Field(default_factory=ConchFilesystemPolicy)
+    network: ConchNetworkPolicy = Field(default_factory=ConchNetworkPolicy)
+
+    @field_validator("template_name", mode="before")
+    @classmethod
+    def normalize_template_name(cls, value: object) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ValueError("conch.template_name must be a string")
+        return value.strip()
+
+    @field_validator("vcpu_num", "vcpu_max", "ram_mb", mode="before")
+    @classmethod
+    def normalize_optional_positive_int(cls, value: object, info) -> int | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            raise ValueError(f"conch.{info.field_name} must be an integer, not a boolean")
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                number = int(text)
+            except ValueError as exc:
+                raise ValueError(
+                    f"conch.{info.field_name} must be an integer, got {value!r}"
+                ) from exc
+        elif isinstance(value, int):
+            number = value
+        elif isinstance(value, float) and value.is_integer():
+            number = int(value)
+        else:
+            raise ValueError(
+                f"conch.{info.field_name} must be an integer, got {type(value).__name__}"
+            )
+        if number < 1:
+            raise ValueError(f"conch.{info.field_name} must be >= 1, got {number}")
+        return number
+
+    @field_validator("run_as_user", "run_as_group", mode="before")
+    @classmethod
+    def normalize_optional_run_as_name(cls, value: object, info) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError(
+                f"conch.{info.field_name} must be a string or non-negative integer, "
+                "not a boolean"
+            )
+        if isinstance(value, int):
+            if value < 0:
+                raise ValueError(
+                    f"conch.{info.field_name} must be a non-negative integer, got {value}"
+                )
+            return str(value)
+        if isinstance(value, float) and value.is_integer():
+            number = int(value)
+            if number < 0:
+                raise ValueError(
+                    f"conch.{info.field_name} must be a non-negative integer, got {value}"
+                )
+            return str(number)
+        if isinstance(value, str):
+            text = value.strip()
+            return text or None
+        raise ValueError(
+            f"conch.{info.field_name} must be a string or non-negative integer, "
+            f"got {type(value).__name__}"
+        )
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def normalize_env(cls, value: object) -> dict[str, str]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("conch.env must be a mapping of string keys to string values")
+        normalized: dict[str, str] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError("conch.env keys must be non-empty strings")
+            if item is None:
+                raise ValueError(f"conch.env[{key!r}] must be a string, got None")
+            if isinstance(item, bool) or not isinstance(item, (str, int, float)):
+                raise ValueError(
+                    f"conch.env[{key!r}] must be a string, got {type(item).__name__}"
+                )
+            normalized[key] = str(item)
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_vcpu_bounds(self) -> ConchPolicy:
+        if self.vcpu_max is not None and self.vcpu_num is None:
+            raise ValueError(
+                "conch.vcpu_max requires conch.vcpu_num to be set"
+            )
+        if (
+            self.vcpu_num is not None
+            and self.vcpu_max is not None
+            and self.vcpu_max < self.vcpu_num
+        ):
+            raise ValueError(
+                f"conch.vcpu_max must be >= conch.vcpu_num "
+                f"({self.vcpu_num}), got {self.vcpu_max}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_run_as_pair(self) -> ConchPolicy:
+        user_set = self.run_as_user is not None
+        group_set = self.run_as_group is not None
+        if user_set != group_set:
+            raise ValueError(
+                "conch.run_as_user and conch.run_as_group must both be set or both omitted"
+            )
+        return self
+
+
 class SecurityPolicy(BaseModel):
     """Complete static security policy for a sandbox."""
 
@@ -788,6 +1007,7 @@ class SecurityPolicy(BaseModel):
     network: NetworkPolicy = Field(default_factory=NetworkPolicy)
     cgroup: CgroupPolicy = Field(default_factory=CgroupPolicy)
     timeout: TimeoutPolicy = Field(default_factory=TimeoutPolicy)
+    conch: ConchPolicy = Field(default_factory=ConchPolicy)
     inference_privacy_proxies: InferencePrivacyProxyPolicy = Field(default_factory=InferencePrivacyProxyPolicy)
 
     def tostring(self) -> str:

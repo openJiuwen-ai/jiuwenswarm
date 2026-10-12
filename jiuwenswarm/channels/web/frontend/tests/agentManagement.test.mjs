@@ -191,22 +191,21 @@ test('Expert Team plaza includes Hub groups alongside built-in groups', () => {
     { id: 'remote', source: 'hub', category: '', tags: [], name: 'remote', displayName: 'Remote', description: '' },
     { id: 'mine', source: 'local', category: '', tags: [], name: 'mine', displayName: 'Mine', description: '' },
   ];
-  const view = buildGroupCatalogViewModel(items, { scope: 'catalog', category: '', query: '', page: 1, pageSize: 10 });
+  const view = buildGroupCatalogViewModel(items, { scope: 'catalog', category: '', query: '' });
   assert.deepEqual(view.items.map(item => item.id), ['built-in', 'remote']);
 });
 
-test('Expert Team plaza filters installed state before pagination', () => {
+test('Expert Team plaza filters installed state', () => {
   const items = [
     { id: 'installed', source: 'hub', installed: true, category: '', tags: [], name: 'installed', displayName: 'Installed', description: '' },
     { id: 'pending', source: 'hub', installed: false, category: '', tags: [], name: 'pending', displayName: 'Pending', description: '' },
   ];
-  const options = { scope: 'catalog', category: '', query: '', page: 2, pageSize: 1 };
+  const options = { scope: 'catalog', category: '', query: '' };
   const installed = buildGroupCatalogViewModel(items, { ...options, installation: 'installed' });
   const uninstalled = buildGroupCatalogViewModel(items, { ...options, installation: 'uninstalled' });
   assert.deepEqual(installed.items.map(item => item.id), ['installed']);
   assert.deepEqual(uninstalled.items.map(item => item.id), ['pending']);
   assert.equal(installed.totalItems, 1);
-  assert.equal(installed.page, 1);
 });
 
 test('My Expert Teams filters install state before pagination', () => {
@@ -215,14 +214,13 @@ test('My Expert Teams filters install state before pagination', () => {
     { id: 'local-pending', source: 'local', installed: false, category: '', tags: [], name: 'local-pending', displayName: 'Local pending', description: '' },
     { id: 'hub-installed', source: 'hub', installed: true, category: '', tags: [], name: 'hub-installed', displayName: 'Hub installed', description: '' },
   ];
-  const options = { scope: 'mine', category: '', query: '', page: 2, pageSize: 1 };
+  const options = { scope: 'mine', category: '', query: '' };
   const installed = buildGroupCatalogViewModel(items, { ...options, installation: 'installed' });
   const uninstalled = buildGroupCatalogViewModel(items, { ...options, installation: 'uninstalled' });
-  assert.deepEqual(installed.items.map(item => item.id), ['hub-installed']);
+  assert.deepEqual(installed.items.map(item => item.id), ['local-installed', 'hub-installed']);
   assert.equal(installed.totalItems, 2);
   assert.deepEqual(uninstalled.items.map(item => item.id), ['local-pending']);
   assert.equal(uninstalled.totalItems, 1);
-  assert.equal(uninstalled.page, 1);
 });
 
 test('normalizes interface source variants and bilingual display fields', () => {

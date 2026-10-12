@@ -26,6 +26,8 @@ from jiuwenswarm.channels.process_cli.protocol.version import (
 )
 
 QUERY_FIELDS = {
+    "protocol.capabilities": (set(), set()),
+    "protocol.schema": (set(), set()),
     "session.get": ({"session_id"}, {"session_id"}),
     "session.list": ({"limit", "offset", "search"}, set()),
     "model.list": (set(), set()),

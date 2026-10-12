@@ -79,6 +79,8 @@ test('skill and connector picker adapters retain marketplace/install state', asy
       };
     }
     if (method === 'mcp.list') {
+      // 后端 mcp.list summary 不下发 installed 字段（registry.py _build_summary），
+      // "哪些算我的"由 filter 拆分表达：local = 已连接的预置 + 全部自定义。
       if (params.filter === 'builtin') {
         return {
           items: [
@@ -93,7 +95,19 @@ test('skill and connector picker adapters retain marketplace/install state', asy
               connection_state: 'disconnected',
               has_bundled_skills: false,
               source: 'hub',
-              installed: false,
+              connected: false,
+            },
+            {
+              id: 'preset-connector',
+              name: 'preset-connector',
+              package_name: 'preset-connector',
+              display_name: 'Preset Connector',
+              description: 'A disconnected preset connector',
+              category: 'search',
+              integration_type: 'stdio-mcp',
+              connection_state: 'disconnected',
+              has_bundled_skills: false,
+              source: 'built_in',
               connected: false,
             },
           ],
@@ -112,7 +126,6 @@ test('skill and connector picker adapters retain marketplace/install state', asy
             connection_state: 'connected',
             has_bundled_skills: false,
             source: 'built_in',
-            installed: true,
             connected: true,
           },
           {
@@ -125,7 +138,6 @@ test('skill and connector picker adapters retain marketplace/install state', asy
             connection_state: 'disconnected',
             has_bundled_skills: false,
             source: 'customize',
-            installed: true,
             connected: false,
           },
         ],
@@ -142,10 +154,16 @@ test('skill and connector picker adapters retain marketplace/install state', asy
   assert.equal(skills[1].installed, true);
 
   const mcps = await client.listMcpOptions();
-  assert.deepEqual(mcps.map((mcp) => mcp.id), ['market-connector', 'custom-connector']);
+  assert.deepEqual(mcps.map((mcp) => mcp.id), ['market-connector', 'preset-connector', 'custom-connector']);
+  // installed 只表达安装态：预置包随应用分发，connectorApi 对非 hub 归一为 installed=true；
+  // 抽屉"我的/广场"tab 归属不依赖 installed，由 AgentEditor 的 isMine 用 connectionState 判断
   assert.equal(mcps[0].installed, true);
   assert.equal(mcps[0].hubAssetId, 'hub-connector-1');
+  assert.equal(mcps[0].connectionState, 'connected');
+  assert.equal(mcps[1].installed, true);
   assert.equal(mcps[1].connectionState, 'disconnected');
+  assert.equal(mcps[2].installed, true);
+  assert.equal(mcps[2].connectionState, 'disconnected');
   assert.deepEqual(calls.map(([method]) => method), ['skills.list', 'mcp.list', 'mcp.list']);
 });
 

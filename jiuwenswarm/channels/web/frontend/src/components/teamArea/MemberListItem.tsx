@@ -1,5 +1,5 @@
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
-import PendingIcon from '../../assets/pending.svg?react';
+import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import { getMemberPlainName, getMemberStatusKey, type TeamMember } from './shared';
 
@@ -59,6 +59,7 @@ export function MemberListItem({
         <div className="flex items-center gap-2">
           <span
             className={`${compact ? 'text-xs' : 'text-sm'} truncate font-semibold text-text`}
+            title={displayName}
             data-testid="team-area-member-item-name"
           >
             {displayName}
@@ -78,7 +79,7 @@ export function MemberListItem({
         isRunning && !showIdleStatus ? (
           <LoadingSpinner />
         ) : (
-          <PendingIcon className="w-4 h-4 text-text-muted" />
+          <FrameTimeIcon className="w-4 h-4 text-text-meta" />
         )
       ) : taskProgress && taskProgress.total > 0 ? (
         <div className="shrink-0 relative">
@@ -114,7 +115,7 @@ export function MemberListItem({
       ) : isRunning && !showIdleStatus ? (
         <LoadingSpinner />
       ) : (
-        <PendingIcon className="w-4 h-4 shrink-0 text-text-muted" />
+        <FrameTimeIcon className="w-4 h-4 shrink-0 text-text-meta" />
       )}
     </button>
   );

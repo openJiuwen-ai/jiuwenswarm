@@ -68,34 +68,6 @@ export function SkillToasts({
           </button>
         </div>
       )}
-      {message && messageType === 'error' && (
-        <div
-          className="fixed right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4 border border-danger"
-          style={{
-            backgroundColor: 'var(--color-feedback-danger-toast)',
-            width: '564px',
-            minHeight: '40px',
-            top: knowledgeTaskCount > 0 ? '4.5rem' : '1rem',
-          }}
-          data-testid="skill-panel-toast"
-          data-variant="error"
-        >
-          <span className="w-4 h-4 rounded-full bg-danger flex items-center justify-center flex-shrink-0 text-text-inverse text-[10px] font-bold">
-            !
-          </span>
-          <span className="flex-1 py-2 break-words">{cleanMessage}</span>
-          <button
-            type="button"
-            onClick={onCloseMessage}
-            className="ml-auto w-5 h-5 flex items-center justify-center hover:bg-card/30 rounded-full "
-            data-testid="skill-panel-toast-close-btn"
-          >
-            <svg className="w-4 h-4 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-      )}
       {message && messageType === 'loading' && knowledgeTaskCount <= 0 && (
         <div
           className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4 bg-card border border-border"

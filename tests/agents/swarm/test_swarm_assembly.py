@@ -992,6 +992,7 @@ def test_enrich_team_spec_for_swarm_has_no_deep_agent_param() -> None:
         "channel_id",
         "request_metadata",
         "agent_group_name",
+        "agent_group_package",
     }
 
 

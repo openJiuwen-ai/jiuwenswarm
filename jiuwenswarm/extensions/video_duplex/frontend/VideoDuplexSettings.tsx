@@ -35,21 +35,21 @@ interface SettingsPayload {
 }
 
 const EMPTY_SETTINGS: SettingsValues = {
-  video_live_provider: 'joyai',
+  video_live_provider: 'qwen_omni',
   joyai_api_base: '',
   joyai_api_key: '',
-  joyai_model: 'jdopensource/JoyAI-VL-Interaction',
+  joyai_model: '',
   qwen_omni_realtime_url: '',
   qwen_omni_api_key: '',
-  qwen_omni_model: 'qwen3.5-omni-flash-realtime',
-  qwen_omni_voice: 'Cherry',
-  voice_protocol: 'native_ws',
-  voice_asr_endpoint: 'ws://127.0.0.1:8994/ws/asr',
-  voice_tts_endpoint: 'ws://127.0.0.1:8992/ws/tts',
+  qwen_omni_model: '',
+  qwen_omni_voice: '',
+  voice_protocol: 'openai_http',
+  voice_asr_endpoint: '',
+  voice_tts_endpoint: '',
   voice_api_key: '',
   voice_asr_model: '',
   voice_tts_model: '',
-  voice_tts_voice: 'vivian',
+  voice_tts_voice: '',
 };
 
 const SECRET_KEYS = ['joyai_api_key', 'qwen_omni_api_key', 'voice_api_key'] as const;
@@ -207,7 +207,7 @@ export function VideoDuplexSettings({
 
           {values.video_live_provider === 'joyai' ? (
             <>
-              {field('joyai_api_base', 'JoyAI API Base', { placeholder: 'http://127.0.0.1:8070/v1' })}
+              {field('joyai_api_base', 'JoyAI API Base')}
               {field('joyai_api_key', 'JoyAI API Key', { secret: true })}
               {field('joyai_model', t('settingsPanel.videoDuplex.joyaiModelLabel'))}
 

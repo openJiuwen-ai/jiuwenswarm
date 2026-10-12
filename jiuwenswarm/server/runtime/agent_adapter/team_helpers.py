@@ -39,7 +39,7 @@ from jiuwenswarm.server.runtime.session.history_io import (
 from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
 from jiuwenswarm.agents.harness.team.team_manager import TEAM_EVENT_QUEUE_MAXSIZE
 from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
-from jiuwenswarm.common.utils import get_agent_skills_dir
+from jiuwenswarm.common.utils import get_agent_skills_dir, mask_sensitive
 from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled
 from jiuwenswarm.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
@@ -686,6 +686,10 @@ async def _prepare_first_team_request(
             error_chunks=error_chunks,
         )
 
+    if isinstance(query, dict) and query.get("type") == "group_chat":
+        return _FirstTeamRequestPreparation(
+            recovered_runtime=False, query=query, hide_dm=False, debug=False, error_chunks=None,
+        )
     query, hide_dm, debug = _extract_query_directives(str(query or ""))
     if hide_dm or debug:
         logger.info(
@@ -981,6 +985,17 @@ def _safe_query_preview(query: Any, limit: int = DEFAULT_PREVIEW_MAX_CHARS) -> s
 # on the same stream.
 _MODEL_OUTPUT_EVENT_TYPES = frozenset({"chat.delta", "chat.final", "chat.reasoning"})
 
+# 前端按 team 分流对话视图时，需要知道这些帧属于哪个 team。见 _tag_team_output_origin。
+_TEAM_ATTRIBUTED_EVENT_TYPES = frozenset({
+    "chat.delta",
+    "chat.final",
+    "chat.reasoning",
+    "chat.tool_call",
+    "chat.tool_result",
+    "chat.usage",
+    "chat.error",
+})
+
 
 def _resolve_user_turn(
     inputs: dict[str, Any],
@@ -1156,6 +1171,43 @@ def _is_member_addressed(text: str) -> bool:
     return bool(payloads) and any(not isinstance(p, GodViewMessage) for p in payloads)
 
 
+def _group_chat_input(request: Any, text: Any) -> dict | None:
+    """Convert explicit public input; mention objects carry their core member identity."""
+    params = getattr(request, "params", None) or {}
+    raw = params.get("query")
+    if not isinstance(raw, dict) or raw.get("type") != "group_chat":
+        if params.get("type") != "group_chat":
+            return None
+        raw = params
+    mentions = raw.get("mentions", [])
+    if not isinstance(mentions, list):
+        raise ValueError("Group mentions must be an array")
+    targets = []
+    for mention in mentions:
+        if isinstance(mention, dict):
+            # An expert team is represented by its leader in the outer team.
+            mention = mention.get("leader_member_name") or mention.get("member_name")
+        if not isinstance(mention, str) or not mention.strip():
+            raise ValueError("Each group mention requires a core member name")
+        targets.append(mention)
+    payload = {
+        "type": "group_chat", "body": raw.get("body", text),
+        "client_message_id": raw.get("client_message_id") or request.request_id,
+        "mentions": list(dict.fromkeys(targets)), "attachments": raw.get("attachments", []),
+    }
+    if not isinstance(payload["body"], str):
+        raise ValueError("Group body must be a string")
+    identity = payload["client_message_id"]
+    if not isinstance(identity, str) or not identity.strip():
+        raise ValueError("Group chat requires client_message_id")
+    attachments = payload["attachments"]
+    if not isinstance(attachments, list):
+        raise ValueError("Group attachments must be an array")
+    if any(not isinstance(item, dict) for item in attachments):
+        raise ValueError("Group attachments must contain JSON objects")
+    return payload
+
+
 def _deliverable(turn: UserTurn, text: Any) -> Any:
     """Render ``text`` into the payload delivered to the team runtime.
 
@@ -1178,6 +1230,8 @@ def _deliverable(turn: UserTurn, text: Any) -> Any:
         The rendered envelope for team-wide input, or ``text`` unchanged when
         the team message system owns delivery.
     """
+    if isinstance(text, dict) and text.get("type") == "group_chat":
+        return text
     if not isinstance(text, str):
         return turn.with_text(text).render()
     if _is_member_addressed(text):
@@ -1848,6 +1902,28 @@ def _enrich_teammate_event(parsed: dict[str, Any], chunk: Any) -> dict[str, Any]
 _TEAM_TOOL_RESULT_TEXT_LIMIT = 512
 
 
+def _tag_team_output_origin(parsed: dict[str, Any], team_name: str) -> dict[str, Any]:
+    """给模型产出的帧打上 team_name/team_id，供前端分流到各自的对话视图。
+
+    一个 session 可以同时挂多个 team（TeamRuntimePool 以 team_name 为键、按
+    current_session_id 归属），而 chat.delta / chat.reasoning 这些帧本身不带任何
+    team 标识——前端只有一个 session_id 可用于归属，于是多个 team 的流会混进同一份
+    messages 里，切换 team 时看到的是同一段对话。
+
+    只标注模型产出与工具事件：team.member / team.task / team.completed 这类控制帧
+    的归属由 payload 内层的 team_id 表达，重复注入外层 team_name 反而会让既有的
+    fan_out / agent_ref 推导（_build_team_event_chunk_meta 读 event.event 内层）
+    与外层字段不一致。
+    """
+    if not team_name:
+        return parsed
+    if parsed.get("event_type") not in _TEAM_ATTRIBUTED_EVENT_TYPES:
+        return parsed
+    parsed["team_name"] = team_name
+    parsed["team_id"] = team_name
+    return parsed
+
+
 def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
     """Trim large team tool result fields before forwarding them to clients."""
     if parsed.get("event_type") != "chat.tool_result":
@@ -2324,6 +2400,16 @@ async def _process_team_message_stream(
     # the leader receives exactly the envelope a single agent would.
     turn = _resolve_user_turn(inputs, channel_id=channel_id, language=language)
     query = turn.text
+    try:
+        group_input = _group_chat_input(request, query)
+    except ValueError as exc:
+        yield AgentResponseChunk(
+            request_id=rid, channel_id=channel_id,
+            payload={"event_type": "chat.error", "error": str(exc)}, is_complete=True,
+        )
+        return
+    if group_input is not None:
+        query = group_input
     query_text = query if isinstance(query, str) else ""
     try:
         from jiuwenswarm.agents.harness.team.remote_member_bootstrap import (
@@ -2388,6 +2474,8 @@ async def _process_team_message_stream(
 
     async def _begin_team_round() -> None:
         nonlocal cron_user_admitted, user_admitted
+        if group_input is not None and not group_input["mentions"]:
+            return
         if not is_bounded_round:
             if admission is not None:
                 begin_team_user = getattr(
@@ -2559,6 +2647,49 @@ async def _process_team_message_stream(
             params_obj if isinstance(params_obj, dict) else None,
             requested_model_name or "",
         )
+        # Remember whether the caller explicitly selected a model.  Only an
+        # explicit choice updates the long-lived Team binding; inherited
+        # session metadata remains a compatibility fallback and is not
+        # implicitly promoted to Team scope.
+        explicit_model_selection = (
+            isinstance(params_obj, dict) and "model_selection" in params_obj
+        )
+        model_selection = params_obj.get("model_selection") if isinstance(params_obj, dict) else None
+        # Request params are client-controlled, so they carry only the stable
+        # business reference; the server resolves and compiles it (a
+        # caller-supplied compiled payload with runtime credentials is never
+        # accepted).
+        if model_selection is not None:
+            from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+            model_selection = SwarmModelSelection.model_validate(model_selection).model_dump()
+        if model_selection is None:
+            current_metadata = get_session_metadata(session_id, cache_bust=True)
+            stored_selection = None
+            team_name_for_selection = str(current_metadata.get("team_name") or "").strip()
+            if team_name_for_selection:
+                try:
+                    from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
+                    stored_selection = get_team_binding_store().get_team_selection(
+                        team_name_for_selection
+                    )
+                except Exception:
+                    stored_selection = None
+            if not isinstance(stored_selection, dict):
+                from jiuwenswarm.server.runtime.session.model_selection_store import (
+                    get_session_model_selection,
+                )
+
+                try:
+                    stored = get_session_model_selection(session_id)
+                except ValueError:
+                    stored = None
+                stored_selection = (
+                    stored.model_dump(exclude_none=True) if stored is not None else None
+                )
+            if isinstance(stored_selection, dict):
+                from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+                model_selection = SwarmModelSelection.model_validate(stored_selection).model_dump()
+        runtime_model_selection = model_selection
         # Provider-based assembly: build members from the shared config source,
         # no pre-built parent DeepAgent required.
         # 会话级 swarmflow 配置：请求 params > metadata > config.yaml
@@ -2582,7 +2713,37 @@ async def _process_team_message_stream(
             login_model_entry=login_model_entry,
             agent_group_name=agent_group_name,
             swarmflow_config=swarmflow_config,
+            model_selection=runtime_model_selection,
         )
+        if isinstance(model_selection, dict) and model_selection.get("type") and model_selection.get("id"):
+            from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+            from jiuwenswarm.server.runtime.session.model_selection_store import (
+                get_session_model_selection,
+                set_session_model_selection,
+            )
+
+            selection_obj = SwarmModelSelection.model_validate(model_selection)
+            normalized = selection_obj.model_dump(exclude_none=True)
+            try:
+                existing = get_session_model_selection(session_id)
+            except ValueError:
+                existing = None
+            if existing is None or existing.model_dump(exclude_none=True) != normalized:
+                set_session_model_selection(session_id, selection_obj)
+            if explicit_model_selection:
+                team_name = str(get_session_metadata(session_id, cache_bust=True).get("team_name") or "").strip()
+                if team_name:
+                    from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
+                    binding_store = get_team_binding_store()
+                    # Legacy session-only Teams may not have a binding yet;
+                    # retain their session persistence without making model
+                    # selection fail solely because the optional Team store
+                    # is absent.
+                    if binding_store.get(team_name) is not None:
+                        binding_store.set_team_selection(
+                            team_name=team_name,
+                            selection=model_selection,
+                        )
         # 请求携带了会话级配置时持久化（刷新恢复用）
         if (
             isinstance(params_obj, dict)
@@ -2628,13 +2789,29 @@ async def _process_team_message_stream(
             )
     except Exception as exc:
         logger.exception("[TeamHelpers] TeamAgent create failed: %s", exc)
-        error_payload: dict[str, Any] = {
-            "event_type": "chat.error",
-            "error": str(exc),
-        }
+        # Resolver/compiler failures can originate in provider configuration;
+        # never put credentials or authorization headers into a user-visible
+        # Team error payload.
+        error_payload: dict[str, Any] = {"event_type": "chat.error", "error": mask_sensitive(str(exc))}
         error_code = getattr(exc, "code", None)
-        if isinstance(error_code, str) and error_code.startswith("AGENT_GROUP_"):
-            error_payload["code"] = error_code
+        if error_code:
+            error_payload["code"] = str(error_code)
+        details = getattr(exc, "details", None)
+        if isinstance(details, dict):
+            def _safe_detail(value: Any) -> Any:
+                if isinstance(value, dict):
+                    return {
+                        key: _safe_detail(item)
+                        for key, item in value.items()
+                        if str(key).lower() not in {"api_key", "apikey", "secret", "token", "password", "authorization"}
+                    }
+                if isinstance(value, list):
+                    return [_safe_detail(item) for item in value]
+                if isinstance(value, str):
+                    return mask_sensitive(value)
+                return value
+
+            error_payload.update(_safe_detail(details))
         yield AgentResponseChunk(
             request_id=rid,
             channel_id=channel_id,
@@ -2899,6 +3076,20 @@ async def _process_team_message_stream(
 
             if not is_first_request:
                 await startup.aclose()
+                if group_input is not None and success:
+                    yield AgentResponseChunk(
+                        request_id=rid, channel_id=channel_id,
+                        payload={"event_type": "team.group_message.accepted",
+                                 "client_message_id": group_input["client_message_id"]},
+                        is_complete=False,
+                    )
+                    if not group_input["mentions"]:
+                        await team_manager.release_round(session_id, rid)
+                        yield _team_processing_done_chunk(rid, channel_id, session_id)
+                        yield AgentResponseChunk(
+                            request_id=rid, channel_id=channel_id, payload=None, is_complete=True,
+                        )
+                        return
                 if is_bounded_round and request_queue is not None:
                     logger.info(
                         "[TeamHelpers] automated follow-up team request waits for round: "
@@ -3055,6 +3246,17 @@ async def _process_team_message_stream(
                             metadata=_metadata,
                             is_complete=False,
                         )
+                        if group_input is not None and not group_input["mentions"]:
+                            if isinstance(event, dict) and event.get("event_type") == "team.group_message.accepted":
+                                identity = event.get("client_message_id") or event.get("message", {}).get(
+                                    "client_message_id",
+                                )
+                                if identity == group_input["client_message_id"]:
+                                    yield _team_processing_done_chunk(rid, channel_id, session_id)
+                                    yield AgentResponseChunk(
+                                        request_id=rid, channel_id=channel_id, payload=None, is_complete=True,
+                                    )
+                                    return
                         if isinstance(event, dict) and event.get("event_type") == "team.error":
                             break
                     except asyncio.TimeoutError:
@@ -3188,6 +3390,48 @@ def _run_lamp_active(run: WorkflowRunState) -> bool:
         for phase in run.phases
         for a in phase.agents
     )
+
+
+async def _finalize_org_bound_team_after_idle(
+    *,
+    session_id: str,
+    team_name: str,
+) -> None:
+    """Pause org-bound teams after a chat stream ends so organization wakes can run.
+
+    Org background turns (unclaimed revision/expired, parent review, ...) only
+    resume leaders in ``RuntimeState.PAUSED``. Call this from stream ``finally``
+    (and ``team.completed``), never from ``team.idle`` while the stream is open.
+    """
+    name = str(team_name or "").strip()
+    sid = str(session_id or "").strip()
+    if not name or not sid:
+        return
+    try:
+        from openjiuwen.agent_teams.runtime.pool import RuntimeState
+        from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+        from jiuwenswarm.agents.harness.team.team_manager import (
+            _runner_team_runtime_manager,
+        )
+
+        runtime = _runner_team_runtime_manager(GLOBAL_RUNNER)
+        entry = await runtime.pool.get(name)
+        if entry is None or getattr(entry, "current_session_id", None) != sid:
+            return
+        if getattr(entry, "state", None) is RuntimeState.PAUSED:
+            return
+        backend = getattr(getattr(entry, "agent", None), "team_backend", None)
+        if getattr(backend, "org_task_manager", None) is None:
+            return
+        await runtime.finalize(team_name=name, session_id=sid)
+    except Exception:
+        logger.exception(
+            "[TeamHelpers] finalize org-bound team after idle failed "
+            "session_id=%s team_name=%s",
+            sid,
+            name,
+        )
 
 
 async def _consume_stream_with_query(
@@ -3324,6 +3568,8 @@ async def _consume_stream_with_query(
                         parsed.get("event_type"),
                         parsed.get("role") or getattr(chunk, "role", None),
                     )
+                # Preserve foreground Team reasoning visibility. Expert streams
+                # use their own organization relay and conversation runtime.
                 if not is_leader and parsed.get("event_type") == "chat.reasoning":
                     continue
                 if _is_duplicate_ask_user_question(parsed, emitted_ask_user_request_ids):
@@ -3334,6 +3580,10 @@ async def _consume_stream_with_query(
                 if not is_leader and parsed.get("event_type") == "chat.ask_user_question":
                     continue
                 parsed["rid"] = round_id
+                # 标注来源 team，让前端能把这一帧分流到对应 team 的对话视图。
+                # 放在 role 标记之前：_enrich_teammate_event 会覆盖 member_name，
+                # 但不动 team_name，顺序上只是先钉住归属再补身份。
+                parsed = _tag_team_output_origin(parsed, roster_team_name)
                 if is_teammate:
                     parsed = _enrich_teammate_event(parsed, chunk)
                 elif is_leader:
@@ -3441,6 +3691,10 @@ async def _consume_stream_with_query(
                         },
                     )
                     terminal_broadcasted = True
+                    await _finalize_org_bound_team_after_idle(
+                        session_id=session_id,
+                        team_name=roster_team_name,
+                    )
                     continue
                 elif parsed.get("event_type") == "team.idle":
                     # A swarmflow workflow may still be running while the leader
@@ -3491,6 +3745,8 @@ async def _consume_stream_with_query(
                         },
                     )
                     terminal_broadcasted = True
+                    # Do not finalize here: the leader stream stays open after
+                    # idle. Org-bound pause happens in finally / team.completed.
                     continue
                 elif (
                     is_leader
@@ -3642,6 +3898,10 @@ async def _consume_stream_with_query(
                         "session_id=%s",
                         session_id,
                     )
+                await _finalize_org_bound_team_after_idle(
+                    session_id=session_id,
+                    team_name=roster_team_name,
+                )
         finally:
             # Registry release must run even if cancellation arrives while a
             # normal stream is delivering its final snapshot.

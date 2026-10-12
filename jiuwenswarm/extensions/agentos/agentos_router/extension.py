@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from gateway_protocol.agent_client import AgentServerClient
+from gateway_protocol.sdk.agent_server_client import AgentServerClientExtension
+from gateway_protocol.sdk.third_agent import ThirdAgentExtension
+from gateway_protocol.third_agent import ThirdAgent
+
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentManager
 from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import AgentOSAuthenticator
@@ -14,15 +19,9 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import Regist
 from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
 from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import YuanrongSshRelay
 from jiuwenswarm.extensions.agentos.agentos_router.third_agent import AgentOSThirdAgent
-from jiuwenswarm.extensions.sdk.agent_server_client import (
-    AgentServerClientExtension,
-)
-from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
     YuanrongFrontendAgentClient,
 )
-from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
-from jiuwenswarm.gateway.routing.third_agent import ThirdAgent
 
 
 class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):

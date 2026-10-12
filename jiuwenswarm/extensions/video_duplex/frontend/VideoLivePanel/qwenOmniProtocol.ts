@@ -47,7 +47,7 @@ export function createQwenOmniSessionUpdate(options: QwenOmniSessionOptions): Re
     type: 'session.update',
     session: {
       modalities: ['audio', 'text'],
-      voice: options.voice || 'Ethan',
+      voice: options.voice || 'Tina',
       instructions: QWEN_SESSION_INSTRUCTIONS + "\n" + speakLanguageInstruction(normalizeReplyLanguage(options.replyLanguage)),
       audio: {
         input: { format: { type: 'pcm', sample_rate: options.inputRate } },

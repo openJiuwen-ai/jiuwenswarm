@@ -993,26 +993,29 @@ async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch) -> No
 
 @pytest.mark.asyncio
 async def test_models_list_includes_cached_zen_free_models(monkeypatch) -> None:
-    """Free models are in-memory entries but must remain selectable in new sessions."""
-    from jiuwenswarm.server.runtime import opencode_zen
+    """Free models stay selectable: Gateway merges rows fetched from AgentServer."""
+    zen_row = {
+        "model_name": "deepseek-v4-flash-free",
+        "api_base": "https://opencode.ai/zen/v1",
+        "api_key": "public",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "reasoning_level": "",
+        "is_default": None,
+        "is_agentos": False,
+        "is_free": True,
+        "alias": "DeepSeek V4 Flash",
+        "context_window_tokens": 200000,
+    }
+
+    async def _rows(_client):
+        return [zen_row]
 
     monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(models_handlers, "get_default_models", lambda _config: [])
     monkeypatch.setattr(
-        opencode_zen,
-        "get_zen_free_model_entries",
-        lambda: [{
-            "model_client_config": {
-                "model_name": "deepseek-v4-flash-free",
-                "api_base": "https://opencode.ai/zen/v1",
-                "api_key": "public",
-                "client_provider": "OpenAI",
-            },
-            "model_config_obj": {"temperature": 0.95},
-            "alias": "DeepSeek V4 Flash",
-            "context_window_tokens": 200000,
-            "is_free": True,
-        }],
+        "jiuwenswarm.gateway.zen_query.fetch_zen_free_model_rows",
+        _rows,
     )
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel))

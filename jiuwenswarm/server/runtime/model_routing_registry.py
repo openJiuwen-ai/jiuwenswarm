@@ -41,19 +41,20 @@ class ModelSelectionResolver:
             return context.session_selection
         if context.spec_selection is not None:
             return context.spec_selection
-        groups = [
-            group
-            for group in self.catalog.snapshot["groups"]
-            if group.get("enabled", True) and group.get("is_default")
-        ]
-        if groups:
-            return ModelSelection(type="model_group", id=groups[0]["model_group_id"])
+        for group in self.catalog.snapshot["groups"]:
+            if (
+                isinstance(group, dict)
+                and group.get("enabled", True)
+                and group.get("is_default")
+            ):
+                return ModelSelection(type="model_group", id=group["model_group_id"])
         if context.legacy_model_name:
             matches = []
             for model in self.catalog.list_public_models():
-                name_matches = model["model_name"] == context.legacy_model_name
-                alias_matches = model["alias"] == context.legacy_model_name
-                if name_matches or alias_matches:
+                if (
+                    model["model_name"] == context.legacy_model_name
+                    or model["alias"] == context.legacy_model_name
+                ):
                     matches.append(model)
             if len(matches) == 1:
                 return ModelSelection(type="model", id=matches[0]["model_id"])
@@ -136,6 +137,6 @@ class ModelSelectionResolver:
             model_group_id=selected.id,
             routes=routes,
             request_config=group.get("request_config") or {},
-            routing={},
+            routing=group.get("routing") or {},
         )
 

@@ -1000,11 +1000,16 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _resolve_project_path(self, rel_path: str) -> Path:
         """Resolve ``rel_path`` under ``project_root``.
 
-        ``Path.resolve()`` raises ``ValueError`` for paths containing an
-        embedded NUL byte (``os.stat`` rejects them) and ``OSError`` for other
-        malformed inputs.  Surface those as ``_BadRequestError`` so the request
+        NUL is rejected explicitly instead of relying on ``Path.resolve()``
+        raising: only POSIX raises ``ValueError`` for an embedded NUL byte,
+        while Windows behaves differently across Python versions (3.11
+        truncates silently at the NUL, 3.13 returns the path unchanged).  Other
+        malformed inputs still surface as ``OSError`` / ``ValueError`` from
+        ``resolve()``.  Both are mapped to ``_BadRequestError`` so the request
         is answered with ``400`` instead of crashing the handler thread.
         """
+        if "\x00" in rel_path:
+            raise _BadRequestError("invalid_path")
         try:
             return (self.project_root / rel_path).resolve()
         except (OSError, ValueError) as exc:
@@ -2088,13 +2093,29 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def send_head(self):
+        # 内嵌 NUL 必须在 resolve() 之前显式拦截：POSIX 上 Path.resolve() 会抛
+        # ValueError，但 Windows 上各 Python 版本行为不一致（3.11 静默在 NUL 处截断、
+        # 3.12 抛异常、3.13 原样返回含 NUL 的路径），靠捕获异常无法跨平台覆盖。
+        # 跨盘符（/D:/x）则由下面的 os.path.commonpath 抛 ValueError。两类都要转成
+        # 400：handle_one_request 只捕获 TimeoutError，异常会穿透到 socketserver，
+        # 连接被直接关掉且客户端收不到任何 HTTP 响应。
         parsed = urlparse(self.path)
         req_path = unquote(parsed.path)
-        rel_path = req_path.lstrip("/") or "index.html"
+        if "\x00" in req_path:
+            self._static_cache_control = None
+            self._write_json(400, {"error": "invalid_path"})
+            return None
 
-        base_dir = Path(self.directory or os.getcwd()).resolve()
-        target = (base_dir / rel_path).resolve()
-        in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+        try:
+            rel_path = req_path.lstrip("/") or "index.html"
+
+            base_dir = Path(self.directory or os.getcwd()).resolve()
+            target = (base_dir / rel_path).resolve()
+            in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+        except (OSError, ValueError):
+            self._static_cache_control = None
+            self._write_json(400, {"error": "invalid_path"})
+            return None
 
         # 使用实际静态解析结果判定 SPA 入口, 覆盖 /、index.html 及路由回退。
         # 现存静态资源及其他 HTML 产物不需要桌面 Cookie。

@@ -9,10 +9,10 @@ for (const [language, expected, announcement] of [
   ['invalid', /same language as their latest utterance/, /same language as the original user question/],
   [undefined, /same language as their latest utterance/, /same language as the original user question/],
 ]) {
-  test(`Qwen language ${language} governs both conversation and task announcement`, () => {
-    const config = createQwenOmniSessionUpdate({ inputRate: 16000, outputRate: 24000, replyLanguage: language });
-    assert.match(config.session.instructions, expected);
-    assert.doesNotMatch(config.session.instructions, /preferred response language/);
+  test(`Qwen ${language ?? 'default'} reply language applies to session and task receipt`, () => {
+    const session = createQwenOmniSessionUpdate({ inputRate: 16000, outputRate: 24000, replyLanguage: language });
+    assert.equal(session.session.voice, 'Tina');
+    assert.match(session.session.instructions, spoken);
     const events = createQwenOmniToolResultEvents(
       'call',
       { status: 'completed', summary: 'done' },

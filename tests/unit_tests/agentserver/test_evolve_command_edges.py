@@ -878,12 +878,19 @@ async def test_non_stream_error_answer_returns_failure_instead_of_empty_success(
     assert response.payload == {"error": "Error code: 401 - model access denied"}
     assert len(seen_inputs) == 1
     assert seen_inputs[0]["query"] == "run task"
+    assert "_turn_number" not in seen_inputs[0]
     _assert_symphony_request_model_context(seen_inputs[0])
 
 
 @pytest.mark.anyio
 async def test_agent_non_stream_slash_followup_continues_into_runner(monkeypatch):
     adapter = _adapter_ready_for_followup_execution(monkeypatch)
+    adapter._kv_cache_affinity_enabled = True
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_trajectory_turn",
+        lambda _params: SimpleNamespace(turn_id="turn-non-stream", turn_number=3),
+    )
     seen_inputs: list[dict] = []
     _install_interaction_followup_agent(
         adapter,
@@ -914,6 +921,7 @@ async def test_agent_non_stream_slash_followup_continues_into_runner(monkeypatch
     assert len(seen_inputs) == 1
     assert seen_inputs[0]["query"] == "review and evolve code-runner"
     assert seen_inputs[0]["_invoke_turn_id"] == "req-followup"
+    assert seen_inputs[0]["_turn_number"] == 3
     _assert_symphony_request_model_context(seen_inputs[0])
     assert response.ok is True
     assert response.payload == {"content": "agent completed"}
@@ -922,6 +930,12 @@ async def test_agent_non_stream_slash_followup_continues_into_runner(monkeypatch
 @pytest.mark.anyio
 async def test_agent_stream_slash_followup_continues_into_runner(monkeypatch):
     adapter = _adapter_ready_for_followup_execution(monkeypatch)
+    adapter._kv_cache_affinity_enabled = True
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_trajectory_turn",
+        lambda _params: SimpleNamespace(turn_id="turn-stream", turn_number=4),
+    )
     seen_inputs: list[dict] = []
     _install_interaction_followup_agent(
         adapter,
@@ -955,6 +969,7 @@ async def test_agent_stream_slash_followup_continues_into_runner(monkeypatch):
     assert len(seen_inputs) == 1
     assert seen_inputs[0]["query"] == "review and simplify code-runner"
     assert seen_inputs[0]["_invoke_turn_id"] == "req-followup-stream"
+    assert seen_inputs[0]["_turn_number"] == 4
     _assert_symphony_request_model_context(seen_inputs[0])
     assert chunks[0].payload == {"event_type": "chat.delta", "content": "agent delta"}
     assert chunks[-1].is_complete is True

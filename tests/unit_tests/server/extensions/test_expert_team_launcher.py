@@ -1,0 +1,649 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Unit tests for JiuwenExpertTeamLauncher (activate + stop rollback)."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from jiuwenswarm.agents.harness.team.expert_org.launcher import (
+    JiuwenExpertTeamLauncher,
+    _align_spec_storage,
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["org_summary_background", "org_expert_background"])
+async def test_only_summary_errors_notify_organization_runtime(monkeypatch, source):
+    from jiuwenswarm.server.runtime.agent_adapter import team_helpers
+    from jiuwenswarm.server.utils import stream_utils
+
+    monkeypatch.setattr(team_helpers, "_is_leader_output", lambda chunk: False)
+    monkeypatch.setattr(team_helpers, "_is_teammate_output", lambda chunk: True)
+    monkeypatch.setattr(team_helpers, "_enrich_teammate_event", lambda parsed, chunk: parsed)
+    monkeypatch.setattr(stream_utils, "parse_stream_chunk", lambda chunk: {
+        "event_type": "chat.error", "member_name": "delivery-drafter", "error": "iteration limit",
+    })
+    org_runtime = SimpleNamespace(notify_summary_member_failure=AsyncMock())
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=SimpleNamespace(), organization_runtime=org_runtime)
+    launcher.push_expert_payload = AsyncMock(return_value=True)
+    await launcher._relay_expert_chunk(
+        object(), team_id="summary", session_id="session", channel_id="web",
+        round_id="org-turn", frame_sequence=12, source=source,
+    )
+    assert org_runtime.notify_summary_member_failure.await_count == (1 if source == "org_summary_background" else 0)
+    if source == "org_summary_background":
+        assert org_runtime.notify_summary_member_failure.call_args.kwargs["turn_id"] == "org-turn:12"
+    launcher.push_expert_payload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", [
+    "org_expert_background", "org_summary_background", "org_root_background", "org_root_delivery",
+])
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+async def test_organization_stream_keeps_round_id_through_web_gateway(source: str, role: str) -> None:
+    """Transport frames stay unique while browser chunks share one request boundary."""
+    import json
+
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+
+    transport = SimpleNamespace(send_push=AsyncMock(return_value=True))
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=SimpleNamespace())
+    launcher._get_push_transport = lambda: transport
+    chunks = [
+        ("chat.delta", "**处理"), ("chat.delta", "结论**"), ("chat.delta", "：完成。"),
+        ("chat.final", "**处理结论**：完成。"),
+    ]
+    for sequence, (event, content) in enumerate(chunks):
+        assert await launcher.push_expert_payload(
+            {"event_type": event, "content": content, "role": role, "member_name": "analyst"},
+            team_id="expert", session_id="session", channel_id="web",
+            round_id="org-round", frame_sequence=sequence, source=source,
+        )
+    pushes = [call.args[0] for call in transport.send_push.call_args_list]
+    assert len({push["request_id"] for push in pushes}) == 4
+    events = []
+    for push in pushes:
+        wire = json.loads(json.dumps(build_server_push_wire(push)))
+        chunk = parse_agent_server_wire_chunk(wire)
+        assert chunk.request_id == push["request_id"]
+        message = MessageHandler._chunk_to_message(chunk, "session")
+        events.append(WebChannel._build_event_payload(message, chunk.payload["event_type"]))
+    assert {event["request_id"] for event in events} == {"org-round"}
+    assert "".join(event["content"] for event in events[:-1]) == events[-1]["content"]
+    assert all(event["role"] == role and event["member_name"] == "analyst" for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["org_expert_direct", "org_expert_background"])
+async def test_push_failure_preserves_direct_cause_and_background_result(source):
+    failure = OSError("transport disconnected")
+    transport = SimpleNamespace(send_push=AsyncMock(side_effect=failure))
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=SimpleNamespace())
+    launcher._get_push_transport = lambda: transport
+    operation = launcher.push_expert_payload(
+        {"event_type": "chat.final", "content": "result"},
+        team_id="expert", session_id="session", channel_id="web",
+        round_id="org-round", frame_sequence=0, source=source,
+    )
+    if source == "org_expert_direct":
+        with pytest.raises(RuntimeError, match="failed to deliver direct expert output") as error:
+            await operation
+        assert error.value.__cause__ is failure
+    else:
+        assert await operation is False
+
+
+class _FakeSpec:
+    def __init__(self, team_name: str, metadata: dict | None = None) -> None:
+        self.team_name = team_name
+        self.metadata = dict(metadata or {"capabilities": ["frontend"]})
+        self.storage = None
+        self.leader = SimpleNamespace(display_name="Expert Leader", desc="leader public")
+
+    def model_copy(self, update: dict) -> _FakeSpec:
+        merged_metadata = dict(self.metadata)
+        if "metadata" in update:
+            merged_metadata.update(update["metadata"])
+        return _FakeSpec(
+            update.get("team_name", self.team_name),
+            metadata=merged_metadata,
+        )
+
+
+class _FakeDb:
+    def __init__(self, connection_string: str = "/tmp/shared-team.db") -> None:
+        self.config = SimpleNamespace(
+            db_type="sqlite",
+            connection_string=connection_string,
+            db_timeout=5,
+            db_enable_wal=True,
+        )
+
+
+class _FakeAgent:
+    def __init__(self, team_name: str, db: object) -> None:
+        self.member_name = f"leader-{team_name}"
+        self.spec = SimpleNamespace(metadata={"capabilities": ["frontend", "ui"]})
+        self.build_team_calls: list[dict] = []
+
+        async def _build_team(**kwargs):
+            self.build_team_calls.append(kwargs)
+
+        self.team_backend = SimpleNamespace(
+            team_name=team_name,
+            leader_member_name=f"leader-{team_name}",
+            member_name=f"leader-{team_name}",
+            db=db,
+            task_manager=SimpleNamespace(db=db),
+            message_manager=SimpleNamespace(db=db),
+            build_team=_build_team,
+        )
+
+
+class _FakeActivation:
+    def __init__(self, agent: _FakeAgent) -> None:
+        self.agent = agent
+
+
+class _FakePool:
+    def __init__(self, entries: dict[str, _FakeAgent]) -> None:
+        self._entries = entries
+
+    async def get(self, team_name: str):
+        agent = self._entries.get(team_name)
+        if agent is None:
+            return None
+        return SimpleNamespace(agent=agent, team_name=team_name)
+
+    async def teams_for_session(self, session_id: str):
+        return []
+
+
+class _FakeRuntime:
+    def __init__(self, shared_db: object) -> None:
+        self.shared_db = shared_db
+        self.entries: dict[str, _FakeAgent] = {}
+        self.activate_calls: list[tuple[str, str]] = []
+        self.stop_calls: list[tuple[str, str]] = []
+        self.pause_calls: list[tuple[str, str]] = []
+        self.fail_activate = False
+
+    @property
+    def pool(self) -> _FakePool:
+        return _FakePool(self.entries)
+
+    async def activate(self, spec, session_id):
+        self.activate_calls.append((spec.team_name, session_id))
+        if self.fail_activate:
+            raise RuntimeError("activate failed")
+        agent = _FakeAgent(spec.team_name, self.shared_db)
+        caps = getattr(spec, "metadata", {}).get("capabilities", ["frontend", "ui"])
+        agent.spec = SimpleNamespace(metadata={"capabilities": list(caps)})
+        self.entries[spec.team_name] = agent
+        return _FakeActivation(agent)
+
+    async def stop_team(self, *, team_name: str, session_id: str) -> bool:
+        self.stop_calls.append((team_name, session_id))
+        self.entries.pop(team_name, None)
+        return True
+
+    async def pause(self, *, team_name: str, session_id: str) -> bool:
+        self.pause_calls.append((team_name, session_id))
+        return True
+
+
+@pytest.fixture(autouse=True)
+def agent_group_loader(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    package_dir = tmp_path / "sample-expert-group"
+    package_dir.mkdir()
+    package = SimpleNamespace(
+        package_dir=package_dir,
+        manifest={
+            "name": "sample-expert-group",
+            "instruction": "expert group instruction",
+            "capabilities": ["frontend"],
+        },
+        templates={},
+        instruction="expert group instruction",
+        capabilities=("frontend",),
+    )
+    calls = {"resolve": 0, "load": 0}
+
+    def _resolve(_name):
+        calls["resolve"] += 1
+        return package_dir
+
+    def _load(path):
+        calls["load"] += 1
+        assert path == package_dir
+        return package
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir",
+        _resolve,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.agent_group.load_agent_group_package_bundle",
+        _load,
+    )
+    return calls
+
+
+def test_align_spec_storage_uses_donor_connection_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _StorageSpec:
+        def __init__(self, type: str, params: dict) -> None:
+            captured["type"] = type
+            captured["params"] = params
+
+    import sys
+
+    monkeypatch.setitem(
+        sys.modules,
+        "openjiuwen.agent_teams.schema.blueprint",
+        SimpleNamespace(StorageSpec=_StorageSpec),
+    )
+
+    spec = _FakeSpec("expert-team")
+    donor_db = _FakeDb("/data/org-team.db")
+    _align_spec_storage(spec, donor_db)
+    assert captured["type"] == "sqlite"
+    assert captured["params"]["connection_string"] == "/data/org-team.db"
+    assert spec.storage is not None
+
+
+@pytest.mark.asyncio
+async def test_launch_creates_resolvable_team(
+    monkeypatch: pytest.MonkeyPatch, agent_group_loader
+) -> None:
+    shared_db = _FakeDb()
+    runtime = _FakeRuntime(shared_db)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def _fake_build(**kwargs):
+        return _FakeSpec(kwargs["team_id"])
+
+    monkeypatch.setattr(launcher, "_build_enriched_spec", _fake_build)
+
+    launched = await launcher.launch(
+        organization_id="org-1",
+        agent_group_name="sample-expert-group",
+        session_id="sess-1",
+        display_name="Sample",
+    )
+
+    assert launched.team_id.startswith("org-expert-")
+    assert len(launched.team_id.removeprefix("org-expert-")) == 12
+    assert launched.agent_group_name == "sample-expert-group"
+    assert launched.leader_id == f"leader-{launched.team_id}"
+    assert launched.capabilities == ("frontend",)
+    assert launched.to_dict()["team_id"] == launched.team_id
+
+    assert runtime.activate_calls == [(launched.team_id, "sess-1")]
+    assert runtime.pause_calls == [(launched.team_id, "sess-1")]
+    assert runtime.stop_calls == []
+    pooled = await runtime.pool.get(launched.team_id)
+    assert pooled is not None
+    assert pooled.agent.team_backend.team_name == launched.team_id
+    assert agent_group_loader == {"resolve": 1, "load": 1}
+
+
+@pytest.mark.asyncio
+async def test_launch_with_owner_uses_shared_db_for_task_and_message_managers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_db = _FakeDb("/tmp/org-owner.db")
+    runtime = _FakeRuntime(shared_db)
+    owner_agent = _FakeAgent("owner-team", shared_db)
+    runtime.entries["owner-team"] = owner_agent
+
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def _fake_build(**kwargs):
+        return _FakeSpec(kwargs["team_id"])
+
+    monkeypatch.setattr(launcher, "_build_enriched_spec", _fake_build)
+
+    launched = await launcher.launch(
+        organization_id="org-1",
+        agent_group_name="sample-expert-group",
+        session_id="sess-1",
+        display_name="Sample Experts",
+        share_db_from_team_id="owner-team",
+    )
+
+    expert = runtime.entries[launched.team_id]
+    assert expert.team_backend.db is shared_db
+    assert expert.team_backend.task_manager.db is shared_db
+    assert expert.team_backend.message_manager.db is shared_db
+    assert expert.build_team_calls == [
+        {
+            "display_name": "Sample Experts",
+            "desc": "expert group instruction",
+            "leader_display_name": "Expert Leader",
+            "leader_desc": "leader public",
+        }
+    ]
+    assert runtime.pause_calls == [(launched.team_id, "sess-1")]
+
+
+@pytest.mark.asyncio
+async def test_launch_allocates_unique_team_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    shared_db = _FakeDb()
+    runtime = _FakeRuntime(shared_db)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def _fake_build(**kwargs):
+        return _FakeSpec(kwargs["team_id"])
+
+    monkeypatch.setattr(launcher, "_build_enriched_spec", _fake_build)
+
+    first = await launcher.launch(
+        organization_id="org",
+        agent_group_name="frontend-group",
+        session_id="s",
+    )
+    second = await launcher.launch(
+        organization_id="org",
+        agent_group_name="frontend-group",
+        session_id="s",
+    )
+    assert first.team_id.startswith("org-expert-")
+    assert second.team_id.startswith("org-expert-")
+    assert first.team_id != second.team_id
+    assert len(first.team_id.removeprefix("org-expert-")) == 12
+    assert len(second.team_id.removeprefix("org-expert-")) == 12
+
+
+@pytest.mark.asyncio
+async def test_launch_does_not_stop_when_spec_build_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _FakeRuntime(_FakeDb())
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def _fail_build(**_kwargs):
+        raise RuntimeError("spec build failed")
+
+    monkeypatch.setattr(launcher, "_build_enriched_spec", _fail_build)
+
+    with pytest.raises(RuntimeError, match="spec build failed"):
+        await launcher.launch(
+            organization_id="org-1",
+            agent_group_name="sample-expert-group",
+            session_id="sess-1",
+        )
+
+    assert runtime.activate_calls == []
+    assert runtime.stop_calls == []
+
+
+@pytest.mark.asyncio
+async def test_launch_rolls_back_when_activate_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_db = _FakeDb()
+    runtime = _FakeRuntime(shared_db)
+    runtime.fail_activate = True
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def _fake_build(**kwargs):
+        return _FakeSpec(kwargs["team_id"])
+
+    monkeypatch.setattr(launcher, "_build_enriched_spec", _fake_build)
+
+    with pytest.raises(RuntimeError, match="activate failed"):
+        await launcher.launch(
+            organization_id="org-1",
+            agent_group_name="sample-expert-group",
+            session_id="sess-1",
+        )
+
+    assert len(runtime.stop_calls) == 1
+    stopped_team_id, stopped_session_id = runtime.stop_calls[0]
+    assert stopped_team_id.startswith("org-expert-")
+    assert stopped_session_id == "sess-1"
+    assert await runtime.pool.get(stopped_team_id) is None
+
+
+@pytest.mark.asyncio
+async def test_stop_removes_team(monkeypatch: pytest.MonkeyPatch) -> None:
+    shared_db = _FakeDb()
+    runtime = _FakeRuntime(shared_db)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def _fake_build(**kwargs):
+        return _FakeSpec(kwargs["team_id"])
+
+    monkeypatch.setattr(launcher, "_build_enriched_spec", _fake_build)
+
+    launched = await launcher.launch(
+        organization_id="org-1",
+        agent_group_name="g",
+        session_id="sess-1",
+    )
+    await launcher.stop(team_id=launched.team_id, session_id="sess-1")
+    assert await runtime.pool.get(launched.team_id) is None
+
+
+@pytest.mark.asyncio
+async def test_launch_requires_agent_group_name() -> None:
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=_FakeRuntime(_FakeDb()))
+    with pytest.raises(ValueError, match="agent_group_name"):
+        await launcher.launch(
+            organization_id="org-1",
+            agent_group_name="  ",
+            session_id="sess-1",
+        )
+
+
+def test_verify_shared_database_rejects_mismatched_task_manager_db() -> None:
+    shared_db = _FakeDb()
+    other_db = _FakeDb("/other.db")
+    launcher = JiuwenExpertTeamLauncher()
+    expert_agent = _FakeAgent("expert", shared_db)
+    expert_agent.team_backend.task_manager = SimpleNamespace(db=other_db)
+    donor_backend = SimpleNamespace(db=shared_db)
+
+    with pytest.raises(ValueError, match="task_manager must use the shared TeamDatabase"):
+        launcher._verify_shared_database(expert_agent, donor_backend)
+
+
+@pytest.mark.asyncio
+async def test_run_organization_turn_falls_back_for_owner_team() -> None:
+    """Non-expert (owner) teams must use the default org runner, not return False."""
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    default_calls: list[tuple[str, str, object]] = []
+
+    class _OwnerRuntime:
+        def __init__(self) -> None:
+            self.pool = SimpleNamespace(
+                get=self._get,
+            )
+
+        async def _get(self, team_id: str):
+            return SimpleNamespace(
+                current_session_id="sess-owner",
+                state=RuntimeState.PAUSED,
+                agent=SimpleNamespace(
+                    spec=SimpleNamespace(metadata={"capabilities": ["general"]}),
+                ),
+            )
+
+        async def run_organization_turn(self, *, team_name: str, session_id: str, inputs: object) -> bool:
+            default_calls.append((team_name, session_id, inputs))
+            return True
+
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=_OwnerRuntime())
+    ok = await launcher.run_organization_turn(
+        "retry-claim-demo",
+        "sess-owner",
+        {"query": "org unclaimed expired"},
+    )
+    assert ok is True
+    assert default_calls == [
+        ("retry-claim-demo", "sess-owner", {"query": "org unclaimed expired"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_launch_reflects_metadata_capabilities_from_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared_db = _FakeDb()
+    runtime = _FakeRuntime(shared_db)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def _fake_build(**kwargs):
+        return _FakeSpec(
+            kwargs["team_id"],
+            metadata={"capabilities": ["finance", "risk"]},
+        )
+
+    monkeypatch.setattr(launcher, "_build_enriched_spec", _fake_build)
+
+    launched = await launcher.launch(
+        organization_id="org-1",
+        agent_group_name="finance-group",
+        session_id="sess-1",
+    )
+    assert launched.capabilities == ("finance", "risk")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_expert", [False, True])
+async def test_organization_turn_routes_root_team_to_core_runtime(is_expert: bool) -> None:
+    """An installed expert runner executes both ordinary and expert Root Team follow-ups."""
+    calls = []
+    agent = SimpleNamespace(spec=SimpleNamespace(metadata={"expert_team": is_expert}))
+    entry = SimpleNamespace(agent=agent, current_session_id="sess-1")
+
+    class _Pool:
+        async def get(self, team_id):
+            return entry if team_id == "ordinary-team" else None
+
+    async def run_organization_turn(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    runtime = SimpleNamespace(pool=_Pool(), run_organization_turn=run_organization_turn)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+    assert await launcher.run_organization_turn("ordinary-team", "sess-1", {"query": "review children"})
+    assert calls == [{
+        "team_name": "ordinary-team",
+        "session_id": "sess-1",
+        "inputs": {"query": "review children"},
+    }]
+    if not is_expert:
+        assert not await launcher.run_organization_turn(
+            "ordinary-team", "sess-1", {"query": "review children"}, source="org_expert_direct"
+        )
+
+
+@pytest.mark.asyncio
+async def test_summary_background_turn_relays_model_frames() -> None:
+    """Only the explicitly marked Summary Team uses the host event relay."""
+    from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    relayed = []
+
+    class _Agent:
+        spec = SimpleNamespace(metadata={"summary_team": True, "channel_id": "web"})
+
+        async def stream(self, inputs, session):
+            yield SimpleNamespace(payload={"event_type": "chat.reasoning"})
+
+    agent = _Agent()
+    entry = SimpleNamespace(agent=agent, current_session_id="sess-1", state=RuntimeState.PAUSED)
+
+    class _Pool:
+        async def get(self, team_id):
+            return entry
+
+    async def _post_run():
+        return None
+
+    async def _activate(spec, session_id, inputs):
+        return SimpleNamespace(
+            agent=agent,
+            action=SimpleNamespace(kind=RunActionKind.RESUME_FROM_PAUSE),
+            session=SimpleNamespace(post_run=_post_run),
+        )
+
+    async def _finalize(**kwargs):
+        return None
+
+    runtime = SimpleNamespace(pool=_Pool(), activate=_activate, finalize=_finalize)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def _relay(chunk, **kwargs):
+        relayed.append((chunk.payload["event_type"], kwargs["team_id"]))
+        return {"event_type": "chat.reasoning", "role": "leader"}
+
+    launcher._relay_expert_chunk = _relay
+    assert await launcher.run_organization_turn(
+        "summary-team", "sess-1", {"query": "summarize"}, source="org_summary_background"
+    )
+    assert relayed == [("chat.reasoning", "summary-team")]
+
+
+@pytest.mark.asyncio
+async def test_root_summary_delivery_turn_relays_owner_output() -> None:
+    """A Summary completion marker relays the Root Leader's verified delivery."""
+    from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    received_inputs = []
+    relayed = []
+
+    class _Agent:
+        spec = SimpleNamespace(metadata={"channel_id": "web"})
+
+        async def stream(self, inputs, session):
+            received_inputs.append(inputs)
+            yield SimpleNamespace(payload={"event_type": "chat.final", "content": "verified report"})
+
+    agent = _Agent()
+    entry = SimpleNamespace(agent=agent, current_session_id="sess-1", state=RuntimeState.PAUSED)
+
+    class _Pool:
+        async def get(self, team_id):
+            return entry
+
+    async def _post_run():
+        return None
+
+    async def _activate(spec, session_id, inputs):
+        return SimpleNamespace(
+            agent=agent,
+            action=SimpleNamespace(kind=RunActionKind.RESUME_FROM_PAUSE),
+            session=SimpleNamespace(post_run=_post_run),
+        )
+
+    async def _finalize(**kwargs):
+        return None
+
+    runtime = SimpleNamespace(pool=_Pool(), activate=_activate, finalize=_finalize)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def _relay(chunk, **kwargs):
+        relayed.append((chunk.payload["event_type"], kwargs["source"], kwargs["team_id"]))
+        return {"event_type": "chat.final", "role": "leader"}
+
+    launcher._relay_expert_chunk = _relay
+    assert await launcher.run_organization_turn(
+        "root-team", "sess-1", {"query": "deliver", "_org_relay_source": "org_root_delivery"}
+    )
+    assert received_inputs == [{"query": "deliver"}]
+    assert relayed == [("chat.final", "org_root_delivery", "root-team")]

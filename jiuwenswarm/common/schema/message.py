@@ -48,6 +48,8 @@ class ReqMethod(Enum):
     CONFIG_SAVE_ALL = "config.save_all"
     CONFIG_VALIDATE_MODEL = "config.validate_model"
     MODELS_LIST = "models.list"
+    MODELS_ZEN_ENTRIES = "models.zen_entries"
+    MODELS_ZEN_WARM = "models.zen_warm"
     MODELS_GET = "models.get"
     MODELS_REPLACE_ALL = "models.replace_all"
     MODELS_VALIDATE = "models.validate"
@@ -420,6 +422,8 @@ class ReqMethod(Enum):
     TEAM_HISTORY_GET = "team.history.get"
     TEAM_MEMBERS_GET = "team.members.get"
     TEAM_MQ_PUBLISH = "team.mq.publish"
+    TEAM_LIST = "team.list"
+    ORG_SNAPSHOT = "org.snapshot"
 
     # Harness package management
     HARNESS_PACKAGES_GET = "harness.packages.get"
@@ -517,6 +521,7 @@ class EventType(Enum):
     # _missing_ so every downstream channel sees HEALTH_CHECK_RELAY.
     HEARTBEAT_RELAY = "health_check.relay"
     HISTORY_GET = "history.message"
+    PROACTIVE_RECOMMENDATION = "proactive_recommendation"
 
     @classmethod
     def _missing_(cls, value):

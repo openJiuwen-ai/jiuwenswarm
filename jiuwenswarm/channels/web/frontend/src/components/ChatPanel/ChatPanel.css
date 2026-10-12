@@ -976,8 +976,8 @@
   height: 16px;
 }
 
-/* close.svg 资源自带硬编码灰色 fill（其他调用处依赖该颜色），此处覆盖为 currentColor，
-   保持 chip 删除图标跟随按钮主题色（--color-chat-accent / --color-action-primary）不变 */
+/* close.svg 已改为 fill="currentColor"（ConversationSidebar 处由调用方 text-text-meta 传灰），
+   此处显式声明 chip 删除图标跟随按钮主题色（--color-chat-accent / --color-action-primary）不变 */
 .chat-input-chip-inline__remove svg path {
   fill: currentColor;
 }
@@ -1250,15 +1250,7 @@
   width: 16px;
   height: 16px;
   flex: 0 0 auto;
-  border: 1.5px solid currentColor;
-  border-radius: 4px;
   color: var(--color-text-primary);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.chat-composer-suggestion__slash-icon--skill {
-  border: 0;
 }
 
 .chat-composer-suggestion__slash-icon--skill::before {
@@ -4856,4 +4848,19 @@
 .chat-panel-file-download-item--expired:hover {
   border-color: var(--color-border-default);
   box-shadow: none;
+}
+.chat-team-select__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.chat-team-select__dot--running {
+  background: var(--color-feedback-success);
+}
+
+.chat-team-select__dot--idle {
+  background: var(--color-feedback-warning);
 }

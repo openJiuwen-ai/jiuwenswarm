@@ -221,14 +221,6 @@
   justify-content: center;
 }
 
-.app-connection-toast {
-  border-radius: 0.5rem;
-  background: var(--color-feedback-danger);
-  padding: 0.5rem 1rem;
-  color: var(--color-text-inverse);
-  box-shadow: var(--effect-shadow-lg);
-}
-
 .app-session-toast {
   border-radius: 0.5rem;
   background: var(--color-feedback-info);

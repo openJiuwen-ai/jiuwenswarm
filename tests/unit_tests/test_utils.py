@@ -945,7 +945,7 @@ class TestCleanupStaleOpenjiuwenDescs:
     def test_agentserver_runtime_backend_cleans_before_openjiuwen_import():
         """Front defers OpenJiuwen; Runtime backend must still clean first."""
         root = Path(__file__).resolve().parents[2]
-        source = (root / "jiuwenswarm" / "server" / "app_agentserver.py").read_text(
+        source = (root / "jiuwenswarm" / "server" / "worker" / "lifecycle.py").read_text(
             encoding="utf-8"
         )
         tree = ast.parse(source)

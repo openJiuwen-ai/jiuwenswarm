@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 // Menu: minimal controlled dropdown (group-by pickers, project selectors).
 // Default: pure CSS positioning relative to the anchor wrapper — no popper.
 // Opt-in `portal` renders the list into document.body, fixed-positioned from

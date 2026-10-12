@@ -1907,6 +1907,7 @@ async def _run(
         message_handler=message_handler,
     )
     cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
+    cron_controller.bind_agent_client(client)
     message_handler.set_cron_controller(cron_controller)
 
     # Heartbeat Store/Controller/Scheduler/Execution live in AgentServer.
@@ -1922,6 +1923,22 @@ async def _run(
         config=dict(full_cfg or {}),
         env={env_key: (os.getenv(env_key) or "") for env_key in _CONFIG_SET_ENV_MAP.values()},
     )
+
+    # Data-plane settings are AgentOS-only. A personal Gateway using etcd for
+    # cron must not start this service. Only agent_sandbox.idle_timeout is
+    # managed, so no user reload/fanout is needed.
+    config_updater = None
+    from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
+    if is_agentos_routing_client(client):
+        from jiuwenswarm.extensions.agentos.config_updater.service import ConfigUpdaterService
+        from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+
+        config_updater = ConfigUpdaterService(
+            etcd_endpoints=list(load_cron_store_settings(full_cfg).endpoints),
+            config=full_cfg,
+            config_provider=get_config,
+            overrides_handler=client.apply_remote_overrides,
+        )
 
     if isinstance(health_check_cfg, dict):
         cfg_every = health_check_cfg.get("every")
@@ -2277,6 +2294,8 @@ async def _run(
     await channel_manager.start_dispatch()
     log_startup_stage("message_dispatch_started")
     await cron_scheduler.start()
+    if config_updater is not None:
+        await config_updater.start()
     log_startup_stage("cron_scheduler_started")
 
     # Give the browser event loop a chance to complete its pending WebSocket
@@ -2418,7 +2437,7 @@ async def _run(
                 logger.error(
                     "[App] A2A server failed to start: %s. "
                     "If A2A is enabled, install optional dependency with "
-                    "`uv sync --extra a2a` or `pip install \"jiuwenswarm[a2a]\"`.",
+                    "`uv sync --extra a2a` or `pip install \"workswarm[a2a]\"`.",
                     exc,
                 )
 
@@ -3084,7 +3103,7 @@ async def _run(
                             logger.error(
                                 "[App] SSH channel failed to start: %s. "
                                 "If SSH is enabled, install optional dependency with "
-                                "`uv sync --extra ssh` or `pip install \"jiuwenswarm[ssh]\"`.",
+                                "`uv sync --extra ssh` or `pip install \"workswarm[ssh]\"`.",
                                 exc,
                             )
 
@@ -3119,44 +3138,6 @@ async def _run(
         if _agent_prewarm_enabled()
         else None
     )
-
-    # ---------- Opencode Zen 免费模型预热 ----------
-    # Gateway 进程独立拉取 Zen 免费模型到内存缓存（_models_list 在此进程处理，
-    # 与 AgentServer 内存不共享，故各自预热）。失败留空，不阻断启动。
-    # fire-and-forget：不再同步 await（拉取上限 15s，原直接推迟 19001/19000
-    # 端口开放，Desktop 只等 19000 且 45s 超时）。失败由 opencode_zen 自带
-    # 后台重试自动恢复；models.list 在完成前返回已有配置模型，不影响主链路。
-    # shutdown 时 cancel（见本函数 finally）。
-    zen_free_models_task: asyncio.Task | None = None
-    try:
-        from jiuwenswarm.server.runtime.opencode_zen import (
-            warm_zen_free_models,
-            set_main_event_loop,
-            register_models_ready_callback,
-        )
-        # 注册 event loop，供后台重试线程通过 call_soon_threadsafe 调度回调
-        set_main_event_loop(asyncio.get_running_loop())
-
-        # 注册回调：后台重试成功后广播 models.updated 事件，前端自动刷新模型列表
-        async def _on_zen_models_ready():
-            try:
-                web_channel = channel_manager.get_channel("web")
-                if web_channel:
-                    await web_channel.broadcast_event("models.updated", {})
-                    logger.info("[App] broadcasted models.updated: zen free models ready")
-            except Exception as e:  # noqa: BLE001
-                logger.debug("[App] broadcast models.updated failed: %s", e)
-
-        def _models_ready_cb():
-            asyncio.create_task(_on_zen_models_ready())
-
-        register_models_ready_callback(_models_ready_cb)
-        zen_free_models_task = asyncio.create_task(
-            warm_zen_free_models(reason="gateway-startup"),
-            name="zen-free-models-warmup",
-        )
-    except Exception as e:  # noqa: BLE001 - 兜底
-        logger.warning("[App] zen free models warm failed (non-fatal): %s", e)
 
     # 主动推荐：按 config 自动注册/删除 proactive.tick 定时 job
     try:
@@ -3339,6 +3320,8 @@ async def _run(
     except asyncio.CancelledError:
         pass
     finally:
+        if config_updater is not None:
+            await config_updater.stop()
         if not channel_config_task.done():
             channel_config_task.cancel()
             try:
@@ -3361,14 +3344,6 @@ async def _run(
                 await prewarm_sync_task
             except asyncio.CancelledError:
                 pass
-        if zen_free_models_task is not None:
-            zen_free_models_task.cancel()
-            try:
-                await zen_free_models_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:
-                logger.warning("[App] zen free models warmup stop failed: %s", exc)
         if a2a_task is not None:
             a2a_task.cancel()
             try:

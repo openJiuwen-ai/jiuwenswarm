@@ -121,15 +121,24 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
     def _invoke_permissions_hook(
         self, hook: Any, *args: Any, session_id: str | None = None,
     ) -> Any:
-        if self._exact_persist_callback is None or hook is not self._host.get_permissions_snapshot:
+        if hook is not self._host.get_permissions_snapshot:
             return super()._invoke_permissions_hook(hook, *args, session_id=session_id)
+        if self._exact_persist_callback is None:
+            snapshot = super()._invoke_permissions_hook(hook, *args, session_id=session_id)
+            if isinstance(snapshot, dict):
+                from jiuwenswarm.runtime.run_permissions import overlay_run_permissions
+                return overlay_run_permissions(snapshot)
+            return snapshot
         # Preserve the SDK's installed-config fallback, but return it through
         # the rail update path so a rebuild cannot discard native extraction.
         try:
             snapshot = super()._invoke_permissions_hook(hook, *args, session_id=session_id)
         except Exception:
             snapshot = None
-        return snapshot if isinstance(snapshot, dict) else self.installed_permission_config()
+        from jiuwenswarm.runtime.run_permissions import overlay_run_permissions
+        return overlay_run_permissions(
+            snapshot if isinstance(snapshot, dict) else self.installed_permission_config()
+        )
 
     async def resolve_interrupt(
         self,
@@ -138,15 +147,41 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         user_input: Any,
         auto_confirm_config: dict | None = None,
     ) -> Any:
-        # Bug #4851 defense boundary: if the response slot received something
-        # we cannot parse (typically chat text accidentally routed in by the
-        # Host after a cold recovery), reject and audit-log instead of letting
-        # super().resolve_interrupt() silently re-issue the interrupt and skip
-        # the permission chain (which would bypass any session-layer allow rule).
-        rejected = self._reject_unparseable_resume(ctx, tool_call, user_input)
-        if rejected is not None:
-            return rejected
+        from jiuwenswarm.runtime.run_permissions import (
+            RUN_PERMISSIONS, overlay_run_permissions,
+        )
 
+        levels = RUN_PERMISSIONS.get() or getattr(self, "run_permission_levels", None)
+        run_token = RUN_PERMISSIONS.set(levels)
+        normalized_name = self._normalize_tool_name(tool_call.name) if tool_call else ""
+        level = levels.get(normalized_name) if levels else None
+        if level == "deny":
+            RUN_PERMISSIONS.reset(run_token)
+            return self.reject(tool_result="[PERMISSION_DENIED] run policy")
+        original_config = self.installed_permission_config() if levels else None
+        original_hook = self._host.permission_scene_hook if levels and level == "ask" else None
+        if original_config is not None:
+            self.update_config(overlay_run_permissions(original_config))
+        if original_hook is not None:
+            async def preserve_scene_rejection(scene_input: Any) -> Any:
+                outcome = await original_hook(scene_input)
+                return outcome if outcome is not None and outcome[0] == "reject" else None
+            self._host.permission_scene_hook = preserve_scene_rejection
+        try:
+            return await self._resolve_interrupt_with_run_policy(
+                ctx, tool_call, user_input, auto_confirm_config
+            )
+        finally:
+            RUN_PERMISSIONS.reset(run_token)
+            if original_hook is not None:
+                self._host.permission_scene_hook = original_hook
+            if original_config is not None:
+                self.update_config(original_config)
+
+    async def _resolve_interrupt_with_run_policy(
+        self, ctx: AgentCallbackContext, tool_call: Any, user_input: Any,
+        auto_confirm_config: dict | None,
+    ) -> Any:
         if self._exact_persist_callback is None:
             return await super().resolve_interrupt(
                 ctx, tool_call, user_input, auto_confirm_config
@@ -180,6 +215,9 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
     def _persist_allow_always(
         self, normalized_name: str, tool_args: dict, *, session_id: str | None = None,
     ) -> bool:
+        from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS
+        if RUN_PERMISSIONS.get() is not None:
+            return False
         callback = self._exact_persist_callback
         if callback is None:
             return super()._persist_allow_always(normalized_name, tool_args, session_id=session_id)
@@ -197,6 +235,12 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         except Exception:
             return False
 
+    def _persist_merged_allow(self, *args: Any, **kwargs: Any) -> bool:
+        from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS
+        if RUN_PERMISSIONS.get() is not None:
+            return False
+        return super()._persist_merged_allow(*args, **kwargs)
+
     def _remove_exact_auto_confirm(self, ctx: Any, tool_call: Any) -> None:
         session = getattr(ctx, "session", None)
         key = self._get_auto_confirm_key(tool_call)
@@ -208,54 +252,6 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         updated = dict(config)
         updated.pop(key, None)
         session.update_state({INTERRUPT_AUTO_CONFIRM_KEY: updated})
-
-    def _reject_unparseable_resume(
-        self,
-        ctx: AgentCallbackContext,
-        tool_call: Any,
-        user_input: Any,
-    ) -> Any:
-        """Defense boundary for bug #4851 (jiuwenswarm-only fix).
-
-        Returns a ``RejectResult`` when ``user_input`` exists but cannot be
-        parsed into a ``ConfirmPayload`` (chat text, malformed dict, or any
-        other non-parseable shape). Returns ``None`` when ``user_input`` is
-        ``None`` (canonical first entry — pass through) or when it parses
-        cleanly (legitimate resume — pass through to the normal response
-        branch).
-
-        Privacy: the audit log records only the input type, the tool call's
-        name and id, and the session id. The raw user_input is **never**
-        logged.
-        """
-        if user_input is None:
-            return None
-        try:
-            payload = self.parse_confirm_payload(user_input)
-        except Exception:
-            payload = None
-        if payload is not None:
-            return None
-        tool_name = getattr(tool_call, "name", None)
-        tool_id = getattr(tool_call, "id", None)
-        session = getattr(ctx, "session", None)
-        session_id = getattr(session, "session_id", lambda: None)() if session is not None else None
-        logger.warning(
-            "[PermissionInterruptRail] invalid_permission_resume "
-            "reason=unparseable_payload user_input_type=%s tool_name=%s "
-            "tool_call_id=%s session_id=%s",
-            type(user_input).__name__,
-            tool_name,
-            tool_id,
-            session_id,
-        )
-        return self.reject(
-            tool_result=(
-                "[PERMISSION_DENIED] Invalid permission resume payload. "
-                "Only ConfirmPayload-shaped responses are accepted on the "
-                "approval slot."
-            )
-        )
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         if root_nonpermission_resume_from_context(ctx) is not None:

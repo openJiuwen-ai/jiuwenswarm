@@ -13,6 +13,7 @@ from jiuwenswarm.server.front.connection import ConnectionHandler, process_hands
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.front.request_registry import RequestRegistry
 from jiuwenswarm.server.front.router import MethodRouter
+from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.lifecycle import Readiness
 
 logger = logging.getLogger(__name__)
@@ -107,8 +108,14 @@ class AgentServerFront:
         self.readiness.mark_draining()
         self.admission.detach_backend()
 
-    async def send_push(self, payload: dict[str, Any]) -> None:
-        await self.forwarder.send(payload)
+    async def send_push(self, payload: dict[str, Any]) -> bool:
+        """Encode a business push and report whether its original frame was sent."""
+        try:
+            wire = build_server_push_wire(payload)
+            return await self.forwarder.send(wire)
+        except Exception:
+            logger.exception("[Front] server push failed: request_id=%s", payload.get("request_id"))
+            return False
 
     async def stop(self) -> None:
         if self._server is None:

@@ -233,8 +233,13 @@ def _merge_models_for_replace_all(
 
         if raw_entry is not None and isinstance(raw_entry, dict):
             new_entry = _copy.deepcopy(raw_entry)
+            # setdefault 对"键存在但值为 null"的脏条目返回 None，归一回空 dict
             new_mcc = new_entry.setdefault("model_client_config", {})
+            if not isinstance(new_mcc, dict):
+                new_mcc = new_entry["model_client_config"] = {}
             new_mco = new_entry.setdefault("model_config_obj", {})
+            if not isinstance(new_mco, dict):
+                new_mco = new_entry["model_config_obj"] = {}
             resolved_mcc = (resolved_entry or {}).get("model_client_config", {}) or {}
             resolved_mco = (resolved_entry or {}).get("model_config_obj", {}) or {}
 
@@ -652,6 +657,8 @@ async def models_list_handler(
     req_id: Any,
     params: Any,
     session_id: Any,
+    *,
+    zen_rows: list[dict[str, Any]] | None = None,
 ) -> None:
     """返回已配置的所有默认模型列表（与 config.get 一致，返回解密后的完整值）。
 
@@ -679,8 +686,13 @@ async def models_list_handler(
         result = []
         active_model = ""
         for idx, entry in enumerate(models):
-            mcc = entry.get("model_client_config", {})
-            mco = entry.get("model_config_obj", {})
+            # 脏配置防御：YAML 里 `model_config_obj:` 后只跟注释时值为 null，
+            # dict.get 的默认值不生效；非 dict 条目（旧版/手改 YAML）直接跳过。
+            # 跳过而非删除以保持 origin_index 与 models.defaults 原始位置对齐。
+            if not isinstance(entry, dict):
+                continue
+            mcc = entry.get("model_client_config") or {}
+            mco = entry.get("model_config_obj") or {}
             is_default = entry.get("is_default", False)
             model_name = str(mcc.get("model_name", "") or "").strip()
             result_entry = {
@@ -700,7 +712,7 @@ async def models_list_handler(
                 # 并让 agentos 进 ModelSelector 下拉（is_default!==false || is_agentos）
                 "is_agentos": bool(mco.get("_source") == "agentos"),
                 # 免费模型标记：前端据此归进「免费模型」分组、并从设置页的模型配置里滤掉。
-                # 下面追加 Zen 模型那段设的是同一个字段，**两处必须一致**。
+                # AgentServer ``append_zen_free_models`` 追加的 Zen 条目使用同一个字段。
                 "is_free": bool(entry.get("is_free")),
                 "alias": entry.get("alias", ""),
                 "origin_index": idx,
@@ -720,44 +732,19 @@ async def models_list_handler(
                 # 登录送的模型：前端据此置灰编辑
                 result_entry.update(source=entry.get("source"), read_only=True)
             result.append(result_entry)
-        # Zen 免费模型仅存在于进程内缓存，不能写回 models.defaults；但需要
-        # 与普通模型一同出现在会话选择器中。is_default 保持 None（而不是
-        # False），使前端把它视为可选模型，同时不会改变首个配置模型作为
-        # active_model 的既有语义。
-        try:
-            from jiuwenswarm.server.runtime.opencode_zen import (
-                get_zen_free_model_entries,
-            )
-
-            existing_names = {str(item.get("model_name") or "") for item in result}
-            for entry in get_zen_free_model_entries():
-                mcc = entry.get("model_client_config") or {}
-                mco = entry.get("model_config_obj") or {}
-                model_name = str(mcc.get("model_name") or "").strip()
-                if not model_name or model_name in existing_names:
-                    continue
-                result.append({
-                    "model_name": model_name,
-                    "api_base": mcc.get("api_base", ""),
-                    "api_key": mcc.get("api_key", ""),
-                    "model_provider": mcc.get("client_provider", ""),
-                    "temperature": mco.get("temperature"),
-                    "reasoning_level": reasoning_level_display(mco.get("reasoning_level")),
-                    "is_default": entry.get("is_default"),
-                    "is_agentos": False,
-                    "is_free": True,
-                    "alias": entry.get("alias", ""),
-                    # Preserve an explicit context-window value supplied by
-                    # the runtime cache; otherwise use the shared default.
-                    "context_window_tokens": (
-                        parse_positive_int(entry.get("context_window_tokens"))
-                        or parse_positive_int(mco.get("context_window"))
-                        or DEFAULT_CONTEXT_WINDOW_TOKENS
-                    ),
-                })
-                existing_names.add(model_name)
-        except Exception:
-            logger.warning("[models.list] append Zen free models failed", exc_info=True)
+        # Zen 免费模型缓存在 AgentServer。调用方把已经格式化好的公开行传进来
+        # （Gateway 经 models.zen_entries 取得）。is_default 保持调用方给的值
+        # （通常是 None），使前端把它视为可选模型，同时不会改变首个配置模型
+        # 作为 active_model 的既有语义。
+        existing_names = {str(item.get("model_name") or "") for item in result}
+        for row in zen_rows or []:
+            if not isinstance(row, dict):
+                continue
+            model_name = str(row.get("model_name") or "").strip()
+            if not model_name or model_name in existing_names:
+                continue
+            result.append(row)
+            existing_names.add(model_name)
 
         # active_model 为列表首位的模型（主对话默认）
         active_model = result[0]["model_name"] if result else ""

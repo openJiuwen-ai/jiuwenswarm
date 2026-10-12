@@ -5,6 +5,7 @@ import { X, Loader2, ExternalLink } from 'lucide-react';
 import { useConnectorStore } from '../../stores/connectorStore';
 import type { ConnectorConnectResponse } from '../../types/connector';
 import { getSkillAvatar } from '../../utils/skillAvatar';
+import { Input } from '../ui/Input/Input';
 import { EntityAvatar } from './EntityAvatar';
 import logoIcon from '/logo.svg';
 
@@ -107,14 +108,13 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
           return (
             <div key={key} className="mb-4">
               <label className="mb-1.5 block text-[13px] font-medium text-text">{field?.label ?? key}</label>
-              <input
+              <Input
                 type={field?.type === 'password' ? 'password' : 'text'}
                 name={`connector-token-${key}`}
                 autoComplete={field?.type === 'password' ? 'new-password' : 'off'}
                 value={tokens[key] ?? ''}
-                onChange={(event) => setTokens((prev) => ({ ...prev, [key]: event.target.value }))}
+                onChange={(next) => setTokens((prev) => ({ ...prev, [key]: next }))}
                 placeholder={field?.placeholder ?? t('connectorMarket.tokenModal.placeholder', { name: displayName })}
-                className="h-9 w-full rounded-lg border border-border bg-bg px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover"
                 data-testid="connector-market-token-modal-field"
                 data-variant={key}
               />

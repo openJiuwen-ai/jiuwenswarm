@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** OTLP/JSON trace types and normalized accessors used on both sides of the transport. */
 
 export type OtlpAnyValue =

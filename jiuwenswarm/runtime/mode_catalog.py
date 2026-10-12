@@ -61,13 +61,13 @@ _SINGLE_AGENT_MODES = (
         mode=NEW_AGENT_WORK_NORMAL,
         work_mode="work",
         is_plan=False,
-        supports_custom_agent_definitions=False,
+        supports_custom_agent_definitions=True,
     ),
     RuntimeModeDescriptor(
         mode=NEW_AGENT_WORK_PLAN,
         work_mode="work",
         is_plan=True,
-        supports_custom_agent_definitions=False,
+        supports_custom_agent_definitions=True,
     ),
     RuntimeModeDescriptor(
         mode=NEW_AGENT_CODE_NORMAL,

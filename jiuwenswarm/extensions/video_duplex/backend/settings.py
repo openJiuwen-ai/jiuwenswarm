@@ -33,19 +33,19 @@ ALLOWED_REPLY_LANGUAGES = frozenset({"match", "zh-CN", "en"})
 DEFAULTS = {
     "joyai_api_base": "",
     "joyai_api_key": "",
-    "joyai_model": "jdopensource/JoyAI-VL-Interaction",
+    "joyai_model": "",
     "qwen_omni_realtime_url": "",
     "qwen_omni_api_key": "",
-    "qwen_omni_model": "qwen3.5-omni-flash-realtime",
-    "qwen_omni_voice": "Cherry",
+    "qwen_omni_model": "",
+    "qwen_omni_voice": "",
     "reply_language": "match",
-    "voice_protocol": "native_ws",
-    "voice_asr_endpoint": "ws://127.0.0.1:8994/ws/asr",
-    "voice_tts_endpoint": "ws://127.0.0.1:8992/ws/tts",
+    "voice_protocol": "openai_http",
+    "voice_asr_endpoint": "",
+    "voice_tts_endpoint": "",
     "voice_api_key": "",
     "voice_asr_model": "",
     "voice_tts_model": "",
-    "voice_tts_voice": "vivian",
+    "voice_tts_voice": "",
 }
 
 
@@ -84,9 +84,9 @@ def _persist_env_updates(updates: Mapping[str, str]) -> None:
 
 
 def _provider() -> str:
-    mode = (os.getenv("VIDEO_LIVE_MODE") or "joyai").strip().casefold()
+    mode = (os.getenv("VIDEO_LIVE_MODE") or "realtime").strip().casefold()
     realtime_provider = (os.getenv("VIDEO_REALTIME_PROVIDER") or "").strip().casefold()
-    return "qwen_omni" if mode == "realtime" and realtime_provider == "qwen_omni" else "joyai"
+    return "qwen_omni" if mode == "realtime" and realtime_provider in {"", "qwen_omni"} else "joyai"
 
 
 def settings_payload(*, enabled: bool) -> dict[str, Any]:
@@ -129,7 +129,7 @@ def _validated_values(values: Mapping[str, Any]) -> dict[str, str]:
         raise ValueError("video_live_provider must be joyai or qwen_omni")
     protocol = normalized.get(
         "voice_protocol",
-        (os.getenv("VOICE_PROTOCOL") or "native_ws").strip().casefold(),
+        (os.getenv("VOICE_PROTOCOL") or "openai_http").strip().casefold(),
     )
     if protocol not in {"native_ws", "openai_http"}:
         raise ValueError("voice_protocol must be native_ws or openai_http")

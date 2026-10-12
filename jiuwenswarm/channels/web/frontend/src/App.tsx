@@ -26,8 +26,7 @@ import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
 import { ExternalCliInstallDialog, type ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
 import { PersonalContextPanel } from './components/PersonalContext';
-import { ToastStack } from './components/ui';
-import { toast } from './components/ui/Toast/toastStore';
+import { LoadingSpinner, ToastStack, toast } from './components/ui';
 import { SettingsPage } from './features/settings/SettingsPage';
 import type { SettingsPageDefinition } from './features/settings/registry/types';
 import type { SettingsRequest } from './features/settings/services/settingsContract';
@@ -180,6 +179,7 @@ import {
   useTrajectoryUiEnabled,
 } from './features/trajectory/featureConfig';
 import './App.css';
+import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
 
 const LazyTrajectoryPanel = lazy(async () => {
   const module = await import('./features/trajectory/TrajectoryPanel');
@@ -1721,6 +1721,7 @@ function AppContent({
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
+      setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
       setServerConfig(config);
       setConfigError(null);
       if (!modelSetupGuideEvaluatedRef.current) {
@@ -2021,6 +2022,36 @@ function AppContent({
     restartSeenDisconnect,
     restartSuccess,
   ]);
+
+  // 连接状态提示：断连期间在右上角挂一条常驻 toast（不自动消失），重连后收起；
+  // 携带业务 id，配置加载/语言切换导致文案变化时原地更新，始终只有一条。
+  const connectionToastKeyRef = useRef<number | null>(null);
+  const connectionStatusText = serverConfig ? t('connection.connecting') : t('connection.loadingConfig');
+  useEffect(() => {
+    if (isConnected) {
+      if (connectionToastKeyRef.current !== null) {
+        toast.close(connectionToastKeyRef.current);
+        connectionToastKeyRef.current = null;
+      }
+      return;
+    }
+    connectionToastKeyRef.current = toast.open({
+      // 保留旧 DOM 契约：外层 app-connection-toast 定位，内层 message 元素带
+      // data-variant="connecting|loadingConfig"；id 仅作业务去重键，不进 DOM
+      id: 'app-connection-toast-message',
+      content: (
+        <span data-testid="app-connection-toast-message" data-variant={serverConfig ? 'connecting' : 'loadingConfig'}>
+          {connectionStatusText}
+        </span>
+      ),
+      duration: 0,
+      position: 'right',
+      variant: 'info',
+      icon: <LoadingSpinner size={14} />,
+      closable: false,
+      testId: 'app-connection-toast',
+    });
+  }, [isConnected, connectionStatusText]);
 
   useEffect(() => {
     return () => {
@@ -4003,15 +4034,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
 
       {/* 全局命令式 toast 渲染出口（toast.open） */}
       <ToastStack />
-
-      {/* 连接状态提示 */}
-      {!isConnected && (
-        <div className="app-toast-wrapper app-toast-wrapper--top" data-testid="app-connection-toast">
-          <div className="app-connection-toast animate-rise" data-testid="app-connection-toast-message" data-variant={serverConfig ? 'connecting' : 'loadingConfig'}>
-            {serverConfig ? t('connection.connecting') : t('connection.loadingConfig')}
-          </div>
-        </div>
-      )}
 
       {saveToastVisible && (
         <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-save-toast">

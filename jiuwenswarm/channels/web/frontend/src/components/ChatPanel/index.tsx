@@ -87,6 +87,7 @@ import {
 import { useDesktopLocalFilePickerReady, useWelcomeBubblePosition } from '../../hooks';
 import { ApplicationPluginTaskRuntimes } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { generateUuidV4 } from '../../utils/uuid';
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 
 export interface ChatHistoryPagerProps {
   loadedBatchSeq: number;
@@ -1044,7 +1045,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onInterrupt,
   onCancel,
   onSwitchMode,
-  isProcessing,
+  isProcessing: sessionIsProcessing,
   onUserAnswer,
   onExportShare,
   isExportingShare = false,
@@ -1079,12 +1080,15 @@ export const ChatPanel = React.memo(function ChatPanel({
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const conversationId = useOrganizationConversationKey(activeSessionId);
+  const expertIsProcessing = useChatStore((s) => s.runtimes[conversationId]?.isProcessing ?? false);
+  const isProcessing = conversationId === activeSessionId ? sessionIsProcessing : expertIsProcessing;
   const agentGroupUnavailable = useChatStore(
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupUnavailable ?? false,
   );
-  const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
-  const isThinking = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isThinking ?? false);
-  const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
+  const messages = useChatStore((s) => s.runtimes[conversationId]?.messages ?? []);
+  const isThinking = useChatStore((s) => s.runtimes[conversationId]?.isThinking ?? false);
+  const toolExecutionOrder = useChatStore((s) => s.runtimes[conversationId]?.toolExecutionOrder ?? []);
   const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');

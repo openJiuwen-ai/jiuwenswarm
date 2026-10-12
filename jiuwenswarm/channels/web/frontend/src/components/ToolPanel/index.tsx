@@ -4,6 +4,7 @@
  * 工具面板，显示 Todo 列表和状态信息
  */
 
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -38,7 +39,6 @@ import { type SingleAgentToolTab } from '../../features/singleAgentPanelState';
 import { useBrowserAgentActivity } from '../../features/browserAgentActivity';
 import { closeDesktopBrowserTab, openFileInDesktopBrowser, useDesktopBrowserTabFlags } from '../../features/desktopBrowserFile';
 import { SubagentExpandedPanel } from '../subagent/SubagentExpandedPanel';
-import { SubagentStatusIcon } from '../subagent/SubagentStatusIcon';
 import { useSubagentStore, selectSubagents } from '../../stores/subagentStore';
 import { useMinWidth } from '../../hooks/useResponsive';
 import { DesktopBrowserPane } from '../DesktopBrowserPane';
@@ -147,15 +147,16 @@ export function ToolPanel({
   const { t } = useTranslation();
   const isConnected = useSessionStore((state) => state.isConnected);
   const activeSessionId = useChatStore(s => s.activeSessionId);
+  const conversationId = useOrganizationConversationKey(activeSessionId);
   const mode = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const resolvedSessionId = sessionId ?? activeSessionId ?? '';
-  const teamMembers = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamMembers ?? []);
+  const teamMembers = useSessionStore(s => s.runtimes[conversationId]?.teamMembers ?? []);
   const teamConnectionPresentation = useSessionStore((s) =>
     s.runtimes[activeSessionId ?? '']?.mode === 'team'
-      ? (s.runtimes[activeSessionId ?? '']?.teamConnectionPresentation ?? null)
+      ? (s.runtimes[conversationId]?.teamConnectionPresentation ?? null)
       : null,
   );
-  const teamHistoryMessages = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamHistoryMessages ?? []);
+  const teamHistoryMessages = useSessionStore(s => s.runtimes[conversationId]?.teamHistoryMessages ?? []);
   const setTeamMembers = useSessionStore(s => s.setTeamMembers);
   const setTeamTaskEvents = useSessionStore(s => s.setTeamTaskEvents);
   const setTeamTasks = useSessionStore(s => s.setTeamTasks);
@@ -163,7 +164,7 @@ export function ToolPanel({
   const setTeamMemberExecutionEvents = useSessionStore(s => s.setTeamMemberExecutionEvents);
   const setTeamHistoryMessages = useSessionStore(s => s.setTeamHistoryMessages);
   const setTeamHumanShareCommands = useSessionStore(s => s.setTeamHumanShareCommands);
-  const isProcessing = useChatStore(s => s.runtimes[activeSessionId ?? '']?.isProcessing ?? false);
+  const isProcessing = useChatStore(s => s.runtimes[conversationId]?.isProcessing ?? false);
   const [planningExpanded, setPlanningExpanded] = useState(false);
   const [teamPlanningExpanded, setTeamPlanningExpanded] = useState(false);
   const [teamMembersExpanded, setTeamMembersExpanded] = useState(false);
@@ -234,7 +235,7 @@ export function ToolPanel({
       status: 'completed' as const,
     }));
   }, [messages, toolExecutions]);
-  const teamLeaderMemberIds = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
+  const teamLeaderMemberIds = useSessionStore(s => s.runtimes[conversationId]?.teamLeaderMemberIds ?? []);
   const memberTasks = useMemo(
     () =>
       teamMembers
@@ -512,7 +513,7 @@ export function ToolPanel({
                   members={teamMembers}
                   totalTasks={teamTotalTasks + applicationPlanningTasks.length}
                   completedTasks={teamCompletedTasks + applicationCompleted}
-                  statusIconAtEnd={isTeam}
+                  statusIconAtEnd
                 />
               ) : (
                 <TaskPlanningPanel
@@ -584,7 +585,7 @@ export function ToolPanel({
             hideHeader
             hideExpandButton
             hideAssignee={!isTeam}
-            statusIconAtEnd={isTeam}
+            statusIconAtEnd
             title={t('chat.recentTasks')}
             maxCollapsedCount={4}
             {...planningProps}
@@ -650,16 +651,11 @@ export function ToolPanel({
             tasks={subagentTasks}
             members={[]}
             hideAssignee
-            statusIconAtEnd
             maxCollapsedCount={4}
             expanded={subagentsExpanded}
             emptyText={t('subagent.empty')}
             emptyIllustration={emptyMembersIcon}
-            renderStatusIcon={task => {
-              const subagent = subagentList.find(s => s.subagent_id === task.task_id);
-              if (!subagent) return null;
-              return <SubagentStatusIcon status={subagent.status} closedReason={subagent.closed_reason} turnOutcome={subagent.turn_outcome} />;
-            }}
+            renderStatusIcon={() => null}
             renderTaskIcon={task => (
               <TeamMemberAvatar member={task.assignee ?? ''} alt={task.title ?? ''} className="h-4 w-4 rounded-full shrink-0" imageClassName="rounded-full" />
             )}

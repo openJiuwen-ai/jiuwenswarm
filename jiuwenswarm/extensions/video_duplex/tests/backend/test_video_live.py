@@ -100,6 +100,21 @@ def test_plugin_settings_mask_secrets_and_report_original_length(monkeypatch) ->
     assert payload["values"]["joyai_api_base"] == "http://127.0.0.1:8070/v1"
 
 
+def test_unconfigured_duplex_settings_do_not_prefill_models_or_endpoints(monkeypatch) -> None:
+    for env_key in (*settings.SETTING_ENV_KEYS.values(), "VIDEO_LIVE_MODE", "VIDEO_REALTIME_PROVIDER"):
+        monkeypatch.delenv(env_key, raising=False)
+
+    values = settings.settings_payload(enabled=True)["values"]
+    assert values["video_live_provider"] == "qwen_omni"
+    assert values["voice_protocol"] == "openai_http"
+    assert values["reply_language"] == "match"
+    for key in settings.SETTING_ENV_KEYS:
+        if key not in {"voice_protocol", "reply_language"}:
+            assert values[key] == ""
+    assert not joyai_provider.uses_native_voice_channel("joyai")
+    assert joyai_provider.voice_config() == ("", "", "")
+
+
 def test_reply_language_is_shared_and_validated(monkeypatch, tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     monkeypatch.setattr(settings, "_active_env_file", lambda: env_file)
@@ -531,7 +546,7 @@ async def test_joyai_channel_tts_collects_pcm_and_returns_wav(monkeypatch) -> No
         ]
     )
     monkeypatch.setenv("JOYAI_TTS_WS_URL", "ws://tts.example/ws/tts")
-    monkeypatch.setenv("JOYAI_TTS_VOICE", "this-must-not-override-the-fixed-voice")
+    monkeypatch.setenv("VOICE_TTS_VOICE", "test-voice")
     monkeypatch.setattr(websockets, "connect", lambda *args, **kwargs: socket)
 
     audio, mime, model = await joyai_provider.synthesize_channel("你好")
@@ -542,7 +557,7 @@ async def test_joyai_channel_tts_collects_pcm_and_returns_wav(monkeypatch) -> No
         assert stream.getframerate() == 24_000
         assert stream.readframes(stream.getnframes()) == pcm
     config = json.loads(socket.sent[0])["config"]
-    assert config["voice"] == "vivian"
+    assert config["voice"] == "test-voice"
     assert config["temperature"] == 0.2
     assert "Standard Mandarin" in config["instructions"]
     assert "never Cantonese" in config["instructions"]
@@ -552,9 +567,21 @@ async def test_joyai_channel_tts_collects_pcm_and_returns_wav(monkeypatch) -> No
     assert json.loads(socket.sent[2])["type"] == "input_text.commit"
 
 
-def test_video_live_mode_is_explicit_and_defaults_to_joyai(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_joyai_native_tts_requires_explicit_voice(monkeypatch) -> None:
+    monkeypatch.setenv("VOICE_TTS_ENDPOINT", "ws://tts.example/ws/tts")
+    monkeypatch.delenv("VOICE_TTS_VOICE", raising=False)
+
+    async def on_chunk(_chunk: bytes) -> None:
+        pass
+
+    with pytest.raises(RuntimeError, match="VOICE_TTS_VOICE"):
+        await joyai_provider.stream_channel_pcm("你好", on_chunk)
+
+
+def test_video_live_mode_is_explicit_and_defaults_to_qwen(monkeypatch) -> None:
     monkeypatch.delenv("VIDEO_LIVE_MODE", raising=False)
-    assert video_live._video_live_mode() == "joyai"  # pylint: disable=protected-access
+    assert video_live._video_live_mode() == "realtime"  # pylint: disable=protected-access
 
     monkeypatch.setenv("VIDEO_LIVE_MODE", "JoyAI")
     assert video_live._video_live_mode() == "joyai"  # pylint: disable=protected-access

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.runtime.cron.etcd_client import (
+from jiuwenswarm.common.etcd.client import (
     EtcdCasError,
     EtcdError,
     EtcdJsonClient,
@@ -62,7 +62,13 @@ class FakeEtcdJsonClient:
             raise EtcdCasError(f"cas failed key={key!r} mod_revision={mod_revision}")
         return await self.put(key, value)
 
-    async def watch_prefix(self, prefix: bytes):
+    async def watch_prefix(
+        self,
+        prefix: bytes,
+        *,
+        start_revision: int | None = None,
+    ):
+        del start_revision
         self.watch_started.set()
         while True:
             batch = await self.watch_queue.get()

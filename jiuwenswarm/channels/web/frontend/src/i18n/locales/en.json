@@ -23,6 +23,7 @@
     "optional": "(optional)",
     "processing": "Processing…",
     "retry": "Retry",
+    "selectedCount": "{{count}} selected",
     "editMenu": {
       "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",
@@ -364,6 +365,7 @@
       "rsi": "RSI · Recursive self-improvement",
       "trajectoryUi": "Trajectory UI",
       "kvCacheAffinity": "Compute affinity",
+      "teamOrganization": "Team Organization",
       "skillPack": "Skill Packs",
       "proactive": "Proactive recommendations",
       "proactiveLimits": "Recommendation limits",
@@ -520,6 +522,10 @@
       "trajectory_ui_enabled": {
         "title": "Enable trajectory UI",
         "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path."
+      },
+      "team_organization_ui_enabled": {
+        "title": "Enable Team Organization UI",
+        "description": "Show experimental multi-Team views and the organization task pool. This switch does not disable backend organization capabilities."
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
@@ -741,6 +747,42 @@
         "cancelled": "Cancelled",
         "failed": "Failed"
       }
+    },
+    "org": {
+      "tab": "Organization",
+      "title": "Task Pool & Organization",
+      "refresh": "Refresh",
+      "loading": "Loading…",
+      "empty": "This Team is not bound to an organization",
+      "noOrganization": "No organization bound",
+      "noTeam": "No Team is available in this session",
+      "loadFailed": "Failed to load organization information",
+      "organizationId": "Organization ID",
+      "displayName": "Name",
+      "description": "Description",
+      "ownerTeam": "Owner Team",
+      "teams": "Teams",
+      "leadTeam": "Team",
+      "leadMember": "Leader",
+      "metadata": "Metadata",
+      "taskPool": "Task Pool",
+      "taskPoolEmpty": "Task pool is empty",
+      "taskId": "Task ID",
+      "taskTitle": "Title",
+      "taskStatus": "Status",
+      "taskAssignee": "Assignee",
+      "taskTeam": "Team",
+      "taskType": "Type",
+      "taskUnclaimed": "Unclaimed",
+      "taskParent": "Parent",
+      "pendingReviews": "Pending reviews",
+      "pendingReviewsEmpty": "No tasks pending review",
+      "reviewTask": "Task",
+      "reviewReviewer": "Reviewer",
+      "statsTotal": "Total tasks",
+      "statsOpen": "Open",
+      "statsUnclaimed": "Unclaimed",
+      "statsPendingReviews": "Pending review"
     }
   },
   "artifacts": {
@@ -872,6 +914,7 @@
     "resume": "Resume",
     "queuePausedConfirm": "You are about to send a message. Clear the {{count}} queued message(s)?\n\nClick \"OK\" to clear the queue and send; click \"Cancel\" to keep the queue (message will be added to the queue).",
     "goalAttachmentsBlocked": "Attachments are not supported when setting a goal. Remove them first, or send the attachment in a separate message.",
+    "commandRequiresSession": "This command requires an existing conversation. Start a conversation first.",
     "editTaskDropAttachments": "Editing will remove the {{count}} attachment(s) carried by this task. Continue?",
     "holdToSpeak": "Hold to speak",
     "send": "Send (Enter)",
@@ -908,6 +951,11 @@
     },
     "configLockedHistory": "Session has messages — create a new session to change config",
     "modeSwitchDisabledProcessing": "This conversation is running. Start a new conversation to choose another mode",
+    "teamSelect": {
+      "tooltip": "Switch the Team being viewed",
+      "loadingLabel": "Loading teams…",
+      "fallbackLabel": "Select Team"
+    },
     "modeSwitchTitle": "Switch Mode",
     "modeSwitchConfirm": "Current session has history messages. Switching mode will create a new session. Continue?",
     "skills": "Skills",
@@ -1007,6 +1055,9 @@
       }
     },
     "inputAttachment": {
+      "imageLimitTooltip": "Images: up to {{limit}}M each",
+      "fileLimitTooltip": "Files: up to {{limit}}M each",
+      "countLimitTooltip": "Up to {{limit}} attachments per message",
       "unnamedFile": "Unnamed file",
       "unsupportedFileType": "Unsupported file type: {{name}}",
       "fileSizeExceeded": "File size exceeds limit: {{name}} (max {{limit}})",
@@ -2772,6 +2823,7 @@
     "source": { "builtin": "Official", "local": "Mine", "hub": "Hub" },
     "categoryLabel": "Expert categories",
     "categoryAll": "All",
+    "loadMore": "Load more content",
     "categoryOther": "Other",
     "categoryScrollPrev": "Scroll categories left",
     "categoryScrollNext": "Scroll categories right",
@@ -2854,13 +2906,6 @@
       "catalogEmpty": "No Experts to show",
       "mineEmpty": "You do not have any Experts yet",
       "noMatch": "No matching Experts found"
-    },
-    "pagination": {
-      "label": "Expert list pagination",
-      "range": "Showing {{start}}-{{end}} of {{total}}",
-      "page": "Page {{page}} / {{total}}",
-      "previous": "Previous page",
-      "next": "Next page"
     },
     "detail": {
       "ability": "Capability",
@@ -2953,7 +2998,6 @@
       "skillSourceTabsLabel": "Skill sources",
       "installSkill": "Install",
       "installingSkill": "Installing…",
-      "selectedCount": "{{count}} selected",
       "refreshSkills": "Refresh skills",
       "skillsError": "Unable to load the skill list. Try again.",
       "skillsEmpty": "No skills available",
@@ -2970,7 +3014,6 @@
       "connectConnector": "Connect",
       "connectingConnector": "Connecting…",
       "selectionSearchPlaceholder": "Search by keyword",
-      "selectionPaginationLabel": "Selection list pagination",
       "mcpError": "Unable to load the connector list. Try again.",
       "mcpEmpty": "No connectors available",
       "promptsLabel": "Try asking me (optional)",
@@ -3077,7 +3120,6 @@
         "leaderTitle": "Choose a leader",
         "memberTitle": "Choose members",
         "empty": "No matching Experts",
-        "selectedCount": "{{count}} selected",
         "localTab": "Local",
         "marketTab": "Marketplace",
         "sourceTabsLabel": "Expert sources",
@@ -3108,6 +3150,13 @@
     "forkFromMessage": "Create a conversation branch from this message",
     "forkFromMessageFailed": "Failed to create a conversation branch. Try again.",
     "fileExpired": "Expired",
+    "fileTypeDocument": "Document",
+    "fileTypeSpreadsheet": "Spreadsheet",
+    "fileTypePresentation": "Presentation",
+    "fileTypePdf": "PDF",
+    "fileTypeImage": "Image",
+    "fileTypeSkill": "Skill",
+    "fileTypeFile": "File",
     "agentProcessing": "Agent Processing",
     "thinking": "Thinking...",
     "processing": "Processing...",
@@ -3774,6 +3823,15 @@
       "fieldRequired": "This field is required",
       "withSkillNotWired": "This entry point isn't wired to the chat panel yet"
     },
+    "picker": {
+      "searchPlaceholder": "Search by keyword",
+      "actionError": "The action could not be completed. Try again in a moment.",
+      "mcpSourceTabsLabel": "Connector sources",
+      "mcpMarketTab": "Connector market",
+      "mcpMineTab": "My connectors",
+      "mcpError": "Unable to load the connector list. Try again.",
+      "mcpEmpty": "No connectors available"
+    },
     "chatPrompts": {
       "createPlugin": "Help me create a xxx plugin that's great at xxx"
     },
@@ -3781,6 +3839,7 @@
       "runtimeMissing": "This connector requires a runtime environment that isn't installed. Please install it before using this connector.",
       "runtimeMissingNamed": "This connector requires {{runtime}}. Please install {{runtime}} before using this connector.",
       "installNetwork": "Failed to download a dependency. Please check your network connection and retry.",
+      "installScriptDep": "The CLI install script requires PowerShell. Please enable or restore PowerShell and retry.",
       "cliIncomplete": "The CLI is incomplete or outdated. Please reconnect to retry.",
       "cliIncompleteNamed": "The CLI is incomplete or outdated. Please run the following command to install or upgrade it, then retry: {{command}}"
     },
@@ -3859,13 +3918,7 @@
       "loadingMyPlugin": "Loading my plugins...",
       "loadingMyMcp": "Loading my connectors..."
     },
-    "pagination": {
-      "pageSize": "Rows per page",
-      "all": "All",
-      "rangeInfo": "{{start}}-{{end}} of {{total}}",
-      "prev": "Previous page",
-      "next": "Next page"
-    },
+    "loadMore": "Load more content",
     "toast": {
       "mcpConnected": "Connector connected successfully.",
       "mcpInstalled": "Connector installed. Connect it before use.",
@@ -3931,6 +3984,7 @@
       "confirm": "Confirm",
       "search": "Search",
       "noResult": "No matches found",
+      "noDescription": "No description",
       "loadFailed": "Failed to load details. Please try again."
     }
   },
