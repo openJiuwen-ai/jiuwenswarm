@@ -58,6 +58,7 @@ _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_
 
 _PLACEHOLDER_RE = re.compile(r"\$\{(\w+)\}")
 
+
 def _positive_timeout_s(raw: Any, *, minimum: float = 0.0) -> float | None:
     """Return a normalized positive timeout, rejecting bool and invalid values."""
     if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > minimum:
@@ -519,7 +520,6 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
             def resolver(key: str) -> str | None:  # noqa: B023
                 if key in stored:
                     return stored[key]
-                import os
                 return os.environ.get(key)
     except Exception as exc:  # noqa: BLE001
         logger.debug("[mcp-config] probe resolver build for '%s' failed: %s", n, exc)

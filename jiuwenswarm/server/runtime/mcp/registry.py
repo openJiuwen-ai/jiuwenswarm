@@ -511,7 +511,7 @@ def _skill_description(skill_dir: Path) -> str:
     except OSError:
         return ""
     # frontmatter: ---\n...description: ...\n---
-    import re
+
     m = re.search(r"^description:\s*(.+?)$", text, re.MULTILINE | re.IGNORECASE)
     return m.group(1).strip().strip("\"'") if m else ""
 

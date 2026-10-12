@@ -207,7 +207,9 @@ class CredentialStore:
         # (save_token, wipe, load). Reject anything that could escape the
         # credentials dir even if an entry point missed registry-side
         # validation.
-        if not n or "/" in n or "\\" in n or ".." in n:
+        if not n:
+            raise ValueError(f"invalid mcp credential name: {name!r}")
+        if "/" in n or "\" in n or ".." in n:
             raise ValueError(f"invalid mcp credential name: {name!r}")
         return self._root / f"{n}.json"
 
