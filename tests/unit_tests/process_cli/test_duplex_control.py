@@ -1013,7 +1013,6 @@ async def test_full_output_queue_does_not_block_runtime_cancel_draining_producer
             drained.set()
 
     monkeypatch.setattr(asyncio, "Queue", ObservedQueue)
-    monkeypatch.setattr(machine, "SHUTDOWN_TIMEOUT_SECONDS", 0.05)
 
     async def flush_session_writes() -> None:
         pass
@@ -1028,6 +1027,8 @@ async def test_full_output_queue_does_not_block_runtime_cancel_draining_producer
         client.original.emit(_event("chat.delta", delta="queued output"))
     run.start()
 
+    # finish() bounds the run to one second. Keep the production cleanup timeout
+    # so a healthy tail drain is not interrupted by a short CI scheduling delay.
     result = await run.finish()
 
     assert saturated.is_set()

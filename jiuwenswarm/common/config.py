@@ -3069,6 +3069,8 @@ def migrate_config_from_template(
 ) -> bool:
     """Sync user config with template structure, preserving user values.
 
+    AgentOS configuration is managed by deployment and skips this migration.
+
     Merge:
     - Add: new fields from template (new config options)
     - Keep: user values for fields that exist in template
@@ -3093,6 +3095,11 @@ def migrate_config_from_template(
     Returns:
         True if migration was performed, False otherwise.
     """
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+
+    if is_agentos_runtime():
+        return False
+
     if not user_config_path.exists():
         return False
 
