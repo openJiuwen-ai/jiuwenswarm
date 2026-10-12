@@ -100,6 +100,8 @@ class BatchProcessor(Tool):
                     "success": False,
                     "error": f"不支持的操作: {operation}",
                 }
+            if "error" in result:
+                return {"success": False, "error": result["error"]}
             return {"success": True, "operation": operation, **result}
         except ImportError as e:
             return {

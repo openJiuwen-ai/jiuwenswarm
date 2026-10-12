@@ -167,7 +167,8 @@ class Redactor(Tool):
                     run.text, patterns
                 )
                 run.text = text
-                all_stats.update(stats)
+                for key, val in stats.items():
+                    all_stats[key] = all_stats.get(key, 0) + val
 
         for table in doc.tables:
             for row in table.rows:
@@ -178,7 +179,10 @@ class Redactor(Tool):
                                 run.text, patterns
                             )
                             run.text = text
-                            all_stats.update(stats)
+                            for key, val in stats.items():
+                                all_stats[key] = (
+                                    all_stats.get(key, 0) + val
+                                )
 
         output_path = str(
             Path(output_dir)
@@ -205,7 +209,8 @@ class Redactor(Tool):
                             cell.value, patterns
                         )
                         cell.value = text
-                        all_stats.update(stats)
+                        for key, val in stats.items():
+                            all_stats[key] = all_stats.get(key, 0) + val
 
         output_path = str(
             Path(output_dir)
