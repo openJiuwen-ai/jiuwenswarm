@@ -329,9 +329,24 @@ def _load_logging_config_from_yaml() -> dict[str, Any]:
         cf = get_config_file()
         if not cf.exists():
             return {}
-        rt = YAML()
-        with open(cf, "r", encoding="utf-8") as f:
-            data = rt.load(f) or {}
+        # Logging reads values only. Round-trip comment preservation makes
+        # importing this module parse the entire config on the Front startup path.
+        rt = YAML(typ="safe")
+        content = cf.read_text(encoding="utf-8")
+        section = re.search(r'(?m)^(?:logging|[\"\']logging[\"\'])\s*:', content)
+        if section is None:
+            # A valid flow mapping need not have a standalone logging section.
+            data = rt.load(content) or {}
+        else:
+            boundary = re.search(r"(?m)^[^\s#]", content[section.end():])
+            end = section.end() + boundary.start() if boundary else len(content)
+            try:
+                data = rt.load(content[section.start():end]) or {}
+            except Exception:
+                # A logging alias may reference an anchor from another section.
+                data = YAML(typ="safe").load(content) or {}
+        if not isinstance(data, dict):
+            return {}
         raw = data.get("logging")
         if isinstance(raw, dict):
             return raw
