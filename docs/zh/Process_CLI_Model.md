@@ -20,6 +20,12 @@
 终端模型参数仅用于带任务文本的非交互入口；REPL 继续使用 `/model`。
 这些参数不能与 `--query-json`、`--run-json`、`--run-jsonl` 混用。
 
+带任务文本的非交互命令仅支持单 Agent 普通模式，例如 `--mode agent.code.normal`
+和 `--mode agent.work.normal`。通过 `--mode` 指定 Plan 或 Team 模式（包括历史别名）
+会在启动 Runtime 前以退出码 `2` 拒绝；此限制也适用于 `--session` 续接命令及所有
+`--output` 格式。交互式 CLI 的模式切换和 `/plan` 保持可用。
+机器 JSON/JSONL 入口已有独立的模式与交互协议，不接受 `--mode`，不受本次限制影响。
+
 ## 2. 完整 CMD 示例
 
 以下示例中的模型名称、服务地址和密钥应换成测试机的真实配置。

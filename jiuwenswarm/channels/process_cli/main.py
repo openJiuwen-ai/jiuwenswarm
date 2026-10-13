@@ -15,13 +15,17 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
 
-from jiuwenswarm.channels.process_cli.display_context import resolve_cli_work_mode
+from jiuwenswarm.channels.process_cli.display_context import (
+    resolve_cli_work_mode,
+    resolve_display_mode,
+)
 from jiuwenswarm.channels.process_cli.diagnostics import capture_diagnostics
 from jiuwenswarm.channels.process_cli.model_options import (
     ModelOptionsError,
     prepare_model_options,
     validate_model_options,
 )
+from jiuwenswarm.common.mode_matrix import is_plan_mode, is_team_mode
 from jiuwenswarm.common.runtime_model_config import runtime_model_config
 
 
@@ -229,7 +233,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="可信目录；可重复指定多个目录。",
     )
-    parser.add_argument("--mode", default="code.normal", help="Runtime 运行模式。")
+    parser.add_argument(
+        "--mode",
+        default="code.normal",
+        help="Runtime 运行模式；非交互命令仅支持单 Agent 普通模式，不支持 Plan 或 Team。",
+    )
     parser.add_argument(
         "--work-mode",
         choices=("code", "work"),
@@ -387,6 +395,16 @@ def main() -> None:
             if args.prompt is not None:
                 parser.error("内部 prompt 文件不能与位置参数同时使用")
             args.prompt = Path(prompt_file).read_text(encoding="utf-8")
+        if (
+            args.prompt is not None
+            and not getattr(args, "_interactive_worker", False)
+        ):
+            mode = resolve_display_mode(args.mode, args.work_mode)
+            if is_plan_mode(mode) or is_team_mode(mode):
+                parser.error(
+                    "非交互式命令仅支持单 Agent 普通模式，不能通过 --mode 进入 Plan 或 Team 模式；"
+                    "请使用 agent.code.normal 或 agent.work.normal，或进入交互式 CLI"
+                )
         _activate_requested_cwd(args, parser)
         if args.timeout is not None and args.timeout <= 0:
             parser.error("--timeout 必须大于零")

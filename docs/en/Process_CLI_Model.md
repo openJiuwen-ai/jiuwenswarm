@@ -20,6 +20,14 @@ The global index is zero based, as in the Runtime model catalog. These flags
 require a task prompt and cannot be combined with machine protocol entrypoints.
 REPL model selection continues to use `/model`.
 
+Noninteractive commands with a task prompt support only normal single-Agent
+modes, such as `--mode agent.code.normal` and `--mode agent.work.normal`.
+Selecting Plan or Team with `--mode`, including historical aliases, exits with
+code `2` before Runtime starts. This also applies to `--session` continuation
+and every `--output` format. Interactive mode switching and `/plan` remain
+available. Machine JSON/JSONL entrypoints have their own mode and interaction
+protocol, reject `--mode`, and are unaffected by this restriction.
+
 ## 2. Windows CMD examples
 
 Select a configured connection:
