@@ -1,0 +1,13 @@
+{
+  "package_type": "plugin",
+  "id": "research-evidence-offline",
+  "name": "Research Evidence Offline",
+  "version": "0.1.0",
+  "description": "Audit frozen research evidence and prepare grounded paper inputs without model calls.",
+  "tools": [
+    {
+      "file": "./tools/research.py",
+      "class": "ResearchEvidenceTool"
+    }
+  ]
+}

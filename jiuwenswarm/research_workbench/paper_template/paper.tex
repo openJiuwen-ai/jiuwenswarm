@@ -1,0 +1,133 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage{iclr2026_conference,times}
+\usepackage{hyperref,url,graphicx}
+\hypersetup{hidelinks}
+\urlstyle{same}
+\renewcommand{\ttdefault}{\rmdefault}
+\title{\raggedright Auditing Evidence Reopening\\under Compressed Agent Memory:\\A Frozen Paper-QA Study}
+\author{Zhiyu Huang \quad Jiayu Guo \quad Hanyun Zhu\\Fuzhou University}
+\iclrfinalcopy
+\begin{document}
+\maketitle
+\lhead{Development manuscript --- requires author review}
+\begin{abstract}
+We implement and audit a bounded evidence-reopening agent inside JiuwenSwarm. The study asks whether short catalogue excerpts and an evidence-output contract improve grounded paper question answering under a shared compressed memory. A frozen two-factor protocol was executed on 24 questions from eight fixed-version papers, with two repetitions and four conditions per question. The 384 requests produced 192 condition outputs, including 18 contract rejections that remain in the evaluation denominator. The batch used 402,503 tokens with an estimated usage cost of CNY 1.191424. %% RESEARCH_SUMMARY %% The present contribution is an inspectable experimental implementation, evidence provenance and failure accounting; improved quality, methodological novelty and autonomous paper-generation capability remain unestablished.
+\end{abstract}
+
+\section{Research question and positioning}
+Research agents must retain and recover evidence after reducing their context. A fluent compressed summary may omit a numerical boundary, a qualification, or a source identifier. We ask a narrower, falsifiable question: under fixed candidate retrieval and compressed memory, do short catalogue excerpts and a quotation-and-abstention contract change grounded task success under the recorded scoring process? The primary comparison is both interventions enabled versus neither enabled. Separate factor comparisons describe possible contributions without assuming either is beneficial.
+
+Long-context access alone does not ensure robust use of evidence at different input positions \citep{liu2024}. Self-RAG trains retrieval and reflection behavior \citep{asai2023}; our study instead uses a fixed hosted model and bounded inference-time tools. RARR researches and revises model outputs using evidence \citep{gao2023}. Our controller does not implement RARR's revision procedure: it reopens selected evidence before answering and never retries a rejected output. FActScore motivates separating supported atomic content from a coarse correctness judgment \citep{min2023}. We adopt human claim-support judgments, not the published FActScore implementation or its numerical metric. These connections establish context rather than a novelty claim.
+
+\section{Agent and intervention design}
+\paragraph{Sources and memory.}
+Eight public PDFs are identified by source group, version and SHA-256. Extraction preserves physical PDF-page locators. A fixed index contains 536 text chunks over 175 pages. Chunks have a 1,600-byte UTF-8 ceiling and 200-byte overlap. Memory initialization samples eight chunks uniformly in sorted identifier order, retaining at most 800 bytes per chunk. Two sequential compression calls produce a memory clipped to 512 bytes after each call. This is a sampled memory over the corpus, not an exhaustive summary. The question and reference answer are withheld from these compression calls.
+
+\paragraph{Candidate selection and reopening.}
+A fixed lexical-overlap retriever uses only the question to select eight candidates from the full index. A catalogue contains immutable chunk identifiers, titles and page locators. In the excerpt condition, each item additionally exposes up to 160 UTF-8 bytes. The model chooses at most two catalogue identifiers. An allowlisted local lookup reopens the corresponding full chunks. Arbitrary URLs, shell commands and fabricated identifiers are not accepted. Both catalogue conditions receive the same question-blind memory and candidate pool. Reference answers, gold pages and human judgments are excluded from model prompts.
+
+\paragraph{Output contract.}
+All answer prompts require a JSON answer, citations and an abstention flag, based only on reopened text. The contract condition additionally requests verbatim support quotations and requires an abstention to contain an empty answer, citations and supports, with a nonempty reason. A deterministic gate validates structure and literal quotation matching. It cannot establish semantic entailment. The contract treatment combines a changed prompt and a gate; this design does not isolate their individual effects.
+
+\begin{table}[t]
+\centering\small
+\begin{tabular}{lcc}
+\hline
+Condition & Catalogue excerpts & Output contract \\
+\hline
+A00 & Off & Off \\
+A10 & On & Off \\
+A01 & Off & On \\
+A11 & On & On \\
+\hline
+\end{tabular}
+\caption{Frozen factorial conditions. Selection is shared by the two contract conditions within each excerpt setting.}
+\end{table}
+
+\paragraph{Execution and resource controls.}
+Each question-repetition job has two shared compression calls, two selection calls, and four answer calls: eight requests in total. A deterministic rotation changes condition order across questions and repetitions. There are no automatic retries or best-of selection. The openJiuwen model interface calls the recorded model alias \texttt{deepseek-flash} with thinking disabled and an output ceiling of 1,000 tokens. Temperature and random seed were not explicitly fixed. Model aliases and provider inference may change, limiting exact output reproduction.
+
+Before every request, the workbench reserves a conservative cost based on serialized UTF-8 input bytes plus an overhead allowance and the maximum output tokens. This is an engineering bound, not a tokenizer measurement. The input estimate must not exceed 12,000; the task allows eight calls and CNY 0.26. The cumulative authorized cap is CNY 15 including earlier workbench reservations. Unknown usage, transport failure or incomplete execution stops the batch; output-gate rejection is retained as an outcome. Actual measured tokens, duration, request settings, inputs, outputs and hashes are stored. The API key is session-only. Paid execution was disabled and the key cleared after the batch.
+
+\section{Frozen evaluation protocol}
+\paragraph{Data and separation.}
+There are three questions per source: an explicit answer, a condition or numeric boundary, and a question about information absent from that source. The total is 16 answerable and eight source-bounded unanswerable questions. The sources are Lost in the Middle, LoCoMo, Self-RAG, RARR, FActScore, FLARE, REPLUG and CRAG. Appendix~\ref{app:sources} identifies the fixed versions. These source groups are disjoint from the 13 development groups and previously discussed questions. This separation does not imply that the hosted model has never seen the public papers.
+
+Two teammates' complete, independent source checks were confirmed by the user. Both used AI assistance; the identity and independence claims are declarations rather than instrumentally verified observations. One label disagreement was adjudicated by the coding assistant against the fixed PDF before outputs existed. Five missing returned screenshots were checked against archived PDF pages. The plan, cases, index and five execution modules were hashed before the first formal request. No frozen question, retrieval policy, prompt or label was modified in response to this batch.
+
+\paragraph{Human evaluation.}
+Two repetitions are planned per question, with four conditions each, yielding 192 condition slots. Every slot, including gate failures, remains in the planned denominator. Both reviewers receive the actual output and reopened evidence, with response identifier and answer hash. Method labels and gate status are concealed, but answer format can reveal the treatment. This is partial label masking, not a fully blind assessment. Reviewers assess correctness, support for all substantive claims, support for emitted citations, input-relative abstention appropriateness and corpus-relative task completion. These judgments are distinct from the earlier source-label checks.
+
+For answerable questions, grounded task success requires a correct, non-abstaining answer whose substantive claims and emitted citations are supported. No-citation cases are recorded separately as not applicable to citation precision; they do not receive a fabricated citation score. For unanswerable questions, appropriate abstention is required. A contract rejection receives zero delivered-task success even when its raw semantic content is judged correct. A cautious abstention due to poor retrieval on an answerable question is not corpus-relative task success. Missing judgments required for the primary metric remain unresolved. The planned process required two documented reviews and reasoned adjudication bound to both rating hashes. In the received materials, 80 of 192 paired records differed on at least one field. The supplemental packet supplied proposed resolutions, but reviewer identity, original review dates and output-review independence remained undocumented. On 29 September 2026, the project user explicitly accepted the supplied scoring and proposals as confirmed. We therefore report a separate user-accepted scoring analysis, not completed independent dual review. Original blanks and the user acceptance are retained separately. Four omitted citation judgments remain unknown; all four concern abstentions on answerable questions and therefore cannot change the primary score of zero. This acceptance is a documented deviation from the planned review process and does not establish judgment accuracy.
+
+\paragraph{Analysis specification.}
+The two repetitions are averaged within each question before computing condition means and the paired A11--A00 difference. Answerable and unanswerable strata are reported separately. The planned source-group uncertainty is implemented with a 10,000-resample percentile bootstrap over eight paper groups, retaining each sampled group's questions and paired conditions; the analysis seed is 20260928. This computational choice was documented after execution but before semantic scores were available and is an analysis supplement, not a retrospectively claimed preregistration. With only eight source groups, the interval is descriptive and fragile. It must not be read as a broad significance or generalization claim. Secondary metrics without adequate annotations remain unavailable.
+
+\section{Execution and semantic assessment}
+All 48 question-repetition jobs completed, with 384 model requests and no automatic retries. There are 192 recorded outputs: 174 completed and 18 rejected by the output gate. All 1,440 saved run-artifact hashes and 192 answer bindings were verified. The rejections comprise 12 A01 and six A11 outputs. Ungated A00 and A10 were not subjected to the same check, so their completion rate does not establish superior quality.
+
+\begin{table}[t]
+\centering\small
+\input{execution-table.tex}
+\caption{Execution status only. Rejections remain in each condition's denominator. The table is generated from stored runs and contains no human quality scores.}
+\end{table}
+
+The gate recorded 12 literal-quote mismatches, eight citation/quote mismatches and seven inconsistent abstentions; reasons overlap across the 18 rejected outputs. These diagnostics reveal contract compliance issues, not semantic error rates. The batch consumed 338,100 input and 64,403 output tokens. At the recorded conservative uncached peak rates of CNY 2 and 8 per million input and output tokens, the usage estimate is CNY 1.191424. Retained reservations for this batch total CNY 6.573792. Across development and formal runs, the workbench records 464 requests, 429,830 tokens, an estimated CNY 1.289698 and CNY 7.870970 in reservations. A separate initial connectivity call used ten tokens and is excluded. Estimates and reservations are not verified provider charges. Shared preprocessing cost is counted once, not once per condition.
+
+\paragraph{Semantic outcome.}
+%% RESEARCH_RESULTS %%
+
+\paragraph{Failure accounting and interpretation.}
+Figure~\ref{fig:outcomes} separates delivered success from raw-answer accounting and shows variation across paper groups. The accepted scoring gives 36, 35, 27 and 32 delivered successes out of 48 for A00, A10, A01 and A11, respectively. The combined intervention does not show the hypothesized improvement in this batch. The descriptive interval crosses zero; it does not establish a general benefit or a general detriment.
+
+As a post-hoc diagnostic, we scored the same saved raw answers while ignoring delivery rejection, keeping every slot. This yields 36, 35, 36 and 36 semantic successes. Nine semantically successful A01 answers and four A11 answers were rejected by the contract. This accounts for the observed A11--A00 delivered-success gap within this accepted scoring set. It is not an experiment with a removed gate: prompt changes and their effects remain, and no model was rerun. It therefore motivates examining contract compliance but does not prove that relaxing the gate would improve a deployed agent.
+
+Several question-level failures persist across all four conditions. For example, all eight outputs for the retrieval-threshold question TST017 abstain despite the full source reporting both endpoints. Some opened text already describes the endpoints, while other outputs lack that evidence. Source availability, actual input coverage and correct use of opened evidence must consequently be distinguished. New controller changes should be assessed on a separate test set; these observed outcomes must not be relabeled as unseen evaluation.
+
+
+\section{Discussion}
+The study illustrates a distinction between provenance checks and successful evidence use. Literal quotation matching detects malformed support strings, but cannot itself establish semantic entailment. Conversely, a semantically adequate saved answer can fail a rigid delivery contract. These are separate failure modes, so neither completion rates nor quotation checks should be reported as answer accuracy.
+
+The bounded controller makes this distinction inspectable through immutable source locators, saved opened evidence, retained rejected answers, and a separate scoring layer. Its measured contribution is reproducible accounting and integration into a research-agent framework. The present experiment does not establish novelty over retrieval-augmented generation or an improvement in task success. A future revision should test evidence coverage and contract usability with new evaluation sources and a prospectively documented scoring process.
+
+\section{Limitations and reproducibility}
+This small custom benchmark evaluates paper QA rather than a standard agent benchmark or full research-paper generation. Lexical retrieval and sampled memory may impose a low evidence-coverage ceiling. Several unanswerable questions concern unreported resource statistics, which may make the task mix unrepresentative. The same model performs compression, selection and answering; we do not isolate their separate error sources. Shared selection, unequal realized token use and an output intervention combining prompting with filtering constrain causal interpretation. PDF extraction can omit layout information. Public-paper pretraining exposure and evolving model aliases remain uncontrolled.
+
+The implementation is an added research-workbench module inside the JiuwenSwarm source tree, using the openJiuwen model adapter with a deterministic tool controller. It does not demonstrate that the native JiuwenSwarm team scheduler ran this experiment. A local native plugin has additionally been loaded through the unchanged JiuwenSwarm chat adapter into a real DeepAgent; its offline audit and material-generation tools were invoked and unloaded successfully. This validates native tool integration, not LLM-directed planning or autonomous discovery. The offline pipeline verifies the frozen evidence and experiment, imports hash-bound ratings with their recorded confirmation basis, generates statistics when complete, and assembles writing materials. It does not autonomously invent a research question or validate scientific novelty. This distinction matters when presenting the competition system.
+
+The reproduction materials identify the upstream commit, local source patch, dependency snapshot, frozen manifests, acquisition URLs and offline audit commands. They preserve raw failures and missing values. Hashes detect file mismatch, not external truth. An offline build compiles this multi-file ICLR template; successful compilation is not acceptance by ICLR or competition review. The manuscript was assembled by the coding assistant from verified artifacts, rather than generated by a demonstrated autonomous scientific-discovery system. Every assembled version records hashes of rating inputs, analysis code, generated sources and the compiled PDF. A changed rating file makes the earlier assembly stale. Author validation and a corresponding final-PDF Reviewer receipt remain required.
+
+\begin{thebibliography}{4}
+\bibitem[Liu et~al.(2024)]{liu2024}
+Nelson F. Liu et~al. Lost in the Middle: How Language Models Use Long Contexts.
+\emph{Transactions of the Association for Computational Linguistics}, 2024.
+\url{https://aclanthology.org/2024.tacl-1.9/}.
+\bibitem[Asai et~al.(2023)]{asai2023}
+Akari Asai et~al. Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection.
+\emph{arXiv:2310.11511v1}, 2023.
+\url{https://arxiv.org/abs/2310.11511v1}.
+\bibitem[Gao et~al.(2023)]{gao2023}
+Luyu Gao et~al. RARR: Researching and Revising What Language Models Say, Using Language Models.
+\emph{ACL}, 2023.
+\url{https://aclanthology.org/2023.acl-long.910/}.
+\bibitem[Min et~al.(2023)]{min2023}
+Sewon Min et~al. FActScore: Fine-grained Atomic Evaluation of Factual Precision in Long Form Text Generation.
+\emph{EMNLP}, 2023.
+\url{https://aclanthology.org/2023.emnlp-main.741/}.
+\end{thebibliography}
+
+\appendix
+\section{Fixed paper versions}\label{app:sources}
+The following identifiers refer to the local fixed PDF versions, not automatically to their latest revision. Full SHA-256 values and extracted-text hashes are in the corpus manifest. Source metadata inherited a candidate label at creation; the later immutable plan and freeze manifest determine the current frozen status.
+\begin{enumerate}
+\item T01: Lost in the Middle. ACL Anthology 2024.tacl-1.9.
+\item T02: LoCoMo. ACL Anthology 2024.acl-long.747.
+\item T03: Self-RAG. arXiv:2310.11511v1.
+\item T04: RARR. ACL Anthology 2023.acl-long.910.
+\item T05: FActScore. ACL Anthology 2023.emnlp-main.741.
+\item T06: FLARE. ACL Anthology 2023.emnlp-main.495.
+\item T07: REPLUG. ACL Anthology 2024.naacl-long.463.
+\item T08: CRAG. arXiv:2401.15884v1.
+\end{enumerate}
+\end{document}
