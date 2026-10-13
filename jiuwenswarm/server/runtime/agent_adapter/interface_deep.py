@@ -4764,11 +4764,14 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         try:
             skill_mode = self._resolve_skill_mode(config)
             logger.info("[JiuWenSwarmDeepAdapter] current skill_mode: %s", skill_mode)
+            from jiuwenswarm.common.skill_discovery import get_skill_discovery_reporter
+            skill_reporter = get_skill_discovery_reporter()
             skill_rail = ReconcilingSkillUseRail(
                 skills_dir=str(get_agent_skills_dir()),
                 skill_mode=skill_mode,
                 include_tools=include_tools,
                 disabled_skills=self._skill_manager.list_execution_disabled_skills(),
+                skill_observer=skill_reporter.new_observer() if skill_reporter else None,
             )
             logger.info("[JiuWenSwarmDeepAdapter] SkillUseRail create success")
         except Exception as exc:
@@ -5261,7 +5264,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         if desktop_security_active():
             from jiuwenswarm.agents.harness.common.rails.behavior_security_rail import BehaviorSecurityRail
             from jiuwenswarm.common.config import get_config
-            return BehaviorSecurityRail(BehaviorSecurityBridge(get_config()))
+            from jiuwenswarm.common.skill_discovery import get_skill_discovery_reporter
+            return BehaviorSecurityRail(BehaviorSecurityBridge(get_config()), get_skill_discovery_reporter())
         try:
             cspl_cfg = CsplConfig.load()
             if not cspl_cfg.enabled:

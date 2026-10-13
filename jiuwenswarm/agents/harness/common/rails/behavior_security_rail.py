@@ -14,9 +14,11 @@ from jiuwenswarm.common.behavior_security import ACTIVE_BEHAVIOR, _event_id, raw
 class BehaviorSecurityRail(DeepAgentRail):
     priority = 100
 
-    def __init__(self, bridge):
+    def __init__(self, bridge, skill_reporter=None):
         super().__init__()
         self.bridge = bridge
+        self.skill_reporter = skill_reporter
+        self.skill_observer = skill_reporter.new_observer() if skill_reporter else None
 
     async def before_invoke(self, ctx):
         if ctx.session is None:
@@ -42,6 +44,10 @@ class BehaviorSecurityRail(DeepAgentRail):
         ctx.extra["behavior.dialogue_context"] = pairs
 
     async def before_tool_call(self, ctx):
+        # Establish this tool's own baseline; an unrelated manual installation
+        # must not acquire a fabricated tool correlation on the next user turn.
+        if self.skill_observer is not None:
+            await self.skill_observer.scan(self.skill_reporter.roots)
         ctx.extra["behavior.finished"] = False
         task = asyncio.current_task()
         if task is not None:
@@ -69,6 +75,8 @@ class BehaviorSecurityRail(DeepAgentRail):
             return
         if getattr(ctx.inputs, "execution_started", False):
             self.bridge.report(raw_event(ctx, "tool.after"))
+            if self.skill_observer is not None:
+                await self.skill_observer.scan(self.skill_reporter.roots, context=ctx)
 
     def uninit(self, agent):
         for task in self.bridge.tasks:

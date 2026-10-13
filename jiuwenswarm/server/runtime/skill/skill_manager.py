@@ -477,6 +477,10 @@ class SkillManager:
         # 使其无需重启 server、刷新"我的技能"即可显示（与导入本地技能一致）。
         self._register_unmanaged_local_skills()
         local = self._scan_local_skills()
+        from jiuwenswarm.common.skill_discovery import get_skill_discovery_reporter
+        reporter = get_skill_discovery_reporter()
+        if reporter is not None:
+            await reporter.scan()
         marketplace = self._scan_marketplace_skills()
         out: dict[str, Any] = {"skills": local + marketplace}
         if bool(params.get("with_installed", False)):

@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -34,6 +35,52 @@ def bridge(enabled=True, decision='allow'):
     b = BehaviorSecurityBridge({'permissions': {'enabled': True}, 'xiaoyi_work_security': {
         'cloud_authorization': {'enabled': enabled}}}, transport=httpx.MockTransport(handler))
     return b, events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stage,mode,expected', [
+    ('skill.before_install', 'authorize', 124), ('skill.before_install', 'report', 4),
+    ('skill.discovered', 'report', 4), ('tool.before', 'authorize', 4),
+])
+async def test_file_upload_budget_only_extends_synchronous_skill_request(monkeypatch, stage, mode, expected):
+    captured = []
+    original = asyncio.timeout
+    def timeout(seconds):
+        captured.append(seconds)
+        return original(seconds)
+    monkeypatch.setattr(asyncio, 'timeout', timeout)
+    async def handler(request):
+        assert request.extensions['timeout']['read'] == expected
+        return httpx.Response(200, json={'decision': 'accepted'})
+    b = BehaviorSecurityBridge({}, transport=httpx.MockTransport(handler))
+    assert await b._send({**raw_event(context(), stage), 'mode': mode}) == {'decision': 'accepted'}
+    assert captured == [expected]
+
+
+@pytest.mark.asyncio
+async def test_tool_rail_reports_new_skill_but_does_not_attribute_existing_manual_copy(tmp_path):
+    from jiuwenswarm.common.skill_discovery import SkillDiscoveryReporter
+    b, events = bridge(decision='accepted')
+    root = tmp_path / 'skills'
+    manual = root / 'manual'
+    manual.mkdir(parents=True)
+    (manual / 'SKILL.md').write_text('already present')
+    reporter = SkillDiscoveryReporter([root], tmp_path / 'state.json', b)
+    rail = BehaviorSecurityRail(b, reporter)
+    ctx = context()
+    await rail.before_tool_call(ctx)
+    installed = root / 'installed-by-tool'
+    installed.mkdir()
+    (installed / 'SKILL.md').write_text('new skill')
+    ctx.inputs.execution_started = True
+    await rail.after_tool_call(ctx)
+    await reporter.flush()
+    await asyncio.gather(*b.tasks)
+    skills = [event for event in events if event['stage'] == 'skill.discovered']
+    assert len(skills) == 1 and skills[0]['skill']['name'] == 'installed-by-tool'
+    assert skills[0]['tool']['id'] == ctx.inputs.tool_call.id
+    assert any(record['status'] == 'awaiting_context' for record in reporter.records.values())
+    await reporter.close()
 
 
 @pytest.mark.asyncio
@@ -119,6 +166,7 @@ async def test_install_confirmation_stops_before_write_and_resumes_once(tmp_path
         await check_agent_skill_install(staged, dest, 'example', 'download')
     assert old.read_text() == 'original'
     assert events[0]['stage'] == 'skill.before_install'
+    assert base64.b64decode(events[0]['skill']['documentBase64']) == b'skill content'
     ctx.inputs.tool_result = {'success': False}
     with pytest.raises(AbortError):
         await rail.after_tool_call(ctx)

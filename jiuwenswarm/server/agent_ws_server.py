@@ -1434,6 +1434,11 @@ class AgentWebSocketServer:
         from jiuwenswarm.agents.harness.common.auto_harness import reset_harness_packages_state
         reset_harness_packages_state()
 
+        from jiuwenswarm.common.skill_discovery import get_skill_discovery_reporter
+        skill_reporter = get_skill_discovery_reporter()
+        if skill_reporter is not None:
+            skill_reporter.start()
+
         if listen_tcp:
             try:
                 from websockets.legacy.server import serve as legacy_serve
@@ -1815,6 +1820,8 @@ class AgentWebSocketServer:
 
     async def stop(self) -> None:
         """停止 WebSocket 服务端."""
+        from jiuwenswarm.common.skill_discovery import stop_skill_discovery
+        await stop_skill_discovery()
         # 先取消 checkpointer 预热任务, 避免在 server 关闭后仍在后台跑.
         warmup = self._checkpointer_warmup_task
         self._checkpointer_warmup_task = None

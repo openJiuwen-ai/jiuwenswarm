@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextvars
 import copy
 import hashlib
@@ -14,6 +15,7 @@ from typing import Any
 import httpx
 
 from openjiuwen.harness.security import PermissionLevel, PermissionResult, SkillInstallContext, before_skill_install
+from openjiuwen.core.single_agent.skills.skill_observer import read_skill_document
 from openjiuwen.harness.security.permission_engine.toolguard.tool_policy import evaluate_tiered_policy
 from jiuwenswarm.agents.harness.common.channel_runtime_context import CURRENT_SESSION_ID
 from jiuwenswarm.common.np_transport import named_pipe_transport_for
@@ -21,6 +23,8 @@ from jiuwenswarm.common.utils import logger
 
 ACTIVE_BEHAVIOR: contextvars.ContextVar[tuple | None] = contextvars.ContextVar("active_behavior", default=None)
 PENDING_SKILL = "behavior_security.pending_skill"
+# Desktop's file preparation budget, separate from the moderation deadline.
+SKILL_FILE_PREPARATION_SECONDS = 120
 
 
 def desktop_security_active() -> bool:
@@ -90,6 +94,8 @@ class BehaviorSecurityBridge:
     async def _send(self, event: dict) -> dict:
         section = self.config.get("xiaoyi_work_security", {}).get("cloud_authorization", {})
         timeout = max(0.1, min(float(section.get("timeout_ms", 4000)) / 1000, 30))
+        if event.get("stage") in ("skill.before_install", "skill.discovered") and event.get("mode") == "authorize":
+            timeout += SKILL_FILE_PREPARATION_SECONDS
         try:
             transport = self.transport or named_pipe_transport_for("np://claw-skill")
             async with asyncio.timeout(timeout):
@@ -194,6 +200,14 @@ async def check_agent_skill_install(staged: Path, destination: Path, name: str, 
     snapshot = await asyncio.to_thread(fingerprint)
     event = raw_event(ctx, "skill.before_install", f"{destination}:{snapshot}")
     event["skill"] = {"name": name, "source": source, "stagedPath": str(staged), "destination": str(destination)}
+    document = None
+    try:
+        document = await asyncio.to_thread(read_skill_document, staged)
+        event["skill"]["documentBase64"] = base64.b64encode(document.content).decode("ascii")
+    except (OSError, ValueError) as exc:
+        # Authorization uses its existing unavailable -> ASK path; report-only
+        # must not prevent installation merely because its document is missing.
+        logger.warning("[behavior-security] skill document unavailable (%s)", type(exc).__name__)
     context = SkillInstallContext(event["eventId"], name, source, staged, destination)
     state_key = PENDING_SKILL + ":" + _event_id(ctx, "tool.before")
     pending = ctx.session.get_state(state_key) if ctx.session else None
@@ -226,6 +240,11 @@ async def check_agent_skill_install(staged: Path, destination: Path, name: str, 
             raise PermissionError("技能内容在授权期间发生变化，请重新安装")
         if ctx.extra.get("behavior.finished"):
             raise PermissionError("安装调用已经取消或结束")
+        if document is not None:
+            from jiuwenswarm.common.skill_discovery import get_skill_discovery_reporter
+            reporter = get_skill_discovery_reporter()
+            if reporter is not None:
+                await reporter.mark_install_reported(destination, document.fingerprint)
         return
     if result.needs_approval:
         if ctx.session:
@@ -240,7 +259,7 @@ def check_agent_skill_install_sync(staged: Path, destination: Path, name: str, s
     if active is not None:
         future = asyncio.run_coroutine_threadsafe(check_agent_skill_install(staged, destination, name, source), active[2])
         try:
-            future.result(timeout=35)
+            future.result(timeout=35 + SKILL_FILE_PREPARATION_SECONDS)
         except BaseException:
             future.cancel()
             raise
