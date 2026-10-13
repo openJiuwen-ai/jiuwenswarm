@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from typing import Any, Optional
 
 from openjiuwen.core.common.exception.codes import StatusCode
@@ -18,9 +19,27 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     is_persistent_todo,
     mark_persistent_todo,
     read_turn_user_query,
+    user_query_drops_reminder,
 )
 
 logger = logging.getLogger(__name__)
+
+# 跟这次 modify 调用走，不挂在工具实例上，避免并发请求互相覆盖。
+_REMINDER_DROP_ALLOWED: ContextVar[bool] = ContextVar(
+    "todo_reminder_drop_allowed",
+    default=False,
+)
+_KEPT_REMINDER_NOTE = (
+    "Kept {count} reminder(s). They stay listed until the user asks to delete that reminder"
+)
+
+
+def _reminder_drop_allowed() -> bool:
+    return _REMINDER_DROP_ALLOWED.get()
+
+
+def _keep_persistent_reminder(todo: TodoItem) -> bool:
+    return is_persistent_todo(todo) and not _reminder_drop_allowed()
 
 
 class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
@@ -32,6 +51,59 @@ class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
     status, leaving the task pending. This shim preserves the canonical behavior
     while treating those update statuses as delete/cancel operations.
     """
+
+    async def invoke(self, inputs: Any, **kwargs: Any) -> Any:
+        session = kwargs.get("session")
+        query = read_turn_user_query(session) if session is not None else ""
+        token = _REMINDER_DROP_ALLOWED.set(user_query_drops_reminder(query))
+        try:
+            return await super().invoke(inputs, **kwargs)
+        finally:
+            _REMINDER_DROP_ALLOWED.reset(token)
+
+    async def _delete_todos(
+        self,
+        session_id: str,
+        ids: list[str],
+        current_todos: list[TodoItem],
+    ) -> str:
+        delete_ids = set(ids)
+        remaining: list[TodoItem] = []
+        deleted: list[str] = []
+        kept: list[str] = []
+        for todo in current_todos:
+            if todo.id not in delete_ids:
+                remaining.append(todo)
+                continue
+            if _keep_persistent_reminder(todo):
+                remaining.append(todo)
+                kept.append(todo.id)
+                continue
+            deleted.append(todo.id)
+        if deleted:
+            await self.save_todos(session_id, remaining)
+        return _drop_result("deleted", ids, deleted, kept)
+
+    async def _cancel_todos(
+        self,
+        session_id: str,
+        ids: list[str],
+        current_todos: list[TodoItem],
+    ) -> str:
+        cancel_ids = set(ids)
+        cancelled: list[str] = []
+        kept: list[str] = []
+        for todo in current_todos:
+            if todo.id not in cancel_ids:
+                continue
+            if _keep_persistent_reminder(todo):
+                kept.append(todo.id)
+                continue
+            todo.status = TodoStatus.CANCELLED
+            cancelled.append(todo.id)
+        if cancelled:
+            await self.save_todos(session_id, current_todos)
+        return _drop_result("cancelled", ids, cancelled, kept)
 
     async def _update_todos(
         self,
@@ -49,6 +121,7 @@ class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
 
         todo_map = {todo.id: todo for todo in current_todos}
         deleted_ids: set[str] = set()
+        kept_ids: list[str] = []
         updated_count = 0
 
         for todo_data in todos_data:
@@ -65,11 +138,16 @@ class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
                 )
 
             status_value = todo_data.get("status")
+            if status_value == "canceled":
+                status_value = "cancelled"
+            current_todo = todo_map[todo_id]
+            dropping = status_value in ("deleted", "delete", "cancelled")
+            if dropping and _keep_persistent_reminder(current_todo):
+                kept_ids.append(todo_id)
+                continue
             if status_value in ("deleted", "delete"):
                 deleted_ids.add(todo_id)
                 continue
-
-            current_todo = todo_map[todo_id]
             if "content" in todo_data:
                 current_todo.content = todo_data["content"]
             if "activeForm" in todo_data:
@@ -77,8 +155,6 @@ class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
             if "description" in todo_data:
                 current_todo.description = todo_data["description"]
             if "status" in todo_data:
-                if status_value == "canceled":
-                    status_value = "cancelled"
                 current_todo.status = TodoStatus(status_value)
                 if status_value == "in_progress":
                     clear_persistent_todo(current_todo)
@@ -101,6 +177,8 @@ class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
             parts.append(
                 f"Successfully deleted {len(deleted_ids)} task(s) (IDs: {', '.join(sorted(deleted_ids))})"
             )
+        if kept_ids:
+            parts.append(_KEPT_REMINDER_NOTE.format(count=len(kept_ids)))
         return "; ".join(parts) or "No task changes applied"
 
 
@@ -189,12 +267,29 @@ async def _load_todos_or_empty(tool: Any, session_id: str) -> list[TodoItem]:
     return []
 
 
+def _drop_result(verb: str, ids: list[str], changed: list[str], kept: list[str]) -> str:
+    if not changed and not kept:
+        joined = ", ".join(ids)
+        return f"No tasks {verb}: None of the provided IDs ({joined}) were found"
+    parts: list[str] = []
+    if changed:
+        parts.append(
+            f"Successfully {verb} {len(changed)} task(s) (IDs: {', '.join(changed)})"
+        )
+    if kept:
+        parts.append(_KEPT_REMINDER_NOTE.format(count=len(kept)))
+    return "; ".join(parts)
+
+
 async def restore_persistent_reminders(
     tool: Any,
     session_id: str,
     before: list[TodoItem],
+    query: str = "",
 ) -> None:
     """Put still-active reminders back after todo_create replaces the file."""
+    if user_query_drops_reminder(query):
+        return
     preserved = [todo for todo in before if _is_active_reminder(todo)]
     if not preserved:
         return
@@ -272,12 +367,13 @@ def _install_backlog_create_patch(tool_cls: type) -> None:
     async def invoke(self: Any, inputs: Any, **kwargs: Any) -> Any:
         session = kwargs.get("session")
         session_id = _session_id_of(session)
+        query = read_turn_user_query(session) if session is not None else ""
         before: list[TodoItem] = []
         if session_id is not None:
             before = await _load_todos_or_empty(self, session_id)
         result = await original(self, inputs, **kwargs)
         if session_id is not None:
-            await restore_persistent_reminders(self, session_id, before)
+            await restore_persistent_reminders(self, session_id, before, query)
         return await persist_backlog_create(self, session, result)
 
     invoke.backlog_create_patched = True  # type: ignore[attr-defined]

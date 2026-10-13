@@ -155,6 +155,26 @@ _EXECUTE_NOW_MARKERS = (
     "立刻做",
     "立即执行",
 )
+# 「取消」单独出现是在放弃执行计划，不带走提醒。取消提醒必须和待办/提醒挨在一起。
+_REMINDER_DROP_VERBS = (
+    "删除",
+    "删掉",
+    "删了",
+    "去掉",
+    "不要了",
+)
+_REMINDER_DROP_NOUNS = (
+    "待办",
+    "提醒",
+)
+_REMINDER_DROP_PHRASES = (
+    "取消待办",
+    "取消提醒",
+    "待办取消",
+    "提醒取消",
+    "取消这个待办",
+    "取消这个提醒",
+)
 _DISPLAY_TODO_TOOLS = frozenset({"todo_list", "todo_get"})
 
 
@@ -228,6 +248,18 @@ def is_backlog_todo_query(query: str) -> bool:
     if _contains_any(text, _EXECUTE_NOW_MARKERS):
         return False
     return _contains_any(text, _BACKLOG_QUERY_MARKERS)
+
+
+def user_query_drops_reminder(query: str) -> bool:
+    """True when the user asked to delete or cancel a reminder."""
+    text = (query or "").strip()
+    if not text:
+        return False
+    if _contains_any(text, _REMINDER_DROP_PHRASES):
+        return True
+    if not _contains_any(text, _REMINDER_DROP_VERBS):
+        return False
+    return _contains_any(text, _REMINDER_DROP_NOUNS)
 
 
 def _contains_any(text: str, markers: Sequence[str]) -> bool:
