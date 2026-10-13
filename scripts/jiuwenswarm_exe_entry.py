@@ -633,7 +633,16 @@ def _dispatch() -> int | None:
             if sys.argv[2] == "ruff":
                 return _forward_to_ruff_binary(sys.argv[3:])
             import runpy
-            runpy.run_module(sys.argv[2], run_name="__main__", alter_sys=True)
+            module_name = sys.argv[2]
+            original_argv = sys.argv
+            # Match ``python -m module args``: the module must receive only its
+            # own arguments. runpy temporarily replaces argv[0] with the module
+            # path, but it does not remove the -m/module tokens for us.
+            sys.argv = [module_name, *original_argv[3:]]
+            try:
+                runpy.run_module(module_name, run_name="__main__", alter_sys=True)
+            finally:
+                sys.argv = original_argv
             return 0
 
         # 其他有参数的情况：直接执行，不检查单实例锁
