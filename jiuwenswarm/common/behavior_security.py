@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 
 from openjiuwen.harness.security import PermissionLevel, PermissionResult, SkillInstallContext, before_skill_install
-from openjiuwen.core.single_agent.skills.skill_observer import read_skill_document
+from openjiuwen.core.single_agent.skills.skill_observer import SkillDocumentSnapshot, read_skill_document
 from openjiuwen.harness.security.permission_engine.toolguard.tool_policy import evaluate_tiered_policy
 from jiuwenswarm.agents.harness.common.channel_runtime_context import CURRENT_SESSION_ID
 from jiuwenswarm.common.np_transport import named_pipe_transport_for
@@ -178,6 +178,15 @@ def skill_confirmation_pending(ctx: Any) -> bool:
     return bool(ctx.session and ctx.session.get_state(PENDING_SKILL + ":" + _event_id(ctx, "tool.before")))
 
 
+async def _mark_install_reported(destination: Path, document: SkillDocumentSnapshot | None) -> None:
+    if document is None:
+        return
+    from jiuwenswarm.common.skill_discovery import get_skill_discovery_reporter
+    reporter = get_skill_discovery_reporter()
+    if reporter is not None:
+        await reporter.mark_install_reported(destination, document.fingerprint)
+
+
 async def check_agent_skill_install(staged: Path, destination: Path, name: str, source: str) -> None:
     """Barrier immediately before mutation. Non-Agent installation is outside this phase."""
     active = ACTIVE_BEHAVIOR.get()
@@ -220,6 +229,7 @@ async def check_agent_skill_install(staged: Path, destination: Path, name: str, 
         if answer is not None:
             ctx.session.update_state({state_key: None})
             if answer.approved:
+                await _mark_install_reported(destination, document)
                 return
             raise PermissionError("用户拒绝安装技能")
 
@@ -240,11 +250,7 @@ async def check_agent_skill_install(staged: Path, destination: Path, name: str, 
             raise PermissionError("技能内容在授权期间发生变化，请重新安装")
         if ctx.extra.get("behavior.finished"):
             raise PermissionError("安装调用已经取消或结束")
-        if document is not None:
-            from jiuwenswarm.common.skill_discovery import get_skill_discovery_reporter
-            reporter = get_skill_discovery_reporter()
-            if reporter is not None:
-                await reporter.mark_install_reported(destination, document.fingerprint)
+        await _mark_install_reported(destination, document)
         return
     if result.needs_approval:
         if ctx.session:

@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import shutil
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -181,6 +182,61 @@ async def test_install_confirmation_stops_before_write_and_resumes_once(tmp_path
     assert len(events) == 1
     assert old.read_text() == 'original'
     await rail.after_tool_call(resumed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('decision', ['allow', 'unavailable'])
+async def test_allowed_install_is_not_reported_again_by_discovery(tmp_path, monkeypatch, decision):
+    from jiuwenswarm.common.skill_discovery import SkillDiscoveryReporter
+
+    b, events = bridge(decision=decision)
+    root = tmp_path / 'skills'
+    root.mkdir()
+    staged = tmp_path / 'staged'
+    staged.mkdir()
+    (staged / 'SKILL.md').write_text('skill content', encoding='utf-8')
+    destination = root / 'installed'
+    reporter = SkillDiscoveryReporter([root], tmp_path / 'state.json', b)
+    monkeypatch.setattr('jiuwenswarm.common.skill_discovery.get_skill_discovery_reporter', lambda: reporter)
+    rail = BehaviorSecurityRail(b, reporter)
+    ctx = context()
+    restored = None
+    await rail.before_tool_call(ctx)
+    try:
+        if decision == 'unavailable':
+            with pytest.raises(PermissionError):
+                await check_agent_skill_install(staged, destination, 'example', 'download')
+            assert not destination.exists()
+            assert reporter.records == {}
+            with pytest.raises(AbortError):
+                await rail.after_tool_call(ctx)
+            ctx = context(ctx.session)
+            ctx.extra[RESUME_USER_INPUT_KEY] = {'approved': True}
+            await rail.before_tool_call(ctx)
+
+        await check_agent_skill_install(staged, destination, 'example', 'download')
+        shutil.copytree(staged, destination)
+        # A background scan may observe the install before the tool's own scan.
+        await reporter.new_observer().scan([root], context=None)
+        await rail.skill_observer.scan([root], context=ctx)
+        await reporter.flush()
+        assert len(events) == 1
+        assert events[0]['stage'] == 'skill.before_install'
+        assert events[0]['mode'] == 'authorize'
+        assert base64.b64decode(events[0]['skill']['documentBase64']) == b'skill content'
+        assert len(reporter.records) == 1
+        assert next(iter(reporter.records.values()))['status'] == 'installer_event'
+
+        # Persisted deduplication also survives recreating the reporter.
+        restored = SkillDiscoveryReporter([root], reporter.state_path, b)
+        await restored.new_observer().scan([root], context=ctx)
+        await restored.flush()
+        assert len(events) == 1
+    finally:
+        await rail.after_tool_call(ctx)
+        await reporter.close()
+        if restored is not None:
+            await restored.close()
 
 
 @pytest.mark.asyncio
