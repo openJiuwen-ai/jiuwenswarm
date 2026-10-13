@@ -321,6 +321,81 @@ class _GatewayWSPushSink:
         return await self._inner.send_error(request_id, message, code=code, channel_id=channel_id)
 
 
+def _snapshot_value(read) -> Any:
+    """单项采集失败记 unavailable，不让快照本身打断连接关闭。"""
+    try:
+        return read()
+    except Exception:
+        return "unavailable"
+
+
+def _snapshot_rss_mb(proc: Any) -> Any:
+    rss = proc.memory_info().rss
+    return round(rss / (1024 * 1024), 1)
+
+
+def _snapshot_handles(proc: Any) -> Any:
+    num_handles = getattr(proc, "num_handles", None)
+    if callable(num_handles):
+        return num_handles()
+    fd_dir = "/proc/self/fd"
+    if not os.path.isdir(fd_dir):
+        return "unavailable"
+    return len(os.listdir(fd_dir))
+
+
+def _snapshot_sockets(proc: Any) -> Any:
+    counted = _count_proc_sockets()
+    if counted is not None:
+        return counted
+    return len(proc.net_connections(kind="inet"))
+
+
+def _count_proc_sockets() -> int | None:
+    """Linux 上数本进程的 socket fd。没有 /proc 时返回 None，改走 psutil。"""
+    fd_dir = "/proc/self/fd"
+    if not os.path.isdir(fd_dir):
+        return None
+    count = 0
+    for name in os.listdir(fd_dir):
+        try:
+            target = os.readlink(os.path.join(fd_dir, name))
+        except OSError:
+            continue
+        if target.startswith("socket:"):
+            count += 1
+    return count
+
+
+def _process_snapshot() -> dict[str, Any]:
+    """断开瞬间的进程资源。四项各自失败互不影响。"""
+    try:
+        import psutil
+
+        proc = psutil.Process()
+    except Exception:
+        proc = None
+    if proc is None:
+        return {
+            "rss_mb": "unavailable",
+            "threads": "unavailable",
+            "handles": "unavailable",
+            "sockets": "unavailable",
+        }
+    return {
+        "rss_mb": _snapshot_value(lambda: _snapshot_rss_mb(proc)),
+        "threads": _snapshot_value(proc.num_threads),
+        "handles": _snapshot_value(lambda: _snapshot_handles(proc)),
+        "sockets": _snapshot_value(lambda: _snapshot_sockets(proc)),
+    }
+
+
+async def _join_connection_tasks(tasks: list[asyncio.Task]) -> None:
+    if not tasks:
+        return
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 class AgentWebSocketServer:
     """Gateway 与 AgentServer 之间的 WebSocket 服务端（单例）.
 
@@ -1075,6 +1150,12 @@ class AgentWebSocketServer:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[AgentWebSocketServer] %s cancel failed: %s", label, exc)
 
+        # 调度器是进程级服务。单条 Gateway 连接 1006 不能停它，只在整个服务退出时停。
+        try:
+            await self._stop_scheduler()
+        except Exception:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] scheduler stop failed")
+
         # 先取消后台预热, 避免在 server 关闭后仍在后台跑.
         warmup = _startup_warmup_task
         _startup_warmup_task = None
@@ -1111,6 +1192,43 @@ class AgentWebSocketServer:
         logger.info("[AgentWebSocketServer] 已停止")
 
     # ---------- 连接处理 ----------
+
+    def _listener_diag(self, remote: Any) -> dict[str, Any]:
+        """进程和监听套接字状态。1006 之后用它区分「对端先断」和「监听已经没了」。"""
+        server = self._server
+        sockets = () if server is None else tuple(server.sockets or ())
+        names: list[Any] = []
+        for sock in sockets:
+            try:
+                names.append(sock.getsockname())
+            except OSError:
+                names.append("closed")
+        return {
+            "pid": os.getpid(),
+            "remote": remote,
+            "listener_present": server is not None,
+            "listener_sockets": names,
+        }
+
+    def _log_cleanup_step(self, step: str, phase: str, remote: Any) -> None:
+        """清理路径打点。只有 start、没有 done/error，说明死在这一步里面。"""
+        logger.info(
+            "[AgentWebSocketServer] 清理步骤: %s",
+            format_ws_diagnostics(
+                {"step": step, "phase": phase},
+                self._listener_diag(remote),
+            ),
+        )
+
+    async def _run_cleanup_step(self, step: str, remote: Any, action: Any) -> None:
+        self._log_cleanup_step(step, "start", remote)
+        try:
+            await action()
+        except Exception:
+            self._log_cleanup_step(step, "error", remote)
+            logger.exception("[AgentWebSocketServer] 清理步骤失败: step=%s", step)
+            return
+        self._log_cleanup_step(step, "done", remote)
 
     async def _connection_handler(self, ws: Any) -> None:
         """处理单个 Gateway WebSocket 连接，同一连接可并发处理多个请求."""
@@ -1190,14 +1308,22 @@ class AgentWebSocketServer:
                 "[AgentWebSocketServer] 连接关闭: %s",
                 format_ws_diagnostics(
                     {
-                        "remote": remote,
                         "active_tasks": len(tasks),
                         "session_stream_tasks": len(self._session_stream_tasks),
                         "ping_interval": self._ping_interval,
                         "ping_timeout": self._ping_timeout,
                     },
+                    self._listener_diag(remote),
                     describe_ws_peer(ws),
                     describe_ws_exception(e),
+                ),
+            )
+            # 快照必须在清理之前落盘。[MemTrend] 两分钟一拍，断连瞬间的资源否则是空的。
+            logger.info(
+                "[AgentWebSocketServer] 进程快照: %s",
+                format_ws_diagnostics(
+                    {"pid": os.getpid()},
+                    _process_snapshot(),
                 ),
             )
         except Exception as e:
@@ -1218,28 +1344,30 @@ class AgentWebSocketServer:
                     task.cancel()
             # Gateway 进程退出/端口关闭时，必须先取消各 session 内流式生产者（SessionManager）
             # 并中止 DeepAgent 内层循环；否则仅等待 _handle_message 任务结束会一直阻塞到任务自然完成。
-            try:
-                await self._agent_manager.cancel_all_inflight_work(
-                    reason=f"[gateway ws closed {remote}] ",
-                )
-            except Exception:
-                logger.exception("[AgentWebSocketServer] cancel_all_inflight_work failed")
-            # Stop scheduler on server shutdown
-            try:
-                await self._stop_scheduler()
-            except Exception:
-                logger.exception("[AgentWebSocketServer] scheduler stop failed")
-            try:
-                from jiuwenswarm.agents.harness.team import cancel_all_team_stream_tasks_across_managers
+            # import 放在 try 外：缺模块要当场暴露，不能被「步骤失败」吞掉。
+            from jiuwenswarm.agents.harness.team import cancel_all_team_stream_tasks_across_managers
 
-                await cancel_all_team_stream_tasks_across_managers(
-                    reason=f"[gateway ws closed {remote}] ",
-                )
-            except Exception:
-                logger.exception("[AgentWebSocketServer] team stream cancel failed")
-            if connection_tasks:
-                await asyncio.gather(*connection_tasks, return_exceptions=True)
+            close_reason = f"[gateway ws closed {remote}] "
+            await self._run_cleanup_step(
+                "cancel_inflight",
+                remote,
+                lambda: self._agent_manager.cancel_all_inflight_work(reason=close_reason),
+            )
+            await self._run_cleanup_step(
+                "team_stream",
+                remote,
+                lambda: cancel_all_team_stream_tasks_across_managers(reason=close_reason),
+            )
+            await self._run_cleanup_step(
+                "join_tasks",
+                remote,
+                lambda: _join_connection_tasks(connection_tasks),
+            )
             self._session_stream_tasks.clear()
+            logger.info(
+                "[AgentWebSocketServer] 连接清理完成: %s",
+                format_ws_diagnostics(self._listener_diag(remote)),
+            )
 
     async def _handle_message(self, ws: Any, raw: str | bytes, send_lock: asyncio.Lock) -> None:
         """解析一条 JSON 请求并交给汇合点处理。

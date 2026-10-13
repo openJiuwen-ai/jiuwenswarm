@@ -60,7 +60,7 @@ from jiuwenswarm.common.openjiuwen_logging import bootstrap_openjiuwen_logging
 _loaded_logging_yaml = bootstrap_openjiuwen_logging()
 
 # --- Now safe to import remaining jiuwenswarm modules ---
-from jiuwenswarm.common.debug_dump import install_async_dump_handler
+from jiuwenswarm.common.debug_dump import install_async_dump_handler, install_fault_log
 from jiuwenswarm.infrastructure.config import Settings
 
 if not _loaded_logging_yaml:
@@ -694,6 +694,7 @@ def main() -> None:
             port = 18092
 
     install_async_dump_handler("agentserver")
+    install_fault_log("agentserver")
     try:
         asyncio.run(_run(host=host, port=port))
         if _EXIT_REASON == "unknown":

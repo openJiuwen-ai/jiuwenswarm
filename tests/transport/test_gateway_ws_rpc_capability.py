@@ -42,6 +42,7 @@ async def _exercise_ws_handshakes(monkeypatch, modern):
     server._stop_scheduler = AsyncMock()
     server._agent_manager = SimpleNamespace(cancel_all_inflight_work=AsyncMock())
     server._session_stream_tasks = {}
+    server._server = None
     server._clear_ws_acp_client_capabilities = lambda _ws: None
 
     async def echo(ws, raw, _lock):
