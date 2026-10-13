@@ -33,7 +33,8 @@ class WorkerForceExit(RuntimeError):
     """Dispatch ignored cancellation, so Runtime shutdown must not run."""
 
 
-async def serve_worker(socket_path: str, *, host: str, port: int) -> None:
+async def serve_worker(socket_path: str, *, host: str, port: int,
+                       code_identity_value: str | None = None) -> None:
     holder = ConnHolder()
     bridge = WorkerGatewayBridge(holder)
     dispatcher = WorkerDispatcher(bridge)
@@ -52,7 +53,7 @@ async def serve_worker(socket_path: str, *, host: str, port: int) -> None:
         # reject this Worker after a source/dependency upgrade.
         from jiuwenswarm.server.supervisor.identity import code_identity
 
-        worker_code_identity = await asyncio.to_thread(code_identity)
+        worker_code_identity = code_identity_value if code_identity_value is not None else await asyncio.to_thread(code_identity)
         while True:
             conn = await server.accept()
             generation = holder.open_session(conn)

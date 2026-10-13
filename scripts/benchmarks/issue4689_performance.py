@@ -164,6 +164,28 @@ with open(os.environ["ISSUE4689_PREP_PROVENANCE"], "w", encoding="utf-8") as f:
     json.dump(provenance, f, indent=2)
 '''
 
+IDENTITY_PROBE = '''
+import json, os, time
+from pathlib import Path
+from jiuwenswarm.server.supervisor.identity import code_identity
+started = time.perf_counter_ns()
+identity = code_identity()
+elapsed = (time.perf_counter_ns() - started) / 1e6
+try:
+    from jiuwenswarm.server.supervisor import identity_cache
+    diagnostics = getattr(identity_cache, "_LAST_DIAGNOSTICS", {})
+    cache_file = str(identity_cache._cache_path(Path(identity_cache.__file__).resolve().parents[3]))
+    module_file = identity_cache.__file__
+except ImportError:
+    diagnostics = {"strategy": "legacy-identity-without-persistent-cache"}
+    cache_file = None
+    module_file = None
+print(json.dumps({"identity": identity, "identity_ms": elapsed, "pid": os.getpid(),
+                  "diagnostics": diagnostics, "actual_identity_cache_file": cache_file,
+                  "identity_module_file": module_file,
+                  "persistent_cache_written": bool(cache_file and Path(cache_file).is_file())}))
+'''
+
 
 def write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -172,6 +194,42 @@ def write_json(path: Path, value) -> None:
 def append_json(path: Path, value) -> None:
     with path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(value, ensure_ascii=False) + "\n")
+
+
+def identity_probe(args, code: Path, sample_root: Path, log: Path) -> dict:
+    """Measure identity in a new process, preserving its persistent cache only."""
+    child = subprocess.run([args.python, "-c", IDENTITY_PROBE], cwd=code,
+                           env=isolated_environment(code, sample_root),
+                           capture_output=True, timeout=90)
+    log.write_bytes(child.stdout + child.stderr)
+    if child.returncode:
+        raise RuntimeError(f"identity probe exited {child.returncode}; see {log.name}")
+    return json.loads(child.stdout.decode("utf-8").splitlines()[-1])
+
+
+def identity_trial(args, label: str, iteration: int, root: Path, output: Path, rows: list[dict]) -> None:
+    code = getattr(args, label)
+    sample_root = root / f"identity-{label}-{iteration:03d}"
+    if (sample_root / "identity-cache").exists():
+        raise FileExistsError("first-build sample cache was already present")
+    previous = None
+    for condition in ("first_build", "cache_hit"):
+        identity = {"label": label, "case": "identity", "condition": condition,
+                    "iteration": iteration, "identity_cache_dir": str(sample_root / "identity-cache")}
+        try:
+            measured = identity_probe(args, code, sample_root,
+                                      output / f"identity-{label}-{iteration:03d}-{condition}.log")
+            if previous is not None and measured["identity"] != previous:
+                raise AssertionError("persistent-cache hit changed the unchanged source identity")
+            previous = measured["identity"]
+            row = {**identity, "ok": True, **measured}
+        except Exception as exc:
+            row = {**identity, "ok": False, "error_type": type(exc).__name__, "error": str(exc)}
+        rows.append(row)
+        append_json(args.output, row)
+        print(json.dumps(row), flush=True)
+        if not row["ok"] and args.fail_fast:
+            raise RuntimeError("identity trial failed; raw evidence retained")
 
 
 def discover_node_binary(explicit: str | None = None) -> Path | None:
@@ -197,13 +255,15 @@ def isolated_environment(code: Path, root: Path, *, observer: Path | None = None
                 "JIUWENSWARM_RUNTIME_WORKSPACE_READY", "PYTHONPROFILEIMPORTTIME",
                 "JIUWENBOX_LISTEN", "PYTHONHOME", "ISSUE4689_ENTRY_LOG",
                 "ISSUE4689_STAGE_LOG", "ISSUE4689_PREP_PROVENANCE",
-                "JIUWENSWARM_SDK_ENTRY_LOG"):
+                "JIUWENSWARM_SDK_ENTRY_LOG", "JIUWENSWARM_IDENTITY_CACHE_DIR"):
         env.pop(key, None)
     home = root / "home"
     home.mkdir(parents=True, exist_ok=True)
     env.update(PYTHONPATH=os.pathsep.join(str(p) for p in (observer, code) if p),
                JIUWENSWARM_DATA_DIR=str(root / "data"), JIUWENSWARM_HOME=str(home),
                USERPROFILE=str(home), HOME=str(home), AGENT_SERVER_HOST="127.0.0.1",
+               JIUWENSWARM_IDENTITY_CACHE_DIR=str(root / "identity-cache"),
+               LOCALAPPDATA=str(root / "local-appdata"),
                JIUWENSWARM_RUNTIME_PROFILE="desktop", NO_PROXY="127.0.0.1,localhost",
                PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     if importtime:
@@ -226,9 +286,44 @@ def configure_fixture(data: Path, model_port: int) -> None:
     path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
 
 
+def configure_all_optional(data: Path, python: str) -> dict:
+    """Enable available optional services without weakening the chat tool policy."""
+    path = data / "config" / "config.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config.setdefault("proactive_recommendation", {})["enabled"] = True
+    config.setdefault("models", {})["enable_free_models"] = True
+    config.setdefault("react", {})["enable_read_image_multimodal"] = None
+    config.setdefault("symphony", {})["enabled"] = True
+    config["symphony"].setdefault("evolution", {}).setdefault("flow", {})["enabled"] = True
+    mcp_script = data.parent / "optional_mcp.py"
+    mcp_script.write_text('from mcp.server.fastmcp import FastMCP\n'
+                          'server = FastMCP("performance-optional")\n'
+                          '@server.tool()\ndef ping() -> str:\n    return "optional-ok"\n'
+                          'server.run(transport="stdio")\n', encoding="utf-8")
+    config["mcp"] = {"servers": [{"name": "performance-optional", "enabled": True,
+                     "transport": "stdio", "command": python, "args": [str(mcp_script)]}]}
+    path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
+    personal = data / ".personal_context"
+    personal.mkdir(exist_ok=True)
+    (personal / "personal_context.yaml").write_text(yaml.safe_dump({
+        "master_enabled": True, "collection_enabled": True, "agent_use_enabled": True,
+        "strategy_profile": "rules", "fetch_services": [], "provider_credentials": {},
+        "max_pages_per_directory": 20, "max_subdirectories_per_directory": 20,
+        "model_id": "mdl_fixture", "model_index": 0}), encoding="utf-8")
+    return {"enabled": ["MCP", "PersonalContext", "Proactive", "Symphony", "image-probe", "Zen-warmup"],
+            "sandbox": "unsupported on Windows; platform guard retained",
+            "mcp": "real local stdio MCP subprocess", "model": "local protocol fixture"}
+
+
 def code_manifest(code: Path) -> dict:
     digest = hashlib.sha256()
-    for source in sorted((code / "jiuwenswarm").rglob("*.py")):
+    sources = []
+    frontend = code / "jiuwenswarm" / "channels" / "web" / "frontend"
+    for directory, children, files in os.walk(code / "jiuwenswarm"):
+        if Path(directory) == frontend:
+            children[:] = [name for name in children if name != "node_modules"]
+        sources.extend(Path(directory) / name for name in files if name.endswith(".py"))
+    for source in sorted(sources):
         digest.update(source.relative_to(code).as_posix().encode())
         digest.update(source.read_bytes())
     files = {name: hashlib.sha256((code / name).read_bytes()).hexdigest()
@@ -241,55 +336,84 @@ def code_manifest(code: Path) -> dict:
 
 def population(values: list[float]) -> dict:
     if not values:
-        return {"n": 0, "mean_ms": None, "p50_ms": None, "p95_ms": None, "p99_ms": None}
+        return {"n": 0, "mean_ms": None, "max_ms": None, "p50_ms": None, "p95_ms": None, "p99_ms": None}
     ordered = sorted(values)
-    return {"n": len(values), "mean_ms": statistics.fmean(values),
+    return {"n": len(values), "mean_ms": statistics.fmean(values), "max_ms": ordered[-1],
             **{f"p{p}_ms": ordered[math.ceil(len(ordered) * p / 100) - 1]
                for p in (50, 95, 99)}}
 
 
 def summarize(rows: list[dict], metadata: dict) -> dict:
     metrics = {}
+    counts = {}
     for label in metadata["labels"]:
         selected = [row for row in rows if row["label"] == label]
         groups = {}
         for case in metadata["cases"]:
-            if case == "front":
+            if case == "identity":
+                for condition in ("first_build", "cache_hit"):
+                    complete = [r for r in selected if r["case"] == case and r["ok"]
+                                and r["condition"] == condition]
+                    name = f"source_identity.{condition}"
+                    groups[name] = population([r["identity_ms"] for r in complete])
+                    counts[name] = "identity_samples"
+            elif case == "front":
                 complete = [r for r in selected if r["case"] == case and r["ok"]]
                 groups["front.listen"] = population([r["listen_ms"] for r in complete])
+                counts["front.listen"] = "front_samples"
                 for method in ("session.list", "project.list", "config.get", "history.get"):
                     groups[method] = population([r["controls"][method]["available_from_spawn_ms"]
                                                  for r in complete])
+                    counts[method] = "front_samples"
             else:
                 for condition in ("cold", "warm_same", "warm_new") if case == "chat" else ("cold",):
                     if condition.startswith("warm") and metadata.get(condition + "_samples") == 0:
                         continue
                     complete = [r for r in selected if r["case"] == case and r["ok"]
                                 and r["condition"] == condition]
-                    groups[f"{case}.{condition}"] = population([r["entry_ms"] for r in complete])
+                    name = f"{case}.{condition}"
+                    groups[name] = population([r["entry_ms"] for r in complete])
+                    counts[name] = ("fresh_install_samples" if case == "fresh" else
+                                    "cold_samples" if condition == "cold" else condition + "_samples")
+                    if condition == "cold" and case in {"new_checkout", "chat"}:
+                        name = "worker.cold_new_checkout" if case == "new_checkout" else "worker.cold_cached_checkout"
+                        groups[name] = groups[f"{case}.{condition}"]
+                        counts[name] = "cold_samples"
         metrics[label] = groups
     limits = {"front.listen": 300, "session.list": 500, "project.list": 500,
               "config.get": 500, "history.get": 500, "chat.cold": 2500,
-              "chat.warm_same": 500, "chat.warm_new": 500, "fresh.cold": 2500}
+              "chat.warm_same": 500, "chat.warm_new": 500, "fresh.cold": 2500,
+              "new_checkout.cold": 2500, "worker.cold_new_checkout": 2500,
+              "worker.cold_cached_checkout": 2500, "optional_all.cold": 2500,
+              "source_identity.first_build": 500, "source_identity.cache_hit": 500}
     target = "candidate" if "candidate" in metrics else "baseline"
     failures = [row for row in rows if not row["ok"]]
     incomplete = []
     for label, groups in metrics.items():
         for name, values in groups.items():
-            count_key = ("front_samples" if name == "front.listen" or "." not in name
-                         or name in {"session.list", "project.list", "config.get", "history.get"}
-                         else "fresh_install_samples" if name.startswith("fresh.")
-                         else "cold_samples" if name == "chat.cold"
-                         else name.split(".", 1)[1] + "_samples")
+            count_key = counts[name]
             expected = metadata.get(count_key)
             if expected is not None and values["n"] != expected:
                 incomplete.append({"label": label, "population": name,
                                    "expected": expected, "observed": values["n"]})
-    decisions = {name: {"limit_ms": limits[name], "p95_ms": values["p95_ms"],
-                         "required": name != "fresh.cold",
-                         "passed": values["p95_ms"] is not None and values["p95_ms"] <= limits[name]}
-                 for name, values in metrics[target].items()}
+    # A new-deployment outlier must fail even when nearest-rank P95 excludes it.
+    every_sample = {"source_identity.first_build", "new_checkout.cold",
+                    "worker.cold_new_checkout", "fresh.cold"}
+    decisions = {}
+    for name, values in metrics[target].items():
+        max_required = name in every_sample
+        decisions[name] = {"limit_ms": limits[name], "p95_ms": values["p95_ms"],
+                           "max_ms": values["max_ms"], "required": True,
+                           "statistic": "p95_and_every_sample" if max_required else "p95",
+                           "passed": values["p95_ms"] is not None
+                           and values["p95_ms"] <= limits[name]
+                           and (not max_required or values["max_ms"] <= limits[name])}
+    outliers = [row for row in rows if row["label"] == target and row["ok"]
+                and ((row["case"] == "identity" and row["condition"] == "first_build"
+                      and row["identity_ms"] > limits["source_identity.first_build"])
+                     or (row["case"] in {"new_checkout", "fresh"} and row["entry_ms"] > 2500))]
     return {"metadata": metadata, "metrics": metrics, "acceptance": decisions,
+            "first_deployment_sample_failures": outliers,
             "failed_attempts": failures, "incomplete_populations": incomplete,
             "all_passed": not failures and not incomplete
                           and all(item["passed"] for item in decisions.values() if item["required"])}
@@ -324,7 +448,7 @@ def prepare_snapshot(args, root: Path, model_port: int, output: Path) -> Path:
 
 async def request_entry(ws, *, request_id: str, session_id: str, mode: str,
                         entry_log: Path, endpoint: str, code: Path,
-                        executable: Path | None = None) -> dict:
+                        executable: Path | None = None, legacy_baseline: bool = False) -> dict:
     sent = time.perf_counter_ns()
     await send(ws, request_id, "chat.send", session_id,
                {"query": "[4689-original] Reply resident-worker-ok", "mode": mode}, stream=True)
@@ -339,14 +463,16 @@ async def request_entry(ws, *, request_id: str, session_id: str, mode: str,
         if wire.get("is_final"):
             completed = time.perf_counter_ns()
             break
-    snapshot_id = f"snapshot-{request_id}"
-    await send(ws, snapshot_id, "session.get_metadata", session_id)
-    response = await receive(ws, snapshot_id)
-    runtime = payload(response).get("runtime", {})
-    dispatches = [item for item in runtime.get("dispatches", []) if item["request_id"] == request_id]
-    if len(dispatches) != 1 or not dispatches[0].get("entered_at_ns"):
-        raise AssertionError(f"expected one prepared execution for {request_id}")
-    prepared = dispatches[0]["entered_at_ns"]
+    runtime, dispatches, prepared = {}, [], None
+    if not legacy_baseline:
+        snapshot_id = f"snapshot-{request_id}"
+        await send(ws, snapshot_id, "session.get_metadata", session_id)
+        response = await receive(ws, snapshot_id)
+        runtime = payload(response).get("runtime", {})
+        dispatches = [item for item in runtime.get("dispatches", []) if item["request_id"] == request_id]
+        if len(dispatches) != 1 or not dispatches[0].get("entered_at_ns"):
+            raise AssertionError(f"expected one prepared execution for {request_id}")
+        prepared = dispatches[0]["entered_at_ns"]
     entry = prepared
     sdk_pid = None
     provenance = {}
@@ -372,13 +498,15 @@ async def request_entry(ws, *, request_id: str, session_id: str, mode: str,
                     or "-m" not in argv or argv[argv.index("-m") + 1] != "jiuwenswarm.server.worker.main"):
                 raise AssertionError("native SDK entry did not come from the expected frozen Worker executable")
             provenance["actual_worker_executable"] = process.exe()
-    if not sent <= prepared <= entry <= completed:
+    if not sent <= entry <= completed or (prepared is not None and not sent <= prepared <= entry):
         raise AssertionError("execution timestamps are not ordered")
     return {"request_id": request_id, "session_id": session_id, "sent_at_ns": sent,
             "entered_at_ns": entry, "completed_at_ns": completed, "prepared_at_ns": prepared,
-            "entry_ms": (entry - sent) / 1e6, "prepared_to_sdk_ms": (entry - prepared) / 1e6,
+            "entry_ms": (entry - sent) / 1e6,
+            "prepared_to_sdk_ms": (entry - prepared) / 1e6 if prepared is not None else None,
             "worker_instance": runtime.get("worker_instance"), "worker_pid": sdk_pid,
-            "execution_id": dispatches[0].get("execution_id"), "entry_endpoint": endpoint,
+            "execution_id": dispatches[0].get("execution_id") if dispatches else None,
+            "entry_endpoint": endpoint, "legacy_baseline_without_snapshot": legacy_baseline,
             "process_provenance": provenance}
 
 
@@ -419,6 +547,7 @@ async def trial(args, label: str, case: str, iteration: int, root: Path,
         configure_fixture(data, model_port)
     else:
         shutil.copytree(snapshot, data)
+    optional_configuration = configure_all_optional(data, args.python) if case == "optional_all" else None
     if case == "chat" and iteration == 0:
         for sample in range(args.warm_new):
             new_session(data, f"warm-new-{sample:03d}", args.mode)
@@ -451,11 +580,23 @@ async def trial(args, label: str, case: str, iteration: int, root: Path,
     command += ["jiuwenswarm.server.app_agentserver", "--port", str(front_port)]
     identity = {"label": label, "case": case, "iteration": iteration, "mode": args.mode,
                 "diagnostic": bool(args.trace or args.importtime or args.native_sdk_calibration),
-                "entry_endpoint": endpoint}
+                "entry_endpoint": endpoint,
+                "identity_cache_dir": env["JIUWENSWARM_IDENTITY_CACHE_DIR"],
+                "identity_cache_condition": "cached_checkout" if case == "chat" else "new_checkout"}
+    if Path(identity["identity_cache_dir"]).exists():
+        raise FileExistsError("sample identity cache already existed before independent deployment")
+    identity["identity_cache_empty_before_preparation"] = True
+    if optional_configuration:
+        identity["optional_configuration"] = optional_configuration
     ws = None
     proc = None
     failed = False
     try:
+        if case == "chat" and not executable:
+            # Each cached-checkout sample has its own first build. Front and
+            # earlier trials cannot supply the cache for this population.
+            identity["identity_preparation"] = identity_probe(
+                args, code, sample_root, output / f"{name}.identity-preparation.log")
         with (output / f"{name}.log").open("wb") as log:
             started = time.perf_counter_ns()
             if args.trace:
@@ -477,12 +618,17 @@ async def trial(args, label: str, case: str, iteration: int, root: Path,
                     identity.update(condition=condition, sample=sample)
                     measured = await request_entry(ws, request_id=f"{name}-{condition}-{sample}",
                         session_id=session_id, mode=args.mode, entry_log=entries, endpoint=endpoint,
-                        code=code, executable=executable)
+                        code=code, executable=executable,
+                        legacy_baseline=label == "baseline" and args.legacy_baseline_sdk)
                     current_worker = (measured["worker_pid"], measured["worker_instance"])
                     if worker_identity is not None and current_worker != worker_identity:
                         raise AssertionError("resident Worker identity changed during warm requests")
                     worker_identity = current_worker
                     row = {**identity, "ok": True, **measured}
+                    if case == "optional_all":
+                        health_id = f"health-{name}"
+                        await send(ws, health_id, "health_check.get_conf", session_id)
+                        row["optional_health_after_first_sdk_entry"] = payload(await receive(ws, health_id))
                     rows.append(row)
                     append_json(args.output, row)
             print(json.dumps({**identity, "ok": True}), flush=True)
@@ -505,6 +651,18 @@ async def trial(args, label: str, case: str, iteration: int, root: Path,
                        "error_type": type(exc).__name__, "error": str(exc)}
                 rows.append(row)
                 append_json(args.output, row)
+        # Windowed Frozen startup can log exclusively to its workspace. Keep
+        # those native stage/loop-lag records after the temporary data is gone.
+        native_logs = data / "logs"
+        if native_logs.is_dir():
+            try:
+                shutil.copytree(native_logs, output / f"{name}.native-logs", dirs_exist_ok=True)
+            except OSError as exc:
+                failed = True
+                row = {**identity, "ok": False, "failure_phase": "native_log_preservation",
+                       "error_type": type(exc).__name__, "error": str(exc)}
+                rows.append(row)
+                append_json(args.output, row)
     if failed and args.fail_fast:
         raise RuntimeError(f"trial {name} failed; raw evidence retained")
 
@@ -518,19 +676,29 @@ async def run(args) -> int:
         if output.is_relative_to(code):
             raise ValueError("acceptance output must be outside both source checkouts")
     labels = ["baseline"] if args.baseline_only else ["candidate"] if args.candidate_only else ["baseline", "candidate"]
+    cases = args.cases[:]
+    if args.baseline_executable or args.candidate_executable:
+        # Source fingerprints are build-time work in controlled frozen packages.
+        cases = [case for case in cases if case != "identity"]
+    if not cases:
+        raise ValueError("at least one applicable population is required")
     metadata = {"run_id": uuid.uuid4().hex, "mode": args.mode, "platform": platform.platform(),
         "python": args.python, "driver_python": sys.executable, "python_version": sys.version,
         "baseline": code_manifest(args.baseline), "candidate": code_manifest(args.candidate),
-        "labels": labels, "cases": args.cases, "cold_samples": args.cold,
+        "labels": labels, "cases": cases, "cold_samples": args.cold, "identity_samples": args.cold,
         "front_samples": args.front_samples, "warm_same_samples": args.warm_same,
         "warm_new_samples": args.warm_new, "fresh_install_samples": args.fresh_samples,
         "diagnostic": bool(args.trace or args.importtime or args.native_sdk_calibration),
         "fixture": "local-openai-protocol; shipped capability switches retained",
         "percentile": "nearest-rank", "cold": "new Front and Worker process, no SDK preloading",
+        "identity_cache": "independent per deployment sample; cold cached checkout explicitly built before timing",
+        "identity_budget": "new internal first-build/cache-hit budget 500ms; Worker limit remains 2500ms",
+        "first_deployment_gate": "P95 and every sample/max; no P95-only exemption for first deployment",
         "warm": "sequential requests on the same resident Worker; same-session and new-session separate",
         "source_endpoint": "actual DeepAgent.send_input observer",
         "frozen_endpoint": "observation-only native hook immediately before actual SDK sender; no prepared-hook fallback",
         "native_sdk_calibration": args.native_sdk_calibration,
+        "legacy_baseline_sdk": args.legacy_baseline_sdk,
         "form": "Windows-frozen" if args.baseline_executable or args.candidate_executable else "Windows-source",
         "packages": {d.metadata["Name"]: d.version for d in importlib.metadata.distributions()}}
     node = discover_node_binary(args.node)
@@ -556,13 +724,16 @@ async def run(args) -> int:
         with tempfile.TemporaryDirectory(prefix="jiuwenswarm-4689-paired-") as temporary:
             root = Path(temporary)
             snapshot = prepare_snapshot(args, root, server.server_port, output)
-            for case in args.cases:
+            for case in cases:
                 count = args.front_samples if case == "front" else args.fresh_samples if case == "fresh" else args.cold
                 for iteration in range(count):
                     ordered = labels if iteration % 2 == 0 else list(reversed(labels))
                     for label in ordered:
-                        await trial(args, label, case, iteration, root, snapshot,
-                                    server.server_port, output, rows)
+                        if case == "identity":
+                            identity_trial(args, label, iteration, root, output, rows)
+                        else:
+                            await trial(args, label, case, iteration, root, snapshot,
+                                        server.server_port, output, rows)
     finally:
         server.shutdown()
         server.server_close()
@@ -581,7 +752,8 @@ def arguments():
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--node", help="optional Web-tooling executable; otherwise discover Node from PATH")
     parser.add_argument("--mode", choices=("agent", "code.normal"), default="agent")
-    parser.add_argument("--cases", type=lambda value: value.split(","), default=["front", "chat", "fresh"])
+    parser.add_argument("--cases", type=lambda value: value.split(","),
+                        default=["identity", "front", "new_checkout", "chat", "fresh", "optional_all"])
     parser.add_argument("--front-samples", type=int, default=30)
     parser.add_argument("--cold", type=int, default=30)
     parser.add_argument("--warm-same", type=int, default=100)
@@ -597,18 +769,23 @@ def arguments():
     parser.add_argument("--baseline-executable", type=lambda p: Path(p).resolve())
     parser.add_argument("--candidate-executable", type=lambda p: Path(p).resolve())
     parser.add_argument("--baseline-instrumentation-patch", type=lambda p: Path(p).resolve())
+    parser.add_argument("--legacy-baseline-sdk", action="store_true",
+                        help="explicit source baseline before Runtime snapshot support; still require actual SDK entry")
     parser.add_argument("--native-sdk-calibration", action="store_true",
                         help="diagnostic only: capture the native hook separately from the source SDK observer")
     args = parser.parse_args()
-    if set(args.cases) - {"front", "chat", "fresh"}:
-        parser.error("--cases must contain front, chat, and/or fresh")
+    if args.legacy_baseline_sdk and (args.baseline_executable or args.candidate_only or "identity" in args.cases or "chat" in args.cases):
+        parser.error("legacy source baseline uses new_checkout/fresh/front cases; no persistent source identity cache")
+    if set(args.cases) - {"identity", "front", "chat", "fresh", "new_checkout", "optional_all"}:
+        parser.error("unknown benchmark case")
     if args.front_samples < 1 or args.cold < 1 or args.fresh_samples < 1 or min(args.warm_same, args.warm_new) < 0:
         parser.error("cold/front/fresh counts must be positive; warm counts nonnegative")
     if (not args.baseline_only and not args.candidate_only
             and bool(args.baseline_executable) != bool(args.candidate_executable)):
         parser.error("paired runs require the same source/frozen form in both versions")
     if (not args.candidate_only and args.baseline_executable
-            and {"chat", "fresh"} & set(args.cases) and not args.baseline_instrumentation_patch):
+            and {"chat", "fresh", "new_checkout", "optional_all"} & set(args.cases)
+            and not args.baseline_instrumentation_patch):
         parser.error("frozen baseline chat requires the explicit observation-only instrumentation patch")
     return args
 

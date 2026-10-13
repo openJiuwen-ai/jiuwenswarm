@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import os
@@ -17,7 +18,6 @@ from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
 from jiuwenswarm.common.version import __version__
-from jiuwenswarm.agents.harness.team import get_team_manager
 from jiuwenswarm.common.config import get_available_models, get_config
 from jiuwenswarm.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
@@ -45,6 +45,13 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def get_team_manager(channel_id: str | None = None) -> Any:
+    """Keep Team-mode imports outside ordinary single-agent startup."""
+    from jiuwenswarm.agents.harness.team import get_team_manager as resolve
+
+    return resolve(channel_id)
 
 
 ACP_DEFAULT_CAPABILITIES: dict[str, Any] = build_acp_initialize_result(agent_version=__version__)
@@ -641,7 +648,10 @@ class AgentManager:
         Returns:
             JiuWenSwarm 实例
         """
-        from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+        facade = await asyncio.to_thread(
+            importlib.import_module, "jiuwenswarm.server.runtime.agent_adapter.interface",
+        )
+        JiuWenSwarm = facade.JiuWenSwarm
 
         for env_key, env_value in self._latest_env_overrides.items():
             key = str(env_key)
@@ -651,6 +661,17 @@ class AgentManager:
                 os.environ[key] = str(env_value)
         channel_key = _normalize_channel_id(agent_key)
         mode_key = _normalize_mode(mode)
+        from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import resolve_sdk_choice
+
+        if resolve_sdk_choice() == "harness":
+            # Import only the backend selected by this request. The adapter
+            # factory and all loop-owned objects are still constructed below
+            # on the Runtime loop after these synchronous imports complete.
+            await asyncio.to_thread(
+                importlib.import_module,
+                "jiuwenswarm.server.runtime.agent_adapter.interface_code" if mode_key == "code"
+                else "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+            )
         # 用并轨后的子模式装配实例，和缓存键保持同一套语义。
         sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
         project_dir = _normalize_project_dir((config or {}).get("project_dir"))

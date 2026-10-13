@@ -11,6 +11,98 @@ import sys
 from pathlib import Path
 
 
+def _deployment_path() -> str:
+    path = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
+    return os.path.normcase(str(path))
+
+
+def _is_launch_parent(parent_pid: int) -> bool:
+    direct = os.getppid()
+    if direct == parent_pid:
+        return True
+    if sys.platform != "win32":
+        return False
+    # A Windows venv launcher creates the actual interpreter as its child.
+    # Accept that single known executable hop, never an arbitrary ancestor.
+    import psutil
+
+    try:
+        launcher = psutil.Process(direct)
+        return (launcher.ppid() == parent_pid
+                and os.path.normcase(str(Path(launcher.exe()).resolve()))
+                == os.path.normcase(str(Path(sys.executable).resolve())))
+    except (psutil.Error, OSError):
+        return False
+
+
+def launch_identity_payload(fingerprint: str) -> bytes:
+    """Describe the parent's validated deployment on a private spawn pipe."""
+    observation = None
+    if not getattr(sys, "frozen", False):
+        from jiuwenswarm.server.supervisor.identity_cache import launch_source_observation
+
+        observation = launch_source_observation()
+    return (json.dumps({"schema": 1, "parent_pid": os.getpid(),
+        "package": _deployment_path(),
+        "data_scope": data_scope(), "build_label": os.environ.get("JIUWENSWARM_BUILD_ID", "").strip(),
+        "code_identity": fingerprint, "source_observation": observation}) + "\n").encode()
+
+
+def read_launch_identity() -> str:
+    """Consume a one-use parent pipe; environment build labels cannot bypass validation."""
+    if sys.stdin is not None:
+        value = sys.stdin.buffer.readline(4097)
+    elif sys.platform == "win32":
+        # Windowed PyInstaller sets sys.stdin=None, but Popen's private input
+        # handle still exists. Read it without depending on a console window.
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetStdHandle.argtypes = [wintypes.DWORD]
+        kernel.GetStdHandle.restype = wintypes.HANDLE
+        kernel.ReadFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+        kernel.ReadFile.restype = wintypes.BOOL
+        buffer = ctypes.create_string_buffer(4097)
+        received = wintypes.DWORD()
+        if not kernel.ReadFile(kernel.GetStdHandle(-10 & 0xffffffff), buffer, len(buffer),
+                               ctypes.byref(received), None):
+            raise RuntimeError("Worker parent identity pipe is unavailable")
+        value = buffer.raw[:received.value]
+    else:
+        raise RuntimeError("Worker parent identity pipe is unavailable")
+    try:
+        payload = json.loads(value)
+        fingerprint = payload["code_identity"]
+        if (len(value) > 4096 or payload.get("schema") != 1
+                or not isinstance(payload.get("parent_pid"), int)
+                or not _is_launch_parent(payload["parent_pid"])
+                or payload.get("package") != _deployment_path()
+                or payload.get("data_scope") != data_scope()
+                or payload.get("build_label") != os.environ.get("JIUWENSWARM_BUILD_ID", "").strip()
+                or not isinstance(fingerprint, str) or len(fingerprint) != 64
+                or any(letter not in "0123456789abcdef" for letter in fingerprint)):
+            raise ValueError("identity pipe does not describe this child deployment")
+        observed_identity = None
+        observation = payload.get("source_observation")
+        if not getattr(sys, "frozen", False) and isinstance(observation, dict):
+            from jiuwenswarm.server.supervisor.identity_cache import verify_launch_source
+
+            source = verify_launch_source(Path(__file__).resolve().parents[2], observation)
+            if source is not None:
+                observed_identity = hashlib.sha256(
+                    f"source-v1\0{source}\0{payload['build_label']}".encode()).hexdigest()
+        # Frozen identity is an O(1) bundled check. Unobservable source/cache
+        # falls back to full validation; a private pipe cannot hide an upgrade.
+        if observed_identity is None:
+            observed_identity = code_identity()
+        if observed_identity != fingerprint:
+            raise ValueError("Worker source changed after the parent validated it")
+        return fingerprint
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise RuntimeError("Invalid Worker parent identity") from exc
+
+
 def data_scope() -> str:
     from jiuwenswarm.common.utils import get_user_workspace_dir
 

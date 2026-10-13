@@ -357,6 +357,8 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
 
     adapter = interface_code.JiuwenSwarmCodeAdapter()
     create_model = MagicMock(side_effect=AssertionError("config model must not build"))
+    adapter._model_recipes = {"unused": {"model_id": "config-only"}}
+    adapter._model_alias_to_key = {"unused-alias": "unused"}
 
     def create_sys_operation():
         adapter._sys_operation_card = SysOperationCard(
@@ -417,6 +419,8 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     assert adapter._agent_name == "caller-spec-agent"
     assert owner_ids == [adapter._tool_owner_id()]
     assert adapter._default_model_name == "test-model"
+    assert adapter._model_recipes == {}
+    assert adapter._model_alias_to_key == {}
     # Reloads keep the caller Spec's tools untouched, including their configs.
     assert adapter._vision_tools == []
     assert adapter._vision_tools_registered is False

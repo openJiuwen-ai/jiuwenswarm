@@ -58,6 +58,8 @@ _HEARTBEAT_INTERVAL = 10.0
 _HEARTBEAT_TIMEOUT = 30.0
 _HELLO_TIMEOUT = 10.0
 _FINAL_SHUTDOWN_TIMEOUT = 30.0
+_SNAPSHOT_WAIT_SECONDS = 0.3
+_SNAPSHOT_WAIT_ATTEMPTS = 3
 
 
 class RuntimeSupervisor:
@@ -125,10 +127,10 @@ class RuntimeSupervisor:
 
     accepts_warming = True
 
-    async def get_runtime_snapshot(self, request: AgentRequest) -> dict[str, Any] | None:
+    async def get_runtime_snapshot(self, request: AgentRequest) -> dict[str, Any]:
         conn = self._conn
         if conn is None:
-            return None
+            return self._recovery_pending("worker_disconnected")
         query_id = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self._queries[query_id] = future
@@ -136,16 +138,37 @@ class RuntimeSupervisor:
         resume = resume if isinstance(resume, dict) else {}
         try:
             after = max(0, int(resume.get("after") or 0))
-            await conn.send({"kind": KIND_SUBSCRIBE, "query_id": query_id,
-                             "generation": self._peer_generation,
-                             "payload": dump_agent_request(request),
-                             "subscribe": bool(resume), "after": after,
-                             "worker_instance": resume.get("worker_instance")})
-            return await asyncio.wait_for(future, timeout=0.3)
-        except (OSError, RuntimeError, asyncio.TimeoutError, ValueError):
-            return None
+            await asyncio.wait_for(conn.send({"kind": KIND_SUBSCRIBE, "query_id": query_id,
+                                              "generation": self._peer_generation,
+                                              "payload": dump_agent_request(request),
+                                              "subscribe": bool(resume), "after": after,
+                                              "worker_instance": resume.get("worker_instance")}),
+                                   timeout=_SNAPSHOT_WAIT_SECONDS)
+            # Retry the wait on the same query. Sending another subscription
+            # would replay the journal twice and could race the first recovery.
+            for _ in range(_SNAPSHOT_WAIT_ATTEMPTS):
+                try:
+                    return await asyncio.wait_for(asyncio.shield(future), timeout=_SNAPSHOT_WAIT_SECONDS)
+                except asyncio.TimeoutError:
+                    if self._conn is not conn:
+                        return self._recovery_pending("worker_disconnected")
+            logger.warning("[Supervisor] runtime snapshot pending query_id=%s session_id=%s",
+                           query_id, request.session_id)
+            return self._recovery_pending("snapshot_timeout")
+        except asyncio.TimeoutError:
+            return self._recovery_pending("snapshot_transport_timeout")
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.info("[Supervisor] runtime snapshot unavailable: %s", exc)
+            return self._recovery_pending("snapshot_unavailable")
         finally:
             self._queries.pop(query_id, None)
+            if not future.done():
+                future.cancel()
+
+    def _recovery_pending(self, reason: str) -> dict[str, Any]:
+        return {"recovery_pending": True, "recovery_reason": reason,
+                "retry_after_ms": int(_SNAPSHOT_WAIT_SECONDS * 1000),
+                "worker_instance": self._worker_instance}
 
     @property
     def socket_path(self) -> str:
@@ -324,6 +347,7 @@ class RuntimeSupervisor:
 
     async def _bring_up(self) -> None:
         await self._cancel_side_tasks()
+        launch_identity = None
         async with self._session_lock:
             from filelock import FileLock
 
@@ -363,6 +387,7 @@ class RuntimeSupervisor:
                             stub_exit_on_request=self._stub_exit_on_request,
                         )
                         await process.spawn()
+                        launch_identity = getattr(process, "launch_identity", None)
                         self._process = process
                         self._owns_process = True
                         self._conn = await connect_with_retry(self._socket_path, timeout=self._connect_timeout)
@@ -380,7 +405,7 @@ class RuntimeSupervisor:
                 raise RuntimeError("runtime ipc protocol mismatch")
             from jiuwenswarm.server.supervisor.identity import code_identity, data_scope
 
-            identity = await asyncio.to_thread(code_identity)
+            identity = launch_identity or await asyncio.to_thread(code_identity)
             if hello.get("data_scope") != data_scope() or hello.get("code_identity") != identity:
                 self._fatal = True
                 self._fatal_reason = "resident Worker belongs to a different deployment or code version"

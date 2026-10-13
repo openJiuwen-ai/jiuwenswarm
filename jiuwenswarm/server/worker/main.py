@@ -20,7 +20,13 @@ def main() -> None:
     parser.add_argument("--stub", action="store_true", help="Speak IPC without loading Runtime.")
     parser.add_argument("--stub-ready-delay", type=float, default=0.0)
     parser.add_argument("--stub-exit-on-request", action="store_true")
+    parser.add_argument("--identity-from-parent", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    code_identity_value = None
+    if args.identity_from_parent:
+        from jiuwenswarm.server.supervisor.identity import read_launch_identity
+
+        code_identity_value = read_launch_identity()
     if args.stub:
         from jiuwenswarm.server.worker.stub import StubExit, serve_stub
 
@@ -30,6 +36,7 @@ def main() -> None:
                     args.socket,
                     ready_delay=args.stub_ready_delay,
                     exit_on_request=args.stub_exit_on_request,
+                    code_identity_value=code_identity_value,
                 )
             )
         except StubExit:
@@ -40,7 +47,8 @@ def main() -> None:
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    task = loop.create_task(serve_worker(args.socket, host=args.host, port=args.port))
+    task = loop.create_task(serve_worker(args.socket, host=args.host, port=args.port,
+                                       code_identity_value=code_identity_value))
 
     def _stop() -> None:
         task.cancel()

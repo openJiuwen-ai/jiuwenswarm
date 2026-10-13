@@ -58,6 +58,22 @@ def seed(root: Path, code: Path, mode: str):
         }) for n in range(24)) + "\n", encoding="utf-8")
 
 
+def _wait_stopped(child, timeout=5):
+    # Grandchildren are not ours to reap with waitpid(). Linux CI containers may
+    # retain an orphan zombie until PID 1 reaps it; it has already stopped and
+    # cannot execute or hold the benchmark's files/sockets open.
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if child.status() == psutil.STATUS_ZOMBIE or not child.is_running():
+                return
+        except psutil.NoSuchProcess:
+            return
+        if time.monotonic() >= deadline:
+            raise psutil.TimeoutExpired(timeout, pid=child.pid)
+        time.sleep(.01)
+
+
 def terminate_owned(proc, children):
     # The parent handle plus creation time protects against unrelated/reused PIDs.
     try:
@@ -72,7 +88,7 @@ def terminate_owned(proc, children):
             child = psutil.Process(pid)
             if child.create_time() == created:
                 child.kill()
-                child.wait(timeout=5)
+                _wait_stopped(child)
         except psutil.NoSuchProcess:
             pass
 

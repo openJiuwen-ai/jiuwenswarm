@@ -205,6 +205,50 @@ from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
     reload_runtime_after_config_save,
 )
 
+from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
+    _HISTORY_PAGE_SIZE,
+    _HISTORY_WIRE_STRING_LIMIT,
+    _HISTORY_WIRE_METADATA_STRING_LIMIT,
+    _HISTORY_WIRE_LIST_LIMIT,
+    _HISTORY_WIRE_DEPTH_LIMIT,
+    _HISTORY_WIRE_RECORD_MAX_BYTES,
+    _TEAM_HISTORY_DEFAULT_LIMIT,
+    _TEAM_HISTORY_MAX_LIMIT,
+    _TEAM_HISTORY_DEFAULT_MAX_BYTES,
+    _TEAM_HISTORY_MIN_MAX_BYTES,
+    _TEAM_HISTORY_MAX_MAX_BYTES,
+    _TEAM_HISTORY_FRAME_OVERHEAD_BYTES,
+    _WORKFLOW_AGENT_FIELD_PART_BYTES,
+    _WORKFLOW_LIST_DEFAULT_LIMIT,
+    _WORKFLOW_LIST_MAX_LIMIT,
+    _WORKFLOW_PHASE_DEFAULT_LIMIT,
+    _WORKFLOW_PHASE_MAX_LIMIT,
+    _WORKFLOW_AGENT_DEFAULT_LIMIT,
+    _WORKFLOW_AGENT_MAX_LIMIT,
+    _SPLITTABLE_AGENT_FIELDS,
+    _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
+    _json_wire_size,
+    _coerce_int,
+    _truncate_string_by_bytes,
+    _compact_wire_metadata_value,
+    _sanitize_history_wire_value,
+    _collapse_oversized_history_record,
+    _minimal_history_record_for_wire,
+    _sanitize_history_record_for_wire,
+    split_history_record_for_stream,
+    _select_history_record_page,
+    _split_oversized_agent_fields,
+    _workflow_list_summary_item,
+    _workflow_phase_summary,
+    _workflow_run_meta,
+    _find_phase,
+    _find_agent,
+    _build_workflow_list_payload,
+    _build_workflow_detail_paginated,
+    _build_phase_detail_paginated,
+    _build_agent_detail,
+)
+
 logger = logging.getLogger(__name__)
 _MANUAL_COMPACT_PROCESSOR_TYPES = [
     "MessageSummaryOffloader",
@@ -419,49 +463,7 @@ def _renew_server_plan_controller() -> PlanModeController:
 # 避免 ping_timeout 导致连接关闭。默认 10 秒，小于服务端 ping_timeout=20s。
 _STREAM_KEEPALIVE_INTERVAL_SECONDS = 10.0
 _STREAM_KEEPALIVE_STOP_TIMEOUT_SECONDS = 1.0
-from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
-    _HISTORY_PAGE_SIZE,
-    _HISTORY_WIRE_STRING_LIMIT,
-    _HISTORY_WIRE_METADATA_STRING_LIMIT,
-    _HISTORY_WIRE_LIST_LIMIT,
-    _HISTORY_WIRE_DEPTH_LIMIT,
-    _HISTORY_WIRE_RECORD_MAX_BYTES,
-    _TEAM_HISTORY_DEFAULT_LIMIT,
-    _TEAM_HISTORY_MAX_LIMIT,
-    _TEAM_HISTORY_DEFAULT_MAX_BYTES,
-    _TEAM_HISTORY_MIN_MAX_BYTES,
-    _TEAM_HISTORY_MAX_MAX_BYTES,
-    _TEAM_HISTORY_FRAME_OVERHEAD_BYTES,
-    _WORKFLOW_AGENT_FIELD_PART_BYTES,
-    _WORKFLOW_LIST_DEFAULT_LIMIT,
-    _WORKFLOW_LIST_MAX_LIMIT,
-    _WORKFLOW_PHASE_DEFAULT_LIMIT,
-    _WORKFLOW_PHASE_MAX_LIMIT,
-    _WORKFLOW_AGENT_DEFAULT_LIMIT,
-    _WORKFLOW_AGENT_MAX_LIMIT,
-    _SPLITTABLE_AGENT_FIELDS,
-    _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
-    _json_wire_size,
-    _coerce_int,
-    _truncate_string_by_bytes,
-    _compact_wire_metadata_value,
-    _sanitize_history_wire_value,
-    _collapse_oversized_history_record,
-    _minimal_history_record_for_wire,
-    _sanitize_history_record_for_wire,
-    split_history_record_for_stream,
-    _select_history_record_page,
-    _split_oversized_agent_fields,
-    _workflow_list_summary_item,
-    _workflow_phase_summary,
-    _workflow_run_meta,
-    _find_phase,
-    _find_agent,
-    _build_workflow_list_payload,
-    _build_workflow_detail_paginated,
-    _build_phase_detail_paginated,
-    _build_agent_detail,
-)
+
 
 
 def _consume_keepalive_task_result(
@@ -1288,6 +1290,11 @@ class AgentWebSocketServer:
         if self._execution_minimum_observed:
             return
         self._execution_minimum_observed = True
+        preparation = getattr(self, "_preparation_registry", None)
+        if preparation is not None:
+            for token in getattr(self, "_startup_preparation_tokens", set()):
+                preparation.resume_background(token)
+            self._startup_preparation_tokens = set()
         callback = self._on_execution_min_ready
         if callable(callback):
             callback()
@@ -1418,10 +1425,13 @@ class AgentWebSocketServer:
             # it does not need the heavy recovery service at process startup.
             from jiuwenswarm.symphony.config import load_symphony_config, evolution_flow_enabled
 
-            config = load_symphony_config()
+            config = await asyncio.to_thread(load_symphony_config)
             if not config.enabled or not evolution_flow_enabled(config):
                 return True
-            from jiuwenswarm.symphony.service import get_swarm_symphony_service
+            import importlib
+
+            service_module = await asyncio.to_thread(importlib.import_module, "jiuwenswarm.symphony.service")
+            get_swarm_symphony_service = service_module.get_swarm_symphony_service
 
             await get_swarm_symphony_service().start()
             return True
@@ -1493,6 +1503,7 @@ class AgentWebSocketServer:
 
         self._preparation_registry = PreparationRegistry(
             on_change=getattr(self, "_on_runtime_capabilities", None),
+            background_concurrency=1,
         )
         preparation = self._preparation_registry
         self._execution_minimum_observed = False
@@ -1557,8 +1568,14 @@ class AgentWebSocketServer:
             retry_delay = 1.0
             while True:
                 try:
+                    phase_started = time.monotonic()
                     await self._runtime.start()
+                    logger.info("[Worker] preparation stage=runtime_start duration_ms=%.3f",
+                                (time.monotonic() - phase_started) * 1000)
+                    phase_started = time.monotonic()
                     await self._heartbeat_runtime.start()
+                    logger.info("[Worker] preparation stage=heartbeat_start duration_ms=%.3f",
+                                (time.monotonic() - phase_started) * 1000)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "[AgentWebSocketServer] Runtime warmup failed; "
@@ -1596,11 +1613,13 @@ class AgentWebSocketServer:
                 return False
 
         # 端口已 listen, 后台预热 connected MCP 的进程级连接缓存, 不阻塞启动与握手.
-        preparation.register("mcp", _warmup_mcp_connections)
+        preparation.register("mcp", _warmup_mcp_connections,
+                             imports=("jiuwenswarm.common.mcp_config",))
         self._mcp_prewarm_task = preparation.start("mcp")
         preparation.register("personal_context", self._start_personal_context_best_effort)
         self._personal_context_start_task = preparation.start("personal_context")
-        preparation.register("symphony", self._start_symphony_recovery)
+        preparation.register("symphony", self._start_symphony_recovery,
+                             imports=("jiuwenswarm.symphony.config",))
         # 登录模型的 id_token 一小时过期：在用且快过期的，请Gateway续期后推回来
         async def _start_login_refresh() -> None:
             from jiuwenswarm.common.auth.login_credentials import run_refresh_requests
@@ -1611,7 +1630,9 @@ class AgentWebSocketServer:
                 run_refresh_requests(self.send_push), name="login-credential-refresh",
             )
 
-        preparation.register("login_refresh", _start_login_refresh)
+        preparation.register("login_refresh", _start_login_refresh,
+                             imports=("jiuwenswarm.common.auth.login_credentials",
+                                      "jiuwenswarm.common.auth.remote_config"))
         # WS 监听已经开放, 现在按 config.yaml::sandbox 的 runtime.enabled +
         # startup_mode 决定要不要自动把 jiuwenbox 子进程也拉起来。失败不阻塞
         # 启动 (用户依然可以在 TUI 里跑 /sandbox enable 重试)。
@@ -2174,7 +2195,7 @@ class AgentWebSocketServer:
         reuse_dependencies: bool = False,
     ) -> AgentRuntime:
         """Build every AgentServer Runtime through one product composition root."""
-        from jiuwenswarm.agents.harness.team import get_team_manager
+        from jiuwenswarm.runtime.team_controller import process_team_controller
         from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
             get_kv_cache_application_owner,
@@ -2198,7 +2219,7 @@ class AgentWebSocketServer:
             session_delete_lifecycle=getattr(self, "_heartbeat_runtime", None),
             participant_registry=registry,
             resource_lease=lease,
-            team_execution_controller=get_team_manager(None),
+            team_execution_controller=process_team_controller(),
         )
 
     # ---------- 连接处理 ----------
@@ -2508,6 +2529,15 @@ class AgentWebSocketServer:
             )
 
         pending_chat_request: tuple[AgentRuntime, str, str] | None = None
+        registry = getattr(self, "_preparation_registry", None)
+        priority_token = None
+        if (registry is not None and not getattr(self, "_execution_minimum_observed", False)
+                and self._should_trigger_before_chat_request_hook(request)):
+            priority_token = registry.pause_background()
+            tokens = getattr(self, "_startup_preparation_tokens", None)
+            if tokens is None:
+                tokens = self._startup_preparation_tokens = set()
+            tokens.add(priority_token)
         try:
             if self._request_requires_sandbox_bootstrap(request):
                 preparation = getattr(self, "_sandbox_start_task", None)
@@ -2515,7 +2545,10 @@ class AgentWebSocketServer:
                     from jiuwenswarm.server.worker.preparation import CapabilityUnavailableError
 
                     try:
-                        await asyncio.shield(preparation)
+                        if registry is not None:
+                            await registry.ensure("sandbox")
+                        else:
+                            await asyncio.shield(preparation)
                     except CapabilityUnavailableError:
                         # Startup was already best-effort. Keep explicit
                         # /sandbox enable retry and the existing backend/error
@@ -2524,14 +2557,20 @@ class AgentWebSocketServer:
             if request.req_method is not None and request.req_method.value.startswith("proactive."):
                 preparation = getattr(self, "_proactive_prepare_task", None)
                 if preparation is not None:
-                    await asyncio.shield(preparation)
+                    if registry is not None:
+                        await registry.ensure("proactive")
+                    else:
+                        await asyncio.shield(preparation)
             if request.req_method is not None and request.req_method.value.startswith("assets.publish."):
                 await self._handle_asset_publish(ws, request, send_lock)
                 return
             if request.req_method in _PERSONAL_CONTEXT_REQ_METHODS:
                 preparation = getattr(self, "_personal_context_start_task", None)
                 if preparation is not None:
-                    await asyncio.shield(preparation)
+                    if registry is not None:
+                        await registry.ensure("personal_context")
+                    else:
+                        await asyncio.shield(preparation)
                 manager = getattr(self, "_agent_manager", None)
                 runtime_callback = getattr(
                     manager, "set_personal_context_runtime_enabled", None
@@ -3076,6 +3115,9 @@ class AgentWebSocketServer:
                 async with send_lock:
                     await send_wire_payload(ws, wire)
         finally:
+            if priority_token is not None:
+                registry.resume_background(priority_token)
+                self._startup_preparation_tokens.discard(priority_token)
             if pending_chat_request is not None:
                 runtime, session_id, request_id = pending_chat_request
                 runtime.end_chat_request(session_id, request_id)
@@ -5059,7 +5101,7 @@ class AgentWebSocketServer:
     ) -> AgentResponse | None:
         """Return an error response when persistent checkpoint storage is unavailable."""
         try:
-            from jiuwenswarm.server.runtime.agent_adapter.interface_deep import ensure_persistent_checkpointer
+            from jiuwenswarm.runtime.checkpointer import ensure_persistent_checkpointer
 
             await ensure_persistent_checkpointer()
             await self._try_start_heartbeat_runtime()
@@ -7152,7 +7194,6 @@ class AgentWebSocketServer:
         team_manager = get_team_manager(channel_id)
         workflow_handler = team_manager.get_workflow_handler(session_id)
         source = "live" if workflow_handler is not None else "checkpoint"
-        detail_raw_bytes: int | None = None
 
         if workflow_handler is None:
             # No live handler (runtime not active / torn down by cancel-stop /
@@ -7247,7 +7288,6 @@ class AgentWebSocketServer:
                         payload={"error": f"workflow not found: {target_id}"},
                     )
                 else:
-                    detail_raw_bytes = _json_wire_size(match)
                     phase_offset = _coerce_int(
                         params.get("phase_offset"), default=0, minimum=0, maximum=10_000_000
                     )
@@ -7360,11 +7400,6 @@ class AgentWebSocketServer:
         payload = resp.payload if isinstance(resp.payload, dict) else {}
         payload_bytes = _json_wire_size(payload)
         has_more = bool(payload.get("has_more")) if isinstance(payload, dict) else False
-        included = (
-            len(payload.get("workflows", []))
-            if payload.get("action") == "list"
-            else None
-        )
         error = payload.get("error") if isinstance(payload, dict) and not resp.ok else None
         log_level = logging.WARNING if (not resp.ok or has_more) else logging.INFO
         logger.log(

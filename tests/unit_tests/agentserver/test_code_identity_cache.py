@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import concurrent.futures
+import asyncio
 import hashlib
+import io
 import json
 import os
 import subprocess
 import struct
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -401,3 +404,165 @@ def test_legacy_frozen_build_preserves_executable_validation(tmp_path, monkeypat
     first = identity.code_identity()
     executable.write_bytes(b"replacement-package")
     assert identity.code_identity() != first
+
+
+@pytest.mark.parametrize("value", [b'\xef\xbb\xbf[core]\n autocrlf = true\n',
+                                  b'autocrlf = true\n', b'[core]\n invalid syntax\n'])
+@pytest.mark.parametrize("location", ["global", "repository"])
+def test_invalid_gitconfig_falls_back_to_content_validation(checkout, monkeypatch, value, location):
+    package, _versions = checkout
+    git = package.parent / ".git"
+    git.mkdir()
+    (git / "HEAD").write_text("a" * 40 + "\n", encoding="utf-8")
+    target = package.parent / "global.gitconfig" if location == "global" else git / "config"
+    target.write_bytes(value)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(package.parent / "global.gitconfig"))
+    first = cache.source_fingerprint(package)
+    assert cache._git_metadata(package.parent) == ({"unavailable": True}, None)
+    assert cache._LAST_DIAGNOSTICS["strategy"] == "full-content"
+    # A stale change marker must not let broken Git metadata reuse a digest.
+    (package / "a.py").write_text("value = 2\n", encoding="utf-8")
+    assert cache.source_fingerprint(package) != first
+
+
+def test_identity_cache_directory_isolated_from_other_runs(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "one"))
+    first = cache._cache_path(tmp_path / "checkout")
+    monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "two"))
+    second = cache._cache_path(tmp_path / "checkout")
+    assert first.parent != second.parent
+    assert first.name == second.name
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="NTFS change-time fallback")
+def test_ntfs_without_usn_persists_digests_and_detects_restored_mtime(tmp_path, monkeypatch):
+    real = cache._windows_kernel()
+
+    class WithoutUsn:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def DeviceIoControl(self, *args):
+            return False
+
+    monkeypatch.setattr(cache, "_windows_kernel", lambda: WithoutUsn())
+    package = tmp_path / "checkout" / "jiuwenswarm"
+    package.mkdir(parents=True)
+    source = package / "same.py"
+    source.write_bytes(b"value = 1\n")
+    marker = cache._ntfs_marker(source)
+    if marker is None:
+        pytest.skip("local filesystem has no trusted NTFS change time")
+    assert marker[0] == "ntfs-change-time"
+    monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "cache"))
+    first = cache.source_fingerprint(package)
+    assert cache._LAST_DIAGNOSTICS["strategy"] == "ntfs-change-time"
+    assert cache.source_fingerprint(package) == first
+    assert cache._LAST_DIAGNOSTICS["rehashed_files"] == 0
+    previous = source.stat()
+    source.write_bytes(b"value = 2\n")
+    os.utime(source, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+    assert source.stat().st_size == previous.st_size
+    assert source.stat().st_mtime_ns == previous.st_mtime_ns
+    assert cache.source_fingerprint(package) != first
+    assert cache._LAST_DIAGNOSTICS["rehashed_files"] == 1
+
+
+@pytest.mark.parametrize("field,value", [("parent_pid", -1), ("package", "elsewhere"),
+    ("data_scope", "other"), ("build_label", "forged"), ("code_identity", "bad")])
+def test_parent_identity_pipe_rejects_wrong_deployment(monkeypatch, field, value):
+    payload = json.loads(identity.launch_identity_payload("a" * 64))
+    payload["parent_pid"] = os.getppid()
+    payload[field] = value
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(payload).encode())))
+    with pytest.raises(RuntimeError, match="Invalid Worker parent identity"):
+        identity.read_launch_identity()
+
+
+def test_parent_identity_pipe_consumed_once(monkeypatch):
+    monkeypatch.setattr(identity, "code_identity", lambda: "a" * 64)
+    payload = json.loads(identity.launch_identity_payload("a" * 64))
+    payload["parent_pid"] = os.getppid()
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(payload).encode())))
+    assert identity.read_launch_identity() == "a" * 64
+    with pytest.raises(RuntimeError, match="Invalid Worker parent identity"):
+        identity.read_launch_identity()
+
+
+def test_parent_source_observation_reuses_content_and_rejects_launch_edit(checkout, monkeypatch):
+    package, versions = checkout
+    monkeypatch.setattr(identity, "__file__", str(package / "server" / "supervisor" / "identity.py"))
+    before = identity.code_identity()
+    payload = json.loads(identity.launch_identity_payload(before))
+    payload["parent_pid"] = os.getppid()
+    assert payload["source_observation"] is not None
+
+    def pipe():
+        return io.TextIOWrapper(io.BytesIO(json.dumps(payload).encode()))
+
+    monkeypatch.setattr(sys, "stdin", pipe())
+    real = Path.read_bytes
+
+    def no_source_reads(path):
+        if path.suffix == ".py" and path.is_relative_to(package):
+            pytest.fail("parent's unchanged content should not be hashed again")
+        return real(path)
+
+    monkeypatch.setattr(Path, "read_bytes", no_source_reads)
+    assert identity.read_launch_identity() == before
+    monkeypatch.setattr(Path, "read_bytes", real)
+    write_source(package / "a.py", "value = 2\n", versions)
+    monkeypatch.setattr(sys, "stdin", pipe())
+    with pytest.raises(RuntimeError, match="Invalid Worker parent identity"):
+        identity.read_launch_identity()
+
+
+def test_launch_parent_accepts_only_the_known_windows_launcher_hop(monkeypatch):
+    import psutil
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(os, "getppid", lambda: 42)
+    launcher = SimpleNamespace(ppid=lambda: 41, exe=lambda: sys.executable)
+    monkeypatch.setattr(psutil, "Process", lambda _pid: launcher)
+    assert identity._is_launch_parent(42)
+    assert identity._is_launch_parent(41)
+    launcher.exe = lambda: str(Path(sys.executable).parent / "unrelated.exe")
+    assert not identity._is_launch_parent(41)
+    launcher.exe = lambda: sys.executable
+    launcher.ppid = lambda: 40
+    assert not identity._is_launch_parent(41)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [b'\xef\xbb\xbf[core]\n autocrlf = true\n', b'broken syntax\n'])
+async def test_bad_global_gitconfig_does_not_block_real_worker_hello(tmp_path, monkeypatch, value):
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.ipc.client import connect_with_retry
+    from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
+
+    config = tmp_path / "bad.gitconfig"
+    config.write_bytes(value)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / "data")
+    monkeypatch.setenv("JIUWENSWARM_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identities"))
+    root = Path(__file__).resolve().parents[3]
+    monkeypatch.setenv("PYTHONPATH", str(root))
+    socket = str(tmp_path / ("runtime.pipe" if os.name == "nt" else "runtime.sock"))
+    worker = WorkerProcess(socket, host="127.0.0.1", port=18092, stub=True)
+    conn = None
+    try:
+        await worker.spawn()
+        conn = await connect_with_retry(socket, timeout=15)
+        hello = await asyncio.wait_for(conn.recv(), 5)
+        assert hello["kind"] == "hello"
+        assert hello["code_identity"] == worker.launch_identity
+        assert (await asyncio.wait_for(conn.recv(), 5))["kind"] == "readiness"
+        await conn.send({"kind": "shutdown"})
+        assert (await asyncio.wait_for(conn.recv(), 5))["ok"] is True
+        assert await worker.wait(timeout=5) == 0
+    finally:
+        if conn is not None:
+            await conn.close()
+        await worker.stop(timeout=5)

@@ -1,5 +1,6 @@
 """Optional first-use preparation and compatible, truthful Worker readiness."""
 import asyncio
+import threading
 
 import pytest
 
@@ -14,6 +15,108 @@ async def checkpoint():
     reached = asyncio.get_running_loop().create_future()
     asyncio.get_running_loop().call_soon(reached.set_result, None)
     await reached
+
+
+@pytest.mark.asyncio
+async def test_background_preparation_is_bounded_and_explicit_first_use_has_priority():
+    registry = PreparationRegistry(background_concurrency=1)
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def slow_network_warmup():
+        calls.append("background")
+        entered.set()
+        await release.wait()
+        return "network ready"
+
+    registry.register("network", slow_network_warmup)
+    registry.register("unrelated", lambda: calls.append("unrelated"))
+    registry.register("requested", lambda: calls.append("requested"))
+    registry.mark_minimum_ready()
+    await entered.wait()
+    await checkpoint()
+    assert calls == ["background"]
+    token = registry.pause_background()
+    await asyncio.wait_for(registry.ensure("requested"), timeout=1)
+    assert calls == ["background", "requested"]
+    release.set()
+    await registry.ensure("network")
+    await checkpoint()
+    assert "unrelated" not in calls
+    registry.resume_background(token)
+    await registry.start("unrelated")
+    assert calls == ["background", "requested", "unrelated"]
+    await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_foreground_priority_is_released_only_when_every_owner_resumes():
+    registry = PreparationRegistry()
+    calls = []
+    first = registry.pause_background()
+    second = registry.pause_background()
+    registry.register("background", lambda: calls.append("background"))
+    registry.mark_minimum_ready()
+    registry.resume_background(first)
+    registry.resume_background(first)
+    await checkpoint()
+    assert calls == []
+    registry.resume_background(second)
+    await registry.start("background")
+    assert calls == ["background"]
+    await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_preparation_runs_off_loop_and_preserves_async_factory_loop(monkeypatch):
+    from jiuwenswarm.server.worker import preparation
+
+    main_thread = threading.get_ident()
+    loop = asyncio.get_running_loop()
+    entered, release = asyncio.Event(), threading.Event()
+    threads = []
+
+    def blocking_import(name):
+        assert name == "optional.heavy"
+        threads.append(threading.get_ident())
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(2), "test did not release blocking import"
+
+    monkeypatch.setattr(preparation.importlib, "import_module", blocking_import)
+    registry = PreparationRegistry()
+
+    async def factory():
+        assert threading.get_ident() == main_thread
+        return "usable"
+
+    registry.register("module", factory, imports=("optional.heavy",))
+    registry.register("sync", threading.get_ident, offload=True)
+    registry.mark_minimum_ready()
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        # An import is genuinely blocked in another thread; IPC-loop callbacks
+        # and unrelated foreground preparation must still progress.
+        await asyncio.wait_for(checkpoint(), .5)
+        assert await asyncio.wait_for(registry.ensure("sync"), .5) != main_thread
+        release.set()
+        assert await registry.ensure("module") == "usable"
+        assert threads and all(thread != main_thread for thread in threads)
+    finally:
+        release.set()
+        await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_background_admission_waiters():
+    registry = PreparationRegistry()
+    registry.pause_background()
+    registry.register("blocked", lambda: pytest.fail("background was paused"))
+    registry.mark_minimum_ready()
+    task = registry.start("blocked")
+    await checkpoint()
+    await registry.close()
+    assert task.cancelled()
+    assert registry.snapshot()["blocked"] == "failed"
 
 
 @pytest.mark.asyncio

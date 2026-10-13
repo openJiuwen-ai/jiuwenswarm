@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 import uuid
 from contextlib import aclosing
 from dataclasses import replace
@@ -112,7 +113,7 @@ class RuntimeStateError(RuntimeError):
 
 async def _initialize_runtime_dependencies() -> None:
     """Initialize shared runtime dependencies without starting a server."""
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    from jiuwenswarm.runtime.checkpointer import (
         ensure_persistent_checkpointer,
     )
 
@@ -127,15 +128,21 @@ async def _acquire_process_runtime_dependencies() -> None:
         if _PROCESS_RUNTIME_DEPENDENCY_USERS == 0:
             runner_start_attempted = False
             try:
+                phase_started = time.monotonic()
                 await _initialize_runtime_dependencies()
+                logger.info("[Worker] preparation stage=checkpointer_start duration_ms=%.3f",
+                            (time.monotonic() - phase_started) * 1000)
                 from openjiuwen.core.runner import Runner
 
                 runner_start_attempted = True
+                phase_started = time.monotonic()
                 runner_started = await Runner.start()
+                logger.info("[Worker] preparation stage=runner_start duration_ms=%.3f",
+                            (time.monotonic() - phase_started) * 1000)
                 if runner_started is False:
                     raise RuntimeError("Runner failed to start")
             except BaseException as start_error:
-                from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+                from jiuwenswarm.runtime.checkpointer import (
                     close_persistent_checkpointer,
                 )
 
@@ -189,7 +196,7 @@ async def _release_process_runtime_dependencies() -> None:
         except BaseException as exc:
             cleanup_errors.append(exc)
 
-        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        from jiuwenswarm.runtime.checkpointer import (
             close_persistent_checkpointer,
         )
 
@@ -343,6 +350,7 @@ class AgentRuntime:
             team_execution_controller=team_execution_controller,
         )
         self._resource_lease = resource_lease
+        self._team_execution_controller = team_execution_controller
         self._session_coordinator = session_coordinator or RuntimeSessionCoordinator()
         # Covers chat admission and preparation before the Team adapter creates
         # its own in-flight marker (including first-run Team construction).
@@ -1069,12 +1077,21 @@ class AgentRuntime:
                 agent_definition=agent_execution.definition.to_dict(),
                 agent_definition_fingerprint=agent_execution.fingerprint,
             )
-        return await prepare_chat_turn(
+        prepared = await prepare_chat_turn(
             self._agent_manager,
             request,
             channel_id,
             **prepare_kwargs,
         )
+        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from jiuwenswarm.runtime.team_controller import LazyTeamExecutionController
+
+        if (is_team_mode((request.params or {}).get("mode"))
+                and isinstance(self._team_execution_controller, LazyTeamExecutionController)):
+            # Team execution may report inactivity before a later delete. Its
+            # existing owner and reporter must be bound before the first turn.
+            self._team_execution_controller.activate()
+        return prepared
 
     async def cancel_request(
         self,

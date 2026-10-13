@@ -83,6 +83,7 @@ class WorkerProcess:
         self._stub_ready_delay = stub_ready_delay
         self._stub_exit_on_request = stub_exit_on_request
         self._proc: subprocess.Popen[bytes] | None = None
+        self.launch_identity: str | None = None
 
     @property
     def pid(self) -> int | None:
@@ -97,6 +98,12 @@ class WorkerProcess:
         return self._proc.poll()
 
     async def spawn(self) -> None:
+        from jiuwenswarm.server.supervisor.identity import code_identity, launch_identity_payload
+
+        # Verify source once before the spawn, then hand that exact observation
+        # to the child. Reattached resident Workers still require fresh checks.
+        self.launch_identity = await asyncio.to_thread(code_identity)
+        payload = launch_identity_payload(self.launch_identity)
         command = build_worker_command(
             self.socket_path,
             host=self._host,
@@ -105,6 +112,7 @@ class WorkerProcess:
             stub_ready_delay=self._stub_ready_delay,
             stub_exit_on_request=self._stub_exit_on_request,
         )
+        command.append("--identity-from-parent")
         logger.info("[Supervisor] spawning runtime worker: %s", " ".join(command))
         # Popen, not asyncio's subprocess transport: that transport kills the
         # child when the Front event loop closes. A new session keeps the
@@ -113,7 +121,15 @@ class WorkerProcess:
             command,
             env=os.environ.copy(),
             start_new_session=True,
+            stdin=subprocess.PIPE,
         )
+        try:
+            self._proc.stdin.write(payload)
+            self._proc.stdin.close()
+        except (OSError, BrokenPipeError):
+            self._proc.kill()
+            await self.wait(timeout=5)
+            raise
 
     async def wait(self, *, timeout: float | None = None) -> int | None:
         """Return the exit code, or ``None`` when ``timeout`` elapses first."""

@@ -28,6 +28,7 @@ interface PendingRequest {
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT_MS = 15000;
+const MAX_RECOVERY_ATTEMPTS = 3;
 
 const LEGACY_EVENT_MAP: Record<string, string> = {
   connection_ack: 'connection.ack',
@@ -332,13 +333,19 @@ class WebClient {
         typeof params?.session_id === 'string'
       ) {
         const runtime = (value as { runtime?: Record<string, unknown> } | null)?.runtime;
-        if (runtime?.is_processing === true && typeof runtime.worker_instance === 'string') {
+        if (
+          runtime?.recovery_pending === true ||
+          (runtime?.is_processing === true && typeof runtime.worker_instance === 'string')
+        ) {
           // A freshly loaded page has no stream cursor yet. Reattach to the
           // existing execution through its snapshot, never by sending input.
           await this.resumeExecutions([
             {
               session_id: params.session_id,
-              runtime_resume: { worker_instance: runtime.worker_instance, after: 0 },
+              runtime_resume: {
+                worker_instance: typeof runtime.worker_instance === 'string' ? runtime.worker_instance : '',
+                after: 0,
+              },
             },
           ]);
         }
@@ -480,23 +487,46 @@ class WebClient {
   }
 
   private async resumeExecutions(queries = this.runtimeResume.queries()): Promise<void> {
-    for (const query of queries) {
+    await Promise.all(queries.map((query) => this.resumeExecution(query)));
+  }
+
+  private async resumeExecution(query: ReturnType<RuntimeResume['queries']>[number]): Promise<void> {
+    const socket = this.ws;
+    const owner = this.resumeOwner;
+    for (let attempt = 0; attempt < MAX_RECOVERY_ATTEMPTS; attempt += 1) {
+      if (this.ws !== socket || this.resumeOwner !== owner || this.state !== 'ready') return;
       try {
         const metadata = await this.request<{ runtime?: Record<string, unknown> }>('session.get_metadata', query, {
           timeoutMs: 10_000,
         });
+        if (this.ws !== socket || this.resumeOwner !== owner) return;
         const runtime = metadata?.runtime;
-        if (!runtime) continue;
-        this.dispatchEvent({
-          type: 'event',
-          event: 'chat.processing_status',
-          payload: { session_id: query.session_id, is_processing: runtime.is_processing },
-        });
+        if (!runtime) return;
         this.dispatchEvent({
           type: 'event',
           event: 'runtime.snapshot',
           payload: { session_id: query.session_id, ...runtime },
         });
+        if (runtime.recovery_pending === true) {
+          // An unfinished snapshot cannot clear a running task. Retry only the
+          // metadata/cursor query, preserving the original accepted execution.
+          if (attempt + 1 < MAX_RECOVERY_ATTEMPTS) {
+            const delay =
+              typeof runtime.retry_after_ms === 'number' && Number.isFinite(runtime.retry_after_ms)
+                ? Math.max(100, Math.min(1000, runtime.retry_after_ms))
+                : 300;
+            await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+            continue;
+          }
+          return;
+        }
+        if (typeof runtime.is_processing === 'boolean') {
+          this.dispatchEvent({
+            type: 'event',
+            event: 'chat.processing_status',
+            payload: { session_id: query.session_id, is_processing: runtime.is_processing },
+          });
+        }
         if (runtime.interrupted === true) {
           this.dispatchEvent({
             type: 'event',
@@ -529,8 +559,10 @@ class WebClient {
             payload: { session_id: query.session_id },
           });
         }
+        return;
       } catch {
         // The next reconnect/history query reconciles state. Never retry chat.send.
+        return;
       }
     }
   }

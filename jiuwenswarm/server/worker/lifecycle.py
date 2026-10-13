@@ -13,12 +13,18 @@ import logging
 import logging.handlers
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
 from jiuwenswarm.server.worker.signals import RuntimeSignalSink
 
 logger = logging.getLogger(__name__)
+
+
+def _log_preparation_stage(stage: str, began: float) -> None:
+    logger.info("[Worker] preparation stage=%s duration_ms=%.3f", stage,
+                (time.monotonic() - began) * 1000)
 
 
 def _configure_openjiuwen_logging() -> None:
@@ -180,26 +186,74 @@ def _spawn_teammate_bootstrap(stop_event: asyncio.Event, server: object) -> asyn
     )
 
 
-def _preload_runtime_backend() -> None:
-    """OpenJiuwen-touching imports and workspace work. Runs off the IPC loop."""
+def _prepare_worker_configuration() -> None:
+    """One writer completes workspace and model migrations before Runtime reads."""
+    began = time.monotonic()
     if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
         from jiuwenswarm.common.utils import prepare_runtime_workspace
 
-        prepare_runtime_workspace(cleanup_stale_descs=True, migrate_config=True)
+        prepare_runtime_workspace(cleanup_stale_descs=False, migrate_config=True)
+    _log_preparation_stage("workspace", began)
     # Persist missing model/model-group/route IDs before any session or agent is
     # restored. Validation happens against the complete candidate before writing.
+    began = time.monotonic()
     from jiuwenswarm.common.config import migrate_model_business_ids
 
     migrate_model_business_ids()
     from jiuwenswarm.common.model_migration import migrate_legacy_model_selections
 
     migrate_legacy_model_selections()
+    _log_preparation_stage("model_migrations", began)
+
+
+def _preload_sdk_execution_modules() -> None:
+    """Import required SDK code only; do not construct clients or read Swarm config."""
+    began = time.monotonic()
+    from openjiuwen.core.runner import Runner  # noqa: F401
+    from openjiuwen.harness.tools.shell import BashTool, PowerShellTool  # noqa: F401
+    from openjiuwen.harness import DeepAgent  # noqa: F401
+    from openjiuwen.harness.factory import create_deep_agent  # noqa: F401
+
+    _log_preparation_stage("sdk_execution_imports", began)
+
+
+def _preload_runtime_backend() -> None:
+    """Join independent SDK code/config work before global patches or consumers."""
+    if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
+        # Description indexes may be consumed by SDK module imports. Repair
+        # stale description layouts first, then overlap only code imports with
+        # user-workspace/configuration writes. SDK imports do not read Swarm
+        # config; all Swarm Runtime imports remain after this joined barrier.
+        from jiuwenswarm.common.utils import cleanup_stale_openjiuwen_descs
+
+        cleanup_stale_openjiuwen_descs()
+    began = time.monotonic()
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="worker-required") as preparation:
+        config = preparation.submit(_prepare_worker_configuration)
+        sdk = preparation.submit(_preload_sdk_execution_modules)
+        config.result()
+        sdk.result()
+    _log_preparation_stage("required_parallel_join", began)
+    began = time.monotonic()
     _configure_openjiuwen_logging()
+    _log_preparation_stage("logging", began)
+    began = time.monotonic()
     _apply_runtime_entry_patches()
+    _log_preparation_stage("runtime_patches", began)
+    began = time.monotonic()
     import openjiuwen.core.runner  # noqa: F401
+    _log_preparation_stage("runner_import", began)
+    began = time.monotonic()
     import jiuwenswarm.extensions.manager  # noqa: F401
     import jiuwenswarm.extensions.registry  # noqa: F401
+    _log_preparation_stage("extension_imports", began)
+    began = time.monotonic()
     import jiuwenswarm.server.agent_ws_server  # noqa: F401
+    _log_preparation_stage("server_import", began)
+    # Core persistence is independent of agent mode and optional Rail imports.
+    began = time.monotonic()
+    import jiuwenswarm.runtime.checkpointer  # noqa: F401
+    _log_preparation_stage("checkpointer_import", began)
 
 
 @dataclass
@@ -280,6 +334,21 @@ async def start_worker_runtime(
     on_constructed: Any = None,
 ) -> WorkerRuntime:
     """Load Agent Runtime. Chat readiness is signaled through ``signals``."""
+    from jiuwenswarm.server.worker.preparation import log_event_loop_lag
+
+    lag_monitor = asyncio.create_task(log_event_loop_lag("runtime_preparation"),
+                                      name="runtime-preparation-loop-lag")
+    try:
+        return await _start_worker_runtime(host, port, signals, on_constructed=on_constructed)
+    finally:
+        lag_monitor.cancel()
+        await asyncio.gather(lag_monitor, return_exceptions=True)
+
+
+async def _start_worker_runtime(
+    host: str, port: int, signals: RuntimeSignalSink, *, on_constructed: Any = None,
+) -> WorkerRuntime:
+    """Required preparation keeps configuration migrations ahead of Runtime use."""
     startup_t0 = time.monotonic()
 
     def log_startup_stage(stage: str) -> None:
@@ -308,18 +377,31 @@ async def start_worker_runtime(
     log_startup_stage("extension_manager_created")
     # AgentServer 为运行时直连进程，不加载传输类扩展（agentos / agent_client 等），
     # 与 runtime/service.py 的加载策略保持一致；北向传输能力由独立 Gateway 承担。
-    await extension_manager.load_all_extensions(include_transport_extensions=False)
-    logger.info(
-        "[Worker] 扩展加载完成，共 %d 个 (elapsed %.2fs)",
-        len(extension_manager.list_extensions()),
-        time.monotonic() - startup_t0,
-    )
-    log_startup_stage("extensions_loaded")
-
     def _construct_runtime_server() -> object:
         return AgentWebSocketServer.get_instance(host=host, port=port)
 
-    server = await asyncio.to_thread(_construct_runtime_server)
+    async def _load_required_extensions() -> None:
+        await extension_manager.load_all_extensions(include_transport_extensions=False)
+        log_startup_stage("extensions_loaded")
+
+    async def _construct_required_server() -> Any:
+        return await asyncio.to_thread(_construct_runtime_server)
+
+    # Construction creates neutral owners and adapters; it does not execute
+    # callbacks or start Runner. Extension registration may overlap it, but
+    # both must finish before server.start and request dispatch are released.
+    extensions, server = await asyncio.gather(
+        _load_required_extensions(), _construct_required_server(),
+        return_exceptions=True,
+    )
+    if isinstance(extensions, BaseException):
+        raise extensions
+    if isinstance(server, BaseException):
+        raise server
+    logger.info(
+        "[Worker] 扩展加载完成，共 %d 个 (elapsed %.2fs)",
+        len(extension_manager.list_extensions()), time.monotonic() - startup_t0,
+    )
     await asyncio.sleep(0)
     log_startup_stage("runtime_constructed")
     if on_constructed is not None:
@@ -422,9 +504,14 @@ async def start_worker_runtime(
     if preparation is not None:
         # Every factory is finite: daemon creation is measured, not its entire
         # lifetime. Imports occur after the required core preparation barrier.
-        for name, factory in (("image", prepare_image), ("zen", prepare_zen),
-                              ("proactive", prepare_proactive), ("teammate", prepare_teammate)):
-            preparation.register(name, factory)
+        for name, factory, modules in (
+            ("image", prepare_image, ()),
+            ("zen", prepare_zen, ("jiuwenswarm.server.runtime.opencode_zen",)),
+            ("proactive", prepare_proactive, ("jiuwenswarm.server.runtime.proactive_adapter",
+                                            "jiuwenswarm.agents.harness.common.recommendation.proactive_engine")),
+            ("teammate", prepare_teammate, ("jiuwenswarm.agents.harness.team.remote_member_bootstrap",)),
+        ):
+            preparation.register(name, factory, imports=modules)
         runtime.zen_task = preparation.start("zen")
         runtime.proactive_task = preparation.start("proactive")
     else:

@@ -244,6 +244,12 @@ async def test_code_reload_rolls_back_spec_rails_when_apply_fails(
     adapter._last_models_config_fingerprint = "old-fingerprint"
     adapter._model_cache = {"old-model": old_model}
     adapter._model_name_to_keys = {"old-model": ["old-model"]}
+    adapter._model_recipes = {"old-model": {"model_id": "old-id"}}
+    adapter._model_alias_to_key = {"old-alias": "old-model"}
+    adapter._global_index_to_cache_key = {1: "old-model"}
+    adapter._model_id_to_key = {"old-id": "old-model"}
+    adapter._model_group_cache = {"old-group": old_model}
+    adapter._kernel_identity = "old-kernel"
     template_state = ("template-a", object(), "1")
     plugin_state = {"plugin-a": (object(), "1")}
     adapter._loaded_agent_template = template_state
@@ -276,6 +282,12 @@ async def test_code_reload_rolls_back_spec_rails_when_apply_fails(
         adapter._last_models_config_fingerprint = "new-fingerprint"
         adapter._model_cache = {"new-model": new_model}
         adapter._model_name_to_keys = {"new-model": ["new-model"]}
+        adapter._model_recipes = {"new-model": {"model_id": "new-id"}}
+        adapter._model_alias_to_key = {"new-alias": "new-model"}
+        adapter._global_index_to_cache_key = {2: "new-model"}
+        adapter._model_id_to_key = {"new-id": "new-model"}
+        adapter._model_group_cache = {"new-group": new_model}
+        adapter._kernel_identity = "new-kernel"
         return new_model
 
     monkeypatch.setattr(adapter, "_create_model", create_model)
@@ -309,6 +321,12 @@ async def test_code_reload_rolls_back_spec_rails_when_apply_fails(
     assert adapter._last_models_config_fingerprint == "old-fingerprint"
     assert adapter._model_cache == {"old-model": old_model}
     assert adapter._model_name_to_keys == {"old-model": ["old-model"]}
+    assert adapter._model_recipes == {"old-model": {"model_id": "old-id"}}
+    assert adapter._model_alias_to_key == {"old-alias": "old-model"}
+    assert adapter._global_index_to_cache_key == {1: "old-model"}
+    assert adapter._model_id_to_key == {"old-id": "old-model"}
+    assert adapter._model_group_cache == {"old-group": old_model}
+    assert adapter._kernel_identity == "old-kernel"
 
 
 @pytest.mark.asyncio

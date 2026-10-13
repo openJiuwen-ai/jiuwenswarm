@@ -61,6 +61,7 @@ class WorkerDispatcher:
         self.shutdown_requested = False
         self._draining = False
         self._failure = ""
+        self._startup_priorities: dict[str, tuple[Any, Any, object]] = {}
 
     async def bind_runtime(self, runtime: Any) -> None:
         """Publish the Runtime before it reports ``AGENT_READY``."""
@@ -72,26 +73,57 @@ class WorkerDispatcher:
             attach(self._bridge, self._lock)
 
     async def mark_ready(self) -> None:
+        # This callback runs before optional tasks released by minimum_ready.
+        # Claim priority before set_available can suspend and before spawning
+        # queued dispatch; pausing inside Runtime dispatch alone is too late.
+        runtime = self._runtime
+        preparation = getattr(runtime, "_preparation_registry", None)
+        if preparation is not None and not getattr(runtime, "_execution_minimum_observed", False):
+            for _generation, request, dispatch_id in self._queued:
+                if (request.req_method not in {ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME, ReqMethod.CHAT_ANSWER}
+                        or dispatch_id in self._startup_priorities):
+                    continue
+                token = preparation.pause_background()
+                tokens = getattr(runtime, "_startup_preparation_tokens", None)
+                if tokens is None:
+                    tokens = runtime._startup_preparation_tokens = set()
+                tokens.add(token)
+                self._startup_priorities[dispatch_id] = (runtime, preparation, token)
         # Mailbox execution is owned by the resident Runtime. It must not wait
         # for the legacy in-process WebSocket connection handler to run.
         service = getattr(self._runtime, "_session_message_service", None)
         if service is not None:
-            await service.set_available(True)
+            try:
+                await service.set_available(True)
+            except BaseException:
+                for dispatch_id in list(self._startup_priorities):
+                    self._release_startup_priority(dispatch_id)
+                raise
         async with self._state_lock:
             self._ready = True
             queued = self._queued
             self._queued = []
         for generation, request, dispatch_id in queued:
             if self._draining:
+                self._release_startup_priority(dispatch_id)
                 self._bridge.events.finish(dispatch_id)
                 continue
             self._spawn(self._run_request(request, generation, dispatch_id), generation)
+
+    def _release_startup_priority(self, dispatch_id: str) -> None:
+        owner = self._startup_priorities.pop(dispatch_id, None)
+        if owner is None:
+            return
+        runtime, preparation, token = owner
+        preparation.resume_background(token)
+        getattr(runtime, "_startup_preparation_tokens", set()).discard(token)
 
     async def mark_failed(self, reason: str) -> None:
         async with self._state_lock:
             self._failure = reason
             queued, self._queued = self._queued, []
         for generation, request, dispatch_id in queued:
+            self._release_startup_priority(dispatch_id)
             self._bridge.events.complete(dispatch_id, state="failed", error=reason)
             await self._finish(generation, request.request_id, ok=False, error=reason,
                                delivered=False, dispatch_id=dispatch_id)
@@ -226,6 +258,8 @@ class WorkerDispatcher:
         async with self._state_lock:
             self._draining = True
             self.shutdown_requested = True
+            for dispatch_id in list(self._startup_priorities):
+                self._release_startup_priority(dispatch_id)
             for _generation, _request, dispatch_id in self._queued:
                 self._bridge.events.complete(dispatch_id, state="cancelled", error="worker shutting down")
             self._queued.clear()
@@ -275,6 +309,7 @@ class WorkerDispatcher:
                 kept.append((generation, queued, dispatch_id))
             self._queued = kept
         for generation, queued, dispatch_id in dropped:
+            self._release_startup_priority(dispatch_id)
             logger.info(
                 "[Worker] cancelled queued request_id=%s generation=%s",
                 queued.request_id,
@@ -297,6 +332,7 @@ class WorkerDispatcher:
             self._bridge.events.register(request, dispatch_id)
         async with self._state_lock:
             if self._draining:
+                self._release_startup_priority(dispatch_id)
                 logger.info(
                     "[Worker] dropped request_id=%s generation=%s draining=%s",
                     request.request_id,
@@ -317,6 +353,7 @@ class WorkerDispatcher:
             else:
                 overflow = False
         if overflow:
+            self._release_startup_priority(dispatch_id)
             await self._finish(
                 generation,
                 str(request.request_id or ""),
@@ -344,6 +381,7 @@ class WorkerDispatcher:
                 "[Worker] dispatch failed: request_id=%s", request.request_id
             )
         finally:
+            self._release_startup_priority(dispatch_id)
             execution_entry_sink.reset(entry_token)
             sdk_entry_sink.reset(minimum_token)
             end_delivery_tracking(token)
@@ -440,7 +478,10 @@ class WorkerDispatcher:
     async def _subscribe(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
         # Publish replay before later live events. IPC reads continue in the
         # service task, so acknowledgements and cancel cannot deadlock replay.
-        async with self._bridge.publication_lock:
+        request = load_agent_request(message.get("payload") or {})
+        async with self._bridge.publication_lock(request_scope(request)):
+            if self._bridge.holder.generation != generation:
+                return
             await self._subscribe_locked(message, conn, generation)
 
     async def _subscribe_locked(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
@@ -478,10 +519,12 @@ class WorkerDispatcher:
                         record.interactions = {key: value for key, value in record.interactions.items()
                                                if key in waiting}
                     snapshot["dispatches"] = self._bridge.events.snapshot(request, after=after)["dispatches"]
+        # Copy the replay before the first await: other scopes can publish and
+        # evict journal frames while this scope's snapshot is being delivered.
+        frames = self._bridge.events.replay(request, after=after) if message.get("subscribe") else []
         await conn.send({"kind": KIND_SNAPSHOT, "query_id": message.get("query_id"),
                          "generation": generation, "payload": snapshot})
-        if message.get("subscribe"):
-            await self._bridge.replay(self._bridge.events.replay(request, after=after), generation)
+        await self._bridge.replay(frames, generation)
 
 
 def _frame_matches_session(message: dict[str, Any], generation: int) -> bool:

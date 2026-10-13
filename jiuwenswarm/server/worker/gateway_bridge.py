@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any
+from weakref import WeakValueDictionary
 
 from jiuwenswarm.server.ipc.protocol import KIND_WIRE
 from jiuwenswarm.server.ipc.stream import IpcConnection
@@ -57,12 +58,20 @@ class WorkerGatewayBridge:
         self._holder = holder
         self.remote_address = ("runtime-worker", 0)
         self.events = WorkerEventStore()
-        self.publication_lock = asyncio.Lock()
+        self._publication_locks: WeakValueDictionary[tuple[str, ...], asyncio.Lock] = WeakValueDictionary()
         self._acks: dict[str, tuple[asyncio.Future[bool] | None, list[bool] | None, int]] = {}
 
     @property
     def holder(self) -> ConnHolder:
         return self._holder
+
+    def publication_lock(self, scope: tuple[str, ...]) -> asyncio.Lock:
+        """Order recovery and live frames only within their resolved caller scope."""
+        lock = self._publication_locks.get(scope)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._publication_locks[scope] = lock
+        return lock
 
     async def send(self, message: str | bytes) -> None:
         if isinstance(message, bytes):
@@ -82,7 +91,7 @@ class WorkerGatewayBridge:
         wire_id = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future() if critical else None
         try:
-            async with self.publication_lock:
+            async with self.publication_lock(self.events.publication_scope(payload, dispatch_id)):
                 generation = self._holder.generation
                 if critical and _REQUEST_GENERATION.get() not in {None, generation}:
                     raise ConnectionError("response delivery connection was replaced")

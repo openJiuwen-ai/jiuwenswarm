@@ -7,6 +7,7 @@ writers and unsupported/error responses use full content hashing instead.
 """
 from __future__ import annotations
 
+import configparser
 import hashlib
 import json
 import os
@@ -17,12 +18,14 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 
-_SCHEMA = 3
+_SCHEMA = 4
 _CACHE_LOCK = threading.RLock()
 _LAST_DIAGNOSTICS: dict = {}
+_LAST_OBSERVATION: dict | None = None
 
 
 def _canonical(path: Path) -> str:
@@ -38,6 +41,9 @@ def _encoded(value) -> bytes:
 
 
 def _cache_path(checkout: Path) -> Path:
+    isolated = os.environ.get("JIUWENSWARM_IDENTITY_CACHE_DIR", "").strip()
+    if isolated:
+        return Path(isolated) / (_bytes_digest(_canonical(checkout).encode()) + ".json")
     parent = os.environ.get("LOCALAPPDATA")
     base = Path(parent) if parent else Path.home() / ".cache"
     return base / "JiuwenSwarm" / "code-identities" / (_bytes_digest(_canonical(checkout).encode()) + ".json")
@@ -90,6 +96,12 @@ def _windows_kernel():
     kernel.DeviceIoControl.restype = wintypes.BOOL
     kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
     kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    kernel.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel.GetVolumeInformationByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR,
+        wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        wintypes.LPWSTR, wintypes.DWORD]
+    kernel.GetVolumeInformationByHandleW.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
     return kernel
@@ -110,20 +122,31 @@ def _ntfs_marker(path: Path):
     try:
         buffer = ctypes.create_string_buffer(4096)
         returned = wintypes.DWORD()
-        if not kernel.DeviceIoControl(handle, 0x000900EB, None, 0,
-                buffer, len(buffer), ctypes.byref(returned), None):
-            return None
-        if returned.value < 60:
-            return None
-        length, major, minor, file_id, parent_id, usn = struct.unpack_from("<IHHQQq", buffer.raw)
-        if major != 2 or minor != 0 or length > returned.value or usn <= 0:
-            return None
         basic = ctypes.create_string_buffer(40)
         if not kernel.GetFileInformationByHandleEx(handle, 0, basic, len(basic)):
             return None
         created, _accessed, written, changed, attributes = struct.unpack_from("<qqqqI", basic.raw)
-        stat = path.stat()
-        return [stat.st_dev, file_id, parent_id, usn, created, written, changed, attributes, stat.st_size]
+        information = ctypes.create_string_buffer(52)
+        if not kernel.GetFileInformationByHandle(handle, information):
+            return None
+        volume, size_high, size_low, _links, id_high, id_low = struct.unpack_from("<IIIIII", information.raw, 28)
+        file_id = (id_high << 32) | id_low
+        size = (size_high << 32) | size_low
+        if kernel.DeviceIoControl(handle, 0x000900EB, None, 0,
+                buffer, len(buffer), ctypes.byref(returned), None) and returned.value >= 60:
+            length, major, minor, record_id, parent_id, usn = struct.unpack_from("<IHHQQq", buffer.raw)
+            if major == 2 and minor == 0 and length <= returned.value and usn > 0:
+                return [volume, record_id, parent_id, usn, created, written, changed, attributes, size]
+        # NTFS ChangeTime updates on writes even when callers restore mtime.
+        # Keep the same exclusive-writer observation and file/volume identity;
+        # filesystems without that contract must still hash their full content.
+        filesystem = ctypes.create_unicode_buffer(32)
+        if changed <= 0 or not kernel.GetVolumeInformationByHandleW(
+                handle, None, 0, None, None, None, filesystem, len(filesystem)):
+            return None
+        if filesystem.value.upper() != "NTFS":
+            return None
+        return ["ntfs-change-time", volume, file_id, created, written, changed, attributes, size]
     except (OSError, ValueError, struct.error):
         return None
     finally:
@@ -194,7 +217,7 @@ def _index_paths(value: bytes) -> dict[str, str] | None:
 def _git_metadata(checkout: Path) -> tuple[dict, dict[str, str] | None]:
     try:
         return _read_git_metadata(checkout)
-    except (OSError, ValueError, UnicodeError):
+    except (OSError, ValueError, UnicodeError, configparser.Error):
         # Git metadata is only an accelerator/classifier. Its absence must
         # select full content verification, not make source identity weaker.
         return {"unavailable": True}, None
@@ -232,7 +255,6 @@ def _read_git_metadata(checkout: Path) -> tuple[dict, dict[str, str] | None]:
         reference = head.partition(b":")[2].strip().decode("utf-8")
         paths.extend((git_dir / reference, common / reference))
     stamps = {_canonical(path): _bytes_digest(path.read_bytes()) if path.exists() else None for path in paths}
-    import configparser
     config = configparser.RawConfigParser(strict=False)
     for path in config_paths:
         if path.exists():
@@ -289,7 +311,8 @@ def _fingerprint(checkout: str, files: dict, dependencies: dict, version: dict) 
 
 
 def _compute(package: Path, cache_path: Path | None) -> str:
-    global _LAST_DIAGNOSTICS
+    global _LAST_DIAGNOSTICS, _LAST_OBSERVATION
+    _LAST_OBSERVATION = None
     checkout = package.parent
     canonical = _canonical(checkout)
     version = {"implementation": sys.implementation.name, "python": list(sys.version_info[:3])}
@@ -298,23 +321,39 @@ def _compute(package: Path, cache_path: Path | None) -> str:
         paths = _source_paths(package)
         git, tracked = _git_metadata(checkout)
         dependencies = _dependencies(checkout)
-        markers = {str(path.relative_to(checkout)): _ntfs_marker(path) for path in paths}
+        observed = [_ntfs_marker(path) for path in paths]
+        markers = {str(path.relative_to(checkout)): marker for path, marker in zip(paths, observed)}
         reusable = tracked is not None and all(marker is not None for marker in markers.values())
-        files, rehashed = {}, 0
-        for path in paths:
+
+        def collect(path):
             name = str(path.relative_to(checkout))
             old = cached.get("files", {}).get(name, {})
             if reusable and old.get("marker") == markers[name]:
                 content = {key: old[key] for key in ("sha256", "git_blob", "git_blob_lf")}
+                rehashed = 0
             else:
                 content = _content_hashes(path)
-                rehashed += 1
-            files[name] = {**content, "marker": markers[name]}
+                rehashed = 1
+            return name, {**content, "marker": markers[name]}, rehashed
+
+        needs_content = not reusable or any(cached.get("files", {}).get(name, {}).get("marker") != marker
+                                             for name, marker in markers.items())
+        if needs_content:
+            # Bound disk reads on a new checkout; cached manifest assembly
+            # needs no threads and keeps reconnect overhead small.
+            with ThreadPoolExecutor(max_workers=4, thread_name_prefix="code-identity") as pool:
+                entries = list(pool.map(collect, paths))
+        else:
+            entries = [collect(path) for path in paths]
+        files = {name: entry for name, entry, _rehashed in entries}
+        rehashed = sum(count for _name, _entry, count in entries)
         current_paths = _source_paths(package)
         if paths != current_paths or git != _git_metadata(checkout)[0] or dependencies != _dependencies(checkout):
             continue
-        if reusable and markers != {str(path.relative_to(checkout)): _ntfs_marker(path) for path in paths}:
-            continue
+        if reusable:
+            current_markers = [_ntfs_marker(path) for path in paths]
+            if observed != current_markers:
+                continue
         dirty = []
         if tracked is not None:
             for name, entry in {**files, **dependencies}.items():
@@ -333,10 +372,49 @@ def _compute(package: Path, cache_path: Path | None) -> str:
             "fingerprint": identity}
         if cache_path is not None and reusable and payload != cached:
             _save_cache(cache_path, payload)
-        _LAST_DIAGNOSTICS = {"strategy": "ntfs-usn" if reusable else "full-content",
+        if cache_path is not None and reusable:
+            _LAST_OBSERVATION = {"path": str(cache_path), "checkout": canonical,
+                                 "checksum": _bytes_digest(_encoded(payload))}
+        strategy = ("ntfs-change-time" if any(marker and marker[0] == "ntfs-change-time"
+                                             for marker in markers.values()) else "ntfs-usn")
+        _LAST_DIAGNOSTICS = {"strategy": strategy if reusable else "full-content",
             "source_files": len(paths), "rehashed_files": rehashed, "dirty_files": len(set(dirty))}
         return identity
     raise RuntimeError("Runtime source changed repeatedly while validating its code identity")
+
+
+def launch_source_observation() -> dict | None:
+    """Reference the exact content manifest validated by the launching parent."""
+    with _CACHE_LOCK:
+        return dict(_LAST_OBSERVATION) if _LAST_OBSERVATION is not None else None
+
+
+def verify_launch_source(package: Path, observation: dict) -> str | None:
+    """Validate a parent observation once, without rehashing unchanged source.
+
+    A missing, overwritten or changed manifest never supplies a launch ID.
+    The caller then performs normal content identity validation instead.
+    """
+    package = package.resolve()
+    checkout = package.parent
+    canonical = _canonical(checkout)
+    version = {"implementation": sys.implementation.name, "python": list(sys.version_info[:3])}
+    try:
+        path = _cache_path(checkout)
+        if observation.get("checkout") != canonical or observation.get("path") != str(path):
+            return None
+        cached = _load_cache(path, canonical, version)
+        if not cached or observation.get("checksum") != _bytes_digest(_encoded(cached)):
+            return None
+        paths = _source_paths(package)
+        markers = {str(path.relative_to(checkout)): _ntfs_marker(path) for path in paths}
+        if (set(markers) != set(cached["files"]) or any(marker is None
+                or marker != cached["files"][name].get("marker") for name, marker in markers.items())
+                or _dependencies(checkout) != cached.get("dependencies")):
+            return None
+        return cached["fingerprint"]
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
 
 
 def source_fingerprint(package: Path) -> str:

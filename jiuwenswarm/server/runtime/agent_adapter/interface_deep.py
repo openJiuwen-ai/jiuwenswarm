@@ -19,6 +19,7 @@ import re
 import subprocess
 import threading
 import time
+import weakref
 from collections import Counter
 from collections.abc import Mapping
 from contextlib import aclosing, asynccontextmanager, contextmanager
@@ -53,9 +54,9 @@ from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.core.foundation.tool import ToolCard, McpServerConfig
 from openjiuwen.core.common.logging import server_logger
 from openjiuwen.core.runner import Runner
-from openjiuwen.core.session.checkpointer import CheckpointerFactory
-from openjiuwen.core.session.checkpointer.checkpointer import CheckpointerConfig
-from openjiuwen.core.session.checkpointer.persistence import PersistenceCheckpointerProvider
+from jiuwenswarm.runtime.checkpointer import (
+    ensure_persistent_checkpointer, close_persistent_checkpointer as close_persistent_checkpointer,
+)
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent import (
     AgentCard,
@@ -604,7 +605,6 @@ from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     get_agent_skills_dir,
     get_agent_workspace_dir,
-    get_checkpoint_dir,
     get_default_project_session_workspace_dir,
     get_env_file,
     get_runtime_state_path,
@@ -733,59 +733,6 @@ def _diag_auth_headers(cfg: Any) -> str:
         vs = str(v)
         parts.append(f"{k}[len={len(vs)}]: {vs[:15]}")
     return "{" + ", ".join(parts) + "}"
-
-_PERSISTENT_CHECKPOINTER_LOCK: asyncio.Lock | None = None
-_PERSISTENT_CHECKPOINTER_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
-_PERSISTENT_CHECKPOINTER_LOCK_INIT = threading.Lock()
-_PERSISTENT_CHECKPOINTER_READY = False
-
-
-def _running_loop() -> asyncio.AbstractEventLoop | None:
-    try:
-        return asyncio.get_running_loop()
-    except RuntimeError:
-        return None
-
-
-async def _get_persistent_checkpointer_lock() -> asyncio.Lock:
-    """Lazy-init or rebind the process-wide checkpointer lock to the running loop.
-
-    ``asyncio.Lock`` binds to the loop of its first ``acquire()``; any later
-    acquire from a different loop raises ``RuntimeError("... is bound to a
-    different event loop")``. The first call may have happened on a transient
-    loop (test harness, ephemeral worker) that is gone by the time AgentServer's
-    main loop needs the lock. To stay correct under that drift we:
-
-    1. Lazily construct the Lock inside the caller's running loop (guarded by a
-       ``threading.Lock`` so concurrent first-acquires from different threads
-       cannot create two Locks).
-    2. Before returning, verify the Lock is still bound to the current loop. If
-       it is bound to a dead/foreign loop, drop and rebuild it so the caller can
-       re-acquire safely. This rebinding is also done under the threading guard.
-
-    After ``_PERSISTENT_CHECKPOINTER_READY`` flips True no one acquires the lock,
-    so rebinding is a no-op for the steady state.
-    """
-    global _PERSISTENT_CHECKPOINTER_LOCK, _PERSISTENT_CHECKPOINTER_LOCK_LOOP
-    current = _running_loop()
-    if current is None:
-        raise RuntimeError(
-            "_get_persistent_checkpointer_lock must be called from a running event loop"
-        )
-    with _PERSISTENT_CHECKPOINTER_LOCK_INIT:
-        bound = _PERSISTENT_CHECKPOINTER_LOCK_LOOP
-        if _PERSISTENT_CHECKPOINTER_LOCK is None or bound is None or bound is not current:
-            if bound is not None and bound is not current and not bound.is_closed():
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] _PERSISTENT_CHECKPOINTER_LOCK rebound: "
-                    "old_loop=%r new_loop=%r (lock repr=%r)",
-                    bound,
-                    current,
-                    _PERSISTENT_CHECKPOINTER_LOCK,
-                )
-            _PERSISTENT_CHECKPOINTER_LOCK = asyncio.Lock()
-            _PERSISTENT_CHECKPOINTER_LOCK_LOOP = current
-    return _PERSISTENT_CHECKPOINTER_LOCK
 
 # Persistence identity of the single-agent card. It is the entity segment of
 # every checkpointer key ("{session_id}:agent:{card_id}:..."), so it must stay
@@ -1632,103 +1579,6 @@ def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRai
         return None
 
 
-async def ensure_persistent_checkpointer() -> None:
-    """Ensure the process-wide default checkpointer uses sqlite persistence."""
-    global _PERSISTENT_CHECKPOINTER_READY
-
-    if _PERSISTENT_CHECKPOINTER_READY:
-        return
-
-    lock = await _get_persistent_checkpointer_lock()
-    acquired = False
-    try:
-        try:
-            await lock.acquire()
-        except RuntimeError as acquire_exc:
-            logger.exception(
-                "[JiuWenSwarmDeepAdapter] _PERSISTENT_CHECKPOINTER_LOCK acquire failed: %s "
-                "(lock repr=%r, running_loop=%r)",
-                acquire_exc,
-                lock,
-                asyncio.get_event_loop(),
-            )
-            raise
-        acquired = True
-        if _PERSISTENT_CHECKPOINTER_READY:
-            return
-
-        try:
-            PersistenceCheckpointerProvider()
-            checkpoint_path = get_checkpoint_dir()
-            checkpointer = await CheckpointerFactory.create(
-                CheckpointerConfig(
-                    type="persistence",
-                    conf={"db_type": "sqlite", "db_path": f"{checkpoint_path}/checkpoint"},
-                ),
-            )
-            CheckpointerFactory.set_default_checkpointer(checkpointer)
-            _PERSISTENT_CHECKPOINTER_READY = True
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] persistent checkpointer ready: %s",
-                checkpoint_path / "checkpoint",
-            )
-        except Exception as exc:
-            logger.error(
-                "[JiuWenSwarmDeepAdapter] fail to setup checkpoint due to: %s",
-                exc,
-            )
-            raise RuntimeError("persistent checkpointer initialization failed") from exc
-    finally:
-        if acquired:
-            lock.release()
-
-
-async def close_persistent_checkpointer() -> None:
-    """Dispose the process-owned persistent checkpointer connection pool."""
-    global _PERSISTENT_CHECKPOINTER_READY
-
-    if not _PERSISTENT_CHECKPOINTER_READY:
-        return
-    lock = await _get_persistent_checkpointer_lock()
-    async with lock:
-        if not _PERSISTENT_CHECKPOINTER_READY:
-            return
-        checkpointer = CheckpointerFactory.get_checkpointer()
-        kv_store = getattr(checkpointer, "_kv_store", None)
-        engine = getattr(kv_store, "engine", None)
-        dispose = getattr(engine, "dispose", None)
-        dispose_error: BaseException | None = None
-        try:
-            if callable(dispose):
-                await dispose()
-        except BaseException as exc:
-            dispose_error = exc
-
-        reset_error: BaseException | None = None
-        try:
-            CheckpointerFactory.set_default_checkpointer(None)
-        except BaseException as exc:
-            reset_error = exc
-        finally:
-            # READY describes whether the currently installed factory value is
-            # safe to reuse.  Even a failed/partial dispose must force the next
-            # Runtime startup through initialization instead of reusing a
-            # potentially closed pool.
-            _PERSISTENT_CHECKPOINTER_READY = False
-
-        if dispose_error is not None:
-            if reset_error is not None:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] checkpointer factory reset failed "
-                    "while preserving dispose error: %s",
-                    reset_error,
-                )
-            raise dispose_error
-        if reset_error is not None:
-            raise reset_error
-        logger.info("[JiuWenSwarmDeepAdapter] persistent checkpointer closed")
-
-
 _MODE_DISPLAY_MAP: dict[str, dict[str, str]] = {
     "agent": {"cn": "智能体模式", "en": "Agent Mode"},
     # Web 的 work 单 agent 计划模式（mode=agent.plan + work_mode=work）。
@@ -1834,6 +1684,22 @@ class _GeneralPurposeAskUserRail(StructuredAskUserRail):
 
     def fork_for_agent(self):
         return type(self)(language=self._language, strict_continuation_contract=False)
+
+
+class _RecipeModelCache(dict):
+    """Preserve custom-subagent dict lookups while constructing selected recipes only."""
+
+    def __init__(self, adapter):
+        super().__init__()
+        self._adapter = weakref.proxy(adapter)
+
+    def get(self, key, default=None):
+        model = dict.get(self, key)
+        if model is not None:
+            return model
+        adapter = self._adapter
+        model = adapter._model_for_catalog_name(key)
+        return model if model is not None else default
 
 
 class JiuWenSwarmDeepAdapter:
@@ -2111,7 +1977,9 @@ class JiuWenSwarmDeepAdapter:
         # the process.
         self._session_git_snapshots: dict[str, _GitSnapshot] = {}
         self._is_proactive_memory: bool | None = None
-        self._model_cache: dict[str, Model] = {}
+        self._model_cache: dict[str, Model] = _RecipeModelCache(self)
+        self._model_recipes: dict[str, dict[str, Any]] = {}
+        self._model_alias_to_key: dict[str, str] = {}
         self._model_name_to_keys: dict[str, list[str]] = {}
         self._model_id_to_key: dict[str, str] = {}
         self._model_group_cache: dict[str, Model] = {}
@@ -6544,8 +6412,8 @@ class JiuWenSwarmDeepAdapter:
     ) -> str | None:
         """Register one model entry into the request-selectable model cache.
 
-        Returns the cache_key (``{model_name}#{per_name_idx}``) on success, or
-        ``None`` when the entry is skipped (missing model_name or build failure).
+        Register the recipe without constructing an unused provider client.
+        Returns its cache key, or None when the entry has no model name.
         The caller pairs this return value with the entry's global list index
         to populate ``_global_index_to_cache_key``.
         """
@@ -6556,19 +6424,7 @@ class JiuWenSwarmDeepAdapter:
         idx = name_counter.get(model_name, 0)
         name_counter[model_name] = idx + 1
         cache_key = f"{model_name}#{idx}"
-        try:
-            model = self._build_kernel_model(
-                mcc,
-                entry.get("model_config_obj") or {},
-                resource_id=str(entry.get("model_id") or model_name),
-            )
-            self._model_cache[cache_key] = model
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] 跳过无效模型条目 %s: %s",
-                model_name, exc,
-            )
-            return None
+        self._model_recipes[cache_key] = copy.deepcopy(entry)
         if model_name not in self._model_name_to_keys:
             self._model_name_to_keys[model_name] = []
         self._model_name_to_keys[model_name].append(cache_key)
@@ -6579,13 +6435,51 @@ class JiuWenSwarmDeepAdapter:
 
         # 同时用纯 model_name 作为 key 指向 is_default=true 的条目
         if entry.get("is_default") is True:
-            self._model_cache[model_name] = self._model_cache[cache_key]
+            self._model_alias_to_key[model_name] = cache_key
 
         alias = entry.get("alias") or ""
-        if alias and alias != model_name and alias not in self._model_cache:
-            self._model_cache[alias] = self._model_cache[cache_key]
+        if alias and alias != model_name:
+            self._model_alias_to_key.setdefault(alias, cache_key)
 
         return cache_key
+
+    def _materialize_model_recipe(self, cache_key: str) -> Model | None:
+        # Bypass the lazy mapping's get() while materializing its own entry.
+        cached = dict.get(self._model_cache, cache_key)
+        if cached is not None:
+            return cached
+        entry = getattr(self, "_model_recipes", {}).get(cache_key)
+        if entry is None:
+            return None
+        mcc = entry.get("model_client_config") or {}
+        try:
+            model = self._build_kernel_model(mcc, entry.get("model_config_obj") or {},
+                                            resource_id=str(entry.get("model_id") or mcc.get("model_name")))
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] model recipe %s failed: %s", cache_key, exc)
+            return None
+        self._model_cache[cache_key] = model
+        for alias, target in getattr(self, "_model_alias_to_key", {}).items():
+            if target == cache_key:
+                self._model_cache[alias] = model
+        return model
+
+    def _model_for_catalog_name(self, name: str) -> Model | None:
+        recipes = getattr(self, "_model_recipes", {})
+        if name in recipes:
+            return self._materialize_model_recipe(name)
+        alias = getattr(self, "_model_alias_to_key", {}).get(name)
+        candidates = ([alias] if alias is not None else [])
+        candidates.extend(self._model_name_to_keys.get(name, ()))
+        # Invalid entries used to be skipped during eager construction. Keep
+        # that routing behavior for duplicate names and colliding aliases.
+        candidates.extend(key for key, entry in recipes.items() if entry.get("alias") == name)
+        for key in dict.fromkeys(candidates):
+            model = self._materialize_model_recipe(key)
+            if model is not None:
+                self._model_cache[name] = model
+                return model
+        return None
 
     def _build_model_cache_from_defaults(self, config: dict) -> None:
         """从 models.defaults 列表构建模型缓存。
@@ -6598,6 +6492,8 @@ class JiuWenSwarmDeepAdapter:
         self._model_name_to_keys.clear()
         self._global_index_to_cache_key.clear()
         self._model_id_to_key.clear()
+        self._model_recipes = {}
+        self._model_alias_to_key = {}
         name_counter: dict[str, int] = {}
 
         # 含登录后自动获得的模型
@@ -6691,12 +6587,23 @@ class JiuWenSwarmDeepAdapter:
             return self._model
 
         self._model_cache.clear()
+        self._model_recipes = {}
+        self._model_alias_to_key = {}
         self._model_name_to_keys.clear()
         self._global_index_to_cache_key.clear()
         self._model_id_to_key.clear()
         self._model_group_cache.clear()
         self._inject_attribution_to_config(config)
         self._build_model_cache_from_defaults(config)
+        recipes = getattr(self, "_model_recipes", {})
+        default_keys = [self._model_alias_to_key[name] for name in self._model_name_to_keys
+                        if name in getattr(self, "_model_alias_to_key", {})
+                        and recipes[self._model_alias_to_key[name]].get("is_default") is True]
+        # Default construction is required by the SDK config. Other recipes
+        # stay lazy until selected by a request or a subagent.
+        for key in [*default_keys, *recipes]:
+            if self._materialize_model_recipe(key) is not None:
+                break
         if not self._model_cache:
             self._build_model_cache_legacy(config)
 
@@ -6846,12 +6753,9 @@ class JiuWenSwarmDeepAdapter:
             # 纯 model_name 精确命中（仅 is_default=true 的条目注册了纯名 key）
             if requested in self._model_cache:
                 return self._model_cache[requested]
-            # 纯 model_name 查找（_model_name_to_keys 的 key 是纯名）
-            keys = self._model_name_to_keys.get(requested)
-            if keys:
-                resolved = self._model_cache.get(keys[0])
-                if resolved is not None:
-                    return resolved
+            resolved = self._model_for_catalog_name(requested)
+            if resolved is not None:
+                return resolved
         # 通道侧使用全局 origin_index；将其换算成后端 per-name cache key。
         if "#" in requested:
             bare_name, _, index_part = requested.rpartition("#")
@@ -6866,7 +6770,7 @@ class JiuWenSwarmDeepAdapter:
                 )
                 return self._model
             cache_key = self._global_index_to_cache_key.get(global_idx)
-            if cache_key is None or cache_key not in self._model_cache:
+            if cache_key is None:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] model resolve: global index %d "
                     "for %r not in cache map (mapped_key=%s), falling back to "
@@ -6884,7 +6788,7 @@ class JiuWenSwarmDeepAdapter:
                     requested, global_idx,
                 )
                 return self._model
-            return self._model_cache[cache_key]
+            return self._materialize_model_recipe(cache_key) or self._model
 
         # Opencode Zen 免费模型（纯内存态，不入 config.yaml）：从进程内存缓存
         # 取完整 model_client_config / model_config_obj 构建并缓存，供本次及后续请求复用。
@@ -7000,10 +6904,11 @@ class JiuWenSwarmDeepAdapter:
             # model:<model_id>
             model_id = requested.split(":", 1)[1]
             cache_key = self._model_id_to_key.get(model_id)
-            if cache_key is None or cache_key not in self._model_cache:
+            selected_model = self._materialize_model_recipe(cache_key) if cache_key is not None else None
+            if selected_model is None:
                 from jiuwenswarm.common.model_errors import MODEL_SELECTION_NOT_FOUND, ModelSelectionError
                 raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, f"unknown model_id {model_id!r}")
-            return self._model_cache[cache_key]
+            return selected_model
         if not requested:
             last = getattr(self, "_last_resolved_model", None)
             if last is not None:
@@ -7088,7 +6993,8 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.common.auth.login_credentials import bare_model_name
 
         bare_name = bare_model_name(requested)
-        if bare_name in self._model_cache or self._model_name_to_keys.get(bare_name):
+        if (bare_name in self._model_cache or self._model_name_to_keys.get(bare_name)
+                or bare_name in getattr(self, "_model_alias_to_key", {})):
             return False
         try:
             from jiuwenswarm.common.auth.model_catalog import get_models

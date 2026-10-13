@@ -38,6 +38,7 @@ async def serve_stub(
     *,
     ready_delay: float = 0.0,
     exit_on_request: bool = False,
+    code_identity_value: str | None = None,
 ) -> None:
     server = IpcServer(socket_path)
     await server.start()
@@ -50,7 +51,7 @@ async def serve_stub(
         # when a Front reconnects after the source checkout has changed.
         from jiuwenswarm.server.supervisor.identity import code_identity
 
-        worker_code_identity = await asyncio.to_thread(code_identity)
+        worker_code_identity = code_identity_value if code_identity_value is not None else await asyncio.to_thread(code_identity)
         while True:
             conn = await server.accept()
             generation += 1

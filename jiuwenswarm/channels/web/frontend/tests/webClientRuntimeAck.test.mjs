@@ -248,3 +248,113 @@ test('a fresh page subscribes to the execution discovered in session metadata', 
     await fresh.disconnect();
   }
 });
+
+test('pending reconnect recovery preserves processing and retries only the original cursor with a bound', async () => {
+  const fresh = new webClient.constructor();
+  await fresh.connect();
+  let processing = true;
+  const snapshots = [];
+  const sent = [];
+  const offStatus = fresh.on('chat.processing_status', ({ payload }) => { processing = payload.is_processing; });
+  const offSnapshot = fresh.on('runtime.snapshot', ({ payload }) => { snapshots.push(payload); });
+  FakeWebSocket.instance.receive({ type: 'event', event: 'chat.delta', payload: {
+    session_id: 'pending-session', runtime_event: { worker_instance: 'original-worker', sequence: 27 },
+  } });
+  await fresh.disconnect();
+  const originalSend = FakeWebSocket.prototype.send;
+  FakeWebSocket.prototype.send = function (raw) {
+    originalSend.call(this, raw);
+    const query = JSON.parse(raw);
+    sent.push(query);
+    queueMicrotask(() => this.receive({ type: 'res', id: query.id, ok: true, payload: {
+      runtime: { recovery_pending: true, recovery_reason: 'snapshot_timeout', retry_after_ms: 1 },
+    } }));
+  };
+  try {
+    await fresh.connect();
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    assert.equal(processing, true);
+    assert.equal(snapshots.length, 3);
+    assert.deepEqual(sent.map(({ method, params }) => ({ method, params })), Array.from({ length: 3 }, () => ({
+      method: 'session.get_metadata', params: { session_id: 'pending-session',
+        runtime_resume: { worker_instance: 'original-worker', after: 27 } },
+    })));
+    assert.ok(snapshots.every((snapshot) => snapshot.recovery_pending === true));
+  } finally {
+    FakeWebSocket.prototype.send = originalSend;
+    offStatus(); offSnapshot();
+    await fresh.disconnect();
+  }
+});
+
+test('fresh metadata pending recovery reaches the later running snapshot without clearing processing', async () => {
+  const fresh = new webClient.constructor();
+  await fresh.connect();
+  const socket = FakeWebSocket.instance;
+  const originalSend = socket.send;
+  const sent = [];
+  let processing = true;
+  const snapshots = [];
+  const offStatus = fresh.on('chat.processing_status', ({ payload }) => { processing = payload.is_processing; });
+  const offSnapshot = fresh.on('runtime.snapshot', ({ payload }) => {
+    snapshots.push(payload);
+    assert.equal(processing, true);
+  });
+  socket.send = function (raw) {
+    originalSend.call(this, raw);
+    const query = JSON.parse(raw);
+    sent.push(query);
+    const runtime = sent.length < 3
+      ? { recovery_pending: true, worker_instance: 'existing-worker', retry_after_ms: 1 }
+      : { is_processing: true, worker_instance: 'existing-worker', cursor: 2048 };
+    queueMicrotask(() => this.receive({ type: 'res', id: query.id, ok: true, payload: { is_processing: true, runtime } }));
+  };
+  try {
+    await fresh.request('session.get_metadata', { session_id: 'fresh-pending' });
+    assert.equal(processing, true);
+    assert.equal(snapshots.length, 2);
+    assert.equal(snapshots[0].recovery_pending, true);
+    assert.equal(snapshots[1].cursor, 2048);
+    assert.deepEqual(sent.map(({ method }) => method), Array(3).fill('session.get_metadata'));
+    assert.deepEqual(sent.slice(1).map(({ params }) => params), Array.from({ length: 2 }, () => ({
+      session_id: 'fresh-pending', runtime_resume: { worker_instance: 'existing-worker', after: 0 },
+    })));
+  } finally {
+    socket.send = originalSend;
+    offStatus(); offSnapshot();
+    await fresh.disconnect();
+  }
+});
+
+test('disconnect during pending recovery prevents another query on the replacement socket', async () => {
+  const fresh = new webClient.constructor();
+  await fresh.connect();
+  FakeWebSocket.instance.receive({ type: 'event', event: 'chat.delta', payload: {
+    session_id: 'disconnect-session', runtime_event: { worker_instance: 'original-worker', sequence: 9 },
+  } });
+  await fresh.disconnect();
+  const originalSend = FakeWebSocket.prototype.send;
+  const sent = [];
+  let releaseSnapshot;
+  const snapshot = new Promise((resolve) => { releaseSnapshot = resolve; });
+  const off = fresh.on('runtime.snapshot', releaseSnapshot);
+  FakeWebSocket.prototype.send = function (raw) {
+    originalSend.call(this, raw);
+    const query = JSON.parse(raw);
+    sent.push(query);
+    queueMicrotask(() => this.receive({ type: 'res', id: query.id, ok: true, payload: {
+      runtime: { recovery_pending: true, retry_after_ms: 1 },
+    } }));
+  };
+  try {
+    await fresh.connect();
+    await snapshot;
+    await fresh.disconnect();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(sent.length, 1);
+  } finally {
+    FakeWebSocket.prototype.send = originalSend;
+    off();
+    await fresh.disconnect();
+  }
+});

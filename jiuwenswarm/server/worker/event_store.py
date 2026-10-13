@@ -99,8 +99,8 @@ class WorkerEventStore:
         record.terminal = {"event_type": "runtime.completed", "state": state, "error": error}
         self.finish(dispatch_id)
 
-    def append(self, wire: dict[str, Any], dispatch_id: str) -> dict[str, Any]:
-        record = self.records.get(dispatch_id)
+    def _push_request(self, wire: dict[str, Any], record: DispatchRecord | None) -> AgentRequest | None:
+        """Resolve a server push target before acquiring its publication lock."""
         metadata = wire.get("metadata") or {}
         target = str(wire.get("session_id") or "")
         if metadata.get(E2A_WIRE_SERVER_PUSH_KEY) and target and (record is None or target != record.scope[-1]):
@@ -108,7 +108,7 @@ class WorkerEventStore:
             # mailbox task inheriting the source request's ContextVars. Its
             # target must own the journal and processing state, not the source.
             owner = metadata.get(SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY)
-            request = replace(record.request, session_id=target,
+            return replace(record.request, session_id=target,
                               request_id=str(wire.get("request_id") or ""),
                               channel_id=str(wire.get("channel") or record.request.channel_id),
                               params={"session_id": target},
@@ -118,7 +118,20 @@ class WorkerEventStore:
                                   session_id=target, channel_id=str(wire.get("channel") or ""),
                                   user_id=str(owner or metadata.get("user_id") or ""), metadata=metadata,
                                   params={"session_id": target})
-            record = self.internal_record(request)
+        return None
+
+    def publication_scope(self, wire: dict[str, Any], dispatch_id: str) -> tuple[str, ...]:
+        record = self.records.get(dispatch_id)
+        target = self._push_request(wire, record)
+        if target is not None:
+            return request_scope(target)
+        return record.scope if record else ("", "", "", "null", str(wire.get("session_id") or ""))
+
+    def append(self, wire: dict[str, Any], dispatch_id: str) -> dict[str, Any]:
+        record = self.records.get(dispatch_id)
+        target = self._push_request(wire, record)
+        if target is not None:
+            record = self.internal_record(target)
             dispatch_id = record.dispatch_id
             self.finish(dispatch_id)
         self._sequence += 1
