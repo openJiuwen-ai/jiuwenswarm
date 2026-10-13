@@ -19,6 +19,7 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     is_persistent_todo,
     mark_persistent_todo,
     read_turn_user_query,
+    user_query_drops_all_reminders,
     user_query_drops_reminder,
 )
 
@@ -41,12 +42,8 @@ def _query_names_todo(query: str, todo: TodoItem) -> bool:
     return len(content) >= 4 and content in text
 
 
-def _persistent_count(todos: list[TodoItem]) -> int:
-    return sum(1 for todo in todos if is_persistent_todo(todo))
-
-
-def _keep_persistent_reminder(todo: TodoItem, persistent_count: int) -> bool:
-    """Keep a reminder unless this turn names it, or it is the only one."""
+def _keep_persistent_reminder(todo: TodoItem) -> bool:
+    """Keep a reminder unless this turn names it, or asks to clear them all."""
     if not is_persistent_todo(todo):
         return False
     query = _TURN_QUERY.get()
@@ -54,7 +51,7 @@ def _keep_persistent_reminder(todo: TodoItem, persistent_count: int) -> bool:
         return True
     if _query_names_todo(query, todo):
         return False
-    return persistent_count != 1
+    return not user_query_drops_all_reminders(query)
 
 
 class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
@@ -86,12 +83,11 @@ class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
         remaining: list[TodoItem] = []
         deleted: list[str] = []
         kept: list[str] = []
-        persistent_count = _persistent_count(current_todos)
         for todo in current_todos:
             if todo.id not in delete_ids:
                 remaining.append(todo)
                 continue
-            if _keep_persistent_reminder(todo, persistent_count):
+            if _keep_persistent_reminder(todo):
                 remaining.append(todo)
                 kept.append(todo.id)
                 continue
@@ -109,11 +105,10 @@ class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
         cancel_ids = set(ids)
         cancelled: list[str] = []
         kept: list[str] = []
-        persistent_count = _persistent_count(current_todos)
         for todo in current_todos:
             if todo.id not in cancel_ids:
                 continue
-            if _keep_persistent_reminder(todo, persistent_count):
+            if _keep_persistent_reminder(todo):
                 kept.append(todo.id)
                 continue
             todo.status = TodoStatus.CANCELLED
@@ -140,7 +135,6 @@ class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
         deleted_ids: set[str] = set()
         kept_ids: list[str] = []
         updated_count = 0
-        persistent_count = _persistent_count(current_todos)
 
         for todo_data in todos_data:
             todo_id = todo_data.get("id")
@@ -160,7 +154,7 @@ class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
                 status_value = "cancelled"
             current_todo = todo_map[todo_id]
             dropping = status_value in ("deleted", "delete", "cancelled")
-            if dropping and _keep_persistent_reminder(current_todo, persistent_count):
+            if dropping and _keep_persistent_reminder(current_todo):
                 kept_ids.append(todo_id)
                 continue
             if status_value in ("deleted", "delete"):

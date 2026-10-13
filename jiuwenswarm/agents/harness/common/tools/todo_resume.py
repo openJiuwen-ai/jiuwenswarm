@@ -162,6 +162,11 @@ _REMINDER_DROP_VERBS = (
     "删了",
     "去掉",
     "不要了",
+    "移除",
+    "清空",
+    "退掉",
+    "划掉",
+    "清掉",
 )
 _REMINDER_DROP_NOUNS = (
     "待办",
@@ -174,6 +179,22 @@ _REMINDER_DROP_PHRASES = (
     "提醒取消",
     "取消这个待办",
     "取消这个提醒",
+    "取消那条提醒",
+    "取消这条提醒",
+    "不要这条提醒",
+    "不要那条提醒",
+)
+# 单独的「都」太宽。「待办都删」才是在清空提醒。
+_REMINDER_DROP_ALL_MARKERS = (
+    "都删",
+    "全删",
+    "全部删",
+    "所有待办",
+    "所有提醒",
+    "待办都",
+    "提醒都",
+    "全部待办",
+    "全部提醒",
 )
 _DISPLAY_TODO_TOOLS = frozenset({"todo_list", "todo_get"})
 
@@ -260,6 +281,14 @@ def user_query_drops_reminder(query: str) -> bool:
     if not _contains_any(text, _REMINDER_DROP_VERBS):
         return False
     return _contains_any(text, _REMINDER_DROP_NOUNS)
+
+
+def user_query_drops_all_reminders(query: str) -> bool:
+    """True when the user asked to clear every reminder, not one of them."""
+    text = (query or "").strip()
+    if not user_query_drops_reminder(text):
+        return False
+    return _contains_any(text, _REMINDER_DROP_ALL_MARKERS)
 
 
 def _contains_any(text: str, markers: Sequence[str]) -> bool:

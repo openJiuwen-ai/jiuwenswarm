@@ -25,6 +25,7 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     is_persistent_todo,
     remember_turn_user_query,
     snapshot_includes_persistent_todos,
+    user_query_drops_all_reminders,
     user_query_drops_reminder,
 )
 
@@ -39,9 +40,16 @@ def test_backlog_query_detects_add_todo_and_rejects_execute_now() -> None:
 def test_drop_query_needs_a_delete_verb_and_a_reminder_noun() -> None:
     assert user_query_drops_reminder("把这个待办删了")
     assert user_query_drops_reminder("取消这个待办")
+    assert user_query_drops_reminder("移除这个待办")
+    assert user_query_drops_reminder("把待办清掉")
+    assert user_query_drops_reminder("取消那条提醒")
+    assert user_query_drops_reminder("不要这条提醒了")
+    assert user_query_drops_all_reminders("把这些待办都删掉")
+    assert not user_query_drops_all_reminders("把这个待办删了")
     assert not user_query_drops_reminder("我有哪些待办事项？")
     assert not user_query_drops_reminder("取消生成PPT")
     assert not user_query_drops_reminder("帮我分析这份数据")
+    assert not user_query_drops_reminder("delete this reminder")
 
 
 def test_execution_filter_drops_reminders_display_keeps_them() -> None:
@@ -306,7 +314,7 @@ async def test_explicit_delete_query_removes_reminder() -> None:
     held = [reminder]
     tool = _modify_tool(held)
     session = _State()
-    remember_turn_user_query(session, "把这个待办删了")
+    remember_turn_user_query(session, "把明天下午2点提交测试报告这个待办删了")
 
     result = await tool.invoke(
         {"action": "delete", "ids": ["submit_test_report"]},
@@ -314,6 +322,43 @@ async def test_explicit_delete_query_removes_reminder() -> None:
     )
     assert held == []
     assert "Successfully deleted 1" in result["message"]
+    assert "Kept" not in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_plan_item_keeps_the_only_reminder() -> None:
+    reminder, plan = _reminder_and_plan()
+    held = [reminder, plan]
+    tool = _modify_tool(held)
+    session = _State()
+    remember_turn_user_query(session, "把生成PPT这个待办删了")
+
+    result = await tool.invoke(
+        {"action": "delete", "ids": ["submit_test_report", "stage"]},
+        session=session,
+    )
+
+    assert [todo.id for todo in held] == ["submit_test_report"]
+    assert reminder.status == TodoStatus.PENDING
+    assert is_persistent_todo(reminder)
+    assert "Kept 1 reminder" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_bulk_phrase_deletes_every_reminder() -> None:
+    first = _persistent("tomorrow", "明早提醒")
+    second = _persistent("last_week", "上周提醒")
+    held = [first, second]
+    tool = _modify_tool(held)
+    session = _State()
+    remember_turn_user_query(session, "把这些待办都删掉")
+
+    result = await tool.invoke(
+        {"action": "delete", "ids": ["tomorrow", "last_week"]},
+        session=session,
+    )
+
+    assert held == []
     assert "Kept" not in result["message"]
 
 
