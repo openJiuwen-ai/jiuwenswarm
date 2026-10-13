@@ -10,7 +10,7 @@
 | 计划条目 | [JM-04](../designs/jiuwenmate-development-plan.md)（原 SW-04）：`ports/commit.py` 与事件、候选输出存储 |
 | 负责人 | 常钰聪 |
 | 状态 | 待验收：宿主组件通过，联合验收待完成（与开发计划一致） |
-| 设计依据 | [JiuwenMate 服务端架构设计](../designs/jiuwenmate-architecture.md) 第 6.2 节“事件、确认与流量控制”、第 6.3 节“完成与结果交接”、第 7.2 节“提交顺序与跨资料交接”；开发计划附录 A.3 `CommitPort` 接口要求；agent-core 仓 `jiuwenmate` 分支 `openjiuwen/harness/persistent_agent/` 的 `CommitPort` 协议 |
+| 设计依据 | [JiuwenMate 服务端架构设计](../designs/jiuwenmate-architecture.md) 第 6.2 节“事件、确认与流量控制”、第 6.3 节“完成与结果交接”、第 7.2 节“提交顺序与跨资料交接”；开发计划第 6.2 节 `CommitPort` 接口要求；agent-core 仓 `jiuwenmate` 分支 `openjiuwen/harness/persistent_agent/` 的 `CommitPort` 协议 |
 | 关联 feature | 前置：[F_03 会话定位与请求受理](F_03_session-request.md)（事件归属校验依赖其 Request / Execution 表） |
 | 验证摘要 | 16 项测试通过（真实 SQLite、替身故障注入）；队列尚未接入 AgentServer，未与 core 正式执行联调 |
 | Refs | 无独立 issue；需求来源为开发计划 JM-04 |
@@ -40,7 +40,7 @@ core 通过 `CommitPort.record(execution, event)` 提交执行过程中的全部
 
 ## 3. 设计约束、假设与待决问题
 
-- 已确认约束与依赖：普通事件允许日志缺口；关键事件须等待自身落盘；final 引用的候选也必须可靠保存；读取日志不声明结果完整（开发计划附录 A.3）。
+- 已确认约束与依赖：普通事件允许日志缺口；关键事件须等待自身落盘；final 引用的候选也必须可靠保存；读取日志不声明结果完整（开发计划第 6.2 节）。
 - 关键假设：core 在同一 Execution 内保证 `local_seq` 唯一，且 `AgentEvent.proposal_digest()` 对相同内容稳定。
 - 待决问题：队列满（默认 10000）时 `put_nowait` 抛出 `asyncio.QueueFull`，当前直接传给 core。超限策略待 JM-07 接入真实负载后评估。
 
