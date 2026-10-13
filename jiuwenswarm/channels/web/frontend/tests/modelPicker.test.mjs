@@ -156,11 +156,11 @@ test('chat and scheduled tasks show identical grouped options, excluding seconda
       const menu = byId(`${prefix}-menu`);
       assert.deepEqual(
         [...menu.querySelectorAll('.model-select__section-header')].map((node) => node.textContent),
-        ['Configured Models', 'Limited-time Free Models'],
+        ['Limited-time Free Models', 'Configured Models'],
       );
       assert.deepEqual(
         [...menu.querySelectorAll('[role="menuitemradio"]')].map((node) => node.textContent),
-        ['Configured A', 'Configured B', 'Free Alias'],
+        ['Free Alias', 'Configured A', 'Configured B'],
       );
       assert.equal(menu.querySelector('[aria-checked="true"]').dataset.variant, 'configured-a');
       await click(document.body);
@@ -183,7 +183,7 @@ test('限时免费模型：没登录拿到之前，这一栏只放一个「获�
     // 分组标题还在——用户得先知道有这回事，再点进去拿
     assert.deepEqual(
       [...menu.querySelectorAll('.model-select__section-header')].map((node) => node.textContent),
-      ['Configured Models', 'Limited-time Free Models'],
+      ['Limited-time Free Models', 'Configured Models'],
     );
     const cta = byId('chat-panel-model-selector-free-cta');
     assert.ok(cta, '未登录时应出现「获取限时免费模型」入口');

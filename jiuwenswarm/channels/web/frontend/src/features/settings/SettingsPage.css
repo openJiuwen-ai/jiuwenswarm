@@ -691,7 +691,10 @@
 
 .settings-page__module[data-settings-module='models'] {
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
   width: min(816px, 100%);
+  gap: 30px;
   padding-top: 20px;
   margin-inline: auto;
 }
@@ -719,7 +722,7 @@
 
 .settings-models__tabs {
   width: fit-content;
-  margin-bottom: 30px;
+  margin-bottom: 14px;
   font-size: 24px;
   line-height: 36px;
 }
@@ -1162,7 +1165,7 @@
 }
 
 .settings-model-group-multiselect__table {
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--color-settings-border);
   border-radius: 8px;
   background: var(--color-surface-card);
@@ -1236,6 +1239,115 @@
   background: var(--color-surface-card);
 }
 
+.settings-model-group-route-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.settings-model-group-multiselect__route-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+}
+
+.settings-model-group-multiselect__route-select > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-model-group-multiselect__route-select > svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.settings-model-group-route-picker__menu,
+.settings-model-group-route-picker__submenu {
+  position: absolute;
+  z-index: 30;
+  min-width: 100%;
+  max-height: 260px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  box-shadow: var(--shadow-lg);
+}
+
+.settings-model-group-route-picker__menu {
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.settings-model-group-route-picker__plan {
+  position: relative;
+}
+
+.settings-model-group-route-picker__submenu {
+  top: -6px;
+  left: calc(100% + 8px);
+  width: max-content;
+  min-width: 190px;
+}
+
+.settings-model-group-route-picker__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings-model-group-route-picker__option:hover,
+.settings-model-group-route-picker__option:focus-visible {
+  background: var(--color-icon-btn-hover-surface);
+  outline: none;
+}
+
+.settings-model-group-route-picker__option-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-model-group-route-picker__option-main {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-model-group-route-picker__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}
+
+.settings-model-group-route-picker__icon svg,
+.settings-model-group-route-picker__icon img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
 .settings-model-group-multiselect__route-actions {
   display: flex;
   align-items: center;
@@ -1278,6 +1390,7 @@
 .ui-dialog.settings-model-group-dialog-surface {
   width: min(660px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
+  overflow: visible;
   border-radius: 10px;
 }
 
@@ -1297,6 +1410,7 @@
 
 .settings-model-group-dialog .form-dialog__body {
   padding: 8px 28px 18px;
+  overflow: visible;
 }
 
 .settings-model-group-dialog .form-dialog__footer {

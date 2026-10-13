@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { GripVertical } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { ModelEntry, ModelGroup, ModelRoute } from '../../../../types';
+import type { ModelEntry, ModelGroup, ModelPlan, ModelRoute } from '../../../../types';
 import { Button } from '../../../../components/ui';
+import { ModelProviderIcon } from '../../../../components/ModelProviderIcon';
 import { Form, FormDialog, useForm, type FormItem } from '../../../../components/form';
 import { SettingsConfirmDialog } from '../../components';
 import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
@@ -15,6 +17,18 @@ type ModelGroupDraft = {
 };
 
 type RouteDraft = ModelRoute & { _key: string };
+type ModelRouteOption = {
+  key: string;
+  label: string;
+  modelName: string;
+  vendorKey?: string;
+  plan?: ModelPlan;
+  model: ModelEntry;
+};
+
+function isPlanOption(option: ModelRouteOption): boolean {
+  return Boolean(option.vendorKey && (option.plan === 'coding_plan' || option.plan === 'token_plan'));
+}
 
 let nextTemporaryRouteKey = 0;
 function temporaryRouteKey(): string {
@@ -45,19 +59,54 @@ function ModelRouteMultiSelect({
   value: RouteDraft[];
   disabled: boolean;
   invalid: boolean;
-  options: readonly { key: string; label: string }[];
+  options: readonly ModelRouteOption[];
   emptyText: string;
   onChange: (next: RouteDraft[]) => void;
   onBlur: () => void;
 }): JSX.Element {
   const { t } = useTranslation();
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [openRouteKey, setOpenRouteKey] = useState<string | null>(null);
+  const [activePlanKey, setActivePlanKey] = useState<string | null>(null);
+  const [menuPosition, setMenuPosition] = useState<CSSProperties | null>(null);
+  const [submenuPosition, setSubmenuPosition] = useState<{ top: number; left: number } | null>(null);
   const optionByKey = new Map(options.map((option) => [option.key, option]));
   const addableOption = options[0];
+  const planGroups = useMemo(() => {
+    const groups = new Map<string, { key: string; label: string; options: ModelRouteOption[] }>();
+    options.filter(isPlanOption).forEach((option) => {
+      const key = `${option.plan}:${option.vendorKey}`;
+      const vendorLabel = getVendorLabel(option.vendorKey!, t)
+        .replace(/[（(][^）)]*[）)]/g, '')
+        .replace(/\s*GLM$/i, '')
+        .trim();
+      const entry = groups.get(key) ?? {
+        key,
+        label: `${vendorLabel}–${t(`settingsPanel.models.vendorGroups.${option.plan}`)}`,
+        options: [],
+      };
+      entry.options.push(option);
+      groups.set(key, entry);
+    });
+    return Array.from(groups.values());
+  }, [options, t]);
+  const flatOptions = options.filter((option) => !isPlanOption(option));
 
   const replaceModel = (routeKey: string, nextId: string) => {
     if (!nextId) return;
     onChange(value.map((route) => route._key === routeKey ? { ...route, model_id: nextId } : route));
+    setOpenRouteKey(null);
+    setActivePlanKey(null);
+  };
+
+  const openPlanMenu = (planKey: string, target: HTMLElement) => {
+    const anchor = target.getBoundingClientRect();
+    const submenuWidth = 220;
+    const left = anchor.right + 8 + submenuWidth <= window.innerWidth
+      ? anchor.right + 8
+      : Math.max(8, anchor.left - submenuWidth - 8);
+    setSubmenuPosition({ top: Math.max(8, anchor.top), left });
+    setActivePlanKey(planKey);
   };
 
   return (
@@ -68,7 +117,11 @@ function ModelRouteMultiSelect({
       aria-disabled={disabled || undefined}
       data-testid="settings-model-group-dialog-model-multiselect"
       onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) onBlur();
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setOpenRouteKey(null);
+          setActivePlanKey(null);
+          onBlur();
+        }
       }}
     >
       {options.length === 0 ? (
@@ -119,23 +172,121 @@ function ModelRouteMultiSelect({
                     >
                       <GripVertical size={16} />
                     </span>
-                    <select
-                      className="settings-model-group-multiselect__route-select"
-                      aria-label={t('settingsPanel.models.modelGroupTableModel')}
-                      value={route.model_id}
-                      disabled={disabled}
-                      title={label}
-                      onChange={(event) => replaceModel(route._key, event.target.value)}
-                    >
-                      {options.map((candidate) => (
-                        <option
-                          key={candidate.key}
-                          value={candidate.key}
-                        >
-                          {candidate.label}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="settings-model-group-route-picker">
+                      <button
+                        type="button"
+                        className="settings-model-group-multiselect__route-select"
+                        aria-label={t('settingsPanel.models.modelGroupTableModel')}
+                        aria-haspopup="menu"
+                        aria-expanded={openRouteKey === route._key}
+                        disabled={disabled}
+                        title={label}
+                        onClick={(event) => {
+                          setActivePlanKey(null);
+                          const closing = openRouteKey === route._key;
+                          if (!closing) {
+                            const anchor = event.currentTarget.getBoundingClientRect();
+                            const below = window.innerHeight - anchor.bottom - 12;
+                            const above = anchor.top - 12;
+                            const openDown = below >= 220 || below >= above;
+                            setMenuPosition({
+                              position: 'fixed',
+                              left: anchor.left,
+                              width: anchor.width,
+                              minWidth: anchor.width,
+                              maxWidth: anchor.width,
+                              maxHeight: Math.min(300, openDown ? below : above),
+                              ...(openDown
+                                ? { top: anchor.bottom + 4 }
+                                : { bottom: window.innerHeight - anchor.top + 4 }),
+                            });
+                          }
+                          setOpenRouteKey(closing ? null : route._key);
+                        }}
+                        data-testid="settings-model-group-dialog-route-select"
+                      >
+                        <span>{label}</span>
+                        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 8l4 4 4-4" />
+                        </svg>
+                      </button>
+                      {openRouteKey === route._key && menuPosition && (
+                        <div className="settings-model-group-route-picker__menu" role="menu" style={menuPosition}>
+                          {flatOptions.map((candidate) => (
+                            <button
+                              key={candidate.key}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={candidate.key === route.model_id}
+                              className="settings-model-group-route-picker__option"
+                              onClick={() => replaceModel(route._key, candidate.key)}
+                            >
+                              <span>{candidate.label}</span>
+                              {candidate.key === route.model_id && <span aria-hidden>✓</span>}
+                            </button>
+                          ))}
+                          {planGroups.map((planGroup) => {
+                            const selectedInPlan = planGroup.options.some((candidate) => candidate.key === route.model_id);
+                            return (
+                              <div key={planGroup.key} className="settings-model-group-route-picker__plan">
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  aria-haspopup="menu"
+                                  aria-expanded={activePlanKey === planGroup.key}
+                                  className="settings-model-group-route-picker__option"
+                                  onMouseEnter={(event) => openPlanMenu(planGroup.key, event.currentTarget)}
+                                  onFocus={(event) => openPlanMenu(planGroup.key, event.currentTarget)}
+                                  onClick={(event) => openPlanMenu(planGroup.key, event.currentTarget)}
+                                  data-testid="settings-model-group-dialog-plan-option"
+                                  data-variant={planGroup.key}
+                                >
+                                  <span className="settings-model-group-route-picker__option-main">
+                                    <span className="settings-model-group-route-picker__icon" aria-hidden="true">
+                                      <ModelProviderIcon model={planGroup.options[0].model} />
+                                    </span>
+                                    <span>{planGroup.label}</span>
+                                  </span>
+                                  <span className="settings-model-group-route-picker__option-actions" aria-hidden>
+                                    {selectedInPlan && <span>✓</span>}
+                                    <span>›</span>
+                                  </span>
+                                </button>
+                                {activePlanKey === planGroup.key && submenuPosition && createPortal(
+                                  <div
+                                    className="settings-model-group-route-picker__submenu"
+                                    role="menu"
+                                    style={{ position: 'fixed', top: submenuPosition.top, left: submenuPosition.left }}
+                                    onMouseDown={(event) => event.preventDefault()}
+                                  >
+                                    {planGroup.options.map((candidate) => (
+                                      <button
+                                        key={candidate.key}
+                                        type="button"
+                                        role="menuitemradio"
+                                        aria-checked={candidate.key === route.model_id}
+                                        className="settings-model-group-route-picker__option"
+                                        onClick={() => replaceModel(route._key, candidate.key)}
+                                        data-testid="settings-model-group-dialog-plan-model-option"
+                                      >
+                                        <span className="settings-model-group-route-picker__option-main">
+                                          <span className="settings-model-group-route-picker__icon" aria-hidden="true">
+                                            <ModelProviderIcon model={candidate.model} />
+                                          </span>
+                                          <span>{candidate.modelName}</span>
+                                        </span>
+                                        {candidate.key === route.model_id && <span aria-hidden>✓</span>}
+                                      </button>
+                                    ))}
+                                  </div>,
+                                  document.querySelector('.settings-model-group-dialog-surface') ?? document.body,
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                     <div className="settings-model-group-multiselect__route-actions">
                       <Button
                         size="sm"
@@ -224,6 +375,10 @@ export function ModelGroupDialog({
       getGroupCandidateModels(models).map((model) => ({
         key: model.model_id,
         label: `${model.vendor_key?.trim() ? getVendorLabel(model.vendor_key, t) : t('settingsPanel.models.customVendor')}/${model.alias?.trim() || model.model_name}`,
+        modelName: model.alias?.trim() || model.model_name,
+        vendorKey: model.vendor_key?.trim() || undefined,
+        plan: model.plan,
+        model,
       })),
     [models, t],
   );

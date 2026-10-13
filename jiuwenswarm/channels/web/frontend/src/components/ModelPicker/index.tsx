@@ -9,6 +9,7 @@ import { useSessionStore } from '../../stores/sessionStore';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import type { ModelEntry, ModelGroup, ModelSelection } from '../../types';
 import { getModelSelectionLabel } from '../../features/settings/modules/models/modelGroupAdapters';
+import { getVendorLabel } from '../../features/settings/modules/models/ModelProviderSelect';
 import { ModelProviderIcon } from '../ModelProviderIcon';
 import ModelGroupIcon from '../../assets/model-group.svg?react';
 
@@ -30,6 +31,25 @@ interface ModelPickerProps {
 
 const MENU_GAP = 10;
 const MENU_MAX_HEIGHT = 300;
+const NESTED_MENU_GAP = 8;
+const NESTED_MENU_CLOSE_DELAY = 100;
+
+type PlanModelGroup = {
+  key: string;
+  label: string;
+  models: ModelEntry[];
+};
+
+function isNestedPlanModel(model: ModelEntry): boolean {
+  return Boolean(model.vendor_key?.trim() && (model.plan === 'coding_plan' || model.plan === 'token_plan'));
+}
+
+function getPlanVendorLabel(vendorKey: string, t: ReturnType<typeof useTranslation>['t']): string {
+  return getVendorLabel(vendorKey, t)
+    .replace(/[（(][^）)]*[）)]/g, '')
+    .replace(/\s*GLM$/i, '')
+    .trim();
+}
 
 function isSameSelection(left: ModelSelection | null | undefined, right: ModelSelection): boolean {
   return Boolean(left && left.type === right.type && left.id === right.id
@@ -59,14 +79,36 @@ export default function ModelPicker({
   const modelGroups = useSessionStore((state) => state.availableModelGroups);
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties | null>(null);
+  const [activePlanKey, setActivePlanKey] = useState<string | null>(null);
+  const [nestedPosition, setNestedPosition] = useState<CSSProperties | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const nestedMenuRef = useRef<HTMLDivElement>(null);
+  const nestedCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selected = models.find((model) => model.model_name === value);
   const freeModels = models.filter((model) => model.is_free === true);
   const enabledGroups = includeModelGroups
     ? modelGroups.filter((group) => group.enabled !== false && Boolean(group.model_group_id))
     : [];
   const selectionLabel = getModelSelectionLabel(selection, models, modelGroups);
+  const configuredModels = models.filter((model) => model.is_free !== true);
+  const planModelGroups = useMemo(() => {
+    const byPlan = new Map<string, PlanModelGroup>();
+    configuredModels.filter(isNestedPlanModel).forEach((model) => {
+      const vendorKey = model.vendor_key!.trim();
+      const key = `${model.plan}:${vendorKey}`;
+      const planLabel = t(`settingsPanel.models.vendorGroups.${model.plan}`);
+      const entry = byPlan.get(key) ?? {
+        key,
+        label: `${getPlanVendorLabel(vendorKey, t)}–${planLabel}`,
+        models: [],
+      };
+      entry.models.push(model);
+      byPlan.set(key, entry);
+    });
+    return Array.from(byPlan.values());
+  }, [configuredModels, t]);
+  const activePlanGroup = planModelGroups.find((group) => group.key === activePlanKey) ?? null;
   const displayLabel =
     selection?.type === 'model_group'
       ? selectionLabel || selection.id
@@ -75,38 +117,48 @@ export default function ModelPicker({
         : value || t('chat.modelSelector.placeholder');
   const groups = [
     {
-      id: 'configuredGroups',
-      label: t('chat.modelSelector.configuredGroups'),
-      models: [] as ModelEntry[],
-      modelGroups: enabledGroups,
-      alwaysShow: false,
-    },
-    {
-      id: 'configured',
-      label: t('chat.modelSelector.configured'),
-      models: models.filter((model) => model.is_free !== true),
-      modelGroups: [] as ModelGroup[],
-      alwaysShow: false,
-    },
-    {
       id: 'free',
       label: t('chat.modelSelector.free'),
       models: freeModels,
       modelGroups: [] as ModelGroup[],
       alwaysShow: false,
     },
+    {
+      id: 'configured',
+      label: t('chat.modelSelector.configured'),
+      models: configuredModels.filter((model) => !isNestedPlanModel(model)),
+      modelGroups: [] as ModelGroup[],
+      alwaysShow: false,
+    },
+    {
+      id: 'configuredGroups',
+      label: t('chat.modelSelector.configuredGroups'),
+      models: [] as ModelEntry[],
+      modelGroups: enabledGroups,
+      alwaysShow: false,
+    },
   ];
   const showFreeModelsCta = !excludeFreeModels && campaign.state !== 'off' && freeModels.length === 0;
 
   useEffect(() => {
-    if (disabled) setOpen(false);
+    if (disabled) {
+      setOpen(false);
+      setActivePlanKey(null);
+    }
   }, [disabled]);
+
+  useEffect(() => () => {
+    if (nestedCloseTimerRef.current) clearTimeout(nestedCloseTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
     function handlePointerDown(event: PointerEvent): void {
-      if (!rootRef.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) {
+      if (!rootRef.current?.contains(event.target as Node)
+        && !menuRef.current?.contains(event.target as Node)
+        && !nestedMenuRef.current?.contains(event.target as Node)) {
         setOpen(false);
+        setActivePlanKey(null);
       }
     }
     document.addEventListener('pointerdown', handlePointerDown);
@@ -141,11 +193,44 @@ export default function ModelPicker({
 
   function handleTriggerClick(): void {
     setPosition(null);
+    setActivePlanKey(null);
     setOpen((current) => !current);
+  }
+
+  function openPlanMenu(planGroup: PlanModelGroup, target: HTMLElement): void {
+    if (nestedCloseTimerRef.current) {
+      clearTimeout(nestedCloseTimerRef.current);
+      nestedCloseTimerRef.current = null;
+    }
+    const anchor = target.getBoundingClientRect();
+    const estimatedHeight = Math.min(planGroup.models.length * 40 + 16, MENU_MAX_HEIGHT);
+    const top = Math.max(MENU_GAP, Math.min(anchor.top, window.innerHeight - estimatedHeight - MENU_GAP));
+    const preferredLeft = anchor.right + NESTED_MENU_GAP;
+    const left = preferredLeft + 220 <= window.innerWidth - MENU_GAP
+      ? preferredLeft
+      : Math.max(MENU_GAP, anchor.left - 220 - NESTED_MENU_GAP);
+    setNestedPosition({ top, left, maxHeight: Math.min(MENU_MAX_HEIGHT, window.innerHeight - top - MENU_GAP) });
+    setActivePlanKey(planGroup.key);
+  }
+
+  function keepPlanMenuOpen(): void {
+    if (!nestedCloseTimerRef.current) return;
+    clearTimeout(nestedCloseTimerRef.current);
+    nestedCloseTimerRef.current = null;
+  }
+
+  function schedulePlanMenuClose(): void {
+    keepPlanMenuOpen();
+    nestedCloseTimerRef.current = setTimeout(() => {
+      setActivePlanKey(null);
+      setNestedPosition(null);
+      nestedCloseTimerRef.current = null;
+    }, NESTED_MENU_CLOSE_DELAY);
   }
 
   function handleSelectModel(model: ModelEntry): void {
     setOpen(false);
+    setActivePlanKey(null);
     if (onSelectionChange && model.model_id?.trim()) {
       onSelectionChange({ type: 'model', id: model.model_id.trim() });
       return;
@@ -234,6 +319,7 @@ export default function ModelPicker({
                   group.alwaysShow ||
                   group.models.length > 0 ||
                   group.modelGroups.length > 0 ||
+                  (group.id === 'configured' && planModelGroups.length > 0) ||
                   (group.id === 'free' && showFreeModelsCta),
               )
               .map((group) => (
@@ -282,8 +368,8 @@ export default function ModelPicker({
                     const active = isSameSelection(selection, { type: 'model_group', id: groupId });
                     const canSelect = Boolean(onSelectionChange);
                     return (
-                      <Fragment key={groupId}>
-                        <button
+                      <button
+                        key={groupId}
                         type="button"
                         disabled={!canSelect}
                         onClick={() => handleSelectGroup(modelGroup)}
@@ -316,36 +402,55 @@ export default function ModelPicker({
                             <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
                           </svg>
                         )}
-                        </button>
-                        {modelGroup.routes
-                          .filter((route) => route.enabled !== false && Boolean(route.route_id))
-                          .map((route) => {
-                            const routeSelection: ModelSelection = {
-                              type: 'model_group', id: groupId, route_id: route.route_id!,
-                            };
-                            const routeModel = models.find((model) => model.model_id === route.model_id);
-                            const routeLabel = routeModel?.alias?.trim() || routeModel?.model_name || route.model_id;
-                            const routeActive = isSameSelection(selection, routeSelection);
-                            return (
-                              <button
-                                key={route.route_id}
-                                type={'button'}
-                                disabled={!canSelect}
-                                onClick={() => { setOpen(false); onSelectionChange?.(routeSelection); }}
-                                className={clsx('chat-mode-select__option', routeActive && 'chat-mode-select__option--active')}
-                                role={'menuitemradio'}
-                                aria-checked={routeActive}
-                                title={route.route_id}
-                                data-testid={testIdPrefix + '-group-route-option'}
-                                data-variant={route.route_id}
-                              >
-                                <span className={'chat-mode-select__option-main'}>
-                                  <span className={'chat-mode-select__label'}>{'↳ '}{routeLabel}</span>
-                                </span>
-                              </button>
-                            );
-                          })}
-                      </Fragment>
+                      </button>
+                    );
+                  })}
+                  {group.id === 'configured' && planModelGroups.map((planGroup) => {
+                    const active = planGroup.models.some((model) => {
+                      const modelSelection = model.model_id?.trim()
+                        ? ({ type: 'model', id: model.model_id.trim() } as const)
+                        : null;
+                      return modelSelection
+                        ? isSameSelection(selection, modelSelection)
+                        : model === selected && selection?.type !== 'model_group';
+                    });
+                    return (
+                      <button
+                        key={planGroup.key}
+                        type="button"
+                        className={clsx(
+                          'chat-mode-select__option',
+                          'model-select__nested-trigger',
+                          active && 'chat-mode-select__option--active',
+                          activePlanKey === planGroup.key && 'model-select__nested-trigger--open',
+                        )}
+                        role="menuitem"
+                        aria-haspopup="menu"
+                        aria-expanded={activePlanKey === planGroup.key}
+                        onMouseEnter={(event) => openPlanMenu(planGroup, event.currentTarget)}
+                        onMouseLeave={schedulePlanMenuClose}
+                        onFocus={(event) => openPlanMenu(planGroup, event.currentTarget)}
+                        onClick={(event) => openPlanMenu(planGroup, event.currentTarget)}
+                        data-testid={`${testIdPrefix}-plan-option`}
+                        data-variant={planGroup.key}
+                      >
+                        <span className="chat-mode-select__option-main">
+                          <span className="chat-mode-select__icon" aria-hidden="true">
+                            <ModelProviderIcon model={planGroup.models[0]} />
+                          </span>
+                          <span className="chat-mode-select__label">{planGroup.label}</span>
+                        </span>
+                        <span className="model-select__nested-actions" aria-hidden="true">
+                          {active && (
+                            <svg className="chat-mode-select__check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
+                            </svg>
+                          )}
+                          <svg className="model-select__nested-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M8 5l4 5-4 5" />
+                          </svg>
+                        </span>
+                      </button>
                     );
                   })}
                   {group.models.map((model, index) => {
@@ -419,6 +524,52 @@ export default function ModelPicker({
           </div>,
           document.body,
         )}
+      {open && !disabled && activePlanGroup && nestedPosition && createPortal(
+        <div
+          ref={nestedMenuRef}
+          className="chat-mode-select__menu model-select__menu model-select__nested-menu"
+          role="menu"
+          style={{ position: 'fixed', zIndex: 10000, ...nestedPosition }}
+          data-testid={`${testIdPrefix}-plan-menu`}
+          data-variant={activePlanGroup.key}
+          onMouseEnter={keepPlanMenuOpen}
+          onMouseLeave={schedulePlanMenuClose}
+        >
+          {activePlanGroup.models.map((model, index) => {
+            const modelSelection = model.model_id?.trim()
+              ? ({ type: 'model', id: model.model_id.trim() } as const)
+              : null;
+            const active = modelSelection
+              ? isSameSelection(selection, modelSelection)
+              : model === selected && selection?.type !== 'model_group';
+            return (
+              <button
+                key={`${model.model_id ?? model.model_name}-${index}`}
+                type="button"
+                onClick={() => handleSelectModel(model)}
+                className={clsx('chat-mode-select__option', active && 'chat-mode-select__option--active')}
+                role="menuitemradio"
+                aria-checked={active}
+                data-testid={`${testIdPrefix}-plan-model-option`}
+                data-variant={model.model_id ?? model.model_name}
+              >
+                <span className="chat-mode-select__option-main">
+                  <span className="chat-mode-select__icon" aria-hidden="true">
+                    <ModelProviderIcon model={model} />
+                  </span>
+                  <span className="chat-mode-select__label">{model.alias || model.model_name}</span>
+                </span>
+                {active && (
+                  <svg className="chat-mode-select__check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
+                  </svg>
+                )}
+              </button>
+            );
+          })}
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

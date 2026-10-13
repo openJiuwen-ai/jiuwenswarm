@@ -2994,6 +2994,31 @@
   overflow-y: auto;
 }
 
+.model-select__nested-trigger--open {
+  background: var(--color-icon-btn-hover-surface);
+}
+
+.model-select__nested-chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-meta);
+}
+
+.model-select__nested-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-select__nested-menu {
+  min-width: 220px;
+  padding: 6px;
+  overflow-y: auto;
+  box-shadow: var(--shadow-lg);
+}
+
 /* 模型选择菜单(chat-panel-model-selector-menu)hover 统一 #f5f5f5，与权限/模式菜单约定一致；
    RSI 实验弹窗复用 .model-select__menu 但不在本次范围，用 :not 排除 */
 .model-select__menu:not(.rsi-model-select__menu) .chat-mode-select__option:hover:not(:disabled),
