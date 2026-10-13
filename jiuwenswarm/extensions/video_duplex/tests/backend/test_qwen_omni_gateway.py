@@ -25,6 +25,19 @@ def test_qwen_config_adds_model_query_and_preserves_existing_query(monkeypatch) 
     )
 
 
+def test_qwen_requires_model_but_uses_tina_when_voice_is_unset(monkeypatch) -> None:
+    monkeypatch.setenv("QWEN_OMNI_REALTIME_URL", "wss://workspace.example/realtime")
+    monkeypatch.setenv("QWEN_OMNI_API_KEY", "secret")
+    monkeypatch.delenv("QWEN_OMNI_MODEL_NAME", raising=False)
+    monkeypatch.delenv("QWEN_OMNI_VOICE", raising=False)
+
+    config = qwen_omni_gateway.QwenOmniRealtimeConfig.from_environment()
+    assert config.model == ""
+    assert config.voice == "Tina"
+    with pytest.raises(ValueError, match="QWEN_OMNI_MODEL_NAME"):
+        config.validate()
+
+
 class _BrowserSocket:
     def __init__(self) -> None:
         self.client_state = WebSocketState.CONNECTING
@@ -116,6 +129,7 @@ async def test_gateway_injects_authorization_and_relays_both_directions(monkeypa
 async def test_gateway_preserves_upstream_close_and_redacts_reason(monkeypatch, code, expected):
     monkeypatch.setenv("QWEN_OMNI_REALTIME_URL", "wss://workspace.example/realtime")
     monkeypatch.setenv("QWEN_OMNI_API_KEY", "private-key")
+    monkeypatch.setenv("QWEN_OMNI_MODEL_NAME", "test-model")
     browser = _BrowserSocket()
     upstream = _UpstreamSocket()
     upstream.close_code = code
@@ -136,6 +150,7 @@ async def test_gateway_preserves_remote_close_reason_without_credentials(monkeyp
 
     monkeypatch.setenv("QWEN_OMNI_REALTIME_URL", "wss://workspace.example/realtime")
     monkeypatch.setenv("QWEN_OMNI_API_KEY", "private-key")
+    monkeypatch.setenv("QWEN_OMNI_MODEL_NAME", "test-model")
 
     class ClosingUpstream(_UpstreamSocket):
         def __init__(self):

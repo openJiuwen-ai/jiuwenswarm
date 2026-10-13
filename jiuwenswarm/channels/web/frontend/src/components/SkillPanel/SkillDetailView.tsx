@@ -21,6 +21,7 @@ import {
   MarkdownPane,
   PageCard,
   PageToolbar,
+  Select,
   Tabs,
   isPreviewableImagePath,
   type FilePreviewContentFile,
@@ -45,20 +46,25 @@ import type {
  * 将技能文件预览数据映射为共享 FilePreviewContent 所需结构。
  * 以当前选中路径为准：加载中/失败时 content 为空，但 header 与错误态仍正常显示
  * （对齐 agent 侧 file.loading/file.error 行为）；图片回退 raw-file 地址。
+ * 例外：切换文件的 loading 期间沿用上一次的预览数据（含其自身 path），
+ * 让内容区继续渲染旧文件，避免预览面板高度塌缩引起页面跳动。
  */
 function buildSkillPreviewFile(
   filePreview: SkillFilePreview | null,
   selectedPath: string,
+  filePreviewStatus: LoadState,
   skillFilePath: string,
 ): FilePreviewContentFile {
-  const matched = filePreview && filePreview.path === selectedPath ? filePreview : null;
+  const matched =
+    filePreview && (filePreview.path === selectedPath || filePreviewStatus === 'loading') ? filePreview : null;
+  const sourcePath = matched?.path ?? selectedPath;
   const skillDir = (skillFilePath || '').replace(/[\\/][^\\/]+$/, '');
   const downloadUrl =
     matched?.download_url ||
-    (isPreviewableImagePath(selectedPath)
-      ? `/file-api/raw-file?path=${encodeURIComponent(`${skillDir}/${selectedPath}`)}`
+    (isPreviewableImagePath(sourcePath)
+      ? `/file-api/raw-file?path=${encodeURIComponent(`${skillDir}/${sourcePath}`)}`
       : null);
-  return { path: selectedPath, content: matched?.content ?? null, downloadUrl };
+  return { path: sourcePath, content: matched?.content ?? null, downloadUrl };
 }
 
 /** 技能包成员阻塞原因 → i18n key（用于"包含技能"页签成员卡片状态徽标） */
@@ -307,7 +313,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           <Tabs
             role="tablist"
             itemTestId={`${tid}-tab`}
-            className="text-base"
+            className="page-tabs"
             value={hubDetailTab}
             onChange={(tab) => setHubDetailTab(tab)}
             items={[
@@ -546,25 +552,28 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           </div>
         ) : (
           <div className="flex items-center gap-2 flex-wrap">
-            <select
+            <Select
+              aria-label={t('skills.detail.versionManage')}
               value={selectedSkill.version || skillVersionsDefault || ''}
-              onChange={(e) => {
-                const ver = e.target.value;
+              style={{ width: '360px' }}
+              options={buildSkillVersionOptions(skillVersions).map((option) => ({
+                value: option.version,
+                label: (
+                  <span className="skill-version-option">
+                    <span className="skill-version-option__version">{option.version}</span>
+                    {option.isDefault ? (
+                      <span className="skill-version-default-tag">{t('skills.detail.defaultVersion')}</span>
+                    ) : null}
+                  </span>
+                ),
+                disabled: option.disabled,
+                disabledReason: option.disabled ? t('skills.detail.unavailableVersion') : undefined,
+              }))}
+              onChange={(ver) => {
                 if (ver) onFetchSkillDetail(selectedSkill.name, ver);
               }}
-              className="appearance-none rounded-[6px] border border-border bg-panel text-xs text-text outline-none focus:outline-none focus:ring-0 focus:border-border"
-              style={{ width: '360px', height: '28px', paddingLeft: '12px', paddingRight: '12px' }}
               data-testid="skill-panel-my-detail-versions-select"
-            >
-              {buildSkillVersionOptions(skillVersions, {
-                defaultSuffix: ` (${t('skills.detail.defaultVersion')})`,
-                unavailableSuffix: ` (${t('skills.detail.unavailableVersion')})`,
-              }).map((option) => (
-                <option key={option.version} value={option.version} disabled={option.disabled} className="text-xs">
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            />
             {selectedSkill.has_evolutions ? (
               <button
                 onClick={() => onRebuild(selectedSkill.name, selectedSkill.version || null)}
@@ -585,7 +594,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           <Tabs
             role="tablist"
             itemTestId={`${tid}-tab`}
-            className="text-base"
+            className="page-tabs"
             value={detailTab}
             onChange={(tab) => {
               setDetailTab(tab);
@@ -675,7 +684,9 @@ export function SkillDetailView(props: SkillDetailViewProps) {
                 selected={Boolean(filePreviewPath)}
                 selectedPreviewable={Boolean(filePreviewPath)}
                 file={
-                  filePreviewPath ? buildSkillPreviewFile(filePreview, filePreviewPath, selectedSkill.file_path) : null
+                  filePreviewPath
+                    ? buildSkillPreviewFile(filePreview, filePreviewPath, filePreviewStatus, selectedSkill.file_path)
+                    : null
                 }
                 status={filePreviewStatus}
                 labels={{

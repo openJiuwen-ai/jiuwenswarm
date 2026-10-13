@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * The client's ONE syntax highlighter: a synchronous fine-grained shiki core
  * (JavaScript regex engine — no oniguruma WASM, bundle-friendly) with an

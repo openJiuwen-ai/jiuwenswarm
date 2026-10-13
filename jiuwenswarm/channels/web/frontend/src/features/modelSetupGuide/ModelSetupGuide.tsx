@@ -244,7 +244,7 @@ export function ModelSetupGuide({
           {t('modelSetupGuide.skip')}
         </button>
         <div className="model-setup-guide__content" data-testid="model-setup-guide-content">
-          <TeamMemberAvatar member="team_leader" className="model-setup-guide__avatar" alt="" />
+          <TeamMemberAvatar member="team_leader" alt="" className="model-setup-guide__avatar" />
           <div className="model-setup-guide__copy" data-testid="model-setup-guide-copy">
             <h2 id={`model-setup-guide-title-${step}`} className="model-setup-guide__title" data-testid="model-setup-guide-title" data-variant={step}>
               {t(`modelSetupGuide.steps.${step}.title`)}

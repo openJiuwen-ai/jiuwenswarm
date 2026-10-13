@@ -334,10 +334,15 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
         return None
 
     captured: dict = {}
+    caller_vision_tool = SimpleNamespace(
+        card=SimpleNamespace(name="visual_question_answering"),
+    )
 
     def build(spec, context):
         captured["spec"] = spec
         captured["context"] = context
+        # A caller Spec may still materialize tools through the Code bundle.
+        context.artifacts.tools = [caller_vision_tool]
         return SimpleNamespace(
             ensure_initialized=ensure_initialized,
             _registered_rails=[],
@@ -412,6 +417,9 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     assert adapter._agent_name == "caller-spec-agent"
     assert owner_ids == [adapter._tool_owner_id()]
     assert adapter._default_model_name == "test-model"
+    # Reloads keep the caller Spec's tools untouched, including their configs.
+    assert adapter._vision_tools == []
+    assert adapter._vision_tools_registered is False
     create_model.assert_not_called()
     convert_config.assert_not_called()
     sync_symphony.assert_not_called()
@@ -506,16 +514,18 @@ def test_runtime_agent_definition_overlays_complete_product_spec():
     assert effective.enable_tool_resilience_rail is True
 
 
-def test_runtime_agent_definition_rejects_unsupported_tool_override():
-    with pytest.raises(ValueError, match="configured set"):
-        interface_code.JiuwenSwarmCodeAdapter._apply_runtime_agent_definition(
-            DeepAgentSpec(system_prompt="product prompt"),
-            {
-                "name": "sdk_agent",
-                "instructions": "Follow the SDK task.",
-                "tools": ["shell"],
-            },
-        )
+def test_runtime_agent_definition_with_tool_list_disables_broader_subagents():
+    base = DeepAgentSpec(system_prompt="product prompt")
+    effective = interface_code.JiuwenSwarmCodeAdapter._apply_runtime_agent_definition(
+        base,
+        {
+            "name": "sdk_agent",
+            "instructions": "Follow the SDK task.",
+            "tools": ["shell"],
+        },
+    )
+    assert effective.subagents == []
+    assert effective.tools == base.tools
 
 
 def test_runtime_agent_definition_is_propagated_to_session_builds():

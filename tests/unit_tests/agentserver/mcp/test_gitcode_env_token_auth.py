@@ -25,9 +25,11 @@ Two layers are pinned here:
 from __future__ import annotations
 
 import os
+import types
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 
 from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
@@ -220,3 +222,128 @@ def test_default_runner_env_none_inherits_parent(monkeypatch) -> None:
     cli_driver.default_runner("echo hi", env=None)
     # env=None passed through → subprocess inherits parent env (existing behavior).
     assert captured["env"] is None
+
+
+# ---------------------------------------------------------------------------
+# Layer 3: _connect_cli rejects an invalid stored token for zero-step CLI MCPs
+#           (gitcode) instead of silently finalizing; OAuth CLIs unaffected.
+# ---------------------------------------------------------------------------
+
+
+class _FakeCliDriver:
+    """Stand-in for CliDriver: install always OK; configurable status/steps."""
+
+    def __init__(self, name: str, *, steps_total: int = 0,
+                 authenticated: bool = False,
+                 output: str = "not logged in") -> None:
+        self.name = name
+        self.manifest = types.SimpleNamespace(status_cmd="gitcode auth status")
+        self._steps_total = steps_total
+        self._authenticated = authenticated
+        self._output = output
+
+    def install(self):
+        return types.SimpleNamespace(
+            version_ok=True, version="0.9.0", min_version="0.9.0",
+            runtime="python", install_cmd="pip install gitcode-cli",
+            error="", error_kind="",
+        )
+
+    def status(self):
+        return types.SimpleNamespace(
+            authenticated=self._authenticated, output=self._output, matched={},
+        )
+
+    def auth_steps_count(self) -> int:
+        return self._steps_total
+
+    def auth_step(self, index: int):
+        return types.SimpleNamespace(
+            succeeded=True, needs_user_action=False, error="",
+        )
+
+
+def _patch_workspace(monkeypatch, tmp_path: Path) -> None:
+    from jiuwenswarm.server.runtime.mcp import credential, registry, state_store
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(state_store, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(credential, "get_workspace_dir", lambda: tmp_path)
+
+
+def test_connect_cli_rejects_invalid_stored_token(tmp_path: Path, monkeypatch) -> None:
+    """gitcode with a stored but INVALID token: install+status run, status is
+    unauthenticated, steps_total==0 and the token IS stored → the stored token
+    is wiped and connect fails with CODE_CREDENTIALS_INVALID (so the next
+    connect re-prompts the credentials modal instead of silently connecting)."""
+    from jiuwenswarm.server.runtime.mcp import cli_driver, registry
+
+    _patch_workspace(monkeypatch, tmp_path)
+    _write_gitcode_pkg(tmp_path)
+    monkeypatch.setattr(cli_driver, "CliDriver",
+                        lambda name, **kw: _FakeCliDriver(name, **kw))
+
+    with patch(
+        "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.get_all",
+        return_value={"GITCODE_TOKEN": "bad_tok"},
+    ), patch(
+        "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.delete_mcp",
+    ) as del_mock, pytest.raises(registry.CliConnectError) as exc_info:
+        registry._connect_cli("gitcode", 0)
+
+    assert exc_info.value.code == registry.CODE_CREDENTIALS_INVALID
+    assert del_mock.call_count == 1
+
+
+def test_connect_cli_oauth_cli_skips_token_enforcement(tmp_path: Path, monkeypatch) -> None:
+    """OAuth CLI (feishu/dingtalk — steps_total > 0): an unauthenticated status
+    does NOT fail connect; the flow proceeds into its auth steps (then
+    finalize). The token-enforcement branch must never run for them."""
+    from jiuwenswarm.server.runtime.mcp import cli_driver, registry
+
+    _patch_workspace(monkeypatch, tmp_path)
+    _write_gitcode_pkg(tmp_path)
+    monkeypatch.setattr(
+        cli_driver, "CliDriver",
+        lambda name, **kw: _FakeCliDriver(name, steps_total=1, authenticated=False, **kw),
+    )
+    captured: dict = {}
+
+    def fake_finalize(name, inst, *, install_only=False):
+        captured["finalized"] = name
+        return {"name": name, "integration_type": "cli", "auth_required": False}
+
+    monkeypatch.setattr(registry, "_finalize_cli", fake_finalize)
+    with patch(
+        "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.delete_mcp",
+    ) as del_mock:
+        result = registry._connect_cli("gitcode", 0)
+
+    assert captured.get("finalized") == "gitcode"
+    assert result.get("name") == "gitcode"
+    assert del_mock.call_count == 0
+
+
+def test_connect_cli_install_only_skips_token_enforcement(tmp_path: Path, monkeypatch) -> None:
+    """install_only callers (another feature manages skills itself) skip the
+    token check: a missing/invalid token must not fail their install flow."""
+    from jiuwenswarm.server.runtime.mcp import cli_driver, registry
+
+    _patch_workspace(monkeypatch, tmp_path)
+    _write_gitcode_pkg(tmp_path)
+    monkeypatch.setattr(cli_driver, "CliDriver",
+                        lambda name, **kw: _FakeCliDriver(name, **kw))
+    captured: dict = {}
+
+    def fake_finalize(name, inst, *, install_only=False):
+        captured["finalized"] = name
+        return {"name": name, "integration_type": "cli", "auth_required": False}
+
+    monkeypatch.setattr(registry, "_finalize_cli", fake_finalize)
+    with patch(
+        "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.delete_mcp",
+    ) as del_mock:
+        result = registry._connect_cli("gitcode", 0, install_only=True)
+
+    assert captured.get("finalized") == "gitcode"
+    assert result.get("name") == "gitcode"
+    assert del_mock.call_count == 0

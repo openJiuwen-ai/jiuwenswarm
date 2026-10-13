@@ -105,6 +105,12 @@ class Readiness:
     def mark_runtime_warming(self) -> None:
         if self._state in {ReadinessState.FAILED, ReadinessState.DRAINING}:
             return
+        # A restarted Worker must block chat again. Clearing the event keeps
+        # waiters parked until the next ``AGENT_READY``.
+        if self._state in _AGENT_STATES:
+            self._agent_ready.clear()
+            self._failed_reason = None
+            self._retrying = False
         self._state = ReadinessState.RUNTIME_WARMING
 
     def mark_agent_ready(self) -> None:

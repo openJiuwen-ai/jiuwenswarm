@@ -1,13 +1,10 @@
-import { useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowLeftRight, Check, ChevronDown, ChevronUp, Minus, Plus, Trash2 } from 'lucide-react';
+import { useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { ChevronDown, ChevronUp, Minus, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   dedupeAgentGroupOptions,
   getAgentAvatarUrl,
-  isSkillVisibleInSourceTab,
-  isTeamSkillOption,
   resolveAgentGroupSelectionId,
-  sortInstalledFirst,
   type AgentCatalogItem,
   type AgentGroupDraft,
   type RequestStatus,
@@ -16,7 +13,9 @@ import {
 import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '../../features/agentManagement/limits';
 import { AgentGroupMemberPicker } from './AgentGroupMemberPicker';
 import { AgentTagPicker } from './AgentTagPicker';
-import { PageCard, Tabs, Input, Textarea, FormDrawer } from '../ui';
+import { DeleteCardIcon, SwitchCardIcon } from './cardActions';
+import { SkillPickerDrawer } from './SkillPickerDrawer';
+import { PageCard, Tabs, Input, Textarea, FieldError } from '../ui';
 import { FormPageLayout } from '../ConnectorMarket/FormPageLayout';
 
 type AgentGroupEditorProps = {
@@ -28,7 +27,6 @@ type AgentGroupEditorProps = {
   skillsStatus: RequestStatus;
   saving: boolean;
   error: string | null;
-  selectionError?: string | null;
   onChange: (draft: AgentGroupDraft) => void;
   onReloadAgents: () => void;
   onReloadSkills: () => void;
@@ -50,7 +48,6 @@ export function AgentGroupEditor({
   skillsStatus,
   saving,
   error,
-  selectionError,
   onChange,
   onReloadAgents,
   onReloadSkills,
@@ -66,14 +63,9 @@ export function AgentGroupEditor({
   const [touched, setTouched] = useState(false);
   const [pickerMode, setPickerMode] = useState<'leader' | 'member' | null>(null);
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
-  const [skillQuery, setSkillQuery] = useState('');
-  const [skillSourceTab, setSkillSourceTab] = useState<'local' | 'market'>('market');
-  const [skillDraft, setSkillDraft] = useState<string[]>(draft.skillRefs);
   const [teamConfigOpen, setTeamConfigOpen] = useState(true);
   const [skillsOpen, setSkillsOpen] = useState(true);
   const [promptsOpen, setPromptsOpen] = useState(true);
-  const leaderPickerTriggerRef = useRef<HTMLElement | null>(null);
-  const memberPickerTriggerRef = useRef<HTMLElement | null>(null);
   const promptKeySeedRef = useMemo(() => ({ current: 0 }), []);
   const promptKeysRef = useMemo(() => ({ current: [] as string[] }), []);
 
@@ -95,14 +87,6 @@ export function AgentGroupEditor({
   const selectedMembers = uniqueAgentOptions.filter(
     (agent) => draft.memberIds.includes(resolveAgentGroupSelectionId(agent)) || draft.memberIds.includes(agent.id),
   );
-  const filteredSkills = sortInstalledFirst(
-    skillOptions.filter((skill) => {
-      if (!isTeamSkillOption(skill, skillSourceTab) || !isSkillVisibleInSourceTab(skill, skillSourceTab)) return false;
-      return `${skill.id} ${skill.name} ${skill.description}`
-        .toLocaleLowerCase()
-        .includes(skillQuery.trim().toLocaleLowerCase());
-    }),
-  );
   const update = (patch: Partial<AgentGroupDraft>) => onChange({ ...draft, ...patch });
 
   const nextPromptKey = () => {
@@ -113,14 +97,6 @@ export function AgentGroupEditor({
     promptKeysRef.current[index] ||= nextPromptKey();
     return promptKeysRef.current[index];
   };
-  const openSkills = () => {
-    setSkillDraft(draft.skillRefs);
-    setSkillQuery('');
-    setSkillSourceTab('market');
-    setSkillPickerOpen(true);
-  };
-  const toggleSkill = (id: string) =>
-    setSkillDraft((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   const addPrompt = () => {
     if (draft.suggestedPrompts.some((prompt) => prompt.trim().length === 0)) return;
     promptKeysRef.current.push(nextPromptKey());
@@ -205,11 +181,9 @@ export function AgentGroupEditor({
                 showCounter
                 counterTestId="agent-group-editor-name-counter"
               />
-              {touched && errors.name ? (
-                <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-group-editor-name-error">
-                  {errors.name}
-                </p>
-              ) : null}
+              <FieldError className="mt-1" testId="agent-group-editor-name-error">
+                {touched && errors.name ? errors.name : null}
+              </FieldError>
             </div>
 
             <div className="mb-4">
@@ -228,14 +202,9 @@ export function AgentGroupEditor({
                 counterTestId="agent-group-editor-description-counter"
                 scrollable
               />
-              {touched && errors.description ? (
-                <p
-                  className="mt-1 text-[11px] leading-4 text-danger"
-                  data-testid="agent-group-editor-description-error"
-                >
-                  {errors.description}
-                </p>
-              ) : null}
+              <FieldError className="mt-1" testId="agent-group-editor-description-error">
+                {touched && errors.description ? errors.description : null}
+              </FieldError>
             </div>
 
             <div className="mb-4">
@@ -263,11 +232,9 @@ export function AgentGroupEditor({
                 aria-label={t('agentManagement.group.form.personaLabel')}
                 data-testid="agent-group-editor-persona"
               />
-              {touched && errors.persona ? (
-                <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-group-editor-persona-error">
-                  {errors.persona}
-                </p>
-              ) : null}
+              <FieldError className="mt-1" testId="agent-group-editor-persona-error">
+                {touched && errors.persona ? errors.persona : null}
+              </FieldError>
             </div>
           </Section>
 
@@ -294,21 +261,21 @@ export function AgentGroupEditor({
                   ) : null}
                 </div>
                 {selectedLeader ? (
-                  <PageCard
-                    testId="agent-group-editor-leader-card"
-                    avatar={{ name: selectedLeader.displayName, iconUrl: getAgentAvatarUrl(selectedLeader) }}
-                    title={selectedLeader.displayName}
-                    description={selectedLeader.description || t('agentManagement.unknownDescription')}
-                    actionsHover
-                    action={{
-                      icon: <ArrowLeftRight size={15} />,
-                      onClick: () => openMemberPicker('leader'),
-                    }}
-                  />
+                  <div className="card-grid-auto">
+                    <PageCard
+                      testId="agent-group-editor-leader-card"
+                      avatar={{ name: selectedLeader.displayName, iconUrl: getAgentAvatarUrl(selectedLeader) }}
+                      title={selectedLeader.displayName}
+                      description={selectedLeader.description || t('agentManagement.unknownDescription')}
+                      actionsHover
+                      action={{
+                        icon: <SwitchCardIcon />,
+                        onClick: () => openMemberPicker('leader'),
+                      }}
+                    />
+                  </div>
                 ) : touched && errors.leader ? (
-                  <p className="text-[11px] leading-4 text-danger" data-testid="agent-group-editor-leader-error">
-                    {errors.leader}
-                  </p>
+                  <FieldError testId="agent-group-editor-leader-error">{errors.leader}</FieldError>
                 ) : null}
               </div>
 
@@ -326,7 +293,7 @@ export function AgentGroupEditor({
                   </button>
                 </div>
                 {selectedMembers.length > 0 ? (
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="card-grid-auto">
                     {selectedMembers.map((agent) => (
                       <PageCard
                         key={agent.id}
@@ -337,7 +304,7 @@ export function AgentGroupEditor({
                         description={agent.description || t('agentManagement.unknownDescription')}
                         actionsHover
                         action={{
-                          icon: <Trash2 size={15} />,
+                          icon: <DeleteCardIcon />,
                           onClick: () =>
                             update({
                               memberIds: draft.memberIds.filter(
@@ -349,9 +316,7 @@ export function AgentGroupEditor({
                     ))}
                   </div>
                 ) : touched && errors.members ? (
-                  <p className="text-[11px] leading-4 text-danger" data-testid="agent-group-editor-members-error">
-                    {errors.members}
-                  </p>
+                  <FieldError testId="agent-group-editor-members-error">{errors.members}</FieldError>
                 ) : null}
               </div>
             </div>
@@ -364,7 +329,7 @@ export function AgentGroupEditor({
                 type="button"
                 className="flex items-center gap-1 rounded-full px-2.5 py-1 text-[13px] text-text hover:text-[color:var(--color-chat-accent)]"
                 data-testid="agent-group-editor-choose-skills"
-                onClick={openSkills}
+                onClick={() => setSkillPickerOpen(true)}
               >
                 <Plus size={14} />
                 {t('agentManagement.group.form.chooseSkills')}
@@ -375,7 +340,7 @@ export function AgentGroupEditor({
             onToggle={() => setSkillsOpen((open) => !open)}
           >
             {draft.skillRefs.length > 0 ? (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="card-grid-auto">
                 {draft.skillRefs.map((id) => {
                   const skill = skillOptions.find((option) => option.id === id);
                   const name = skill?.name || id;
@@ -389,7 +354,7 @@ export function AgentGroupEditor({
                       description={skill?.description || t('agentManagement.unknownDescription')}
                       actionsHover
                       action={{
-                        icon: <Trash2 size={15} />,
+                        icon: <DeleteCardIcon />,
                         onClick: () => update({ skillRefs: draft.skillRefs.filter((item) => item !== id) }),
                       }}
                     />
@@ -453,8 +418,6 @@ export function AgentGroupEditor({
           agentsError={agentsError}
           selectedLeaderId={draft.leaderId}
           selectedMemberIds={draft.memberIds}
-          restoreFocusRef={pickerMode === 'leader' ? leaderPickerTriggerRef : memberPickerTriggerRef}
-          selectionError={selectionError}
           onInstallAgent={onInstallAgent}
           installingAgentIds={installingAgentIds}
           onReloadAgents={onReloadAgents}
@@ -469,126 +432,24 @@ export function AgentGroupEditor({
       ) : null}
 
       {skillPickerOpen && (
-        <FormDrawer
+        <SkillPickerDrawer
           title={t('agentManagement.group.form.chooseSkills')}
+          testId="agent-group-editor-skill-picker"
+          status={skillsStatus}
+          skills={skillOptions}
+          initialSelectedIds={draft.skillRefs}
           onClose={() => setSkillPickerOpen(false)}
-          onConfirm={() => {
-            update({ skillRefs: skillDraft });
+          onConfirm={(ids) => {
+            update({ skillRefs: ids });
             setSkillPickerOpen(false);
           }}
-          testId="agent-group-editor-skill-picker"
-          width={900}
-        >
-          <div className="relative mb-4 shrink-0">
-            <input
-              value={skillQuery}
-              onChange={(event) => setSkillQuery(event.target.value)}
-              placeholder={t('agentManagement.form.selectionSearchPlaceholder')}
-              className="h-8 w-full rounded-lg border border-border bg-bg pl-8 pr-3 text-[12px] leading-[18px] text-text outline-none focus:border-border-hover"
-              data-testid="agent-group-editor-skill-picker-search"
-            />
-          </div>
-          <Tabs
-            className="mb-4"
-            items={[
-              {
-                value: 'market',
-                label: t('agentManagement.form.skillMarket'),
-                testId: 'agent-group-editor-skill-picker-tab-market',
-              },
-              {
-                value: 'local',
-                label: t('agentManagement.form.mySkills'),
-                testId: 'agent-group-editor-skill-picker-tab-local',
-              },
-            ]}
-            value={skillSourceTab}
-            onChange={setSkillSourceTab}
-            wrapperTestId="agent-group-editor-skill-picker-tabs"
-            role="tablist"
-            ariaLabel={t('agentManagement.group.picker.skillSourceTabsLabel')}
-          />
-          {selectionError ? (
-            <div
-              className="agent-management-form-error mb-4"
-              role="alert"
-              data-testid="agent-group-editor-selection-error"
-            >
-              {selectionError}
-            </div>
-          ) : null}
-          <div className="flex-1 overflow-y-auto">
-            {skillsStatus === 'loading' ? (
-              <p className="py-10 text-center text-[13px] text-text-muted">{t('common.loading')}</p>
-            ) : skillsStatus === 'error' ? (
-              <div className="agent-management-form-error">
-                <span>{t('agentManagement.group.form.skillsError')}</span>
-                <button type="button" data-testid="agent-group-editor-skill-picker-retry" onClick={onReloadSkills}>
-                  {t('common.retry')}
-                </button>
-              </div>
-            ) : filteredSkills.length === 0 ? (
-              <div className="py-10 text-center text-[13px] text-text-muted">
-                <p>{t('agentManagement.group.form.skillsEmpty')}</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-4" data-testid="agent-group-editor-skill-picker-list">
-                {filteredSkills.map((skill) => {
-                  const selected = skillDraft.includes(skill.id);
-                  const installed = skill.installed === true;
-                  const installing = installingSkillId === skill.id;
-                  return (
-                    <PageCard
-                      key={skill.id}
-                      testId="agent-group-editor-skill-picker-item"
-                      variant={skill.id}
-                      interactive={installed}
-                      selected={selected}
-                      disabled={!installed && !onInstallSkill}
-                      onClick={installed ? () => toggleSkill(skill.id) : undefined}
-                      avatar={{ name: skill.name }}
-                      title={skill.name}
-                      description={skill.description || t('agentManagement.unknownDescription')}
-                      actionSlot={
-                        !installed && onInstallSkill ? (
-                          <button
-                            type="button"
-                            className="agent-management-inline-action"
-                            data-testid="agent-group-editor-skill-picker-install"
-                            data-variant={skill.id}
-                            disabled={installing}
-                            aria-busy={installing}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void onInstallSkill(skill);
-                            }}
-                          >
-                            {installing
-                              ? t('agentManagement.form.installingSkill')
-                              : t('agentManagement.form.installSkill')}
-                          </button>
-                        ) : (
-                          <span className="shrink-0" aria-hidden="true">
-                            {selected ? (
-                              <Check size={14} className="text-[color:var(--color-chat-accent)]" />
-                            ) : (
-                              <Plus size={14} className="text-text-muted" />
-                            )}
-                          </span>
-                        )
-                      }
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <div className="mt-4 flex items-center justify-between border-t border-border pt-4">
-            <span className="text-[13px] text-text-muted">
-              {t('agentManagement.group.picker.selectedCount', { count: skillDraft.length })}
-            </span>
-          </div>
-        </FormDrawer>
+          onRetry={onReloadSkills}
+          onInstallSkill={onInstallSkill}
+          installingSkillId={installingSkillId}
+          tabsAriaLabel={t('agentManagement.group.picker.skillSourceTabsLabel')}
+          errorMessage={t('agentManagement.group.form.skillsError')}
+          emptyMessage={t('agentManagement.group.form.skillsEmpty')}
+        />
       )}
     </>
   );

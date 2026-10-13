@@ -70,7 +70,7 @@ _MIGRATION_LOCK = threading.Lock()
 _PENDING_MIGRATIONS: set[tuple[str, str]] = set()
 _MAX_PENDING_MIGRATIONS = 64
 _COLLECT_LOCK = threading.Lock()
-_COLLECT_INFLIGHT: dict[tuple[str, str], Future] = {}
+_COLLECT_INFLIGHT: dict[tuple[str, str, bool], Future] = {}
 
 # 内存缓存: 解决异步写入时读取到陈旧磁盘数据的竞态条件
 _METADATA_CACHE: dict[str, dict[str, Any]] = {}
@@ -1178,6 +1178,21 @@ def sync_session_request_metadata(
     metadata = _read_metadata(session_id, cache_bust=True)
     effective_project_dir: str | None = None
 
+    from jiuwenswarm.common.agentos_runtime import is_agentos_workspace_fallback
+
+    workspace_fallback = is_agentos_workspace_fallback(
+        channel_id=channel_id,
+        project_dir=project_dir,
+        project_id=project_id,
+    )
+    stored_project_id = str((metadata or {}).get("project_id") or "").strip()
+    stored_project_dir = str((metadata or {}).get("project_dir") or "").strip().rstrip("/")
+    if stored_project_id not in {"", "default", "default_code"} or stored_project_dir not in {
+        "", "/home/agentos/workspace",
+    }:
+        workspace_fallback = False
+    binding_project_dir = None if workspace_fallback else project_dir
+
     if not metadata:
         # 会话元数据不存在：兜底新建（外部渠道隐式创建 session 的场景）
         now = _current_timestamp()
@@ -1199,7 +1214,7 @@ def sync_session_request_metadata(
             "team_name": "",
             "team_template_id": "",
             "round_id": 0,
-            "project_dir": project_dir or "",
+            "project_dir": binding_project_dir or "",
             "project_id": project_id or "",
             "persist_session": persist_session if isinstance(persist_session, bool) else False,
             "model": model if (model is not None and explicit_model_provided) else "",
@@ -1246,7 +1261,11 @@ def sync_session_request_metadata(
 
         # 校验 project_dir：首次锁定 / 不一致告警不覆盖
         locked_project = metadata.get("project_dir")
-        if isinstance(locked_project, str) and locked_project.strip():
+        if workspace_fallback:
+            # Execution cwd only: do not persist a project association or treat
+            # an old fallback directory as a newly requested binding.
+            effective_project_dir = project_dir
+        elif isinstance(locked_project, str) and locked_project.strip():
             # 已锁定：以磁盘值为准
             effective_project_dir = locked_project.strip()
             # 请求带了不同值 → 告警（会话被换项目目录，有问题），但不覆盖
@@ -1386,6 +1405,12 @@ def save_session_equipment(
         "plugin_names": _normalize_session_equipment_names(plugin_names),
         "mcp": _normalize_session_equipment_names(mcp),
     }
+    if get_session_equipment(session_id, cache_bust=True) == snapshot:
+        return
+    # The first user record may still be queued. A synchronous equipment
+    # update from the older disk snapshot would erase its title and count.
+    if not flush_pending_writes():
+        raise RuntimeError("session metadata writes did not finish before equipment update")
     if get_session_equipment(session_id, cache_bust=True) == snapshot:
         return
     update_session_metadata(
@@ -1933,9 +1958,11 @@ def get_all_sessions_metadata(
 
 def collect_all_sessions_metadata(
     user_id: str | None = None,
+    *,
+    enable_writeback: bool = True,
 ) -> list[dict[str, Any]]:
-    """Share only overlapping scans; later requests still read fresh disk state."""
-    key = (str(get_agent_sessions_dir()), user_id or "")
+    """Share overlapping scans with the same metadata writeback policy."""
+    key = (str(get_agent_sessions_dir()), user_id or "", enable_writeback)
     with _COLLECT_LOCK:
         pending = _COLLECT_INFLIGHT.get(key)
         owner = pending is None
@@ -1945,7 +1972,11 @@ def collect_all_sessions_metadata(
     if not owner:
         return copy.deepcopy(pending.result())
     try:
-        result = _collect_all_sessions_metadata(user_id)
+        result = (
+            _collect_all_sessions_metadata(user_id)
+            if enable_writeback
+            else _collect_all_sessions_metadata(user_id, enable_writeback=False)
+        )
         pending.set_result(result)
         return copy.deepcopy(result)
     except BaseException as exc:
@@ -1970,6 +2001,8 @@ def _apply_batch_projection(
 
 def _collect_all_sessions_metadata(
     user_id: str | None = None,
+    *,
+    enable_writeback: bool = True,
 ) -> list[dict[str, Any]]:
     """收集全部会话元数据(不分页、不排序),供项目统计与置顶会话聚合使用。
 
@@ -2050,7 +2083,9 @@ def _collect_all_sessions_metadata(
                 dir_to_projects=dir_to_projects,
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
-                background_writeback=not user_id and not state.get("write_blocked"),
+                background_writeback=(
+                    enable_writeback and not user_id and not state.get("write_blocked")
+                ),
             )
         if meta.get("ephemeral") is True:
             continue

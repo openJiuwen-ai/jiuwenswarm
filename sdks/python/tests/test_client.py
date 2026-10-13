@@ -43,6 +43,15 @@ async def test_distinct_query_processes():
 
 
 @pytest.mark.asyncio
+async def test_null_request_id_is_generated_and_correlated_over_real_pipes():
+    result = await client().run(
+        {"input": "test", "request_id": None}, deadline_seconds=10
+    )
+    assert isinstance(result["request_id"], str) and result["request_id"]
+    assert result["status"] == "completed"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mode",
     [
@@ -68,7 +77,9 @@ async def test_reject_protocol_or_process_disagreement(mode):
     [
         (b"\xff\n", UnicodeDecodeError),
         (b"{\n", json.JSONDecodeError),
-        (b"[" * 2000 + b"\n", RecursionError),
+        # 20000 层在全部受支持版本（3.11–3.13）都会触发 RecursionError；
+        # 2000 层在 3.13 的 C 扫描器下只会得到 JSONDecodeError。
+        pytest.param(b"[" * 20000 + b"\n", RecursionError, id="deep-nesting"),
     ],
 )
 def test_invalid_json_retains_protocol_error_and_cause(line, cause):
@@ -111,6 +122,31 @@ async def test_two_answers_same_process():
 async def test_no_automatic_approval():
     with pytest.raises(InteractionRequired):
         await client("ask").run({"input": "test"}, deadline_seconds=10)
+
+
+@pytest.mark.asyncio
+async def test_permission_is_rejected_and_child_continues_without_handler():
+    result = await client("permission_without_handler").run(
+        {"input": "test"}, deadline_seconds=10
+    )
+    assert result["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_host_tool_callback_returns_to_same_child():
+    seen = []
+
+    async def tool(event):
+        seen.append(event["payload"])
+        return {"value": "world"}
+
+    result = await client("host_tool").run(
+        {"input": "test", "host_tools": [{"name": "lookup"}]},
+        on_tool_call=tool,
+        deadline_seconds=10,
+    )
+    assert result["status"] == "completed"
+    assert seen[0]["arguments"] == {"key": "hello"}
 
 
 @pytest.mark.asyncio
@@ -273,7 +309,7 @@ def test_no_runtime_dependency():
     source = str(FIXTURE.parents[1] / "python" / "src")
     script = (
         "import sys\n"
-        f"sys.path.append({source!r})\n"
+        f"sys.path.insert(0, {source!r})\n"
         "import jiuwenswarm_sdk\n"
         "from pathlib import Path\n"
         f"assert Path(jiuwenswarm_sdk.__file__).resolve().parent == Path({source!r}) / 'jiuwenswarm_sdk'\n"

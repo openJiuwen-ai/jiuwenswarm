@@ -445,7 +445,7 @@ export function TaskPlanningPanel({
   return (
     <div className="flex-1 overflow-hidden bg-card" data-testid="team-area-task-planning-panel" data-variant="expanded">
       {view === 'list' ? (
-        <div className="flex h-full flex-col px-6 pb-6" data-testid="team-area-task-planning-list-view">
+        <div className="flex h-full min-h-0 flex-col px-6 pb-6" data-testid="team-area-task-planning-list-view">
           {header}
           {workflowRuns.length > 0 && activeSessionId ? (
             <>

@@ -60,7 +60,11 @@ export function MemberOverviewCard({
           />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-normal text-text" data-testid="team-area-member-overview-card-name">
+          <div
+            className="truncate text-sm font-normal text-text"
+            title={displayName}
+            data-testid="team-area-member-overview-card-name"
+          >
             {displayName}
           </div>
           <div className="mt-0.5 truncate text-xs text-text-muted" data-testid="team-area-member-overview-card-id">

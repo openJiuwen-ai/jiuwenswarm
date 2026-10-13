@@ -3106,3 +3106,150 @@ async def test_project_gate_discards_response_crossing_hide(tmp_path, monkeypatc
     svc._project_admission_revisions["p"] = 2
     release.set()
     assert await pending is False
+
+
+# ── 登录免费模型：执行请求携带凭据 ────────────────────────────────────────────
+
+_LOGIN_REF = "0123456789abcdef0123456789abcdef"
+
+
+def _patch_login_credential_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fresh: dict | None = None,
+) -> None:
+    """把"按句柄取凭据"换成内存桩；是否注入仍由 job.credential_ref 真实决定。
+
+    ``fresh`` 为 refreshed_credential_for_ref 的返回值（None=凭据已撤销/拿不到）。
+    """
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref",
+        lambda ref: fresh
+        if fresh is not None
+        else {"credential_ref": ref, "revoked": True},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.apig.resolve_apig_config",
+        lambda allow_refresh=True: SimpleNamespace(
+            invoke_base_url="https://apig.example.com/v1"
+        ),
+    )
+
+
+class TestLoginModelAuthForJob:
+    def test_returns_auth_payload_for_bound_job(self, monkeypatch):
+        """绑定了登录账号句柄的任务 → 返回请求级凭据体。"""
+        _patch_login_credential_lookup(
+            monkeypatch, fresh={"credential_ref": _LOGIN_REF, "api_key": "tok-1"}
+        )
+        job = _make_job(
+            model_name="GLM-5.2", user_id="route-user-1", credential_ref=_LOGIN_REF
+        )
+        assert cron_scheduler_module._login_model_auth_for_job(job) == {
+            "api_base": "https://apig.example.com/v1",
+            "api_key": "tok-1",
+            "credential_ref": _LOGIN_REF,
+        }
+
+    def test_none_without_binding_even_if_user_id_present(self, monkeypatch):
+        """路由 user_id 与华为账号是两套独立用户体系：没有绑定就不能注入。
+
+        回归：曾按 job.user_id 推导凭据句柄，路由 ID ≠ openid（或为空）时
+        静默拿不到凭据，任务无法使用登录模型。
+        """
+        _patch_login_credential_lookup(
+            monkeypatch, fresh={"credential_ref": _LOGIN_REF, "api_key": "tok-1"}
+        )
+        job = _make_job(model_name="GLM-5.2", user_id="route-user-1")
+        assert cron_scheduler_module._login_model_auth_for_job(job) is None
+
+    def test_none_for_malformed_ref(self, monkeypatch):
+        _patch_login_credential_lookup(
+            monkeypatch, fresh={"credential_ref": "bad", "api_key": "tok-1"}
+        )
+        job = _make_job(model_name="GLM-5.2", credential_ref="not-a-ref")
+        assert cron_scheduler_module._login_model_auth_for_job(job) is None
+
+    def test_none_when_credential_revoked(self, monkeypatch):
+        _patch_login_credential_lookup(monkeypatch, fresh=None)
+        job = _make_job(model_name="GLM-5.2", credential_ref=_LOGIN_REF)
+        assert cron_scheduler_module._login_model_auth_for_job(job) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("migrated", [False, True])
+async def test_wake_execution_carries_login_model_auth(tmp_path, monkeypatch, migrated):
+    """绑定登录账号的任务执行请求必须带 _model_auth 凭据，否则 AgentServer 会报 login_required。"""
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await store.create_job(
+        name="free-model-job",
+        cron_expr="0 0 9 * * ? *",
+        timezone="Asia/Shanghai",
+        description="reminder",
+        targets="web",
+        user_id="route-user-1",
+        model_name="old-config-model" if migrated else "GLM-5.2",
+        model_selection={"type": "model", "id": "old-config-model-id"} if migrated else None,
+        credential_ref="" if migrated else _LOGIN_REF,
+    )
+    if migrated:
+        await store.update_job(
+            job.id, {"model_name": "GLM-5.2", "credential_ref": _LOGIN_REF}
+        )
+        job = await CronJobStore(path=store.path).get_job(job.id)
+        assert job.model_selection is None
+    agent = FakeAgentClient()
+    svc = _make_scheduler(store, agent_client=agent)
+    _patch_login_credential_lookup(
+        monkeypatch, fresh={"credential_ref": _LOGIN_REF, "api_key": "tok-1"}
+    )
+
+    run_id = f"{job.id}:1234"
+    await svc.on_wake(job, run_id)
+    await svc.run_tasks[run_id]
+
+    chat_env = next(
+        env for env in agent.stream_requests if "model_name" in (env.params or {})
+    )
+    assert chat_env.params["model_name"] == "GLM-5.2"
+    assert "model_selection" not in chat_env.params
+    assert chat_env.params["_model_auth"] == {
+        "api_base": "https://apig.example.com/v1",
+        "api_key": "tok-1",
+        "credential_ref": _LOGIN_REF,
+    }
+
+
+@pytest.mark.asyncio
+async def test_wake_execution_without_binding_omits_model_auth(tmp_path, monkeypatch):
+    """未绑定（自配模型，即使与登录模型同名）→ 不注入 _model_auth。
+
+    回归：曾按"模型名出现在登录目录"就注入，同名自配模型会被切到登录模型、
+    改用 APIG 接入点和登录账号额度计费。
+    """
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await store.create_job(
+        name="config-model-job",
+        cron_expr="0 0 9 * * ? *",
+        timezone="Asia/Shanghai",
+        description="reminder",
+        targets="web",
+        user_id="route-user-1",
+        model_name="GLM-5.2",
+    )
+    agent = FakeAgentClient()
+    svc = _make_scheduler(store, agent_client=agent)
+    # 凭据查询桩即使返回可用凭据也不该被用到
+    _patch_login_credential_lookup(
+        monkeypatch, fresh={"credential_ref": _LOGIN_REF, "api_key": "tok-1"}
+    )
+
+    run_id = f"{job.id}:1234"
+    await svc.on_wake(job, run_id)
+    await svc.run_tasks[run_id]
+
+    chat_env = next(
+        env for env in agent.stream_requests if "model_name" in (env.params or {})
+    )
+    assert chat_env.params["model_name"] == "GLM-5.2"
+    assert "_model_auth" not in chat_env.params

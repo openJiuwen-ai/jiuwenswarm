@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Explicit execution-subject grouping shared by live and archive trajectory views. */
 
 import { OPENJIUWEN_ATTRIBUTES } from './semconv/constants';

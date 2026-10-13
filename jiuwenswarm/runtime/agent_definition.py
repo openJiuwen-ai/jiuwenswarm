@@ -111,27 +111,19 @@ def _string_tuple(field: str, value: object) -> tuple[str, ...]:
     return result
 
 
-def _configured_tools(value: object) -> str:
+def _configured_tools(value: object) -> str | tuple[str, ...]:
     if value == "*":
         return "*"
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         tools = _string_tuple("tools", value)
-        if not tools:
-            raise _invalid("tools", "tools must not be empty; use '*' instead")
         if tools == ("*",):
             return "*"
-        raise RuntimeAgentDefinitionError(
-            "explicit tool allowlists are not supported by this Runtime contract",
-            code=RuntimeAgentDefinitionErrorCode.TOOL_ALLOWLIST_UNSUPPORTED,
-            field="tools",
-        )
+        if "*" in tools:
+            raise _invalid("tools", "'*' cannot be combined with tool names")
+        return tools
     if isinstance(value, str):
         _required_text("tools", value)
-        raise RuntimeAgentDefinitionError(
-            "explicit tool allowlists are not supported by this Runtime contract",
-            code=RuntimeAgentDefinitionErrorCode.TOOL_ALLOWLIST_UNSUPPORTED,
-            field="tools",
-        )
+        raise _invalid("tools", "tools must be '*' or a sequence of strings")
     raise _invalid("tools", "tools must be '*' or a sequence of strings")
 
 
@@ -160,16 +152,15 @@ def _strict_definition_mapping(value: object) -> Mapping[str, Any]:
 class RuntimeAgentDefinition:
     """Validated definition of one root Agent owned by the shared Runtime.
 
-    ``tools='*'`` means use the Runtime's configured tool set.  An explicit
-    allowlist is intentionally rejected until the Runtime can enforce it after
-    all rails and extensions have contributed their tools.
+    ``tools='*'`` means use the Runtime's configured tool set. An explicit
+    allowlist is enforced at the Agent ability boundary after rail startup.
     """
 
     name: str
     instructions: str
     description: str | None = None
     model: str | None = None
-    tools: str = "*"
+    tools: str | tuple[str, ...] = "*"
     skills: tuple[str, ...] = ()
     max_iterations: int | None = None
 
@@ -225,7 +216,7 @@ class RuntimeAgentDefinition:
             "instructions": self.instructions,
             "description": self.description,
             "model": self.model,
-            "tools": self.tools,
+            "tools": list(self.tools) if isinstance(self.tools, tuple) else self.tools,
             "skills": list(self.skills),
             "max_iterations": self.max_iterations,
         }
@@ -277,12 +268,6 @@ class RuntimeAgentExecution:
         if not isinstance(self.definition, RuntimeAgentDefinition):
             raise _invalid("agent", "agent must be a RuntimeAgentDefinition")
         mode = _runtime_agent_mode(self.mode)
-        if mode in {RuntimeAgentMode.WORK_NORMAL, RuntimeAgentMode.WORK_PLAN}:
-            raise RuntimeAgentDefinitionError(
-                "custom Agent definitions are not supported in work mode",
-                code=RuntimeAgentDefinitionErrorCode.UNSUPPORTED_MODE,
-                field="mode",
-            )
         object.__setattr__(self, "mode", mode)
 
     @property

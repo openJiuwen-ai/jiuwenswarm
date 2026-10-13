@@ -22,6 +22,7 @@ from jiuwenswarm.common.schema.agent import (
 )
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.ws_send import send_wire_payload
+from jiuwenswarm.server.personal_context.error_messages import localize_error, log_error
 
 if TYPE_CHECKING:
     from jiuwenswarm.server.personal_context.host_api import PersonalContextHostAPI
@@ -380,28 +381,32 @@ async def handle_personal_context_request(
     except asyncio.CancelledError:
         raise
     except ValueError as exc:
+        log_error(exc)
         await _send_error(
             ws,
             request,
             send_lock,
-            message=str(exc),
+            message=localize_error(
+                exc, getattr(host, "error_language", "zh"), reason="parameter_invalid"
+            ),
             code="BAD_REQUEST",
         )
     except BaseError as exc:
+        log_error(exc)
         await _send_error(
             ws,
             request,
             send_lock,
-            message=exc.message,
+            message=localize_error(exc, getattr(host, "error_language", "zh")),
             code=str(exc.code),
             status=exc.status.name,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("PersonalContext request failed: %s", type(exc).__name__)
+        log_error(exc)
         await _send_error(
             ws,
             request,
             send_lock,
-            message="PersonalContext request failed",
+            message=localize_error(exc, getattr(host, "error_language", "zh")),
             code="INTERNAL_ERROR",
         )

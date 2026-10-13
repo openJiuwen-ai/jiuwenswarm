@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** UI primitives copied into the standalone viewer. */
 
 export { JsonTree } from './JsonTree.tsx'

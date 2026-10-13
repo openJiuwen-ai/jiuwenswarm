@@ -23,6 +23,7 @@
     "optional": "(optional)",
     "processing": "Processing…",
     "retry": "Retry",
+    "selectedCount": "{{count}} selected",
     "editMenu": {
       "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",
@@ -353,7 +354,12 @@
       "headless": "Headless mode",
       "headlessDescription": "Run browser automation without showing a browser window.",
       "chromePath": "Chrome executable path",
-      "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "decisionLlm": "LLM only",
+      "decisionShadow": "Jev shadow (observe only)",
+      "decisionHybrid": "Jev hybrid",
+      "providerOpenrouter": "OpenRouter",
+      "providerTypesafe": "TypeSafe"
     },
     "experimental": {
       "taskAsr": "Speech transcription",
@@ -364,6 +370,7 @@
       "rsi": "RSI · Recursive self-improvement",
       "trajectoryUi": "Trajectory UI",
       "kvCacheAffinity": "Compute affinity",
+      "teamOrganization": "Team Organization",
       "skillPack": "Skill Packs",
       "proactive": "Proactive recommendations",
       "proactiveLimits": "Recommendation limits",
@@ -423,6 +430,23 @@
       "headless": {
         "title": "Browser run mode",
         "description": "Show the browser window in the foreground or run in headless mode."
+      },
+      "decision_mode": {
+        "title": "Browser decisions",
+        "description": "Choose who decides each browser step. Jev modes need the Jev API key below."
+      },
+      "decision_provider": {
+        "title": "Jev provider",
+        "description": "Where Jev is called: through OpenRouter, or TypeSafe directly."
+      },
+      "jev_api_key": {
+        "title": "Jev API key"
+      },
+      "jev_openrouter_api_key": {
+        "title": "OpenRouter API key"
+      },
+      "jev_typesafe_api_key": {
+        "title": "TypeSafe API key"
       },
       "model_name": { "title": "Model name", "placeholder": "e.g. glm-4.7" },
       "alias": { "title": "Custom alias", "placeholder": "e.g. GLM-4.7 Production" },
@@ -520,6 +544,10 @@
       "trajectory_ui_enabled": {
         "title": "Enable trajectory UI",
         "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path."
+      },
+      "team_organization_ui_enabled": {
+        "title": "Enable Team Organization UI",
+        "description": "Show experimental multi-Team views and the organization task pool. This switch does not disable backend organization capabilities."
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
@@ -741,7 +769,54 @@
         "cancelled": "Cancelled",
         "failed": "Failed"
       }
+    },
+    "org": {
+      "tab": "Organization",
+      "title": "Task Pool & Organization",
+      "refresh": "Refresh",
+      "loading": "Loading…",
+      "empty": "This Team is not bound to an organization",
+      "noOrganization": "No organization bound",
+      "noTeam": "No Team is available in this session",
+      "loadFailed": "Failed to load organization information",
+      "organizationId": "Organization ID",
+      "displayName": "Name",
+      "description": "Description",
+      "ownerTeam": "Owner Team",
+      "teams": "Teams",
+      "leadTeam": "Team",
+      "leadMember": "Leader",
+      "metadata": "Metadata",
+      "taskPool": "Task Pool",
+      "taskPoolEmpty": "Task pool is empty",
+      "taskId": "Task ID",
+      "taskTitle": "Title",
+      "taskStatus": "Status",
+      "taskAssignee": "Assignee",
+      "taskTeam": "Team",
+      "taskType": "Type",
+      "taskUnclaimed": "Unclaimed",
+      "taskParent": "Parent",
+      "pendingReviews": "Pending reviews",
+      "pendingReviewsEmpty": "No tasks pending review",
+      "reviewTask": "Task",
+      "reviewReviewer": "Reviewer",
+      "statsTotal": "Total tasks",
+      "statsOpen": "Open",
+      "statsUnclaimed": "Unclaimed",
+      "statsPendingReviews": "Pending review"
     }
+  },
+  "sessionAssets": {
+    "title": "Assets",
+    "empty": "Uploaded and generated files appear here. Rename them and reference them in the chat box with @name.",
+    "rename": "Rename",
+    "save": "Save",
+    "cancel": "Cancel",
+    "invalidName": "The name must not be empty, at most 60 characters, and cannot contain @ or line breaks",
+    "pickTitle": "Choose an asset",
+    "referHint": "Type @ in the chat box to reference",
+    "reference": "Referenced"
   },
   "artifacts": {
     "title": "Artifacts",
@@ -872,6 +947,7 @@
     "resume": "Resume",
     "queuePausedConfirm": "You are about to send a message. Clear the {{count}} queued message(s)?\n\nClick \"OK\" to clear the queue and send; click \"Cancel\" to keep the queue (message will be added to the queue).",
     "goalAttachmentsBlocked": "Attachments are not supported when setting a goal. Remove them first, or send the attachment in a separate message.",
+    "commandRequiresSession": "This command requires an existing conversation. Start a conversation first.",
     "editTaskDropAttachments": "Editing will remove the {{count}} attachment(s) carried by this task. Continue?",
     "holdToSpeak": "Hold to speak",
     "send": "Send (Enter)",
@@ -908,6 +984,11 @@
     },
     "configLockedHistory": "Session has messages — create a new session to change config",
     "modeSwitchDisabledProcessing": "This conversation is running. Start a new conversation to choose another mode",
+    "teamSelect": {
+      "tooltip": "Switch the Team being viewed",
+      "loadingLabel": "Loading teams…",
+      "fallbackLabel": "Select Team"
+    },
     "modeSwitchTitle": "Switch Mode",
     "modeSwitchConfirm": "Current session has history messages. Switching mode will create a new session. Continue?",
     "skills": "Skills",
@@ -1007,6 +1088,9 @@
       }
     },
     "inputAttachment": {
+      "imageLimitTooltip": "Images: up to {{limit}}M each",
+      "fileLimitTooltip": "Files: up to {{limit}}M each",
+      "countLimitTooltip": "Up to {{limit}} attachments per message",
       "unnamedFile": "Unnamed file",
       "unsupportedFileType": "Unsupported file type: {{name}}",
       "fileSizeExceeded": "File size exceeds limit: {{name}} (max {{limit}})",
@@ -1100,6 +1184,7 @@
     "toggleLabel": "Pursue Goal",
     "toolbarUnavailable": "A goal is already in progress. Finish or clear it first.",
     "toolbarUnavailablePlan": "Plan mode is in progress, so Goal isn't available",
+    "toolbarUnavailableProcessing": "A reply is in progress, so Goal isn't available",
     "overwriteConfirm": "The current goal \"{{currentObjective}}\" is unfinished. Replace it with \"{{requestedObjective}}\"?",
     "closeTag": "Cancel goal",
     "closeTagDisabled": "Cannot close the goal while the session is busy",
@@ -1931,6 +2016,12 @@
       "colActions": "Actions",
       "stateCollecting": "Fetching",
       "stateCompleted": "Completed",
+      "stateCancelled": "Cancelled",
+      "createdNodes": "Added {{nodes}} nodes ({{files}} files) in this run",
+      "updatedNodes": "Updated {{count}} nodes",
+      "noNewContent": "No new content",
+      "collectionDisabledHint": "Enable Personal Context and content collection in settings before fetching now.",
+      "collectionStoppingHint": "Collection is stopping. Wait until it has stopped and try again.",
       "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
       "stateFailed": "Failed",
       "stateWaiting": "Waiting",
@@ -1990,7 +2081,8 @@
       "maxItemsLabel": "Max items per run",
       "maxItemsPlaceholder": "Leave empty for default",
       "advancedConfig": "Advanced Settings",
-      "maxItemsRangeError": "Max items must be 1-40, or empty for default",
+      "maxItemsRangeError": "Max items must be an integer from 1 to 40, or empty for default",
+      "frequencyRangeError": "Frequency must be an integer from 1 to {{max}}",
       "previousStep": "Previous",
       "submit": "Add",
       "save": "Save",
@@ -2764,6 +2856,7 @@
     "source": { "builtin": "Official", "local": "Mine", "hub": "Hub" },
     "categoryLabel": "Expert categories",
     "categoryAll": "All",
+    "loadMore": "Load more content",
     "categoryOther": "Other",
     "categoryScrollPrev": "Scroll categories left",
     "categoryScrollNext": "Scroll categories right",
@@ -2847,13 +2940,6 @@
       "mineEmpty": "You do not have any Experts yet",
       "noMatch": "No matching Experts found"
     },
-    "pagination": {
-      "label": "Expert list pagination",
-      "range": "Showing {{start}}-{{end}} of {{total}}",
-      "page": "Page {{page}} / {{total}}",
-      "previous": "Previous page",
-      "next": "Next page"
-    },
     "detail": {
       "ability": "Capability",
       "sourcePrefix": "Source: {{source}}",
@@ -2931,6 +3017,7 @@
       "webUploadPlaceholder": "Click to upload a file",
       "uploadInvalidType": "Only .zip and .tar files are supported",
       "uploadDirectoryUnsupported": "Folders cannot be dragged here. Compress the folder into a .zip or .tar file before uploading.",
+      "uploadVirtualFileUnsupported": "Files cannot be dragged directly from WinRAR or another archive app. Extract or copy the file to a local folder before uploading.",
       "uploadPickerUnsupported": "Local file selection is not supported in this environment",
       "uploadPickerFailed": "Failed to open the local file picker. Try again.",
       "removeUpload": "Remove selected file",
@@ -2944,7 +3031,6 @@
       "skillSourceTabsLabel": "Skill sources",
       "installSkill": "Install",
       "installingSkill": "Installing…",
-      "selectedCount": "{{count}} selected",
       "refreshSkills": "Refresh skills",
       "skillsError": "Unable to load the skill list. Try again.",
       "skillsEmpty": "No skills available",
@@ -2961,7 +3047,6 @@
       "connectConnector": "Connect",
       "connectingConnector": "Connecting…",
       "selectionSearchPlaceholder": "Search by keyword",
-      "selectionPaginationLabel": "Selection list pagination",
       "mcpError": "Unable to load the connector list. Try again.",
       "mcpEmpty": "No connectors available",
       "promptsLabel": "Try asking me (optional)",
@@ -3068,7 +3153,6 @@
         "leaderTitle": "Choose a leader",
         "memberTitle": "Choose members",
         "empty": "No matching Experts",
-        "selectedCount": "{{count}} selected",
         "localTab": "Local",
         "marketTab": "Marketplace",
         "sourceTabsLabel": "Expert sources",
@@ -3091,11 +3175,21 @@
   "chatUi": {
     "copyMessage": "Copy message",
     "copied": "Copied",
+    "usageInput": "Input",
+    "usageOutput": "Output",
+    "usageCacheHit": "Cache hit",
     "stopReading": "Stop reading",
     "readMessage": "Read message",
     "forkFromMessage": "Create a conversation branch from this message",
     "forkFromMessageFailed": "Failed to create a conversation branch. Try again.",
     "fileExpired": "Expired",
+    "fileTypeDocument": "Document",
+    "fileTypeSpreadsheet": "Spreadsheet",
+    "fileTypePresentation": "Presentation",
+    "fileTypePdf": "PDF",
+    "fileTypeImage": "Image",
+    "fileTypeSkill": "Skill",
+    "fileTypeFile": "File",
     "agentProcessing": "Agent Processing",
     "thinking": "Thinking...",
     "processing": "Processing...",
@@ -3546,6 +3640,7 @@
       "renamePlaceholder": "Enter a new name",
       "archiveConversation": "Archive",
       "conversationArchived": "Task session archived",
+      "conversationDeleted": "Conversation deleted",
       "archiveView": "View",
       "archiveUndo": "Undo",
       "removeProject": "Remove project",
@@ -3591,7 +3686,9 @@
     },
     "deleteDialog": {
       "title": "Delete",
-      "description": "Delete “<name>{{title}}</name>”? This action cannot be undone."
+      "attention": "Attention",
+      "description": "Delete “<name>{{title}}</name>”? This action cannot be undone.",
+      "permanentConfirm": "Are you sure you want to permanently delete this task?"
     },
     "notFound": {
       "title": "Conversation not found or deleted",
@@ -3759,6 +3856,15 @@
       "fieldRequired": "This field is required",
       "withSkillNotWired": "This entry point isn't wired to the chat panel yet"
     },
+    "picker": {
+      "searchPlaceholder": "Search by keyword",
+      "actionError": "The action could not be completed. Try again in a moment.",
+      "mcpSourceTabsLabel": "Connector sources",
+      "mcpMarketTab": "Connector market",
+      "mcpMineTab": "My connectors",
+      "mcpError": "Unable to load the connector list. Try again.",
+      "mcpEmpty": "No connectors available"
+    },
     "chatPrompts": {
       "createPlugin": "Help me create a xxx plugin that's great at xxx"
     },
@@ -3766,6 +3872,7 @@
       "runtimeMissing": "This connector requires a runtime environment that isn't installed. Please install it before using this connector.",
       "runtimeMissingNamed": "This connector requires {{runtime}}. Please install {{runtime}} before using this connector.",
       "installNetwork": "Failed to download a dependency. Please check your network connection and retry.",
+      "installScriptDep": "The CLI install script requires PowerShell. Please enable or restore PowerShell and retry.",
       "cliIncomplete": "The CLI is incomplete or outdated. Please reconnect to retry.",
       "cliIncompleteNamed": "The CLI is incomplete or outdated. Please run the following command to install or upgrade it, then retry: {{command}}"
     },
@@ -3844,13 +3951,7 @@
       "loadingMyPlugin": "Loading my plugins...",
       "loadingMyMcp": "Loading my connectors..."
     },
-    "pagination": {
-      "pageSize": "Rows per page",
-      "all": "All",
-      "rangeInfo": "{{start}}-{{end}} of {{total}}",
-      "prev": "Previous page",
-      "next": "Next page"
-    },
+    "loadMore": "Load more content",
     "toast": {
       "mcpConnected": "Connector connected successfully.",
       "mcpInstalled": "Connector installed. Connect it before use.",
@@ -3916,6 +4017,7 @@
       "confirm": "Confirm",
       "search": "Search",
       "noResult": "No matches found",
+      "noDescription": "No description",
       "loadFailed": "Failed to load details. Please try again."
     }
   },
@@ -4341,6 +4443,59 @@
     "budgetPanelHint": "Set the Token limit for this session.",
     "budgetPlaceholder": "Enter number",
     "budgetActualHint": "Configured limit: {{count}} tokens",
-    "workflowList": "Workflow List"
+    "workflowList": "Workflow List",
+    "worktreeToggleLabel": "Worktree isolation",
+    "worktreeGuideTitle": "Choose a project directory for worktree isolation",
+    "worktreeGuideDescription": "Worktree isolation is on: code-editing tasks in the workflow can run in an independent worktree of the project, leaving the main repository untouched. Worktrees are created from the project directory — pick one via the highlighted project selector; if isolation is not needed, you can turn the switch off in the SwarmFlow settings.",
+    "worktreeGuideHint": "Click the project selector to choose a directory",
+    "worktreeGuideAcknowledge": "Got it",
+    "worktreeGuideSkip": "Skip",
+    "verifyReviewing": "Reviewing…",
+    "verifyReviewingShort": "Reviewing",
+    "verifyPass": "✓ Pass",
+    "verifyFail": "✗ Fail",
+    "verifyUndecided": "? Undecided",
+    "verifyThreshold": "Threshold {{count}}",
+    "verifyUndecidedHint": "Some reviewer(s) did not vote (undecided); retry recommended",
+    "verifyVotesMissing": "{{count}} vote(s) missing · retry recommended",
+    "verifyVoteUndecided": "? No vote",
+    "verifyScore": "{{score}} pts",
+    "verifyRound": "Round {{count}} · {{verdict}}",
+    "verifyGroupTitle": "verify · {{label}}",
+    "verifyReviewersPending": "{{names}} reviewing…",
+    "sectionInput": "Input",
+    "sectionOutput": "Output",
+    "sectionHumanPrompt": "Human question",
+    "sectionHumanReply": "Human reply",
+    "sectionError": "Error",
+    "charUnit": "chars",
+    "clickToViewDetail": "Click to view details"
+  },
+  "a4pSettings": {
+    "title": "A4P pre-authorization",
+    "enableTitle": "Enable A4P pre-authorization",
+    "description": "Batch-authorize the multiple permissions an Agent needs for tasks in a session, and pre-authorize permissions for scheduled tasks. Only applies in Default permissions mode."
+  },
+  "a4pAuthorization": {
+    "expandParams": "Expand parameters for {{name}}",
+    "collapseParams": "Collapse parameters for {{name}}",
+    "permissionScope": "Permission scope",
+    "selectedCount": "{{selected}} / {{total}} selected",
+    "readyRange": "Authorization will cover the selected permissions.",
+    "emptySelection": "Select at least one permission, or reject this request.",
+    "title": "A4P Pre-authorization Confirmation",
+    "reason": "Authorization reason",
+    "defaultReason": "Pre-authorize the following tool operations.",
+    "tools": {
+      "bash": "Run shell command",
+      "mcpExecCommand": "Run command",
+      "createTerminal": "Create terminal",
+      "writeFile": "Write file",
+      "editFile": "Edit file",
+      "acpChat": "Chat with agent"
+    },
+    "reject": "Reject",
+    "approve": "Authorize",
+    "waiting": "Processing..."
   }
 }

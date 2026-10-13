@@ -100,6 +100,10 @@ ProcRunner = Callable[[str], tuple[Any, str]]
 # / ENOENT), distinct from "ran but returned non-zero". Lets the connect flow
 # tell the user "install node" instead of dumping WinError 2.
 ERR_BINARY_NOT_FOUND = "binary_not_found"
+# install_script_dep: the package's npm/gem install script could not find
+# PowerShell (npm postinstall "spawn powershell.exe ENOENT"). Runtime exists;
+# surface "enable/restore PowerShell" instead of the generic "version too low".
+ERR_INSTALL_SCRIPT_DEP = "install_script_dep"
 
 
 @dataclass
@@ -156,6 +160,21 @@ def _is_binary_not_found(exc: BaseException) -> bool:
     if errno == 2:  # errno.ENOENT
         return True
     return False
+
+
+# Install-script output meaning the script needs PowerShell: npm postinstall's
+# "spawn powershell.exe ENOENT", or cmd's "'powershell' is not recognized".
+# Generic ENOENT/network text must NOT match (stays unclassified downstream).
+_POWERSHELL_SCRIPT_DEP_RE = re.compile(
+    r"spawn\s+\S*[Pp]owershell(?:\.exe)?\S*\s+ENOENT"
+    r"|['\"]?[Pp]owershell(?:\.exe)?['\"]?\s+(?:is not recognized|not found)"
+)
+
+
+def _is_powershell_script_dep(output: str) -> bool:
+    """True when a failed install's output shows its script needs PowerShell.
+    Text-anchored only, so CLIs that don't depend on it are never misclassified."""
+    return bool(_POWERSHELL_SCRIPT_DEP_RE.search(output or ""))
 
 
 def _safe_split_command(command: str) -> list[str]:
@@ -557,11 +576,16 @@ class CliDriver:
             logger.info("[cli_driver] %s skip init (version %s ok)", self.name, version)
         elif init_cmd:
             res = self._runner(init_cmd)
-            if not res.succeeded:
+            init_failed = not res.succeeded
+            if init_failed:
                 err = f"init failed (rc={res.returncode}): {res.combined_output}"
                 logger.warning("[cli_driver] %s init failed: %s", self.name, err)
             if res.error_kind == ERR_BINARY_NOT_FOUND:
                 kind = ERR_BINARY_NOT_FOUND
+            elif init_failed and _is_powershell_script_dep(res.combined_output):
+                # Package installer needs PowerShell; surface it instead of the
+                # generic "version too low".
+                kind = ERR_INSTALL_SCRIPT_DEP
             # re-check version after install
             if m.version_cmd:
                 res2 = self._runner(m.version_cmd)
@@ -571,7 +595,8 @@ class CliDriver:
                 elif m.min_version:
                     version_ok = False
                     err = (err + "; " if err else "") + f"could not parse version after init: {res2.combined_output}"
-                if res2.error_kind == ERR_BINARY_NOT_FOUND:
+                if res2.error_kind == ERR_BINARY_NOT_FOUND and not kind:
+                    # A failed init already diagnosed the cause; don't override it.
                     kind = ERR_BINARY_NOT_FOUND
         return InstallResult(
             name=self.name, installed=True,
@@ -785,6 +810,7 @@ __all__ = [
     "InstallResult",
     "AuthStepResult",
     "StatusResult",
+    "ERR_INSTALL_SCRIPT_DEP",
     "default_runner",
     "load_cli_manifest",
 ]

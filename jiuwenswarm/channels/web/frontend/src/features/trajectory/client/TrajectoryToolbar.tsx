@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Trajectory toolbar: timeline and ledger fold controls.
  * Adapted mechanically from `packages/client/ui-trajectory/src/client/TrajectoryToolbar.tsx`

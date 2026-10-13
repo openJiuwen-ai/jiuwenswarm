@@ -1,5 +1,7 @@
 # 轨迹源码来源
 
+Assistant 列表优先展示正文。只有思考内容时，保留 ASSISTANT 标签、徽标、记录身份和详情内容，仅使用弱化的斜体文本区分思考与正文。
+
 [English](PROVENANCE.md) | 中文
 
 JiuwenSwarm 依据 MIT 许可证复制部分 DSH Trajectory 源码，并且仅调整本 feature 目录中的副本。原始 `packages/client` 文件保持不变，并继续负责 DSH Web 功能。

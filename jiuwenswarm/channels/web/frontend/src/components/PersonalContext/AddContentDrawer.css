@@ -277,11 +277,26 @@
 }
 
 .pc-drawer__error {
-  background: rgba(220, 50, 50, 0.08);
-  color: #dc3232;
+  background: var(--color-feedback-danger-subtle);
+  color: var(--color-feedback-danger);
   border-radius: 6px;
   padding: 8px 12px;
   font-size: 12px;
+}
+
+.pc-drawer__field-error {
+  color: var(--color-feedback-danger);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.pc-drawer__foot-hint.pc-drawer__field-error {
+  color: var(--color-feedback-danger);
+}
+
+.pc-drawer__input[aria-invalid='true'],
+.pc-drawer__spinner-input[aria-invalid='true'] {
+  border-color: var(--color-border-danger);
 }
 
 

@@ -130,6 +130,70 @@ def _snapshot_two_workflows() -> list[dict[str, Any]]:
     ]
 
 
+def _snapshot_with_verify_group() -> dict[str, Any]:
+    """A phase carrying a settled verify group + token-split / fork agents."""
+    return {
+        "id": "wf_v",
+        "name": "verify-flow",
+        "status": "completed",
+        "phases": [
+            {
+                "id": "phase-v",
+                "name": "交叉评审",
+                "status": "completed",
+                "agents": [
+                    {
+                        "id": "agent-r",
+                        "name": "verify-评:q1",
+                        "status": "completed",
+                        "prompt": "review",
+                        "outcome": '{"score": 0.9}',
+                        "token_count": 3000,
+                        "input_token_count": 2500,
+                        "output_token_count": 500,
+                        "cache_token_count": 1800,
+                    },
+                    {
+                        "id": "agent-f",
+                        "name": "答题-GLM",
+                        "status": "completed",
+                        "prompt": "answer",
+                        "outcome": "ok",
+                        "node_type": "agent_session_fork",
+                        "parent_session_id": "wf-sess-analyst-0",
+                        "member_name": "wf-sess-glm-1",
+                    },
+                ],
+                "verify_groups": [
+                    {
+                        "id": "phase-v-verify-1",
+                        "label": "verify-2",
+                        "verify_id": '["verify", 2]',
+                        "status": "settled",
+                        "threshold": 0.6,
+                        "reviewers": 1,
+                        "reviewer_labels": ["verify-2-评:q1"],
+                        "verdict": "pass",
+                        "started_at": "2026-09-21T10:50:00",
+                        "settled_at": "2026-09-21T10:51:00",
+                        "votes": [
+                            {
+                                "name": "verify-2-评:q1",
+                                "agent_id": 'k1',
+                                "kind": "score",
+                                "decision": None,
+                                "score": 0.9,
+                                "feedback": "long feedback " * 50,
+                                "voted": True,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+
 class TestHandleCommandWorkflows:
     @pytest.mark.anyio
     async def test_no_handler_returns_empty_snapshot(self) -> None:
@@ -295,6 +359,63 @@ class TestHandleCommandWorkflows:
         assert agent["outcome_preview"] == "done"
         assert payload["agent_total"] == 1
         assert payload["has_more"] is False
+
+    @pytest.mark.anyio
+    async def test_get_phase_summary_keeps_verify_group_and_token_fields(self) -> None:
+        """Refresh-path regression: verify containers + token chips + fork keys
+        must survive the wire summaries (get_workflow / get_phase), or the tree
+        renders them live-only and drops them after a page reload."""
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        snapshot = [_snapshot_with_verify_group()]
+        fake_handler = _FakeWorkflowHandler(snapshot=snapshot)
+
+        # get_workflow: phase summary carries the verify group card (feedback stripped)
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        ws = _FakeWS()
+        request = _make_request(
+            session_id="sess-v",
+            channel_id="web",
+            params={"action": "get_workflow", "workflow_id": "wf_v"},
+        )
+        with patch(
+            "jiuwenswarm.agents.harness.team.get_team_manager",
+            return_value=_FakeTeamManager(workflow_handler=fake_handler),
+        ):
+            await server._handle_command_workflows(ws, request, asyncio.Lock())
+        payload = _extract_payload(json.loads(ws.sent[0]))
+        group = payload["workflow"]["phases"][0]["verify_groups"][0]
+        assert group["label"] == "verify-2"
+        assert group["verify_id"] == '["verify", 2]'  # round identity rides the summary
+        assert group["status"] == "settled"
+        assert group["verdict"] == "pass"
+        assert group["reviewer_labels"] == ["verify-2-评:q1"]
+        assert group["votes"][0]["name"] == "verify-2-评:q1"
+        assert group["votes"][0]["agent_id"] == "k1"
+        assert group["votes"][0]["score"] == 0.9
+        assert "feedback" not in group["votes"][0]  # heavy text stripped
+
+        # get_phase: agent summary carries the token split + fork lineage keys
+        ws2 = _FakeWS()
+        request2 = _make_request(
+            session_id="sess-v",
+            channel_id="web",
+            params={"action": "get_phase", "workflow_id": "wf_v", "phase_id": "phase-v"},
+        )
+        with patch(
+            "jiuwenswarm.agents.harness.team.get_team_manager",
+            return_value=_FakeTeamManager(workflow_handler=fake_handler),
+        ):
+            await server._handle_command_workflows(ws2, request2, asyncio.Lock())
+        payload2 = _extract_payload(json.loads(ws2.sent[0]))
+        agents = {a["name"]: a for a in payload2["phase"]["agents"]}
+        reviewer = agents["verify-评:q1"]
+        assert reviewer["input_token_count"] == 2500
+        assert reviewer["output_token_count"] == 500
+        assert reviewer["cache_token_count"] == 1800
+        fork = agents["答题-GLM"]
+        assert fork["parent_session_id"] == "wf-sess-analyst-0"
+        assert fork["member_name"] == "wf-sess-glm-1"
 
     @pytest.mark.anyio
     async def test_get_agent_returns_single_agent(self) -> None:

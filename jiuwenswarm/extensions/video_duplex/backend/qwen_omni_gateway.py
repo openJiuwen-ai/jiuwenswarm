@@ -19,7 +19,6 @@ from websockets.exceptions import ConnectionClosed
 logger = logging.getLogger(__name__)
 
 QWEN_OMNI_PROXY_PATH = "/ws/video/qwen-omni"
-_DEFAULT_MODEL = "qwen3.5-omni-flash-realtime"
 
 
 @dataclass(frozen=True)
@@ -34,9 +33,8 @@ class QwenOmniRealtimeConfig:
         return cls(
             upstream_url=os.environ.get("QWEN_OMNI_REALTIME_URL", "").strip(),
             api_key=os.environ.get("QWEN_OMNI_API_KEY", "").strip(),
-            model=os.environ.get("QWEN_OMNI_MODEL_NAME", _DEFAULT_MODEL).strip()
-            or _DEFAULT_MODEL,
-            voice=os.environ.get("QWEN_OMNI_VOICE", "Ethan").strip() or "Ethan",
+            model=os.environ.get("QWEN_OMNI_MODEL_NAME", "").strip(),
+            voice=os.environ.get("QWEN_OMNI_VOICE", "").strip() or "Tina",
         )
 
     def validate(self) -> None:

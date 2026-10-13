@@ -83,6 +83,8 @@ make check-genai-semconv
 
 **DSH 上游拷贝。** `client/`、`primitives/`、`theme/`、`trajectory/` 下多数文件是 DeepSeek Harness commit `99f6f02` 的 MIT 拷贝，映射记录在 `NOTICE.md` 与各目录的 `PROVENANCE.md`。改这些文件时同步更新对应 PROVENANCE 的适配说明；不要新增对上游 workspace 包的构建期或运行期依赖。
 
+**不加 Huawei copyright 头。** 本目录下所有文件（含 `.ts` / `.tsx` / `.css` 及子目录）都不添加 `Copyright (c) Huawei Technologies Co., Ltd.` 文件头，新增文件同样不加，覆盖仓库通用的"新增代码必须加 copyright"约定。上游来源与许可证信息统一由 `NOTICE.md` / `LICENSE.deepseek-harness` / `PROVENANCE.md` 承载。
+
 **主题作用域。** `theme/*.css` 把上游的全局 `:root` / `body` / 滚动条选择器改写成 `.jiuwenTrajectoryTheme` 与 `.jiuwenTrajectoryPortal`。不要在这里写全局选择器，否则会污染宿主应用。
 
 **v2 replay vectors 是双份的。** `tests/fixtures/trajectory-v2/*.json` 与 agent-core 的 `tests/unit_tests/agent_evolving/trajectory/fixtures/v2` 是同一组向量的两份拷贝（两个仓库没有共同根）。改动 v2 payload 形状或回放语义时两边都要改。`VIEW_ONLY_CODES`（`v2.checkpoint_recovery` / `v2.partial_window`）是查看器独有、agent-core 不产出的诊断码。

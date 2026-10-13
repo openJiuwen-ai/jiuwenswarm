@@ -13,7 +13,7 @@
 
 .model-setup-guide__spotlight {
   position: fixed;
-  border: 1px solid var(--color-action-primary);
+  border: 0;
   border-radius: 12px;
   box-shadow: var(--effect-shadow-lg);
   pointer-events: none;
@@ -89,11 +89,10 @@
 }
 
 .model-setup-guide__avatar {
-  width: 52px;
-  height: 52px;
-  flex: 0 0 52px;
-  overflow: hidden;
-  border-radius: 14px;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  display: block;
 }
 
 .model-setup-guide__copy {

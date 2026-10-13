@@ -219,6 +219,53 @@ def test_logging_in_again_keeps_the_credential_ref(apig_env, monkeypatch, tmp_pa
     assert after[E2A_MODEL_AUTH_PARAM_KEY]["api_key"] == "id-second"
 
 
+def test_first_message_after_idle_gets_a_refreshed_token(apig_env, monkeypatch, tmp_path):
+    import asyncio
+    import time
+
+    from jiuwenswarm.common.auth import service as service_mod
+    from jiuwenswarm.common.auth import session_store as store_mod
+    from jiuwenswarm.common.auth.account_kit import Credential, LoginOutcome
+    from jiuwenswarm.gateway.app_gateway import _refresh_expired_login_credential
+
+    monkeypatch.setattr(store_mod, "auth_dir", lambda: tmp_path)
+    store = store_mod.AuthSessionStore()
+    auth = service_mod.AuthService(store=store)
+    monkeypatch.setattr(service_mod, "_service", auth)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.auth.model_catalog.get_models",
+        lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
+    )
+    refreshed: list = []
+
+    def _refresh(credential):
+        refreshed.append(credential.id_token)
+        return Credential(id_token="id-new", refresh_token="rt", expires_at=time.time() + 3600)
+
+    monkeypatch.setattr(auth._flow, "refresh", _refresh)
+    session = store.create(LoginOutcome(
+        credential=Credential(id_token="id-old", refresh_token="rt", expires_at=time.time() - 3 * 3600),
+        user_id="openid-owner",
+        user_name="owner",
+    ))
+
+    def _forward(model_name):
+        msg = SimpleNamespace(id="m1", params={"model_name": model_name}, metadata={"auth_session": session.session_id})
+        asyncio.run(_refresh_expired_login_credential(msg))
+        passthrough.normalize_model_auth(msg.params, session_id=session.session_id)
+        return msg.params
+
+    # 自配模型不为它去续期
+    assert E2A_MODEL_AUTH_PARAM_KEY not in _forward("my-own-model")
+    assert refreshed == []
+    # 登录模型：先续期，挂上的是新 token
+    assert _forward("glm-5")[E2A_MODEL_AUTH_PARAM_KEY]["api_key"] == "id-new"
+    assert refreshed == ["id-old"]
+    # 已经是新的就不再续
+    assert _forward("glm-5")[E2A_MODEL_AUTH_PARAM_KEY]["api_key"] == "id-new"
+    assert refreshed == ["id-old"]
+
+
 def test_forwarding_path_never_refreshes_remote_config_synchronously(monkeypatch, login_model):
     seen: dict = {}
 

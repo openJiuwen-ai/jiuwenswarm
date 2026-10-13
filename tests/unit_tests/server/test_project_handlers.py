@@ -188,8 +188,7 @@ class _FakeSessionCreateAgentClient:
 class _FakeRemoveRuntime:
     """project.remove busy 扫描的 AgentRuntime 桩。
 
-    ``running``/``parked`` 分别控制 ``is_session_running`` 与
-    ``has_parked_team_streams`` 的应答,模拟执行中会话与 parked 的
+    ``running``/``parked`` 控制 ``is_session_running`` 的应答,模拟执行中会话与 parked 的
     Team 常驻流。``heartbeats`` 是"仅因后台心跳在跑"的会话子集:
     ``ignore_heartbeats`` 读时排除它们,``stop_heartbeat_runs`` 停掉它们。
     """
@@ -209,10 +208,7 @@ class _FakeRemoveRuntime:
     def is_session_running(self, session_id, *, ignore_heartbeats=False):
         if ignore_heartbeats and session_id in self._heartbeats:
             return False
-        return session_id in self._running
-
-    def has_parked_team_streams(self, session_id):
-        return session_id in self._parked
+        return session_id in self._running and session_id not in self._parked
 
     async def stop_heartbeat_runs(self, session_id):
         if session_id not in self._heartbeats or not self._stop_heartbeats:

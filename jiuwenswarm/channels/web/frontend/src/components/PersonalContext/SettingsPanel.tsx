@@ -82,6 +82,7 @@ export function PersonalContextSettingsPanel({
   // 因此"是否已配置"以 status.configured 为准，而非 config.configured。
   const isConfigured = status?.configured === true || config.collection_enabled === true;
   const fetchActive = hasRunningFetchTask(status);
+  const runtimeStopping = status?.state === 'STOPPING';
 
   useEffect(() => {
     if (!isConnected) return;
@@ -127,9 +128,9 @@ export function PersonalContextSettingsPanel({
   const isFetchStillRunning = useCallback(async (): Promise<boolean> => {
     try {
       const fresh = await pcApi.getStatus();
-      return hasRunningFetchTask(fresh);
+      return fresh.state === 'STOPPING' || hasRunningFetchTask(fresh);
     } catch {
-      return false;
+      return true;
     }
   }, []);
 
@@ -327,15 +328,19 @@ export function PersonalContextSettingsPanel({
           description={t(
             configNeedsReconciliation
               ? 'personalContext.settings.collectionReconciling'
-              : 'personalContext.settings.masterEnableHint',
+              : runtimeStopping
+                ? 'personalContext.settings.collectionStoppingRetry'
+                : 'personalContext.settings.masterEnableHint',
           )}
         >
           <Switch
+            data-testid="personal-context-master-switch"
             checked={masterEnabled}
             onChange={handleMasterEnabled}
             disabled={
               !isConnected ||
               configNeedsReconciliation ||
+              runtimeStopping ||
               !!pendingWrites.collection_enabled ||
               !!pendingWrites.agent_use_enabled
             }
@@ -350,13 +355,16 @@ export function PersonalContextSettingsPanel({
               description={t(
                 configNeedsReconciliation
                   ? 'personalContext.settings.collectionReconciling'
-                  : 'personalContext.settings.enableHint',
+                  : runtimeStopping
+                    ? 'personalContext.settings.collectionStoppingRetry'
+                    : 'personalContext.settings.enableHint',
               )}
             >
               <Switch
+                data-testid="personal-context-collection-switch"
                 checked={config.collection_enabled}
                 onChange={handleEnabled}
-                disabled={!isConnected || configNeedsReconciliation || !!pendingWrites.collection_enabled}
+                disabled={!isConnected || configNeedsReconciliation || runtimeStopping || !!pendingWrites.collection_enabled}
               />
             </SettingRow>
 

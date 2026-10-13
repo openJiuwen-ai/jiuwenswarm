@@ -78,8 +78,12 @@ async def test_web_channel_routes_session_message_status_to_owner_only(owner_use
     WebChannel._resolve_connection_user_id(
         {"user_id": owner_user_id} if owner_user_id else {}, owner
     )
-    other.authenticated_user_id = "other"
-    WebChannel._resolve_connection_user_id({"user_id": owner_user_id or "local"}, other)
+    # Session identity comes from the declared username; the authenticated IAM
+    # ID is only an authentication gate and does not replace that username.
+    other.authenticated_user_id = "other-iam-id"
+    WebChannel._resolve_connection_user_id({"user_id": "other"}, other)
+    assert WebChannel.connection_user_id(owner) == owner_user_id
+    assert WebChannel.connection_user_id(other) == "other"
     for client, user_id in ((owner, owner_user_id or "local-peer"), (other, "other")):
         await channel.register_ws(
             client,
@@ -136,6 +140,61 @@ async def test_web_channel_routes_session_message_status_to_owner_only(owner_use
     finally:
         await channel.unregister_ws(owner)
         await channel.unregister_ws(other)
+
+
+@pytest.mark.asyncio
+async def test_web_channel_preserves_a4p_authorization_request_payload():
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = _FakeClient()
+    routing_key = RoutingKey(
+        channel_id="web",
+        app_id="default",
+        user_id="test_user",
+        session_id="sess-1",
+        agent_ref=None,
+    )
+    await channel.register_ws(client, routing_key)
+    try:
+        await channel.send(
+            Message(
+                id="a4p_operation_1",
+                type="event",
+                channel_id="web",
+                session_id="sess-1",
+                params={},
+                timestamp=0.0,
+                ok=True,
+                payload={
+                    "event_type": "a4p.authorization_request",
+                    "requestId": "mdt_intent_1",
+                    "kind": "intent",
+                    "mandate": {
+                        "type": "a4p/v1/intent-mandate",
+                        "mandateId": "mdt_intent_1",
+                        "intent": {
+                            "actions": [
+                                {"name": "bash", "params": {"command": "pwd"}}
+                            ]
+                        },
+                    },
+                    "signingOptions": {},
+                    "uiContext": {"kind": "intent", "sessionId": "sess-1"},
+                },
+                event_type=None,
+            )
+        )
+        for _ in range(20):
+            if client.frames:
+                break
+            await asyncio.sleep(0.005)
+
+        assert client.frames[0]["event"] == "a4p.authorization_request"
+        assert client.frames[0]["payload"]["mandate"]["intent"]["actions"] == [
+            {"name": "bash", "params": {"command": "pwd"}}
+        ]
+        assert client.frames[0]["payload"]["session_id"] == "sess-1"
+    finally:
+        await channel.unregister_ws(client)
 
 
 def test_web_channel_exposes_heartbeat_marker_without_routing_metadata():
@@ -330,6 +389,37 @@ def test_web_channel_preserves_goal_structured_payloads():
 
     for event_name, msg, expected in messages:
         assert WebChannel._build_event_payload(msg, event_name) == expected
+
+
+def test_web_channel_preserves_organization_progress_payload():
+    """Organization milestones must retain their phase and target Team."""
+    msg = Message(
+        id="org-progress-summary_execution_delegated:0",
+        type="event",
+        channel_id="web",
+        session_id="session-1",
+        params={},
+        timestamp=0.0,
+        ok=True,
+        payload={
+            "event_type": "org.progress",
+            "phase": "summary_execution_delegated",
+            "root_task_id": "root-1",
+            "team_id": "root-team",
+            "team_name": "root-team",
+            "source": "org_root_progress",
+        },
+    )
+
+    assert WebChannel._build_event_payload(msg, "org.progress") == {
+        "event_type": "org.progress",
+        "phase": "summary_execution_delegated",
+        "root_task_id": "root-1",
+        "team_id": "root-team",
+        "team_name": "root-team",
+        "source": "org_root_progress",
+        "session_id": "session-1",
+    }
 
 
 @pytest.mark.asyncio

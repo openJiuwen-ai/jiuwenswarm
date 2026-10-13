@@ -142,6 +142,7 @@
 | `components/FileIcon` | `file-icon` | 文件类型图标 |
 | `components/ModelProviderIcon` | `model-provider-icon` | 模型供应商图标 |
 | `components/Switch` | `switch` | 通用开关(无透传,调用处编号兜底,自身不加) |
+| `components/ui/PageCard` | `page-card` | 通用卡片;卡片右上角浮现主操作按钮(defaultButton) |
 | `features/trajectory` | `trajectory` | 轨迹面板(zip/JSONL 归档流式导入/导出;保留期检查点播种;原始数据检视器) |
 | `features/trajectory` | `single-agent` | 单 Agent 工作台(chat/trajectory 双 tab 切换) |
 | `features/trajectory` | `team-trajectory` | 团队轨迹工作台(泳道视图) |
@@ -149,3 +150,5 @@
 | `components/marketplace` | `marketplace` | 公共市场布局与目录缓存状态 |
 | `App.tsx` | `app` | 应用外壳;全局布局与 toast |
 | `components/ui/Select` | `ui-select` | 通用下拉选择控件 |
+
+| `features/A4PAuthorizationModal` | `a4p-authorization` | A4P 授权卡片及范围选择 |

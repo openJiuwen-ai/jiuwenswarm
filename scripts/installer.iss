@@ -57,6 +57,12 @@ ArchitecturesInstallIn64BitMode=x64compatible
 AppMutex=JiuwenSwarm.App,Global\JiuwenSwarm.App,{#MyAppName}.App,Global\{#MyAppName}.App
 CloseApplications=yes
 RestartApplications=no
+#ifdef BuildSignToolName
+  ; The compiler-provided Sign Tool signs Setup itself. Enabling the signed
+  ; uninstaller also signs temporary self-copies executed from {tmp}.
+  SignTool={#BuildSignToolName}
+  SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

@@ -827,6 +827,7 @@ Two hook types are supported:
 | `prompt` | Invokes LLM review. `$ARGUMENTS` in the template is replaced with JSON context, `$TOOL_NAME` with the tool name. LLM response JSON with `decision: "block"` blocks the operation. | `prompt`, `timeout` (default 15s), `model` |
 
 - **Blocking**: Exit code 2 (command) or `decision: "block"` (prompt) blocks the current operation (e.g., skip tool call) and feeds the reason back to the model.
+- **PreToolUse termination**: Blocking skips that tool and other tools in the batch that have not started executing, including after approval resumes, preserves the reason in their tool messages, and returns it as the final response. The current agent execution and task loop end without another model call to retry. A blocked Goal round, including a resumed approval, marks the original Goal as `blocked` and removes its queued continuations; resolve the hook restriction before explicitly resuming it. `PostToolUse` does not run for skipped tools; users can still submit a new request. Other parallel tools that have already started are not rolled back.
 - **Input Modification**: PreToolUse hooks can modify tool input parameters via `modifiedInput` in stdout JSON.
 - **Additional Context**: Extra information can be injected into tool results or model context via `additionalContext` in stdout JSON.
 - **Global Toggle**: `hooks.disable_all_hooks: true` in `config.yaml` disables all hooks.

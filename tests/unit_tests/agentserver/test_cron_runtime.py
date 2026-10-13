@@ -743,7 +743,7 @@ async def test_cron_tools_create_job_uses_route_project_id_and_work_mode(
     # 本测试断言 route 上下文 model_name 透传，不依赖外部模型配置：patch 掉
     # 严格校验，与 test_cron_tools_update_job_validates_model 保持一致。
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.cron.cron_tools.validate_cron_model",
+        "jiuwenswarm.runtime.cron.models.validate_cron_model",
         lambda raw: str(raw).strip() or None,
     )
 
@@ -905,7 +905,7 @@ async def test_cron_tools_update_job_validates_model(tmp_path, monkeypatch) -> N
         targets="web",
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.cron.cron_tools.validate_cron_model",
+        "jiuwenswarm.runtime.cron.models.validate_cron_model",
         lambda raw: "checked-model" if raw == "valid-model" else None,
     )
 
@@ -1223,7 +1223,6 @@ class TestComputeNextRunMissedTriggerWindow:
         assert push_dt == datetime(2026, 7, 24, 18, 25, 31, tzinfo=ZoneInfo("Asia/Shanghai"))
         assert wake_dt == push_dt
         assert run_id.startswith("one-shot:")
-
     def test_missed_trigger_beyond_window_raises(self) -> None:
         svc = _TestableScheduler.__new__(_TestableScheduler)
 

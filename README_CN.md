@@ -27,7 +27,7 @@
     <img src="https://img.shields.io/badge/license-Apache--2.0-green.svg" alt="License" />
   </a>
   <a href="https://gitcode.com/openJiuwen/jiuwenswarm/releases">
-    <img src="https://img.shields.io/pypi/v/jiuwenswarm.svg" alt="Release" />
+    <img src="https://img.shields.io/pypi/v/workswarm.svg" alt="Release" />
   </a>
   <img src="https://img.shields.io/badge/python-%E2%89%A53.11-blue.svg" alt="Python Version" />
   <img src="https://img.shields.io/badge/os-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="OS Support" />
@@ -81,11 +81,11 @@
 ```bash
 # 安装 JiuwenSwarm
 ## 方式一：默认安装
-pip install jiuwenswarm
+pip install workswarm
 
 ## 方式二：使用国内镜像源（推荐）
 # 清华源
-pip install jiuwenswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install workswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 初始化 JiuwenSwarm（首次启动）
 jiuwenswarm-init
@@ -96,20 +96,6 @@ jiuwenswarm-start
 
 启动后访问 http://localhost:5173 打开前端页面即可使用。
 
-如需使用 TUI（终端交互界面），在启动 JiuwenSwarm 后另开终端：
-
-```bash
-# 安装 JiuwenSwarm-tui
-## 方式一：默认安装
-pip install jiuwenswarm-tui
-
-## 方式二：使用国内镜像源（推荐）
-# 清华源
-pip install jiuwenswarm-tui -i https://pypi.tuna.tsinghua.edu.cn/simple
-
-# 启动 JiuwenSwarm-tui
-jiuwenswarm-tui
-```
 
 > 详细安装指导请见：[安装指南](docs/zh/安装指南.md)
 

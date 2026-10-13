@@ -38,7 +38,7 @@ def document(operation="mode.list", **overrides):
         ("model.list", {}, "list_model_capabilities"),
         ("model.resolve", {"requested": "model"}, "resolve_model_capability"),
         ("session.get", {"session_id": "owned"}, "get_session"),
-        ("session.list", {"limit": 2, "offset": 1}, "list_sessions"),
+        ("session.list", {"limit": 2, "offset": 1, "search": "alpha"}, "list_sessions"),
         ("permission.get", {"session_id": "owned"}, "get_permission_snapshot"),
         ("mcp.validate", {"references": ["server"]}, "validate_mcp_references"),
     ],
@@ -76,6 +76,8 @@ async def test_query_public_dispatch_and_close(operation, params, method):
         getattr(client, name).assert_not_called()
     if operation.startswith("session.") or operation == "permission.get":
         assert getattr(client, method).call_args.args[0].channel_id == "process_cli"
+    if operation == "session.list":
+        assert client.list_sessions.call_args.args[0].search == "alpha"
 
 
 @pytest.mark.parametrize(
@@ -92,6 +94,8 @@ async def test_query_public_dispatch_and_close(operation, params, method):
         {"operation": "session.list", "params": {"limit": 0}},
         {"operation": "session.list", "params": {"limit": 201}},
         {"operation": "session.list", "params": {"offset": True}},
+        {"operation": "session.list", "params": {"search": 123}},
+        {"operation": "session.list", "params": {"search": "x" * 201}},
         {"operation": "session.get", "params": {}},
         {"operation": "session.get", "params": {"session_id": " "}},
         {"operation": "mcp.validate", "params": {"references": "server"}},

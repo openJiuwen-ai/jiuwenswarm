@@ -8,7 +8,11 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import deprecate_mode, is_single_agent_mode
+from jiuwenswarm.common.mode_matrix import (
+    deprecate_mode,
+    is_single_agent_mode,
+    is_team_mode,
+)
 
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 200
@@ -38,6 +42,7 @@ class SessionListInput:
     channel_id: str
     limit: int = _DEFAULT_LIMIT
     offset: int = 0
+    search: str = ""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -162,11 +167,16 @@ def _project_session(
     metadata: Mapping[str, Any],
     *,
     channel_id: str,
+    include_team: bool = False,
 ) -> SessionSummary | None:
     item_channel = _safe_text(metadata.get("channel_id")).lower()
     if item_channel != channel_id:
         return None
     mode = _single_agent_mode(metadata.get("mode"))
+    if not mode and include_team:
+        normalized = deprecate_mode(metadata.get("mode"))
+        if isinstance(normalized, str) and is_team_mode(normalized):
+            mode = normalized.strip()
     if not mode:
         return None
     session_id = _safe_text(metadata.get("session_id"))
@@ -199,11 +209,15 @@ def _read_session_metadata(session_id: str) -> dict[str, Any]:
     )
 
 
-def _collect_session_metadata() -> Iterable[Mapping[str, Any]]:
+def _collect_session_metadata(
+    *, read_only: bool = False
+) -> Iterable[Mapping[str, Any]]:
     from jiuwenswarm.server.runtime.session.session_metadata import (
         collect_all_sessions_metadata,
     )
 
+    if read_only:
+        return collect_all_sessions_metadata(enable_writeback=False)
     return collect_all_sessions_metadata()
 
 
@@ -226,21 +240,47 @@ def get_session(request: SessionGetInput) -> SessionSummary | None:
     return _project_session(metadata, channel_id=channel_id)
 
 
-def list_sessions(request: SessionListInput) -> SessionListResult:
-    """Filter by Channel and single-Agent mode, then sort and paginate."""
+def list_sessions(
+    request: SessionListInput, *, include_team: bool = False, read_only: bool = False
+) -> SessionListResult:
+    """List owned Sessions; single-Agent scope remains the default for SDK calls."""
     if not isinstance(request, SessionListInput):
         raise SessionCatalogError("session list input is required", code="BAD_REQUEST")
     channel_id = _normalize_channel_id(request.channel_id)
+    if not isinstance(include_team, bool) or not isinstance(read_only, bool):
+        raise SessionCatalogError("invalid session query options", code="BAD_REQUEST")
     limit, offset = _validate_page(request.limit, request.offset)
+    if not isinstance(request.search, str) or len(request.search) > 200:
+        raise SessionCatalogError("invalid session search", code="BAD_REQUEST")
+    search_terms = request.search.casefold().split()
     try:
-        raw_sessions = _collect_session_metadata()
+        raw_sessions = (
+            _collect_session_metadata(read_only=True)
+            if read_only
+            else _collect_session_metadata()
+        )
         session_items: list[SessionSummary] = []
         for metadata in raw_sessions:
             if not isinstance(metadata, Mapping):
                 continue
-            projected = _project_session(metadata, channel_id=channel_id)
-            if projected is not None:
-                session_items.append(projected)
+            projected = _project_session(
+                metadata, channel_id=channel_id, include_team=include_team
+            )
+            if projected is None:
+                continue
+            if search_terms:
+                searchable = " ".join(
+                    (
+                        projected.session_id,
+                        projected.title,
+                        projected.project_id,
+                        projected.project_dir,
+                        projected.mode,
+                    )
+                ).casefold()
+                if not all(term in searchable for term in search_terms):
+                    continue
+            session_items.append(projected)
         filtered = tuple(session_items)
     except SessionCatalogError:
         raise

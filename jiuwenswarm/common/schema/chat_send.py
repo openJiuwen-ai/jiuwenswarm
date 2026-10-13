@@ -169,6 +169,9 @@ class ChatSendParams(TypedDict, total=False):
     team: NotRequired[bool]
     """团队模式布尔标志。"""
 
+    target_team_id: NotRequired[str]
+    """当前用户消息明确指定的 Team；Owner 走常规路径，组织 Expert 走定向执行。"""
+
     run: NotRequired[dict]
     """Run 上下文结构（cron / 定时任务场景由 Gateway 注入）。"""
 
@@ -200,4 +203,14 @@ class ChatSendParams(TypedDict, total=False):
 
     Only meaningful when ``enable_swarmflow`` is True. Absent means use the
     server default budget.
+    """
+
+    swarmflow_worktree: NotRequired[bool]
+    """Session-level worktree isolation switch for swarmflow workers.
+
+    When True the team is armed with a worktree manager so
+    ``agent(options={"isolation": "worktree"})`` succeeds; when False the
+    manager is withheld and isolation calls fail fast. Absent keeps the
+    session's persisted value (first request falls back to the team config's
+    ``worktree`` section). Requires a project directory to be usable.
     """

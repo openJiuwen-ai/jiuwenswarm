@@ -214,6 +214,9 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
         if (localResult.status === 'rejected') throw localResult.reason;
         const marketplace = marketplaceResult.status === 'fulfilled' ? marketplaceResult.value : [];
         const local = localResult.value;
+        // installed 沿用 mcp.list summary 的语义：预置恒为 true（包随应用分发，未连接也能发起
+        // 连接），hub 条目按真实安装态下发。抽屉"我的MCP" tab 的归属不依赖 installed，由
+        // AgentEditor 的 isMine 用 connectionState 判断，避免两个 tab 内容雷同。
         const byRuntimeName = new Map<string, McpOption>();
         [...marketplace, ...local].forEach((item) => {
           const runtimePackageName = item.runtimePackageName || item.name;

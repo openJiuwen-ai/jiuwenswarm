@@ -1,5 +1,8 @@
 # One-shot Process CLI machine execution
 
+For ordinary terminal commands with a prompt, see
+[model connection flags](Process_CLI_Model.md).
+
 `jiuwenswarm-process --run-json FILE` (noninteractive) and
 `jiuwenswarm-process --run-jsonl` (duplex) execute one single-root-Agent request
 through `InProcessRuntimeClient` and the shared Runtime Public API. It does not
@@ -64,12 +67,58 @@ Optional `agent` uses the existing Agent definition contract, for example:
 
 Attach this object as the request's `agent` field. Omit `model` to use the
 configured selection. Definitions are validated and executed by Runtime, not
-loaded into a second Agent engine. Current Runtime rejects custom work-mode
-Agents and explicit tool allowlists; those errors are preserved, not silently
-downgraded. Available skills and model names still come from local Runtime
-configuration. The request is not a configuration-file override mechanism.
-An inline definition is invocation-scoped: send it again to execute the same
-custom definition when resuming history in a later process.
+loaded into a second Agent engine. Custom roots work in both code and work
+modes. `agent.tools` accepts `[*]` for the configured set or a nonempty list
+of exact tool names. Runtime filters model-facing tools and rejects calls to
+other tools, including tools registered after Agent startup. Available skills
+and model names still come from local Runtime configuration.
+
+The run document also accepts these per-invocation fields:
+
+```json
+{
+  "model": "configured-model-name",
+  "skills": ["review"],
+  "mcp": ["local-server"],
+  "permissions": {
+    "tools": {"read_file": "allow", "write_file": "ask", "run_shell": "deny"}
+  }
+}
+```
+
+`model` resolves against the Runtime catalog before Session execution and
+overrides `agent.model` for this run. `skills` and `mcp` use the same selected
+Skill and MCP inputs as `chat.send`; an explicit empty list requests no
+selection for that field on this turn. MCP references must be locally ready.
+`permissions.tools` accepts
+only `allow`, `ask`, and `deny` decisions. The policy is scoped to the run and
+does not write the global permission configuration. An installed deny remains
+deny. Without a callback, permission cards with an explicit `reject` option
+are rejected and execution resumes; other interactions need a host answer.
+
+Optional `output_schema` is an object-root JSON Schema. The final answer must
+be exactly one matching JSON object; success includes parsed `output_json`.
+Invalid output fails with `OUTPUT_SCHEMA_MISMATCH`. `max_turns` (1 to 1000)
+caps the Agent model loop and reports `usage.model_calls`. If the Agent has
+not finished when it reaches the cap, the result fails with
+`TURN_LIMIT_EXCEEDED`. A tool call may use one turn and require another model
+call to summarize its result. The tool can execute before the limit error; the
+result does not roll back its effects. `max_budget_usd`
+stops after reported model cost exceeds the bound. Costs are checked after
+each call, so one call can cross the limit. A model without usable cost data
+fails a budgeted run with `BUDGET_METER_UNAVAILABLE`.
+
+`host_tools` declares SDK-hosted tools for `--run-jsonl` only. Each has a
+unique `name`, `description`, and object-root JSON Schema `input_schema`.
+Custom `agent.tools` must list these names (or use `["*"]`). Runtime registers
+them for this run and validates their arguments. The host responds to each
+`host_tool.requested` event with a matching `tool_result` control frame.
+
+An inline definition must be sent again when resuming history in a later
+process. The Process CLI stores its fingerprint with the Session; a different
+definition or omission is rejected. Calls using the same Session are guarded
+by an exclusive process lock; concurrent attempts return retryable
+`SESSION_BUSY`. Legacy unbound Sessions with history cannot adopt a custom Agent.
 
 Workspace paths are resolved relative to the launching directory **before**
 changing `cwd`. `cwd` controls process execution; `project_dir` remains a
@@ -80,9 +129,23 @@ Session descriptor; supply it again when it differs from the project root.
 
 ## Output and lifecycle
 
+Normal one-shot CLI runs keep detailed Runtime and dependency diagnostics in a
+per-invocation file under
+`JIUWENSWARM_DATA_DIR/agent/process_cli_logs/` (or
+`~/.jiuwenswarm/agent/process_cli_logs/` by default). The terminal shows the
+answer and short progress for human output; failures also print a concise
+stderr summary and the diagnostic path. `--debug` shows detailed diagnostics
+in the terminal for a legacy prompt invocation. Machine entrypoints remain
+standalone: set `JIUWENSWARM_PROCESS_DEBUG=1` to inspect their diagnostics in
+stderr without mixing legacy flags into the JSON protocol. This setting does
+not change the stdout format. Piped runs also capture inherited native output.
+Windows terminals keep their console handles intact, so native code that writes
+directly to those handles can still appear in the terminal.
+
 Stdout contains only UTF-8 JSONL, with zero-based consecutive `sequence`, a
 stable external `request_id`, and the resolved `session_id`. Python/native
-dependency diagnostics and inherited tool stdout go to stderr. The adapter
+dependency diagnostics and inherited tool output go to the diagnostic file by
+default in piped runs, or to stderr when debugging is enabled. The adapter
 flushes each event immediately rather than retaining the event stream.
 
 Records are schema `0.1` `event` observations followed by exactly one terminal
@@ -133,10 +196,11 @@ stream is not retried, since a JSONL record may already be partially delivered.
 
 ## Noninteractive interaction boundary
 
-`--run-json FILE|-` remains noninteractive. Asking questions, plan approval and
-harness activation observations produce `INTERACTION_REQUIRED`, followed by
-cancellation and cleanup. Its stdin input still requires EOF. No answer is
-inferred, auto-approved or supplied by reading the terminal.
+`--run-json FILE|-` remains noninteractive. Permission questions with an
+explicit `reject` option are rejected through the typed Runtime API and the
+Agent can continue. Other questions, plan approvals and harness activation
+still fail with `INTERACTION_REQUIRED` or `INTERACTION_UNSUPPORTED`. Its stdin
+input still requires EOF. No answer is read from the terminal.
 
 ## Duplex interaction within one command
 
@@ -158,6 +222,18 @@ unrelated Session command or configuration override is not accepted.
 4. Keep stdin open if answers or cancellation may be needed. Wait for the single terminal
    `result` and process exit. Neither another command nor closing stdin is
    required for a normally completed command to exit.
+
+For a declared host tool, `host_tool.requested` carries a unique `call_id`,
+tool `name`, and validated `arguments`. The SDK callback returns one JSON value
+through the same child process:
+
+```json
+{"schema_version":"0.1","type":"tool_result","request_id":"sdk-run-001","session_id":"<session_id from output>","call_id":"<call_id>","result":{"value":"example"}}
+```
+
+Send `error` instead of `result` to fail that tool call. Exactly one is
+required; unknown, duplicate, or foreign call IDs are rejected. The shipped
+SDKs require a callback whenever `host_tools` is declared.
 
 For a question with the option `ALPHA`, an answer line is:
 

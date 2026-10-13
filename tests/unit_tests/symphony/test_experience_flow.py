@@ -909,6 +909,70 @@ def test_explicit_flow_enabled_false_skips_core_flow(monkeypatch, tmp_path: Path
     assert created["runtime"]["flow_engine"] is None
 
 
+def test_core_flow_uses_success_count_config_and_ignores_legacy_switch(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = symphony_config_from_dict(
+        {
+            "enabled": True,
+            "paths": {"graph_dir": str(tmp_path / "graph")},
+            "evolution": {
+                "enabled": False,
+                "flow": {"enabled": True, "min_successes": 6},
+            },
+        }
+    )
+    service = SwarmSymphonyService()
+    model = object()
+    created: dict[str, object] = {}
+
+    class ReviewAgent:
+        def __init__(self, value) -> None:
+            created["review_model"] = value
+
+    class Gate:
+        def __init__(self, agent) -> None:
+            created["review_agent"] = agent
+
+    class Flow:
+        def __init__(self, root, **kwargs) -> None:
+            created["flow_root"] = root
+            created.update(kwargs)
+
+    class Runtime:
+        def __init__(self, **kwargs) -> None:
+            created["runtime"] = kwargs
+
+    _patch_runtime_construction(monkeypatch, Flow, Runtime, model)
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.LLMPackageReviewAgent", ReviewAgent
+    )
+    monkeypatch.setattr("jiuwenswarm.symphony.service.PackageReviewGate", Gate)
+    runtime = service._runtime_for(config)
+
+    assert runtime is service._runtime
+    assert created["review_model"] is model
+    assert created["review_agent"] is not None
+    assert created["flow_root"] == tmp_path / "flow"
+    assert created["llm_client"] is model
+    flow_config = created["config"]
+    accepted = inspect.signature(type(flow_config)).parameters
+    if "min_successes" in accepted:
+        assert flow_config.min_successes == 6
+    else:
+        assert flow_config.min_successes_candidate == 6
+        assert flow_config.min_successes_verified == 6
+    if "min_pack_success_rate" in accepted:
+        assert flow_config.min_pack_success_rate == config.evolution.flow.min_pack_success_rate
+    elif "min_pack_success_rate_verified" in accepted:
+        assert (
+            flow_config.min_pack_success_rate_verified
+            == config.evolution.flow.min_pack_success_rate
+        )
+    assert isinstance(created["skill_adapter"], SkillPackAdapter)
+    assert isinstance(created["runtime"]["flow_engine"], Flow)
+
+
 @pytest.mark.asyncio
 async def test_service_start_recovers_candidates_when_flow_is_enabled(
     monkeypatch, tmp_path: Path

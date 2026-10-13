@@ -93,6 +93,44 @@ def test_team_binding_store_creates_and_persists_binding(tmp_path) -> None:
     assert reloaded.session_ids == ("sess-a", "sess-b")
 
 
+def test_team_binding_store_persists_team_model_selection(tmp_path) -> None:
+    path = tmp_path / "teams" / "bindings.json"
+    store = TeamBindingStore(path)
+    store.create(team_name="research_team", template_id="default")
+
+    updated = store.set_team_selection(
+        team_name="research_team",
+        selection={"type": "model_group", "id": "group-a"},
+    )
+
+    assert store.get_team_selection("research_team") == {
+        "type": "model_group",
+        "id": "group-a",
+    }
+    assert updated.model_selection == {
+        "type": "model_group",
+        "id": "group-a",
+    }
+    reloaded = TeamBindingStore(path).get("research_team")
+    assert reloaded is not None
+    assert reloaded.model_selection == {
+        "type": "model_group",
+        "id": "group-a",
+    }
+
+
+def test_team_binding_store_rejects_invalid_model_selection(tmp_path) -> None:
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    store.create(team_name="research_team", template_id="default")
+
+    with pytest.raises(TeamBindingStoreError) as exc_info:
+        store.set_team_selection(
+            team_name="research_team",
+            selection={"type": "unknown", "id": "x"},
+        )
+    assert exc_info.value.code == "BAD_REQUEST"
+
+
 def test_team_binding_store_unbinds_deleted_session(tmp_path) -> None:
     store = TeamBindingStore(tmp_path / "teams" / "bindings.json")
     store.create(team_name="research_team", template_id="default")

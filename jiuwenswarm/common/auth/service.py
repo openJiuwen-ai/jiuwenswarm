@@ -237,6 +237,8 @@ class AuthService:
         快过期（:data:`REFRESH_AHEAD_S` 内）就续。``blocking=False`` 给不能等网络的
         调用方（Gateway 转发热路径、逐请求的模型解析）：续期丢到后台线程，本次先用
         还没过期的旧 token；已经过期的这次就拿不到，下一次请求就能用上后台换好的。
+        Gateway 转发登录模型请求前会先把已过期的凭据同步续好（放线程里），所以放置
+        很久后的第一条消息不会因此失败，见 ``app_gateway._refresh_expired_login_credential``。
         """
         if not session.credential.expires_within(REFRESH_AHEAD_S):
             return session

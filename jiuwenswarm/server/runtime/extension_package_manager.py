@@ -1151,6 +1151,15 @@ def resolve_agent_template_dir(name: Any) -> Path:
     )
 
 
+def get_agent_group_search_roots() -> list[tuple[str, Path | None]]:
+    """Return AgentGroup roots in catalog search order."""
+    return [
+        ("local", _local_root(_AGENT_GROUP_KIND)),
+        ("built_in", _built_in_root(_AGENT_GROUP_KIND)),
+        ("resources", _resources_root(_AGENT_GROUP_KIND)),
+    ]
+
+
 def resolve_agent_group_dir(name: Any) -> Path:
     """Resolve one installed AgentGroup package for Team assembly."""
     safe_name = _reject_package_name(name, "agent_group")

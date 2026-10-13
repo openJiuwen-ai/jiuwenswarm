@@ -794,6 +794,7 @@ class _SharePostHandlerStub:
 
     _handle_share_api_post = app_web._SpaStaticHandler._handle_share_api_post
     _read_request_body = app_web._SpaStaticHandler._read_request_body
+    _parse_content_length = app_web._SpaStaticHandler._parse_content_length
 
     def __init__(self, *, body: dict, desktop_token: str, cookie_name: str, manager: _FakeShareManager) -> None:
         raw = json.dumps(body).encode("utf-8")

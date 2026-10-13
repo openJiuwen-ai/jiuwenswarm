@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * ic_ds_* icon set for the dsh web UI. All glyphs render fill="currentColor"
  * and take {size, className}. Batch A mirrors the deepsuite icon library

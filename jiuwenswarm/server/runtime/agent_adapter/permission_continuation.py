@@ -207,6 +207,141 @@ async def discard_permission_continuation(
     return True
 
 
+async def discard_pending_permission_interrupt_for_target(
+    instance: Any,
+    target_sid: str,
+    loop_session_id: str | None,
+    *,
+    cancel_reason: str = "host_fresh_user_input_drops_pending_permission",
+) -> bool:
+    """Clear any pending Core permission interrupt for *target_sid*.
+
+    This is the manual-mode / Smart-queue-empty counterpart of
+    ``discard_permission_continuation``. It does not require frozen_keys:
+    whatever pending entries are in ``INTERRUPTION_KEY.interrupted_tools``
+    are cleared, with cancellation ToolMessages appended to balance context.
+
+    Mirrors the validation pattern of ``discard_permission_continuation``:
+    cross-checks ``ai_message.tool_calls`` against the last assistant message
+    in the context engine and verifies completed tool results before clearing.
+
+    Returns True if state was cleared, False if nothing pending, mismatch,
+    or session does not match.
+    """
+    loop_session = getattr(instance, "_loop_session", None)
+    if loop_session is None or loop_session_id != target_sid:
+        return False
+
+    try:
+        state = loop_session.get_state(INTERRUPTION_KEY)
+        interrupted_tools = getattr(state, "interrupted_tools", None)
+        if not isinstance(interrupted_tools, Mapping) or not interrupted_tools:
+            return False
+
+        pending_tool_ids: list[str] = []
+        for outer_id, entry in interrupted_tools.items():
+            call = getattr(entry, "tool_call", None)
+            tool_call_id = str(getattr(call, "id", "") or "") if call is not None else ""
+            if not tool_call_id or tool_call_id != str(outer_id or ""):
+                continue
+            pending_tool_ids.append(tool_call_id)
+
+        ai_message = getattr(state, "ai_message", None)
+        state_calls = list(getattr(ai_message, "tool_calls", None) or [])
+        state_signature = [
+            (
+                str(getattr(call, "id", "") or ""),
+                str(getattr(call, "name", "") or ""),
+            )
+            for call in state_calls
+        ]
+        all_tool_ids = {tool_call_id for tool_call_id, _name in state_signature}
+        if (
+            not state_signature
+            or len(all_tool_ids) != len(state_signature)
+            or not set(pending_tool_ids).issubset(all_tool_ids)
+        ):
+            return False
+
+        react_agent = getattr(instance, "react_agent", None)
+        context_engine = getattr(react_agent, "context_engine", None)
+        context = (
+            context_engine.get_context(session_id=target_sid)
+            if context_engine is not None
+            else None
+        )
+        messages = list(context.get_messages() or []) if context is not None else []
+        assistant_index = next(
+            (
+                index
+                for index in range(len(messages) - 1, -1, -1)
+                if getattr(messages[index], "tool_calls", None)
+            ),
+            -1,
+        )
+        if assistant_index < 0:
+            return False
+        context_signature: list[tuple[str, str]] = []
+        for call in list(
+            getattr(messages[assistant_index], "tool_calls", None) or []
+        ):
+            context_signature.append(
+                (
+                    str(getattr(call, "id", "") or ""),
+                    str(getattr(call, "name", "") or ""),
+                )
+            )
+        if context_signature != state_signature:
+            return False
+        pending_id_set = set(pending_tool_ids)
+        tail_id_set: set[str] = set()
+        for message in messages[assistant_index + 1:]:
+            if getattr(message, "role", None) != "tool":
+                continue
+            tool_call_id = str(getattr(message, "tool_call_id", "") or "")
+            if tool_call_id in all_tool_ids:
+                tail_id_set.add(tool_call_id)
+        active_ids = [tid for tid in pending_tool_ids if tid not in tail_id_set]
+        stale_ids = [tid for tid in pending_tool_ids if tid in tail_id_set]
+
+        added = 0
+        try:
+            for tool_call_id in active_ids:
+                await context.add_messages(
+                    ToolMessage(
+                        tool_call_id=tool_call_id,
+                        content="[INTERRUPTED - Superseded by new user input]",
+                    )
+                )
+                added += 1
+            loop_session.update_state({INTERRUPTION_KEY: None})
+            await context_engine.save_contexts(loop_session)
+        except Exception:
+            loop_session.update_state({INTERRUPTION_KEY: state})
+            if added:
+                context.pop_messages(added, with_history=True)
+            raise
+    except Exception:
+        logger.debug(
+            "[PermissionContinuation] pending permission interrupt discard failed "
+            "session=%s reason=%s",
+            target_sid,
+            cancel_reason,
+            exc_info=True,
+        )
+        return False
+
+    logger.info(
+        "[PermissionContinuation] discarded pending permission interrupt "
+        "session=%s active=%d stale=%d reason=%s",
+        target_sid,
+        len(active_ids),
+        len(stale_ids),
+        cancel_reason,
+    )
+    return True
+
+
 def validate_manual_resume(loop_session: Any, query: InteractiveInput) -> None:
     """Retain the SDK's manual batch/subset contract during Smart activation."""
     state = loop_session.get_state(INTERRUPTION_KEY)

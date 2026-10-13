@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Exact OTLP attribute readers and builders for semantic validation. */
 
 import type { OtlpAnyValue, OtlpKeyValue } from '../shared/otlp.ts'

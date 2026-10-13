@@ -5,69 +5,20 @@ title: "[Bug]: "
 labels: ["bug"]
 type: "Bug-Report"
 body:
-  - type: dropdown
-    id: branch_select
-    attributes:
-      label: 分支选择
-      options:
-        - dev-stable
-        - develop
-        - agent-os
-        - xiaoyi
-    validations:
-      required: true
-  - type: dropdown
+  - type: cascading-dropdown
     id: module_select
     attributes:
-      label: 模块选择
-      description: |
-        dev-stable分支请选择【dev-stable专属】模块
-        develop、agent-os、xiaoyi分支请选择【通用】模块
+      label: 分支 / 模块
+      description: 请依次选择分支和对应模块。
       options:
-        - 【通用】 Agent Core harness
-        - 【通用】 AutoHarness
-        - 【通用】 集群模式
-        - 【通用】 同session联机
-        - 【通用】 Gateway
-        - 【通用】 编排与分发
-        - 【通用】 单Agent模式
-        - 【通用】 定时
-        - 【通用】 多session
-        - 【通用】 记忆
-        - 【通用】 数字分身
-        - 【通用】 浏览器
-        - 【通用】 文件系统
-        - 【通用】 TUI
-        - 【通用】 A2UI
-        - 【通用】 Sandbox
-        - 【通用】 LLM wiki
-        - 【通用】 skillnet
-        - 【通用】 前端
-        - 【通用】 channel-小艺
-        - 【通用】 channel-钉钉
-        - 【通用】 channel-web
-        - 【通用】 channel-飞书
-        - 【通用】 channel-微信
-        - 【通用】 channel-企业微信
-        - 【通用】 channel-WharsApp
-        - 【通用】 自演进
-        - 【通用】 未知
-        - 【dev-stable专属】 服务接入和处理
-        - 【dev-stable专属】 Agent执行控制
-        - 【dev-stable专属】 工具与外部能力
-        - 【dev-stable专属】 上下文
-        - 【dev-stable专属】 技能管理
-        - 【dev-stable专属】 平台底座
-        - 【dev-stable专属】 主动推荐（数字分身）
-        - 【dev-stable专属】 性能
-        - 【dev-stable专属】 成本（非skill加速）
-        - 【dev-stable专属】 企业级
-        - 【dev-stable专属】 自演进
-        - 【dev-stable专属】 安全
-        - 【dev-stable专属】 Agent Team
-        - 【dev-stable专属】 Code Agent
-        - 【dev-stable专属】 记忆引擎
-        - 【dev-stable专属】 DeepSearch
+        - value: dev-stable
+          children: [【dev-stable专属】 服务接入和处理, 【dev-stable专属】 Agent执行控制, 【dev-stable专属】 工具与外部能力,【dev-stable专属】 上下文,【dev-stable专属】 技能管理,【dev-stable专属】 平台底座,【dev-stable专属】 主动推荐（数字分身）,【dev-stable专属】 性能,【dev-stable专属】 成本（非skill加速）,【dev-stable专属】 企业级,【dev-stable专属】 自演进,【dev-stable专属】 安全,【dev-stable专属】 Agent Team,【dev-stable专属】 Code Agent,【dev-stable专属】 记忆引擎,【dev-stable专属】 DeepSearch,【dev-stable专属】 其他]
+        - value: develop
+          children: [【通用】 Agent Core harness, 【通用】 AutoHarness, 【通用】 集群模式, 【通用】 同session联机,【通用】 Gateway,【通用】 编排与分发,【通用】 单Agent模式,【通用】 定时,【通用】 多session,【通用】 记忆,【通用】 数字分身,【通用】 浏览器,【通用】 文件系统,【通用】 TUI,【通用】 A2UI,【通用】 Sandbox,【通用】 LLM wiki,【通用】 skillnet,【通用】 前端,【通用】 channel-小艺,【通用】 channel-钉钉,【通用】 channel-web,【通用】 channel-飞书,【通用】 channel-微信,【通用】 channel-企业微信,【通用】 channel-WharsApp,【通用】 自演进,【通用】 未知]
+        - value: agent-os
+          children: [【通用】 Agent Core harness, 【通用】 AutoHarness, 【通用】 集群模式, 【通用】 同session联机,【通用】 Gateway,【通用】 编排与分发,【通用】 单Agent模式,【通用】 定时,【通用】 多session,【通用】 记忆,【通用】 数字分身,【通用】 浏览器,【通用】 文件系统,【通用】 TUI,【通用】 A2UI,【通用】 Sandbox,【通用】 LLM wiki,【通用】 skillnet,【通用】 前端,【通用】 channel-小艺,【通用】 channel-钉钉,【通用】 channel-web,【通用】 channel-飞书,【通用】 channel-微信,【通用】 channel-企业微信,【通用】 channel-WharsApp,【通用】 自演进,【通用】 未知]
+        - value: xiaoyi
+          children: [【通用】 Agent Core harness, 【通用】 AutoHarness, 【通用】 集群模式, 【通用】 同session联机,【通用】 Gateway,【通用】 编排与分发,【通用】 单Agent模式,【通用】 定时,【通用】 多session,【通用】 记忆,【通用】 数字分身,【通用】 浏览器,【通用】 文件系统,【通用】 TUI,【通用】 A2UI,【通用】 Sandbox,【通用】 LLM wiki,【通用】 skillnet,【通用】 前端,【通用】 channel-小艺,【通用】 channel-钉钉,【通用】 channel-web,【通用】 channel-飞书,【通用】 channel-微信,【通用】 channel-企业微信,【通用】 channel-WharsApp,【通用】 自演进,【通用】 未知]
     validations:
       required: true
   - type: checkboxes

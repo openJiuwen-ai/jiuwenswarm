@@ -179,6 +179,38 @@ async def test_team_prepare_finishes_before_create_result(
 
 
 @pytest.mark.asyncio
+async def test_create_code_team_keeps_canonical_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """创建链路保留 canonical 元数据，不全局回显请求中的旧 mode。"""
+    from jiuwenswarm.agents.harness import team as team_package
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        get_session_metadata,
+    )
+
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state, target_is_team=True)
+
+    class TeamManager:
+        async def prepare_session_switch(self, *_args: Any, **_kwargs: Any) -> None:
+            state.events.append("team.prepare")
+
+    monkeypatch.setattr(
+        team_package, "get_team_manager", lambda _channel: TeamManager()
+    )
+
+    prepared = await _provisioner(state).prepare_session_create(
+        _input(mode="team", work_mode="code")
+    )
+
+    assert prepared.state is SessionProvisionState.PREPARED
+    meta = get_session_metadata("created-session")
+    assert meta["mode"] == "team.code.normal"
+    assert "wire_mode" not in meta
+
+
+@pytest.mark.asyncio
 async def test_team_hint_triggers_prepare_when_mode_is_agent(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,

@@ -31,22 +31,22 @@ type SettingsValues = {
 };
 
 const DEFAULTS: SettingsValues = {
-  video_live_provider: 'joyai',
+  video_live_provider: 'qwen_omni',
   joyai_api_base: '',
   joyai_api_key: '',
-  joyai_model: 'jdopensource/JoyAI-VL-Interaction',
+  joyai_model: '',
   qwen_omni_realtime_url: '',
   qwen_omni_api_key: '',
-  qwen_omni_model: 'qwen3.5-omni-flash-realtime',
-  qwen_omni_voice: 'Cherry',
+  qwen_omni_model: '',
+  qwen_omni_voice: '',
   reply_language: 'match',
-  voice_protocol: 'native_ws',
-  voice_asr_endpoint: 'ws://127.0.0.1:8994/ws/asr',
-  voice_tts_endpoint: 'ws://127.0.0.1:8992/ws/tts',
+  voice_protocol: 'openai_http',
+  voice_asr_endpoint: '',
+  voice_tts_endpoint: '',
   voice_api_key: '',
   voice_asr_model: '',
   voice_tts_model: '',
-  voice_tts_voice: 'vivian',
+  voice_tts_voice: '',
 };
 
 const SECRET_KEYS = ['joyai_api_key', 'qwen_omni_api_key', 'voice_api_key'] as const;
@@ -168,8 +168,9 @@ export function VideoDuplexModelSettings() {
     setDeleteError('');
     try {
       const emptyValues = Object.fromEntries(Object.keys(DEFAULTS).map((key) => [key, ''])) as Record<string, string>;
-      emptyValues.video_live_provider = 'joyai';
+      emptyValues.video_live_provider = DEFAULTS.video_live_provider;
       emptyValues.reply_language = DEFAULTS.reply_language;
+      emptyValues.voice_protocol = DEFAULTS.voice_protocol;
       const payload = await webRequest<Payload>(
         'video.duplex.settings.update',
         { values: emptyValues, clear_secrets: true },
@@ -310,7 +311,7 @@ export function VideoDuplexModelSettings() {
             </label>
             {draft.video_live_provider === 'joyai' ? (
               <>
-                <ConfigField value={draft.joyai_api_base} label="JoyAI API Base" placeholder="http://127.0.0.1:8070/v1" onChange={(value) => updateDraft('joyai_api_base', value)} />
+                <ConfigField value={draft.joyai_api_base} label="JoyAI API Base" onChange={(value) => updateDraft('joyai_api_base', value)} />
                 <ConfigField value={draft.joyai_api_key} label="JoyAI API Key" secret placeholder={secretPlaceholder(secretLengths.joyai_api_key)} onChange={(value) => updateDraft('joyai_api_key', value)} />
                 <ConfigField value={draft.joyai_model} label={t('settingsPanel.videoDuplex.joyaiModelLabel')} onChange={(value) => updateDraft('joyai_model', value)} />
                 <h3>{t('settingsPanel.videoDuplex.voiceSectionTitle')}</h3>

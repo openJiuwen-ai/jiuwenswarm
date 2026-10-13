@@ -2445,6 +2445,59 @@ test('provisional inference projects running lifecycle without a fabricated end 
   assert.equal(request.completedAt, null);
 });
 
+function setDoubleAttribute(span, key, value) {
+  const current = span.attributes.find(attribute => attribute.key === key);
+  if (current === undefined) {
+    span.attributes.push({ key, value: { doubleValue: value } });
+    return;
+  }
+  current.value = { doubleValue: value };
+}
+
+function firstInferenceSpan(records) {
+  return spansOf(records).find(span => span.attributes.some(attribute => (
+    attribute.key === 'openjiuwen.trajectory.record.kind'
+      && attribute.value.stringValue === 'inference'
+  )));
+}
+
+test('assistant timing prefers time to first token over a framing-only first chunk', async () => {
+  const records = await fixtureRecords('standard-records.json');
+  const inferenceSpan = firstInferenceSpan(records);
+  assert.ok(inferenceSpan);
+  setDoubleAttribute(inferenceSpan, GEN_AI_ATTRIBUTES.GEN_AI_RESPONSE_TIME_TO_FIRST_CHUNK, 0.28);
+  setDoubleAttribute(inferenceSpan, 'openjiuwen.gen_ai.response.time_to_first_token_ms', 4000);
+  setDoubleAttribute(inferenceSpan, 'openjiuwen.gen_ai.response.time_to_first_byte_ms', 150);
+  setIntAttribute(inferenceSpan, 'openjiuwen.request.retry_count', 1);
+  const identity = `${inferenceSpan.traceId}:${inferenceSpan.spanId}`;
+
+  const assistant = cellsOf(projectOtelTrajectory(records))
+    .find(cell => cell.recordId === `${identity}:assistant`);
+
+  assert.ok(assistant);
+  const metrics = assistant.assistantMetrics;
+  assert.equal(metrics.firstTokenTime - metrics.stepStartTime, 4000);
+  assert.equal(metrics.firstByteTime - metrics.stepStartTime, 150);
+  assert.equal(metrics.retryCount, 1);
+});
+
+test('assistant timing falls back to the first chunk when time to first token is absent', async () => {
+  const records = await fixtureRecords('standard-records.json');
+  const inferenceSpan = firstInferenceSpan(records);
+  assert.ok(inferenceSpan);
+  setDoubleAttribute(inferenceSpan, GEN_AI_ATTRIBUTES.GEN_AI_RESPONSE_TIME_TO_FIRST_CHUNK, 0.5);
+  const identity = `${inferenceSpan.traceId}:${inferenceSpan.spanId}`;
+
+  const assistant = cellsOf(projectOtelTrajectory(records))
+    .find(cell => cell.recordId === `${identity}:assistant`);
+
+  assert.ok(assistant);
+  const metrics = assistant.assistantMetrics;
+  assert.equal(metrics.firstTokenTime - metrics.stepStartTime, 500);
+  assert.equal(metrics.firstByteTime, null);
+  assert.equal(metrics.retryCount, null);
+});
+
 test('every inference keeps an independent request identity inside a shared step', async () => {
   const records = await fixtureRecords('agent-loop-records.json');
   for (const record of records) {
@@ -3285,6 +3338,28 @@ test('content the store no longer holds is told apart from a silent model', () =
     expired.includes('Output content is no longer stored'),
     `got ${JSON.stringify(expired)}`,
   );
+});
+
+test('an inference rebuilt without its request is told apart from a silent model', () => {
+  const record = legacyInferenceRecord({
+    output: 'never rebuilt',
+    requestNumber: 1,
+    spanId: 'e'.repeat(16),
+    startTimeUnixNano: 1_000_000,
+    stepId: 'step-1',
+    stepNumber: 1,
+  });
+  // A harness whose request logs never arrived reports the reply alone; here
+  // it had not yet seen any of the reply's content.
+  const attributes = record.resourceSpans[0].scopeSpans[0].spans[0].attributes;
+  const output = attributes.find(entry => entry.key === 'gen_ai.output.messages');
+  output.value = { stringValue: JSON.stringify([{ role: 'assistant', parts: [] }]) };
+  attributes.push({ key: 'openjiuwen.inference.input_observed', value: { boolValue: false } });
+
+  const assistant = cellsOf(projectOtelTrajectory([record])).find(cell => cell.kind === 'message');
+
+  assert.equal(assistant.text, 'Output not observed (request logs did not arrive)');
+  assert.equal(assistant.assistantMetrics.inputObserved, false);
 });
 
 test('a resumed run does not present the messages it resumed with as newly said', () => {

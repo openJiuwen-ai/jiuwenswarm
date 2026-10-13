@@ -132,6 +132,16 @@ _BEFORE_CHAT_HOOK_WATCH_PARAM_KEYS = ("query", "model_name")
 # Shown when a channel with streaming disabled asks for a team round. The team
 # runtime streams member events as they happen and has no non-streaming entry
 # point, so the request is refused rather than silently downgraded.
+_SESSION_OWNER_AUTH_WAIT_S = 20.0
+_LOGIN_HINT_NO_OWNER = (
+    "该会话使用的是登录华为账号获得的限时免费模型。"
+    "请先在网页端打开这个会话，用该模型发送一条消息，之后即可在这里继续使用。"
+)
+_LOGIN_HINT_OWNER_LOGGED_OUT = (
+    "该会话的免费模型使用网页端登录的华为账号额度，但该账号已退出或登录已过期。"
+    "请在网页端重新登录后再试。"
+)
+_LOGIN_HINT_RETRY = "暂时无法获取网页端登录的华为账号凭据，请稍后重试。"
 _NON_STREAM_TEAM_NOTICE = (
     "集群模式需要开启流式输出才能运行（成员协作事件是流式下发的）。"
     "请在该通道配置中开启 enable_streaming，或改用单 Agent 模式。"
@@ -157,7 +167,7 @@ def apply_a2ui_text_fallback_to_gateway_payload(
     if not any(_A2UI_OPEN_TAG_MARKER in value for value in payload.values() if isinstance(value, str)):
         return payload
 
-    from jiuwenswarm.server.runtime.a2ui.integration import apply_non_web_text_fallback_to_payload
+    from jiuwenswarm.gateway.embedded.runtime.a2ui_text import apply_non_web_text_fallback_to_payload
 
     return apply_non_web_text_fallback_to_payload(payload, channel_id=channel_id)
 
@@ -343,6 +353,7 @@ class MessageHandler(ABC):
         self._disconnect_cancel_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._stream_app_ids: dict[str, str] = {}  # request_id -> app_id, 多应用流式精确路由
         self._fire_and_forget_tasks: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
+        self._server_push_lock = asyncio.Lock()
         self._evolution_approval = EvolutionApprovalCoordinator()
         # 配置仅在启动/成功热重载时解析；流式 chunk 热路径直接读取该内存值，
         # 避免每个审批事件重新读取磁盘配置。
@@ -2684,6 +2695,17 @@ class MessageHandler(ABC):
         """
         self._channel_manager = channel_manager
 
+    async def _broadcast_models_updated(self) -> None:
+        """把 AgentServer 的 models.updated 推送给所有 Web 连接。"""
+        web_channel = self._resolve_web_channel()
+        if web_channel is None:
+            return
+        try:
+            await web_channel.broadcast_event("models.updated", {})
+            logger.info("[MessageHandler] broadcasted models.updated")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[MessageHandler] broadcast models.updated failed: %s", exc)
+
     def _resolve_web_channel(self) -> Any:
         """从 ChannelManager 取 web channel 实例（广播用）；取不到返回 None。"""
         cm = getattr(self, "_channel_manager", None)
@@ -3222,6 +3244,15 @@ class MessageHandler(ABC):
         return bool(getattr(resp, "ok", False))
 
     async def _handle_agent_server_push(self, wire: dict[str, Any]) -> None:
+        """Serialize server-push handling so a final cannot overtake its deltas."""
+        lock = getattr(self, "_server_push_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._server_push_lock = lock
+        async with lock:
+            await self._handle_agent_server_push_ordered(wire)
+
+    async def _handle_agent_server_push_ordered(self, wire: dict[str, Any]) -> None:
         """AgentServer ``send_push`` 下行：与 RPC 共用连接但不得占用 unary/stream 等待队列。"""
         from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 
@@ -3241,6 +3272,9 @@ class MessageHandler(ABC):
 
         from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import EVENT, handle_checkpoint_push
 
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "models.updated":
+            await self._broadcast_models_updated()
+            return
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == EVENT:
             await handle_checkpoint_push(self.agent_client, chunk, session_id)
             return
@@ -3431,6 +3465,19 @@ class MessageHandler(ABC):
         params = payload.get("data") or {}
         if not isinstance(params, dict):
             params = {}
+        # 对话里的 cron 工具也使用原始请求的华为登录会话。只读 Gateway
+        # 保存的请求上下文，不信任工具参数或响应 metadata 里的登录身份。
+        request_metadata = self._stream_metadata.get(request_id)
+        if not isinstance(request_metadata, dict):
+            original_message = getattr(
+                self, "_non_stream_chat_messages", {}
+            ).get(request_id)
+            request_metadata = getattr(original_message, "metadata", None)
+        auth_session = (
+            str(request_metadata.get("auth_session") or "").strip()
+            if isinstance(request_metadata, dict)
+            else ""
+        )
         from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
 
         is_agentos = is_agentos_routing_client(self.agent_client)
@@ -3459,10 +3506,34 @@ class MessageHandler(ABC):
                         if str(job.get("user_id") or "").strip() == owner_user_id
                     ]
             elif action == "get":
-                data = await _get_owned_job(str(params.get("job_id") or ""))
-                if data is None:
-                    raise KeyError("job not found")
+                job_id = str(params.get("job_id") or "")
+                if params.get("authoritative") is True:
+                    if not isinstance(params.get("job_id"), str) or not job_id.strip():
+                        raise ValueError("authoritative cron query requires a nonempty job_id")
+                    data = await cc.get_job(job_id)
+                    if data is not None:
+                        if (
+                            not isinstance(data, dict)
+                            or data.get("id") != job_id.strip()
+                            or not isinstance(data.get("user_id", ""), str)
+                        ):
+                            raise ValueError("invalid authoritative cron job")
+                        job_owner = data.get("user_id", "")
+                        if str(job_owner or "").strip() != owner_user_id:
+                            data = {"status": "forbidden", "code": "FORBIDDEN"}
+                        else:
+                            data = {"status": "found", "job": data}
+                    else:
+                        data = {"status": "missing"}
+                else:
+                    data = await _get_owned_job(job_id)
+                    if data is None:
+                        raise KeyError("job not found")
             elif action == "create":
+                params = dict(params)
+                params.pop("_auth_session", None)
+                if auth_session:
+                    params["_auth_session"] = auth_session
                 # Gateway, rather than an AgentServer payload, is authoritative
                 # for the authenticated owner in AgentOS.
                 if owner_user_id:
@@ -3481,6 +3552,9 @@ class MessageHandler(ABC):
                 if await _get_owned_job(job_id) is None:
                     raise KeyError("job not found")
                 patch = dict(params.get("patch") or {})
+                patch.pop("_auth_session", None)
+                if auth_session:
+                    patch["_auth_session"] = auth_session
                 if is_agentos:
                     patch["_agentos_project_binding_verified"] = True
                 data = await cc.update_job(job_id, patch)
@@ -3524,6 +3598,9 @@ class MessageHandler(ABC):
                 data=data,
                 user_id=owner_user_id or None,
             )
+
+        if not channel_id:
+            return
 
         from jiuwenswarm.common.schema.message import EventType, Message
         out = Message(
@@ -3785,7 +3862,7 @@ class MessageHandler(ABC):
         return msg.req_method == ReqMethod.CHAT_SEND
 
     def _session_has_streams_blocking_processing_false(
-        self, session_id: str | None
+        self, session_id: str | None, *, exclude_rid: str | None = None
     ) -> bool:
         """同 session 是否还有应挡住 ``is_processing=false`` 补发的流.
 
@@ -3801,6 +3878,8 @@ class MessageHandler(ABC):
         if any(msg.session_id == session_id for msg in self._non_stream_chat_messages.values()):
             return True
         for active_rid, sid in self._stream_sessions.items():
+            if active_rid == exclude_rid:
+                continue
             if sid != session_id:
                 continue
             if self._stream_emits_processing_status.get(active_rid, True):
@@ -4124,10 +4203,95 @@ class MessageHandler(ABC):
             user_id=getattr(msg, "user_id", None),
         )
 
+    def _effective_session_model(self, session_id: str, params: dict[str, Any]) -> str:
+        if isinstance(params.get("model_selection"), dict):
+            return ""
+        explicit = str(params.get("model_name") or "").strip()
+        if explicit:
+            return explicit
+        from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
+
+        if not is_legacy_shared_directory_client(self.agent_client):
+            return ""
+        try:
+            from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import (
+                get_session_model_selection,
+            )
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
+
+            if get_session_model_selection(session_id) is not None:
+                return ""
+            metadata = get_session_metadata(session_id, cache_bust=True, enable_writeback=False)
+        except Exception:  # noqa: BLE001 — 读不到就当没有
+            logger.debug("[MessageHandler] 读取会话模型失败 session=%s", session_id, exc_info=True)
+            return ""
+        stored = metadata.get("model") if isinstance(metadata, dict) else None
+        return stored.strip() if isinstance(stored, str) else ""
+
+    async def _apply_session_login_owner(self, env: "E2AEnvelope") -> None:
+        from jiuwenswarm.common.e2a.constants import (
+            E2A_LOGIN_REQUIRED_HINT_PARAM_KEY,
+            E2A_MODEL_AUTH_PARAM_KEY,
+        )
+
+        params = getattr(env, "params", None)
+        session_id = str(getattr(env, "session_id", None) or "").strip()
+        if not isinstance(params, dict) or getattr(env, "method", None) != "chat.send":
+            return
+        params.pop(E2A_LOGIN_REQUIRED_HINT_PARAM_KEY, None)
+        if not session_id:
+            return
+        auth = params.get(E2A_MODEL_AUTH_PARAM_KEY)
+        if isinstance(auth, dict):
+            # 凭据是 Gateway 按登录会话挂的：记下会话主人
+            try:
+                from jiuwenswarm.common.auth import session_owners
+
+                session_owners.remember(
+                    session_id,
+                    str(auth.get("credential_ref") or ""),
+                    str(params.get("model_name") or ""),
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("[MessageHandler] 记录会话主人失败 session=%s", session_id, exc_info=True)
+            return
+        if str(getattr(env, "channel", None) or "") == "web":
+            return
+
+        try:
+            from jiuwenswarm.common.auth import session_owners
+            from jiuwenswarm.common.auth.login_credentials import bare_model_name
+
+            owner = session_owners.lookup(session_id)
+            if owner is None or (
+                bare_model_name(self._effective_session_model(session_id, params)) != owner.model_name
+            ):
+                params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_NO_OWNER
+                return
+            auth = await asyncio.wait_for(
+                asyncio.to_thread(session_owners.login_auth_for_owner, owner),
+                timeout=_SESSION_OWNER_AUTH_WAIT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[MessageHandler] 取会话主人的登录凭据超时 session=%s", session_id)
+            params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_RETRY
+            return
+        except Exception:  # noqa: BLE001 — 凭据取不到照常转发，由 AgentServer 提示
+            logger.warning("[MessageHandler] 取会话主人的登录凭据失败 session=%s", session_id, exc_info=True)
+            params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_RETRY
+            return
+        if auth is None:
+            logger.info("[MessageHandler] 会话主人未登录或登录已过期，免费模型不可用 session=%s", session_id)
+            params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_OWNER_LOGGED_OUT
+            return
+        params[E2A_MODEL_AUTH_PARAM_KEY] = auth
+        params.setdefault("model_name", owner.model_name)
+
     async def _send_non_stream_agent_request(
         self,
         env: "E2AEnvelope",
     ) -> "AgentResponse":
+        await self._apply_session_login_owner(env)
         return await send_agent_request_with_timeout(
             self.agent_client,
             env,
@@ -4826,6 +4990,7 @@ class MessageHandler(ABC):
         )
         try:
             await self._sync_agentos_cron_jobs(env)
+            await self._apply_session_login_owner(env)
             async for chunk in self.agent_client.send_request_stream(env):
                 _proc_count += 1
                 if _proc_count <= 3:
@@ -4837,6 +5002,21 @@ class MessageHandler(ABC):
                     )
                 if self._is_terminal_stream_chunk(chunk):
                     continue
+                payload = chunk.payload or {}
+                is_processing_false = (
+                    isinstance(payload, dict)
+                    and payload.get("event_type") == "chat.processing_status"
+                    and payload.get("is_processing") is False
+                )
+                if (
+                    is_processing_false
+                    and self._session_has_streams_blocking_processing_false(
+                        session_id, exclude_rid=rid
+                    )
+                ):
+                    # 这是单个请求的结束；同 session 仍有其他对话流时不能向前端
+                    # 宣告整个会话空闲；保留自动收尾，让最后一个流退出时发送权威 false。
+                    continue
                 published = await self.publish_stream_chunk(
                     chunk,
                     session_id=session_id,
@@ -4844,7 +5024,6 @@ class MessageHandler(ABC):
                 )
                 if not published:
                     continue
-                payload = chunk.payload or {}
                 if isinstance(payload, dict):
                     event_type = payload.get("event_type")
                     if event_type == "chat.processing_status":

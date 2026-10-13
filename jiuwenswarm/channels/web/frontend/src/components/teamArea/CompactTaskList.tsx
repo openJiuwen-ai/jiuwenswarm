@@ -24,19 +24,12 @@ import { useTranslation } from 'react-i18next';
 import { ApplicationTaskControls } from '../../applicationPlugins/ApplicationTaskControls';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import type { TeamTask as SessionTeamTask } from '../../stores/sessionStore';
-import statusProcessingIcon from '../../assets/work-mode/status-processing.svg';
-import statusSuccessIcon from '../../assets/work-mode/status-success.svg';
-import statusWaitingIcon from '../../assets/work-mode/status-waiting.svg';
-import statusWarningIcon from '../../assets/work-mode/status-warning.svg';
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
+import StatusSuccessIcon from '../../assets/work-mode/status-success.svg?react';
+import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
+import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
-import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TaskColumnKey, type TeamMember } from './shared';
-
-const compactStatusIcons: Record<TaskColumnKey, string> = {
-  completed: statusSuccessIcon,
-  running: statusProcessingIcon,
-  waiting: statusWaitingIcon,
-  cancelled: statusWarningIcon,
-};
+import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TeamMember } from './shared';
 
 export interface CompactTaskListProps {
   tasks: SessionTeamTask[];
@@ -91,14 +84,33 @@ export function CompactTaskList({
         const columnKey = getTaskColumnKey(task);
         const statusIcon = renderStatusIcon ? (
           renderStatusIcon(task)
+        ) : columnKey === 'running' ? (
+          <span
+            className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
+            data-testid="team-area-task-planning-task-status-icon"
+          >
+            <LoadingSpinner />
+          </span>
+        ) : columnKey === 'cancelled' ? (
+          <span
+            className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
+            data-testid="team-area-task-planning-task-status-icon"
+          >
+            <CancelledIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+          </span>
+        ) : columnKey === 'waiting' ? (
+          <span
+            className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
+            data-testid="team-area-task-planning-task-status-icon"
+          >
+            <FrameTimeIcon className="h-4 w-4 shrink-0 text-text-meta" aria-hidden="true" />
+          </span>
         ) : (
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden">
-            <img
-              src={compactStatusIcons[columnKey]}
-              className={`h-4 w-4 shrink-0 ${columnKey === 'running' ? 'animate-spin' : ''}`}
-              aria-hidden="true"
-              data-testid="team-area-task-planning-task-status-icon"
-            />
+          <span
+            className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
+            data-testid="team-area-task-planning-task-status-icon"
+          >
+            <StatusSuccessIcon className="h-4 w-4 shrink-0 text-[var(--color-team-status-completed-icon)]" aria-hidden="true" />
           </span>
         );
         return (

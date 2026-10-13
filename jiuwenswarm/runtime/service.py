@@ -1188,8 +1188,10 @@ class AgentRuntime:
             )
         params = dict(request.params)
         params["mode"] = execution.mode.value
-        params["work_mode"] = "code"
-        if execution.definition.model:
+        params["work_mode"] = (
+            "code" if execution.mode.value.startswith("agent.code.") else "work"
+        )
+        if execution.definition.model and not params.get("model_name"):
             selected_model = self.resolve_model_capability(
                 execution.definition.model
             )
@@ -2383,6 +2385,9 @@ class AgentRuntime:
     ) -> bool:
         """Read current execution state without cancelling work or fencing admission.
 
+        Only RUNNING executions count. Queued requests, waiting controls,
+        persistent response streams and cached runtimes do not make a Session busy.
+
         ``ignore_heartbeats`` drops background Heartbeat executions from the
         read, answering "would this Session still be busy once a lifecycle
         action has stopped its Heartbeats".  Removal prechecks use it so a
@@ -2390,11 +2395,9 @@ class AgentRuntime:
         the action itself still scans with them counted, so a run that
         refused to cancel keeps the Session busy.
         """
-        if getattr(self, "_pending_chat_requests", {}).get(session_id):
-            return True
         snapshot = self._session_coordinator.snapshot_session(session_id)
         if snapshot and any(
-            not execution.state.terminal
+            execution.state is SessionExecutionState.RUNNING
             and not (
                 ignore_heartbeats
                 and execution.work_kind is SessionWorkKind.HEARTBEAT
@@ -2528,6 +2531,9 @@ class AgentRuntime:
         )
 
         assert_runtime_owner(session_id)
+        await self._stop_team_runtime_for_delete(
+            channel_id=channel_id, session_id=session_id
+        )
         closed = await self._session_coordinator.close_session(
             session_id, wait_timeout=10
         )
@@ -2538,10 +2544,34 @@ class AgentRuntime:
             session_id=session_id,
             reason="session_archived",
         )
+        # Join the outer response producers directly; idle adapter caches are
+        # removed by cleanup below and never require a polling delay.
+        await self._agent_manager.cancel_session_tasks(
+            channel_id=channel_id, session_id=session_id
+        )
         await self.cleanup_session(
             channel_id=channel_id, session_id=session_id, reset_plan_state=False
         )
         release_runtime(session_id)
+
+    async def _stop_team_runtime_for_delete(
+        self, *, channel_id: str, session_id: str
+    ) -> None:
+        """Stop response streams, retaining Runner until delete releases resources."""
+        try:
+            from jiuwenswarm.agents.harness.team import get_team_manager
+
+            team_manager = get_team_manager(channel_id)
+            stopper = getattr(team_manager, "stop_session_runtime", None)
+            if callable(stopper):
+                await stopper(session_id, "session.delete: ", stop_runner=False)
+        except Exception:
+            logger.warning(
+                "[AgentRuntime] team runtime stop failed before delete: "
+                "session_id=%s",
+                session_id,
+                exc_info=True,
+            )
 
     async def delete_session(
         self,
@@ -3271,8 +3301,7 @@ class AgentRuntime:
     async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
         if request.req_method not in AgentRuntime._chat_turn_methods():
             return
-        from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-        from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
+        from gateway_protocol.hooks import AgentServerChatHookContext, AgentServerHookEvents
         from jiuwenswarm.extensions.registry import ExtensionRegistry
 
         params = request.params if isinstance(request.params, dict) else {}

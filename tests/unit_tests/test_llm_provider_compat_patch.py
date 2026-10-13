@@ -2,6 +2,8 @@ from types import SimpleNamespace
 
 from jiuwenswarm.common import reasoning_injector
 from jiuwenswarm.llm_provider_compat_patch import (
+    _coalesce_tool_call_fragments,
+    _drop_orphan_tool_calls,
     _patch_anthropic_modelarts,
     _patch_openai_modelarts_tool_choice,
 )
@@ -128,3 +130,33 @@ def test_shared_model_builder_installs_provider_patches(monkeypatch):
 
     assert calls == [True]
     assert result["model"] == "qwen3-32b"
+
+
+def test_first_chunk_tool_call_fragments_merge_like_later_chunks():
+    from openjiuwen.core.foundation.llm.schema.message_chunk import AssistantMessageChunk
+    from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
+
+    def _call(call_id, name, arguments, index=0):
+        return ToolCall(id=call_id, type="function", name=name, arguments=arguments, index=index)
+
+    def _calls(*tool_calls):
+        chunk = AssistantMessageChunk(content="", tool_calls=list(tool_calls))
+        return [(tc.id, tc.name, tc.arguments) for tc in _coalesce_tool_call_fragments(chunk).tool_calls]
+
+    assert _calls(_call("call_1", "view_task", ""), _call("", "", "{}")) == [("call_1", "view_task", "{}")]
+    tail_then_new = _calls(_call("", "", "}"), _call("call_2", "ping", "", index=1))
+    assert tail_then_new == [("", "", "}"), ("call_2", "ping", "")]
+    parallel = _calls(_call("call_1", "a", "{}"), _call("call_2", "b", "{}", index=1))
+    assert parallel == [("call_1", "a", "{}"), ("call_2", "b", "{}")]
+
+
+def test_history_tool_calls_without_id_and_name_are_dropped_before_sending():
+    good = {"id": "call_1", "type": "function", "function": {"name": "view_task", "arguments": ""}}
+    orphan = {"id": "", "type": "function", "function": {"name": "", "arguments": "{}"}}
+    history = [{"role": "assistant", "content": "", "tool_calls": [good, orphan]}]
+
+    sent = _drop_orphan_tool_calls(history)
+
+    assert sent[0]["tool_calls"] == [good]
+    assert history[0]["tool_calls"] == [good, orphan]
+    assert _drop_orphan_tool_calls(sent) is sent

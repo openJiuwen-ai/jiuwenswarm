@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Turn-aware trajectory event ledger with a local record inspector.
  * Adapted mechanically from `packages/client/ui-trajectory/src/client/TrajectoryTable.tsx`
@@ -37,7 +35,7 @@ import {
   groupTrajectoryVirtualRows, trajectoryVirtualRecordKey,
 } from '../trajectory/virtual-rows.ts'
 import type { TrajectoryVirtualRow } from '../trajectory/virtual-rows.ts'
-import { trajectoryDisplayText, trajectoryPreviewText } from '../trajectory/preview.ts'
+import { isThinkingOnlyPreview, trajectoryDisplayText, trajectoryPreviewText } from '../trajectory/preview.ts'
 import {
   compactionExplanation, compactionFacts, compactionsByToolCall,
 } from '../trajectory/compaction.ts'
@@ -325,6 +323,11 @@ function ttft(metrics: AssistantMetricDetail): string {
   return formatDurationMs(Math.max(0, metrics.firstTokenTime - metrics.stepStartTime))
 }
 
+function ttfb(metrics: AssistantMetricDetail): string | null {
+  if (metrics.firstByteTime == null || metrics.stepStartTime === null) return null
+  return formatDurationMs(Math.max(0, metrics.firstByteTime - metrics.stepStartTime))
+}
+
 function generationTime(metrics: AssistantMetricDetail): string {
   if (metrics.streaming === false) return 'Not separately recorded'
   if (!metrics.timingRecorded || metrics.firstTokenTime === null) return 'First token unavailable'
@@ -344,13 +347,19 @@ function throughput(metrics: AssistantMetricDetail): string {
 }
 
 function AssistantTimingPanel({ metrics }: { metrics: AssistantMetricDetail }) {
+  const firstByte = ttfb(metrics)
   return (
     <dl className={css.overview}>
       <div><dt>Started</dt><StartedAtValue timestamp={metrics.stepStartTime} /></div>
       <div><dt>Total duration</dt><dd>{totalTime(metrics)}</dd></div>
+      {firstByte === null ? null : <div><dt>TTFB</dt><dd>{firstByte}</dd></div>}
       <div><dt>TTFT</dt><dd>{ttft(metrics)}</dd></div>
+      {metrics.retryCount ? <div><dt>Retries</dt><dd>{metrics.retryCount}</dd></div> : null}
       <div><dt>Generation</dt><dd>{generationTime(metrics)}</dd></div>
       <div><dt>Throughput</dt><dd>{throughput(metrics)}</dd></div>
+      {metrics.inputObserved === false
+        ? <div><dt>Request</dt><dd>Not observed; input unknown, output may be partial</dd></div>
+        : null}
     </dl>
   )
 }
@@ -1166,9 +1175,19 @@ function RecordListText({
   displayText,
   toolCallOnly,
   toolCallText,
-}: Pick<RecordPresentationValue, 'displayText' | 'toolCallOnly' | 'toolCallText'>) {
+  thinkingOnly,
+}: Pick<RecordPresentationValue, 'displayText' | 'toolCallOnly' | 'toolCallText'> & {
+  thinkingOnly: boolean
+}) {
   if (toolCallOnly) {
     return <span className={css.toolCallOnly}>(tool call only)</span>
+  }
+  if (thinkingOnly) {
+    return (
+      <span className={css.thinkingPreview} data-testid="trajectory-thinking-preview">
+        {displayText || '—'}
+      </span>
+    )
   }
   if (toolCallText === undefined) return displayText || '—'
   return (
@@ -2428,6 +2447,7 @@ export function TrajectoryTable({
                 cell={record.cell}
               >
                 {({ displayText, listDisplayText, resultText, toolCallOnly, toolCallText }) => {
+                  const thinkingOnly = isThinkingOnlyPreview(record.cell)
                   const isCollapsedSummary = record.collapsedSummary !== undefined
                   const isRequestOnly = record.cell.requestOnly === true
                   const isInitialSystem = record.cell.kind === 'system'
@@ -2610,6 +2630,8 @@ export function TrajectoryTable({
                                               : css[record.cell.kind]
                                 }`}
                                 data-role-kind={record.cell.kind}
+                                data-testid="trajectory-record-kind"
+                                data-variant={record.cell.kind}
                               >
                                 <Tooltip
                                   label={KIND_LABEL[record.cell.kind]}
@@ -2649,6 +2671,7 @@ export function TrajectoryTable({
                                     displayText={displayText}
                                     toolCallOnly={toolCallOnly}
                                     toolCallText={toolCallText}
+                                    thinkingOnly={thinkingOnly}
                                   />
                                 </span>
                                 {resultText !== undefined && (

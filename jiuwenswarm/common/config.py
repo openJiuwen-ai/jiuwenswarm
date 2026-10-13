@@ -28,6 +28,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     validate_affinity_invariant,
 )
 from jiuwenswarm.common.security.base_crypto import get_crypto_provider
+from jiuwenswarm.common.runtime_model_config import apply_runtime_model_config
 from jiuwenswarm.common.utils import (
     get_config_dir,
     get_config_file,
@@ -39,6 +40,8 @@ _CONFIG_MODULE_DIR = Path(__file__).parent
 CONFIG_YAML_PATH = get_config_file()
 SWARMFLOW_ENABLED_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 SWARMFLOW_BUDGET_CONFIG_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
+SWARMFLOW_WORKTREE_CONFIG_PATH = ("modes", "team", "jiuwen_team", "worktree", "enabled")
+DEFAULT_SWARMFLOW_WORKTREE_ENABLED = False
 DEFAULT_SWARMFLOW_ENABLED = False
 EXTERNAL_CLI_PUBLISH_URL_FRONT_KEY = "external_cli_publish_url"
 EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
@@ -241,7 +244,21 @@ def get_config():
     config_base = resolve_env_vars(config_base)
     _normalize_config(config_base)
 
-    return config_base
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+    if is_agentos_runtime():
+        for section, env_key in (
+            ("code_graph", "JIUWENSWARM_AGENTOS_CODE_GRAPH_CONFIG"),
+            ("sandbox", "JIUWENSWARM_AGENTOS_SANDBOX_CONFIG"),
+        ):
+            try:
+                defaults = json.loads(os.getenv(env_key, "{}"))
+                if isinstance(defaults, dict) and defaults:
+                    local = config_base.get(section)
+                    config_base[section] = {**defaults, **local} if isinstance(local, dict) else defaults
+            except (ValueError, TypeError):
+                logger.warning("Ignoring malformed AgentOS %s deployment config", section)
+
+    return apply_runtime_model_config(config_base)
 
 
 def get_configured_read_image_multimodal(
@@ -834,6 +851,18 @@ def update_browser_in_config(updates: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_browser_decision_in_config(updates: dict[str, Any]) -> None:
+    """只更新 browser.decision 中给定的字段，保留阈值等其余字段。"""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if not isinstance(data.get("browser"), dict):
+        data["browser"] = {}
+    if not isinstance(data["browser"].get("decision"), dict):
+        data["browser"]["decision"] = {}
+    for key, value in updates.items():
+        data["browser"]["decision"][key] = value
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_context_engine_enabled_in_config(value: bool) -> None:
     """更新 react.context_engine_config.enabled（上下文压缩开关）并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -926,6 +955,15 @@ def update_permissions_profile_in_config(profile: str) -> None:
     update_config(_mutate)
 
 
+def update_a4p_in_config(updates: dict[str, Any]) -> None:
+    """更新 a4p 配置段并写回。"""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "a4p" not in data or data["a4p"] is None:
+        data["a4p"] = {}
+    _merge_config_dict(data["a4p"], updates)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_auto_recap_enabled_in_config(value: bool) -> None:
     """更新 auto_recap.enabled（自动回顾开关）并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -990,6 +1028,15 @@ def update_trajectory_ui_in_config(enabled: bool) -> None:
     if "trajectory_ui" not in data or data["trajectory_ui"] is None:
         data["trajectory_ui"] = {}
     data["trajectory_ui"]["enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def update_team_organization_ui_in_config(enabled: bool) -> None:
+    """Persist the experimental Organization UI switch without changing runtime capabilities."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "experimental" not in data or data["experimental"] is None:
+        data["experimental"] = {}
+    data["experimental"]["team_organization_ui_enabled"] = bool(enabled)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -1428,6 +1475,9 @@ def _infer_is_default(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     groups: OrderedDict[str, list[int]] = OrderedDict()
     for i, entry in enumerate(result):
+        if not isinstance(entry, dict):
+            # 非 dict 的脏条目不参与分组，但保留原位置以维持下标稳定
+            continue
         name = (entry.get("model_client_config") or {}).get("model_name", "")
         if name not in groups:
             groups[name] = []
@@ -1476,6 +1526,12 @@ def _decrypt_model_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]
         )
 
     for entry in result:
+        if not isinstance(entry, dict):
+            continue
+        # YAML 里 `model_config_obj:` 后只跟注释时解析为 null（键存在，
+        # dict.get 的默认值不生效），统一回填为空 dict，下游 .get 不再崩。
+        if entry.get("model_config_obj") is None:
+            entry["model_config_obj"] = {}
         mcc = entry.get("model_client_config")
         if isinstance(mcc, dict):
             if mcc.get("api_key") and crypto:
@@ -3037,6 +3093,8 @@ def migrate_config_from_template(
 ) -> bool:
     """Sync user config with template structure, preserving user values.
 
+    AgentOS configuration is managed by deployment and skips this migration.
+
     Merge:
     - Add: new fields from template (new config options)
     - Keep: user values for fields that exist in template
@@ -3061,6 +3119,11 @@ def migrate_config_from_template(
     Returns:
         True if migration was performed, False otherwise.
     """
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+
+    if is_agentos_runtime():
+        return False
+
     if not user_config_path.exists():
         return False
 
@@ -3333,7 +3396,7 @@ def resolve_sandbox_enabled(sandbox: Any) -> bool:
     if "enabled" in sandbox:
         return bool(sandbox["enabled"])
     return (
-        str(sandbox.get("type") or "").strip().lower() == "jiuwenbox"
+        str(sandbox.get("type") or "").strip().lower() in {"jiuwenbox", "jiuwenbox-conch"}
         and bool(str(sandbox.get("url") or "").strip())
         and bool(str(sandbox.get("control_token_path") or "").strip())
     )
@@ -3398,6 +3461,8 @@ _YUANRONG_ENDPOINT_OPTIONAL_KEYS: tuple[str, ...] = (
     "memory",
     "mem_limit",
     "rootfs",
+    "user",
+    "group",
 )
 
 # Public re-exports for callers that need to fall back to / advertise defaults
@@ -3659,7 +3724,8 @@ def get_sandbox_endpoint() -> dict[str, Any]:
     当 ``type=yuanrong`` 时额外返回:
     - ``executor`` (缺省 ``docker``)
     - 若 yaml 中存在: ``image`` / ``workdir`` / ``mounts`` / ``cpu`` /
-      ``cpu_limit`` / ``memory`` / ``mem_limit`` / ``rootfs``
+      ``cpu_limit`` / ``memory`` / ``mem_limit`` / ``rootfs`` /
+      ``user`` / ``group``
     - ``url`` 为空时回落占位 ``http://yuanrong.local`` (仅作 cache key)
 
     Raises:
@@ -3683,6 +3749,10 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         result["url"] = url or _DEFAULT_YUANRONG_URL
         result["executor"] = _normalize_yuanrong_executor(sandbox.get("executor"))
         for key in _YUANRONG_ENDPOINT_OPTIONAL_KEYS:
+            if key in sandbox:
+                result[key] = sandbox[key]
+    if sandbox_type == "jiuwenbox-conch":
+        for key in ("template_name", "user", "group", "conch"):
             if key in sandbox:
                 result[key] = sandbox[key]
     return result

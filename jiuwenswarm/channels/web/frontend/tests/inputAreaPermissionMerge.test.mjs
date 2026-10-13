@@ -6,7 +6,12 @@ import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
 
 // Reserved, non-resolving DOM origin only; fetch rejects network access and the WebSocket fixture returns picker data.
-const dom = new JSDOM('<div id="root"></div>', { url: 'https://input-area.invalid', pretendToBeVisual: true });
+const dom = new JSDOM('<!doctype html><div class="chat-panel-shell"><div id="root"></div></div>', {
+  url: 'https://input-area.invalid',
+  pretendToBeVisual: true,
+});
+const slashRequests = [];
+let completeCompact;
 class MockWebSocket {
   static OPEN = 1;
   static CLOSED = 3;
@@ -22,10 +27,10 @@ class MockWebSocket {
 
   send(rawMessage) {
     const request = JSON.parse(rawMessage);
-    if (request.method !== 'agent_groups.list') {
+    if (!['agent_groups.list', 'commands.list', 'skills.list', 'command.compact'].includes(request.method)) {
       throw new Error(`Unexpected WebSocket request: ${request.method}`);
     }
-    const payload = {
+    let payload = {
       agentGroups: [
         {
           id: 'group-1',
@@ -37,11 +42,33 @@ class MockWebSocket {
         },
       ],
     };
-    queueMicrotask(() => {
+    if (request.method === 'commands.list') {
+      payload = {
+        commands: ['fork', 'compact', 'plan', 'goal', 'persist'].map((name) => ({
+          name,
+          description: name,
+          takesArgs: ['goal', 'persist'].includes(name),
+        })),
+      };
+    } else if (request.method === 'skills.list') {
+      payload = {
+        skills: [
+          { name: 'test-skill', description: 'Test skill for compacting text', skill_type: 'skill', installed: true },
+          { name: 'team-skill', description: 'Team skill', skill_type: 'swarm_skill', installed: true },
+        ],
+        plugins: [],
+      };
+    } else if (request.method === 'command.compact') {
+      slashRequests.push(request);
+      payload = { result: 'noop' };
+    }
+    const respond = () => {
       this.onmessage?.({
         data: JSON.stringify({ type: 'res', id: request.id, ok: true, payload }),
       });
-    });
+    };
+    if (request.method === 'command.compact') completeCompact = respond;
+    else queueMicrotask(respond);
   }
 
   close() {
@@ -56,6 +83,7 @@ const globals = {
   navigator: dom.window.navigator,
   localStorage: dom.window.localStorage,
   Node: dom.window.Node,
+  NodeFilter: dom.window.NodeFilter,
   HTMLElement: dom.window.HTMLElement,
   MutationObserver: dom.window.MutationObserver,
   CustomEvent: dom.window.CustomEvent,
@@ -88,7 +116,7 @@ after(() => {
 
 const { InputArea } =
   await import('../node_modules/.cache/input-area-permission-merge/components/ChatPanel/InputArea.js');
-const { useChatStore, useSessionStore, useWorkspaceStore } =
+const { useChatStore, useSessionStore, useWorkspaceStore, usePlanStore } =
   await import('../node_modules/.cache/input-area-permission-merge/stores/index.js');
 const { default: i18n } = await import('../node_modules/.cache/input-area-permission-merge/i18n/index.js');
 
@@ -145,8 +173,138 @@ const flushMicrotasks = async () =>
     for (let index = 0; index < 4; index += 1) await Promise.resolve();
   });
 
+for (const language of ['zh', 'en']) {
+  for (const desktop of [false, true]) {
+    test(`${language}: upload tooltip shows limits for ${desktop ? 'desktop' : 'web'} without title`, async () => {
+      if (desktop) window.pywebview = { api: { select_local_files: async () => [] } };
+      try {
+        await mount({ language }, async () => {
+          await click(byId('chat-panel-input-attach-trigger'));
+          const option = byId('chat-panel-input-attach-menu-file');
+          option.getBoundingClientRect = () => new dom.window.DOMRect(200, 300, 160, 32);
+          assert.equal(option.hasAttribute('title'), false);
+          await act(async () => option.dispatchEvent(new dom.window.MouseEvent('mouseover', { bubbles: true })));
+          const tooltip = document.querySelector('[role="tooltip"]');
+          const lines = language === 'zh'
+            ? ['图片：单张最大 10M', ...(!desktop ? ['文件：单个最大 100M'] : []), '每条消息最多 20 个附件']
+            : ['Images: up to 10M each', ...(!desktop ? ['Files: up to 100M each'] : []), 'Up to 20 attachments per message'];
+          assert.equal(tooltip.textContent, lines.join('\n'));
+          assert.equal(tooltip.style.whiteSpace, 'pre-line');
+          assert.equal(tooltip.style.left, '366px');
+          await act(async () => option.dispatchEvent(new dom.window.MouseEvent('mouseout', { bubbles: true })));
+          assert.equal(document.querySelector('[role="tooltip"]'), null);
+          await act(async () => option.dispatchEvent(new dom.window.MouseEvent('mouseover', { bubbles: true })));
+          assert.ok(document.querySelector('[role="tooltip"]'));
+          // Keyboard/AX activation does not dispatch pointerdown; closing the menu must still hide its tooltip.
+          await click(option);
+          await flushMicrotasks();
+          assert.equal(document.querySelector('[role="tooltip"]'), null);
+          await click(byId('chat-panel-input-attach-trigger'));
+          const reopenedOption = byId('chat-panel-input-attach-menu-file');
+          await act(async () => {
+            reopenedOption.dispatchEvent(new dom.window.MouseEvent('mouseover', { bubbles: true }));
+            reopenedOption.click();
+          });
+          await flushMicrotasks();
+          assert.equal(document.querySelector('[role="tooltip"]'), null);
+        });
+      } finally {
+        delete window.pywebview;
+        delete window.__JIUWEN_DESKTOP__;
+        delete window.__JIUWEN_DESKTOP_DND__;
+      }
+    });
+  }
+}
+
+test('web plus opens browser picker directly without a server file dialog', async () => {
+  await mount({}, async () => {
+    let opened = 0;
+    byId('chat-panel-input-file-input').click = () => { opened += 1; };
+    await click(byId('chat-panel-input-attach-trigger'));
+    await click(byId('chat-panel-input-attach-menu-file'));
+    assert.equal(opened, 1);
+  });
+});
+
+test('desktop plus accepts a document above 100 MiB as a path without reading its content', async () => {
+  const pick = { kind: 'document', path: '/fixtures/large.txt', filename: 'large.txt', size: 101 * 1024 * 1024 };
+  window.pywebview = { api: { select_local_files: async () => [pick] } };
+  try {
+    await mount({}, async ({ props, render }) => {
+      const received = [];
+      props.onPersistDocuments = async (_text, items) => {
+        received.push(...items);
+        return { media_items: items };
+      };
+      await render();
+      await click(byId('chat-panel-input-attach-trigger'));
+      await click(byId('chat-panel-input-attach-menu-file'));
+      assert.equal(received.length, 1);
+      assert.equal(received[0].path, pick.path);
+      assert.equal(received[0].size_bytes, pick.size);
+      assert.equal(received[0].base64Data, undefined);
+      assert.equal(document.querySelectorAll('[data-testid="chat-panel-input-attachment-card"]').length, 1);
+    });
+  } finally {
+    delete window.pywebview;
+    delete window.__JIUWEN_DESKTOP__;
+    delete window.__JIUWEN_DESKTOP_DND__;
+  }
+});
+
+for (const [filename, mime, limit] of [['image.png', 'image/png', 10], ['document.txt', 'text/plain', 100]]) {
+  for (const extraByte of [0, 1]) {
+    test(`browser ${filename} ${extraByte ? 'rejects above' : 'accepts at'} ${limit} MiB`, async () => {
+      await mount({}, async ({ props, render }) => {
+        const received = [];
+        const persist = async (_text, items) => {
+          received.push(...items);
+          return { media_items: items.map((item) => ({ ...item, path: `/uploads/${item.filename}` })) };
+        };
+        props.onPersistMedia = persist;
+        props.onPersistDocuments = persist;
+        await render();
+        const file = new dom.window.File(['fixture'], filename, { type: mime });
+        // Exercise File.size validation without allocating 100 MiB in each DOM test.
+        // The backend transport check uses the full payload and compares stored bytes.
+        Object.defineProperty(file, 'size', { value: limit * 1024 * 1024 + extraByte });
+        const input = byId('chat-panel-input-file-input');
+        Object.defineProperty(input, 'files', { value: [file] });
+        await act(async () => {
+          input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+          if (!extraByte) {
+            for (let attempts = 0; received.length === 0 && attempts < 100; attempts += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+          }
+        });
+        assert.equal(received.length, extraByte ? 0 : 1);
+        assert.equal(document.querySelectorAll('[data-testid="chat-panel-input-attachment-card"]').length, 1);
+        if (extraByte) {
+          assert.ok(document.body.textContent.includes(`${limit}.0 MB`));
+          assert.ok(byId('chat-panel-input-attachment-card').textContent.includes(i18n.t('chat.uploadFailed')));
+        }
+      });
+    });
+  }
+}
+
+test('native image picks above 10 MiB are rejected before persist', async () => {
+  await mount({}, async ({ props, render, inputAreaRef }) => {
+    props.onPersistMedia = async () => assert.fail('oversized image must not upload');
+    await render();
+    await act(async () => inputAreaRef.current.appendLocalFilePicks([
+      { kind: 'image', filename: 'large.png', size: 10 * 1024 * 1024 + 1, base64: 'dGVzdA==' },
+    ]));
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-input-attachment-card"]').length, 0);
+    assert.ok(document.body.textContent.includes('10.0 MB'));
+  });
+});
+
+let mountSequence = 0;
 async function mount(
-  { mode = 'agent', profile = 'default', language = 'en', sessionId = 'input-permission-merge' } = {},
+  { mode = 'agent', profile = 'default', language = 'en', sessionId = `input-permission-merge-${++mountSequence}` } = {},
   run,
 ) {
   useChatStore.getState().ensureRuntime(sessionId);
@@ -186,10 +344,16 @@ async function mount(
     await render();
     await run({ saved, switched, props, render, unmountInputArea, sessionId, inputAreaRef });
   } finally {
+    await act(async () => {
+      for (const button of document.querySelectorAll('[data-testid="chat-panel-input-attachment-remove"]')) {
+        button.click();
+      }
+    });
     await act(async () => root.unmount());
     useChatStore.getState().setActiveSessionId(null);
     useChatStore.getState().removeRuntime(sessionId);
     useSessionStore.getState().removeRuntime(sessionId);
+    usePlanStore.getState().removeRuntime(sessionId);
     useWorkspaceStore.setState(previousWorkspace, true);
   }
 }
@@ -223,6 +387,125 @@ test('pasted image in a historical session restores after InputArea unmounts on 
 
     useChatStore.getState().removeRuntime(newConversationId);
     useSessionStore.getState().removeRuntime(newConversationId);
+  });
+});
+
+async function typeSlash(value) {
+  await act(async () => {
+    const editor = byId('chat-panel-input');
+    editor.textContent = value;
+    editor.focus();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    editor.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  await flushMicrotasks();
+}
+
+const pressKey = async (key) =>
+  act(async () => {
+    byId('chat-panel-input').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key, bubbles: true }));
+  });
+const suggestionIds = () =>
+  Array.from(
+    document.querySelectorAll('[data-testid="chat-panel-composer-suggestion-item"]'),
+    (item) => item.dataset.variant,
+  );
+
+test('welcome command menu updates on session and mode changes without hiding skills', async () => {
+  await mount({ sessionId: 'new' }, async () => {
+    await typeSlash('/');
+    assert.deepEqual(suggestionIds(), ['plan', 'goal', 'persist', 'test-skill']);
+    const realSession = 'slash-real-session';
+    try {
+      await act(async () => {
+        useChatStore.getState().ensureRuntime(realSession);
+        useSessionStore.getState().ensureRuntime(realSession);
+        useChatStore.getState().setActiveSessionId(realSession);
+      });
+      await typeSlash('/');
+      assert.deepEqual(suggestionIds(), ['fork', 'compact', 'plan', 'goal', 'persist', 'test-skill']);
+      await act(async () => useSessionStore.getState().setMode(realSession, 'team'));
+      assert.deepEqual(suggestionIds(), ['team-skill']);
+    } finally {
+      await act(async () => useChatStore.getState().setActiveSessionId('new'));
+      useChatStore.getState().removeRuntime(realSession);
+      useSessionStore.getState().removeRuntime(realSession);
+    }
+  });
+});
+
+for (const language of ['zh', 'en']) {
+  for (const command of ['compact', 'fork']) {
+    test(`${language}: welcome /${command} is blocked through Enter and send, preserving input and attachments`, async () => {
+      await mount({ sessionId: 'new', language }, async ({ props, render, inputAreaRef, sessionId }) => {
+        props.onSubmit = () => assert.fail('blocked commands must not submit chat messages');
+        props.onForkSession = () => assert.fail('blocked commands must not fork');
+        await render();
+        await act(async () =>
+          inputAreaRef.current.appendLocalFilePicks([
+            { kind: 'image', filename: 'draft.png', mime_type: 'image/png', size: 4, base64: 'dGVzdA==' },
+          ]),
+        );
+        await typeSlash(`/${command}`);
+        assert.deepEqual(suggestionIds(), command === 'compact' ? ['test-skill'] : []);
+        for (const submit of [() => pressKey('Enter'), () => click(byId('chat-panel-input-send'))]) {
+          await submit();
+          assert.equal(byId('chat-panel-input').textContent, `/${command}`);
+          assert.equal(useChatStore.getState().getRuntime(sessionId).inputValue, `/${command}`);
+          assert.equal(useChatStore.getState().getRuntime(sessionId).messages.length, 0);
+          assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedSkills, []);
+          assert.equal(useChatStore.getState().activeSessionId, 'new');
+          assert.notEqual(document.querySelector('[data-testid="chat-panel-input-attachment-card"]'), null);
+          const alerts = document.querySelectorAll('[data-testid="chat-panel-input-local-alert"]');
+          assert.equal(alerts[alerts.length - 1].textContent, i18n.t('chat.commandRequiresSession'));
+        }
+      });
+    });
+  }
+}
+
+test('welcome Tab and unknown slash Enter do not send input; /plan still executes from the menu', async () => {
+  await mount({ sessionId: 'new' }, async ({ props, render }) => {
+    props.onSubmit = () => assert.fail('menu completion must not submit chat messages');
+    await render();
+    await typeSlash('/fork');
+    await pressKey('Tab');
+    assert.equal(byId('chat-panel-input').textContent, '/fork');
+    assert.equal(document.querySelector('[data-testid="chat-panel-input-local-alert"]'), null);
+    await typeSlash('/unknown-command');
+    await pressKey('Enter');
+    assert.equal(byId('chat-panel-input').textContent, '/unknown-command');
+    await typeSlash('/plan');
+    await pressKey('Enter');
+    assert.notEqual(document.querySelector('[data-testid="chat-panel-plan-tag"]'), null);
+    assert.equal(useChatStore.getState().getRuntime('new').messages.length, 0);
+  });
+});
+
+test('real session still forks and prevents overlapping compact requests', async () => {
+  await mount({}, async ({ props, render, sessionId }) => {
+    const forked = [];
+    props.onForkSession = async (sid) => forked.push(sid);
+    await render();
+    await typeSlash('/fork');
+    await pressKey('Enter');
+    assert.deepEqual(forked, [sessionId]);
+    const previousRequests = slashRequests.length;
+    try {
+      await typeSlash('/compact');
+      await pressKey('Enter');
+      await typeSlash('/compact');
+      await pressKey('Enter');
+      assert.equal(slashRequests.length, previousRequests + 1);
+      assert.equal(slashRequests.at(-1).params.session_id, sessionId);
+    } finally {
+      await act(async () => completeCompact?.());
+      completeCompact = undefined;
+    }
   });
 });
 

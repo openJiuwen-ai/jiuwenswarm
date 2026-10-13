@@ -26,8 +26,7 @@ import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
 import { ExternalCliInstallDialog, type ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
 import { PersonalContextPanel } from './components/PersonalContext';
-import { ToastStack } from './components/ui';
-import { toast } from './components/ui/Toast/toastStore';
+import { LoadingSpinner, ToastStack, toast } from './components/ui';
 import { SettingsPage } from './features/settings/SettingsPage';
 import type { SettingsPageDefinition } from './features/settings/registry/types';
 import type { SettingsRequest } from './features/settings/services/settingsContract';
@@ -180,6 +179,7 @@ import {
   useTrajectoryUiEnabled,
 } from './features/trajectory/featureConfig';
 import './App.css';
+import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
 
 const LazyTrajectoryPanel = lazy(async () => {
   const module = await import('./features/trajectory/TrajectoryPanel');
@@ -1674,12 +1674,22 @@ function AppContent({
         // session_swarmflow_config 是上次会话持久化的配置，刷新/重进后读回。
         const sfConfig = (session as unknown as Record<string, unknown> | null)?.session_swarmflow_config;
         if (sfConfig && typeof sfConfig === 'object') {
-          const cfg = sfConfig as { enable_swarmflow?: boolean; swarmflow_budget?: number | null };
+          const cfg = sfConfig as {
+            enable_swarmflow?: boolean;
+            swarmflow_budget?: number | null;
+            swarmflow_worktree?: boolean;
+          };
           if (cfg.enable_swarmflow) {
             useSessionStore.getState().setSwarmflowActive(
               targetSessionId,
               true,
               cfg.swarmflow_budget ?? undefined,
+            );
+          }
+          if (cfg.swarmflow_worktree !== undefined) {
+            useSessionStore.getState().setSwarmflowWorktree(
+              targetSessionId,
+              cfg.swarmflow_worktree,
             );
           }
         }
@@ -1721,6 +1731,7 @@ function AppContent({
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
+      setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
       setServerConfig(config);
       setConfigError(null);
       if (!modelSetupGuideEvaluatedRef.current) {
@@ -2021,6 +2032,36 @@ function AppContent({
     restartSeenDisconnect,
     restartSuccess,
   ]);
+
+  // 连接状态提示：断连期间在右上角挂一条常驻 toast（不自动消失），重连后收起；
+  // 携带业务 id，配置加载/语言切换导致文案变化时原地更新，始终只有一条。
+  const connectionToastKeyRef = useRef<number | null>(null);
+  const connectionStatusText = serverConfig ? t('connection.connecting') : t('connection.loadingConfig');
+  useEffect(() => {
+    if (isConnected) {
+      if (connectionToastKeyRef.current !== null) {
+        toast.close(connectionToastKeyRef.current);
+        connectionToastKeyRef.current = null;
+      }
+      return;
+    }
+    connectionToastKeyRef.current = toast.open({
+      // 保留旧 DOM 契约：外层 app-connection-toast 定位，内层 message 元素带
+      // data-variant="connecting|loadingConfig"；id 仅作业务去重键，不进 DOM
+      id: 'app-connection-toast-message',
+      content: (
+        <span data-testid="app-connection-toast-message" data-variant={serverConfig ? 'connecting' : 'loadingConfig'}>
+          {connectionStatusText}
+        </span>
+      ),
+      duration: 0,
+      position: 'right',
+      variant: 'info',
+      icon: <LoadingSpinner size={14} />,
+      closable: false,
+      testId: 'app-connection-toast',
+    });
+  }, [isConnected, connectionStatusText]);
 
   useEffect(() => {
     return () => {
@@ -2590,7 +2631,7 @@ function AppContent({
       currentMode: currentRuntime?.mode ?? mode,
       pending: newConversationPreviousSessionRef.current,
       newConversationId: NEW_CONVERSATION_ID,
-      clear: lifecycle.clearPreviousSession,
+      clear: lifecycle.clearPreviousSession || options.clearPreviousSession,
     });
     // 返回尚未发送的新建任务时，恢复该临时会话自己的模式和模型；真正开始一个新任务时，
     // 仍固定使用配置的默认模型，不继承当前正式会话手动切换过的模型。
@@ -2663,9 +2704,10 @@ function AppContent({
     setCurrentSession(null);
     setTeamAreaExpanded(false);
     setSingleAgentPanelExpanded(false);
+    // 删除/归档当前会话后 replace，避免后退回到已失效的 /chat/session/:id
     navigate(
       { kind: 'chat-new' },
-      options.replaceHistory ? { replace: true } : undefined,
+      (lifecycle.clearPreviousSession || options.clearPreviousSession) ? { replace: true } : undefined,
     );
     setActiveNav('chat');
     requestComposerFocus();
@@ -2825,6 +2867,9 @@ function AppContent({
       );
       if (pendingRuntime?.enableSwarmflow) {
         sessionStore.setSwarmflowActive(newSid, true, pendingRuntime.swarmflowBudget);
+      }
+      if (pendingRuntime?.swarmflowWorktree !== undefined) {
+        sessionStore.setSwarmflowWorktree(newSid, pendingRuntime.swarmflowWorktree);
       }
       if (usePlanStore.getState().isActive(NEW_CONVERSATION_ID)) {
         usePlanStore.getState().setActive(newSid, true, {
@@ -2989,6 +3034,12 @@ function AppContent({
         const newConvSwarmflow = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
         if (newConvSwarmflow?.enableSwarmflow) {
           useSessionStore.getState().setSwarmflowActive(newSid, true, newConvSwarmflow.swarmflowBudget);
+        }
+        if (newConvSwarmflow?.swarmflowWorktree !== undefined) {
+          useSessionStore.getState().setSwarmflowWorktree(
+            newSid,
+            newConvSwarmflow.swarmflowWorktree,
+          );
         }
         pendingNewConversationRef.current = false;
         useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
@@ -3400,7 +3451,10 @@ function AppContent({
   );
 
   const requestSessionNavigation = useCallback((target: Session | 'new', options?: NewConversationOptions) => {
-    if (target === 'new') { enterNewConversation(mode, options); return; }
+    if (target === 'new') {
+      enterNewConversation(mode, options, { clearPreviousSession: options?.clearPreviousSession });
+      return;
+    }
     if (isToolPanelAutoHideViewport) {
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
@@ -3563,6 +3617,14 @@ function AppContent({
     shareExportMonitorTokensRef.current.set(currentSessionId, token);
     setShareExportSessionActive(currentSessionId, true);
     try {
+      if (window.jiuwenDesktop?.isElectron) {
+        const saved = await window.jiuwenDesktop.exportShareImage(
+          currentSessionId,
+          i18n.resolvedLanguage ?? i18n.language,
+        );
+        if (saved) showSaveToast();
+        return;
+      }
       const createResponse = await fetch('/share-api/jobs', {
         method: 'POST',
         cache: 'no-store',
@@ -3588,7 +3650,16 @@ function AppContent({
         setShareExportSessionActive(currentSessionId, false);
       }
     }
-  }, [i18n.language, i18n.resolvedLanguage, isPaused, isProcessing, monitorAndSaveShareImageJob, setShareExportSessionActive, t]);
+  }, [
+    i18n.language,
+    i18n.resolvedLanguage,
+    isPaused,
+    isProcessing,
+    monitorAndSaveShareImageJob,
+    setShareExportSessionActive,
+    showSaveToast,
+    t,
+  ]);
 
   const routeSessionMissing = routeSessionId !== null
     && initialDataLoaded
@@ -3999,15 +4070,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
 
       {/* 全局命令式 toast 渲染出口（toast.open） */}
       <ToastStack />
-
-      {/* 连接状态提示 */}
-      {!isConnected && (
-        <div className="app-toast-wrapper app-toast-wrapper--top" data-testid="app-connection-toast">
-          <div className="app-connection-toast animate-rise" data-testid="app-connection-toast-message" data-variant={serverConfig ? 'connecting' : 'loadingConfig'}>
-            {serverConfig ? t('connection.connecting') : t('connection.loadingConfig')}
-          </div>
-        </div>
-      )}
 
       {saveToastVisible && (
         <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-save-toast">

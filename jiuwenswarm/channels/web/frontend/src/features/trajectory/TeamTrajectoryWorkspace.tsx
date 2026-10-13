@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Team member navigation using the native trajectory overview and ledger. */
 
 import { memo, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';

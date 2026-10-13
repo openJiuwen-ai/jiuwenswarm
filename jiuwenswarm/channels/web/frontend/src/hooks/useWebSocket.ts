@@ -6,6 +6,14 @@
 
 import { readOutputOrder } from '../features/sessionOutput';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
+import {
+  assetKindFromMime,
+  findReferencedAssets,
+  normalizePath,
+  stemFilename,
+  useSessionAssetsStore,
+  type NamedAsset,
+} from '../features/sessionAssets/sessionAssets';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -116,6 +124,8 @@ import {
   withUploadDocumentBlock,
 } from '../utils/documentMessage';
 import { useSubagentStore } from '../stores/subagentStore';
+import { expertTeamId, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
+import { useOrganizationEvents } from '../features/teamOrganization/useOrganizationEvents';
 import {
   normalizeSubagentActivityEvent,
   normalizeSubagentToolStatusUpdates,
@@ -780,7 +790,7 @@ function slimPersistedMediaRecords(items: Record<string, unknown>[]): Record<str
   }));
 }
 
-function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unknown> {
+function buildPersistedMediaFiles(mediaItems: Record<string, unknown>[]): Record<string, unknown> {
   const files: Record<string, unknown> = {};
   const images = mediaItems.filter((item) => item.type === 'image');
   const documents = mediaItems.filter((item) => item.type === 'document');
@@ -788,7 +798,7 @@ function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unkno
     files.uploaded_images = images.map((item) => ({
       filename: item.filename,
       path: item.path,
-      mime_type: getMediaMimeType(item),
+      mime_type: item.mime_type ?? item.mimeType,
       size_bytes: item.size_bytes ?? item.sizeBytes,
     }));
   }
@@ -796,7 +806,7 @@ function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unkno
     files.uploaded_documents = documents.map((item) => ({
       filename: item.filename,
       path: item.path,
-      mime_type: getMediaMimeType(item),
+      mime_type: item.mime_type ?? item.mimeType,
       size_bytes: item.size_bytes ?? item.sizeBytes,
     }));
   }
@@ -971,6 +981,7 @@ type ArchiveResourceEventPayload = {
 const ARCHIVE_EVENT_REFRESH_DEBOUNCE_MS = 300;
 
 export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
+  useOrganizationEvents();
   const { t } = useTranslation();
   const {
     activeSessionId,
@@ -1140,7 +1151,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const resolveEventSessionId = useCallback(
     (payload: Record<string, unknown>): string | null => {
       const payloadSessionId = getPayloadSessionId(payload);
-      if (!payloadSessionId) return null;
+        if (!payloadSessionId) return null;
+        if (expertTeamId(payload, payloadSessionId)) return null;
       ensureSessionRuntimes(payloadSessionId);
       if (typeof payload.execution_id === 'string' && payload.execution_id) {
         useChatStore.getState().setActiveExecutionId(payloadSessionId, payload.execution_id);
@@ -1864,6 +1876,27 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   // 发送聊天消息
   const sendMessage = useCallback(
     async (content: string, sessionId: string, mediaItems: MediaItem[] = [], options?: ChatSendOptions): Promise<boolean> => {
+      if (!options?.queuedTaskId && selectedExpertTeamId(sessionId)) {
+        if (!content.trim() && !mediaItems.length) return false;
+        try {
+          const attachments: Record<string, unknown> = {};
+          let query = content;
+          if (mediaItems.length) {
+            const imageItems = mediaItems.filter((item) => item.type !== 'document');
+            const documentItems = mediaItems.filter((item) => item.type === 'document');
+            const persisted: PersistMediaResponse = imageItems.length ? await persistMedia(content, sessionId, imageItems) : {};
+            const documents: PersistMediaResponse = documentItems.length ? await persistDocuments(content, sessionId, documentItems) : {};
+            const items = [...(persisted.media_items ?? []), ...(documents.media_items ?? [])];
+            attachments.media_items = items;
+            attachments.files = { ...persisted.files, ...documents.files };
+            query = withUploadDocumentBlock(persisted.content ?? persisted.query ?? content, toUploadDocumentHints(documents.media_items));
+          }
+          return (await sendExpertMessage(query, sessionId, mediaItems, attachments)) ?? false;
+        } catch (error) {
+          onErrorRef.current?.((error as WebError).message || t('network.sendMessageFailed'));
+          return false;
+        }
+      }
       const taskId = options?.queuedTaskId;
       if (taskId) {
         const store = useChatStore.getState();
@@ -1945,10 +1978,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // pruneEnabledExtensions）兜底重新核对一遍"我的插件/我的MCP里已连接的"，避免把早就失效的
       // 名字发给后端；被摘掉的项同步从 sessionStore 里移除，让"+"扩展面板的开关同步变回关闭。
       const extensionPayload = buildExtensionSendPayload(sessionId);
+      const userMessageId = prefixedMessageId('user-');
+      const displayedContent =
+        stripUploadDocumentBlocks(content) || content.replace(/\n*【上传文档[\s\S]*$/, '').trim() || content;
       useChatStore.getState().addMessage(sessionId, {
-        id: prefixedMessageId('user-'),
+        id: userMessageId,
         role: 'user',
-        content: stripUploadDocumentBlocks(content) || content.replace(/\n*【上传文档[\s\S]*$/, '').trim() || content,
+        content: displayedContent,
         mediaItems,
         timestamp: new Date().toISOString(),
         ...(selectedSkillsForRequest.length > 0 ? { skills: selectedSkillsForRequest } : {}),
@@ -1984,44 +2020,86 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         let outgoingMediaItems: Record<string, unknown>[] | undefined;
         let outgoingFiles: Record<string, unknown> | undefined;
         if (hasMedia) {
-          if (mediaItems.every(isPersistedMediaItem)) {
-            outgoingMediaItems = mediaItems.map(toPersistedMediaRecord);
-            outgoingFiles = buildPersistedMediaFiles(mediaItems);
-          } else {
-            const imageItems = mediaItems.filter((item) => item.type !== 'document');
-            const documentItems = mediaItems.filter((item) => item.type === 'document');
-            const mergedItems: Record<string, unknown>[] = [];
-            const mergedFiles: Record<string, unknown> = {};
-            if (imageItems.length) {
-              const persisted = await persistMedia(content, sessionId, imageItems);
-              outgoingContent = persisted.content ?? persisted.query ?? content;
-              if (Array.isArray(persisted.media_items)) {
-                mergedItems.push(...persisted.media_items);
-              }
-              if (persisted.files && typeof persisted.files === 'object') {
-                Object.assign(mergedFiles, persisted.files);
-              }
+          const mergedItems: Record<string, unknown>[] = [];
+          // 新会话的附件尚未落盘。每次只上传一项，既不触发批量数量限制，
+          // 也不把多份大文件的 base64 拼进同一条 WebSocket 消息。
+          for (const item of mediaItems) {
+            if (isPersistedMediaItem(item)) {
+              mergedItems.push(toPersistedMediaRecord(item));
+              continue;
             }
-            if (documentItems.length) {
-              const persistedDocs = await persistDocuments(content, sessionId, documentItems);
-              if (Array.isArray(persistedDocs.media_items)) {
-                mergedItems.push(...persistedDocs.media_items);
-              }
-              if (persistedDocs.files && typeof persistedDocs.files === 'object') {
-                Object.assign(mergedFiles, persistedDocs.files);
-              }
-              // The composer could not persist these documents before send (a
-              // brand-new session has no id yet), so its hint block carries
-              // filenames without paths. Rewrite it now that paths exist —
-              // team mode reads paths from the message text only.
-              const documentHints = toUploadDocumentHints(persistedDocs.media_items);
-              if (documentHints.length) {
-                outgoingContent = withUploadDocumentBlock(outgoingContent, documentHints);
-              }
+            const persist = item.type === 'document' ? persistDocuments : persistMedia;
+            const persisted = await persist('', sessionId, [item]);
+            const stored = persisted.media_items?.[0];
+            if (persisted.media_items?.length !== 1 || typeof stored?.path !== 'string' || !stored.path.trim()) {
+              throw new Error(`${item.filename}: ${t('chat.inputAttachment.uploadFailed')}`);
             }
-            outgoingMediaItems = mergedItems.length ? slimPersistedMediaRecords(mergedItems) : undefined;
-            outgoingFiles = Object.keys(mergedFiles).length ? mergedFiles : undefined;
+            mergedItems.push(stored);
           }
+          const documentHints = toUploadDocumentHints(mergedItems);
+          if (documentHints.length) {
+            outgoingContent = withUploadDocumentBlock(outgoingContent, documentHints);
+          }
+          outgoingMediaItems = slimPersistedMediaRecords(mergedItems);
+          outgoingFiles = buildPersistedMediaFiles(mergedItems);
+        }
+        // @名称 -> 文件路径的引用笔记在这里统一加（不在 InputArea 提交时加）：候选既包括这个
+        // 会话之前已经登记过的素材，也包括这条消息里刚落盘、还没跑完注册往返的文件——用
+        // pendingNames 里用户自己起的名字，没改过就用文件名去掉扩展名（和后端默认命名规则一致）。
+        // 这样欢迎页发的第一条消息（这时候 session 刚建，素材注册还没来得及跑）也能正确 @ 到
+        // 这条消息自己带的附件。
+        {
+          const pendingNames = useSessionAssetsStore.getState().pendingNames;
+          const freshAssets: NamedAsset[] = (outgoingMediaItems ?? []).flatMap((item) => {
+            const path = typeof item.path === 'string' ? item.path.trim() : '';
+            const filename = typeof item.filename === 'string' ? item.filename : '';
+            if (!path) return [];
+            const mimeType = typeof item.mime_type === 'string' ? item.mime_type : '';
+            return [{ name: pendingNames[filename] || stemFilename(filename) || filename, path, kind: assetKindFromMime(mimeType) }];
+          });
+          const knownAssets = useSessionAssetsStore.getState().bySession[sessionId] ?? [];
+          const byName = new Map<string, NamedAsset>();
+          for (const asset of knownAssets) byName.set(asset.name.toLowerCase(), asset);
+          for (const asset of freshAssets) byName.set(asset.name.toLowerCase(), asset); // 本次上传的名字优先
+          const referenced = findReferencedAssets(outgoingContent, [...byName.values()]);
+          if (referenced.length) {
+            // 笔记只加进发给 agent 的文本（outgoingContent），不进气泡——用户不需要读一段带绝对
+            // 路径的文本，引用的是什么样子应该直接看图，不是看路径字符串。
+            const lines = referenced.map((asset) => `@${asset.name} = ${asset.path} (${asset.kind})`);
+            outgoingContent = `${outgoingContent}\n\n[引用素材]\n${lines.join('\n')}`;
+            // 引用的文件如果这条消息本来就带了（最常见：刚上传、随手就 @ 了自己），气泡上已经有
+            // 一张卡片在显示它，不用再摆一张重复的；只给"引用的是之前已经存在、这条消息没有重新
+            // 上传"的素材补一张缩略图卡片，让引用在气泡上是看得见的图，不是纯文本。
+            const shownPaths = new Set(
+              [...mediaItems.map((item) => item.path), ...(outgoingMediaItems ?? []).map((item) => item.path)]
+                .filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+                .map(normalizePath),
+            );
+            const extraMediaItems: MediaItem[] = referenced
+              .filter((asset) => !shownPaths.has(normalizePath(asset.path)))
+              .map((asset) => ({
+                type: (['image', 'video', 'audio', 'document'] as const).includes(asset.kind as never)
+                  ? (asset.kind as MediaItem['type'])
+                  : 'document',
+                filename: asset.path.split(/[\\/]/).pop() || asset.name,
+                displayName: asset.name,
+                mimeType: '',
+                path: asset.path,
+              }));
+            if (extraMediaItems.length) {
+              const current = useChatStore.getState().runtimes[sessionId]?.messages.find((m) => m.id === userMessageId);
+              useChatStore.getState().updateMessage(sessionId, userMessageId, {
+                mediaItems: [...(current?.mediaItems ?? mediaItems), ...extraMediaItems],
+              });
+            }
+          }
+        }
+        // 上传的文件落盘后登记为任务素材（欢迎页发出的第一条消息也走这里；后端按路径去重）。
+        if (outgoingMediaItems?.length) {
+          void useSessionAssetsStore
+            .getState()
+            .registerUploads(sessionId, outgoingMediaItems)
+            .catch((error) => console.error('Failed to register session assets:', error));
         }
         // Goal 处于 active 时，普通输入按文档 §5.1 作为补充约束插入当前 Goal，而不是覆盖它
         const activeGoal = useGoalStore.getState().getRuntime(sessionId)?.goal;
@@ -2049,6 +2127,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           enable_swarmflow: Boolean(sessionRt?.enableSwarmflow),
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
+            : {}),
+          // 会话级 worktree 开关：仅用户显式拨过（非 undefined）才发送，
+          // 后端按 params > 会话持久化 > 团队模板配置 回退。
+          ...(sessionRt?.swarmflowWorktree !== undefined
+            ? { swarmflow_worktree: sessionRt.swarmflowWorktree }
             : {}),
         });
         clearConnectionPresentationForUserAction(sessionId);
@@ -2218,6 +2301,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       options?: { newInput?: string }
     ) => {
       const newInput = options?.newInput;
+      const expertId = selectedExpertTeamId(sessionId);
+      if (expertId) {
+        if (intent === 'supplement' && newInput) {
+          return (await sendExpertMessage(newInput, sessionId)) ?? false;
+        }
+        const result = await request<{ success?: boolean }>('chat.interrupt', {
+          session_id: sessionId, target_team_id: expertId, mode: 'team', intent,
+        });
+        if (result?.success) {
+          useChatStore.getState().setProcessing(`${sessionId}::${expertId}`, false);
+        }
+        return result?.success === true;
+      }
       if (intent === 'supplement' && newInput) {
         resetContextCompressionTurn(sessionId);
         userInputVersionRef.current += 1;
@@ -4432,6 +4528,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
         if (!isProcessingNow) {
           useChatStore.getState().setThinking(sessionId, false);
+          // 轮次终态兜底：思考段若因「思考后无文本增量/无工具调用」而未关闭，
+          // 会一直挂着「思考中…」；此处统一收口（已关闭时为幂等空操作）。
+          useChatStore.getState().closeReasoning(sessionId, {
+            atMs: eventTimestampMs(payload),
+          });
           useChatStore.getState().stopStreaming(sessionId);
           useChatStore.getState().settleHistoricalToolExecutions(sessionId);
 
@@ -4968,6 +5069,68 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           });
         }
         useChatStore.getState().enqueuePendingQuestion(sessionId, normalizedPayload);
+      }),
+      webClient.on('a4p.authorization_request', ({ payload }) => {
+        const requestPayload = payload as Record<string, unknown>;
+        const sessionId = resolveEventSessionId(requestPayload);
+        if (!sessionId) return;
+        const requestId =
+          typeof requestPayload.requestId === 'string'
+            ? requestPayload.requestId
+            : typeof requestPayload.request_id === 'string'
+              ? requestPayload.request_id
+              : '';
+        const mandate = requestPayload.mandate;
+        const signingOptions = requestPayload.signingOptions;
+        if (
+          !requestId
+          || !mandate
+          || typeof mandate !== 'object'
+          || Array.isArray(mandate)
+          || !signingOptions
+          || typeof signingOptions !== 'object'
+          || Array.isArray(signingOptions)
+        ) {
+          return;
+        }
+        const uiContext =
+          requestPayload.uiContext && typeof requestPayload.uiContext === 'object'
+            ? requestPayload.uiContext as Record<string, unknown>
+            : {};
+        useChatStore.getState().setPendingA4PAuthorization(sessionId, {
+          requestId,
+          originalActions: Array.isArray(requestPayload.originalActions)
+            ? requestPayload.originalActions as Record<string, unknown>[] : undefined,
+          preparedActionIndexes: Array.isArray(requestPayload.preparedActionIndexes)
+            ? requestPayload.preparedActionIndexes as number[] : undefined,
+          replacesRequestId: typeof requestPayload.replacesRequestId === 'string'
+            ? requestPayload.replacesRequestId : undefined,
+          repreparing: requestPayload.repreparing === true,
+          kind: typeof requestPayload.kind === 'string' ? requestPayload.kind : 'intent',
+          mandate: mandate as Record<string, unknown>,
+          signingOptions: signingOptions as Record<string, unknown>,
+          uiContext,
+          sessionId: getPayloadSessionId(requestPayload),
+        });
+      }),
+      webClient.on('a4p.authorization_terminated', ({ payload }) => {
+        const requestPayload = payload as Record<string, unknown>;
+        const sessionId = resolveEventSessionId(requestPayload);
+        if (!sessionId) return;
+        const requestId =
+          typeof requestPayload.requestId === 'string'
+            ? requestPayload.requestId
+            : typeof requestPayload.request_id === 'string'
+              ? requestPayload.request_id
+              : '';
+        if (requestId) {
+          const store = useChatStore.getState();
+          store.setPendingA4PAuthorization(sessionId, null, requestId);
+          // A termination can overtake the replacement push; retire its predecessor too.
+          if (typeof requestPayload.replacesRequestId === 'string') {
+            store.setPendingA4PAuthorization(sessionId, null, requestPayload.replacesRequestId);
+          }
+        }
       }),
       // 同时监听 session_result 事件，以处理后端可能发送的不同格式
       webClient.on('session_result', ({ payload }) => {

@@ -20,6 +20,9 @@
   --duration-normal: 200ms;
   --duration-slow: 350ms;
 
+  /* State */
+  --opacity-disabled: 0.55;
+
   /* Shell layout */
   --shell-pad: 16px;
   --shell-gap: 16px;

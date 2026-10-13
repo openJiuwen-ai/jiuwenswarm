@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Operation-sequence and recorded-time projections for the trajectory overview.
  * Adapted mechanically from `packages/client/ui-trajectory/src/client/timeline.ts`

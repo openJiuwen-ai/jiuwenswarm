@@ -16,6 +16,7 @@ import type {
   SearchProgressEntry,
 } from "./VideoLivePanel/types";
 import { TaskDuplexJobs } from "./taskDuplexJobs";
+import { describeDuplexError } from "./duplexErrorMessage";
 import {
   registerTaskFullDuplexController,
   setTaskFullDuplexRuntimeError,
@@ -269,7 +270,9 @@ export function TaskFullDuplexRuntime({
         sequence: payload.sequence ?? latest?.sequence ?? 0,
         detail:
           (status === "waiting_user" ? "等待回答：" + (payload.interaction?.questions.map(q => q.question).join("；") || "") : "") ||
-          WAIT_REASON_LABELS[payload.wait_reason || ""] || payload.error || payload.display_result || payload.result ||
+          WAIT_REASON_LABELS[payload.wait_reason || ""] ||
+          (payload.error ? describeDuplexError(payload.error, "task") : "") ||
+          payload.display_result || payload.result ||
           [latest?.title, latest?.detail].filter(Boolean).join("\n"),
         createdAt: (entries[0]?.timestamp || Date.now() / 1000) * 1000,
         steps: plan,

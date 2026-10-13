@@ -30,6 +30,9 @@ a2ui:
 rsi:
   enabled: true
 
+a4p:
+  enabled: false
+
 symphony:
   enabled: null  # null = 跟随程序默认；用户切换后保存 true/false
   paths:
@@ -581,6 +584,7 @@ trajectory_ui:
   discard_final_span_frames: true
 
 experimental:
+  team_organization_ui_enabled: false # Team Organization 多团队视图；不控制后端组织能力
   task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口
   task_asr_enabled: false            # 默认关闭普通任务对话中的语音转写入口
 
@@ -1108,7 +1112,7 @@ channels:
     # SSH channel -> MessageHandler（北向）；南向经 gateway.agent_client
     # （type=agentos_router 时由 AgentOS Router 创建 YuanRong 实例并
     # 以 yr:instance:<instance_id>:port=2222 中继到 frontend）。
-    # 启用前请安装可选依赖: pip install "jiuwenswarm[ssh]" 或 uv sync --extra ssh
+    # 启用前请安装可选依赖: pip install "workswarm[ssh]" 或 uv sync --extra ssh
     # 客户端: ssh -p <listen_port> user@<gateway-host>
     # 南向连接参数见 gateway.agentos.ssh；agent_type 跟随用户当前值（3rdagent.switch）。
     enabled: false
@@ -1401,6 +1405,22 @@ permissions:
     "*": "ask"
 
 browser:
+  # Browser-only decisions. Existing LLM still handles fallback and final answers.
+  decision:
+    mode: llm # llm | shadow (observe only) | hybrid; shadow and hybrid need an openjiuwen with Jev
+    provider: openrouter # openrouter | typesafe
+    model: typesafe/jev-1.13
+    api_base: https://openrouter.ai/api/alpha
+    # Use a dedicated OpenRouter key, or explicitly reference API_KEY if it is already an OpenRouter key.
+    api_key_env: OPENROUTER_API_KEY
+    # TypeSafe direct: provider=typesafe, model=jev-1.13.0,
+    # api_base=https://api.typesafe.ai/v1, api_key_env=TYPESAFE_API_KEY.
+    request_timeout_ms: 3000
+    max_retries: 1
+    max_decisions: 40 # Shared across LLM handoffs and focused resume in the same task.
+    candidate_limit: 30 # Eligible controls, filtered and ranked before truncation.
+    min_confidence: 0.55 # Initial routing threshold; calibrate on your own tasks.
+    fallback_reserve_ms: 1000
   # chrome_path can be a string or per-OS map.
   # Example:
   # chrome_path:

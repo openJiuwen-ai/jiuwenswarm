@@ -409,6 +409,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "command.goal",
     "command.btw",
     "command.compact",
+    "command.mcp",
     "chat.send",
     "chat.interrupt",
     "chat.resume",
@@ -478,6 +479,9 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.graph.cancel",
     "skills.experience.list",
     "skills.experience.request",
+    "session.assets.list",
+    "session.assets.register",
+    "session.assets.rename",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
     "personal_context.runtime.stop_collection",
@@ -557,6 +561,8 @@ _FORWARD_REQ_METHODS = frozenset({
     "team.snapshot",
     "team.history.get",
     "team.mq.publish",
+    "team.list",
+    "org.snapshot",
     # Agent configuration
     "agents.list",
     "agents.get",
@@ -599,6 +605,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "command.goal",
     "command.btw",
     "command.compact",
+    "command.mcp",
     "team.snapshot",
     "team.history.get",
     "team.mq.publish",
@@ -606,6 +613,8 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "swarmflow.pause",
     "swarmflow.resume",
     "swarmflow.stop",
+    "team.list",
+    "org.snapshot",
     "skills.marketplace.list",
     "skills.list",
     "skills.installed",
@@ -664,6 +673,9 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.graph.cancel",
     "skills.experience.list",
     "skills.experience.request",
+    "session.assets.list",
+    "session.assets.register",
+    "session.assets.rename",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
     "personal_context.runtime.stop_collection",
@@ -1631,7 +1643,7 @@ def _persist_media_locally(
     AgentServer-side ``_persisted`` passthrough recognizes the file.
     """
     from jiuwenswarm.common.utils import get_agent_sessions_dir
-    from jiuwenswarm.server.runtime.attachments.upload_storage import atomic_write_unique
+    from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import atomic_write_unique
 
     try:
         upload_dir = get_agent_sessions_dir() / safe_session_id / "uploads"
@@ -1659,10 +1671,10 @@ async def _upload_document_item_via_http(
     """
     from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
     from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-    from jiuwenswarm.server.runtime.attachments.document_attachments import (
+    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
         is_forbidden_document,
     )
-    from jiuwenswarm.server.runtime.attachments.upload_storage import (
+    from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
         safe_session_dirname,
         safe_upload_filename,
     )
@@ -1722,7 +1734,7 @@ async def _pre_persist_large_documents(
     可能超内部 WS 帧限制。
     """
     from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
-    from jiuwenswarm.server.runtime.attachments.document_attachments import (
+    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
         _strip_data_uri_prefix,
     )
 
@@ -1800,8 +1812,8 @@ async def _upload_media_item_via_http(
     """
     from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
     from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-    from jiuwenswarm.server.runtime.attachments import media_attachments as _ma
-    from jiuwenswarm.server.runtime.attachments.upload_storage import (
+    from jiuwenswarm.gateway.embedded.runtime.attachments import media_attachments as _ma
+    from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
         safe_session_dirname,
         safe_upload_filename,
     )
@@ -1864,7 +1876,7 @@ async def _pre_persist_large_media(
     import json as _json
 
     from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
-    from jiuwenswarm.server.runtime.attachments.document_attachments import (
+    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
         _strip_data_uri_prefix,
     )
 
@@ -1947,7 +1959,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     def _schedule_agent_prewarm_sync(name: str) -> None:
         """Reconcile project-derived warm keys without delaying the Web RPC."""
-        from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+        from jiuwenswarm.gateway.embedded.runtime.agent_prewarm import prewarm_enabled_by_env
 
         if not prewarm_enabled_by_env():
             return
@@ -2083,6 +2095,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
+    async def _request_zen_warmup() -> None:
+        from jiuwenswarm.gateway.zen_query import request_zen_warmup
+
+        await request_zen_warmup(_resolve(agent_client))
+
     async def _config_set(ws, req_id, params, session_id):
         """config.set 实现已下沉 ``common.config_panel.config_set_handlers``。"""
         await config_set_handlers.config_set_handler(
@@ -2091,6 +2108,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             agent_client=_resolve(agent_client),
             ensure_codex_dependency=_ensure_codex_dependency_available_or_start_install,
             ensure_claude_dependency=_ensure_claude_dependency_available_or_start_install,
+            on_free_models_toggled=_request_zen_warmup,
         )
 
     async def _config_validate_model(ws, req_id, params, session_id, max_tokens_bounds=None):
@@ -2102,7 +2120,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # ── models.* handlers ────────────────────────────────────────
 
     async def _models_list(ws, req_id, params, session_id):
-        await models_handlers.models_list_handler(channel, ws, req_id, params, session_id)
+        from jiuwenswarm.gateway.zen_query import fetch_zen_free_model_rows
+
+        zen_rows = await fetch_zen_free_model_rows(_resolve(agent_client))
+        await models_handlers.models_list_handler(
+            channel, ws, req_id, params, session_id, zen_rows=zen_rows,
+        )
 
     async def _models_replace_all(ws, req_id, params, session_id):
         """原子地用提交的列表整体替换 models.defaults（实现见下沉模块）。"""
@@ -2121,6 +2144,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             agent_client=_resolve(agent_client),
             ensure_codex_dependency=_ensure_codex_dependency_available_or_start_install,
             ensure_claude_dependency=_ensure_claude_dependency_available_or_start_install,
+            on_free_models_toggled=_request_zen_warmup,
         )
 
     async def _models_validate(ws, req_id, params, session_id):
@@ -2170,8 +2194,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _session_selection_set(ws, req_id, params, session_id):
         from jiuwenswarm.common.model_selection import ModelSelection
-        from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
-        from jiuwenswarm.server.runtime.session.model_selection_store import set_session_model_selection
+        from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver
+        from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import set_session_model_selection
         try:
             target = str((params or {}).get("session_id") or session_id or "")
             selection = ModelSelection.model_validate((params or {}).get("model_selection"))
@@ -2619,9 +2643,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             is_legacy_shared_directory_client(real_client)
             and not getattr(real_client, "server_ready", True)
         ):
-            from jiuwenswarm.server.runtime.gateway_adapter.base import parse_int_param
-            from jiuwenswarm.server.runtime.session.session_info import to_session_info
-            from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata
+            from jiuwenswarm.gateway.embedded.runtime.parse_int import parse_int_param
+            from jiuwenswarm.gateway.embedded.runtime.session.session_info import to_session_info
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_all_sessions_metadata
 
             raw_params = params if isinstance(params, dict) else {}
             limit = parse_int_param(raw_params, "limit", 20, minimum=1, maximum=200)
@@ -2780,7 +2804,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             is_legacy_shared_directory_client(real_client)
             and not getattr(real_client, "server_ready", True)
         ):
-            from jiuwenswarm.server.runtime.session.session_rename import apply_session_rename
+            from jiuwenswarm.gateway.embedded.runtime.session.session_rename import apply_session_rename
 
             ok, payload, error, code = apply_session_rename(
                 params if isinstance(params, dict) else {},
@@ -2832,7 +2856,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if not isinstance(pinned, bool):
                 await channel.send_response(ws, req_id, ok=False, error="pinned must be boolean", code="BAD_REQUEST")
                 return
-            from jiuwenswarm.server.runtime.session.session_metadata import set_session_pinned
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import set_session_pinned
 
             result = await asyncio.to_thread(set_session_pinned, sid.strip(), pinned)
             if result is None:
@@ -3350,9 +3374,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             raw_headless = browser_cfg.get("headless", True)
             headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
 
+        from jiuwenswarm.agents.harness.common.browser_config import browser_decision_state
+
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={"chrome_path": chrome_path, "headless": headless},
+            payload={
+                "chrome_path": chrome_path,
+                "headless": headless,
+                **browser_decision_state(config),
+            },
         )
 
     async def _path_set(ws, req_id, params, session_id, user_id=None):
@@ -3369,6 +3399,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         raw_headless = params.get("headless", True)
         headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
+        # Older clients omit the decision fields; the saved values are then left untouched.
+        set_params = {"chrome_path": chrome_path, "headless": headless}
+        for decision_key in ("decision_mode", "decision_provider"):
+            if params.get(decision_key) is not None:
+                set_params[decision_key] = params[decision_key]
 
         from jiuwenswarm.gateway.routing.e2a_proxy import (
             fetch_agent_unary,
@@ -3422,7 +3457,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
             await proxy_unary_request(
                 channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                params={"chrome_path": chrome_path, "headless": headless},
+                params=set_params,
                 session_id=session_id, user_id=user_id,
                 req_method=ReqMethod.PATH_SET, label="path.set",
                 on_done=_on_path_set_done,
@@ -3442,8 +3477,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             else True
         )
 
+        from jiuwenswarm.agents.harness.common.browser_config import (
+            browser_decision_state,
+            browser_decision_updates,
+        )
+        from jiuwenswarm.common.config import update_browser_decision_in_config
+
+        decision_updates, error = browser_decision_updates(
+            set_params.get("decision_mode"), set_params.get("decision_provider"), get_config()
+        )
+        if error:
+            await channel.send_response(ws, req_id, ok=False, error=error, code="BAD_REQUEST")
+            return
+
         try:
             update_browser_in_config({"chrome_path": chrome_path, "headless": headless})
+            if decision_updates:
+                update_browser_decision_in_config(decision_updates)
             resolved_agent_client = _resolve(agent_client)
             await _clear_agent_config_cache(resolved_agent_client)
         except Exception as e:  # noqa: BLE001
@@ -3465,7 +3515,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={"chrome_path": chrome_path, "headless": headless},
+            payload={"chrome_path": chrome_path, "headless": headless, **browser_decision_state(get_config())},
         )
 
     async def _path_select_directory(ws, req_id, params, session_id, user_id=None):
@@ -4682,6 +4732,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 否则 CreateSandbox 拉不起 → 60s 超时（见 plan-cron-user-id）。
             if user_id:
                 params["user_id"] = str(user_id).strip()
+            # 登录会话 id：服务端专有键，无条件覆盖客户端传值。controller 用它给
+            # 登录免费模型绑定华为账号凭据句柄（与路由 user_id 是两套独立用户
+            # 体系），用后即弃、不落任务数据。
+            params["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
             is_agentos = is_agentos_routing_client(_resolve(agent_client))
             # 仅共享目录单用户可由 Gateway 从 session metadata 补 project_dir。
             # AgentOS 下 metadata 在目标 AgentServer 用户目录，Gateway 读部署目录会
@@ -4693,7 +4747,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 and session_id
             ):
                 try:
-                    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+                    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
                     meta = get_session_metadata(session_id, cache_bust=True)
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")
@@ -4820,6 +4874,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 })
                 patch.pop("project_dir", None)
                 patch["_agentos_project_binding_verified"] = True
+            # 登录会话 id（服务端专有键，见 _cron_job_create）：改选登录免费模型时
+            # 重绑华为账号凭据句柄；无条件覆盖客户端传值。
+            patch["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
             job = await cc.update_job(job_id, patch)
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError:
@@ -4854,7 +4911,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             deleted = await cc.delete_job(job_id)
         except Exception as exc:
-            from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+            from jiuwenswarm.gateway.embedded.runtime.session.lifecycle import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
             await channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code=code
@@ -5598,6 +5655,97 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_perm("permissions.rules.delete", _PermReq.PERMISSIONS_RULES_DELETE)
     _register_perm("permissions.approval_overrides.get", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_GET)
     _register_perm("permissions.approval_overrides.delete", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_DELETE)
+
+    async def _forward_a4p_to_agent(ws, req_id, params, session_id, *, req_method):
+        """Forward an A4P User Authorizer RPC over the session's logical Web route."""
+        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        if not isinstance(req_method, ReqMethod):
+            await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
+            return
+        ac = _resolve(agent_client)
+        if ac is None or not getattr(ac, "server_ready", False):
+            await channel.send_response(
+                ws, req_id, ok=False, error="Agent server is not ready", code="AGENT_NOT_READY"
+            )
+            return
+
+        route_metadata: dict[str, Any] = {
+            "ws_id": str(getattr(ws, "_jiuwen_ws_id", "") or ""),
+        }
+        route = None
+        try:
+            routes = await channel.routing_keys_for_ws(ws)
+            route = next(
+                (item for item in reversed(routes) if item.session_id == session_id),
+                None,
+            )
+            if route is not None:
+                route_metadata["app_id"] = route.app_id
+                route_metadata["agent_ref"] = {
+                    "mode": route.agent_ref.mode,
+                    "id": route.agent_ref.id,
+                }
+        except Exception:
+            logger.warning("[a4p] failed to resolve Web authorizer route", exc_info=True)
+        if route is None:
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="No Web authorizer route is registered for this session",
+                code="A4P_WEB_SESSION_REQUIRED",
+            )
+            return
+
+        env = e2a_from_agent_fields(
+            request_id=str(req_id) if req_id else "",
+            channel_id="web",
+            session_id=session_id,
+            req_method=req_method,
+            params=dict(params) if isinstance(params, dict) else {},
+            metadata=route_metadata,
+        )
+        try:
+            resp = await ac.send_request(env)
+        except Exception as exc:
+            logger.exception("[a4p] forward to agent failed: %s", exc)
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
+            return
+        if not resp.ok:
+            payload = resp.payload if isinstance(resp.payload, dict) else {}
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error=str(payload.get("error") or "request failed"),
+                code=str(payload.get("code") or "BAD_REQUEST"),
+            )
+            return
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=True,
+            payload=resp.payload if isinstance(resp.payload, dict) else {},
+        )
+
+    from jiuwenswarm.common.schema.message import ReqMethod as _A4PReq
+
+    def _register_a4p(method_name: str, req_method: Any) -> None:
+        async def _handler(ws, req_id, params, session_id):
+            await _forward_a4p_to_agent(
+                ws, req_id, params, session_id, req_method=req_method
+            )
+
+        channel.register_method(method_name, _handler)
+
+    _register_a4p("a4p.config.get", _A4PReq.A4P_CONFIG_GET)
+    _register_a4p("a4p.config.update", _A4PReq.A4P_CONFIG_UPDATE)
+    _register_a4p("a4p.authorization.reprepare", _A4PReq.A4P_AUTHORIZATION_REPREPARE)
+    _register_a4p("a4p.authorization.complete", _A4PReq.A4P_AUTHORIZATION_COMPLETE)
+    _register_a4p("a4p.authorization.reject", _A4PReq.A4P_AUTHORIZATION_REJECT)
+    _register_a4p("a4p.authorization.pending", _A4PReq.A4P_AUTHORIZATION_PENDING)
 
     async def _memory_forbidden_get(ws, req_id, params, session_id, user_id=None):
         from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client, proxy_unary_request

@@ -24,10 +24,11 @@ import { hasUnfinishedGoal } from '../../components/ChatPanel/slashCommands/sema
 // 不再重复定义一份（bugfix 2026092201 bug001 第2轮）。
 import { isSessionBusyForPlanToggle as isSessionBusyForModeToggle } from '../planMode/planModeGate';
 
-/** 命中限制时给用户的提示文案 i18n key（都是项目已有 key，不新增）。 */
+/** 命中限制时给用户的提示文案 i18n key。 */
 export type GoalArmBlockReason =
   | 'goal.toolbarUnavailable'
   | 'goal.toolbarUnavailablePlan'
+  | 'goal.toolbarUnavailableProcessing'
   | 'goal.closeTagDisabled';
 
 export interface GoalArmDecision {
@@ -144,6 +145,7 @@ function isPlanCommittedForSession(sessionId: string | null | undefined): boolea
 /**
  * Goal 能否切到 `next` 武装状态。
  *   - 打开方向（`next === true`）：已有未完成目标 → 不可；Plan 已提交 → 不可；
+ *     会话忙（任务执行中/暂停中/等待回答）→ 不可；
  *   - 关闭方向（`next === false`）：`isGoalSessionBusy` 判定为忙 → 不可，见该函数注释
  *     （拼了三段信号才覆盖"从消息发出到执行结束"全程，第6轮 Playwright 实测才最终定稿）。
  *
@@ -152,6 +154,10 @@ function isPlanCommittedForSession(sessionId: string | null | undefined): boolea
  * 对齐 Plan。第3轮补了 `hasPendingGoalAction`，第6轮又补了 `isGoalStatusActive`——
  * 前两轮都只靠静态读代码推理，Playwright 实测才发现真正的大段空白在哪里，具体见
  * `isGoalStatusActive` 的详细注释。
+ *
+ * bugfix 2026092401 bug001：打开方向原来不查会话忙，普通任务（无目标、无计划）执行中
+ * 仍能点开"+"菜单的「追求目标」开关。这里补上与 `evaluatePlanToggle` 打开方向同款的
+ * `isSessionBusyForModeToggle` 检查，任何类型任务执行期间都不允许进入目标武装态。
  */
 export function evaluateGoalArm(
   sessionId: string | null | undefined,
@@ -168,6 +174,9 @@ export function evaluateGoalArm(
   }
   if (isPlanCommittedForSession(sessionId)) {
     return { ok: false, reason: 'goal.toolbarUnavailablePlan' };
+  }
+  if (isSessionBusyForModeToggle(sessionId)) {
+    return { ok: false, reason: 'goal.toolbarUnavailableProcessing' };
   }
   return { ok: true };
 }

@@ -532,7 +532,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // silent=true 用于轮询/可见性刷新等后台静默拉取：不切 loading 态、失败时不清空现有列表、
   // 不弹错误提示，避免偶发网络抖动打断用户正在看的内容（见 bug007/bug008/bug009 progress.md）
   const loadJobs = useCallback(
-    async (projectList: ProjectInfo[], options?: { silent?: boolean }) => {
+    async (projectListInput: ProjectInfo[] | Promise<ProjectInfo[]>, options?: { silent?: boolean }) => {
       const silent = options?.silent ?? false;
       if (!silent) {
         setLoading(true);
@@ -545,6 +545,9 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // （见 bug007/bug008/bug009 progress.md：此前 isWebChannelJob 过滤把非 web 任务藏掉，
         // 导致飞书建的任务在 web 列表永不出现，轮询再勤也无济于事）
         const allJobs = payload.jobs || [];
+        // cron.job.list 请求本身不依赖项目列表（仅本地映射需要）：先发请求再等
+        // projects，挂载时才能与 project.list 真正并行；对传数组的调用方是 no-op
+        const projectList = await projectListInput;
         setJobs(allJobs.map((j) => cronJobToUI(j, projectList)));
       } catch (loadError) {
         if (silent) {
@@ -614,9 +617,11 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
 
   useEffect(() => {
     void (async () => {
-      const projectList = await loadProjects();
-      await loadJobs(projectList);
-      await loadChannels();
+      // 首开关键路径（issue #4885）：cron.job.list 请求不依赖 project.list 的
+      // 结果（只有 loadJobs 里的本地映射需要），两者并行把关键路径从两个串行
+      // 往返压到一个；channel.get 只影响推送下拉选项，一并并行
+      const projectsPromise = loadProjects();
+      await Promise.all([loadJobs(projectsPromise), loadChannels()]);
     })();
   }, [loadChannels, loadJobs, loadProjects]);
 

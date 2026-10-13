@@ -3483,3 +3483,251 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     await server.stop()
     recovered_runtime.close.assert_awaited_once_with()
     assert listeners[1].closed is True
+
+
+class _ArchiveStopAgentManager(FakeAgentManager):
+    def __init__(self, order: list[str]) -> None:
+        super().__init__()
+        self._order = order
+        self.release_calls: list[tuple[str, str, str]] = []
+        self.cancel_session_calls: list[tuple[str, str]] = []
+
+    async def release_subagent_runtime_for_session(
+        self,
+        *,
+        channel_id: str = "",
+        session_id: str,
+        reason: str = "",
+    ) -> bool:
+        self.release_calls.append((channel_id, session_id, reason))
+        return False
+
+    async def cancel_session_tasks(
+        self,
+        *,
+        channel_id: str = "",
+        session_id: str,
+    ) -> None:
+        self._order.append("cancel_session_tasks")
+        self.cancel_session_calls.append((channel_id, session_id))
+
+    async def cleanup_session_runtime(
+        self,
+        *,
+        channel_id: str,
+        session_id: str,
+    ) -> bool:
+        self._order.append("cleanup_session_runtime")
+        return await super().cleanup_session_runtime(
+            channel_id=channel_id, session_id=session_id
+        )
+
+
+class _RecordingTeamManager:
+    """TeamManager stand-in capturing stop_session_runtime archive calls."""
+
+    def __init__(
+        self,
+        order: list[str],
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self._order = order
+        self._error = error
+        self.stop_calls: list[tuple[str, str, bool]] = []
+        self.channel_ids: list[str | None] = []
+
+    async def stop_session_runtime(
+        self, session_id: str, reason: str = "", *, stop_runner: bool = True
+    ) -> bool:
+        self._order.append("team_stop")
+        self.stop_calls.append((session_id, reason, stop_runner))
+        if self._error is not None:
+            raise self._error
+        return True
+
+
+@pytest.mark.asyncio
+async def test_stop_session_for_archive_stops_parked_team_runtime_first(
+    monkeypatch,
+) -> None:
+    """Delete stop drains the parked Team leader stream before the strict check.
+
+    A swarmflow pause/stop parks the persistent leader stream; its per-session
+    state keeps ``has_session_runtime`` true forever, so without this teardown
+    session.delete always fails with ``cleanup_session_runtime failed``.
+    """
+    from jiuwenswarm.agents.harness import team as team_harness
+    from jiuwenswarm.server.runtime.session import lifecycle as session_lifecycle
+
+    monkeypatch.setattr(
+        session_lifecycle, "assert_runtime_owner", lambda session_id: None
+    )
+    monkeypatch.setattr(session_lifecycle, "release_runtime", lambda session_id: None)
+
+    order: list[str] = []
+    team_manager = _RecordingTeamManager(order)
+
+    def fake_get_team_manager(channel_id=None):
+        team_manager.channel_ids.append(channel_id)
+        return team_manager
+
+    monkeypatch.setattr(team_harness, "get_team_manager", fake_get_team_manager)
+    manager = _ArchiveStopAgentManager(order)
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+    )
+
+    await runtime.stop_session_for_archive(
+        channel_id="web", session_id="web_parked_1"
+    )
+
+    assert team_manager.stop_calls == [("web_parked_1", "session.delete: ", False)]
+    assert team_manager.channel_ids == ["web"]
+    assert order == [
+        "team_stop",
+        "cancel_session_tasks",
+        "cleanup_session_runtime",
+    ]
+    assert manager.cleanup_session_calls == [("web", "web_parked_1")]
+    assert manager.cancel_session_calls == [("web", "web_parked_1")]
+    assert manager.release_calls == [("web", "web_parked_1", "session_archived")]
+
+
+@pytest.mark.asyncio
+async def test_stop_session_for_archive_survives_team_stop_failure(
+    monkeypatch,
+) -> None:
+    """A failing team teardown is logged, not fatal: the strict drain continues."""
+    from jiuwenswarm.agents.harness import team as team_harness
+    from jiuwenswarm.server.runtime.session import lifecycle as session_lifecycle
+
+    monkeypatch.setattr(
+        session_lifecycle, "assert_runtime_owner", lambda session_id: None
+    )
+    monkeypatch.setattr(session_lifecycle, "release_runtime", lambda session_id: None)
+
+    team_manager = _RecordingTeamManager(
+        [], error=RuntimeError("team stop exploded")
+    )
+    monkeypatch.setattr(
+        team_harness, "get_team_manager", lambda channel_id=None: team_manager
+    )
+    manager = _ArchiveStopAgentManager([])
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+    )
+
+    await runtime.stop_session_for_archive(
+        channel_id="web", session_id="web_parked_2"
+    )
+
+    assert team_manager.stop_calls == [("web_parked_2", "session.delete: ", False)]
+    assert manager.cleanup_session_calls == [("web", "web_parked_2")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parked_request", [False, True])
+async def test_stop_session_for_archive_cancels_requests_without_waiting_for_caches(
+    monkeypatch, parked_request,
+) -> None:
+    """Real cached adapters clean promptly, with or without a parked request."""
+    from collections import Counter
+    from jiuwenswarm.agents.harness import team as team_harness
+    from jiuwenswarm.server.runtime.agent_manager import AgentManager
+    from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.session.session_manager import SessionManager
+    from jiuwenswarm.server.runtime.session import lifecycle as session_lifecycle
+
+    sid = "web_parked_3"
+    other_sid = "web_other"
+    monkeypatch.setattr(
+        session_lifecycle, "assert_runtime_owner", lambda session_id: None
+    )
+    monkeypatch.setattr(session_lifecycle, "release_runtime", lambda session_id: None)
+    monkeypatch.setattr(
+        team_harness,
+        "get_team_manager",
+        lambda channel_id=None: _RecordingTeamManager([]),
+    )
+    root = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    root._is_session_scoped_adapter = False
+    root._active_session_ids = Counter()
+    root._session_agent_tasks = {}
+    root._session_adapter_locks = {sid: asyncio.Lock()}
+    root._session_adapter_last_used = {}
+    root._session_adapter_versions = {}
+    root._session_adapter_reload_failures = {}
+
+    def child_adapter(session_id):
+        child = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+        child._is_session_scoped_adapter = True
+        child._parent_session_id = session_id
+        child._active_session_ids = Counter()
+        child._session_agent_tasks = {}
+        child._permission_state = SimpleNamespace(permission_isolated=False)
+        child._has_live_root_permission_owner = lambda sid: False
+        child.is_deep_agent_executing_for_session = lambda sid: False
+        child.cleanup = AsyncMock()
+        return child
+
+    child = child_adapter(sid)
+    other = child_adapter(other_sid)
+    root._session_adapters = {sid: child, other_sid: other}
+    facade = JiuWenSwarm.__new__(JiuWenSwarm)
+    facade._adapter = root
+    facade._session_manager = SessionManager()
+    manager = AgentManager()
+    manager.agents["web"] = {"team::": facade}
+    manager.release_subagent_runtime_for_session = AsyncMock(return_value=False)
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+    )
+
+    async def parked_handler(adapter, session_id, ready):
+        adapter._register_session_agent_task(session_id)
+        ready.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            adapter._unregister_session_agent_task(session_id)
+
+    ready = asyncio.Event()
+    other_task = asyncio.create_task(parked_handler(other, other_sid, ready))
+    await ready.wait()
+    request_task = None
+    if parked_request:
+        ready = asyncio.Event()
+        request_task = asyncio.create_task(parked_handler(child, sid, ready))
+        await ready.wait()
+    try:
+        assert facade.has_session_runtime(sid)
+        # Cached adapters are retained until cleanup. A permanently parked
+        # request must be cancelled and joined instead of waiting for a tick.
+        await asyncio.wait_for(
+            runtime.stop_session_for_archive(channel_id="web", session_id=sid),
+            timeout=0.5,
+        )
+        assert not facade.has_session_runtime(sid)
+        assert not child.is_session_active(sid)
+        child.cleanup.assert_awaited_once()
+        if request_task is not None:
+            assert request_task.cancelled()
+        assert not other_task.done()
+        assert facade.has_session_runtime(other_sid)
+        other.cleanup.assert_not_awaited()
+    finally:
+        for task in (request_task, other_task):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(
+            *[task for task in (request_task, other_task) if task is not None],
+            return_exceptions=True,
+        )

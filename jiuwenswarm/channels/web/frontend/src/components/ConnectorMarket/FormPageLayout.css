@@ -5,6 +5,11 @@
   background: var(--color-surface-card);
 }
 
+/* 表单页铺满到底部，抵消全局 .page-content 的 16px 底边距（Chrome 107 已支持 :has） */
+.page-content:has(.form-page-layout) {
+  margin-bottom: 0;
+}
+
 .form-page-layout__header {
   display: flex;
   flex-direction: column;

@@ -177,7 +177,7 @@ def test_asyncio_shutdown_failure_cannot_publish_success(monkeypatch) -> None:
         finally:
             raise RuntimeError("private-shutdown-diagnostic")
 
-    async def run(_run_input, writer):
+    async def run(_run_input, writer, *, control=None):
         asyncio.create_task(background())
         await asyncio.sleep(0)
         return _success(writer)
@@ -215,7 +215,7 @@ def test_final_output_value_error_never_escapes_or_retries(monkeypatch) -> None:
         def write(self, _value):
             raise ValueError("closed data pipe")
 
-    async def run(_run_input, writer):
+    async def run(_run_input, writer, *, control=None):
         return _success(writer)
 
     _install_runner(monkeypatch, run)
@@ -236,7 +236,7 @@ def test_first_runtime_error_survives_asyncio_shutdown_failure(monkeypatch) -> N
         finally:
             raise RuntimeError("shutdown failure")
 
-    async def run(_run_input, writer):
+    async def run(_run_input, writer, *, control=None):
         asyncio.create_task(background())
         await asyncio.sleep(0)
         return replace(

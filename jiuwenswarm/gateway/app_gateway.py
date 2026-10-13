@@ -90,7 +90,7 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod, Message, Mode
-from jiuwenswarm.server.runtime.attachments.media_attachments import (
+from jiuwenswarm.gateway.embedded.runtime.attachments.media_attachments import (
     normalize_chat_media_attachments,
 )
 _mark_startup_import_phase("gateway_core_imports_loaded")
@@ -125,7 +125,7 @@ def _agent_prewarm_enabled() -> bool:
     Prewarming is opt-in via JIUWENSWARM_AGENT_PREWARM; when off the Gateway
     must not emit agent.prewarm.sync requests or related log noise.
     """
-    from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+    from jiuwenswarm.gateway.embedded.runtime.agent_prewarm import prewarm_enabled_by_env
 
     return prewarm_enabled_by_env()
 
@@ -255,6 +255,37 @@ def _normalize_model_auth(params: dict[str, Any], msg) -> None:
         logger.debug("[App] 模型凭据注入失败", exc_info=True)
 
 
+#: 转发前等登录凭据续期的上限。续期本身的 HTTP 超时是 15 秒，这里只是兜住排队等锁等意外。
+_LOGIN_REFRESH_WAIT_S = 20.0
+
+
+async def _refresh_expired_login_credential(msg) -> None:
+    """用登录模型、而凭据已过期时，先把凭据续好再转发。
+
+    放置超过id_token有效期1小时后发的第一条消息，转发时 token 已过期，挂不上
+    凭据，AgentServer会当成未登录；用户点一下账号再回来又好了。
+    这里把续期提前到转发之前：放线程里等，不卡事件循环；每条入站消息各自一个 task，
+    也不挡同一连接的其他请求；同一账号并发的几次续期在 ``try_refresh`` 里合并成一次。
+    续不了（refresh_token失效等）就照旧转发，由AgentServer提示重新登录。
+    """
+    try:
+        from jiuwenswarm.common.auth.passthrough import expired_login_session
+        from jiuwenswarm.common.auth.service import get_auth_service
+
+        params = msg.params if isinstance(msg.params, dict) else {}
+        session = expired_login_session(params, _auth_session_id(msg))
+        if session is None:
+            return
+        await asyncio.wait_for(
+            asyncio.to_thread(get_auth_service().try_refresh, session),
+            timeout=_LOGIN_REFRESH_WAIT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[App] 转发前续期登录凭据超时，本次按原凭据转发 id=%s", getattr(msg, "id", None))
+    except Exception:  # noqa: BLE001 — 续期失败不该让整条消息发不出去
+        logger.debug("[App] 转发前续期登录凭据失败", exc_info=True)
+
+
 def _normalize_gateway_message(msg):
 
     req_method = getattr(msg, "req_method", None) or ReqMethod.CHAT_SEND
@@ -293,6 +324,7 @@ def _normalize_gateway_message(msg):
 
 
 async def _normalize_and_forward_message(msg, channel_manager) -> bool:
+    await _refresh_expired_login_credential(msg)
     normalized = _normalize_gateway_message(msg)
     # ACP/直连转发路径(session.create 等)也需注入 work_mode 归一化,
     # 与 _norm_and_forward(Web/TUI 主路径)保持一致。否则直连 AgentServer 的
@@ -335,7 +367,7 @@ def _inject_session_work_mode(msg: Message) -> None:
         return
     channel_id = getattr(msg, "channel_id", None)
     try:
-        from jiuwenswarm.server.runtime.session.work_mode import resolve_session_work_mode_params
+        from jiuwenswarm.gateway.embedded.runtime.session.work_mode import resolve_session_work_mode_params
         binding = resolve_session_work_mode_params(params, channel_id=channel_id)
     except Exception:  # noqa: BLE001
         # 归一化异常时不写回,保留原始 params 由后续处理
@@ -1875,6 +1907,7 @@ async def _run(
         message_handler=message_handler,
     )
     cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
+    cron_controller.bind_agent_client(client)
     message_handler.set_cron_controller(cron_controller)
 
     # Heartbeat Store/Controller/Scheduler/Execution live in AgentServer.
@@ -1890,6 +1923,22 @@ async def _run(
         config=dict(full_cfg or {}),
         env={env_key: (os.getenv(env_key) or "") for env_key in _CONFIG_SET_ENV_MAP.values()},
     )
+
+    # Data-plane settings are AgentOS-only. A personal Gateway using etcd for
+    # cron must not start this service. Only agent_sandbox.idle_timeout is
+    # managed, so no user reload/fanout is needed.
+    config_updater = None
+    from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
+    if is_agentos_routing_client(client):
+        from jiuwenswarm.extensions.agentos.config_updater.service import ConfigUpdaterService
+        from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+
+        config_updater = ConfigUpdaterService(
+            etcd_endpoints=list(load_cron_store_settings(full_cfg).endpoints),
+            config=full_cfg,
+            config_provider=get_config,
+            overrides_handler=client.apply_remote_overrides,
+        )
 
     if isinstance(health_check_cfg, dict):
         cfg_every = health_check_cfg.get("every")
@@ -2140,7 +2189,7 @@ async def _run(
     # 注入 Git diff 监控注册表(设计文档阶段10):
     # 1. 让 ``_mark_git_watcher_dirty`` 能通过 ``channel.git_watcher_registry`` 唤醒轮询
     # 2. 通过 ``set_channel`` 让 registry 拿到 send_event 的发送句柄
-    from jiuwenswarm.server.runtime.session.git_diff_watcher import (
+    from jiuwenswarm.gateway.embedded.runtime.session.git_diff_watcher import (
         get_git_diff_watcher_registry,
     )
     _git_watcher_registry = get_git_diff_watcher_registry()
@@ -2196,6 +2245,7 @@ async def _run(
             method_val = getattr(getattr(msg, "req_method", None), "value", None) or ""
             if method_val not in forward_methods:
                 return False
+            await _refresh_expired_login_credential(msg)
             normalized = _normalize_gateway_message(msg)
             # session.create 主路径注入 work_mode 归一化(与 fallback _session_create
             # 共用同一 helper resolve_session_work_mode_params,保持主路径/fallback 一致):
@@ -2244,6 +2294,8 @@ async def _run(
     await channel_manager.start_dispatch()
     log_startup_stage("message_dispatch_started")
     await cron_scheduler.start()
+    if config_updater is not None:
+        await config_updater.start()
     log_startup_stage("cron_scheduler_started")
 
     # Give the browser event loop a chance to complete its pending WebSocket
@@ -2385,7 +2437,7 @@ async def _run(
                 logger.error(
                     "[App] A2A server failed to start: %s. "
                     "If A2A is enabled, install optional dependency with "
-                    "`uv sync --extra a2a` or `pip install \"jiuwenswarm[a2a]\"`.",
+                    "`uv sync --extra a2a` or `pip install \"workswarm[a2a]\"`.",
                     exc,
                 )
 
@@ -3051,7 +3103,7 @@ async def _run(
                             logger.error(
                                 "[App] SSH channel failed to start: %s. "
                                 "If SSH is enabled, install optional dependency with "
-                                "`uv sync --extra ssh` or `pip install \"jiuwenswarm[ssh]\"`.",
+                                "`uv sync --extra ssh` or `pip install \"workswarm[ssh]\"`.",
                                 exc,
                             )
 
@@ -3086,44 +3138,6 @@ async def _run(
         if _agent_prewarm_enabled()
         else None
     )
-
-    # ---------- Opencode Zen 免费模型预热 ----------
-    # Gateway 进程独立拉取 Zen 免费模型到内存缓存（_models_list 在此进程处理，
-    # 与 AgentServer 内存不共享，故各自预热）。失败留空，不阻断启动。
-    # fire-and-forget：不再同步 await（拉取上限 15s，原直接推迟 19001/19000
-    # 端口开放，Desktop 只等 19000 且 45s 超时）。失败由 opencode_zen 自带
-    # 后台重试自动恢复；models.list 在完成前返回已有配置模型，不影响主链路。
-    # shutdown 时 cancel（见本函数 finally）。
-    zen_free_models_task: asyncio.Task | None = None
-    try:
-        from jiuwenswarm.server.runtime.opencode_zen import (
-            warm_zen_free_models,
-            set_main_event_loop,
-            register_models_ready_callback,
-        )
-        # 注册 event loop，供后台重试线程通过 call_soon_threadsafe 调度回调
-        set_main_event_loop(asyncio.get_running_loop())
-
-        # 注册回调：后台重试成功后广播 models.updated 事件，前端自动刷新模型列表
-        async def _on_zen_models_ready():
-            try:
-                web_channel = channel_manager.get_channel("web")
-                if web_channel:
-                    await web_channel.broadcast_event("models.updated", {})
-                    logger.info("[App] broadcasted models.updated: zen free models ready")
-            except Exception as e:  # noqa: BLE001
-                logger.debug("[App] broadcast models.updated failed: %s", e)
-
-        def _models_ready_cb():
-            asyncio.create_task(_on_zen_models_ready())
-
-        register_models_ready_callback(_models_ready_cb)
-        zen_free_models_task = asyncio.create_task(
-            warm_zen_free_models(reason="gateway-startup"),
-            name="zen-free-models-warmup",
-        )
-    except Exception as e:  # noqa: BLE001 - 兜底
-        logger.warning("[App] zen free models warm failed (non-fatal): %s", e)
 
     # 主动推荐：按 config 自动注册/删除 proactive.tick 定时 job
     try:
@@ -3306,6 +3320,8 @@ async def _run(
     except asyncio.CancelledError:
         pass
     finally:
+        if config_updater is not None:
+            await config_updater.stop()
         if not channel_config_task.done():
             channel_config_task.cancel()
             try:
@@ -3328,14 +3344,6 @@ async def _run(
                 await prewarm_sync_task
             except asyncio.CancelledError:
                 pass
-        if zen_free_models_task is not None:
-            zen_free_models_task.cancel()
-            try:
-                await zen_free_models_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:
-                logger.warning("[App] zen free models warmup stop failed: %s", exc)
         if a2a_task is not None:
             a2a_task.cancel()
             try:

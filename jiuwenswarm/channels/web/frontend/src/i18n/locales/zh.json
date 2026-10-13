@@ -23,6 +23,7 @@
     "optional": "（可选）",
     "processing": "处理中…",
     "retry": "重试",
+    "selectedCount": "已选 {{count}} 个",
     "editMenu": {
       "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
@@ -353,7 +354,12 @@
       "headless": "无头模式",
       "headlessDescription": "不显示浏览器窗口运行自动化任务。",
       "chromePath": "Chrome 可执行文件路径",
-      "chromePathPlaceholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      "chromePathPlaceholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "decisionLlm": "仅 LLM",
+      "decisionShadow": "Jev 影子模式（仅观察）",
+      "decisionHybrid": "Jev 混合模式",
+      "providerOpenrouter": "OpenRouter",
+      "providerTypesafe": "TypeSafe"
     },
     "experimental": {
       "taskAsr": "语音转写",
@@ -364,6 +370,7 @@
       "rsi": "RSI 递归自我改进",
       "trajectoryUi": "轨迹界面",
       "kvCacheAffinity": "算力亲和",
+      "teamOrganization": "Team Organization",
       "skillPack": "技能包",
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
@@ -423,6 +430,23 @@
       "headless": {
         "title": "浏览器运行方式",
         "description": "选择在前台显示浏览器窗口或以无头模式运行。"
+      },
+      "decision_mode": {
+        "title": "浏览器决策",
+        "description": "选择由谁决定每一步浏览器操作。Jev 模式需要先在下方配置 Jev API 密钥。"
+      },
+      "decision_provider": {
+        "title": "Jev 服务提供方",
+        "description": "通过 OpenRouter 调用 Jev，或直接调用 TypeSafe。"
+      },
+      "jev_api_key": {
+        "title": "Jev API 密钥"
+      },
+      "jev_openrouter_api_key": {
+        "title": "OpenRouter API 密钥"
+      },
+      "jev_typesafe_api_key": {
+        "title": "TypeSafe API 密钥"
       },
       "model_name": { "title": "模型名称", "placeholder": "例如：glm-4.7" },
       "alias": { "title": "自定义别名", "placeholder": "例如：GLM-4.7 生产环境" },
@@ -511,6 +535,10 @@
       "trajectory_ui_enabled": {
         "title": "启用轨迹界面",
         "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
+      },
+      "team_organization_ui_enabled": {
+        "title": "启用 Team Organization 界面",
+        "description": "显示实验性的多 Team 视图和组织任务池。此开关不关闭后端组织能力。"
       },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
@@ -710,7 +738,7 @@
       "skills": "技能",
       "files": "文件",
       "unassigned": "未分配",
-      "unassignedAvatar": "未分配 avatar",
+      "unassignedAvatar": "未分配头像",
       "views": {
         "list": "列表视图",
         "structure": "结构视图",
@@ -732,7 +760,54 @@
         "cancelled": "已取消",
         "failed": "任务失败"
       }
+    },
+    "org": {
+      "tab": "组织信息",
+      "title": "Task Pool 与组织",
+      "refresh": "刷新",
+      "loading": "加载中…",
+      "empty": "当前 Team 未绑定 organization",
+      "noOrganization": "未绑定组织",
+      "noTeam": "当前会话暂无可查询的 Team",
+      "loadFailed": "组织信息加载失败",
+      "organizationId": "Organization ID",
+      "displayName": "名称",
+      "description": "描述",
+      "ownerTeam": "Owner Team",
+      "teams": "Team 列表",
+      "leadTeam": "Team",
+      "leadMember": "Leader",
+      "metadata": "元数据",
+      "taskPool": "Task Pool",
+      "taskPoolEmpty": "任务池为空",
+      "taskId": "Task ID",
+      "taskTitle": "标题",
+      "taskStatus": "状态",
+      "taskAssignee": "执行者",
+      "taskTeam": "Team",
+      "taskType": "类型",
+      "taskUnclaimed": "待认领",
+      "taskParent": "父任务",
+      "pendingReviews": "待评审",
+      "pendingReviewsEmpty": "没有待评审的任务",
+      "reviewTask": "任务",
+      "reviewReviewer": "评审人",
+      "statsTotal": "任务总数",
+      "statsOpen": "进行中",
+      "statsUnclaimed": "待认领",
+      "statsPendingReviews": "待评审"
     }
+  },
+  "sessionAssets": {
+    "title": "素材",
+    "empty": "上传文件或生成内容后，会出现在这里；可以重命名，并在输入框里用 @名称 引用。",
+    "rename": "重命名",
+    "save": "保存",
+    "cancel": "取消",
+    "invalidName": "名称不能为空，最多 60 个字符，不能包含 @ 或换行",
+    "pickTitle": "选择素材",
+    "referHint": "输入框里输入 @ 引用",
+    "reference": "已引用"
   },
   "artifacts": {
     "title": "所有产物",
@@ -863,6 +938,7 @@
     "resume": "继续执行",
     "queuePausedConfirm": "你即将发送一条消息，要清除正在排队的{{count}}条消息吗？\n\n点击「确定」清空队列并发送；点击「取消」保持队列（消息将加入队列）。",
     "goalAttachmentsBlocked": "设为目标时不支持附件，请先移除附件，或先单独发送附件消息。",
+    "commandRequiresSession": "该命令需在对话详情页使用，请先开始一个对话。",
     "editTaskDropAttachments": "编辑将移除该任务携带的 {{count}} 个附件，是否继续？",
     "holdToSpeak": "按住说话",
     "send": "发送 (Enter)",
@@ -898,6 +974,11 @@
       "noBreakdown": "后端未返回分类明细"
     },
     "modeSwitchDisabledProcessing": "当前对话运行中，请新建对话后选择模式",
+    "teamSelect": {
+      "tooltip": "切换当前查看的 Team",
+      "loadingLabel": "加载 Team…",
+      "fallbackLabel": "选择 Team"
+    },
     "configLockedHistory": "会话已有消息，请新建会话后更改配置",
     "modeSwitchTitle": "切换模式",
     "modeSwitchConfirm": "当前会话有历史消息，切换模式将新建会话。是否继续？",
@@ -998,6 +1079,9 @@
       }
     },
     "inputAttachment": {
+      "imageLimitTooltip": "图片：单张最大 {{limit}}M",
+      "fileLimitTooltip": "文件：单个最大 {{limit}}M",
+      "countLimitTooltip": "每条消息最多 {{limit}} 个附件",
       "unnamedFile": "未命名文件",
       "unsupportedFileType": "文件类型不支持：{{name}}",
       "fileSizeExceeded": "文件大小超出限制：{{name}}（最大{{limit}}）",
@@ -1091,6 +1175,7 @@
     "toggleLabel": "追求目标",
     "toolbarUnavailable": "当前已有进行中的目标，请先完成或清除",
     "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
+    "toolbarUnavailableProcessing": "对话进行中，暂不可选择目标",
     "overwriteConfirm": "当前目标“{{currentObjective}}”尚未完成。是否替换为“{{requestedObjective}}”？",
     "closeTag": "取消目标",
     "closeTagDisabled": "会话进行中，无法关闭目标",
@@ -1922,6 +2007,12 @@
       "colActions": "操作",
       "stateCollecting": "正在采集",
       "stateCompleted": "采集完成",
+      "stateCancelled": "已取消",
+      "createdNodes": "本次新增 {{nodes}} 个节点（{{files}} 个文件）",
+      "updatedNodes": "已更新 {{count}} 个节点",
+      "noNewContent": "无新增内容",
+      "collectionDisabledHint": "请先在上下文设置中开启总开关和内容采集，再立即采集。",
+      "collectionStoppingHint": "正在停止采集，请等待停止完成后重试。",
       "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
       "stateFailed": "采集失败",
       "stateWaiting": "等待采集",
@@ -1981,7 +2072,8 @@
       "maxItemsLabel": "单次最多采集条数",
       "maxItemsPlaceholder": "留空使用默认",
       "advancedConfig": "高级配置",
-      "maxItemsRangeError": "单次采集条数须在 1~40 之间，或留空使用默认",
+      "maxItemsRangeError": "单次采集条数须为 1~40 之间的整数，或留空使用默认",
+      "frequencyRangeError": "采集频率须为 1~{{max}} 之间的整数",
       "previousStep": "上一步",
       "submit": "添加",
       "save": "保存",
@@ -1993,7 +2085,8 @@
       "localFiles": {
         "rootDirLabel": "本地文件夹路径",
         "rootDirPlaceholder": "D:/my-notes",
-        "rootDirHint": "须为绝对路径"
+        "rootDirHint": "须为绝对路径",
+        "rootDirRequired": "请选择本地文件夹路径"
       },
       "zhihu": {
         "columnUrlLabel": "知乎专栏地址",
@@ -2754,6 +2847,7 @@
     "source": { "builtin": "官方", "local": "我的", "hub": "Hub" },
     "categoryLabel": "专家分类",
     "categoryAll": "全部",
+    "loadMore": "加载更多内容",
     "categoryOther": "其他",
     "categoryScrollPrev": "向左滚动分类",
     "categoryScrollNext": "向右滚动分类",
@@ -2833,13 +2927,6 @@
       "mineEmpty": "还没有我的专家",
       "noMatch": "没有找到匹配的专家"
     },
-    "pagination": {
-      "label": "专家列表分页",
-      "range": "显示 {{start}}-{{end}}，共 {{total}} 个",
-      "page": "第 {{page}} / {{total}} 页",
-      "previous": "上一页",
-      "next": "下一页"
-    },
     "detail": {
       "ability": "能力介绍",
       "sourcePrefix": "来源：{{source}}",
@@ -2917,6 +3004,7 @@
       "webUploadPlaceholder": "点击上传文件",
       "uploadInvalidType": "仅支持 .zip 和 .tar 文件",
       "uploadDirectoryUnsupported": "不支持直接拖拽文件夹，请先将文件夹压缩为 .zip 或 .tar 文件后再上传",
+      "uploadVirtualFileUnsupported": "不支持直接从 WinRAR 等压缩软件中拖入文件，请先解压或复制到本地磁盘后再上传",
       "uploadPickerUnsupported": "当前环境暂不支持选择本地文件",
       "uploadPickerFailed": "打开文件选择器失败，请重试",
       "removeUpload": "移除已选文件",
@@ -2930,7 +3018,6 @@
       "skillSourceTabsLabel": "技能来源",
       "installSkill": "安装",
       "installingSkill": "安装中…",
-      "selectedCount": "已选 {{count}} 个",
       "refreshSkills": "刷新技能",
       "skillsError": "技能列表加载失败，请重试。",
       "skillsEmpty": "暂无可用技能",
@@ -2947,7 +3034,6 @@
       "connectConnector": "连接",
       "connectingConnector": "连接中…",
       "selectionSearchPlaceholder": "请输入关键字搜索",
-      "selectionPaginationLabel": "选择列表分页",
       "mcpError": "连接器列表加载失败，请重试。",
       "mcpEmpty": "暂无可用连接器",
       "promptsLabel": "这样问我试试看（可选）",
@@ -3054,7 +3140,6 @@
         "leaderTitle": "选择负责人",
         "memberTitle": "选择成员",
         "empty": "没有匹配的专家",
-        "selectedCount": "已选 {{count}} 个",
         "localTab": "本地",
         "marketTab": "广场",
         "sourceTabsLabel": "专家来源",
@@ -3077,11 +3162,21 @@
   "chatUi": {
     "copyMessage": "复制消息",
     "copied": "已复制",
+    "usageInput": "输入",
+    "usageOutput": "输出",
+    "usageCacheHit": "缓存命中",
     "stopReading": "停止朗读",
     "readMessage": "朗读消息",
     "forkFromMessage": "从此消息新建会话分支",
     "forkFromMessageFailed": "新建会话分支失败，请重试。",
     "fileExpired": "已过期",
+    "fileTypeDocument": "文档",
+    "fileTypeSpreadsheet": "电子表格",
+    "fileTypePresentation": "演示文件",
+    "fileTypePdf": "PDF",
+    "fileTypeImage": "图片",
+    "fileTypeSkill": "技能",
+    "fileTypeFile": "文件",
     "agentProcessing": "Agent 处理中",
     "thinking": "正在思考...",
     "processing": "正在处理...",
@@ -3532,6 +3627,7 @@
       "renamePlaceholder": "输入新名称",
       "archiveConversation": "归档",
       "conversationArchived": "已归档任务会话",
+      "conversationDeleted": "对话已删除",
       "archiveView": "查看",
       "archiveUndo": "撤销",
       "removeProject": "移除项目",
@@ -3577,7 +3673,9 @@
     },
     "deleteDialog": {
       "title": "删除",
-      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。"
+      "attention": "注意",
+      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。",
+      "permanentConfirm": "确定要永久删除该任务吗？"
     },
     "notFound": {
       "title": "对话不存在或已删除",
@@ -3745,6 +3843,15 @@
       "fieldRequired": "该项为必填项，请填写",
       "withSkillNotWired": "该入口尚未接入聊天面板，需先在聊天输入框完成对接"
     },
+    "picker": {
+      "searchPlaceholder": "请输入关键字搜索",
+      "actionError": "操作未完成，请稍后重试。",
+      "mcpSourceTabsLabel": "连接器来源",
+      "mcpMarketTab": "连接器广场",
+      "mcpMineTab": "我的连接器",
+      "mcpError": "连接器列表加载失败，请重试。",
+      "mcpEmpty": "暂无可用连接器"
+    },
     "chatPrompts": {
       "createPlugin": "帮我创建一个xxx插件，擅长xxx"
     },
@@ -3752,6 +3859,7 @@
       "runtimeMissing": "该连接器依赖的运行环境缺失，请先安装对应运行环境后再使用",
       "runtimeMissingNamed": "该连接器依赖 {{runtime}} 运行环境，请先安装 {{runtime}} 后再使用",
       "installNetwork": "依赖下载失败，请检查网络连接后重试",
+      "installScriptDep": "CLI 安装脚本需要 PowerShell 环境，请先启用或恢复 PowerShell 后重试",
       "cliIncomplete": "CLI 安装不完整或版本过低，请重新连接以重试",
       "cliIncompleteNamed": "CLI 安装不完整或版本过低，请手动执行以下命令安装或升级后重试：{{command}}"
     },
@@ -3830,13 +3938,7 @@
       "loadingMyPlugin": "加载我的插件中...",
       "loadingMyMcp": "加载我的连接器中..."
     },
-    "pagination": {
-      "pageSize": "每页显示",
-      "all": "全部",
-      "rangeInfo": "{{start}}-{{end}} / 共 {{total}} 条",
-      "prev": "上一页",
-      "next": "下一页"
-    },
+    "loadMore": "加载更多内容",
     "toast": {
       "mcpConnected": "连接器已连接成功。",
       "mcpInstalled": "连接器安装成功，请连接后使用。",
@@ -3902,6 +4004,7 @@
       "confirm": "确定",
       "search": "搜索",
       "noResult": "没有匹配结果",
+      "noDescription": "暂无描述",
       "loadFailed": "详情加载失败，请重试"
     }
   },
@@ -4325,6 +4428,59 @@
     "budgetPanelHint": "设置本次会话的 Token 上限。",
     "budgetPlaceholder": "输入数字",
     "budgetActualHint": "本次配置上限：{{count}} tokens",
-    "workflowList": "工作流列表"
+    "workflowList": "工作流列表",
+    "worktreeToggleLabel": "Worktree 隔离",
+    "worktreeGuideTitle": "为 Worktree 隔离选择项目目录",
+    "worktreeGuideDescription": "Worktree 隔离已开启：动态工作流中需要修改代码的任务，可以选择在项目的独立工作树中进行，不影响主仓库。工作树以项目目录为源创建，请点击高亮处的「项目」选择目录；暂不需要隔离时，可在动态工作流设置中关闭该开关。",
+    "worktreeGuideHint": "点击「项目」选择目录",
+    "worktreeGuideAcknowledge": "我知道了",
+    "worktreeGuideSkip": "跳过",
+    "verifyReviewing": "评审中…",
+    "verifyReviewingShort": "评审中",
+    "verifyPass": "✓ 通过",
+    "verifyFail": "✗ 不通过",
+    "verifyUndecided": "? 未裁决",
+    "verifyThreshold": "阈值 {{count}}",
+    "verifyUndecidedHint": "有 reviewer 未投票（undecided），建议重试",
+    "verifyVotesMissing": "{{count}} 票缺失 · 建议重试",
+    "verifyVoteUndecided": "? 未投",
+    "verifyScore": "{{score}} 分",
+    "verifyRound": "第{{count}}轮 · {{verdict}}",
+    "verifyGroupTitle": "verify 组 · {{label}}",
+    "verifyReviewersPending": "{{names}} 评审中…",
+    "sectionInput": "输入",
+    "sectionOutput": "输出",
+    "sectionHumanPrompt": "人工提问",
+    "sectionHumanReply": "人工回复",
+    "sectionError": "错误",
+    "charUnit": "字符",
+    "clickToViewDetail": "点击查看详情"
+  },
+  "a4pSettings": {
+    "title": "A4P预授权",
+    "enableTitle": "启用A4P预授权",
+    "description": "允许在会话中批量授权 Agent 执行任务所需的多项权限，并为定时任务预授权权限。仅在“默认权限”模式下生效。"
+  },
+  "a4pAuthorization": {
+    "expandParams": "展开 {{name}} 的参数",
+    "collapseParams": "收起 {{name}} 的参数",
+    "permissionScope": "授权范围",
+    "selectedCount": "已选 {{selected}} / {{total}} 项",
+    "readyRange": "将按所选权限授权",
+    "emptySelection": "请至少选择一项权限，或拒绝本次授权",
+    "title": "A4P 预授权确认",
+    "reason": "授权原因",
+    "defaultReason": "为以下工具操作申请预授权。",
+    "tools": {
+      "bash": "执行 Shell 命令",
+      "mcpExecCommand": "执行命令",
+      "createTerminal": "创建终端",
+      "writeFile": "写入文件",
+      "editFile": "编辑文件",
+      "acpChat": "与 Agent 对话"
+    },
+    "reject": "拒绝",
+    "approve": "授权",
+    "waiting": "处理中..."
   }
 }

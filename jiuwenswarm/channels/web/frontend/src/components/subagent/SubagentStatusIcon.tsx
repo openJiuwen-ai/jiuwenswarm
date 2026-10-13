@@ -1,8 +1,9 @@
 import { useTranslation } from 'react-i18next';
-import { CircleAlert } from 'lucide-react';
-import LoadingIcon from '../../assets/subagent/loading.svg?react';
-import SuccessIcon from '../../assets/subagent/success.svg?react';
-import WaitingIcon from '../../assets/subagent/waiting.svg?react';
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
+import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
+import StatusSuccessIcon from '../../assets/work-mode/status-success.svg?react';
+import WarningCircleIcon from '../../assets/work-mode/warning-circle.svg?react';
+import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 import { getSubagentStatusLabelKey, getSubagentStatusTone } from '../../features/subagent/subagentStatusPresentation';
 import type { SubagentClosedReason, SubagentStatus, SubagentTurnOutcome } from '../../types/subagent';
 
@@ -22,16 +23,17 @@ export function SubagentStatusIcon({
   const label = t(getSubagentStatusLabelKey(status, closedReason, turnOutcome));
 
   if (tone === 'running') {
-    return <LoadingIcon className={`${className} shrink-0 text-muted animate-spin`} aria-label={label} role="img" />;
-  }
-  if (tone === 'waiting') {
-    return <WaitingIcon className={`${className} shrink-0 text-text-muted`} aria-label={label} role="img" />;
+    return <LoadingSpinner />;
   }
   if (tone === 'danger') {
-    return <CircleAlert className={`${className} shrink-0 text-danger`} aria-label={label} role="img" />;
+    return <WarningCircleIcon className={`${className} shrink-0 text-danger`} aria-label={label} role="img" />;
   }
   if (tone === 'success') {
-    return <SuccessIcon className={`${className} shrink-0 text-ok`} aria-label={label} role="img" />;
+    return <StatusSuccessIcon className={`${className} shrink-0 text-[var(--color-team-status-completed-icon)]`} aria-label={label} role="img" />;
   }
-  return <WaitingIcon className={`${className} shrink-0 text-text-muted`} aria-label={label} role="img" />;
+  if (tone === 'neutral') {
+    // 取消态与 team-area StatusIcon 的 cancelled 同形同规：已取消.svg（禁止符+横杠），不传色继承上下文
+    return <CancelledIcon className={`${className} shrink-0`} aria-label={label} role="img" />;
+  }
+  return <FrameTimeIcon className={`${className} shrink-0 text-text-meta`} aria-label={label} role="img" />;
 }

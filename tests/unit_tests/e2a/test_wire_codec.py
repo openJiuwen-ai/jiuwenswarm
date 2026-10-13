@@ -26,6 +26,17 @@ from jiuwenswarm.common.e2a.wire_codec import (
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 
 
+@pytest.mark.parametrize("source", [None, "team_background", "user"])
+def test_regular_team_delta_keeps_existing_identity_contract(source: str | None) -> None:
+    payload = {"event_type": "chat.delta", "content": "text", "request_id": "business", "rid": "round"}
+    if source is not None:
+        payload["source"] = source
+    chunk = AgentResponseChunk(request_id="frame", channel_id="web", payload=payload, is_complete=False)
+    restored = parse_agent_server_wire_chunk(encode_agent_chunk_for_wire(chunk, response_id="frame", sequence=1))
+    assert restored.request_id == "frame"
+    assert restored.payload == {key: value for key, value in payload.items() if key != "request_id"}
+
+
 def test_roundtrip_unary_ok() -> None:
     orig = AgentResponse(
         request_id="r1",
@@ -105,6 +116,7 @@ def test_roundtrip_chunk_chat_delta() -> None:
             "content": "hi",
             "source_chunk_type": "llm_reasoning",
             "rid": 7,
+            "source": "org_summary_background",
         },
         is_complete=False,
     )
@@ -115,6 +127,7 @@ def test_roundtrip_chunk_chat_delta() -> None:
     assert back.payload.get("content") == "hi"
     assert back.payload.get("source_chunk_type") == "llm_reasoning"
     assert back.payload.get("rid") == 7
+    assert back.payload.get("source") == "org_summary_background"
 
 
 def test_roundtrip_chunk_custom_event() -> None:

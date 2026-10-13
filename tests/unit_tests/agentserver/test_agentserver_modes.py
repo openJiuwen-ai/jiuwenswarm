@@ -1032,6 +1032,84 @@ def test_deliver_control_input_uses_existing_adapter_without_opening_work_turn(m
 
 
 @pytest.mark.asyncio
+async def test_process_message_stream_persists_team_ask_user_answer_with_original_request_id(
+    monkeypatch,
+):
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    class FakeSessionManager:
+        @staticmethod
+        def get_session_id(session_id=None):
+            return session_id or "default"
+
+    class FakeAdapter:
+        @staticmethod
+        async def process_message_stream_impl(_request, _inputs):
+            yield AgentResponseChunk(
+                request_id="req-resume-new",
+                channel_id="web",
+                payload={"event_type": "chat.final", "content": "已选择开放中"},
+                is_complete=True,
+            )
+
+    history_records = []
+    monkeypatch.setattr(interface_module, "SessionManager", FakeSessionManager)
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+    monkeypatch.setattr(
+        interface_module.JiuWenSwarm,
+        "_ensure_adapter",
+        lambda self, mode="agent": FakeAdapter(),
+    )
+    monkeypatch.setattr(
+        interface_module,
+        "append_history_record",
+        lambda **kwargs: history_records.append(kwargs),
+    )
+
+    request = AgentRequest(
+        request_id="req-resume-new",
+        channel_id="web",
+        session_id="team-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "query": "",
+            "mode": "team.work.normal",
+            "request_id": "call-original-question",
+            "answers": [{"question": "查询哪些 PR？", "selected_options": ["开放中"]}],
+            "source": "ask_user_interrupt",
+        },
+        is_stream=True,
+    )
+
+    chunks = [
+        chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(request)
+    ]
+
+    answer_records = [
+        record for record in history_records
+        if record["event_type"] == "chat.ask_user_answer"
+    ]
+    assert len(answer_records) == 1
+    answer = answer_records[0]
+    assert answer["session_id"] == "team-session"
+    assert answer["request_id"] == "call-original-question"
+    assert answer["extra"] == {
+        "request_id": "call-original-question",
+        "source": "ask_user_interrupt",
+        "answers": [{"question": "查询哪些 PR？", "selected_options": ["开放中"]}],
+    }
+    assert answer["mode"] == "team.work.normal"
+    assert not any(record["role"] == "user" for record in history_records)
+    assert any(
+        record["event_type"] == "chat.final"
+        and record["request_id"] == "req-resume-new"
+        for record in history_records
+    )
+    assert any(chunk.payload.get("event_type") == "chat.final" for chunk in chunks)
+
+
+@pytest.mark.asyncio
 async def test_process_message_stream_routes_web_evolution_interrupt_without_user_history(
     monkeypatch,
 ):

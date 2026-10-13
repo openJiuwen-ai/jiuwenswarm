@@ -86,6 +86,11 @@
       <td width="50%">受控通道指令与命令行操作指南。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>进程式 CLI 会话查询</strong></td>
+      <td width="28%"><a href="zh/进程式CLI会话查询.md">进程式 CLI 会话查询</a></td>
+      <td width="50%">普通终端只读查询完整会话 ID、搜索翻页、获取最近会话与跨进程续接。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>定时任务</strong></td>
       <td width="28%"><a href="zh/定时任务.md">定时任务</a></td>
       <td width="50%">定时触发任务的配置、运行与管理。</td>
@@ -93,7 +98,7 @@
     <tr>
       <td width="22%"><strong>技能</strong></td>
       <td width="28%"><a href="zh/技能.md">技能</a></td>
-      <td width="50%">智能体技能挂载、调用与扩展机制。</td>
+      <td width="50%">智能体技能挂载、调用与扩展机制；含 Server / Client 分离部署的技能同步接口。</td>
     </tr>
     <tr>
       <td width="22%"><strong>技能交响乐</strong></td>
@@ -109,6 +114,11 @@
       <td width="22%"><strong>配置信息</strong></td>
       <td width="28%"><a href="zh/配置信息.md">配置信息</a></td>
       <td width="50%">系统参数、大模型 API、运行环境相关配置。</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>进程式 CLI 模型配置</strong></td>
+      <td width="28%"><a href="zh/Process_CLI_Model.md">非交互命令的模型连接配置</a></td>
+      <td width="50%">通过 CMD 指定本次任务的模型、API 地址、密钥环境变量与协议提供方。</td>
     </tr>
     <tr>
       <td width="22%"><strong>IDE 插件</strong></td>
@@ -185,7 +195,7 @@
     </tr>
     <tr>
       <td width="22%"><strong>Agent Team</strong></td>
-      <td width="28%"><a href="zh/AgentTeam.md">Agent Teams</a> / <a href="zh/SwarmSkills.md">Swarm Skills</a> / <a href="zh/分布式Team.md">分布式 Team</a></td>
+      <td width="28%"><a href="zh/AgentTeam.md">Agent Teams</a> / <a href="zh/TeamOrganization使用指南.md">Team Organization</a> / <a href="zh/SwarmSkills.md">Swarm Skills</a> / <a href="zh/分布式Team.md">分布式 Team</a></td>
       <td width="50%">支持多智能体团队协作、团队级技能编排与复用，以及多进程分布式 Team 的运行模式。</td>
     </tr>
     <tr>

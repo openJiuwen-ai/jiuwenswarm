@@ -1,0 +1,1 @@
+"""Gateway-owned hook executor."""

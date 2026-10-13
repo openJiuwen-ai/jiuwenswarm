@@ -6,29 +6,18 @@ export type SkillVersionOptionSource = {
 
 export type SkillVersionOption = {
   version: string;
+  isDefault: boolean;
   disabled: boolean;
   label: string;
 };
 
-export type SkillVersionOptionLabels = {
-  defaultSuffix: string;
-  unavailableSuffix: string;
-};
-
-export function buildSkillVersionOptions(
-  versions: readonly SkillVersionOptionSource[],
-  labels: SkillVersionOptionLabels,
-): SkillVersionOption[] {
+export function buildSkillVersionOptions(versions: readonly SkillVersionOptionSource[]): SkillVersionOption[] {
   return versions
     .filter((entry) => typeof entry.version === 'string' && entry.version.trim().length > 0)
-    .map((entry) => {
-      const disabled = !entry.available;
-      const defaultSuffix = entry.is_default ? labels.defaultSuffix : '';
-      const unavailableSuffix = disabled ? labels.unavailableSuffix : '';
-      return {
-        version: entry.version,
-        disabled,
-        label: `${entry.version}${defaultSuffix}${unavailableSuffix}`,
-      };
-    });
+    .map((entry) => ({
+      version: entry.version,
+      isDefault: entry.is_default,
+      disabled: !entry.available,
+      label: entry.version,
+    }));
 }
