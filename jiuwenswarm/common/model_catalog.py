@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.config import get_config, load_models_config
-from jiuwenswarm.common.model_errors import MODEL_SELECTION_NOT_FOUND, ModelSelectionError
+from jiuwenswarm.common.model_errors import MODEL_RUNTIME_UNAVAILABLE, MODEL_SELECTION_NOT_FOUND, ModelSelectionError
 from jiuwenswarm.common.model_selection import ModelSelection
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,8 @@ def _read_session_selection(path: Path) -> dict[str, Any] | None:
     except (OSError, ValueError):
         logger.warning("Failed to read session model selection from %s", path, exc_info=True)
         raise
+    if not isinstance(metadata, dict):
+        raise ValueError("session metadata must be an object")
     value = metadata.get("model_selection")
     return value if isinstance(value, dict) else None
 
@@ -165,9 +167,13 @@ class ModelCatalog:
                     value = _read_session_selection(path)
                     if _matches(selection, value):
                         refs.append(SelectionReference("session", directory.name))
-        except (OSError, RuntimeError):
+        except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Failed to scan session model references", exc_info=True)
-            raise
+            # An incomplete scan cannot prove that a resource is safe to delete.
+            raise ModelSelectionError(
+                MODEL_RUNTIME_UNAVAILABLE,
+                "Cannot check model references: session metadata is unreadable or invalid; repair it and retry",
+            ) from exc
         try:
             from jiuwenswarm.common.utils import get_cron_jobs_path
             path = get_cron_jobs_path()
@@ -177,9 +183,12 @@ class ModelCatalog:
                 value = item.get("model_selection") if isinstance(item, dict) else None
                 if _matches(selection, value):
                     refs.append(SelectionReference("cron", str(item.get("id") or "")))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
             logger.warning("Failed to scan cron model references", exc_info=True)
-            raise
+            raise ModelSelectionError(
+                MODEL_RUNTIME_UNAVAILABLE,
+                "Cannot check model references: cron data is unreadable or invalid; repair it and retry",
+            ) from exc
         refs.extend(_find_embedded_selections(self.config.get("agents"), selection, scope="agent"))
         refs.extend(_find_embedded_selections(self.config.get("team"), selection, scope="team"))
         # A malformed tree can contain the same selection through aliases. Keep

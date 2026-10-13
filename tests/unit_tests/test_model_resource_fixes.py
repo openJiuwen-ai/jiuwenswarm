@@ -136,6 +136,53 @@ def test_all_disabled_group_rejected_at_save_and_execution(catalog_state):
     assert execution.value.code == "MODEL_GROUP_INVALID"
 
 
+@pytest.mark.parametrize("fields", [{}, {"routes": None}, {"routes": []}])
+def test_group_without_routes_returns_validation_error(catalog_state, fields):
+    before = deepcopy(catalog_state)
+    with pytest.raises(ModelSelectionError) as caught:
+        config_module.upsert_model_group_resource({"display_name": "empty", **fields})
+    assert caught.value.code == "MODEL_GROUP_INVALID"
+    assert catalog_state == before
+
+
+@pytest.mark.parametrize("content", ['{"model_selection":', "null", "[]"])
+@pytest.mark.asyncio
+async def test_corrupt_session_blocks_delete_with_explicit_error(tmp_path, monkeypatch, content):
+    from jiuwenswarm.common.config_panel import model_resource_handlers as handlers
+
+    directory = tmp_path / "broken-session"
+    directory.mkdir()
+    (directory / "metadata.json").write_text(content, encoding="utf-8")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.get_config", lambda: {"models": {
+        "defaults": [{"model_id": "mdl_a", "model_client_config": {"model_name": "a"}}],
+    }})
+    deleted = []
+    monkeypatch.setattr(handlers, "delete_model_resource", lambda *args, **kwargs: deleted.append(args))
+    channel = SimpleNamespace(send_response=AsyncMock())
+
+    await handlers.model_resource_handler(
+        channel, None, "r", {"model_id": "mdl_a"}, "s", operation="models.delete",
+    )
+
+    response = channel.send_response.call_args.kwargs
+    assert response["ok"] is False
+    assert response["code"] == "MODEL_RUNTIME_UNAVAILABLE"
+    assert "session metadata" in response["error"]
+    assert deleted == []
+
+
+def test_corrupt_cron_reference_file_returns_explicit_error(tmp_path, monkeypatch):
+    path = tmp_path / "cron.json"
+    path.write_text('{"jobs":', encoding="utf-8")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: tmp_path / "sessions")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_cron_jobs_path", lambda: path)
+    with pytest.raises(ModelSelectionError) as caught:
+        ModelCatalog({"models": {}}).find_references(ModelSelection(type="model", id="mdl_a"))
+    assert caught.value.code == "MODEL_RUNTIME_UNAVAILABLE"
+    assert "cron" in str(caught.value)
+
+
 @pytest.mark.asyncio
 async def test_shared_registration_and_reload(catalog_state, monkeypatch):
     from jiuwenswarm.common.config_panel.models_handlers import register_models_handlers
