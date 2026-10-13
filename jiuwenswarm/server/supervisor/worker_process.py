@@ -11,6 +11,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from jiuwenswarm.server.ipc.client import try_connect
+from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,6 +52,43 @@ def build_worker_command(
         if stub_exit_on_request:
             command.append("--stub-exit-on-request")
     return command
+
+
+async def request_resident_worker_shutdown(socket_path: str, *, hello_timeout: float = 5.0) -> int | None:
+    """Ask the Worker listening on ``socket_path`` to shut down.
+
+    A Worker outlives the Front that spawned it, so stopping the service
+    process tree leaves it running. This connects as a fresh supervisor,
+    reads the hello to learn the Worker pid, then sends ``shutdown``. The
+    caller must stop every Front first; otherwise a Front supervisor would
+    spawn a replacement Worker.
+
+    Args:
+        socket_path: Worker IPC endpoint, see ``default_socket_path``.
+        hello_timeout: Seconds to wait for the Worker hello frame.
+
+    Returns:
+        The pid of the Worker asked to shut down, or ``None`` when no Worker
+        is listening on the endpoint.
+
+    Raises:
+        RuntimeError: The endpoint answered with something other than a
+            Worker hello.
+    """
+    conn = await try_connect(socket_path)
+    if conn is None:
+        return None
+    try:
+        hello = await asyncio.wait_for(conn.recv(), timeout=hello_timeout)
+        if not isinstance(hello, dict) or hello.get("kind") != KIND_HELLO:
+            raise RuntimeError(f"expected worker hello on {socket_path}")
+        pid = hello.get("pid")
+        if not isinstance(pid, int):
+            raise RuntimeError(f"worker hello on {socket_path} carries no pid")
+        await conn.send({"kind": KIND_SHUTDOWN})
+        return pid
+    finally:
+        await conn.close()
 
 
 class WorkerProcess:
