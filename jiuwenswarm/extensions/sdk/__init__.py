@@ -1,10 +1,4 @@
-"""Extension SDK exports; contract modules resolve to gateway_protocol.
-
-惰性机制保留：transport 相关契约仍按需 import；纯契约模块已迁
-``gateway_protocol.{types,sdk}``，此处的旧路径仅为过渡期兼容
-（与 common/e2a 转发别名同模式，同一对象非副本）。
-ExtensionLoader/Manager/Registry 为实现类，仍由本仓扩展框架提供。
-"""
+"""Extension SDK exports, with transport contracts loaded lazily."""
 
 from __future__ import annotations
 
@@ -39,7 +33,7 @@ _EXPORTS = {
         "gateway_protocol.sdk.application_plugin",
         "WebSocketRouteContribution",
     ),
-    "BaseExtension": ("gateway_protocol.sdk.base", "BaseExtension"),
+    "BaseExtension": ("jiuwenswarm.extensions.sdk.base", "BaseExtension"),
     "CryptoUtility": (
         "gateway_protocol.sdk.crypto_utility",
         "CryptoUtility",

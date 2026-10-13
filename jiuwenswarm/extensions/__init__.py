@@ -1,9 +1,4 @@
-"""Extension public surface with transport adapters loaded lazily.
-
-纯契约符号（SDK 基类/数据类型）已迁 ``gateway_protocol.{sdk,types}``（支线
-计划 E 后 source of truth，转发别名同一对象）；ExtensionLoader/Manager/Registry
-为具体实现，仍由本仓扩展框架提供、待 gateway 仓迁移。
-"""
+"""Extension public surface with transport adapters loaded lazily."""
 
 from __future__ import annotations
 
@@ -22,7 +17,7 @@ _EXPORTS = {
         "gateway_protocol.sdk.application_plugin",
         "ApplicationPluginExtension",
     ),
-    "BaseExtension": ("gateway_protocol.sdk.base", "BaseExtension"),
+    "BaseExtension": ("jiuwenswarm.extensions.sdk.base", "BaseExtension"),
     "CryptoUtility": (
         "gateway_protocol.sdk.crypto_utility",
         "CryptoUtility",
