@@ -26,14 +26,6 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     remember_turn_user_query,
     snapshot_includes_persistent_todos,
 )
-from jiuwenswarm.agents.harness.common.tools.todo_resume import (
-    TURN_USER_QUERY_KEY,
-    filter_todos_for_display,
-    filter_todos_for_execution,
-    is_backlog_todo_query,
-    remember_turn_user_query,
-    snapshot_includes_persistent_todos,
-)
 
 
 def test_backlog_query_detects_add_todo_and_rejects_execute_now() -> None:
