@@ -218,6 +218,9 @@ async def test_notification_without_runtime_host_returns_false(monkeypatch) -> N
         def set_proactive_agent(self, agent: Any) -> None:
             captured["agent"] = agent
 
+        def set_proactive_agent_builder(self, builder: Any) -> None:
+            captured["builder"] = builder
+
         def set_check_agent_available_callback(self, callback: Any) -> None:
             captured["check"] = callback
 

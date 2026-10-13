@@ -210,9 +210,13 @@ class WorkerRuntime:
     stop_event: asyncio.Event
     teammate_task: asyncio.Task | None = None
     zen_task: asyncio.Task | None = None
+    proactive_task: asyncio.Task | None = None
 
     async def shutdown(self) -> None:
         self.stop_event.set()
+        if self.proactive_task is not None:
+            self.proactive_task.cancel()
+            await asyncio.gather(self.proactive_task, return_exceptions=True)
         if self.teammate_task is not None:
             self.teammate_task.cancel()
             try:
@@ -264,6 +268,8 @@ class WorkerRuntime:
             shutdown_agent_observability()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[Worker] agent observability shutdown failed: %s", exc)
+        from jiuwenswarm.runtime.kernel import process_kernel
+        await process_kernel().close()
 
 
 async def start_worker_runtime(
@@ -345,18 +351,6 @@ async def start_worker_runtime(
     install_subagent_observability_hook()
     log_startup_stage("observability_installed")
 
-    schedule_warmup = getattr(server, "schedule_image_modality_warmup", None)
-    if callable(schedule_warmup):
-        schedule_warmup(reason="startup")
-
-    from jiuwenswarm.server.runtime.opencode_zen import (
-        register_models_ready_callback,
-        set_main_event_loop,
-        warm_zen_free_models,
-    )
-
-    set_main_event_loop(asyncio.get_running_loop())
-
     def _on_zen_models_ready() -> None:
         reset_cache = getattr(server, "reset_model_cache", None)
         if callable(reset_cache):
@@ -374,11 +368,25 @@ async def start_worker_runtime(
         except Exception:  # noqa: BLE001
             logger.debug("[Worker] models.updated push failed", exc_info=True)
 
-    register_models_ready_callback(_on_zen_models_ready)
-    zen_task = asyncio.create_task(
-        warm_zen_free_models(reason="startup"),
-        name="zen-free-models-warmup",
-    )
+    async def prepare_zen() -> bool:
+        from jiuwenswarm.server.runtime.opencode_zen import (
+            register_models_ready_callback,
+            set_main_event_loop,
+            warm_zen_free_models,
+        )
+
+        set_main_event_loop(asyncio.get_running_loop())
+        register_models_ready_callback(_on_zen_models_ready)
+        return await warm_zen_free_models(reason="startup", report_status=True) is not False
+
+    async def prepare_image() -> bool:
+        schedule_warmup = getattr(server, "schedule_image_modality_warmup", None)
+        if callable(schedule_warmup):
+            schedule_warmup(reason="startup")
+            task = getattr(server, "_image_modality_refresh_task", None)
+            if task is not None:
+                return await asyncio.shield(task) is not False
+        return True
 
     from jiuwenswarm.observability.gateway_hints import trajectory_gateway_hint_bridge
 
@@ -387,27 +395,48 @@ async def start_worker_runtime(
         trajectory_gateway_hint_bridge.bind(asyncio.get_running_loop(), send_push)
 
     from jiuwenswarm.common.config import get_config
-    from jiuwenswarm.server.runtime.proactive_adapter import init_proactive_engine
-
     full_cfg = get_config()
     proactive_config = full_cfg.get("proactive_recommendation", {}) if isinstance(full_cfg, dict) else {}
-    try:
-        await init_proactive_engine(server, proactive_config)
-        log_startup_stage("proactive_engine_initialized")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[Worker] proactive engine init failed: %s", exc)
-        signals.degraded(str(exc))
+
+    async def prepare_proactive() -> bool:
+        from jiuwenswarm.server.runtime.proactive_adapter import init_proactive_engine
+        try:
+            await init_proactive_engine(server, proactive_config)
+            log_startup_stage("proactive_engine_initialized")
+            return getattr(server, "_proactive_engine", None) is not None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Worker] proactive engine init failed: %s", exc)
+            signals.degraded(str(exc))
+            return False
 
     stop_event = asyncio.Event()
-    teammate_task: asyncio.Task | None = None
-    try:
-        teammate_task = _spawn_teammate_bootstrap(stop_event, server)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[Worker] teammate bootstrap daemon start failed: %s", exc)
-    log_startup_stage("ready")
-    return WorkerRuntime(
+    runtime = WorkerRuntime(
         server=server,
         stop_event=stop_event,
-        teammate_task=teammate_task,
-        zen_task=zen_task,
     )
+
+    async def prepare_teammate() -> None:
+        runtime.teammate_task = _spawn_teammate_bootstrap(stop_event, server)
+
+    preparation = getattr(server, "_preparation_registry", None)
+    if preparation is not None:
+        # Every factory is finite: daemon creation is measured, not its entire
+        # lifetime. Imports occur after the required core preparation barrier.
+        for name, factory in (("image", prepare_image), ("zen", prepare_zen),
+                              ("proactive", prepare_proactive), ("teammate", prepare_teammate)):
+            preparation.register(name, factory)
+        runtime.zen_task = preparation.start("zen")
+        runtime.proactive_task = preparation.start("proactive")
+    else:
+        # Compatibility servers without the internal registry preserve their
+        # original background behavior.
+        asyncio.create_task(prepare_image(), name="image-modality-prepare")
+        runtime.zen_task = asyncio.create_task(prepare_zen(), name="zen-free-models-warmup")
+        runtime.proactive_task = asyncio.create_task(prepare_proactive(), name="proactive-prepare")
+        try:
+            await prepare_teammate()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Worker] teammate bootstrap daemon start failed: %s", exc)
+    server._proactive_prepare_task = runtime.proactive_task
+    log_startup_stage("runtime_host_installed")
+    return runtime
