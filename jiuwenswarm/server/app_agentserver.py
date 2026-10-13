@@ -451,7 +451,9 @@ def _resolve_bind_host() -> str:
     优先级:
     1. ``AGENT_SERVER_HOST`` 环境变量(显式指定,含 127.0.0.1)——保持单机版与显式配置兼容;
     2. 沙箱环境(``JIUWENBOX_LISTEN`` 存在,表明处于 jiuwenbox 沙箱管控下)且 env 为空:
-       检测沙箱本地非 loopback IP,ISOLATED 模式拿到 veth 地址,外部可达;
+       先读 ``SANDBOX_IP`` 快照(jiuwenbox runtime 在 create/start 时注入,与对外暴露的
+       ``ip_address`` 一致,免去运行时探测开销),缺失时再 ``_detect_sandbox_local_ip()``
+       探测沙箱本地非 loopback IP,ISOLATED 模式拿到 veth 地址,外部可达;
     3. 其余(单机版 env 为空)回退 127.0.0.1,保持 ``os.getenv("AGENT_SERVER_HOST", "127.0.0.1")``
        的单机默认语义不变。
     """
@@ -461,6 +463,14 @@ def _resolve_bind_host() -> str:
 
     # 沙箱标志:jiuwenbox runtime 起沙箱时设置,单机版直接跑 agentserver 时不存在。
     if os.getenv("JIUWENBOX_LISTEN"):
+        sandbox_ip = os.getenv("SANDBOX_IP", "").strip()
+        if sandbox_ip:
+            logger.info(
+                "[AgentServer] AGENT_SERVER_HOST unset in sandbox; "
+                "using SANDBOX_IP snapshot: %s",
+                sandbox_ip,
+            )
+            return sandbox_ip
         detected = _detect_sandbox_local_ip()
         if detected:
             logger.info(
