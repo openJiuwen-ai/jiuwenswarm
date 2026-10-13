@@ -119,6 +119,30 @@ def test_manual_builder_retains_sdk_factory_and_dynamic_overlay_host(overlays):
     assert "session_tool" not in current["tools"]
 
 
+def test_manual_snapshot_uses_replaced_global_policy(overlays):
+    caller = {
+        "permissions": {
+            "enabled": True,
+            "mode": "manual",
+            "tools": {"write_file": "allow"},
+        }
+    }
+    rail = build_permission_rail(caller, session_id="manual")
+    assert rail._host.get_permissions_snapshot()["tools"]["write_file"] == "allow"
+
+    rail.replace_installed_global_permissions({
+        "enabled": True,
+        "mode": "manual",
+        "tools": {"write_file": "ask"},
+    })
+
+    current = rail._host.get_permissions_snapshot()
+    assert current["enabled"] is True
+    assert current["tools"]["write_file"] == "ask"
+    assert current["tools"]["user_tool"] == "allow"
+    assert current["tools"]["session_tool"] == "allow"
+
+
 @pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_without_installed_snapshot_keeps_composed_build(overlays, tmp_path):
     rail = build_permission_rail(

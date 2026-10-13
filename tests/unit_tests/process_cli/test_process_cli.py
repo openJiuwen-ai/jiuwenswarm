@@ -285,8 +285,7 @@ class SessionOperationClient(FakeClient):
 
     async def prepare_session_fork(self, provision_input):
         self.calls.append(
-            f"prepare:fork:{provision_input.source_session_id}:"
-            f"{provision_input.title}"
+            f"prepare:fork:{provision_input.source_session_id}:{provision_input.title}"
         )
         return _PreparedSession(
             "fork",
@@ -544,7 +543,9 @@ async def test_runtime_client_close_drains_team_work_before_runtime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_client_close_attempts_every_stage_after_cleanup_failure() -> None:
+async def test_runtime_client_close_attempts_every_stage_after_cleanup_failure() -> (
+    None
+):
     calls: list[str] = []
 
     class RuntimeStub:
@@ -941,6 +942,80 @@ async def test_answer_interaction_handles_consecutive_questions(
 
 
 @pytest.mark.asyncio
+async def test_interaction_displays_nested_questions_and_collects_each_answer(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class NestedQuestionsClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.answers: list[dict] = []
+
+        async def stream(self, request):
+            yield RuntimeEvent(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                session_id=request.session_id,
+                payload={
+                    "event_type": "chat.ask_user_question",
+                    "questions": [
+                        {
+                            "question": "Choose the color",
+                            "options": [
+                                {"label": "RED", "value": "color_red"},
+                                {"label": "BLUE", "value": "color_blue"},
+                            ],
+                        },
+                        {"question": "Provide the reason", "options": []},
+                    ],
+                },
+            )
+
+        async def answer_interaction(self, request):
+            self.answers = request.params["answers"]
+            return []
+
+    monkeypatch.setattr(app, "InProcessRuntimeClient", NestedQuestionsClient)
+    monkeypatch.setattr(app.sys, "stdin", io.StringIO("2\ncustom answer\n"))
+    output = io.StringIO()
+    result = await app.run(
+        _args(tmp_path, output="human", _interactive_worker=True),
+        stdout=output,
+        stderr=output,
+    )
+    assert result == 0
+    assert "Choose the color" in output.getvalue()
+    assert "2. BLUE" in output.getvalue()
+    assert "Provide the reason" in output.getvalue()
+    client = NestedQuestionsClient.latest
+    assert isinstance(client, NestedQuestionsClient)
+    assert client.answers == [
+        {"selected_options": ["color_blue"], "custom_input": "2"},
+        {"selected_options": ["custom answer"], "custom_input": "custom answer"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_interaction_eof_exits_without_submitting_empty_answer(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(app, "InProcessRuntimeClient", ConsecutiveInteractionClient)
+    monkeypatch.setattr(app.sys, "stdin", io.StringIO(""))
+    output = io.StringIO()
+    result = await app.run(
+        _args(tmp_path, output="human", _interactive_worker=True),
+        stdout=output,
+        stderr=output,
+    )
+    client = ConsecutiveInteractionClient.latest
+    assert result == 4
+    assert client.answer_count == 0
+    assert "无法接收交互输入" in output.getvalue()
+    assert client.calls[-2:] == ["cleanup:process_cli:runtime-session", "close"]
+
+
+@pytest.mark.asyncio
 async def test_interactive_worker_reports_real_runtime_session(
     monkeypatch,
     tmp_path: Path,
@@ -1273,7 +1348,9 @@ async def test_session_switch_uses_persisted_modes_not_current_cli_mode(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("commit_error", [RuntimeError("commit failed"), asyncio.CancelledError()])
+@pytest.mark.parametrize(
+    "commit_error", [RuntimeError("commit failed"), asyncio.CancelledError()]
+)
 async def test_session_create_post_delivery_failure_aborts_only_prepared_lease(
     monkeypatch,
     tmp_path: Path,
@@ -1594,8 +1671,7 @@ async def test_session_operations_reject_foreign_owned_metadata(
     assert result == 1
     assert document["events"][0]["metadata"] == {"code": "NOT_FOUND"}
     assert not any(
-        call.startswith(("prepare:", "commit:", "delete:"))
-        for call in client.calls
+        call.startswith(("prepare:", "commit:", "delete:")) for call in client.calls
     )
 
 
@@ -1651,9 +1727,7 @@ def test_runtime_has_no_process_cli_dependency() -> None:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name.startswith("jiuwenswarm.channels.process_cli"):
-                        violations.append(
-                            f"{source.name}:{node.lineno}:{alias.name}"
-                        )
+                        violations.append(f"{source.name}:{node.lineno}:{alias.name}")
     assert violations == []
 
 

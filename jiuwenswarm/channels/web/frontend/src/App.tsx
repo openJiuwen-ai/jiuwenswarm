@@ -3598,6 +3598,14 @@ function AppContent({
     shareExportMonitorTokensRef.current.set(currentSessionId, token);
     setShareExportSessionActive(currentSessionId, true);
     try {
+      if (window.jiuwenDesktop?.isElectron) {
+        const saved = await window.jiuwenDesktop.exportShareImage(
+          currentSessionId,
+          i18n.resolvedLanguage ?? i18n.language,
+        );
+        if (saved) showSaveToast();
+        return;
+      }
       const createResponse = await fetch('/share-api/jobs', {
         method: 'POST',
         cache: 'no-store',
@@ -3623,7 +3631,16 @@ function AppContent({
         setShareExportSessionActive(currentSessionId, false);
       }
     }
-  }, [i18n.language, i18n.resolvedLanguage, isPaused, isProcessing, monitorAndSaveShareImageJob, setShareExportSessionActive, t]);
+  }, [
+    i18n.language,
+    i18n.resolvedLanguage,
+    isPaused,
+    isProcessing,
+    monitorAndSaveShareImageJob,
+    setShareExportSessionActive,
+    showSaveToast,
+    t,
+  ]);
 
   const routeSessionMissing = routeSessionId !== null
     && initialDataLoaded

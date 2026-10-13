@@ -490,6 +490,41 @@ Generally, from highest to lowest: **values you save in the web Configuration UI
 
 ---
 
+## 11. Skill Sync Configuration (Split Server / Client Deployment)
+
+When the Server and the Client are deployed separately, each side keeps its own skill library (`~/.jiuwenswarm/agent/workspace/skills/`). The skill sync API (`/skill-sync/*`: diff / package / apply) lets a client synchronize its local skills with the server. The capability is **off by default** and must be enabled explicitly.
+
+### 11.1 Configuration keys
+
+These keys live in the main config file (`config.yaml`) and must be edited manually:
+
+| Key | Description | Default |
+| --- | --- | --- |
+| `skill_sync.enabled` | Whether the skill sync API is enabled | `false` |
+| `skill_sync.token` | Bearer token for the sync API; **must be non-empty to enable**; verified uniformly across all three endpoints (diff / package / apply) | empty (disabled) |
+
+```yaml
+skill_sync:
+  enabled: true
+  token: "<your strong random token>"
+```
+
+### 11.2 Environment variable
+
+| Variable | Description |
+| --- | --- |
+| `JIUWENSKILL_SYNC_TOKEN` | Overrides `skill_sync.token`; intended for container / split-deployment injection. Once set, a token is considered configured without touching the config file |
+
+> ⚠️ **Security notes**:
+> - With no token configured (both config and environment empty), the endpoints always return 503 — **there is no "empty token passes" path**;
+> - The token guards all three endpoints (diff / package / apply); a wrong token returns 401;
+> - Production traffic must use HTTPS (or equivalent transport-layer encryption / mTLS);
+> - Quotas: apply uploads are limited to 60MB per request (413 beyond); package batches are limited to 100 skills / 5000 files / 100MB uncompressed / 50MB zip (the upload limit sits above the package limit to leave headroom for multipart overhead).
+
+For the protocol details (SkillDigest format, diff state machine, error codes, the `checksum_algo_version` algorithm-version alignment requirement, and the pull-only rule for builtin skills), see the "Split Server / Client Deployment: Skill Sync API" section of the [Skills doc](Skills.md).
+
+---
+
 ## FAQ
 
 ### Q: Configurations not taking effect after saving?

@@ -93,7 +93,7 @@
     <tr>
       <td width="22%"><strong>技能</strong></td>
       <td width="28%"><a href="zh/技能.md">技能</a></td>
-      <td width="50%">智能体技能挂载、调用与扩展机制。</td>
+      <td width="50%">智能体技能挂载、调用与扩展机制；含 Server / Client 分离部署的技能同步接口。</td>
     </tr>
     <tr>
       <td width="22%"><strong>技能交响乐</strong></td>

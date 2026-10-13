@@ -19,7 +19,7 @@ from loguru import logger
 from jiuwenswarm.gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
-from jiuwenswarm.server.runtime.attachments.upload_storage import (
+from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
     atomic_write_unique,
 )
 

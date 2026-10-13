@@ -75,10 +75,21 @@ def infer_work_mode_from_targets(job_item: dict[str, Any]) -> str:
     return DEFAULT_WEB_WORK_MODE
 
 
+_cron_project_lister: Any = None
+
+
+def set_cron_project_lister(list_projects: Any) -> None:
+    """Gateway 注入自己的项目表读取函数，避免 runtime 引用 gateway。"""
+    global _cron_project_lister
+    _cron_project_lister = list_projects
+
+
 def build_cron_project_lookup() -> dict[str, str]:
     """构建 project_id → work_mode 映射,供 cron job 惰性迁移推断 work_mode。"""
     try:
-        from jiuwenswarm.server.runtime.session.project_store import list_projects
+        list_projects = _cron_project_lister
+        if list_projects is None:
+            from jiuwenswarm.server.runtime.session.project_store import list_projects
 
         return {
             p.project_id: p.work_mode

@@ -940,6 +940,15 @@ def update_permissions_profile_in_config(profile: str) -> None:
     update_config(_mutate)
 
 
+def update_a4p_in_config(updates: dict[str, Any]) -> None:
+    """更新 a4p 配置段并写回。"""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "a4p" not in data or data["a4p"] is None:
+        data["a4p"] = {}
+    _merge_config_dict(data["a4p"], updates)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_auto_recap_enabled_in_config(value: bool) -> None:
     """更新 auto_recap.enabled（自动回顾开关）并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -3069,6 +3078,8 @@ def migrate_config_from_template(
 ) -> bool:
     """Sync user config with template structure, preserving user values.
 
+    AgentOS configuration is managed by deployment and skips this migration.
+
     Merge:
     - Add: new fields from template (new config options)
     - Keep: user values for fields that exist in template
@@ -3093,6 +3104,11 @@ def migrate_config_from_template(
     Returns:
         True if migration was performed, False otherwise.
     """
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+
+    if is_agentos_runtime():
+        return False
+
     if not user_config_path.exists():
         return False
 

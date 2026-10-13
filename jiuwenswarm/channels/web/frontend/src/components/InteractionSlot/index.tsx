@@ -3,6 +3,7 @@
  *
  * 读取当前会话 pendingQuestion，按 source 分流：
  *  - authorization → AuthorizationPrompt（授权条）
+ *  - A4P authorization → A4PAuthorizationCard（意图令牌授权卡）
  *  - interaction   → InteractionPrompt（交互卡）
  *  - experience    → InteractionPrompt（复用交互卡外观，使用技能包直接操作）
  *  - legacy/none   → 不渲染（演进/计划审批仍由消息流内的 InlineQuestionCard 处理）
@@ -11,6 +12,7 @@
  */
 
 import { useChatStore } from '../../stores';
+import { A4PAuthorizationCard } from '../../features/A4PAuthorizationModal';
 import type { UserAnswer } from '../../types';
 import { AuthorizationPrompt } from './AuthorizationPrompt';
 import { InteractionPrompt } from './InteractionPrompt';
@@ -26,26 +28,46 @@ export function InteractionSlot({ onSubmit }: InteractionSlotProps) {
   const pending = useChatStore(
     (s) => s.runtimes[activeSessionId ?? '']?.pendingQuestions[0] ?? null,
   );
+  const pendingA4P = useChatStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.pendingA4PAuthorization ?? null,
+  );
+
+  if (pendingA4P) {
+    return (
+      <div
+        className="interaction-slot interaction-slot--attached"
+        data-testid="interaction-slot-root"
+        data-variant="a4p-authorization"
+      >
+        <A4PAuthorizationCard />
+      </div>
+    );
+  }
 
   const kind = classifyPrompt(pending);
   if (!pending || kind === 'none' || kind === 'legacy') {
-    return null;
+    // Keep the recovery probe mounted even without a visible card so a fresh
+    // connection can recover a pending A4P request from the backend.
+    return <A4PAuthorizationCard />;
   }
 
   // 授权条：页签式吸附输入框顶部；交互卡：独立浮卡。
   const isAuth = kind === 'authorization';
   const variant = isAuth ? 'auth' : kind;
   return (
-    <div
-      className={`interaction-slot${isAuth ? ' interaction-slot--attached' : ''}`}
-      data-testid="interaction-slot-root"
-      data-variant={variant}
-    >
-      {isAuth ? (
-        <AuthorizationPrompt pending={pending} onSubmit={onSubmit} />
-      ) : (
-        <InteractionPrompt pending={pending} onSubmit={onSubmit} />
-      )}
-    </div>
+    <>
+      <A4PAuthorizationCard />
+      <div
+        className={`interaction-slot${isAuth ? ' interaction-slot--attached' : ''}`}
+        data-testid="interaction-slot-root"
+        data-variant={variant}
+      >
+        {isAuth ? (
+          <AuthorizationPrompt pending={pending} onSubmit={onSubmit} />
+        ) : (
+          <InteractionPrompt pending={pending} onSubmit={onSubmit} />
+        )}
+      </div>
+    </>
   );
 }

@@ -515,6 +515,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _is_share_api_route(self) -> bool:
         return urlparse(self.path).path.startswith("/share-api/")
 
+    def _is_skill_sync_route(self) -> bool:
+        return urlparse(self.path).path.startswith("/skill-sync/")
+
     def _is_websocket_upgrade(self) -> bool:
         upgrade = self.headers.get("Upgrade", "")
         connection = self.headers.get("Connection", "")
@@ -1000,11 +1003,16 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _resolve_project_path(self, rel_path: str) -> Path:
         """Resolve ``rel_path`` under ``project_root``.
 
-        ``Path.resolve()`` raises ``ValueError`` for paths containing an
-        embedded NUL byte (``os.stat`` rejects them) and ``OSError`` for other
-        malformed inputs.  Surface those as ``_BadRequestError`` so the request
+        NUL is rejected explicitly instead of relying on ``Path.resolve()``
+        raising: only POSIX raises ``ValueError`` for an embedded NUL byte,
+        while Windows behaves differently across Python versions (3.11
+        truncates silently at the NUL, 3.13 returns the path unchanged).  Other
+        malformed inputs still surface as ``OSError`` / ``ValueError`` from
+        ``resolve()``.  Both are mapped to ``_BadRequestError`` so the request
         is answered with ``400`` instead of crashing the handler thread.
         """
+        if "\x00" in rel_path:
+            raise _BadRequestError("invalid_path")
         try:
             return (self.project_root / rel_path).resolve()
         except (OSError, ValueError) as exc:
@@ -1777,6 +1785,112 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(raw)
 
+    def _handle_skill_sync_post(self, parsed) -> None:
+        """POST /skill-sync/{diff,package,apply}：Server/Client 分离部署技能同步."""
+        try:
+            from jiuwenswarm.server.runtime.skill import skill_sync_http
+            from jiuwenswarm.server.runtime.skill.skill_manager import SkillRpcError
+        except ImportError as exc:
+            self.log_error("skill sync module unavailable: %s", exc)
+            self._write_json(
+                500,
+                {
+                    "code": "SKILL_SYNC_PACKAGE_FAILED",
+                    "message": "skill-sync 模块不可用",
+                    "error": "skill-sync 模块不可用",
+                },
+            )
+            return
+
+        authorization = self.headers.get("Authorization", "")
+        # 读 body 前完成鉴权与 Content-Length 预检（未鉴权连接不得
+        # 强制服务器读入任意大小的 body；apply 超限直接 413）
+        content_length_raw = self.headers.get("Content-Length", "")
+        try:
+            content_length = int(content_length_raw) if content_length_raw else 0
+        except ValueError:
+            # 与 skill_sync_http_error_body 一致的三字段结构（code/message/
+            # error），按 code 解析的客户端不失配
+            self._write_json(
+                400,
+                skill_sync_http.skill_sync_http_error_body(
+                    "SKILL_SYNC_INVALID_PAYLOAD", "Content-Length 不是有效整数"
+                ),
+            )
+            return
+        try:
+            skill_sync_http.precheck_skill_sync_request(
+                authorization=authorization,
+                path=parsed.path,
+                content_length=content_length,
+            )
+        except SkillRpcError as exc:
+            status = skill_sync_http.skill_sync_http_error_status(exc.code)
+            self._write_json(
+                status, skill_sync_http.skill_sync_http_error_body(exc.code, exc.message)
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            # 预检兜底：任何未预期异常（如畸形 header 触发的解析错误）
+            # 都不得冒泡到 BaseHTTPRequestHandler 打印 traceback 断连
+            self.log_error("skill-sync precheck failed: %s", exc)
+            self._write_json(
+                400,
+                skill_sync_http.skill_sync_http_error_body(
+                    "SKILL_SYNC_INVALID_PAYLOAD", "请求预检失败"
+                ),
+            )
+            return
+
+        if parsed.path == "/skill-sync/diff":
+            status, payload = skill_sync_http.handle_sync_diff_http(
+                authorization=authorization,
+                body=self._read_request_body(),
+            )
+            self._write_json(status, payload)
+            return
+
+        if parsed.path == "/skill-sync/package":
+            status, payload = skill_sync_http.handle_sync_package_http(
+                authorization=authorization,
+                body=self._read_request_body(),
+                send_file=self._send_skill_sync_zip,
+            )
+            if payload is not None:
+                self._write_json(status, payload)
+            return
+
+        if parsed.path == "/skill-sync/apply":
+            status, payload = skill_sync_http.handle_sync_apply_http(
+                authorization=authorization,
+                content_type=self.headers.get("Content-Type", ""),
+                body=self._read_request_body(),
+                content_length=content_length,
+            )
+            self._write_json(status, payload)
+            return
+
+        self._write_json(404, {"error": "not_found"})
+
+    def _send_skill_sync_zip(
+        self, zip_path: Path, filename: str, sha256: str, size: int
+    ) -> None:
+        """整包临时文件回写响应头后流式发送（X-Package-Sha256 覆盖整个 body）."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header(
+            "Content-Disposition", f'attachment; filename="{filename}"'
+        )
+        self.send_header("X-Package-Sha256", sha256)
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command == "HEAD":
+            return
+        with zip_path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                self.wfile.write(chunk)
+
     def _handle_file_api_post(self, parsed) -> None:
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
@@ -2005,6 +2119,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self._is_share_api_route():
             self._handle_share_api_post(parsed)
             return
+        # 技能同步接口为独立 /skill-sync/* 路径（不属 /file-api 命名空间），
+        # 必须在 do_POST 顶层接入而非 _handle_file_api_post（设计文档第 7 节）。
+        if self._is_skill_sync_route():
+            self._handle_skill_sync_post(parsed)
+            return
         if self._is_file_api_route():
             try:
                 self._handle_file_api_post(parsed)
@@ -2088,13 +2207,29 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def send_head(self):
+        # 内嵌 NUL 必须在 resolve() 之前显式拦截：POSIX 上 Path.resolve() 会抛
+        # ValueError，但 Windows 上各 Python 版本行为不一致（3.11 静默在 NUL 处截断、
+        # 3.12 抛异常、3.13 原样返回含 NUL 的路径），靠捕获异常无法跨平台覆盖。
+        # 跨盘符（/D:/x）则由下面的 os.path.commonpath 抛 ValueError。两类都要转成
+        # 400：handle_one_request 只捕获 TimeoutError，异常会穿透到 socketserver，
+        # 连接被直接关掉且客户端收不到任何 HTTP 响应。
         parsed = urlparse(self.path)
         req_path = unquote(parsed.path)
-        rel_path = req_path.lstrip("/") or "index.html"
+        if "\x00" in req_path:
+            self._static_cache_control = None
+            self._write_json(400, {"error": "invalid_path"})
+            return None
 
-        base_dir = Path(self.directory or os.getcwd()).resolve()
-        target = (base_dir / rel_path).resolve()
-        in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+        try:
+            rel_path = req_path.lstrip("/") or "index.html"
+
+            base_dir = Path(self.directory or os.getcwd()).resolve()
+            target = (base_dir / rel_path).resolve()
+            in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+        except (OSError, ValueError):
+            self._static_cache_control = None
+            self._write_json(400, {"error": "invalid_path"})
+            return None
 
         # 使用实际静态解析结果判定 SPA 入口, 覆盖 /、index.html 及路由回退。
         # 现存静态资源及其他 HTML 产物不需要桌面 Cookie。

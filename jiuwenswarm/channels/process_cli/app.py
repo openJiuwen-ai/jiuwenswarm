@@ -518,13 +518,29 @@ def _interaction_answers(
     return [{"selected_options": [selected], "custom_input": answer}]
 
 
+def _interaction_questions(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    questions = payload.get("questions")
+    if isinstance(questions, list):
+        prompts = [item for item in questions if isinstance(item, dict)]
+        if prompts:
+            return prompts
+    return [payload]
+
+
 def _interaction_answer(
     payload: dict[str, Any],
     stream: TextIO,
 ) -> tuple[str, list[dict[str, Any]]]:
-    options = _render_interaction_prompt(payload, stream)
-    answer = sys.stdin.readline().strip()
-    return answer, _interaction_answers(answer, options)
+    answers = []
+    answer = ""
+    for question in _interaction_questions(payload):
+        options = _render_interaction_prompt(question, stream)
+        line = sys.stdin.readline()
+        if not line:
+            raise EOFError(INTERACTIVE_INPUT_REQUIRED)
+        answer = line.strip()
+        answers.extend(_interaction_answers(answer, options))
+    return answer, answers
 
 
 def _answer_request(
@@ -610,7 +626,7 @@ async def _consume(
         original_request: AgentRequest,
         interaction: RuntimeEvent,
     ) -> int:
-        if not interactive:
+        def input_unavailable() -> int:
             renderer.render(
                 RuntimeEvent.error(
                     request_id=interaction.request_id or original_request.request_id,
@@ -621,22 +637,27 @@ async def _consume(
             )
             return 4
 
+        if not interactive:
+            return input_unavailable()
+
         if live_input is not None:
             await live_input.pause()
         renderer.prepare_interaction()
-        if live_input is None:
-            _answer, answers = await asyncio.to_thread(
-                _interaction_answer,
-                interaction.payload or {},
-                renderer.stdout,
-            )
-        else:
-            options = _render_interaction_prompt(
-                interaction.payload or {},
-                renderer.stdout,
-            )
-            answer = await live_input.read_interaction_line()
-            answers = _interaction_answers(answer, options)
+        try:
+            if live_input is None:
+                _answer, answers = await asyncio.to_thread(
+                    _interaction_answer,
+                    interaction.payload or {},
+                    renderer.stdout,
+                )
+            else:
+                answers = []
+                for question in _interaction_questions(interaction.payload or {}):
+                    options = _render_interaction_prompt(question, renderer.stdout)
+                    answer = await live_input.read_interaction_line()
+                    answers.extend(_interaction_answers(answer, options))
+        except EOFError:
+            return input_unavailable()
         answer_request, resumes_stream = _answer_request(
             original_request,
             interaction,

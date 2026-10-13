@@ -167,7 +167,7 @@ def apply_a2ui_text_fallback_to_gateway_payload(
     if not any(_A2UI_OPEN_TAG_MARKER in value for value in payload.values() if isinstance(value, str)):
         return payload
 
-    from jiuwenswarm.server.runtime.a2ui.integration import apply_non_web_text_fallback_to_payload
+    from jiuwenswarm.gateway.embedded.runtime.a2ui_text import apply_non_web_text_fallback_to_payload
 
     return apply_non_web_text_fallback_to_payload(payload, channel_id=channel_id)
 
@@ -3506,9 +3506,29 @@ class MessageHandler(ABC):
                         if str(job.get("user_id") or "").strip() == owner_user_id
                     ]
             elif action == "get":
-                data = await _get_owned_job(str(params.get("job_id") or ""))
-                if data is None:
-                    raise KeyError("job not found")
+                job_id = str(params.get("job_id") or "")
+                if params.get("authoritative") is True:
+                    if not isinstance(params.get("job_id"), str) or not job_id.strip():
+                        raise ValueError("authoritative cron query requires a nonempty job_id")
+                    data = await cc.get_job(job_id)
+                    if data is not None:
+                        if (
+                            not isinstance(data, dict)
+                            or data.get("id") != job_id.strip()
+                            or not isinstance(data.get("user_id", ""), str)
+                        ):
+                            raise ValueError("invalid authoritative cron job")
+                        job_owner = data.get("user_id", "")
+                        if str(job_owner or "").strip() != owner_user_id:
+                            data = {"status": "forbidden", "code": "FORBIDDEN"}
+                        else:
+                            data = {"status": "found", "job": data}
+                    else:
+                        data = {"status": "missing"}
+                else:
+                    data = await _get_owned_job(job_id)
+                    if data is None:
+                        raise KeyError("job not found")
             elif action == "create":
                 params = dict(params)
                 params.pop("_auth_session", None)
@@ -3578,6 +3598,9 @@ class MessageHandler(ABC):
                 data=data,
                 user_id=owner_user_id or None,
             )
+
+        if not channel_id:
+            return
 
         from jiuwenswarm.common.schema.message import EventType, Message
         out = Message(
@@ -4191,10 +4214,10 @@ class MessageHandler(ABC):
         if not is_legacy_shared_directory_client(self.agent_client):
             return ""
         try:
-            from jiuwenswarm.server.runtime.session.model_selection_store import (
+            from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import (
                 get_session_model_selection,
             )
-            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
 
             if get_session_model_selection(session_id) is not None:
                 return ""

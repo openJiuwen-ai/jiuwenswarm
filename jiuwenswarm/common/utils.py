@@ -46,6 +46,7 @@ import logging
 from logging.handlers import BaseRotatingHandler
 from ruamel.yaml import YAML
 
+from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
 
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
@@ -886,6 +887,7 @@ def ensure_config_migrated_from_template(
 ) -> bool:
     """将模板新增的配置项合并进用户 config.yaml（保留用户已有值）。
 
+    AgentOS 配置由部署模板管理，跳过包内默认模板的结构同步。
     版本号短路：用户 config.config_version == 程序 VERSION 时跳过迁移；
     不一致时迁移，迁移成功后由 migrate_config_from_template 把 config_version 写回程序版本。
 
@@ -897,6 +899,9 @@ def ensure_config_migrated_from_template(
     purely additive: keys the operator added that the template does not contain
     are preserved, so this is safe to call on every start.
     """
+    if is_agentos_runtime():
+        return False
+
     from jiuwenswarm.common.config import migrate_config_from_template, load_yaml_round_trip
     from jiuwenswarm.common._build_config import VERSION
 
@@ -1097,7 +1102,8 @@ def prepare_workspace(
     config_dest_dir.mkdir(parents=True, exist_ok=True)
     config_yaml_dest = config_dest_dir / "config.yaml"
 
-    if overwrite or not config_yaml_dest.exists():
+    config_initialized = overwrite or not config_yaml_dest.exists()
+    if config_initialized:
         with TrackCopyDiff(
             dest=config_yaml_dest,
             is_file=True,
@@ -1264,7 +1270,10 @@ def prepare_workspace(
     from jiuwenswarm.common.config import migrate_config_from_template, set_preferred_language_in_config_file
 
     migrate_config_from_template(config_yaml_src, config_yaml_dest)
-    set_preferred_language_in_config_file(config_yaml_dest, resolved_lang)
+    # Runtime MCP repairs must leave an existing AgentOS deployment config intact.
+    # Fresh initialization and an explicit language choice can still set the language.
+    if config_initialized or preferred_language is not None or not is_agentos_runtime():
+        set_preferred_language_in_config_file(config_yaml_dest, resolved_lang)
 
     # ----- 默认安装内置技能: skill-creator 和 swarmskill-creator -----
     _install_default_builtin_skills(

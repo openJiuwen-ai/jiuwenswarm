@@ -102,8 +102,42 @@ class _ConfigRpcChannel:
         }
 
 
+async def reload_runtime_after_config_save(
+    agent_manager: Any,
+    _updated_keys: Any = None,
+    *,
+    env_updates: dict[str, Any] | None = None,
+    config_payload: dict[str, Any] | None = None,
+    reload_options: dict[str, Any] | None = None,
+) -> bool:
+    """Publish a saved config to every agent in this process before acknowledging it.
+
+    Permission changes share one config file across channels, so they are not
+    narrowed to the channel that submitted the panel request.
+    """
+    options = reload_options if isinstance(reload_options, dict) else {}
+    scopes = {
+        str(scope)
+        for scope in (options.get("reload_scopes") or [])
+        if isinstance(scope, str) and scope
+    }
+    target_channel = str(options.get("target_channel_id") or "").strip() or None
+    if "permissions" in scopes:
+        target_channel = None
+    await agent_manager.reload_agents_config(
+        config_payload if isinstance(config_payload, dict) else None,
+        env_updates if isinstance(env_updates, dict) else None,
+        target_channel_id=target_channel,
+        reload_scopes=scopes or None,
+    )
+    return True
+
+
 class ConfigAdapter(GatewayAdapter):
     """Execute config-panel requests in the current AgentServer directory."""
+
+    def __init__(self, on_config_saved: Any = None) -> None:
+        self._on_config_saved = on_config_saved
 
     methods = frozenset({
         ReqMethod.CONFIG_GET.value,
@@ -219,7 +253,10 @@ class ConfigAdapter(GatewayAdapter):
                 register_models_handlers,
             )
 
-            register_config_set_handlers(channel)
+            register_config_set_handlers(
+                channel,
+                on_config_saved=self._on_config_saved,
+            )
             register_models_handlers(channel)
         handler = channel.methods.get(request.req_method.value)
         if handler is None:
