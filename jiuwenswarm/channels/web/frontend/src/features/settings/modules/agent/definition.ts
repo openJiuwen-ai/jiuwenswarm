@@ -1,5 +1,6 @@
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
+import { A2ADuplexSettings } from './A2ADuplexSettings';
 import { AgentMediaSettings, AgentSearchSettings, VideoGenSettings, VisualGenSettings } from './AgentSettings';
 
 export const agentModule: SettingsModuleDefinition = {
@@ -38,6 +39,11 @@ export const agentModule: SettingsModuleDefinition = {
         { id: 'video-gen-settings', component: 'custom', render: VideoGenSettings },
         { id: 'visual-gen-settings', component: 'custom', render: VisualGenSettings },
       ],
+    },
+    {
+      id: 'a2a-duplex',
+      titleKey: 'settingsPanel.agent.a2aDuplex.title',
+      items: [{ id: 'a2a-duplex-settings', component: 'custom', render: A2ADuplexSettings }],
     },
   ],
 };

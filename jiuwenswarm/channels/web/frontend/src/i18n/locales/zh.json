@@ -320,6 +320,46 @@
       "test": "测试"
     },
     "agent": {
+      "a2aDuplex": {
+        "title": "A2A 双工监工",
+        "disabled": "已关闭",
+        "restartHint": "Agent 忙时收到新消息，由监工决定打断、插入或排队。修改后重启团队生效。",
+        "jevKeyHint": "可选。留空则使用浏览器设置的 JEV 密钥",
+        "endpointHint": "按地址自动填写：typesafe.ai 用 /systemone，OpenRouter、MCL、Yale 等用 /decisions。",
+        "keyKept": "已配置，留空则不修改",
+        "clearTitle": "清除监工配置？",
+        "clearConfirm": "关闭监工，并清除地址、模型和 API Key。",
+        "modes": {
+          "off": "关闭",
+          "active": "主动监工"
+        },
+        "formats": {
+          "openai": "OpenAI 标准格式",
+          "anthropic": "Anthropic 格式",
+          "jev": "JEV 格式"
+        },
+        "formatHints": {
+          "openai": "适用 DeepSeek、GLM、Kimi 等模型和 OpenAI 格式中转站。模型必须返回 logprobs。",
+          "anthropic": "适用 Anthropic 格式中转站。概率由模型自报，未经校准。",
+          "jev": "适用 JEV、MCL、Yale 等。服务端直接返回选项和概率。"
+        },
+        "fields": {
+          "enabled": "启用监工",
+          "mode": "模式",
+          "format": "接口格式",
+          "api_base": "API Base URL",
+          "endpoint": "接口路径",
+          "model": "模型名",
+          "api_key": "API Key",
+          "timeout_seconds": "超时（秒）"
+        },
+        "errors": {
+          "timeout": "请输入 0–60 之间的秒数",
+          "jevKey": "请填写 API 密钥，或在浏览器设置的 JEV 密钥里配置",
+          "endpoint": "以 / 开头",
+          "url": "请输入 http(s) 地址"
+        }
+      },
       "skills": "技能",
       "webSearch": "网页搜索",
       "mediaTools": "工具",

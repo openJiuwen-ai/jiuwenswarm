@@ -320,6 +320,46 @@
       "test": "Test"
     },
     "agent": {
+      "a2aDuplex": {
+        "title": "A2A duplex supervisor",
+        "disabled": "Off",
+        "restartHint": "When a busy agent gets a new message, the supervisor decides to interrupt, insert or queue it. Restart the team after changes.",
+        "jevKeyHint": "Optional. Leave empty to use the key from Browser settings → JEV API key",
+        "endpointHint": "Filled from the URL: /systemone for typesafe.ai, /decisions for OpenRouter, MCL, Yale and others.",
+        "keyKept": "Configured. Leave empty to keep it.",
+        "clearTitle": "Clear supervisor settings?",
+        "clearConfirm": "Turn off the supervisor and clear the URL, model and API key.",
+        "modes": {
+          "off": "Off",
+          "active": "Active"
+        },
+        "formats": {
+          "openai": "OpenAI format",
+          "anthropic": "Anthropic format",
+          "jev": "JEV format"
+        },
+        "formatHints": {
+          "openai": "For DeepSeek, GLM, Kimi and OpenAI-format relays. The model must return logprobs.",
+          "anthropic": "For Anthropic-format relays. The model reports its own probability, which is not calibrated.",
+          "jev": "For JEV, MCL, Yale and similar. The server returns the choice and its probability."
+        },
+        "fields": {
+          "enabled": "Enable supervisor",
+          "mode": "Mode",
+          "format": "API format",
+          "api_base": "API Base URL",
+          "endpoint": "Endpoint",
+          "model": "Model",
+          "api_key": "API key",
+          "timeout_seconds": "Timeout (s)"
+        },
+        "errors": {
+          "timeout": "Enter seconds between 0 and 60",
+          "jevKey": "Enter an API key, or set the key in Browser settings → JEV API key",
+          "endpoint": "Start with /",
+          "url": "Enter an http(s) URL"
+        }
+      },
       "skills": "Skills",
       "webSearch": "Web search",
       "mediaTools": "Tools",
