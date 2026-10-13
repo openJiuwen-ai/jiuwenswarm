@@ -65,9 +65,15 @@ if getattr(sys, "frozen", False):
     # 优先命中内置 Node 22，用户无需单独安装 Node。入口脚本是所有冻结进程（主进程 + --desktop-run-*
     # 子进程）的共同入口，PATH 在每个进程启动时都会被前置，幂等且随子进程继承。
     if sys.platform == "darwin":
+        # pywebview: Contents/MacOS/<exe>; Electron: Contents/Resources/backend/<exe>.
+        _bundle_contents = next(
+            (parent for parent in Path(sys.executable).resolve().parents
+             if parent.name == "Contents" and parent.parent.suffix == ".app"),
+            None,
+        )
         _node_bin = (
-            Path(sys.executable).resolve().parent.parent
-            / "Resources" / "node-runtime" / "bin"
+            _bundle_contents / "Resources" / "node-runtime" / "bin"
+            if _bundle_contents else _frozen_exe_dir / "runtime" / "node-runtime" / "bin"
         )
         if _node_bin.is_dir():
             _old_path = os.environ.get("PATH", "")
