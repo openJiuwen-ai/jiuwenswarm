@@ -1,9 +1,11 @@
-"""Sessions, accepted Requests and their Executions.
+"""Sessions, accepted Requests, their Executions, event logs and candidate outputs.
 
 A Session is found by the full ``(namespace, agent, conversation kind, channel,
 key)`` tuple, each part in its own column, so two conversations never share a
 Session because of joined or truncated strings. Requests are written before
 dispatch and survive restarts; a supplementary message is always a new Request.
+Events are stored once per ``event_id``; a candidate output keeps the ``output_id``
+of the event that first proposed it.
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -28,7 +30,7 @@ from jiuwenswarm.server.runtime.persistent_agents.execution_models import (
 from jiuwenswarm.server.runtime.persistent_agents.models import PersistentAgentError, require_identifier
 from jiuwenswarm.server.runtime.persistent_agents.spec_provider import ConfigSnapshot
 from jiuwenswarm.server.runtime.persistent_agents.sqlite_store import SQLiteStore
-from openjiuwen.harness.persistent_agent import RequestInput
+from openjiuwen.harness.persistent_agent import AgentEvent, EventType, RequestInput
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -68,7 +70,33 @@ CREATE TABLE IF NOT EXISTS executions (
     PRIMARY KEY (namespace_id, execution_id)
 );
 CREATE INDEX IF NOT EXISTS executions_by_request ON executions (namespace_id, request_id, started_at);
+CREATE TABLE IF NOT EXISTS execution_events (
+    namespace_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    execution_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    local_seq INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    event_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (namespace_id, event_id),
+    UNIQUE (namespace_id, execution_id, local_seq)
+);
+CREATE TABLE IF NOT EXISTS candidate_outputs (
+    namespace_id TEXT NOT NULL,
+    output_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    execution_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    target_ref TEXT NOT NULL,
+    share_mode TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (namespace_id, output_id)
+);
 """
+_TERMINAL_EVENTS = (EventType.EXECUTION_PAUSED.value, EventType.EXECUTION_FINAL.value)
 
 
 def _uuid_ids(prefix: str) -> Callable[[], str]:
@@ -291,6 +319,133 @@ class ExecutionRepository(SQLiteStore):
                 (namespace_id, session_id),
             ).fetchall()
         return [self._request(row) for row in rows]
+
+    def record_events(self, events: Sequence[AgentEvent], *, now: datetime) -> None:
+        """Store events of one Execution in one transaction; nothing is kept if any of them is rejected.
+
+        A resubmitted event with the same content is skipped. A final is rejected
+        unless every output it references is stored for the same Request, either
+        earlier or in this batch.
+        """
+        if not events:
+            return
+        with self._transaction() as conn:
+            for event in events:
+                self._insert_event(conn, event, now)
+
+    def _insert_event(self, conn: sqlite3.Connection, event: AgentEvent, now: datetime) -> None:
+        owner = conn.execute(
+            "SELECT r.agent_id, r.session_id, r.source_ref FROM executions e JOIN requests r "
+            "ON r.namespace_id = e.namespace_id AND r.request_id = e.request_id "
+            "WHERE e.namespace_id = ? AND e.execution_id = ? AND e.request_id = ?",
+            (event.namespace_id, event.execution_id, event.request_id),
+        ).fetchone()
+        if owner is None or (owner["agent_id"], owner["session_id"], owner["source_ref"]) != (
+            event.agent_id,
+            event.session_id,
+            event.source_ref,
+        ):
+            raise PersistentAgentError("event does not belong to a stored Execution", code="NOT_FOUND")
+        digest = event.proposal_digest()
+        stored = conn.execute(
+            "SELECT digest FROM execution_events WHERE namespace_id = ? AND event_id = ?",
+            (event.namespace_id, event.event_id),
+        ).fetchone()
+        if stored is not None:
+            if stored["digest"] != digest:
+                raise PersistentAgentError("event_id was recorded with other content", code="CONFLICT")
+            return
+        if event.event_type in _TERMINAL_EVENTS:
+            terminal = conn.execute(
+                "SELECT event_id FROM execution_events WHERE namespace_id = ? AND execution_id = ? "
+                "AND event_type IN (?, ?)",
+                (event.namespace_id, event.execution_id, *_TERMINAL_EVENTS),
+            ).fetchone()
+            if terminal is not None:
+                raise PersistentAgentError("execution already has a final or paused event", code="CONFLICT")
+        if event.event_type == EventType.OUTPUT_PROPOSED:
+            self._insert_output(conn, event, now)
+        if event.event_type == EventType.EXECUTION_FINAL:
+            self._require_outputs(conn, event)
+        conn.execute(
+            "INSERT INTO execution_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event.namespace_id,
+                event.event_id,
+                event.execution_id,
+                event.request_id,
+                event.local_seq,
+                event.event_type.value,
+                digest,
+                event.model_dump_json(),
+                now.isoformat(),
+            ),
+        )
+
+    @staticmethod
+    def _insert_output(conn: sqlite3.Connection, event: AgentEvent, now: datetime) -> None:
+        output = event.payload
+        existing = conn.execute(
+            "SELECT event_id FROM candidate_outputs WHERE namespace_id = ? AND output_id = ?",
+            (event.namespace_id, output.output_id),
+        ).fetchone()
+        if existing is not None:
+            raise PersistentAgentError("output_id was proposed by another event", code="CONFLICT")
+        conn.execute(
+            "INSERT INTO candidate_outputs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event.namespace_id,
+                output.output_id,
+                event.request_id,
+                event.execution_id,
+                event.event_id,
+                output.target_ref,
+                output.share_mode,
+                output.model_dump_json(),
+                now.isoformat(),
+            ),
+        )
+
+    @staticmethod
+    def _require_outputs(conn: sqlite3.Connection, event: AgentEvent) -> None:
+        for output_id in event.payload.output_refs:
+            row = conn.execute(
+                "SELECT 1 FROM candidate_outputs WHERE namespace_id = ? AND output_id = ? AND request_id = ?",
+                (event.namespace_id, output_id, event.request_id),
+            ).fetchone()
+            if row is None:
+                raise PersistentAgentError(f"final references unsaved output {output_id}", code="OUTPUT_MISSING")
+
+    def read_execution_log(
+        self, namespace_id: str, session_id: str, request_id: str, execution_id: str
+    ) -> tuple[AgentEvent, ...]:
+        """Saved events of an Execution of the given Session and Request, in ``local_seq`` order."""
+        with self._transaction() as conn:
+            owner = conn.execute(
+                "SELECT 1 FROM executions e JOIN requests r "
+                "ON r.namespace_id = e.namespace_id AND r.request_id = e.request_id "
+                "WHERE e.namespace_id = ? AND e.execution_id = ? AND r.request_id = ? AND r.session_id = ?",
+                (namespace_id, execution_id, request_id, session_id),
+            ).fetchone()
+            if owner is None:
+                raise PersistentAgentError("execution is not part of this Request", code="NOT_FOUND")
+            rows = conn.execute(
+                "SELECT event_json FROM execution_events WHERE namespace_id = ? AND execution_id = ? "
+                "ORDER BY local_seq",
+                (namespace_id, execution_id),
+            ).fetchall()
+        return tuple(AgentEvent.model_validate_json(row["event_json"]) for row in rows)
+
+    def candidate_output(self, namespace_id: str, output_id: str) -> AgentEvent | None:
+        """The stored ``output.proposed`` event of an output, for delivery handoff."""
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT e.event_json FROM candidate_outputs c "
+                "JOIN execution_events e ON e.namespace_id = c.namespace_id AND e.event_id = c.event_id "
+                "WHERE c.namespace_id = ? AND c.output_id = ?",
+                (namespace_id, output_id),
+            ).fetchone()
+        return None if row is None else AgentEvent.model_validate_json(row["event_json"])
 
     def pending_requests(self, namespace_id: str) -> list[RequestState]:
         """Queued and dispatched Requests, grouped by Session in arrival order, for restart recovery."""
