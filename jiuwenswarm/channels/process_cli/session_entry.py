@@ -26,6 +26,14 @@ def _validate_query(
         for value in command_args
         if value.startswith("-") and not value.lstrip("-").isdecimal()
     }
+    # parse_args has already rejected unknown and ambiguous options. Match its
+    # accepted long-option abbreviations before enforcing the query allowlist.
+    if parser.allow_abbrev:
+        for option in provided_options - allowed:
+            matches = [name for name in allowed if name.startswith(option)]
+            if option.startswith("--") and len(matches) == 1:
+                provided_options.remove(option)
+                provided_options.add(matches[0])
     if args.prompt is not None or provided_options - allowed:
         parser.error("会话查询仅支持 --search、--limit、--offset，不能混用任务参数")
     if args.latest_session and (args.limit is not None or args.offset is not None):

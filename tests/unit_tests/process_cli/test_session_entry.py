@@ -58,6 +58,50 @@ def test_query_uses_owned_catalog_without_runtime_start(monkeypatch, capsys):
     assert include_team and read_only
 
 
+@pytest.mark.parametrize(
+    "arguments,search,limit,offset,latest",
+    [
+        (["--list"], "", 20, 0, False),
+        (["--latest"], "", 1, 0, True),
+        (["--list-sessions", "--sea", "my project"], "my project", 20, 0, False),
+        (
+            ["--list", "--sea", "my project", "--lim", "7", "--off", "2"],
+            "my project",
+            7,
+            2,
+            False,
+        ),
+        (
+            ["--list", "--sea=my project", "--lim=7", "--off=2"],
+            "my project",
+            7,
+            2,
+            False,
+        ),
+        (["--latest", "--sea=my project"], "my project", 1, 0, True),
+    ],
+)
+def test_query_accepts_unique_abbreviations(
+    arguments, search, limit, offset, latest, monkeypatch, capsys
+):
+    calls = []
+
+    def list_sessions(request, *, include_team, read_only):
+        calls.append((request, include_team, read_only))
+        return _result(_session("process_cli_full_id"))
+
+    monkeypatch.setattr(session_catalog, "list_sessions", list_sessions)
+    assert _execute(arguments) == 0
+    request, include_team, read_only = calls[0]
+    assert request.channel_id == "process_cli"
+    assert (request.search, request.limit, request.offset) == (search, limit, offset)
+    assert include_team and read_only
+    output = capsys.readouterr().out
+    assert "process_cli_full_id" in output
+    if latest:
+        assert output == "process_cli_full_id\n"
+
+
 def test_list_keeps_full_ids_and_sanitizes_multiline_metadata(monkeypatch, capsys):
     item = SessionSummary(
         session_id="process_cli_1234567890abcdef_9876543210abcdef",
@@ -95,6 +139,17 @@ def test_list_keeps_full_ids_and_sanitizes_multiline_metadata(monkeypatch, capsy
         ["--search", "test"],
         ["--limit", "10", "task"],
         ["--offset", "0"],
+        ["--list", "--ses", "process_cli_full_id"],
+        ["--list", "--time=30"],
+        ["--list", "--mo", "code.normal"],
+        ["--list", "--out", "human"],
+        ["--list", "--lim", "0"],
+        ["--list", "--off", "-1"],
+        ["--latest", "--lim=1"],
+        ["--latest", "--off=0"],
+        ["--sea", "test"],
+        ["--list", "--l"],
+        ["--list", "--o", "0"],
     ],
 )
 def test_invalid_queries_fail_before_storage(arguments, monkeypatch):
@@ -218,9 +273,12 @@ main()
         return result.stdout
 
     assert run("--latest-session") == "process_cli_team\n"
+    assert run("--latest") == "process_cli_team\n"
     output = run("--list-sessions", "--limit", "1", "--offset", "1")
     assert "process_cli_old" in output and "process_cli_team" not in output
+    assert run("--list", "--lim=1", "--off=1") == output
     assert "web_foreign" not in run("--list-sessions")
+    assert run("--list") == run("--list-sessions")
     file = sessions / "process_cli_old" / "metadata.json"
     metadata = json.loads(file.read_text(encoding="utf-8"))
     metadata["last_message_at"] = 30
@@ -228,4 +286,6 @@ main()
     before[file] = file.read_bytes()
     assert run("--latest-session") == "process_cli_old\n"
     assert run("--latest-session", "--search=team") == "process_cli_team\n"
+    assert run("--latest", "--sea=team") == "process_cli_team\n"
+    assert "process_cli_team" in run("--list", "--sea", "team")
     assert {p: p.read_bytes() for p in sessions.rglob("*") if p.is_file()} == before
