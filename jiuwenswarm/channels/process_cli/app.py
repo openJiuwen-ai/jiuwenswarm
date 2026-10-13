@@ -98,8 +98,7 @@ def _build_request(
         "project_dir": project_dir,
         "trusted_dirs": trusted_dirs,
         "supports_user_interaction": (
-            bool(getattr(args, "_interactive_worker", False))
-            or (args.output == "human" and sys.stdin.isatty())
+            bool(getattr(args, "_interactive_worker", False)) or sys.stdin.isatty()
         ),
     }
     model_selection = str(getattr(args, "model_selection", "") or "").strip()
@@ -764,7 +763,6 @@ async def run(
     request_id = _new_request_id()
     operation = str(getattr(args, "_operation", CHAT_OPERATION) or CHAT_OPERATION)
     renderer = EventRenderer(
-        args.output,
         stdout=stdout,
         stderr=stderr,
         show_reasoning=args.show_reasoning,
@@ -836,7 +834,7 @@ async def run(
         )
         renderer.working()
         interactive = bool(getattr(args, "_interactive_worker", False)) or (
-            args.output == "human" and sys.stdin.isatty()
+            sys.stdin.isatty()
         )
         live_input = None
         if supports_live_session_input(
@@ -882,7 +880,6 @@ async def run(
             result = await execute()
         renderer.finish(
             session_id=session_id,
-            request_id=request_id,
             show_completion=operation == CHAT_OPERATION,
         )
         return result
@@ -899,7 +896,6 @@ async def run(
         )
         renderer.finish(
             session_id=session_id,
-            request_id=request_id,
             show_completion=operation == CHAT_OPERATION,
         )
         return 124
@@ -910,8 +906,10 @@ async def run(
         raise
     except Exception as exc:  # noqa: BLE001 - CLI converts failures to events
         error_metadata = None
-        if isinstance(exc, SessionProvisionError) and exc.code is not None:
-            error_metadata = {"code": exc.code}
+        if isinstance(exc, SessionProvisionError):
+            error_code = getattr(exc, "code", None)
+            if error_code is not None:
+                error_metadata = {"code": error_code}
         renderer.render(
             RuntimeEvent.error(
                 request_id=request_id,
@@ -923,7 +921,6 @@ async def run(
         )
         renderer.finish(
             session_id=session_id,
-            request_id=request_id,
             show_completion=operation == CHAT_OPERATION,
         )
         return 1

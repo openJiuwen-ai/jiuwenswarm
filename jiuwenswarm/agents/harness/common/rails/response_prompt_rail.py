@@ -70,8 +70,8 @@ class ResponsePromptRail(DeepAgentRail):
                 if isinstance(inputs, dict)
                 else getattr(inputs, "query", None)
             )
-            extra[A2UI_BROWSER_WORKFLOW_CONTEXT_KEY] = (
-                is_a2ui_browser_workflow_request(query)
+            extra[A2UI_BROWSER_WORKFLOW_CONTEXT_KEY] = is_a2ui_browser_workflow_request(
+                query
             )
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
@@ -80,7 +80,9 @@ class ResponsePromptRail(DeepAgentRail):
 
         language = self.system_prompt_builder.language or "cn"
         self.system_prompt_builder.remove_section("response")
-        self.system_prompt_builder.add_section(_input_prompt(language))
+        self.system_prompt_builder.add_section(
+            _input_prompt(language, channel=self._resolve_channel(ctx))
+        )
         self.system_prompt_builder.add_section(_output_prompt(language))
         self._sync_a2ui_prompt_section(
             self._resolve_channel(ctx),
@@ -165,7 +167,11 @@ class ResponsePromptRail(DeepAgentRail):
     @staticmethod
     def _resolve_context_value(ctx: AgentCallbackContext, key: str) -> str | None:
         for source in (getattr(ctx, "inputs", None), getattr(ctx, "extra", None)):
-            value = source.get(key) if isinstance(source, dict) else getattr(source, key, None)
+            value = (
+                source.get(key)
+                if isinstance(source, dict)
+                else getattr(source, key, None)
+            )
             if value is not None and str(value).strip():
                 return str(value)
         return None
@@ -176,7 +182,11 @@ class ResponsePromptRail(DeepAgentRail):
             return extra[A2UI_BROWSER_WORKFLOW_CONTEXT_KEY] is True
 
         inputs = getattr(ctx, "inputs", None)
-        query = inputs.get("query") if isinstance(inputs, dict) else getattr(inputs, "query", None)
+        query = (
+            inputs.get("query")
+            if isinstance(inputs, dict)
+            else getattr(inputs, "query", None)
+        )
         return is_a2ui_browser_workflow_request(query)
 
     def _sync_a2ui_prompt_section(
@@ -195,7 +205,9 @@ class ResponsePromptRail(DeepAgentRail):
         try:
             from jiuwenswarm.server.runtime.a2ui.integration import is_a2ui_channel
             from jiuwenswarm.server.runtime.a2ui.config import get_current_a2ui_config
-            from jiuwenswarm.server.runtime.a2ui.runtime.prompt import build_a2ui_prompt_section
+            from jiuwenswarm.server.runtime.a2ui.runtime.prompt import (
+                build_a2ui_prompt_section,
+            )
 
             is_web_channel = is_a2ui_channel(channel)
             enabled = get_current_a2ui_config().enabled if is_web_channel else False

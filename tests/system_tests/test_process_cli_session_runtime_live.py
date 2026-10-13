@@ -54,25 +54,16 @@ def _args(
         trusted_dir=[str(workspace)],
         mode=mode,
         work_mode=work_mode,
-        output="json",
         timeout=180.0,
         show_reasoning=False,
         show_tools=False,
         _interactive_worker=False,
-        _session_result_file=None,
+        _session_result_file=str(workspace / "current-session.txt"),
     )
 
 
-def _assert_terminal_response(document: dict) -> None:
-    events = document.get("events") or []
-    assert document.get("ok") is True
-    assert any(bool(event.get("is_complete")) for event in events)
-    response_text = "".join(
-        str((event.get("payload") or {}).get(key) or "")
-        for event in events
-        for key in ("delta", "content", "text", "answer")
-    ).strip()
-    assert response_text
+def _assert_terminal_response(output: str) -> None:
+    assert output.strip()
 
 
 @pytest.mark.asyncio
@@ -108,10 +99,9 @@ async def test_process_cli_two_turn_session_resume_live(
         stderr=io.StringIO(),
     )
     assert first_result == 0
-    first_document = json.loads(first_output.getvalue())
-    session_id = str(first_document["session_id"])
+    session_id = (tmp_path / "current-session.txt").read_text(encoding="utf-8")
     assert session_id
-    _assert_terminal_response(first_document)
+    _assert_terminal_response(first_output.getvalue())
     first_history = load_history_records(session_id)
     assert first_history
 
@@ -128,9 +118,8 @@ async def test_process_cli_two_turn_session_resume_live(
         stderr=io.StringIO(),
     )
     assert second_result == 0
-    second_document = json.loads(second_output.getvalue())
-    assert second_document["session_id"] == session_id
-    _assert_terminal_response(second_document)
+    assert (tmp_path / "current-session.txt").read_text(encoding="utf-8") == session_id
+    _assert_terminal_response(second_output.getvalue())
     second_history = load_history_records(session_id)
     assert len(second_history) > len(first_history)
 
@@ -174,9 +163,10 @@ async def test_unloaded_persisted_session_message_live(
             stderr=io.StringIO(),
         )
         assert result == 0
-        document = json.loads(output.getvalue())
-        _assert_terminal_response(document)
-        session_ids.append(str(document["session_id"]))
+        _assert_terminal_response(output.getvalue())
+        session_ids.append(
+            (tmp_path / "current-session.txt").read_text(encoding="utf-8")
+        )
 
     source_session_id, target_session_id = session_ids
     before = load_history_records(target_session_id)
@@ -260,10 +250,7 @@ async def test_single_agent_ask_user_resume_after_stream_end_live(
             is_stream=True,
             params=params,
         )
-        first_events = [
-            event
-            async for event in client.stream(original)
-        ]
+        first_events = [event async for event in client.stream(original)]
         waiting = client.runtime._session_coordinator.snapshot_session(session_id)
         assert waiting is not None
         execution = next(
@@ -276,8 +263,7 @@ async def test_single_agent_ask_user_resume_after_stream_end_live(
             event
             for event in first_events
             if event.event_type == "chat.ask_user_question"
-            and (event.payload or {}).get("request_id")
-            == execution.waiting_control_id
+            and (event.payload or {}).get("request_id") == execution.waiting_control_id
         )
 
         interaction_payload = interaction.payload or {}
@@ -310,8 +296,7 @@ async def test_single_agent_ask_user_resume_after_stream_end_live(
             timeout=180,
         )
         resumed_text = "".join(
-            str((event.payload or {}).get("content") or "")
-            for event in resumed_events
+            str((event.payload or {}).get("content") or "") for event in resumed_events
         )
         assert expected_text in resumed_text
         completed = client.runtime._session_coordinator.snapshot_session(session_id)

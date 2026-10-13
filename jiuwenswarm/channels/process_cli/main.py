@@ -146,21 +146,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="要执行的指令；省略后进入交互式 CLI。",
     )
     parser.add_argument("--session", help="恢复已有的 Runtime 会话 ID。")
-    parser.add_argument(
-        "--query-json",
-        metavar="FILE|-",
-        help="执行一次只读 Runtime 查询，输出 query_result 后关闭 Runtime 并退出。",
-    )
-    parser.add_argument(
-        "--run-json",
-        metavar="FILE|-",
-        help="执行一份机器 JSON 请求并输出版本化 JSONL；- 从标准输入读取至 EOF。",
-    )
-    parser.add_argument(
-        "--run-jsonl",
-        action="store_true",
-        help="一次进程内按行接收 run、answer、cancel；任务结束即退出。",
-    )
     parser.add_argument("--cwd", help="工作目录；默认为当前目录。")
     parser.add_argument("--project-dir", help="稳定的项目目录；默认与工作目录相同。")
     parser.add_argument(
@@ -175,12 +160,6 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("code", "work"),
         default="code",
         help="Runtime 工作模式配置。",
-    )
-    parser.add_argument(
-        "--output",
-        choices=("human", "json", "jsonl"),
-        default="human",
-        help="Runtime 事件流的输出格式。",
     )
     parser.add_argument("--timeout", type=float, help="总执行超时时间，单位为秒。")
     parser.add_argument("--show-reasoning", action="store_true", help="显示思考过程。")
@@ -249,19 +228,6 @@ def _activate_requested_cwd(
     args.cwd = str(target)
 
 
-def _report_machine_failure(
-    code: int, stderr: TextIO, log_path: Path | None
-) -> None:
-    if code == 0:
-        return
-    detail = f"；诊断日志：{log_path}" if log_path else ""
-    _write_stderr(
-        stderr,
-        f"jiuwenswarm-process: 请求失败（退出码 {code}）；"
-        f"详见标准输出的错误记录{detail}",
-    )
-
-
 def _write_stderr(stream: TextIO, message: str) -> None:
     """Write a user-visible CLI message independently of diagnostic logging."""
     stream.write(f"{message}\n")
@@ -272,43 +238,6 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     _configure_forwarded_stdio(args)
-    if args.query_json is not None:
-        standalone = sys.argv[1:] in (
-            ["--query-json", args.query_json],
-            [f"--query-json={args.query_json}"],
-        )
-        with capture_diagnostics(capture_stdout=False, debug=args.debug) as streams:
-            from jiuwenswarm.channels.process_cli.query_entry import (
-                execute_query_source,
-            )
-
-            code = execute_query_source(
-                args.query_json, conflicting_arguments=not standalone
-            )
-            _report_machine_failure(code, streams.stderr, streams.log_path)
-        sys.exit(code)
-    if args.run_jsonl:
-        with capture_diagnostics(capture_stdout=False, debug=args.debug) as streams:
-            from jiuwenswarm.channels.process_cli.machine_entry import execute_source
-
-            code = execute_source(
-                "-",
-                json_lines=True,
-                conflicting_arguments=sys.argv[1:] != ["--run-jsonl"],
-            )
-            _report_machine_failure(code, streams.stderr, streams.log_path)
-        sys.exit(code)
-    if args.run_json is not None:
-        command_args = sys.argv[1:]
-        standalone = command_args == ["--run-json", args.run_json]
-        standalone = standalone or command_args == [f"--run-json={args.run_json}"]
-        conflicting = not standalone
-        with capture_diagnostics(capture_stdout=False, debug=args.debug) as streams:
-            from jiuwenswarm.channels.process_cli.machine_entry import execute_source
-
-            code = execute_source(args.run_json, conflicting_arguments=conflicting)
-            _report_machine_failure(code, streams.stderr, streams.log_path)
-        sys.exit(code)
     args.work_mode = resolve_cli_work_mode(args.mode, args.work_mode)
     worker_interrupt = _WindowsWorkerInterruptController(
         enabled=bool(getattr(args, "_interactive_worker", False)),
@@ -324,8 +253,6 @@ def main() -> None:
         _activate_requested_cwd(args, parser)
         if args.timeout is not None and args.timeout <= 0:
             parser.error("--timeout 必须大于零")
-        if args.prompt is None and args.output != "human":
-            parser.error("交互模式仅支持 --output human")
         if args.prompt is None and args.debug:
             parser.error("--debug 仅支持非交互式运行")
         if args.prompt is None:

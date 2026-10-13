@@ -97,10 +97,9 @@ def test_live_input_only_supports_human_tty_single_agent_normal(
     mode: str,
     enabled: bool,
 ) -> None:
-    args = argparse.Namespace(output="human", _operation="chat", mode=mode)
+    args = argparse.Namespace(_operation="chat", mode=mode)
     assert supports_live_session_input(args, stdin=Tty(), stdout=Tty()) is enabled
-    args.output = "json"
-    assert not supports_live_session_input(args, stdin=Tty(), stdout=Tty())
+    assert not supports_live_session_input(args, stdin=io.StringIO(), stdout=Tty())
 
 
 def test_build_steer_request_copies_only_owned_bindings() -> None:
@@ -149,7 +148,6 @@ async def test_pipe_line_reader_accepts_parent_forwarded_input() -> None:
 def test_human_layout_orders_request_processing_output_and_input() -> None:
     stderr = io.StringIO()
     renderer = EventRenderer(
-        "human",
         stdout=io.StringIO(),
         stderr=stderr,
     )
@@ -182,7 +180,7 @@ def test_parent_live_turn_keeps_inputs_output_and_editor_separate() -> None:
 
 def test_renderer_separates_consecutive_model_generations() -> None:
     stdout = io.StringIO()
-    renderer = EventRenderer("human", stdout=stdout, stderr=io.StringIO())
+    renderer = EventRenderer(stdout=stdout, stderr=io.StringIO())
 
     renderer.render(event("chat.delta", delta="第一轮末尾。"))
     renderer.render(
@@ -464,7 +462,6 @@ async def test_app_installs_live_input_on_the_same_runtime_client(
         mode="code.normal",
         work_mode="code",
         prompt="initial",
-        output="human",
         session=None,
         timeout=None,
         show_reasoning=False,

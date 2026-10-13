@@ -32,6 +32,20 @@ from jiuwenswarm.runtime.session_provisioner import (
 )
 
 
+@pytest.fixture
+def rendered_events(monkeypatch):
+    """Observe delivered Runtime events without exposing a machine CLI format."""
+    events = []
+    original = app.EventRenderer.render
+
+    def observe(self, event, **kwargs):
+        events.append(event.to_dict())
+        return original(self, event, **kwargs)
+
+    monkeypatch.setattr(app.EventRenderer, "render", observe)
+    return events
+
+
 class FakeClient:
     latest: FakeClient | None = None
     delay = 0.0
@@ -371,7 +385,6 @@ def _args(tmp_path: Path, **overrides) -> argparse.Namespace:
         "trusted_dir": [],
         "mode": "code.normal",
         "work_mode": "code",
-        "output": "jsonl",
         "timeout": None,
         "show_reasoning": False,
         "show_tools": False,
@@ -615,13 +628,13 @@ async def test_one_command_owns_one_runtime_lifecycle(
         "close",
     ]
     output = capsys.readouterr().out
-    assert '"event_type": "chat.delta"' in output
-    assert '"event_type": "chat.final"' in output
+    assert output == "hello\n"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["team.work.normal", "team.code.normal"])
 async def test_team_round_returns_on_terminal_status_and_closes_persistent_stream(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
     mode: str,
@@ -631,7 +644,7 @@ async def test_team_round_returns_on_terminal_status_and_closes_persistent_strea
 
     result = await asyncio.wait_for(
         app.run(
-            _args(tmp_path, mode=mode, output="json"),
+            _args(tmp_path, mode=mode),
             stdout=stdout,
             stderr=io.StringIO(),
         ),
@@ -639,10 +652,9 @@ async def test_team_round_returns_on_terminal_status_and_closes_persistent_strea
     )
 
     client = PersistentTeamClient.latest
-    document = json.loads(stdout.getvalue())
+    events = rendered_events
     assert result == 0
-    assert document["ok"] is True
-    assert [event["payload"]["event_type"] for event in document["events"]] == [
+    assert [event["payload"]["event_type"] for event in events] == [
         "chat.final",
         "chat.processing_status",
     ]
@@ -659,6 +671,7 @@ async def test_team_round_returns_on_terminal_status_and_closes_persistent_strea
 
 @pytest.mark.asyncio
 async def test_single_agent_does_not_treat_team_status_shape_as_stream_boundary(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -666,18 +679,18 @@ async def test_single_agent_does_not_treat_team_status_shape_as_stream_boundary(
     stdout = io.StringIO()
 
     result = await app.run(
-        _args(tmp_path, mode="agent.work.normal", output="json"),
+        _args(tmp_path, mode="agent.work.normal"),
         stdout=stdout,
         stderr=io.StringIO(),
     )
 
-    document = json.loads(stdout.getvalue())
+    events = rendered_events
     assert result == 0
-    assert [event["payload"]["event_type"] for event in document["events"]] == [
+    assert [event["payload"]["event_type"] for event in events] == [
         "chat.processing_status",
         "chat.final",
     ]
-    assert document["events"][-1]["payload"]["content"] == "single result"
+    assert events[-1]["payload"]["content"] == "single result"
 
 
 @pytest.mark.asyncio
@@ -709,46 +722,47 @@ async def test_timeout_precisely_cancels_then_cleans_up(
 
 
 @pytest.mark.asyncio
-async def test_timeout_keeps_jsonl_error_machine_compatible(
+async def test_timeout_has_concise_human_error(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     FakeClient.delay = 0.1
     monkeypatch.setattr(app, "InProcessRuntimeClient", FakeClient)
     stdout = io.StringIO()
+    stderr = io.StringIO()
 
     try:
         result = await app.run(
             _args(tmp_path, timeout=0.01),
             stdout=stdout,
-            stderr=io.StringIO(),
+            stderr=stderr,
         )
     finally:
         FakeClient.delay = 0.0
 
-    document = json.loads(stdout.getvalue().strip())
     assert result == 124
-    assert document["payload"]["event_type"] == "runtime.error"
-    assert document["payload"]["error"] == "process CLI execution timed out"
+    assert "进程式 CLI 执行超时" in stderr.getvalue()
+    assert stdout.getvalue() == ""
     assert "\033[" not in stdout.getvalue()
 
 
 @pytest.mark.asyncio
-async def test_timeout_covers_runtime_startup(monkeypatch, tmp_path: Path) -> None:
+async def test_timeout_covers_runtime_startup(
+    rendered_events, monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(app, "InProcessRuntimeClient", SlowStartClient)
     stdout = io.StringIO()
 
     result = await app.run(
-        _args(tmp_path, timeout=0.01, output="json"),
+        _args(tmp_path, timeout=0.01),
         stdout=stdout,
         stderr=io.StringIO(),
     )
 
-    document = json.loads(stdout.getvalue())
+    events = rendered_events
     client = SlowStartClient.latest
     assert result == 124
-    assert document["ok"] is False
-    assert document["events"][-1]["payload"]["event_type"] == "runtime.error"
+    assert events[-1]["payload"]["event_type"] == "runtime.error"
     assert client is not None
     assert client.calls == ["start", "close"]
 
@@ -851,7 +865,7 @@ async def test_human_task_cancellation_shows_interrupted_state(
     try:
         task = asyncio.create_task(
             app.run(
-                _args(tmp_path, output="human"),
+                _args(tmp_path),
                 stdout=output,
                 stderr=output,
             )
@@ -872,6 +886,7 @@ async def test_human_task_cancellation_shows_interrupted_state(
 
 @pytest.mark.asyncio
 async def test_start_failure_still_closes_runtime(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -885,7 +900,7 @@ async def test_start_failure_still_closes_runtime(
     )
 
     client = StartFailureClient.latest
-    event = json.loads(stdout.getvalue())
+    event = rendered_events[0]
     assert result == 1
     assert event["ok"] is False
     assert event["payload"]["error"] == "start failed"
@@ -894,28 +909,22 @@ async def test_start_failure_still_closes_runtime(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("output_format", ["json", "jsonl"])
-async def test_noninteractive_interaction_is_an_explicit_machine_failure(
+async def test_noninteractive_interaction_reports_unavailable_input(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
-    output_format: str,
 ) -> None:
     monkeypatch.setattr(app, "InProcessRuntimeClient", InteractionClient)
     stdout = io.StringIO()
 
     result = await app.run(
-        _args(tmp_path, output=output_format),
+        _args(tmp_path),
         stdout=stdout,
         stderr=io.StringIO(),
     )
 
     assert result == 4
-    if output_format == "json":
-        document = json.loads(stdout.getvalue())
-        assert document["ok"] is False
-        events = document["events"]
-    else:
-        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    events = rendered_events
     assert events[-1]["ok"] is False
     assert events[-1]["payload"]["event_type"] == "runtime.error"
     assert "interactive input is unavailable" in events[-1]["payload"]["error"]
@@ -930,7 +939,7 @@ async def test_answer_interaction_handles_consecutive_questions(
     monkeypatch.setattr(app, "_interaction_answer", lambda _payload, _stream: ("y", []))
 
     result = await app.run(
-        _args(tmp_path, output="human", _interactive_worker=True),
+        _args(tmp_path, _interactive_worker=True),
         stdout=io.StringIO(),
         stderr=io.StringIO(),
     )
@@ -979,7 +988,7 @@ async def test_interaction_displays_nested_questions_and_collects_each_answer(
     monkeypatch.setattr(app.sys, "stdin", io.StringIO("2\ncustom answer\n"))
     output = io.StringIO()
     result = await app.run(
-        _args(tmp_path, output="human", _interactive_worker=True),
+        _args(tmp_path, _interactive_worker=True),
         stdout=output,
         stderr=output,
     )
@@ -1004,7 +1013,7 @@ async def test_interaction_eof_exits_without_submitting_empty_answer(
     monkeypatch.setattr(app.sys, "stdin", io.StringIO(""))
     output = io.StringIO()
     result = await app.run(
-        _args(tmp_path, output="human", _interactive_worker=True),
+        _args(tmp_path, _interactive_worker=True),
         stdout=output,
         stderr=output,
     )
@@ -1027,7 +1036,6 @@ async def test_interactive_worker_reports_real_runtime_session(
     result = await app.run(
         _args(
             tmp_path,
-            output="human",
             _interactive_worker=True,
             _session_result_file=str(result_file),
         )
@@ -1050,7 +1058,6 @@ async def test_skills_list_uses_stateless_runtime_invoke_lifecycle(
             tmp_path,
             prompt="/skills list",
             session="existing-session",
-            output="human",
             _operation="skills.list",
         ),
         stdout=stdout,
@@ -1071,6 +1078,7 @@ async def test_skills_list_uses_stateless_runtime_invoke_lifecycle(
 
 @pytest.mark.asyncio
 async def test_skills_list_json_preserves_runtime_payload(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1081,17 +1089,15 @@ async def test_skills_list_json_preserves_runtime_payload(
         _args(
             tmp_path,
             prompt="/skills list",
-            output="json",
             _operation="skills.list",
         ),
         stdout=stdout,
         stderr=io.StringIO(),
     )
 
-    document = json.loads(stdout.getvalue())
+    events = rendered_events
     assert result == 0
-    assert document["ok"] is True
-    assert document["events"][0]["payload"] == {
+    assert events[0]["payload"] == {
         "skills": [
             {
                 "name": "demo",
@@ -1105,6 +1111,7 @@ async def test_skills_list_json_preserves_runtime_payload(
 
 @pytest.mark.asyncio
 async def test_skills_list_preserves_runtime_error_event_and_closes(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1115,7 +1122,6 @@ async def test_skills_list_preserves_runtime_error_event_and_closes(
         _args(
             tmp_path,
             prompt="/skills list",
-            output="json",
             _operation="skills.list",
         ),
         stdout=stdout,
@@ -1123,12 +1129,11 @@ async def test_skills_list_preserves_runtime_error_event_and_closes(
     )
 
     client = SkillsErrorClient.latest
-    document = json.loads(stdout.getvalue())
+    events = rendered_events
     assert result == 1
     assert client is not None
     assert client.calls == ["start", "invoke:skills.list", "close"]
-    assert document["ok"] is False
-    assert document["events"][0]["payload"] == {
+    assert events[0]["payload"] == {
         "event_type": "runtime.error",
         "error": "skills unavailable",
     }
@@ -1136,6 +1141,7 @@ async def test_skills_list_preserves_runtime_error_event_and_closes(
 
 @pytest.mark.asyncio
 async def test_skills_list_converts_invoke_exception_and_closes(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1146,7 +1152,6 @@ async def test_skills_list_converts_invoke_exception_and_closes(
         _args(
             tmp_path,
             prompt="/skills list",
-            output="jsonl",
             _operation="skills.list",
         ),
         stdout=stdout,
@@ -1154,7 +1159,7 @@ async def test_skills_list_converts_invoke_exception_and_closes(
     )
 
     client = SkillsRaiseClient.latest
-    event = json.loads(stdout.getvalue())
+    event = rendered_events[0]
     assert result == 1
     assert client is not None
     assert client.calls == ["start", "invoke:skills.list", "close"]
@@ -1164,6 +1169,7 @@ async def test_skills_list_converts_invoke_exception_and_closes(
 
 @pytest.mark.asyncio
 async def test_skills_list_timeout_closes_without_chat_cleanup(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1174,7 +1180,6 @@ async def test_skills_list_timeout_closes_without_chat_cleanup(
         _args(
             tmp_path,
             prompt="/skills list",
-            output="json",
             timeout=0.01,
             _operation="skills.list",
         ),
@@ -1183,11 +1188,11 @@ async def test_skills_list_timeout_closes_without_chat_cleanup(
     )
 
     client = SlowSkillsClient.latest
-    document = json.loads(stdout.getvalue())
+    events = rendered_events
     assert result == 124
     assert client is not None
     assert client.calls == ["start", "invoke:skills.list", "close"]
-    assert document["events"][0]["payload"] == {
+    assert events[0]["payload"] == {
         "event_type": "runtime.error",
         "error": "process CLI execution timed out",
     }
@@ -1211,7 +1216,7 @@ async def test_session_create_delivers_result_before_after_delivery_commit(
 
         async def commit_session_provision(self, prepared, *, timing, context=None):
             assert timing is SessionProvisionCommitTiming.AFTER_RESULT_DELIVERY
-            assert '"event_type": "session.created"' in stdout.getvalue()
+            assert "已创建并切换到会话 process_cli_created" in stdout.getvalue()
             assert json.loads(worker_result.read_text(encoding="utf-8")) == {
                 "operation": "session.create",
                 "session_id": "process_cli_created",
@@ -1379,7 +1384,7 @@ async def test_session_create_post_delivery_failure_aborts_only_prepared_lease(
     )
 
     assert result == 0
-    assert '"event_type": "session.created"' in stdout.getvalue()
+    assert "已创建并切换到会话 process_cli_created" in stdout.getvalue()
     assert '"event_type": "runtime.error"' not in stdout.getvalue()
     assert worker_result.is_file()
     assert client.calls[-2:] == ["abort:create", "close"]
@@ -1404,6 +1409,7 @@ async def test_session_create_post_delivery_failure_aborts_only_prepared_lease(
     ],
 )
 async def test_switch_and_fork_commit_before_result_delivery(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
     operation: str,
@@ -1440,10 +1446,10 @@ async def test_switch_and_fork_commit_before_result_delivery(
         stderr=io.StringIO(),
     )
 
-    document = json.loads(stdout.getvalue())
+    events = rendered_events
     state = json.loads(worker_result.read_text(encoding="utf-8"))
     assert result == 0
-    assert document["payload"]["event_type"] == event_type
+    assert events[0]["payload"]["event_type"] == event_type
     assert state["session_id"] == expected_session
     assert not any(call.startswith("cleanup:") for call in client.calls)
     assert client.calls[-1] == "close"
@@ -1458,6 +1464,7 @@ async def test_switch_and_fork_commit_before_result_delivery(
     ],
 )
 async def test_switch_and_fork_commit_failure_aborts_without_publishing_state(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
     operation: str,
@@ -1478,7 +1485,6 @@ async def test_switch_and_fork_commit_failure_aborts_without_publishing_state(
             tmp_path,
             prompt=prompt,
             session="process_cli_source",
-            output="json",
             _operation=operation,
             _worker_result_file=str(worker_result),
         ),
@@ -1486,15 +1492,16 @@ async def test_switch_and_fork_commit_failure_aborts_without_publishing_state(
         stderr=io.StringIO(),
     )
 
-    document = json.loads(stdout.getvalue())
+    events = rendered_events
     assert result == 1
-    assert document["events"][0]["payload"]["event_type"] == "runtime.error"
+    assert events[0]["payload"]["event_type"] == "runtime.error"
     assert not worker_result.exists()
     assert client.calls[-2:] == [f"abort:{operation.removeprefix('session.')}", "close"]
 
 
 @pytest.mark.asyncio
 async def test_resume_missing_session_preserves_state_and_never_prepares(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1508,7 +1515,6 @@ async def test_resume_missing_session_preserves_state_and_never_prepares(
             tmp_path,
             prompt="missing",
             session="process_cli_current",
-            output="json",
             _operation="session.switch",
             _worker_result_file=str(worker_result),
         ),
@@ -1516,15 +1522,16 @@ async def test_resume_missing_session_preserves_state_and_never_prepares(
         stderr=io.StringIO(),
     )
 
-    document = json.loads(stdout.getvalue())
+    events = rendered_events
     assert result == 1
-    assert document["events"][0]["metadata"] == {"code": "NOT_FOUND"}
+    assert events[0]["metadata"] == {"code": "NOT_FOUND"}
     assert not worker_result.exists()
     assert client.calls == ["start", "describe:missing", "close"]
 
 
 @pytest.mark.asyncio
 async def test_session_delete_uses_runtime_and_never_runs_chat_cleanup(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1545,7 +1552,7 @@ async def test_session_delete_uses_runtime_and_never_runs_chat_cleanup(
         stderr=io.StringIO(),
     )
 
-    event = json.loads(stdout.getvalue())
+    event = rendered_events[0]
     assert result == 0
     assert event["payload"]["event_type"] == "session.deleted"
     assert json.loads(worker_result.read_text(encoding="utf-8"))["session_id"] == (
@@ -1561,6 +1568,7 @@ async def test_session_delete_uses_runtime_and_never_runs_chat_cleanup(
 
 @pytest.mark.asyncio
 async def test_session_delete_accepts_owned_custom_session_id(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1573,16 +1581,15 @@ async def test_session_delete_accepts_owned_custom_session_id(
             tmp_path,
             prompt="custom_process_session",
             session="process_cli_current",
-            output="json",
             _operation="session.delete",
         ),
         stdout=stdout,
         stderr=io.StringIO(),
     )
 
-    document = json.loads(stdout.getvalue())
+    events = rendered_events
     assert result == 0
-    assert document["events"][0]["payload"]["event_type"] == "session.deleted"
+    assert events[0]["payload"]["event_type"] == "session.deleted"
     assert client.calls == [
         "start",
         "describe:custom_process_session",
@@ -1593,6 +1600,7 @@ async def test_session_delete_accepts_owned_custom_session_id(
 
 @pytest.mark.asyncio
 async def test_session_delete_failure_does_not_publish_parent_state(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1615,7 +1623,6 @@ async def test_session_delete_failure_does_not_publish_parent_state(
             tmp_path,
             prompt="custom_process_session",
             session="process_cli_current",
-            output="json",
             _operation="session.delete",
             _worker_result_file=str(worker_result),
         ),
@@ -1623,9 +1630,9 @@ async def test_session_delete_failure_does_not_publish_parent_state(
         stderr=io.StringIO(),
     )
 
-    document = json.loads(stdout.getvalue())
+    events = rendered_events
     assert result == 1
-    assert document["events"][0]["metadata"] == {"code": "SESSION_BUSY"}
+    assert events[0]["metadata"] == {"code": "SESSION_BUSY"}
     assert not worker_result.exists()
     assert client.calls[-1] == "close"
 
@@ -1636,6 +1643,7 @@ async def test_session_delete_failure_does_not_publish_parent_state(
     ["session.switch", "session.fork", "session.delete"],
 )
 async def test_session_operations_reject_foreign_owned_metadata(
+    rendered_events,
     monkeypatch,
     tmp_path: Path,
     operation: str,
@@ -1660,16 +1668,15 @@ async def test_session_operations_reject_foreign_owned_metadata(
             tmp_path,
             prompt=(target if operation != "session.fork" else "branch"),
             session=(target if operation == "session.fork" else "process_cli_current"),
-            output="json",
             _operation=operation,
         ),
         stdout=stdout,
         stderr=io.StringIO(),
     )
 
-    document = json.loads(stdout.getvalue())
+    events = rendered_events
     assert result == 1
-    assert document["events"][0]["metadata"] == {"code": "NOT_FOUND"}
+    assert events[0]["metadata"] == {"code": "NOT_FOUND"}
     assert not any(
         call.startswith(("prepare:", "commit:", "delete:")) for call in client.calls
     )
@@ -1679,7 +1686,6 @@ def test_interactive_worker_enables_runtime_interactions(tmp_path: Path) -> None
     request = app._build_request(
         _args(
             tmp_path,
-            output="human",
             _interactive_worker=True,
         ),
         session_id="runtime-session",

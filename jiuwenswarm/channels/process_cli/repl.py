@@ -115,8 +115,6 @@ def _worker_command(
         sys.executable,
         "-m",
         "jiuwenswarm.channels.process_cli.main",
-        "--output",
-        "human",
         "--mode",
         args.mode,
         "--work-mode",

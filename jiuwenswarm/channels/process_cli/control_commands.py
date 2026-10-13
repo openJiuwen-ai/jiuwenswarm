@@ -11,7 +11,7 @@ import sys
 from datetime import datetime
 from typing import Any
 
-from jiuwenswarm.channels.process_cli.protocol.version import CURRENT_SCHEMA_VERSION
+from jiuwenswarm.channels.process_cli.control_worker import build_command
 from jiuwenswarm.channels.process_cli.ui import ProcessCliUI
 
 
@@ -26,34 +26,24 @@ async def query_runtime(
     params: dict[str, Any] | None = None,
     timeout: float = 30.0,
 ) -> dict[str, Any]:
-    """Run a read-only public Runtime query in its own process."""
+    """Run a private REPL catalog worker without a public JSON input protocol."""
 
-    request = {
-        "schema_version": CURRENT_SCHEMA_VERSION,
-        "type": "query",
-        "operation": operation,
-        "params": params or {},
-        "workspace": {"cwd": cwd},
-        "timeout_seconds": timeout,
-    }
+    command = build_command(operation, cwd=cwd, params=params or {}, timeout=timeout)
     environment = os.environ.copy()
     environment.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "jiuwenswarm.channels.process_cli.main",
-        "--query-json",
-        "-",
-        stdin=asyncio.subprocess.PIPE,
+        "jiuwenswarm.channels.process_cli.control_worker",
+        *command,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=environment,
     )
     try:
         stdout, _stderr = await asyncio.wait_for(
-            process.communicate(
-                json.dumps(request, ensure_ascii=False).encode("utf-8")
-            ),
+            process.communicate(),
             timeout=timeout + 5,
         )
     except (asyncio.CancelledError, TimeoutError):

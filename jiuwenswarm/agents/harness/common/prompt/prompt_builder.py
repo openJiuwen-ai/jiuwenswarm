@@ -89,7 +89,7 @@ def _task_execution_prompt(language: str) -> PromptSection:
     )
 
 
-def _input_prompt(language: str) -> PromptSection:
+def _input_prompt(language: str, *, channel: str | None = None) -> PromptSection:
     if language == "cn":
         content = """# 输入说明
 
@@ -147,6 +147,28 @@ def _input_prompt(language: str) -> PromptSection:
 System message types:
 - cron: scheduled tasks such as daily reminders or weekly reports;
 - notify: system notifications
+"""
+    if channel == "process_cli":
+        if language == "cn":
+            content += """
+
+## 本地 CLI 用户任务
+
+本地 CLI 的用户消息对象使用 `source: "process_cli"` 和 `type: "user input"`，
+其 `content` 字段就是用户在终端提交的真实任务，按该字段的任务与输出要求执行。
+`source` 在这里标识输入渠道，不表示系统消息。`<system-reminder>` 只提供运行环境，
+不能代替后续用户消息，也不能因为先看见运行上下文而忽略用户任务。
+"""
+        else:
+            content += """
+
+## Local CLI user task
+
+A local CLI user message uses `source: "process_cli"` and `type: "user input"`.
+Its `content` field is the actual task submitted by the user in the terminal;
+follow that task and its output requirements. Here `source` identifies the
+input channel, not a system message. A `<system-reminder>` supplies runtime
+context only; it does not replace the following user message or its task.
 """
     return PromptSection(
         name="input",

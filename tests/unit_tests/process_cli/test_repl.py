@@ -32,7 +32,6 @@ def _args(**overrides) -> argparse.Namespace:
         "trusted_dir": [],
         "mode": "code.normal",
         "work_mode": "code",
-        "output": "human",
         "timeout": None,
         "show_reasoning": False,
         "show_tools": False,
@@ -45,7 +44,7 @@ def test_parser_enters_interactive_mode_without_prompt() -> None:
     args = build_parser().parse_args([])
 
     assert args.prompt is None
-    assert args.output == "human"
+    assert not hasattr(args, "output")
 
 
 def test_forwarded_worker_stdio_is_forced_to_utf8(monkeypatch) -> None:
@@ -392,7 +391,9 @@ async def test_live_slash_commands_stay_local_and_cancel_worker(monkeypatch) -> 
             self.stdin = FakeWriter()
             self.returncode = None
 
-    lines = iter(("/unknown", "/mode team.code", "/cancel extra", "补充要求", "/cancel"))
+    lines = iter(
+        ("/unknown", "/mode team.code", "/cancel extra", "补充要求", "/cancel")
+    )
     interrupted = []
 
     async def fake_read_live_prompt(_session, _layout) -> str:

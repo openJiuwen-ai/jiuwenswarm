@@ -25,7 +25,6 @@ def _args(**overrides) -> argparse.Namespace:
         "project_dir": None,
         "trusted_dir": [],
         "timeout": None,
-        "output": "human",
         "show_reasoning": False,
         "show_tools": False,
         "prompt": "hello",
@@ -263,14 +262,13 @@ async def test_plan_toggle_preserves_work_mode_and_rejects_team() -> None:
 
 
 @pytest.mark.asyncio
-async def test_query_worker_uses_public_read_only_protocol(monkeypatch) -> None:
+async def test_query_worker_uses_private_command_arguments(monkeypatch) -> None:
     observed = {}
 
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self, data):
-            observed["request"] = json.loads(data)
+        async def communicate(self):
             return (
                 json.dumps(
                     {
@@ -294,9 +292,16 @@ async def test_query_worker_uses_public_read_only_protocol(monkeypatch) -> None:
     )
 
     assert result["total"] == 0
-    assert observed["command"][-2:] == ("--query-json", "-")
-    assert observed["request"]["params"] == {"limit": 10}
-    assert observed["request"]["workspace"] == {"cwd": "D:/workspace"}
+    assert observed["command"][2] == "jiuwenswarm.channels.process_cli.control_worker"
+    assert observed["command"][3:] == (
+        "session.list",
+        "--cwd",
+        "D:/workspace",
+        "--timeout",
+        "30.0",
+        "--limit=10",
+    )
+    assert observed["kwargs"]["stdin"] == asyncio.subprocess.DEVNULL
 
 
 @pytest.mark.asyncio

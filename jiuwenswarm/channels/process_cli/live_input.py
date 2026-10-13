@@ -18,7 +18,7 @@ from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.history import InMemoryHistory
 
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
-from jiuwenswarm.channels.process_cli.duplex_input import DuplexLineReader
+from jiuwenswarm.channels.process_cli.line_input import BoundedLineReader
 from jiuwenswarm.channels.process_cli.live_layout import FORWARDED_RECEIPT_PREFIX
 from jiuwenswarm.channels.process_cli.prompt import LIVE_INPUT_PROMPT
 from jiuwenswarm.common.mode_matrix import (
@@ -94,7 +94,7 @@ class PipeLineReader:
     prompt_safe = False
 
     def __init__(self, stream: Any = None) -> None:
-        self._reader = DuplexLineReader(stream)
+        self._reader = BoundedLineReader(stream)
 
     async def __call__(self, _prompt: str) -> str | None:
         line = await self._reader.read_line()
@@ -107,8 +107,6 @@ class PipeLineReader:
 def supports_live_session_input(args: Any, *, stdin: Any, stdout: Any) -> bool:
     """Return whether this human command can safely own live terminal input."""
 
-    if getattr(args, "output", None) != "human":
-        return False
     if str(getattr(args, "_operation", "chat") or "chat") != "chat":
         return False
     forwarded_repl = bool(getattr(args, "_forwarded_live_input", False))

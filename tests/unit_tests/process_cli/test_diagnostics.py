@@ -39,7 +39,9 @@ main()
 """
 
 
-def _run(tmp_path: Path, *flags: str, fail: bool = False) -> subprocess.CompletedProcess[str]:
+def _run(
+    tmp_path: Path, *flags: str, fail: bool = False
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["JIUWENSWARM_DATA_DIR"] = str(tmp_path)
     env.pop("JIUWENSWARM_PROCESS_DEBUG", None)

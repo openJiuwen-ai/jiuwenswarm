@@ -1,10 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Human, JSON, and JSONL renderers for one Runtime event stream."""
+"""Human-readable rendering for one Runtime event stream."""
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from typing import Any, TextIO
@@ -50,7 +49,6 @@ class EventRenderer:
 
     def __init__(
         self,
-        output_format: str,
         *,
         stdout: TextIO | None = None,
         stderr: TextIO | None = None,
@@ -58,47 +56,37 @@ class EventRenderer:
         show_tools: bool = False,
         concise_errors: bool = False,
     ) -> None:
-        self.output_format = output_format
         self.stdout = stdout or sys.stdout
         self.stderr = stderr or sys.stderr
         self.show_reasoning = show_reasoning
         self.show_tools = show_tools
         self.concise_errors = concise_errors
-        self.events: list[dict[str, Any]] = []
         self._wrote_delta = False
         self._pending_output_break = False
         self.failed = False
         self._human_ui = HumanRunUI(self.stdout, self.stderr)
 
     def start(self) -> None:
-        if self.output_format == "human":
-            self._human_ui.start()
+        self._human_ui.start()
 
     def working(self) -> None:
-        if self.output_format == "human":
-            self._human_ui.working()
+        self._human_ui.working()
 
     def interrupted(self) -> None:
-        if self.output_format == "human":
-            self._human_ui.interrupted()
+        self._human_ui.interrupted()
 
     def prepare_interaction(self) -> None:
         """Clear transient status before the Runtime asks the user a question."""
-        if self.output_format == "human":
-            self._human_ui.end_reasoning()
-            self._human_ui.clear_status()
+        self._human_ui.end_reasoning()
+        self._human_ui.clear_status()
 
     def live_input_ready(self, request_text: str) -> None:
-        if self.output_format == "human":
-            self._human_ui.live_input_ready(request_text)
+        self._human_ui.live_input_ready(request_text)
 
     def live_input_receipt(self, *, status: str, message: str) -> None:
-        if self.output_format == "human":
-            self._human_ui.live_input_receipt(status=status, message=message)
+        self._human_ui.live_input_receipt(status=status, message=message)
 
     def render(self, event: RuntimeEvent, *, view: str | None = None) -> None:
-        data = event.to_dict()
-        self.events.append(data)
         self.failed = (
             self.failed
             or not event.ok
@@ -109,12 +97,6 @@ class EventRenderer:
                 "team.error",
             }
         )
-        if self.output_format == "jsonl":
-            self.stdout.write(json.dumps(data, ensure_ascii=False, default=str) + "\n")
-            self.stdout.flush()
-            return
-        if self.output_format == "json":
-            return
         if view == "skills.list" and event.ok:
             payload = event.payload if isinstance(event.payload, dict) else {}
             raw_skills = payload.get("skills")
@@ -126,24 +108,12 @@ class EventRenderer:
         self,
         *,
         session_id: str,
-        request_id: str,
         show_completion: bool = True,
     ) -> None:
-        if self.output_format == "human":
-            self._human_ui.end_reasoning()
-        if self.output_format == "json":
-            document = {
-                "ok": not self.failed,
-                "session_id": session_id,
-                "request_id": request_id,
-                "events": self.events,
-            }
-            self.stdout.write(
-                json.dumps(document, ensure_ascii=False, default=str) + "\n"
-            )
-        elif self.output_format == "human" and self._wrote_delta:
+        self._human_ui.end_reasoning()
+        if self._wrote_delta:
             self.stdout.write("\n")
-        if self.output_format == "human" and not self.failed and show_completion:
+        if not self.failed and show_completion:
             self._human_ui.completed(session_id)
         self.stdout.flush()
 

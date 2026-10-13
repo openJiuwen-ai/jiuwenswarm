@@ -14,10 +14,10 @@ from typing import BinaryIO
 
 import pytest
 
-from jiuwenswarm.channels.process_cli.duplex_input import (
-    MAX_DUPLEX_LINE_BYTES,
-    DuplexInputError,
-    DuplexLineReader,
+from jiuwenswarm.channels.process_cli.line_input import (
+    MAX_LINE_BYTES,
+    LineInputError,
+    BoundedLineReader,
 )
 
 
@@ -27,10 +27,10 @@ import asyncio
 import sys
 import threading
 
-from jiuwenswarm.channels.process_cli.duplex_input import DuplexLineReader
+from jiuwenswarm.channels.process_cli.line_input import BoundedLineReader
 
 async def main():
-    async with DuplexLineReader() as reader:
+    async with BoundedLineReader() as reader:
         first = await reader.read_line()
         assert first == b'{"type":"run"}', first
         pending = asyncio.create_task(reader.read_line())
@@ -66,7 +66,7 @@ async def test_memory_stream_yields_each_complete_line_before_eof(stream_type) -
     content = document.encode("utf-8") if stream_type is io.BytesIO else document
     stream = stream_type(content)
 
-    async with DuplexLineReader(stream) as reader:
+    async with BoundedLineReader(stream) as reader:
         assert await reader.read_line() == '{"input":"你好"}'.encode("utf-8")
         assert await reader.read_line() == b'{"type":"cancel"}'
         assert await reader.read_line() is None
@@ -80,13 +80,13 @@ async def test_memory_stream_yields_each_complete_line_before_eof(stream_type) -
 async def test_default_stream_is_current_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "stdin", io.StringIO("run\n"))
 
-    async with DuplexLineReader() as reader:
+    async with BoundedLineReader() as reader:
         assert await reader.read_line() == b"run"
 
 
 @pytest.mark.asyncio
 async def test_empty_lines_are_distinct_from_eof() -> None:
-    async with DuplexLineReader(io.BytesIO(b"\n\r\n")) as reader:
+    async with BoundedLineReader(io.BytesIO(b"\n\r\n")) as reader:
         assert await reader.read_line() == b""
         assert await reader.read_line() == b""
         assert await reader.read_line() is None
@@ -99,7 +99,7 @@ async def test_pipe_delivers_first_line_while_parent_keeps_input_open(
     incoming, outgoing = pipe_streams
     outgoing.write(b'{"type":"run"}\n')
 
-    async with DuplexLineReader(incoming) as reader:
+    async with BoundedLineReader(incoming) as reader:
         first = await asyncio.wait_for(reader.read_line(), timeout=1)
         assert first == b'{"type":"run"}'
         assert not outgoing.closed
@@ -117,7 +117,7 @@ async def test_pipe_accepts_split_multibyte_utf8_and_split_crlf(
 ) -> None:
     incoming, outgoing = pipe_streams
     encoded = "你".encode("utf-8")
-    async with DuplexLineReader(incoming, max_line_bytes=3) as reader:
+    async with BoundedLineReader(incoming, max_line_bytes=3) as reader:
         pending = asyncio.create_task(reader.read_line())
         for fragment in (encoded[:1], encoded[1:], b"\r"):
             outgoing.write(fragment)
@@ -136,7 +136,7 @@ async def test_pipe_eof_after_full_line_is_clean(
     outgoing.write(b"run\n")
     outgoing.close()
 
-    async with DuplexLineReader(incoming) as reader:
+    async with BoundedLineReader(incoming) as reader:
         assert await reader.read_line() == b"run"
         assert await asyncio.wait_for(reader.read_line(), timeout=1) is None
 
@@ -144,9 +144,9 @@ async def test_pipe_eof_after_full_line_is_clean(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("partial", [b"{}", b"partial\r", b"\xc3"])
 async def test_eof_with_partial_line_is_rejected(partial: bytes) -> None:
-    reader = DuplexLineReader(io.BytesIO(partial))
+    reader = BoundedLineReader(io.BytesIO(partial))
 
-    with pytest.raises(DuplexInputError, match="line terminator") as caught:
+    with pytest.raises(LineInputError, match="line terminator") as caught:
         await reader.read_line()
 
     assert caught.value.code == "INVALID_INPUT"
@@ -163,17 +163,17 @@ async def test_pipe_eof_with_partial_control_line_is_rejected(
     outgoing.write(b"run\npartial")
     outgoing.close()
 
-    async with DuplexLineReader(incoming) as reader:
+    async with BoundedLineReader(incoming) as reader:
         assert await reader.read_line() == b"run"
-        with pytest.raises(DuplexInputError, match="line terminator"):
+        with pytest.raises(LineInputError, match="line terminator"):
             await asyncio.wait_for(reader.read_line(), timeout=1)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("content", [b"secret\xff\n", b"\xc0\xaf\n", b"\xed\xa0\x80\n"])
 async def test_invalid_utf8_is_rejected_without_echoing_data(content: bytes) -> None:
-    async with DuplexLineReader(io.BytesIO(content)) as reader:
-        with pytest.raises(DuplexInputError, match="UTF-8") as caught:
+    async with BoundedLineReader(io.BytesIO(content)) as reader:
+        with pytest.raises(LineInputError, match="UTF-8") as caught:
             await reader.read_line()
 
     assert "secret" not in str(caught.value)
@@ -182,8 +182,8 @@ async def test_invalid_utf8_is_rejected_without_echoing_data(content: bytes) -> 
 
 @pytest.mark.asyncio
 async def test_stringio_invalid_unicode_is_reported_safely() -> None:
-    async with DuplexLineReader(io.StringIO("secret\ud800\n")) as reader:
-        with pytest.raises(DuplexInputError, match="UTF-8") as caught:
+    async with BoundedLineReader(io.StringIO("secret\ud800\n")) as reader:
+        with pytest.raises(LineInputError, match="UTF-8") as caught:
             await reader.read_line()
 
     assert "secret" not in str(caught.value)
@@ -194,8 +194,8 @@ async def test_stringio_invalid_unicode_is_reported_safely() -> None:
 async def test_limit_allows_exact_content_size_and_excludes_line_ending(
     ending: bytes,
 ) -> None:
-    content = b"x" * MAX_DUPLEX_LINE_BYTES
-    async with DuplexLineReader(io.BytesIO(content + ending)) as reader:
+    content = b"x" * MAX_LINE_BYTES
+    async with BoundedLineReader(io.BytesIO(content + ending)) as reader:
         assert await reader.read_line() == content
         assert await reader.read_line() is None
 
@@ -205,24 +205,24 @@ async def test_limit_allows_exact_content_size_and_excludes_line_ending(
 async def test_oversized_line_is_rejected_with_or_without_terminator(
     ending: bytes,
 ) -> None:
-    async with DuplexLineReader(
+    async with BoundedLineReader(
         io.BytesIO(b"x" * 17 + ending), max_line_bytes=16
     ) as reader:
-        with pytest.raises(DuplexInputError, match="byte limit"):
+        with pytest.raises(LineInputError, match="byte limit"):
             await reader.read_line()
         assert reader.buffered_bytes == 0
 
 
 @pytest.mark.asyncio
 async def test_line_limit_counts_utf8_bytes_not_characters() -> None:
-    async with DuplexLineReader(io.StringIO("你好\n"), max_line_bytes=5) as reader:
-        with pytest.raises(DuplexInputError, match="byte limit"):
+    async with BoundedLineReader(io.StringIO("你好\n"), max_line_bytes=5) as reader:
+        with pytest.raises(LineInputError, match="byte limit"):
             await reader.read_line()
 
 
 @pytest.mark.asyncio
 async def test_many_buffered_lines_keep_the_framing_buffer_bounded() -> None:
-    async with DuplexLineReader(
+    async with BoundedLineReader(
         io.BytesIO(b"1234\n" * 1000), max_line_bytes=4
     ) as reader:
         for _ in range(1000):
@@ -237,7 +237,7 @@ async def test_close_discards_partial_input_and_wakes_a_long_poll_immediately(
 ) -> None:
     incoming, outgoing = pipe_streams
     outgoing.write(b"partial")
-    reader = DuplexLineReader(incoming, poll_interval=10)
+    reader = BoundedLineReader(incoming, poll_interval=10)
     pending = asyncio.create_task(reader.read_line())
     await asyncio.sleep(0.02)
     assert reader.buffered_bytes == len(b"partial")
@@ -263,12 +263,12 @@ async def test_cancelled_read_has_no_executor_or_thread_and_can_resume_partial_l
     before_tasks = asyncio.all_tasks()
 
     def forbidden_executor(*args, **kwargs):
-        raise AssertionError("duplex input must not start executor work")
+        raise AssertionError("pipe input must not start executor work")
 
     monkeypatch.setattr(
         asyncio.get_running_loop(), "run_in_executor", forbidden_executor
     )
-    async with DuplexLineReader(incoming, poll_interval=10) as reader:
+    async with BoundedLineReader(incoming, poll_interval=10) as reader:
         pending = asyncio.create_task(reader.read_line())
         await asyncio.sleep(0.02)
         pending.cancel()
@@ -287,7 +287,7 @@ async def test_concurrent_reads_are_rejected_without_consuming_input(
     pipe_streams: tuple[BinaryIO, BinaryIO],
 ) -> None:
     incoming, outgoing = pipe_streams
-    async with DuplexLineReader(incoming) as reader:
+    async with BoundedLineReader(incoming) as reader:
         pending = asyncio.create_task(reader.read_line())
         await asyncio.sleep(0.02)
         with pytest.raises(RuntimeError, match="only one"):
@@ -301,11 +301,11 @@ async def test_concurrent_reads_are_rejected_without_consuming_input(
 async def test_regular_file_uses_utf8_bytes_without_closing_borrowed_stream(
     mode: str, tmp_path: Path
 ) -> None:
-    path = tmp_path / "input.jsonl"
+    path = tmp_path / "input.txt"
     path.write_bytes("你好\ncontrol\n".encode("utf-8"))
     options = {"encoding": "ascii"} if mode == "r" else {}
     with path.open(mode, **options) as stream:
-        async with DuplexLineReader(stream) as reader:
+        async with BoundedLineReader(stream) as reader:
             assert await reader.read_line() == "你好".encode("utf-8")
             assert await reader.read_line() == b"control"
             assert await reader.read_line() is None
@@ -321,10 +321,10 @@ async def test_integer_descriptor_is_borrowed_without_flag_changes(
     outgoing.write(b"run\n")
 
     def forbidden_set_blocking(*args):
-        raise AssertionError("duplex input must not change descriptor flags")
+        raise AssertionError("pipe input must not change descriptor flags")
 
     monkeypatch.setattr(os, "set_blocking", forbidden_set_blocking, raising=False)
-    async with DuplexLineReader(descriptor) as reader:
+    async with BoundedLineReader(descriptor) as reader:
         assert await asyncio.wait_for(reader.read_line(), timeout=1) == b"run"
     os.fstat(descriptor)
 
@@ -334,29 +334,29 @@ async def test_closed_descriptor_is_reported_without_io_details(
     pipe_streams: tuple[BinaryIO, BinaryIO],
 ) -> None:
     incoming, _ = pipe_streams
-    reader = DuplexLineReader(incoming)
+    reader = BoundedLineReader(incoming)
     incoming.close()
 
-    with pytest.raises(DuplexInputError, match="could not be read"):
+    with pytest.raises(LineInputError, match="could not be read"):
         await reader.read_line()
     assert reader.closed
 
 
 def test_unreadable_stream_is_rejected_at_construction() -> None:
-    with pytest.raises(DuplexInputError):
-        DuplexLineReader(-1)
+    with pytest.raises(LineInputError):
+        BoundedLineReader(-1)
 
 
 @pytest.mark.parametrize("limit", [0, -1, False, 1.5])
 def test_invalid_line_limits_are_rejected(limit) -> None:
     with pytest.raises((TypeError, ValueError)):
-        DuplexLineReader(io.BytesIO(), max_line_bytes=limit)
+        BoundedLineReader(io.BytesIO(), max_line_bytes=limit)
 
 
 @pytest.mark.parametrize("interval", [0, -1, False, float("nan"), float("inf"), "1"])
 def test_invalid_poll_intervals_are_rejected(interval) -> None:
     with pytest.raises((TypeError, ValueError)):
-        DuplexLineReader(io.BytesIO(), poll_interval=interval)
+        BoundedLineReader(io.BytesIO(), poll_interval=interval)
 
 
 @pytest.mark.parametrize("shutdown", ["close", "cancel"])
@@ -398,7 +398,7 @@ def test_command_exits_while_parent_stdin_stays_open_without_leaking_threads(
 def test_cold_import_does_not_load_runtime_or_machine_adapter() -> None:
     script = """
 import sys
-import jiuwenswarm.channels.process_cli.duplex_input
+import jiuwenswarm.channels.process_cli.line_input
 
 for name in sys.modules:
     assert not name.startswith('jiuwenswarm.runtime'), name
