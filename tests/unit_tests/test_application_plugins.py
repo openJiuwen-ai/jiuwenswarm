@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openjiuwen_protocol.types import ExtensionMetadata
 from jiuwenswarm.extensions.application_host import (
     application_plugin_manifest,
     iter_websocket_routes,
@@ -21,7 +22,6 @@ from jiuwenswarm.extensions.sdk import (
     FrontendContribution,
     WebSocketRouteContribution,
 )
-from jiuwenswarm.extensions.types import ExtensionMetadata
 
 
 class _FakeChannel:

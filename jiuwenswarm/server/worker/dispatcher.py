@@ -9,7 +9,7 @@ import logging
 import os
 from typing import Any
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from openjiuwen_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.server.ipc.protocol import (
     KIND_CANCEL,
     KIND_GATEWAY_ATTACH,

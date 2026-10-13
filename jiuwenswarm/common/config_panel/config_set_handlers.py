@@ -1393,7 +1393,7 @@ async def _clear_agent_config_cache(agent_client=None) -> None:
 
     try:
         if agent_client is not None:
-            from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+            from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
             from jiuwenswarm.common.schema.message import ReqMethod
 
             env = e2a_from_agent_fields(

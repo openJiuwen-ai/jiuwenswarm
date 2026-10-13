@@ -76,15 +76,15 @@ def apply_trace_header(
         if str(key).lower() != "x-trace-id"
     } | {TRACE_ID_HEADER: resolved}
 
-from jiuwenswarm.common.client.agent_client import AgentServerClient
-
-from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import (
+from openjiuwen_protocol.e2a.models import E2AEnvelope
+from openjiuwen_protocol.e2a.wire_codec import (
     parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
 )
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk, AgentRequest
+from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk, AgentRequest
+from jiuwenswarm.common.client.agent_client import AgentServerClient
+
+from jiuwenswarm.common.schema.agent_compat import e2a_to_agent_request
 
 
 logger = logging.getLogger(__name__)

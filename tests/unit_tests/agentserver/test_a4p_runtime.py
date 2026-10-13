@@ -19,6 +19,7 @@ from a4p.types import (
 )
 from openjiuwen.core.foundation.tool import ToolExposure
 
+from openjiuwen_protocol.e2a.agent_models import AgentRequest
 from jiuwenswarm.agents.harness.common import a4p_runtime
 from jiuwenswarm.agents.harness.common import a4p_rpc
 from jiuwenswarm.agents.harness.common.a4p_authorizer import (
@@ -49,7 +50,6 @@ from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
     get_tools,
     request_a4p_intent_authorization,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 
 

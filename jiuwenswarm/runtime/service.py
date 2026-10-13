@@ -65,7 +65,7 @@ from jiuwenswarm.server.runtime.agent_manager import AgentManager
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 
-    from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+    from openjiuwen_protocol.e2a.agent_models import AgentRequest, AgentResponse
     from jiuwenswarm.runtime.agent_definition import (
         RuntimeAgentDefinition,
         RuntimeAgentExecution,
@@ -837,7 +837,7 @@ class AgentRuntime:
                 channel_id=target.channel_id,
             )
 
-        from jiuwenswarm.common.schema.agent import AgentRequest
+        from openjiuwen_protocol.e2a.agent_models import AgentRequest
 
         message_request_id = str(request_id or "").strip() or uuid.uuid4().hex
         params = {
@@ -3301,7 +3301,7 @@ class AgentRuntime:
     async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
         if request.req_method not in AgentRuntime._chat_turn_methods():
             return
-        from gateway_protocol.hooks import AgentServerChatHookContext, AgentServerHookEvents
+        from openjiuwen_protocol.hooks import AgentServerChatHookContext, AgentServerHookEvents
         from jiuwenswarm.extensions.registry import ExtensionRegistry
 
         params = request.params if isinstance(request.params, dict) else {}

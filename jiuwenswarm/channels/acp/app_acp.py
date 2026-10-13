@@ -14,16 +14,16 @@ import sys
 import uuid
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
+from openjiuwen_protocol.e2a.adapters import (
+    e2a_response_to_acp_jsonrpc_response,
+    envelope_from_acp_jsonrpc,
+)
+from openjiuwen_protocol.e2a.constants import E2A_RESPONSE_KIND_E2A_CHUNK
+from openjiuwen_protocol.e2a.models import E2AResponse
 from jiuwenswarm.dotenv_early import parse_dotenv_early, get_parsed_dotenv
 parse_dotenv_early("jiuwenswarm-tui")
 
 # --- Now safe to import jiuwenswarm modules ---
-from jiuwenswarm.common.e2a.adapters import (
-    e2a_response_to_acp_jsonrpc_response,
-    envelope_from_acp_jsonrpc,
-)
-from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_KIND_E2A_CHUNK
-from jiuwenswarm.common.e2a.models import E2AResponse
 
 logger = logging.getLogger(__name__)
 

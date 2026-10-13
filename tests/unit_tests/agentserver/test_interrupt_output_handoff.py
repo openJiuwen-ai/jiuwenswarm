@@ -13,7 +13,7 @@ from openjiuwen.harness.schema.interaction import (
     OutputLeaseManager,
 )
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from openjiuwen_protocol.e2a.agent_models import AgentRequest, AgentResponseChunk
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
@@ -225,10 +225,10 @@ def test_runtime_outcome_comes_from_interruption_state_not_text(pending):
 
 @pytest.mark.parametrize("fallback", [False, True])
 def test_internal_completion_never_enters_wire(monkeypatch, fallback):
-    # 实现已迁 gateway_protocol.e2a.wire_codec（common/e2a 为转发别名），
+    # 实现已迁 openjiuwen_protocol.e2a.wire_codec（common/e2a 为转发别名），
     # monkeypatch 需指向真实实现模块才能生效。
-    from gateway_protocol.e2a import wire_codec as protocol_wire_codec
-    from jiuwenswarm.common.e2a import wire_codec
+    from openjiuwen_protocol.e2a import wire_codec as protocol_wire_codec
+    from openjiuwen_protocol.e2a import wire_codec
 
     if fallback:
         monkeypatch.setattr(

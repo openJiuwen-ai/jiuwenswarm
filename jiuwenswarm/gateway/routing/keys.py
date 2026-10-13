@@ -7,10 +7,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# AgentRef 为跨仓线协议数据结构，source of truth 在 gateway_protocol
+# AgentRef 为跨仓线协议数据结构，source of truth 在 openjiuwen_protocol
 # （v2 口径：纯数据结构进协议包，AgentRequest.agent_ref 携带）；此处转发
 # 保持 gateway 树内既有引用不变（过渡形态，随 gateway 目录迁移收敛）。
-from gateway_protocol.e2a.agent_models import AgentRef  # noqa: F401
+from openjiuwen_protocol.e2a.agent_models import AgentRef  # noqa: F401
 
 WILDCARD = "*"
 APP_ID_DEFAULT = "default"

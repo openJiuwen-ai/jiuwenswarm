@@ -9,6 +9,7 @@ from typing import Any
 
 from a4p.errors import A4PProtocolError
 
+from openjiuwen_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.agents.harness.common.a4p_execution_context import (
     authorizer_route_from_request,
 )
@@ -19,7 +20,6 @@ from jiuwenswarm.agents.harness.common.a4p_runtime import (
     reconfigure_a4p_runtime,
 )
 from jiuwenswarm.common.config import update_a4p_in_config
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 
 

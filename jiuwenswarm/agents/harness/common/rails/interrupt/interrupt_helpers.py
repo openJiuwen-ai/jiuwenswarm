@@ -232,7 +232,7 @@ def build_permission_rail(
         AUTHORIZATION_EXECUTION_CONTEXTS,
     )
     from jiuwenswarm.common.config import get_config
-    from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
+    from openjiuwen_protocol.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
     from jiuwenswarm.common.utils import get_config_file
 
     inline_permissions = config.get("permissions", {})

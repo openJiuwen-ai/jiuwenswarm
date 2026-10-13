@@ -707,7 +707,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         不可达时返回可重试错误；单用户 WebSocket 客户端与 AgentServer 共享目录，
         恢复迁移前的本地重绑路径以保持离线可用性。
         """
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
@@ -890,7 +890,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         fall back to the Gateway deployment directory.  AgentServer will
         support fast startup, so the legacy local fallback was removed.
         """
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 
         real_client = _resolve_agent_client(agent_client)
         if real_client is None:
@@ -939,7 +939,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         Always returns True: failures are reported to the client and never
         fall back to local execution (AgentServer will support fast startup).
         """
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 
         real_client = _resolve_agent_client(agent_client)
         if real_client is None:
@@ -983,7 +983,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         user_id: str | None = None,
     ) -> tuple[Optional[str], int]:
         """通过 E2A 转发 LLM 摘要请求到 AgentServer。返回 (summary, summarized_count)。"""
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
         real_client = _resolve_agent_client(agent_client)
@@ -1199,7 +1199,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             summarized_count = 0
 
         # Step 2: Send rewind to AgentServer (truncation + agent-internal record writing)
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if real_client is not None:
@@ -1455,7 +1455,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         async def _run_harmonyos_dev_init_operation() -> None:
             try:
-                from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+                from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
                 from jiuwenswarm.common.schema.message import ReqMethod
                 from jiuwenswarm.gateway.routing.e2a_proxy import (
                     is_legacy_shared_directory_client,

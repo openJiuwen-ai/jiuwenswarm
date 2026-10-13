@@ -11,8 +11,8 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from jiuwenswarm.common.e2a.wire_codec import is_e2a_response_wire_dict
+from openjiuwen_protocol.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from openjiuwen_protocol.e2a.wire_codec import is_e2a_response_wire_dict
 from jiuwenswarm.observability.gateway_hints import TrajectoryGatewayHintBridge
 from jiuwenswarm.observability.models import CommittedTraceUpdate
 from jiuwenswarm.server.front.server import AgentServerFront
@@ -61,7 +61,7 @@ async def test_front_push_encodes_business_message(response_kind: str | None) ->
         assert wire["response_kind"] == response_kind
         assert wire["body"] == payload
     else:
-        from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+        from openjiuwen_protocol.e2a.wire_codec import parse_agent_server_wire_chunk
 
         assert parse_agent_server_wire_chunk(wire).payload == payload
     test_logger.info("Front encoded the push with its routing and business payload intact")
@@ -124,7 +124,7 @@ async def test_trajectory_bridge_retries_through_front_after_reconnect() -> None
         await asyncio.wait_for(socket.sent.wait(), timeout=2)
         assert len(socket.frames) == 1
         assert socket.frames[0]["metadata"][E2A_WIRE_SERVER_PUSH_KEY] is True
-        from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+        from openjiuwen_protocol.e2a.wire_codec import parse_agent_server_wire_chunk
 
         payload = parse_agent_server_wire_chunk(socket.frames[0]).payload
         assert payload["event_type"] == "trace.updated"

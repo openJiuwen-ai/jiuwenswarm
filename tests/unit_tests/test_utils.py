@@ -9,6 +9,7 @@ import ast
 import importlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -933,10 +934,10 @@ class TestCleanupStaleOpenjiuwenDescs:
         source = (root / relative_path).read_text(encoding="utf-8")
         cleanup_call = source.index("cleanup_stale_openjiuwen_descs()")
 
+        # 词边界匹配：排除 openjiuwen_protocol 等以 openjiuwen 为前缀的模块名。
         openjiuwen_imports = [
-            source.find(marker)
-            for marker in ("from openjiuwen", "import openjiuwen")
-            if source.find(marker) >= 0
+            m.start()
+            for m in re.finditer(r"(?:from|import)\s+openjiuwen\b", source)
         ]
         if openjiuwen_imports:
             assert cleanup_call < min(openjiuwen_imports)

@@ -13,10 +13,10 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Coroutine
 
+from openjiuwen_protocol.e2a.models import E2AEnvelope
+from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.client.agent_client import AgentServerClient
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
