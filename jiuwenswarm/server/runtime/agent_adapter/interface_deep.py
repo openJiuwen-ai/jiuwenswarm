@@ -8835,7 +8835,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         # 返回 None 走 OUTPUT_LEASE_BUSY 显式报错路径（宁可显式失败，不僵尸）。
         settle_deadline = time.monotonic() + settle_seconds
         while True:
-            active_round = getattr(self._instance, "_active_interaction_round", None)
+            active_round = getattr(self._instance, "active_round", None)
             if active_round is None:
                 break
             if time.monotonic() >= settle_deadline:
