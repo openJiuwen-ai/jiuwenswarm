@@ -8788,6 +8788,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         *,
         timeout_seconds: float = 5.0,
         poll_interval_seconds: float = 0.1,
+        settle_seconds: float = 10.0,
     ) -> Optional["InteractionOutputStream"]:
         """普通对话取输出租约；被旧轮悬挂占用时重放 interrupt 收回。
 
@@ -8824,6 +8825,29 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             request.request_id,
         )
         await self._process_interaction_interrupt(request, "cancel", None)
+        # ── 顶替栅栏（fence）：等待被取消的旧轮回调完全退出后再放行 ──
+        # cancel_round 内部对旧 exec task 的取消是"有界等待(1.5s) + 后台收尾"：
+        # 返回 cancelled=True 时旧轮的 LLM I/O 可能仍在排空。若此刻立即 attach
+        # 并派发新消息：(a) 旧轮残余产出会流入新租约（内容串味）；(b) 新回合的
+        # dispatch 可能被旧轮未完成的收尾阻塞（实测 120s 僵尸、仅 keepalive，
+        # 见 docs/bug_busy_default_lease_reclaim_cancel_race.md）。这里轮询等待
+        # 旧轮回调彻底退出（_active_interaction_round 清空）后再放行；超时则
+        # 返回 None 走 OUTPUT_LEASE_BUSY 显式报错路径（宁可显式失败，不僵尸）。
+        settle_deadline = time.monotonic() + settle_seconds
+        while True:
+            active_round = getattr(self._instance, "_active_interaction_round", None)
+            if active_round is None:
+                break
+            if time.monotonic() >= settle_deadline:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] 顶替后旧轮回调未完全退出，放弃接管: "
+                    "session=%s request_id=%s settle_timeout_s=%.1f",
+                    session_id,
+                    request.request_id,
+                    settle_seconds,
+                )
+                return None
+            await asyncio.sleep(0.2)
         started_at = time.monotonic()
         deadline = started_at + timeout_seconds
         while True:
@@ -11124,6 +11148,17 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     inputs["query"] = (
                         f"{inputs.get('query') or ''}\n\n{stopped_reminder}"
                     )
+                # 顶替收尾（作用域修复①）：重放 interrupt(cancel) 的 rail.abort
+                # 会给本 session 设置会话级 abort 标志（本意是让垂死的旧轮在
+                # before_model_call/before_tool_call 检查点自杀）。但入口处的
+                # reset_abort（见上方）在 reclaim 之前已执行，无法清掉重放新设
+                # 的标志；若不清，#2 自己的新回合会在首个检查点读到该标志并
+                # CancelledError 自杀（出生即死/僵尸形态，见
+                # docs/bug_busy_default_lease_reclaim_cancel_race.md）。旧轮已
+                # 被 cancel_round 杀死（task.cancel），标志的使命已结束——
+                # 在派发新消息前清掉，保证新回合干净起跑。
+                if self._stream_event_rail is not None:
+                    self._stream_event_rail.reset_abort(session_id)
                 server_logger.info(
                     "[AgentServer] message entering runner streaming: session_id=%s request_id=%s"
                     " channel_id=%s mode=%s prepare_ms=%.1f query=%s",
