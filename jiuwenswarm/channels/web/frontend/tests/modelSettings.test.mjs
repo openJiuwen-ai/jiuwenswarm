@@ -531,30 +531,39 @@ test('adding a model replaces only the placeholder primary model', () => {
 
 test('model Settings sources use the required RPCs without hardcoded vendor options or unsupported tiers', () => {
   const page = source('src/features/settings/modules/models/ModelsSettings.tsx');
+  const definition = source('src/features/settings/modules/models/definition.ts');
+  const tabLayout = source('src/features/settings/components/SettingsTabLayout.tsx');
   const dialog = source('src/features/settings/modules/models/ModelDialog.tsx');
   const provider = source('src/features/settings/modules/models/ModelProviderSelect.tsx');
   const account = source('src/features/settings/modules/models/OpenAIAccountField.tsx');
   const accountCss = source('src/features/settings/modules/models/OpenAIAccountField.css');
   const operations = source('src/features/settings/modules/models/modelListOperations.ts');
-  assert.match(page, /request<ReplaceModelsResult>\(\s*'models\.replace_all'/);
+  assert.match(page, /request<ModelResourceResult>\(\s*'models\.upsert'/);
+  assert.match(page, /request\('models\.get', \{ model_id: nextDialog\.model\.model_id \}\)/);
+  assert.match(page, /request\('models\.references', \{ type: 'model', id: model\.model_id \}\)/);
+  assert.match(page, /request\('models\.delete', \{ model_id: confirmation\.model\.model_id \}/);
+  assert.doesNotMatch(page, /models\.replace_all/);
   assert.match(page, /const refreshedPayload = await request\('models\.list'\)/);
   assert.match(page, /setAvailableModels\(parsed\.models, parsed\.activeModel\)/);
   assert.match(page, /const reloadModels = useCallback[\s\S]*await loadModels\(\)/);
   assert.match(page, /title=\{t\('settingsPanel\.models\.customModels'\)\}/);
   assert.match(page, /<FreeModelsSettings\s*\/>/);
   assert.match(page, /data-testid="settings-models-add-btn"/);
-  assert.match(page, /const \[activeTab, setActiveTab\] = useState<'models' \| 'groups'>\('models'\)/);
-  assert.match(page, /wrapperTestId="settings-models-tabs"/);
+  assert.match(page, /<SettingsTabLayout/);
+  assert.match(page, /testIdPrefix="settings-models"/);
   assert.match(page, /activeTab === 'models'/);
-  assert.match(page, /value: 'models', label: t\('settingsPanel\.models\.modelsTab'\)/);
-  assert.match(page, /value: 'groups', label: t\('settingsPanel\.models\.modelGroups'\)/);
-  assert.match(page, /setDialog\(nextDialog\);\s*void loadCatalog\(\)/);
+  assert.match(definition, /id: 'models', labelKey: 'settingsPanel\.models\.modelsTab'/);
+  assert.match(definition, /id: 'groups', labelKey: 'settingsPanel\.models\.modelGroups'/);
+  assert.match(definition, /defaultModelSettingsTab: ModelSettingsTabId = 'models'/);
+  assert.match(tabLayout, /const \[activeTab, setActiveTab\] = useState<TabId>\(defaultTab\)/);
+  assert.match(tabLayout, /items=\{tabs\.map\(\(tab\) => \(\{ value: tab\.id, label: t\(tab\.labelKey\) \}\)\)\}/);
+  assert.match(page, /void loadCatalog\(\);[\s\S]{0,180}setDialog\(nextDialog\)/);
   assert.match(page, /type SaveModelsOptions = \{ errorScope\?: SettingsSaveErrorScope \};/);
   assert.match(page, /saveQueue\.enqueue\([\s\S]{0,320}\{ errorScope \},/);
   assert.match(page, /if \(errorScope === 'page'\) setSaveError\(message\)/);
   assert.match(
     page,
-    /await saveModels\(nextModels, dialog\.model \? 'model\.edit' : 'model\.add', \{ errorScope: 'caller' \}\)/,
+    /await saveModel\(next, dialog\.model \? 'model\.edit' : 'model\.add', \{ errorScope: 'caller' \}\)/,
   );
   assert.match(page, /const customName = model\.alias\?\.trim\(\) \|\| model\.model_name/);
   assert.match(page, /models\.map\(\(model, index\) => renderModelCard\(model, index\)\)/);

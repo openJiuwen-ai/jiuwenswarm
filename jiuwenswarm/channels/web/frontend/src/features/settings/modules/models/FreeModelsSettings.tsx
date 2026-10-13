@@ -158,7 +158,6 @@ export function FreeModelsSettings() {
             <ArrowRight size={16} aria-hidden />
           </button>
         </div>
-        <div className="free-models-banner__decor" aria-hidden />
       </section>
       <FreeModelSettingsDialog open={configOpen} models={loginModels} onClose={() => setConfigOpen(false)} />
     </>

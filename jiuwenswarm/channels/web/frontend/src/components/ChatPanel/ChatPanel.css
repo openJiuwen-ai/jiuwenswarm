@@ -2998,6 +2998,11 @@
   background: var(--color-icon-btn-hover-surface);
 }
 
+.model-select__group-route {
+  padding-left: 36px;
+  font-size: 13px;
+}
+
 .model-select__nested-chevron {
   flex: none;
   width: 14px;

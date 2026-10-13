@@ -148,6 +148,17 @@ function cronDrawer(overrides = {}) {
   });
 }
 
+test('Team conversations keep model-group selection enabled', () => {
+  const selectorSource = readFileSync(
+    new URL('../src/components/ChatPanel/ChatModelSelector.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(selectorSource, /mode\s*!==\s*['"]team['"]/);
+  assert.doesNotMatch(selectorSource, /next\.type\s*===\s*['"]model_group['"]\)\s*return/);
+  assert.match(selectorSource, /includeModelGroups/);
+  assert.match(selectorSource, /model_selection:\s*next/);
+});
+
 test('chat and scheduled tasks show identical grouped options, excluding secondary connections', async () => {
   await withFixture(async ({ mount, click, byId }) => {
     await mount(createElement(ChatModelSelector), cronDrawer());

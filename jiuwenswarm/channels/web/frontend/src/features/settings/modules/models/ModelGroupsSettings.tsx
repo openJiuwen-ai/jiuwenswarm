@@ -5,7 +5,7 @@ import type { ModelEntry, ModelGroup } from '../../../../types';
 import { Button, Tag } from '../../../../components/ui';
 import { settingsActionIcons, settingsEmptyBoxIllustration } from '../../../../assets/settings';
 import { SettingsSection } from '../../components';
-import { getGroupDefaultModelId, getModelGroupDisplayName } from './modelGroupAdapters';
+import { getGroupDefaultRouteId, getModelGroupDisplayName } from './modelGroupAdapters';
 
 type ModelPresentation = {
   customName: string;
@@ -25,9 +25,9 @@ type ModelGroupsSettingsProps = {
   onAdd: () => void;
   onEdit: (group: ModelGroup) => void;
   onDelete: (group: ModelGroup) => void;
-  onSetDefault: (group: ModelGroup, modelId: string) => Promise<void>;
+  onSetDefault: (group: ModelGroup, routeId: string) => Promise<void>;
   onTestModel: (model: ModelEntry, index: number) => void;
-  onRemoveRoute: (group: ModelGroup, modelId: string, modelName: string) => void;
+  onRemoveRoute: (group: ModelGroup, routeId: string, modelName: string) => void;
 };
 
 export function ModelGroupsSettings({
@@ -64,7 +64,7 @@ export function ModelGroupsSettings({
     const groupId = group.model_group_id ?? getModelGroupDisplayName(group);
     const title = getModelGroupDisplayName(group);
     const expanded = !collapsedGroupIds[groupId];
-    const defaultModelId = getGroupDefaultModelId(group);
+    const defaultRouteId = getGroupDefaultRouteId(group);
     const headerLabel = t('settingsPanel.models.modelGroupCardHeader', {
       name: title,
       count: group.routes.length,
@@ -171,8 +171,9 @@ export function ModelGroupsSettings({
                       metadata: t('settingsPanel.models.missingConfiguredModel'),
                       logo: undefined,
                     };
-                const isRouteDefault = route.model_id === defaultModelId;
+                const isRouteDefault = Boolean(route.route_id && route.route_id === defaultRouteId);
                 const canRemove = group.routes.length > 1;
+                const hasStableRouteId = Boolean(route.route_id);
 
                 return (
                   <div
@@ -225,8 +226,10 @@ export function ModelGroupsSettings({
                           className="settings-models-group-route__set-default"
                           variant="quiet"
                           size="sm"
-                          disabled={actionsDisabled || !group.model_group_id}
-                          onClick={() => void onSetDefault(group, route.model_id).catch(() => undefined)}
+                          disabled={actionsDisabled || !group.model_group_id || !hasStableRouteId || route.enabled === false}
+                          onClick={() => {
+                            if (route.route_id) void onSetDefault(group, route.route_id).catch(() => undefined);
+                          }}
                           data-testid="settings-models-group-route-set-default-btn"
                           data-variant={route.model_id}
                         >
@@ -256,8 +259,10 @@ export function ModelGroupsSettings({
                             ? t('settingsPanel.models.removeModelFromGroup')
                             : t('settingsPanel.models.keepOneGroupRoute')
                         }
-                        disabled={actionsDisabled || !group.model_group_id || !canRemove}
-                        onClick={() => onRemoveRoute(group, route.model_id, presentation.customName)}
+                        disabled={actionsDisabled || !group.model_group_id || !canRemove || !hasStableRouteId}
+                        onClick={() => {
+                          if (route.route_id) onRemoveRoute(group, route.route_id, presentation.customName);
+                        }}
                         data-testid="settings-models-group-route-remove-btn"
                         data-variant={route.model_id}
                       />

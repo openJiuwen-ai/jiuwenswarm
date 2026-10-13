@@ -2,12 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ModelEntry, ModelGroup, VendorPresetMap } from '../../../../types';
-import { Button, Tabs, Tag } from '../../../../components/ui';
+import { Button, Tag } from '../../../../components/ui';
 import { settingsActionIcons, settingsEmptyBoxIllustration } from '../../../../assets/settings';
 import { getModelLogoUrl } from '../../../../assets/providers';
-import { buildModelValidationPayload, buildModelsSavePayload } from '../../services/settingsContract';
+import { buildModelValidationPayload } from '../../services/settingsContract';
 import type { SettingsSaveErrorScope } from '../../services/SettingsSaveQueue';
-import { SettingsConfirmDialog, SettingsSection } from '../../components';
+import {
+  SettingsConfirmDialog,
+  SettingsSection,
+  SettingsTabLayout,
+  type SettingsTabDefinition,
+} from '../../components';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { FreeModelsSettings } from './FreeModelsSettings';
 import { ModelDialog } from './ModelDialog';
@@ -17,7 +22,7 @@ import { getVendorLabel } from './ModelProviderSelect';
 import { displayModelProtocol, parseVendorCatalog } from './modelAdapters';
 import {
   extractModelSelectionReferences,
-  getGroupDefaultModelId,
+  getGroupDefaultRouteId,
   getModelGroupDisplayName,
   parseModelGroup,
   parseModelGroups,
@@ -26,7 +31,7 @@ import {
   removeGroupRoute,
 } from './modelGroupAdapters';
 import { useSessionStore } from '../../../../stores/sessionStore';
-import { addEditableModel, getEditableModels, promotePrimaryModel, removeEditableModel } from './modelListOperations';
+import { getEditableModels } from './modelListOperations';
 
 const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
   reasoning: null,
@@ -38,11 +43,81 @@ const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
 type ModelConfirmation =
   | { type: 'delete-model'; model: ModelEntry; message: string }
   | { type: 'delete-group'; group: ModelGroup; message: string }
-  | { type: 'remove-group-route'; group: ModelGroup; modelId: string; message: string };
+  | { type: 'remove-group-route'; group: ModelGroup; routeId: string; message: string };
 
 type ValidationToast = { success: boolean; message: string };
-type ReplaceModelsResult = { count: number; applied_without_restart: boolean };
 type SaveModelsOptions = { errorScope?: SettingsSaveErrorScope };
+
+type ModelResourceResult = { model?: unknown; applied_without_restart?: unknown };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function parseModelResource(payload: unknown): ModelEntry {
+  if (!isRecord(payload) || !isRecord(payload.model)) throw new Error('INVALID_MODEL_RESOURCE');
+  const model = payload.model;
+  const client = isRecord(model.model_client_config) ? model.model_client_config : {};
+  const config = isRecord(model.model_config_obj) ? model.model_config_obj : {};
+  const writeOnlyFields = Array.isArray(model.write_only_fields) ? model.write_only_fields : [];
+  if (typeof client.model_name !== 'string' || typeof client.api_base !== 'string') {
+    throw new Error('INVALID_MODEL_RESOURCE');
+  }
+  return {
+    model_id: typeof model.model_id === 'string' ? model.model_id : undefined,
+    alias: typeof model.alias === 'string' ? model.alias : '',
+    model_name: client.model_name,
+    api_base: client.api_base,
+    api_key: '',
+    has_api_key: writeOnlyFields.includes('model_client_config.api_key'),
+    model_provider: typeof client.client_provider === 'string' ? client.client_provider : '',
+    timeout: typeof client.timeout === 'number' ? client.timeout : undefined,
+    temperature: typeof config.temperature === 'number' ? config.temperature : undefined,
+    reasoning_level: typeof config.reasoning_level === 'string' ? config.reasoning_level : '',
+    context_window_tokens: typeof config.context_window === 'number' ? config.context_window : undefined,
+    is_default: model.is_default === true,
+    vendor_key: typeof client.vendor_key === 'string' ? client.vendor_key : undefined,
+    plan:
+      client.plan === 'token_plan' || client.plan === 'coding_plan' || client.plan === 'custom_api'
+        ? client.plan
+        : undefined,
+    endpoint_profile: typeof client.endpoint_profile === 'string' ? client.endpoint_profile : undefined,
+    is_agentos: model.is_agentos === true,
+    source: typeof model.source === 'string' ? model.source : undefined,
+    read_only: model.read_only === true,
+  };
+}
+
+export function buildModelResourcePayload(model: ModelEntry): Record<string, unknown> {
+  const client: Record<string, unknown> = {
+    model_name: model.model_name,
+    api_base: model.api_base,
+    client_provider: model.model_provider,
+  };
+  if (model.api_key.trim()) client.api_key = model.api_key;
+  if (model.timeout !== undefined) client.timeout = model.timeout;
+  if (model.vendor_key) client.vendor_key = model.vendor_key;
+  if (model.plan) client.plan = model.plan;
+  if (model.endpoint_profile) client.endpoint_profile = model.endpoint_profile;
+  const config: Record<string, unknown> = {};
+  if (model.temperature !== undefined) config.temperature = model.temperature;
+  if (model.reasoning_level) config.reasoning_level = model.reasoning_level;
+  if (model.context_window_tokens !== undefined) config.context_window = model.context_window_tokens;
+  return {
+    ...(model.model_id ? { model_id: model.model_id } : {}),
+    alias: model.alias ?? '',
+    is_default: model.is_default === true,
+    model_client_config: client,
+    model_config_obj: config,
+  };
+}
+
+export type ModelSettingsTabId = 'models' | 'groups';
+
+type ModelsSettingsProps = {
+  tabs: readonly SettingsTabDefinition<ModelSettingsTabId>[];
+  defaultTab: ModelSettingsTabId;
+};
 
 function modelIdentity(model: ModelEntry, index: number): string {
   return `${model.model_id ?? model.origin_index ?? `new-${index}`}:${model.model_name}:${model.alias ?? ''}`;
@@ -82,7 +157,7 @@ export function parseModelsPayload(payload: unknown): {
   return { models: normalizedModels, modelGroups, activeModel };
 }
 
-export function ModelsSettings() {
+export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
   const { t } = useTranslation();
   const { isConnected, request, saveQueue } = useSettingsServices();
   const setAvailableModels = useSessionStore((state) => state.setAvailableModels);
@@ -103,7 +178,6 @@ export function ModelsSettings() {
   const [confirmError, setConfirmError] = useState('');
   const [validationStates, setValidationStates] = useState<Record<string, 'testing' | 'success'>>({});
   const [validationToast, setValidationToast] = useState<ValidationToast | null>(null);
-  const [activeTab, setActiveTab] = useState<'models' | 'groups'>('models');
   const modelsRequestId = useRef(0);
   const catalogRequestId = useRef(0);
   const validationRequestIds = useRef<Record<string, number>>({});
@@ -179,14 +253,6 @@ export function ModelsSettings() {
     await loadModels();
   }, [loadModels]);
 
-  const openModelDialog = useCallback(
-    (nextDialog: { model?: ModelEntry }) => {
-      setDialog(nextDialog);
-      void loadCatalog();
-    },
-    [loadCatalog],
-  );
-
   const closeModelDialog = useCallback(() => {
     catalogRequestId.current += 1;
     setCatalogLoading(false);
@@ -215,19 +281,38 @@ export function ModelsSettings() {
     }, 3000);
   }, []);
 
-  const saveModels = async (
-    nextModels: ModelEntry[],
+  const openModelDialog = useCallback(
+    async (nextDialog: { model?: ModelEntry }) => {
+      void loadCatalog();
+      if (!nextDialog.model?.model_id) {
+        setDialog(nextDialog);
+        return;
+      }
+      try {
+        const payload = await request('models.get', { model_id: nextDialog.model.model_id });
+        setDialog({ model: parseModelResource(payload) });
+      } catch (error) {
+        showValidationToast({
+          success: false,
+          message: error instanceof Error ? error.message : t('settingsPanel.feedback.loadFailed'),
+        });
+      }
+    },
+    [loadCatalog, request, showValidationToast, t],
+  );
+
+  const saveModel = async (
+    model: ModelEntry,
     operation: string,
     { errorScope = 'page' }: SaveModelsOptions = {},
   ) => {
-    const submittedModels = getEditableModels(nextModels);
     setSaving(true);
     setSaveError('');
     try {
       const result = await saveQueue.enqueue(
         operation,
         () =>
-          request<ReplaceModelsResult>('models.replace_all', buildModelsSavePayload(submittedModels), {
+          request<ModelResourceResult>('models.upsert', { model: buildModelResourcePayload(model) }, {
             timeoutMs: 600_000,
           }),
         { errorScope },
@@ -251,6 +336,38 @@ export function ModelsSettings() {
       throw error;
     } finally {
       setSaving(false);
+    }
+  };
+
+  const requestDeleteModel = async (model: ModelEntry) => {
+    if (!model.model_id) return;
+    setConfirmError('');
+    try {
+      const referencesPayload = await request('models.references', { type: 'model', id: model.model_id });
+      const references = parseModelSelectionReferences(referencesPayload);
+      if (references.length > 0) {
+        showValidationToast({
+          success: false,
+          message: t('settingsPanel.models.modelReferenced', {
+            count: references.length,
+            scopes: references.map((item) => item.scope).join(', '),
+          }),
+        });
+        return;
+      }
+      setConfirmation({
+        type: 'delete-model',
+        model,
+        message: t('settingsPanel.models.deleteConfirm', {
+          alias: model.alias || t('settingsPanel.models.missingCustomName'),
+          model: model.model_name,
+        }),
+      });
+    } catch (error) {
+      showValidationToast({
+        success: false,
+        message: error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'),
+      });
     }
   };
 
@@ -335,9 +452,18 @@ export function ModelsSettings() {
     setConfirmError('');
     try {
       if (confirmation.type === 'delete-model') {
-        await saveModels(removeEditableModel(models, confirmation.model), 'model.delete');
+        if (!confirmation.model.model_id) throw new Error(t('settingsPanel.feedback.saveFailed'));
+        setSaving(true);
+        await saveQueue.enqueue(
+          'model.delete',
+          () => request('models.delete', { model_id: confirmation.model.model_id }, { timeoutMs: 600_000 }),
+          { errorScope: 'page' },
+        );
+        const refreshedPayload = await request('models.list');
+        applyCatalog(parseModelsPayload(refreshedPayload));
+        showValidationToast({ success: true, message: t('settingsPanel.models.savedApplied') });
       } else if (confirmation.type === 'remove-group-route') {
-        const nextGroup = removeGroupRoute(confirmation.group, confirmation.modelId);
+        const nextGroup = removeGroupRoute(confirmation.group, confirmation.routeId);
         if (nextGroup.routes.length === 0) {
           throw new Error(t('settingsPanel.models.keepOneGroupRoute'));
         }
@@ -382,9 +508,9 @@ export function ModelsSettings() {
     }
   };
 
-  const setGroupRouteDefault = async (group: ModelGroup, modelId: string) => {
-    if (getGroupDefaultModelId(group) === modelId) return;
-    await saveModelGroup(promoteGroupRouteDefault(group, modelId));
+  const setGroupRouteDefault = async (group: ModelGroup, routeId: string) => {
+    if (getGroupDefaultRouteId(group) === routeId) return;
+    await saveModelGroup(promoteGroupRouteDefault(group, routeId));
   };
 
   const testSavedModel = async (model: ModelEntry, index: number) => {
@@ -415,7 +541,7 @@ export function ModelsSettings() {
   };
 
   const setPrimary = async (model: ModelEntry) => {
-    await saveModels(promotePrimaryModel(models, model), 'model.primary');
+    await saveModel({ ...model, is_default: true }, 'model.primary');
   };
 
   const getCardPresentation = (model: ModelEntry) => {
@@ -521,7 +647,7 @@ export function ModelsSettings() {
               aria-label={t('common.modify')}
               title={t('common.modify')}
               disabled={actionsDisabled}
-              onClick={() => openModelDialog({ model })}
+              onClick={() => void openModelDialog({ model })}
               data-testid="settings-models-card-edit-btn"
               data-variant={model.model_id ?? model.origin_index ?? 'new'}
             />
@@ -533,17 +659,7 @@ export function ModelsSettings() {
               aria-label={t('common.delete')}
               title={editableModels.length <= 1 ? t('settingsPanel.models.keepOneModel') : t('common.delete')}
               disabled={actionsDisabled || editableModels.length <= 1}
-              onClick={() => {
-                setConfirmError('');
-                setConfirmation({
-                  type: 'delete-model',
-                  model,
-                  message: t('settingsPanel.models.deleteConfirm', {
-                    alias: model.alias || t('settingsPanel.models.missingCustomName'),
-                    model: model.model_name,
-                  }),
-                });
-              }}
+              onClick={() => void requestDeleteModel(model)}
               data-testid="settings-models-card-delete-btn"
               data-variant={model.model_id ?? model.origin_index ?? 'new'}
             />
@@ -555,21 +671,13 @@ export function ModelsSettings() {
 
   return (
     <>
-      <Tabs
-        role="tablist"
-        ariaLabel={t('settingsPanel.models.tabsLabel')}
-        bordered
+      <SettingsTabLayout
+        tabs={tabs}
+        defaultTab={defaultTab}
+        ariaLabelKey="settingsPanel.models.tabsLabel"
         className="settings-models__tabs"
-        wrapperTestId="settings-models-tabs"
-        itemTestId="settings-models-tab"
-        value={activeTab}
-        onChange={setActiveTab}
-        items={[
-          { value: 'models', label: t('settingsPanel.models.modelsTab') },
-          { value: 'groups', label: t('settingsPanel.models.modelGroups') },
-        ]}
-      />
-      {activeTab === 'models' ? (
+        testIdPrefix="settings-models"
+        renderPanel={(activeTab) => activeTab === 'models' ? (
         <div className={'settings-models__models-pane'}>
           <FreeModelsSettings />
           <SettingsSection
@@ -579,7 +687,7 @@ export function ModelsSettings() {
               <Button
                 variant="primary"
                 disabled={actionsDisabled}
-                onClick={() => openModelDialog({})}
+                onClick={() => void openModelDialog({})}
                 data-testid="settings-models-add-btn"
               >
                 {t('settingsPanel.models.addModel')}
@@ -616,7 +724,7 @@ export function ModelsSettings() {
                 <Button
                   variant="primary"
                   disabled={!isConnected || saving}
-                  onClick={() => openModelDialog({})}
+                  onClick={() => void openModelDialog({})}
                   data-testid="settings-models-empty-add-btn"
                 >
                   {t('settingsPanel.models.addModel')}
@@ -628,7 +736,7 @@ export function ModelsSettings() {
             </div>
           </SettingsSection>
         </div>
-      ) : (
+        ) : (
         <ModelGroupsSettings
           models={models}
           modelGroups={modelGroups}
@@ -643,17 +751,18 @@ export function ModelsSettings() {
           onDelete={(group) => void requestDeleteModelGroup(group)}
           onSetDefault={setGroupRouteDefault}
           onTestModel={(model, index) => void testSavedModel(model, index)}
-          onRemoveRoute={(group, modelId, modelName) => {
+          onRemoveRoute={(group, routeId, modelName) => {
             setConfirmError('');
             setConfirmation({
               type: 'remove-group-route',
               group,
-              modelId,
+              routeId,
               message: t('settingsPanel.models.removeModelFromGroupConfirm', { name: modelName }),
             });
           }}
         />
-      )}
+        )}
+      />
       {groupDialog ? (
         <ModelGroupDialog
           models={models}
@@ -674,10 +783,7 @@ export function ModelsSettings() {
           onRetryCatalog={() => void loadCatalog()}
           onClose={closeModelDialog}
           onSave={async (next) => {
-            const nextModels = dialog.model
-              ? models.map((current) => (current === dialog.model ? next : current))
-              : addEditableModel(models, next);
-            await saveModels(nextModels, dialog.model ? 'model.edit' : 'model.add', { errorScope: 'caller' });
+            await saveModel(next, dialog.model ? 'model.edit' : 'model.add', { errorScope: 'caller' });
           }}
         />
       ) : null}

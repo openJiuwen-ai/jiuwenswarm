@@ -11,14 +11,11 @@
   overflow: hidden;
   color: var(--color-text-primary);
   border-radius: var(--radius-xl);
-  background:
-    radial-gradient(ellipse 64% 210% at 9% -78%, rgba(255, 255, 255, 0.48) 0%, transparent 68%),
-    linear-gradient(
-      104deg,
-      var(--color-free-models-banner-from) 0%,
-      var(--color-free-models-banner-mid) 58%,
-      var(--color-free-models-banner-to) 100%
-    );
+  background-color: var(--color-free-models-banner-mid);
+  background-image: url('../../../../assets/settings/models/free-models-background.svg');
+  background-repeat: no-repeat;
+  background-position: 0 0;
+  background-size: 100% 100%;
 }
 
 .free-models-banner--ended {
@@ -29,9 +26,9 @@
   position: relative;
   z-index: 1;
   display: grid;
+  flex: 1 1 auto;
   gap: 4px;
   min-width: 0;
-  max-width: 70ch;
 }
 
 .free-models-banner__copy strong {
@@ -43,14 +40,10 @@
 
 .free-models-banner__copy p {
   margin: 0;
-  overflow: hidden;
   color: var(--color-settings-text-secondary);
   font-size: 14px;
   font-weight: 400;
   line-height: 22px;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
 .free-models-banner__actions {
@@ -128,17 +121,6 @@
 .free-models-banner__icon-btn svg {
   width: 16px;
   height: 16px;
-}
-
-.free-models-banner__decor {
-  position: absolute;
-  top: 14px;
-  right: 108px;
-  width: 96px;
-  height: 88px;
-  pointer-events: none;
-  opacity: 0.68;
-  background: url('../../../../assets/settings/models/free-banner-decor.svg') center / contain no-repeat;
 }
 
 .free-models-card {
@@ -285,11 +267,6 @@
   .free-models-banner {
     flex-direction: column;
     align-items: flex-start;
-  }
-
-  .free-models-banner__decor {
-    right: -20px;
-    opacity: 0.22;
   }
 
   .free-models-card {

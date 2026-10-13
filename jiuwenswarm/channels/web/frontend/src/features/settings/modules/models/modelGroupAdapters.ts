@@ -166,9 +166,9 @@ export function formatModelGroupRouteSummary(
 }
 
 /** First enabled route is used when no explicit route is selected. */
-export function getGroupDefaultModelId(group: ModelGroup): string | undefined {
+export function getGroupDefaultRouteId(group: ModelGroup): string | undefined {
   const route = group.routes.find((item) => item.enabled !== false) ?? group.routes[0];
-  return route?.model_id;
+  return route?.route_id;
 }
 
 /** Move the target route to the front so it becomes the in-group default. */

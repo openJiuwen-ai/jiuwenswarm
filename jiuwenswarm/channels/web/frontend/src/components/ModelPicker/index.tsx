@@ -238,10 +238,14 @@ export default function ModelPicker({
     onChange(model.model_name);
   }
 
-  function handleSelectGroup(group: ModelGroup): void {
+  function handleSelectGroup(group: ModelGroup, routeId?: string): void {
     if (!group.model_group_id || !onSelectionChange) return;
     setOpen(false);
-    onSelectionChange({ type: 'model_group', id: group.model_group_id });
+    onSelectionChange({
+      type: 'model_group',
+      id: group.model_group_id,
+      ...(routeId ? { route_id: routeId } : {}),
+    });
   }
 
   return (
@@ -368,8 +372,8 @@ export default function ModelPicker({
                     const active = isSameSelection(selection, { type: 'model_group', id: groupId });
                     const canSelect = Boolean(onSelectionChange);
                     return (
-                      <button
-                        key={groupId}
+                      <Fragment key={groupId}>
+                        <button
                         type="button"
                         disabled={!canSelect}
                         onClick={() => handleSelectGroup(modelGroup)}
@@ -388,7 +392,9 @@ export default function ModelPicker({
                           <span className="chat-mode-select__icon" aria-hidden="true">
                             <ModelGroupIcon />
                           </span>
-                          <span className="chat-mode-select__label">{label}</span>
+                          <span className="chat-mode-select__label">
+                            {label} · {t('chat.modelSelector.followGroupDefault')}
+                          </span>
                         </span>
                         {active && (
                           <svg
@@ -402,7 +408,49 @@ export default function ModelPicker({
                             <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
                           </svg>
                         )}
-                      </button>
+                        </button>
+                        {modelGroup.routes
+                          .filter((route) => route.enabled !== false && Boolean(route.route_id))
+                          .map((route) => {
+                            const routeId = route.route_id!;
+                            const routeSelection: ModelSelection = {
+                              type: 'model_group',
+                              id: groupId,
+                              route_id: routeId,
+                            };
+                            const routeModel = models.find((model) => model.model_id === route.model_id);
+                            const routeLabel = routeModel?.alias?.trim() || routeModel?.model_name || route.model_id;
+                            const routeActive = isSameSelection(selection, routeSelection);
+                            return (
+                              <button
+                                key={routeId}
+                                type="button"
+                                disabled={!canSelect}
+                                onClick={() => handleSelectGroup(modelGroup, routeId)}
+                                className={clsx(
+                                  'chat-mode-select__option',
+                                  'model-select__group-route',
+                                  routeActive && 'chat-mode-select__option--active',
+                                  !canSelect && 'chat-mode-select__option--disabled',
+                                )}
+                                role="menuitemradio"
+                                aria-checked={routeActive}
+                                title={routeId}
+                                data-testid={`${testIdPrefix}-group-route-option`}
+                                data-variant={routeId}
+                              >
+                                <span className="chat-mode-select__option-main">
+                                  <span className="chat-mode-select__label">↳ {routeLabel} · {routeId}</span>
+                                </span>
+                                {routeActive && (
+                                  <svg className="chat-mode-select__check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
+                                  </svg>
+                                )}
+                              </button>
+                            );
+                          })}
+                      </Fragment>
                     );
                   })}
                   {group.id === 'configured' && planModelGroups.map((planGroup) => {

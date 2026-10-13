@@ -13,10 +13,33 @@ import { getVendorLabel } from './ModelProviderSelect';
 
 type ModelGroupDraft = {
   name: string;
+  enabled: boolean;
+  isDefault: boolean;
+  requestConfigText: string;
   routes: RouteDraft[];
 };
 
-type RouteDraft = ModelRoute & { _key: string };
+type RouteDraft = Omit<ModelRoute, 'request_overrides'> & { _key: string; requestOverridesText: string };
+
+const FORBIDDEN_REQUEST_KEYS = new Set([
+  'model', 'messages', 'tools', 'stream', 'api_key', 'api_base', 'provider', 'client_provider',
+  'client_id', 'strategy', 'num_retries', 'timeout_seconds', 'enable_health_check',
+  'health_check_interval_seconds', 'enable_observability', 'context_window', '_source',
+]);
+
+function formatRequestPatch(value: Record<string, unknown> | null | undefined): string {
+  return value && Object.keys(value).length > 0 ? JSON.stringify(value, null, 2) : '';
+}
+
+function parseRequestPatch(value: unknown): Record<string, unknown> | null {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const parsed: unknown = JSON.parse(text);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('REQUEST_PATCH_OBJECT');
+  const forbidden = Object.keys(parsed).filter((key) => FORBIDDEN_REQUEST_KEYS.has(key));
+  if (forbidden.length > 0) throw new Error(`REQUEST_PATCH_FORBIDDEN:${forbidden.join(', ')}`);
+  return parsed as Record<string, unknown>;
+}
 type ModelRouteOption = {
   key: string;
   label: string;
@@ -287,6 +310,29 @@ function ModelRouteMultiSelect({
                         </div>
                       )}
                     </div>
+                    <div className="settings-model-group-dialog__route-config">
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={route.enabled !== false}
+                          disabled={disabled}
+                          onChange={(event) => onChange(value.map((item) => item._key === route._key
+                            ? { ...item, enabled: event.target.checked }
+                            : item))}
+                        />
+                        {t('settingsPanel.models.modelGroupRouteEnabled')}
+                      </label>
+                      <textarea
+                        value={route.requestOverridesText}
+                        disabled={disabled}
+                        rows={2}
+                        aria-label={t('settingsPanel.models.modelGroupRouteOverrides')}
+                        placeholder={t('settingsPanel.models.modelGroupRouteOverridesPlaceholder')}
+                        onChange={(event) => onChange(value.map((item) => item._key === route._key
+                          ? { ...item, requestOverridesText: event.target.value }
+                          : item))}
+                      />
+                    </div>
                     <div className="settings-model-group-multiselect__route-actions">
                       <Button
                         size="sm"
@@ -323,6 +369,7 @@ function ModelRouteMultiSelect({
                 _key: temporaryRouteKey(),
                 model_id: addableOption.key,
                 enabled: true,
+                requestOverridesText: '',
               }]);
             }}
             data-testid="settings-model-group-dialog-add-route-btn"
@@ -354,9 +401,13 @@ export function ModelGroupDialog({
   const initialValues = useMemo<ModelGroupDraft>(
     () => ({
       name: group?.display_name?.trim() || '',
+      enabled: group?.enabled !== false,
+      isDefault: group?.is_default === true,
+      requestConfigText: formatRequestPatch(group?.request_config),
       routes: (group?.routes ?? []).map((route, index) => ({
         ...route,
         _key: route.route_id || `existing-route-${index}`,
+        requestOverridesText: formatRequestPatch(route.request_overrides),
       })),
     }),
     [group],
@@ -393,6 +444,40 @@ export function ModelGroupDialog({
         placeholder: t('settingsPanel.models.modelGroupNamePlaceholder'),
       },
       {
+        name: 'enabled',
+        label: t('settingsPanel.models.modelGroupEnabled'),
+        component: 'custom',
+        render: ({ id, value, disabled, onChange, onBlur }) => (
+          <label className="settings-model-group-dialog__checkbox" htmlFor={id}>
+            <input id={id} type="checkbox" checked={value !== false} disabled={disabled}
+              onChange={(event) => onChange(event.target.checked)} onBlur={onBlur} />
+            {t('settingsPanel.models.modelGroupEnabledDescription')}
+          </label>
+        ),
+      },
+      {
+        name: 'isDefault',
+        label: t('settingsPanel.models.modelGroupDefault'),
+        component: 'custom',
+        render: ({ id, value, disabled, onChange, onBlur }) => (
+          <label className="settings-model-group-dialog__checkbox" htmlFor={id}>
+            <input id={id} type="checkbox" checked={value === true} disabled={disabled}
+              onChange={(event) => onChange(event.target.checked)} onBlur={onBlur} />
+            {t('settingsPanel.models.modelGroupDefaultDescription')}
+          </label>
+        ),
+      },
+      {
+        name: 'requestConfigText',
+        label: t('settingsPanel.models.modelGroupRequestConfig'),
+        component: 'custom',
+        render: ({ id, value, disabled, onChange, onBlur }) => (
+          <textarea id={id} rows={3} value={String(value ?? '')} disabled={disabled}
+            placeholder={t('settingsPanel.models.modelGroupRequestConfigPlaceholder')}
+            onChange={(event) => onChange(event.target.value)} onBlur={onBlur} />
+        ),
+      },
+      {
         name: 'routes',
         label: t('settingsPanel.models.modelGroupModels'),
         component: 'custom',
@@ -427,10 +512,33 @@ export function ModelGroupDialog({
       routes: [
         {
           trigger: ['change', 'blur'] as const,
-          validator: (value: unknown) =>
-            Array.isArray(value) && value.length > 0 ? undefined : t('settingsPanel.validation.required'),
+          validator: (value: unknown) => {
+            if (!Array.isArray(value) || value.length === 0) return t('settingsPanel.validation.required');
+            if (!value.some((route) => route.enabled !== false)) {
+              return t('settingsPanel.models.modelGroupNeedsEnabledRoute');
+            }
+            try {
+              value.forEach((route) => parseRequestPatch(route.requestOverridesText));
+              return undefined;
+            } catch {
+              return t('settingsPanel.models.modelGroupRequestConfigInvalid');
+            }
+          },
         },
       ],
+      requestConfigText: [{
+        trigger: ['change', 'blur'] as const,
+        validator: (value: unknown) => {
+          try {
+            parseRequestPatch(value);
+            return undefined;
+          } catch (error) {
+            return error instanceof Error && error.message.startsWith('REQUEST_PATCH_FORBIDDEN:')
+              ? t('settingsPanel.models.modelGroupForbiddenRequestKeys', { keys: error.message.split(':')[1] })
+              : t('settingsPanel.models.modelGroupRequestConfigInvalid');
+          }
+        },
+      }],
     }),
     [t],
   );
@@ -441,12 +549,22 @@ export function ModelGroupDialog({
     setSubmitting(true);
     setSaveError('');
     try {
+      const enabled = result.values.enabled !== false;
+      const isDefault = result.values.isDefault === true;
+      if (!enabled && isDefault) throw new Error(t('settingsPanel.models.disabledGroupCannotBeDefault'));
+      const routes = Array.isArray(result.values.routes)
+        ? result.values.routes.map(({ _key, requestOverridesText, ...route }) => ({
+            ...route,
+            request_overrides: parseRequestPatch(requestOverridesText) ?? undefined,
+          }))
+        : [];
       await onSave(
         buildModelGroupUpsertPayload({
           displayName: String(result.values.name ?? ''),
-          routes: Array.isArray(result.values.routes)
-            ? result.values.routes.map(({ _key, ...route }) => route)
-            : [],
+          routes,
+          enabled,
+          isDefault,
+          requestConfig: parseRequestPatch(result.values.requestConfigText),
           group,
         }),
       );

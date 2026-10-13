@@ -18,7 +18,6 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelGroups = useSessionStore((state) => state.availableModelGroups);
   const activeSessionId = useChatStore((state) => state.activeSessionId);
-  const mode = useSessionStore((state) => state.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const selectedModelName = useSessionStore(
     (state) => state.runtimes[activeSessionId ?? '']?.selectedModelName ?? null,
   );
@@ -29,29 +28,22 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
   const setSelectedModelName = useSessionStore((state) => state.setSelectedModelName);
   const setSelectedModelSelection = useSessionStore((state) => state.setSelectedModelSelection);
   const [selectionError, setSelectionError] = useState('');
-  // Team mode has no model-group selection contract yet — hide groups in the picker.
-  const includeModelGroups = mode !== 'team';
   // Preserve the chat.send model resolution; the shared picker does not choose defaults.
   const selected = resolveChatModelSelection(models, selectedModelName, defaultModelName);
   const inferredSelection =
     selectedModelSelection
     ?? selectionFromModel(selected)
     ?? null;
-  const pickerSelection =
-    includeModelGroups || inferredSelection?.type !== 'model_group' ? inferredSelection : selectionFromModel(selected);
-  const hasSelectableGroup =
-    includeModelGroups && modelGroups.some((group) => group.enabled !== false && Boolean(group.model_group_id));
+  const pickerSelection = inferredSelection;
+  const hasSelectableGroup = modelGroups.some(
+    (group) => group.enabled !== false && Boolean(group.model_group_id),
+  );
   if (!selected && !pickerSelection && models.length === 0 && !hasSelectableGroup) return null;
 
   const persistSelection = async (next: ModelSelection) => {
     if (!activeSessionId) return;
-    if (!includeModelGroups && next.type === 'model_group') return;
     setSelectionError('');
     setSelectedModelSelection(activeSessionId, next);
-    if (next.type === 'model') {
-      const model = models.find((entry) => entry.model_id === next.id);
-      if (model) setSelectedModelName(activeSessionId, model.model_name);
-    }
     if (activeSessionId === NEW_CONVERSATION_ID) return;
     try {
       await webRequest('session.selection.set', {
@@ -84,7 +76,7 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
         testIdPrefix="chat-panel-model-selector"
         value={selected?.model_name ?? selectedModelName}
         selection={pickerSelection}
-        includeModelGroups={includeModelGroups}
+        includeModelGroups
         onChange={(modelName) => {
           if (!activeSessionId) return;
           setSelectedModelName(activeSessionId, modelName);
