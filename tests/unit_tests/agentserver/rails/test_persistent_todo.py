@@ -317,12 +317,73 @@ async def test_explicit_delete_query_removes_reminder() -> None:
     assert "Kept" not in result["message"]
 
 
+def _persistent(todo_id: str, content: str) -> TodoItem:
+    return TodoItem(
+        id=todo_id,
+        content=content,
+        status=TodoStatus.PENDING,
+        meta_data={"persistent": True},
+    )
+
+
 @pytest.mark.asyncio
-async def test_delete_query_does_not_restore_reminder() -> None:
-    reminder, plan = _reminder_and_plan()
-    tool = _TodoFile([plan])
-    await restore_persistent_reminders(tool, "sess-1", [reminder], "把这个待办删了")
-    assert [todo.id for todo in tool.todos] == ["stage"]
+async def test_bulk_cancel_on_a_delete_turn_keeps_unnamed_reminders() -> None:
+    named = _persistent("tomorrow", "明早提醒")
+    other = _persistent("last_week", "上周提醒")
+    held = [named, other]
+    tool = _modify_tool(held)
+    session = _State()
+    remember_turn_user_query(session, "把这个待办删了，再记一个待办：周五开会")
+
+    result = await tool.invoke(
+        {
+            "action": "update",
+            "todos": [
+                {"id": "tomorrow", "status": "cancelled"},
+                {"id": "last_week", "status": "cancelled"},
+            ],
+        },
+        session=session,
+    )
+
+    assert named.status == TodoStatus.PENDING
+    assert other.status == TodoStatus.PENDING
+    assert is_persistent_todo(named)
+    assert is_persistent_todo(other)
+    assert "Kept 2 reminder" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_named_delete_leaves_the_other_reminder() -> None:
+    named = _persistent("tomorrow", "明早提醒")
+    other = _persistent("last_week", "上周提醒")
+    held = [named, other]
+    tool = _modify_tool(held)
+    session = _State()
+    remember_turn_user_query(session, "把明早提醒这个待办删了")
+
+    result = await tool.invoke(
+        {"action": "delete", "ids": ["tomorrow", "last_week"]},
+        session=session,
+    )
+
+    assert [todo.id for todo in held] == ["last_week"]
+    assert is_persistent_todo(held[0])
+    assert "Kept 1 reminder" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_create_on_a_delete_turn_still_restores_reminders() -> None:
+    named = _persistent("tomorrow", "明早提醒")
+    other = _persistent("last_week", "上周提醒")
+    created = TodoItem(id="friday", content="周五开会", status=TodoStatus.PENDING)
+    tool = _TodoFile([created])
+
+    await restore_persistent_reminders(tool, "sess-1", [named, other])
+
+    assert [todo.id for todo in tool.todos] == ["friday", "tomorrow", "last_week"]
+    assert is_persistent_todo(tool.todos[1])
+    assert is_persistent_todo(tool.todos[2])
 
 
 def test_rail_execution_load_excludes_persistent(tmp_path: Path) -> None:
