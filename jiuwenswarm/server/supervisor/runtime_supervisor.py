@@ -416,29 +416,33 @@ class RuntimeSupervisor:
         state = str(message.get("state") or "")
         reason = str(message.get("reason") or "")
         if state == ReadinessState.AGENT_READY.value:
+            if message.get("agent_ready") is False:
+                return
             self._fatal = False
             self._restart_count = 0
             self._registry.mark_ready("primary", ready=True)
             self._readiness.mark_agent_ready()
             logger.info("[Supervisor] runtime worker agent_ready pid=%s", self._worker_pid)
-            return
-        if state == ReadinessState.DEGRADED.value:
-            if self._readiness.state is not ReadinessState.AGENT_READY:
-                self._readiness.mark_agent_ready()
-            self._readiness.mark_degraded()
-            self._registry.mark_ready("primary", ready=True)
-            return
-        if state == ReadinessState.RUNTIME_WARMING.value:
+        elif state == ReadinessState.DEGRADED.value:
+            if self._readiness.snapshot()["agent_ready"] or message.get("agent_ready") is True:
+                if not self._readiness.snapshot()["agent_ready"]:
+                    self._readiness.mark_agent_ready()
+                self._readiness.mark_degraded()
+                self._registry.mark_ready("primary", ready=True)
+        elif state == ReadinessState.RUNTIME_WARMING.value:
             self._registry.mark_ready("primary", ready=False)
             if self._readiness.state in {ReadinessState.AGENT_READY, ReadinessState.DEGRADED}:
                 self._readiness.mark_runtime_warming()
             self._readiness.note_warmup_retry(reason or "runtime warming")
-            return
-        if state == ReadinessState.FAILED.value:
+        elif state == ReadinessState.FAILED.value:
             self._fatal = True
             self._fatal_reason = reason or "runtime worker failed"
             self._registry.mark_ready("primary", ready=False)
             self._readiness.mark_failed(self._fatal_reason)
+        self._readiness.note_runtime_progress(
+            runtime_phase=message.get("runtime_phase"),
+            capability_readiness=message.get("capability_readiness"),
+        )
 
     async def _schedule_restart(self, reason: str) -> bool:
         if self._stopping or self._fatal:

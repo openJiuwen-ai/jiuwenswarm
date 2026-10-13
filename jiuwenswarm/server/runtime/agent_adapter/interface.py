@@ -1525,6 +1525,12 @@ class JiuWenSwarm:
         elif include_legacy:
             await self.reload_agent_config(config_base=config, env_overrides={})
 
+    async def prepare_kernel(self, *, mode: str) -> None:
+        adapter = self._ensure_adapter(mode="code" if mode.startswith("code") else "agent")
+        prepare = getattr(adapter, "prepare_kernel", None)
+        if callable(prepare):
+            await prepare()
+
     async def prepare_session(
         self,
         *,

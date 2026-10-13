@@ -6065,6 +6065,22 @@ class SkillManager:
 
     @staticmethod
     def _parse_skill_md(path: Path) -> dict | None:
+        from jiuwenswarm.runtime.kernel import KernelIdentity, ResourceKey, identity_reference, process_kernel
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            return SkillManager._parse_skill_md_uncached(path)
+        identity = KernelIdentity.for_agent(project_dir=str(path.parent), work_mode="skill-index",
+            definition="skill-frontmatter", capabilities="metadata-v1", configuration=content)
+        key = ResourceKey(identity, "skill-index", str(path.resolve()), "", "", identity_reference(content))
+        # Serialized immutable metadata is shared; callers retain independent
+        # mutable snapshots and the established session selection semantics.
+        encoded = process_kernel().recipe(key, lambda: json.dumps(
+            SkillManager._parse_skill_md_uncached(path, text=content), ensure_ascii=False, default=str))
+        return json.loads(encoded)
+
+    @staticmethod
+    def _parse_skill_md_uncached(path: Path, *, text: str | None = None) -> dict | None:
         """解析 SKILL.md，提取 YAML frontmatter 和正文.
 
         支持两种格式:
@@ -6072,7 +6088,8 @@ class SkillManager:
         2. 无 frontmatter（整个文件作为 body，name 从文件名推断）
         """
         try:
-            text = path.read_text(encoding="utf-8")
+            if text is None:
+                text = path.read_text(encoding="utf-8")
         except Exception:
             logger.warning("无法读取文件: %s", path)
             return None
