@@ -148,6 +148,18 @@ def test_agent_ras_passthrough_still_enabled() -> None:
     assert kwargs["agent_ras"] is not False
 
 
+def test_code_mode_create_instance_passes_agent_ras_kwargs() -> None:
+    """code 模式独立调用 create_deep_agent，agent_ras 须与 deep/flash 路径对齐透传."""
+    import inspect
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    source = inspect.getsource(JiuwenSwarmCodeAdapter.create_instance)
+    assert "**_agent_ras_kwargs_from_config(config_base)" in source
+
+
 def test_optional_enable_subagent_runtime_follows_deep_agent_config_signature() -> None:
     """Official pin omits the field; overlay / post-3A SDK keeps it."""
     from inspect import signature

@@ -54,6 +54,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _AGENT_CARD_ID,
     _CRON_TOOL_CHANNEL_ID,
     _RailBuildInfo,
+    _agent_ras_kwargs_from_config,
     _deep_agent_kv_cache_affinity_config,
     _optional_enable_subagent_runtime,
     _resolve_instance_config_base,
@@ -617,6 +618,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             **_optional_enable_subagent_runtime(
                 self._resolve_enable_subagent_runtime(config_base),
             ),
+            **_agent_ras_kwargs_from_config(config_base),
         )
 
         # Keep ensure_initialized on the main event loop (same as interface_deep).
