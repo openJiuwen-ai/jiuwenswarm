@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -73,9 +73,10 @@ def _local_timezone_name() -> str:
     ``""``.
     """
     try:
-        # Explicit tz=None satisfies the tz-aware-now check; the no-arg
-        # astimezone() below still resolves the process-local zone.
-        tz = datetime.now(tz=None).astimezone().tzinfo
+        # G.PSL.02 requires a non-None tz argument on now(); timezone.utc only
+        # labels the instant - the no-arg astimezone() below re-derives the
+        # process-local zone, so the result is the real local zone on any host.
+        tz = datetime.now(tz=timezone.utc).astimezone().tzinfo
     except Exception:  # pragma: no cover - extremely unusual hosts
         return ""
     if tz is None:
