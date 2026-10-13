@@ -181,3 +181,70 @@ test('timeout and disconnect reject runtime-ack requests after gateway acceptanc
   await assert.rejects(disconnected, (error) => error.code === 'WS_CLOSED');
   await closed;
 });
+
+test('reconnect resumes the original event cursor without resubmitting input', async () => {
+  await webClient.connect();
+  let deltas = 0;
+  let processing;
+  const offDelta = webClient.on('chat.delta', () => { deltas += 1; });
+  const offStatus = webClient.on('chat.processing_status', (event) => { processing = event.payload.is_processing; });
+  const payload = { session_id: 'resume-session', content: 'original-output',
+    runtime_event: { worker_instance: 'worker-original', sequence: 17, dispatch_id: 'original-dispatch' } };
+  try {
+    runtimeEvent('chat.delta', 'original-request', payload);
+    runtimeEvent('chat.delta', 'original-request', payload);
+    assert.equal(deltas, 1);
+    await webClient.disconnect();
+    await webClient.connect();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const query = FakeWebSocket.instance.lastRequest;
+    assert.equal(query.method, 'session.get_metadata');
+    assert.deepEqual(query.params, { session_id: 'resume-session',
+      runtime_resume: { worker_instance: 'worker-original', after: 17 } });
+    FakeWebSocket.instance.receive({ type: 'res', id: query.id, ok: true,
+      payload: { runtime: { is_processing: false, history_required: false } } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    runtimeEvent('chat.delta', 'original-request', payload);
+    runtimeEvent('chat.delta', 'original-request', { ...payload,
+      runtime_event: { ...payload.runtime_event, sequence: 18, replayed: true } });
+    assert.equal(deltas, 2);
+    assert.equal(processing, false);
+  } finally {
+    offDelta(); offStatus();
+    await webClient.disconnect();
+  }
+});
+
+test('a fresh page subscribes to the execution discovered in session metadata', async () => {
+  const fresh = new webClient.constructor();
+  await fresh.connect();
+  const socket = FakeWebSocket.instance;
+  const sent = [];
+  const originalSend = socket.send;
+  socket.send = function (raw) {
+    sent.push(JSON.parse(raw));
+    originalSend.call(this, raw);
+  };
+  let processing;
+  const off = fresh.on('chat.processing_status', (event) => { processing = event.payload.is_processing; });
+  try {
+    const pending = fresh.request('session.get_metadata', { session_id: 'fresh-session' });
+    await Promise.resolve();
+    socket.receive({ type: 'res', id: socket.lastRequest.id, ok: true, payload: {
+      runtime: { worker_instance: 'existing-worker', is_processing: true },
+    } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const subscription = socket.lastRequest;
+    assert.deepEqual(subscription.params, { session_id: 'fresh-session',
+      runtime_resume: { worker_instance: 'existing-worker', after: 0 } });
+    socket.receive({ type: 'res', id: subscription.id, ok: true, payload: {
+      runtime: { worker_instance: 'existing-worker', is_processing: true, history_required: false },
+    } });
+    await pending;
+    assert.equal(processing, true);
+    assert.deepEqual(sent.map((request) => request.method), ['session.get_metadata', 'session.get_metadata']);
+  } finally {
+    off();
+    await fresh.disconnect();
+  }
+});

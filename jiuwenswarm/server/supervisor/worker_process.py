@@ -9,7 +9,7 @@ import logging
 import os
 import subprocess
 import sys
-from pathlib import Path
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +18,21 @@ def default_socket_path() -> str:
     override = os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip()
     if override:
         return override
-    home = os.environ.get("JIUWENSWARM_HOME") or os.path.expanduser("~")
-    name = "runtime-worker.pipe" if os.name == "nt" else "runtime-worker.sock"
-    return str(Path(home) / ".jiuwenswarm" / "run" / name)
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+    from jiuwenswarm.server.supervisor.identity import data_scope
+
+    suffix = "pipe" if os.name == "nt" else "sock"
+    path = get_user_workspace_dir() / "run" / f"runtime-{data_scope()[:16]}.{suffix}"
+    if os.name != "nt" and len(os.fsencode(path)) >= 100:
+        import tempfile
+        from pathlib import Path
+        directory = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if directory.is_symlink() or directory.stat().st_uid != os.getuid():
+            raise RuntimeError("Runtime IPC directory has an unexpected owner")
+        directory.chmod(0o700)
+        path = directory / f"runtime-{data_scope()[:16]}.sock"
+    return str(path)
 
 
 def build_worker_command(
@@ -117,9 +129,11 @@ class WorkerProcess:
         proc = self._proc
         if proc is None or proc.poll() is not None:
             return
+        deadline = time.monotonic() + max(0.0, timeout)
         proc.terminate()
-        code = await self.wait(timeout=timeout)
+        code = await self.wait(timeout=max(0.0, deadline - time.monotonic()))
         if code is None:
             logger.warning("[Supervisor] worker did not exit after SIGTERM; killing")
             proc.kill()
-            await self.wait()
+            if await self.wait(timeout=max(0.0, deadline - time.monotonic())) is None:
+                logger.error("[Supervisor] worker exit could not be observed within the shutdown deadline")

@@ -25,12 +25,13 @@ from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
 
-from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
+from jiuwenswarm.agents.harness.common.auto_harness import reset_harness_packages_state
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_output_manager
 from jiuwenswarm.common.utils import (
+    get_user_workspace_dir,
     get_agent_root_dir,
     get_agent_sessions_dir,
     get_config_file,
@@ -259,6 +260,12 @@ def _strip_untrusted_session_message_context(request: AgentRequest) -> None:
         metadata = dict(request.metadata)
         metadata.pop(SESSION_MESSAGE_INTERNAL_KEY, None)
         request.metadata = metadata
+
+
+def AutoHarnessService(*args: Any, **kwargs: Any) -> Any:
+    """Construct the optional service at its first RPC, outside startup."""
+    from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService as Service
+    return Service(*args, **kwargs)
 
 
 def _is_session_prewarm_model_eligible(
@@ -1193,9 +1200,10 @@ class AgentWebSocketServer:
         self._jiuwenbox_runner = JiuwenBoxRunner.instance()
         # AgentServer 内唯一持有的进程内 PersonalContext Host；Context Rail 使用同一固定目录。
         self._personal_context_host = PersonalContextHostAPI(
-            home=Path.home() / ".jiuwenswarm" / ".personal_context",
+            home=get_user_workspace_dir() / ".personal_context",
         )
         self._personal_context_start_task: asyncio.Task[None] | None = None
+        self._sandbox_start_task: asyncio.Task[None] | None = None
         # checkpointer 后台预热任务 (start() 里 fire-and-forget, stop() 时 cancel)
         self._checkpointer_warmup_task: Optional[asyncio.Task] = None
         # MCP 连接缓存预热任务 (同上, 建 Runner.resource_mgr 供首轮对话命中)
@@ -1210,6 +1218,10 @@ class AgentWebSocketServer:
         self._on_runtime_ready: Any = None
         self._on_runtime_warmup_retry: Any = None
         self._on_runtime_failed: Any = None
+        self._on_runtime_capabilities: Any = None
+        self._on_execution_min_ready: Any = None
+        self._execution_minimum_observed = False
+        self._preparation_registry: Any = None
         get_acp_output_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
@@ -1249,6 +1261,8 @@ class AgentWebSocketServer:
         on_ready: Any = None,
         on_warmup_retry: Any = None,
         on_failed: Any = None,
+        on_capabilities: Any = None,
+        on_execution_min_ready: Any = None,
     ) -> None:
         """Front readiness callbacks. ``on_ready`` is Agent Runtime start, not attach.
 
@@ -1258,6 +1272,22 @@ class AgentWebSocketServer:
         self._on_runtime_ready = on_ready
         self._on_runtime_warmup_retry = on_warmup_retry
         self._on_runtime_failed = on_failed
+        self._on_runtime_capabilities = on_capabilities
+        self._on_execution_min_ready = on_execution_min_ready
+
+    def observe_execution_minimum_ready(self) -> None:
+        """The first request's model, safety Rails and context are prepared.
+
+        Runtime.start only releases legacy dispatch admission. This observation
+        comes from the prepared execution entry, never from a queue ACK, and
+        avoids predicting the first request's mode with a spare Agent.
+        """
+        if self._execution_minimum_observed:
+            return
+        self._execution_minimum_observed = True
+        callback = self._on_execution_min_ready
+        if callable(callback):
+            callback()
 
     def set_rsi_harness_provider(self, provider: Any) -> None:
         """Install the production ``HarnessProvider`` at the RSI seam."""
@@ -1335,7 +1365,7 @@ class AgentWebSocketServer:
         config: dict[str, Any] | None,
         *,
         reason: str,
-    ) -> None:
+    ) -> asyncio.Task[bool]:
         """Schedule a non-blocking tokenizer warm-up task.
 
         The service-level lock deduplicates overlapping resolutions. Keeping
@@ -1343,7 +1373,7 @@ class AgentWebSocketServer:
         without cancelling an in-flight worker-thread download.
         """
 
-        async def _run() -> None:
+        async def _run() -> bool:
             try:
                 result = await self._tokenizer_service.warm(config, reason=reason)
                 logger.info(
@@ -1354,6 +1384,7 @@ class AgentWebSocketServer:
                     result.get("degraded", 0),
                     result.get("failed", 0),
                 )
+                return not result.get("failed", 0)
             except (
                 AttributeError,
                 ImportError,
@@ -1368,24 +1399,35 @@ class AgentWebSocketServer:
                     reason,
                     exc,
                 )
+                return False
 
         task = asyncio.create_task(_run(), name=f"tokenizer-warmup:{reason}")
         self._tokenizer_warmup_tasks.add(task)
         task.add_done_callback(self._tokenizer_warmup_tasks.discard)
+        return task
 
     @staticmethod
-    async def _start_symphony_recovery() -> None:
+    async def _start_symphony_recovery() -> bool:
         """Recover Flow candidates without affecting AgentServer availability."""
 
         try:
+            # Disabled Flow still supports Skill discovery through the toolkit;
+            # it does not need the heavy recovery service at process startup.
+            from jiuwenswarm.symphony.config import load_symphony_config, evolution_flow_enabled
+
+            config = load_symphony_config()
+            if not config.enabled or not evolution_flow_enabled(config):
+                return True
             from jiuwenswarm.symphony.service import get_swarm_symphony_service
 
             await get_swarm_symphony_service().start()
+            return True
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[AgentWebSocketServer] Symphony Flow recovery failed: %s",
                 exc,
             )
+            return False
 
     def attach_gateway_connection(self, ws: Any, send_lock: asyncio.Lock) -> None:
         """Publish the Front-owned Gateway socket for send_push / ACP caps."""
@@ -1444,9 +1486,17 @@ class AgentWebSocketServer:
         owner = self._kv_cache_application_owner
         await owner.activate_from_config()
 
+        from jiuwenswarm.server.worker.preparation import PreparationRegistry
+
+        self._preparation_registry = PreparationRegistry(
+            on_change=getattr(self, "_on_runtime_capabilities", None),
+        )
+        preparation = self._preparation_registry
+        self._execution_minimum_observed = False
+
         from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveService
         self._archive_service = SessionArchiveService(self._execution_runtime())
-        self._archive_service.start_recovery()
+        preparation.register("archive", self._archive_service.start_recovery)
 
         # Reset harness package state to native on service startup
         reset_harness_packages_state()
@@ -1485,12 +1535,18 @@ class AgentWebSocketServer:
             "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port
         )
 
-        self._asset_start_task = asyncio.create_task(self._start_asset_services())
+        # Skill inventory and Hub catalog reads have their own lazy paths.
+        # Publication recovery is required before a publish query, not before
+        # ordinary execution. Keep its capability pending until actual use.
+        preparation.register("assets", self._start_asset_services, warm=False)
 
         # The port is already listening. Remote tokenizer downloads must not
         # delay startup; ContextEngine is local-only and uses string fallback
         # if this task has not completed when the first context is created.
-        self._schedule_tokenizer_warmup(get_config(), reason="startup")
+        async def _prepare_tokenizers() -> bool:
+            return await self._schedule_tokenizer_warmup(get_config(), reason="startup")
+
+        preparation.register("tokenizers", _prepare_tokenizers)
 
         # 端口已 listen, 后台预热 checkpointer, 不阻塞启动与握手.
         # _checkpointer_warmup_task 供 shutdown 时 cancel, 避免任务悬挂.
@@ -1516,45 +1572,48 @@ class AgentWebSocketServer:
                 ready = self._on_runtime_ready
                 if callable(ready):
                     ready()
-                await self._start_symphony_recovery()
+                # Optional imports, downloads and recovery may start only after
+                # the required Runtime/Heartbeat initialization succeeded.
+                preparation.mark_minimum_ready()
                 return
 
         self._checkpointer_warmup_task = asyncio.create_task(
             _start_runtime(), name="runtime-start"
         )
 
-        async def _warmup_mcp_connections() -> None:
+        async def _warmup_mcp_connections() -> bool:
             try:
                 from jiuwenswarm.common.mcp_config import prewarm_connected_mcps
-                await prewarm_connected_mcps()
+                return await prewarm_connected_mcps(report_status=True) is not False
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[AgentWebSocketServer] MCP prewarm failed "
                     "(will lazy-connect on first chat): %s", exc,
                 )
+                return False
 
         # 端口已 listen, 后台预热 connected MCP 的进程级连接缓存, 不阻塞启动与握手.
-        self._mcp_prewarm_task = asyncio.create_task(
-            _warmup_mcp_connections(), name="mcp-prewarm"
-        )
-        self._personal_context_start_task = asyncio.create_task(
-            self._start_personal_context_best_effort(),
-            name="personal-context-host-start",
-        )
+        preparation.register("mcp", _warmup_mcp_connections)
+        self._mcp_prewarm_task = preparation.start("mcp")
+        preparation.register("personal_context", self._start_personal_context_best_effort)
+        self._personal_context_start_task = preparation.start("personal_context")
+        preparation.register("symphony", self._start_symphony_recovery)
         # 登录模型的 id_token 一小时过期：在用且快过期的，请Gateway续期后推回来
-        from jiuwenswarm.common.auth.login_credentials import run_refresh_requests
-        from jiuwenswarm.common.auth.remote_config import warm_up_in_background
+        async def _start_login_refresh() -> None:
+            from jiuwenswarm.common.auth.login_credentials import run_refresh_requests
+            from jiuwenswarm.common.auth.remote_config import warm_up_in_background
 
-        # 官网配置在后台先拉一次：AgentServer 读它的地方都在逐请求的热路径上，
-        # 不预热的话第一个请求拿到的是空配置（认不出免费模型）
-        warm_up_in_background()
-        self._login_credential_refresh_task = asyncio.create_task(
-            run_refresh_requests(self.send_push), name="login-credential-refresh"
-        )
+            warm_up_in_background()
+            self._login_credential_refresh_task = asyncio.create_task(
+                run_refresh_requests(self.send_push), name="login-credential-refresh",
+            )
+
+        preparation.register("login_refresh", _start_login_refresh)
         # WS 监听已经开放, 现在按 config.yaml::sandbox 的 runtime.enabled +
         # startup_mode 决定要不要自动把 jiuwenbox 子进程也拉起来。失败不阻塞
         # 启动 (用户依然可以在 TUI 里跑 /sandbox enable 重试)。
-        await self._bootstrap_internal_jiuwenbox()
+        preparation.register("sandbox", self._bootstrap_internal_jiuwenbox)
+        self._sandbox_start_task = preparation.start("sandbox")
 
     def schedule_image_modality_warmup(
         self, *, reason: str, reset_cache: bool = False
@@ -1581,12 +1640,12 @@ class AgentWebSocketServer:
         if reset_cache:
             coro = refresh_image_modality_cache(get_config(), reason=reason)
         else:
-            coro = warm_image_modality_cache(get_config(), reason=reason)
+            coro = warm_image_modality_cache(get_config(), reason=reason, report_status=True)
         self._image_modality_refresh_task = asyncio.create_task(
             coro, name=f"image-modality-warmup-{reason}"
         )
 
-    async def _start_personal_context_best_effort(self) -> None:
+    async def _start_personal_context_best_effort(self) -> bool:
         """Start optional PersonalContext without changing AgentServer readiness."""
         start_cancelled: asyncio.CancelledError | None = None
         try:
@@ -1598,7 +1657,7 @@ class AgentWebSocketServer:
                 "[AgentWebSocketServer] optional PersonalContext startup failed: %s",
                 type(exc).__name__,
             )
-            return
+            return False
         if start_cancelled is not None:
             raise start_cancelled
 
@@ -1620,10 +1679,12 @@ class AgentWebSocketServer:
                 "[AgentWebSocketServer] optional PersonalContext Rail sync failed: %s",
                 type(exc).__name__,
             )
+            return False
         if rail_sync_cancelled is not None:
             raise rail_sync_cancelled
+        return True
 
-    async def _bootstrap_internal_jiuwenbox(self) -> None:
+    async def _bootstrap_internal_jiuwenbox(self) -> bool | None:
         """启动时按 ``config.yaml::sandbox`` 自动拉起 jiuwenbox 子进程。
 
         触发条件: ``config.yaml::sandbox.startup_mode`` **显式**写为 ``internal``。
@@ -1705,7 +1766,7 @@ class AgentWebSocketServer:
                     effective_policy_file,
                     policy_path,
                 )
-                return
+                return False
 
             host, preferred_port = self._parse_sandbox_host_port(url)
             port = self._allocate_internal_jiuwenbox_port(host, preferred_port)
@@ -1726,7 +1787,7 @@ class AgentWebSocketServer:
                     "跳过 jiuwenbox auto-start: %s",
                     exc,
                 )
-                return
+                return False
             # Sync onto the agent-server process so provider HTTP clients /
             # hybrid-shell host orchestration inherit the same Bearer token.
             sync_sandbox_api_token_environ(api_token)
@@ -1749,7 +1810,7 @@ class AgentWebSocketServer:
                     policy_path,
                     stderr_tail or "(empty)",
                 )
-                return
+                return False
 
             # 端口可能在 _allocate_internal_jiuwenbox_port 里换过, 把最终生效
             # 的 url 落盘, 这样 (a) 后续会话/agent 重建直接读到正确端点,
@@ -1792,6 +1853,7 @@ class AgentWebSocketServer:
                 "[AgentWebSocketServer] jiuwenbox auto-start raised an "
                 "unexpected error; skipping (用户可在 TUI 里 /sandbox enable 重试)"
             )
+            return False
 
     async def _stop_scheduler(self) -> None:
         """Stop the auto_harness scheduler."""
@@ -1906,6 +1968,21 @@ class AgentWebSocketServer:
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
+        preparation = getattr(self, "_preparation_registry", None)
+        if preparation is not None:
+            await preparation.close()
+            self._preparation_registry = None
+        proactive = getattr(self, "_proactive_engine", None)
+        if proactive is not None:
+            close = getattr(proactive, "close", None)
+            if callable(close):
+                await close()
+            self._proactive_engine = None
+        sandbox_start = getattr(self, "_sandbox_start_task", None)
+        self._sandbox_start_task = None
+        if sandbox_start is not None:
+            sandbox_start.cancel()
+            await asyncio.gather(sandbox_start, return_exceptions=True)
         task = getattr(self, "_asset_start_task", None)
         if task is not None:
             task.cancel()
@@ -2392,6 +2469,28 @@ class AgentWebSocketServer:
         )
         await self.dispatch_parsed_request(ws, request, send_lock)
 
+    @staticmethod
+    def _request_requires_sandbox_bootstrap(request: AgentRequest) -> bool:
+        """Only configured internal Sandbox execution shares its startup barrier.
+
+        A chat parameter cannot override the trusted server backend. Explicit
+        internal mode may enable Sandbox at startup even when enabled is false;
+        waiting preserves that existing Linux configuration contract.
+        """
+        if request.req_method == ReqMethod.COMMAND_SANDBOX:
+            # Serialize config mutation with bootstrap, avoiding a late startup
+            # enabling Sandbox after /sandbox disable returned successfully.
+            return True
+        if request.req_method not in {ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME, ReqMethod.CHAT_ANSWER}:
+            return False
+        if not sys.platform.startswith("linux"):
+            return False
+        try:
+            return (get_sandbox_startup_mode_explicit() == "internal"
+                    and str(get_sandbox_endpoint().get("type") or "jiuwenbox").strip().lower() != "yuanrong")
+        except Exception:  # noqa: BLE001 - an unknown backend retains its barrier
+            return True
+
     async def dispatch_parsed_request(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
@@ -2407,10 +2506,29 @@ class AgentWebSocketServer:
 
         pending_chat_request: tuple[AgentRuntime, str, str] | None = None
         try:
+            if self._request_requires_sandbox_bootstrap(request):
+                preparation = getattr(self, "_sandbox_start_task", None)
+                if preparation is not None:
+                    from jiuwenswarm.server.worker.preparation import CapabilityUnavailableError
+
+                    try:
+                        await asyncio.shield(preparation)
+                    except CapabilityUnavailableError:
+                        # Startup was already best-effort. Keep explicit
+                        # /sandbox enable retry and the existing backend/error
+                        # resolution available after a failed warm pass.
+                        logger.warning("[AgentServer] Sandbox bootstrap unavailable")
+            if request.req_method is not None and request.req_method.value.startswith("proactive."):
+                preparation = getattr(self, "_proactive_prepare_task", None)
+                if preparation is not None:
+                    await asyncio.shield(preparation)
             if request.req_method is not None and request.req_method.value.startswith("assets.publish."):
                 await self._handle_asset_publish(ws, request, send_lock)
                 return
             if request.req_method in _PERSONAL_CONTEXT_REQ_METHODS:
+                preparation = getattr(self, "_personal_context_start_task", None)
+                if preparation is not None:
+                    await asyncio.shield(preparation)
                 manager = getattr(self, "_agent_manager", None)
                 runtime_callback = getattr(
                     manager, "set_personal_context_runtime_enabled", None
@@ -3843,6 +3961,16 @@ class AgentWebSocketServer:
             user_id=stored_user_id,
         )
 
+        execution_scope = getattr(getattr(self, "_current_ws", None), "execution_scope", None)
+        if callable(execution_scope):
+            with execution_scope(request):
+                return await self._run_internal_session_message(record, request, channel_id, cross_session)
+        return await self._run_internal_session_message(record, request, channel_id, cross_session)
+
+    async def _run_internal_session_message(
+        self, record: SessionMessageRecord, request: AgentRequest,
+        channel_id: str, cross_session: dict[str, Any],
+    ) -> SessionMessageExecutionResult:
         public_cross_session = {
             **cross_session,
             "content": record.content,
@@ -8969,10 +9097,12 @@ class AgentWebSocketServer:
             return self._asset_publish_api
 
     async def _start_asset_services(self):
+        available = True
         try:
             await self._get_asset_publish_api()
         except Exception:
             logger.warning("[AssetPublish] startup unavailable; requests may retry initialization")
+            available = False
         try:
             from jiuwenswarm.common.utils import get_agent_workspace_dir
             from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
@@ -8980,12 +9110,17 @@ class AgentWebSocketServer:
             await start_hub_catalog_preload(SkillManager(workspace_dir=str(get_agent_workspace_dir())))
         except Exception:
             logger.warning("[HubCatalog] preload unavailable; requests may load on demand")
+            available = False
+        return available
 
     async def _handle_asset_publish(self, ws, request, send_lock):
         from jiuwenswarm.server.runtime.marketplace.asset_publish_api import PublishAPIError
         try:
             if request.channel_id != "web":
                 raise PublishAPIError("WEB_CHANNEL_REQUIRED")
+            preparation = getattr(self, "_preparation_registry", None)
+            if preparation is not None:
+                self._asset_start_task = preparation.start("assets")
             api = await self._get_asset_publish_api()
             payload = await api.call(request.req_method.value.rsplit(".", 1)[-1], request.params or {},
                                      gateway_user=request.user_id)
@@ -11311,6 +11446,11 @@ class AgentWebSocketServer:
         from jiuwenswarm.common.auth.login_credentials import apply_credential_update
 
         applied = apply_credential_update(request.params)
+        proactive = getattr(self, "_proactive_engine", None)
+        if applied and proactive is not None:
+            from jiuwenswarm.server.runtime.proactive_adapter import build_proactive_agent
+
+            proactive.rebuild_proactive_agent(build_proactive_agent)
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -11987,7 +12127,8 @@ class AgentWebSocketServer:
                 response_id=request.request_id,
             )
             async with send_lock:
-                await send_wire_payload(ws, wire)
+                if not await send_wire_payload(ws, wire):
+                    raise RuntimeError("session provision result was not delivered")
             response_delivered = True
 
             await runtime.commit_session_provision(
