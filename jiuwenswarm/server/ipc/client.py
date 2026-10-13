@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from jiuwenswarm.server.ipc.stream import (
     _PIPE_AUTHKEY,
@@ -14,6 +16,10 @@ from jiuwenswarm.server.ipc.stream import (
     PipeConnection,
     StreamConnection,
     endpoint_address,
+)
+
+_PIPE_CONNECT_POOL = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="runtime-ipc-connect"
 )
 
 
@@ -28,7 +34,9 @@ async def _connect_pipe(path: str) -> IpcConnection:
     from multiprocessing.connection import Client
 
     address = endpoint_address(path)
-    raw = await asyncio.to_thread(Client, address, "AF_PIPE", _PIPE_AUTHKEY)
+    raw = await asyncio.get_running_loop().run_in_executor(
+        _PIPE_CONNECT_POOL, partial(Client, address, "AF_PIPE", _PIPE_AUTHKEY)
+    )
     return PipeConnection(raw)
 
 
