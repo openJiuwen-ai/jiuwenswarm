@@ -48,6 +48,7 @@ from jiuwenswarm.common.config import (
     replace_teams_in_config,
     update_a2ui_in_config,
     update_context_engine_enabled_in_config,
+    update_duplex_router_in_config,
     update_default_model_provider_in_config,
     update_enable_free_models_in_config,
     update_external_cli_agents_in_config,
@@ -75,6 +76,13 @@ from jiuwenswarm.common.config import (
 from jiuwenswarm.common.config_panel.models_handlers import (
     ConfigPanelBadRequest,
     build_models_defaults_from_frontend,
+)
+from jiuwenswarm.common.config_panel.duplex_router_settings import (
+    DUPLEX_ROUTER_API_KEY_ENV,
+    DUPLEX_ROUTER_API_KEY_PARAM,
+    DUPLEX_ROUTER_PARAM_KEYS,
+    build_duplex_router_update,
+    duplex_router_settings_view,
 )
 from jiuwenswarm.common.context_window import parse_positive_int
 from jiuwenswarm.common.kv_cache_affinity_config import (
@@ -113,7 +121,7 @@ class ConfigPanelInternalError(RuntimeError):
 # --------------------------------------------------------------------------- #
 WEB_CONFIG_RELOAD_CHANNEL_ID = "web"
 # Saved through config.save_all but never sent back to clients.
-WRITE_ONLY_CONFIG_KEYS = frozenset({"jev_openrouter_api_key", "jev_typesafe_api_key"})
+WRITE_ONLY_CONFIG_KEYS = frozenset({"jev_openrouter_api_key", "jev_typesafe_api_key", DUPLEX_ROUTER_API_KEY_PARAM})
 SEARCH_RELOAD_ENV_KEYS = {
     "BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY",
 }
@@ -312,6 +320,7 @@ CONFIG_SET_ENV_MAP = {
     "perplexity_api_key": "PERPLEXITY_API_KEY",
     "jev_openrouter_api_key": "OPENROUTER_API_KEY",
     "jev_typesafe_api_key": "TYPESAFE_API_KEY",
+    DUPLEX_ROUTER_API_KEY_PARAM: DUPLEX_ROUTER_API_KEY_ENV,
     "github_token": "GITHUB_TOKEN",
     "teamskills_market_url": "TEAM_SKILLS_HUB_BASE_URL",
     "teamskills_user_token": "TEAM_SKILLS_HUB_USER_TOKEN",
@@ -1175,6 +1184,8 @@ def apply_config_payload(
         normalize_affinity_request(params)
     except ValueError as exc:
         raise ConfigPanelBadRequest(str(exc)) from exc
+    # Validate before any write so a bad duplex value leaves .env and config.yaml untouched.
+    duplex_router_update = build_duplex_router_update(params, raw.get("duplex_router") or {})
 
     for param_key, env_key in CONFIG_SET_ENV_MAP.items():
         if param_key not in params:
@@ -1312,6 +1323,14 @@ def apply_config_payload(
                 raise ConfigPanelInternalError("failed to update enable_swarmflow") from e
             if param_key in EXTERNAL_CLI_AGENT_CONFIG_KEYS:
                 raise ConfigPanelInternalError("failed to update external_cli_agents") from e
+
+    if duplex_router_update:
+        try:
+            update_duplex_router_in_config(duplex_router_update)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[config.set] 写回 duplex_router 失败: %s", exc)
+            raise ConfigPanelInternalError("failed to update duplex_router") from exc
+        yaml_updated.extend(sorted(DUPLEX_ROUTER_PARAM_KEYS & params.keys()))
 
     if params.get("model_provider") == ASCEND_AFFINITY_PROVIDER:
         try:
@@ -1517,6 +1536,7 @@ async def config_get_handler(
             proactive_cfg.get("max_rounds_per_tick", 20))
         models_cfg = resolved.get("models") or {}
         payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
+        payload.update(duplex_router_settings_view(raw))
     except Exception:  # noqa: BLE001
         payload.setdefault("context_engine_enabled", "false")
         payload.setdefault("kv_cache_affinity_enabled", "false")
@@ -1550,6 +1570,8 @@ async def config_get_handler(
         payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
         payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "false")
+        for key, value in duplex_router_settings_view({}).items():
+            payload.setdefault(key, value)
     await channel.send_response(ws, req_id, ok=True, payload=payload)
 
 

@@ -26,6 +26,10 @@ _DEFAULT_COMPLETION_TIMEOUT = 600.0
 _DEFAULT_AGENT_WORKSPACE = {"stable_base": True}
 _DEFAULT_TEAM_WORKSPACE = {"enabled": True}
 _DEFAULT_TRANSPORT = {"type": "inprocess"}
+# config.yaml duplex_router -> TeamAgentSpec.duplex (agent-core owns defaults and validation).
+_DUPLEX_SPEC_KEYS = (
+    "enabled", "mode", "format", "api_base", "endpoint", "model", "api_key_env", "timeout_seconds",
+)
 
 
 class TeamTemplateNotFoundError(ValueError):
@@ -641,6 +645,24 @@ def _apply_swarmflow_budget(spec_dict: dict[str, Any], raw_value: Any) -> None:
     spec_dict["swarmflow_budget"] = budget_value
 
 
+def _apply_duplex_router(spec_dict: dict[str, Any], config_base: dict[str, Any]) -> None:
+    """Pass ``duplex_router`` to ``TeamAgentSpec.duplex`` once the SDK declares that field."""
+    from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+
+    section = config_base.get("duplex_router")
+    if not isinstance(section, dict):
+        return
+    if not section.get("enabled") or str(section.get("mode")) != "active":
+        # Supervisor off: omit the key so a hand-edited section cannot block team start.
+        return
+    if "duplex" not in TeamAgentSpec.model_fields:
+        logger.warning(
+            "[TeamConfigLoader] duplex_router enabled but installed agent-core has no duplex support; ignored"
+        )
+        return
+    spec_dict["duplex"] = {key: section[key] for key in _DUPLEX_SPEC_KEYS if key in section}
+
+
 def load_team_spec_dict(
     config_base: dict[str, Any] | None = None,
     *,
@@ -700,6 +722,7 @@ def load_team_spec_dict(
     spec_dict["leader"] = _build_leader_spec(team_raw)
     spec_dict["agents"] = agents
     spec_dict["language"] = str(config_base.get("preferred_language", "zh")).strip().lower()
+    _apply_duplex_router(spec_dict, config_base)
 
     workspace_spec = _build_workspace_spec(team_raw)
     if workspace_spec is not None:

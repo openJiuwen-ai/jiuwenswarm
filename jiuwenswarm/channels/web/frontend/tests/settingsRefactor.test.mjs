@@ -1078,6 +1078,9 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       ),
       `${modality}_enabled`,
     ]),
+    ...findVariableArrayStrings(parseTsx('src/features/settings/modules/agent/A2ADuplexSettings.tsx'), 'FIELDS').map(
+      (field) => `duplex_router_${field}`,
+    ),
   ]);
   assert.deepEqual(
     [...agentVisible].sort(),
