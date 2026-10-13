@@ -168,6 +168,8 @@ async def test_watch_loop_pulls_once_before_watching():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
 async def test_watch_loop_filters_neighbour_key_events():
     fake = FakeEtcd()
     seen: list[int] = []
@@ -195,6 +197,8 @@ async def test_watch_loop_filters_neighbour_key_events():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
 async def test_watch_loop_repulls_after_stream_ends(monkeypatch):
     monkeypatch.setattr(
         "jiuwenswarm.extensions.agentos.config_updater.client._CONNECT_INITIAL_DELAY",

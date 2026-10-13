@@ -1502,3 +1502,62 @@ def test_load_team_spec_dict_preserves_arbitrary_team_top_level_fields(monkeypat
         "retry_limit": 5,
     }
     assert spec["custom_labels"] == ["a", "b"]
+
+
+def _progressive_tool_config(team_extra: dict) -> dict:
+    return {
+        "models": {
+            "default": {
+                "model_client_config": {
+                    "model_name": "gpt-progressive",
+                    "client_provider": "openai",
+                },
+                "model_config_obj": {},
+            }
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "enable_swarmflow": True,
+                    "agents": {"leader": {}},
+                    **team_extra,
+                }
+            }
+        ),
+    }
+
+
+def test_load_team_spec_dict_maps_swarmflow_progressive_tool(monkeypatch, tmp_path):
+    """config.yaml swarmflow_progressive_tool: true becomes spec progressive_tool=True."""
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_config",
+        lambda: _progressive_tool_config({"swarmflow_progressive_tool": True}),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_agent_teams_home",
+        lambda: tmp_path / ".agent_teams",
+    )
+
+    spec = load_team_spec_dict()
+
+    assert spec["progressive_tool"] is True
+    assert "swarmflow_progressive_tool" not in spec
+
+
+def test_load_team_spec_dict_progressive_tool_defaults_false(monkeypatch, tmp_path):
+    """Missing key → False; the single-agent global switch is never consulted."""
+    config = _progressive_tool_config({})
+    config["progressive_tool_enabled"] = True
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_config",
+        lambda: config,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_agent_teams_home",
+        lambda: tmp_path / ".agent_teams",
+    )
+
+    spec = load_team_spec_dict()
+
+    assert spec["progressive_tool"] is False

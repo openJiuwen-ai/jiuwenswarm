@@ -2776,6 +2776,37 @@ def test_external_cli_dependency_install_starts_managed_runtime_in_frozen_deskto
     assert created_threads[0].started is True
 
 
+def test_optional_dependency_install_restates_openjiuwen_url_requirements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """uv pip refuses a URL dependency that is only transitive, so openjiuwen's
+    git-pinned requirements must ride the install command as direct requirements;
+    requirements gated on another extra stay out."""
+    from jiuwenswarm.common import external_cli_runtime
+
+    monkeypatch.setattr(external_cli_runtime, "pinned_sdk_requirements", lambda _cli_agent: ["claude-agent-sdk==0.2.115"])
+    monkeypatch.setattr(app_web_handlers.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        app_web_handlers.importlib.metadata,
+        "requires",
+        lambda _name: [
+            "pydantic>=2",
+            "intelli-router @ git+https://example.invalid/agent-protocol.git@feature/intelliRouter#subdirectory=intelli_router",
+            'codex-only @ git+https://example.invalid/codex.git ; extra == "codex"',
+            'claude-only @ git+https://example.invalid/claude.git ; extra == "claude"',
+        ],
+    )
+
+    args = app_web_handlers._build_optional_dependency_install_args("openjiuwen[claude]", "claude")
+
+    assert args[-4:] == [
+        "openjiuwen[claude]",
+        "intelli-router @ git+https://example.invalid/agent-protocol.git@feature/intelliRouter#subdirectory=intelli_router",
+        "claude-only @ git+https://example.invalid/claude.git",
+        "claude-agent-sdk==0.2.115",
+    ]
+
+
 def test_optional_dependency_install_times_out_after_one_hour(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

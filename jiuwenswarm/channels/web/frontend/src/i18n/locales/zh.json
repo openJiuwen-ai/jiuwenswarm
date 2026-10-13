@@ -4448,13 +4448,16 @@
     "verifyRound": "第{{count}}轮 · {{verdict}}",
     "verifyGroupTitle": "verify 组 · {{label}}",
     "verifyReviewersPending": "{{names}} 评审中…",
+    "sectionCallRecords": "活动",
+    "sectionToolCalls": "工具调用",
     "sectionInput": "输入",
     "sectionOutput": "输出",
     "sectionHumanPrompt": "人工提问",
     "sectionHumanReply": "人工回复",
     "sectionError": "错误",
     "charUnit": "字符",
-    "clickToViewDetail": "点击查看详情"
+    "clickToViewDetail": "点击查看详情",
+    "runIdTooltip": "运行 ID：{{id}}"
   },
   "a4pSettings": {
     "title": "A4P预授权",

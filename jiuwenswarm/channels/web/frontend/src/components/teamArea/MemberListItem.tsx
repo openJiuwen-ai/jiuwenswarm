@@ -1,7 +1,7 @@
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
-import { getMemberPlainName, getMemberStatusKey, type TeamMember } from './shared';
+import { getMemberAvatarIdentity, getMemberAvatarKey, getMemberPlainName, getMemberStatusKey, type TeamMember } from './shared';
 
 interface TaskProgress {
   completed: number;
@@ -49,7 +49,8 @@ export function MemberListItem({
     >
       <div className="relative shrink-0" data-testid="team-area-member-item-avatar">
         <TeamMemberAvatar
-          member={member.member_id}
+          member={getMemberAvatarKey(member)}
+          identity={getMemberAvatarIdentity(member)}
           alt={displayName}
           className="h-8 w-8 rounded-full"
           imageClassName="rounded-full"

@@ -51,3 +51,4 @@ def set_session_model_selection(session_id: str, selection: ModelSelection) -> N
         temporary = path.with_name(f"metadata.{uuid.uuid4().hex}.tmp")
         temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, path)
+

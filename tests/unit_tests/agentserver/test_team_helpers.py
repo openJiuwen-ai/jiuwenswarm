@@ -5535,6 +5535,7 @@ async def test_consume_workflow_events_broadcasts_raw_for_tui(monkeypatch):
         seen_phase: dict = {}
         seen_agent: dict = {}
         spawned_members: set = set()
+        seen_activity: dict = {}
 
         async def events(self):
             yield event
@@ -5579,6 +5580,7 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
         seen_phase: dict = {}
         seen_agent: dict = {}
         spawned_members: set = set()
+        seen_activity: dict = {}
 
         async def events(self):
             yield event
@@ -5638,6 +5640,7 @@ async def test_consume_workflow_events_dedup_survives_consumer_restart(monkeypat
             self.seen_phase = {}
             self.seen_agent = {}
             self.spawned_members = set()
+            self.seen_activity = {}
 
         is_running = True
 
@@ -5696,6 +5699,7 @@ async def test_consume_workflow_events_releases_held_idle_when_last_run_leaves_a
         seen_phase: dict = {}
         seen_agent: dict = {}
         spawned_members: set = set()
+        seen_activity: dict = {}
         async def events(self):
             yield event
         def get_run_states(self):
@@ -5745,6 +5749,7 @@ async def test_consume_workflow_events_keeps_held_idle_on_natural_completion(mon
         seen_phase: dict = {}
         seen_agent: dict = {}
         spawned_members: set = set()
+        seen_activity: dict = {}
         async def events(self):
             for e in events:
                 yield e
@@ -5786,6 +5791,7 @@ async def test_consume_workflow_events_keeps_held_idle_while_a_run_is_active(mon
         seen_phase: dict = {}
         seen_agent: dict = {}
         spawned_members: set = set()
+        seen_activity: dict = {}
         async def events(self):
             yield event
         def get_run_states(self):
@@ -6072,6 +6078,287 @@ async def test_broadcast_team_state_snapshot_broadcasts_member_and_task_status(m
     assert task_events[0]["event"]["status"] == "completed"
     assert task_events[1]["event"]["task_id"] == "task-2"
     assert task_events[1]["event"]["status"] == "in_progress"
+
+
+@pytest.mark.anyio
+async def test_broadcast_team_state_snapshot_replay_dedupes_agent_ids_across_phases(monkeypatch):
+    """Iterative loops reuse an agent id across phases; the replay emits it once.
+
+    The live path keeps a session-wide ``spawned_members`` set; without the
+    replay-side dedup a run whose phases repeat an agent id would emit (and
+    persist) duplicate spawned events and history rows.
+    """
+    broadcast_events: list[dict] = []
+    loop_run = WorkflowRunState(
+        id="run-loop",
+        name="flow-loop",
+        status="running",
+        phases=[
+            WorkflowPhaseState(
+                id=f"p{n}",
+                name=f"phase-{n}",
+                status="completed",
+                agents=[
+                    WorkflowAgentState(
+                        id="same-agent", name="coder", status="completed",
+                        kind="agent", agent_type="codex",
+                    )
+                ],
+            )
+            for n in (1, 2)
+        ],
+    )
+
+    class _FakeMonitorHandler:
+        @staticmethod
+        async def get_team_snapshot():
+            return {"team_id": "team-snapshot-test", "members": [], "tasks": []}
+
+    class _FakeManager:
+        @staticmethod
+        def get_monitor_handler(session_id: str):
+            return _FakeMonitorHandler()
+
+        @staticmethod
+        def get_workflow_handler(session_id: str):
+            return SimpleNamespace(get_run_states=lambda: {"run-loop": loop_run})
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcast_events),
+    )
+
+    await team_helpers._broadcast_team_state_snapshot("web", "sess-snapshot-test")
+
+    spawned = [e for e in broadcast_events if e["event"]["type"] == "team.member.spawned"]
+    assert len(spawned) == 1
+    assert spawned[0]["event"]["member_id"] == "run-loop:same-agent"
+
+
+@pytest.mark.anyio
+async def test_broadcast_team_state_snapshot_replays_mirrored_workflow_members(monkeypatch):
+    """A page refresh restores mirrored workflow members from checkpointed runs.
+
+    Mirrored members have no DB row — they exist only as broadcast events, so a
+    full page reload loses them (finished runs permanently). The snapshot replay
+    re-emits the same spawned events the live path produces, grouped by
+    ``workflow_run_id``, including members of already-finished runs, with the
+    same ``cli_agent`` / ``role`` identity fields and a status mapped onto the
+    member busy/idle convention.
+    """
+    broadcast_events: list[dict] = []
+    running_run = WorkflowRunState(
+        id="run-running",
+        name="flow-running",
+        status="running",
+        phases=[
+            WorkflowPhaseState(
+                id="p1",
+                name="phase",
+                status="running",
+                agents=[
+                    WorkflowAgentState(
+                        id="a-claude", name="c", status="running",
+                        kind="agent", agent_type="claude",
+                    ),
+                    WorkflowAgentState(
+                        id="a-human", name="h", status="running",
+                        kind="human", node_type="human",
+                    ),
+                ],
+            )
+        ],
+    )
+    finished_run = WorkflowRunState(
+        id="run-finished",
+        name="flow-finished",
+        status="completed",
+        phases=[
+            WorkflowPhaseState(
+                id="p2",
+                name="phase",
+                status="completed",
+                agents=[
+                    WorkflowAgentState(
+                        id="b-claude", name="c", status="completed",
+                        kind="agent", agent_type="claude",
+                    ),
+                    WorkflowAgentState(
+                        id="b-human", name="h", status="completed",
+                        kind="human", node_type="human",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    class _FakeMonitorHandler:
+        @staticmethod
+        async def get_team_snapshot():
+            return {
+                "team_id": "team-snapshot-test",
+                "members": [{"member_id": "agent1", "status": "ready"}],
+                "tasks": [],
+            }
+
+    class _FakeManager:
+        @staticmethod
+        def get_monitor_handler(session_id: str):
+            return _FakeMonitorHandler()
+
+        @staticmethod
+        def get_workflow_handler(session_id: str):
+            return SimpleNamespace(
+                get_run_states=lambda: {
+                    "run-running": running_run,
+                    "run-finished": finished_run,
+                }
+            )
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcast_events),
+    )
+
+    await team_helpers._broadcast_team_state_snapshot("web", "sess-snapshot-test")
+
+    spawned = [e for e in broadcast_events if e["event"]["type"] == "team.member.spawned"]
+    assert len(spawned) == 4
+    by_id = {e["event"]["member_id"]: e["event"] for e in spawned}
+    claude = by_id["run-running:a-claude"]
+    assert claude["workflow_run_id"] == "run-running"
+    assert claude["name"] == "c"
+    assert claude["team_id"] == "team-snapshot-test"
+    assert claude["cli_agent"] == "claude"
+    assert "role" not in claude
+    assert claude["status"] == "busy"
+    human = by_id["run-running:a-human"]
+    assert human["workflow_run_id"] == "run-running"
+    assert human["role"] == "human_agent"
+    assert human["mode"] == "human"
+    assert "cli_agent" not in human
+    # finished run: member_id carries its own run id, terminal node maps to idle
+    assert by_id["run-finished:b-claude"]["workflow_run_id"] == "run-finished"
+    assert by_id["run-finished:b-claude"]["status"] == "idle"
+    assert by_id["run-finished:b-human"]["workflow_run_id"] == "run-finished"
+
+
+@pytest.mark.anyio
+async def test_broadcast_team_state_snapshot_skips_run_member_colliding_with_db(monkeypatch):
+    """A DB member already covering a run member id is not emitted twice."""
+    broadcast_events: list[dict] = []
+    run = WorkflowRunState(
+        id="run-1",
+        name="flow-1",
+        status="running",
+        phases=[
+            WorkflowPhaseState(
+                id="p1",
+                name="phase",
+                status="running",
+                agents=[
+                    WorkflowAgentState(
+                        id="a-claude", name="c", status="running",
+                        kind="agent", agent_type="claude",
+                    ),
+                    WorkflowAgentState(
+                        id="a-human", name="h", status="running",
+                        kind="human", node_type="human",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    class _FakeMonitorHandler:
+        @staticmethod
+        async def get_team_snapshot():
+            return {
+                "team_id": "team-snapshot-test",
+                "members": [
+                    {"member_id": "agent1", "status": "ready"},
+                    {"member_id": "run-1:a-claude", "status": "busy"},
+                ],
+                "tasks": [],
+            }
+
+    class _FakeManager:
+        @staticmethod
+        def get_monitor_handler(session_id: str):
+            return _FakeMonitorHandler()
+
+        @staticmethod
+        def get_workflow_handler(session_id: str):
+            return SimpleNamespace(get_run_states=lambda: {"run-1": run})
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcast_events),
+    )
+
+    await team_helpers._broadcast_team_state_snapshot("web", "sess-snapshot-test")
+
+    spawned = [e for e in broadcast_events if e["event"]["type"] == "team.member.spawned"]
+    assert [e["event"]["member_id"] for e in spawned] == ["run-1:a-human"]
+
+
+@pytest.mark.anyio
+async def test_broadcast_team_state_snapshot_no_workflow_handler_adds_nothing(monkeypatch):
+    """Without a workflow handler / run states the snapshot broadcast is unchanged."""
+    broadcast_events: list[dict] = []
+
+    class _FakeMonitorHandler:
+        @staticmethod
+        async def get_team_snapshot():
+            return {
+                "team_id": "team-snapshot-test",
+                "members": [{"member_id": "agent1", "status": "ready"}],
+                "tasks": [],
+            }
+
+    class _FakeManagerNoHandler:
+        @staticmethod
+        def get_monitor_handler(session_id: str):
+            return _FakeMonitorHandler()
+
+    monkeypatch.setattr(
+        team_helpers, "get_team_manager", lambda channel_id: _FakeManagerNoHandler()
+    )
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcast_events),
+    )
+
+    await team_helpers._broadcast_team_state_snapshot("web", "sess-snapshot-test")
+
+    assert [e["event"]["type"] for e in broadcast_events] == ["team.member.status_changed"]
+
+    # Empty _runs on an existing handler likewise adds nothing.
+    broadcast_events.clear()
+
+    class _FakeManagerEmptyRuns:
+        @staticmethod
+        def get_monitor_handler(session_id: str):
+            return _FakeMonitorHandler()
+
+        @staticmethod
+        def get_workflow_handler(session_id: str):
+            return SimpleNamespace(get_run_states=lambda: {})
+
+    monkeypatch.setattr(
+        team_helpers, "get_team_manager", lambda channel_id: _FakeManagerEmptyRuns()
+    )
+
+    await team_helpers._broadcast_team_state_snapshot("web", "sess-snapshot-test")
+
+    assert [e["event"]["type"] for e in broadcast_events] == ["team.member.status_changed"]
 
 
 @pytest.mark.anyio
@@ -6366,7 +6653,7 @@ def _wf_event(phases: list[dict], *, run_id: str = "run-1", name: str = "wf") ->
 
 def test_workflow_updated_to_team_events_ignores_non_workflow_events():
     out = team_helpers._workflow_updated_to_team_events(
-        {"event_type": "team.member", "event": {}}, "sess-wf", {}, {}, set()
+        {"event_type": "team.member", "event": {}}, "sess-wf", team_helpers._WorkflowMirrorDedup({}, {}, set())
     )
     assert out == []
 
@@ -6376,9 +6663,7 @@ def test_workflow_updated_to_team_events_planned_phase_creates_task():
     out = team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "planning-1", "name": "planning", "status": "planned"}]),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     assert len(out) == 1
     ev = out[0]
@@ -6388,6 +6673,46 @@ def test_workflow_updated_to_team_events_planned_phase_creates_task():
     assert ev["event"]["task_id"] == "run-1:planning-1"
     assert ev["event"]["title"] == "planning"
     assert ev["event"]["team_id"] == "wf"
+    # Emission time rides on the inner event: the frontend dedups identical
+    # payloads within 1.5s, so a legitimately repeated status must differ.
+    assert isinstance(ev["event"]["timestamp"], int)
+
+
+def test_workflow_updated_to_team_events_repeated_status_carries_distinct_timestamps(monkeypatch):
+    """A phase status that repeats must not be dropped as a redelivery.
+
+    The frontend's payload-identity dedup used to eat the second
+    ``team.task.completed`` of a flapping card (identical payload), sticking
+    the task on the preceding ``claimed``. Distinct emissions carry distinct
+    timestamps so only true redeliveries collapse.
+    """
+    ticks = iter(range(1, 100))
+    monkeypatch.setattr(team_helpers.time, "time", lambda: 1000.0 + next(ticks) * 0.001)
+    seen_phase, seen_agent, spawned = {}, {}, set()
+    out1 = team_helpers._workflow_updated_to_team_events(
+        _wf_event([{"id": "ph-1", "name": "impl", "status": "completed"}]),
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
+    )
+    # Phase re-entered (status running) then completed again.
+    out2 = team_helpers._workflow_updated_to_team_events(
+        _wf_event([{"id": "ph-1", "name": "impl", "status": "running"}]),
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
+    )
+    out3 = team_helpers._workflow_updated_to_team_events(
+        _wf_event([{"id": "ph-1", "name": "impl", "status": "completed"}]),
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
+    )
+    completed = [
+        ev["event"] for ev in (out1 + out3)
+        if ev["event"].get("type") == "team.task.completed"
+    ]
+    assert len(completed) == 2
+    stamps = [ev["timestamp"] for ev in completed]
+    assert stamps[0] != stamps[1]  # distinct payloads → distinct dedup keys
+    assert out2[0]["event"]["type"] == "team.task.claimed"
 
 
 def test_workflow_updated_to_team_events_paused_phase_freezes_task_then_resume_thaws():
@@ -6402,18 +6727,21 @@ def test_workflow_updated_to_team_events_paused_phase_freezes_task_then_resume_t
     seen_phase, seen_agent, spawned = {}, {}, set()
     team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "p1", "name": "p", "status": "running"}]),
-        "sess-wf", seen_phase, seen_agent, spawned,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     out = team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "p1", "name": "p", "status": "paused"}]),
-        "sess-wf", seen_phase, seen_agent, spawned,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     assert [(e["event"]["type"], e["event"]["status"], e["event"]["progress_frozen"]) for e in out] == [
         ("team.task.paused", "in_progress", True),
     ]
     out = team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "p1", "name": "p", "status": "running"}]),
-        "sess-wf", seen_phase, seen_agent, spawned,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     assert [(e["event"]["type"], e["event"]["status"], e["event"]["progress_frozen"]) for e in out] == [
         ("team.task.claimed", "in_progress", False),
@@ -6436,9 +6764,7 @@ def test_workflow_updated_to_team_events_running_agent_spawns_member_and_claims_
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     types = [e["event"]["type"] for e in out]
     assert "team.task.claimed" in types
@@ -6448,6 +6774,43 @@ def test_workflow_updated_to_team_events_running_agent_spawns_member_and_claims_
     assert member["event"]["name"] == "researcher"
     # running agent should not also emit a status_changed
     assert "team.member.status_changed" not in types
+
+
+def test_workflow_updated_to_team_events_spawned_member_carries_node_identity():
+    """The roster mirror must resolve to the same avatar as the workflow tree:
+    third-party nodes carry ``cli_agent``, human nodes carry the human role."""
+    seen_phase, seen_agent, spawned = {}, {}, set()
+    out = team_helpers._workflow_updated_to_team_events(
+        _wf_event(
+            [
+                {
+                    "id": "impl-1",
+                    "name": "impl",
+                    "status": "running",
+                    "agents": [
+                        {"id": "a-codex", "name": "impl:codex", "status": "running",
+                         "agent_type": "codex", "kind": "agent"},
+                        {"id": "a-gate", "name": "gate", "status": "running",
+                         "kind": "human", "node_type": "human"},
+                        {"id": "a-native", "name": "impl:native", "status": "running",
+                         "kind": "agent"},
+                    ],
+                }
+            ]
+        ),
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
+    )
+    spawned_events = {e["event"]["member_id"]: e["event"] for e in out if e["event"]["type"] == "team.member.spawned"}
+    codex = spawned_events["run-1:a-codex"]
+    assert codex["cli_agent"] == "codex"
+    assert "role" not in codex
+    gate = spawned_events["run-1:a-gate"]
+    assert gate["role"] == "human_agent"
+    assert gate["mode"] == "human"
+    assert "cli_agent" not in gate
+    native = spawned_events["run-1:a-native"]
+    assert "cli_agent" not in native and "role" not in native
 
 
 def test_workflow_updated_to_team_events_dedups_repeated_running_delta():
@@ -6461,12 +6824,12 @@ def test_workflow_updated_to_team_events_dedups_repeated_running_delta():
         }
     ]
     first = team_helpers._workflow_updated_to_team_events(
-        _wf_event(phases), "sess-wf", seen_phase, seen_agent, spawned
+        _wf_event(phases), "sess-wf", team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned)
     )
     assert first  # first delta emits events
     # Same delta again (e.g. another agent_started re-includes the running phase)
     second = team_helpers._workflow_updated_to_team_events(
-        _wf_event(phases), "sess-wf", seen_phase, seen_agent, spawned
+        _wf_event(phases), "sess-wf", team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned)
     )
     assert second == []  # no status change -> nothing re-emitted
 
@@ -6486,9 +6849,7 @@ def test_workflow_updated_to_team_events_agent_completed_changes_member_status()
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     # Then: agent completed, phase completed
     out = team_helpers._workflow_updated_to_team_events(
@@ -6503,9 +6864,7 @@ def test_workflow_updated_to_team_events_agent_completed_changes_member_status()
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     types = [e["event"]["type"] for e in out]
     assert "team.task.completed" in types
@@ -6531,9 +6890,7 @@ def test_workflow_updated_to_team_events_first_sight_terminal_spawns_then_status
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     member_types = [e["event"]["type"] for e in out if e["event_type"] == "team.member"]
     assert member_types == ["team.member.spawned", "team.member.status_changed"]
@@ -7267,3 +7624,186 @@ def test_team_tool_result_truncation_covers_rendered_result():
     assert trimmed["rendered_result"] == "x" * limit
     assert trimmed["result"] == "r" * 10
     assert trimmed["truncated"] is True
+
+
+# ---------------------------------------------------------------------------
+# swarmflow activity mirror — agent_activity deltas -> chat.tool_call/result frames
+# ---------------------------------------------------------------------------
+
+
+def _activity_agent(
+    activity: list[dict],
+    *,
+    agent_id: str = "coder-1",
+    status: str = "running",
+) -> dict:
+    return {
+        "id": agent_id, "name": agent_id, "status": status,
+        "activity": activity,
+    }
+
+
+def _activity_event(agents: list[dict]) -> dict:
+    return _wf_event([{"id": "impl-1", "name": "impl", "status": "running", "agents": agents}])
+
+
+def test_workflow_updated_to_team_events_activity_emits_tool_frames():
+    """Activity rows mirror as chat.tool_call / chat.tool_result frames.
+
+    A tool_call row emits a chat.tool_call frame; a paired ``tool_result_preview``
+    emits a matching chat.tool_result frame with the same tool_call_id so the
+    frontend's existing call/result pairing links them. An orphan result row
+    emits a lone chat.tool_result frame. Every frame carries role=teammate +
+    member_name so the frontend gates it into the hidden-teammate execution-event
+    chain (the same gate real teammate frames use). The worker is also spawned
+    on first sight.
+    """
+    seen_phase, seen_agent, spawned = {}, {}, set()
+    seen_activity: dict[str, set[str]] = {}
+    out = team_helpers._workflow_updated_to_team_events(
+        _activity_event([
+            _activity_agent([
+                {"timestamp": "ts", "type": "tool_call", "content": "ls",
+                 "tool_name": "bash", "tool_call_id": "t1"},
+                {"timestamp": "ts", "type": "tool_call", "content": "ls",
+                 "tool_name": "bash", "tool_call_id": "t2",
+                 "tool_result_preview": "file1 file2"},
+                {"timestamp": "ts", "type": "tool_result", "content": "orphan",
+                 "tool_name": "bash", "tool_call_id": "t3"},
+            ]),
+        ]),
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned, seen_activity),
+    )
+
+    spawned_events = [
+        e for e in out
+        if e["event_type"] == "team.member" and e["event"]["type"] == "team.member.spawned"
+    ]
+    assert len(spawned_events) == 1
+    assert spawned_events[0]["event"]["member_id"] == "run-1:coder-1"
+
+    calls = [e for e in out if e["event_type"] == "chat.tool_call"]
+    results = [e for e in out if e["event_type"] == "chat.tool_result"]
+    assert len(calls) == 2
+    assert len(results) == 2
+    frames = calls + results
+    # every frame is a broadcast-frame sibling of the team.member envelopes, gated
+    # into the hidden-teammate chain by role + member_name
+    assert all(f["session_id"] == "sess-wf" for f in frames)
+    assert all(f["role"] == "teammate" for f in frames)
+    assert all(f["member_name"] == "run-1:coder-1" for f in frames)
+
+    by_call: dict[str, list[dict]] = {}
+    for frame in frames:
+        by_call.setdefault(
+            frame.get("tool_call_id")
+            or (frame.get("tool_call") or {}).get("id"),
+            [],
+        ).append(frame)
+    assert by_call["t1"][0]["event_type"] == "chat.tool_call"
+    assert by_call["t1"][0]["tool_call"]["name"] == "bash"
+    assert by_call["t1"][0]["tool_call"]["description"] == "ls"
+    assert by_call["t1"][0]["tool_call"]["id"] == "t1"
+    assert len(by_call["t1"]) == 1
+    # the paired preview rides a chat.tool_result frame with the same tool_call_id
+    assert [f["event_type"] for f in by_call["t2"]] == ["chat.tool_call", "chat.tool_result"]
+    assert by_call["t2"][0]["tool_call"]["description"] == "ls"
+    assert by_call["t2"][1]["tool_call_id"] == "t2"
+    assert by_call["t2"][1]["result"] == "file1 file2"
+    assert by_call["t2"][1]["tool_name"] == "bash"
+    # the orphan result is its own chat.tool_result frame
+    assert by_call["t3"][0]["event_type"] == "chat.tool_result"
+    assert by_call["t3"][0]["result"] == "orphan"
+    assert by_call["t3"][0]["tool_call_id"] == "t3"
+    assert len(by_call["t3"]) == 1
+
+
+def test_workflow_updated_to_team_events_activity_dedup_across_deltas():
+    """Repeated deltas re-include the full node — only NEW activity mirrors."""
+    seen_phase, seen_agent, spawned = {}, {}, set()
+    seen_activity: dict[str, set[str]] = {}
+    t1 = {"timestamp": "ts", "type": "tool_call", "content": "ls",
+          "tool_name": "bash", "tool_call_id": "t1"}
+    t2 = {"timestamp": "ts", "type": "tool_call", "content": "cat",
+          "tool_name": "bash", "tool_call_id": "t2",
+          "tool_result_preview": "text"}
+
+    first = team_helpers._workflow_updated_to_team_events(
+        _activity_event([_activity_agent([t1])]),
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned, seen_activity),
+    )
+    assert len([e for e in first if e["event_type"] == "chat.tool_call"]) == 1
+
+    # Same delta re-broadcast (activity buffered then flushed) — no duplicates.
+    again = team_helpers._workflow_updated_to_team_events(
+        _activity_event([_activity_agent([t1])]),
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned, seen_activity),
+    )
+    assert [e["event_type"] for e in again if e["event_type"] != "team.member"] == []
+
+    # A later delta carries t1 (already seen) + t2 (new) — only t2 mirrors.
+    third = team_helpers._workflow_updated_to_team_events(
+        _activity_event([_activity_agent([t1, t2])]),
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned, seen_activity),
+    )
+    t2_frames = [
+        e for e in third if e["event_type"] in {"chat.tool_call", "chat.tool_result"}
+        and ((e.get("tool_call") or {}).get("id") == "t2" or e.get("tool_call_id") == "t2")
+    ]
+    assert [f["event_type"] for f in t2_frames] == ["chat.tool_call", "chat.tool_result"]
+
+
+def test_workflow_updated_to_team_events_late_preview_emits_tool_result():
+    """A result paired after its call row was mirrored (the call outlived the
+    activity batch window) still produces exactly one chat.tool_result frame."""
+    dedup = team_helpers._WorkflowMirrorDedup()
+    call = {"timestamp": "ts", "type": "tool_call", "content": "ls",
+            "tool_name": "bash", "tool_call_id": "t1"}
+    paired = {**call, "tool_result_preview": "file1 file2"}
+
+    first = team_helpers._workflow_updated_to_team_events(
+        _activity_event([_activity_agent([call])]), "sess-wf", dedup,
+    )
+    assert [e["event_type"] for e in first if e["event_type"].startswith("chat.")] == ["chat.tool_call"]
+
+    second = team_helpers._workflow_updated_to_team_events(
+        _activity_event([_activity_agent([paired])]), "sess-wf", dedup,
+    )
+    results = [e for e in second if e["event_type"].startswith("chat.")]
+    assert [e["event_type"] for e in results] == ["chat.tool_result"]
+    assert results[0]["tool_call_id"] == "t1"
+    assert results[0]["tool_name"] == "bash"
+    assert results[0]["result"] == "file1 file2"
+
+    third = team_helpers._workflow_updated_to_team_events(
+        _activity_event([_activity_agent([paired])]), "sess-wf", dedup,
+    )
+    assert [e for e in third if e["event_type"].startswith("chat.")] == []
+
+
+def test_workflow_updated_to_team_events_non_activity_delta_unchanged():
+    """A status delta without activity mirrors no tool frames."""
+    seen_phase, seen_agent, spawned = {}, {}, set()
+    seen_activity: dict[str, set[str]] = {}
+    team_helpers._workflow_updated_to_team_events(
+        _wf_event([
+            {"id": "impl-1", "name": "impl", "status": "running",
+             "agents": [{"id": "coder-1", "name": "coder", "status": "running"}]},
+        ]),
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned, seen_activity),
+    )
+    out = team_helpers._workflow_updated_to_team_events(
+        _wf_event([
+            {"id": "impl-1", "name": "impl", "status": "completed",
+             "agents": [{"id": "coder-1", "name": "coder", "status": "completed"}]},
+        ]),
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned, seen_activity),
+    )
+    assert [e["event"]["type"] for e in out] == ["team.task.completed", "team.member.status_changed"]
+    assert not [e for e in out if e["event_type"] in {"chat.tool_call", "chat.tool_result"}]

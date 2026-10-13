@@ -138,3 +138,4 @@ class ModelSelectionResolver:
             request_config=group.get("request_config") or {},
             routing={},
         )
+

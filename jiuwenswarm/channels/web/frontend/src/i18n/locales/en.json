@@ -4463,13 +4463,16 @@
     "verifyRound": "Round {{count}} · {{verdict}}",
     "verifyGroupTitle": "verify · {{label}}",
     "verifyReviewersPending": "{{names}} reviewing…",
+    "sectionCallRecords": "Activity",
+    "sectionToolCalls": "Tool calls",
     "sectionInput": "Input",
     "sectionOutput": "Output",
     "sectionHumanPrompt": "Human question",
     "sectionHumanReply": "Human reply",
     "sectionError": "Error",
     "charUnit": "chars",
-    "clickToViewDetail": "Click to view details"
+    "clickToViewDetail": "Click to view details",
+    "runIdTooltip": "Run ID: {{id}}"
   },
   "a4pSettings": {
     "title": "A4P pre-authorization",

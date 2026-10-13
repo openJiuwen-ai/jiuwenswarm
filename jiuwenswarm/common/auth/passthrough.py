@@ -154,3 +154,4 @@ def expired_login_session(params: dict[str, Any], session_id: str | None):
     if session is None or not session.credential.is_expired():
         return None
     return session
+

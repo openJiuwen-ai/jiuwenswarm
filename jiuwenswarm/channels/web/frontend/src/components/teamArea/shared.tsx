@@ -24,6 +24,12 @@ export interface TeamMember {
   name?: string;
   execution_status?: string | null;
   mode?: string;
+  /** TeamRole 值：leader / teammate / human_agent / bridge_agent / worker */
+  role?: string;
+  /** 外部 CLI 后端名（claude / codex / ...），普通成员为空 */
+  cli_agent?: string | null;
+  /** 镜像的 swarmflow worker 带 run id；真实队友无此字段。 */
+  workflow_run_id?: string;
 }
 
 export interface TeamTaskEvent {
@@ -184,6 +190,25 @@ export const getMemberDisplayName = (member: TeamMember | string): string => {
 export const getMemberPlainName = (member: TeamMember | string): string => {
   const { memberId, displayName } = resolveMemberIdentity(member);
   return displayName || memberId;
+};
+
+/**
+ * 成员头像 key：镜像的 swarmflow worker 按 agent.name 哈希（与树视图同源），
+ * 真实队友（无 workflow_run_id）保持 member_id，与旧行为一致。
+ */
+export const getMemberAvatarKey = (member: TeamMember): string => {
+  return member.workflow_run_id ? member.name || member.member_id : member.member_id;
+};
+
+/**
+ * 成员头像身份：镜像 worker 的 avatarKey 是名字而非 member_id，组件内的
+ * 名册查找必然落空——CLI 身份（品牌头像）与人类身份必须在这里显式给出，
+ * 否则树视图（传 identity）显示品牌脸、成员列表显示哈希插画，两边对不上。
+ */
+export const getMemberAvatarIdentity = (member: TeamMember): { cliAgent?: string; role?: string; mode?: string } => {
+  if (member.cli_agent) return { cliAgent: member.cli_agent };
+  if (member.role === 'human_agent' || member.mode === 'human') return { role: 'human_agent' };
+  return {};
 };
 
 const resolveMemberIdentity = (member: TeamMember | string): { memberId: string; displayName: string } => {

@@ -1585,6 +1585,13 @@ modes:
       teammate_mode: build_mode
       spawn_mode: inprocess
       enable_swarmflow: false
+      # Progressive tool exposure for swarmflow workers: workers see only the
+      # tool_search meta-tool plus a small direct set and search for the rest
+      # on demand, cutting per-call context. Only effective when
+      # enable_swarmflow is true. Independent of the top-level
+      # progressive_tool_enabled (single-agent) switch. Takes effect for
+      # teams created after the change.
+      swarmflow_progressive_tool: false
       external_cli_agents: []
       external_transport: null
 

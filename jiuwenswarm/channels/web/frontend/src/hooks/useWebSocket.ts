@@ -1316,6 +1316,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             snapshotMember.cli_agent === null || typeof snapshotMember.cli_agent === 'string'
               ? snapshotMember.cli_agent
               : existing?.cli_agent,
+          workflow_run_id:
+            typeof snapshotMember.workflow_run_id === 'string'
+              ? snapshotMember.workflow_run_id
+              : existing?.workflow_run_id,
         }];
       });
       if (snapshotMembers.length !== response.members.length || snapshotMembers.length === 0) return;
@@ -5276,6 +5280,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             mode?: string;
             role?: string;
             cli_agent?: string | null;
+            workflow_run_id?: string;
           };
           if (e.member_id) markTeamConnectionStateChanged(sessionId, e.member_id);
           if (e.member_id && (e.status || e.new_status || e.execution_status)) {
@@ -5306,6 +5311,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 name: e.name,
                 execution_status: e.execution_status || e.new_status,
                 mode: e.mode,
+                workflow_run_id: e.workflow_run_id,
               });
             }
           } else if (
@@ -5327,6 +5333,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               mode: e.mode,
               role: e.role,
               cli_agent: e.cli_agent,
+              workflow_run_id: e.workflow_run_id,
             });
           }
         }

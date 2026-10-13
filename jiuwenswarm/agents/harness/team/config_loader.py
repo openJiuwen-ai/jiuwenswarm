@@ -697,6 +697,9 @@ def load_team_spec_dict(
     spec_dict["enable_hitt"] = team_raw.get("enable_hitt", True)
     spec_dict["enable_permissions"] = _resolve_enable_permissions(config_base)
     _apply_swarmflow_budget(spec_dict, team_raw.get("swarmflow_budget"))
+    # Team-level key, independent of the single-agent progressive_tool_enabled
+    # switch; the spec field is named progressive_tool on the engine side.
+    spec_dict["progressive_tool"] = bool(spec_dict.pop("swarmflow_progressive_tool", False))
     spec_dict["leader"] = _build_leader_spec(team_raw)
     spec_dict["agents"] = agents
     spec_dict["language"] = str(config_base.get("preferred_language", "zh")).strip().lower()

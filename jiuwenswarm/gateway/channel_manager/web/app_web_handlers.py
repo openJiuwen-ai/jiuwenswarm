@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import importlib.util
 import json
 import logging
@@ -1255,6 +1256,29 @@ _OPTIONAL_DEPENDENCY_INDEX_URL = os.getenv("PIP_INDEX_URL") or os.getenv("UV_IND
 )
 
 
+def _openjiuwen_url_requirements(extra: str) -> list[str]:
+    """URL-pinned requirements of the installed openjiuwen, restated as direct ones.
+
+    uv pip rejects a URL dependency that only appears transitively (openjiuwen
+    pins protocol packages to git), so the extra install must name them itself.
+    Requirements gated on a different extra are left out.
+    """
+    try:
+        requires = importlib.metadata.requires("openjiuwen") or []
+    except importlib.metadata.PackageNotFoundError:
+        return []
+    forwarded: list[str] = []
+    for raw in requires:
+        spec, _, marker = raw.partition(";")
+        spec = spec.strip()
+        if " @ " not in spec:
+            continue
+        if "extra" in marker and f'"{extra}"' not in marker and f"'{extra}'" not in marker:
+            continue
+        forwarded.append(spec)
+    return forwarded
+
+
 def _build_optional_dependency_install_args(package: str, cli_agent: str) -> list[str]:
     """Build the pip/uv command that installs an optional CLI agent SDK.
 
@@ -1267,6 +1291,7 @@ def _build_optional_dependency_install_args(package: str, cli_agent: str) -> lis
     from jiuwenswarm.common.external_cli_runtime import pinned_sdk_requirements
 
     pinned = pinned_sdk_requirements(cli_agent)
+    requirements = [package, *_openjiuwen_url_requirements(cli_agent), *pinned]
     uv_cmd = shutil.which("uv")
     if uv_cmd and sys.prefix != sys.base_prefix:
         # Pin the target interpreter: without --python, uv resolves its own
@@ -1281,8 +1306,7 @@ def _build_optional_dependency_install_args(package: str, cli_agent: str) -> lis
             sys.executable,
             "--index-url",
             _OPTIONAL_DEPENDENCY_INDEX_URL,
-            package,
-            *pinned,
+            *requirements,
         ]
     return [
         sys.executable,
@@ -1291,8 +1315,7 @@ def _build_optional_dependency_install_args(package: str, cli_agent: str) -> lis
         "install",
         "--index-url",
         _OPTIONAL_DEPENDENCY_INDEX_URL,
-        package,
-        *pinned,
+        *requirements,
     ]
 
 

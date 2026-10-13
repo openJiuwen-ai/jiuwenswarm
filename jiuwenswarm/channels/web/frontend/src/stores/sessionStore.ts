@@ -434,6 +434,8 @@ interface TeamMember {
   role?: string;
   /** 外部 CLI 后端名（claude / codex / ...），普通成员为空 */
   cli_agent?: string | null;
+  /** 产生该成员的 swarmflow run（镜像 worker 才有，真实队友无此字段） */
+  workflow_run_id?: string;
 }
 
 /** 增量成员事件里的空字段不得覆盖已知值：返回 next，空则回退 prev。 */
@@ -1597,6 +1599,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           mode: keepKnownMemberField(member.mode, existingMember.mode),
           role: keepKnownMemberField(member.role, existingMember.role),
           cli_agent: keepKnownMemberField(member.cli_agent, existingMember.cli_agent),
+          workflow_run_id: keepKnownMemberField(
+            member.workflow_run_id,
+            existingMember.workflow_run_id,
+          ),
         };
         return {
           runtimes: {
