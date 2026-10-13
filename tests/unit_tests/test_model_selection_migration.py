@@ -100,11 +100,14 @@ def test_legacy_migration_only_adds_stable_ids(monkeypatch, with_empty_groups):
 
 
 def test_model_detail_is_editable_without_exposing_write_only_values():
-    detail = ModelCatalog(_config()).get_public_model_detail("mdl_a")
+    config = _config()
+    original = deepcopy(config)
+    detail = ModelCatalog(config).get_public_model_detail("mdl_a")
 
+    assert config == original
     assert detail["read_only"] is False
     assert detail["source"] == "defaults"
-    assert detail["model_detail"]["fallback_tag"] == "chat"
+    assert detail["model_detail"]["fallback_tag"] == "a"
     assert "api_key" not in detail["model_client_config"]
     assert "custom_headers" not in detail["model_client_config"]
     assert detail["write_only_fields"] == [
@@ -152,7 +155,7 @@ def test_default_group_wins_and_keeps_route_order():
     assert resolved.routes[0].enabled is True
     assert resolved.routes[1].enabled is False
     assert resolved.routes[0].model.endpoint_profile == "deepseek"
-    assert resolved.routes[0].model.fallback_tag == "chat"
+    assert resolved.routes[0].model.fallback_tag == "a"
     assert resolved.routes[0].model.model_description == "primary model"
     assert resolved.routing == {"strategy": "ordered-failover", "num_retries": 3}
     assert "routing" not in catalog.list_public_groups()[0]
@@ -196,9 +199,10 @@ def test_single_model_selection_rejects_route_id():
 
 
 def test_group_route_selection_round_trips_session_store(monkeypatch, tmp_path):
-    from jiuwenswarm.server.runtime.session import model_selection_store
+    from jiuwenswarm.server.runtime.session import model_selection_store, session_metadata
 
     monkeypatch.setattr(model_selection_store, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: tmp_path)
     selection = ModelSelection(type="model_group", id="mgp_a", route_id="primary")
 
     model_selection_store.set_session_model_selection("session-a", selection)
@@ -219,10 +223,7 @@ def test_manual_route_overrides_tag_filter_and_compiles_selected_member():
     resolver = ModelSelectionResolver(ModelCatalog(config))
     for route_id, model_id in [("primary", "mdl_a"), ("backup", "mdl_b")]:
         resolved = resolver.resolve(ModelSelection(type="model_group", id="mgp_a", route_id=route_id))
-        assert resolved.routing == {
-            "strategy": "tag-filtered",
-            "strategy_kwargs": {"fallback_tag": "non-matching-tag"},
-        }
+        assert resolved.routing == group["routing"]
         try:
             compiled = compile_model_selection(resolved)
         except ModelSelectionError as exc:
@@ -230,14 +231,34 @@ def test_manual_route_overrides_tag_filter_and_compiles_selected_member():
             pytest.skip("agent-core compiler unavailable")
         assert resolved.model_group_id == "mgp_a"
         assert resolved.routes[0].model.model_id == model_id
-        # 手工指定的路由决定部署集合；tag-filter 策略随编译进入路由器配置，
-        # 而不是在解析阶段被丢弃。
         router = compiled.model_client_config.intelli_router
         assert router is not None
         assert router.strategy == "tag-filtered"
         assert [deployment.route_id for deployment in router.deployments] == [route_id]
         assert router.deployments[0].model_id == model_id
+        assert router.deployments[0].fallback_tag == resolved.routes[0].model.model_name
     assert group["routing"]["strategy"] == "tag-filtered"
+
+
+@pytest.mark.parametrize("route_id,expected_name", [(None, "a"), ("primary", "a"), ("backup", "b")])
+def test_single_agent_build_keeps_team_routing_unchanged(route_id, expected_name):
+    from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
+
+    config = _config()
+    group = config["models"]["groups"][0]
+    group["routes"][1]["enabled"] = True
+    group["routing"] = {
+        "strategy": "tag-filtered",
+        "strategy_kwargs": {"fallback_tag": "non-matching-tag"},
+    }
+    selection = ModelSelection(type="model_group", id="mgp_a", route_id=route_id)
+    resolved = ModelSelectionResolver(ModelCatalog(config)).resolve(selection)
+
+    model = build_model_from_selection(resolved)
+
+    assert model.model_client_config.intelli_router is None
+    assert model.model_config.model_name == expected_name
+    assert resolved.routing == group["routing"]
 
 
 def test_validation_rejects_complete_catalog_conflicts_and_forbidden_fields():
@@ -296,9 +317,9 @@ def test_compiler_adapter_matches_final_core_dto():
     assert router is not None
     assert router.strategy == "ordered-failover"
     assert router.num_retries == 3
-    # 禁用路由不进入部署集合；分组请求参数合入部署默认值（.5 覆盖模型级 .7）。
     assert [deployment.route_id for deployment in router.deployments] == ["primary"]
     assert router.deployments[0].request_defaults == {"temperature": 0.5}
+    assert router.deployments[0].fallback_tag == "a"
     assert compiled.model_request_config.context_window == 100
 
 
@@ -312,25 +333,21 @@ def test_pool_accepts_absent_null_and_legacy_strategy(routing):
 
 
 def test_pool_uses_first_enabled_route_and_route_parameter_overrides():
-    from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
+    from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
 
     config = _config()
     group = config["models"]["groups"][0]
     group["routes"][0]["enabled"] = False
-    group["routes"][1].update(enabled=True, request_overrides={"temperature": .2, "context_window": 200})
+    group["routes"][1].update(enabled=True, request_overrides={"temperature": .2})
+    config["models"]["agentos"][0]["model_config_obj"] = {"context_window": 200}
     resolved = ModelSelectionResolver(ModelCatalog(config)).resolve(None)
     try:
-        compiled = compile_model_selection(resolved)
+        model = build_model_from_selection(resolved)
     except ModelSelectionError as exc:
         assert exc.code == "MODEL_RUNTIME_UNAVAILABLE"
         pytest.skip("agent-core compiler unavailable; skipping real integration")
-    router = compiled.model_client_config.intelli_router
-    assert router is not None
-    # 禁用路由被排除，仅剩的启用路由成为唯一部署。
-    assert [deployment.route_id for deployment in router.deployments] == ["backup"]
-    deployment = router.deployments[0]
-    assert deployment.model_name == "b"
-    assert deployment.provider == "openai"
-    # 路由级 request_overrides 覆盖分组请求参数；context_window 汇总进请求配置。
-    assert deployment.request_defaults == {"temperature": 0.2}
-    assert compiled.model_request_config.context_window == 200
+    assert model.model_client_config.intelli_router is None
+    assert model.model_config.model_name == "b"
+    assert model.model_config.temperature == 0.2
+    assert model.model_config.context_window == 200
+    assert resolved.routing == group["routing"]

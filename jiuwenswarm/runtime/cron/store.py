@@ -82,13 +82,15 @@ class FileCronJobStore:
     async def get_revision(self) -> int:
         return self._file_revision()
 
-    async def list_jobs(self) -> list[CronJob]:
+    async def list_jobs(self, *, strict: bool = False) -> list[CronJob]:
         # 惰性迁移:在同一个锁内 read + 推断缺 work_mode 的老 job + writeback,
         # 替代启动迁移 ``migrate_legacy_jobs_at_startup``。
         def _body() -> list[CronJob]:
-            data = self._read_json_unlocked()
-            jobs_raw = data.get("jobs") or []
+            data = self._read_json_unlocked(strict=strict)
+            jobs_raw = data.get("jobs", [])
             if not isinstance(jobs_raw, list):
+                if strict:
+                    raise ValueError("cron jobs must be an array")
                 return []
 
             jobs_raw, changed = migrate_work_mode_on_items(jobs_raw)
@@ -100,6 +102,8 @@ class FileCronJobStore:
                     logger.warning(
                         "Cron 惰性迁移写回 cron_jobs.json 失败: %s", exc
                     )
+            if strict:
+                return [CronJob.from_dict(item) for item in jobs_raw]
             return parse_cron_jobs(jobs_raw)
 
         return await self._run_locked(_body)
@@ -298,7 +302,7 @@ class FileCronJobStore:
     async def _read_json(self) -> dict[str, Any]:
         return await self._run_locked(self._read_json_unlocked)
 
-    def _read_json_unlocked(self) -> dict[str, Any]:
+    def _read_json_unlocked(self, *, strict: bool = False) -> dict[str, Any]:
         path = self._path
         try:
             if not path.exists():
@@ -306,6 +310,8 @@ class FileCronJobStore:
             raw = path.read_text(encoding="utf-8")
             data = json.loads(raw) if raw.strip() else {}
             if not isinstance(data, dict):
+                if strict:
+                    raise ValueError("cron store must be an object")
                 return {"version": 1, "jobs": []}
             if "version" not in data:
                 data["version"] = 1
@@ -313,6 +319,8 @@ class FileCronJobStore:
                 data["jobs"] = []
             return data
         except Exception:
+            if strict:
+                raise
             return {"version": 1, "jobs": []}
 
     def _write_json_unlocked(self, data: dict[str, Any]) -> None:

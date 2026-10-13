@@ -594,7 +594,8 @@ def _write_metadata_unfenced(
         # and friends (writes replace the whole file, they do not merge). When
         # disk has an identity and the incoming payload does not, treat it as a
         # race-induced dirty write and restore the missing fields.
-        if current and current.get("session_id") and not metadata.get("session_id"):
+        needs_identity_recovery = options.merge_fields is None and current and current.get("session_id")
+        if needs_identity_recovery and not metadata.get("session_id"):
             recovered = {k: v for k, v in current.items() if k not in metadata}
             to_write = {**current, **metadata}
             logger.warning(
@@ -605,6 +606,14 @@ def _write_metadata_unfenced(
 
         if options.preserve_pin_fields and current is not None:
             to_write = _merge_pin_fields(current, to_write)
+        # Preserve newer selections against queued history/title snapshots.
+        owns_selection = options.merge_fields is not None and "model_selection" in options.merge_fields
+        if current is not None and not owns_selection:
+            to_write = dict(to_write)
+            if "model_selection" in current:
+                to_write["model_selection"] = current["model_selection"]
+            else:
+                to_write.pop("model_selection", None)
         # 权威 rebind 版本检查: 持锁后重比 gen, 判定调用方传入的快照是否已陈旧。
         # 比调用方持锁前的 pre-check 更可靠 —— 消除"gen 比较与文件写入"之间的
         # TOCTOU 窗口(P3)。rebind 自身传入的 gen 已 bump, 等于当前 gen, 不触发合并。
@@ -627,6 +636,20 @@ def _write_metadata_unfenced(
             tmp.unlink(missing_ok=True)
             raise
     return to_write
+
+
+def update_session_model_selection(
+    session_id: str, selection: dict[str, Any], *, expected_selection: tuple[bool, Any] | None = None,
+) -> None:
+    """Update only selection through the Gateway lifecycle/atomic-write boundary."""
+    _write_metadata_sync(
+        session_id, {"model_selection": selection},
+        _MetadataWriteOptions(
+            merge_fields=frozenset({"model_selection"}),
+            expected_fields={"model_selection": expected_selection} if expected_selection is not None else None,
+        ),
+    )
+    remove_session_metadata_cache(session_id)
 
 
 def _merge_pin_fields(current: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:

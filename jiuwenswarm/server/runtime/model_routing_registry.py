@@ -119,6 +119,8 @@ class ModelSelectionResolver:
                     f"route {selected.route_id!r} in model group {selected.id!r} is disabled",
                 )
             group_routes = selected_routes
+        if not any(route.get("enabled", True) for route in group_routes):
+            raise ModelSelectionError(MODEL_GROUP_INVALID, f"model group {selected.id!r} has no enabled routes")
         routes = [
             ResolvedRoute(
                 route_id=route["route_id"],
@@ -139,4 +141,3 @@ class ModelSelectionResolver:
             request_config=group.get("request_config") or {},
             routing=group.get("routing") or {},
         )
-

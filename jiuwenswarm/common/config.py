@@ -1641,25 +1641,14 @@ def load_models_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     by_id: dict[str, dict[str, Any]] = {}
     for source, entries in (("defaults", defaults), ("agentos", agentos)):
         for entry in entries:
+            entry["model_detail"] = {
+                **(entry.get("model_detail") or {}),
+                "fallback_tag": (entry.get("model_client_config") or {}).get("model_name"),
+            }
             model_id = str(entry.get("model_id") or "").strip()
             if model_id:
                 by_id[model_id] = {"source": source, "entry": entry}
     return {"defaults": defaults, "agentos": agentos, "groups": groups, "by_id": by_id}
-
-
-def save_models_candidate(models: dict[str, Any]) -> dict[str, Any]:
-    """Validate and atomically replace only the models section."""
-    candidate = deepcopy(models)
-    _ensure_model_business_ids(candidate)
-    from jiuwenswarm.common.model_config_validation import raise_if_invalid
-    raise_if_invalid(candidate)
-
-    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-        data["models"] = candidate
-        return data
-
-    update_config(_mutate)
-    return candidate
 
 
 def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
@@ -1726,24 +1715,92 @@ def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict
 
 
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
-    candidate = deepcopy((get_config_raw().get("models") or {}))
-    defaults = candidate.setdefault("defaults", [])
     saved = _normalize_model_entry(entry)
     saved.setdefault("model_id", _new_business_id("mdl"))
-    for index, current in enumerate(defaults):
-        if isinstance(current, dict) and current.get("model_id") == saved["model_id"]:
-            saved = _merge_model_update(current, saved)
-            defaults[index] = saved
-            break
-    else:
-        defaults.append(saved)
-    save_models_candidate(candidate)
+
+    def _mutate(data):
+        nonlocal saved
+        candidate = data.setdefault("models", {})
+        _require_editable_model(candidate, saved["model_id"])
+        defaults = candidate.setdefault("defaults", [])
+        for index, current in enumerate(defaults):
+            if current.get("model_id") == saved["model_id"]:
+                _protect_model_key(saved, current)
+                saved = _merge_model_update(current, saved)
+                defaults[index] = saved
+                break
+        else:
+            _protect_model_key(saved, {})
+            defaults.append(saved)
+        if entry.get("is_default") is True:
+            for current in defaults:
+                current["is_default"] = current["model_id"] == saved["model_id"]
+        _validate_model_candidate(candidate)
+        return data
+
+    update_config(_mutate)
     return saved
 
 
+def _require_editable_model(models: dict[str, Any], model_id: str) -> None:
+    from jiuwenswarm.common.model_errors import MODEL_SELECTION_FORBIDDEN, ModelSelectionError
+
+    if any(entry.get("model_id") == model_id for entry in models.get("agentos") or []):
+        raise ModelSelectionError(MODEL_SELECTION_FORBIDDEN, "AgentOS models are read-only")
+
+
+def _protect_model_key(update: dict[str, Any], current: dict[str, Any]) -> None:
+    """Preserve omitted credentials; encrypt changed keys with the installed provider."""
+    client = update.get("model_client_config") or {}
+    if "api_key" not in client:
+        return
+    key = client["api_key"]
+    previous = (current.get("model_client_config") or {}).get("api_key")
+    if key == previous or not key:
+        return
+    crypto = get_crypto_provider()
+    if crypto is not None:
+        resolved = _decrypt_model_entries([current])[0]
+        previous_plaintext = (resolved.get("model_client_config") or {}).get("api_key")
+        if previous and key == previous_plaintext:
+            client["api_key"] = previous
+        else:
+            client["api_key"] = crypto.encrypt(key)
+
+
+def _validate_model_candidate(candidate: dict[str, Any]) -> None:
+    from jiuwenswarm.common.model_config_validation import raise_if_invalid
+
+    _ensure_model_business_ids(candidate)
+    raise_if_invalid(candidate)
+
+
+def _require_unreferenced_model(
+    data: dict[str, Any], resource_type: str, resource_id: str, *, cron_references_checked: bool = False,
+) -> None:
+    from jiuwenswarm.common.model_catalog import ModelCatalog
+    from jiuwenswarm.common.model_errors import MODEL_SELECTION_REFERENCED, ModelSelectionError
+    from jiuwenswarm.common.model_selection import ModelSelection
+    from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+
+    is_etcd = load_cron_store_settings(data).backend == "etcd"
+    if is_etcd and not cron_references_checked:
+        raise ModelSelectionError(
+            MODEL_SELECTION_REFERENCED, "use the resource API to check etcd references before deletion",
+        )
+    refs = ModelCatalog(data).find_references(
+        ModelSelection(type=resource_type, id=resource_id), include_cron=not is_etcd,
+    )
+    if refs:
+        raise ModelSelectionError(
+            MODEL_SELECTION_REFERENCED, "resource is still referenced",
+            references=[ref.__dict__ for ref in refs],
+        )
+
+
 def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
-    candidate = deepcopy((get_config_raw().get("models") or {}))
-    groups = candidate.setdefault("groups", [])
+    from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
+
     saved = deepcopy(group)
     saved.setdefault("model_group_id", _new_business_id("mgp"))
     # Legacy routing settings are inactive in model-pool mode.
@@ -1751,27 +1808,50 @@ def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
     for route in saved.get("routes") or []:
         if isinstance(route, dict):
             route.setdefault("route_id", _new_business_id("rte"))
-    for index, current in enumerate(groups):
-        if isinstance(current, dict) and current.get("model_group_id") == saved["model_group_id"]:
-            groups[index] = saved
-            break
-    else:
-        groups.append(saved)
-    save_models_candidate(candidate)
+
+    def _mutate(data):
+        candidate = data.setdefault("models", {})
+        groups = candidate.setdefault("groups", [])
+        for index, current in enumerate(groups):
+            if current.get("model_group_id") == saved["model_group_id"]:
+                groups[index] = saved
+                break
+        else:
+            groups.append(saved)
+        if saved.get("is_default"):
+            for current in groups:
+                current["is_default"] = current["model_group_id"] == saved["model_group_id"]
+        _validate_model_candidate(candidate)
+        if saved.get("enabled", True) and not any(route.get("enabled", True) for route in saved["routes"]):
+            raise ModelSelectionError(MODEL_GROUP_INVALID, "enabled model group must contain an enabled route")
+        return data
+
+    update_config(_mutate)
     return saved
 
 
-def delete_model_resource(resource_type: str, resource_id: str) -> bool:
-    candidate = deepcopy((get_config_raw().get("models") or {}))
+def delete_model_resource(resource_type: str, resource_id: str, *, cron_references_checked: bool = False) -> bool:
     key = "groups" if resource_type == "model_group" else "defaults"
     id_key = "model_group_id" if resource_type == "model_group" else "model_id"
-    entries = candidate.get(key) or []
-    filtered = [entry for entry in entries if not isinstance(entry, dict) or entry.get(id_key) != resource_id]
-    if len(filtered) == len(entries):
-        return False
-    candidate[key] = filtered
-    save_models_candidate(candidate)
-    return True
+    deleted = False
+
+    def _mutate(data):
+        nonlocal deleted
+        candidate = data.setdefault("models", {})
+        if resource_type == "model":
+            _require_editable_model(candidate, resource_id)
+        entries = candidate.get(key) or []
+        filtered = [entry for entry in entries if entry.get(id_key) != resource_id]
+        if len(filtered) == len(entries):
+            return None
+        _require_unreferenced_model(data, resource_type, resource_id, cron_references_checked=cron_references_checked)
+        candidate[key] = filtered
+        _validate_model_candidate(candidate)
+        deleted = True
+        return data
+
+    update_config(_mutate)
+    return deleted
 
 
 def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -1871,16 +1951,24 @@ def get_available_models(
     return [*configured, *extra]
 
 
-def update_default_models_in_config(models_list: list[dict[str, Any]]) -> None:
+def update_default_models_in_config(
+    models_list: list[dict[str, Any]], *, cron_references_checked: bool = False,
+) -> None:
     def _mutate(data):
         if "models" not in data:
             data["models"] = {}
+        retained_ids = {entry.get("model_id") for entry in models_list}
+        for previous in data["models"].get("defaults") or []:
+            model_id = previous.get("model_id")
+            if model_id and model_id not in retained_ids:
+                _require_unreferenced_model(data, "model", model_id, cron_references_checked=cron_references_checked)
         for entry in models_list:
             if isinstance(entry, dict) and isinstance(entry.get("alias"), str):
                 entry["alias"] = DoubleQuotedScalarString(entry["alias"])
         data["models"]["defaults"] = models_list
         if "default" in data["models"]:
             del data["models"]["default"]
+        _validate_model_candidate(data["models"])
         return data
     update_config(_mutate)
 
