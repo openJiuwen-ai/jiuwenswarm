@@ -1051,7 +1051,8 @@ agent_ras:
   # 恢复侧通用配置
   recovery:
     # LOW 警告时是否向用户推送可见 notice（steering 始终按 policy 执行）
-    notify_user_on_warning: true
+    # 默认 false：[工具调用异常] 等告警不再写入前台回复流，仅向模型注入 steering 自纠偏
+    notify_user_on_warning: false
 
 # web_enterprise 聊天附件上传（自部署 MinIO / S3 兼容对象存储）
 # 环境变量：OBS_URL / OBS_ACCESS_KEY / OBS_SECRET_KEY / OBS_BUCKET / OBS_SECURE / OBS_PUBLIC_BASE_URL / OBS_REGION
