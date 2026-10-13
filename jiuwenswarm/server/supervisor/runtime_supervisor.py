@@ -50,6 +50,13 @@ def _is_server_push(payload: dict[str, Any]) -> bool:
 _HEARTBEAT_INTERVAL = 10.0
 _HEARTBEAT_TIMEOUT = 30.0
 _HELLO_TIMEOUT = 10.0
+_WATCHDOG_INTERVAL = 5.0
+_FORWARD_QUEUE_SIZE = 256
+_FORWARD_TIMEOUT = 10.0
+_FORWARD_DRAIN_TIMEOUT = 1.0
+
+_GatewayRoute = tuple[Any, asyncio.Lock]
+_ForwardQueue = asyncio.Queue[tuple[dict[str, Any], _GatewayRoute | None]]
 
 
 class RuntimeSupervisor:
@@ -106,6 +113,7 @@ class RuntimeSupervisor:
         self._generation = 0
         self._peer_generation: int | None = None
         self._last_rx = 0.0
+        self._forward_queue: _ForwardQueue | None = None
         self._session_lock = asyncio.Lock()
 
     @property
@@ -164,7 +172,9 @@ class RuntimeSupervisor:
         worker_id = self._affinity.worker_for(request.session_id)
         slot = self._registry.get(worker_id)
         if slot is None or self._conn is None:
-            await self._emit_error(ws, request, send_lock, "runtime worker is not connected")
+            await self._emit_error(
+                ws, request, send_lock, "runtime worker is not connected"
+            )
             return
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
@@ -187,14 +197,26 @@ class RuntimeSupervisor:
                 return
             result = await future
         except Exception as exc:  # noqa: BLE001
-            await self._emit_error(ws, request, send_lock, f"runtime worker closed: {exc}")
+            await self._emit_error(
+                ws, request, send_lock, f"runtime worker closed: {exc}"
+            )
             return
         finally:
             self._pending.pop(request_id, None)
             self._routes.pop(request_id, None)
-        if request_id and not result.get("ok", False) and not result.get("delivered", False):
+        if (
+            request_id
+            and not result.get("ok", False)
+            and not result.get("delivered", False)
+        ):
             error = str(result.get("error") or "runtime worker closed")
-            await self._emit_error(ws, request, send_lock, error)
+            await self._emit_error(
+                ws,
+                request,
+                send_lock,
+                error,
+                code=str(result.get("code") or "WORKER_CLOSED"),
+            )
 
     async def stop(self, *, terminate_worker: bool = False) -> None:
         """Detach from the Worker so this Front can exit.
@@ -332,10 +354,89 @@ class RuntimeSupervisor:
         generation = self._generation
         if conn is None:
             return
+        queue: _ForwardQueue = asyncio.Queue(maxsize=_FORWARD_QUEUE_SIZE)
+        self._forward_queue = queue
+        writer = asyncio.create_task(
+            self._forward_messages(queue, generation), name="runtime-gateway-forward"
+        )
+        try:
+            while not self._stopping and self._generation == generation:
+                message = await conn.recv()
+                self._last_rx = time.monotonic()
+                await self._handle(message)
+        except (OSError, RuntimeError):
+            # Deliver already-received terminal frames on EOF when possible,
+            # but never hold Worker recovery behind an unavailable Gateway.
+            if not self._stopping and self._generation == generation:
+                try:
+                    await asyncio.wait_for(queue.join(), _FORWARD_DRAIN_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[Supervisor] Gateway forward drain timed out; queued=%s generation=%s",
+                        queue.qsize(),
+                        generation,
+                    )
+            raise
+        finally:
+            writer.cancel()
+            await asyncio.gather(writer, return_exceptions=True)
+            if self._forward_queue is queue:
+                self._forward_queue = None
+
+    async def _forward_messages(self, queue: _ForwardQueue, generation: int) -> None:
         while not self._stopping and self._generation == generation:
-            message = await conn.recv()
-            self._last_rx = time.monotonic()
-            await self._handle(message)
+            message, route = await queue.get()
+            try:
+                if self._stopping or self._generation != generation:
+                    return
+                if message.get("kind") == KIND_REQUEST_DONE:
+                    self._finish_request(message)
+                elif route is not None and self._route_is_current(message, route):
+                    await self._forward_wire(message, route=route)
+            finally:
+                queue.task_done()
+
+    def _queue_forward(
+        self, message: dict[str, Any], route: _GatewayRoute | None
+    ) -> None:
+        queue = self._forward_queue
+        if queue is None:
+            raise RuntimeError("Gateway forwarding queue is not running")
+        try:
+            queue.put_nowait((message, route))
+        except asyncio.QueueFull:
+            request_id = str(message.get("request_id") or "")
+            error = "Gateway forwarding queue is full"
+            logger.warning(
+                "[Supervisor] %s; request_id=%s queued=%s generation=%s",
+                error,
+                request_id,
+                queue.qsize(),
+                self._generation,
+            )
+            self._fail_forwarding(request_id, error)
+
+    def _route_is_current(self, message: dict[str, Any], route: _GatewayRoute) -> bool:
+        payload = message.get("payload") or {}
+        request_id = str(message.get("request_id") or payload.get("request_id") or "")
+        current = self._routes.get(request_id)
+        if current is not None:
+            return current[0] is route[0] and current[1] is route[1]
+        return _is_server_push(payload) and self._gateway_ws is route[0]
+
+    def _fail_forwarding(self, request_id: str, error: str) -> None:
+        # Completion from the Worker cannot turn a failed Gateway delivery
+        # into success. Retire its route so queued frames cannot follow an error.
+        self._routes.pop(request_id, None)
+        self._finish_request(
+            {
+                "request_id": request_id,
+                "ok": False,
+                "delivered": False,
+                "error": error,
+                "code": "GATEWAY_FORWARD_FAILED",
+            }
+        )
 
     async def _handle(self, message: dict[str, Any]) -> None:
         kind = str(message.get("kind") or "")
@@ -348,7 +449,9 @@ class RuntimeSupervisor:
                     self._peer_generation,
                 )
                 return
-            await self._forward_wire(message)
+            route = self._wire_route(message)
+            if route is not None:
+                self._queue_forward(message, route)
             return
         if kind == KIND_REQUEST_DONE:
             if not self._accepts_peer_generation(message):
@@ -359,7 +462,9 @@ class RuntimeSupervisor:
                     self._peer_generation,
                 )
                 return
-            self._finish_request(message)
+            self._queue_forward(
+                message, self._routes.get(str(message.get("request_id") or ""))
+            )
             return
         if kind == KIND_READINESS:
             self._apply_readiness(message)
@@ -370,10 +475,10 @@ class RuntimeSupervisor:
             return
         logger.info("[Supervisor] ignored ipc kind=%s", kind)
 
-    async def _forward_wire(self, message: dict[str, Any]) -> None:
+    def _wire_route(self, message: dict[str, Any]) -> _GatewayRoute | None:
         payload = message.get("payload")
         if not isinstance(payload, dict):
-            return
+            return None
         request_id = str(message.get("request_id") or payload.get("request_id") or "")
         route = self._routes.get(request_id) if request_id else None
         if route is not None:
@@ -386,21 +491,41 @@ class RuntimeSupervisor:
                 request_id,
                 message.get("generation"),
             )
-            return
+            return None
         if self._forwarder is None or ws is None or send_lock is None:
             logger.warning(
                 "[Supervisor] dropped worker wire; no Gateway connection request_id=%s",
                 request_id,
             )
-            return
+            return None
+        return ws, send_lock
+
+    async def _forward_wire(
+        self, message: dict[str, Any], *, route: _GatewayRoute
+    ) -> None:
+        payload = message["payload"]
+        request_id = str(message.get("request_id") or payload.get("request_id") or "")
+        ws, send_lock = route
         try:
-            await self._forwarder.send(payload, ws=ws, send_lock=send_lock)
+            async with asyncio.timeout(_FORWARD_TIMEOUT):
+                await self._forwarder.send(payload, ws=ws, send_lock=send_lock)
+        except asyncio.TimeoutError:
+            error = "Gateway forwarding timed out"
+            logger.warning(
+                "[Supervisor] %s; request_id=%s timeout=%.1fs generation=%s",
+                error,
+                request_id,
+                _FORWARD_TIMEOUT,
+                self._generation,
+            )
+            self._fail_forwarding(request_id, error)
         except Exception:  # noqa: BLE001
             logger.warning(
                 "[Supervisor] dropped worker wire; Gateway forward failed request_id=%s",
                 request_id,
                 exc_info=True,
             )
+            self._fail_forwarding(request_id, "Gateway forwarding failed")
 
     def _accepts_peer_generation(self, message: dict[str, Any]) -> bool:
         raw = message.get("generation")
@@ -489,18 +614,29 @@ class RuntimeSupervisor:
         request: AgentRequest,
         send_lock: asyncio.Lock,
         error: str,
+        *,
+        code: str = "WORKER_CLOSED",
     ) -> None:
         response = AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=False,
-            payload={"error": error, "code": "WORKER_CLOSED"},
+            payload={"error": error, "code": code},
             metadata=request.metadata,
         )
         wire = encode_response(response, response_id=request.request_id)
         if self._forwarder is None:
             return
-        await self._forwarder.send(wire, ws=ws, send_lock=send_lock)
+        try:
+            async with asyncio.timeout(_FORWARD_TIMEOUT):
+                await self._forwarder.send(wire, ws=ws, send_lock=send_lock)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Supervisor] Gateway error delivery failed; request_id=%s error=%s",
+                request.request_id,
+                error,
+                exc_info=True,
+            )
 
     @staticmethod
     def _schedule(coro: Any) -> None:
@@ -540,12 +676,19 @@ class RuntimeSupervisor:
 
     async def _watchdog(self, generation: int) -> None:
         while not self._stopping and generation == self._generation:
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(_WATCHDOG_INTERVAL)
             if generation != self._generation:
                 return
             if time.monotonic() - self._last_rx <= _HEARTBEAT_TIMEOUT:
                 continue
-            logger.warning("[Supervisor] runtime worker heartbeat timed out")
+            logger.warning(
+                "[Supervisor] runtime worker heartbeat timed out; last_rx_age=%.1fs "
+                "forward_queued=%s generation=%s pid=%s",
+                time.monotonic() - self._last_rx,
+                self._forward_queue.qsize() if self._forward_queue is not None else 0,
+                generation,
+                self._worker_pid,
+            )
             conn = self._conn
             if conn is not None:
                 await conn.close()
