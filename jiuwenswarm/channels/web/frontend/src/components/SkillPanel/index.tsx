@@ -1,4 +1,5 @@
-﻿import { useAssetPublication } from '../../hooks/useAssetPublication';
+import { assetSearchNames, matchesAssetName } from '../../features/assetNameSearch';
+import { useAssetPublication } from '../../hooks/useAssetPublication';
 import { publicationLabel, matchesPublicationFilter } from '../../features/assetPublication';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
@@ -330,13 +331,15 @@ export function SkillPanel({
   }, [skills]);
 
   const filteredSkills = useMemo(() => {
-    let result = skills;
+    const result = skills;
     if (activeTab === 'my') {
       // 2026-08-21：抽成 utils/mySkills.ts 的 computeMySkills，跟"手动创建插件"的"添加技能"
       // 弹窗共用同一份"我的技能"判定规则，见该文件头注释。这里原本是"候选集过滤+排除内置未装"
       // 两步（第二步挪到了下面 visibleSkills 里），computeMySkills 已经把两步合并，语义不变
       // （排除条件不依赖搜索关键字，跟下面的关键字过滤谁先谁后结果一样）。
-      result = computeMySkills(result, installedSkillNames);
+      return computeMySkills(result, installedSkillNames).filter(skill =>
+        matchesAssetName(searchKeyword, assetSearchNames(skill.display_name, skill.name)),
+      );
     }
     const keyword = searchKeyword.toLowerCase();
     if (!keyword) return result;
@@ -1312,7 +1315,7 @@ export function SkillPanel({
               value={search}
               onChange={(e) => handleSearchChange(e.target.value)}
               onClear={() => handleSearchChange('')}
-              placeholder={t('skills.searchPlaceholder')}
+              placeholder={t(activeTab === 'my' ? 'common.searchName' : 'skills.searchPlaceholder')}
               inputTestId="skill-panel-search-input"
               className="focus-visible:border-[color:var(--color-control-emphasis)]"
             />

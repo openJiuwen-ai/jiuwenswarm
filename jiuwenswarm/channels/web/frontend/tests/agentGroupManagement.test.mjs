@@ -147,7 +147,7 @@ test('only an unbound Team selection creates the first group payload', () => {
   assert.deepEqual(buildAgentGroupSelectionPayloadForMode('agent', { kind: 'select', id: 'review-team' }, null), {});
 });
 
-test('group view model separates catalog and mine scopes and searches tags', () => {
+test('group view model separates catalog and mine scopes and excludes tags from mine search', () => {
   const local = normalizeAgentGroupListItem({
     ...rawGroup,
     id: 'local-team',
@@ -172,7 +172,7 @@ test('group view model separates catalog and mine scopes and searches tags', () 
     buildGroupCatalogViewModel([item, local], {
       scope: 'mine',
       category: '',
-      query: '本地专属',
+      query: '本地团队',
       page: 1,
       pageSize: 15,
     }).totalItems,
@@ -218,4 +218,25 @@ test('group upload accepts zip, tar and tar.gz only', () => {
   assert.equal(isAgentGroupUploadFilename('team.tar'), true);
   assert.equal(isAgentGroupUploadFilename('team.tar.gz'), true);
   assert.equal(isAgentGroupUploadFilename('team.json'), false);
+});
+
+test('mine group search matches bilingual display names only (#4473)', () => {
+  const item = normalizeAgentGroupListItem({
+    ...rawGroup, name: 'hidden-package-s-6',
+    displayName: { zh: '旅游规划专家团', en: 'Travel Team' },
+    displayDescription: { zh: '生成可执行旅行方案' },
+    category: 'hidden-category', tags: [{ zh: 'hidden-tag' }],
+  }, 'zh');
+  const search = query => buildGroupCatalogViewModel([item], {
+    scope: 'mine', category: '', query, page: 1, pageSize: 12,
+  }).items.length;
+  for (const query of ['生成', 'hidden', 's', '6']) assert.equal(search(query), 0, query);
+  for (const query of ['旅游', ' travel ', 'ＴＲＡＶＥＬ']) assert.equal(search(query), 1, query);
+});
+
+test('catalog filtering keeps description matches while mine excludes them', () => {
+  const item = normalizeAgentGroupListItem({ ...rawGroup, displayDescription: { zh: 'description-only' } }, 'zh');
+  const options = { category: '', query: 'description-only', page: 1, pageSize: 12 };
+  assert.equal(buildGroupCatalogViewModel([item], { ...options, scope: 'catalog' }).totalItems, 1);
+  assert.equal(buildGroupCatalogViewModel([item], { ...options, scope: 'mine' }).totalItems, 0);
 });

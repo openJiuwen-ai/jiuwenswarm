@@ -1,5 +1,6 @@
 {
   "common": {
+    "searchName": "Search names",
     "noData": "No data",
     "confirm": "Confirm",
     "cancel": "Cancel",

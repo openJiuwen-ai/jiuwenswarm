@@ -1,5 +1,6 @@
 {
   "common": {
+    "searchName": "搜索名称",
     "noData": "暂无数据",
     "confirm": "确认",
     "cancel": "取消",
