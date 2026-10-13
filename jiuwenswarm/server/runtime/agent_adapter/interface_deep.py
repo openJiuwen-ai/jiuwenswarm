@@ -7175,6 +7175,7 @@ class JiuWenSwarmDeepAdapter:
             "session_id": request.session_id,
             "image_count": len(image_files),
             "image_input_status": image_input_status,
+            "timestamp": time.time() * 1000,
         }
         if model_name:
             notice["model_name"] = model_name
@@ -16301,6 +16302,9 @@ class JiuWenSwarmDeepAdapter:
         cid = request.channel_id
         query = request.params.get("query", "")
         mode = request.params.get("mode", "agent")
+        # Capture the input boundary before early notices or model output.
+        # Model phase timestamps still describe the phase itself.
+        input_timestamp_ms = time.time() * 1000
 
         # Team 模式处理
         if is_team_mode(mode):
@@ -16954,10 +16958,19 @@ class JiuWenSwarmDeepAdapter:
                 _debug_logger = None
 
             async def _yield_runtime_accepted() -> AsyncIterator[AgentResponseChunk]:
+                # payload.timestamp 使用输出前记录的执行机输入时间：前端乐观
+                # user 气泡只能盖浏览器钟，与执行机钟有偏差时会把本轮首个输出事件排到用户
+                # 消息之前（「任务用时」行插到时间线顶部）；前端收到 accepted 后按
+                # request_id 用该权威时间回填乐观气泡。仅正常发送路径需要——steer/跨会话
+                # 的 user 气泡由 chat.input_received 盖服务端章，不走本生成点。
                 yield AgentResponseChunk(
                     request_id=rid,
                     channel_id=cid,
-                    payload={"event_type": "runtime.accepted", "request_id": rid},
+                    payload={
+                        "event_type": "runtime.accepted",
+                        "request_id": rid,
+                        "timestamp": input_timestamp_ms,
+                    },
                     is_complete=False,
                 )
                 yield AgentResponseChunk(
@@ -17127,7 +17140,12 @@ class JiuWenSwarmDeepAdapter:
                     yield AgentResponseChunk(
                         request_id=rid,
                         channel_id=cid,
-                        payload={"event_type": "runtime.accepted", "request_id": rid},
+                        payload={
+                            "event_type": "runtime.accepted",
+                            "request_id": rid,
+                            # 与 _yield_runtime_accepted 共用输出前记录的输入时间。
+                            "timestamp": input_timestamp_ms,
+                        },
                         is_complete=False,
                     )
                 if interaction_stream is None:
@@ -17165,6 +17183,8 @@ class JiuWenSwarmDeepAdapter:
                         payload={
                             "event_type": "runtime.accepted",
                             "request_id": rid,
+                            # 与 _yield_runtime_accepted 共用输出前记录的输入时间。
+                            "timestamp": input_timestamp_ms,
                         },
                         is_complete=False,
                     )
@@ -17301,7 +17321,12 @@ class JiuWenSwarmDeepAdapter:
                         event_type = "chat.output_phase"
                     yield AgentResponseChunk(
                         request_id=rid, channel_id=cid,
-                        payload=await note_chat_payload({"event_type": event_type, **chunk.payload}),
+                        payload=await note_chat_payload({
+                            "event_type": event_type,
+                            **chunk.payload,
+                            **({"input_timestamp": input_timestamp_ms}
+                               if event_type == "chat.output_phase" else {}),
+                        }),
                         is_complete=False,
                     )
                     continue
