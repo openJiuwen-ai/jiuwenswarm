@@ -9,7 +9,6 @@ to the current user.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import sqlite3
@@ -25,6 +24,7 @@ from jiuwenswarm.server.runtime.persistent_agents.models import (
     PersistentAgentError,
 )
 from jiuwenswarm.server.runtime.persistent_agents.spec_provider import ConfigSnapshot
+from jiuwenswarm.server.runtime.persistent_agents.sqlite_store import SQLiteStore, private_dir
 from openjiuwen.harness.resources.extension_loader import find_agent_template_manifest, load_agent_template_package
 
 _SCHEMA = """
@@ -60,36 +60,10 @@ CREATE TABLE IF NOT EXISTS namespace_defaults (
 _TEMPLATE_DIR_NAME = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
-def _private_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    os.chmod(path, 0o700)
+class PersistentAgentRepository(SQLiteStore):
+    """Colleague definitions and their published configuration versions."""
 
-
-class PersistentAgentRepository:
-    """SQLite store; every multi-row change runs in one immediate transaction."""
-
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = Path(db_path)
-        _private_dir(self._db_path.parent)
-        with closing(self._connect()) as conn:
-            conn.executescript(_SCHEMA)
-        os.chmod(self._db_path, 0o600)
-
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Connection]:
-        with closing(self._connect()) as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                yield conn
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
-            conn.execute("COMMIT")
+    _schema = _SCHEMA
 
     @staticmethod
     def _definition(row: sqlite3.Row) -> ColleagueDefinition:
@@ -272,7 +246,7 @@ class TemplateStore:
 
     def __init__(self, root: Path) -> None:
         self._root = Path(root)
-        _private_dir(self._root)
+        private_dir(self._root)
 
     def path(self, agent_id: str) -> Path:
         if not _TEMPLATE_DIR_NAME.fullmatch(agent_id):
