@@ -1,5 +1,7 @@
 import os
 
+import yaml
+
 from openjiuwen.core.foundation.tool import Tool, ToolCard
 from openjiuwen.core.sys_operation.cwd import get_cwd
 
@@ -97,11 +99,11 @@ class DocumentExporter(Tool):
             # --- YAML front matter ---
             if metadata:
                 lines.append("---")
-                for key, value in metadata.items():
-                    if isinstance(value, list):
-                        lines.append(f"{key}: [{', '.join(value)}]")
-                    else:
-                        lines.append(f"{key}: {value}")
+                lines.append(
+                    yaml.safe_dump(
+                        metadata, allow_unicode=True, sort_keys=False
+                    ).rstrip("\n")
+                )
                 lines.append("---")
                 lines.append("")
 
@@ -150,6 +152,11 @@ class DocumentExporter(Tool):
             if not output_filename:
                 safe_title = self._sanitize_filename(title)[:50]
                 output_filename = f"{safe_title}.md"
+            else:
+                # 用户输入的文件名剥离路径分量，防止写出 exports 目录
+                output_filename = os.path.basename(output_filename)
+                if not output_filename:
+                    return {"success": False, "error": "非法的输出文件名"}
 
             if not output_filename.endswith(".md"):
                 output_filename += ".md"

@@ -3,14 +3,14 @@
   "packageType": "plugin",
   "id": "content-creation-assistant",
   "name": "内容创作辅助插件",
-  "description": "协助撰写高质量内容，覆盖起草、增强、审阅三大阶段七个场景",
+  "description": "协助撰写高质量内容，覆盖起草、增强、审阅三大阶段九个场景",
   "displayName": {
     "en": "Content Creation Assistant Plugin",
     "zh": "内容创作辅助插件"
   },
   "displayDescription": {
-    "en": "Full-chain content creation assistant covering drafting, enhancement, and review across seven scenes.",
-    "zh": "从材料启动到成稿收口的全链路内容创作辅助，覆盖起草、增强、审阅三大阶段七个场景。"
+    "en": "Full-chain content creation assistant covering drafting, enhancement, and review across nine scenes.",
+    "zh": "从材料启动到成稿收口的全链路内容创作辅助，覆盖起草、增强、审阅三大阶段九个场景。"
   },
   "category": "Design",
   "source": "local",
