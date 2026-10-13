@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
@@ -146,6 +146,79 @@ class ExecutionRecord:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExecutionRecord:
         return cls(**data)
+
+
+ConversationKind = Literal["web_direct", "im_direct", "group"]
+_REQUEST_KINDS: dict[str, frozenset[str]] = {
+    "web_direct": frozenset({"direct_message", "scheduled"}),
+    "im_direct": frozenset({"direct_message", "scheduled"}),
+    "group": frozenset({"group_message", "scheduled"}),
+}
+RequestStatus = Literal["queued", "dispatched", "ended"]
+ENDED_OUTCOMES = frozenset({"completed", "ignored", "paused", "failed", "cancelled", "stopped"})
+
+
+@dataclass(frozen=True, kw_only=True)
+class ConversationRef:
+    """Where a colleague talks: one Web conversation, one IM private chat or one Swarm group.
+
+    ``channel`` is ``web`` for Web, the IM platform for private chats, and ``group``
+    for groups, whose ``key`` is the Swarm ``group_chat_id``. Every part is stored
+    whole; no part is ever truncated or joined into a single string.
+    """
+
+    kind: ConversationKind
+    channel: str
+    key: str
+
+    def __post_init__(self) -> None:
+        if self.kind not in _REQUEST_KINDS:
+            raise PersistentContractError("invalid conversation kind")
+        _require_text("conversation channel", self.channel)
+        _require_text("conversation key", self.key)
+        if self.kind == "web_direct" and self.channel != "web":
+            raise PersistentContractError("a Web conversation uses the web channel")
+        if self.kind == "group" and self.channel != "group":
+            raise PersistentContractError("a group conversation is keyed by group_chat_id")
+        if self.kind == "im_direct" and self.channel in ("web", "group"):
+            raise PersistentContractError("an IM private chat names its platform")
+
+    @classmethod
+    def web(cls, conversation_id: str) -> ConversationRef:
+        return cls(kind="web_direct", channel="web", key=conversation_id)
+
+    @classmethod
+    def im_direct(cls, platform: str, chat_id: str) -> ConversationRef:
+        return cls(kind="im_direct", channel=platform, key=chat_id)
+
+    @classmethod
+    def group(cls, group_chat_id: str) -> ConversationRef:
+        return cls(kind="group", channel="group", key=group_chat_id)
+
+    def accepts(self, request_kind: str) -> bool:
+        return request_kind in _REQUEST_KINDS[self.kind]
+
+
+@dataclass(frozen=True, kw_only=True)
+class SessionRecord:
+    """The stable Session of one colleague in one conversation."""
+
+    namespace_id: str
+    agent_id: str
+    session_id: str
+    conversation: ConversationRef
+    created_at: datetime
+
+
+@dataclass(frozen=True, kw_only=True)
+class RequestState:
+    """A stored Request plus its place in the Session queue and its dispatch state."""
+
+    record: RequestRecord
+    seq: int
+    status: RequestStatus
+    outcome: str | None
+    updated_at: datetime
 
 
 def build_execution_context(
