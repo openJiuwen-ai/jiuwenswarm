@@ -151,8 +151,14 @@ class WebClient {
     this.connectPromise = new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(url);
       this.ws = ws;
+      const rejectClosedConnection = () =>
+        reject(this.createWebError(i18n.t('network.connectionClosed'), 'WS_CLOSED', undefined, false));
 
       ws.onopen = () => {
+        if (this.ws !== ws) {
+          rejectClosedConnection();
+          return;
+        }
         logDevWsTraffic({
           direction: 'lifecycle',
           data: { event: 'open', url },
@@ -166,10 +172,15 @@ class WebClient {
       };
 
       ws.onmessage = (event) => {
+        if (this.ws !== ws) return;
         this.handleIncoming(event.data);
       };
 
       ws.onerror = () => {
+        if (this.ws !== ws) {
+          rejectClosedConnection();
+          return;
+        }
         logDevWsTraffic({
           direction: 'lifecycle',
           data: { event: 'error' },
@@ -182,6 +193,10 @@ class WebClient {
       };
 
       ws.onclose = (closeEvent) => {
+        if (this.ws !== ws) {
+          rejectClosedConnection();
+          return;
+        }
         logDevWsTraffic({
           direction: 'lifecycle',
           data: {
@@ -327,11 +342,7 @@ class WebClient {
         reject(error);
       }
     }).then(async (value) => {
-      if (
-        method === 'session.get_metadata' &&
-        !params?.runtime_resume &&
-        typeof params?.session_id === 'string'
-      ) {
+      if (method === 'session.get_metadata' && !params?.runtime_resume && typeof params?.session_id === 'string') {
         const runtime = (value as { runtime?: Record<string, unknown> } | null)?.runtime;
         if (
           runtime?.recovery_pending === true ||

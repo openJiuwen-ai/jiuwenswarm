@@ -2,7 +2,7 @@
 import asyncio
 import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -47,6 +47,54 @@ async def test_required_configuration_failure_prevents_runtime_consumers(monkeyp
                         lambda: pytest.fail("configuration did not become usable"))
     with pytest.raises(ValueError, match="invalid model migration"):
         await asyncio.to_thread(lifecycle._preload_runtime_backend)
+
+
+@pytest.mark.asyncio
+async def test_successful_construction_retains_cleanup_owner_when_parallel_extensions_fail(monkeypatch):
+    from jiuwenswarm.extensions.manager import ExtensionManager
+    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.worker import service
+
+    loop = asyncio.get_running_loop()
+    constructed = asyncio.Event()
+    server = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+    extension_error = OSError("extension directory cannot be read")
+
+    def construct(**kwargs):
+        assert kwargs == {"host": "127.0.0.1", "port": 18000}
+        loop.call_soon_threadsafe(constructed.set)
+        return server
+
+    async def load_extensions(self, *, include_transport_extensions):
+        assert include_transport_extensions is False
+        await constructed.wait()
+        raise extension_error
+
+    monkeypatch.setattr(lifecycle, "_preload_runtime_backend", lambda: None)
+    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
+    monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
+    monkeypatch.setattr(ExtensionManager, "load_all_extensions", load_extensions)
+    signals = SimpleNamespace(failed=Mock())
+    dispatcher = SimpleNamespace(bind_runtime=AsyncMock(), mark_failed=AsyncMock())
+    loaded = {}
+    with pytest.raises(OSError, match="extension directory cannot be read") as caught:
+        await service._load_runtime("127.0.0.1", 18000, signals, dispatcher, loaded)
+
+    assert caught.value is extension_error
+    assert loaded["runtime"].server is server
+    dispatcher.bind_runtime.assert_awaited_once_with(server)
+    server.start.assert_not_awaited()
+    signals.failed.assert_called_once_with(str(extension_error))
+    dispatcher.mark_failed.assert_awaited_once_with(str(extension_error))
+    # Shutdown can recover the exact constructed owner even though the loader
+    # task failed, rather than losing it before any Runtime consumer started.
+    failed_loader = asyncio.create_task(_raise(extension_error))
+    assert await service._runtime_for_shutdown(failed_loader, loaded, timeout=1) is loaded["runtime"]
+
+
+async def _raise(error):
+    raise error
 
 
 def test_team_controller_preserves_reporter_without_constructing_unused_team_mode():

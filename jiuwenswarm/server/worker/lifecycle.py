@@ -394,18 +394,23 @@ async def _start_worker_runtime(
         _load_required_extensions(), _construct_required_server(),
         return_exceptions=True,
     )
+    if isinstance(server, BaseException):
+        if isinstance(extensions, BaseException):
+            raise extensions
+        raise server
+    # Construction may succeed while extension discovery fails. Publish its
+    # cleanup owner before propagating either preparation failure; no Runtime
+    # consumer is started until the extension barrier has also succeeded.
+    if on_constructed is not None:
+        await on_constructed(server)
     if isinstance(extensions, BaseException):
         raise extensions
-    if isinstance(server, BaseException):
-        raise server
     logger.info(
         "[Worker] 扩展加载完成，共 %d 个 (elapsed %.2fs)",
         len(extension_manager.list_extensions()), time.monotonic() - startup_t0,
     )
     await asyncio.sleep(0)
     log_startup_stage("runtime_constructed")
-    if on_constructed is not None:
-        await on_constructed(server)
     set_hooks = getattr(server, "set_runtime_lifecycle_hooks", None)
     if callable(set_hooks):
         import inspect
