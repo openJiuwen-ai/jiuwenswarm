@@ -77,6 +77,9 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     build_member_rails,
 )
 from jiuwenswarm.common.utils import get_agent_skills_dir
+from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+    release_team_owned_sandbox,
+)
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_session_metadata,
     get_session_team_template_snapshot,
@@ -1948,6 +1951,11 @@ class TeamManager:
         await self._cleanup_runtime_locals(session_id)
 
         team_agent = self._team_agents.pop(session_id, None)
+        # 自持沙箱按运行态（session-scoped）team 名回收；destroy_team 可能清空
+        # spec，故在销毁前先取出名字。
+        runtime_team_name = str(
+            getattr(getattr(team_agent, "spec", None), "team_name", "") or ""
+        )
         cleaned = False
         try:
             if team_agent is None:
@@ -1959,6 +1967,7 @@ class TeamManager:
                 try:
                     cleaned = await team_agent.destroy_team(force=True)
                 finally:
+                    release_team_owned_sandbox(runtime_team_name)
                     await release_a2x_reservations_for_session(session_id, team_agent=team_agent)
                     await _stop_team_messager(team_agent, session_id=session_id)
             finally:

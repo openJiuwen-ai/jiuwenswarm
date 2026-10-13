@@ -633,6 +633,11 @@ async def handle_team_delete(ctx: RequestContext) -> None:
                         metadata=request.metadata,
                     )
                 else:
+                    from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+                        release_team_owned_sandbox,
+                    )
+
+                    release_team_owned_sandbox(team_name)
                     entity_store.delete_team_directory(team_name)
                     binding_store.delete(team_name)
                     resp = AgentResponse(
@@ -757,6 +762,11 @@ async def handle_team_delete(ctx: RequestContext) -> None:
                         else:
                             # agent-core normally removes team_home; retry here because it logs and
                             # suppresses filesystem cleanup failures.
+                            from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+                                release_team_owned_sandbox,
+                            )
+
+                            release_team_owned_sandbox(team_name)
                             entity_store.delete_team_directory(team_name)
                             binding_store.delete(team_name)
                             resp = AgentResponse(

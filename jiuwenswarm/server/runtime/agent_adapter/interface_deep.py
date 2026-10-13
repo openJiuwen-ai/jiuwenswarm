@@ -631,7 +631,9 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
     create_local_sysop_card,
     create_sandbox_sysop_card,
+    registered_sandbox_owner_by_key,
     resolve_sandbox_endpoint,
+    sandbox_isolation_key_of,
 )
 from jiuwenswarm.server.runtime.context_read_patch import apply_context_read_patch
 from jiuwenswarm.server.runtime.memory_init_patch import apply_memory_init_patch
@@ -7340,42 +7342,6 @@ class JiuWenSwarmDeepAdapter:
                 return str(value)
         return None
 
-    @staticmethod
-    def _sys_operation_isolation_key(sysop_card: SysOperationCard) -> str | None:
-        try:
-            sys_operation = SysOperation(sysop_card)
-            return sys_operation.isolation_key_template
-        except Exception as exc:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] failed to resolve sys_operation isolation key: %s",
-                exc,
-            )
-            return None
-
-    @staticmethod
-    def _get_registered_sys_operation_by_isolation_key(
-        isolation_key_template: str | None,
-    ) -> SysOperation | None:
-        if not isolation_key_template:
-            return None
-
-        try:
-            resource_registry = getattr(Runner.resource_mgr, "_resource_registry", None)
-            if resource_registry is None:
-                return None
-            sys_operation_mgr = resource_registry.sys_operation()
-            owner_map = getattr(sys_operation_mgr, "_sandbox_key_owner_map", {})
-            existing_op_id = owner_map.get(isolation_key_template)
-            if not existing_op_id:
-                return None
-            return Runner.resource_mgr.get_sys_operation(existing_op_id)
-        except Exception as exc:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] failed to get registered sys_operation: %s",
-                exc,
-            )
-            return None
-
     def _create_sys_operation(self) -> SysOperation | None:
         """Resolve this adapter's sys operation and take a reference on it.
 
@@ -7554,11 +7520,9 @@ class JiuWenSwarmDeepAdapter:
                 logger.warning("[JiuWenSwarmDeepAdapter] add sys_operation failed: sysop_card is None")
                 return None
             self._sys_operation_card = sysop_card
-            isolation_key_template = JiuWenSwarmDeepAdapter._sys_operation_isolation_key(sysop_card)
-            registered_sys_operation = (
-                JiuWenSwarmDeepAdapter._get_registered_sys_operation_by_isolation_key(
-                    isolation_key_template
-                )
+            isolation_key_template = sandbox_isolation_key_of(sysop_card)
+            registered_sys_operation = registered_sandbox_owner_by_key(
+                isolation_key_template
             )
             if registered_sys_operation is not None:
                 logger.info(
@@ -7569,10 +7533,8 @@ class JiuWenSwarmDeepAdapter:
 
             result = Runner.resource_mgr.add_sys_operation(sysop_card)
             if result.is_err():
-                registered_sys_operation = (
-                    JiuWenSwarmDeepAdapter._get_registered_sys_operation_by_isolation_key(
-                        isolation_key_template
-                    )
+                registered_sys_operation = registered_sandbox_owner_by_key(
+                    isolation_key_template
                 )
                 if registered_sys_operation is not None:
                     logger.info(
@@ -7649,11 +7611,9 @@ class JiuWenSwarmDeepAdapter:
                     (time.monotonic() - _t0) * 1000,
                 )
                 return None
-            isolation_key = self._sys_operation_isolation_key(sysop_card)
+            isolation_key = sandbox_isolation_key_of(sysop_card)
             if isolation_key:
-                registered = self._get_registered_sys_operation_by_isolation_key(
-                    isolation_key
-                )
+                registered = registered_sandbox_owner_by_key(isolation_key)
                 if registered is not None:
                     self._retain_sys_operation(str(registered.id))
                     self._local_sys_operation = registered
@@ -7667,7 +7627,7 @@ class JiuWenSwarmDeepAdapter:
             result = Runner.resource_mgr.add_sys_operation(sysop_card)
             if result.is_err():
                 registered = (
-                    self._get_registered_sys_operation_by_isolation_key(isolation_key)
+                    registered_sandbox_owner_by_key(isolation_key)
                     if isolation_key
                     else None
                 )
@@ -8052,7 +8012,7 @@ class JiuWenSwarmDeepAdapter:
                     )
                     return
                 try:
-                    isolation_key = self._sys_operation_isolation_key(card)
+                    isolation_key = sandbox_isolation_key_of(card)
                     shared_key = (
                         build_yuanrong_shared_scope_key(
                             str(launcher.base_url), str(isolation_key)

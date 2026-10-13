@@ -165,16 +165,79 @@ class _FakeRegistry:
         return SimpleNamespace(_sandbox_key_owner_map=self._owner_map)
 
 
+class _FakeOk:
+    """openjiuwen ``Ok`` 的最小替身。"""
+
+    def __init__(self, value=None):
+        self._value = value
+
+    def is_err(self):
+        return False
+
+    def is_ok(self):
+        return True
+
+    def msg(self):
+        return ""
+
+    def error(self):
+        return None
+
+
+class _FakeErr:
+    """openjiuwen ``Error`` 的最小替身。"""
+
+    def __init__(self, msg="boom"):
+        self._msg = msg
+
+    def is_err(self):
+        return True
+
+    def is_ok(self):
+        return False
+
+    def msg(self):
+        return self._msg
+
+    def error(self):
+        return ValueError(self._msg)
+
+
 class _FakeResourceMgr:
-    """按 openjiuwen ``ResourceMgr`` 的关键语义实现，记录 remove 以便断言。"""
+    """按 openjiuwen ``ResourceMgr`` 的关键语义实现，记录变更以便断言。"""
 
     def __init__(self, owner_map, sysops):
         self._resource_registry = _FakeRegistry(owner_map, sysops)
         self._sysops = sysops
         self.removed: list[str] = []
+        self.added: list[str] = []
+        #: 测试可置为 False 让 add 一律失败（验证 Result 检查路径）
+        self.add_succeeds = True
 
     def get_sys_operation(self, sysop_id):
         return self._sysops.get(sysop_id)
+
+    def add_sys_operation(self, card):
+        if not self.add_succeeds:
+            return _FakeErr("simulated add failure")
+        template = None
+        try:
+            from openjiuwen.core.sys_operation.sys_operation import SysOperation
+
+            template = SysOperation(card).isolation_key_template
+        except Exception:  # noqa: BLE001
+            template = None
+        instance = SimpleNamespace(
+            id=card.id,
+            mode=card.mode,
+            isolation_key_template=template,
+        )
+        self._sysops[card.id] = instance
+        self.added.append(card.id)
+        registry = self._resource_registry
+        if template:
+            registry._owner_map[template] = card.id
+        return _FakeOk(card.id)
 
     def remove_sys_operation(self, sysop_id):
         op = self._sysops.pop(sysop_id, None)
@@ -215,7 +278,7 @@ def _patch_card_build(monkeypatch, card):
     monkeypatch.setattr(builder, "create_sandbox_sysop_card", lambda *a, **kw: card)
 
 
-def _make_sandbox_card():
+def _make_sandbox_card(custom_id: str = "project_unit_ep_unit"):
     from openjiuwen.core.sys_operation.config import (
         ContainerScope,
         PreDeployLauncherConfig,
@@ -229,7 +292,7 @@ def _make_sandbox_card():
         gateway_config=SandboxGatewayConfig(
             isolation=SandboxIsolationConfig(
                 container_scope=ContainerScope.CUSTOM,
-                custom_id="project_unit_ep_unit",
+                custom_id=custom_id,
             ),
             launcher_config=PreDeployLauncherConfig(
                 base_url="http://sandbox.invalid",
@@ -290,7 +353,10 @@ def test_spec_id_is_stable_ref_handle_without_owner(monkeypatch):
 
 
 def test_spec_ignores_local_owner(monkeypatch):
-    """owner map 指向 LOCAL 实例时不复用（避免成员对齐到 LOCAL）。"""
+    """owner map 指向 LOCAL 实例时不复用（避免成员对齐到 LOCAL）。
+
+    LOCAL owner 不可复用，但**不应**阻断自持兑底——否则会退化成 LOCAL。
+    """
     from openjiuwen.core.sys_operation.sys_operation import SysOperation
 
     card = _make_sandbox_card()
@@ -303,7 +369,10 @@ def test_spec_ignores_local_owner(monkeypatch):
     )
 
     assert spec.id == "team_sandbox_ref_unit_team"
-    assert spec.resolve() is None
+    resolved = spec.resolve()
+    assert resolved is not None, "LOCAL owner 不该阻断自持兑底"
+    assert resolved.id == "team_sandbox_owned_unit_team"
+    assert resolved.mode == OperationMode.SANDBOX
 
 
 # ---------------------------------------------------------------------------
@@ -328,18 +397,168 @@ def test_resolve_returns_registered_sandbox_owner(monkeypatch):
     assert resolved.mode == OperationMode.SANDBOX
 
 
-def test_resolve_without_owner_returns_none_and_warns(monkeypatch, caplog):
-    """无 owner 可复用时返回 None 并打 WARNING（= 上线前既有行为，零回归）。
+def test_resolve_without_owner_uses_team_owned_fallback(monkeypatch):
+    """无 owner 时必须**自持一个 team 沙箱**，而不是直接落回 LOCAL。
 
-    WARNING 是该降级唯一的可诊断线索，故必须响亮，不能是 debug。
+    这是 db988de28 引入的回退点：owner 查不到时直接返回 None，成员工具会落
+    宿主机。而分布式 bootstrap 下两侧 project_dir 不同源，key 必然不匹配，
+    必然走这条路径——故必须有兑底。
     """
-    spec, _rm = _build_spec(monkeypatch, owner_map={}, sysops={})
+    spec, rm = _build_spec(monkeypatch, owner_map={}, sysops={})
+
+    resolved = spec.resolve()
+
+    assert resolved is not None, "无 owner 时不得回落 LOCAL"
+    assert resolved.mode == OperationMode.SANDBOX
+    assert resolved.id == "team_sandbox_owned_unit_team"
+    assert rm.added == ["team_sandbox_owned_unit_team"]
+
+
+def test_resolve_returns_none_when_no_owner_and_add_fails(monkeypatch, caplog):
+    """自持注册**失败**时才回落 LOCAL，并打 WARNING（Result 检查路径）。
+
+    注意：库 SysOperationSpec.resolve（deep_agent_spec.py:259）恰恰漏检 Result，
+    同 key 冲突被静默吞成 None 后回落 LOCAL 且无日志——此处必须区别对待。
+    """
+    spec, rm = _build_spec(monkeypatch, owner_map={}, sysops={})
+    rm.add_succeeds = False
 
     with caplog.at_level("WARNING", logger="jiuwenswarm.server.runtime.agent_adapter.sysop_builder"):
         assert spec.resolve() is None
 
-    assert "team sandbox owner 未注册" in caplog.text
-    assert "team_sandbox_ref_unit_team" in caplog.text
+    assert "team 自持沙箱注册失败" in caplog.text
+    assert "team_sandbox_owned_unit_team" in caplog.text
+
+
+def test_team_owned_sandbox_registered_once(monkeypatch):
+    """多个成员各自 resolve，只应 add 一次自持沙箱（全队共用）。"""
+    card = _make_sandbox_card()
+    rm = _patch_resource_mgr(monkeypatch, {}, {})
+    _patch_card_build(monkeypatch, card)
+
+    first = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid", "jiuwenbox", team_id="unit_team", startup_mode="external",
+    )
+    second = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid", "jiuwenbox", team_id="unit_team", startup_mode="external",
+    )
+    first.resolve()
+    second.resolve()
+
+    assert rm.added == ["team_sandbox_owned_unit_team"], f"自持沙箱被重复注册：{rm.added}"
+    assert builder.release_team_owned_sandbox("unit_team") is None
+
+
+def test_member_dispose_does_not_remove_team_owned_sandbox(monkeypatch):
+    """**走兑底后**，成员 dispose 仍不得摘掉自持沙箱。
+
+    自持 id 与借用句柄 id 解耦是 P0-1 不变量在兑底路径上的延伸。
+    """
+    spec, rm = _build_spec(monkeypatch, owner_map={}, sysops={})
+    assert spec.resolve() is not None, "前置条件：先成功自持"
+
+    _simulate_native_harness_dispose(rm, spec.id)
+
+    assert rm.removed == [], f"成员销毁摘掉了自持沙箱：{rm.removed}"
+    assert rm.get_sys_operation("team_sandbox_owned_unit_team") is not None
+
+
+def test_release_removes_team_owned_sandbox(monkeypatch):
+    """release 后 registry 与记账表都清空。"""
+    spec, rm = _build_spec(monkeypatch, owner_map={}, sysops={})
+    assert spec.resolve() is not None
+
+    builder.release_team_owned_sandbox("unit_team")
+
+    assert rm.removed == ["team_sandbox_owned_unit_team"]
+    assert rm.get_sys_operation("team_sandbox_owned_unit_team") is None
+
+
+def test_release_matches_session_scoped_team_name(monkeypatch):
+    """base 名应能释放 session-scoped 变体（``{base}_{suffix}``）。
+
+    运行时 team 名是 session-scoped 的，而删除入口拿到的是 base 名。
+    """
+    card = _make_sandbox_card()
+    rm = _patch_resource_mgr(monkeypatch, {}, {})
+    _patch_card_build(monkeypatch, card)
+    spec = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid",
+        "jiuwenbox",
+        team_id="unit_team_sess42",
+        startup_mode="external",
+    )
+    assert spec.resolve() is not None
+
+    builder.release_team_owned_sandbox("unit_team")
+
+    assert rm.removed == ["team_sandbox_owned_unit_team_sess42"]
+
+
+def test_release_does_not_overmatch_similar_team_name(monkeypatch):
+    """释放 ``abc`` 不得误伤 ``abc2``（前缀需带边界）。
+
+    两个 team 必须用**不同**的 isolation key，否则它们本就该共用同一个沙箱，
+    根本走不到自持分支（那正是共享语义，不是缺陷）。
+    """
+    rm = _patch_resource_mgr(monkeypatch, {}, {})
+    for team, custom_id in (("abc2", "p_abc2"), ("abc_sess1", "p_abc_sess1")):
+        _patch_card_build(monkeypatch, _make_sandbox_card(custom_id=custom_id))
+        spec = builder.create_sandbox_sysop_spec(
+            "http://sandbox.invalid",
+            "jiuwenbox",
+            team_id=team,
+            startup_mode="external",
+        )
+        assert spec.resolve() is not None, f"{team} 应自持成功"
+        assert spec.resolve().id == f"team_sandbox_owned_{team}"
+
+    builder.release_team_owned_sandbox("abc")
+
+    assert rm.removed == ["team_sandbox_owned_abc_sess1"]
+    assert rm.get_sys_operation("team_sandbox_owned_abc2") is not None
+
+
+def test_teams_with_same_isolation_key_share_sandbox(monkeypatch):
+    """同 isolation key 的两个 team 应共用一个沙箱，而非各建一个。
+
+    这是"一 key 一 owner"语义的直接体现，也解释��上��用例为何必须给两个 team
+    分配不同 key。
+    """
+    card = _make_sandbox_card()
+    rm = _patch_resource_mgr(monkeypatch, {}, {})
+    _patch_card_build(monkeypatch, card)
+
+    first = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid", "jiuwenbox", team_id="team_a", startup_mode="external",
+    )
+    second = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid", "jiuwenbox", team_id="team_b", startup_mode="external",
+    )
+
+    assert first.resolve().id == second.resolve().id
+    assert rm.added == ["team_sandbox_owned_team_a"], "第二个 team 不应重复注册"
+    builder.release_team_owned_sandbox("team_a")
+    builder.release_team_owned_sandbox("team_b")
+
+
+def test_resolve_returns_none_without_team_id(monkeypatch, caplog):
+    """既无 owner 又无 team_id 时返回 None + WARNING，不抛异常。"""
+    card = _make_sandbox_card()
+    rm = _patch_resource_mgr(monkeypatch, {}, {})
+    _patch_card_build(monkeypatch, card)
+    spec = builder.TeamSharedSandboxSpec(
+        id="team_sandbox_ref_",
+        mode=OperationMode.SANDBOX,
+        work_config=LocalWorkConfig(shell_allowlist=None),
+        gateway_config=card.gateway_config,
+    )
+
+    with caplog.at_level("WARNING", logger="jiuwenswarm.server.runtime.agent_adapter.sysop_builder"):
+        assert spec.resolve() is None
+
+    assert rm.added == [], "无 team_id 时不应注册任何沙箱"
+    assert "team sandbox 不可用" in caplog.text
 
 
 # ---------------------------------------------------------------------------

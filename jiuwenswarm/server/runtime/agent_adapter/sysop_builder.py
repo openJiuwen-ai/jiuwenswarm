@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Literal
@@ -897,52 +898,60 @@ def create_sandbox_sysop_card(
         return None
 
 
-def _sandbox_isolation_key_of(gateway_config: Any) -> str | None:
-    """由 ``gateway_config`` 纯构造算出 isolation key template，无注册副作用。
+def sandbox_isolation_key_of(sysop_card: SysOperationCard) -> str | None:
+    """由 card 算出 isolation key template；无注册副作用。
 
-    ``SysOperation.__init__`` 只赋值 ``id`` / ``mode`` / ``_run_config`` / ``_instances``
-    （``sys_operation.py:170-185``），``isolation_key_template`` 是只读 property
-    （``:197-202``），故此探针不触碰 ``Runner`` / ``ResourceMgr`` 任何状态。
-    与主 adapter ``JiuWenSwarmDeepAdapter._sys_operation_isolation_key`` 同源。
+    ⚠️ 全仓唯一计算 isolation key 的入口。key 的全部输入
+    （``container_scope`` / ``launcher_type`` / ``sandbox_type`` / ``custom_id``）
+    由本模块 ``create_sandbox_sysop_card`` 与 ``_sandbox_isolation_custom_id``
+    决定；其他模块一律调用本函数，**不要**自行构 ``SysOperation`` 推导——
+    那会让 key 的定义散落到多处，上游一旦调整组成方式必然漏改。
+
+    零副作用依据：``SysOperation.__init__`` 只赋值 ``id`` / ``mode`` /
+    ``_run_config`` / ``_instances``（``sys_operation.py:170-185``），
+    ``isolation_key_template`` 是只读 property（``:197-202``），故此探针不触碰
+    ``Runner`` / ``ResourceMgr`` 任何状态。
+
+    Args:
+        sysop_card: 任意 ``SysOperationCard``。注意 key **与 card.id 无关**，
+            只取决于 ``mode`` + ``gateway_config``——这正是借用句柄可以与
+            注册 id 解耦的前提。
+
+    Returns:
+        isolation key template；构造失败时返回 ``None``。
     """
-    if gateway_config is None:
-        return None
     try:
         from openjiuwen.core.sys_operation.sys_operation import SysOperation
 
-        probe = SysOperation(
-            SysOperationCard(
-                mode=OperationMode.SANDBOX,
-                work_config=LocalWorkConfig(shell_allowlist=None),
-                gateway_config=gateway_config,
-            )
-        )
-        return probe.isolation_key_template
+        return SysOperation(sysop_card).isolation_key_template
     except Exception as exc:  # noqa: BLE001
         logger.debug("[sysop_builder] compute sandbox isolation key failed: %s", exc)
         return None
 
 
-def _registered_sandbox_owner(gateway_config: Any) -> "SysOperation | None":  # type: ignore[name-defined]
-    """返回持有同 isolation key 且仍注册着的 SANDBOX ``SysOperation`` 实例。
+def registered_sandbox_owner_by_key(
+    isolation_key_template: str | None,
+) -> "SysOperation | None":  # type: ignore[name-defined]
+    """返回持有该 isolation key 且仍注册着的 SANDBOX ``SysOperation`` 实例。
 
-    库 ``SysOperationMgr``（``sys_operation_manager.py:38-49``）强制"一个 isolation
-    key template 只属于一个 sysop id"：同 key 异 id 的 ``add_sys_operation`` 抛
-    ``ValueError``，且被 ``_inner_add_resource`` 的 try/except 吞成 ``Error`` 返回
-    （``resource_manager.py:1449``）—— 而库 ``SysOperationSpec.resolve``
-    （``deep_agent_spec.py:259``）**不检查该 Result**、直接丢弃，260 行再 get 只拿到
-    ``None``，harness factory 随即兜底出 LOCAL sysop（成员工具落宿主机）。
+    ⚠️ 全仓唯一触碰 ``Runner.resource_mgr._resource_registry.sys_operation()
+    ._sandbox_key_owner_map`` 的地方——那是 openjiuwen 的**私有 API**，没有
+    public 出口。上游一旦提供 public 查询，本函数应整体删除。
 
-    本 helper 给出唯一的合规出口：按 owner map 查已注册实例直接复用，零 add 零冲突。
-    与主 adapter ``_get_registered_sys_operation_by_isolation_key``
-    （``interface_deep.py:7157``）同源，本函数额外校验 owner 仍是 SANDBOX 实例。
+    存在的理由：库 ``SysOperationMgr``（``sys_operation_manager.py:38-49``）
+    强制"一个 isolation key template 只属于一个 sysop id"：同 key 异 id 的
+    ``add_sys_operation`` 抛 ``ValueError``，且被 ``_inner_add_resource`` 的
+    try/except 吞成 ``Error`` 返回（``resource_manager.py:1449``）——而库
+    ``SysOperationSpec.resolve``（``deep_agent_spec.py:259``）**不检查该 Result**
+    就丢弃，260 行再 get 只拿到 ``None``，harness factory 随即兜底出 LOCAL sysop
+    （成员工具落宿主机）。本函数给出唯一合规出口：按 owner map 查已注册实例直接
+    复用，零 add 零冲突。
 
     查不到（owner map 与 registry 失配 / 指向非沙箱 / 私有 API 变更）一律返回
-    ``None``，由调用方决定降级；**失败一律 warning 级**——私有 API 一旦失效，
-    必须响亮，否则又退化成无声的隔离降级。
+    ``None``，由调用方决定降级。**失败一律 warning 级**——私有 API 一旦失效必须
+    响亮，否则又退化成无声的隔离降级。
     """
-    template = _sandbox_isolation_key_of(gateway_config)
-    if not template:
+    if not isolation_key_template:
         return None
     try:
         from openjiuwen.core.runner.runner import Runner
@@ -952,19 +961,19 @@ def _registered_sandbox_owner(gateway_config: Any) -> "SysOperation | None":  # 
             logger.warning(
                 "[sysop_builder] Runner.resource_mgr._resource_registry 不可达，"
                 "无法按 isolation key 复用已注册沙箱：key=%s",
-                template,
+                isolation_key_template,
             )
             return None
         owner_map = getattr(registry.sys_operation(), "_sandbox_key_owner_map", {})
-        owner_id = owner_map.get(template)
+        owner_id = owner_map.get(isolation_key_template)
         if not owner_id:
             return None
         owner = Runner.resource_mgr.get_sys_operation(owner_id)
         if owner is None or getattr(owner, "mode", None) != OperationMode.SANDBOX:
-            # owner map 与 registry 失配或指向非沙箱实例：不可用。
+            # owner map 与 registry 失配，或指向非沙箱实例：不可用。
             logger.warning(
                 "[sysop_builder] isolation key owner 失配：key=%s owner_id=%s mode=%s",
-                template,
+                isolation_key_template,
                 owner_id,
                 getattr(owner, "mode", None),
             )
@@ -975,41 +984,151 @@ def _registered_sandbox_owner(gateway_config: Any) -> "SysOperation | None":  # 
         return None
 
 
-class TeamSharedSandboxSpec(SysOperationSpec):
-    """team 成员**借用**主 agent 已注册沙箱的句柄；自身不持有任何注册。
+# 自持沙箱（team owner 未命中时注册）的 id 集合。注册 id 是
+# ``team_sandbox_owned_<team_id>``，与成员 spec 的借用句柄
+# ``team_sandbox_ref_<team_id>`` **刻意不同**——成员 dispose 只按借用句柄判定，
+# 因此永不触碰自持沙箱；回收由 release_team_owned_sandbox 在 team 生命周期
+# 结束时统一执行。
+_TEAM_OWNED_SYSOP_IDS: set[str] = set()
+_TEAM_OWNED_SYSOP_IDS_LOCK = threading.Lock()
 
-    ``id`` 是借用句柄名，**刻意永不注册**进 ``Runner.resource_mgr``。库在成员销毁时
-    （``team_harness.py:215`` → ``native_harness.py:474-475``）执行
+
+def release_team_owned_sandbox(team_name: str) -> None:
+    """释放该 team 名下自持的沙箱。
+
+    运行时 team 名是 session-scoped 的（``team_manager.build_session_scoped_team_name``
+    产出 ``{base}_{suffix}``），而删除入口拿到的是 base 名，故按**前缀边界**匹配：
+    ``team_sandbox_owned_abc`` 命中 ``..._abc_sess1``，但不会误伤 ``..._abc2``。
+
+    Args:
+        team_name: base 名或 session-scoped 运行态名，均可。
+    """
+    name = str(team_name or "").strip()
+    if not name:
+        return
+    prefix = f"team_sandbox_owned_{name}"
+    with _TEAM_OWNED_SYSOP_IDS_LOCK:
+        targets = [
+            owned_id
+            for owned_id in _TEAM_OWNED_SYSOP_IDS
+            if owned_id == prefix or owned_id.startswith(prefix + "_")
+        ]
+        _TEAM_OWNED_SYSOP_IDS.difference_update(targets)
+    if not targets:
+        return
+    try:
+        from openjiuwen.core.runner.runner import Runner
+
+        for owned_id in targets:
+            try:
+                if Runner.resource_mgr.get_sys_operation(owned_id) is not None:
+                    Runner.resource_mgr.remove_sys_operation(owned_id)
+                    logger.info("[sysop_builder] team 自持沙箱已释放：id=%s", owned_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[sysop_builder] team 自持沙箱释放失败：id=%s err=%s", owned_id, exc
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[sysop_builder] release team owned sandbox failed: %s", exc)
+
+
+class TeamSharedSandboxSpec(SysOperationSpec):
+    """team 成员**借用**已注册沙箱的句柄；自身不持有任何注册。
+
+    ``id`` 是借用句柄名（``team_sandbox_ref_<team>``），**刻意永不注册**进
+    ``Runner.resource_mgr``。库在成员销毁时（``team_harness.py:215`` →
+    ``native_harness.py:474-475``）执行
     ``if get_sys_operation(sys_op.id) is not None: remove_sys_operation(sys_op.id)``：
-    句柄未注册 ⇒ 判定恒假 ⇒ 成员 shutdown / team 销毁不会摘掉主 agent 的沙箱实例，
-    也不会经 ``sys_operation_manager.py:68`` 释放它的 isolation key。这正是
+    句柄未注册 ⇒ 判定恒假 ⇒ 成员 shutdown / team 销毁不会摘掉别人的沙箱实例，
+    也不会经 ``sys_operation_manager.py:68`` 释放其 isolation key。这正是
     ``interface_deep.py:955-959`` 那条 refcount 约束所要求的。
 
-    对齐 owner id 来"零 add 命中"是**错的**：那样 dispose 会连带注销主 agent 的
-    沙箱（并释放其 isolation key），下次 ``_resolve_sys_operation`` 重新 add 出新
-    uuid 即重新易主，构成又一次静默回落 LOCAL。本类用"句柄永不注册"从构造上消灭
-    该串扰，而不是用引用计数对冲。
+    对齐 owner id 来"零 add 命中"是**错的**：那样 dispose 会连带注销 owner 的
+    沙箱（并释放其 isolation key），下次 owner 重新 add 出新 uuid 即重新易主，
+    构成又一次静默回落 LOCAL。
 
-    owner 查询刻意放在 ``resolve()``（harness 构建期，库调用的唯一入口）而非 enrich
-    期（请求组装期）：后者早于主 agent ``_create_sys_operation``，正是原 bug 的时序
-    根源；前者更接近真相。
+    ``resolve()`` 分三级：复用 owner → 自持 team 专属沙箱 → ``None``（成员维持
+    LOCAL，即本特性上线前的既有行为，零回归）。第二级不可省：分布式 bootstrap
+    下 owner 侧的 project_dir 与成员侧不同源，key 必然不匹配，此时若不
+    自持就直接把成员丢回宿主机——比"多一个容器"糟得多。
 
-    ``resolve()`` 返回 ``None`` 时库 factory 兜底出 LOCAL sysop——即本特性上线前的
-    既有行为，零回归；此处 warning 是唯一的可诊断线索，故必须响亮。
+    ``team_id`` 只用于推导自持 id，不进 ``build_card()``（key 与 id 无关）。
     """
 
+    team_id: str = ""
+
     def resolve(self) -> "SysOperation | None":  # type: ignore[name-defined]
-        """复用已注册的主 agent 沙箱实例；未注册则返回 None（成员维持 LOCAL）。"""
-        owner = _registered_sandbox_owner(self.gateway_config)
+        """复用 owner；无 owner 时自持；均不可用则返回 None（成员维持 LOCAL）。"""
+        card = self.build_card()
+        key = sandbox_isolation_key_of(card)
+        owner = registered_sandbox_owner_by_key(key)
         if owner is not None:
             return owner
+        owned = self._ensure_team_owned_sandbox(card, key)
+        if owned is not None:
+            return owned
         logger.warning(
-            "[sysop_builder] team sandbox owner 未注册，成员回落 LOCAL"
-            "（主 agent 沙箱尚未 resolve？）；ref_id=%s key=%s",
+            "[sysop_builder] team sandbox 不可用，成员回落 LOCAL；ref_id=%s key=%s",
             self.id,
-            _sandbox_isolation_key_of(self.gateway_config),
+            key,
         )
         return None
+
+    def _ensure_team_owned_sandbox(
+        self,
+        card: SysOperationCard,
+        key: str | None,
+    ) -> "SysOperation | None":  # type: ignore[name-defined]
+        """owner 未命中时，为本 team 注册一个自持沙箱。
+
+        注册 id 与借用句柄 ``self.id`` **刻意不同**：前者是我们真正持有的资源，
+        后者永不注册。两者解耦，成员 dispose 永远不会碰到自持沙箱——回收由
+        :func:`release_team_owned_sandbox` 在 team 生命周期结束时统一执行。
+
+        Args:
+            card: 借用句柄对应的 card；会复制出 ``id`` 为自持 id 的新 card。
+            key: 已算出的 isolation key，仅用于日志与排障。
+
+        Returns:
+            自持的 SANDBOX 实例；无 team_id 或注册失败时返回 ``None``。
+        """
+        if not self.team_id:
+            return None
+        owned_id = f"team_sandbox_owned_{self.team_id}"
+        try:
+            from openjiuwen.core.runner.runner import Runner
+
+            with _TEAM_OWNED_SYSOP_IDS_LOCK:
+                existing = Runner.resource_mgr.get_sys_operation(owned_id)
+                if existing is not None:
+                    return existing
+                result = Runner.resource_mgr.add_sys_operation(
+                    card.model_copy(update={"id": owned_id})
+                )
+                # 必须检查 Result：库 SysOperationSpec.resolve（deep_agent_spec.py:259）
+                # 恰恰漏了这一步，同 key 冲突被静默吞成 None 后回落 LOCAL。
+                if result.is_err():
+                    logger.warning(
+                        "[sysop_builder] team 自持沙箱注册失败：id=%s key=%s err=%s",
+                        owned_id,
+                        key,
+                        result.msg(),
+                    )
+                    return None
+                _TEAM_OWNED_SYSOP_IDS.add(owned_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[sysop_builder] ensure team owned sandbox failed: id=%s err=%s",
+                owned_id,
+                exc,
+            )
+            return None
+        logger.info(
+            "[sysop_builder] team 自持沙箱已注册（owner 未命中）：id=%s key=%s",
+            owned_id,
+            key,
+        )
+        return Runner.resource_mgr.get_sys_operation(owned_id)
 
 
 def create_sandbox_sysop_spec(
@@ -1076,6 +1195,7 @@ def create_sandbox_sysop_spec(
         mode=OperationMode.SANDBOX,
         work_config=LocalWorkConfig(shell_allowlist=None),
         gateway_config=card.gateway_config,
+        team_id=str(team_id or ""),
     )
 
 
@@ -1383,6 +1503,9 @@ __all__ = [
     "find_nested_files_conflict",
     "list_auto_managed_sandbox_paths",
     "list_effective_sandbox_files",
+    "registered_sandbox_owner_by_key",
+    "release_team_owned_sandbox",
     "resolve_sandbox_endpoint",
+    "sandbox_isolation_key_of",
     "validate_sandbox_files_runtime",
 ]
