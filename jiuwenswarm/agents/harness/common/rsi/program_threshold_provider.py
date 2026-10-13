@@ -81,7 +81,7 @@ class ThresholdStoppingProgramProvider(PuctProgramArtifactProvider):
                         type="pruned",
                         summary="已达标，停止此候选",
                         reason="其他候选已达到目标分数",
-                        failure_class=None,
+                        failure_class="SKIPPED_TARGET_REACHED",
                         extra=extra,
                     ))
             if on_event is not None:

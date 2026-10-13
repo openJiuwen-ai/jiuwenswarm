@@ -408,3 +408,28 @@ test('program scores are shown out of 100; other scenarios are unchanged', () =>
   assert.equal(scoreScale('PROGRAM'), 100);
   assert.equal(scoreScale('PAPER'), 1);
 });
+
+test('program candidates skipped after a sibling reached the target render as neutral skips', () => {
+  const root = { node_id: 'n0', type: 'ROOT', iteration: 0, parent_id: null, adopted: true, score: 0.067, changes: [], extra: {} };
+  const variants = [
+    { failure_class: 'SKIPPED_TARGET_REACHED', failure_reason: '其他候选已达到目标分数', extra: {} },
+    // Legacy projections: runtime-failure markers but the skip reason or flag.
+    { failure_class: 'candidate-failed', failure_reason: '其他候选已达到目标分数', extra: { program: { error: 'empty_reply' } } },
+    { failure_class: 'empty_reply', failure_reason: 'empty', extra: { threshold_stop_cancelled: true } },
+  ];
+  for (const [index, variant] of variants.entries()) {
+    for (const type of ['REJECTED', 'PRUNED']) {
+      const node = { node_id: `n${index + 1}`, type, iteration: 2, parent_id: 'n0', adopted: false, score: null, changes: [], ...variant };
+      const p = presentRsiNode(node, context('ARTIFACT', 'PROGRAM', [root, node]));
+      assert.equal(p.lifecycle, 'skipped');
+      assert.equal(p.runtimeKind, 'pruned');
+      assert.equal(p.statusKind, 'pruned');
+      assert.equal(p.runtimeLabel, '已跳过');
+      assert.equal(p.reasonLabel, '其他候选已达到目标分数');
+      assert.equal(p.reasonDetail, null);
+      assert.doesNotMatch(`${p.title}${p.runtimeLabel}${p.reasonLabel}`, /失败/);
+    }
+  }
+  const failed = { node_id: 'n9', type: 'REJECTED', iteration: 2, parent_id: 'n0', adopted: false, score: null, changes: [], failure_class: 'generation_failed', failure_reason: 'generation failed', extra: {} };
+  assert.equal(presentRsiNode(failed, context('ARTIFACT', 'PROGRAM', [root, failed])).lifecycle, 'failed');
+});

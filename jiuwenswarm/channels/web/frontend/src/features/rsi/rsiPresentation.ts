@@ -396,7 +396,7 @@ function attemptInfo(
 }
 
 export type RsiNodeLifecycle =
-  'baseline' | 'generating' | 'evaluating' | 'pending' | 'adopted' | 'rejected' | 'failed' | 'pruned';
+  'baseline' | 'generating' | 'evaluating' | 'pending' | 'adopted' | 'rejected' | 'failed' | 'pruned' | 'skipped';
 
 export interface RsiNodePresentationContext {
   scenario: RsiScenario;
@@ -432,8 +432,23 @@ function artifactObjectLabel(scenario: RsiScenario, artifactType: RsiArtifactTyp
   return artifactType === 'PROGRAM' ? '程序' : '论文';
 }
 
+export const SKIPPED_TARGET_REACHED = 'SKIPPED_TARGET_REACHED';
+export const SKIPPED_TARGET_REACHED_REASON = '其他候选已达到目标分数';
+
+/**
+ * A program candidate abandoned because another candidate already reached the
+ * target score was skipped, not failed. Never present it as a failure.
+ */
+export function isSkippedForTargetReached(node: RsiTreeNode): boolean {
+  if (node.type === 'ROOT' || node.type === 'ADOPTED' || node.adopted) return false;
+  if ((node.failure_class ?? '').toUpperCase() === SKIPPED_TARGET_REACHED) return true;
+  if (node.extra?.threshold_stop_cancelled === true) return true;
+  return asText(node.failure_reason)?.trim() === SKIPPED_TARGET_REACHED_REASON;
+}
+
 function lifecycleForNode(node: RsiTreeNode, taskRunning: boolean): RsiNodeLifecycle {
   if (node.type === 'ROOT') return 'baseline';
+  if (isSkippedForTargetReached(node)) return 'skipped';
   if (node.type === 'PRUNED') return 'pruned';
   if (node.type === 'PROVISIONAL') {
     if (!taskRunning) return 'pending';
@@ -472,6 +487,7 @@ function failureLabel(
     return '未达到采纳条件';
   }
   if (lifecycle === 'pruned') return asText(node.failure_reason) || '搜索空间已剪枝';
+  if (lifecycle === 'skipped') return SKIPPED_TARGET_REACHED_REASON;
   return null;
 }
 
@@ -487,6 +503,7 @@ function lifecycleStatusKind(lifecycle: RsiNodeLifecycle): NodeStatusKind {
     case 'failed':
       return 'failed';
     case 'pruned':
+    case 'skipped':
       return 'pruned';
     case 'rejected':
       return 'evaluated';
@@ -509,6 +526,7 @@ function lifecycleRuntimeKind(lifecycle: RsiNodeLifecycle): NodeRuntimeKind {
     case 'rejected':
       return 'evaluated';
     case 'pruned':
+    case 'skipped':
       return 'pruned';
   }
 }
@@ -536,6 +554,8 @@ function lifecycleRuntimeLabel(lifecycle: RsiNodeLifecycle): string {
       return '失败';
     case 'pruned':
       return '已剪枝';
+    case 'skipped':
+      return '已跳过';
   }
 }
 
@@ -586,7 +606,7 @@ export function presentRsiNode(node: RsiTreeNode, context: RsiNodePresentationCo
     summary,
     changeItems,
     reasonLabel,
-    reasonDetail: lifecycle === 'pruned' ? null : clampText(asText(node.failure_reason), 500),
+    reasonDetail: lifecycle === 'pruned' || lifecycle === 'skipped' ? null : clampText(asText(node.failure_reason), 500),
     parentTitle: parent ? presentRsiNode(parent, { ...context, allNodes }).title : null,
     iteration: round,
     attempt,

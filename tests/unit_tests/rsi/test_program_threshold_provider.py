@@ -131,7 +131,7 @@ async def test_empty_model_waits_after_solve_are_stopped_not_failed(tmp_path: Pa
         "rejected", "adopted", "pruned", "pruned", "rejected",
     ]
     stopped = forwarded[3].node
-    assert stopped.failure_class is None
+    assert stopped.failure_class == "SKIPPED_TARGET_REACHED"
     assert stopped.extra["threshold_stop_cancelled"] is True
     assert stopped.extra["program"]["error"] is None
 
@@ -185,3 +185,33 @@ def test_completed_legacy_run_reclassifies_only_empty_replies_after_solve(tmp_pa
     assert by_id["attempt:3"]["type"] == "PRUNED"
     assert by_id["attempt:3"]["extra"]["threshold_stop_cancelled"] is True
     assert recovered.reconcile_program_threshold_stops(task_id) == 0
+
+
+def test_adapter_tags_target_reached_skips_as_neutral_pruned() -> None:
+    from jiuwenswarm.agents.harness.common.rsi.artifact_adapter import provider_node_to_dict
+
+    by_flag = provider_node_to_dict({
+        "node_id": "attempt:2", "type": "rejected", "adopted": False, "score": None,
+        "failure_class": "empty_reply", "reason": "the model returned an empty reply",
+        "extra": {"threshold_stop_cancelled": True, "program": {"error": "empty_reply"}},
+    })
+    by_reason = provider_node_to_dict({
+        "node_id": "attempt:4", "type": "rejected", "adopted": False, "score": None,
+        "failure_class": "candidate-failed", "reason": "其他候选已达到目标分数",
+    })
+    for node in (by_flag, by_reason):
+        assert node["type"] == "PRUNED"
+        assert node["failure_class"] == "SKIPPED_TARGET_REACHED"
+        assert node["failure_reason"] == "其他候选已达到目标分数"
+
+    real_failure = provider_node_to_dict({
+        "node_id": "attempt:5", "type": "rejected", "adopted": False,
+        "failure_class": "empty_reply", "reason": "the model returned an empty reply",
+    })
+    assert real_failure["type"] == "REJECTED"
+    assert real_failure["failure_class"] == "empty_reply"
+    adopted = provider_node_to_dict({
+        "node_id": "attempt:3", "type": "adopted", "adopted": True, "score": 1.0,
+        "extra": {"threshold_stop_cancelled": True},
+    })
+    assert adopted["type"] == "ADOPTED"

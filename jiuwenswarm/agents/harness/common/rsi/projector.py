@@ -90,7 +90,7 @@ class RsiProjector:
                 node.type = "PRUNED"
                 node.description = "已达标，停止此候选"
                 node.failure_reason = "其他候选已达到目标分数"
-                node.failure_class = None
+                node.failure_class = "SKIPPED_TARGET_REACHED"
                 node.extra = extra
                 changed += 1
             if changed:
