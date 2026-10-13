@@ -1,4 +1,4 @@
-﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """退出路径 E1-E12 的帧级终态收口契约（S_01 执行路径全景 / S_08 事件顺序约束）。
 

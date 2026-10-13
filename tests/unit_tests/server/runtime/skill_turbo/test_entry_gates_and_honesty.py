@@ -5,7 +5,7 @@
 防护意图：
 - 两块入口拦截（[TEMP-TEMPLATE-BYPASS] / [REGION-EDIT-BYPASS]）此前无任何
   单测（S_02 边界 9）。拦截失效的后果是"从 Stage 1 全量重跑丢失原 PPT"
-  （officeclaw_885400a37… 事故形态）。
+  （历史线上事故形态）。
 - workspace_base"只认 output_dir、禁止 agent workspace 兜底"是 PR 5036→5133
   反复（加入兜底→次日删除）的直接防线，无回归测试会再次反复。
 - _wrap_skill_turbo_result 失败分支"不追加停止提示"是收尾诚实性契约。

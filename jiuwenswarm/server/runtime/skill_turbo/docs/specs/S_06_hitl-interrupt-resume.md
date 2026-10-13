@@ -425,7 +425,7 @@ async def resume_stream(self, *, plan_code, inputs, request_id, channel_id,
 | 17 | **作答 request_id 与 pending 不一致** | 仅 warning，继续 resume（宽容策略） | —（无专门测试） |
 | 18 | **resume 时 interactive_ask 缺省** | 从 saved_inputs 恢复中断前引导模式（防 preview 类 ask_user 误判 skipped / 引导管线退化） | interactive_ask 单测；resume 两入口均调用 |
 | 19 | **非引导模式 + preview 类 ask_user** | 不中断不弹卡，直接 `{"status":"skipped"}` 沿用当前内容（`_should_skip_for_non_interactive`） | test_ask_user_rail_gates |
-| 20 | **user_input 形态不认识** | re-interrupt（重新中断等待）；确定性 tcid 相同 → 重问帧可能被 sidecar dedup 吞卡（注释警示） | —（无直接单测） |
+| 20 | **user_input 形态不认识** | re-interrupt（重新中断等待）；确定性 tcid 相同 → 重问帧可能被 sidecar dedup 吞卡（注释警示） | test_ask_user_rail_gates（形态不认识 → re-interrupt 分支）；重问帧 dedup 吞卡为注释警示面，无单测 |
 | 21 | **resume 时 skill_acceleration_exec 重复工具事件** | RESUME_USER_INPUT_KEY 存在 → before_tool_call 跳过 tool_call / tool_update emit；首次调用仍 emit | test_hitl_resume_react |
 | 22 | **权限账本误吞 ask_user 应答** | ask_user continuation 不进 permission ledger；且不归一化 `#n` 后缀（防死锁）；非 ask_user source 被忽略 | test_hitl_resume_react |
 | 23 | **HITL 占位与上下文修复** | `_fix_incomplete_tool_context` 识别占位模板；STOP hint 优先于占位（防暂停被当完成） | test_hitl_resume_react |

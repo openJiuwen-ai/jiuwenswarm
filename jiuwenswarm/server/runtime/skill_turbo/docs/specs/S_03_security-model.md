@@ -63,7 +63,7 @@ SkillTurbo 对 skill_code / plan_code 的安全控制由**两层独立防线**�
 8. **_safe_import 三重约束**：禁相对导入（level≠0 → ImportError）+ 模块名前缀白名单（`env.skill_code_import_prefixes`，含动态包前缀）+ fromlist 黑名单 `_DENIED_FROMLIST_NAMES`（15 项，防 `from skill_codes.xxx import __import__` 式绕过）。
 9. **相对导入安全性来自机制而非静态检查**：validator 不校验相对导入目标（`deny_relative_import=False` 直接放行）；安全性 = 相对导入只能命中 sys.modules 动态注册包的受控 `__path__`（物理无法逃逸，[[S_05]]）+ 技能目录 `rglob("*.py")` 全量同 profile 校验（包内被导入者必已过检）。
 10. **审批收口外层**：内层 executor 不挂权限 rail；`skill_acceleration_exec` 在外层 DeepAgent 经 config `skill_turbo: ask` 一次性授权内部工具，审批通过后内部调用直接放行。
-11. **审批卡文案即协议**：SkillTurboPermissionRail 的审批消息必须包含关键字「需要授权」，供 Relay 权限桥识别为审批卡；改文案不得移除该关键字。
+11. **审批卡文案即协议**：SkillTurboPermissionRail 的审批消息必须包含关键字「需要授权」，供 上游权限桥识别为审批卡；改文案不得移除该关键字。
 12. **审批清单覆盖实际工具类别**：`SKILL_TURBO_APPROVAL_TOOLS`（11 项）仅用于审批卡展示、无行为耦合，但必须覆盖 turbo 节点实际可用工具类别（**含网络组** web_search / fetch_webpage）；回归测试 `test_skill_turbo_approval_tools.py` 断言网络组存在 + 核心组不回归。
 13. **fallback 子代理 suspend/restore 对称**：父子 agent **共享同一权限 rail 实例**，`spawn_fallback` 挂起三类 rail（PermissionInterruptRail / SkillAuthorizationPermissionRail / SkillTurboPermissionRail）时必须 `_static_config.enabled=False` + 替换 `host.get_permissions_snapshot` 回调，且 finally 恢复；漏恢复 = 父 agent 权限状态被子代理污染。
 14. **安全护栏 fail-closed**：护栏路径自身异常必须中断流程而非被框架吞掉继续执行（如 `validate_fallback_success` 实现异常同样触发终止性降级，[[S_07]]）；callback framework 只认 AbortError——中断/审批信号以 AbortError 为唯一载体，护栏抛其它异常类型不会被框架识别为中断。
@@ -211,7 +211,7 @@ class SkillTurboPermissionRail(SkillAuthorizationPermissionRail):
 ### P5 审批链（外层收口）
 
 1. 外层 LLM 调 `skill_acceleration_exec` → 外层权限链按 config `skill_turbo: ask` 触发审批；
-2. `SkillTurboPermissionRail._build_message` 渲染统一审批卡：`SKILL_TURBO_APPROVAL_DESCRIPTION`（一次性授权声明）+ 11 项工具清单 + 文案含「需要授权」关键字（Relay 权限桥识别协议）；
+2. `SkillTurboPermissionRail._build_message` 渲染统一审批卡：`SKILL_TURBO_APPROVAL_DESCRIPTION`（一次性授权声明）+ 11 项工具清单 + 文案含「需要授权」关键字（上游权限桥识别协议）；
 3. 用户确认 → 整个 turbo 执行期内**不再逐工具审批**（内部 bash / 读写文件 / 网络组等直接放行）；
 4. 内层 executor 的 `before_tool_call` rail 链仍执行（补发 chat.tool_call / chat.tool_update 事件，[[S_08]]），但不承担审批职责；
 5. 例外：ask_user 的 HITL 交互经 SkillTurboAskUserRail 转 AbortError 中断（[[S_06]]），不走审批面。
@@ -247,7 +247,7 @@ class SkillTurboPermissionRail(SkillAuthorizationPermissionRail):
 | 15 | 白名单前缀过宽 | allowed_import_prefixes 命中过宽（如误含引擎内部包）→ 沙箱面扩大；前缀列表来源必须经 skill_code_import_prefixes 单一通道 | test_validator_external_profile（engine_internal_still_denied） |
 | 16 | 审批清单与实际工具面漂移 | 新增 turbo 工具类别未同步 SKILL_TURBO_APPROVAL_TOOLS → 审批卡误导用户；回归测试守护 | test_skill_turbo_approval_tools |
 | 17 | 白名单含 plan_node 全路径但禁直连其它引擎模块 | `jiuwenswarm.server.runtime.skill_turbo.plan_node` 是 AbortError/FallbackContractError 唯一合法触点；openjiuwen / fallback_handler 等其余引擎路径均不在白名单（防绕过门面直连内部实现） | test_validator_external_profile（facade 白名单） |
-| 18 | 审批文案改写 | 「需要授权」关键字被移除 / 改写 → Relay 权限桥无法识别审批卡 → 审批链断裂（文案即协议，改文案必须同步上层识别逻辑） | 无（「需要授权」文案协议） |
+| 18 | 审批文案改写 | 「需要授权」关键字被移除 / 改写 → 上游权限桥无法识别审批卡 → 审批链断裂（文案即协议，改文案必须同步上层识别逻辑） | 无（「需要授权」文案协议） |
 | 19 | strict 模式启动失败 | strict_builtin_skill_validation=True 时任一内置技能校验失败 → ValueError 阻止整个启动（适用于严格部署，默认过渡期 False） | 无（同 #2） |
 
 ## 修改检查单
@@ -265,7 +265,7 @@ class SkillTurboPermissionRail(SkillAuthorizationPermissionRail):
 - **新增护栏代码** → 必须有调用点且有测试证明被走到（护栏不可达 = 假安全）；护栏自身异常路径按 fail-closed 处理（中断而非吞掉）。
 - **翻转 deny_relative_import 或收窄目录全量校验** → 先确认相对导入目标有等价的静态校验能力，否则等于打开逃逸面（不变量 9 的机制前提被破坏）。
 - **改注册期失败处理（WARNING/strict）** → 同步排查指南：用户唯一可见症状是"无匹配skill"，日志文案必须含 skill/file/errors 三要素。
-- **改审批文案** → 保留「需要授权」关键字与工具清单结构；文案变更须与 Relay 权限桥的识别逻辑同批验证。
+- **改审批文案** → 保留「需要授权」关键字与工具清单结构；文案变更须与 上游权限桥的识别逻辑同批验证。
 - **翻转 strict_builtin_skill_validation 默认值** → 必须先全量跑所有内置/外部技能仓的注册门禁测试，否则启动期 ValueError 直接阻断服务。
 
 ## 与其它 spec 的关系
