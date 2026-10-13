@@ -160,7 +160,7 @@ class IpcServer:
         if listener is not None:
             close = getattr(listener, "close", None)
             if callable(close):
-                await asyncio.to_thread(close)
+                close()
             self._listener = None
         if os.name != "nt":
             try:

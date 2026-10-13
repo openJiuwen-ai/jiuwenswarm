@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
@@ -29,6 +31,7 @@ from jiuwenswarm.server.ipc.protocol import (
 from jiuwenswarm.server.ipc.stream import IpcConnection
 from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 from jiuwenswarm.server.supervisor.affinity import SessionAffinity
+from jiuwenswarm.server.supervisor.diagnostics import dump_runtime_state
 from jiuwenswarm.server.supervisor.worker_process import (
     WorkerProcess,
     default_socket_path,
@@ -114,6 +117,11 @@ class RuntimeSupervisor:
         self._peer_generation: int | None = None
         self._last_rx = 0.0
         self._forward_queue: _ForwardQueue | None = None
+        self._forward_started = 0.0
+        self._forward_request_id = ""
+        self._event_loop_lag = 0.0
+        self._last_dump_at = 0.0
+        self._last_dump_path: Path | None = None
         self._session_lock = asyncio.Lock()
 
     @property
@@ -416,6 +424,46 @@ class RuntimeSupervisor:
             )
             self._fail_forwarding(request_id, error)
 
+    def _log_diagnostics(self, reason: str) -> None:
+        now = time.monotonic()
+        conn_stats = getattr(self._conn, "diagnostics", None)
+        forward_stats = getattr(self._forwarder, "diagnostics", None)
+        stderr_path = getattr(self._process, "stderr_path", None)
+        snapshot = {
+            "reason": reason,
+            "pid": self._worker_pid,
+            "generation": self._generation,
+            "last_rx_age": now - self._last_rx,
+            "ipc": conn_stats() if callable(conn_stats) else {},
+            "gateway": forward_stats() if callable(forward_stats) else {},
+            "forward_queued": self._forward_queue.qsize()
+            if self._forward_queue is not None
+            else 0,
+            "forward_request_id": self._forward_request_id,
+            "forward_seconds": now - self._forward_started
+            if self._forward_started
+            else 0.0,
+            "event_loop_lag_seconds": self._event_loop_lag,
+            "worker_stderr": str(stderr_path) if stderr_path is not None else None,
+        }
+        logger.warning("[Supervisor] runtime diagnostics: %s", json.dumps(snapshot))
+        if now - self._last_dump_at < 10.0:
+            return
+        self._last_dump_at = now
+        try:
+            if stderr_path is not None:
+                directory = stderr_path.parent
+            else:
+                from jiuwenswarm.common.utils import get_logs_dir
+
+                directory = get_logs_dir() / "runtime_diagnostics"
+            self._last_dump_path = dump_runtime_state(directory, snapshot)
+            logger.warning(
+                "[Supervisor] runtime diagnostic dump=%s", self._last_dump_path
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("[Supervisor] runtime diagnostic dump failed", exc_info=True)
+
     def _route_is_current(self, message: dict[str, Any], route: _GatewayRoute) -> bool:
         payload = message.get("payload") or {}
         request_id = str(message.get("request_id") or payload.get("request_id") or "")
@@ -506,6 +554,8 @@ class RuntimeSupervisor:
         payload = message["payload"]
         request_id = str(message.get("request_id") or payload.get("request_id") or "")
         ws, send_lock = route
+        self._forward_started = time.monotonic()
+        self._forward_request_id = request_id
         try:
             async with asyncio.timeout(_FORWARD_TIMEOUT):
                 await self._forwarder.send(payload, ws=ws, send_lock=send_lock)
@@ -518,6 +568,7 @@ class RuntimeSupervisor:
                 _FORWARD_TIMEOUT,
                 self._generation,
             )
+            self._log_diagnostics(error)
             self._fail_forwarding(request_id, error)
         except Exception:  # noqa: BLE001
             logger.warning(
@@ -526,6 +577,9 @@ class RuntimeSupervisor:
                 exc_info=True,
             )
             self._fail_forwarding(request_id, "Gateway forwarding failed")
+        finally:
+            self._forward_started = 0.0
+            self._forward_request_id = ""
 
     def _accepts_peer_generation(self, message: dict[str, Any]) -> bool:
         raw = message.get("generation")
@@ -676,7 +730,9 @@ class RuntimeSupervisor:
 
     async def _watchdog(self, generation: int) -> None:
         while not self._stopping and generation == self._generation:
+            expected_wakeup = time.monotonic() + _WATCHDOG_INTERVAL
             await asyncio.sleep(_WATCHDOG_INTERVAL)
+            self._event_loop_lag = max(0.0, time.monotonic() - expected_wakeup)
             if generation != self._generation:
                 return
             if time.monotonic() - self._last_rx <= _HEARTBEAT_TIMEOUT:
@@ -689,6 +745,7 @@ class RuntimeSupervisor:
                 generation,
                 self._worker_pid,
             )
+            self._log_diagnostics("runtime worker heartbeat timed out")
             conn = self._conn
             if conn is not None:
                 await conn.close()
@@ -704,7 +761,11 @@ class RuntimeSupervisor:
                 continue
             if self._stopping or generation != self._generation:
                 return
-            logger.warning("[Supervisor] runtime worker exited: code=%s", code)
+            logger.warning(
+                "[Supervisor] runtime worker exited: code=%s stderr=%s",
+                code,
+                process.stderr_path,
+            )
             conn = self._conn
             if conn is not None:
                 await conn.close()

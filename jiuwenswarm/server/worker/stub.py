@@ -24,6 +24,7 @@ from jiuwenswarm.server.ipc.protocol import (
     PROTOCOL_VERSION,
 )
 from jiuwenswarm.server.ipc.server import IpcServer
+from jiuwenswarm.server.worker.diagnostics import arm_stall_dump, cancel_stall_dump
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,8 @@ async def serve_stub(
             except (OSError, asyncio.IncompleteReadError):
                 runtime_loaded = True
                 continue
+            finally:
+                cancel_stall_dump()
             runtime_loaded = True
             if closed:
                 return
@@ -92,8 +95,10 @@ async def _serve_one(
     if ready_delay > 0:
         await asyncio.sleep(ready_delay)
     await send({"kind": KIND_READINESS, "state": "AGENT_READY", "reason": ""})
+    arm_stall_dump()
     while True:
         message = await recv()
+        arm_stall_dump()
         kind = str(message.get("kind") or "")
         if kind == KIND_SHUTDOWN:
             return True
@@ -108,8 +113,14 @@ async def _serve_one(
                 continue
             if exit_on_request:
                 raise StubExit("stub exit on request")
-            payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
-            request_id = str(payload.get("request_id") or message.get("request_id") or "")
+            payload = (
+                message.get("payload")
+                if isinstance(message.get("payload"), dict)
+                else {}
+            )
+            request_id = str(
+                payload.get("request_id") or message.get("request_id") or ""
+            )
             frame_generation = incoming if isinstance(incoming, int) else generation
             await send(
                 {

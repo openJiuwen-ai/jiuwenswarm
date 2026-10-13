@@ -18,6 +18,7 @@ from jiuwenswarm.server.ipc.protocol import KIND_HELLO, PROTOCOL_VERSION
 from jiuwenswarm.server.ipc.server import IpcServer
 from jiuwenswarm.server.ipc.stream import IpcConnection
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
+from jiuwenswarm.server.worker.diagnostics import arm_stall_dump, cancel_stall_dump
 from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBridge
 from jiuwenswarm.server.worker.signals import RuntimeSignalSink
 
@@ -235,7 +236,12 @@ async def _send_hello(
 
 
 async def _read_session(conn: IpcConnection, dispatcher: WorkerDispatcher) -> bool:
-    while True:
-        message = await conn.recv()
-        if not await dispatcher.handle(message, conn):
-            return False
+    arm_stall_dump()
+    try:
+        while True:
+            message = await conn.recv()
+            arm_stall_dump()
+            if not await dispatcher.handle(message, conn):
+                return False
+    finally:
+        cancel_stall_dump()
