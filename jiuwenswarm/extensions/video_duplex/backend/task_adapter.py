@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from typing import Any
 
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
@@ -21,6 +22,41 @@ from .qwen_omni_tools import parse_qwen_omni_tool_call
 logger = logging.getLogger(__name__)
 AGENT_QUERY_TIMEOUT = 20
 EVENT_SEND_TIMEOUT = 2
+
+
+class AgentRequestTimeoutError(TimeoutError):
+    """AgentServer unary 请求超时（与 gateway.routing.agent_request_timeout 同契约的最小子集）."""
+
+    code = "AGENT_SERVER_TIMEOUT"
+
+
+async def send_agent_request_with_timeout(
+    agent_client: Any,
+    env: Any,
+    *,
+    label: str,
+    timeout_seconds: float,
+) -> Any:
+    """限时等待 AgentServer unary 响应（gateway 薄代理同语义的最小本地实现）。
+
+    task 查询始终显式传 timeout_seconds，不涉及 gateway 的 TUI 通道超时策略；
+    仅依赖注入的 AgentServerClient.send_request，不引用 gateway 树实现。
+    """
+    try:
+        return await asyncio.wait_for(
+            agent_client.send_request(env), timeout=timeout_seconds
+        )
+    except asyncio.TimeoutError as exc:
+        logger.warning(
+            "[%s] AgentServer unary request timed out: request_id=%s method=%s "
+            "channel=%s timeout=%ss",
+            label,
+            getattr(env, "request_id", ""),
+            getattr(env, "method", ""),
+            getattr(env, "channel", ""),
+            timeout_seconds,
+        )
+        raise AgentRequestTimeoutError() from exc
 
 
 def task_identity(ws, scope):
@@ -49,7 +85,6 @@ def task_identity(ws, scope):
 async def task_agent_query(client, method, params, session, owner):
     """Read from the routed AgentServer, never from Gateway's local session tree."""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-    from jiuwenswarm.gateway.routing.e2a_proxy import send_agent_request_with_timeout
 
     client = client.get("value") if isinstance(client, dict) else client
     if client is None:

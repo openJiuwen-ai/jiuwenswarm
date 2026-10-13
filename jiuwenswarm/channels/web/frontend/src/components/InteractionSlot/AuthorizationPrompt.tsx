@@ -19,7 +19,7 @@ import { ShieldCheck, ChevronDown } from 'lucide-react';
 import type { AskUserQuestionPayload, Question, QuestionOption, UserAnswer } from '../../types';
 import { formatToolArguments } from '../../utils';
 import { classifyAuthOption, type AuthSemantic } from './promptRouting';
-import { AutoReviewerDetails, AutoReviewerStatusBadge } from '../ChatPanel/AutoReviewerStatus';
+import { AutoReviewerDetails } from '../ChatPanel/AutoReviewerStatus';
 import { permissionQuestionKind } from '../../stores/pendingQuestionQueue';
 import { translatePermissionText } from './permissionTextI18n';
 
@@ -193,7 +193,7 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   const questions = pending.questions ?? [];
   const primary = questions[0];
   const smart = pending.source === 'permission_interrupt' && permissionQuestionKind(questions) === 'smart';
-  const reviewer = primary?.reviewer_metadata;
+
   const isConfirm = pending.source === 'confirm_interrupt';
   const count = questions.length;
 
@@ -233,7 +233,7 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
 
   return (
     <div
-      className={smart ? 'auth-prompt auth-prompt--smart' : 'auth-prompt'}
+      className="auth-prompt"
       role="alertdialog"
       aria-label={title}
       data-testid="interaction-slot-auth-prompt"
@@ -276,7 +276,6 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
               ({count})
             </span>
           )}
-          {count === 1 && <AutoReviewerStatusBadge reviewer={reviewer} />}
           <ChevronDown
             className={`auth-prompt__chevron${expanded ? ' auth-prompt__chevron--open' : ''}`}
             size={14}

@@ -1462,8 +1462,16 @@ function shareImageExportError(error: unknown): string {
   return error instanceof Error && error.message ? error.message : 'share_export_render_failed';
 }
 
-/** Dedicated entrypoint used only by the server-owned headless export browser. */
-export function ShareImageExportRunner({ jobId }: { jobId: string }): JSX.Element {
+/** Dedicated document shared by server and Electron export renderers. */
+export function ShareImageExportRunner({
+  jobId,
+  sessionId,
+  locale,
+}: {
+  jobId: string | null;
+  sessionId?: string | null;
+  locale?: string | null;
+}): JSX.Element {
   const [snapshot, setSnapshot] = useState<ShareImageSnapshot | null>(null);
   const filenameRef = useRef('jiuwenswarm-share.png');
   const documentRef = useRef<HTMLDivElement>(null);
@@ -1474,7 +1482,11 @@ export function ShareImageExportRunner({ jobId }: { jobId: string }): JSX.Elemen
     runnerWindow.__SHARE_IMAGE_EXPORT_STATE = { status: 'loading_snapshot' };
     void (async () => {
       try {
-        const response = await fetch(`/share-api/jobs/${encodeURIComponent(jobId)}/snapshot`, {
+        if (locale) await i18n.changeLanguage(locale);
+        const snapshotUrl = jobId
+          ? `/share-api/jobs/${encodeURIComponent(jobId)}/snapshot`
+          : `/share-api/snapshot?session_id=${encodeURIComponent(sessionId || '')}`;
+        const response = await fetch(snapshotUrl, {
           cache: 'no-store',
           signal: abortController.signal,
         });
@@ -1499,7 +1511,7 @@ export function ShareImageExportRunner({ jobId }: { jobId: string }): JSX.Elemen
       }
     })();
     return () => abortController.abort();
-  }, [jobId]);
+  }, [jobId, sessionId, locale]);
 
   useEffect(() => {
     if (!snapshot) return;

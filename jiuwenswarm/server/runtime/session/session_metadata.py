@@ -70,7 +70,7 @@ _MIGRATION_LOCK = threading.Lock()
 _PENDING_MIGRATIONS: set[tuple[str, str]] = set()
 _MAX_PENDING_MIGRATIONS = 64
 _COLLECT_LOCK = threading.Lock()
-_COLLECT_INFLIGHT: dict[tuple[str, str], Future] = {}
+_COLLECT_INFLIGHT: dict[tuple[str, str, bool], Future] = {}
 
 # 内存缓存: 解决异步写入时读取到陈旧磁盘数据的竞态条件
 _METADATA_CACHE: dict[str, dict[str, Any]] = {}
@@ -1958,9 +1958,11 @@ def get_all_sessions_metadata(
 
 def collect_all_sessions_metadata(
     user_id: str | None = None,
+    *,
+    enable_writeback: bool = True,
 ) -> list[dict[str, Any]]:
-    """Share only overlapping scans; later requests still read fresh disk state."""
-    key = (str(get_agent_sessions_dir()), user_id or "")
+    """Share overlapping scans with the same metadata writeback policy."""
+    key = (str(get_agent_sessions_dir()), user_id or "", enable_writeback)
     with _COLLECT_LOCK:
         pending = _COLLECT_INFLIGHT.get(key)
         owner = pending is None
@@ -1970,7 +1972,11 @@ def collect_all_sessions_metadata(
     if not owner:
         return copy.deepcopy(pending.result())
     try:
-        result = _collect_all_sessions_metadata(user_id)
+        result = (
+            _collect_all_sessions_metadata(user_id)
+            if enable_writeback
+            else _collect_all_sessions_metadata(user_id, enable_writeback=False)
+        )
         pending.set_result(result)
         return copy.deepcopy(result)
     except BaseException as exc:
@@ -1995,6 +2001,8 @@ def _apply_batch_projection(
 
 def _collect_all_sessions_metadata(
     user_id: str | None = None,
+    *,
+    enable_writeback: bool = True,
 ) -> list[dict[str, Any]]:
     """收集全部会话元数据(不分页、不排序),供项目统计与置顶会话聚合使用。
 
@@ -2075,7 +2083,9 @@ def _collect_all_sessions_metadata(
                 dir_to_projects=dir_to_projects,
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
-                background_writeback=not user_id and not state.get("write_blocked"),
+                background_writeback=(
+                    enable_writeback and not user_id and not state.get("write_blocked")
+                ),
             )
         if meta.get("ephemeral") is True:
             continue

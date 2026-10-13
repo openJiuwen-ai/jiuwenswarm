@@ -85,6 +85,7 @@ class EventRenderer:
     def prepare_interaction(self) -> None:
         """Clear transient status before the Runtime asks the user a question."""
         if self.output_format == "human":
+            self._human_ui.end_reasoning()
             self._human_ui.clear_status()
 
     def live_input_ready(self, request_text: str) -> None:
@@ -128,6 +129,8 @@ class EventRenderer:
         request_id: str,
         show_completion: bool = True,
     ) -> None:
+        if self.output_format == "human":
+            self._human_ui.end_reasoning()
         if self.output_format == "json":
             document = {
                 "ok": not self.failed,
@@ -156,6 +159,7 @@ class EventRenderer:
         if payload.get("steering_generation_start") and self._wrote_delta:
             self._pending_output_break = True
         if event_type == "chat.delta":
+            self._human_ui.end_reasoning()
             if self._pending_output_break:
                 self.stdout.write("\n\n")
                 self._pending_output_break = False
@@ -164,6 +168,7 @@ class EventRenderer:
             self.stdout.flush()
             self._wrote_delta = True
         elif event_type == "chat.final":
+            self._human_ui.end_reasoning()
             if text and not self._wrote_delta:
                 self._human_ui.begin_assistant()
                 self.stdout.write(text)
@@ -177,6 +182,8 @@ class EventRenderer:
                 self._human_ui.begin_assistant()
                 self._human_ui.reasoning(text)
         elif event_type in {"chat.tool_call", "chat.tool_result"}:
+            if not teammate:
+                self._human_ui.end_reasoning()
             if self._wrote_delta and not teammate:
                 self._pending_output_break = True
             if self.show_tools:

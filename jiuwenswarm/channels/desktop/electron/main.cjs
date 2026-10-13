@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { createShareImageExporter } = require('./share_image_export.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
 
 const BACKEND_HOST = '127.0.0.1';
@@ -2461,6 +2462,13 @@ function registerIpcHandlers() {
     await discardBlobSaveTransfer(transfer);
     return true;
   });
+  registerHandler('desktop:export-share-image', createShareImageExporter({
+    BrowserWindow,
+    getFrontendUrl: () => currentFrontendUrl,
+    getCookies: url => mainWindow.webContents.session.cookies.get({ url }),
+    uniqueDownloadPath,
+    showItemInFolder: file => shell.showItemInFolder(file),
+  }));
   registerHandler('desktop:download-file', async (url, filename) => {
     const targetUrl = new URL(String(url), currentFrontendUrl);
     // 仅允许 http/https：渲染器传入 file: 等本地协议会把任意本地文件写进下载目录。

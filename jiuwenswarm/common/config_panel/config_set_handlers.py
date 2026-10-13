@@ -38,9 +38,11 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
 )
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
+    DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
     SWARMFLOW_BUDGET_CONFIG_PATH,
     SWARMFLOW_ENABLED_CONFIG_PATH,
+    SWARMFLOW_WORKTREE_CONFIG_PATH,
     get_config,
     get_config_raw,
     replace_teams_in_config,
@@ -541,6 +543,12 @@ def flatten_swarmflow_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     flat = {"swarmflow_enabled": "true" if enabled else "false"}
     if budget is not None:
         flat["swarmflow_budget"] = str(budget)
+    worktree_enabled = get_nested_config_value(
+        raw,
+        SWARMFLOW_WORKTREE_CONFIG_PATH,
+        DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
+    )
+    flat["swarmflow_worktree"] = "true" if worktree_enabled else "false"
     return flat
 
 

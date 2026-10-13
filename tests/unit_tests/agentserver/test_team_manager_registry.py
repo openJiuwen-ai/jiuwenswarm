@@ -883,6 +883,64 @@ async def test_prepare_session_switch_keeps_other_local_sessions_running(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "organization_id", "should_stop"),
+    [("local", "org-1", False), ("local", None, True), ("distributed", "org-1", True)],
+)
+async def test_session_switch_preserves_only_local_organization_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    organization_id: str | None,
+    should_stop: bool,
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_config",
+        lambda: {"team": {"runtime": {"mode": mode}}},
+    )
+    manager = _TeamManagerHarness()
+    backend = SimpleNamespace(org_task_manager=SimpleNamespace(organization_id=organization_id))
+    entry = SimpleNamespace(current_session_id="sess-owner", agent=SimpleNamespace(team_backend=backend))
+    pool = {"team-owner": entry}
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager._runner_team_runtime_manager",
+        lambda _runner: SimpleNamespace(pool=SimpleNamespace(get=AsyncMock(side_effect=pool.get))),
+    )
+    monkeypatch.setattr(
+        manager,
+        "_find_paused_runner_team_name",
+        AsyncMock(side_effect=lambda session_id: "team-owner" if session_id == "sess-owner" else None),
+    )
+
+    async def stop_runtime(*_args):
+        pool.pop("team-owner")
+        return True
+
+    stop = AsyncMock(side_effect=stop_runtime)
+    cleanup = AsyncMock()
+    monkeypatch.setattr(manager, "_stop_runner_team_runtime", stop)
+    monkeypatch.setattr(manager, "_stop_runner_team_agent_transport", AsyncMock())
+    monkeypatch.setattr(manager, "_finalize_runtime_cleanup", cleanup)
+    monkeypatch.setattr(manager, "_dispatch_swarmflow_controller", AsyncMock())
+    monkeypatch.setattr(manager, "_stop_stale_distributed_sessions", AsyncMock())
+
+    await manager.prepare_session_switch("sess-other", previous_session_id="sess-owner")
+    await manager.prepare_session_switch("sess-owner", previous_session_id="sess-other")
+
+    if should_stop:
+        stop.assert_awaited_once()
+        cleanup.assert_awaited_once()
+        assert "team-owner" not in pool
+    else:
+        stop.assert_not_awaited()
+        cleanup.assert_not_awaited()
+        assert pool["team-owner"].agent.team_backend is backend
+
+        # Explicit shutdown still releases a parked organization Team.
+        assert await manager.stop_paused_session_runtime("sess-owner", offload=False)
+        stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_find_paused_runner_team_name_normalizes_session_and_team_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

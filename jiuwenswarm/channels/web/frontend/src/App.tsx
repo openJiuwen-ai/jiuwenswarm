@@ -1674,12 +1674,22 @@ function AppContent({
         // session_swarmflow_config 是上次会话持久化的配置，刷新/重进后读回。
         const sfConfig = (session as unknown as Record<string, unknown> | null)?.session_swarmflow_config;
         if (sfConfig && typeof sfConfig === 'object') {
-          const cfg = sfConfig as { enable_swarmflow?: boolean; swarmflow_budget?: number | null };
+          const cfg = sfConfig as {
+            enable_swarmflow?: boolean;
+            swarmflow_budget?: number | null;
+            swarmflow_worktree?: boolean;
+          };
           if (cfg.enable_swarmflow) {
             useSessionStore.getState().setSwarmflowActive(
               targetSessionId,
               true,
               cfg.swarmflow_budget ?? undefined,
+            );
+          }
+          if (cfg.swarmflow_worktree !== undefined) {
+            useSessionStore.getState().setSwarmflowWorktree(
+              targetSessionId,
+              cfg.swarmflow_worktree,
             );
           }
         }
@@ -2858,6 +2868,9 @@ function AppContent({
       if (pendingRuntime?.enableSwarmflow) {
         sessionStore.setSwarmflowActive(newSid, true, pendingRuntime.swarmflowBudget);
       }
+      if (pendingRuntime?.swarmflowWorktree !== undefined) {
+        sessionStore.setSwarmflowWorktree(newSid, pendingRuntime.swarmflowWorktree);
+      }
       if (usePlanStore.getState().isActive(NEW_CONVERSATION_ID)) {
         usePlanStore.getState().setActive(newSid, true, {
           explicitEntry: usePlanStore.getState().hasPendingExplicitEntry(NEW_CONVERSATION_ID),
@@ -3021,6 +3034,12 @@ function AppContent({
         const newConvSwarmflow = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
         if (newConvSwarmflow?.enableSwarmflow) {
           useSessionStore.getState().setSwarmflowActive(newSid, true, newConvSwarmflow.swarmflowBudget);
+        }
+        if (newConvSwarmflow?.swarmflowWorktree !== undefined) {
+          useSessionStore.getState().setSwarmflowWorktree(
+            newSid,
+            newConvSwarmflow.swarmflowWorktree,
+          );
         }
         pendingNewConversationRef.current = false;
         useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
@@ -3598,6 +3617,14 @@ function AppContent({
     shareExportMonitorTokensRef.current.set(currentSessionId, token);
     setShareExportSessionActive(currentSessionId, true);
     try {
+      if (window.jiuwenDesktop?.isElectron) {
+        const saved = await window.jiuwenDesktop.exportShareImage(
+          currentSessionId,
+          i18n.resolvedLanguage ?? i18n.language,
+        );
+        if (saved) showSaveToast();
+        return;
+      }
       const createResponse = await fetch('/share-api/jobs', {
         method: 'POST',
         cache: 'no-store',
@@ -3623,7 +3650,16 @@ function AppContent({
         setShareExportSessionActive(currentSessionId, false);
       }
     }
-  }, [i18n.language, i18n.resolvedLanguage, isPaused, isProcessing, monitorAndSaveShareImageJob, setShareExportSessionActive, t]);
+  }, [
+    i18n.language,
+    i18n.resolvedLanguage,
+    isPaused,
+    isProcessing,
+    monitorAndSaveShareImageJob,
+    setShareExportSessionActive,
+    showSaveToast,
+    t,
+  ]);
 
   const routeSessionMissing = routeSessionId !== null
     && initialDataLoaded

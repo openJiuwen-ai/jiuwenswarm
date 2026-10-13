@@ -734,6 +734,13 @@ def build_permission_rail(
             )
 
         installed_permission_rail: Any | None = None
+        installed_global_permissions = [deepcopy(inline_permissions)]
+
+        def _replace_installed_global_permissions(permissions: dict[str, Any]) -> None:
+            """Publish the global policy installed by the latest session reload."""
+            installed_global_permissions[0] = (
+                deepcopy(permissions) if isinstance(permissions, dict) else {}
+            )
 
         def _get_installed_permissions(session_id: str | None = None) -> dict[str, Any]:
             """Expose only the policy committed by the session adapter.
@@ -755,7 +762,7 @@ def build_permission_rail(
             if not enable_auto_permission:
                 sid = _effective_session_id(session_id)
                 return compose_host_effective_permissions(
-                    global_permissions=inline_permissions,
+                    global_permissions=installed_global_permissions[0],
                     user_permissions=load_user_permissions(),
                     session_permissions=load_session_permissions(sid),
                     session_id=sid,
@@ -829,6 +836,10 @@ def build_permission_rail(
                 _persist_exact_allow_rule if enable_auto_permission else None
             ),
         )
+        if not enable_auto_permission:
+            permission_rail.replace_installed_global_permissions = (
+                _replace_installed_global_permissions
+            )
         if enable_auto_permission:
             from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
                 normalize_auto_permission_options,

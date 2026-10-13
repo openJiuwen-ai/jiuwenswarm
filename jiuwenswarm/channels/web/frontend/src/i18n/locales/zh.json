@@ -776,6 +776,17 @@
       "statsPendingReviews": "待评审"
     }
   },
+  "sessionAssets": {
+    "title": "素材",
+    "empty": "上传文件或生成内容后，会出现在这里；可以重命名，并在输入框里用 @名称 引用。",
+    "rename": "重命名",
+    "save": "保存",
+    "cancel": "取消",
+    "invalidName": "名称不能为空，最多 60 个字符，不能包含 @ 或换行",
+    "pickTitle": "选择素材",
+    "referHint": "输入框里输入 @ 引用",
+    "reference": "已引用"
+  },
   "artifacts": {
     "title": "所有产物",
     "tab": "产物",
@@ -4396,6 +4407,12 @@
     "budgetPlaceholder": "输入数字",
     "budgetActualHint": "本次配置上限：{{count}} tokens",
     "workflowList": "工作流列表",
+    "worktreeToggleLabel": "Worktree 隔离",
+    "worktreeGuideTitle": "为 Worktree 隔离选择项目目录",
+    "worktreeGuideDescription": "Worktree 隔离已开启：动态工作流中需要修改代码的任务，可以选择在项目的独立工作树中进行，不影响主仓库。工作树以项目目录为源创建，请点击高亮处的「项目」选择目录；暂不需要隔离时，可在动态工作流设置中关闭该开关。",
+    "worktreeGuideHint": "点击「项目」选择目录",
+    "worktreeGuideAcknowledge": "我知道了",
+    "worktreeGuideSkip": "跳过",
     "verifyReviewing": "评审中…",
     "verifyReviewingShort": "评审中",
     "verifyPass": "✓ 通过",

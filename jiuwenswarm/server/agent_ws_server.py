@@ -200,6 +200,9 @@ from jiuwenswarm.server.runtime.gateway_adapter import (
     SessionAdapter,
     WorkspaceFileAdapter,
 )
+from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
+    reload_runtime_after_config_save,
+)
 
 logger = logging.getLogger(__name__)
 _MANUAL_COMPACT_PROCESSOR_TYPES = [
@@ -1164,7 +1167,7 @@ class AgentWebSocketServer:
             MemoryAdapter(),
             ProjectAdapter(runtime_probe=self._execution_runtime),
             HarmonyOSAdapter(),
-            ConfigAdapter(),
+            ConfigAdapter(on_config_saved=self._reload_after_config_save),
         ):
             self._adapter_registry.register(adapter)
         # AgentServer-side tokenizer cache/download service. The Gateway only
@@ -2035,7 +2038,7 @@ class AgentWebSocketServer:
                     MemoryAdapter(),
                     ProjectAdapter(runtime_probe=self._execution_runtime),
                     HarmonyOSAdapter(),
-                    ConfigAdapter(),
+                    ConfigAdapter(on_config_saved=self._reload_after_config_save),
                 ):
                     self._adapter_registry.register(adapter)
 
@@ -11320,6 +11323,23 @@ class AgentWebSocketServer:
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
+
+    async def _reload_after_config_save(
+        self,
+        updated_keys: Any = None,
+        *,
+        env_updates: dict[str, Any] | None = None,
+        config_payload: dict[str, Any] | None = None,
+        reload_options: dict[str, Any] | None = None,
+    ) -> bool:
+        """Apply a ConfigAdapter save to the agents in this process."""
+        return await reload_runtime_after_config_save(
+            self._agent_manager,
+            updated_keys,
+            env_updates=env_updates,
+            config_payload=config_payload,
+            reload_options=reload_options,
+        )
 
     async def _handle_agent_reload_config(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         try:

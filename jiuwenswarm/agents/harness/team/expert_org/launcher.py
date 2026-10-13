@@ -372,6 +372,30 @@ class JiuwenExpertTeamLauncher:
                     frame_sequence=frame_sequence,
                     source=source,
                 )
+                frame_sequence += 1
+            if source in {"org_root_background", "org_root_delivery"}:
+                from jiuwenswarm.server.runtime.session.session_metadata import (
+                    get_session_metadata,
+                )
+
+                owner_team_id = str(
+                    get_session_metadata(session_id, enable_writeback=False).get("team_name") or ""
+                ).strip()
+                if team_id == owner_team_id:
+                    await self.push_expert_payload(
+                        {
+                            "event_type": "chat.processing_status",
+                            "is_processing": False,
+                            "is_complete": True,
+                            "team_id": team_id,
+                        },
+                        team_id=team_id,
+                        session_id=session_id,
+                        channel_id=resolved_channel_id,
+                        round_id=round_id,
+                        frame_sequence=frame_sequence,
+                        source=source,
+                    )
             return True
         except Exception as exc:
             logger.warning(

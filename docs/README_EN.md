@@ -66,6 +66,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">Web conversation entry point, supporting message sending, new sessions, and planning / performance / cluster mode switching.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Process CLI Session Queries</strong></td>
+      <td width="28%"><a href="en/ProcessCLISessionQueries.md">Process CLI Session Queries</a></td>
+      <td width="50%">Read full local session IDs, search and paginate, select the latest session, and resume a task in a new process.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Agent</strong></td>
       <td width="28%"><a href="en/Agent.md">Agent</a></td>
       <td width="50%">Agents with different roles, workspace creation, and workspace management flows.</td>

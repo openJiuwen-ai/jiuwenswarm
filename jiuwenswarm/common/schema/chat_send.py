@@ -204,3 +204,13 @@ class ChatSendParams(TypedDict, total=False):
     Only meaningful when ``enable_swarmflow`` is True. Absent means use the
     server default budget.
     """
+
+    swarmflow_worktree: NotRequired[bool]
+    """Session-level worktree isolation switch for swarmflow workers.
+
+    When True the team is armed with a worktree manager so
+    ``agent(options={"isolation": "worktree"})`` succeeds; when False the
+    manager is withheld and isolation calls fail fast. Absent keeps the
+    session's persisted value (first request falls back to the team config's
+    ``worktree`` section). Requires a project directory to be usable.
+    """

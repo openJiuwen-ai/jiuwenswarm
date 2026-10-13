@@ -76,7 +76,7 @@ def apply_trace_header(
         if str(key).lower() != "x-trace-id"
     } | {TRACE_ID_HEADER: resolved}
 
-from gateway_protocol.agent_client import AgentServerClient
+from jiuwenswarm.common.client.agent_client import AgentServerClient
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.models import E2AEnvelope
