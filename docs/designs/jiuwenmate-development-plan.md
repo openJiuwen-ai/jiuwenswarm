@@ -9,8 +9,8 @@
 | Swarm 接入基线 | 本地 `jiuwenmate`，commit `f0a69728c`；新版业务模块从空数据开始开发，已有个人版与旧版数据不作为初始化来源 |
 | 现有实现参考 | 可参考现有个人版飞书适配器、Template 和资源管理接口；新版 AI 同事独立开发、独立保存数据 |
 | 范围 | Swarm 侧本轮开发及跨仓依赖：同事管理、执行调度、飞书群聊协作、会话存储、结果投递与续做；确认恢复、知识版本与来源失效、主动学习和扩展执行模式暂不纳入 |
-| 更新日期 | 2026-10-12 |
-| 当前进度 | 新版主链路完成 0/17 项，待验收 3 项（SW-01～SW-03 宿主组件通过，联合验收待完成）；扩展 0/1 项。前端同事页仍为页面内状态，小九需待 SW-10 接入后显示。现有通用能力可供参考，不计作新版任务完成 |
+| 更新日期 | 2026-10-13 |
+| 当前进度 | 新版主链路完成 0/17 项，待验收 4 项（SW-01～SW-04 宿主组件通过，联合验收待完成）；扩展 0/1 项。前端同事页仍为页面内状态，小九需待 SW-10 接入后显示。现有通用能力可供参考，不计作新版任务完成 |
 
 ## 1. 怎么读这份计划
 
@@ -58,7 +58,7 @@
 | SW-01 | 固定 SDK 版本、建立公开协议适配与契约测试；新增 `spec_provider.py`、`execution_models.py`；核对既有依赖声明位置 | 能构造合法 Spec / Context / RequestInput；字段错配明确拒绝；识别未开放能力，不能绕过 core 校验执行；测试替身与真实 SDK 类型一致 | 无 | 待验收 | 常钰聪 | 宿主组件通过，联合验收待完成。提交 `7a78a10f`。开发验证使用 huenrui_agent-core `12cf92bd71dedb3c39309b72fd8519b5ad9134e6`；该版本固定仅保留在本地 `pyproject.toml` / `uv.lock`，不随提交入库；宿主仅开放 `construction`，`workspace_read` 待 SW-14。`.venv/bin/python -m pytest tests/unit_tests/server/runtime/persistent_agents/test_core_contract.py -o addopts="--asyncio-mode=auto"`：32 passed。core 正式执行仍停在 PA-10（哨兵测试覆盖），续做停在 PA-18；对端 PA-01～PA-05 |
 | SW-02 | 新建 AI 同事定义、存储和管理服务；调用现有 Template、模型和能力管理接口 | 自定义创建、首次使用自动创建默认小九且不重复创建、设置读取 / 发布、删除可用；同事与 Template 一对一；新版数据独立保存；Request 固定配置快照，新请求用新配置 | SW-01 | 待验收 | 常钰聪 | 宿主组件通过，联合验收待完成。提交 `5f12ea8a`。新增 `persistent_agents/models.py`、`repository.py`、`service.py`；数据位于 `~/.jiuwenswarm/jiuwenmate/`（SQLite 权限 0600，Template 在 `templates/<agent_id>/`，不进入个人版专家市场）；模型经现有模型目录解析，配置快照含凭据，对外视图脱敏；Skill / 连接器 / 插件仅记录选择，装配待 SW-14；管理接口待 SW-10，当前无入口调用 `ensure_default_colleague`，页面打开后尚不显示小九。`.venv/bin/python -m pytest tests/unit_tests/server/runtime/persistent_agents -o addopts="--asyncio-mode=auto"`：54 passed（SW-02 22 项） |
 | SW-03 | 新建 Session / Request / Execution 关联仓库及新版群会话映射 | 同一 Agent 同一群稳定复用 Session；跨 Agent、跨群、Web 与 IM 私聊隔离；补充消息是新 Request；重启能查回队列和已派发任务；不会因字符串截断造成 Session 碰撞 | SW-01 | 待验收 | 常钰聪 | 宿主组件通过，联合验收待完成。新增 `persistent_agents/execution_repository.py`（Session / Request / Execution）、`group_chat_repository.py`（平台群 → `group_chat_id`，SW-11 在同文件扩展公共记录与搜索）、`sqlite_store.py`（共用 SQLite 文件与事务）；`execution_models.py` 补充 `ConversationRef`、`SessionRecord`、`RequestState`。Session 按 (namespace, agent, 会话类型, 渠道, 会话键) 分列唯一约束定位，`session_id` 随机生成，不拼接或截断；同一来源事件按 (namespace, agent, source_ref) 幂等受理；同一 Session 同时仅允许一个已派发 Request（串行调度由 SW-07 负责）。SW-02 联调：受理时固定 `current_snapshot` 版本，重启后由存储记录重建合法 core 调用上下文。删除同事时的排队 Request 处理待 SW-07。`.venv/bin/python -m pytest tests/unit_tests/server/runtime/persistent_agents -o addopts="--asyncio-mode=auto"`：70 passed（SW-03 16 项） |
-| SW-04 | 实现 `ports/commit.py` 与事件、候选输出存储；队列由 AgentServer 生命周期持有 | 重交 event_id 不重复；普通日志保存失败不阻断后续关键事件；关键事件落盘失败抛异常；final 缺少候选内容时失败；候选和 final 重交后保持原 ID；读日志校验归属并按序返回 | SW-03 | 待开始 | 常钰聪 | PA-04、PA-08、PA-15、PA-17 |
+| SW-04 | 实现 `ports/commit.py` 与事件、候选输出存储；队列由 AgentServer 生命周期持有 | 重交 event_id 不重复；普通日志保存失败不阻断后续关键事件；关键事件落盘失败抛异常；final 缺少候选内容时失败；候选和 final 重交后保持原 ID；读日志校验归属并按序返回 | SW-03 | 待验收 | 常钰聪 | 宿主组件通过，联合验收待完成。新增 `persistent_agents/ports/commit.py`（`HostCommitPort`、`CommitQueue`）；`execution_repository.py` 增加 `execution_events`、`candidate_outputs` 两表及 `record_events`、`read_execution_log`、`candidate_output`。关键事件（tool.intent / execution.paused / execution.final）同步落盘，失败抛出；普通事件经后台队列写入，失败记日志留缺口；final 在同一事务内补存队列中尚未落盘的引用候选，缺少候选时拒绝且不保存 final；按 event_id 去重、同 ID 异内容拒绝；output_id 不可被其他事件复用；每个 Execution 至多一个 final / paused。队列提供 `start` / `aclose`，由 SW-07 在 AgentServer 启停时持有，当前尚未接线。`.venv/bin/python -m pytest tests/unit_tests/server/runtime/persistent_agents -o addopts="--asyncio-mode=auto"`：86 passed（SW-04 16 项）；core 正式执行仍停在 PA-10，与真实执行的联调待 PA-04、PA-08 |
 | SW-05 | 实现 `ports/window_backend.py`，配置持久化后端、Session 隔离、保留期和删除清理 | 服务重启数据仍在；Agent 文件工具读不到窗口；A Session 不能读写 B；core 能加载 / 保存状态和归档；禁止内存后端被误当生产持久化 | SW-01 | 待开始 | 常钰聪 | PA-10～PA-12 |
 | SW-06 | 实现 `ports/budget.py`，模型准入、额度预留、用量结算和查询 | 同一群多个 Agent 同时申请不会超卖；重复 report 不重复计费；拒绝时不调用模型；未知用量不当作零；额度恢复有可验证依据供续做使用 | SW-03 | 待开始 | 常钰聪 | PA-05、PA-07、PA-11 |
 | SW-07 | 新建 AI 同事管理器、Session 排队器和执行驱动 | 同一 Session 串行，不同 Session 可在容量内并发并使用不同实例；控制只作用于目标 Execution；流结束和清理完成后才释放占用；新 Request 与非确认续做走同一调度入口；设置全局 / Agent 并发和排队上限 | SW-01、SW-03 | 待开始 | 常钰聪 | 正式执行联调依赖 SW-04～SW-06 和 PA-05、PA-06、PA-10；续做再联调 PA-17、PA-18 |
@@ -153,7 +153,7 @@ python -m pytest tests/integration_tests/persistent_agents -q
 
 | 交付节点 | 状态 | 负责人 | 验收证据或待办 |
 | --- | --- | --- | --- |
-| S0：契约与宿主基线 | 进行中 | 常钰聪 | SW-01～SW-03 宿主组件通过；事件、窗口后端和预算验证待 SW-04～SW-06 |
+| S0：契约与宿主基线 | 进行中 | 常钰聪 | SW-01～SW-04 宿主组件通过；窗口后端和预算验证待 SW-05、SW-06 |
 | S1：私聊闭环 | 待开始 | 常钰聪 | 等待 PA-05、PA-06、PA-08、PA-10 的正式执行链路接通后联合验收 |
 | S2a：飞书群协作 | 待开始 | 常钰聪 | 群消息、主动响应、真实 @ 与隔离验证 |
 | S2b：资源、定时任务与管理 | 待开始 | 常钰聪 | Agent 资源隔离、定时触发和管理查询 |
@@ -172,6 +172,7 @@ python -m pytest tests/integration_tests/persistent_agents -q
 | 2026-10-12 | 登记 SW-01（`7a78a10f`）、SW-02（`5f12ea8a`）提交；核对前端未接入同事服务 | SDK 版本固定不随提交入库；页面打开不显示小九，入口登记至 SW-10；完成数仍为 0，待验收 2 项 |
 | 2026-10-12 | 指定负责人：其余任务与交付节点为常钰聪，SW-11 为闫祉君 | 原「待分配」24 处；完成数不变 |
 | 2026-10-12 | SW-03：新增 Session / Request / Execution 仓库与新版群会话映射，与 SW-02 配置快照联调 | 16 项测试通过，全目录 70 项通过；状态为待验收，完成数仍为 0，待验收 3 项 |
+| 2026-10-13 | SW-04：新增 `ports/commit.py` 与事件、候选输出存储 | 16 项测试通过，全目录 86 项通过；仅使用替身预算端口，队列尚未接入 AgentServer；状态为待验收，完成数仍为 0，待验收 4 项 |
 
 ## 5. 新旧版本隔离与公共能力复用
 
