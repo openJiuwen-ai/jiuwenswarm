@@ -18,13 +18,13 @@ from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from jiuwenswarm.server.runtime.persistent_agents.models import (
+from jiuwenswarm.server.jiuwenmate.models import (
     ColleagueDefinition,
     ColleagueSettings,
     PersistentAgentError,
 )
-from jiuwenswarm.server.runtime.persistent_agents.spec_provider import ConfigSnapshot
-from jiuwenswarm.server.runtime.persistent_agents.sqlite_store import SQLiteStore, private_dir
+from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot
+from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore, private_dir
 from openjiuwen.harness.resources.extension_loader import find_agent_template_manifest, load_agent_template_package
 
 _SCHEMA = """

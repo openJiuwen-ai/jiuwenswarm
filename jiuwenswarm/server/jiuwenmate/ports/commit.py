@@ -16,9 +16,9 @@ from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime, timezone
 
-from jiuwenswarm.server.runtime.persistent_agents.execution_models import PersistentContractError
-from jiuwenswarm.server.runtime.persistent_agents.execution_repository import ExecutionRepository
-from jiuwenswarm.server.runtime.persistent_agents.models import PersistentAgentError, require_identifier
+from jiuwenswarm.server.jiuwenmate.execution_models import PersistentContractError
+from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
+from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType, ExecutionContext
 
 logger = logging.getLogger(__name__)

@@ -13,7 +13,7 @@ from typing import Any, Literal, get_args, get_origin
 
 from pydantic import ValidationError
 
-from jiuwenswarm.server.runtime.persistent_agents.execution_models import (
+from jiuwenswarm.server.jiuwenmate.execution_models import (
     ExecutionRecord,
     PersistentContractError,
     RequestRecord,

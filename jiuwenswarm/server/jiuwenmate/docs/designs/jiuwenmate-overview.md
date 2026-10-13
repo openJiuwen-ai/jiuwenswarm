@@ -7,7 +7,7 @@
 | 类型 | 目标与当前能力的设计概览；目标流程尚未全部贯通，不能作为已开放接口的说明 |
 | 最近一次修订日期 | 2026-10-13 |
 | 责任人 | henry hu |
-| 所属模块 | `jiuwenswarm.server.jiuwenmate`；现有业务基础位于 `server/runtime/persistent_agents/` |
+| 所属模块 | `jiuwenswarm.server.jiuwenmate`；代码与设计文档位于 `server/jiuwenmate/` |
 | 编写依据 | [架构模板](../templates/architecture-template.md)、[概览模板](../templates/overview-template.md)与[文档约定](../AGENTS.md) |
 | 详细设计 | [JiuwenMate 服务端详细架构设计](jiuwenmate-architecture.md) |
 | 协作模块 | agent-core 仓的 [Persistent Agent 概览](../../../../../../agent-core/openjiuwen/harness/persistent_agent/docs/designs/persistent-agent-overview.md)及[详细架构](../../../../../../agent-core/openjiuwen/harness/persistent_agent/docs/designs/persistent-agent-architecture.md) |
@@ -298,15 +298,15 @@ flowchart TB
 
 | 已有基础与依据 | 已有行为 | 待补齐责任及能力限制 |
 | --- | --- | --- |
-| [同事管理服务](../../../runtime/persistent_agents/service.py)、[业务模型](../../../runtime/persistent_agents/models.py) | 创建、默认初始化、独立设置、发布、查询和删除；公开视图不交出内部 Spec 或模型凭据 | 入口与授权职责接入真实用户管理；当前不能由页面创建或启停状态推断后台已执行 |
-| [配置与岗位资料存储](../../../runtime/persistent_agents/repository.py) | 同事和固定版本保存，发布内容与当前关系在数据库事务内确认；岗位资料独立维护 | 配置职责核对跨资料并发与中断一致性、部署访问保护及在途引用保留；不能扩展为全链路事务 |
-| [版本及调用准备](../../../runtime/persistent_agents/spec_provider.py)、[请求执行关联](../../../runtime/persistent_agents/execution_models.py) | 校验原配置、归属、来源和执行关联，准备单次现场；宿主目前仅开放 `construction`，拒绝续做和未开放模式 | 请求执行职责补齐可靠仓库、真实宿主端口及执行驱动；具备类型和准备函数不等于正式任务可运行 |
-| [现有组件测试](../../../../../tests/unit_tests/server/runtime/persistent_agents/) | 覆盖默认初始化、发布前后行为、范围隔离、公开信息裁剪和契约拒绝等场景 | 这些用例不能代替产品入口、真实执行和平台投递的联合验收；本次未重跑这些测试 |
+| [同事管理服务](../../service.py)、[业务模型](../../models.py) | 创建、默认初始化、独立设置、发布、查询和删除；公开视图不交出内部 Spec 或模型凭据 | 入口与授权职责接入真实用户管理；当前不能由页面创建或启停状态推断后台已执行 |
+| [配置与岗位资料存储](../../repository.py) | 同事和固定版本保存，发布内容与当前关系在数据库事务内确认；岗位资料独立维护 | 配置职责核对跨资料并发与中断一致性、部署访问保护及在途引用保留；不能扩展为全链路事务 |
+| [版本及调用准备](../../spec_provider.py)、[请求执行关联](../../execution_models.py) | 校验原配置、归属、来源和执行关联，准备单次现场；宿主目前仅开放 `construction`，拒绝续做和未开放模式 | 请求执行职责补齐可靠仓库、真实宿主端口及执行驱动；具备类型和准备函数不等于正式任务可运行 |
+| [现有组件测试](../../../../../tests/unit_tests/server/jiuwenmate/) | 覆盖默认初始化、发布前后行为、范围隔离、公开信息裁剪和契约拒绝等场景 | 这些用例不能代替产品入口、真实执行和平台投递的联合验收；本次未重跑这些测试 |
 | [通用协议入口](../../../agent_ws_server.py)、[会话协调器](../../../../runtime/session/coordinator.py)、[会话调度器](../../../../runtime/session/work_scheduler.py) | 运行就绪检查、通用会话内串行、会话间并行、控制及关闭基础 | 数字同事接收与调度职责明确持久请求、业务顺序、控制与容量；通用聊天采用最新输入优先，不能直接当作业务 FIFO |
 | [飞书适配器](../../../../gateway/channel_manager/im_platforms/feishu/feishu_connect.py)、[定时控制器](../../../../gateway/cron/controller.py) | 现有渠道收发与定时执行基础 | 渠道与计划职责补齐新版绑定、可靠分发、公开记录、触发去重及业务结果交接，不继承旧版全部语义 |
 | [同事前端入口](../../../../channels/web/frontend/src/features/jiuwenmate/JiuwenMateApp.tsx) | 创建、配置与办公室页面已有交互基础，使用页面内状态并从空同事列表初始化 | 用户入口需调用后台默认初始化、加载列表与真实状态；前端存在不等于后台管理与工作闭环已接通 |
 
-上述业务基础位于 `server/runtime/persistent_agents/`，本文所在 `server/jiuwenmate/` 当前承载设计文档，不用目录名推断运行模块已经迁移。既有个人版、集群模式和旧版同事数据与入口保留原语义；新版从独立数据与路由接入，不读取或转换旧版同事资料作为初始化来源。
+上述业务代码与本文同在 `server/jiuwenmate/`。既有个人版、集群模式和旧版同事数据与入口保留原语义；新版从独立数据与路由接入，不读取或转换旧版同事资料作为初始化来源。
 
 ### 5.2 能力开放条件
 

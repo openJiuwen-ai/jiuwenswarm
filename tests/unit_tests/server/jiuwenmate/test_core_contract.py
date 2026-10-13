@@ -7,14 +7,14 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
-from jiuwenswarm.server.runtime.persistent_agents.execution_models import (
+from jiuwenswarm.server.jiuwenmate.execution_models import (
     AccessSnapshot,
     ExecutionRecord,
     PersistentContractError,
     RequestRecord,
     build_execution_context,
 )
-from jiuwenswarm.server.runtime.persistent_agents.spec_provider import (
+from jiuwenswarm.server.jiuwenmate.spec_provider import (
     HOST_OPEN_FEATURES,
     ConfigSnapshot,
     build_invocation,

@@ -16,8 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
-from jiuwenswarm.server.runtime.persistent_agents.execution_models import PersistentContractError
-from jiuwenswarm.server.runtime.persistent_agents.models import (
+from jiuwenswarm.server.jiuwenmate.execution_models import PersistentContractError
+from jiuwenswarm.server.jiuwenmate.models import (
     CapabilitySelection,
     ColleagueDefinition,
     ColleagueSettings,
@@ -26,8 +26,8 @@ from jiuwenswarm.server.runtime.persistent_agents.models import (
     PersistentAgentError,
     require_identifier,
 )
-from jiuwenswarm.server.runtime.persistent_agents.repository import PersistentAgentRepository, TemplateStore
-from jiuwenswarm.server.runtime.persistent_agents.spec_provider import ConfigSnapshot, publish_spec
+from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
+from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, publish_spec
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.harness.schema.deep_agent_spec import TeamModelConfig
 
