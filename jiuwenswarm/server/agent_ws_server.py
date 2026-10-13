@@ -31,6 +31,7 @@ from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_output_manager
 from jiuwenswarm.common.utils import (
+    get_user_workspace_dir,
     get_agent_root_dir,
     get_agent_sessions_dir,
     get_config_file,
@@ -1196,7 +1197,7 @@ class AgentWebSocketServer:
         self._jiuwenbox_runner = JiuwenBoxRunner.instance()
         # AgentServer 内唯一持有的进程内 PersonalContext Host；Context Rail 使用同一固定目录。
         self._personal_context_host = PersonalContextHostAPI(
-            home=Path.home() / ".jiuwenswarm" / ".personal_context",
+            home=get_user_workspace_dir() / ".personal_context",
         )
         self._personal_context_start_task: asyncio.Task[None] | None = None
         # checkpointer 后台预热任务 (start() 里 fire-and-forget, stop() 时 cancel)
@@ -1213,6 +1214,10 @@ class AgentWebSocketServer:
         self._on_runtime_ready: Any = None
         self._on_runtime_warmup_retry: Any = None
         self._on_runtime_failed: Any = None
+        self._on_runtime_capabilities: Any = None
+        self._on_execution_min_ready: Any = None
+        self._execution_minimum_observed = False
+        self._preparation_registry: Any = None
         get_acp_output_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
@@ -1252,6 +1257,8 @@ class AgentWebSocketServer:
         on_ready: Any = None,
         on_warmup_retry: Any = None,
         on_failed: Any = None,
+        on_capabilities: Any = None,
+        on_execution_min_ready: Any = None,
     ) -> None:
         """Front readiness callbacks. ``on_ready`` is Agent Runtime start, not attach.
 
@@ -1261,6 +1268,22 @@ class AgentWebSocketServer:
         self._on_runtime_ready = on_ready
         self._on_runtime_warmup_retry = on_warmup_retry
         self._on_runtime_failed = on_failed
+        self._on_runtime_capabilities = on_capabilities
+        self._on_execution_min_ready = on_execution_min_ready
+
+    def observe_execution_minimum_ready(self) -> None:
+        """The first request's model, safety Rails and context are prepared.
+
+        Runtime.start only releases legacy dispatch admission. This observation
+        comes from the prepared execution entry, never from a queue ACK, and
+        avoids predicting the first request's mode with a spare Agent.
+        """
+        if self._execution_minimum_observed:
+            return
+        self._execution_minimum_observed = True
+        callback = self._on_execution_min_ready
+        if callable(callback):
+            callback()
 
     def set_rsi_harness_provider(self, provider: Any) -> None:
         """Install the production ``HarnessProvider`` at the RSI seam."""
@@ -3846,6 +3869,16 @@ class AgentWebSocketServer:
             user_id=stored_user_id,
         )
 
+        execution_scope = getattr(getattr(self, "_current_ws", None), "execution_scope", None)
+        if callable(execution_scope):
+            with execution_scope(request):
+                return await self._run_internal_session_message(record, request, channel_id, cross_session)
+        return await self._run_internal_session_message(record, request, channel_id, cross_session)
+
+    async def _run_internal_session_message(
+        self, record: SessionMessageRecord, request: AgentRequest,
+        channel_id: str, cross_session: dict[str, Any],
+    ) -> SessionMessageExecutionResult:
         public_cross_session = {
             **cross_session,
             "content": record.content,
@@ -12007,7 +12040,8 @@ class AgentWebSocketServer:
                 response_id=request.request_id,
             )
             async with send_lock:
-                await send_wire_payload(ws, wire)
+                if not await send_wire_payload(ws, wire):
+                    raise RuntimeError("session provision result was not delivered")
             response_delivered = True
 
             await runtime.commit_session_provision(

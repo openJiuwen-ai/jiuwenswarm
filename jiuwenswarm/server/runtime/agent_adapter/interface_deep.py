@@ -11679,8 +11679,10 @@ class JiuWenSwarmDeepAdapter:
 
             if rail is None:
                 try:
+                    from jiuwenswarm.common.utils import get_user_workspace_dir
+
                     rail = PersonalContextRail(
-                        Path.home() / ".jiuwenswarm" / ".personal_context"
+                        get_user_workspace_dir() / ".personal_context"
                     )
                     await self._instance.register_rail(rail)
                 except Exception as exc:  # noqa: BLE001
@@ -13602,6 +13604,9 @@ class JiuWenSwarmDeepAdapter:
                 stream = OutputHandoff(self._instance, stream)
                 self._interaction_output_handoff = stream
             mode = self._resolve_input_dispatch_mode(request.params)
+            from jiuwenswarm.runtime.execution_telemetry import observe_execution_entry
+            observe_execution_entry(request, str((request.params or {}).get("mode")
+                                                or getattr(self, "_session_instance_mode", "agent")))
             dispatched = await self._send_input_with_permission_resume_guard(
                 SendInputRequest(
                     request_id=request.request_id,
@@ -13625,10 +13630,24 @@ class JiuWenSwarmDeepAdapter:
         self, request: SendInputRequest, *, send: Any = None,
     ) -> bool:
         sender = send if send is not None else self._instance.send_input
+        # Source and frozen acceptance use the same boundary after permission
+        # dispatch has prepared the actual SDK input. Custom continuation
+        # senders are not labelled as a DeepAgent.send_input measurement.
+        from jiuwenswarm.runtime.execution_telemetry import observe_sdk_entry, sdk_entry_sink
+
+        if send is None and (sdk_entry_sink.get() is not None or os.environ.get("JIUWENSWARM_SDK_ENTRY_LOG")):
+
+            async def measured_sender(actual_request: SendInputRequest) -> Any:
+                observe_sdk_entry(actual_request, sender)
+                return await sender(actual_request)
+
+            sdk_sender = measured_sender
+        else:
+            sdk_sender = sender
         if not self._enable_auto_permission:
-            await sender(request)
+            await sdk_sender(request)
             return False
-        return await self._permission_dispatch.send(request, sender)
+        return await self._permission_dispatch.send(request, sdk_sender)
 
 
     def _permission_context_messages(

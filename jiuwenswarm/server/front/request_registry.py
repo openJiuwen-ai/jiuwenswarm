@@ -15,6 +15,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.server.ipc.protocol import request_scope
+
+
+class DuplicateRequestError(ValueError):
+    """An active request already owns this caller-scoped request ID."""
 
 
 @dataclass
@@ -37,7 +42,7 @@ class RequestRegistry:
     """Track Front-accepted requests until they complete or cancel."""
 
     def __init__(self) -> None:
-        self._items: dict[str, TrackedRequest] = {}
+        self._items: dict[tuple[str, ...], TrackedRequest] = {}
         self._lock = asyncio.Lock()
 
     async def register(self, request: AgentRequest, *, queued: bool = False) -> TrackedRequest:
@@ -46,28 +51,37 @@ class RequestRegistry:
         if not request_id:
             return tracked
         async with self._lock:
-            self._items[request_id] = tracked
+            key = (*request_scope(request)[:4], request_id)
+            if key in self._items:
+                raise DuplicateRequestError("duplicate active request_id")
+            self._items[key] = tracked
         return tracked
 
-    async def mark_dispatched(self, request_id: str) -> None:
+    async def mark_dispatched(self, request_id: str, *, tracked: TrackedRequest | None = None) -> None:
         async with self._lock:
-            tracked = self._items.get(request_id)
-            if tracked is not None:
-                tracked.queued = False
+            current = tracked or self.get(request_id)
+            if current is not None:
+                current.queued = False
 
-    async def complete(self, request_id: str) -> TrackedRequest | None:
+    async def complete(self, request_id: str, *, tracked: TrackedRequest | None = None) -> TrackedRequest | None:
         async with self._lock:
-            return self._items.pop(request_id, None)
+            current = tracked or self.get(request_id)
+            if current is None:
+                return None
+            key = (*request_scope(current.request)[:4], request_id)
+            if self._items.get(key) is current:
+                return self._items.pop(key)
+            return None
 
-    async def cancel(self, request_id: str) -> TrackedRequest | None:
+    async def cancel(self, request_id: str, *, owner: AgentRequest | None = None) -> TrackedRequest | None:
         async with self._lock:
-            tracked = self._items.get(request_id)
+            tracked = self.get(request_id, owner=owner)
         if tracked is None:
             return None
         tracked.cancelled.set()
         return tracked
 
-    async def cancel_session(self, session_id: str) -> list[TrackedRequest]:
+    async def cancel_session(self, session_id: str, *, owner: AgentRequest | None = None) -> list[TrackedRequest]:
         sid = str(session_id or "").strip()
         if not sid:
             return []
@@ -76,6 +90,7 @@ class RequestRegistry:
                 item
                 for item in self._items.values()
                 if item.session_id == sid and not item.cancelled.is_set()
+                and (owner is None or request_scope(item.request)[:4] == request_scope(owner)[:4])
             ]
         cancelled: list[TrackedRequest] = []
         for item in matches:
@@ -83,8 +98,10 @@ class RequestRegistry:
             cancelled.append(item)
         return cancelled
 
-    def get(self, request_id: str) -> TrackedRequest | None:
-        return self._items.get(request_id)
+    def get(self, request_id: str, *, owner: AgentRequest | None = None) -> TrackedRequest | None:
+        matches = [item for item in self._items.values() if item.request_id == request_id
+                   and (owner is None or request_scope(item.request)[:4] == request_scope(owner)[:4])]
+        return matches[0] if len(matches) == 1 else None
 
     def snapshot(self) -> list[dict[str, Any]]:
         return [
