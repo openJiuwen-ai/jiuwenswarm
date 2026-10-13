@@ -444,7 +444,11 @@ def test_all_serializers_handle_unserializable_values_and_4096_limit() -> None:
     assert "<_Opaque>" in definitions
 
 
-def test_tool_arguments_and_results_are_individually_limited_to_4096_chars() -> None:
+def test_tool_arguments_and_results_follow_message_char_budget() -> None:
+    """Tool single-item fields (result content / call arguments) share the
+    message-level char budget instead of a fixed 4096 cap: with headroom the
+    payload passes through untruncated, and a tighter budget truncates each
+    item to the budget."""
     tool_result = json.loads(
         serialize_input_messages(
             [{"role": "tool", "content": "r" * 5_000}], max_chars=10_000
@@ -461,9 +465,27 @@ def test_tool_arguments_and_results_are_individually_limited_to_4096_chars() -> 
         )
     )
 
-    assert len(tool_result[0]["parts"][0]["content"]) == 4096
-    assert isinstance(output[0]["tool_calls"][0]["arguments"], str)
-    assert len(output[0]["tool_calls"][0]["arguments"]) == 4096
+    # Headroom: neither item is truncated; the arguments dict is small enough
+    # to fit the budget and is kept structured (see _bounded_value).
+    assert len(tool_result[0]["parts"][0]["content"]) == 5_000
+    assert output[0]["tool_calls"][0]["arguments"] == {"value": "a" * 5_000}
+
+    tight_result = serialize_input_messages(
+        [{"role": "tool", "content": "r" * 5_000}], max_chars=4_000
+    )
+    tight_output = serialize_output_message(
+        {
+            "tool_calls": [
+                {"name": "tool", "arguments": {"value": "a" * 5_000}}
+            ]
+        },
+        max_chars=4_000,
+    )
+
+    # Tight budget: the budget still caps the serialized output (best-effort
+    # truncation, same assertion style as the fixed-budget test above).
+    assert len(tight_result) == 4_000
+    assert len(tight_output) == 4_000
 
 
 @pytest.mark.parametrize(
