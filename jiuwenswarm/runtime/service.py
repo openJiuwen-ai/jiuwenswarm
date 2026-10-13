@@ -878,6 +878,10 @@ class AgentRuntime:
         """Return the bounded status record for queued Session work."""
         return self._session_coordinator.get_execution(execution_id)
 
+    def get_session_snapshot(self, session_id: str):
+        """Read the authoritative execution state without attaching a consumer."""
+        return self._session_coordinator.snapshot_session(session_id)
+
     async def prepare_session_fork(
         self,
         provision_input: SessionForkInput,

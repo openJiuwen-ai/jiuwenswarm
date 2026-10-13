@@ -238,6 +238,18 @@ class WorkerRuntime:
         stop = getattr(self.server, "stop", None)
         if callable(stop):
             await stop()
+        # Both stores may still have queued writes after execution cleanup.
+        # The enclosing Worker deadline covers this concurrent barrier too.
+        from jiuwenswarm.server.runtime.session.session_history import flush_pending_writes as flush_history
+        from jiuwenswarm.server.runtime.session.session_metadata import flush_pending_writes as flush_metadata
+        flushed = await asyncio.gather(
+            asyncio.to_thread(flush_history, 10.0),
+            asyncio.to_thread(flush_metadata, 10.0),
+        )
+        if not all(flushed):
+            raise RuntimeError("Worker shutdown persistence barrier did not complete")
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import get_kv_cache_application_owner
+        await get_kv_cache_application_owner().close()
         try:
             from jiuwenswarm.agents.harness.team.team_manager import shutdown_team_observability
 
@@ -308,11 +320,23 @@ async def start_worker_runtime(
         await on_constructed(server)
     set_hooks = getattr(server, "set_runtime_lifecycle_hooks", None)
     if callable(set_hooks):
-        set_hooks(
-            on_ready=signals.agent_ready,
-            on_warmup_retry=signals.warmup_retry,
-            on_failed=signals.failed,
-        )
+        import inspect
+
+        hooks = {
+            "on_ready": getattr(signals, "runtime_base_ready", signals.agent_ready),
+            "on_warmup_retry": signals.warmup_retry,
+            "on_failed": signals.failed,
+        }
+        parameters = inspect.signature(set_hooks).parameters
+        if "on_capabilities" in parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+        ):
+            hooks["on_capabilities"] = lambda readiness, fully_warm: signals.capabilities(
+                readiness, fully_warm=fully_warm,
+            )
+        if "on_execution_min_ready" in parameters:
+            hooks["on_execution_min_ready"] = signals.execution_min_ready
+        set_hooks(**hooks)
     await server.start(bind_transport=False)
     log_startup_stage("runtime_started")
 

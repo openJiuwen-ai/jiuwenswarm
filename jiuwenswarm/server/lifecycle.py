@@ -49,6 +49,8 @@ _WARMING_STATES = frozenset(
     }
 )
 _AGENT_STATES = frozenset({ReadinessState.AGENT_READY, ReadinessState.DEGRADED})
+_RUNTIME_PHASES = frozenset({"IPC_READY", "EXECUTION_MIN_READY", "FULLY_WARM"})
+_CAPABILITY_STATES = frozenset({"pending", "ready", "disabled", "failed"})
 
 
 class Readiness:
@@ -64,6 +66,8 @@ class Readiness:
         self._agent_ready = asyncio.Event()
         self._failed_reason: str | None = None
         self._retrying = False
+        self._runtime_phase: str | None = None
+        self._capability_readiness: dict[str, str] | None = None
 
     @property
     def state(self) -> ReadinessState:
@@ -74,7 +78,7 @@ class Readiness:
         control_ready = self._state in _CONTROL_STATES
         runtime_warming = self._state in _WARMING_STATES
         agent_ready = self._state in _AGENT_STATES
-        return {
+        snapshot = {
             "state": self._state.value,
             "transport_ready": transport_ready,
             "control_ready": control_ready,
@@ -91,6 +95,22 @@ class Readiness:
                 "execution": agent_ready,
             },
         }
+        if self._runtime_phase is not None:
+            snapshot["runtime_phase"] = self._runtime_phase
+        if self._capability_readiness is not None:
+            snapshot["capability_readiness"] = dict(self._capability_readiness)
+        return snapshot
+
+    def note_runtime_progress(self, *, runtime_phase: Any = None,
+                              capability_readiness: Any = None) -> None:
+        """Retain optional Worker progress; admission still uses the old state."""
+        if isinstance(runtime_phase, str) and runtime_phase in _RUNTIME_PHASES:
+            self._runtime_phase = runtime_phase
+        if isinstance(capability_readiness, dict):
+            self._capability_readiness = {
+                name: state for name, state in capability_readiness.items()
+                if isinstance(name, str) and isinstance(state, str) and state in _CAPABILITY_STATES
+            }
 
     def mark_transport_ready(self) -> None:
         if self._state in {ReadinessState.FAILED, ReadinessState.DRAINING}:
@@ -105,6 +125,8 @@ class Readiness:
     def mark_runtime_warming(self) -> None:
         if self._state in {ReadinessState.FAILED, ReadinessState.DRAINING}:
             return
+        self._runtime_phase = None
+        self._capability_readiness = None
         # A restarted Worker must block chat again. Clearing the event keeps
         # waiters parked until the next ``AGENT_READY``.
         if self._state in _AGENT_STATES:

@@ -596,6 +596,10 @@ def _dispatch() -> int | None:
         from jiuwenswarm.channels.web.app_web import main as web_main
         web_main()
         return None
+    if _pop_flag("--desktop-run-worker-lifecycle"):
+        from jiuwenswarm.server.supervisor.shutdown import main as lifecycle_main
+        lifecycle_main()
+        return None
     if _pop_flag(_DESKTOP_RUN_AGENT):
         _activate_external_cli_runtime_paths()
         from jiuwenswarm.server.app_agentserver import main as agent_main
@@ -633,7 +637,10 @@ def _dispatch() -> int | None:
             if sys.argv[2] == "ruff":
                 return _forward_to_ruff_binary(sys.argv[3:])
             import runpy
-            runpy.run_module(sys.argv[2], run_name="__main__", alter_sys=True)
+            module_name = sys.argv[2]
+            # Match Python -m: the target parser must not see -m/module again.
+            sys.argv = [module_name, *sys.argv[3:]]
+            runpy.run_module(module_name, run_name="__main__", alter_sys=True)
             return 0
 
         # 其他有参数的情况：直接执行，不检查单实例锁

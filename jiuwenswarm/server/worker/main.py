@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 
 
@@ -51,8 +52,12 @@ def main() -> None:
         pass
     try:
         loop.run_until_complete(task)
-    except WorkerForceExit:
-        raise SystemExit(1) from None
+    except WorkerForceExit as exc:
+        logging.getLogger(__name__).error("[Worker] forced exit with unfinished shutdown steps: %s", exc)
+        logging.shutdown()
+        # A cancelled to_thread load may still own non-daemon executor threads.
+        # SystemExit waits for those threads and can exceed the shared deadline.
+        os._exit(1)
     finally:
         loop.close()
 
