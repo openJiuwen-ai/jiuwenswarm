@@ -717,17 +717,15 @@ channels:
 # ========== 细粒度权限管控（tiered_policy）==========
 #
 # schema: tiered_policy（或兼容 v_cc / v4.2）时由 tiered_policy.evaluate_tiered_policy 求值；
-# permission_mode: normal|strict 决定 severity 映射，见 agentserver/permissions/tiered_policy.py。
-# severity（normal）：LOW/MEDIUM→allow，HIGH/CRITICAL→ask；strict 下 MEDIUM→ask、CRITICAL→deny。
-# rules[*].action: 可选显式动作 allow|ask|deny；配置后优先于 severity 映射，适合敏感文件读取、
-# 系统控制等不希望随 permission_mode 漂移的规则。
+# severity 映射：LOW/MEDIUM→allow，HIGH/CRITICAL→ask。
+# rules[*].action: 可选显式动作 allow|ask|deny；适合敏感文件读取、
+# 系统控制等不希望随 severity 漂移的规则。
 # 内置参数规则 > 用户 rules；整工具存在则不用 defaults；详见 tiered_policy 模块说明。
 #
 # 三种动作: allow / ask / deny
 permissions:
   enabled: false
   schema: tiered_policy
-  permission_mode: normal
   shell_guard:
     unknown_structure: false
     interpreter_sink: false

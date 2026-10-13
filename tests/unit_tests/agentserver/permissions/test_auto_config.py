@@ -46,7 +46,6 @@ def test_declared_auto_workspace_rejects_conflicting_roots(tmp_path) -> None:
         )
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_mode_preserves_disabled_boundary_and_defaults_to_ask() -> None:
     raw = {"mode": "auto", "enabled": False, "defaults": {"*": "allow"}}
     normalized = normalize_permissions_for_runtime(raw)
@@ -67,7 +66,7 @@ def test_auto_mode_preserves_disabled_boundary_and_defaults_to_ask() -> None:
 @pytest.mark.parametrize(
     ("config", "boundary_enabled", "auto_enabled"),
     [
-        ({"enabled": True, "mode": "auto"}, True, False),
+        ({"enabled": True, "mode": "auto"}, True, True),
         ({"enabled": True, "mode": "manual"}, True, False),
         ({"enabled": False, "mode": "auto"}, False, False),
         ({"enabled": "true", "mode": "auto"}, False, False),
@@ -85,14 +84,12 @@ def test_permission_activation_uses_exact_enabled_auto_truth_table(
     assert is_auto_permission_enabled(config) is auto_enabled
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_normalization_does_not_insert_missing_enabled() -> None:
     normalized = normalize_permissions_for_runtime({"mode": "auto"})
 
     assert "enabled" not in normalized
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_mode_ignores_attempt_to_disable_fixed_reviewer_route() -> None:
     raw = {
         "mode": "auto",
@@ -114,7 +111,6 @@ def test_auto_mode_ignores_attempt_to_disable_fixed_reviewer_route() -> None:
     assert "production_reviewer" not in normalized["auto"]
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_mode_preserves_explicit_default_deny() -> None:
     raw = {"mode": "auto", "defaults": {"*": "deny"}}
 
@@ -131,13 +127,6 @@ def test_invalid_mode_falls_back_to_manual() -> None:
     assert normalized["enabled"] is False
 
 
-def test_permission_mode_is_not_runtime_mode() -> None:
-    raw = {"permission_mode": "auto", "enabled": False}
-    assert resolve_permission_runtime_mode(raw) == "manual"
-    assert normalize_permissions_for_runtime(raw)["enabled"] is False
-
-
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_mode_keeps_explicit_deny_for_risky_tools() -> None:
     raw = {
         "mode": "auto",
@@ -153,7 +142,6 @@ def test_auto_mode_keeps_explicit_deny_for_risky_tools() -> None:
     assert normalized["tools"]["upload_file"] == "deny"
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_mode_alias_collision_uses_strictest_level() -> None:
     raw = {
         "mode": "auto",
@@ -171,7 +159,6 @@ def test_auto_mode_alias_collision_uses_strictest_level() -> None:
     assert normalized["tools"]["mcp_exec_command"] == "ask"
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_mode_alias_collision_is_order_independent() -> None:
     raw = {
         "mode": "auto",
@@ -186,7 +173,6 @@ def test_auto_mode_alias_collision_is_order_independent() -> None:
     assert normalized["tools"]["mcp_fetch_webpage"] == "deny"
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_mode_structured_alias_collision_uses_strictest_subrule() -> None:
     raw = {
         "mode": "auto",
@@ -218,7 +204,6 @@ def test_auto_mode_structured_alias_collision_uses_strictest_subrule() -> None:
     }
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_mode_structured_list_alias_collision_uses_strictest_subrule() -> None:
     raw = {
         "mode": "auto",
@@ -250,7 +235,6 @@ def test_auto_mode_structured_list_alias_collision_uses_strictest_subrule() -> N
     }
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_mode_structured_list_alias_collision_is_order_independent() -> None:
     raw = {
         "mode": "auto",
@@ -274,7 +258,6 @@ def test_auto_mode_structured_list_alias_collision_is_order_independent() -> Non
     }
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_mode_preserves_structured_tool_deny_rules() -> None:
     raw = {
         "mode": "auto",
@@ -300,7 +283,6 @@ def test_auto_mode_preserves_structured_tool_deny_rules() -> None:
     assert normalized["tools"]["bash"]["commands"] == {"pwd": "deny"}
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_mode_keeps_only_current_option_allowlist() -> None:
     raw = {
         "mode": "auto",
@@ -332,7 +314,6 @@ def test_auto_mode_keeps_only_current_option_allowlist() -> None:
     assert raw["auto"]["bounded_write_excluded_paths"][0] == " .git "
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_mode_invalid_bounded_write_options_fall_back_to_safe_defaults() -> None:
     raw = {
         "mode": "auto",

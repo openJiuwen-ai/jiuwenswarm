@@ -89,7 +89,7 @@ function groupAll(
       : String((r as any).tools ?? "");
     const pattern = String((r as any).pattern ?? "");
     let action = String((r as any).action ?? "").toLowerCase();
-    // 当 action 未显式配置时，根据 severity 推断（与后端 permission_mode=normal 一致）
+    // 当 action 未显式配置时，根据 severity 推断（与后端 _P1_SEVERITY_TO_ACTION 一致）
     if (!action || !["allow", "ask", "deny"].includes(action)) {
       const severity = String((r as any).severity ?? "").toUpperCase();
       if (severity === "LOW" || severity === "MEDIUM") {

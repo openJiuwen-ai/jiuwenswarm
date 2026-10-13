@@ -23,18 +23,17 @@ In digital persona and group chat scenarios, `ask` may be downgraded to `deny` �
 
 This corresponds to `evaluate_tiered_policy()` in the `openjiuwen` harness SDK. Parameters are the current `tool_name` and `tool_args` (e.g. bash `command`, file-read `path`, etc.). The tiered policy engine is part of the `openjiuwen.harness.security` module shipped with the harness SDK.
 
-### 2.1 Setup: `permission_mode` and `severity`
+### 2.1 Setup: `severity`
 
-- `permissions.permission_mode`: `normal` (default) or `strict`.
 - If a parameter-level rule (built-in or user) specifies an explicit **`action: allow|ask|deny`**, that action is used **directly** — `severity` is not consulted.
-- Without an explicit `action`, **`severity`** is mapped to an action based on `permission_mode`:
+- Without an explicit `action`, **`severity`** is mapped to an action:
 
-| severity | normal mode | strict mode |
-|----------|-------------|-------------|
-| LOW | allow | allow |
-| MEDIUM | allow | **ask** |
-| HIGH | **ask** | **ask** |
-| CRITICAL | **ask** | **deny** |
+| severity | action |
+|----------|--------|
+| LOW | allow |
+| MEDIUM | allow |
+| HIGH | **ask** |
+| CRITICAL | **ask** |
 
 Unknown `severity` is treated as **HIGH**.
 
@@ -181,7 +180,7 @@ Calls `permissions.rules.create` to create a parameter-level rule. If a rule wit
 The `/permissions` command writes the user's `allow/ask/deny` choice **directly into the rule's `action` field**, rather than indirectly mapping through `severity`. When the engine resolves a parameter-level rule, if an explicit `action` is present, it **uses that action directly — bypassing the severity mapping table** (see §2.1).
 
 This means:
-- `/permissions deny bash(re:.*rm -rf.*)` → `action: deny` → **rejects in any mode** (independent of `permission_mode`).
+- `/permissions deny bash(re:.*rm -rf.*)` → `action: deny` → **always rejects**.
 - `/permissions ask write_file(re:.*\.env$)` → `action: ask` → **always requires confirmation**.
 
 > **Why not severity?** The previous implementation mapped `deny` → `severity: CRITICAL`, but in `normal` mode CRITICAL resolves to `ask`, not `deny` — contradicting the user's intent. Writing `action` directly ensures the user's `allow/ask/deny` intent is faithfully expressed.

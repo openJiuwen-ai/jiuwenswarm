@@ -495,7 +495,6 @@ async def main():
         enable_skill_discovery=True,
         permissions={
             "enabled": True,
-            "permission_mode": "normal",
             "tools": {
                 "read_file": "allow",
                 "write_file": "ask",
