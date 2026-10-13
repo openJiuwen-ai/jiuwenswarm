@@ -81,6 +81,25 @@ export const experimentalModule: SettingsModuleDefinition = {
       items: [{ id: 'team-organization-ui-enabled', component: 'switch', key: 'team_organization_ui_enabled' }],
     },
     {
+      id: 'team-scheduled-dispatch',
+      titleKey: 'settingsPanel.experimental.teamScheduledDispatch',
+      items: [
+        {
+          id: 'team-scheduled-dispatch-enabled',
+          component: 'switch',
+          key: 'team_scheduled_dispatch_enabled',
+          subItems: {
+            show: 'always',
+            disabled: 'when-parent-unchecked',
+            uncheckWithParent: true,
+            items: [
+              { id: 'team-task-verification-enabled', component: 'switch', key: 'team_task_verification_enabled' },
+            ],
+          },
+        },
+      ],
+    },
+    {
       id: 'proactive-recommendation',
       titleKey: 'settingsPanel.experimental.proactive',
       items: [

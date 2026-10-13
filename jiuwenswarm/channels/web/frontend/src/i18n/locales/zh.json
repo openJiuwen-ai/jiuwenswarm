@@ -366,6 +366,7 @@
       "trajectoryUi": "轨迹界面",
       "kvCacheAffinity": "算力亲和",
       "teamOrganization": "Team Organization",
+      "teamScheduledDispatch": "调度模式",
       "skillPack": "技能包",
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
@@ -517,6 +518,14 @@
       "team_organization_ui_enabled": {
         "title": "启用 Team Organization 界面",
         "description": "显示实验性的多 Team 视图和组织任务池。此开关不关闭后端组织能力。"
+      },
+      "team_scheduled_dispatch_enabled": {
+        "title": "启用调度模式",
+        "description": "Leader 将每个任务分配给指定成员，成员按分配顺序依次执行。"
+      },
+      "team_task_verification_enabled": {
+        "title": "启用验证者",
+        "description": "任务完成后由验证者进行验收，未通过验收的任务将退回返工。"
       },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",

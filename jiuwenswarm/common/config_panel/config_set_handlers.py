@@ -39,10 +39,14 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
+    DEFAULT_TEAM_DISPATCH_MODE,
+    DEFAULT_TEAM_TASK_VERIFICATION_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
     SWARMFLOW_BUDGET_CONFIG_PATH,
     SWARMFLOW_ENABLED_CONFIG_PATH,
     SWARMFLOW_WORKTREE_CONFIG_PATH,
+    TEAM_DISPATCH_MODE_CONFIG_PATH,
+    TEAM_TASK_VERIFICATION_CONFIG_PATH,
     get_config,
     get_config_raw,
     replace_teams_in_config,
@@ -67,6 +71,8 @@ from jiuwenswarm.common.config import (
     update_task_full_duplex_in_config,
     update_team_organization_ui_in_config,
     update_task_asr_in_config,
+    update_team_scheduled_dispatch_in_config,
+    update_team_task_verification_in_config,
     update_trajectory_ui_in_config,
     update_default_models_in_config,
     update_login_model_settings_in_config,
@@ -194,7 +200,7 @@ class ConfigChangeSet:
             key_text = str(key)
             if key_text in {"models.defaults"} or key_text.startswith("models."):
                 scopes.add("model")
-            elif key_text in {"modes.team", "agents", "team"}:
+            elif key_text in {"modes.team", "agents", "team", *TEAM_DISPATCH_CONFIG_KEYS}:
                 scopes.add("team")
             elif key_text.startswith("permissions"):
                 scopes.add("permissions")
@@ -357,6 +363,8 @@ CONFIG_YAML_KEYS = frozenset({
     "proactive_recommendation_max_rounds_per_tick",
     "swarmflow_enabled",
     "swarmflow_budget",
+    "team_scheduled_dispatch_enabled",
+    "team_task_verification_enabled",
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
@@ -367,6 +375,11 @@ CONFIG_YAML_KEYS = frozenset({
     "skill_evolution",
     "ttse_enabled",
     "enable_free_models",
+})
+# 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification），改动后需重载 team。
+TEAM_DISPATCH_CONFIG_KEYS = frozenset({
+    "team_scheduled_dispatch_enabled",
+    "team_task_verification_enabled",
 })
 EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
     "external_cli_agent_claude_enabled",
@@ -550,6 +563,19 @@ def flatten_swarmflow_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     )
     flat["swarmflow_worktree"] = "true" if worktree_enabled else "false"
     return flat
+
+
+def flatten_team_dispatch_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
+    dispatch_mode = get_nested_config_value(raw, TEAM_DISPATCH_MODE_CONFIG_PATH, DEFAULT_TEAM_DISPATCH_MODE)
+    verification = get_nested_config_value(
+        raw,
+        TEAM_TASK_VERIFICATION_CONFIG_PATH,
+        DEFAULT_TEAM_TASK_VERIFICATION_ENABLED,
+    )
+    return {
+        "team_scheduled_dispatch_enabled": "true" if str(dispatch_mode).strip() == "scheduled" else "false",
+        "team_task_verification_enabled": "true" if parse_config_switch_bool(verification) else "false",
+    }
 
 
 def flatten_external_cli_agents_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
@@ -1243,6 +1269,19 @@ def apply_config_payload(
                 update_swarmflow_enabled_in_config(parsed)
             elif param_key == "swarmflow_budget":
                 update_swarmflow_budget_in_config(str(val).strip())
+            elif param_key == "team_scheduled_dispatch_enabled":
+                update_team_scheduled_dispatch_in_config(parsed)
+                if not parsed:
+                    # 验证者只在调度模式下生效，关闭调度模式时一并关闭。
+                    update_team_task_verification_in_config(False)
+                    yaml_updated.append("team_task_verification_enabled")
+            elif param_key == "team_task_verification_enabled":
+                scheduled = (
+                    parse_config_bool(params["team_scheduled_dispatch_enabled"])
+                    if "team_scheduled_dispatch_enabled" in params
+                    else flatten_team_dispatch_for_config_panel(raw)["team_scheduled_dispatch_enabled"] == "true"
+                )
+                update_team_task_verification_in_config(parsed and scheduled)
             elif param_key in EXTERNAL_CLI_AGENT_CONFIG_KEYS:
                 if not external_cli_agents_updated:
                     try:
@@ -1496,6 +1535,7 @@ async def config_get_handler(
             "true" if experimental_cfg.get("task_asr_enabled", False) else "false"
         )
         payload.update(flatten_swarmflow_for_config_panel(raw))
+        payload.update(flatten_team_dispatch_for_config_panel(raw))
         payload.update(flatten_external_cli_agents_for_config_panel(raw))
         payload.update(flatten_symphony_for_config_panel(raw))
         if not payload.get("free_search_ddg_enabled"):
@@ -1525,6 +1565,11 @@ async def config_get_handler(
         payload.setdefault("memory_forbidden_enabled", "false")
         payload.setdefault("memory_forbidden_description", "")
         payload.setdefault("swarmflow_enabled", "true" if DEFAULT_SWARMFLOW_ENABLED else "false")
+        payload.setdefault("team_scheduled_dispatch_enabled", "false")
+        payload.setdefault(
+            "team_task_verification_enabled",
+            "true" if DEFAULT_TEAM_TASK_VERIFICATION_ENABLED else "false",
+        )
         for key, value in get_default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")

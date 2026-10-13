@@ -366,6 +366,7 @@
       "trajectoryUi": "Trajectory UI",
       "kvCacheAffinity": "Compute affinity",
       "teamOrganization": "Team Organization",
+      "teamScheduledDispatch": "Scheduled dispatch",
       "skillPack": "Skill Packs",
       "proactive": "Proactive recommendations",
       "proactiveLimits": "Recommendation limits",
@@ -526,6 +527,14 @@
       "team_organization_ui_enabled": {
         "title": "Enable Team Organization UI",
         "description": "Show experimental multi-Team views and the organization task pool. This switch does not disable backend organization capabilities."
+      },
+      "team_scheduled_dispatch_enabled": {
+        "title": "Enable scheduled dispatch",
+        "description": "The Leader assigns each task to a specific member, and members work through their assigned tasks in order."
+      },
+      "team_task_verification_enabled": {
+        "title": "Enable reviewers",
+        "description": "Completed tasks are reviewed by verifiers. Tasks that fail review are returned for rework."
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
