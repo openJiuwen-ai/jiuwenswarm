@@ -648,6 +648,9 @@ from jiuwenswarm.server.runtime.agent_adapter.stale_todo_cleanup_helpers import 
     prepare_stale_todo_cleanup_for_request,
     adapter_ckpt_light_enabled,
 )
+from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+    get_todo_generation_token,
+)
 from jiuwenswarm.server.runtime.agent_adapter.plan_pause_helpers import (
     build_paused_plan_decision_prompt_from_session_snapshot,
     cancel_pending_todos_on_tool,
@@ -14408,6 +14411,14 @@ class JiuWenSwarmDeepAdapter:
             session_id = request.session_id or "default"
             rid = request.request_id
             cid = request.channel_id
+            runtime_session = getattr(
+                getattr(self, "_instance", None), "_interaction_session", None
+            )
+            todo_generation_token = (
+                get_todo_generation_token(runtime_session)
+                if runtime_session is not None
+                else None
+            )
 
             async def _emit_usage_summary() -> AsyncIterator[AgentResponseChunk]:
                 nonlocal usage_summary_emitted
@@ -14505,25 +14516,41 @@ class JiuWenSwarmDeepAdapter:
                             yield summary_chunk
                         continue
                     yield chunk
-                try:
-                    completion_chunks = await self._complete_skill_turbo_outer_todo(
-                        session_id=session_id,
-                        request_id=rid,
-                        channel_id=cid,
-                        resume_ctx=resume_ctx,
-                    )
-                except Exception:
+                from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+                    _ppt_delivery_failed_error,
+                )
+
+                delivery_error = _ppt_delivery_failed_error(
+                    getattr(skill_turbo, "artifact_holder", None)
+                )
+                if delivery_error:
                     logger.warning(
-                        "[JiuWenSwarmDeepAdapter] SkillTurbo resume outer todo "
-                        "completion hook failed; continue delivery session_id=%s",
+                        "[JiuWenSwarmDeepAdapter] SkillTurbo resume delivery failed; "
+                        "skip outer todo completion session_id=%s error=%s",
                         session_id,
-                        exc_info=True,
+                        delivery_error,
                     )
-                    completion_chunks = []
-                for completion_chunk in completion_chunks:
-                    yield completion_chunk
+                else:
+                    try:
+                        completion_chunks = await self._complete_skill_turbo_outer_todo(
+                            session_id=session_id,
+                            request_id=rid,
+                            channel_id=cid,
+                            resume_ctx=resume_ctx,
+                            generation_token=todo_generation_token,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "[JiuWenSwarmDeepAdapter] SkillTurbo resume outer todo "
+                            "completion hook failed; continue delivery session_id=%s",
+                            session_id,
+                            exc_info=True,
+                        )
+                        completion_chunks = []
+                    for completion_chunk in completion_chunks:
+                        yield completion_chunk
                 await _clear_resume_ctx()
-                finish_text = _finish_text(True)
+                finish_text = _finish_text(not delivery_error, delivery_error)
             except _SkillTurboAbortError as e:
                 async for summary_chunk in _emit_usage_summary():
                     yield summary_chunk
@@ -14588,6 +14615,7 @@ class JiuWenSwarmDeepAdapter:
         request_id: str,
         channel_id: str,
         resume_ctx: dict[str, Any],
+        generation_token: str | None = None,
     ) -> list[AgentResponseChunk]:
         """Close the outer Todo after a SkillTurbo HITL resume succeeds."""
         modify_tool = self._get_todo_modify_tool(session_id)
@@ -14636,13 +14664,32 @@ class JiuWenSwarmDeepAdapter:
             )
             return []
 
+        target_generation_token = getattr(target, "generation_token", None)
+        if generation_token is not None and target_generation_token != generation_token:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] SkillTurbo resume completion skipped: "
+                "saved outer task belongs to another generation saved_task_id=%s "
+                "saved_generation_token=%s current_generation_token=%s session_id=%s",
+                task_id,
+                target_generation_token,
+                generation_token,
+                session_id,
+            )
+            return []
+
         status = getattr(getattr(target, "status", None), "value", None)
         if status == TodoStatus.COMPLETED.value:
             active = []
             for todo in todos:
                 todo_status = getattr(todo, "status", None)
                 status_value = getattr(todo_status, "value", None)
-                if status_value == TodoStatus.IN_PROGRESS.value:
+                if (
+                    status_value == TodoStatus.IN_PROGRESS.value
+                    and (
+                        generation_token is None
+                        or getattr(todo, "generation_token", None) == generation_token
+                    )
+                ):
                     active.append(todo)
             if len(active) != 1:
                 logger.info(
@@ -14651,6 +14698,19 @@ class JiuWenSwarmDeepAdapter:
                     "saved_task_id=%s session_id=%s",
                     len(active),
                     saved_task_id,
+                    session_id,
+                )
+                return []
+            if getattr(active[0], "generation_token", None) != target_generation_token:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] SkillTurbo resume completion skipped: "
+                    "saved and active outer tasks belong to different generations "
+                    "saved_task_id=%s saved_generation_token=%s active_task_id=%s "
+                    "active_generation_token=%s session_id=%s",
+                    task_id,
+                    target_generation_token,
+                    active[0].id,
+                    getattr(active[0], "generation_token", None),
                     session_id,
                 )
                 return []

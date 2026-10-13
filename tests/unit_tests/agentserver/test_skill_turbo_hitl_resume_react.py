@@ -512,15 +512,19 @@ async def test_complete_skill_turbo_outer_todo_updates_status_and_returns_events
 @pytest.mark.asyncio
 async def test_complete_skill_turbo_outer_todo_recovers_parallel_task_after_saved_task_completed():
     class _TodoTool:
-        def __init__(self):
+        def __init__(
+            self, saved_generation_token="gen-1", active_generation_token="gen-1"
+        ):
             self.todos = [
                 SimpleNamespace(
                     id="research",
                     status=SimpleNamespace(value="completed"),
+                    generation_token=saved_generation_token,
                 ),
                 SimpleNamespace(
                     id="create_ppt",
                     status=SimpleNamespace(value="in_progress"),
+                    generation_token=active_generation_token,
                 ),
             ]
             self.updated = None
@@ -557,6 +561,7 @@ async def test_complete_skill_turbo_outer_todo_recovers_parallel_task_after_save
         request_id="resume-parallel",
         channel_id="web",
         resume_ctx={"outer_task_id": "todo:research"},
+        generation_token="gen-1",
     )
 
     assert todo_tool.updated is not None
@@ -564,6 +569,58 @@ async def test_complete_skill_turbo_outer_todo_recovers_parallel_task_after_save
         {"id": "create_ppt", "status": "completed"}
     ]
     assert [chunk.payload["event_type"] for chunk in chunks] == ["task.complete"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current_generation_token", [None, "gen-new"])
+async def test_complete_skill_turbo_outer_todo_skips_cross_generation_task(
+    current_generation_token,
+):
+    class _TodoTool:
+        def __init__(self):
+            self.todos = [
+                SimpleNamespace(
+                    id="research",
+                    status=SimpleNamespace(value="completed"),
+                    generation_token="gen-old",
+                ),
+                SimpleNamespace(
+                    id="create_ppt",
+                    status=SimpleNamespace(value="in_progress"),
+                    generation_token="gen-new",
+                ),
+            ]
+            self.updated = None
+
+        async def load_todos(self, _session_id):
+            return self.todos
+
+        async def _update_todos(self, session_id, updates, todos):
+            self.updated = (session_id, updates, todos)
+
+    class _TaskRail:
+        def external_todo_completion_events(
+            self, session_id, task_id, *, parent_request_id
+        ):
+            raise AssertionError(
+                "cross-generation todo must not emit completion events"
+            )
+
+    todo_tool = _TodoTool()
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._task_execution_rail = _TaskRail()
+    adapter._get_todo_modify_tool = lambda _session_id: todo_tool
+
+    chunks = await adapter._complete_skill_turbo_outer_todo(
+        session_id="sess-cross-generation",
+        request_id="resume-cross-generation",
+        channel_id="web",
+        resume_ctx={"outer_task_id": "todo:research"},
+        generation_token=current_generation_token,
+    )
+
+    assert todo_tool.updated is None
+    assert chunks == []
 
 
 @pytest.mark.asyncio
