@@ -206,7 +206,10 @@ def _capture_logs(caplog):
 async def _worker(mode, tmp_path, monkeypatch):
     fixture = Path(__file__).parent / "fixtures" / "diagnostic_worker.py"
     root = Path(__file__).resolve().parents[3]
-    monkeypatch.setenv("PYTHONPATH", str(root))
+    python_paths = [str(root)]
+    if os.environ.get("PYTHONPATH"):
+        python_paths.append(os.environ["PYTHONPATH"])
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(python_paths))
 
     def command(socket_path, **options):
         return [sys.executable, str(fixture), "--mode", mode, "--socket", socket_path]
@@ -228,7 +231,9 @@ async def _worker(mode, tmp_path, monkeypatch):
         await asyncio.wait_for(supervisor.run_until_ipc_ready(), 10)
         process = supervisor._process
         assert process is not None and supervisor.worker_pid != os.getpid()
-        assert await supervisor._readiness.wait_agent_ready(5)
+        assert await supervisor._readiness.wait_agent_ready(
+            15 if mode == "slow-shell" else 5
+        )
         yield supervisor, process
     finally:
         try:
@@ -378,6 +383,75 @@ async def test_real_worker_survives_busy_pools_timeout_and_reconnect(
             ),
             encoding="utf-8",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell discovery and pipes")
+async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
+    tmp_path, monkeypatch, caplog
+):
+    """A real model hook must not stall IPC or process exit on a slow OS probe."""
+    from websockets.asyncio.client import connect as ws_connect
+
+    async with _worker("slow-shell", tmp_path, monkeypatch) as (supervisor, process):
+        pid = supervisor.worker_pid
+        async with _gateway(supervisor) as (url, gateway, attached):
+            async with ws_connect(url) as client:
+                await asyncio.wait_for(attached.wait(), 2)
+                started = time.monotonic()
+                dispatch = asyncio.create_task(
+                    supervisor.dispatch_parsed_request(
+                        gateway["ws"], _request(1), gateway["lock"]
+                    )
+                )
+                first = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert first["phase"] == "shell_pending"
+                assert first["unknown"] and first["probe_pending"]
+                assert first["first_round_seconds"] < 2
+                assert first["probe_calls"] == first["probe_threads"] == 1
+                assert first["probe_daemon"]
+
+                # No business frames are emitted during this interval, so
+                # last_rx advancing beyond 25 seconds demonstrates heartbeats.
+                await asyncio.sleep(31)
+                assert supervisor._last_rx > started + 25
+                assert supervisor.worker_pid == pid and process.returncode is None
+                assert supervisor._restart_count == 0
+                assert supervisor._readiness.state is ReadinessState.AGENT_READY
+
+                final = json.loads(await asyncio.wait_for(client.recv(), 10))
+                await asyncio.wait_for(dispatch, 3)
+                assert final["phase"] == "final"
+                assert final["unknown"] and final["probe_pending"]
+                assert final["probe_seconds"] >= 35
+                assert final["probe_calls"] == final["probe_threads"] == 1
+                assert final["probe_daemon"]
+                assert final["rails"] == 12 and final["rounds"] >= 30
+                assert supervisor.worker_pid == pid and supervisor._restart_count == 0
+                assert "heartbeat timed out" not in caplog.text
+
+        shutdown_started = time.monotonic()
+        await asyncio.wait_for(supervisor.stop(terminate_worker=True), 7)
+        shutdown_seconds = time.monotonic() - shutdown_started
+        assert process.returncode == 0, "Worker must exit normally without termination"
+        assert shutdown_seconds < 5
+        evidence = {
+            "case": "slow_shell_probe",
+            "pid": pid,
+            "hook": "RuntimePromptRail.before_model_call",
+            "first_round_seconds": first["first_round_seconds"],
+            "heartbeat_timeout": 30,
+            "restarts": 0,
+            "terminal_received": True,
+            "worker_exit_code": process.returncode,
+            "shutdown_seconds": shutdown_seconds,
+            "stderr": str(process.stderr_path),
+            **final,
+        }
+    (tmp_path / "acceptance.json").write_text(
+        json.dumps(evidence, indent=2), encoding="utf-8"
+    )
 
 
 @pytest.mark.asyncio

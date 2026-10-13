@@ -15,10 +15,49 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 from jiuwenswarm.server.ipc.protocol import KIND_REQUEST
 from jiuwenswarm.server.worker import diagnostics, service
 from jiuwenswarm.server.worker.main import main
+
+
+class SlowShellProbe:
+    """Keep one discovery call pending even during normal Worker shutdown."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.lock = threading.Lock()
+        self.calls = 0
+        self.threads: set[int] = set()
+        self.daemon = True
+        self.started = 0.0
+        self.finished = False
+
+    def __call__(self) -> str:
+        with self.lock:
+            self.calls += 1
+            self.threads.add(threading.get_ident())
+            self.daemon = self.daemon and threading.current_thread().daemon
+            self.started = self.started or time.monotonic()
+        # This owned child's injected OS probe deliberately remains pending
+        # when the real Worker receives shutdown. A non-daemon implementation
+        # would therefore fail the parent's graceful-exit assertion.
+        self.release.wait(120)
+        self.finished = True
+        return r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return {
+                "probe_calls": self.calls,
+                "probe_threads": len(self.threads),
+                "probe_daemon": self.daemon,
+                "probe_pending": bool(self.started) and not self.finished,
+                "probe_seconds": time.monotonic() - self.started
+                if self.started
+                else 0.0,
+            }
 
 
 class TrafficRuntime:
@@ -33,6 +72,28 @@ class TrafficRuntime:
             asyncio.get_running_loop().set_default_executor(self.pool)
             for _ in range(2):
                 self.pool.submit(self.release.wait)
+        if mode == "slow-shell":
+            from openjiuwen.harness.prompts import SystemPromptBuilder
+
+            from jiuwenswarm.agents.harness.common.prompt import shell_environment
+            from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import (
+                RuntimePromptRail,
+            )
+
+            self.shell_probe = SlowShellProbe()
+            shell_environment._available_powershell = self.shell_probe
+            self.shell_rails = []
+
+            async def runtime_state(_ctx):
+                # This fixture has no Agent Runtime/configuration or model.
+                # Isolate unrelated attachment IO, retaining the real hook.
+                return {"channel": "diagnostic"}
+
+            for _ in range(12):
+                rail = RuntimePromptRail(language="en", channel="diagnostic")
+                rail.system_prompt_builder = SystemPromptBuilder(language="en")
+                rail._refresh_dynamic_attachments = runtime_state
+                self.shell_rails.append(rail)
 
     def attach_gateway_connection(self, ws, send_lock) -> None:
         pass
@@ -44,6 +105,9 @@ class TrafficRuntime:
         self.release.set()
 
     async def dispatch_parsed_request(self, ws, request, send_lock) -> None:
+        if self.mode == "slow-shell":
+            await self._slow_shell_request(ws, request)
+            return
         if self.mode == "freeze":
             await ws.send(
                 json.dumps({"request_id": request.request_id, "phase": "freezing"})
@@ -65,11 +129,55 @@ class TrafficRuntime:
             await asyncio.sleep(0.001)
         await ws.send(json.dumps({"request_id": request.request_id, "phase": "final"}))
 
+    async def _slow_shell_request(self, ws, request) -> None:
+        ctx = SimpleNamespace(agent=None, session=None)
+        started = time.monotonic()
+
+        async def round_trip():
+            await asyncio.gather(
+                *(rail.before_model_call(ctx) for rail in self.shell_rails)
+            )
+            return all(
+                "not yet verified" in rail.system_prompt_builder.build()
+                for rail in self.shell_rails
+            )
+
+        unknown = await round_trip()
+        first_round_seconds = time.monotonic() - started
+        await ws.send(
+            json.dumps(
+                {
+                    "request_id": request.request_id,
+                    "phase": "shell_pending",
+                    "unknown": unknown,
+                    "first_round_seconds": first_round_seconds,
+                    **self.shell_probe.snapshot(),
+                }
+            )
+        )
+        rounds = 1
+        while time.monotonic() - started < 36:
+            await asyncio.sleep(1)
+            unknown = await round_trip() and unknown
+            rounds += 1
+        await ws.send(
+            json.dumps(
+                {
+                    "request_id": request.request_id,
+                    "phase": "final",
+                    "unknown": unknown,
+                    "rails": len(self.shell_rails),
+                    "rounds": rounds,
+                    **self.shell_probe.snapshot(),
+                }
+            )
+        )
+
 
 def run() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--mode", choices=["pool-pressure", "freeze", "crash"], required=True
+        "--mode", choices=["pool-pressure", "freeze", "crash", "slow-shell"], required=True
     )
     args, remaining = parser.parse_known_args()
 

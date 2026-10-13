@@ -1923,15 +1923,17 @@ async def test_runtime_prompt_clears_directory_boundaries_outside_web_and_tui(
 @pytest.mark.asyncio
 async def test_runtime_prompt_reports_powershell_and_removes_generic_shell_rules(monkeypatch):
     import jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail as runtime_module
+    from jiuwenswarm.agents.harness.common.prompt.shell_environment import ShellCapabilities
+
+    async def get_capabilities(os_type):
+        assert os_type == "win32"
+        return ShellCapabilities(
+            detected=True,
+            powershell=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        )
 
     monkeypatch.setattr(runtime_module.sys, "platform", "win32")
-    monkeypatch.setattr(
-        runtime_module.shutil,
-        "which",
-        lambda command: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        if command == "powershell"
-        else None,
-    )
+    monkeypatch.setattr(runtime_module, "get_shell_capabilities", get_capabilities)
 
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
