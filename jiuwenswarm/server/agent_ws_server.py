@@ -1150,12 +1150,6 @@ class AgentWebSocketServer:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[AgentWebSocketServer] %s cancel failed: %s", label, exc)
 
-        # 调度器是进程级服务。单条 Gateway 连接 1006 不能停它，只在整个服务退出时停。
-        try:
-            await self._stop_scheduler()
-        except Exception:  # noqa: BLE001
-            logger.exception("[AgentWebSocketServer] scheduler stop failed")
-
         # 先取消后台预热, 避免在 server 关闭后仍在后台跑.
         warmup = _startup_warmup_task
         _startup_warmup_task = None
@@ -1353,6 +1347,7 @@ class AgentWebSocketServer:
                 remote,
                 lambda: self._agent_manager.cancel_all_inflight_work(reason=close_reason),
             )
+            await self._run_cleanup_step("stop_scheduler", remote, self._stop_scheduler)
             await self._run_cleanup_step(
                 "team_stream",
                 remote,

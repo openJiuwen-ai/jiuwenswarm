@@ -523,7 +523,7 @@ async def _async_noop(*_args, **_kwargs) -> None:
 
 
 @pytest.mark.asyncio
-async def test_abrupt_disconnect_cancels_round_but_keeps_scheduler(
+async def test_abrupt_disconnect_cancels_round_and_stops_scheduler(
     monkeypatch, caplog,
 ) -> None:
     target_logger = logging.getLogger("jiuwenswarm.server.agent_ws_server")
@@ -559,7 +559,8 @@ async def test_abrupt_disconnect_cancels_round_but_keeps_scheduler(
 
     assert len(cancelled) == 1
     assert "127.0.0.1" in cancelled[0]
-    assert scheduler_stops == []
+    assert scheduler_stops == ["stop"]
+    assert "step='stop_scheduler' phase='done'" in caplog.text
     assert "连接关闭" in caplog.text
     assert "进程快照" in caplog.text
     assert "rss_mb=" in caplog.text
@@ -595,6 +596,7 @@ async def test_cleanup_step_error_still_reaches_later_steps(
         raise RuntimeError(reason)
 
     server._agent_manager = SimpleNamespace(cancel_all_inflight_work=cancel_all)
+    server._stop_scheduler = _async_noop
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.team.cancel_all_team_stream_tasks_across_managers",
         _async_noop,
@@ -620,34 +622,3 @@ def test_process_snapshot_keeps_other_fields_when_one_probe_fails(monkeypatch) -
     assert snapshot["threads"] != "unavailable"
     assert "handles" in snapshot
     assert "sockets" in snapshot
-
-
-@pytest.mark.asyncio
-async def test_server_stop_stops_scheduler(monkeypatch) -> None:
-    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
-    scheduler_stops: list[str] = []
-
-    async def stop_scheduler() -> None:
-        scheduler_stops.append("stop")
-
-    server._stop_scheduler = stop_scheduler
-    server._server = None
-    server._loop_lag_task = None
-    server._restore_runtime_push_host = lambda: None
-
-    async def cancel_pending() -> None:
-        return None
-
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache_product_hooks.cancel_pending_tasks",
-        cancel_pending,
-    )
-    monkeypatch.setattr(agent_ws_server_module, "is_enterprise", lambda: True)
-    previous = agent_ws_server_module._startup_warmup_task
-    agent_ws_server_module._startup_warmup_task = None
-    try:
-        await server._stop_main_services()
-    finally:
-        agent_ws_server_module._startup_warmup_task = previous
-
-    assert scheduler_stops == ["stop"]
