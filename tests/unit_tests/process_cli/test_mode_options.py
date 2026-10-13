@@ -40,6 +40,28 @@ RESTRICTED_MODES = (
 )
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        [],
+        ["hello"],
+        ["--run-json", "-"],
+        ["--run-jsonl"],
+        ["--query-json", "-"],
+    ),
+)
+def test_removed_work_mode_flag_is_rejected(arguments, capsys):
+    parser = cli_main.build_parser()
+    assert "--work-mode" not in parser.format_help()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args([*arguments, "--work-mode", "work"])
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "无法识别的参数" in captured.err
+    assert "--work-mode" in captured.err
+
+
 @pytest.mark.parametrize("mode", RESTRICTED_MODES)
 @pytest.mark.parametrize("output", ("human", "json", "jsonl"))
 def test_noninteractive_modes_rejected_before_setup(monkeypatch, capsys, mode, output):

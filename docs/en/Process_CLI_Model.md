@@ -28,6 +28,10 @@ and every `--output` format. Interactive mode switching and `/plan` remain
 available. Machine JSON/JSONL entrypoints have their own mode and interaction
 protocol, reject `--mode`, and are unaffected by this restriction.
 
+Select the environment with a complete `--mode`: `agent.code.normal` for code
+and `agent.work.normal` for general work. The separate `--work-mode` CLI option
+has been removed.
+
 ## 2. Windows CMD examples
 
 Select a configured connection:

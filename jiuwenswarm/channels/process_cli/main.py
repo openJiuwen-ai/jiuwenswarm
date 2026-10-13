@@ -238,12 +238,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="code.normal",
         help="Runtime 运行模式；非交互命令仅支持单 Agent 普通模式，不支持 Plan 或 Team。",
     )
-    parser.add_argument(
-        "--work-mode",
-        choices=("code", "work"),
-        default="code",
-        help="Runtime 工作模式配置。",
-    )
+    # Runtime/session metadata still uses work_mode; the public mode selects it.
+    parser.set_defaults(work_mode="code")
     parser.add_argument(
         "--output",
         choices=("human", "json", "jsonl"),
