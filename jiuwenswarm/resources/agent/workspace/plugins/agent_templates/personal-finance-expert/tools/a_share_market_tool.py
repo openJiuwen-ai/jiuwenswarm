@@ -1,4 +1,6 @@
+import asyncio
 import json
+import re
 import urllib.request
 
 from openjiuwen.core.foundation.tool import Tool, ToolCard
@@ -98,15 +100,15 @@ class AShareMarketTool(Tool):
         action = inputs.get("action", "")
         try:
             if action == "quote":
-                return self._get_stock_quote(inputs)
+                return await asyncio.to_thread(self._get_stock_quote, inputs)
             elif action == "market_index":
-                return self._get_market_index(inputs)
+                return await asyncio.to_thread(self._get_market_index, inputs)
             elif action == "stock_ranking":
-                return self._get_stock_ranking(inputs)
+                return await asyncio.to_thread(self._get_stock_ranking, inputs)
             elif action == "sector_performance":
-                return self._get_sector_performance(inputs)
+                return await asyncio.to_thread(self._get_sector_performance, inputs)
             elif action == "fund_estimate":
-                return self._get_fund_estimate(inputs)
+                return await asyncio.to_thread(self._get_fund_estimate, inputs)
             else:
                 return {"success": False, "error": f"不支持的操作类型: {action}"}
         except Exception as e:
@@ -417,6 +419,12 @@ class AShareMarketTool(Tool):
             return {"success": False, "error": "stock_codes 参数必填"}
 
         codes = [c.strip() for c in stock_codes.split(",") if c.strip()]
+        invalid = [c for c in codes if not re.fullmatch(r"\d{6}", c)]
+        if invalid:
+            return {
+                "success": False,
+                "error": f"无效的股票代码: {', '.join(invalid)}",
+            }
 
         # Step 1: 尝试新浪获取基础行情
         sina_map: dict = {}
@@ -608,6 +616,8 @@ class AShareMarketTool(Tool):
         fund_code = inputs.get("fund_code", "")
         if not fund_code:
             return {"success": False, "error": "fund_code 参数必填"}
+        if not re.fullmatch(r"\d{6}", fund_code):
+            return {"success": False, "error": f"无效的基金代码: {fund_code}"}
 
         url = f"{self.FUND_URL}/js/{fund_code}.js"
 

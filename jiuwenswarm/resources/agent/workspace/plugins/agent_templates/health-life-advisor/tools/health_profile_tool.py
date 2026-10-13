@@ -6,6 +6,7 @@
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,8 @@ class HealthProfileTool(Tool):
             get_session_id = getattr(session, "get_session_id", None)
             if callable(get_session_id):
                 session_id = get_session_id()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", str(session_id)) or ".." in str(session_id):
+            raise ValueError(f"invalid session_id: {session_id!r}")
         base = Path(get_cwd())
         profile_dir = base / self.AGENT_NAME / session_id
         profile_dir.mkdir(parents=True, exist_ok=True)
