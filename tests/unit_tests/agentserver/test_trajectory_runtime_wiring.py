@@ -30,6 +30,7 @@ def reset_observability_demands():
         agent_span_context.reset_run_root_spans()
         agent_observability._agent_observability_active = False
         agent_observability._force_ever_enabled = False
+        agent_observability._file_exporter_fanout = None
         team_manager._observability_active = False
 
     _reset()
@@ -334,3 +335,74 @@ def test_team_trajectory_disabled_stops_sink(monkeypatch, tmp_path):
     assert runtime_settings[0][0].enabled is False
     assert runtime_settings[0][1] == {"demand": "team"}
     assert team_manager._observability_active is True
+
+
+class _FakeFanoutProcessor:
+    """Stand-in for the BatchSpanProcessor attached by the fan-out path."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.shutdown_calls = 0
+        self._fail = fail
+
+    def shutdown(self) -> None:
+        self.shutdown_calls += 1
+        if self._fail:
+            raise RuntimeError("fan-out shutdown failed")
+
+
+def test_shutdown_calls_shutdown_on_file_exporter_fanout(monkeypatch):
+    """Regression (PR #7971 review): dropping the reference alone leaves the
+    processor registered on the shared provider (OTel has no remove API), so
+    jsonl keeps growing while disabled and a re-attach duplicates every span.
+    """
+    fanout = _FakeFanoutProcessor()
+    monkeypatch.setattr(
+        agent_observability, "shutdown_trajectory_runtime", lambda **kwargs: True
+    )
+    monkeypatch.setattr(agent_observability, "release_observability", lambda: None)
+    agent_observability._agent_observability_active = True
+    agent_observability._file_exporter_fanout = fanout
+
+    agent_observability.shutdown_agent_observability()
+
+    assert fanout.shutdown_calls == 1
+    assert agent_observability._file_exporter_fanout is None
+    assert agent_observability._agent_observability_active is False
+
+
+def test_shutdown_fanout_not_gated_by_active_flag(monkeypatch):
+    """An orphaned fan-out processor (state inconsistency) must still be shut
+    down — the cleanup sits before the ``_agent_observability_active`` gate."""
+    fanout = _FakeFanoutProcessor()
+    monkeypatch.setattr(
+        agent_observability, "shutdown_trajectory_runtime", lambda **kwargs: True
+    )
+    agent_observability._agent_observability_active = False
+    agent_observability._file_exporter_fanout = fanout
+
+    agent_observability.shutdown_agent_observability()
+
+    assert fanout.shutdown_calls == 1
+    assert agent_observability._file_exporter_fanout is None
+
+
+def test_fanout_shutdown_failure_does_not_block_release(monkeypatch):
+    """A failing fan-out shutdown is logged and swallowed; the shared provider
+    release must still proceed."""
+    fanout = _FakeFanoutProcessor(fail=True)
+    released = []
+    monkeypatch.setattr(
+        agent_observability, "shutdown_trajectory_runtime", lambda **kwargs: True
+    )
+    monkeypatch.setattr(
+        agent_observability, "release_observability", lambda: released.append(True)
+    )
+    agent_observability._agent_observability_active = True
+    agent_observability._file_exporter_fanout = fanout
+
+    agent_observability.shutdown_agent_observability()
+
+    assert fanout.shutdown_calls == 1
+    assert agent_observability._file_exporter_fanout is None
+    assert released == [True]
+    assert agent_observability._agent_observability_active is False

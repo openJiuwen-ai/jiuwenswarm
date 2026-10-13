@@ -199,12 +199,25 @@ def shutdown_agent_observability() -> None:
             logger.warning("[AgentObservability] trajectory runtime did not drain cleanly")
     except Exception as exc:
         logger.warning("[AgentObservability] trajectory runtime shutdown failed: %s", exc)
+    # The fan-out processor must be shut down before the active-flag gate: OTel
+    # TracerProvider has no remove API, so a registered processor stays on the
+    # shared provider forever. Merely dropping the reference would keep jsonl
+    # growing while "disabled" and let a later re-attach register a second
+    # instance (add_span_processors dedups by object identity), duplicating
+    # every span per disable→enable cycle and leaking one worker thread each.
+    # shutdown() flushes the queue; SafeSpanProcessor then drops on_end calls.
+    fanout_processor = _file_exporter_fanout
+    _file_exporter_fanout = None
+    if fanout_processor is not None:
+        try:
+            fanout_processor.shutdown()
+        except Exception as exc:
+            logger.warning("[AgentObservability] file exporter fan-out shutdown failed: %s", exc)
     if not _agent_observability_active:
         return
     try:
         release_observability()
         _agent_observability_active = False
-        _file_exporter_fanout = None
         logger.info("[AgentObservability] disabled")
     except Exception as exc:
         logger.warning("[AgentObservability] shutdown failed: %s", exc)
