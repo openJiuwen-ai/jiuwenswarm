@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any, Optional
 from openjiuwen.rsi.harness_rsi.auto_harness.pipelines import META_EVOLVE_PIPELINE
 from openjiuwen.core.foundation.llm import Model
 
+from jiuwenswarm.common.errors import record_boundary_exception
+
 from .run_log_status import has_terminal_session_event
 
 if TYPE_CHECKING:
@@ -403,6 +405,7 @@ class Scheduler:
             final_status = "failed"
             error_msg = str(e)
             logger.exception("[Scheduler] Task %s execution %s failed: %s", task_id, execution_id, e)
+            record_boundary_exception("scheduler.task", e)
 
         finally:
             if final_status == "success" and log_path.exists() and not has_terminal_session_event(log_path):
