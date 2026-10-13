@@ -74,7 +74,12 @@ test('an AgentGroup display identity survives catalog removal for the session', 
   const store = useSessionStore.getState();
   store.ensureRuntime(sessionId);
   try {
-    const identity = { id: 'group-a', displayName: '中文专家团', avatarUrl: null };
+    const identity = {
+      id: 'hub-asset-123',
+      name: 'group-a',
+      displayName: '中文专家团',
+      avatarUrl: null,
+    };
     store.setMode(sessionId, 'team');
     store.setAgentGroupBinding(sessionId, 'group-a');
     store.setTeamGroupIdentity(sessionId, identity);

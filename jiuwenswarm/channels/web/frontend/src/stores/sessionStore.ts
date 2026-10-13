@@ -1414,7 +1414,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             teamLeaderIdentity: normalized && (!runtime.agentGroupBinding || runtime.agentGroupBinding === normalized)
               ? runtime.teamLeaderIdentity
               : null,
-            teamGroupIdentity: normalized && runtime.teamGroupIdentity?.id === normalized
+            teamGroupIdentity: normalized && (
+              runtime.teamGroupIdentity?.name === normalized
+              || runtime.teamGroupIdentity?.id === normalized
+            )
               ? runtime.teamGroupIdentity
               : null,
             agentGroupSelectionIntent: normalized ? { kind: 'keep' } : runtime.agentGroupSelectionIntent,
