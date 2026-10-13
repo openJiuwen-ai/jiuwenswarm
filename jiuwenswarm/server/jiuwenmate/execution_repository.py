@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 
-from jiuwenswarm.server.runtime.persistent_agents.execution_models import (
+from jiuwenswarm.server.jiuwenmate.execution_models import (
     ENDED_OUTCOMES,
     AccessSnapshot,
     ConversationRef,
@@ -27,9 +27,9 @@ from jiuwenswarm.server.runtime.persistent_agents.execution_models import (
     RequestState,
     SessionRecord,
 )
-from jiuwenswarm.server.runtime.persistent_agents.models import PersistentAgentError, require_identifier
-from jiuwenswarm.server.runtime.persistent_agents.spec_provider import ConfigSnapshot
-from jiuwenswarm.server.runtime.persistent_agents.sqlite_store import SQLiteStore
+from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
+from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot
+from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType, RequestInput
 
 _SCHEMA = """

@@ -8,7 +8,7 @@
 
 **Tech Stack:** React 18、TypeScript、CSS、i18next、lucide-react、Vite
 
-**Spec:** `docs/designs/jiuwenmate-ui-desigin.md`
+**Spec:** [jiuwenmate-ui-desigin.md](jiuwenmate-ui-desigin.md)
 
 ## Global Constraints
 

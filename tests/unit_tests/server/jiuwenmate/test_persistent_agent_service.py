@@ -8,22 +8,22 @@ from datetime import datetime, timedelta, timezone
 from itertools import count
 
 import pytest
-from jiuwenswarm.server.runtime.persistent_agents.execution_models import (
+from jiuwenswarm.server.jiuwenmate.execution_models import (
     AccessSnapshot,
     ExecutionRecord,
     RequestRecord,
 )
-from jiuwenswarm.server.runtime.persistent_agents.models import (
+from jiuwenswarm.server.jiuwenmate.models import (
     CapabilitySelection,
     ColleagueSettings,
     PersistentAgentError,
 )
-from jiuwenswarm.server.runtime.persistent_agents.repository import PersistentAgentRepository, TemplateStore
-from jiuwenswarm.server.runtime.persistent_agents.service import (
+from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
+from jiuwenswarm.server.jiuwenmate.service import (
     ConfiguredModelProvider,
     PersistentAgentService,
 )
-from jiuwenswarm.server.runtime.persistent_agents.spec_provider import ConfigSnapshot, build_invocation
+from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation
 
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.foundation.store import InMemoryKVStore

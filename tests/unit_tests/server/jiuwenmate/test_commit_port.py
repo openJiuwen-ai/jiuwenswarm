@@ -5,15 +5,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-from jiuwenswarm.server.runtime.persistent_agents.execution_models import (
+from jiuwenswarm.server.jiuwenmate.execution_models import (
     AccessSnapshot,
     ConversationRef,
     build_execution_context,
 )
-from jiuwenswarm.server.runtime.persistent_agents.execution_repository import ExecutionRepository
-from jiuwenswarm.server.runtime.persistent_agents.models import PersistentAgentError
-from jiuwenswarm.server.runtime.persistent_agents.ports.commit import CommitQueue, HostCommitPort
-from jiuwenswarm.server.runtime.persistent_agents.spec_provider import publish_spec
+from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
+from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
+from jiuwenswarm.server.jiuwenmate.spec_provider import publish_spec
 
 from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
