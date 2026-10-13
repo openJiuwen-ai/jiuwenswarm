@@ -56,6 +56,7 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
 )
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
+    SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY,
 )
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     filter_todos_for_display,
@@ -1256,8 +1257,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
                 _resume_answers = extra.get(RESUME_USER_INPUT_KEY)
             _outer_todo_active = None
+            _outer_todo_pending = None
             if isinstance(extra, dict):
                 _outer_todo_active = extra.get(SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY)
+                _outer_todo_pending = extra.get(SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY)
             bind_skill_turbo_context(
                 ctx,
                 adapter=self._skill_turbo_adapter,
@@ -1265,6 +1268,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 parent_session=session,
                 resume_answers=_resume_answers,
                 outer_todo_active=_outer_todo_active,
+                outer_todo_pending=_outer_todo_pending,
             )
         except Exception:
             # metadata / resume_answers 绑定失败意味着 HITL 作答注入静默失效，

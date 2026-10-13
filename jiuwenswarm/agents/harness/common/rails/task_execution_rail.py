@@ -49,6 +49,9 @@ _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
 SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY = (
     "_jiuwenswarm_skill_turbo_outer_todo_active"
 )
+SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY = (
+    "_jiuwenswarm_skill_turbo_outer_todo_pending"
+)
 
 
 def get_current_task_id() -> str | None:
@@ -1497,6 +1500,9 @@ class TaskExecutionRail(DeepAgentRail):
             ctx.extra[SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY] = (
                 _ACTIVE_TASK_ID.get() is not None
             )
+            ctx.extra[SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY] = (
+                self._pending_items_after(_ACTIVE_TASK_ID.get())
+            )
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         if not isinstance(ctx.inputs, ToolCallInputs):
@@ -1892,6 +1898,43 @@ class TaskExecutionRail(DeepAgentRail):
             if str(task.get("status", "")).lower() not in self._TODO_DONE_STATUSES:
                 return True
         return False
+
+    def _pending_items_after(self, task_id: str | None) -> dict[str, Any] | None:
+        """当前绑定项之后的未完成项快照；无外层 todo 或无后续项返回 None。
+
+        供停止提示条件化（_wrap_skill_turbo_result）：有后续未完成项时
+        引导模型先标记当前项完成再继续，而非一刀切终止本轮。
+        """
+        if not task_id:
+            return None
+        raw_id = task_id[5:] if task_id.startswith("todo:") else task_id
+        todo_map = self._todo_map
+        if not todo_map:
+            return None
+        current = todo_map.get(raw_id)
+        if not current:
+            return None
+        try:
+            current_index = int(current.get("index", 0))
+        except (TypeError, ValueError):
+            return None
+        pending: list[dict[str, Any]] = []
+        for other_id, task in self._iter_todos_by_index(todo_map):
+            try:
+                other_index = int(task.get("index", 0))
+            except (TypeError, ValueError):
+                continue
+            if (other_index, other_id) <= (current_index, raw_id):
+                continue
+            if str(task.get("status", "")).lower() in self._TODO_DONE_STATUSES:
+                continue
+            pending.append({"id": other_id, "subject": task.get("subject", ""), "index": other_index})
+        if not pending:
+            return None
+        return {
+            "count": len(pending),
+            "next_summary": pending[0].get("subject", "") if pending else "",
+        }
 
     def _overlay_serial_todo_statuses(
         self,

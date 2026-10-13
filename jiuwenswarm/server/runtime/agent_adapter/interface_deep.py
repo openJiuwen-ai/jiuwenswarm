@@ -638,6 +638,7 @@ from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
     mark_resume_in_flight as _skill_turbo_mark_resume_in_flight,
     set_skill_turbo_id as _skill_turbo_set_agent_id,
 )
+from jiuwenswarm.server.runtime.skill_turbo.hitl_dedup import OuterCallIDDeduplicator
 # 中断恢复体系（从 enterprise_dev 全量迁移，已剥离 QA）
 from jiuwenswarm.server.runtime.agent_adapter.interrupt_resume_helpers import (
     prepare_interrupt_resume_for_request,
@@ -2605,7 +2606,9 @@ class JiuWenSwarmDeepAdapter:
         self._stream_event_rail: JiuSwarmStreamEventRail | None = None
         # ask_user 卡片序号：同一外层 tool_call_id 的第 N 次中断共用同一 id，
         # 卡片 request_id 以 {id}#{n} 区分（跨请求存续，见 should_skip_duplicate_ask_user）
-        self._ask_user_card_seq: dict[str, int] = {}
+        # 序号计数收口至 OuterCallIDDeduplicator（derive + seq 单一实现），
+        # _ask_user_card_seq 作为 thin delegate property 暴露（守护测试直接断言）
+        self._outer_call_dedup = OuterCallIDDeduplicator()
         # HITL 中断实例活性注册表（tcid 双轨分离的活性半边）：
         # 同一 base tool_call_id 同一时刻至多一张活卡（新卡发出即取代旧卡）。
         #   _hitl_card_instances: final_id -> base tcid（卡片身份登记）
@@ -12793,6 +12796,9 @@ class JiuWenSwarmDeepAdapter:
         supports_user_interaction: bool = True
         interactive_ask: bool = False
         request_system_prompt: str | None = None
+        # 用户上传附件（request.params["files"]）：注入 metadata 供 skill_turbo
+        # 工具复制到 inputs["files"]，流水线 intent_classify 据此设 has_documents。
+        files: Any = None
 
     @staticmethod
     def _extract_request_system_prompt(request: AgentRequest | None) -> str | None:
@@ -13043,6 +13049,10 @@ class JiuWenSwarmDeepAdapter:
                 # interactive_ask：引导模式显式 opt-in。不得回退 supports_user_interaction
                 # （OfficeClaw 会话 HITL 能力恒为 True，否则未点引导模式也会走大纲审阅）。
                 meta["interactive_ask"] = bool(runtime_config.interactive_ask)
+                # 用户上传附件注入 metadata：skill_turbo 工具构建 inputs 时从此读取，
+                # 复制到 inputs["files"] 供流水线 intent_classify 检测文档路径（has_documents 门控）。
+                if runtime_config.files is not None:
+                    meta["files"] = runtime_config.files
                 set_current_request_metadata(meta)
                 # Align with test/jiuwenclaw: also bind effective workspace ContextVar
                 # in the request task (skill_turbo / fork readers). Tool CwdState is
@@ -14800,13 +14810,12 @@ class JiuWenSwarmDeepAdapter:
     def _derive_outer_call_id(params_request_id: str) -> str:
         """从入站 ask_user 作答的 params.request_id 派生外层 call id。
 
+        薄委托至 ``OuterCallIDDeduplicator.derive_outer_call_id``（单一实现）。
         与 ``interface._build_inputs`` 剥 ``{id}#{n}`` 后缀同一套规则：有后缀
         取 base，无后缀保留原值（不返回空串）。resume 内二次中断的 ask_user
         卡片需用此 id 作 request_id，对齐首个 ask_user（TIE 重写后用外层 call id）。
         """
-        rid = (params_request_id or "").strip()
-        m = re.search(r"^(?P<base>.+)#\d+$", rid)
-        return (m.group("base").strip() if m and m.group("base").strip() else rid)
+        return OuterCallIDDeduplicator.derive_outer_call_id(params_request_id)
 
     @staticmethod
     def _skill_turbo_answers_to_confirm_payload(
@@ -19297,6 +19306,10 @@ class JiuWenSwarmDeepAdapter:
                     ),
                     interactive_ask=self._extract_request_interactive_ask(request),
                     request_system_prompt=self._extract_request_system_prompt(request),
+                    files=(
+                        request.params.get("files")
+                        if isinstance(request.params, dict) else None
+                    ),
                 )
             )
             html_followup_result = None
@@ -20035,6 +20048,10 @@ class JiuWenSwarmDeepAdapter:
                         ),
                         interactive_ask=self._extract_request_interactive_ask(request),
                         request_system_prompt=self._extract_request_system_prompt(request),
+                        files=(
+                            request.params.get("files")
+                            if isinstance(request.params, dict) else None
+                        ),
                     )
                 )
 
@@ -20443,6 +20460,10 @@ class JiuWenSwarmDeepAdapter:
                     ),
                     interactive_ask=self._extract_request_interactive_ask(request),
                     request_system_prompt=self._extract_request_system_prompt(request),
+                    files=(
+                        request.params.get("files")
+                        if isinstance(request.params, dict) else None
+                    ),
                 )
             )
             direct_path_eligible = self._is_stream_rewrite_fast_path_eligible(
@@ -21612,6 +21633,15 @@ class JiuWenSwarmDeepAdapter:
         source = str(payload.get("source") or "").strip()
         return source not in {"subagent_skill_load", "subagent_tool_permission"}
 
+    @property
+    def _ask_user_card_seq(self) -> dict[str, int]:
+        # thin delegate：守护直接断言 adapter._ask_user_card_seq 的测试
+        return self._outer_call_dedup.card_seq
+
+    @_ask_user_card_seq.setter
+    def _ask_user_card_seq(self, value: dict[str, int]) -> None:
+        self._outer_call_dedup._card_seq = value
+
     def _dedupe_ask_user_card(
         self,
         parsed: dict | None,
@@ -21658,9 +21688,7 @@ class JiuWenSwarmDeepAdapter:
             emitted_request_ids.add(live_final)
             emitted_questions[live_final] = questions_key
             return False
-        seq = self._ask_user_card_seq.get(request_id, 0)
-        final_id = request_id if seq == 0 else f"{request_id}#{seq + 1}"
-        self._ask_user_card_seq[request_id] = seq + 1
+        final_id = self._outer_call_dedup.next_final_id(request_id)
         emitted_request_ids.add(final_id)
         emitted_questions[final_id] = questions_key
         if final_id != request_id:

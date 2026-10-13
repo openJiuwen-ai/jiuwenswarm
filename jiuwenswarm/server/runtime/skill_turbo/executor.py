@@ -927,64 +927,6 @@ class SkillTurboExecutor:
             self._resume_replay = False
             await self._finish_trace(start)
 
-    def _build_permission_rail(self) -> Any | None:
-        """构建 PermissionInterruptRail；权限被禁用或构建失败时返回 None。
-
-        复用 DeepAgent 的 ``build_permission_rail`` 工厂。专属 body 取自
-        ``environment.config['permissions']``（Adapter 注入的 yaml
-        ``agents[id]`` / 企业模板）；未注入则回落生效全局段。
-        ``permissions_persist_target_agent_id`` 在 rail 构建时钉住落盘目标。
-        """
-        try:
-            from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
-                PermissionRailBuildOptions,
-                build_permission_rail,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[SkillTurboExecutor] build_permission_rail import failed: %s", exc
-            )
-            return None
-
-        try:
-            cfg = self._env.config if isinstance(self._env.config, dict) else {}
-        except Exception:
-            cfg = {}
-            logger.debug("[SkillTurboExecutor] read env config failed", exc_info=True)
-
-        model = self._env.model_client
-        model_name = None
-        try:
-            mc = getattr(model, "model_config", None)
-            model_name = getattr(mc, "model_name", None) if mc is not None else None
-        except Exception:
-            model_name = None
-            logger.debug("[SkillTurboExecutor] read model_name failed", exc_info=True)
-
-        perm_body = cfg.get("permissions") if isinstance(cfg.get("permissions"), dict) else None
-        persist_target = cfg.get("permissions_persist_target_agent_id")
-        persist_target_id = (
-            str(persist_target).strip() if persist_target is not None and str(persist_target).strip() else None
-        )
-
-        try:
-            return build_permission_rail(
-                cfg,
-                PermissionRailBuildOptions(
-                    llm=model,
-                    model_name=model_name,
-                    permission_config=perm_body,
-                    persist_target_agent_id_provider=(
-                        (lambda: persist_target_id) if persist_target_id else None
-                    ),
-                ),
-            )
-        except Exception as exc:
-            logger.warning(
-                "[SkillTurboExecutor] build_permission_rail failed: %s", exc
-            )
-            return None
-
     def _build_ask_user_rail(self) -> SkillTurboAskUserRail | None:
         """构建结构化 ask_user rail；构建失败时返回 None（不阻塞执行）。
 
@@ -2914,9 +2856,9 @@ class SkillTurboExecutor:
             # 将消息文本中出现的内部 plan_name 替换为中文显示名
             actual_content = self._replace_plan_names_in_text(actual_content)
 
-            # 进度/完成类消息（来自 message 字段）追加换行，避免前端拼接成一行
+            # 进度/完成/失败/降级类消息（来自 message 字段）追加换行，避免前端拼接成一行
             chunk_status = content.get("status")
-            if chunk_status in ("progress", "ok") and actual_content:
+            if chunk_status in ("progress", "ok", "failed", "error", "warning") and actual_content:
                 actual_content = actual_content.rstrip("\n") + "\n"
 
             # 将 data_payload 中的 current_node 转为显示名（已浅拷贝，避免修改原始 chunk）
@@ -3208,38 +3150,6 @@ class SkillTurboExecutor:
             return False
         logger.info(
             "[SkillTurboExecutor] resume skip execute completed stage plan_name=%s task_id=%s",
-            subplan.plan_name,
-            _task_id,
-        )
-        return True
-
-    async def _should_suppress_subplan_start_banner(
-        self,
-        subplan: PlanNode,
-        inputs: dict[str, Any],
-    ) -> bool:
-        """HITL resume 重放时，抑制二层 stage 的「开始执行」进度横幅。
-
-        completed stage 已由 ``_should_skip_subplan_execute`` 静默跳过；
-        in_progress stage 仍需重入（命中 ask_user tool_call_id），但不应再刷横幅。
-        """
-        del inputs
-        if not self._resume_replay:
-            return False
-        if subplan.depth != 1:
-            return False
-        task_states = self._live_task_states()
-        if not task_states:
-            return False
-        found = self._find_task_state_by_plan_name(subplan.plan_name, task_states)
-        if found is None:
-            return False
-        _task_id, task_state = found
-        if task_state.get("status") != "in_progress":
-            return False
-        logger.info(
-            "[SkillTurboExecutor] suppress start banner for in-progress stage "
-            "(HITL resume replay): plan_name=%s task_id=%s",
             subplan.plan_name,
             _task_id,
         )
@@ -3774,7 +3684,6 @@ class SkillTurboExecutor:
             before_subplan_execute=self._before_subplan_execute,
             after_subplan_execute=self._after_subplan_execute,
             should_skip_subplan_execute=self._should_skip_subplan_execute,
-            should_suppress_subplan_start_banner=self._should_suppress_subplan_start_banner,
         )
 
     @staticmethod
