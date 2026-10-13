@@ -38,7 +38,7 @@ agent-core 的 Persistent Agent 以 `PersistentAgentSpec`（固定配置）、`P
 
 ## 3. 设计约束、假设与待决问题
 
-- 已确认约束与依赖：只使用 `openjiuwen.harness.persistent_agent` 的公共导出类型，不从 core 内部 `execution/`、`schema/` 拼装执行链（开发计划第 1 节“全局约束”）。本轮只开放单轮执行，`enable_task_loop`、子 Agent 等能力不开放。
+- 已确认约束与依赖：只使用 `openjiuwen.harness.persistent_agent` 的公共导出类型，不从 core 内部 `execution/`、`schema/` 拼装执行链（开发计划第 1 节）。本轮只开放单轮执行，`enable_task_loop`、子 Agent 等能力不开放。
 - 关键假设：`PersistentAgentSpec.enabled_features` 的类型注解以 `Literal` 列出 core 支持的能力。若 core 改用其他表达方式，`core_features()` 将识别不到能力，发布会全部被拒绝；契约测试 `test_host_opens_only_features_core_advertises` 用于发现这一变化。
 - 待决问题：agent-core 依赖版本目前只固定在本地 `pyproject.toml` / `uv.lock`，不随提交入库；正式入库的版本固定方式待对端发布可引用版本后确定，不影响本仓组件验证。
 

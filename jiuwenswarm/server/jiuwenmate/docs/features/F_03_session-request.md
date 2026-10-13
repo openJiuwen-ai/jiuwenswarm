@@ -10,7 +10,7 @@
 | 计划条目 | [JM-03](../designs/jiuwenmate-development-plan.md)（原 SW-03）：Session / Request / Execution 关联仓库及新版群会话映射 |
 | 负责人 | 常钰聪 |
 | 状态 | 待验收：宿主组件通过，联合验收待完成（与开发计划一致） |
-| 设计依据 | [JiuwenMate 服务端架构设计](../designs/jiuwenmate-architecture.md) 第 2.1 节“核心对象、关系与生命周期”、第 6.1 节“状态分类与转换”、第 9.2 节“共享与隔离”；开发计划附录 A.3“身份和会话”“任务和执行” |
+| 设计依据 | [JiuwenMate 服务端架构设计](../designs/jiuwenmate-architecture.md) 第 2.1 节“核心对象、关系与生命周期”、第 6.1 节“状态分类与转换”、第 9.2 节“共享与隔离”；开发计划第 6.2 节“身份和会话”“任务和执行” |
 | 关联 feature | 前置：[F_01 核心契约适配](F_01_core-contract.md)、[F_02 同事定义与配置发布](F_02_colleague-management.md)；后续：[F_04 事件提交端口](F_04_commit-port.md) 在本文的表上记录事件 |
 | 验证摘要 | 16 项测试通过，含与 F_02 配置快照的联调；尚无渠道入口与调度器调用 |
 | Refs | 无独立 issue；需求来源为开发计划 JM-03 |
@@ -40,7 +40,7 @@
 
 ## 3. 设计约束、假设与待决问题
 
-- 已确认约束与依赖：`(agent_id, group_chat_id)` 对应一个稳定 `session_id`，Swarm 私聊、飞书私聊与不同群分别创建 Session（开发计划附录 A.3）。补充消息是新 Request。
+- 已确认约束与依赖：`(agent_id, group_chat_id)` 对应一个稳定 `session_id`，Swarm 私聊、飞书私聊与不同群分别创建 Session（开发计划第 6.2 节）。补充消息是新 Request。
 - 关键假设：`source_ref` 由渠道层按平台事件身份生成，同一平台事件对同一同事保持不变。若渠道层生成方式不稳定，幂等受理将失效；JM-08 实现时需核对。
 - 待决问题：无。
 
