@@ -507,7 +507,7 @@ async def test_resume_stream_delivery_failure_does_not_complete_outer_todo(
 
     request = AgentRequest(
         request_id="req-resume-failed",
-        channel_id="officeclaw",
+        channel_id="web",
         session_id="sess-resume-failed",
         req_method=ReqMethod.CHAT_SEND,
         params={"source": "ask_user_interrupt", "answers": [{"question": "风格"}]},

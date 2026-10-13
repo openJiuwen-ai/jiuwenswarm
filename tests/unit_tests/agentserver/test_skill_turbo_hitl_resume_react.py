@@ -443,6 +443,64 @@ async def test_save_resume_ctx_persists_outer_task_id():
 
 
 @pytest.mark.asyncio
+async def test_save_resume_ctx_preserves_outer_task_id_across_nested_interrupt():
+    """A second HITL interruption keeps the first interruption's outer Todo id."""
+    from openjiuwen.core.session.utils import update_dict
+
+    checkpoint: dict = {}
+
+    class _MergeCheckpointSession:
+        def __init__(self):
+            self._state: dict = {}
+
+        async def pre_run(self, inputs=None):
+            self._state = copy.deepcopy(checkpoint)
+
+        async def post_run(self):
+            checkpoint.clear()
+            checkpoint.update(copy.deepcopy(self._state))
+
+        def update_state(self, mapping):
+            update_dict(mapping, self._state)
+
+        def get_state(self, key):
+            return copy.deepcopy(self._state.get(key))
+
+    first_interrupt = _MergeCheckpointSession()
+    await save_resume_ctx(
+        first_interrupt,
+        plan_code="plan-x",
+        inputs={},
+        pending_tool_call_id="skill_turbo-tc-ask_user-1",
+        task_states=None,
+        outer_task_id="todo:create_ppt",
+    )
+    await first_interrupt.post_run()
+
+    first_resume = _MergeCheckpointSession()
+    first_ctx = await load_resume_ctx(first_resume)
+    assert first_ctx is not None
+    assert first_ctx["outer_task_id"] == "create_ppt"
+    await mark_resume_in_flight(first_resume, first_ctx)
+
+    second_interrupt = _MergeCheckpointSession()
+    await save_resume_ctx(
+        second_interrupt,
+        plan_code="plan-x",
+        inputs={},
+        pending_tool_call_id="skill_turbo-tc-ask_user-2",
+        task_states=None,
+    )
+    await second_interrupt.post_run()
+
+    second_resume = _MergeCheckpointSession()
+    second_ctx = await load_resume_ctx(second_resume)
+    assert second_ctx is not None
+    assert second_ctx["pending_tool_call_id"] == "skill_turbo-tc-ask_user-2"
+    assert second_ctx["outer_task_id"] == "create_ppt"
+
+
+@pytest.mark.asyncio
 async def test_complete_skill_turbo_outer_todo_updates_status_and_returns_events():
     class _TodoTool:
         def __init__(self):
