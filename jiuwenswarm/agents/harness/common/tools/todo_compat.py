@@ -214,7 +214,7 @@ def install_todo_modify_compat_patch() -> None:
 
 
 def _install_backlog_create_patch(tool_cls: type) -> None:
-    if getattr(tool_cls.invoke, "_backlog_create", False):
+    if getattr(tool_cls.invoke, "backlog_create_patched", False):
         return
     original = tool_cls.invoke
 
@@ -222,12 +222,12 @@ def _install_backlog_create_patch(tool_cls: type) -> None:
         result = await original(self, inputs, **kwargs)
         return await persist_backlog_create(self, kwargs.get("session"), result)
 
-    invoke._backlog_create = True  # type: ignore[attr-defined]
+    invoke.backlog_create_patched = True  # type: ignore[attr-defined]
     tool_cls.invoke = invoke
 
 
 def _install_backlog_list_patch(tool_cls: type) -> None:
-    if getattr(tool_cls.invoke, "_backlog_list", False):
+    if getattr(tool_cls.invoke, "backlog_list_patched", False):
         return
     original = tool_cls.invoke
 
@@ -235,5 +235,5 @@ def _install_backlog_list_patch(tool_cls: type) -> None:
         result = await original(self, inputs, **kwargs)
         return await merge_persistent_list_items(self, kwargs.get("session"), result)
 
-    invoke._backlog_list = True  # type: ignore[attr-defined]
+    invoke.backlog_list_patched = True  # type: ignore[attr-defined]
     tool_cls.invoke = invoke
