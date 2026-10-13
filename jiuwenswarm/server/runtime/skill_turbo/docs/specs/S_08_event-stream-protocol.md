@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / event-stream-protocol |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`：executor.py（事件构造 / 缓冲 / task 管线）、markdown_stream.py、skill_turbo_tools.py（tool 层转发）、rails/artifact_rail.py、rails/delivery_summary_rail.py；外层 interface_deep.py（HITL 三件套 / invocation_paused） |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联 feature | 暂无（首批 specs） |
 
 ## 范围 / 边界
@@ -359,28 +359,28 @@ task_states 快照恢复（复用 task_id）→ 恢复首段发 task.update 快�
 
 ## 异常分支与边界 case
 
-| # | 边界 case | 现行为 / 风险 |
-|---|---|---|
-| 1 | E5/E6 校验/加载失败 | yield chat.error + complete 后 return，**无 plan.finished**（不对称）；前端靠 complete 兜底收口 |
-| 2 | E9 用户取消 | CancelledError / KeyboardInterrupt 不 flush task 事件直接 raise；前端面板可能滞留 in_progress，依赖上层终止流（现状最薄弱路径） |
-| 3 | 双排空乱序 | produce / drain 双协程排空时 task.start 反超开始横幅 → deferred 机制保证横幅先行 |
-| 4 | markdown 围栏粘连 | 闭合 ```` ``` ```` + 开放 ```` ```json ```` 粘成六反引号，CommonMark 不视为 closer，其后日志全吞进一个 `<pre>` |
-| 5 | ```` ``` ````+`json` 拆分 | 流式拆块场景误插换行会破坏开放围栏 → `_is_fence_info_continuation` 不插 |
-| 6 | OOB 送达数为 0 | send_push 返回 0 = 未投递；当作成功则任务快照静默丢失 |
-| 7 | 外层 todo 抑制失效 | taskProgress 槽位被内部步骤覆盖 / taskStack 嵌套 / segment 分裂 |
-| 8 | 缓冲 flush 时机错配 | 类型切换或非缓冲事件前未 flush → 相邻 delta 交错、围栏状态错乱 |
-| 9 | usage 失败轮泄漏 | 失败轮发送 llm_usage 会与后成功轮重复计费 |
-| 10 | 交付骨架校验失败 | `startswith(DELIVERY_SUMMARY_START)` 不过 → 静默跳过；ppt 动态包不在场返回空串短路走各自兜底文案 |
-| 11 | task_id 未剥 | 内部 task_id 泄漏进外层事件 → segment 分裂 / 槽位抢占 |
-| 12 | fallback 事件透传 | 不在 skip / 映射集，以原 event_type 转发——新增 skip 项时勿误收 |
-| 13 | chat.error 抢跑 | 前端 useWebSocket 收 chat.error 清 activeRequestIdRef 抢先终结本轮——降级路径因此禁发 chat.error（决策侧见 [[S_07]] P9） |
-| 14 | invocation_paused 语义 | gateway 转 is_final=False in_progress 帧，客户端不得当任务完成；对照 chat.error+is_complete → E2A final FAILED |
-| 15 | plan.started content 泄露 | 不 skip 会被外层 `_parse_stream_chunk` fallback 误改写为 chat.delta 泄露给用户 |
-| 16 | task.update delta 淹没 | 数千页生成 delta 淹没 FIFO，任务列表滞后（Stage 卡 in_progress 直至交付后）→ OOB 旁路解决 |
-| 17 | parent_session 为 None | task 事件 drop 并告警（任务列表到不了前端）；resume 侧 session_id 缺失仅告警继续 |
-| 18 | 中断态 tool_result 抑制 | StreamEventRail 中断态跳过 `_emit_tool_result`（卡片由 harness `__interaction__` 转换统一发出）——否则工具结果凭空出现 |
-| 19 | task.update 快照一致性 | 全量快照必须深拷贝 + 按 task_index 排序；否则后到快照与前端列表顺序抖动、并发修改穿透 |
-| 20 | 横幅与 task.start 的时序耦合 | 横幅依赖 deferred 机制保持在 task.start 之前；技能侧横幅不带 `_bubble_progress` 标记则时序保证失效（魔法键协商是纯约定，[[S_04]]） |
+| # | 边界 case | 现行为 / 风险 | 测试覆盖 |
+|---|---|---|---|
+| 1 | E5/E6 校验/加载失败 | yield chat.error + complete 后 return，**无 plan.finished**（不对称）；前端靠 complete 兜底收口 | test_exit_path_frames（E5/E6 帧序列） |
+| 2 | E9 用户取消 | CancelledError / KeyboardInterrupt 不 flush task 事件直接 raise；前端面板可能滞留 in_progress，依赖上层终止流（现状最薄弱路径） | test_exit_path_frames（E9 用例） |
+| 3 | 双排空乱序 | produce / drain 双协程排空时 task.start 反超开始横幅 → deferred 机制保证横幅先行 | 部分：test_resume_skip_completed（回调级 deferred 用例；双协程竞态级无） |
+| 4 | markdown 围栏粘连 | 闭合 ```` ``` ```` + 开放 ```` ```json ```` 粘成六反引号，CommonMark 不视为 closer，其后日志全吞进一个 `<pre>` | test_markdown_stream_fence |
+| 5 | ```` ``` ````+`json` 拆分 | 流式拆块场景误插换行会破坏开放围栏 → `_is_fence_info_continuation` 不插 | test_markdown_stream_fence |
+| 6 | OOB 送达数为 0 | send_push 返回 0 = 未投递；当作成功则任务快照静默丢失 | 部分：test_skill_turbo_tools（OOB 旁路）；0 送达判定无用例 |
+| 7 | 外层 todo 抑制失效 | taskProgress 槽位被内部步骤覆盖 / taskStack 嵌套 / segment 分裂 | test_skill_turbo_tools |
+| 8 | 缓冲 flush 时机错配 | 类型切换或非缓冲事件前未 flush → 相邻 delta 交错、围栏状态错乱 | 部分：test_resume_skip_completed（横幅绕缓冲） |
+| 9 | usage 失败轮泄漏 | 失败轮发送 llm_usage 会与后成功轮重复计费 | test_llm_retry_rail_mount（failed attempt 不发 usage） |
+| 10 | 交付骨架校验失败 | `startswith(DELIVERY_SUMMARY_START)` 不过 → 静默跳过；ppt 动态包不在场返回空串短路走各自兜底文案 | test_ppt_delivery_summary |
+| 11 | task_id 未剥 | 内部 task_id 泄漏进外层事件 → segment 分裂 / 槽位抢占 | test_skill_turbo_tools |
+| 12 | fallback 事件透传 | 不在 skip / 映射集，以原 event_type 转发——新增 skip 项时勿误收 | test_fallback_context_writeback |
+| 13 | chat.error 抢跑 | 前端 useWebSocket 收 chat.error 清 activeRequestIdRef 抢先终结本轮——降级路径因此禁发 chat.error（决策侧见 [[S_07]] P9） | test_exit_path_frames（E10/E11 禁发断言） |
+| 14 | invocation_paused 语义 | gateway 转 is_final=False in_progress 帧，客户端不得当任务完成；对照 chat.error+is_complete → E2A final FAILED | 部分：test_exit_path_frames（executor 侧零帧已锁定）；adapter 终结帧无用例 |
+| 15 | plan.started content 泄露 | 不 skip 会被外层 `_parse_stream_chunk` fallback 误改写为 chat.delta 泄露给用户 | 无（tool 层 skip 集无用例） |
+| 16 | task.update delta 淹没 | 数千页生成 delta 淹没 FIFO，任务列表滞后（Stage 卡 in_progress 直至交付后）→ OOB 旁路解决 | test_skill_turbo_tools（OOB 用例） |
+| 17 | parent_session 为 None | task 事件 drop 并告警（任务列表到不了前端）；resume 侧 session_id 缺失仅告警继续 | 无专项用例 |
+| 18 | 中断态 tool_result 抑制 | StreamEventRail 中断态跳过 `_emit_tool_result`（卡片由 harness `__interaction__` 转换统一发出）——否则工具结果凭空出现 | 部分：test_skill_turbo_hitl_tie_rewrite_repro（TIE 改写侧击） |
+| 19 | task.update 快照一致性 | 全量快照必须深拷贝 + 按 task_index 排序；否则后到快照与前端列表顺序抖动、并发修改穿透 | 无直接断言 |
+| 20 | 横幅与 task.start 的时序耦合 | 横幅依赖 deferred 机制保持在 task.start 之前；技能侧横幅不带 `_bubble_progress` 标记则时序保证失效（魔法键协商是纯约定，[[S_04]]） | test_resume_skip_completed（deferred 用例组） |
 
 ## 修改检查单
 

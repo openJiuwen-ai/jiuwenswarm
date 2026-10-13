@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_03 / security-model |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（validator.py、executor.py、environment.py、rails/permission_rail.py、plan_node.py、runtime/__init__.py） |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联 feature | 暂无（首批 specs） |
 
 ## 范围 / 边界
@@ -228,27 +228,27 @@ class SkillTurboPermissionRail(SkillAuthorizationPermissionRail):
 
 ## 异常分支与边界 case
 
-| # | case | 行为 / 风险 |
-|---|---|---|
-| 1 | validator 拒绝（注册期） | 用户视角"无匹配skill"静默降级 DeepAgent；排查只能靠服务端 WARNING 日志（skill/file/errors 明细） |
-| 2 | strict_builtin_skill_validation | 默认 False（过渡期，失败仅跳过）；True 时校验失败 ValueError 阻止整个启动 |
-| 3 | 语法错误 | `ast.parse` 抛 SyntaxError → validate 返回 `["语法错误: ..."]`，不抛异常、与其它违规同路处理 |
-| 4 | 无显式 root 变量 | 0 个 PlanNode 实例 → ValueError；恰好 1 个 → 脆弱兜底采用（依赖 dict 迭代顺序）；>1 个 → PlanCodeValidationError |
-| 5 | 执行期校验失败（流式） | chat.error + complete + return，不抛 NotHandled；外层 LLM 拿不到降级信号，可能误判工具成功 |
-| 6 | fromlist 绕过尝试 | `from skill_codes.xxx import __import__` / `getattr` / `type` 等 → `_DENIED_FROMLIST_NAMES` 拦截（15 项） |
-| 7 | type 三参调用 | builtin / generated profile deny_type_three_args 拒绝动态类型创建；plan_code profile 不启此开关 |
-| 8 | dunder 访问 | deny_dunder_attribute 默认 True；builtin 仅 `__init__` / `__name__` 放行；`__class__` / `__subclasses__` 等全禁 |
-| 9 | 文件 IO / 网络直连 | pathlib 读写方法在 denied_attribute_call_names 封死；http./urllib./requests. 前缀黑名单 + 白名单缺省拒绝；一律走 use_tool 工具通道 |
-| 10 | `asyncio.gather(return_exceptions=True)` 吞 AbortError | 静态校验无法覆盖（gather 不是 try/except）；技能侧约定显式重抛 + P7 运行期三道穿透兜底 |
-| 11 | 权限 rail suspend 漏恢复 | 父子共享 rail 实例；finally 缺失或 snapshot 回调未替换 → resolve_interrupt 用旧 snapshot 覆盖 → 父 agent 权限状态被污染 |
-| 12 | 清洗碰撞 | 不同 skill_name 清洗后同动态包名 → ensure_turbo_package 拒绝后注册者 → 跳过注册（防 import 解析到错误代码，[[S_05]]） |
-| 13 | 并发请求共享模块级 root 单例 | 不 deepcopy 即绑回调 → 后启动请求覆盖先启动请求回调 → 节点产物写错 executor 的 holder |
-| 14 | generated profile 无调用方 | 当前预留、行为冻结；启用前必须重审 deny 清单与调用方约束 |
-| 15 | 白名单前缀过宽 | allowed_import_prefixes 命中过宽（如误含引擎内部包）→ 沙箱面扩大；前缀列表来源必须经 skill_code_import_prefixes 单一通道 |
-| 16 | 审批清单与实际工具面漂移 | 新增 turbo 工具类别未同步 SKILL_TURBO_APPROVAL_TOOLS → 审批卡误导用户；回归测试守护 |
-| 17 | 白名单含 plan_node 全路径但禁直连其它引擎模块 | `jiuwenswarm.server.runtime.skill_turbo.plan_node` 是 AbortError/FallbackContractError 唯一合法触点；openjiuwen / fallback_handler 等其余引擎路径均不在白名单（防绕过门面直连内部实现） |
-| 18 | 审批文案改写 | 「需要授权」关键字被移除 / 改写 → Relay 权限桥无法识别审批卡 → 审批链断裂（文案即协议，改文案必须同步上层识别逻辑） |
-| 19 | strict 模式启动失败 | strict_builtin_skill_validation=True 时任一内置技能校验失败 → ValueError 阻止整个启动（适用于严格部署，默认过渡期 False） |
+| # | case | 行为 / 风险 | 测试覆盖 |
+|---|---|---|---|
+| 1 | validator 拒绝（注册期） | 用户视角"无匹配skill"静默降级 DeepAgent；排查只能靠服务端 WARNING 日志（skill/file/errors 明细） | test_environment_external_turbo + 技能仓注册门禁（仓外） |
+| 2 | strict_builtin_skill_validation | 默认 False（过渡期，失败仅跳过）；True 时校验失败 ValueError 阻止整个启动 | 无（strict=True 专测缺） |
+| 3 | 语法错误 | `ast.parse` 抛 SyntaxError → validate 返回 `["语法错误: ..."]`，不抛异常、与其它违规同路处理 | 无（语法错误分支） |
+| 4 | 无显式 root 变量 | 0 个 PlanNode 实例 → ValueError；恰好 1 个 → 脆弱兜底采用（依赖 dict 迭代顺序）；>1 个 → PlanCodeValidationError | test_executor_plan_code_import（三分支用例） |
+| 5 | 执行期校验失败（流式） | chat.error + complete + return，不抛 NotHandled；外层 LLM 拿不到降级信号，可能误判工具成功 | test_exit_path_frames（E5/E6 帧序列） |
+| 6 | fromlist 绕过尝试 | `from skill_codes.xxx import __import__` / `getattr` / `type` 等 → `_DENIED_FROMLIST_NAMES` 拦截（15 项） | 无 |
+| 7 | type 三参调用 | builtin / generated profile deny_type_three_args 拒绝动态类型创建；plan_code profile 不启此开关 | 无 |
+| 8 | dunder 访问 | deny_dunder_attribute 默认 True；builtin 仅 `__init__` / `__name__` 放行；`__class__` / `__subclasses__` 等全禁 | 部分：test_validator_external_profile（白/黑名单面） |
+| 9 | 文件 IO / 网络直连 | pathlib 读写方法在 denied_attribute_call_names 封死；http./urllib./requests. 前缀黑名单 + 白名单缺省拒绝；一律走 use_tool 工具通道 | 部分：test_validator_external_profile（denied 面同上） |
+| 10 | `asyncio.gather(return_exceptions=True)` 吞 AbortError | 静态校验无法覆盖（gather 不是 try/except）；技能侧约定显式重抛 + P7 运行期三道穿透兜底 | 部分：运行期穿透由 test_abort_error_guards 锁定；静态面无法覆盖（spec 自认） |
+| 11 | 权限 rail suspend 漏恢复 | 父子共享 rail 实例；finally 缺失或 snapshot 回调未替换 → resolve_interrupt 用旧 snapshot 覆盖 → 父 agent 权限状态被污染 | 部分：test_spawn_fallback_suspend_and_interrupt（单元级）；端到端无 |
+| 12 | 清洗碰撞 | 不同 skill_name 清洗后同动态包名 → ensure_turbo_package 拒绝后注册者 → 跳过注册（防 import 解析到错误代码，[[S_05]]） | test_turbo_package_loader |
+| 13 | 并发请求共享模块级 root 单例 | 不 deepcopy 即绑回调 → 后启动请求覆盖先启动请求回调 → 节点产物写错 executor 的 holder | 部分：test_executor_plan_code_import（deepcopy 独立副本断言） |
+| 14 | generated profile 无调用方 | 当前预留、行为冻结；启用前必须重审 deny 清单与调用方约束 | N/A（无调用方，行为冻结） |
+| 15 | 白名单前缀过宽 | allowed_import_prefixes 命中过宽（如误含引擎内部包）→ 沙箱面扩大；前缀列表来源必须经 skill_code_import_prefixes 单一通道 | test_validator_external_profile（engine_internal_still_denied） |
+| 16 | 审批清单与实际工具面漂移 | 新增 turbo 工具类别未同步 SKILL_TURBO_APPROVAL_TOOLS → 审批卡误导用户；回归测试守护 | test_skill_turbo_approval_tools |
+| 17 | 白名单含 plan_node 全路径但禁直连其它引擎模块 | `jiuwenswarm.server.runtime.skill_turbo.plan_node` 是 AbortError/FallbackContractError 唯一合法触点；openjiuwen / fallback_handler 等其余引擎路径均不在白名单（防绕过门面直连内部实现） | test_validator_external_profile（facade 白名单） |
+| 18 | 审批文案改写 | 「需要授权」关键字被移除 / 改写 → Relay 权限桥无法识别审批卡 → 审批链断裂（文案即协议，改文案必须同步上层识别逻辑） | 无（「需要授权」文案协议） |
+| 19 | strict 模式启动失败 | strict_builtin_skill_validation=True 时任一内置技能校验失败 → ValueError 阻止整个启动（适用于严格部署，默认过渡期 False） | 无（同 #2） |
 
 ## 修改检查单
 

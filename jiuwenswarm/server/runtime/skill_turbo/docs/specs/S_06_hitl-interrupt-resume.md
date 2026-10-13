@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_06 / hitl-interrupt-resume |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（executor.py、agent.py、plan_node.py、permission_bridge.py、resume_context.py、interactive_ask.py、rails/ask_user_rail.py、skill_turbo_tools.py、context_binding.py、node_artifact_store.py）+ `agent_adapter/interface_deep.py`、`agent_adapter/interface.py` + `agents/harness/common/rails/stream_event_rail.py` + `openjiuwen/core/single_agent/interrupt/state.py` |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联 feature | 暂无（首批 specs） |
 
 ## 范围 / 边界
@@ -420,18 +420,18 @@ async def resume_stream(self, *, plan_code, inputs, request_id, channel_id,
 | 12 | **resume 重放产物继承**（五情形） | plan_code_hash 匹配才继承；不匹配跳过；旧记录无 hash fail-open；出错 fail-open；无记录 no-op；persist 必写 hash | test_interrupt_recovery |
 | 13 | **暂停后重发纯文本** | cancel 已清状态 → 全新 invocation 意图判断；未清时的缺陷形态：文本被塞进 rail.resolve_interrupt，parse 失败被当 skip → 直接重生成（`_drop_pending_pure_ask_user_round` 封堵） | test_interrupt_recovery（间接） |
 | 14 | **乱序点击 / 多卡并发** | 挂起表复用分支重发原卡（不新增代次）；死卡守卫拒绝旧卡应答；守卫 fail-open | test_hitl_resume_react |
-| 15 | **跨会话并发同参数 ask_user** | request_id 混入 args_hash 生成不同 tcid / 卡 id，作答不串台；代价是精确匹配失效，name+idx 回退成预期路径（无直接单测，靠生成 docstring + consume 的 info 日志口径） | — |
+| 15 | **跨会话并发同参数 ask_user** | request_id 混入 args_hash 生成不同 tcid / 卡 id，作答不串台；代价是精确匹配失效，name+idx 回退成预期路径 | test_repro_cross_session_tcid_collision（tcid 生成层）；作答路由隔离端到端无 |
 | 16 | **tcid 漂移**（重放参数非确定） | name+idx 回退命中，改用 expected_tcid 对齐注入（防二次中断死循环） | executor consume 相关用例 |
 | 17 | **作答 request_id 与 pending 不一致** | 仅 warning，继续 resume（宽容策略） | —（无专门测试） |
 | 18 | **resume 时 interactive_ask 缺省** | 从 saved_inputs 恢复中断前引导模式（防 preview 类 ask_user 误判 skipped / 引导管线退化） | interactive_ask 单测；resume 两入口均调用 |
-| 19 | **非引导模式 + preview 类 ask_user** | 不中断不弹卡，直接 `{"status":"skipped"}` 沿用当前内容（`_should_skip_for_non_interactive`） | ask_user_rail 单测 |
+| 19 | **非引导模式 + preview 类 ask_user** | 不中断不弹卡，直接 `{"status":"skipped"}` 沿用当前内容（`_should_skip_for_non_interactive`） | test_ask_user_rail_gates |
 | 20 | **user_input 形态不认识** | re-interrupt（重新中断等待）；确定性 tcid 相同 → 重问帧可能被 sidecar dedup 吞卡（注释警示） | —（无直接单测） |
 | 21 | **resume 时 skill_acceleration_exec 重复工具事件** | RESUME_USER_INPUT_KEY 存在 → before_tool_call 跳过 tool_call / tool_update emit；首次调用仍 emit | test_hitl_resume_react |
 | 22 | **权限账本误吞 ask_user 应答** | ask_user continuation 不进 permission ledger；且不归一化 `#n` 后缀（防死锁）；非 ask_user source 被忽略 | test_hitl_resume_react |
 | 23 | **HITL 占位与上下文修复** | `_fix_incomplete_tool_context` 识别占位模板；STOP hint 优先于占位（防暂停被当完成） | test_hitl_resume_react |
 | 24 | **连续多卡**（同外层调用第 N 次中断） | `{id}#{n}` 序号区分；回传剥后缀还原；序号计数跨请求存续（adapter 实例） | test_hitl_resume_react |
-| 25 | **resume 完成收尾帧** | delta 承载终稿 + **空 content 的 chat.final**（防上层前端终稿拼接 computeFinalTextDelta 双拷贝）；HITL resume 绕过 DeliverySummaryRail，只发 P10 骨架 / 安全短句 | test_resume_usage |
-| 26 | **瞬时失败保留断点** | release_checkpoint=False → 不清 resume_ctx、不 post_run（防 stale 内存态 clobber 磁盘有效断点） | —（无专门单测） |
+| 25 | **resume 完成收尾帧** | delta 承载终稿 + **空 content 的 chat.final**（防上层前端终稿拼接 computeFinalTextDelta 双拷贝）；HITL resume 绕过 DeliverySummaryRail，只发 P10 骨架 / 安全短句 | test_ppt_delivery_summary（resume 终稿骨架用例） |
+| 26 | **瞬时失败保留断点** | release_checkpoint=False → 不清 resume_ctx、不 post_run（防 stale 内存态 clobber 磁盘有效断点） | test_skill_turbo_tools（保留三态 + NotHandled 对照用例） |
 | 27 | **save_resume_ctx 失败** | 仅 warning，中断照常上抛（断点丢失 → 作答退化 DeepAgent 路径） | —（无单测） |
 | 28 | **session_id 缺失** | inputs 无 session_id / conversation_id → 随机 UUID sid，恢复按 request.session_id 无法命中（warning 提示查 metadata 绑定链路）；无 card → pre_run / post_run 崩溃无法持久化 | —（无单测） |
 

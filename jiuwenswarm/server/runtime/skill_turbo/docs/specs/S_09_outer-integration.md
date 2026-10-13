@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_09 / outer-integration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（外层接缝：`server/runtime/agent_adapter/interface_deep.py`、`agents/harness/common/rails/*`、`server/agent_ws_server.py`、`common/e2a/gateway_normalize.py`；双仓部署边界见附录） |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联 feature | 暂无（首批 specs） |
 
 ## 范围 / 边界
@@ -252,23 +252,23 @@ AbortError 透传到工具层 → 返回 `__skill_turbo_hitl__` 标记 dict → 
 
 ## 异常分支与边界 case
 
-| # | 场景 | 现行为 / 约束 |
-|---|---|---|
-| B1 | 外部技能目录扫描失败 | 60s TTL 缓存 + `_last_good_entries` 进程级兜底，沿用上次成功清单，绝不闪断"暂无"；ToolCard 并发最后写入生效（per-user sidecar 内目录一致，无实际冲突） |
-| B2 | adapter 长生命周期内存态 | HITL 卡片注册表有界 1024/512 防泄漏；`_ask_user_card_seq` 等不持久化，重启后死卡守卫 fail-open、序号回卷，仅剩相位守卫兜底 |
-| B3 | tool_info.json 多实例写同一默认路径 | 类级去重 + 原子写；不同 agent 实例注册不同工具集时最后写者胜（CodeGen 可能读到别家 schema） |
-| B4 | 对端心跳不识别 | Gateway 侧 message_handler 跳过 keepalive 不投递 IM；对端版本过旧时需确认其 keepalive 帧过滤行为，否则保活失效退化为依赖 ping/pong |
-| B5 | 跨请求 workspace 切换 | 每请求新建 SkillTurbo/Environment/Executor；`_setup_execution_context` 重置计数器与执行 ContextVar；ArtifactRail 工作区基线随实例重建，不跨请求残留 |
-| B6 | 并发会话 metadata 覆盖 | request 级字段一律走 ContextVar；send_file_to_user 等携带 session 路由的工具按全局 tool_id 从 Runner.resource_mgr 现取实例，并发下"后注册者覆盖"是已知行为，必须经请求级 ContextVar 解析路由 |
-| B7 | WS backpressure | legacy serve 必须 `max_queue=None`；有界队列被不读的对端填满后 ping/pong 阻塞 → ping_timeout 断连；新 API 回退分支未传 max_queue（现状记录，两分支须同步） |
-| B8 | skills 目录变化 rebind | 同名动态包不同目录 → `ensure_turbo_package` WARNING rebind + 清陈旧子模块；per-user sidecar 单进程安全；多租户共享进程下 rebind 会导致先注册租户 import 解析到后注册租户代码（[[S_05]]） |
-| B9 | 类级缓存无淘汰 | `_scan_cache` / `_external_scan_cache` / `_tool_info_last_export` 只增不减；skills_dir 变更后旧 key 永久驻留（长驻进程内存缓慢增长面） |
-| B10 | 沙箱关闭残留 | `sandbox_config_rpc` 关沙箱时清 Runner.resource_mgr sysop 残留，防 `environment._resolve_sys_operation` 兜底命中已关闭实例 |
-| B11 | parent_session 为 None | task 事件 drop 并告警（任务列表到不了前端）；resume 侧 session_id 缺失仅告警继续（checkpointer key 可能 miss） |
-| B12 | rail 构建失败 | 两个 rail 工厂异常安全返回 None，不阻塞 adapter 初始化（缺指南注入/交付总结但加速仍可运行） |
-| B13 | send_push 0 送达 | 无订阅者 / 编码失败 / 过滤无匹配 / sink 全败 → warning + return 0；调用方必须以返回值判定成败（N4） |
-| B14 | ③ 先于 ② 部署 | 新引擎进程扫不到外部 turbo_codes → 清单为空 → PromptRail 不注入 + planner 无匹配 → `SkillTurboNotHandled` 降级（用户表现为"加速不生效"而非报错；只能靠部署顺序与验证日志预防） |
-| B15 | gateway 帧误判 | `chat.error` + is_complete 会被 normalize 为 E2A final FAILED、前端清 activeRequestIdRef 终结本轮——这正是降级路径禁止发 chat.error 的边界（[[S_07]]/[[S_08]]），改事件桥时须逐帧推演 |
+| # | 场景 | 现行为 / 约束 | 测试覆盖 |
+|---|---|---|---|
+| B1 | 外部技能目录扫描失败 | 60s TTL 缓存 + `_last_good_entries` 进程级兜底，沿用上次成功清单，绝不闪断"暂无"；ToolCard 并发最后写入生效（per-user sidecar 内目录一致，无实际冲突） | test_description_refresh（last-good） |
+| B2 | adapter 长生命周期内存态 | HITL 卡片注册表有界 1024/512 防泄漏；`_ask_user_card_seq` 等不持久化，重启后死卡守卫 fail-open、序号回卷，仅剩相位守卫兜底 | 部分：test_hitl_superseded_invalidation（活卡/死卡守卫）；有界上限无 |
+| B3 | tool_info.json 多实例写同一默认路径 | 类级去重 + 原子写；不同 agent 实例注册不同工具集时最后写者胜（CodeGen 可能读到别家 schema） | test_environment_export_tool_info |
+| B4 | 对端心跳不识别 | Gateway 侧 message_handler 跳过 keepalive 不投递 IM；对端版本过旧时需确认其 keepalive 帧过滤行为，否则保活失效退化为依赖 ping/pong | 无（gateway 侧） |
+| B5 | 跨请求 workspace 切换 | 每请求新建 SkillTurbo/Environment/Executor；`_setup_execution_context` 重置计数器与执行 ContextVar；ArtifactRail 工作区基线随实例重建，不跨请求残留 | test_context_binding_channels（通道复位契约） |
+| B6 | 并发会话 metadata 覆盖 | request 级字段一律走 ContextVar；send_file_to_user 等携带 session 路由的工具按全局 tool_id 从 Runner.resource_mgr 现取实例，并发下"后注册者覆盖"是已知行为，必须经请求级 ContextVar 解析路由 | test_context_binding_channels（条件语义/复位隔离） |
+| B7 | WS backpressure | legacy serve 必须 `max_queue=None`；有界队列被不读的对端填满后 ping/pong 阻塞 → ping_timeout 断连；新 API 回退分支未传 max_queue（现状记录，两分支须同步） | test_ws_keepalive_backpressure（agentserver） |
+| B8 | skills 目录变化 rebind | 同名动态包不同目录 → `ensure_turbo_package` WARNING rebind + 清陈旧子模块；per-user sidecar 单进程安全；多租户共享进程下 rebind 会导致先注册租户 import 解析到后注册租户代码（[[S_05]]） | test_turbo_package_loader（rebind 用例） |
+| B9 | 类级缓存无淘汰 | `_scan_cache` / `_external_scan_cache` / `_tool_info_last_export` 只增不减；skills_dir 变更后旧 key 永久驻留（长驻进程内存缓慢增长面） | 无 |
+| B10 | 沙箱关闭残留 | `sandbox_config_rpc` 关沙箱时清 Runner.resource_mgr sysop 残留，防 `environment._resolve_sys_operation` 兜底命中已关闭实例 | 无 |
+| B11 | parent_session 为 None | task 事件 drop 并告警（任务列表到不了前端）；resume 侧 session_id 缺失仅告警继续（checkpointer key 可能 miss） | 无专项 |
+| B12 | rail 构建失败 | 两个 rail 工厂异常安全返回 None，不阻塞 adapter 初始化（缺指南注入/交付总结但加速仍可运行） | 无 |
+| B13 | send_push 0 送达 | 无订阅者 / 编码失败 / 过滤无匹配 / sink 全败 → warning + return 0；调用方必须以返回值判定成败（N4） | 部分：test_skill_turbo_tools（OOB 旁路）；0 送达判定无 |
+| B14 | ③ 先于 ② 部署 | 新引擎进程扫不到外部 turbo_codes → 清单为空 → PromptRail 不注入 + planner 无匹配 → `SkillTurboNotHandled` 降级（用户表现为"加速不生效"而非报错；只能靠部署顺序与验证日志预防） | 无（部署顺序预防） |
+| B15 | gateway 帧误判 | `chat.error` + is_complete 会被 normalize 为 E2A final FAILED、前端清 activeRequestIdRef 终结本轮——这正是降级路径禁止发 chat.error 的边界（[[S_07]]/[[S_08]]），改事件桥时须逐帧推演 | 部分：test_exit_path_frames（E10/E11 禁发 chat.error）；gateway 帧归 gateway 侧 |
 
 ## 修改检查单
 

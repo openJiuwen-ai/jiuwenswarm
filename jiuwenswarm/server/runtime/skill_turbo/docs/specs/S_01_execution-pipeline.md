@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / execution-pipeline |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（主战场：agent.py / executor.py / skill_turbo_tools.py；environment.py / planner.py 仅涉执行链一侧） |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联 feature | 暂无（首批 specs，由现状代码逆向固化） |
 
 > 代码定位约定：本文一律用"文件 + 方法名"定位；随附行号必然随代码演进漂移，以方法名为准。
@@ -266,20 +266,22 @@ pending ──_before_subplan_execute──▶ in_progress ──_after_subplan_
 
 ## 边界 case 清单
 
-1. **流式入口校验失败不降级**（E5/E6）：plan.started 已发出后仅 error+complete 直接 return，无 plan.finished，agent 层无 NotHandled——前端靠 complete 兜底，外层 LLM 无降级信号。
-2. **E9 不 flush task 事件**：取消瞬间前端任务面板可能滞留 in_progress，依赖上层终止流收口。
-3. **`_extract_root_node` 兜底脆弱**：root 变量缺失时取"最后一个 PlanNode 实例"（依赖 namespace dict 迭代顺序）；多实例且无显式 root 变量才报校验错误。
-4. **类级缓存无淘汰**：`_scan_cache` / `_external_scan_cache` / `_tool_info_last_export` 只增不减；skills 目录集合变更后旧 key 永久驻留（长驻进程内存缓慢增长面）。
-5. **tool_info.json 多实例写同默认路径**（`~/.jiuwenswarm/tool_info.json`）：内容去重 + 原子写，但不同 agent 实例注册不同工具集时最后写者胜，CodeGen 可能读到别家 schema。
-6. **session_id 缺失断点失联**：executor 仅 warning 不 fail-fast；checkpointer 落随机 UUID，恢复侧按 request.session_id 必然 miss。
-7. **`_finish_trace` 静默返回**：`_setup_execution_context` 部分失败（如 session 创建抛异常）时 `_current_trace` 为 None，duration/fallback 统计丢失（可观测性缺口）。
-8. **ContextVar 绑定失败仅 warning**：send_file / interactive_ask 绑定失败后工具行为降级但流程继续，故障面转移到运行期。
-9. **E7 超时分支近似死代码**：流式路径无整体 wait_for；若未来引入整体超时，必须同步审查 flush / task 事件 / 终态帧三件收口。
-10. **resume 回退命中依赖 tcid 末段 idx 解析**：`_next_tool_call_id` 格式变更会使 `_parse_call_idx_from_call_id` 回退命中静默失效，形成二次中断循环。
-11. **metadata 缺 output_dir 时 workspace_base 不设置**：pipeline 输出路径完全依赖 skill_code 内部回退逻辑，行为不在本模块内静态可判定。
-12. **deepcopy 假设**：PlanNode 树若持有不可深拷贝资源（锁/连接/文件句柄），`_prepare_root_node` 的 deepcopy 直接爆炸——节点资源约束见 [[S_04]]。
-13. **全局 tool_id 覆盖竞态**：并发下"后注册者覆盖"；当前仅 send_file 经请求级 ContextVar 兜住，其他携带实例状态的工具是隐患（N9）。
-14. **主/临时 session 生命周期交错**：产物 clear/inherit 用独立 session 的原因是 post_run close_stream 副作用；改动 session API 时该约束易碎。
+| # | case（场景 / 现行为 / 风险） | 测试覆盖 |
+|---|---|---|
+| 1 | **流式入口校验失败不降级**（E5/E6）：plan.started 已发出后仅 error+complete 直接 return，无 plan.finished，agent 层无 NotHandled——前端靠 complete 兜底，外层 LLM 无降级信号。 | test_exit_path_frames（E5/E6 帧序列） |
+| 2 | **E9 不 flush task 事件**：取消瞬间前端任务面板可能滞留 in_progress，依赖上层终止流收口。 | test_exit_path_frames（E9 用例） |
+| 3 | **`_extract_root_node` 兜底脆弱**：root 变量缺失时取"最后一个 PlanNode 实例"（依赖 namespace dict 迭代顺序）；多实例且无显式 root 变量才报校验错误。 | test_executor_plan_code_import（三分支用例） |
+| 4 | **类级缓存无淘汰**：`_scan_cache` / `_external_scan_cache` / `_tool_info_last_export` 只增不减；skills 目录集合变更后旧 key 永久驻留（长驻进程内存缓慢增长面）。 | 无（结构性风险记录） |
+| 5 | **tool_info.json 多实例写同默认路径**（`~/.jiuwenswarm/tool_info.json`）：内容去重 + 原子写，但不同 agent 实例注册不同工具集时最后写者胜，CodeGen 可能读到别家 schema。 | test_environment_export_tool_info（写盘协议面） |
+| 6 | **session_id 缺失断点失联**：executor 仅 warning 不 fail-fast；checkpointer 落随机 UUID，恢复侧按 request.session_id 必然 miss。 | 无（S_06 #28 同项） |
+| 7 | **`_finish_trace` 静默返回**：`_setup_execution_context` 部分失败（如 session 创建抛异常）时 `_current_trace` 为 None，duration/fallback 统计丢失（可观测性缺口）。 | 无（可观测性缺口） |
+| 8 | **ContextVar 绑定失败仅 warning**：send_file / interactive_ask 绑定失败后工具行为降级但流程继续，故障面转移到运行期。 | 无 |
+| 9 | **E7 超时分支近似死代码**：流式路径无整体 wait_for；若未来引入整体超时，必须同步审查 flush / task 事件 / 终态帧三件收口。 | 无（近似死代码；引入超时须同步补三件收口测试） |
+| 10 | **resume 回退命中依赖 tcid 末段 idx 解析**：`_next_tool_call_id` 格式变更会使 `_parse_call_idx_from_call_id` 回退命中静默失效，形成二次中断循环。 | test_resume_tool_call_alignment（idx 比较用例组） |
+| 11 | **metadata 缺 output_dir 时 workspace_base 不设置**：pipeline 输出路径完全依赖 skill_code 内部回退逻辑，行为不在本模块内静态可判定。 | test_context_binding_channels（workspace 派生条件）+ test_entry_gates_and_honesty（入口负例） |
+| 12 | **deepcopy 假设**：PlanNode 树若持有不可深拷贝资源（锁/连接/文件句柄），`_prepare_root_node` 的 deepcopy 直接爆炸——节点资源约束见 [[S_04]]。 | 无（资源约束类） |
+| 13 | **全局 tool_id 覆盖竞态**：并发下"后注册者覆盖"；当前仅 send_file 经请求级 ContextVar 兜住，其他携带实例状态的工具是隐患（N9）。 | 无（send_file 请求级 ContextVar 兜底为生产逻辑，无专测） |
+| 14 | **主/临时 session 生命周期交错**：产物 clear/inherit 用独立 session 的原因是 post_run close_stream 副作用；改动 session API 时该约束易碎。 | 部分：test_hitl_resume_react（isolated session 语义间接锁定） |
 
 ## 修改检查单
 

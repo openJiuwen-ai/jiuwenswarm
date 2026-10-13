@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / skill-routing-and-registration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（environment.py、planner.py、skill_meta.py、turbo_package_loader.py、tools_loader.py、skill_turbo_tools.py） |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联 feature | 暂无（首批 specs） |
 
 ## 范围 / 边界
@@ -245,24 +245,24 @@ HITL resume 不走 planner：直接使用持久化的 `resume_ctx["plan_code"]`�
 
 ## 异常分支与边界 case
 
-| # | case | 行为 / 风险 |
-|---|---|---|
-| 1 | 同名技能多源 | roots 顺序（请求级 > 共享 > 工作区）取第一个，后续源同名静默忽略 |
-| 2 | 清洗碰撞 | 不同 skill_name 清洗后同包名（如 "p.pt" 与 "p_pt"）→ `ensure_turbo_package` 拒绝后注册者 → 跳过注册（[[S_05]]） |
-| 3 | mtime 计算失败 | 返回 0.0 → 缓存永不命中 → 每次全量重扫（正确性优先） |
-| 4 | skill_name 以 `_` / `.` 开头 | 发现阶段跳过；`__pycache__` / `.git` 在 mtime 计算与校验中排除 |
-| 5 | meta.json 缺失/损坏/无已知键 | `{}` + 默认 description/keywords，技能仍可注册路由 |
-| 6 | 入口文件全缺失 | find_skill_root_file None → `skill.plan_code` 兜底 → 仍无 → "无匹配" 降级 |
-| 7 | 路由 LLM 空输出 / 非 JSON | 瞬态失败重试 1 次；仍失败 → None 降级（非错误路径） |
-| 8 | confidence 不足 / skill_name=null | 模型正常判定，**不重试**，直接 None |
-| 9 | 拦截层语义击穿 | 两块 TEMP 拦截为正则/关键词启发式，LLM 改写 query 可绕过；主防线在 PromptRail 提示词 |
-| 10 | 外部源扫描瞬时失败 | `_last_good_entries` 兜底，清单不闪断为"暂无"；ToolCard 并发最后写生效（per-user sidecar 内目录一致，无实际冲突） |
-| 11 | `reload()` 不清类级缓存 | 目录变更靠 mtime 快照失效兜住；但旧 key 永久驻留（无淘汰），长驻进程内存缓慢增长面 |
-| 12 | tool_info.json 多实例同路径 | 最后写者胜；CodeGen 可能读到其它实例的 schema，编排须保证工具集一致 |
-| 13 | 路由规则单技能硬编码 | PPT 准入/排除写死在 system prompt；新技能家族接入须重构规则结构，否则规则互相污染 |
-| 14 | PlanGenerationError | 已定义 + re-export 但无 raise 点；按死符号对待，不得在其 except 分支上堆积逻辑 |
-| 15 | model_client 缺失 | 路由直接 None（仅 warning），后续表现为"无匹配"降级 |
-| 16 | 空 task / 空 query | plan 前置检查返回 None 降级 |
+| # | case | 行为 / 风险 | 测试覆盖 |
+|---|---|---|---|
+| 1 | 同名技能多源 | roots 顺序（请求级 > 共享 > 工作区）取第一个，后续源同名静默忽略 | 部分：test_turbo_package_loader（多 roots 发现；同名取首个无断言） |
+| 2 | 清洗碰撞 | 不同 skill_name 清洗后同包名（如 "p.pt" 与 "p_pt"）→ `ensure_turbo_package` 拒绝后注册者 → 跳过注册（[[S_05]]） | test_turbo_package_loader（collision_after_sanitize_rejected） |
+| 3 | mtime 计算失败 | 返回 0.0 → 缓存永不命中 → 每次全量重扫（正确性优先） | 无 |
+| 4 | skill_name 以 `_` / `.` 开头 | 发现阶段跳过；`__pycache__` / `.git` 在 mtime 计算与校验中排除 | 无 |
+| 5 | meta.json 缺失/损坏/无已知键 | `{}` + 默认 description/keywords，技能仍可注册路由 | test_environment_skill_meta |
+| 6 | 入口文件全缺失 | find_skill_root_file None → `skill.plan_code` 兜底 → 仍无 → "无匹配" 降级 | 部分：test_turbo_package_loader（发现侧跳过）；planner 兜底链无 |
+| 7 | 路由 LLM 空输出 / 非 JSON | 瞬态失败重试 1 次；仍失败 → None 降级（非错误路径） | test_planner_route_retry |
+| 8 | confidence 不足 / skill_name=null | 模型正常判定，**不重试**，直接 None | test_planner_route_retry |
+| 9 | 拦截层语义击穿 | 两块 TEMP 拦截为正则/关键词启发式，LLM 改写 query 可绕过；主防线在 PromptRail 提示词 | test_entry_gates_and_honesty（拦截正/负例） |
+| 10 | 外部源扫描瞬时失败 | `_last_good_entries` 兜底，清单不闪断为"暂无"；ToolCard 并发最后写生效（per-user sidecar 内目录一致，无实际冲突） | test_description_refresh（last-good 用例） |
+| 11 | `reload()` 不清类级缓存 | 目录变更靠 mtime 快照失效兜住；但旧 key 永久驻留（无淘汰），长驻进程内存缓慢增长面 | 无 |
+| 12 | tool_info.json 多实例同路径 | 最后写者胜；CodeGen 可能读到其它实例的 schema，编排须保证工具集一致 | test_environment_export_tool_info |
+| 13 | 路由规则单技能硬编码 | PPT 准入/排除写死在 system prompt；新技能家族接入须重构规则结构，否则规则互相污染 | 无（结构性债务） |
+| 14 | PlanGenerationError | 已定义 + re-export 但无 raise 点；按死符号对待，不得在其 except 分支上堆积逻辑 | 无（死符号） |
+| 15 | model_client 缺失 | 路由直接 None（仅 warning），后续表现为"无匹配"降级 | test_planner_route_retry（TestPlannerPrechecks） |
+| 16 | 空 task / 空 query | plan 前置检查返回 None 降级 | test_planner_route_retry（TestPlannerPrechecks） |
 
 ## 修改检查单
 

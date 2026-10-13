@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_04 / node-contract |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（主战场：plan_node.py / json_utils.py / thinking_seam.py；executor.py 的回调绑定、LLM 与 ask_user 实现侧） |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联 feature | 暂无（首批 specs，由现状代码逆向固化） |
 
 > 代码定位约定：本文一律用"文件 + 方法名"定位；随附行号必然随代码演进漂移，以方法名为准。
@@ -372,23 +372,25 @@ finally:
 
 ## 异常分支与边界 case
 
-1. **回调未初始化**：`RuntimeError("PlanNode xxx 回调未初始化")`——正常链路（deepcopy 后先绑回调再执行）不可达；出现即绑定顺序错误，必须修绑定而非捕获。
-2. **_execute_stream 默认包装**：未覆盖时调用 `_execute` 并单值 yield（流式/非流式行为一致性兜底）；产出进度片段与终态是技能侧可选增强。
-3. **display_names 缺省兼容**：无类属性 → 空 dict → `_display_name` 原样返回 plan_name，技能完全可用。
-4. **stream_llm_collect 协程语义**：是协程非 async generator，可直接进 `asyncio.gather`（多页并发范式）；DisableThinkingMixin 经 stream_llm 透传自动覆盖 collect。
-5. **execute_subplan_stream 的 finally-after**：正常 / 普通异常 / 外层提前 close 生成器均触发 after；仅 hitl_interrupt 抑制；after 自身失败仅 `logger.exception` 不影响主流程。
-6. **skip_subplan 业务性跳过**：仍触发 before/after，task 事件完整，标记 skipped + status ok（能力不支持不算失败）。
-7. **resume skip result 的 "node" 键**：= subplan.plan_name，即"子节点写回约定键"的形态示例；下游读 `inputs[plan_name]` 不因跳过而缺键。
-8. **业务失败 vs 异常的双表达**：`export_status=="failed"` / `status=="error"` 走 task.complete(failed)；基础设施失败走 raise → fallback。两种表达不得混用（后者会消耗 fallback 预算）。
-9. **should_skip_subplan 二次判定**：引擎判定与技能侧二次判定不一致时，技能侧回退真实执行（防 subplan 被静默丢弃）。
-10. **env.model_client 为 None** → RuntimeError("model_client 未配置")（配置错误 fail-fast）。
-11. **thinking 参数被拒** → 裸参重试一次（启发式判定见 LLM 契约；重试仍失败则按普通异常进重试 rail）。
-12. **LLM 排队观测**：≥1000ms（`_LLM_QUEUE_WAIT_LOG_THRESHOLD_MS`）升 INFO 日志，可观测 Semaphore 排队时长。
-13. **非引导模式 + preview 类 ask_user** → 直接 skipped 不弹卡（`interactive_ask` ContextVar；技能侧需处理 skipped 返回值，不得假装已确认——交付告警如实上报）。
-14. **节点视角的 AbortError**：`call_tool` 直接抛 AbortError，断点已由 use_tool 落库（save_resume_ctx）；节点只需保证不吞（require_abort_reraise 写法）。
-15. **run / run_stream 日志不对称**：run 进 fallback 前打 WARNING（含 plan_name/instruction/error），run_stream 直接进 fallback_stream（无 WARNING）——排查流式路径失败需依赖 fallback trace 而非节点日志。
-16. **display_names 读取时机**：`_prepare_root_node` 在绑回调后一次性读取类属性；执行中途修改 root.display_names 不影响本请求的事件映射（要生效需改类属性后重启/重新 import）。
-17. **inputs 浅拷贝语义**：`merged_inputs` 是用户 inputs 的浅拷贝——顶层键写入互不影响，但嵌套 dict/list 是共享引用；技能侧避免原地修改深层共享结构（约定：读后新建写回，不 in-place 改嵌套）。模块级 root 单例在并发请求间共享（deepcopy 前），任何在构造函数里捕获 executor 状态的写法都会造成跨请求串扰——N11 deepcopy 是唯一防线。
+| # | case（场景 / 现行为 / 风险） | 测试覆盖 |
+|---|---|---|
+| 1 | **回调未初始化**：`RuntimeError("PlanNode xxx 回调未初始化")`——正常链路（deepcopy 后先绑回调再执行）不可达；出现即绑定顺序错误，必须修绑定而非捕获。 | 无 |
+| 2 | **_execute_stream 默认包装**：未覆盖时调用 `_execute` 并单值 yield（流式/非流式行为一致性兜底）；产出进度片段与终态是技能侧可选增强。 | 部分：test_fallback_contract_error_task_events（间接使用默认包装） |
+| 3 | **display_names 缺省兼容**：无类属性 → 空 dict → `_display_name` 原样返回 plan_name，技能完全可用。 | 无 |
+| 4 | **stream_llm_collect 协程语义**：是协程非 async generator，可直接进 `asyncio.gather`（多页并发范式）；DisableThinkingMixin 经 stream_llm 透传自动覆盖 collect。 | 部分：test_skill_turbo_thinking（Mixin 面）；collect 协程语义无专测 |
+| 5 | **execute_subplan_stream 的 finally-after**：正常 / 普通异常 / 外层提前 close 生成器均触发 after；仅 hitl_interrupt 抑制；after 自身失败仅 `logger.exception` 不影响主流程。 | 部分：test_abort_error_guards（AbortError 抑制 + 普通异常触发两态）；提前 close / after 自身失败无 |
+| 6 | **skip_subplan 业务性跳过**：仍触发 before/after，task 事件完整，标记 skipped + status ok（能力不支持不算失败）。 | 部分：test_resume_skip_completed（resume skip 分支） |
+| 7 | **resume skip result 的 "node" 键**：= subplan.plan_name，即"子节点写回约定键"的形态示例；下游读 `inputs[plan_name]` 不因跳过而缺键。 | test_resume_skip_completed |
+| 8 | **业务失败 vs 异常的双表达**：`export_status=="failed"` / `status=="error"` 走 task.complete(failed)；基础设施失败走 raise → fallback。两种表达不得混用（后者会消耗 fallback 预算）。 | 无（_is_subplan_business_failure 无单测） |
+| 9 | **should_skip_subplan 二次判定**：引擎判定与技能侧二次判定不一致时，技能侧回退真实执行（防 subplan 被静默丢弃）。 | 无（技能侧纪律） |
+| 10 | **env.model_client 为 None** → RuntimeError("model_client 未配置")（配置错误 fail-fast）。 | 无 |
+| 11 | **thinking 参数被拒** → 裸参重试一次（启发式判定见 LLM 契约；重试仍失败则按普通异常进重试 rail）。 | 部分：test_skill_turbo_thinking（启发式）；executor 内组合路径无 |
+| 12 | **LLM 排队观测**：≥1000ms（`_LLM_QUEUE_WAIT_LOG_THRESHOLD_MS`）升 INFO 日志，可观测 Semaphore 排队时长。 | 无（日志观测） |
+| 13 | **非引导模式 + preview 类 ask_user** → 直接 skipped 不弹卡（`interactive_ask` ContextVar；技能侧需处理 skipped 返回值，不得假装已确认——交付告警如实上报）。 | test_ask_user_rail_gates + test_interactive_ask |
+| 14 | **节点视角的 AbortError**：`call_tool` 直接抛 AbortError，断点已由 use_tool 落库（save_resume_ctx）；节点只需保证不吞（require_abort_reraise 写法）。 | test_abort_error_guards + test_validator_external_profile（require_abort_reraise） |
+| 15 | **run / run_stream 日志不对称**：run 进 fallback 前打 WARNING（含 plan_name/instruction/error），run_stream 直接进 fallback_stream（无 WARNING）——排查流式路径失败需依赖 fallback trace 而非节点日志。 | 无（日志不对称） |
+| 16 | **display_names 读取时机**：`_prepare_root_node` 在绑回调后一次性读取类属性；执行中途修改 root.display_names 不影响本请求的事件映射（要生效需改类属性后重启/重新 import）。 | 无 |
+| 17 | **inputs 浅拷贝语义**：`merged_inputs` 是用户 inputs 的浅拷贝——顶层键写入互不影响，但嵌套 dict/list 是共享引用；技能侧避免原地修改深层共享结构（约定：读后新建写回，不 in-place 改嵌套）。模块级 root 单例在并发请求间共享（deepcopy 前），任何在构造函数里捕获 executor 状态的写法都会造成跨请求串扰——N11 deepcopy 是唯一防线。 | 部分：test_executor_plan_code_import（deepcopy 防串扰断言） |
 
 ## 修改检查单
 

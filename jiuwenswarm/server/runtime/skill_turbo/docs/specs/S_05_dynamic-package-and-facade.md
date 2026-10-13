@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_05 / dynamic-package-and-facade |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（主战场：turbo_package_loader.py / runtime/__init__.py / runtime/tool_utils.py / skill_meta.py 发现侧；environment.py 注册调用侧） |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联 feature | 暂无（首批 specs，由现状代码逆向固化） |
 
 > 代码定位约定：本文一律用"文件 + 方法名"定位；随附行号必然随代码演进漂移，以方法名为准。
@@ -366,26 +366,28 @@ for name, kwargs in tool_attempts:
 
 ## 异常分支与边界 case
 
-1. **同 skill_name 多源**：roots 顺序取第一个，后续源静默忽略（用户视角不可见，排查靠 roots 顺序）。
-2. **目录变更 rebind**：WARNING + 清 pkg 及 `pkg.*` 子模块重注册；单进程安全；多租户共享进程不安全（N17，改动 rebind 行为前必读文件头注释）。
-3. **清洗碰撞**：`"p.pt"` 与 `"p_pt"` → 同包名 `skill_turbo_codes_p_pt` → 后注册者 error 日志 + return None + 跳过注册。
-4. **skill_name 目录名边界两种形态**：`_` / `.` 开头 → 发现阶段直接跳过（`__pycache__` / `.git` 在 mtime 计算与代码校验中同样排除）；数字开头（如 `1ppt`）目录名合法 → sanitize 补前导 `_` → 包名 `skill_turbo_codes__1ppt`（双下划线）——前者根本不进发现，后者注册成功，两回事不得混淆。
-5. **入口未命中**：turbo_codes 目录存在但 `find_skill_root_file` 返回 None → 发现阶段跳过该 skill（不注册、无报错面）。
-6. **meta.json 部分缺失**：含任一已知键（external_name / description / match_keywords）即合法——仅含 external_name 也可路由；无文件 / 解析失败 / 不含任何已知键 → `{}` 走默认 description / keywords（[[S_02]]）。
-7. **resume 自愈仍未命中**：交 `exec(plan_code)` 自然抛 ImportError → `PlanCodeLoadError` → 降级链路（不强行构造包、不静默跳过 import——保证失败可见）。
-8. **多行 plan_code**：首个 import 是非动态包时正则仍须遍历到后面的动态包 import（MULTILINE，N14）。
-9. **bash 工具注册形态不支持 timeout**：第一次 ValueError → 降级为不带 timeout 重试（run_bash 两段 attempts 设计；bash 工具形态变化时必查此处）。
-10. **exit_code 语义四态**：显式 exit_code 采用；无显式但 success=True → 0（非 default，防成功调用被误判失败）；完全无信息 → default=1；exit_code=0 但有失败信号（success=False / error 非空 / `[ERROR]` 标记 / `Exit code N` 文本）→ 反推升 1（bash 偶发只回 `content="Exit code 1\n..."` 不带 exit_code 字段，不识别会把失败当成功）。
-11. **`Exit code N` 文本前缀必须识别**：parse_bash_payload / `_coerce_exit_code` 都要消费该形态（convert 类命令失败只体现在 content 文本时的唯一失败信号）。
-12. **URL 防误匹配**：盘符前字母数字排除、Unix `/` 前置字符排除、`len<=3` 骨架跳过（extract_path_candidates 三规则；漏一条即 URL 被当本地路径传给工具触发网络访问阻塞）。
-13. **SQLite use-after-close 瞬态错误**：模式匹配 + `gc.collect()` + 重试 1 次（WeakValueDictionary 锁注册表回收时机问题）；节点内自愈，不升级节点失败、不消耗 plan 级 fallback 预算。
-14. **内嵌引号修复已知局限**：内嵌引号紧跟 ASCII `,` + 空格 + 引号的罕见场景误判为结构闭引号 → 修复后仍失败则抛出，走既有重试/失败路径（与未修复行为一致，可接受）。
-15. **BashResult 直通**：`_extract_bash_result` 入参已是 BashResult 直接返回——否则 get_tool_exit_code 对 run_bash 结果走文本兜底恒返 0。
-16. **CancelledError 穿透**：BaseException 不被 `except Exception` 捕获，call_tool_with_retry / run_bash 无需显式分支即透传（注释明示，勿加捕获）。
-17. **外部 skill 同名覆盖内置注册**：`register_skill` 统一入口，覆盖打 info 日志（[[S_02]] N1）；覆盖发生在 Skill 记录层，动态包层无覆盖语义（包名碰撞走拒绝，N5）。
-18. **缓存命中路径跳过校验**：`_external_scan_cache` 命中只跳过扫盘 + 代码校验，`ensure_turbo_package` + `register_skill` 必须幂等重做（[[S_02]] N8）——包注册状态与扫描缓存生命周期不同步。
-19. **`is_package_registered` 双查**（N19）：注册表命中但 sys.modules 缺失（如测试中手动清理）→ 判未注册 → 触发自愈重注册；单查一边都会产生假阳性/假阴性。
-20. **门面重复注册无害**：`ensure_runtime_facade` 幂等（N11）；多个调用点重复触发是设计内行为，不是缺陷——但不得依赖"谁先调用"的顺序假设。
+| # | case（场景 / 现行为 / 风险） | 测试覆盖 |
+|---|---|---|
+| 1 | **同 skill_name 多源**：roots 顺序取第一个，后续源静默忽略（用户视角不可见，排查靠 roots 顺序）。 | 部分：test_turbo_package_loader（多 roots 发现） |
+| 2 | **目录变更 rebind**：WARNING + 清 pkg 及 `pkg.*` 子模块重注册；单进程安全；多租户共享进程不安全（N17，改动 rebind 行为前必读文件头注释）。 | test_turbo_package_loader（rebind 用例） |
+| 3 | **清洗碰撞**：`"p.pt"` 与 `"p_pt"` → 同包名 `skill_turbo_codes_p_pt` → 后注册者 error 日志 + return None + 跳过注册。 | test_turbo_package_loader |
+| 4 | **skill_name 目录名边界两种形态**：`_` / `.` 开头 → 发现阶段直接跳过（`__pycache__` / `.git` 在 mtime 计算与代码校验中同样排除）；数字开头（如 `1ppt`）目录名合法 → sanitize 补前导 `_` → 包名 `skill_turbo_codes__1ppt`（双下划线）——前者根本不进发现，后者注册成功，两回事不得混淆。 | 无 |
+| 5 | **入口未命中**：turbo_codes 目录存在但 `find_skill_root_file` 返回 None → 发现阶段跳过该 skill（不注册、无报错面）。 | test_turbo_package_loader（no_root_file_skipped） |
+| 6 | **meta.json 部分缺失**：含任一已知键（external_name / description / match_keywords）即合法——仅含 external_name 也可路由；无文件 / 解析失败 / 不含任何已知键 → `{}` 走默认 description / keywords（[[S_02]]）。 | test_environment_skill_meta |
+| 7 | **resume 自愈仍未命中**：交 `exec(plan_code)` 自然抛 ImportError → `PlanCodeLoadError` → 降级链路（不强行构造包、不静默跳过 import——保证失败可见）。 | test_executor_plan_code_import（unresolvable 用例） |
+| 8 | **多行 plan_code**：首个 import 是非动态包时正则仍须遍历到后面的动态包 import（MULTILINE，N14）。 | test_turbo_package_loader（multiline 用例） |
+| 9 | **bash 工具注册形态不支持 timeout**：第一次 ValueError → 降级为不带 timeout 重试（run_bash 两段 attempts 设计；bash 工具形态变化时必查此处）。 | test_tool_utils_bash_parsing（降级重试用例） |
+| 10 | **exit_code 语义四态**：显式 exit_code 采用；无显式但 success=True → 0（非 default，防成功调用被误判失败）；完全无信息 → default=1；exit_code=0 但有失败信号（success=False / error 非空 / `[ERROR]` 标记 / `Exit code N` 文本）→ 反推升 1（bash 偶发只回 `content="Exit code 1\n..."` 不带 exit_code 字段，不识别会把失败当成功）。 | test_tool_utils_bash_parsing（四态用例组） |
+| 11 | **`Exit code N` 文本前缀必须识别**：parse_bash_payload / `_coerce_exit_code` 都要消费该形态（convert 类命令失败只体现在 content 文本时的唯一失败信号）。 | test_tool_utils_bash_parsing |
+| 12 | **URL 防误匹配**：盘符前字母数字排除、Unix `/` 前置字符排除、`len<=3` 骨架跳过（extract_path_candidates 三规则；漏一条即 URL 被当本地路径传给工具触发网络访问阻塞）。 | test_tool_utils_path_extract |
+| 13 | **SQLite use-after-close 瞬态错误**：模式匹配 + `gc.collect()` + 重试 1 次（WeakValueDictionary 锁注册表回收时机问题）；节点内自愈，不升级节点失败、不消耗 plan 级 fallback 预算。 | test_tool_utils_call_with_retry |
+| 14 | **内嵌引号修复已知局限**：内嵌引号紧跟 ASCII `,` + 空格 + 引号的罕见场景误判为结构闭引号 → 修复后仍失败则抛出，走既有重试/失败路径（与未修复行为一致，可接受）。 | test_tool_utils_json_repair（局限文档化） |
+| 15 | **BashResult 直通**：`_extract_bash_result` 入参已是 BashResult 直接返回——否则 get_tool_exit_code 对 run_bash 结果走文本兜底恒返 0。 | test_tool_utils_bash_parsing（BashResult 直通用例） |
+| 16 | **CancelledError 穿透**：BaseException 不被 `except Exception` 捕获，call_tool_with_retry / run_bash 无需显式分支即透传（注释明示，勿加捕获）。 | test_tool_utils_call_with_retry + test_exit_path_frames（E9） |
+| 17 | **外部 skill 同名覆盖内置注册**：`register_skill` 统一入口，覆盖打 info 日志（[[S_02]] N1）；覆盖发生在 Skill 记录层，动态包层无覆盖语义（包名碰撞走拒绝，N5）。 | 无（同名覆盖用例空转，见 test_tool_description_external 已知缺陷） |
+| 18 | **缓存命中路径跳过校验**：`_external_scan_cache` 命中只跳过扫盘 + 代码校验，`ensure_turbo_package` + `register_skill` 必须幂等重做（[[S_02]] N8）——包注册状态与扫描缓存生命周期不同步。 | 部分：test_environment_external_turbo（cache_hit 用例自认弱断言） |
+| 19 | **`is_package_registered` 双查**（N19）：注册表命中但 sys.modules 缺失（如测试中手动清理）→ 判未注册 → 触发自愈重注册；单查一边都会产生假阳性/假阴性。 | 无 |
+| 20 | **门面重复注册无害**：`ensure_runtime_facade` 幂等（N11）；多个调用点重复触发是设计内行为，不是缺陷——但不得依赖"谁先调用"的顺序假设。 | test_runtime_facade（幂等用例） |
 
 ## 修改检查单
 

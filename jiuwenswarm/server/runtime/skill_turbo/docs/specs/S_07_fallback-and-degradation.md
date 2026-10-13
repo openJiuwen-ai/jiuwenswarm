@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_07 / fallback-and-degradation |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`：fallback_handler.py、executor.py、plan_node.py、agent.py、skill_turbo_tools.py；外层装配 interface_deep.py（`spawn_fallback` / `DeepAgentFallbackHandler` 构建） |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联 feature | 暂无（首批 specs） |
 
 ## 范围 / 边界
@@ -368,26 +368,26 @@ fallback 终止后**不在 turbo 内部转标准流程**，决策交还外层 LL
 
 ## 异常分支与边界 case
 
-| # | 边界 case | 现行为 / 约束 |
-|---|---|---|
-| 1 | fallback 终止时任务面板停滞 | 不排空 deferred + drain task 事件 → 前端 in_progress 冻结；`_execute_node_stream` 现已先排空再 raise，改动必须保持 |
-| 2 | 子代理以未解决 HITL interrupt 结束 | spawn_fallback 显式 RuntimeError（不吞成空输出）→ 按产生源①转 FallbackContractError |
-| 3 | 权限 rail 父子共享实例 | suspend 必须 finally restore；`resolve_interrupt` 首次调用会用 snapshot 刷新覆盖，故 snapshot 回调也要临时替换 |
-| 4 | 降级后任务列表脱节 | turbo Stage 体系与标准流程 stage 无映射，任务面板冻结（已知未解边界） |
-| 5 | enable_fallback 开关三态 | True（正常走）/ False（re-raise 原错误）/ handler None（re-raise + error 日志）——后两者不得制造新异常 |
-| 6 | 契约块出现在输出开头/中段 | 裸括号平衡扫描全文兼容 off-spec 位置 |
-| 7 | validator 自身异常 | 与返回拒绝 reason 同等对待（fail-closed），不区分"校验失败"与"校验器崩溃" |
-| 8 | result 非 dict | 包装为 `{"reason": str(result)}` 后继续判定 |
-| 9 | 回写剔除键 | 契约层剔除 `reason`；回写层剔除 `node` / `status`——两层键集不同，勿合并 |
-| 10 | fallback 事件透传 | fallback.started / finished 不在 tool 层 skip 集，以原 event_type 转发父会话 |
-| 11 | 空产出 vs 有产出无契约 | 分开记日志（诊断区分"子代理没干活"与"干了但没自证"） |
-| 12 | 缺 success 字段 | `bool(payload.get("success", False))` → False（fail-closed） |
-| 13 | AbortError 在 validator 内冒出 | 白名单原样上抛，转 HITL（[[S_06]]） |
-| 14 | 输出含多个 JSON 对象 | `dict.fromkeys` 去重后从后往前找含 success 字段者（契约声明约定在末尾） |
-| 15 | JSON 嵌套结构 | 四级候选保持嵌套完整性，禁止 `\{.*?\}` 非贪婪截断 |
-| 16 | 路由重试范围 | 仅解析类失败重试 1 次；confidence 不足 / skill_name=null 是模型判断，不重试 |
-| 17 | 嵌套子计划的回写 | 父节点丢弃 execute_subplan 返回值 → inputs.update 是下游读新值的唯一通道 |
-| 18 | 非流式 / 流式降级语义分叉 | execute_plan（非流式）各类异常 re-raise 由 agent 统一包装；流式路径 E5/E6/E12 存在"事件化吞掉"分支——新增降级出口必须先明确归属哪一语义（[[S_01]]） |
+| # | 边界 case | 现行为 / 约束 | 测试覆盖 |
+|---|---|---|---|
+| 1 | fallback 终止时任务面板停滞 | 不排空 deferred + drain task 事件 → 前端 in_progress 冻结；`_execute_node_stream` 现已先排空再 raise，改动必须保持 | test_fallback_contract_error_task_events + test_exit_path_frames（E10/E11） |
+| 2 | 子代理以未解决 HITL interrupt 结束 | spawn_fallback 显式 RuntimeError（不吞成空输出）→ 按产生源①转 FallbackContractError | test_spawn_fallback_suspend_and_interrupt |
+| 3 | 权限 rail 父子共享实例 | suspend 必须 finally restore；`resolve_interrupt` 首次调用会用 snapshot 刷新覆盖，故 snapshot 回调也要临时替换 | test_spawn_fallback_suspend_and_interrupt |
+| 4 | 降级后任务列表脱节 | turbo Stage 体系与标准流程 stage 无映射，任务面板冻结（已知未解边界） | 无（已知未解） |
+| 5 | enable_fallback 开关三态 | True（正常走）/ False（re-raise 原错误）/ handler None（re-raise + error 日志）——后两者不得制造新异常 | test_fallback_contract_parsing（TestCheckFallbackLimit / TestHandlerMissing） |
+| 6 | 契约块出现在输出开头/中段 | 裸括号平衡扫描全文兼容 off-spec 位置 | test_fallback_contract_parsing |
+| 7 | validator 自身异常 | 与返回拒绝 reason 同等对待（fail-closed），不区分"校验失败"与"校验器崩溃" | test_fallback_deliverable_gate |
+| 8 | result 非 dict | 包装为 `{"reason": str(result)}` 后继续判定 | test_fallback_contract_parsing |
+| 9 | 回写剔除键 | 契约层剔除 `reason`；回写层剔除 `node` / `status`——两层键集不同，勿合并 | test_fallback_context_writeback |
+| 10 | fallback 事件透传 | fallback.started / finished 不在 tool 层 skip 集，以原 event_type 转发父会话 | test_fallback_context_writeback（流式事件断言） |
+| 11 | 空产出 vs 有产出无契约 | 分开记日志（诊断区分"子代理没干活"与"干了但没自证"） | test_fallback_contract_parsing（分支区分用例） |
+| 12 | 缺 success 字段 | `bool(payload.get("success", False))` → False（fail-closed） | test_fallback_contract_parsing |
+| 13 | AbortError 在 validator 内冒出 | 白名单原样上抛，转 HITL（[[S_06]]） | test_fallback_deliverable_gate |
+| 14 | 输出含多个 JSON 对象 | `dict.fromkeys` 去重后从后往前找含 success 字段者（契约声明约定在末尾） | test_fallback_contract_parsing |
+| 15 | JSON 嵌套结构 | 四级候选保持嵌套完整性，禁止 `\{.*?\}` 非贪婪截断 | test_fallback_contract_parsing |
+| 16 | 路由重试范围 | 仅解析类失败重试 1 次；confidence 不足 / skill_name=null 是模型判断，不重试 | test_planner_route_retry |
+| 17 | 嵌套子计划的回写 | 父节点丢弃 execute_subplan 返回值 → inputs.update 是下游读新值的唯一通道 | test_fallback_context_writeback |
+| 18 | 非流式 / 流式降级语义分叉 | execute_plan（非流式）各类异常 re-raise 由 agent 统一包装；流式路径 E5/E6/E12 存在"事件化吞掉"分支——新增降级出口必须先明确归属哪一语义（[[S_01]]） | test_exit_path_frames（流式帧）+ test_executor_plan_code_import（非流式 raise） |
 
 ## 修改检查单
 

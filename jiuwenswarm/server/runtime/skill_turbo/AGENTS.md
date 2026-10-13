@@ -158,7 +158,7 @@ skill_turbo/
 pytest.ini 的 addopts 含全仓 coverage，日常跑请清掉（`-o addopts=""`）：
 
 ```powershell
-# 模块单测（245 个：validator/包加载/tool_utils/planner/fallback/HITL 对齐/交付门禁…）
+# 模块单测（322 个：validator/包加载/tool_utils/planner/fallback/HITL 对齐/交付门禁/退出路径帧级/AbortError 守卫/契约解析/ask_user 门控/ContextVar 通道/入口拦截/task_states 快照…）
 .venv\Scripts\python.exe -m pytest tests/unit_tests/server/runtime/skill_turbo/ -o addopts=""
 
 # HITL / 工具面 / 中断恢复（历史路径在 agentserver/ 下——skill_turbo 曾位于该处，迁移遗留，勿再新增）
