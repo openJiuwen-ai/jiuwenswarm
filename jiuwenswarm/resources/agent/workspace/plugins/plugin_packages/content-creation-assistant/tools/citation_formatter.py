@@ -270,8 +270,12 @@ class CitationFormatter(Tool):
         url = cite.get("url", "")
         access_date = cite.get("access_date", "")
         source_type = cite.get("source_type", "")
+        if author:
+            prefix = f"{author} " if author.endswith(".") else f"{author}. "
+        else:
+            prefix = ""
         if source_type == "journal":
-            r = f'"{title}." {source}'
+            r = f'{prefix}"{title}." {source}'
             if volume:
                 r += f", vol. {volume}"
             if issue:
@@ -282,14 +286,14 @@ class CitationFormatter(Tool):
                 r += f", pp. {pages}"
             return r + "."
         elif source_type == "book":
-            r = f"{author}. {title}."
+            r = f"{prefix}{title}."
             if publisher:
                 r += f" {publisher}"
             if year:
                 r += f", {year}"
             return r + "."
         elif source_type == "web":
-            r = f'"{title}."'
+            r = f'{prefix}"{title}."'
             if source:
                 r += f" {source}"
             if year:
@@ -300,7 +304,7 @@ class CitationFormatter(Tool):
                 r += f". Accessed {access_date}"
             return r + "."
         else:
-            r = f'"{title}."'
+            r = f'{prefix}"{title}."'
             if source:
                 r += f" {source}"
             if year:
