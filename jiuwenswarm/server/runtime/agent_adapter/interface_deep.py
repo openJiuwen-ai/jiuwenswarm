@@ -7016,6 +7016,45 @@ class JiuWenSwarmDeepAdapter:
                     exc_info=True,
                 )
 
+    def _restore_skill_turbo_model_from_resume_ctx(
+        self, resume_ctx: dict[str, Any]
+    ) -> None:
+        resume_inputs = resume_ctx.get("inputs")
+        resume_metadata = (
+            resume_inputs.get("metadata") if isinstance(resume_inputs, dict) else None
+        )
+        model_identity = (
+            resume_metadata.get(_SKILL_TURBO_MODEL_IDENTITY_KEY)
+            if isinstance(resume_metadata, dict)
+            else None
+        )
+        if not isinstance(model_identity, dict):
+            raise RuntimeError(
+                "SkillTurbo resume context missing model identity; please restart the task"
+            )
+        model_ref = str(model_identity.get("model_ref") or "").strip()
+        saved_model_name = str(model_identity.get("model_name") or "").strip()
+        if not model_ref:
+            raise RuntimeError(
+                "SkillTurbo resume context missing model_ref; please restart the task"
+            )
+        resolved_model = self._resolve_model_by_identity(model_ref)
+        actual_model_name = str(
+            getattr(resolved_model.model_config, "model_name", "") or ""
+        ).strip()
+        if saved_model_name and saved_model_name != actual_model_name:
+            raise ValueError(
+                "SkillTurbo resume model identity mismatch: "
+                f"expected {saved_model_name!r}, found {actual_model_name!r}"
+            )
+        self._apply_model_to_react_agent(resolved_model)
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] SkillTurbo resume model restored: "
+            "model_name=%s model_ref=%s",
+            actual_model_name,
+            model_ref,
+        )
+
     @staticmethod
     def _resolve_skill_mode(config: dict[str, Any]) -> str:
         """Validate configured skill mode and fallback safely on invalid values."""
@@ -14279,40 +14318,8 @@ class JiuWenSwarmDeepAdapter:
                     exc_info=True,
                 )
             return self._make_skill_turbo_resume_duplicate_placeholder(request)
-        resume_inputs = resume_ctx.get("inputs")
-        resume_metadata = resume_inputs.get("metadata") if isinstance(resume_inputs, dict) else None
-        model_identity = (
-            resume_metadata.get(_SKILL_TURBO_MODEL_IDENTITY_KEY)
-            if isinstance(resume_metadata, dict)
-            else None
-        )
         try:
-            if not isinstance(model_identity, dict):
-                raise RuntimeError(
-                    "SkillTurbo resume context missing model identity; please restart the task"
-                )
-            model_ref = str(model_identity.get("model_ref") or "").strip()
-            saved_model_name = str(model_identity.get("model_name") or "").strip()
-            if not model_ref:
-                raise RuntimeError(
-                    "SkillTurbo resume context missing model_ref; please restart the task"
-                )
-            resolved_model = self._resolve_model_by_identity(model_ref)
-            actual_model_name = str(
-                getattr(resolved_model.model_config, "model_name", "") or ""
-            ).strip()
-            if saved_model_name and saved_model_name != actual_model_name:
-                raise ValueError(
-                    "SkillTurbo resume model identity mismatch: "
-                    f"expected {saved_model_name!r}, found {actual_model_name!r}"
-                )
-            self._apply_model_to_react_agent(resolved_model)
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] SkillTurbo resume model restored: "
-                "model_name=%s model_ref=%s",
-                actual_model_name,
-                model_ref,
-            )
+            self._restore_skill_turbo_model_from_resume_ctx(resume_ctx)
         except Exception:
             try:
                 await session.post_run()

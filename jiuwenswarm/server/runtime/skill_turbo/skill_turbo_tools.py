@@ -928,10 +928,6 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
         "skipped" if has_outer_todo else "forwarded as-is",
     )
 
-    # 构造 config 和 SkillTurbo 实例
-    config = adapter.build_skill_turbo_config()
-    skill_turbo_inst = SkillTurbo(config)
-
     # metadata：通过 ContextVar 读取（_update_runtime_config 中设置，无并发覆盖风险）
     request_metadata = get_current_request_metadata()
     request_id = request_metadata.get("request_id", "") if isinstance(request_metadata, dict) else ""
@@ -1025,6 +1021,28 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                     )
                 turbo_session = None
             resume_ctx = None
+
+    if resume_ctx is not None:
+        try:
+            adapter._restore_skill_turbo_model_from_resume_ctx(resume_ctx)
+        except Exception:
+            logger.exception(
+                "[SkillTurboTool] resume model restore failed; aborting resume",
+            )
+            if turbo_session is not None:
+                try:
+                    await turbo_session.post_run()
+                except Exception:
+                    logger.debug(
+                        "[SkillTurboTool] resume model restore post_run failed",
+                        exc_info=True,
+                    )
+                turbo_session = None
+            raise
+
+    # 构造 config 和 SkillTurbo 实例；resume 模式必须在此之前恢复原模型。
+    config = adapter.build_skill_turbo_config()
+    skill_turbo_inst = SkillTurbo(config)
 
     hitl_interrupt = False
 
