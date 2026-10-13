@@ -502,6 +502,11 @@ async def test_event_loop_lag_dump_is_bounded_and_omits_queue_payload(
     snapshot = json.loads(text.splitlines()[0])
     assert snapshot["event_loop_lag_seconds"] >= 0.08
     assert "ASYNCIO TASKS" in text and "THREAD STACKS" in text
+    assert (
+        text.index("THREAD STACKS")
+        < text.index("in dump_runtime_state")
+        < text.index("ASYNCIO TASKS")
+    )
     assert "DO_NOT_COPY_BUSINESS_PAYLOAD" not in text
     assert len(text) < 256 * 1024
 

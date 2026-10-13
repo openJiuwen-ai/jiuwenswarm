@@ -203,10 +203,11 @@ class PipeConnection(IpcConnection):
         finally:
             self._recv_seconds = time.monotonic() - self._receiving_since
             self._receiving_since = 0.0
-        if len(frame) < HEADER.size:
+        header_size = HEADER.size
+        if len(frame) < header_size:
             raise IpcError("ipc pipe frame is truncated")
-        (length,) = HEADER.unpack(frame[: HEADER.size])
-        body = frame[HEADER.size :]
+        (length,) = HEADER.unpack(frame[:header_size])
+        body = frame[header_size:]
         if length != len(body):
             raise IpcError("ipc pipe frame length mismatch")
         return decode_frame(body)

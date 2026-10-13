@@ -5,12 +5,11 @@
 from __future__ import annotations
 
 import asyncio
+import faulthandler
 import json
 import os
-import sys
 import threading
 import time
-import traceback
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +21,12 @@ def dump_runtime_state(directory: Path, snapshot: dict[str, Any]) -> Path:
     with target.open("w", encoding="utf-8") as out:
         out.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
         out.write("THREAD STACKS\n")
-        for ident, frame in list(sys._current_frames().items())[:64]:
-            out.write(f"Thread {ident} {thread_names.get(ident, '?')}\n")
-            out.writelines(traceback.format_stack(frame, limit=20))
+        for ident, name in list(thread_names.items())[:64]:
+            out.write(f"Thread {ident} {name}\n")
+        # Flush buffered text before the public API writes to the same file
+        # descriptor, keeping the JSON header and thread/task sections ordered.
+        out.flush()
+        faulthandler.dump_traceback(file=out, all_threads=True)
         tasks = sorted(asyncio.all_tasks(), key=lambda task: task.get_name())
         out.write(f"ASYNCIO TASKS total={len(tasks)} limit=64\n")
         for task in tasks[:64]:
