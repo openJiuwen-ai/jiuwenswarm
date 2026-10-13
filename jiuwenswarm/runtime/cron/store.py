@@ -100,7 +100,7 @@ class FileCronJobStore:
                     logger.warning(
                         "Cron 惰性迁移写回 cron_jobs.json 失败: %s", exc
                     )
-            return parse_cron_jobs(jobs_raw)
+            return parse_cron_jobs(jobs_raw, source=str(self._path))
 
         return await self._run_locked(_body)
 
