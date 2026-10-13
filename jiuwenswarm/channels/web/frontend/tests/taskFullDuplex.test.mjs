@@ -5,10 +5,12 @@ import test from 'node:test';
 const read = (path) => readFileSync(path, 'utf8');
 
 test('video duplex contributes a task action backed by the headless existing workflow', () => {
+  const inputArea = read('src/components/ChatPanel/InputArea.tsx');
   const entry = read('../../../extensions/video_duplex/frontend/index.tsx');
   const action = read('../../../extensions/video_duplex/frontend/TaskFullDuplexAction.tsx');
   const runtime = read('../../../extensions/video_duplex/frontend/TaskFullDuplexRuntime.tsx');
   const panel = read('../../../extensions/video_duplex/frontend/VideoLivePanel/index.tsx');
+  assert.match(inputArea, /eligible=\{fullDuplexActionEligible && !isTeamMode\}/);
   assert.match(entry, /applicationPluginTaskInputAction = TaskFullDuplexAction/);
   assert.match(entry, /applicationPluginTaskRuntime = TaskFullDuplexRuntime/);
   assert.match(action, /startTaskFullDuplex/);
