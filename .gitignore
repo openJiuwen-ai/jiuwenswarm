@@ -60,7 +60,9 @@ developerID_application.cer
 *.swp
 *.swo
 .DS_Store
-.claude
+.claude/*
+# Shared Claude Code rules are tracked; local overrides stay ignored.
+!.claude/rules/
 **/CLAUDE.md
 **/CLAUDE.local.md
 **/JIUWENCLAW.local.md
