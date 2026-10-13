@@ -199,12 +199,23 @@ def migrate_legacy_permissions(
 
     had_mode = isinstance(cfg.get("mode"), str) and bool(str(cfg.get("mode")).strip())
     legacy_pm = cfg.pop("permission_mode", None)
-    if cfg.get("enabled") is False and not is_overlay:
+    # 原始 enabled 状态先于改写捕获：enabled:false 的 full_access 优先级
+    # 须对齐 get_permissions_mode 的读取顺序。
+    legacy_enabled_false = cfg.get("enabled") is False
+    if legacy_enabled_false and not is_overlay:
         cfg["enabled"] = True
         if not had_mode:
             cfg["mode"] = "full_access"
     if not had_mode:
-        if isinstance(legacy_pm, str) and legacy_pm.strip().lower() == "strict":
+        # enabled:false 与 legacy strict 并存时对齐 get_permissions_mode
+        # 的读取优先级（enabled:false → full_access 优先），避免迁移落盘
+        # 把"完全访问"翻转成"严格审批"。
+        legacy_strict = (
+            isinstance(legacy_pm, str)
+            and legacy_pm.strip().lower() == "strict"
+            and not legacy_enabled_false
+        )
+        if legacy_strict:
             cfg["mode"] = "strict"
         elif not is_overlay and "mode" not in cfg:
             cfg["mode"] = "auto"
@@ -304,7 +315,10 @@ def _compose_effective_local(
     merged_overrides = _merge_approval_overrides(user_migrated, session_migrated)
     if merged_overrides:
         out["approval_overrides"] = merged_overrides
-    for source in (user_migrated, session_migrated):
+    # Global 在内：模板将 file_guard.paths 引导为产品/组织增量入口
+    # （"此处仅放产品/组织增量 paths"），回退合成不得丢弃；顺序
+    # global → user → session，allow 棘轮语义保证后写优先、不降级。
+    for source in (global_migrated, user_migrated, session_migrated):
         file_guard = source.get("file_guard")
         if isinstance(file_guard, dict) and isinstance(file_guard.get("paths"), list):
             _merge_file_guard_path_entries(out, file_guard["paths"])
