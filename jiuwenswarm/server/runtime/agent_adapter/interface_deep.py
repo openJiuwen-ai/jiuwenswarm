@@ -7016,7 +7016,7 @@ class JiuWenSwarmDeepAdapter:
                     exc_info=True,
                 )
 
-    def _restore_skill_turbo_model_from_resume_ctx(
+    def restore_skill_turbo_model_from_resume_ctx(
         self, resume_ctx: dict[str, Any]
     ) -> None:
         resume_inputs = resume_ctx.get("inputs")
@@ -14319,7 +14319,7 @@ class JiuWenSwarmDeepAdapter:
                 )
             return self._make_skill_turbo_resume_duplicate_placeholder(request)
         try:
-            self._restore_skill_turbo_model_from_resume_ctx(resume_ctx)
+            self.restore_skill_turbo_model_from_resume_ctx(resume_ctx)
         except Exception:
             try:
                 await session.post_run()

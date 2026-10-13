@@ -1024,7 +1024,7 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
 
     if resume_ctx is not None:
         try:
-            adapter._restore_skill_turbo_model_from_resume_ctx(resume_ctx)
+            adapter.restore_skill_turbo_model_from_resume_ctx(resume_ctx)
         except Exception:
             logger.exception(
                 "[SkillTurboTool] resume model restore failed; aborting resume",

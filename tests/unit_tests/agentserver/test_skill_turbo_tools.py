@@ -230,7 +230,7 @@ async def test_tool_resume_restores_model_before_building_skill_turbo(
     def restore_model(_ctx):
         adapter.current_model = "saved-model"
 
-    adapter._restore_skill_turbo_model_from_resume_ctx.side_effect = restore_model
+    adapter.restore_skill_turbo_model_from_resume_ctx.side_effect = restore_model
     adapter.build_skill_turbo_config.side_effect = lambda: {
         "model_client": adapter.current_model
     }
@@ -287,7 +287,7 @@ async def test_tool_resume_restores_model_before_building_skill_turbo(
         result = await skill_turbo.invoke({"query": _QUERY})
 
     assert result.get("success") is True
-    adapter._restore_skill_turbo_model_from_resume_ctx.assert_called_once_with(
+    adapter.restore_skill_turbo_model_from_resume_ctx.assert_called_once_with(
         resume_ctx
     )
     adapter.build_skill_turbo_config.assert_called_once_with()
