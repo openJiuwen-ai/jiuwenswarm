@@ -353,6 +353,56 @@ def test_compose_round_trips_rules_overrides_and_paths(isolated_data_dir: Path) 
     assert any(p.get("path") == "**/.ssh/**" for p in eff_paths)
 
 
+def test_compose_includes_global_file_guard_paths(isolated_data_dir: Path) -> None:
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        compose_host_effective_permissions,
+    )
+
+    _write_global(
+        isolated_data_dir,
+        {
+            "enabled": True,
+            "mode": "auto",
+            "file_guard": {
+                "enabled": True,
+                "paths": [
+                    {
+                        "path": "/org/secrets/**",
+                        "match": "glob",
+                        "read": "ask",
+                        "write": "ask",
+                        "exec": "deny",
+                    },
+                ],
+            },
+        },
+    )
+    eff = compose_host_effective_permissions()
+    paths = (eff.get("file_guard") or {}).get("paths") or []
+    org = next(p for p in paths if p.get("path") == "/org/secrets/**")
+    assert org["exec"] == "deny"
+    # preset 底线仍在
+    assert any(p.get("path") == "**/.ssh/**" for p in paths)
+
+
+def test_migrate_enabled_false_with_legacy_strict_reads_full_access(
+    isolated_data_dir: Path,
+) -> None:
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        get_permissions_mode,
+        migrate_and_write_global_permissions,
+    )
+
+    _write_global(
+        isolated_data_dir,
+        {"enabled": False, "permission_mode": "strict"},
+    )
+    migrate_and_write_global_permissions()
+    # 迁移落盘结果与 get_permissions_mode 读取优先级一致：
+    # enabled:false → full_access 优先于 legacy strict
+    assert get_permissions_mode() == "full_access"
+
+
 def test_append_session_allow_tool_persists_and_reloads(isolated_data_dir: Path) -> None:
     from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
         append_allow_tool,
