@@ -37,6 +37,26 @@ def _fake_turbo():
     return inst
 
 
+
+
+def _isolated_session_side_effect(main_session: MagicMock):
+    """create_agent_session 的 side_effect：首次调用返回 main_session，之后返回独立
+    隔离 session mock（clear_resume_in_flight / clear_resume_ctx 的隔离键 session），
+    使隔离 session 的 post_run 不计入 main_session 的断言。
+    """
+    counter = {"n": 0}
+
+    def _factory(*_args, **_kwargs):
+        counter["n"] += 1
+        if counter["n"] == 1:
+            return main_session
+        isolated = MagicMock()
+        isolated.pre_run = AsyncMock()
+        isolated.post_run = AsyncMock()
+        isolated.close_stream = AsyncMock()
+        return isolated
+
+    return _factory
 @pytest.fixture
 def _skill_turbo_runtime():
     adapter = MagicMock()
@@ -129,7 +149,7 @@ async def test_load_resume_ctx_failure_still_post_runs_turbo_session(_skill_turb
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -185,7 +205,7 @@ async def test_clear_resume_ctx_failure_does_not_mask_resume_success(_skill_turb
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -270,7 +290,7 @@ async def test_tool_resume_restores_model_before_building_skill_turbo(
         ) as skill_turbo_cls,
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -351,7 +371,7 @@ async def test_hitl_abort_does_not_clear_or_post_run_turbo_session(
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -428,7 +448,7 @@ async def test_abort_without_tic_keeps_resume_ctx(_skill_turbo_runtime) -> None:
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -493,7 +513,7 @@ async def test_generic_exception_keeps_resume_ctx(_skill_turbo_runtime) -> None:
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -556,7 +576,7 @@ async def test_not_handled_clears_resume_ctx(_skill_turbo_runtime) -> None:
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -726,7 +746,7 @@ async def test_skill_turbo_returns_failure_when_p10_delivery_failed(
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",

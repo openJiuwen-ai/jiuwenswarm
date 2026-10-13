@@ -1045,6 +1045,7 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
             from openjiuwen.core.session.agent import create_agent_session
             from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
                 load_resume_ctx,
+                mark_resume_in_flight,
                 set_skill_turbo_id,
             )
 
@@ -1115,6 +1116,19 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                 apply_interactive_ask_to_inputs,
                 resolve_resume_interactive_ask,
             )
+
+            # 防重：resume_in_flight 命中 = 双击/网关重试作答，跳过本次避免
+            # 两次 resume_stream 重复生成（对齐 Path A 的 resume_in_flight 防重）。
+            if resume_ctx.get("resume_in_flight"):
+                logger.warning(
+                    "[SkillTurboTool] duplicate resume answers while in flight; ignoring"
+                )
+                return _wrap_skill_turbo_result(
+                    {"success": True, "result": "任务正在处理中，本次重复作答已忽略"},
+                    artifact_holder=skill_turbo_inst.artifact_holder,
+                )
+            # mark in_flight（防重起点）：resume 处理期间第二次作答会被上方判重
+            await mark_resume_in_flight(turbo_session, resume_ctx)
 
             raw_ia = None
             if isinstance(request_metadata, dict) and (
@@ -1277,6 +1291,20 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
             artifact_holder=skill_turbo_inst.artifact_holder,
         )
     finally:
+        # clear in_flight：无论 resume 成功/中断/失败都必须清除，防下次作答被误判
+        # 重复（意外异常后重试作答场景）。isolated 通道强制落盘，失败 warning 可观测。
+        if turbo_session is not None and resume_ctx is not None:
+            from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
+                clear_resume_in_flight,
+            )
+
+            try:
+                await clear_resume_in_flight(turbo_session)
+            except Exception:
+                logger.warning(
+                    "[SkillTurboTool] clear_resume_in_flight failed",
+                    exc_info=True,
+                )
         if turbo_session is not None and not hitl_interrupt and release_checkpoint:
             if resume_ctx is not None:
                 from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
