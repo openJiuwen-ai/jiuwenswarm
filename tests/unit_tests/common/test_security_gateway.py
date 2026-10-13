@@ -14,8 +14,12 @@ from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist imp
     normalize_net_guard_patch,
 )
 from jiuwenswarm.common import config_split
-from jiuwenswarm.extensions.agentos.agentos_router.config import load_ssh_channel_endpoint
-from jiuwenswarm.gateway.channel_manager.protocol.ssh.config import proxy_config_from_dict
+from jiuwenswarm.extensions.agentos.agentos_router.config import (
+    load_ssh_channel_endpoint,
+)
+from jiuwenswarm.gateway.channel_manager.protocol.ssh.config import (
+    proxy_config_from_dict,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -67,15 +71,30 @@ def test_restore_user_keep_merges_net_guard_urls(tmp_path):
 
 def test_normalize_net_guard_patch_validates():
     out = normalize_net_guard_patch(
-        {"enabled": True, "defaults": "DENY", "urls": {" *.corp.example ": "Allow"}, "tools": ["t1"]}
+        {
+            "enabled": True,
+            "defaults": "DENY",
+            "urls": {" *.corp.example ": "Allow"},
+            "max_request_mb": 20,
+            "timeout_seconds": 90,
+            "tools": ["t1"],
+        }
     )
-    assert out == {"enabled": True, "defaults": "deny", "urls": {"*.corp.example": "allow"}}
+    assert out == {
+        "enabled": True,
+        "defaults": "deny",
+        "urls": {"*.corp.example": "allow"},
+        "max_request_mb": 20,
+        "timeout_seconds": 90,
+    }
     for bad in (
         {"urls": {"169.254.169.254": "allow"}},
         {"enabled": "yes"},
         {"defaults": "invalid"},
         {"urls": {"x": "invalid"}},
         {"urls": ["x"]},
+        {"max_request_mb": 0},
+        {"timeout_seconds": True},
     ):
         with pytest.raises(ValueError):
             normalize_net_guard_patch(bad)
@@ -91,6 +110,8 @@ def test_net_guard_rpc_get_and_set(monkeypatch):
 
     from jiuwenswarm.agents.harness.common.rails.permissions import (
         permissions_config_rpc as rpc,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions import (
         permissions_persist,
     )
     from jiuwenswarm.common import config as config_mod
@@ -116,6 +137,8 @@ def test_net_guard_rpc_get_and_set(monkeypatch):
         )
         assert resp.ok and resp.payload["apply_mode"] == "hot_reload"
         assert resp.payload["net_guard"]["enforce_host_exit"] is True
+        assert resp.payload["net_guard"]["max_request_mb"] == 10
+        assert resp.payload["net_guard"]["timeout_seconds"] == 120
 
         resp = rpc.dispatch_permissions_config_request(
             AgentRequest(
@@ -166,9 +189,71 @@ def test_publish_host_exit_policy_from_config():
         host_exit.reset_host_exit_policy()
 
 
+def test_sandbox_limits_have_simple_defaults_and_strict_validation():
+    from jiuwenswarm.common.config import _ensure_sandbox_runtime_shape
+
+    assert _ensure_sandbox_runtime_shape({})["limits"] == {
+        "max_file_mb": 100,
+        "exec_timeout_seconds": 600,
+    }
+    assert _ensure_sandbox_runtime_shape(
+        {"limits": {"max_file_mb": 12, "exec_timeout_seconds": 34}}
+    )["limits"] == {"max_file_mb": 12, "exec_timeout_seconds": 34}
+    for limits in (
+        {"max_file_mb": 0},
+        {"exec_timeout_seconds": True},
+        {"unknown": 1},
+    ):
+        with pytest.raises(ValueError):
+            _ensure_sandbox_runtime_shape({"limits": limits})
+
+
+def test_sandbox_limits_rpc_get_set(monkeypatch):
+    from jiuwenswarm.common import config as config_mod
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.server import sandbox_config_rpc as rpc
+
+    runtime = {
+        "enabled": False,
+        "limits": {"max_file_mb": 100, "exec_timeout_seconds": 300},
+    }
+    applied: list[str] = []
+
+    def update(patch):
+        runtime["limits"].update(patch["limits"])
+        return runtime
+
+    monkeypatch.setattr(config_mod, "get_sandbox_runtime", lambda: runtime)
+    monkeypatch.setattr(config_mod, "update_sandbox_runtime", update)
+    monkeypatch.setattr(rpc, "_trigger_apply", applied.append)
+
+    get_response = rpc.dispatch_sandbox_config_request(
+        AgentRequest(request_id="limits-get", req_method=ReqMethod.SANDBOX_LIMITS_GET)
+    )
+    assert get_response.ok
+    assert get_response.payload["limits"]["max_file_mb"] == 100
+
+    set_response = rpc.dispatch_sandbox_config_request(
+        AgentRequest(
+            request_id="limits-set",
+            req_method=ReqMethod.SANDBOX_LIMITS_SET,
+            params={"limits": {"max_file_mb": 12}},
+        )
+    )
+    assert set_response.ok
+    assert set_response.payload["limits"] == {
+        "max_file_mb": 12,
+        "exec_timeout_seconds": 300,
+    }
+    assert applied == ["limits"]
+
+
 @pytest.mark.asyncio
 async def test_reload_continues_when_host_exit_publish_fails(monkeypatch):
-    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_config_rpc
+    from jiuwenswarm.agents.harness.common.rails.permissions import (
+        permissions_config_rpc,
+    )
     from jiuwenswarm.server.runtime import agent_manager as agent_manager_module
 
     class FakeAgent:
@@ -194,7 +279,10 @@ async def test_reload_continues_when_host_exit_publish_fails(monkeypatch):
 def test_mcp_endpoint_check_error_skips_only_that_server():
     from openjiuwen.harness.security.outbound import policy as host_exit
 
-    from jiuwenswarm.common.mcp_config import build_enabled_mcp_server_configs, mcp_endpoint_blocked_reason
+    from jiuwenswarm.common.mcp_config import (
+        build_enabled_mcp_server_configs,
+        mcp_endpoint_blocked_reason,
+    )
 
     host_exit.publish_host_exit_policy({"net_guard": {"enabled": True, "enforce_host_exit": True}})
     try:

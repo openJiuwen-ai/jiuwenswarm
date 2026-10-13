@@ -16,12 +16,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from jiuwenbox.logging_config import configure_logging, make_stream_logging_nonblocking
 from jiuwenbox import __version__
-from jiuwenbox.server.auth import BearerTokenAuthMiddleware, get_configured_token
-from jiuwenbox.server.audit_logger import AuditLogger
+from jiuwenbox.logging_config import configure_logging, make_stream_logging_nonblocking
 from jiuwenbox.models.sandbox import InvalidJobIdError, InvalidSandboxIdError
-from jiuwenbox.server.runtime.process import BackgroundJobNotFoundError
+from jiuwenbox.server.audit_logger import AuditLogger
+from jiuwenbox.server.auth import BearerTokenAuthMiddleware, get_configured_token
+from jiuwenbox.server.limits import (
+    MAX_JSON_BODY_BYTES,
+    MULTIPART_OVERHEAD_BYTES,
+    SandboxLimitError,
+    SandboxLimits,
+    limit_asgi_receive,
+)
+from jiuwenbox.server.policy_engine import PolicyValidationError
+from jiuwenbox.server.policy_reader import PolicyReader
+from jiuwenbox.server.proxy_manager import ProxyManager
+from jiuwenbox.server.runtime.process import BackgroundJobNotFoundError, enable_child_subreaper
 from jiuwenbox.server.sandbox_manager import (
     CodePolicyDenialError,
     SandboxConflictError,
@@ -29,10 +39,6 @@ from jiuwenbox.server.sandbox_manager import (
     SandboxNotFoundError,
     SandboxStateError,
 )
-from jiuwenbox.server.policy_reader import PolicyReader
-from jiuwenbox.server.proxy_manager import ProxyManager
-from jiuwenbox.server.policy_engine import PolicyValidationError
-from jiuwenbox.server.runtime.process import enable_child_subreaper
 
 # Operator-facing env: when set, the audit JSONL is persisted to this
 # directory using a ``{sandbox_id}-{ts}.audit.log`` filename per sandbox.
@@ -531,6 +537,51 @@ def create_app() -> FastAPI:
     )
     application.add_middleware(BearerTokenAuthMiddleware)
 
+    @application.middleware("http")
+    async def sandbox_request_size_limit(request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/api/v1/sandboxes"):
+            raw_length = request.headers.get("content-length")
+            length = None
+            if raw_length:
+                try:
+                    length = int(raw_length)
+                except ValueError:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": "invalid Content-Length", "code": "INVALID_CONTENT_LENGTH"},
+                    )
+            if path.endswith("/upload"):
+                maximum = SandboxLimits.from_env().max_file_bytes + MULTIPART_OVERHEAD_BYTES
+                chunked_code = "SANDBOX_UPLOAD_TOO_LARGE"
+            else:
+                maximum = MAX_JSON_BODY_BYTES
+                chunked_code = "SANDBOX_REQUEST_TOO_LARGE"
+            if length is not None and length > maximum:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "error": f"request body is {length} bytes; limit is {maximum} bytes",
+                        "code": "SANDBOX_REQUEST_TOO_LARGE",
+                    },
+                )
+            # Chunked requests omit Content-Length. Count the body as it
+            # arrives so neither the multipart parser nor json.loads can
+            # buffer an unbounded body.
+            limited = limit_asgi_receive(request._receive, maximum, code=chunked_code)
+            request._receive = limited
+            try:
+                response = await call_next(request)
+            except SandboxLimitError as exc:
+                limited.error = limited.error or exc
+            if limited.error is not None:
+                return JSONResponse(
+                    status_code=limited.error.status_code,
+                    content={"error": str(limited.error), "code": limited.error.code},
+                )
+            return response
+        return await call_next(request)
+
     @application.exception_handler(SandboxNotFoundError)
     async def not_found_handler(request: Request, exc: SandboxNotFoundError):
         return JSONResponse(status_code=404, content={"error": str(exc)})
@@ -570,6 +621,13 @@ def create_app() -> FastAPI:
     async def policy_validation_error_handler(request: Request, exc: PolicyValidationError):
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
+    @application.exception_handler(SandboxLimitError)
+    async def sandbox_limit_error_handler(request: Request, exc: SandboxLimitError):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": str(exc), "code": exc.code},
+        )
+
     @application.exception_handler(ValidationError)
     async def pydantic_validation_error_handler(request: Request, exc: ValidationError):
         # Pydantic ``ValidationError`` raised inside a route handler (e.g. when
@@ -605,9 +663,9 @@ def create_app() -> FastAPI:
             },
         )
 
-    from jiuwenbox.server.routes.sandbox import router as sandbox_router
     from jiuwenbox.server.routes.policy import router as policy_router
     from jiuwenbox.server.routes.proxy import router as proxy_router
+    from jiuwenbox.server.routes.sandbox import router as sandbox_router
 
     application.include_router(sandbox_router, prefix="/api/v1")
     application.include_router(policy_router, prefix="/api/v1")

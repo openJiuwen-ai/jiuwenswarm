@@ -145,6 +145,7 @@ from jiuwenbox.models.sandbox import (
     validate_custom_sandbox_id,
 )
 from jiuwenbox.server.audit_logger import AuditLogger
+from jiuwenbox.server.limits import SandboxLimitError, SandboxLimits
 from jiuwenbox.server.policy_engine import PolicyEngine
 from jiuwenbox.server.policy_reader import PolicyReader
 from jiuwenbox.server.runtime.base import (
@@ -158,6 +159,103 @@ from jiuwenbox.server.workspace import JIUWENBOX_HOME
 
 configure_logging()
 logger = logging.getLogger(__name__)
+
+# Exit 46: the fallback path refused to follow a symlink. The IPC fast path
+# uses O_NOFOLLOW; these scripts keep the same behavior when the daemon is down.
+_SYMLINK_EXIT = 46
+_FILE_TOO_LARGE_EXIT = 47
+
+_UPLOAD_NOFOLLOW_SCRIPT = """
+import errno
+import os
+import sys
+
+path = sys.argv[1]
+if os.path.islink(path):
+    sys.exit(46)
+parent = os.path.dirname(path)
+if parent and parent not in ("/", "."):
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError:
+        sys.exit(1)
+flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+nofollow = getattr(os, "O_NOFOLLOW", 0)
+if nofollow:
+    flags |= nofollow
+if hasattr(os, "O_BINARY"):
+    flags |= os.O_BINARY
+try:
+    fd = os.open(path, flags, 0o644)
+except OSError as exc:
+    if os.path.islink(path) or exc.errno == errno.ELOOP:
+        sys.exit(46)
+    sys.exit(1)
+try:
+    while True:
+        chunk = sys.stdin.buffer.read(1024 * 1024)
+        if not chunk:
+            break
+        view = memoryview(chunk)
+        offset = 0
+        while offset < len(view):
+            written = os.write(fd, view[offset:])
+            if written <= 0:
+                sys.exit(1)
+            offset += written
+finally:
+    os.close(fd)
+""".strip()
+
+_DOWNLOAD_NOFOLLOW_SCRIPT = """
+import base64
+import errno
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+max_bytes = int(sys.argv[2])
+if os.path.islink(path):
+    sys.exit(46)
+flags = os.O_RDONLY
+nofollow = getattr(os, "O_NOFOLLOW", 0)
+if nofollow:
+    flags |= nofollow
+if hasattr(os, "O_BINARY"):
+    flags |= os.O_BINARY
+try:
+    fd = os.open(path, flags)
+except OSError as exc:
+    if os.path.islink(path) or exc.errno == errno.ELOOP:
+        sys.exit(46)
+    if exc.errno == errno.ENOENT:
+        sys.exit(44)
+    if exc.errno == errno.EISDIR:
+        sys.exit(45)
+    sys.exit(1)
+try:
+    info = os.fstat(fd)
+    if stat.S_ISLNK(info.st_mode):
+        sys.exit(46)
+    if stat.S_ISDIR(info.st_mode):
+        sys.exit(45)
+    if info.st_size > max_bytes:
+        sys.exit(47)
+    chunks = []
+    total = 0
+    while True:
+        data = os.read(fd, 1024 * 1024)
+        if not data:
+            break
+        total += len(data)
+        if total > max_bytes:
+            sys.exit(47)
+        chunks.append(data)
+finally:
+    os.close(fd)
+sys.stdout.buffer.write(base64.b64encode(b"".join(chunks)))
+""".strip()
 
 
 @dataclass(frozen=True)
@@ -176,6 +274,7 @@ class SandboxBackgroundExecRequest:
     workdir: str | None = None
     env: dict[str, str] | None = None
     stdin_data: bytes | None = None
+    timeout: float | None = None
 
 
 @dataclass(frozen=True)
@@ -227,6 +326,7 @@ class SandboxManager:
         state_dir: Path | None = None,
         policy_reader: PolicyReader | None = None,
         policy_path: Path | None = None,
+        limits: SandboxLimits | None = None,
     ) -> None:
         self.runtime = runtime or ProcessRuntime()
         self.policy_engine = policy_engine or PolicyEngine()
@@ -238,6 +338,7 @@ class SandboxManager:
             policy_path=policy_path,
         )
         self.policy = self.policy_reader.load_policy()
+        self.limits = limits or SandboxLimits.from_env()
 
         self._lock = asyncio.Lock()
         self._sandboxes: dict[str, SandboxRef] = {}
@@ -771,7 +872,12 @@ class SandboxManager:
         self,
         sandbox_id: str,
         request: SandboxExecRequest,
+        *,
+        output_limit: int | None = None,
     ) -> ExecResult:
+        """``output_limit`` is for internal callers whose stdout carries a
+        payload with its own limit (the base64 download fallback); the HTTP
+        exec route never passes it."""
         async with self._lock:
             ref = self._get_sandbox(sandbox_id)
             if ref.phase != SandboxPhase.READY:
@@ -779,6 +885,8 @@ class SandboxManager:
                     f"Cannot exec in sandbox '{sandbox_id}': state is {ref.phase.value}"
                 )
             self._mark_active(ref)
+
+        await self._enforce_exec_workdir(sandbox_id, request.workdir)
 
         # One audit row per exec, emitted **after** the runtime returns so
         # the payload covers both intent (command/workdir) and outcome
@@ -810,7 +918,7 @@ class SandboxManager:
             workdir=request.workdir,
             env=exec_env,
             stdin_data=request.stdin_data,
-            timeout=request.timeout,
+            timeout=self.limits.effective_exec_timeout(request.timeout),
         )
         try:
             result = await self.runtime.exec(sandbox_id, runtime_request)
@@ -823,6 +931,12 @@ class SandboxManager:
                 )
                 await self.restart_sandbox(sandbox_id)
                 result = await self.runtime.exec(sandbox_id, runtime_request)
+            if output_limit is None:
+                self.limits.enforce_exec_output(result.stdout, result.stderr)
+            else:
+                self.limits.enforce_exec_output(
+                    result.stdout, result.stderr, limit=output_limit
+                )
         except Exception as exc:
             self.audit.log(
                 AuditEventType.EXEC_COMMAND,
@@ -859,6 +973,8 @@ class SandboxManager:
                     f"Cannot exec in sandbox '{sandbox_id}': state is {ref.phase.value}"
                 )
             self._mark_active(ref)
+
+        await self._enforce_exec_workdir(sandbox_id, request.workdir)
 
         job_id = (
             generate_job_id()
@@ -910,7 +1026,40 @@ class SandboxManager:
             error=result.error_message,
             duration_ms=int((time.monotonic() - start) * 1000),
         )
+        if result.started:
+            timeout = self.limits.effective_exec_timeout(request.timeout)
+            asyncio.create_task(
+                self._expire_background_job(sandbox_id, job_id, timeout),
+                name=f"jiuwenbox-bg-timeout-{sandbox_id}-{job_id}",
+            )
         return result
+
+    async def _expire_background_job(
+        self,
+        sandbox_id: str,
+        job_id: str,
+        timeout: float,
+    ) -> None:
+        await asyncio.sleep(timeout)
+        try:
+            status = await self.runtime.get_background_job(sandbox_id, job_id)
+            if status.running:
+                await self.runtime.kill_background_job(sandbox_id, job_id, signum=15)
+                logger.info(
+                    "background job timeout enforced sandbox=%s job=%s timeout=%s",
+                    sandbox_id,
+                    job_id,
+                    timeout,
+                )
+        except (BackgroundJobNotFoundError, SandboxNotFoundError):
+            return
+        except Exception:
+            logger.warning(
+                "failed to enforce background timeout sandbox=%s job=%s",
+                sandbox_id,
+                job_id,
+                exc_info=True,
+            )
 
     async def get_background_job_in_sandbox(
         self,
@@ -987,6 +1136,7 @@ class SandboxManager:
         sandbox_path: str,
         content: bytes,
     ) -> None:
+        self.limits.enforce_file_size(len(content), direction="upload")
         async with self._lock:
             ref = self._get_sandbox(sandbox_id)
             if ref.phase != SandboxPhase.READY:
@@ -1067,47 +1217,15 @@ class SandboxManager:
         """Legacy ``bash + cat`` upload path used only when the IPC fast
         path is unavailable (e.g. an older runtime adapter, or a sandbox
         whose daemon flagged itself unhealthy mid-request)."""
-        upload_script = textwrap.dedent(
-            """
-            set -euo pipefail
-            target="$1"
-            parent=$(dirname -- "$target") || {
-                status=$?
-                printf "dirname failed for upload target '%s' (exit %s)\\n" "$target" "$status" >&2
-                exit "$status"
-            }
-            mkdir -p -- "$parent" || {
-                status=$?
-                uid=$(id -u 2>/dev/null || true)
-                gid=$(id -g 2>/dev/null || true)
-                parent_parent=$(dirname -- "$parent" 2>/dev/null || true)
-                printf "mkdir failed: parent='%s' target='%s'\\n" "$parent" "$target" >&2
-                printf "sandbox identity: uid=%s gid=%s exit=%s\\n" "$uid" "$gid" "$status" >&2
-                if [ -n "$parent_parent" ]; then
-                    ls -ld -- "$parent_parent" "$parent" >&2 || true
-                fi
-                exit "$status"
-            }
-            cat > "$target" || {
-                status=$?
-                printf "write failed: target='%s' exit=%s\\n" "$target" "$status" >&2
-                exit "$status"
-            }
-            """
-        ).strip()
         result = await self.exec_in_sandbox(
             sandbox_id,
             SandboxExecRequest(
-                command=[
-                    "bash",
-                    "-c",
-                    upload_script,
-                    "jiuwenbox-upload",
-                    sandbox_path,
-                ],
+                command=["python3", "-S", "-c", _UPLOAD_NOFOLLOW_SCRIPT, sandbox_path],
                 stdin_data=content,
             ),
         )
+        if result.exit_code == _SYMLINK_EXIT:
+            raise SandboxStateError("Refusing to follow symlink")
         if result.exit_code != 0:
             detail = (result.stderr or result.stdout).strip()
             if not detail:
@@ -1171,6 +1289,7 @@ class SandboxManager:
             result = await self.runtime.read_file(sandbox_id, sandbox_path)
         if result.ok:
             content = result.content or b""
+            self.limits.enforce_file_size(len(content), direction="download")
             _emit_result(True, size=len(content), path="ipc")
             return content
 
@@ -1195,6 +1314,7 @@ class SandboxManager:
             except Exception as exc:
                 _emit_result(False, error=repr(exc), path="exec_fallback")
                 raise
+            self.limits.enforce_file_size(len(content), direction="download")
             _emit_result(True, size=len(content), path="exec_fallback")
             return content
 
@@ -1210,25 +1330,33 @@ class SandboxManager:
         sandbox_path: str,
     ) -> bytes:
         """Legacy bash+base64 download path used only when the IPC fast
-        path is unavailable."""
-        result = await self.exec_in_sandbox(
-            sandbox_id,
-            SandboxExecRequest(
-                command=[
-                    "bash",
-                    "-c",
-                    (
-                        "set -euo pipefail; "
-                        'target="$1"; '
-                        'if [ ! -e "$target" ]; then exit 44; fi; '
-                        'if [ -d "$target" ]; then exit 45; fi; '
-                        'base64 -w 0 -- "$target"'
-                    ),
-                    "jiuwenbox-download",
-                    sandbox_path,
-                ],
-            ),
-        )
+        path is unavailable.
+
+        Its stdout is the file in base64, so the generic exec output cap
+        would shrink the download limit to ~3 MB. The script enforces
+        ``max_file_bytes`` itself and the output cap is widened to match,
+        keeping both paths on the same limit and error code.
+        """
+        max_bytes = self.limits.max_file_bytes
+        try:
+            result = await self.exec_in_sandbox(
+                sandbox_id,
+                SandboxExecRequest(
+                    command=[
+                        "python3", "-S", "-c", _DOWNLOAD_NOFOLLOW_SCRIPT,
+                        sandbox_path, str(max_bytes),
+                    ],
+                ),
+                output_limit=self.limits.download_fallback_output_bytes,
+            )
+        except SandboxLimitError as exc:
+            if exc.code != "SANDBOX_EXEC_OUTPUT_TOO_LARGE":
+                raise
+            raise self.limits.file_too_large("download") from exc
+        if result.exit_code == _FILE_TOO_LARGE_EXIT:
+            raise self.limits.file_too_large("download")
+        if result.exit_code == _SYMLINK_EXIT:
+            raise SandboxStateError("Refusing to follow symlink")
         if result.exit_code == 44:
             raise FileNotFoundError(sandbox_path)
         if result.exit_code == 45:
@@ -1501,6 +1629,18 @@ class SandboxManager:
         if path_norm == rule_norm:
             return True
         return path_norm.startswith(rule_norm + os.sep)
+
+    async def _enforce_exec_workdir(self, sandbox_id: str, workdir: str | None) -> None:
+        """Apply deny_read and deny_write to an exec cwd.
+
+        File APIs already pass their path through ``_enforce_path_policy``.
+        A workdir skips that check and lets a command read or create files
+        relative to a denied directory.
+        """
+        if workdir is None or not workdir.strip():
+            return
+        await self._enforce_path_policy(sandbox_id, workdir, op="read")
+        await self._enforce_path_policy(sandbox_id, workdir, op="write")
 
     async def _enforce_path_policy(
         self,

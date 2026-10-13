@@ -86,6 +86,8 @@ def _net_guard_payload() -> dict[str, Any]:
         "defaults": str(raw.get("defaults") or "allow"),
         "urls": dict(raw.get("urls") or {}) if isinstance(raw.get("urls"), dict) else {},
         "enforce_host_exit": raw.get("enforce_host_exit", True) is not False,
+        "max_request_mb": raw.get("max_request_mb", 10),
+        "timeout_seconds": raw.get("timeout_seconds", 120),
     }
     warnings: list[str] = []
     if section["enabled"] and not section["enforce_host_exit"]:

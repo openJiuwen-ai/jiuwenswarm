@@ -629,6 +629,10 @@ def persist_merged_allow_rule_snapshot(permissions: dict[str, Any], *, approval_
 
 _NET_GUARD_ACTIONS = frozenset({"allow", "ask", "deny"})
 _NET_GUARD_BOOL_KEYS = ("enabled", "enforce_host_exit")
+_NET_GUARD_INT_LIMITS = {
+    "max_request_mb": 1024,
+    "timeout_seconds": 3600,
+}
 
 
 def normalize_net_guard_patch(patch: Any) -> dict[str, Any]:
@@ -649,6 +653,13 @@ def normalize_net_guard_patch(patch: Any) -> dict[str, Any]:
             if not isinstance(patch[key], bool):
                 raise ValueError(f"net_guard.{key} must be boolean")
             out[key] = patch[key]
+    for key, maximum in _NET_GUARD_INT_LIMITS.items():
+        if key not in patch:
+            continue
+        value = patch[key]
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+            raise ValueError(f"net_guard.{key} must be an integer in [1, {maximum}]")
+        out[key] = value
     if "defaults" in patch:
         defaults = str(patch["defaults"] or "").strip().lower()
         if defaults not in _NET_GUARD_ACTIONS:

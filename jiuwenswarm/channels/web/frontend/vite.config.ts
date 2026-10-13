@@ -742,9 +742,24 @@ function devFileContentApi(): Plugin {
           return
         }
 
+        let realPath: string
+        try {
+          realPath = fs.realpathSync(payload.path)
+        } catch {
+          res.statusCode = 404
+          res.setHeader('content-type', 'application/json; charset=utf-8')
+          res.end(JSON.stringify({ error: 'file_not_found' }))
+          return
+        }
+        if (!isPathUnderAllowedRoot(realPath)) {
+          res.statusCode = 403
+          res.setHeader('content-type', 'application/json; charset=utf-8')
+          res.end(JSON.stringify({ error: 'forbidden_path' }))
+          return
+        }
         let stat: fs.Stats
         try {
-          stat = fs.statSync(payload.path)
+          stat = fs.statSync(realPath)
         } catch {
           res.statusCode = 404
           res.setHeader('content-type', 'application/json; charset=utf-8')
@@ -793,7 +808,7 @@ function devFileContentApi(): Plugin {
 
         const contentLength = fileSize === 0 ? 0 : end - start + 1
         const inline = ['1', 'true'].includes((url.searchParams.get('inline') || '').toLowerCase())
-        const fileName = path.basename(payload.path)
+        const fileName = path.basename(realPath)
         res.statusCode = partial ? 206 : 200
         res.setHeader('content-type', downloadContentType(payload.path))
         res.setHeader('content-length', String(contentLength))
@@ -805,9 +820,9 @@ function devFileContentApi(): Plugin {
           res.end()
           return
         }
-        const fileStream = fs.createReadStream(payload.path, fileSize === 0 ? undefined : { start, end })
+        const fileStream = fs.createReadStream(realPath, fileSize === 0 ? undefined : { start, end })
         fileStream.once('error', (error) => {
-          server.config.logger.error(`[file-api] Failed to read ${payload.path}: ${(error as Error).message}`)
+          server.config.logger.error(`[file-api] Failed to read ${realPath}: ${(error as Error).message}`)
           handleFileStreamError(res, error)
         })
         fileStream.pipe(res)
@@ -838,21 +853,39 @@ function devFileContentApi(): Plugin {
             res.end(JSON.stringify({ error: 'forbidden_path' }))
             return
           }
-          if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
+          let fileStat: fs.Stats
+          try {
+            fileStat = fs.lstatSync(fullPath)
+          } catch {
             res.statusCode = 404
             res.setHeader('content-type', 'application/json; charset=utf-8')
-            res.end(JSON.stringify({ error: '文件不存在', fullPath }))
+            res.end(JSON.stringify({ error: '文件不存在' }))
+            return
+          }
+          if (fileStat.isSymbolicLink()) {
+            res.statusCode = 403
+            res.setHeader('content-type', 'application/json; charset=utf-8')
+            res.end(JSON.stringify({ error: 'symlink_not_allowed' }))
+            return
+          }
+          if (!fileStat.isFile()) {
+            res.statusCode = 404
+            res.setHeader('content-type', 'application/json; charset=utf-8')
+            res.end(JSON.stringify({ error: '文件不存在' }))
             return
           }
 
           res.statusCode = 200
           res.setHeader('content-type', downloadContentType(fullPath))
           res.setHeader('cache-control', 'no-store')
+          res.setHeader('x-content-type-options', 'nosniff')
           if (req.method === 'HEAD') {
             res.end()
             return
           }
-          const fileStream = fs.createReadStream(fullPath)
+          const nofollow = fs.constants.O_NOFOLLOW || 0
+          const fd = fs.openSync(fullPath, fs.constants.O_RDONLY | nofollow)
+          const fileStream = fs.createReadStream(fullPath, { fd, autoClose: true })
           fileStream.once('error', (error) => {
             server.config.logger.error(`[file-api] Failed to read ${fullPath}: ${(error as Error).message}`)
             handleFileStreamError(res, error)
@@ -885,7 +918,19 @@ function devFileContentApi(): Plugin {
               res.end(JSON.stringify({ error: 'forbidden_path' }))
               return
             }
-            if (!fs.existsSync(fullPath)) {
+            let contentStat: fs.Stats | undefined
+            try {
+              contentStat = fs.lstatSync(fullPath)
+            } catch {
+              contentStat = undefined
+            }
+            if (contentStat?.isSymbolicLink()) {
+              res.statusCode = 403
+              res.setHeader('content-type', 'application/json; charset=utf-8')
+              res.end(JSON.stringify({ error: 'symlink_not_allowed' }))
+              return
+            }
+            if (!contentStat) {
               if (filePath.replace(/\\/g, '/') === 'agent/workspace/agent-data.json') {
                 try {
                   const runResult = spawnSync(process.execPath, [generateAgentFoldersScriptPath], {
@@ -907,11 +952,19 @@ function devFileContentApi(): Plugin {
               }
               res.statusCode = 404
               res.setHeader('content-type', 'application/json; charset=utf-8')
-              res.end(JSON.stringify({ error: '文件不存在', fullPath }))
+              res.end(JSON.stringify({ error: '文件不存在' }))
               return
             }
 
-            const { content, encoding } = decodeFileContent(fs.readFileSync(fullPath), requestedEncoding)
+            const nofollow = fs.constants.O_NOFOLLOW || 0
+            const contentFd = fs.openSync(fullPath, fs.constants.O_RDONLY | nofollow)
+            let rawContent: Buffer
+            try {
+              rawContent = fs.readFileSync(contentFd)
+            } finally {
+              fs.closeSync(contentFd)
+            }
+            const { content, encoding } = decodeFileContent(rawContent, requestedEncoding)
             res.statusCode = 200
             res.setHeader('content-type', 'text/plain; charset=utf-8')
             res.setHeader('X-Original-Encoding', encoding)

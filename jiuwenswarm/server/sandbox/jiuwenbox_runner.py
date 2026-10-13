@@ -311,6 +311,7 @@ class JiuwenBoxRunner:
         # 上次 spawn 的 policy 内容指纹 (sha256). 网络配置变更改写运行时副本 (path 不变内容变),
         # 须比指纹才检测到 → 触发 stop+spawn 重启 box-server 重建 EgressFilter.
         self._spawned_policy_fingerprint: Optional[str] = None
+        self._spawned_limits: tuple[int, int] | None = None
         # Policy-only reloads omit extra_env. Keep bootstrap-injected runner
         # Python/venv/skills paths across stop+spawn and failed-start retries.
         self._startup_extra_env: dict[str, str] = {}
@@ -477,6 +478,13 @@ class JiuwenBoxRunner:
 
             # internal 模式: agent-server 自管 jbx 生命周期. 上游保证 port 是 (a) 之前拉起的同 host:port 或 (b) 空闲端口.
             # 决策: 进程 alive 且 host/port/policy_path+内容指纹全匹配 → 复用; 指纹变 → 重 spawn; 否则停旧 spawn 新.
+            from jiuwenswarm.common.config import get_sandbox_runtime
+
+            sandbox_limits = get_sandbox_runtime()["limits"]
+            desired_limits = (
+                sandbox_limits["max_file_mb"],
+                sandbox_limits["exec_timeout_seconds"],
+            )
             new_fp = self._policy_fingerprint(policy_path)
             owned_match = (
                 self.process is not None
@@ -486,6 +494,7 @@ class JiuwenBoxRunner:
                 and self.port == port
                 and self.spawned_policy_path == policy_path
                 and self._spawned_policy_fingerprint == new_fp
+                and self._spawned_limits == desired_limits
             )
             if owned_match:
                 if await self.health_check(host, port):
@@ -569,6 +578,12 @@ class JiuwenBoxRunner:
                     env[_k] = _v
             # Retain explicit bootstrap overrides on policy-only reloads.
             env.update(self._startup_extra_env)
+            # The public sandbox config intentionally exposes only these two
+            # business limits. Box-server validates and enforces them again.
+            env["JIUWENBOX_MAX_FILE_MB"] = str(sandbox_limits["max_file_mb"])
+            env["JIUWENBOX_EXEC_TIMEOUT_SECONDS"] = str(
+                sandbox_limits["exec_timeout_seconds"]
+            )
             if sys.platform == "win32":
                 _apply_soft_delete_env(env)
             # 若 jiuwenbox 未安装到 site-packages, 尝试用仓库内源码目录注入 PYTHONPATH
@@ -614,6 +629,7 @@ class JiuwenBoxRunner:
                 self.owns_process = True
                 self.spawned_policy_path = policy_path
                 self._spawned_policy_fingerprint = new_fp
+                self._spawned_limits = desired_limits
                 # 同步退出兜底: 即便没走 stop() 也尽可能 terminate 子进程
                 self._register_atexit_once()
                 # 后台持续 drain stdout/stderr, 防止管道堆积阻塞子进程; 同时

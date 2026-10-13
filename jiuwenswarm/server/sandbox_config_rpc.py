@@ -1,11 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """沙箱配置 RPC: E2A / AgentRequest 入口, 返回 AgentResponse.
 
-与 :mod:`jiuwenclaw.agentserver.permissions.config_rpc` 同形态. 对外暴露 8 个
+与 :mod:`jiuwenclaw.agentserver.permissions.config_rpc` 同形态. 对外暴露
 ``sandbox.*`` WS 方法 (经 ``agent_ws_server._handle_agent_request_body`` 派发):
 
   - ``sandbox.enabled.get/set``        沙箱开关 (config.yaml::sandbox.enabled, 基础配置)
   - ``sandbox.startup_mode.get/set``   沙箱启动方式 (config.yaml::sandbox.startup_mode)
+  - ``sandbox.limits.get/set``         文件大小和命令超时 (config.yaml::sandbox.limits)
   - ``sandbox.files.get/set``          文件白/黑名单 (运行时副本 user_overrides.files)
   - ``sandbox.network.get/set``        网络配置 (运行时副本 user_overrides.network)
 
@@ -52,6 +53,8 @@ _SANDBOX_CFG_METHODS: frozenset[ReqMethod] = frozenset(
         ReqMethod.SANDBOX_ENABLED_SET,
         ReqMethod.SANDBOX_STARTUP_MODE_GET,
         ReqMethod.SANDBOX_STARTUP_MODE_SET,
+        ReqMethod.SANDBOX_LIMITS_GET,
+        ReqMethod.SANDBOX_LIMITS_SET,
         ReqMethod.SANDBOX_FILES_GET,
         ReqMethod.SANDBOX_FILES_SET,
         ReqMethod.SANDBOX_NETWORK_GET,
@@ -145,7 +148,7 @@ def _teardown_registered_sandbox_sysops() -> int:
 async def _apply_sandbox_change(kind: str) -> None:
     """set 后的生效动作 (异步, 不阻塞 RPC 响应).
 
-    kind ∈ {'enabled', 'startup_mode', 'files', 'network'}.
+    kind ∈ {'enabled', 'startup_mode', 'limits', 'files', 'network'}.
 
     关键认知: box-server 的 SandboxManager 在启动时一次性加载 root policy 到
     ``self.policy`` (PolicyReader.load_policy, sandbox_manager.py:228), 之后**不重读文件**.
@@ -168,7 +171,9 @@ async def _apply_sandbox_change(kind: str) -> None:
             if not bool(get_sandbox_runtime().get("enabled")):
                 removed = _teardown_registered_sandbox_sysops()
                 # 清 provider 缓存 + 删残留沙箱进程 (同步 HTTP 调用, 放 worker 线程不阻塞 event loop).
-                from jiuwenswarm.server.sandbox_lifecycle import shutdown_jiuwenbox_sandboxes
+                from jiuwenswarm.server.sandbox_lifecycle import (
+                    shutdown_jiuwenbox_sandboxes,
+                )
                 released = await asyncio.to_thread(shutdown_jiuwenbox_sandboxes)
                 logger.info(
                     "[sandbox] enabled 变更为关闭, 已移除 %d 个残留沙箱 sysop, 释放 %d 个残留沙箱进程, 下轮 _create_sys_operation 读新值生效",
@@ -198,7 +203,7 @@ async def _apply_sandbox_change(kind: str) -> None:
                 await runner.stop()
             # internal 时下次 _bootstrap_internal_jiuwenbox 拉起; 这里不主动拉.
             return
-        if kind in ("files", "network"):
+        if kind in ("files", "network", "limits"):
             # 文件 ACL + 网络 egress 都需重启 box-server 重载 root policy 副本.
             # 重启的 lifespan shutdown 调 shutdown_all_sandboxes 自动清活沙箱 (新配置只作
             # 用于新沙箱); jbx-sandbox 用户不重建 (ensure_windows_setup 幂等).
@@ -295,14 +300,14 @@ def dispatch_sandbox_config_request(request: AgentRequest) -> AgentResponse:
     """
     from jiuwenswarm.common.config import (
         get_sandbox_runtime,
-        update_sandbox_runtime,
         get_sandbox_startup_mode,
+        update_sandbox_runtime,
         update_sandbox_startup_mode,
     )
     from jiuwenswarm.server.sandbox_policy_render import (
         get_sandbox_files_config,
-        set_sandbox_files_config,
         get_sandbox_network_config,
+        set_sandbox_files_config,
         set_sandbox_network_config,
     )
 
@@ -350,6 +355,15 @@ def dispatch_sandbox_config_request(request: AgentRequest) -> AgentResponse:
                 return _err(request, str(exc))
             _trigger_apply("startup_mode")
             return _ok(request, {"startup_mode": normalized})
+
+        if m == ReqMethod.SANDBOX_LIMITS_GET:
+            return _ok(request, {"limits": dict(get_sandbox_runtime()["limits"])})
+
+        if m == ReqMethod.SANDBOX_LIMITS_SET:
+            limits = params.get("limits") if isinstance(params.get("limits"), dict) else params
+            runtime = update_sandbox_runtime({"limits": limits})
+            _trigger_apply("limits")
+            return _ok(request, {"limits": dict(runtime["limits"])})
 
         # ---- 接口2: 文件安全 (读写运行时副本, 不碰 config.yaml) ----
         if m == ReqMethod.SANDBOX_FILES_GET:

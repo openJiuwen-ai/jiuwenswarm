@@ -2370,6 +2370,10 @@ _SANDBOX_RUNTIME_DEFAULTS: dict[str, Any] = {
     "idle_ttl_seconds": None,
     "idle_check_interval": None,
     "fallback_on_failure": False,
+    "limits": {
+        "max_file_mb": 100,
+        "exec_timeout_seconds": 600,
+    },
 }
 
 # 受 ``get_sandbox_runtime`` / ``update_sandbox_runtime`` 管辖的 sandbox 字段。
@@ -2442,6 +2446,24 @@ def _ensure_sandbox_runtime_shape(runtime: Any) -> dict[str, Any]:
         out["enabled"] = bool(runtime["enabled"])
     if "fallback_on_failure" in runtime:
         out["fallback_on_failure"] = bool(runtime["fallback_on_failure"])
+    raw_limits = runtime.get("limits")
+    if raw_limits is not None:
+        if not isinstance(raw_limits, dict):
+            raise ValueError("sandbox.limits must be an object")
+        limits = dict(out["limits"])
+        for key, maximum in (("max_file_mb", 1024), ("exec_timeout_seconds", 3600)):
+            if key not in raw_limits:
+                continue
+            value = raw_limits[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+                raise ValueError(
+                    f"sandbox.limits.{key} must be an integer in [1, {maximum}]"
+                )
+            limits[key] = value
+        unknown = set(raw_limits) - set(limits)
+        if unknown:
+            raise ValueError(f"unsupported sandbox.limits fields: {sorted(unknown)}")
+        out["limits"] = limits
     raw_excluded = runtime.get("excluded_commands")
     if isinstance(raw_excluded, list):
         out["excluded_commands"] = [
@@ -2994,6 +3016,13 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
         merged["enabled"] = bool(patch["enabled"])
     if "fallback_on_failure" in patch:
         merged["fallback_on_failure"] = bool(patch["fallback_on_failure"])
+    if "limits" in patch:
+        if not isinstance(patch["limits"], dict):
+            raise ValueError("sandbox.limits must be an object")
+        candidate = _ensure_sandbox_runtime_shape(
+            {"limits": {**current["limits"], **patch["limits"]}}
+        )
+        merged["limits"] = candidate["limits"]
     if "excluded_commands" in patch:
         value = patch["excluded_commands"]
         if not isinstance(value, list):

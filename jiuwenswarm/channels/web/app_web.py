@@ -17,7 +17,9 @@ import os
 import select
 import socket
 import ssl
+import stat
 import sys
+import tempfile
 import time
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -59,6 +61,17 @@ from jiuwenswarm.server.runtime.session.session_history import (
 )
 
 configure_agent_teams_home()
+
+
+def _web_file_limit_bytes() -> int:
+    """Use the same simple file limit as jiuwenbox without importing it."""
+    try:
+        from jiuwenswarm.common.config import get_sandbox_runtime
+
+        value = get_sandbox_runtime()["limits"]["max_file_mb"]
+        return int(value) * 1024 * 1024
+    except (KeyError, TypeError, ValueError):
+        return 100 * 1024 * 1024
 
 
 def _dated_user_log_roots(logs_root: Path) -> list[Path]:
@@ -217,6 +230,43 @@ def _parse_single_byte_range(
     if start >= file_size or end < start:
         return None
     return start, min(end, file_size - 1)
+
+
+def _open_nofollow(path: Path) -> int:
+    """Open a regular file without following a symlink at the final path.
+
+    Windows CPython does not expose ``O_NOFOLLOW``. The ``is_symlink`` check
+    covers that platform; Unix still uses the flag so a link created between
+    the check and the open is rejected by the kernel.
+    """
+    if path.is_symlink():
+        raise PermissionError("symlink_not_allowed")
+    flags = os.O_RDONLY
+    nofollow = getattr(os, "O_NOFOLLOW", 0) or 0
+    if nofollow:
+        flags |= nofollow
+    if os.name == "nt":
+        flags |= getattr(os, "O_BINARY", 0)
+    try:
+        return os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP or path.is_symlink():
+            raise PermissionError("symlink_not_allowed") from exc
+        raise
+
+
+def _read_nofollow(path: Path) -> bytes:
+    fd = _open_nofollow(path)
+    try:
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
 
 
 class _SpaStaticHandler(SimpleHTTPRequestHandler):
@@ -927,27 +977,54 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if not file_arg:
                 self._write_json(400, {"error": "missing_file_path"})
                 return
-            full_path = (self.project_root / file_arg).resolve()
+            requested = self.project_root / file_arg
+            try:
+                if requested.is_symlink():
+                    self._write_json(403, {"error": "symlink_not_allowed"})
+                    return
+            except OSError:
+                self._write_json(404, {"error": "file_not_found"})
+                return
+            full_path = requested.resolve()
             if not self._is_path_under_allowed_root(full_path):
                 self._write_json(403, {"error": "forbidden_path"})
                 return
-            if not full_path.is_file():
+            try:
+                fd = _open_nofollow(full_path)
+            except PermissionError:
+                self._write_json(403, {"error": "symlink_not_allowed"})
+                return
+            except OSError:
                 self._write_json(404, {"error": "file_not_found"})
                 return
-
-            mime_type, _ = mimetypes.guess_type(full_path.name)
-            self.send_response(200)
-            self.send_header("Content-Type", mime_type or "application/octet-stream")
-            self.send_header("Content-Length", str(full_path.stat().st_size))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            if self.command != "HEAD":
-                with full_path.open("rb") as file_obj:
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode):
+                    self._write_json(404, {"error": "file_not_found"})
+                    return
+                file_size = info.st_size
+                limit = _web_file_limit_bytes()
+                if file_size > limit:
+                    self._write_json(
+                        413,
+                        {"error": "file_too_large", "code": "WEB_FILE_TOO_LARGE", "limit": limit},
+                    )
+                    return
+                mime_type, _ = mimetypes.guess_type(full_path.name)
+                self.send_response(200)
+                self.send_header("Content-Type", mime_type or "application/octet-stream")
+                self.send_header("Content-Length", str(file_size))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                if self.command != "HEAD":
                     while True:
-                        chunk = file_obj.read(65536)
+                        chunk = os.read(fd, 65536)
                         if not chunk:
                             break
                         self.wfile.write(chunk)
+            finally:
+                os.close(fd)
             return
 
         if path == "/file-api/file-content":
@@ -956,7 +1033,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if not file_arg:
                 self._write_json(400, {"error": "missing_file_path"})
                 return
-            full_path = (self.project_root / file_arg).resolve()
+            requested = self.project_root / file_arg
+            try:
+                if requested.is_symlink():
+                    self._write_json(403, {"error": "symlink_not_allowed"})
+                    return
+            except OSError:
+                self._write_json(404, {"error": "file_not_found"})
+                return
+            full_path = requested.resolve()
             if not self._is_path_under_allowed_root(full_path):
                 self._write_json(403, {"error": "forbidden_path"})
                 return
@@ -970,10 +1055,16 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                         )
                         return
                 if not full_path.exists():
-                    self._write_json(
-                        404, {"error": "file_not_found", "fullPath": str(full_path)}
-                    )
+                    self._write_json(404, {"error": "file_not_found"})
                     return
+            file_size = full_path.stat().st_size
+            limit = _web_file_limit_bytes()
+            if file_size > limit:
+                self._write_json(
+                    413,
+                    {"error": "file_too_large", "code": "WEB_FILE_TOO_LARGE", "limit": limit},
+                )
+                return
 
             def read_file_with_encoding(
                 file_path: Path, encoding: str
@@ -981,7 +1072,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 if encoding == "auto":
                     import charset_normalizer
 
-                    raw_data = file_path.read_bytes()
+                    raw_data = _read_nofollow(file_path)
                     detected = charset_normalizer.from_bytes(raw_data).best()
                     if detected is None:
                         detected_encoding = "utf-8"
@@ -1005,10 +1096,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                             f"Unable to decode file with any known encoding"
                         ) from decode_exc
                 else:
-                    return file_path.read_text(encoding=encoding), encoding
+                    return _read_nofollow(file_path).decode(encoding), encoding
 
             try:
                 data, used_encoding = read_file_with_encoding(full_path, encoding_arg)
+            except PermissionError:
+                self._write_json(403, {"error": "symlink_not_allowed"})
+                return
             except OSError as exc:
                 self._write_json(500, {"error": str(exc)})
                 return
@@ -1057,9 +1151,18 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
 
         file_path = payload.get("path", "")
-        if not file_path or not os.path.isfile(file_path):
+        if not isinstance(file_path, str) or not file_path:
             self._write_json(404, {"error": "file_not_found"})
             return
+        candidate = Path(file_path)
+        if not self._is_path_under_allowed_root(candidate):
+            self._write_json(403, {"error": "forbidden_path"})
+            return
+        resolved = candidate.resolve()
+        if not resolved.is_file():
+            self._write_json(404, {"error": "file_not_found"})
+            return
+        file_path = str(resolved)
 
         try:
             file_size = os.path.getsize(file_path)
@@ -1081,6 +1184,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
             start, end = byte_range or (0, max(0, file_size - 1))
             content_length = 0 if file_size == 0 else end - start + 1
+            limit = _web_file_limit_bytes()
+            if content_length > limit:
+                self._write_json(
+                    413,
+                    {"error": "file_too_large", "code": "WEB_FILE_TOO_LARGE", "limit": limit},
+                )
+                return
             self.send_response(206 if byte_range is not None else 200)
             self.send_header("Content-Type", mime_type)
             self.send_header("Content-Length", str(content_length))
@@ -1157,7 +1267,19 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/file-api/file-content":
-            length = int(self.headers.get("Content-Length", "0") or "0")
+            try:
+                length = int(self.headers.get("Content-Length", "0") or "0")
+            except ValueError:
+                self._write_json(400, {"error": "invalid_content_length"})
+                return
+            limit = _web_file_limit_bytes()
+            # JSON escaping adds overhead; bound the transport before allocating.
+            if length > limit + 1024 * 1024:
+                self._write_json(
+                    413,
+                    {"error": "request_too_large", "code": "WEB_REQUEST_TOO_LARGE"},
+                )
+                return
             raw = self.rfile.read(length) if length > 0 else b""
             try:
                 payload = json.loads(raw.decode("utf-8") if raw else "{}")
@@ -1173,6 +1295,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if not isinstance(request_content, str):
                 self._write_json(400, {"error": "missing_file_content"})
                 return
+            content_bytes = request_content.encode("utf-8")
+            if len(content_bytes) > limit:
+                self._write_json(
+                    413,
+                    {"error": "file_too_large", "code": "WEB_FILE_TOO_LARGE", "limit": limit},
+                )
+                return
 
             full_path = (self.project_root / request_path).resolve()
             if not self._is_path_under_allowed_root(full_path):
@@ -1185,9 +1314,23 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self._write_json(404, {"error": "file_not_found"})
                 return
 
+            temp_path: Path | None = None
             try:
-                full_path.write_text(request_content, encoding="utf-8")
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    dir=full_path.parent,
+                    prefix=f".{full_path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temp_file:
+                    temp_file.write(content_bytes)
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+                    temp_path = Path(temp_file.name)
+                os.replace(temp_path, full_path)
             except OSError as exc:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
                 self._write_json(500, {"error": str(exc)})
                 return
             self._write_json(200, {"ok": True})

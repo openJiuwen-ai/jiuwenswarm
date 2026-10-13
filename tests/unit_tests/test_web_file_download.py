@@ -48,6 +48,9 @@ class _DownloadHandlerStub:
     def log_error(self, message: str, *args: object) -> None:
         raise AssertionError(message % args)
 
+    def _is_path_under_allowed_root(self, target: Path) -> bool:
+        return True
+
 
 def _serve_file(
     monkeypatch: pytest.MonkeyPatch,
@@ -212,3 +215,31 @@ def test_download_handler_rejects_invalid_byte_range(
     assert handler.status == 416
     assert handler.response_headers["Content-Range"] == "bytes */10"
     assert handler.wfile.getvalue() == b""
+
+
+def test_download_handler_rejects_path_outside_allowed_root(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_path = tmp_path / "secret.txt"
+    file_path.write_text("secret", encoding="utf-8")
+
+    class _RejectingStub(_DownloadHandlerStub):
+        def _is_path_under_allowed_root(self, target: Path) -> bool:
+            return False
+
+        def _write_json(self, status: int, payload: dict) -> None:
+            self.status = status
+            self.json_payload = payload
+
+    monkeypatch.setattr(
+        web_file_download,
+        "validate_file_download_token",
+        lambda _token: {"path": str(file_path)},
+    )
+    handler = _RejectingStub()
+    _SpaStaticHandler._handle_file_download(handler, {"token": "signed-token"})
+
+    assert handler.status == 403
+    assert handler.json_payload == {"error": "forbidden_path"}
+    assert str(file_path) not in str(handler.json_payload)

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import PurePosixPath
 from typing import Annotated, Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
@@ -24,11 +26,40 @@ from jiuwenbox.models.sandbox import (
     SandboxRef,
     SandboxSpec,
 )
-from jiuwenbox.server.sandbox_manager import SandboxBackgroundExecRequest, SandboxExecRequest, SandboxListRequest
+from jiuwenbox.server.limits import (
+    MAX_COMMAND_ITEMS,
+    MAX_ENV_ITEMS,
+    MAX_EXCLUDE_PATTERNS,
+    MAX_SEARCH_PATTERN_CHARS,
+    MAX_STDIN_CHARS,
+    UPLOAD_CHUNK_BYTES,
+    SandboxLimitError,
+)
+from jiuwenbox.server.sandbox_manager import (
+    SandboxBackgroundExecRequest,
+    SandboxExecRequest,
+    SandboxListRequest,
+)
 
 router = APIRouter(tags=["sandboxes"])
 configure_logging()
 logger = logging.getLogger(__name__)
+
+
+def _download_headers(sandbox_path: str) -> dict[str, str]:
+    """Force a download and stop the browser from sniffing the body.
+
+    The filename is the path's final segment, percent-encoded so a crafted
+    path cannot inject header fields.
+    """
+    name = PurePosixPath(sandbox_path.replace("\\", "/")).name
+    if name in {"", ".", ".."}:
+        name = "download"
+    encoded = quote(name, safe="")
+    return {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{encoded}",
+        "X-Content-Type-Options": "nosniff",
+    }
 
 
 def _mgr():
@@ -37,18 +68,18 @@ def _mgr():
 
 
 class CreateSandboxRequest(BaseModel):
-    command: list[str] = Field(default_factory=list)
-    env: dict[str, str] = Field(default_factory=dict)
+    command: list[str] = Field(default_factory=list, max_length=MAX_COMMAND_ITEMS)
+    env: dict[str, str] = Field(default_factory=dict, max_length=MAX_ENV_ITEMS)
     policy: dict[str, Any] | None = None
     policy_mode: PolicyMode = PolicyMode.OVERRIDE
     sandbox_id: str | None = None
 
 
 class ExecRequest(BaseModel):
-    command: list[str]
+    command: list[str] = Field(min_length=1, max_length=MAX_COMMAND_ITEMS)
     workdir: str | None = None
-    env: dict[str, str] | None = None
-    stdin: str | None = None
+    env: dict[str, str] | None = Field(default=None, max_length=MAX_ENV_ITEMS)
+    stdin: str | None = Field(default=None, max_length=MAX_STDIN_CHARS)
     timeout_seconds: int | None = None
 
 
@@ -152,6 +183,7 @@ async def exec_background_in_sandbox(
             workdir=request.workdir,
             env=request.env,
             stdin_data=stdin_data,
+            timeout=request.timeout_seconds,
         ),
     )
 
@@ -168,6 +200,7 @@ async def list_background_jobs_in_sandbox(
         sandbox_id,
         running_only=running_only,
     )
+    _mgr().limits.enforce_result_count(len(items))
     return BackgroundJobListResponse(items=items)
 
 
@@ -198,6 +231,7 @@ async def kill_background_job_in_sandbox(
 @router.get("/sandboxes/{sandbox_id}/logs")
 async def get_logs(sandbox_id: str):
     logs = await _mgr().get_logs(sandbox_id)
+    _mgr().limits.enforce_text_response(logs)
     return PlainTextResponse(logs)
 
 
@@ -211,8 +245,24 @@ async def upload_file(
 
     In process mode, this writes to the bind-mounted host path.
     """
-    content = await file.read()
-    await _mgr().upload_file_to_sandbox(sandbox_id, sandbox_path, content)
+    limit = _mgr().limits.max_file_bytes
+    declared_size = file.size
+    if declared_size is not None and declared_size > limit:
+        raise SandboxLimitError(
+            "SANDBOX_UPLOAD_TOO_LARGE",
+            f"upload file is {declared_size} bytes; limit is {limit} bytes",
+            status_code=413,
+        )
+    content = bytearray()
+    while chunk := await file.read(UPLOAD_CHUNK_BYTES):
+        content.extend(chunk)
+        if len(content) > limit:
+            raise SandboxLimitError(
+                "SANDBOX_UPLOAD_TOO_LARGE",
+                f"upload file exceeds limit of {limit} bytes",
+                status_code=413,
+            )
+    await _mgr().upload_file_to_sandbox(sandbox_id, sandbox_path, bytes(content))
     return Response(status_code=204)
 
 
@@ -225,9 +275,13 @@ async def download_file(
     try:
         content = await _mgr().download_file_from_sandbox(sandbox_id, sandbox_path)
     except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"error": f"File not found: {sandbox_path}"})
+        return JSONResponse(status_code=404, content={"error": "File not found"})
 
-    return Response(content=content, media_type="application/octet-stream")
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers=_download_headers(sandbox_path),
+    )
 
 
 @router.get("/sandboxes/{sandbox_id}/files")
@@ -248,10 +302,8 @@ async def list_files(
             ),
         )
     except FileNotFoundError:
-        return JSONResponse(
-            status_code=404,
-            content={"error": f"Directory not found: {query.sandbox_path}"},
-        )
+        return JSONResponse(status_code=404, content={"error": "Directory not found"})
+    _mgr().limits.enforce_result_count(len(items))
     return {"items": items}
 
 
@@ -259,8 +311,8 @@ async def list_files(
 async def search_files(
     sandbox_id: str,
     sandbox_path: str = Query(...),
-    pattern: str = Query(...),
-    exclude_patterns: list[str] | None = Query(None),
+    pattern: str = Query(..., min_length=1, max_length=MAX_SEARCH_PATTERN_CHARS),
+    exclude_patterns: list[str] | None = Query(None, max_length=MAX_EXCLUDE_PATTERNS),
 ):
     """Search files under a sandbox path with shell-style glob patterns."""
     try:
@@ -271,5 +323,6 @@ async def search_files(
             exclude_patterns=exclude_patterns,
         )
     except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"error": f"Directory not found: {sandbox_path}"})
+        return JSONResponse(status_code=404, content={"error": "Directory not found"})
+    _mgr().limits.enforce_result_count(len(items))
     return {"items": items}

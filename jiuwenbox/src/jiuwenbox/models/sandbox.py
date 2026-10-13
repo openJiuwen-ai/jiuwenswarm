@@ -10,6 +10,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from jiuwenbox.server.limits import MAX_COMMAND_ITEMS, MAX_ENV_ITEMS, MAX_STDIN_CHARS
+
 SANDBOX_ID_MIN_LEN = 4
 SANDBOX_ID_MAX_LEN = 40
 CUSTOM_SANDBOX_ID_RE = re.compile(
@@ -108,11 +110,11 @@ class ExecResult(BaseModel):
 
 
 class BackgroundExecRequest(BaseModel):
-    command: list[str]
+    command: list[str] = Field(min_length=1, max_length=MAX_COMMAND_ITEMS)
     job_id: str | None = None
     workdir: str | None = None
-    env: dict[str, str] | None = None
-    stdin: str | None = None
+    env: dict[str, str] | None = Field(default=None, max_length=MAX_ENV_ITEMS)
+    stdin: str | None = Field(default=None, max_length=MAX_STDIN_CHARS)
     timeout_seconds: int | None = None
 
 
