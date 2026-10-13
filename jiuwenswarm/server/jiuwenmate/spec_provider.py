@@ -19,6 +19,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import (
     RequestRecord,
     build_execution_context,
 )
+from jiuwenswarm.server.jiuwenmate.ports.window_backend import SessionWindowBackend
 from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.session.checkpointer import NoopCheckpointer
 from openjiuwen.core.single_agent import create_agent_session
@@ -153,6 +154,13 @@ def build_invocation(
         raise PersistentContractError("Request was accepted under another configuration version")
     if execution.recovery_ref is not None:
         raise PersistentContractError("continuation is not opened yet (PA-18)", code="PERSISTENT_NOT_OPENED")
+    backend = ports.window_backend
+    if not isinstance(backend, SessionWindowBackend) or backend.scope != (
+        request.namespace_id,
+        request.agent_id,
+        request.session_id,
+    ):
+        raise PersistentContractError("window_backend must be the host store bound to this Session")
     spec = snapshot.load_spec()
     context = build_execution_context(request, execution, capability_snapshot=snapshot.enabled_features)
     session = create_agent_session(session_id=request.session_id, card=spec.card, checkpointer=NoopCheckpointer())

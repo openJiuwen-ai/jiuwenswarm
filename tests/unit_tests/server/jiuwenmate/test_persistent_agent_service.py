@@ -18,6 +18,7 @@ from jiuwenswarm.server.jiuwenmate.models import (
     ColleagueSettings,
     PersistentAgentError,
 )
+from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.service import (
     ConfiguredModelProvider,
@@ -26,7 +27,6 @@ from jiuwenswarm.server.jiuwenmate.service import (
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation
 
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
-from openjiuwen.core.foundation.store import InMemoryKVStore
 from openjiuwen.harness import persistent_agent as core
 from openjiuwen.harness.resources.extension_loader import find_agent_template_manifest, load_agent_template_package
 from openjiuwen.harness.schema.deep_agent_spec import TeamModelConfig
@@ -79,6 +79,7 @@ def make_service(tmp_path, models=None):
         models=models or FakeModels(),
         template_source=TEMPLATES.get,
         clock=lambda: base + timedelta(seconds=next(ticks)),
+        windows=WindowBackendStore(tmp_path / "agents.sqlite3"),
     )
 
 
@@ -128,9 +129,11 @@ class FakePorts:
         raise AssertionError("not called")
 
 
-def ports() -> core.PersistentPorts:
+def ports(tmp_path, request: RequestRecord) -> core.PersistentPorts:
     host = FakePorts()
-    return core.PersistentPorts(commit=host, budget=host, window_backend=InMemoryKVStore())
+    windows = WindowBackendStore(tmp_path / "agents.sqlite3")
+    backend = windows.bind(request.namespace_id, request.agent_id, request.session_id)
+    return core.PersistentPorts(commit=host, budget=host, window_backend=backend)
 
 
 def test_default_colleague_is_created_once_and_published(tmp_path):
@@ -257,10 +260,11 @@ def test_settings_change_only_affects_requests_after_publication(tmp_path):
         service.snapshot(NS, view.agent_id, pinned.config_version),
         pinned,
         ExecutionRecord(request_id="request-old", execution_id="e-1"),
-        ports=ports(),
+        ports=ports(tmp_path, pinned),
     )
+    pending = request_for(v2, "request-new")
     new_spec, _ = build_invocation(
-        v2, request_for(v2, "request-new"), ExecutionRecord(request_id="request-new", execution_id="e-2"), ports=ports()
+        v2, pending, ExecutionRecord(request_id="request-new", execution_id="e-2"), ports=ports(tmp_path, pending)
     )
     assert old_spec.model.model_client_config.model_name == "deepseek"
     assert new_spec.model.model_client_config.model_name == "kimi"
@@ -329,6 +333,22 @@ def test_deleted_colleague_and_versions_are_gone(tmp_path):
         with pytest.raises(PersistentAgentError) as caught:
             call()
         assert caught.value.code == "NOT_FOUND"
+
+
+async def test_deleting_a_colleague_purges_only_its_window_data(tmp_path):
+    service = make_service(tmp_path)
+    gone = service.create_colleague(NS, settings()).agent_id
+    kept = service.create_colleague(NS, settings(name="运维同事")).agent_id
+    windows = WindowBackendStore(tmp_path / "agents.sqlite3")
+    for agent_id in (gone, kept):
+        for session_id in ("sess_a", "sess_b"):
+            await windows.bind(NS, agent_id, session_id).set(f"pa:{agent_id}:{session_id}:state", "s")
+
+    service.delete_colleague(NS, gone)
+
+    for session_id in ("sess_a", "sess_b"):
+        assert await windows.bind(NS, gone, session_id).get_by_prefix("") == {}
+        assert await windows.bind(NS, kept, session_id).get(f"pa:{kept}:{session_id}:state") == "s"
 
 
 def test_namespaces_do_not_see_each_other(tmp_path):

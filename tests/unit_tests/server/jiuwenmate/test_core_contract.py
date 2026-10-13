@@ -14,6 +14,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import (
     RequestRecord,
     build_execution_context,
 )
+from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.spec_provider import (
     HOST_OPEN_FEATURES,
     ConfigSnapshot,
@@ -24,7 +25,6 @@ from jiuwenswarm.server.jiuwenmate.spec_provider import (
 from pydantic import ValidationError
 
 from openjiuwen.core.common.exception.errors import BaseError
-from openjiuwen.core.foundation.store import InMemoryKVStore
 from openjiuwen.core.session.checkpointer import NoopCheckpointer
 from openjiuwen.core.single_agent import AgentCard, create_agent_session
 from openjiuwen.harness import persistent_agent as core
@@ -106,9 +106,16 @@ def request_for(snapshot: ConfigSnapshot, **changes) -> RequestRecord:
     return RequestRecord(**fields)
 
 
-def host_ports(**changes) -> core.PersistentPorts:
-    host = FakeHostPorts()
-    return core.PersistentPorts(commit=host, budget=host, window_backend=InMemoryKVStore(), **changes)
+@pytest.fixture
+def host_ports(tmp_path):
+    """Ports for the Session ``request_for`` uses, with the real host window backend."""
+    windows = WindowBackendStore(tmp_path / "agents.sqlite3").bind("tenant-1", AGENT_ID, "session-1")
+
+    def make(**changes) -> core.PersistentPorts:
+        host = FakeHostPorts()
+        return core.PersistentPorts(commit=host, budget=host, window_backend=windows, **changes)
+
+    return make
 
 
 @pytest.fixture
@@ -127,7 +134,7 @@ def test_published_spec_is_a_core_spec_with_fixed_single_round_fields(snapshot):
     assert ConfigSnapshot.from_dict(snapshot.to_dict()) == snapshot
 
 
-def test_valid_spec_context_and_request_input_are_accepted_by_core(snapshot):
+def test_valid_spec_context_and_request_input_are_accepted_by_core(snapshot, host_ports):
     request = request_for(snapshot)
     spec, build_context = build_invocation(
         snapshot, request, ExecutionRecord(request_id="request-1", execution_id="execution-1"), ports=host_ports()
@@ -202,7 +209,7 @@ def test_tampered_snapshot_is_refused(snapshot):
         {"agent_id": "another-agent"},
     ],
 )
-def test_request_from_another_configuration_is_refused(snapshot, changes):
+def test_request_from_another_configuration_is_refused(snapshot, changes, host_ports):
     request = request_for(snapshot, **changes)
 
     with pytest.raises(PersistentContractError):
@@ -211,7 +218,7 @@ def test_request_from_another_configuration_is_refused(snapshot, changes):
         )
 
 
-def test_capability_snapshot_mismatch_is_refused_by_core(snapshot):
+def test_capability_snapshot_mismatch_is_refused_by_core(snapshot, host_ports):
     spec = snapshot.load_spec()
     context = build_execution_context(
         request_for(snapshot),
@@ -268,7 +275,7 @@ def test_context_rule_violations_are_reported_as_contract_errors(snapshot):
         )
 
 
-def test_continuation_is_not_opened(snapshot):
+def test_continuation_is_not_opened(snapshot, host_ports):
     with pytest.raises(PersistentContractError, match="PA-18") as caught:
         build_invocation(
             snapshot,
@@ -280,7 +287,7 @@ def test_continuation_is_not_opened(snapshot):
     assert caught.value.code == "PERSISTENT_NOT_OPENED"
 
 
-async def test_core_entries_still_reject_values_the_host_cannot_publish(snapshot):
+async def test_core_entries_still_reject_values_the_host_cannot_publish(snapshot, host_ports):
     unsafe = core.PersistentAgentSpec(card=AgentCard(id=AGENT_ID, name="x"), enable_task_loop=True)
     _, build = build_invocation(
         snapshot, request_for(snapshot), ExecutionRecord(request_id="request-1", execution_id="e-1"), ports=host_ports()
@@ -291,7 +298,7 @@ async def test_core_entries_still_reject_values_the_host_cannot_publish(snapshot
             pass
 
 
-async def test_core_rejects_group_message_without_group_chat_port(snapshot):
+async def test_core_rejects_group_message_without_group_chat_port(snapshot, host_ports):
     group_input = core.RequestInput(
         kind="group_message",
         text="@研发同事 看一下",
@@ -318,7 +325,7 @@ async def test_core_rejects_group_message_without_group_chat_port(snapshot):
             pass
 
 
-async def test_core_execution_is_not_open_until_session_state_is_integrated(snapshot):
+async def test_core_execution_is_not_open_until_session_state_is_integrated(snapshot, host_ports):
     """Canary: when this starts passing PA-10, the host must add its real execution acceptance."""
     spec, build = build_invocation(
         snapshot, request_for(snapshot), ExecutionRecord(request_id="request-1", execution_id="e-1"), ports=host_ports()
@@ -344,7 +351,7 @@ def test_fake_ports_match_core_protocol_signatures(protocol, names):
         assert inspect.iscoroutinefunction(getattr(FakeHostPorts, name))
 
 
-async def test_fake_ports_pass_core_port_validation_and_return_core_types(snapshot):
+async def test_fake_ports_pass_core_port_validation_and_return_core_types(snapshot, host_ports):
     ports = host_ports()
     ports.validate()
     _, build = build_invocation(

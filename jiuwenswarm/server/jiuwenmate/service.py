@@ -26,6 +26,7 @@ from jiuwenswarm.server.jiuwenmate.models import (
     PersistentAgentError,
     require_identifier,
 )
+from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, publish_spec
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
@@ -154,9 +155,11 @@ class PersistentAgentService:
         template_source: TemplateSource = show_agent_template,
         clock: Callable[[], datetime] = _utcnow,
         id_factory: Callable[[], str] = _new_agent_id,
+        windows: WindowBackendStore | None = None,
     ) -> None:
         self._repository = repository
         self._templates = templates
+        self._windows = windows
         self._models = models
         self._template_source = template_source
         self._clock = clock
@@ -169,6 +172,7 @@ class PersistentAgentService:
             PersistentAgentRepository(root / "agents.sqlite3"),
             TemplateStore(root / "templates"),
             models=ConfiguredModelProvider(),
+            windows=WindowBackendStore(root / "agents.sqlite3"),
         )
 
     def _require(self, namespace_id: str, agent_id: str) -> ColleagueDefinition:
@@ -340,7 +344,9 @@ class PersistentAgentService:
         return stored[0]
 
     def delete_colleague(self, namespace_id: str, agent_id: str) -> None:
-        """Remove the colleague, its versions and its Template; a deleted 小九 is not provisioned again."""
+        """Remove the colleague, its versions, Template and window data; a deleted 小九 is not provisioned again."""
         self._require(namespace_id, agent_id)
         if self._repository.delete(namespace_id, agent_id):
             self._templates.remove(agent_id)
+            if self._windows is not None:
+                self._windows.purge_agent(namespace_id, agent_id)
