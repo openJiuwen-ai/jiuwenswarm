@@ -15,7 +15,7 @@ from typing import Any
 from ruamel.yaml import YAML
 
 from openjiuwen.agent_teams.paths import configure_openjiuwen_home, get_agent_teams_home, team_home
-from jiuwenswarm.agents.harness.team.config_loader import (
+from jiuwenswarm.common.team_template_config import (
     TeamTemplateNotFoundError,
     get_team_template_snapshot,
 )

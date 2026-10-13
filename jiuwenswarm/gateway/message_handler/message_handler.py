@@ -2488,7 +2488,7 @@ class MessageHandler(ABC):
                     {"error": "AgentServer 不可达，无法回退（远程模式不回退本地目录）"},
                 )
                 return
-            from jiuwenswarm.agents.harness.common.session_ops_service import rewind_session
+            from jiuwenswarm.gateway.embedded.runtime.session.session_ops import rewind_session
             result = rewind_session(session_id=target_sid, turn_index=turn_index)
             preview = result.get("content_preview", "")
             remaining = result.get("remaining_records", 0)

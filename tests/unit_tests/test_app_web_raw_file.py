@@ -139,7 +139,7 @@ def test_verified_download_get_and_head_use_conventional_staged_file_handler(
     )
     manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.web_file_download.time.time",
+        "jiuwenswarm.common.file_download_token.time.time",
         lambda: 100.0,
     )
     monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)

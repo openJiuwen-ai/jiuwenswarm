@@ -33,9 +33,7 @@ from typing import Any
 
 from openjiuwen.core.foundation.llm import ProviderType
 
-from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
-    is_auto_permission_mode,
-)
+from jiuwenswarm.common.permission_mode import is_auto_permission_mode
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
@@ -1101,7 +1099,7 @@ def preserve_deleted_team_entities(params: dict[str, Any]) -> None:
     if next_template_ids is None:
         return
 
-    from jiuwenswarm.agents.harness.team import list_team_template_summaries
+    from jiuwenswarm.common.team_template_config import list_team_template_summaries
     from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
     from jiuwenswarm.server.runtime.team_entity_store import ensure_team_entity_for_binding
 

@@ -44,11 +44,11 @@ _EXTERNAL_MEMORY_BASENAMES = frozenset(
 @pytest.fixture
 def internal_auto_mode(monkeypatch):
     """Opt in retained Smart internals; product-entry tests keep real mode support."""
-    from jiuwenswarm.agents.harness.common.rails.permissions import auto_config
+    from jiuwenswarm.common import permission_mode
 
     monkeypatch.setattr(
-        auto_config, "_VALID_RUNTIME_MODES",
-        auto_config._VALID_RUNTIME_MODES | {auto_config.AUTO_PERMISSION_MODE},
+        permission_mode, "_VALID_RUNTIME_MODES",
+        permission_mode._VALID_RUNTIME_MODES | {permission_mode.AUTO_PERMISSION_MODE},
     )
 
 

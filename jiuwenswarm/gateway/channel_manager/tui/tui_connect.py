@@ -1035,7 +1035,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     async def _session_rewind(ws, req_id, params, session_id, user_id=None):
         """session.rewind: E2A → AgentServer（权威写入者），fallback 本地."""
-        from jiuwenswarm.agents.harness.common.session_ops_service import rewind_session
+        from jiuwenswarm.gateway.embedded.runtime.session.session_ops import rewind_session
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(params, dict):
@@ -1085,7 +1085,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
     async def _history_list_turns(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.agents.harness.common.session_ops_service import list_session_turns
+        from jiuwenswarm.gateway.embedded.runtime.session.session_ops import list_session_turns
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(params, dict):
@@ -1111,7 +1111,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     async def _session_rewind_and_restore(ws, req_id, params, session_id, user_id=None):
         """session.rewind_and_restore: E2A → AgentServer（权威写入者），fallback 本地."""
-        from jiuwenswarm.agents.harness.common.session_ops_service import (
+        from jiuwenswarm.gateway.embedded.runtime.session.session_ops import (
             restore_session_files,
             rewind_session,
         )
@@ -1172,7 +1172,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     async def _session_restore_files(ws, req_id, params, session_id, user_id=None):
         """session.restore_files: 仅恢复文件，不截断对话."""
-        from jiuwenswarm.agents.harness.common.session_ops_service import restore_session_files
+        from jiuwenswarm.gateway.embedded.runtime.session.session_ops import restore_session_files
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(params, dict):
@@ -1310,7 +1310,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         # Fallback: local truncation + record writing
         try:
-            from jiuwenswarm.agents.harness.common.session_ops_service import compact_partial_session
+            from jiuwenswarm.gateway.embedded.runtime.session.session_ops import compact_partial_session
             result = compact_partial_session(
                 session_id=target_sid,
                 turn_index=turn_index,
