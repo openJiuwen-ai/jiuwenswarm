@@ -69,6 +69,15 @@ _plan_exited_sessions: set[str] = set()
 # CLI / Web work 的每一条普通消息，而其中绝大多数会话从未开过 Plan；有这个标记
 # 才需要去同步 plan 状态。跨重启的情况另有一道判据（会话 metadata 里上一轮的
 # canonical mode），见 ``_session_may_hold_plan_state``。
+#
+# 已声明的取舍（评审 CR-9）：
+# - 键无渠道维度：下游会话 id 全局唯一，无碰撞面，不叠加渠道前缀。
+# - rewind 视同退出 plan：session.py 的 rewind 成功路径同步翻转双标记；
+#   session.delete 失败路径不清理是有意的——删除失败即会话仍在，标记保持。
+# - 标记跨重启丢失是预期行为：内存标记 + metadata 判据（上一轮 canonical
+#   mode）构成双保险，重启后最坏情况是延续消息回退 normal，且状态会被
+#   判据同步复位，不会悬挂；e2a 下游需要跨重启 plan 时应逐条消息携带
+#   ``plan_entry_source``。
 _plan_active_sessions: set[str] = set()
 
 # 上一轮写盘前的会话 canonical mode，由 ``_prepare_code_mode_chat_turn`` 在覆盖

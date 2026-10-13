@@ -354,7 +354,11 @@ async def _ensure_code_mode_state(
                 )
             if target_plan_state == "plan":
                 mode_changed_to_plan = True
-                _plan_active_sessions.add(session_id)
+                # 空 session_id 的请求在本地落 "default" 键，而放行判断用原始
+                # request.session_id 短路（CR-9②），永远查不到该键；跳过写入
+                # 避免幽灵标记。真实会话 id 均为系统生成的非空值。
+                if request.session_id and str(request.session_id).strip():
+                    _plan_active_sessions.add(session_id)
                 # Clear stale plan_slug from previous plan session so
                 # enter_plan_mode creates a fresh plan file.
                 state = deep_agent.load_state(session)
