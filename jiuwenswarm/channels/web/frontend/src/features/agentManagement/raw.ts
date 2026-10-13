@@ -48,6 +48,7 @@ export type RawAgentTemplateDetail = RawAgentTemplateListItem & {
   mcps?: RawAgentCapability[];
   quickInputs?: RawLocalizedText[];
   pending_connectors?: string[];
+  runtime?: { provider_name?: string };
 };
 
 export type RawAgentGroupMember = {

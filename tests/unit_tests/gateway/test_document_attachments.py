@@ -9,6 +9,7 @@ import pytest
 
 from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
     FORBIDDEN_DOCUMENT_EXTENSIONS,
+    _MAX_DOCUMENT_BYTES,
     forbidden_formats,
     is_forbidden_document,
     is_supported_document,
@@ -66,7 +67,7 @@ def test_browser_document_100_mib_boundary(tmp_path: Path, monkeypatch, extra_by
         "jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments.get_agent_sessions_dir",
         lambda: tmp_path,
     )
-    content = b"x" * (100 * 1024 * 1024 + extra_bytes)
+    content = b"x" * (_MAX_DOCUMENT_BYTES + extra_bytes)
     result = persist_and_parse_documents(
         {"documents": [{"filename": "boundary.txt", "base64_data": base64.b64encode(content).decode("ascii")}]},
         session_id="size-boundary",
@@ -83,7 +84,7 @@ def test_browser_document_100_mib_boundary(tmp_path: Path, monkeypatch, extra_by
 def test_local_document_reference_above_100_mib_remains_unlimited(tmp_path: Path):
     source = tmp_path / "large-local.txt"
     with source.open("wb") as stream:
-        stream.truncate(101 * 1024 * 1024)
+        stream.truncate(_MAX_DOCUMENT_BYTES + 1)
     result = persist_and_parse_documents({"documents": [{"filename": source.name, "path": str(source)}]})
     assert not result.get("document_errors")
     assert result["media_items"][0]["path"] == str(source)
