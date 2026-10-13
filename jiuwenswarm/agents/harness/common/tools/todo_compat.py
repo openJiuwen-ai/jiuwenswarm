@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from openjiuwen.core.common.exception.codes import StatusCode
@@ -18,6 +19,8 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     mark_persistent_todo,
     read_turn_user_query,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class CompatibleTodoModifyTool(_OpenJiuWenTodoModifyTool):
@@ -156,6 +159,53 @@ async def persist_backlog_create(tool: Any, session: Any, result: Any) -> Any:
     return updated
 
 
+def _todo_status_text(todo: TodoItem) -> str:
+    status = todo.status
+    if isinstance(status, TodoStatus):
+        return status.value
+    return str(status)
+
+
+def _is_active_reminder(todo: TodoItem) -> bool:
+    if not is_persistent_todo(todo):
+        return False
+    return _todo_status_text(todo) not in ("completed", "cancelled")
+
+
+def _is_missing_todo_file(exc: Exception) -> bool:
+    return "not found" in str(exc).lower()
+
+
+async def _load_todos_or_empty(tool: Any, session_id: str) -> list[TodoItem]:
+    """Read the current file. A missing file means there is nothing to keep."""
+    try:
+        loaded = await tool.load_todos(session_id)
+    except Exception as exc:
+        if not _is_missing_todo_file(exc):
+            logger.warning("todo_create could not read existing reminders: %s", exc)
+        return []
+    if isinstance(loaded, list):
+        return loaded
+    return []
+
+
+async def restore_persistent_reminders(
+    tool: Any,
+    session_id: str,
+    before: list[TodoItem],
+) -> None:
+    """Put still-active reminders back after todo_create replaces the file."""
+    preserved = [todo for todo in before if _is_active_reminder(todo)]
+    if not preserved:
+        return
+    current = await tool.load_todos(session_id)
+    seen = {todo.id for todo in current if todo.id}
+    extras = [todo for todo in preserved if todo.id and todo.id not in seen]
+    if not extras:
+        return
+    await tool.save_todos(session_id, [*current, *extras])
+
+
 async def merge_persistent_list_items(tool: Any, session: Any, result: Any) -> Any:
     """Put reminders back into todo_list after the generation filter drops them."""
     if not isinstance(result, dict):
@@ -220,8 +270,15 @@ def _install_backlog_create_patch(tool_cls: type) -> None:
     original = tool_cls.invoke
 
     async def invoke(self: Any, inputs: Any, **kwargs: Any) -> Any:
+        session = kwargs.get("session")
+        session_id = _session_id_of(session)
+        before: list[TodoItem] = []
+        if session_id is not None:
+            before = await _load_todos_or_empty(self, session_id)
         result = await original(self, inputs, **kwargs)
-        return await persist_backlog_create(self, kwargs.get("session"), result)
+        if session_id is not None:
+            await restore_persistent_reminders(self, session_id, before)
+        return await persist_backlog_create(self, session, result)
 
     invoke.backlog_create_patched = True  # type: ignore[attr-defined]
     tool_cls.invoke = invoke

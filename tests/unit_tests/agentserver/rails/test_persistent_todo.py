@@ -15,6 +15,16 @@ from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     CompatibleTodoModifyTool,
     merge_persistent_list_items,
     persist_backlog_create,
+    restore_persistent_reminders,
+)
+from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+    TURN_USER_QUERY_KEY,
+    filter_todos_for_display,
+    filter_todos_for_execution,
+    is_backlog_todo_query,
+    is_persistent_todo,
+    remember_turn_user_query,
+    snapshot_includes_persistent_todos,
 )
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     TURN_USER_QUERY_KEY,
@@ -124,6 +134,58 @@ async def test_backlog_create_marks_pending_and_drops_execute_now() -> None:
     assert "Immediately execute" not in result["message"]
     assert "pending" in result["message"]
     assert session.get_state(TURN_USER_QUERY_KEY).startswith("帮我添加一个待办")
+
+
+@pytest.mark.asyncio
+async def test_ordinary_create_keeps_existing_reminder() -> None:
+    reminder = TodoItem(
+        id="submit_test_report",
+        content="明天下午2点提交测试报告",
+        status=TodoStatus.PENDING,
+        meta_data={"persistent": True},
+    )
+    plan = TodoItem(id="analyze", content="分析数据", status=TodoStatus.IN_PROGRESS)
+    tool = _TodoFile([plan])
+
+    await restore_persistent_reminders(tool, "sess-1", [reminder])
+    session = _State()
+    remember_turn_user_query(session, "帮我分析这份数据")
+    result = await persist_backlog_create(
+        tool,
+        session,
+        {"message": "Successfully created 1 task(s)"},
+    )
+
+    assert [todo.id for todo in tool.todos] == ["analyze", "submit_test_report"]
+    assert tool.todos[0].status == TodoStatus.IN_PROGRESS
+    assert not is_persistent_todo(tool.todos[0])
+    assert tool.todos[1].status == TodoStatus.PENDING
+    assert is_persistent_todo(tool.todos[1])
+    assert "stays listed" not in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_restore_drops_finished_reminder_and_duplicate_id() -> None:
+    done = TodoItem(
+        id="old",
+        content="已完成",
+        status=TodoStatus.COMPLETED,
+        meta_data={"persistent": True},
+    )
+    same = TodoItem(
+        id="analyze",
+        content="分析数据",
+        status=TodoStatus.PENDING,
+        meta_data={"persistent": True},
+    )
+    plan = TodoItem(id="analyze", content="分析数据", status=TodoStatus.IN_PROGRESS)
+    tool = _TodoFile([plan])
+
+    await restore_persistent_reminders(tool, "sess-1", [done, same])
+
+    assert [todo.id for todo in tool.todos] == ["analyze"]
+    assert tool.todos[0].status == TodoStatus.IN_PROGRESS
+    assert not is_persistent_todo(tool.todos[0])
 
 
 @pytest.mark.asyncio
