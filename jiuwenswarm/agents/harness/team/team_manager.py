@@ -1093,6 +1093,7 @@ class TeamManager:
             TEAM_MODEL_SELECTION_STALE,
             ModelSelectionError,
         )
+        from jiuwenswarm.common.model_selection import ResolvedModelGroup
         from jiuwenswarm.server.runtime.model_compiler_adapter import (
             compile_model_selection,
         )
@@ -1108,6 +1109,18 @@ class TeamManager:
                     route_id=selection.route_id,
                 )
             )
+            # Team routes across the whole group. Groups saved from the UI
+            # carry no routing strategy, which would compile to the first
+            # route only; default them to ordered failover. A manually
+            # selected route keeps compiling to that single model.
+            if (
+                isinstance(resolved, ResolvedModelGroup)
+                and selection.route_id is None
+                and not (resolved.routing or {}).get("strategy")
+            ):
+                resolved = resolved.model_copy(
+                    update={"routing": {**(resolved.routing or {}), "strategy": "ordered-failover"}}
+                )
             compiled = compile_model_selection(resolved)
         except ModelSelectionError:
             # Stable catalog / permission failures are meaningful to callers.
@@ -1123,6 +1136,42 @@ class TeamManager:
             ) from exc
 
         return compiled
+
+    @staticmethod
+    def _selected_model_name(
+        selection: SwarmModelSelection,
+        compiled: CompiledModelSelection,
+    ) -> str:
+        """Return the model name a compiled single-model selection points at."""
+        from jiuwenswarm.common.model_errors import (
+            MODEL_REQUEST_CONFIG_INVALID,
+            TEAM_MODEL_SELECTION_STALE,
+            ModelSelectionError,
+        )
+
+        if (
+            compiled.selected_type != selection.type
+            or compiled.selected_id != selection.id
+        ):
+            raise ModelSelectionError(
+                TEAM_MODEL_SELECTION_STALE,
+                "model selection does not match compiled selection",
+            )
+        request = (
+            compiled.model_request_config.model_dump(
+                exclude_none=True,
+                by_alias=True,
+            )
+            if compiled.model_request_config
+            else {}
+        )
+        name = request.get("model") or request.get("model_name") or ""
+        if not name:
+            raise ModelSelectionError(
+                MODEL_REQUEST_CONFIG_INVALID,
+                "compiled model selection has an empty model name",
+            )
+        return name
 
     @staticmethod
     def _apply_compiled_team_selection(
@@ -1270,18 +1319,7 @@ class TeamManager:
                 )
                 config_base = fallback_distributed_to_local(config_base)
 
-        spec_dict = load_team_spec_dict(
-            config_base=config_base,
-            requested_model_name=requested_model_name,
-            login_model_entry=login_model_entry,
-            template_id=template_id,
-            template_snapshot=template_snapshot,
-            strict_template=strict_template,
-        )
-        spec_dict = TeamManager._normalize_team_identity_fields(spec_dict)
-        if TeamManager._is_distributed_mode(config_base):
-            spec_dict = TeamManager._normalize_distributed_transport_fields(config_base, spec_dict)
-
+        selection: SwarmModelSelection | None = None
         if model_selection is not None:
             # Normalize through the swarm DTO so ``route_id`` (a valid
             # group-scope pin) survives; the foundation ``ModelSelection``
@@ -1298,6 +1336,28 @@ class TeamManager:
                     if key in raw_selection
                 }
             )
+        if selection is not None and selection.type == "model":
+            # A single-model selection only names the page-selected model; the
+            # pool keeps every configured model below so members can still be
+            # assigned any of them. Resolving it also rejects a stale selection.
+            requested_model_name = TeamManager._selected_model_name(
+                selection,
+                TeamManager._resolve_and_compile_team_selection(selection),
+            )
+
+        spec_dict = load_team_spec_dict(
+            config_base=config_base,
+            requested_model_name=requested_model_name,
+            login_model_entry=login_model_entry,
+            template_id=template_id,
+            template_snapshot=template_snapshot,
+            strict_template=strict_template,
+        )
+        spec_dict = TeamManager._normalize_team_identity_fields(spec_dict)
+        if TeamManager._is_distributed_mode(config_base):
+            spec_dict = TeamManager._normalize_distributed_transport_fields(config_base, spec_dict)
+
+        if selection is not None and selection.type == "model_group":
             compiled = TeamManager._resolve_and_compile_team_selection(selection)
             TeamManager._apply_compiled_team_selection(
                 spec_dict,
