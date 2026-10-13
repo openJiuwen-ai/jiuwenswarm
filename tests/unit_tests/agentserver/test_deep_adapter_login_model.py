@@ -110,3 +110,22 @@ def test_model_check_records_whether_the_session_uses_a_free_model(adapter, monk
 
     adapter._model_config_error(_request("my-gpt"))
     assert login_credentials.session_uses_login_model("s") is False
+
+
+@pytest.mark.parametrize("selection_type", ["model", "model_group"])
+def test_stable_selection_clears_previous_free_model_error_classification(adapter, selection_type):
+    from jiuwenswarm.common.auth.apig import classify_model_error
+
+    adapter._model_config_error(_request("glm-5", **SCOPED))
+    assert login_credentials.session_uses_login_model("s") is True
+
+    request = SimpleNamespace(
+        params={"model_selection": {"type": selection_type, "id": "configured-resource"}},
+        session_id="s",
+    )
+    adapter._note_session_model(request, uses_login_model=False)
+
+    assert login_credentials.session_uses_login_model("s") is False
+    assert classify_model_error(
+        "Error code: 401", login_model=login_credentials.session_uses_login_model("s")
+    ) is None

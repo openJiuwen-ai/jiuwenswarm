@@ -234,18 +234,15 @@
       }
     },
     "models": {
-      "primaryModels": "Chat models",
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
       "modelGroups": "Model groups",
       "modelGroupsManagement": "Model group management",
       "empty": "No models configured",
-      "emptyDescription": "Add a model to test its connection and manage the primary model here.",
+      "emptyDescription": "Add a model to test its connection and manage custom models here.",
       "modelGroupsEmpty": "No model groups configured",
       "modelGroupsEmptyDescription": "Add a model group to manage ordered failover across models.",
-      "primary": "Primary",
-      "setPrimary": "Make primary",
       "addModel": "Add model",
       "addModelGroup": "Add model group",
       "addModelGroupTitle": "Add model group",
@@ -588,6 +585,10 @@
       "ttse_enabled": {
         "title": "Local environment facts and task experience auto-evolution",
         "description": "Control the agent's learning of environment facts and task experience"
+      },
+      "skill_retrieval_index_enabled": {
+        "title": "Skill index",
+        "description": "Enable a tree of installed skills for structured skill discovery (may consume additional tokens)."
       },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo search",

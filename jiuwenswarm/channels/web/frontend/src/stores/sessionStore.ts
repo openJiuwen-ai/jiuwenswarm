@@ -51,9 +51,102 @@ import {
 
 const MODE_STORAGE_KEY = 'jiuwenclaw_mode';
 const MODEL_STORAGE_KEY = 'jiuwenclaw_selected_model';
+const MODEL_SELECTION_STORAGE_KEY = 'jiuwenclaw_last_model_selection';
 const AGENT_SELECTION_STORAGE_KEY = 'jiuwenclaw_agent_selection';
 const AGENT_GROUP_SELECTION_STORAGE_KEY = 'jiuwenclaw_agent_group_selection';
 const TRANSIENT_NEW_CONVERSATION_ID = 'new';
+
+function loadLastModelSelection(): ModelSelection | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(MODEL_SELECTION_STORAGE_KEY);
+    if (!raw) return null;
+    const value: unknown = JSON.parse(raw);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const selection = value as Partial<ModelSelection>;
+    if ((selection.type !== 'model' && selection.type !== 'model_group') || typeof selection.id !== 'string') {
+      return null;
+    }
+    const id = selection.id.trim();
+    if (!id) return null;
+    if (selection.type === 'model') return { type: 'model', id };
+    return {
+      type: 'model_group',
+      id,
+      ...(typeof selection.route_id === 'string' && selection.route_id.trim()
+        ? { route_id: selection.route_id.trim() }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function cacheLastModelSelection(selection: ModelSelection): void {
+  if (typeof localStorage === 'undefined') return;
+  try { localStorage.setItem(MODEL_SELECTION_STORAGE_KEY, JSON.stringify(selection)); } catch { /* noop */ }
+}
+
+/** New chats restore the last stable selection, then fall back custom -> free -> empty. */
+export function resolveNewConversationModelSelection(
+  models: ModelEntry[],
+  groups: ModelGroup[],
+  cachedSelection: ModelSelection | null,
+): ModelSelection | null {
+  if (cachedSelection?.type === 'model') {
+    const cachedModel = models.find((model) => model.model_id === cachedSelection.id);
+    if (cachedModel) return { type: 'model', id: cachedSelection.id };
+  } else if (cachedSelection?.type === 'model_group') {
+    const cachedGroup = groups.find(
+      (group) => group.model_group_id === cachedSelection.id && group.enabled !== false,
+    );
+    if (cachedGroup) {
+      const routeId = cachedSelection.route_id?.trim();
+      if (!routeId || cachedGroup.routes.some((route) => route.route_id === routeId && route.enabled !== false)) {
+        return routeId
+          ? { type: 'model_group', id: cachedSelection.id, route_id: routeId }
+          : { type: 'model_group', id: cachedSelection.id };
+      }
+    }
+  }
+  const fallback = models.find((model) => model.is_free !== true && Boolean(model.model_id?.trim()))
+    ?? models.find((model) => model.is_free === true && Boolean(model.model_id?.trim()));
+  return fallback?.model_id ? { type: 'model', id: fallback.model_id } : null;
+}
+
+function isModelSelectionAvailable(
+  selection: ModelSelection | null,
+  models: ModelEntry[],
+  groups: ModelGroup[],
+): boolean {
+  if (selection?.type === 'model') return models.some((model) => model.model_id === selection.id);
+  if (selection?.type !== 'model_group') return false;
+  const group = groups.find((item) => item.model_group_id === selection.id && item.enabled !== false);
+  if (!group) return false;
+  const routeId = selection.route_id?.trim();
+  return !routeId || group.routes.some((route) => route.route_id === routeId && route.enabled !== false);
+}
+
+function restoreNewConversationSelection(
+  runtime: SessionRuntime,
+  models: ModelEntry[],
+  groups: ModelGroup[],
+): SessionRuntime {
+  const cached = loadLastModelSelection();
+  const selection = isModelSelectionAvailable(cached, models, groups)
+    ? cached
+    : isModelSelectionAvailable(runtime.selectedModelSelection, models, groups)
+      ? runtime.selectedModelSelection
+      : resolveNewConversationModelSelection(models, groups, cached);
+  const selectedModel = selection?.type === 'model'
+    ? models.find((model) => model.model_id === selection.id)
+    : null;
+  return {
+    ...runtime,
+    selectedModelSelection: selection,
+    selectedModelName: selectedModel?.model_name ?? null,
+  };
+}
 
 function clearStoredAgentSelection(sessionId: string): void {
   if (typeof localStorage === 'undefined') return;
@@ -550,14 +643,21 @@ export interface SessionRuntime {
   workflowRuns: WorkflowRun[];
 }
 
-function createEmptyRuntime(sessionId?: string): SessionRuntime {
+function createEmptyRuntime(
+  sessionId?: string,
+  availableModels: ModelEntry[] = [],
+  availableModelGroups: ModelGroup[] = [],
+): SessionRuntime {
+  const restoredSelection = sessionId === TRANSIENT_NEW_CONVERSATION_ID
+    ? resolveNewConversationModelSelection(availableModels, availableModelGroups, loadLastModelSelection())
+    : null;
+  const restoredModel = restoredSelection?.type === 'model'
+    ? availableModels.find((model) => model.model_id === restoredSelection.id)
+    : null;
   return {
     mode: loadModeFromStorage(),
-    selectedModelName: (() => {
-      if (typeof localStorage === 'undefined') return null;
-      try { return localStorage.getItem(MODEL_STORAGE_KEY); } catch { return null; }
-    })(),
-    selectedModelSelection: null,
+    selectedModelName: restoredModel?.model_name ?? null,
+    selectedModelSelection: restoredSelection,
     projectDirectory: null,
     persistSession: false,
     contextUsageSnapshot: null,
@@ -738,9 +838,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   runtimes: {},
 
   ensureRuntime: (sessionId) => {
-    const existing = get().runtimes[sessionId];
+    const state = get();
+    const existing = state.runtimes[sessionId];
     if (existing) return existing;
-    const runtime = createEmptyRuntime(sessionId);
+    const runtime = createEmptyRuntime(sessionId, state.chatAvailableModels, state.availableModelGroups);
     set((state) => ({
       runtimes: { ...state.runtimes, [sessionId]: runtime },
     }));
@@ -2003,20 +2104,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // 选择的模型不受影响。已创建的真实会话 runtime 依然不在此处重置。
       const runtimes = { ...state.runtimes };
       const pendingNewRuntime = runtimes['new'];
-      if (
-        pendingNewRuntime
-        && selected
-        && state.defaultModelName
-        && pendingNewRuntime.selectedModelName === state.defaultModelName
-      ) {
-        runtimes['new'] = { ...pendingNewRuntime, selectedModelName: selected };
+      if (pendingNewRuntime) {
+        runtimes['new'] = restoreNewConversationSelection(
+          pendingNewRuntime,
+          chatModels,
+          state.availableModelGroups,
+        );
       }
       return { availableModels: models, chatAvailableModels: chatModels, defaultModelName: selected, runtimes };
     });
   },
 
   setAvailableModelGroups: (groups) => {
-    set({ availableModelGroups: groups });
+    set((state) => {
+      const pendingNewRuntime = state.runtimes[TRANSIENT_NEW_CONVERSATION_ID];
+      if (!pendingNewRuntime) return { availableModelGroups: groups };
+      return {
+        availableModelGroups: groups,
+        runtimes: {
+          ...state.runtimes,
+          [TRANSIENT_NEW_CONVERSATION_ID]: restoreNewConversationSelection(
+            pendingNewRuntime,
+            state.chatAvailableModels,
+            groups,
+          ),
+        },
+      };
+    });
   },
 
   setSelectedModelName: (sessionId, name) => {

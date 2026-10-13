@@ -540,10 +540,6 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
     }
   };
 
-  const setPrimary = async (model: ModelEntry) => {
-    await saveModel({ ...model, is_default: true }, 'model.primary');
-  };
-
   const getCardPresentation = (model: ModelEntry) => {
     const customName = model.alias?.trim() || model.model_name;
     const protocol = displayModelProtocol(model);
@@ -568,9 +564,7 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
     const key = modelIdentity(model, index);
     const validationState = validationStates[key];
     const presentation = getCardPresentation(model);
-    const isPrimary = model === editableModels[0];
     const readOnly = model.is_agentos === true;
-    const canSetPrimary = !readOnly && !isPrimary;
     return (
       <article
         className={`settings-model-card${presentation.logo ? '' : ' settings-model-card--no-logo'}`}
@@ -590,15 +584,6 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
             >
               {presentation.customName}
             </h3>
-            {isPrimary ? (
-              <Tag
-                variant="info"
-                data-testid="settings-models-card-primary-tag"
-                data-variant={model.model_id ?? model.origin_index ?? 'new'}
-              >
-                {t('settingsPanel.models.primary')}
-              </Tag>
-            ) : null}
             {readOnly ? (
               <Tag
                 variant="neutral"
@@ -618,19 +603,6 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
           </p>
         </div>
         <div className="settings-model-card__actions">
-          {canSetPrimary ? (
-            <Button
-              className="settings-model-card__text-action"
-              variant="quiet"
-              size="sm"
-              disabled={actionsDisabled}
-              onClick={() => void setPrimary(model).catch(() => undefined)}
-              data-testid="settings-models-card-set-primary-btn"
-              data-variant={model.model_id ?? model.origin_index ?? 'new'}
-            >
-              {t('settingsPanel.models.setPrimary')}
-            </Button>
-          ) : null}
           <Button
             icon={<settingsActionIcons.test aria-hidden />}
             aria-label={t('settingsPanel.models.testConnection')}

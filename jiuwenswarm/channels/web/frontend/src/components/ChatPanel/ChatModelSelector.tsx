@@ -5,7 +5,7 @@ import { selectionFromModel } from '../../features/settings/modules/models/model
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores/chatStore';
-import { resolveChatModelSelection, useSessionStore } from '../../stores/sessionStore';
+import { cacheLastModelSelection, resolveChatModelSelection, useSessionStore } from '../../stores/sessionStore';
 import type { ModelSelection } from '../../types';
 import ModelPicker from '../ModelPicker';
 
@@ -43,6 +43,7 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
   const persistSelection = async (next: ModelSelection) => {
     if (!activeSessionId) return;
     setSelectionError('');
+    cacheLastModelSelection(next);
     setSelectedModelSelection(activeSessionId, next);
     if (activeSessionId === NEW_CONVERSATION_ID) return;
     try {

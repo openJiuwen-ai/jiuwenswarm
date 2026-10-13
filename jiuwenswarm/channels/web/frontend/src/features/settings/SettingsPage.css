@@ -825,10 +825,6 @@
   gap: 8px;
 }
 
-.settings-model-card__actions .settings-model-card__text-action {
-  color: var(--color-settings-link);
-}
-
 .settings-model-card__actions .ui-button--icon-only svg {
   width: 16px;
   height: 16px;
@@ -1444,28 +1440,6 @@
 .settings-model-group-dialog__form .ui-input {
   height: 40px;
   border-radius: 8px;
-}
-
-.settings-model-group-dialog__checkbox {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 32px;
-  color: var(--color-text-primary);
-  cursor: pointer;
-}
-
-.settings-model-group-dialog__route-config {
-  display: grid;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.settings-model-group-dialog__route-config textarea,
-.settings-model-group-dialog__form textarea {
-  width: 100%;
-  min-height: 72px;
-  resize: vertical;
 }
 
 .settings-page .ui-input:not(.ui-input--affixed),

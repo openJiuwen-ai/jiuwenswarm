@@ -6964,7 +6964,14 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.common.auth.login_credentials import note_session_model
 
         params = request.params if isinstance(request.params, dict) else {}
-        if not uses_login_model and not str(params.get("model_name") or "").strip():
+        # Stable model/group selections are explicit switches even without a legacy
+        # model_name. Clear the previous login-model marker for these requests.
+        has_explicit_selection = params.get("model_selection") is not None
+        if (
+            not uses_login_model
+            and not has_explicit_selection
+            and not str(params.get("model_name") or "").strip()
+        ):
             return
         note_session_model(getattr(request, "session_id", None), uses_login_model=uses_login_model)
 

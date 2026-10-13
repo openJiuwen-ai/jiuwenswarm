@@ -105,8 +105,8 @@ export function FreeModelsSettings() {
               type="button"
               className="free-models-card__icon-btn"
               onClick={() => requestLogin('account')}
-              aria-label={t('auth.logout')}
-              title={t('auth.logout')}
+              aria-label={t('auth.huawei.logout')}
+              title={t('auth.huawei.logout')}
               data-testid="settings-free-models-account"
               data-state="signed-in"
             >

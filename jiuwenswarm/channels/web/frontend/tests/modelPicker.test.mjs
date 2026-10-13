@@ -90,6 +90,7 @@ async function withFixture(run, language = 'en') {
     // 不挂到全局的话那句直接 ReferenceError
     CustomEvent: dom.window.CustomEvent,
     ResizeObserver: dom.window.ResizeObserver,
+    MutationObserver: dom.window.MutationObserver,
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
     previousGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -182,7 +183,7 @@ test('chat and scheduled tasks show identical grouped options, excluding seconda
 test('限时免费模型：没登录拿到之前，这一栏只放一个「获取」入口', async () => {
   await withFixture(async ({ mount, click, byId }) => {
     // 活动在跑但还没登录：免费模型一个都没有
-    useAuthStore.setState({ enabled: true, initialized: true, islogin: false });
+    useAuthStore.setState({ enabled: true, initialized: true, islogin: false, campaignState: 'active' });
     useSessionStore.getState().setAvailableModels(
       catalog.filter((model) => model.is_free !== true),
       'configured-a',

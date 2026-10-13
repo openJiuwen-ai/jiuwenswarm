@@ -20,11 +20,8 @@ import {
 } from '../node_modules/.cache/settings-refactor/modules/models/modelAdapters.js';
 import { validateModelDraft } from '../node_modules/.cache/settings-refactor/modules/models/modelValidation.js';
 import {
-  addEditableModel,
   getEditableModels,
   getModelDisplayGroups,
-  promotePrimaryModel,
-  removeEditableModel,
 } from '../node_modules/.cache/settings-refactor/modules/models/modelListOperations.js';
 
 const root = new URL('../', import.meta.url);
@@ -470,7 +467,7 @@ test('custom vendor uses server reasoning data even when there are no built-in p
   );
 });
 
-test('default and deletion operations preserve identity and read-only filtering', () => {
+test('model listing preserves identity and read-only filtering', () => {
   const primary = { model_name: 'same', alias: 'first', is_default: true };
   const target = { model_name: 'same', alias: 'second', is_default: false };
   const other = { model_name: 'other', alias: 'third', is_default: true };
@@ -502,31 +499,6 @@ test('default and deletion operations preserve identity and read-only filtering'
     displayGroups.slice(1).map((group) => group.items[0].model.alias),
     ['third', 'backup'],
   );
-  const promoted = promotePrimaryModel(models, target);
-  assert.equal(promoted.length, models.length);
-  assert.equal(promoted[0].alias, 'second');
-  assert.equal(promoted[0].is_default, true);
-  assert.equal(promoted[1].alias, 'first');
-  assert.throws(() => removeEditableModel([primary, agentOs], primary), /LAST_EDITABLE_MODEL/);
-});
-
-test('adding a model replaces only the placeholder primary model', () => {
-  const placeholder = { model_name: 'your-model-name', alias: 'placeholder', is_default: true };
-  const existing = { model_name: 'existing', alias: 'existing', is_default: true };
-  const added = { model_name: 'new-model', alias: 'new', is_default: false };
-  const agentOs = { model_name: 'backup', alias: 'backup', is_agentos: true };
-
-  const replaced = addEditableModel([placeholder, existing, agentOs], added);
-  assert.deepEqual(
-    replaced.map((model) => model.alias),
-    ['new', 'existing', 'backup'],
-  );
-  assert.equal(replaced[0].is_default, true);
-  assert.equal(replaced.includes(placeholder), false);
-
-  const appended = addEditableModel([existing, agentOs], added);
-  assert.deepEqual(appended, [existing, agentOs, added]);
-  assert.equal(appended[0], existing);
 });
 
 test('model Settings sources use the required RPCs without hardcoded vendor options or unsupported tiers', () => {
@@ -659,7 +631,7 @@ test('models are listed flat without same-name auto grouping', () => {
   assert.match(settingsAssets, /test: ConnectivityIcon/);
   assert.doesNotMatch(groupsPage, /ChevronRight|expandedModelGroups|getModelDisplayGroups|setGroupDefaultModel/);
   assert.match(page, /models\.map\(\(model, index\) => renderModelCard\(model, index\)\)/);
-  assert.match(page, /const canSetPrimary = !readOnly && !isPrimary/);
+  assert.doesNotMatch(page, /setPrimary|isPrimary|canSetPrimary|settings-models-card-primary-tag/);
   assert.doesNotMatch(page, /settings-model-group__header|groupOrdinal|isDuplicate/);
   assert.doesNotMatch(settingsCss, /\.settings-model-group\s*\{/);
   assert.match(settingsCss, /\.settings-models-group-card\s*\{/);
