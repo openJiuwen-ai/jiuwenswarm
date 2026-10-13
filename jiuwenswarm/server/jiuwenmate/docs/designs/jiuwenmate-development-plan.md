@@ -55,10 +55,10 @@
 
 | ID | 特性：要做什么 | 怎样证明做成 | 开工硬前置 | 状态 | 负责人 | 证据与对端条件 |
 | --- | --- | --- | --- | --- | --- | --- |
-| SW-01 | 固定 SDK 版本、建立公开协议适配与契约测试；新增 `spec_provider.py`、`execution_models.py`；核对既有依赖声明位置 | 能构造合法 Spec / Context / RequestInput；字段错配明确拒绝；识别未开放能力，不能绕过 core 校验执行；测试替身与真实 SDK 类型一致 | 无 | 待验收 | 常钰聪 | 宿主组件通过，联合验收待完成。提交 `7a78a10f`。开发验证使用 huenrui_agent-core `12cf92bd71dedb3c39309b72fd8519b5ad9134e6`；该版本固定仅保留在本地 `pyproject.toml` / `uv.lock`，不随提交入库；宿主仅开放 `construction`，`workspace_read` 待 SW-14。`.venv/bin/python -m pytest tests/unit_tests/server/runtime/persistent_agents/test_core_contract.py -o addopts="--asyncio-mode=auto"`：32 passed。core 正式执行仍停在 PA-10（哨兵测试覆盖），续做停在 PA-18；对端 PA-01～PA-05 |
-| SW-02 | 新建 AI 同事定义、存储和管理服务；调用现有 Template、模型和能力管理接口 | 自定义创建、首次使用自动创建默认小九且不重复创建、设置读取 / 发布、删除可用；同事与 Template 一对一；新版数据独立保存；Request 固定配置快照，新请求用新配置 | SW-01 | 待验收 | 常钰聪 | 宿主组件通过，联合验收待完成。提交 `5f12ea8a`。新增 `persistent_agents/models.py`、`repository.py`、`service.py`；数据位于 `~/.jiuwenswarm/jiuwenmate/`（SQLite 权限 0600，Template 在 `templates/<agent_id>/`，不进入个人版专家市场）；模型经现有模型目录解析，配置快照含凭据，对外视图脱敏；Skill / 连接器 / 插件仅记录选择，装配待 SW-14；管理接口待 SW-10，当前无入口调用 `ensure_default_colleague`，页面打开后尚不显示小九。`.venv/bin/python -m pytest tests/unit_tests/server/runtime/persistent_agents -o addopts="--asyncio-mode=auto"`：54 passed（SW-02 22 项） |
-| SW-03 | 新建 Session / Request / Execution 关联仓库及新版群会话映射 | 同一 Agent 同一群稳定复用 Session；跨 Agent、跨群、Web 与 IM 私聊隔离；补充消息是新 Request；重启能查回队列和已派发任务；不会因字符串截断造成 Session 碰撞 | SW-01 | 待验收 | 常钰聪 | 宿主组件通过，联合验收待完成。新增 `persistent_agents/execution_repository.py`（Session / Request / Execution）、`group_chat_repository.py`（平台群 → `group_chat_id`，SW-11 在同文件扩展公共记录与搜索）、`sqlite_store.py`（共用 SQLite 文件与事务）；`execution_models.py` 补充 `ConversationRef`、`SessionRecord`、`RequestState`。Session 按 (namespace, agent, 会话类型, 渠道, 会话键) 分列唯一约束定位，`session_id` 随机生成，不拼接或截断；同一来源事件按 (namespace, agent, source_ref) 幂等受理；同一 Session 同时仅允许一个已派发 Request（串行调度由 SW-07 负责）。SW-02 联调：受理时固定 `current_snapshot` 版本，重启后由存储记录重建合法 core 调用上下文。删除同事时的排队 Request 处理待 SW-07。`.venv/bin/python -m pytest tests/unit_tests/server/runtime/persistent_agents -o addopts="--asyncio-mode=auto"`：70 passed（SW-03 16 项） |
-| SW-04 | 实现 `ports/commit.py` 与事件、候选输出存储；队列由 AgentServer 生命周期持有 | 重交 event_id 不重复；普通日志保存失败不阻断后续关键事件；关键事件落盘失败抛异常；final 缺少候选内容时失败；候选和 final 重交后保持原 ID；读日志校验归属并按序返回 | SW-03 | 待验收 | 常钰聪 | 宿主组件通过，联合验收待完成。新增 `persistent_agents/ports/commit.py`（`HostCommitPort`、`CommitQueue`）；`execution_repository.py` 增加 `execution_events`、`candidate_outputs` 两表及 `record_events`、`read_execution_log`、`candidate_output`。关键事件（tool.intent / execution.paused / execution.final）同步落盘，失败抛出；普通事件经后台队列写入，失败记日志留缺口；final 在同一事务内补存队列中尚未落盘的引用候选，缺少候选时拒绝且不保存 final；按 event_id 去重、同 ID 异内容拒绝；output_id 不可被其他事件复用；每个 Execution 至多一个 final / paused。队列提供 `start` / `aclose`，由 SW-07 在 AgentServer 启停时持有，当前尚未接线。`.venv/bin/python -m pytest tests/unit_tests/server/runtime/persistent_agents -o addopts="--asyncio-mode=auto"`：86 passed（SW-04 16 项）；core 正式执行仍停在 PA-10，与真实执行的联调待 PA-04、PA-08 |
+| SW-01 | 固定 SDK 版本、建立公开协议适配与契约测试；新增 `spec_provider.py`、`execution_models.py`；核对既有依赖声明位置 | 能构造合法 Spec / Context / RequestInput；字段错配明确拒绝；识别未开放能力，不能绕过 core 校验执行；测试替身与真实 SDK 类型一致 | 无 | 待验收 | 常钰聪 | 宿主组件通过，联合验收待完成。提交 `7a78a10f`。开发验证使用 huenrui_agent-core `12cf92bd71dedb3c39309b72fd8519b5ad9134e6`；该版本固定仅保留在本地 `pyproject.toml` / `uv.lock`，不随提交入库；宿主仅开放 `construction`，`workspace_read` 待 SW-14。`.venv/bin/python -m pytest tests/unit_tests/server/jiuwenmate/test_core_contract.py -o addopts="--asyncio-mode=auto"`：32 passed。core 正式执行仍停在 PA-10（哨兵测试覆盖），续做停在 PA-18；对端 PA-01～PA-05 |
+| SW-02 | 新建 AI 同事定义、存储和管理服务；调用现有 Template、模型和能力管理接口 | 自定义创建、首次使用自动创建默认小九且不重复创建、设置读取 / 发布、删除可用；同事与 Template 一对一；新版数据独立保存；Request 固定配置快照，新请求用新配置 | SW-01 | 待验收 | 常钰聪 | 宿主组件通过，联合验收待完成。提交 `5f12ea8a`。新增 `jiuwenmate/models.py`、`repository.py`、`service.py`；数据位于 `~/.jiuwenswarm/jiuwenmate/`（SQLite 权限 0600，Template 在 `templates/<agent_id>/`，不进入个人版专家市场）；模型经现有模型目录解析，配置快照含凭据，对外视图脱敏；Skill / 连接器 / 插件仅记录选择，装配待 SW-14；管理接口待 SW-10，当前无入口调用 `ensure_default_colleague`，页面打开后尚不显示小九。`.venv/bin/python -m pytest tests/unit_tests/server/jiuwenmate -o addopts="--asyncio-mode=auto"`：54 passed（SW-02 22 项） |
+| SW-03 | 新建 Session / Request / Execution 关联仓库及新版群会话映射 | 同一 Agent 同一群稳定复用 Session；跨 Agent、跨群、Web 与 IM 私聊隔离；补充消息是新 Request；重启能查回队列和已派发任务；不会因字符串截断造成 Session 碰撞 | SW-01 | 待验收 | 常钰聪 | 宿主组件通过，联合验收待完成。新增 `jiuwenmate/execution_repository.py`（Session / Request / Execution）、`group_chat_repository.py`（平台群 → `group_chat_id`，SW-11 在同文件扩展公共记录与搜索）、`sqlite_store.py`（共用 SQLite 文件与事务）；`execution_models.py` 补充 `ConversationRef`、`SessionRecord`、`RequestState`。Session 按 (namespace, agent, 会话类型, 渠道, 会话键) 分列唯一约束定位，`session_id` 随机生成，不拼接或截断；同一来源事件按 (namespace, agent, source_ref) 幂等受理；同一 Session 同时仅允许一个已派发 Request（串行调度由 SW-07 负责）。SW-02 联调：受理时固定 `current_snapshot` 版本，重启后由存储记录重建合法 core 调用上下文。删除同事时的排队 Request 处理待 SW-07。`.venv/bin/python -m pytest tests/unit_tests/server/jiuwenmate -o addopts="--asyncio-mode=auto"`：70 passed（SW-03 16 项） |
+| SW-04 | 实现 `ports/commit.py` 与事件、候选输出存储；队列由 AgentServer 生命周期持有 | 重交 event_id 不重复；普通日志保存失败不阻断后续关键事件；关键事件落盘失败抛异常；final 缺少候选内容时失败；候选和 final 重交后保持原 ID；读日志校验归属并按序返回 | SW-03 | 待验收 | 常钰聪 | 宿主组件通过，联合验收待完成。新增 `jiuwenmate/ports/commit.py`（`HostCommitPort`、`CommitQueue`）；`execution_repository.py` 增加 `execution_events`、`candidate_outputs` 两表及 `record_events`、`read_execution_log`、`candidate_output`。关键事件（tool.intent / execution.paused / execution.final）同步落盘，失败抛出；普通事件经后台队列写入，失败记日志留缺口；final 在同一事务内补存队列中尚未落盘的引用候选，缺少候选时拒绝且不保存 final；按 event_id 去重、同 ID 异内容拒绝；output_id 不可被其他事件复用；每个 Execution 至多一个 final / paused。队列提供 `start` / `aclose`，由 SW-07 在 AgentServer 启停时持有，当前尚未接线。`.venv/bin/python -m pytest tests/unit_tests/server/jiuwenmate -o addopts="--asyncio-mode=auto"`：86 passed（SW-04 16 项）；core 正式执行仍停在 PA-10，与真实执行的联调待 PA-04、PA-08 |
 | SW-05 | 实现 `ports/window_backend.py`，配置持久化后端、Session 隔离、保留期和删除清理 | 服务重启数据仍在；Agent 文件工具读不到窗口；A Session 不能读写 B；core 能加载 / 保存状态和归档；禁止内存后端被误当生产持久化 | SW-01 | 待开始 | 常钰聪 | PA-10～PA-12 |
 | SW-06 | 实现 `ports/budget.py`，模型准入、额度预留、用量结算和查询 | 同一群多个 Agent 同时申请不会超卖；重复 report 不重复计费；拒绝时不调用模型；未知用量不当作零；额度恢复有可验证依据供续做使用 | SW-03 | 待开始 | 常钰聪 | PA-05、PA-07、PA-11 |
 | SW-07 | 新建 AI 同事管理器、Session 排队器和执行驱动 | 同一 Session 串行，不同 Session 可在容量内并发并使用不同实例；控制只作用于目标 Execution；流结束和清理完成后才释放占用；新 Request 与非确认续做走同一调度入口；设置全局 / Agent 并发和排队上限 | SW-01、SW-03 | 待开始 | 常钰聪 | 正式执行联调依赖 SW-04～SW-06 和 PA-05、PA-06、PA-10；续做再联调 PA-17、PA-18 |
@@ -132,17 +132,17 @@
 - [ ] 运行本任务测试，再运行受影响的共享入口回归；接入 core 功能时记录双方 commit 和启用能力。
 - [ ] 完成该任务所对应节点的联调后，将状态改为“完成”，登记测试命令、结果及演示证据；只过替身测试时标明“宿主组件通过，联合验收待完成”。
 
-建议新增测试落点均在 `tests/unit_tests/server/runtime/persistent_agents/`：`test_core_contract.py`（SW-01）、`test_persistent_agent_service.py`（SW-02）、`test_request_routing.py`（SW-03）、`test_commit_port.py`（SW-04）、`test_window_backend.py`（SW-05）、`test_budget_port.py`（SW-06）、`test_session_scheduler.py` 和 `test_execution_driver.py`（SW-07）、`test_delivery_service.py`（SW-09）、`test_group_chat_port.py`（SW-11）、`test_execution_control_service.py`（SW-12）、`test_recovery_service.py`（SW-13）、`test_resource_scope.py`（SW-14）、`test_management_query.py`（SW-16）、`test_scheduled_requests.py`（SW-19）。另需测试新版从空数据启动、旧版数据不可见和飞书消息不串路由。
+建议新增测试落点均在 `tests/unit_tests/server/jiuwenmate/`：`test_core_contract.py`（SW-01）、`test_persistent_agent_service.py`（SW-02）、`test_request_routing.py`（SW-03）、`test_commit_port.py`（SW-04）、`test_window_backend.py`（SW-05）、`test_budget_port.py`（SW-06）、`test_session_scheduler.py` 和 `test_execution_driver.py`（SW-07）、`test_delivery_service.py`（SW-09）、`test_group_chat_port.py`（SW-11）、`test_execution_control_service.py`（SW-12）、`test_recovery_service.py`（SW-13）、`test_resource_scope.py`（SW-14）、`test_management_query.py`（SW-16）、`test_scheduled_requests.py`（SW-19）。另需测试新版从空数据启动、旧版数据不可见和飞书消息不串路由。
 
-Gateway 补充 `tests/unit_tests/gateway/test_persistent_group_fanout.py`，覆盖 SW-08 的目标去重与权限范围。SW-10 / SW-18 增加 Web 断开、状态重查与个人模式回归；联合测试建议放 `tests/integration_tests/persistent_agents/`，覆盖 S1～S3。
+Gateway 补充 `tests/unit_tests/gateway/test_persistent_group_fanout.py`，覆盖 SW-08 的目标去重与权限范围。SW-10 / SW-18 增加 Web 断开、状态重查与个人模式回归；联合测试建议放 `tests/integration_tests/jiuwenmate/`，覆盖 S1～S3。
 
 在项目已配置好的 Python 环境中，从 `jiuwenswarm/` 执行：
 
 ```bash
-python -m pytest tests/unit_tests/server/runtime/persistent_agents/test_core_contract.py -q
-python -m pytest tests/unit_tests/server/runtime/persistent_agents -q
+python -m pytest tests/unit_tests/server/jiuwenmate/test_core_contract.py -q
+python -m pytest tests/unit_tests/server/jiuwenmate -q
 python -m pytest tests/unit_tests/gateway/test_persistent_group_fanout.py -q
-python -m pytest tests/integration_tests/persistent_agents -q
+python -m pytest tests/integration_tests/jiuwenmate -q
 ```
 
 以上为实施时的计划命令，新增测试文件当前尚未建立，本文未执行或宣称测试通过。正式飞书验收使用测试应用和测试群，至少覆盖两个 Bot、两个群、一次私聊、重复事件、发送失败、停止 / 取消和服务重启；在验收记录中写明飞书应用接收权限与真实观察结果。
@@ -167,7 +167,7 @@ python -m pytest tests/integration_tests/persistent_agents -q
 | 2026-10-09 | 收窄本轮范围，移出确认恢复、授权知识版本、跨来源失效、主动学习和扩展执行模式；保留停止 / 取消 | SW-12 改为控制服务；SW-15、SW-20 不纳入本轮；主链路 17 项、扩展 2 项，完成数仍为 0 |
 | 2026-10-09 | 新版独立开发、独立存储 | 删除 SW-17 数据迁移任务；SW-18 改为新旧版隔离验收；主链路 16 项、扩展 2 项，完成数仍为 0 |
 | 2026-10-09 | 将定时任务纳入主线 | SW-19 从扩展项移入资源与管理工作线；主链路 17 项、扩展 1 项，完成数仍为 0 |
-| 2026-10-12 | SW-01：固定 agent-core 版本，新增 `persistent_agents/spec_provider.py`、`execution_models.py` 与契约测试 | 32 项契约测试通过；仅使用替身端口，状态为待验收，完成数仍为 0 |
+| 2026-10-12 | SW-01：固定 agent-core 版本，新增 `jiuwenmate/spec_provider.py`、`execution_models.py` 与契约测试 | 32 项契约测试通过；仅使用替身端口，状态为待验收，完成数仍为 0 |
 | 2026-10-12 | SW-02：新增同事定义、存储与管理服务，默认小九、设置读写、发布与删除 | 22 项服务测试通过；本机模型配置冒烟验证发布 v1；状态为待验收，完成数仍为 0 |
 | 2026-10-12 | 登记 SW-01（`7a78a10f`）、SW-02（`5f12ea8a`）提交；核对前端未接入同事服务 | SDK 版本固定不随提交入库；页面打开不显示小九，入口登记至 SW-10；完成数仍为 0，待验收 2 项 |
 | 2026-10-12 | 指定负责人：其余任务与交付节点为常钰聪，SW-11 为闫祉君 | 原「待分配」24 处；完成数不变 |
@@ -196,7 +196,7 @@ SW-09 的发送“只执行一次”不能仅靠本地标记承诺：平台已�
 
 | 代码模块 / 目录 | Swarm 承担的职责 | 与 agent-core 的边界 |
 | --- | --- | --- |
-| 新版 `server/runtime/persistent_agents/service.py`、`models.py`、`repository.py` | AI 同事创建、Template 关联、配置发布、默认小九、渠道绑定和管理查询 | 输出业务定义和固定版本的 Spec，不包含模型执行循环 |
+| 新版 `server/jiuwenmate/service.py`、`models.py`、`repository.py` | AI 同事创建、Template 关联、配置发布、默认小九、渠道绑定和管理查询 | 输出业务定义和固定版本的 Spec，不包含模型执行循环 |
 | 新版 `capabilities.py`、`resource_scope.py`、`resource_bootstrap.py`、`agent_workspace.py` | 装配模型、Skill、MCP、插件及办公空间授权，维护每个同事的资源范围 | core 使用已经装配的工具和 Workspace；安装、选择和凭据管理仍属 Swarm |
 | 新增 `spec_provider.py`、`execution_models.py` | 配置快照与 core DTO 转换；保存 Request、Execution、来源与回复路由的关联 | 直接复用 `PersistentAgentSpec`、`ExecutionContext`、`RequestInput`，不复制其协议定义 |
 | 新版 `agent_manager.py`、`session_scheduler.py`、`execution_driver.py` | Session 排队、容量控制、执行任务生命周期、调用 core 的执行 / 停止 / 取消入口；续做阶段重新调用执行入口 | 实例绑定、模型运行和实例内部清理由 core 完成；Swarm 等待清理结束再释放 Session |

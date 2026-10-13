@@ -6,21 +6,21 @@ from datetime import datetime, timedelta, timezone
 from itertools import count
 
 import pytest
-from jiuwenswarm.server.runtime.persistent_agents.execution_models import (
+from jiuwenswarm.server.jiuwenmate.execution_models import (
     AccessSnapshot,
     ConversationRef,
     PersistentContractError,
 )
-from jiuwenswarm.server.runtime.persistent_agents.execution_repository import ExecutionRepository
-from jiuwenswarm.server.runtime.persistent_agents.group_chat_repository import GroupChatRepository
-from jiuwenswarm.server.runtime.persistent_agents.models import (
+from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
+from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+from jiuwenswarm.server.jiuwenmate.models import (
     CapabilitySelection,
     ColleagueSettings,
     PersistentAgentError,
 )
-from jiuwenswarm.server.runtime.persistent_agents.repository import PersistentAgentRepository, TemplateStore
-from jiuwenswarm.server.runtime.persistent_agents.service import PersistentAgentService
-from jiuwenswarm.server.runtime.persistent_agents.spec_provider import build_invocation
+from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
+from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
+from jiuwenswarm.server.jiuwenmate.spec_provider import build_invocation
 
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.foundation.store import InMemoryKVStore

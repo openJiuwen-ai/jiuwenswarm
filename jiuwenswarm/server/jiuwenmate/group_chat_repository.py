@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from jiuwenswarm.server.runtime.persistent_agents.models import PersistentAgentError, require_identifier
-from jiuwenswarm.server.runtime.persistent_agents.sqlite_store import SQLiteStore
+from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
+from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS group_chats (
