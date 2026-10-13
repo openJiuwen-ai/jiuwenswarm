@@ -270,6 +270,26 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_update():
     }
 
 
+def test_parse_stream_chunk_converts_session_budget_exhaustion_to_chat_error():
+    parsed = parse_stream_chunk(
+        types.SimpleNamespace(
+            type="answer",
+            payload={
+                "reason": "swarmflow session token budget exhausted (101/100)",
+                "exhausted_ledger": "session",
+                "output": "",
+                "result_type": "",
+            },
+        )
+    )
+
+    assert parsed == {
+        "event_type": "chat.error",
+        "code": "SWARMFLOW_SESSION_BUDGET_EXHAUSTED",
+        "error": "Session budget exhausted",
+    }
+
+
 def _full_context_usage_payload():
     return {
         "event_type": "context.usage",

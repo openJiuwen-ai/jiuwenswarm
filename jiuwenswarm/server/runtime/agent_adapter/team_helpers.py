@@ -4456,6 +4456,18 @@ async def _consume_workflow_events(
             # broadcast_event 用它走 gateway server-push 兜底投递。
             await _broadcast_event(channel_id, session_id, event)
 
+            if not is_tui and wf.get("budget_exhausted_scope") == "session":
+                await _broadcast_event(
+                    channel_id,
+                    session_id,
+                    {
+                        "event_type": "chat.error",
+                        "session_id": session_id,
+                        "code": "SWARMFLOW_SESSION_BUDGET_EXHAUSTED",
+                        "error": "Session budget exhausted",
+                    },
+                )
+
             # The idle guard may be holding a swallowed team.idle for this
             # session. A pause / stop takes the run out of the active set
             # without waking the leader, so nothing else will re-emit idle:

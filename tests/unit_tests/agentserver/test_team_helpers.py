@@ -5604,6 +5604,50 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
 
 
 @pytest.mark.anyio
+async def test_consume_workflow_events_reports_session_budget_exhaustion_as_chat_error(monkeypatch):
+    """The web UI must show a terminal session-budget failure even with no active run."""
+    broadcasted: list[dict[str, object]] = []
+    event = {
+        "event_type": "workflow.updated",
+        "session_id": "sess-budget",
+        "workflow": {
+            "id": "run-budget",
+            "status": "stopped",
+            "budget_exhausted_scope": "session",
+            "budget": {"total": 1000, "spent": 1000, "remaining": 0, "exhausted": True},
+        },
+    }
+
+    class _FakeWorkflowHandler:
+        is_running = True
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
+        seen_activity: dict = {}
+
+        async def events(self):
+            yield event
+
+        @staticmethod
+        def get_run_states():
+            return {}
+
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+
+    await _TeamHelpersTestApi.consume_workflow_events(
+        "web", "sess-budget", _FakeWorkflowHandler(),
+    )
+
+    errors = [item for item in broadcasted if item.get("event_type") == "chat.error"]
+    assert errors == [{
+        "event_type": "chat.error",
+        "session_id": "sess-budget",
+        "code": "SWARMFLOW_SESSION_BUDGET_EXHAUSTED",
+        "error": "Session budget exhausted",
+    }]
+
+
+@pytest.mark.anyio
 async def test_consume_workflow_events_dedup_survives_consumer_restart(monkeypatch):
     """A resume relaunch replays the whole event history (cached prefix):
     every already-completed phase's agents re-emit started+completed. The
