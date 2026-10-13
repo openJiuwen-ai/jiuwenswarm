@@ -136,7 +136,7 @@ def get_todo_generation_token(session: Any) -> str | None:
 # 用户原话是「记一条待办」时写入。执行地图（绑定 / 首帧回放 / 工作工具推进）
 # 不装这些条目；todo_list 与明确的查改快照仍要看见它们。
 PERSISTENT_TODO_META_KEY = "persistent"
-TURN_USER_QUERY_KEY = "jiuwenclaw_turn_user_query"
+TURN_USER_QUERY_KEY = "todo_turn_user_query"
 
 _BACKLOG_QUERY_MARKERS = (
     "添加一个待办",

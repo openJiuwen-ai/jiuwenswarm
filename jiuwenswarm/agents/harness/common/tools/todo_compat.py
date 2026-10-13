@@ -135,6 +135,7 @@ async def persist_backlog_create(tool: Any, session: Any, result: Any) -> Any:
     session_id = _session_id_of(session)
     if session_id is None:
         return result
+    # todo_create already replaced the file with this call's tasks.
     todos = await tool.load_todos(session_id)
     changed = False
     for todo in todos:
