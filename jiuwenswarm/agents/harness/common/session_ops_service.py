@@ -1498,7 +1498,7 @@ async def warmup_session_context(
         )
         restored_context = context_engine.get_context(session_id=session_id)
         if restored_context is not None:
-            restored_context._duplex_history_ids = {
+            restored_context.duplex_history_ids = {
                 record.get("id") or record.get("request_id")
                 for record in history_records
                 if record.get("channel_id") == "video_duplex"

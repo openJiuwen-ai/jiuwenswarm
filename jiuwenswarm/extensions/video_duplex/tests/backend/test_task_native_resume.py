@@ -2,8 +2,9 @@
 
 import asyncio
 import json
-import pytest
 from types import SimpleNamespace
+
+import pytest
 
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.runner import Runner

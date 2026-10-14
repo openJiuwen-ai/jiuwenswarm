@@ -46,9 +46,11 @@ def routed_task_fixture(tmp_path, monkeypatch):
         publish_robot_messages=AsyncMock(),
     )
     # The production push boundary now delegates ordering to a separate method.
+
     async def ordered(wire):
-        await MessageHandler._handle_agent_server_push_ordered(handler, wire)
-    handler._handle_agent_server_push_ordered = ordered
+        await MessageHandler._handle_agent_server_push_ordered(handler, wire)  # pylint: disable=protected-access
+
+    handler._handle_agent_server_push_ordered = ordered  # pylint: disable=protected-access
 
     async def push(message):
         frames.append(message)

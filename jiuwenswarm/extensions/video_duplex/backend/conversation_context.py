@@ -19,7 +19,9 @@ HISTORY_ID = "duplex_history_id"
 def conversation_record_id(record):
     if record.get("channel_id") != "video_duplex":
         return None
-    if record.get("role") == "user" or (
+    if record.get("role") == "user":
+        return record.get("id") or record.get("request_id")
+    if (
         record.get("role") == "assistant"
         and record.get("event_type") == "chat.final"
         and record.get("presentation") != "tool_result"
@@ -39,17 +41,19 @@ async def sync_conversation_context(agent, session_id):
         raise RuntimeError("语音对话历史尚未保存，请稍后重试。")
     records = await asyncio.to_thread(load_history_records, session_id)
     # Retain consumed IDs even if Core compacts its message window.
-    seen = getattr(context, "_duplex_history_ids", None)
+    seen = getattr(context, "duplex_history_ids", None)
     if seen is None:
         seen = {
             (getattr(message, "metadata", None) or {}).get(HISTORY_ID)
             for message in context.get_messages()
         }
-        context._duplex_history_ids = seen
+        context.duplex_history_ids = seen
     for record in records:
         identity = conversation_record_id(record)
         content = record.get("content")
-        if not identity or identity in seen or not isinstance(content, str) or not content.strip():
+        if not identity or identity in seen:
+            continue
+        if not isinstance(content, str) or not content.strip():
             continue
         message_type = UserMessage if record["role"] == "user" else AssistantMessage
         metadata = {HISTORY_ID: identity}
