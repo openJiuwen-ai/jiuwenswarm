@@ -392,6 +392,7 @@ class SubagentSkillAuthorizationRail(SkillAuthorizationRail):
             self._create_pending_grant_quiet(
                 session_id, agent_scope_id, current_manifest, tool_call_id,
                 decision=GrantDecision.LOCAL, log_tag="subagent.skill.grant_create_failed",
+                authorization_generation=authorization_generation,
             )
         self._proceed_tool_call(ctx, tool_call, tool_name)
 

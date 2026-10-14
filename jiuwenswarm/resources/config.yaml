@@ -899,6 +899,15 @@ redis:
   operation_timeout: ${REDIS_OPERATION_TIMEOUT:-10}
   health_check_interval: ${REDIS_HEALTH_CHECK_INTERVAL:-30}
 
+# Opt-in shared Skill state for multi-Pod AgentServers. Namespace must be unique
+# per deployment; all Pods in that deployment must use the same value.
+skill_authorization_store:
+  backend: ${SKILL_GRANT_STORE_BACKEND:-memory}
+  namespace: ${SKILL_GRANT_STORE_NAMESPACE:-}
+  # Independent of Runtime's routing/slot TTL (normally 60s).
+  ttl: ${SKILL_GRANT_STORE_TTL:-604800}
+  operation_timeout: ${SKILL_GRANT_STORE_OPERATION_TIMEOUT:-0.3}
+
 gateway:
   # 产品形态：personal（个人版，默认）| enterprise（企业版）；影响 Gateway 存储选型（文件/DB、内存/Redis）
   edition: ${JIUWENSWARM_EDITION:-personal}

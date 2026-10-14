@@ -554,6 +554,13 @@ class AgentWebSocketServer:
             logger.warning("[AgentWebSocketServer] 服务端已在运行")
             return
 
+        # Install shared Skill state before prewarm or any request creates rails.
+        from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.redis_store import (
+            configure_shared_skill_authorization,
+        )
+
+        configure_shared_skill_authorization(get_config())
+
         # Reset harness package state to native on service startup
         reset_harness_packages_state()
 

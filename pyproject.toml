@@ -130,6 +130,7 @@ test = [
     "pytest-html>=4.1.1",
     "pytest-mock>=3.14.0",
     "pytest-cov>=7.0.0",
+    "fakeredis[lua]>=2.27.0",
     "coverage>=7.7.1",
     "pyyaml>=6.0",
 ]
@@ -211,6 +212,7 @@ test = [
     "pytest-html>=4.1.1",
     "pytest-mock>=3.14.0",
     "pytest-cov>=7.0.0",
+    "fakeredis[lua]>=2.27.0",
     "coverage>=7.7.1",
     "pyyaml>=6.0",
 ]

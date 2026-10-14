@@ -3065,7 +3065,7 @@ class JiuWenSwarmDeepAdapter:
         self._session_adapter_last_used.pop(session_id, None)
         self._session_adapter_versions.pop(session_id, None)
         self._session_adapter_reload_failures.pop(session_id, None)
-        clear_session_skill_state(session_id)
+        clear_session_skill_state(session_id, local_only=True)
         self._forget_skill_sleep_session(session_id, adapter)
         if not remove_runtime_state:
             return
@@ -10428,7 +10428,7 @@ class JiuWenSwarmDeepAdapter:
             context_engine_config=_deep_agent_context_engine_config(config),
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
-            max_iterations=config.get("max_iterations", 15),
+            max_iterations=parse_int(config.get("max_iterations"), 15),
             subagents=configured_subagents,
             add_general_purpose_agent=should_add_general_agent,
             tools=normalized_tool_cards,
@@ -11410,7 +11410,7 @@ class JiuWenSwarmDeepAdapter:
                     rails=rails_list if rails_list else [],
                     enable_task_loop=self._resolve_enable_task_loop(config, config_base),
                     add_general_purpose_agent=should_enable_general_agent,
-                    max_iterations=config.get("max_iterations", 15),
+                    max_iterations=parse_int(config.get("max_iterations"), 15),
                     workspace=self._build_agent_workspace(),
                     sys_operation=sys_operation,
                     language=self._resolve_runtime_language(),
@@ -14792,7 +14792,7 @@ class JiuWenSwarmDeepAdapter:
                     self._parent_session_id,
                     exc,
                 )
-            clear_session_skill_state(str(self._parent_session_id or "").strip())
+            clear_session_skill_state(str(self._parent_session_id or "").strip(), local_only=True)
             self._forget_skill_sleep_session(str(self._parent_session_id or "").strip())
         try:
             await self._sync_personal_context_rail("cleanup")
