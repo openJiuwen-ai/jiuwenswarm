@@ -1765,9 +1765,16 @@ class AgentRuntime:
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
-                events = await self._deliver_control(
-                    request, on_control_event=on_control_event,
-                )
+                # Bind the Runtime for the delivery, as invoke() does: the
+                # answer resumes agent work that reads it (Session messaging
+                # tools, cross-Session admission). Never hold it across a yield.
+                token = set_runtime_context(self, self._agent_manager)
+                try:
+                    events = await self._deliver_control(
+                        request, on_control_event=on_control_event,
+                    )
+                finally:
+                    reset_runtime_context(token)
                 for event in events:
                     yield event
                 return
