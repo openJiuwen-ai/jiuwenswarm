@@ -54,6 +54,12 @@ interface Window {
         | Array<Record<string, unknown>>;
       get_close_action?: () => Promise<'ask' | 'hide' | 'quit' | null> | 'ask' | 'hide' | 'quit' | null;
       set_close_action?: (action: 'ask' | 'hide' | 'quit') => Promise<boolean> | boolean;
+      report_tray_state?: (
+        state: 'idle' | 'running' | 'waiting' | 'error',
+        title?: string,
+        body?: string,
+        jobId?: string,
+      ) => Promise<void> | void;
     };
   };
   /** Durable ingest hook invoked by desktop_app.py run_js on native file drops. */
