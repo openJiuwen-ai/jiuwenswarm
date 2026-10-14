@@ -182,6 +182,12 @@ def _spawn_teammate_bootstrap(stop_event: asyncio.Event, server: object) -> asyn
 
 def _preload_runtime_backend() -> None:
     """OpenJiuwen-touching imports and workspace work. Runs off the IPC loop."""
+    # worker 启动链不加载任何 server runtime 模块，而下方 migrate 经
+    # common.external_providers 取 session_metadata——必须在功能模块加载前
+    # 显式装配（P0：否则 ExternalProviderUnregistered，AGENT_READY 永不到达）
+    from jiuwenswarm.server.runtime.provider_setup import install as _install_providers
+
+    _install_providers()
     if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
         from jiuwenswarm.common.utils import prepare_runtime_workspace
 
