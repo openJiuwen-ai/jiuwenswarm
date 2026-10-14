@@ -11,7 +11,6 @@ import sys
 import threading
 import time
 import uuid
-from pathlib import Path
 
 import pytest
 
@@ -889,6 +888,8 @@ forbidden = (
     "openjiuwen",
     "jiuwenswarm.server.agent_ws_server",
     "jiuwenswarm.server.worker.lifecycle",
+    "jiuwenswarm.server.worker.runtime_backend",
+    "jiuwenswarm.server.worker.runtime_bootstrap",
     "jiuwenswarm.agents.harness",
 )
 import jiuwenswarm.server.ipc.protocol  # noqa: F401
@@ -912,8 +913,23 @@ if hits:
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def test_worker_lifecycle_owns_runtime_construct() -> None:
-    root = Path(__file__).resolve().parents[3]
-    text = (root / "jiuwenswarm/server/worker/lifecycle.py").read_text(encoding="utf-8")
-    assert "bind_transport=False" in text
-    assert "AgentWebSocketServer.get_instance" in text
+def test_worker_runtime_owner_imports_do_not_prepare_the_backend() -> None:
+    """Ownership modules are safe to load before required preparation begins."""
+    script = r"""
+import sys
+from jiuwenswarm.server.worker import lifecycle, runtime_backend, runtime_bootstrap
+forbidden = (
+    "openjiuwen",
+    "jiuwenswarm.server.agent_ws_server",
+    "jiuwenswarm.extensions.manager",
+    "jiuwenswarm.agents.harness",
+)
+hits = [name for name in sys.modules
+        if any(name == prefix or name.startswith(prefix + ".") for prefix in forbidden)]
+if hits:
+    raise SystemExit("unexpected modules: " + ",".join(sorted(hits)[:20]))
+"""
+    result = __import__("subprocess").run(
+        [sys.executable, "-c", script], check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout

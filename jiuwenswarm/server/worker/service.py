@@ -242,11 +242,12 @@ async def _load_runtime(
 ) -> Any:
     from jiuwenswarm.server.worker.lifecycle import WorkerRuntime, start_worker_runtime
 
-    async def constructed(server: Any) -> None:
+    async def constructed(server: Any) -> WorkerRuntime:
         # Retain a cleanup owner even when preparation fails after construction.
         # Shutdown still waits for the loader to stop before releasing resources.
         loaded["runtime"] = WorkerRuntime(server=server, stop_event=asyncio.Event())
         await dispatcher.bind_runtime(server)
+        return loaded["runtime"]
 
     try:
         runtime = await start_worker_runtime(

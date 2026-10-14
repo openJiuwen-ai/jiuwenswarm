@@ -9,7 +9,8 @@ import pytest
 
 from jiuwenswarm.runtime.team_controller import LazyTeamExecutionController
 from jiuwenswarm.runtime.service import AgentRuntime
-from jiuwenswarm.server.worker import lifecycle
+from jiuwenswarm.server.worker import runtime_backend, runtime_bootstrap
+from jiuwenswarm.server.worker.telemetry import StartupTelemetry
 
 
 @pytest.mark.asyncio
@@ -22,32 +23,35 @@ async def test_required_configuration_and_sdk_import_overlap_before_runtime_patc
         complete.append(name)
 
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", "1")
-    monkeypatch.setattr(lifecycle, "_prepare_worker_configuration", lambda: prepare("config"))
-    monkeypatch.setattr(lifecycle, "_preload_sdk_execution_modules", lambda: prepare("sdk"))
+    monkeypatch.setattr(runtime_backend, "_prepare_worker_configuration", lambda: prepare("config"))
+    monkeypatch.setattr(runtime_backend, "_preload_sdk_execution_modules", lambda: prepare("sdk"))
 
     def apply_after_join():
         assert set(complete) == {"config", "sdk"}
 
-    monkeypatch.setattr(lifecycle, "_configure_openjiuwen_logging", apply_after_join)
-    monkeypatch.setattr(lifecycle, "_apply_runtime_entry_patches", apply_after_join)
-    await asyncio.to_thread(lifecycle._preload_runtime_backend)
+    monkeypatch.setattr(runtime_backend, "_configure_openjiuwen_logging", apply_after_join)
+    monkeypatch.setattr(runtime_backend, "_apply_runtime_entry_patches", apply_after_join)
+    await asyncio.to_thread(runtime_backend.preload_runtime_backend)
 
 
 @pytest.mark.asyncio
-async def test_required_configuration_failure_prevents_runtime_consumers(monkeypatch):
+@pytest.mark.parametrize("failed_stage", ["configuration", "sdk"])
+async def test_required_preparation_failure_prevents_runtime_consumers(monkeypatch, failed_stage):
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", "1")
 
     def fail():
         raise ValueError("invalid model migration")
 
-    monkeypatch.setattr(lifecycle, "_prepare_worker_configuration", fail)
-    monkeypatch.setattr(lifecycle, "_preload_sdk_execution_modules", lambda: None)
-    monkeypatch.setattr(lifecycle, "_configure_openjiuwen_logging",
+    monkeypatch.setattr(runtime_backend, "_prepare_worker_configuration",
+                        fail if failed_stage == "configuration" else lambda: None)
+    monkeypatch.setattr(runtime_backend, "_preload_sdk_execution_modules",
+                        fail if failed_stage == "sdk" else lambda: None)
+    monkeypatch.setattr(runtime_backend, "_configure_openjiuwen_logging",
                         lambda: pytest.fail("configuration did not become usable"))
-    monkeypatch.setattr(lifecycle, "_apply_runtime_entry_patches",
+    monkeypatch.setattr(runtime_backend, "_apply_runtime_entry_patches",
                         lambda: pytest.fail("configuration did not become usable"))
     with pytest.raises(ValueError, match="invalid model migration"):
-        await asyncio.to_thread(lifecycle._preload_runtime_backend)
+        await asyncio.to_thread(runtime_backend.preload_runtime_backend)
 
 
 @pytest.mark.asyncio
@@ -72,7 +76,8 @@ async def test_successful_construction_retains_cleanup_owner_when_parallel_exten
         await constructed.wait()
         raise extension_error
 
-    monkeypatch.setattr(lifecycle, "_preload_runtime_backend", lambda: None)
+    monkeypatch.setattr(runtime_backend, "preload_runtime_backend", lambda: None)
+    monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", lambda: None)
     monkeypatch.setattr(ExtensionRegistry, "_instance", None)
     monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
     monkeypatch.setattr(ExtensionManager, "load_all_extensions", load_extensions)
@@ -121,16 +126,61 @@ async def test_execution_code_overlaps_construction_and_failure_retains_owner(
     async def own(value):
         owners.append(value)
 
-    monkeypatch.setattr(lifecycle, "_preload_runtime_backend", lambda: None)
-    monkeypatch.setattr(lifecycle, "_preload_shared_execution_code", prepare_code)
+    monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", prepare_code)
     monkeypatch.setattr(ExtensionRegistry, "_instance", None)
     monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
-    monkeypatch.setattr(ExtensionManager, "load_all_extensions", AsyncMock())
+    load_extensions = AsyncMock()
+    monkeypatch.setattr(ExtensionManager, "load_all_extensions", load_extensions)
     with pytest.raises(ImportError, match="required execution module failed"):
-        await lifecycle._start_worker_runtime(
-            "127.0.0.1", 18000, SimpleNamespace(), on_constructed=own
+        await runtime_bootstrap.construct_runtime_server(
+            "127.0.0.1", 18000, on_constructed=own, telemetry=StartupTelemetry()
         )
     assert owners == [server]
+    server.start.assert_not_awaited()
+    load_extensions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_extensions_observe_execution_patches_after_parallel_server_construction(monkeypatch):
+    from jiuwenswarm.extensions.manager import ExtensionManager
+    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    overlap = threading.Barrier(2, timeout=2)
+    patches_installed = threading.Event()
+    events = []
+    server = SimpleNamespace(start=AsyncMock())
+
+    def prepare_code():
+        overlap.wait()
+        patches_installed.set()
+
+    def construct(**kwargs):
+        overlap.wait()
+        events.append("constructed")
+        return server
+
+    async def load_extensions(self, *, include_transport_extensions):
+        assert include_transport_extensions is False
+        assert patches_installed.is_set()
+        events.append("extensions")
+
+    async def retain_owner(value):
+        assert value is server
+        assert set(events) == {"constructed", "extensions"}
+        events.append("retained")
+
+    monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", prepare_code)
+    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
+    monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
+    monkeypatch.setattr(ExtensionManager, "load_all_extensions", load_extensions)
+
+    actual = await runtime_bootstrap.construct_runtime_server(
+        "127.0.0.1", 18000, on_constructed=retain_owner, telemetry=StartupTelemetry(),
+    )
+
+    assert actual is server
+    assert events[-1] == "retained"
     server.start.assert_not_awaited()
 
 
