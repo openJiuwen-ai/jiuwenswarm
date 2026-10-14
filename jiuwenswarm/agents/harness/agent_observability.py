@@ -74,13 +74,12 @@ def _attach_file_exporter_fanout(traces_dir: str, cfg: Any) -> None:
     if _file_exporter_fanout is not None:
         return
     try:
+        from opentelemetry import trace
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
         from openjiuwen.extensions.observability.file_exporter import TraceFileExporter
-        from openjiuwen.extensions.observability.setup import (
-            get_observability_runtime,
-            is_initialized,
-        )
+        from openjiuwen.extensions.observability.runtime import SafeSpanProcessor
+        from openjiuwen.extensions.observability.setup import is_initialized
 
         if not is_initialized():
             return
@@ -88,9 +87,15 @@ def _attach_file_exporter_fanout(traces_dir: str, cfg: Any) -> None:
             root_dir=traces_dir,
             retention_days=int(cfg.get("file_retention_days", 7)),
         )
-        processor = BatchSpanProcessor(exporter)
-        get_observability_runtime().add_span_processors((processor,))
-        _file_exporter_fanout = processor
+        # 注册并持有包装层（SafeSpanProcessor）而非内层 BatchSpanProcessor：
+        # provider 上真正挂的是适配器，on_end 只在适配器自身的 _shutdown_called
+        # 置位后才短路——持有内层时对其 shutdown 无法让适配器停转（评审 CR-002）。
+        # 直接在全局 provider 上注册：unified runtime 初始化时会
+        # set_tracer_provider，与 runtime.add_span_processors 内部使用的是同一
+        # 个 provider；自持引用的幂等判断（is not None）强于其对象身份去重。
+        adapter = SafeSpanProcessor(BatchSpanProcessor(exporter))
+        trace.get_tracer_provider().add_span_processor(adapter)
+        _file_exporter_fanout = adapter
         logger.info(
             "[AgentObservability] file exporter attached as fan-out processor: traces_dir=%s",
             traces_dir,
@@ -201,16 +206,18 @@ def shutdown_agent_observability() -> None:
         logger.warning("[AgentObservability] trajectory runtime shutdown failed: %s", exc)
     # The fan-out processor must be shut down before the active-flag gate: OTel
     # TracerProvider has no remove API, so a registered processor stays on the
-    # shared provider forever. Merely dropping the reference would keep jsonl
-    # growing while "disabled" and let a later re-attach register a second
-    # instance (add_span_processors dedups by object identity), duplicating
-    # every span per disable→enable cycle and leaking one worker thread each.
-    # shutdown() flushes the queue; SafeSpanProcessor then drops on_end calls.
+    # shared provider forever. _file_exporter_fanout holds the SafeSpanProcessor
+    # adapter (the object actually registered on the provider); its shutdown()
+    # sets _shutdown_called FIRST — subsequent on_end calls short-circuit before
+    # reaching the inner BatchSpanProcessor — then stops the inner processor on
+    # a best-effort basis (inner failure is logged, the gate stays latched).
+    # The reference is only cleared on success: a failed shutdown keeps it so a
+    # later attach stays a no-op instead of stacking a second processor.
     fanout_processor = _file_exporter_fanout
-    _file_exporter_fanout = None
     if fanout_processor is not None:
         try:
             fanout_processor.shutdown()
+            _file_exporter_fanout = None
         except Exception as exc:
             logger.warning("[AgentObservability] file exporter fan-out shutdown failed: %s", exc)
     if not _agent_observability_active:
