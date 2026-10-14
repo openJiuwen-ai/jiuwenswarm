@@ -7,27 +7,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+# AgentRef 为跨仓线协议数据结构，source of truth 在 gateway_protocol
+# （v2 口径：纯数据结构进协议包，AgentRequest.agent_ref 携带）；此处转发
+# 保持 gateway 树内既有引用不变（过渡形态，随 gateway 目录迁移收敛）。
+from gateway_protocol.e2a.agent_models import AgentRef  # noqa: F401
+
 WILDCARD = "*"
 APP_ID_DEFAULT = "default"
-
-
-@dataclass(frozen=True)
-class AgentRef:
-    """后端智能体标识。
-
-    mode: 'agent' | 'code' | 'team'
-    id:   mode='agent'/'code' 时为 agent_id；mode='team' 时为 team_name
-    """
-
-    mode: str
-    id: str
-
-    @classmethod
-    def default(cls) -> "AgentRef":
-        return cls(mode="agent", id="default")
-
-    def __repr__(self) -> str:
-        return f"AgentRef({self.mode}:{self.id})"
 
 
 @dataclass(frozen=True)

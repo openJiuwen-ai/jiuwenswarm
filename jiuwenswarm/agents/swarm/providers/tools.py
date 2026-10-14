@@ -38,6 +38,13 @@ from openjiuwen.agent_teams.harness.manifest import (
     harness_element,
     param_field,
 )
+from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+    AUTHORIZATION_EXECUTION_CONTEXTS,
+)
+from jiuwenswarm.agents.harness.common.a4p_runtime import is_a4p_enabled
+from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
+    get_tools as get_a4p_tools,
+)
 from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     apply_audio_model_config_from_yaml,
@@ -116,6 +123,7 @@ VIDEO_GEN = "swarm.video_gen"
 VISUAL_GEN = "swarm.visual_gen"
 XIAOYI_PHONE = "swarm.xiaoyi_phone"
 SYMPHONY_TOOLKIT = "swarm.symphony_toolkit"
+A4P_INTENT_AUTHORIZATION = "swarm.a4p_intent_authorization"
 CODE_EXTRA_TOOLS = "swarm.code_extra_tools"
 
 # xiaoyi phone tool objects, gated by ``channels.xiaoyi.phone_tools_enabled``.
@@ -481,6 +489,20 @@ def _build_symphony_tools(ctx: SwarmBuildContext) -> list[Any]:
         return []
 
 
+def _build_a4p_intent_authorization_tools(ctx: SwarmBuildContext) -> list[Any]:
+    """Build the A4P request tool only for an interactive Web team leader."""
+    if getattr(ctx, "role", "") != "leader" or not is_a4p_enabled(ctx.config or {}):
+        return []
+    execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(ctx.session_id)
+    if execution_context is None or not execution_context.is_interactive_web:
+        return []
+    try:
+        return list(get_a4p_tools(session_id=ctx.session_id))
+    except Exception as exc:
+        logger.warning("[swarm.a4p_intent_authorization] construction failed: %s", exc)
+        return []
+
+
 class SkillToolkitInput(ConstructionInput):
     """Construction inputs for the skill-toolkit tool."""
 
@@ -605,6 +627,16 @@ def build_symphony_toolkit(params: dict[str, Any], ctx: SwarmBuildContext) -> li
     return _build_symphony_tools(ctx)
 
 
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=A4P_INTENT_AUTHORIZATION,
+    description="A4P intent-token authorization tool for repeated protected tool calls.",
+)
+def build_a4p_intent_authorization(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Build the leader-only A4P authorization request tool."""
+    return _build_a4p_intent_authorization_tools(ctx)
+
+
 class CodeExtraToolsInput(ConstructionInput):
     """Construction inputs for the code-extra tools."""
 
@@ -642,11 +674,13 @@ __all__ = [
     "IMAGE_GEN",
     "XIAOYI_PHONE",
     "SYMPHONY_TOOLKIT",
+    "A4P_INTENT_AUTHORIZATION",
     "CODE_EXTRA_TOOLS",
     "vision_model_config_params",
     "audio_dedicated_configured",
     "audio_model_config_params",
     "build_symphony_toolkit",
+    "build_a4p_intent_authorization",
     "build_code_extra_tools",
     "skill_retrieval_toolkit_for_context",
     "visible_skill_names_for_list_skill",

@@ -46,9 +46,9 @@ const visualGenFields = [
 ] as const;
 const visualGenContextWindowField = 'visual_gen_context_window_tokens';
 
-type SaveConfig = (updates: Record<string, string>, operation: string) => Promise<unknown>;
+export type SaveConfig = (updates: Record<string, string>, operation: string) => Promise<unknown>;
 
-function AgentConfigDialog({
+export function AgentConfigDialog({
   titleKey,
   fields,
   config,

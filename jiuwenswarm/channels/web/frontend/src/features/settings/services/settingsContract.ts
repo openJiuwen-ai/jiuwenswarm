@@ -66,7 +66,6 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('embed_api_base', 'models', 'text', 'EMBED_API_BASE'),
   envField('embed_api_key', 'models', 'text', 'EMBED_API_KEY'),
   envField('embed_model', 'models', 'text', 'EMBED_MODEL'),
-  yamlField('enable_free_models', 'models', 'boolean', 'models.enable_free_models'),
 
   yamlField('skill_evolution', 'agent', 'boolean', 'react.evolution.skill_evolution'),
   yamlField('skill_retrieval_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.enabled'),
@@ -78,6 +77,8 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('bocha_api_key', 'agent', 'text', 'BOCHA_API_KEY'),
   envField('perplexity_api_key', 'agent', 'text', 'PERPLEXITY_API_KEY'),
   envField('serper_api_key', 'agent', 'text', 'SERPER_API_KEY'),
+  envField('jev_openrouter_api_key', 'browser', 'text', 'OPENROUTER_API_KEY'),
+  envField('jev_typesafe_api_key', 'browser', 'text', 'TYPESAFE_API_KEY'),
   envField('github_token', 'agent', 'text', 'GITHUB_TOKEN'),
   envField('vision_api_base', 'agent', 'text', 'VISION_API_BASE'),
   envField('vision_api_key', 'agent', 'text', 'VISION_API_KEY'),
@@ -133,6 +134,13 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   yamlField('rsi_enabled', 'experimental', 'boolean', 'rsi.enabled'),
   yamlField('trajectory_ui_enabled', 'experimental', 'boolean', 'trajectory_ui.enabled'),
   yamlField('team_organization_ui_enabled', 'experimental', 'boolean', 'experimental.team_organization_ui_enabled'),
+  yamlField('team_scheduled_dispatch_enabled', 'experimental', 'boolean', 'modes.team.jiuwen_team.dispatch_mode'),
+  yamlField(
+    'team_task_verification_enabled',
+    'experimental',
+    'boolean',
+    'modes.team.jiuwen_team.enable_task_verification',
+  ),
   yamlField('task_full_duplex_enabled', 'experimental', 'boolean', 'experimental.task_full_duplex_enabled'),
   yamlField('task_asr_enabled', 'experimental', 'boolean', 'experimental.task_asr_enabled'),
   yamlField('symphony_evolution_enabled', 'experimental', 'boolean', 'symphony.evolution.flow.enabled'),
@@ -195,7 +203,7 @@ export const SETTINGS_OTHER_PERSISTENCE = [
     id: 'browser',
     method: 'path.set',
     persistence: 'config.yaml',
-    path: 'browser.chrome_path, browser.headless',
+    path: 'browser.chrome_path, browser.headless, browser.decision.mode, browser.decision.provider',
   },
   {
     id: 'permissions.tools',
@@ -312,5 +320,13 @@ export function buildModelsSavePayload(models: ModelEntry[]): Record<string, unk
   if (models.length === 0) {
     throw new Error('At least one model is required');
   }
-  return { models };
+  return {
+    models: models.map(({ has_api_key: hasApiKey, ...model }) => {
+      if (hasApiKey && !model.api_key.trim()) {
+        const { api_key: _unchangedApiKey, ...modelWithoutApiKey } = model;
+        return modelWithoutApiKey;
+      }
+      return model;
+    }),
+  };
 }

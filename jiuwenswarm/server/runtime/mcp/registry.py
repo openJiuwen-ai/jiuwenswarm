@@ -220,6 +220,7 @@ def _load_index_entry(name: str) -> dict[str, Any]:
     examples = raw.get("examples") if isinstance(raw.get("examples"), dict) else {}
     return {
         **raw,
+        "display_name_i18n": display_name,
         "display_name": display_name.get("zh") or package.name,
         "display_name_en": display_name.get("en") or package.name,
         "name": display_name.get("zh") or package.name,
@@ -351,6 +352,7 @@ def _build_summary(
         "name": name,
         # 中文名优先：display_name > name(中文) > name_zh > 包名
         "display_name": meta.get("display_name") or meta.get("name") or meta.get("name_zh") or name,
+        "display_name_i18n": meta.get("display_name_i18n", {}),
         # 中文描述优先（索引里 description_zh 是干净中文，description 是英文）
         "description": meta.get("description_zh") or meta.get("description", ""),
         "category": meta.get("category", ""),

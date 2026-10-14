@@ -48,6 +48,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
 )
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_config_validation import probe_model_connection, raise_if_invalid
+from jiuwenswarm.common.model_errors import MODEL_SELECTION_REFERENCED, ModelSelectionError
 from jiuwenswarm.common.reasoning_config import (
     effective_endpoint_profile,
     validate_reasoning_level_for_model,
@@ -224,6 +225,11 @@ def _merge_models_for_replace_all(
     out: list[dict[str, Any]] = []
     for item in parsed:
         origin_idx = item.get("origin_index")
+        model_id = item.get("model_id")
+        if model_id:
+            origin_idx = next((i for i, entry in enumerate(raw_defaults) if entry.get("model_id") == model_id), None)
+            if origin_idx is None:
+                raise ConfigPanelBadRequest(f"unknown model_id: {model_id}")
         raw_entry = None
         resolved_entry = None
         if isinstance(origin_idx, int) and 0 <= origin_idx < len(raw_defaults):
@@ -293,7 +299,7 @@ def _merge_models_for_replace_all(
             new_entry["is_default"] = item["is_default"]
             # api_key: resolved holds the decrypted plaintext shown to the frontend.
             # Unchanged → keep raw (placeholder or ciphertext); changed → encrypt new value.
-            if not _values_match(item["api_key"], resolved_mcc.get("api_key")):
+            if item.get("api_key_provided", True) and not _values_match(item["api_key"], resolved_mcc.get("api_key")):
                 new_mcc["api_key"] = (
                     crypto.encrypt(item["api_key"]) if (item["api_key"] and crypto) else item["api_key"]
                 )
@@ -461,9 +467,11 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
             aliases_seen[alias] = idx
 
         parsed.append({
+            "model_id": item.get("model_id"),
             "model_name": model_name,
             "api_base": api_base,
             "api_key": api_key,
+            "api_key_provided": "api_key" in item,
             "model_provider": model_provider,
             "temperature": temperature,
             "is_default": is_default,
@@ -701,8 +709,9 @@ async def models_list_handler(
                 "model_id": entry.get("model_id", ""),
                 "model_name": model_name,
                 "api_base": mcc.get("api_base", ""),
-                # 凭据绝不能随列表下发到浏览器
+                # 保持旧设置页的编辑/测试/保存协议；登录模型凭据不可下发。
                 "api_key": "" if is_login_model(entry) else mcc.get("api_key", ""),
+                "has_api_key": bool(mcc.get("api_key")),
                 "model_provider": mcc.get("client_provider", ""),
                 "temperature": mco.get("temperature"),
                 "reasoning_level": reasoning_level_display(mco.get("reasoning_level")),
@@ -767,6 +776,7 @@ async def models_replace_all_handler(
     *,
     on_config_saved: Any = None,
     agent_client: Any = None,
+    user_id: str = "",
 ) -> None:
     """原子地用提交的列表整体替换 models.defaults。
 
@@ -782,6 +792,21 @@ async def models_replace_all_handler(
         return
     try:
         new_models = build_models_defaults_from_frontend(params.get("models"))
+        from jiuwenswarm.common.config_panel.model_resource_handlers import find_resource_references
+        from jiuwenswarm.common.model_selection import ModelSelection
+
+        catalog = ModelCatalog()
+        retained_ids = {entry.get("model_id") for entry in new_models}
+        for old in catalog.snapshot["defaults"]:
+            if old.get("model_id") in retained_ids:
+                continue
+            selection = ModelSelection(type="model", id=old["model_id"])
+            references = await find_resource_references(catalog, selection, user_id=user_id)
+            if references:
+                raise ModelSelectionError(
+                    MODEL_SELECTION_REFERENCED, "resource is still referenced",
+                    references=[ref.__dict__ for ref in references],
+                )
         if (
             is_affinity_enabled(get_config_raw())
             and not has_kv_cache_affinity_capability(
@@ -795,7 +820,7 @@ async def models_replace_all_handler(
         candidate_models["defaults"] = new_models
         _ensure_model_business_ids(candidate_models)
         raise_if_invalid(candidate_models)
-        update_default_models_in_config(candidate_models["defaults"])
+        update_default_models_in_config(candidate_models["defaults"], cron_references_checked=True)
 
         applied_without_restart = await _apply_models_change(
             on_config_saved, agent_client, changed_keys=["models.defaults"], force=True
@@ -807,6 +832,8 @@ async def models_replace_all_handler(
         })
     except ConfigPanelBadRequest as exc:
         await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
+    except ModelSelectionError as exc:
+        await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code, payload=exc.to_payload())
     except Exception as exc:  # noqa: BLE001
         logger.warning("[models.replace_all] %s", exc)
         await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
@@ -871,7 +898,7 @@ async def _apply_models_change(
         else:
             get_config()
     except Exception:  # noqa: BLE001
-        pass
+        return False
     return True
 
 
@@ -880,6 +907,7 @@ def register_models_handlers(
     *,
     on_config_saved: Any = None,
     agent_client: Any = None,
+    user_id: str = "",
 ) -> None:
     """在 channel 上注册 Web 侧 models/config 域本地 handler。
 
@@ -887,6 +915,12 @@ def register_models_handlers(
     AgentServer）由 gateway 侧 ``_register_config_proxy`` 包装；ConfigAdapter
     直接本地执行。两侧注册入口各自调用本函数，注册语义保持一致。
     """
+
+    from jiuwenswarm.common.config_panel.model_resource_handlers import register_model_resource_handlers
+
+    register_model_resource_handlers(
+        channel, on_config_saved=on_config_saved, agent_client=agent_client, user_id=user_id,
+    )
 
     async def _config_validate_model(ws, req_id, params, session_id):
         await config_validate_model_handler(channel, ws, req_id, params)
@@ -903,6 +937,7 @@ def register_models_handlers(
             channel, ws, req_id, params, session_id,
             on_config_saved=on_config_saved,
             agent_client=agent_client,
+            user_id=user_id,
         )
 
     channel.register_method("config.validate_model", _config_validate_model)

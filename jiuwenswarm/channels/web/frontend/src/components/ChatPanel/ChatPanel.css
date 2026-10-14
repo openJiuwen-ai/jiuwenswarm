@@ -1116,6 +1116,13 @@
   height: 26px;
 }
 
+.chat-composer-suggestion__asset-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
 .chat-composer-suggestion__text {
   display: flex;
   min-width: 0;
@@ -1490,6 +1497,21 @@
 .chat-mode-select {
   position: relative;
   min-width: 0;
+}
+
+.chat-model-selector {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.chat-model-selector__error {
+  max-width: 220px;
+  color: var(--color-danger, #c23);
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .chat-mode-select__trigger {
@@ -2972,6 +2994,36 @@
   overflow-y: auto;
 }
 
+.model-select__nested-trigger--open {
+  background: var(--color-icon-btn-hover-surface);
+}
+
+.model-select__group-route {
+  padding-left: 36px;
+  font-size: 13px;
+}
+
+.model-select__nested-chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-meta);
+}
+
+.model-select__nested-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-select__nested-menu {
+  min-width: 220px;
+  padding: 6px;
+  overflow-y: auto;
+  box-shadow: var(--shadow-lg);
+}
+
 /* 模型选择菜单(chat-panel-model-selector-menu)hover 统一 #f5f5f5，与权限/模式菜单约定一致；
    RSI 实验弹窗复用 .model-select__menu 但不在本次范围，用 :not 排除 */
 .model-select__menu:not(.rsi-model-select__menu) .chat-mode-select__option:hover:not(:disabled),
@@ -3202,6 +3254,13 @@
   font-size: var(--font-size-2xs, 11px);
   color: var(--color-text-secondary);
   opacity: 0.7;
+}
+
+.chat-swarmflow-config-panel__worktree-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .chat-skill-select__trigger {
@@ -3483,6 +3542,22 @@
       rgba(var(--color-action-primary-rgb), 0.04));
 }
 
+/* @ 引用的素材预览卡：由输入框里的 @名称 驱动，不由上传产生。
+   用虚线和主色底把“引用”跟“真附件”区分开，也不做 hover 抬升。 */
+.chat-input-attachment-card--reference {
+  border-style: dashed;
+  border-color: rgba(var(--color-action-primary-rgb), 0.55);
+  background-color: var(--color-surface-card);
+  background-image: linear-gradient(rgba(var(--color-action-primary-rgb), 0.05),
+      rgba(var(--color-action-primary-rgb), 0.05));
+  cursor: default;
+}
+
+.chat-input-attachment-card--reference:hover {
+  transform: none;
+  box-shadow: var(--effect-chat-toolbar-shadow);
+}
+
 .chat-input-attachment-card--error {
   border-color: var(--color-chat-attachment-error-border);
   background-color: var(--color-surface-card);
@@ -3522,13 +3597,21 @@
 }
 
 .chat-input-attachment-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  min-width: 0;
   color: var(--color-text-primary);
   font-size: 12px;
   font-weight: 500;
   line-height: 17px;
+}
+
+.chat-input-attachment-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .chat-input-attachment-meta {
@@ -4152,6 +4235,87 @@
 .chat-welcome__banner--bubble--visible {
   opacity: 1;
   transform: scale(1);
+}
+
+.chat-welcome__banner--bubble--campaign {
+  box-sizing: border-box;
+  width: 186px;
+  padding: 12px 16px;
+  color: #191919;
+  background: linear-gradient(135deg, #f1edff 0%, #fff4ef 100%);
+  pointer-events: auto;
+  transform-origin: right bottom;
+}
+
+.chat-welcome__campaign-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.chat-welcome__campaign-heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-welcome__campaign-heading > span svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chat-welcome__campaign-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: #191919;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+}
+
+.chat-welcome__campaign-close:hover {
+  background: rgba(25, 25, 25, 0.08);
+}
+
+.chat-welcome__campaign-close svg {
+  width: 15px;
+  height: 15px;
+}
+
+.chat-welcome__banner--bubble--campaign > p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.chat-welcome__campaign-claim {
+  display: block;
+  min-width: 68px;
+  height: 28px;
+  margin: 8px 0 0 auto;
+  padding: 0 12px;
+  color: #191919;
+  font: inherit;
+  font-size: 12px;
+  line-height: 26px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid #686868;
+  border-radius: 999px;
+}
+
+.chat-welcome__campaign-claim:hover {
+  background: #fff;
+  border-color: #191919;
 }
 
 .chat-welcome__banner--bee {
@@ -4849,6 +5013,36 @@
   border-color: var(--color-border-default);
   box-shadow: none;
 }
+
+.chat-input-attachment-name-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0 4px;
+  border: 1px solid var(--color-border, #d0d5dd);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.chat-input-attachment-rename {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  margin-left: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted, #667085);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.chat-input-attachment-card:hover .chat-input-attachment-rename,
+.chat-input-attachment-rename:focus-visible {
+  opacity: 1;
+}
+
 .chat-team-select__dot {
   width: 6px;
   height: 6px;

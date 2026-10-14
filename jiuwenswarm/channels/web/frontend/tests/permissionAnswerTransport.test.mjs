@@ -6,7 +6,7 @@ import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
 
 // Reserved DOM origin only. HTTP is rejected; WebSocket is an in-memory transport, never a network client.
-const dom = new JSDOM('<div id="root"></div>', { url: 'https://permission-answer.invalid', pretendToBeVisual: true });
+const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://permission-answer.invalid', pretendToBeVisual: true });
 class MemoryWebSocket {
   static OPEN = 1;
   static instance;
@@ -42,6 +42,8 @@ after(() => dom.window.close());
 
 const { useWebSocket } = await import('../node_modules/.cache/permission-answer-transport/hooks/useWebSocket.js');
 const { AuthorizationPrompt } = await import('../node_modules/.cache/permission-answer-transport/components/InteractionSlot/AuthorizationPrompt.js');
+const { ToolCallDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolCallDisplay.js');
+const { ToolGroupDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolGroupDisplay.js');
 const { useChatStore, useSessionStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
 const { default: i18n } = await import('../node_modules/.cache/permission-answer-transport/i18n/index.js');
 const { webClient } = await import('../node_modules/.cache/permission-answer-transport/services/webClient.js');
@@ -53,7 +55,7 @@ const question = (extra = {}) => ({
 });
 const payload = (questions = [question()]) => ({ session_id: sessionId, request_id: 'sdk-request', source: 'permission_interrupt', questions });
 
-async function mounted(run) {
+async function mounted(run, content = null) {
   useChatStore.getState().ensureRuntime(sessionId);
   useChatStore.getState().setActiveSessionId(sessionId);
   useSessionStore.getState().ensureRuntime(sessionId);
@@ -62,6 +64,7 @@ async function mounted(run) {
   function Host() {
     observed.api = useWebSocket({ activeSessionId: sessionId, onError: (error) => observed.errors.push(error) });
     const pending = useChatStore((state) => state.runtimes[sessionId]?.pendingQuestions[0]);
+    if (content) return content;
     return pending ? createElement(AuthorizationPrompt, {
       pending,
       onSubmit: async (...args) => {
@@ -95,6 +98,11 @@ for (const count of [1, 2]) for (const action of ['allow-once', 'reject']) {
     await deliver(socket, payload(Array.from({ length: count }, () => question())));
     assertPlanToggleAllowed(false);
     assert.ok(prompt(), 'legacy permission must be displayed');
+    const header = document.querySelector('[data-testid="interaction-slot-auth-bar"]');
+    assert.equal(header.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]'), null);
+    await act(async () => header.click());
+    assert.equal(prompt().querySelector('[data-testid="chat-panel-auto-reviewer-details"]'), null);
+    assert.match(prompt().textContent, /\/protected\.txt/);
     await act(async () => document.querySelector(`[data-variant="${action}"]`).click());
     const request = socket.requests.at(-1);
     assert.equal(request.method, 'chat.send');
@@ -109,20 +117,51 @@ for (const count of [1, 2]) for (const action of ['allow-once', 'reject']) {
   }));
 }
 
-test('Smart prompt remains pending after res and unrelated ack; exact runtime ack consumes it', async () => mounted(async ({ socket, observed }) => {
-  await deliver(socket, payload([question({ card_id: 'exact-card' })]));
-  assert.equal(prompt().dataset.cardIds, 'exact-card');
-  await act(async () => document.querySelector('[data-variant="allow-once"]').click());
-  const request = socket.requests.at(-1);
-  assert.deepEqual(request.params.answers, [{ selected_options: ['allow_once'], card_id: 'exact-card' }]);
-  await respond(socket, request);
-  await runtimeAck(socket, 'foreign');
-  assert.deepEqual(observed.results, []);
-  assert.ok(prompt());
-  await runtimeAck(socket, request.id);
-  assert.deepEqual(observed.results, [true]);
-  assert.equal(prompt(), null);
-}));
+const automatic = {
+  reviewer_status: 'approved', final_reviewer_status: 'approved', decision_source: 'auto_reviewer',
+  risk_level: 'low', evidence_summary: 'Creates the requested summary.',
+};
+const manual = {
+  reviewer_status: 'manual', decision_source: 'auto_reviewer', risk_level: 'medium',
+  manual_reason_summary: 'Review the target file.', user_review_hint: 'Check the content before allowing.',
+};
+
+for (const language of ['zh', 'en']) {
+  test(`${language}: Smart review stays in expanded details and awaits its exact runtime ack`, async () => {
+    const previousLanguage = i18n.language;
+    await i18n.changeLanguage(language);
+    try {
+      await mounted(async ({ socket, observed }) => {
+        await deliver(socket, payload([question({ card_id: 'exact-card', reviewer_metadata: manual })]));
+        assert.equal(prompt().dataset.cardIds, 'exact-card');
+        const header = document.querySelector('[data-testid="interaction-slot-auth-bar"]');
+        assert.equal(header.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]'), null);
+        assert.equal(prompt().querySelector('[data-testid="chat-panel-auto-reviewer-details"]'), null);
+        await act(async () => header.click());
+        const details = prompt().querySelector('[data-testid="chat-panel-auto-reviewer-details"]');
+        assert.ok(details);
+        assert.equal(header.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]'), null);
+        assert.equal(details.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]').textContent,
+          language === 'zh' ? '需要人工审批' : 'Manual review required');
+        assert.match(details.textContent, /Review the target file/);
+        assert.match(details.textContent, /Check the content before allowing/);
+        await act(async () => document.querySelector('[data-variant="allow-once"]').click());
+        const request = socket.requests.at(-1);
+        assert.deepEqual(request.params.answers, [{ selected_options: ['allow_once'], card_id: 'exact-card' }]);
+        assert.equal(header.getAttribute('aria-expanded'), 'true', 'action buttons do not collapse the prompt');
+        await respond(socket, request);
+        await runtimeAck(socket, 'foreign');
+        assert.deepEqual(observed.results, []);
+        assert.ok(prompt());
+        await runtimeAck(socket, request.id);
+        assert.deepEqual(observed.results, [true]);
+        assert.equal(prompt(), null);
+      });
+    } finally {
+      await i18n.changeLanguage(previousLanguage);
+    }
+  });
+}
 
 test('legacy caller cards are stripped, and blind or foreign permission answers send nothing', async () => mounted(async ({ socket, observed }) => {
   const answers = [{ selected_options: ['allow_once'], card_id: 'forged' }];
@@ -186,3 +225,50 @@ test('plan toggle waits for both cards and preserves a failed answer', async () 
   }
   assert.deepEqual(observed.results, [false, true, true]);
 }));
+
+const toolCall = { id: 'write-1', name: 'write_file', arguments: { file_path: 'notes/summary.md' }, reviewer: automatic };
+const toolResult = { toolCallId: 'write-1', toolName: 'write_file', result: 'File written.', success: true, reviewer: automatic };
+
+for (const [name, props] of [['tool call', { toolCall }], ['tool result', { toolResult }]]) {
+  test(`${name} shows approval only in expanded details`, async () => mounted(async ({ socket }) => {
+    const header = document.querySelector('[data-testid="chat-panel-tool-call-card-header"]');
+    assert.equal(header.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]'), null);
+    assert.equal(document.querySelector('[data-testid="chat-panel-auto-reviewer-details"]'), null);
+    await act(async () => header.click());
+    assert.equal(header.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]'), null);
+    assert.equal(document.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]').dataset.variant, 'approved');
+    await act(async () => header.click());
+    assert.equal(document.querySelector('[data-testid="chat-panel-auto-reviewer-details"]'), null);
+    assert.equal(socket.requests.length, 0, 'expansion does not submit permission answers');
+  }, createElement(ToolCallDisplay, props)));
+}
+
+test('tool group separates approval details from execution completion', async () => mounted(async ({ socket }) => {
+  const header = document.querySelector('[data-testid="chat-panel-tool-tree-header"]');
+  assert.equal(header.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]'), null);
+  await act(async () => header.click());
+  assert.equal(header.getAttribute('aria-expanded'), 'true');
+  assert.equal(header.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]'), null);
+  const details = document.querySelector('[data-testid="chat-panel-tool-execution-details"]');
+  assert.equal(details.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]').dataset.variant, 'approved');
+  assert.equal(details.querySelector('[data-testid="chat-panel-tool-execution-details-badge"]').dataset.variant, 'success');
+  assert.equal(socket.requests.length, 0);
+}, createElement(ToolGroupDisplay, {
+  showAvatar: false,
+  executions: [{ toolCallId: 'write-1', toolCall, result: toolResult, status: 'completed' }],
+})));
+
+test('multi-item review keeps the count and each item status out of the prompt header', async () => mounted(async () => {
+  const header = document.querySelector('[data-testid="interaction-slot-auth-bar"]');
+  assert.equal(document.querySelector('[data-testid="interaction-slot-auth-count"]').textContent, '(2)');
+  assert.equal(header.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]'), null);
+  await act(async () => header.click());
+  const details = document.querySelectorAll('[data-testid="chat-panel-auto-reviewer-details"]');
+  assert.equal(details.length, 2);
+  assert.deepEqual([...details].map(item => item.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]').dataset.variant),
+    ['manual', 'approved']);
+  assert.equal(header.querySelector('[data-testid="chat-panel-auto-reviewer-badge"]'), null);
+}, createElement(AuthorizationPrompt, {
+  pending: payload([question({ reviewer_metadata: manual }), question({ reviewer_metadata: automatic })]),
+  onSubmit: async () => true,
+})));

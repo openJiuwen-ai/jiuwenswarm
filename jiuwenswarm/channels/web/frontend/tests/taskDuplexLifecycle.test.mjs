@@ -59,7 +59,9 @@ await build({
             : path.endsWith('webClient')
               ? `
           export const webClient = { on(...args) { return globalThis.__duplexHarness.on(...args); } };
-          export const webRequest = (...args) => globalThis.__duplexHarness.request(...args);`
+          export const webRequest = (...args) => globalThis.__duplexHarness.request(...args);
+          export const requestAgentDetail = async () => null;
+          export const requestPhaseAgents = async () => [];`
               : path.endsWith('featureFlag')
                 ? 'export const useTaskFullDuplexEnabled = () => true;'
                 : `export const useApplicationTaskStore = { getState: () => globalThis.__duplexHarness.tasks };

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from gateway_protocol.agent_client import AgentServerClient
-from gateway_protocol.sdk.agent_server_client import AgentServerClientExtension
-from gateway_protocol.sdk.third_agent import ThirdAgentExtension
-from gateway_protocol.third_agent import ThirdAgent
+from jiuwenswarm.common.client.agent_client import AgentServerClient
+from jiuwenswarm.extensions.sdk.agent_server_client import AgentServerClientExtension
+from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
+from jiuwenswarm.common.client.third_agent import ThirdAgent
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentManager

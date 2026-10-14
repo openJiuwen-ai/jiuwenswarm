@@ -235,6 +235,12 @@ symphony_submodules = collect_submodules("jiuwenswarm.symphony")
 gateway_adapter_submodules = collect_submodules(
     "jiuwenswarm.server.runtime.gateway_adapter"
 )
+# The Runtime Worker is launched by module name through the frozen entrypoint's
+# runpy dispatcher. PyInstaller cannot infer this subprocess entrypoint from
+# the string passed to ``-m``, so bundle the package and all of its modules.
+runtime_worker_submodules = collect_submodules(
+    "jiuwenswarm.server.worker"
+)
 # TeamManager imports this lifecycle hook while its parent package is being
 # initialized.  Keep it explicit because PyInstaller cannot reliably infer
 # this package-attribute import from the frozen entry point.
@@ -281,7 +287,7 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
-] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + team_kv_cache_hiddenimports + dispatch_submodules
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + team_kv_cache_hiddenimports + dispatch_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [

@@ -102,8 +102,42 @@ class _ConfigRpcChannel:
         }
 
 
+async def reload_runtime_after_config_save(
+    agent_manager: Any,
+    _updated_keys: Any = None,
+    *,
+    env_updates: dict[str, Any] | None = None,
+    config_payload: dict[str, Any] | None = None,
+    reload_options: dict[str, Any] | None = None,
+) -> bool:
+    """Publish a saved config to every agent in this process before acknowledging it.
+
+    Permission changes share one config file across channels, so they are not
+    narrowed to the channel that submitted the panel request.
+    """
+    options = reload_options if isinstance(reload_options, dict) else {}
+    scopes = {
+        str(scope)
+        for scope in (options.get("reload_scopes") or [])
+        if isinstance(scope, str) and scope
+    }
+    target_channel = str(options.get("target_channel_id") or "").strip() or None
+    if "permissions" in scopes:
+        target_channel = None
+    await agent_manager.reload_agents_config(
+        config_payload if isinstance(config_payload, dict) else None,
+        env_updates if isinstance(env_updates, dict) else None,
+        target_channel_id=target_channel,
+        reload_scopes=scopes or None,
+    )
+    return True
+
+
 class ConfigAdapter(GatewayAdapter):
     """Execute config-panel requests in the current AgentServer directory."""
+
+    def __init__(self, on_config_saved: Any = None) -> None:
+        self._on_config_saved = on_config_saved
 
     methods = frozenset({
         ReqMethod.CONFIG_GET.value,
@@ -219,8 +253,11 @@ class ConfigAdapter(GatewayAdapter):
                 register_models_handlers,
             )
 
-            register_config_set_handlers(channel)
-            register_models_handlers(channel)
+            register_config_set_handlers(
+                channel,
+                on_config_saved=self._on_config_saved,
+            )
+            register_models_handlers(channel, user_id=request.user_id)
         handler = channel.methods.get(request.req_method.value)
         if handler is None:
             return build_error_response(request, "unsupported config method", code="BAD_REQUEST")
@@ -259,10 +296,19 @@ class ConfigAdapter(GatewayAdapter):
         )
 
     async def _handle_browser_config(self, request: AgentRequest) -> AgentResponse:
-        from jiuwenswarm.common.config import get_config, update_browser_in_config
+        from jiuwenswarm.agents.harness.common.browser_config import (
+            browser_decision_state,
+            browser_decision_updates,
+        )
+        from jiuwenswarm.common.config import (
+            get_config,
+            update_browser_decision_in_config,
+            update_browser_in_config,
+        )
 
+        config = get_config() or {}
         if request.req_method == ReqMethod.PATH_GET:
-            browser = (get_config() or {}).get("browser") or {}
+            browser = config.get("browser") or {}
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -270,6 +316,7 @@ class ConfigAdapter(GatewayAdapter):
                 payload={
                     "chrome_path": _resolve_browser_path(browser) if isinstance(browser, dict) else "",
                     "headless": browser.get("headless") if isinstance(browser.get("headless"), bool) else True,
+                    **browser_decision_state(config),
                 },
                 metadata=request.metadata,
             )
@@ -282,7 +329,15 @@ class ConfigAdapter(GatewayAdapter):
         headless = params.get("headless", True)
         if not isinstance(headless, bool):
             headless = True
+        # Older clients omit the decision fields; the saved values then stay untouched.
+        decision_updates, error = browser_decision_updates(
+            params.get("decision_mode"), params.get("decision_provider"), config
+        )
+        if error:
+            return build_error_response(request, error, code="BAD_REQUEST")
         update_browser_in_config({"chrome_path": chrome_path, "headless": headless})
+        if decision_updates:
+            update_browser_decision_in_config(decision_updates)
         metadata = dict(request.metadata or {})
         metadata["config_changed"] = True
         metadata["browser_runtime_restart"] = True
@@ -290,7 +345,11 @@ class ConfigAdapter(GatewayAdapter):
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload={"chrome_path": chrome_path, "headless": headless},
+            payload={
+                "chrome_path": chrome_path,
+                "headless": headless,
+                **browser_decision_state(get_config() or {}),
+            },
             metadata=metadata,
         )
 

@@ -167,7 +167,7 @@ def apply_a2ui_text_fallback_to_gateway_payload(
     if not any(_A2UI_OPEN_TAG_MARKER in value for value in payload.values() if isinstance(value, str)):
         return payload
 
-    from jiuwenswarm.server.runtime.a2ui.integration import apply_non_web_text_fallback_to_payload
+    from jiuwenswarm.gateway.embedded.runtime.a2ui_text import apply_non_web_text_fallback_to_payload
 
     return apply_non_web_text_fallback_to_payload(payload, channel_id=channel_id)
 
@@ -2417,13 +2417,12 @@ class MessageHandler(ABC):
     ) -> None:
         """受控通道 /rewind N：回退当前会话到指定轮次并通知。
 
-        优先转发到 AgentServer（原子性截断 history + context + checkpointer）；
-        E2A 不可达时仅对单用户共享目录 client 回退到本地截断 history.json，
-        远程/AgentOS client 返回可重试错误（方案 §8：禁止用部署侧目录代替用户目录）。
+        转发到 AgentServer（原子性截断 history + context + checkpointer）；
+        E2A 不可达时直接返回错误，不回退 Gateway 本地目录
+        （方案 §8：禁止用部署侧目录代替用户目录）。
         """
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
         state = self.get_or_create_channel_state(msg)
         target_sid = state.session_id
@@ -2469,41 +2468,20 @@ class MessageHandler(ABC):
                     )
                     return
                 # AgentServer 已返回业务错误，说明传输可用。远程/AgentOS 模式
-                # 不能以“不可达”覆盖真实错误，也不能回退到 Gateway 本地目录。
+                # 不能以“不可达”覆盖真实错误；也不回退到 Gateway 本地目录。
                 error_payload = resp.payload if isinstance(resp.payload, dict) else {}
                 logger.warning("[MessageHandler] /rewind E2A failed: %s", error_payload)
-                if not is_legacy_shared_directory_client(self.agent_client):
-                    await self.send_channel_notice(
-                        user_infos, channel_id, reply_session_id,
-                        error_payload or {"error": "回退失败"},
-                    )
-                    return
-            except Exception as e2a_exc:
-                logger.warning("[MessageHandler] /rewind E2A failed, fallback local: %s", e2a_exc)
-
-            # --- Fallback: 仅单用户共享目录 client 回退到本地截断 history.json ---
-            if not is_legacy_shared_directory_client(self.agent_client):
                 await self.send_channel_notice(
                     user_infos, channel_id, reply_session_id,
-                    {"error": "AgentServer 不可达，无法回退（远程模式不回退本地目录）"},
+                    error_payload or {"error": "回退失败"},
                 )
                 return
-            from jiuwenswarm.agents.harness.common.session_ops_service import rewind_session
-            result = rewind_session(session_id=target_sid, turn_index=turn_index)
-            preview = result.get("content_preview", "")
-            remaining = result.get("remaining_records", 0)
-            removed = result.get("removed_records", 0)
+            except Exception as e2a_exc:
+                logger.warning("[MessageHandler] /rewind E2A failed: %s", e2a_exc)
 
             await self.send_channel_notice(
                 user_infos, channel_id, reply_session_id,
-                f"[收到 /rewind 指令] 已回退到第 {turn_index} 轮"
-                f'（"{preview[:50]}"）'
-                f"，删除 {removed} 条记录，剩余 {remaining} 条。"
-                f"（注意：上下文未同步截断）",
-            )
-            logger.info(
-                "[MessageHandler] /rewind 完成: session=%s turn=%s remaining=%s removed=%s",
-                target_sid, turn_index, remaining, removed,
+                {"error": "AgentServer 不可达，无法回退"},
             )
         except ValueError as e:
             await self.send_channel_notice(
@@ -3506,9 +3484,29 @@ class MessageHandler(ABC):
                         if str(job.get("user_id") or "").strip() == owner_user_id
                     ]
             elif action == "get":
-                data = await _get_owned_job(str(params.get("job_id") or ""))
-                if data is None:
-                    raise KeyError("job not found")
+                job_id = str(params.get("job_id") or "")
+                if params.get("authoritative") is True:
+                    if not isinstance(params.get("job_id"), str) or not job_id.strip():
+                        raise ValueError("authoritative cron query requires a nonempty job_id")
+                    data = await cc.get_job(job_id)
+                    if data is not None:
+                        if (
+                            not isinstance(data, dict)
+                            or data.get("id") != job_id.strip()
+                            or not isinstance(data.get("user_id", ""), str)
+                        ):
+                            raise ValueError("invalid authoritative cron job")
+                        job_owner = data.get("user_id", "")
+                        if str(job_owner or "").strip() != owner_user_id:
+                            data = {"status": "forbidden", "code": "FORBIDDEN"}
+                        else:
+                            data = {"status": "found", "job": data}
+                    else:
+                        data = {"status": "missing"}
+                else:
+                    data = await _get_owned_job(job_id)
+                    if data is None:
+                        raise KeyError("job not found")
             elif action == "create":
                 params = dict(params)
                 params.pop("_auth_session", None)
@@ -3578,6 +3576,9 @@ class MessageHandler(ABC):
                 data=data,
                 user_id=owner_user_id or None,
             )
+
+        if not channel_id:
+            return
 
         from jiuwenswarm.common.schema.message import EventType, Message
         out = Message(
@@ -4191,10 +4192,10 @@ class MessageHandler(ABC):
         if not is_legacy_shared_directory_client(self.agent_client):
             return ""
         try:
-            from jiuwenswarm.server.runtime.session.model_selection_store import (
+            from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import (
                 get_session_model_selection,
             )
-            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
 
             if get_session_model_selection(session_id) is not None:
                 return ""

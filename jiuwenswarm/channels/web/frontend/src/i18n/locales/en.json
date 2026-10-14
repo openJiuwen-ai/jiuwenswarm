@@ -1,5 +1,6 @@
 {
   "common": {
+    "searchName": "Search names",
     "noData": "No data",
     "confirm": "Confirm",
     "cancel": "Cancel",
@@ -67,27 +68,75 @@
   "videoLive": {
     "modelFallback": "Video model",
     "subtitle": "Real-time multi-screen audio and video Q&A",
-    "status": { "connecting": "Connecting to the Full-duplex model and requesting microphone access…", "speaking": "The model is responding…" },
-    "coreAgent": { "startFailed": "Jiuwen Core Agent could not start the task: {{message}}", "startFailedSummary": "The task could not start. The error is shown in the interface." },
-    "errors": { "startFailed": "Failed to start the Full-duplex session.", "joyaiTextNotAccepted": "The text input was not accepted by the JoyAI session.", "qwenTextNotAccepted": "The text input was not accepted by the Qwen Realtime session.", "textSendFailed": "Failed to send the text input." },
-    "empty": { "title": "Open a real-time view", "description": "Use a camera, local video, or add multiple screens", "listening": "Listening continuously", "waiting": "Waiting to start Full-duplex", "hint": "Speak after starting; no need to click for each sentence" },
-    "sources": { "camera": "Camera", "localVideo": "Local video", "addScreen": "Add screen", "shareScreen": "Share screen", "stopCamera": "Stop camera", "stopScreens": "Stop all screens" },
-    "actions": { "closeVideo": "Close video", "starting": "Starting Full-duplex session", "stopSession": "End Full-duplex session", "startSession": "Start Full-duplex session" },
+    "status": {
+      "connecting": "Connecting to the Full-duplex model and requesting microphone access…",
+      "speaking": "The model is responding…"
+    },
+    "coreAgent": {
+      "startFailed": "Jiuwen Core Agent could not start the task: {{message}}",
+      "startFailedSummary": "The task could not start. The error is shown in the interface."
+    },
+    "errors": {
+      "startFailed": "Failed to start the Full-duplex session.",
+      "joyaiTextNotAccepted": "The text input was not accepted by the JoyAI session.",
+      "qwenTextNotAccepted": "The text input was not accepted by the Qwen Realtime session.",
+      "textSendFailed": "Failed to send the text input."
+    },
+    "empty": {
+      "title": "Open a real-time view",
+      "description": "Use a camera, local video, or add multiple screens",
+      "listening": "Listening continuously",
+      "waiting": "Waiting to start Full-duplex",
+      "hint": "Speak after starting; no need to click for each sentence"
+    },
+    "sources": {
+      "camera": "Camera",
+      "localVideo": "Local video",
+      "addScreen": "Add screen",
+      "shareScreen": "Share screen",
+      "stopCamera": "Stop camera",
+      "stopScreens": "Stop all screens"
+    },
+    "actions": {
+      "closeVideo": "Close video",
+      "starting": "Starting Full-duplex session",
+      "stopSession": "End Full-duplex session",
+      "startSession": "Start Full-duplex session"
+    },
     "frameWindow": "Rolling window: {{count}}/{{max}} frames",
     "audioOnly": "Audio only; no video frames sent",
-    "chat": { "coreResult": "Tool result · Jiuwen Core Agent", "user": "You", "search": "Jiuwen Search", "assistant": "Assistant", "searchCompleted": "Jiuwen Search Agent completed" },
-    "search": { "ready": "Preparing search", "selectHistory": "Select search history", "latest": "Latest search (automatic)" },
-    "input": { "activePlaceholder": "You can also type in this session…", "inactivePlaceholder": "Start Full-duplex first…", "send": "Send question" }
+    "chat": {
+      "coreResult": "Tool result · Jiuwen Core Agent",
+      "user": "You",
+      "search": "Jiuwen Search",
+      "assistant": "Assistant",
+      "searchCompleted": "Jiuwen Search Agent completed"
+    },
+    "search": {
+      "ready": "Preparing search",
+      "selectHistory": "Select search history",
+      "latest": "Latest search (automatic)"
+    },
+    "input": {
+      "activePlaceholder": "You can also type in this session…",
+      "inactivePlaceholder": "Start Full-duplex first…",
+      "send": "Send question"
+    }
   },
   "settingsPanel": {
     "title": "Settings",
     "freeModels": {
-      "title": "Limited-time free models",
+      "title": "Free models",
+      "bannerDescription": "Enable free models to use them in chat. Free models may have rate limits and smaller context windows. Sourced from OpenCode Zen.",
+      "goAuthorize": "Authorize",
       "loginTitle": "Sign in with Huawei Cloud",
       "loginDescription": "Sign in with your Huawei Cloud account to get JiuwenSwarm's limited-time free models",
       "quotaTitle": "Free credits",
       "quotaLoggedOut": "Sign in to view",
       "signedIn": "Signed in",
+      "enabled": "Enabled",
+      "quotaLabel": "Quota",
+      "weeklyQuotaDescription": "Quota refreshes every Monday at 8:00 and includes multiple models",
       "loggedInDescription": "Limited-time free models are now available in the chat model dropdown",
       "endedTitle": "Campaign ended",
       "endedDescription": "This round of limited-time free models has ended. Thanks for taking part.",
@@ -186,25 +235,70 @@
       }
     },
     "models": {
-      "primaryModels": "Chat models",
+      "customModels": "Custom models",
+      "tabsLabel": "Model settings categories",
+      "modelsTab": "Models",
+      "modelGroups": "Model groups",
+      "modelGroupsManagement": "Model group management",
       "empty": "No models configured",
-      "emptyDescription": "Add a model to test its connection and manage the primary model here.",
-      "primary": "Primary",
-      "groupMeta": "Model group · {{count}} configurations",
-      "groupAriaLabel": "Model group {{model}}, {{count}} configurations",
-      "expandGroup": "Expand other configurations in the {{model}} model group",
-      "collapseGroup": "Collapse other configurations in the {{model}} model group",
-      "groupDefault": "Group default",
-      "setPrimary": "Make primary",
-      "setGroupDefault": "Make group default",
-      "setGroupDefaultConfirm": "After this becomes the group default, requests using the model name “{{model}}” without an alias will use this configuration. The previous default in this group will be cleared. Continue?",
-      "setPrimaryGroupDefaultConfirm": "“{{model}}” is currently the primary model. Making this configuration the group default will also make it the primary configuration. Requests using this model name without an alias will use it, and the previous group default will be cleared. Continue?",
+      "emptyDescription": "Add a model to test its connection and manage custom models here.",
+      "modelGroupsEmpty": "No model groups configured",
+      "modelGroupsEmptyDescription": "Add a model group to manage ordered failover across models.",
       "addModel": "Add model",
+      "addModelGroup": "Add model group",
+      "addModelGroupTitle": "Add model group",
+      "editModelGroupTitle": "Edit model group",
+      "editModelGroup": "Edit model group",
+      "savingModelGroup": "Saving model group…",
+      "modelGroupName": "Model group name",
+      "modelGroupNamePlaceholder": "Enter a model group name",
+      "modelGroupEnabled": "Enable model group",
+      "modelGroupEnabledDescription": "Allow this model group to be selected and used in conversations",
+      "modelGroupDefaultDescription": "Use this as the default model group",
+      "modelGroupRequestConfig": "Shared request parameters (JSON)",
+      "modelGroupRequestConfigPlaceholder": "For example: {\"temperature\": 0.3}",
+      "modelGroupRouteEnabled": "Enable member",
+      "modelGroupRouteOverrides": "Member request overrides (JSON)",
+      "modelGroupRouteOverridesPlaceholder": "For example: {\"temperature\": 0.2}",
+      "modelGroupNeedsEnabledRoute": "A model group requires at least one enabled member",
+      "modelGroupRequestConfigInvalid": "Enter a valid JSON object without credentials, endpoints, context windows, or routing fields",
+      "modelGroupForbiddenRequestKeys": "Request parameters contain forbidden fields: {{keys}}",
+      "disabledGroupCannotBeDefault": "A disabled model group cannot be the default",
+      "selectConfiguredModels": "Select configured models",
+      "modelGroupModels": "Models",
+      "modelGroupTableModel": "Model",
+      "modelGroupTableActions": "Actions",
+      "selectConfiguredModelsEmpty": "No eligible configured models (free models cannot be added to a group).",
+      "modelGroupMeta": "{{count}} routes · {{routes}}",
+      "modelGroupCardHeader": "Group: {{name}} · {{count}} models",
+      "modelGroupLabel": "Group:",
+      "modelGroupCount": "{{count}} models",
+      "modelGroupNoRoutes": "No routes",
+      "modelGroupRouteOrderHint": "Drag to reorder. This order determines the invocation sequence.",
+      "moveRouteUp": "Up",
+      "moveRouteDown": "Down",
+      "modelGroupDefault": "Default group",
+      "modelGroupRouteDefault": "Group default",
+      "setModelGroupRouteDefault": "Make group default",
+      "expandModelGroup": "Expand model group",
+      "collapseModelGroup": "Collapse model group",
+      "copyModelName": "Copy model name",
+      "modelNameCopied": "Model name copied",
+      "copyModelNameFailed": "Copy failed",
+      "removeModelFromGroup": "Remove from group",
+      "removeModelFromGroupConfirm": "Remove “{{name}}” from this model group?",
+      "removeModelFromGroupConfirmTitle": "Remove model",
+      "keepOneGroupRoute": "A model group must keep at least one model",
+      "missingConfiguredModel": "Model unavailable",
+      "modelGroupDisabled": "Disabled",
+      "modelGroupReferenced": "This model group is still referenced in {{count}} place(s) ({{scopes}}). Remove the references before deleting it.",
+      "modelReferenced": "This model is still referenced in {{count}} place(s) ({{scopes}}). Remove the references before deleting it.",
+      "deleteModelGroupConfirm": "Delete model group “{{name}}”?",
+      "deleteModelGroupConfirmTitle": "Delete model group",
       "add": "Add",
       "editModel": "Edit model",
       "deleteConfirm": "Delete “{{alias}}” ({{model}})?",
       "deleteConfirmTitle": "Delete model",
-      "groupDefaultConfirmTitle": "Set group default model",
       "loadFailed": "Failed to load the model list. Please try again.",
       "customName": "Custom name",
       "customNamePlaceholder": "Enter a unique custom name",
@@ -354,7 +448,12 @@
       "headless": "Headless mode",
       "headlessDescription": "Run browser automation without showing a browser window.",
       "chromePath": "Chrome executable path",
-      "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "decisionLlm": "LLM only",
+      "decisionShadow": "Jev shadow (observe only)",
+      "decisionHybrid": "Jev hybrid",
+      "providerOpenrouter": "OpenRouter",
+      "providerTypesafe": "TypeSafe"
     },
     "experimental": {
       "taskAsr": "Speech transcription",
@@ -366,6 +465,7 @@
       "trajectoryUi": "Trajectory UI",
       "kvCacheAffinity": "Compute affinity",
       "teamOrganization": "Team Organization",
+      "teamScheduledDispatch": "Scheduled dispatch",
       "skillPack": "Skill Packs",
       "proactive": "Proactive recommendations",
       "proactiveLimits": "Recommendation limits",
@@ -426,6 +526,23 @@
         "title": "Browser run mode",
         "description": "Show the browser window in the foreground or run in headless mode."
       },
+      "decision_mode": {
+        "title": "Browser decisions",
+        "description": "Choose who decides each browser step. Jev modes need the Jev API key below."
+      },
+      "decision_provider": {
+        "title": "Jev provider",
+        "description": "Where Jev is called: through OpenRouter, or TypeSafe directly."
+      },
+      "jev_api_key": {
+        "title": "Jev API key"
+      },
+      "jev_openrouter_api_key": {
+        "title": "OpenRouter API key"
+      },
+      "jev_typesafe_api_key": {
+        "title": "TypeSafe API key"
+      },
       "model_name": { "title": "Model name", "placeholder": "e.g. glm-4.7" },
       "alias": { "title": "Custom alias", "placeholder": "e.g. GLM-4.7 Production" },
       "api_base": { "title": "API URL", "placeholder": "e.g. https://api.openai.com/v1" },
@@ -469,6 +586,10 @@
       "ttse_enabled": {
         "title": "Local environment facts and task experience auto-evolution",
         "description": "Control the agent's learning of environment facts and task experience"
+      },
+      "skill_retrieval_index_enabled": {
+        "title": "Skill index",
+        "description": "Enable a tree of installed skills for structured skill discovery (may consume additional tokens)."
       },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo search",
@@ -526,6 +647,14 @@
       "team_organization_ui_enabled": {
         "title": "Enable Team Organization UI",
         "description": "Show experimental multi-Team views and the organization task pool. This switch does not disable backend organization capabilities."
+      },
+      "team_scheduled_dispatch_enabled": {
+        "title": "Enable scheduled dispatch",
+        "description": "The Leader assigns each task to a specific member, and members work through their assigned tasks in order."
+      },
+      "team_task_verification_enabled": {
+        "title": "Enable reviewers",
+        "description": "Completed tasks are reviewed by verifiers. Tasks that fail review are returned for rework."
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
@@ -785,6 +914,17 @@
       "statsPendingReviews": "Pending review"
     }
   },
+  "sessionAssets": {
+    "title": "Assets",
+    "empty": "Uploaded and generated files appear here. Rename them and reference them in the chat box with @name.",
+    "rename": "Rename",
+    "save": "Save",
+    "cancel": "Cancel",
+    "invalidName": "The name must not be empty, at most 60 characters, and cannot contain @ or line breaks",
+    "pickTitle": "Choose an asset",
+    "referHint": "Type @ in the chat box to reference",
+    "reference": "Referenced"
+  },
   "artifacts": {
     "title": "Artifacts",
     "tab": "Artifacts",
@@ -867,6 +1007,11 @@
     "placeholderVoice": "Listening...",
     "welcomeLogoAlt": "WorkSwarm logo",
     "welcomeBubbleText": "Hi~ I'm your personal desktop smart buddy.",
+    "freeModelsCampaign": {
+      "title": "Offer",
+      "description": "Xiaojiu has prepared limited-time free models for you.",
+      "claim": "Claim now"
+    },
     "welcomeHeading": "Hi, I'm WorkSwarm. Nice to meet you!",
     "groupCreateWelcomeBrand": "JiuwenSwarm",
     "groupCreateWelcomeSuffix": "makes every work problem easier!",
@@ -927,10 +1072,13 @@
     "taskFullDuplexStop": "Stop Full-duplex conversation and screen sharing",
     "modelSelector": {
       "tooltip": "Switch the model used for chat",
+      "configuredGroups": "Model groups",
+      "followGroupDefault": "Follow group default",
       "configured": "Configured Models",
       "free": "Limited-time Free Models",
       "getFreeModels": "Get limited-time free models",
-      "addModel": "Add Custom Model",
+      "addModel": "Add Custom Model/Model Group",
+      "selectionFailed": "Model selection could not be applied. Please choose again.",
       "empty": "No models available. Add a model in Settings first.",
       "placeholder": "Select Model"
     },
@@ -1043,6 +1191,8 @@
       "permission": {
         "default": "Default",
         "defaultDesc": "Always ask when editing external files or accessing the internet",
+        "automatic": "Smart Approval",
+        "automaticDesc": "Reviews tool requests against your task and permissions, asking you when needed",
         "fullAccess": "Full Access",
         "fullAccessDesc": "Unrestricted access to the internet and any files on your computer",
         "fullAccessWarning": {
@@ -2819,7 +2969,14 @@
     "title": "Expert Management",
     "subtitle": "Create and manage reusable Expert assets",
     "tabsLabel": "Expert management categories",
-    "tabs": { "catalog": "Expert marketplace", "teams": "Expert Team marketplace", "mine": "My Experts", "mineAgent": "Experts", "mineGroup": "Expert Teams", "mineLabel": "My asset type" },
+    "tabs": {
+      "catalog": "Expert marketplace",
+      "teams": "Expert Team marketplace",
+      "mine": "My Experts",
+      "mineAgent": "Experts",
+      "mineGroup": "Expert Teams",
+      "mineLabel": "My asset type"
+    },
     "source": { "builtin": "Official", "local": "Mine", "hub": "Hub" },
     "categoryLabel": "Expert categories",
     "categoryAll": "All",
@@ -3071,7 +3228,10 @@
         "noDetails": "No additional details",
         "filesUnavailable": "Install the Expert Team to view its files."
       },
-      "files": { "loadError": "Unable to load Expert Team files. Try again.", "readError": "Unable to read the Expert Team file. Try again." },
+      "files": {
+        "loadError": "Unable to load Expert Team files. Try again.",
+        "readError": "Unable to read the Expert Team file. Try again."
+      },
       "form": {
         "title": "Create manually",
         "createAgentTab": "Create Expert",
@@ -4367,7 +4527,7 @@
       "candidateError": "Candidate {{index}}/{{total}} generation failed",
       "scoreSuffix": " · {{score}}"
     }
-    },
+  },
   "swarmflow": {
     "statusPlanned": "Planned",
     "statusPending": "Pending",
@@ -4411,6 +4571,12 @@
     "budgetPlaceholder": "Enter number",
     "budgetActualHint": "Configured limit: {{count}} tokens",
     "workflowList": "Workflow List",
+    "worktreeToggleLabel": "Worktree isolation",
+    "worktreeGuideTitle": "Choose a project directory for worktree isolation",
+    "worktreeGuideDescription": "Worktree isolation is on: code-editing tasks in the workflow can run in an independent worktree of the project, leaving the main repository untouched. Worktrees are created from the project directory — pick one via the highlighted project selector; if isolation is not needed, you can turn the switch off in the SwarmFlow settings.",
+    "worktreeGuideHint": "Click the project selector to choose a directory",
+    "worktreeGuideAcknowledge": "Got it",
+    "worktreeGuideSkip": "Skip",
     "verifyReviewing": "Reviewing…",
     "verifyReviewingShort": "Reviewing",
     "verifyPass": "✓ Pass",
@@ -4424,12 +4590,42 @@
     "verifyRound": "Round {{count}} · {{verdict}}",
     "verifyGroupTitle": "verify · {{label}}",
     "verifyReviewersPending": "{{names}} reviewing…",
+    "sectionCallRecords": "Activity",
+    "sectionToolCalls": "Tool calls",
     "sectionInput": "Input",
     "sectionOutput": "Output",
     "sectionHumanPrompt": "Human question",
     "sectionHumanReply": "Human reply",
     "sectionError": "Error",
     "charUnit": "chars",
-    "clickToViewDetail": "Click to view details"
+    "clickToViewDetail": "Click to view details",
+    "runIdTooltip": "Run ID: {{id}}"
+  },
+  "a4pSettings": {
+    "title": "A4P pre-authorization",
+    "enableTitle": "Enable A4P pre-authorization",
+    "description": "Batch-authorize the multiple permissions an Agent needs for tasks in a session, and pre-authorize permissions for scheduled tasks. Only applies in Default permissions mode."
+  },
+  "a4pAuthorization": {
+    "expandParams": "Expand parameters for {{name}}",
+    "collapseParams": "Collapse parameters for {{name}}",
+    "permissionScope": "Permission scope",
+    "selectedCount": "{{selected}} / {{total}} selected",
+    "readyRange": "Authorization will cover the selected permissions.",
+    "emptySelection": "Select at least one permission, or reject this request.",
+    "title": "A4P Pre-authorization Confirmation",
+    "reason": "Authorization reason",
+    "defaultReason": "Pre-authorize the following tool operations.",
+    "tools": {
+      "bash": "Run shell command",
+      "mcpExecCommand": "Run command",
+      "createTerminal": "Create terminal",
+      "writeFile": "Write file",
+      "editFile": "Edit file",
+      "acpChat": "Chat with agent"
+    },
+    "reject": "Reject",
+    "approve": "Authorize",
+    "waiting": "Processing..."
   }
 }

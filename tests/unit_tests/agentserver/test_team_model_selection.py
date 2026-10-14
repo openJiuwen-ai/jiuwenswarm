@@ -429,12 +429,13 @@ def test_resolver_keeps_enabled_routes_when_another_route_is_disabled():
     assert any(route.enabled for route in resolved.routes)
 
 
-def test_resolver_returns_no_enabled_routes_for_all_disabled_group_for_compiler_to_reject():
+def test_resolver_rejects_all_disabled_group_with_business_error():
     group = _catalog_group()
     group["routes"][0]["enabled"] = False
     resolver = ModelSelectionResolver(_Catalog(groups=[group], models=[{"model_id": "m1", "model_name": "m1", "provider": "OpenAI"}]))
-    resolved = resolver.resolve(ModelSelection(type="model_group", id="g1"))
-    assert resolved.routes and all(not route.enabled for route in resolved.routes)
+    with pytest.raises(ModelSelectionError) as error:
+        resolver.resolve(ModelSelection(type="model_group", id="g1"))
+    assert error.value.code == MODEL_GROUP_INVALID
 
 
 def test_resolver_applies_access_check_to_group_and_route_models():

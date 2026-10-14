@@ -30,6 +30,9 @@ a2ui:
 rsi:
   enabled: true
 
+a4p:
+  enabled: false
+
 symphony:
   enabled: null  # null = 跟随程序默认；用户切换后保存 true/false
   paths:
@@ -581,7 +584,7 @@ trajectory_ui:
   discard_final_span_frames: true
 
 experimental:
-  team_organization_ui_enabled: false # Team Organization 多团队视图；不控制后端组织能力
+  team_organization_ui_enabled: false # Team Organization 多团队视图；关闭后新建团队不挂载 org 工具
   task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口
   task_asr_enabled: false            # 默认关闭普通任务对话中的语音转写入口
 
@@ -1148,6 +1151,7 @@ permissions:
   shell_guard:
     unknown_structure: false
     interpreter_sink: false
+  # manual keeps the existing approval flow; auto enables Smart Approval.
   mode: manual
 
   defaults:
@@ -1402,6 +1406,22 @@ permissions:
     "*": "ask"
 
 browser:
+  # Browser-only decisions. Existing LLM still handles fallback and final answers.
+  decision:
+    mode: llm # llm | shadow (observe only) | hybrid; shadow and hybrid need an openjiuwen with Jev
+    provider: openrouter # openrouter | typesafe
+    model: typesafe/jev-1.13
+    api_base: https://openrouter.ai/api/alpha
+    # Use a dedicated OpenRouter key, or explicitly reference API_KEY if it is already an OpenRouter key.
+    api_key_env: OPENROUTER_API_KEY
+    # TypeSafe direct: provider=typesafe, model=jev-1.13.0,
+    # api_base=https://api.typesafe.ai/v1, api_key_env=TYPESAFE_API_KEY.
+    request_timeout_ms: 3000
+    max_retries: 1
+    max_decisions: 40 # Shared across LLM handoffs and focused resume in the same task.
+    candidate_limit: 30 # Eligible controls, filtered and ranked before truncation.
+    min_confidence: 0.55 # Initial routing threshold; calibrate on your own tasks.
+    fallback_reserve_ms: 1000
   # chrome_path can be a string or per-OS map.
   # Example:
   # chrome_path:
@@ -1566,6 +1586,13 @@ modes:
       teammate_mode: build_mode
       spawn_mode: inprocess
       enable_swarmflow: false
+      # Progressive tool exposure for swarmflow workers: workers see only the
+      # tool_search meta-tool plus a small direct set and search for the rest
+      # on demand, cutting per-call context. Only effective when
+      # enable_swarmflow is true. Independent of the top-level
+      # progressive_tool_enabled (single-agent) switch. Takes effect for
+      # teams created after the change.
+      swarmflow_progressive_tool: false
       external_cli_agents: []
       external_transport: null
 

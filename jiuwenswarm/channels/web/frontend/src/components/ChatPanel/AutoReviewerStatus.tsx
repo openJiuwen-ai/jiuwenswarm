@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import './AutoReviewerStatus.css';
 import { useTranslation } from 'react-i18next';
 import type { AutoReviewerMetadata, AutoReviewerStatus } from '../../types';
 import { effectiveReviewerStatus, normalizeReviewerStatus } from '../../features/tool-events/reviewerMetadata';
@@ -6,11 +7,11 @@ import { effectiveReviewerStatus, normalizeReviewerStatus } from '../../features
 export type AutoReviewerBadgeTone = 'danger' | 'info' | 'neutral' | 'success' | 'warning';
 
 const BADGE_TONE_CLASS: Record<AutoReviewerBadgeTone, string> = {
-  danger: 'border-danger bg-danger-subtle text-danger',
-  info: 'border-accent bg-accent-subtle text-accent',
-  neutral: 'border-border bg-secondary text-text-muted',
-  success: 'border-ok bg-ok-subtle text-ok',
-  warning: 'border-warn bg-warn-subtle text-warn',
+  danger: 'bg-danger-subtle text-danger',
+  info: 'bg-accent-subtle text-accent',
+  neutral: 'bg-secondary text-text-muted',
+  success: 'bg-ok-subtle text-ok',
+  warning: 'bg-warn-subtle text-warn',
 };
 
 const MANUAL_DECISION_SOURCES = new Set(['manual_approval']);
@@ -93,9 +94,10 @@ export function AutoReviewerStatusBadge({ reviewer }: { reviewer?: AutoReviewerM
   const tone = reviewerBadgeTone(reviewer);
   return (
     <span
-      className={clsx('inline-flex shrink-0 items-center rounded border px-2 py-0.5 text-[11px] font-medium', BADGE_TONE_CLASS[tone])}
+      className={clsx('auto-reviewer-badge', BADGE_TONE_CLASS[tone])}
       data-badge-tone={tone}
-      data-testid={`auto-reviewer-badge-${status.replace(/_/g, '-')}`}
+      data-testid="chat-panel-auto-reviewer-badge"
+      data-variant={status}
     >
       {t(statusLabelKey(status, reviewer))}
     </span>
@@ -139,18 +141,27 @@ export function AutoReviewerDetails({ reviewer }: { reviewer?: AutoReviewerMetad
   ].filter((row): row is [string, string] => Boolean(row[1]));
   if (!rows.length) return null;
   return (
-    <div className="mt-3 rounded-lg border border-border bg-card p-3 text-xs" data-testid="auto-reviewer-details">
-      <div className="mb-2 flex items-center gap-2 font-semibold text-text">
-        <span>{t('chatUi.autoReviewer.title')}</span>
+    <div className="auto-reviewer-details" data-testid="chat-panel-auto-reviewer-details">
+      <div className="auto-reviewer-details__heading" data-testid="chat-panel-auto-reviewer-details-heading">
+        <span className="auto-reviewer-details__title" data-testid="chat-panel-auto-reviewer-details-title">
+          {t('chatUi.autoReviewer.title')}
+        </span>
         <AutoReviewerStatusBadge reviewer={reviewer} />
       </div>
-      <div className="grid gap-1 sm:grid-cols-2">
-        {rows.map(([label, value]) => (
-          <div className="min-w-0" key={label}>
-            <span className="text-text-muted">{label}: </span>
-            <span className="break-words text-text">{value}</span>
-          </div>
-        ))}
+      <div className="auto-reviewer-details__content" data-testid="chat-panel-auto-reviewer-details-content">
+        <div className="grid gap-1 sm:grid-cols-2" data-testid="chat-panel-auto-reviewer-details-rows">
+          {rows.map(([label, value]) => (
+            <div
+              className="min-w-0"
+              key={label}
+              data-testid="chat-panel-auto-reviewer-details-row"
+              data-variant={label}
+            >
+              <span className="text-text-muted">{label}: </span>
+              <span className="break-words text-text">{value}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

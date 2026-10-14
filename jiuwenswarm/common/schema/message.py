@@ -285,6 +285,21 @@ class ReqMethod(Enum):
     SKILLS_EXPERIENCE_LIST = "skills.experience.list"
     SKILLS_EXPERIENCE_REQUEST = "skills.experience.request"
 
+    # Task (session) assets: named files referenceable with @name in the chat box.
+    SESSION_ASSETS_LIST = "session.assets.list"
+    SESSION_ASSETS_REGISTER = "session.assets.register"
+    SESSION_ASSETS_RENAME = "session.assets.rename"
+
+    # 技能同步（Server / Client 分离部署）。外部入口为 HTTP /skill-sync/*
+    # （Bearer token 鉴权）。WS 侧仅保留 reload：web 进程 HTTP apply 落盘后的
+    # 进程间通知（参数仅 applied 名称列表，纯 JSON）；diff / package / apply
+    # 不注册 WS 路由（经 WS 调用会绕过 token 鉴权，且 package 泄漏临时目录、
+    # apply 的 zip_bytes 无法过 JSON 序列化，均不可用）。
+    SKILL_SYNC_DIFF = "skills.sync.diff"
+    SKILL_SYNC_PACKAGE = "skills.sync.package"
+    SKILL_SYNC_APPLY = "skills.sync.apply"
+    SKILL_SYNC_RELOAD = "skills.sync.reload"
+
     PERSONAL_CONTEXT_RUNTIME_STATUS = "personal_context.runtime.status"
     PERSONAL_CONTEXT_RUNTIME_START_COLLECTION = (
         "personal_context.runtime.start_collection"
@@ -391,6 +406,14 @@ class ReqMethod(Enum):
 
     MEMORY_FORBIDDEN_GET = "memory.forbidden.get"
     MEMORY_FORBIDDEN_SET = "memory.forbidden.set"
+
+    # A4P 授权桥接（Web User Authorizer → AgentServer A4PServer）
+    A4P_AUTHORIZATION_REPREPARE = "a4p.authorization.reprepare"
+    A4P_AUTHORIZATION_COMPLETE = "a4p.authorization.complete"
+    A4P_AUTHORIZATION_REJECT = "a4p.authorization.reject"
+    A4P_AUTHORIZATION_PENDING = "a4p.authorization.pending"
+    A4P_CONFIG_GET = "a4p.config.get"
+    A4P_CONFIG_UPDATE = "a4p.config.update"
 
     CHANNEL_FEISHU_GET_CONF = "channel.feishu.get_conf"
     CHANNEL_FEISHU_SET_CONF = "channel.feishu.set_conf"

@@ -55,23 +55,9 @@ _INTERACTION_EVENTS = frozenset(
 
 async def _flush_session_writes() -> None:
     """Make one-shot history and metadata visible before the child exits."""
-    from jiuwenswarm.server.runtime.session import session_history, session_metadata
+    from jiuwenswarm.channels.process_cli.persistence import flush_session_writes
 
-    queues = (
-        ("history", session_history.flush_pending_writes),
-        ("metadata", session_metadata.flush_pending_writes),
-    )
-    # Both writers own independent queues. Wait for their barriers together so
-    # the outer cleanup_step timeout covers one window, not two. Keep a margin
-    # even when a caller uses a shorter shutdown deadline.
-    flush_timeout = SHUTDOWN_TIMEOUT_SECONDS - min(0.5, SHUTDOWN_TIMEOUT_SECONDS / 10)
-    results = await asyncio.gather(
-        *(asyncio.to_thread(flush, flush_timeout) for _, flush in queues),
-        return_exceptions=True,
-    )
-    failed = [name for (name, _), result in zip(queues, results) if result is not True]
-    if failed:
-        raise RuntimeError(f"{', '.join(failed)} writes did not finish before shutdown")
+    await flush_session_writes(timeout_seconds=SHUTDOWN_TIMEOUT_SECONDS)
 
 
 class MachineRunError(RuntimeError):

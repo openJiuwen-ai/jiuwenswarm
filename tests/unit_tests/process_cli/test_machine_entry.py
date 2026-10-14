@@ -178,7 +178,6 @@ def test_machine_option_dispatches_directly_without_legacy_execution(
         ["--project-dir", "."],
         ["--trusted-dir", "."],
         ["--mode", "code.normal"],
-        ["--work-mode", "code"],
         ["--output", "human"],
         ["--timeout", "10"],
         ["--show-tools"],
@@ -219,6 +218,7 @@ def test_machine_option_does_not_change_legacy_parser_defaults_or_help() -> None
     for option in ("--run-json", "--session", "--cwd", "--output", "--show-tools"):
         assert option in help_text
     assert "--_interactive-worker" not in help_text
+    assert "--work-mode" not in help_text
 
 
 def test_help_exits_without_machine_or_runtime_imports() -> None:

@@ -776,8 +776,15 @@ export async function sendGoalStreamCommand(params: {
   objective?: string;
   mode?: string;
   modelName?: string | null;
+  modelParams?: Record<string, unknown>;
 }): Promise<void> {
-  const { sessionId, action, objective, mode, modelName } = params;
+  const { sessionId, action, objective, mode, modelName, modelParams } = params;
+  const outgoingModel =
+    modelParams && Object.keys(modelParams).length > 0
+      ? modelParams
+      : modelName
+        ? { model_name: modelName }
+        : {};
   await webClient.sendFireAndForget(
     'command.goal',
     {
@@ -785,7 +792,7 @@ export async function sendGoalStreamCommand(params: {
       action,
       mode: mode ?? 'agent',
       ...(action === 'set' ? { objective, overwrite_confirmed: true } : {}),
-      ...(modelName ? { model_name: modelName } : {}),
+      ...outgoingModel,
     },
     { isStream: true }
   );

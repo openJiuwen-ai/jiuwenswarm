@@ -1,8 +1,9 @@
 """Extension public surface with transport adapters loaded lazily.
 
-纯契约符号（SDK 基类/数据类型）已迁 ``gateway_protocol.{sdk,types}``（支线
-计划 E 后 source of truth，转发别名同一对象）；ExtensionLoader/Manager/Registry
-为具体实现，仍由本仓扩展框架提供、待 gateway 仓迁移。
+SDK 基类与接口为本仓实现副本（gateway_protocol 仓收敛为纯数据结构后，
+接口/基类回各仓持有；两仓经组装期注入对齐）；ExtensionConfig/ExtensionMetadata
+为纯数据结构，仍以 ``gateway_protocol.types`` 为 source of truth；
+ExtensionLoader/Manager/Registry 为具体实现，仍由本仓扩展框架提供。
 """
 
 from __future__ import annotations
@@ -15,20 +16,20 @@ _EXPORTS = {
     "ExtensionManager": ("jiuwenswarm.extensions.manager", "ExtensionManager"),
     "ExtensionRegistry": ("jiuwenswarm.extensions.registry", "ExtensionRegistry"),
     "AgentServerClientExtension": (
-        "gateway_protocol.sdk.agent_server_client",
+        "jiuwenswarm.extensions.sdk.agent_server_client",
         "AgentServerClientExtension",
     ),
     "ApplicationPluginExtension": (
-        "gateway_protocol.sdk.application_plugin",
+        "jiuwenswarm.extensions.sdk.application_plugin",
         "ApplicationPluginExtension",
     ),
-    "BaseExtension": ("gateway_protocol.sdk.base", "BaseExtension"),
+    "BaseExtension": ("jiuwenswarm.extensions.sdk.base", "BaseExtension"),
     "CryptoUtility": (
-        "gateway_protocol.sdk.crypto_utility",
+        "jiuwenswarm.extensions.sdk.crypto_utility",
         "CryptoUtility",
     ),
     "ThirdAgentExtension": (
-        "gateway_protocol.sdk.third_agent",
+        "jiuwenswarm.extensions.sdk.third_agent",
         "ThirdAgentExtension",
     ),
     "ExtensionConfig": ("gateway_protocol.types", "ExtensionConfig"),

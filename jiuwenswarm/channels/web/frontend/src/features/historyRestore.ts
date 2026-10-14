@@ -1694,16 +1694,21 @@ function buildAnsweredQaSummaryMessage(
   const items = (pending.questions ?? []).map((q) => {
     const ans = answerByQuestion.get(q.question);
     const answerTexts: string[] = [];
+    const answerSources: Array<'option' | 'input'> = [];
     if (ans) {
       for (const opt of ans.selected_options ?? []) {
-        if (opt.trim()) answerTexts.push(opt);
+        if (opt.trim()) {
+          answerTexts.push(opt);
+          answerSources.push('option');
+        }
       }
       if (ans.custom_input && ans.custom_input.trim()) {
         answerTexts.push(ans.custom_input);
+        answerSources.push('input');
       }
     }
     const header = q.header && q.header.trim() ? q.header : undefined;
-    return { header, question: q.question, answers: answerTexts };
+    return { header, question: q.question, answers: answerTexts, answerSources };
   });
   if (items.length === 0) {
     return null;

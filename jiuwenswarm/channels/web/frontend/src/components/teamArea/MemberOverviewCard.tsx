@@ -5,6 +5,10 @@ import type { ProcessItem } from './shared';
 
 type MemberOverviewCardProps = {
   memberId: string;
+  /** 头像 hash key（镜像 worker 传 agent.name，真实队友缺省用 memberId）。 */
+  avatarKey?: string;
+  /** 头像身份（CLI 品牌 / 人类）：avatarKey 非成员 id 时名册查不到，需显式传入。 */
+  avatarIdentity?: { cliAgent?: string; role?: string; mode?: string };
   displayName: string;
   sequence: number;
   statusIcon?: ReactNode;
@@ -15,6 +19,8 @@ type MemberOverviewCardProps = {
 
 export function MemberOverviewCard({
   memberId,
+  avatarKey,
+  avatarIdentity,
   displayName,
   sequence,
   statusIcon,
@@ -53,7 +59,8 @@ export function MemberOverviewCard({
         </span>
         <div className="relative shrink-0">
           <TeamMemberAvatar
-            member={memberId}
+            member={avatarKey ?? memberId}
+            identity={avatarIdentity}
             alt={displayName}
             className="h-8 w-8 rounded-full"
             imageClassName="rounded-full"

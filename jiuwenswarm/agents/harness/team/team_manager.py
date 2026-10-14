@@ -1519,6 +1519,18 @@ class TeamManager:
                 spec.swarmflow_budget = budget
             else:
                 spec.swarmflow_budget = None
+            # Session-level worktree gate: True arms the manager, False withholds
+            # it, None (not specified) keeps the team config's worktree section.
+            worktree_flag = swarmflow_config.get("swarmflow_worktree")
+            if worktree_flag is True:
+                if spec.worktree is None:
+                    from openjiuwen.harness.tools.worktree import WorktreeConfig
+
+                    spec.worktree = WorktreeConfig(enabled=True)
+                elif not spec.worktree.enabled:
+                    spec.worktree = spec.worktree.model_copy(update={"enabled": True})
+            elif worktree_flag is False:
+                spec.worktree = None
         return spec
 
     @staticmethod

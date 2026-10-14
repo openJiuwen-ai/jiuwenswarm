@@ -150,6 +150,7 @@ def _dump_agent_ref(agent_ref: Any) -> Any:
 def _load_agent_ref(value: Any) -> Any:
     if not isinstance(value, dict) or "mode" not in value or "id" not in value:
         return value
-    from jiuwenswarm.gateway.routing.keys import AgentRef
+    # AgentRef 为协议包数据结构（与 AgentRequest.agent_ref 同源），不依赖 gateway 树。
+    from gateway_protocol.e2a.agent_models import AgentRef
 
     return AgentRef(mode=str(value.get("mode") or ""), id=str(value.get("id") or ""))

@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Coroutine
 
-from gateway_protocol.agent_client import AgentServerClient
+from jiuwenswarm.common.client.agent_client import AgentServerClient
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk

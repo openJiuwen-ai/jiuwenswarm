@@ -21,6 +21,10 @@ _UNNAMED_PHASE = "unnamed phase"
 _UNNAMED_HUMAN = "unnamed human"
 _UNNAMED_AGENT = "unnamed agent"
 
+# Per-node activity ring cap — keeps a long-running worker's tool history
+# bounded (oldest dropped) so a delta / snapshot never unboundedly grows.
+_ACTIVITY_RING_CAP = 200
+
 
 # ---------------------------------------------------------------------------
 # Input model — mirrors WorkflowProgressTeamEvent fields
@@ -60,7 +64,14 @@ class WorkflowProgress(BaseModel):
                            sole source of node kind — kind derives:
                            node_type in {human, human_session} -> human)
       agent_id       -> agent_id  (AGENT_*: deterministic resume-stable node id)
+      agent_type     -> agent_type  (AGENT_STARTED: external provider kind
+                           claude/codex; None for native workers)
       answer         -> answer  (HUMAN_REPLIED: the person's raw reply text)
+      activity_type  -> activity_type  (AGENT_ACTIVITY: "tool_call" / "tool_result")
+      tool_call_id   -> tool_call_id  (AGENT_ACTIVITY: pairs a call with its result)
+      tool_name      -> tool_name  (AGENT_ACTIVITY: the invoked tool)
+      content        -> content  (AGENT_ACTIVITY: 512-char preview; result preview
+                           rides the call's row via tool_result_preview)
 
     """
 
@@ -81,7 +92,17 @@ class WorkflowProgress(BaseModel):
     correlation_id: Optional[str] = None
     node_type: Optional[str] = None
     agent_id: Optional[str] = None
+    # AGENT_STARTED: external provider kind (claude / codex); None for native workers.
+    agent_type: Optional[str] = None
     answer: Optional[str] = None
+    # AGENT_ACTIVITY: "tool_call" | "tool_result" (structured worker activity)
+    activity_type: Optional[str] = None
+    # AGENT_ACTIVITY: pairs a tool call with its result (result previews ride the
+    # call's row on WorkflowAgentActivity.tool_result_preview).
+    tool_call_id: Optional[str] = None
+    tool_name: Optional[str] = None
+    # AGENT_ACTIVITY: preview text (engine-truncated to 512 chars)
+    content: Optional[str] = None
     tokens: Optional[int] = None
     budget: Optional[dict] = None
     workflow_budget: Optional[dict] = None
@@ -141,9 +162,15 @@ class WorkflowAgentActivity(BaseModel):
     Agent lifecycle (started/completed/failed) is already captured by
     ``status`` / ``started_at`` / ``completed_at`` / ``outcome`` / ``error``
     / ``duration_ms`` on ``WorkflowAgentState`` itself, so no status-type
-    activity is written. Tool-call activity (type="tool_call" /
-    "tool_result") requires upstream structured data which is not yet
-    available. ``activity`` on ``WorkflowAgentState`` is always empty.
+    activity is written. Only tool activity is recorded here: the engine's
+    ``AGENT_ACTIVITY`` pair (``type="tool_call"`` / ``type="tool_result"``)
+    carries a 512-char preview in ``content``.
+
+    A ``tool_result`` pairs back onto its ``tool_call`` row (same
+    ``tool_call_id``): the result preview fills ``tool_result_preview`` on
+    that row and no second entry is appended. An orphan result (no matching
+    call — e.g. after the ring cap dropped it) appends as its own
+    ``type="tool_result"`` row, in order.
 
     Human nodes never produce activity (their question/answer live on
     ``human_prompt`` / ``human_reply``); only agent nodes' tool_call /
@@ -151,11 +178,12 @@ class WorkflowAgentActivity(BaseModel):
     """
 
     timestamp: str  # required — every entry must be timestamped
-    type: str  # "tool_call" | "tool_result" (pending upstream)
+    type: str  # "tool_call" | "tool_result"
     content: str = ""
-    # reserved — tool calls require upstream WorkflowProgressEvent extension
     tool_name: Optional[str] = None
     tool_call_id: Optional[str] = None
+    # Paired result preview, filled when a matching tool_result arrives;
+    # None on the call row until then.
     tool_result_preview: Optional[str] = None
 
 
@@ -184,6 +212,7 @@ class WorkflowAgentState(BaseModel):
     duration_ms: Optional[int] = None
     kind: str = "agent"  # "agent" | "human" — derived: node_type in {"human","human_session"} -> "human"
     node_type: Optional[str] = None
+    agent_type: Optional[str] = None  # "claude" | "codex" | None (native)
     correlation_id: Optional[str] = None
     # Fork child (node_type=agent_session_fork): the parent session's avatar
     # member name (unique per session), carried on every AGENT_STARTED turn so
@@ -337,6 +366,7 @@ class WorkflowRunState(BaseModel):
         "agent_started": "_on_agent_started",
         "agent_completed": "_on_agent_completed",
         "agent_failed": "_on_agent_failed",
+        "agent_activity": "_on_agent_activity",
         "human_prompt": "_on_human_prompt",
         "human_replied": "_on_human_replied",
         "verify_started": "_on_verify_started",
@@ -634,25 +664,73 @@ class WorkflowRunState(BaseModel):
             and prev.name != phase_name
             and prev.status == "running"
         )
-        if can_seal_prev:
-            # Phase status mirrors its agents by priority:
-            #   any stopped → stopped (external termination wins)
-            #   all failed  → failed (every agent errored)
-            #   otherwise   → completed (at least one completed, partial OK)
-            statuses = [a.status for a in prev.agents] if prev.agents else []
-            if statuses and any(s == "stopped" for s in statuses):
-                prev.status = "stopped"
-            elif statuses and all(s == "failed" for s in statuses):
-                prev.status = "failed"
-            else:
-                prev.status = "completed"
+        if can_seal_prev and self._phase_quiescent(prev):
+            prev.status = self._phase_status_from_agents(prev)
             self._finalize_running_agents(prev, prev.status)
             sealed = prev
             logger.info("[WF_DBG WorkflowRunState] phase %s -> %s (sealed on switch to %s)",
                         prev.name, prev.status, phase_name)
+        elif can_seal_prev:
+            # Interleaved branches (pipe([impl, verify]) running in parallel per
+            # spec) legitimately start the next phase's agents while siblings of
+            # the previous phase are still running. Sealing here would stamp
+            # live agents completed; the phase stays running and the last
+            # terminal agent seals it (see _seal_child_and_propagate).
+            logger.info(
+                "[WF_DBG WorkflowRunState] phase %s still has live agents; "
+                "deferring seal on switch to %s",
+                prev.name, phase_name,
+            )
 
         self._last_phase = target
         return target, sealed
+
+    @staticmethod
+    def _phase_quiescent(phase: WorkflowPhaseState) -> bool:
+        """True when a phase holds no live agent (empty, or all terminal)."""
+        return not phase.agents or WorkflowRunState._all_agents_terminal(phase)
+
+    @staticmethod
+    def _verify_rounds_all_settled(phase: WorkflowPhaseState) -> bool:
+        """True for a verify phase (has rounds) whose every round has settled.
+
+        A settled round emits nothing more, so with every agent terminal the
+        phase can close even while it is still the active phase. A phase with
+        no verify rounds is not eligible: a plain phase's "next event" is
+        unknowable (another sequential agent may follow).
+        """
+        groups = phase.verify_groups
+        return bool(groups) and all(g.status == "settled" for g in groups)
+
+    def _author_phase_sealable(self, phase: WorkflowPhaseState, *, require_settled: bool) -> bool:
+        """True when a running author phase has gone quiet enough to seal.
+
+        Every agent must be terminal. Then either the phase is no longer the
+        active one (no further event can reach it), or it is a verify phase
+        whose rounds have all settled; ``require_settled`` demands the latter
+        regardless of the active slot (the settle event re-check).
+        """
+        if phase.phase_type == "child" or phase.status != "running":
+            return False
+        if not self._all_agents_terminal(phase):
+            return False
+        if require_settled or phase is self._last_phase:
+            return self._verify_rounds_all_settled(phase)
+        return True
+
+    @staticmethod
+    def _phase_status_from_agents(phase: WorkflowPhaseState) -> str:
+        """Phase status mirrored from its agents by priority.
+
+        any stopped → stopped (external termination wins); all failed → failed;
+        otherwise completed (at least one completed, partial OK).
+        """
+        statuses = [a.status for a in phase.agents] if phase.agents else []
+        if statuses and any(s == "stopped" for s in statuses):
+            return "stopped"
+        if statuses and all(s == "failed" for s in statuses):
+            return "failed"
+        return "completed"
 
     def _resolve_agent(
             self,
@@ -792,6 +870,8 @@ class WorkflowRunState(BaseModel):
             agent.outcome = outcome
         if error is not None:
             agent.error = error
+        if progress.model:
+            agent.model = progress.model  # the CLI-reported model beats the assembly-time guess
 
         self._bump_completion(phase, progress, agent)
         logger.info(
@@ -880,6 +960,9 @@ class WorkflowRunState(BaseModel):
             if error is not None and not agent.error:
                 agent.error = error
                 updated = True
+            if progress.model and not agent.model:
+                agent.model = progress.model
+                updated = True
             if updated:
                 if progress.tokens is not None:
                     agent.token_count = progress.tokens
@@ -904,6 +987,27 @@ class WorkflowRunState(BaseModel):
                 self._refresh_phase_counts(phase)
                 self._refresh_run_agent_counts()
                 return self._build_phase_delta(phase)
+        # Mixed statuses: the node was stamped by a phase seal (an inference
+        # from the phase aggregate) while it was actually still running, and
+        # the engine's genuine verdict arrived after the seal. A real terminal
+        # event — one whose agent_id exactly matches the node — overrides the
+        # inference; a label-fallback event (no id match) never does, because
+        # it may have resolved to the wrong same-label node.
+        id_backed = bool(progress.agent_id and progress.agent_id == agent.id)
+        seal_status = agent.status
+        if id_backed and seal_status in ("completed", "stopped", "failed") and seal_status != status:
+            self._stamp_agent_terminal(agent, status)
+            if outcome is not None:
+                agent.outcome = outcome
+            if error is not None:
+                agent.error = error
+            self._refresh_phase_counts(phase)
+            self._refresh_run_agent_counts()
+            logger.info(
+                "[WF_DBG WorkflowRunState] late %s overrode seal stamp %s on %r",
+                status, seal_status, agent.name,
+            )
+            return self._build_phase_delta(phase)
         return None
 
     def _bump_completion(self, phase: WorkflowPhaseState, progress: WorkflowProgress,
@@ -936,18 +1040,24 @@ class WorkflowRunState(BaseModel):
 
     def _seal_child_and_propagate(self, phase: WorkflowPhaseState) -> dict:
         """Seal child phase when all its agents are done, then try sealing parent."""
+        # Author phase whose last agent just went terminal seals here — but only
+        # when no more events can flip the card back: either another phase has
+        # taken the active slot, or (the active phase) it is a verify phase whose
+        # every round has settled. Sealing between same-phase events (sequential
+        # agents, a verify settle still pending) flips the card completed/running
+        # and makes the task mirror flap claimed/completed; a verify phase with
+        # all rounds settled gets nothing further by construction, and waiting
+        # for the next phase to displace it leaves a finished card spinning for
+        # as long as a sibling branch keeps retrying elsewhere.
+        if self._author_phase_sealable(phase, require_settled=False):
+            phase.status = self._phase_status_from_agents(phase)
+            logger.info(
+                "[WF_DBG WorkflowRunState] sealed author phase=%s (last agent terminal, status=%s)",
+                phase.name, phase.status,
+            )
+            return self._build_phase_delta(phase)
         if phase.phase_type == "child" and self._all_agents_terminal(phase):
-            # Phase status mirrors its agents by priority:
-            #   any stopped → stopped (external termination wins)
-            #   all failed  → failed (every agent errored)
-            #   otherwise   → completed (at least one completed, partial OK)
-            statuses = [a.status for a in phase.agents] if phase.agents else []
-            if statuses and any(s == "stopped" for s in statuses):
-                phase.status = "stopped"
-            elif statuses and all(s == "failed" for s in statuses):
-                phase.status = "failed"
-            else:
-                phase.status = "completed"
+            phase.status = self._phase_status_from_agents(phase)
             logger.info(
                 "[WF_DBG child] sealed child phase=%s (all agents done, status=%s)",
                 phase.name, phase.status,
@@ -1298,6 +1408,15 @@ class WorkflowRunState(BaseModel):
         if progress.outcome is not None:
             group.outcome = progress.outcome
         group.settled_at = WorkflowRunState._now_iso()
+        # The settle may land after the last reviewer's terminal event (the
+        # engine aggregates votes once every reviewer returned): re-run the
+        # author seal so a fully settled verify phase closes on this event.
+        if self._author_phase_sealable(phase, require_settled=True):
+            phase.status = self._phase_status_from_agents(phase)
+            logger.info(
+                "[WF_DBG WorkflowRunState] sealed verify phase=%s (all rounds settled, status=%s)",
+                phase.name, phase.status,
+            )
         if sealed is not None:
             return self._build_phases_delta([sealed, phase])
         return self._build_phase_delta(phase)
@@ -1332,6 +1451,7 @@ class WorkflowRunState(BaseModel):
                 correlation_id=progress.correlation_id,
                 parent_session_id=progress.parent_session_id,
                 member_name=progress.member_name,
+                agent_type=progress.agent_type,
             )
 
         def _reuse_existing(existing: WorkflowAgentState) -> None:
@@ -1347,6 +1467,7 @@ class WorkflowRunState(BaseModel):
             existing.status = "running"
             existing.prompt = progress.prompt
             existing.model = progress.model
+            existing.agent_type = progress.agent_type
             existing.parent_session_id = progress.parent_session_id
             existing.member_name = progress.member_name
             existing.completed_at = None
@@ -1420,6 +1541,59 @@ class WorkflowRunState(BaseModel):
             status="failed",
             error=progress.text or progress.outcome or "agent failed",
         )
+
+    def _on_agent_activity(self, progress: WorkflowProgress) -> Optional[dict[str, Any]]:
+        """Append one tool-call / tool-result activity row to the target node.
+
+        Locates the node by ``agent_id`` (resume-stable, distinguishes
+        parallel same-label nodes); legacy events without it fall back to the
+        latest running same-label node in the phase. A ``tool_result`` with a
+        matching ``tool_call_id`` pairs back onto its call row (fills
+        ``tool_result_preview``, no second row); an orphan result appends as
+        its own ``tool_result`` row, in order. The per-node activity list is
+        capped at 200 rows (oldest dropped). The delta carries only the
+        touched phase — statuses are untouched by activity.
+        """
+        self._apply_nested_phase(progress, "agent_activity")
+        phase, agent = self._resolve_agent(
+            progress.phase or _UNNAMED_PHASE,
+            progress.label or "",
+            agent_id=progress.agent_id,
+            correlation_id=progress.correlation_id,
+            iteration=progress.phase_iteration,
+        )
+        if phase is None or agent is None:
+            logger.warning(
+                "[WF_DBG WorkflowRunState] agent_activity dropped: "
+                "phase=%r label=%r agent_id=%r",
+                progress.phase, progress.label, progress.agent_id,
+            )
+            return None
+
+        activity_type = progress.activity_type or "tool_call"
+        tool_call_id = progress.tool_call_id
+        if activity_type == "tool_result" and tool_call_id:
+            # Pair back: fill the matching call row's result preview, in order —
+            # never append a second row for a matched result.
+            for entry in reversed(agent.activity):
+                if entry.type == "tool_call" and entry.tool_call_id == tool_call_id:
+                    entry.tool_result_preview = progress.content or ""
+                    return self._build_phase_delta(phase)
+
+        agent.activity.append(
+            WorkflowAgentActivity(
+                timestamp=self._now_iso(),
+                type=activity_type,
+                content=progress.content or "",
+                tool_name=progress.tool_name,
+                tool_call_id=tool_call_id,
+                tool_result_preview=None,
+            )
+        )
+        if len(agent.activity) > _ACTIVITY_RING_CAP:
+            # Ring cap: drop the oldest rows so the node list stays bounded.
+            del agent.activity[: len(agent.activity) - _ACTIVITY_RING_CAP]
+        return self._build_phase_delta(phase)
 
     def _on_human_prompt(self, progress: WorkflowProgress) -> Optional[dict[str, Any]]:
         """A human turn is now waiting for the person's reply.

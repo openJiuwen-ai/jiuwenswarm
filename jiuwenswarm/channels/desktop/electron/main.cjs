@@ -10,7 +10,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { createShareImageExporter } = require('./share_image_export.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
+let macUpdateInProgress = false;
 
 const BACKEND_HOST = '127.0.0.1';
 const FRONTEND_HOST = '127.0.0.1';
@@ -2461,6 +2463,13 @@ function registerIpcHandlers() {
     await discardBlobSaveTransfer(transfer);
     return true;
   });
+  registerHandler('desktop:export-share-image', createShareImageExporter({
+    BrowserWindow,
+    getFrontendUrl: () => currentFrontendUrl,
+    getCookies: url => mainWindow.webContents.session.cookies.get({ url }),
+    uniqueDownloadPath,
+    showItemInFolder: file => shell.showItemInFolder(file),
+  }));
   registerHandler('desktop:download-file', async (url, filename) => {
     const targetUrl = new URL(String(url), currentFrontendUrl);
     // 仅允许 http/https：渲染器传入 file: 等本地协议会把任意本地文件写进下载目录。
@@ -2478,6 +2487,26 @@ function registerIpcHandlers() {
   });
   registerHandler('desktop:install-update', async installerPath => {
     const target = path.resolve(String(installerPath));
+    if (process.platform === 'darwin') {
+      if (!app.isPackaged || isFrontendOnly || isTestBuild || !sessionPorts || macUpdateInProgress) return false;
+      macUpdateInProgress = true;
+      try {
+        const { launchMacUpdate } = require('./macos_update.cjs');
+        const dataRoot = process.env.JIUWENSWARM_DATA_DIR || path.join(app.getPath('home'), '.jiuwenswarm');
+        await launchMacUpdate({
+          installerPath: target, executable: process.execPath, parentPid: process.pid,
+          childPids: [...serviceProcesses.values()].map(child => child.pid).filter(Number.isInteger),
+          ports: Object.values(sessionPorts), updatesDir: path.join(dataRoot, '.updates'),
+          logDir: path.join(dataRoot, 'logs'), arch: process.arch,
+        });
+        void requestShutdown(0);
+        return true;
+      } catch (error) {
+        macUpdateInProgress = false;
+        console.error('[electron] macOS update failed', error);
+        return false;
+      }
+    }
     if (canUseBackendUpdateHelper()) {
       // Windows packaged builds delegate to the bundled backend's update
       // helper (workswarm.exe --desktop-install-update): it waits for this
