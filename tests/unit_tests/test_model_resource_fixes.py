@@ -229,6 +229,22 @@ def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch, r
     assert to_session_info(latest)["model_selection"] == selection
 
 
+@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+def test_model_selection_accepts_cron_session_id(tmp_path, monkeypatch, runtime):
+    metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
+    store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = "__cron___1a1231c0004_53dd13fcf709"
+    selection = ModelSelection(type="model_group", id="mgp_a", route_id="rte_b")
+
+    store.set_session_model_selection(session_id, selection)
+
+    assert store.get_session_model_selection(session_id) == selection
+    with pytest.raises(ValueError, match="invalid session_id"):
+        store.set_session_model_selection("../escape", selection)
+
+
 def test_gateway_resolver_rejects_all_disabled_routes(catalog_state):
     from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver as GatewayResolver
 
