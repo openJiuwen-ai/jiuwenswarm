@@ -9,7 +9,7 @@ import { AgentTagPicker } from './AgentTagPicker';
 import { DeleteCardIcon } from './cardActions';
 import { SkillPickerDrawer } from './SkillPickerDrawer';
 import { McpPickerDrawer } from '../ConnectorMarket/McpPickerDrawer';
-import { PageCard, Tabs, Input, Textarea, FieldError } from '../ui';
+import { PageCard, Tabs, Input, Textarea, FieldError, Switch, RadioGroup } from '../ui';
 import { FormPageLayout } from '../ConnectorMarket/FormPageLayout';
 
 type AgentEditorProps = {
@@ -210,6 +210,41 @@ export function AgentEditor({
             </div>
 
             <div className="mb-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[13px] font-medium text-text">{t('agentManagement.form.useExternalHarness')}</div>
+                  <p className="mt-1 text-[12px] text-text-muted">{t('agentManagement.form.useExternalHarnessHint')}</p>
+                </div>
+                <Switch
+                  checked={draft.useExternalHarness}
+                  onChange={(checked) =>
+                    update(checked ? { useExternalHarness: true, mcpRefs: [] } : { useExternalHarness: false })
+                  }
+                  aria-label={t('agentManagement.form.useExternalHarness')}
+                  data-testid="agent-editor-external-harness"
+                />
+              </div>
+              {draft.useExternalHarness ? (
+                <div className="mt-3">
+                  <div className="mb-1.5 text-[13px] font-medium text-text">
+                    {t('agentManagement.form.externalHarnessProvider')}
+                  </div>
+                  <RadioGroup
+                    aria-label={t('agentManagement.form.externalHarnessProvider')}
+                    value={draft.externalHarnessProvider}
+                    options={[
+                      { value: 'claudecode', label: 'Claude' },
+                      { value: 'codex', label: 'Codex' },
+                    ]}
+                    onChange={(value) =>
+                      update({ externalHarnessProvider: value === 'codex' ? 'codex' : 'claudecode' })
+                    }
+                  />
+                </div>
+              ) : null}
+            </div>
+
+            <div className="mb-4">
               <label className="mb-1.5 block text-[13px] font-medium text-text">
                 {t('agentManagement.form.personaLabel')}
               </label>
@@ -268,6 +303,7 @@ export function AgentEditor({
             </div>
           </Section>
 
+          {draft.useExternalHarness ? null : (
           <Section
             title={t('agentManagement.form.mcpLabel')}
             action={
@@ -305,6 +341,7 @@ export function AgentEditor({
               </div>
             ) : null}
           </Section>
+          )}
 
           <Section
             title={t('agentManagement.form.skillsLabel')}

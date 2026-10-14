@@ -182,6 +182,7 @@ import {
   createAgentGroupManagementClient,
   getAgentAvatarUrl,
   isAgentGroupSelected,
+  isExternalHarnessCatalogItem,
   type AgentCatalogItem,
   type AgentGroupCatalogItem,
   type AgentGroupIdentity,
@@ -764,6 +765,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [projectCreateMode, setProjectCreateMode] = useState<ProjectCreateMode>('blank');
   const [menuDirection, setMenuDirection] = useState<'up' | 'down'>('up');
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const [externalAgentSwitchNotice, setExternalAgentSwitchNotice] = useState<string | null>(null);
   const [agentPickerQuery, setAgentPickerQuery] = useState('');
   const [pickerTab, setPickerTab] = useState<'agent' | 'group'>('agent');
   const { tooltip: agentTooltipNode, handlers: agentTooltipHandlers } = useAdaptiveTooltip({ offsetX: -50 });
@@ -1024,6 +1026,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const { workMode, projects, selectedProject, setSelectedProject, createProject } = useWorkspaceStore();
   const loadedMsgLen = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages?.length ?? 0);
   const hasHistory = (currentSession?.message_count ?? 0) > 0 || loadedMsgLen > 0;
+  const externalAgentSwitchBlocked = Boolean(
+    activeSessionId && activeSessionId !== NEW_CONVERSATION_ID && hasHistory,
+  );
+
+  useEffect(() => {
+    if (!externalAgentSwitchNotice) return;
+    const timer = window.setTimeout(() => setExternalAgentSwitchNotice(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [externalAgentSwitchNotice]);
   const goalArmed = useGoalStore((s) => s.runtimes[activeSessionId ?? '']?.armed ?? false);
   const currentGoal = useGoalStore((s) => s.runtimes[activeSessionId ?? '']?.goal ?? null);
   // 目标 active 时普通发送改走排队，而不是文档 §5.1 原定的 input_mode:'steer' 实时插话——
@@ -4010,6 +4021,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                 filteredAgentOptions.map((item) => {
                                   const avatarUrl = getAgentAvatarUrl(item);
                                   const isSelected = isSameAgentOption(item, selectedAgentId);
+                                  const externalSwitchBlocked =
+                                    externalAgentSwitchBlocked && isExternalHarnessCatalogItem(item);
                                   return (
                                     <button
                                       key={item.id}
@@ -4017,21 +4030,27 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                       className={clsx(
                                         'chat-agent-picker__item',
                                         isSelected && 'is-selected',
-                                        agentSelectionDisabled && 'is-locked',
+                                        (agentSelectionDisabled || externalSwitchBlocked) && 'is-locked',
                                       )}
                                       role="menuitemradio"
                                       aria-checked={isSelected}
-                                      aria-disabled={agentSelectionDisabled}
+                                      aria-disabled={agentSelectionDisabled || externalSwitchBlocked}
                                       data-testid="chat-panel-agent-picker-item"
                                       data-variant={item.id}
                                       data-tooltip={
                                         agentSelectionDisabled
                                           ? t('chat.agentOnlyInSingleAgentMode')
-                                          : item.description || undefined
+                                          : externalSwitchBlocked
+                                            ? t('chat.externalAgentRequiresNewSession')
+                                            : item.description || undefined
                                       }
                                       {...agentTooltipHandlers}
                                       onClick={() => {
                                         if (!activeSessionId || agentSelectionDisabled) return;
+                                        if (externalSwitchBlocked) {
+                                          setExternalAgentSwitchNotice(t('chat.externalAgentRequiresNewSession'));
+                                          return;
+                                        }
                                         useSessionStore.getState().setMode(activeSessionId, 'agent');
                                         setAgentSelectionIntent(activeSessionId, { kind: 'select', id: item.id });
                                         setAttachMenuOpen(false);
@@ -4158,6 +4177,18 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               )}
                             </PickerPanel>
                           )}
+                          {externalAgentSwitchNotice ? (
+                            <div className="app-toast-wrapper app-toast-wrapper--top-center">
+                              <div
+                                className="app-session-toast"
+                                role="status"
+                                aria-live="polite"
+                                data-testid="chat-panel-external-agent-switch-notice"
+                              >
+                                {externalAgentSwitchNotice}
+                              </div>
+                            </div>
+                          ) : null}
                           {agentTooltipNode}
                         </div>
                         {/* 插件/MCP 装备目前后端在集群模式下不生效（JiuWenSwarmDeepAdapter

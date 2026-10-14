@@ -674,8 +674,10 @@ def _install_session_child(
         history_before_request_id: str | None = None,
         reserve_activity: bool = False,
         host_external_input: bool = False,
+        external_harness_binding: dict | None = None,
+        **_: object,
     ) -> _SessionChild:
-        del history_before_request_id, host_external_input
+        del history_before_request_id, host_external_input, external_harness_binding
         lookups.append(session_id)
         if reserve_activity:
             child._register_session_agent_task(str(session_id or "default"))
