@@ -205,8 +205,7 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  /* 上下留白：<1920px 固定 16px，≥1920px 由 min-width:1920 媒体查询统一提到 24px（不再平滑过渡）。原左右 padding 移除：工作台左右由下方 margin-left/right 自适应曲线接管，介绍页 --intro 重置为 0 */
-  margin-top: 16px;
+  margin-top: 32px;
   margin-bottom: 16px;
   /* 背景图已上移 .rsi-page 铺满整个内容区（margin 空隙不再露底色），详情区自身保持透明 */
 }
