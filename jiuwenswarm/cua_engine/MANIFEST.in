@@ -1,0 +1,10 @@
+include setup.py
+include uv.lock SOURCE.json THIRD_PARTY_NOTICES.md
+include backends/macos/Package.swift
+recursive-include backends/macos/Sources *.swift
+recursive-include backends/windows *.cs
+recursive-include assets/agent-pointer *.svg *.json
+recursive-include skills *.md
+prune backends/macos/.build
+prune backends/windows/.build
+global-exclude *.pyc *.pyo
