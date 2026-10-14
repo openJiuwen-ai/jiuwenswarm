@@ -206,6 +206,40 @@ class TestBeforeToolCall:
         hook_input = rail._executor.run_all.await_args.kwargs["hook_input"]
         assert hook_input["session_id"] == "session-2747"
 
+    @pytest.mark.asyncio
+    async def test_passes_subagent_type_in_hook_input(self):
+        """UserHookRail created for a sub-agent includes subagent_type in hook_input."""
+        config = self._make_config(
+            PreToolUse=[("*", [{"command": "echo ok", "timeout": 5}])]
+        )
+        rail = UserHookRail(config, subagent_type="code_agent")
+        rail._executor.run_all = AsyncMock(return_value=[])
+        ctx = MockCallbackContext(
+            inputs=MockToolInputs(tool_name="Bash"),
+        )
+
+        await rail.before_tool_call(ctx)
+
+        hook_input = rail._executor.run_all.await_args.kwargs["hook_input"]
+        assert hook_input["subagent_type"] == "code_agent"
+
+    @pytest.mark.asyncio
+    async def test_main_agent_subagent_type_is_empty(self):
+        """UserHookRail created for the main agent has empty subagent_type."""
+        config = self._make_config(
+            PreToolUse=[("*", [{"command": "echo ok", "timeout": 5}])]
+        )
+        rail = UserHookRail(config)
+        rail._executor.run_all = AsyncMock(return_value=[])
+        ctx = MockCallbackContext(
+            inputs=MockToolInputs(tool_name="Bash"),
+        )
+
+        await rail.before_tool_call(ctx)
+
+        hook_input = rail._executor.run_all.await_args.kwargs["hook_input"]
+        assert hook_input["subagent_type"] == ""
+
 
 # ============================================================
 # UserHookRail: after_tool_call (PostToolUse)
