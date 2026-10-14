@@ -472,7 +472,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         AgentOSFileTransferError,
         AgentOSRouterClient,
     )
-    from jiuwenswarm.extensions.agentos.auth.common import headers_to_dict
+    from jiuwenswarm.gateway.extensions.auth.common import headers_to_dict
 
     client = getattr(channel, "container_file_client", None)
     if not isinstance(client, AgentOSRouterClient):
