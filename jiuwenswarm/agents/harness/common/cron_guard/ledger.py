@@ -158,7 +158,7 @@ class CronRunLedger:
                     conn.execute(
                         "INSERT OR REPLACE INTO cron_runs (run_id, job_id, sid, state, started_at,"
                         " ended_at, trip_reason, reaped) VALUES (?, '', '', ?, ?, ?, ?, ?)",
-                        (run_id, state, time.time(), trip_reason, 1 if reaped else 0),
+                        (run_id, state, time.time(), time.time(), trip_reason, 1 if reaped else 0),
                     )
                 conn.commit()
         except Exception as exc:  # noqa: BLE001

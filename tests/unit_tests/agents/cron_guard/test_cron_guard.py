@@ -25,6 +25,7 @@ from jiuwenswarm.agents.harness.common.cron_guard.identity import (
     verify_run_token,
 )
 from jiuwenswarm.agents.harness.common.cron_guard.ledger import (
+    STATE_FAILED,
     STATE_FINISHED,
     STATE_ORPHANED,
     STATE_RUNNING,
@@ -1098,3 +1099,92 @@ def test_cron_guard_end_async_reap_off_event_loop(tmp_path, monkeypatch):
         assert order == ["reap_start", "probe", "reap_end"]
     finally:
         led_mod.reset_run_ledger()
+
+
+def test_cron_guard_end_async_survives_reap_raise(tmp_path, monkeypatch):
+    """never-raises contract holds on the async path; the ledger still gets its terminal row."""
+    import asyncio
+    import copy
+
+    base = copy.deepcopy(cfg_mod.DEFAULTS)
+    base["enabled"] = True
+    base["budget_ledger"]["path"] = str(tmp_path / "ledger.db")
+    monkeypatch.setattr(cfg_mod, "get_cron_guard_config", lambda: base)
+    from jiuwenswarm.agents.harness.common.cron_guard import watchdog as wd
+    from jiuwenswarm.agents.harness.common.cron_guard import ledger as led_mod
+
+    led_mod.reset_run_ledger()
+    try:
+        ctx = SimpleNamespace(run_id="rBR", budget=SimpleNamespace(snapshot=lambda: {}))
+
+        def boom(run_id, kill_grace_seconds=3.0):
+            raise RuntimeError("reap exploded")
+
+        reg = wd.get_run_registry()
+        monkeypatch.setattr(reg, "reap", boom)
+        asyncio.run(wd.cron_guard_end_async(ctx, None, None, final_state="finished"))
+        row = led_mod.get_run_ledger().lookup_run("rBR")
+        assert row["state"] == STATE_FINISHED
+    finally:
+        led_mod.reset_run_ledger()
+
+
+def test_cron_terminal_state_mapping():
+    """Guard trips are 'tripped'; a producer crash is 'failed'; clean is 'finished'."""
+    from jiuwenswarm.agents.harness.common.cron_guard.watchdog import cron_terminal_state
+
+    assert cron_terminal_state(None) == "finished"
+    assert cron_terminal_state("deadline_exceeded") == "tripped"
+    assert cron_terminal_state("budget_exceeded") == "tripped"
+    assert cron_terminal_state("producer_error") == "failed"
+
+
+def test_cron_guard_end_async_producer_error_records_failed(tmp_path, monkeypatch):
+    """A producer crash must land in the ledger as state=failed with its reason, not a green finished."""
+    import asyncio
+    import copy
+
+    base = copy.deepcopy(cfg_mod.DEFAULTS)
+    base["enabled"] = True
+    base["budget_ledger"]["path"] = str(tmp_path / "ledger.db")
+    monkeypatch.setattr(cfg_mod, "get_cron_guard_config", lambda: base)
+    monkeypatch.setenv("JIUWENSWARM_CRON_RUN_SECRET", "sec")
+    from jiuwenswarm.agents.harness.common.cron_guard import watchdog as wd
+    from jiuwenswarm.agents.harness.common.cron_guard import ledger as led_mod
+
+    led_mod.reset_run_ledger()
+    try:
+        monkeypatch.setattr(wd, "_orphans_marked", True)
+        tok = sign_run_token("rPE", "jPE", "sPE", b"sec")
+        req = SimpleNamespace(
+            metadata={"cron": {"job_id": "jPE", "run_id": "rPE", "run_token": tok, "timeout_seconds": 3600}},
+            params={},
+        )
+        ctx, cvar_token, timer = wd.cron_guard_begin(req, "sPE")
+        assert ctx is not None
+        led = led_mod.get_run_ledger()
+        asyncio.run(wd.cron_guard_end_async(
+            ctx, cvar_token, timer,
+            final_state=wd.cron_terminal_state("producer_error"),
+            trip_reason="producer_error",
+        ))
+        row = led.lookup_run("rPE")
+        assert row["state"] == STATE_FAILED
+        assert row["trip_reason"] == "producer_error"
+    finally:
+        led_mod.reset_run_ledger()
+
+
+def test_ledger_finish_fallback_insert_missing_start(tmp_path):
+    """finish_run for a run_id whose start row is missing must still land the
+    terminal row (the fallback INSERT bound 5 params against 6 placeholders
+    and silently lost the write)."""
+    led = CronRunLedger(tmp_path / "ledger.db")
+    led.finish_run("rFB", STATE_FAILED, trip_reason="producer_error", reaped=True)
+    row = led.lookup_run("rFB")
+    assert row is not None
+    assert row["state"] == STATE_FAILED
+    assert row["trip_reason"] == "producer_error"
+    assert row["reaped"] == 1
+    assert row["started_at"] > 0
+    assert row["ended_at"] >= row["started_at"]

@@ -35,9 +35,26 @@ from .identity import (
     get_run_registry,
     resolve_cron_run_context,
 )
-from .ledger import STATE_FAILED, STATE_TRIPPED, get_run_ledger
+from .ledger import STATE_FAILED, STATE_FINISHED, STATE_TRIPPED, get_run_ledger
 
 _orphans_marked = False
+
+# Trip reason recorded by the generic producer-exception branch of the stream
+# path — distinguishable in the ledger from guard trips and from a clean run.
+PRODUCER_ERROR_REASON = "producer_error"
+
+
+def cron_terminal_state(trip_reason: str | None) -> str:
+    """Map a trip reason to the ledger terminal state.
+
+    ``deadline_exceeded`` / ``budget_exceeded`` are guard trips
+    (``tripped``); a producer crash (``producer_error``) is a plain failure
+    (``failed``) — the two are kept apart so the terminal state alone tells
+    ops an abnormal exit happened instead of reading as a green finish.
+    """
+    if trip_reason == PRODUCER_ERROR_REASON:
+        return STATE_FAILED
+    return STATE_TRIPPED if trip_reason else STATE_FINISHED
 
 
 class CronDeadlineExceeded(Exception):

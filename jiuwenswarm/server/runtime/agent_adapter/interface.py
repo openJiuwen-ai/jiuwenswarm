@@ -3673,6 +3673,7 @@ class JiuWenSwarm:
             from jiuwenswarm.agents.harness.common.cron_guard.watchdog import (
                 cron_guard_begin,
                 cron_guard_end_async,
+                cron_terminal_state,
             )
             from jiuwenswarm.agents.harness.common.cron_guard.checkpoint_guard import (
                 CronCheckpointQuarantined,
@@ -3978,6 +3979,11 @@ class JiuWenSwarm:
                     producer_cancellation = cancel_exc
                     raise
             except Exception as exc:
+                if cron_ctx is not None:
+                    # A producer crash must not land in the ledger as a green
+                    # "finished": record a distinguishable reason —
+                    # cron_terminal_state maps it to the "failed" terminal state.
+                    cron_trip_reason = "producer_error"
                 logger.exception("[JiuWenSwarm] 流式任务异常: %s", exc)
                 try:
                     await stream_queue.put(("error", exc))
@@ -4861,7 +4867,7 @@ class JiuWenSwarm:
                             cron_ctx,
                             cron_ctxvar_token,
                             cron_soft_timer,
-                            final_state="tripped" if cron_trip_reason else "finished",
+                            final_state=cron_terminal_state(cron_trip_reason),
                             trip_reason=cron_trip_reason,
                         )
                     except Exception:  # noqa: BLE001
