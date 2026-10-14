@@ -248,11 +248,15 @@ def _cleanup_orphans_best_effort(reason: str) -> None:
         logger.exception("[launcher] orphan network cleanup (%s) failed", reason)
 
 
-def _set_parent_death_signal(signum: int) -> None:
+def _set_parent_death_signal(signum: int, parent_pid: int) -> None:
     """Ask the kernel to SIGTERM this process if the supervisor parent dies.
 
     ``PR_SET_PDEATHSIG`` fires even when the parent is SIGKILL'd, which is the
     case we cannot handle with a Python ``try/finally`` in the parent.
+
+    ``parent_pid`` is the ppid sampled immediately after ``fork``. In a
+    container the supervisor itself is often PID 1, so ``getppid() == 1`` is
+    the steady state and must not be treated as "parent already exited".
     """
     if not sys.platform.startswith("linux"):
         return
@@ -271,9 +275,15 @@ def _set_parent_death_signal(signum: int) -> None:
             ctypes.get_errno(),
         )
         return
-    # Race: parent already died between fork() and prctl().
-    if os.getppid() == 1:
-        logger.warning("[launcher] supervisor parent already gone; sending %s to self", signum)
+    # Race: parent died between fork() and prctl(), and this process was
+    # reparented. Compare against the pid captured at fork, not against 1.
+    if os.getppid() != parent_pid:
+        logger.warning(
+            "[launcher] supervisor parent %s already gone (ppid=%s); sending %s to self",
+            parent_pid,
+            os.getppid(),
+            signum,
+        )
         os.kill(os.getpid(), signum)
 
 
@@ -425,8 +435,9 @@ def main(argv: list[str] | None = None) -> int:
             logger.warning("[launcher] fork() failed; running without supervisor", exc_info=True)
             return _run_server(uvicorn_kwargs)
         if child_pid == 0:
+            parent_pid = os.getppid()
             os.environ[ENV_SUPERVISOR_CHILD] = "1"
-            _set_parent_death_signal(signal.SIGTERM)
+            _set_parent_death_signal(signal.SIGTERM, parent_pid)
             return _run_server(uvicorn_kwargs)
         return _supervise_child(child_pid)
 

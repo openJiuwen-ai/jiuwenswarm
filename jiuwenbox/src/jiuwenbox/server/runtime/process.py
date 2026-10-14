@@ -34,7 +34,7 @@ from typing import Any
 import yaml
 
 from jiuwenbox.logging_config import configure_logging
-from jiuwenbox.models.policy import NetworkMode, NetworkPolicy, SecurityPolicy
+from jiuwenbox.models.policy import CgroupPolicy, NetworkMode, NetworkPolicy, SecurityPolicy
 from jiuwenbox.models.sandbox import (
     BackgroundExecResult,
     BackgroundJobStatus,
@@ -164,6 +164,59 @@ FASTPATH_ENV = "JIUWENBOX_PYTHON_FASTPATH"
 # cap) and the cold-start blast radius when many sandboxes start together.
 FASTPATH_MAX_SANDBOXES_ENV = "JIUWENBOX_PYTHON_FASTPATH_MAX_SANDBOXES"
 FASTPATH_DEFAULT_MAX_SANDBOXES = 50
+# Mirrors ``sandbox_daemon`` so the server can decide whether a cgroup has
+# room for the resident pool before it marks a request.
+FASTPATH_WORKERS_ENV = "JIUWENBOX_PYTHON_FASTPATH_WORKERS"
+FASTPATH_DEFAULT_WORKERS = 2
+FASTPATH_MAX_WORKERS = 4
+# Tasks already charged against ``pids.max`` before a user process can
+# start: bwrap monitor, bwrap pid-1, the daemon's main thread, and the
+# per-request handler thread. The fast path adds an idle-reaper thread
+# at daemon startup, then one process per worker, then the user fork.
+_FASTPATH_CGROUP_PIDS_BASE = 4
+# Two warm interpreters plus the daemon do not fit under a small
+# ``memory.max``; the OOM killer then takes the daemon and the client
+# sees a closed IPC socket instead of the child's exit status.
+_FASTPATH_MIN_MEMORY_BYTES = 128 * 1024 * 1024
+
+
+def _cgroup_allows_fastpath(cgroup: CgroupPolicy) -> bool:
+    """False when a resident worker pool would break this cgroup.
+
+    The pool's reaper thread is started at daemon launch, before any
+    request, so a tight ``pids.max`` is already exhausted by the time
+    ``subprocess`` tries to spawn the user command. A tight
+    ``memory.max`` cannot hold the extra interpreters; the OOM killer
+    then takes the daemon and the client sees a closed IPC socket.
+    """
+    if cgroup.pids_max is not None:
+        needed = (
+            _FASTPATH_CGROUP_PIDS_BASE
+            + 1
+            + _fastpath_worker_count()
+            + 1
+        )
+        if cgroup.pids_max < needed:
+            return False
+    if (
+        cgroup.memory_max is not None
+        and cgroup.memory_max < _FASTPATH_MIN_MEMORY_BYTES
+    ):
+        return False
+    return True
+
+
+def _fastpath_worker_count() -> int:
+    """Resident worker target, matching ``sandbox_daemon._fastpath_worker_count``."""
+    raw = os.environ.get(FASTPATH_WORKERS_ENV)
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value >= 1:
+            return min(value, FASTPATH_MAX_WORKERS)
+    return FASTPATH_DEFAULT_WORKERS
 
 
 def _fastpath_max_sandboxes() -> int:
@@ -1028,6 +1081,12 @@ class ProcessRuntime(RuntimeAdapter):
             config.env[LISTENER_FD_ENV] = str(listener_fd)
 
         apply_sandbox_ip_env(config.env, sandbox_ip)
+        # The daemon starts its fast-path reaper thread at launch, before
+        # any request is marked. A per-request flag cannot reclaim that
+        # thread, so a cgroup that cannot spare the pool must turn the
+        # feature off for this sandbox.
+        if not _cgroup_allows_fastpath(policy.cgroup):
+            config.env[FASTPATH_ENV] = "0"
 
         if launcher_dir is not None and landlock_enabled:
             launcher_path = launcher_dir / "landlock-launcher.py"
@@ -2068,6 +2127,7 @@ class ProcessRuntime(RuntimeAdapter):
             cgroup_procs_paths = [
                 str(group_dir / "cgroup.procs") for group_dir in cgroup_handle.paths
             ]
+        protect_oom = policy.cgroup.memory_max is not None
 
         def _preexec_attach_to_cgroup() -> None:
             # Runs in the child after fork, before execve. Writing our own
@@ -2081,6 +2141,15 @@ class ProcessRuntime(RuntimeAdapter):
             for procs_path in cgroup_procs_paths:
                 with open(procs_path, "w", encoding="utf-8") as fh:
                     fh.write(str(child_pid))
+            # Descendants inherit this score. User commands raise theirs
+            # to +1000 before exec so the OOM killer prefers them even
+            # when this write is rejected (no CAP_SYS_RESOURCE).
+            if protect_oom:
+                try:
+                    with open("/proc/self/oom_score_adj", "w", encoding="ascii") as fh:
+                        fh.write("-1000")
+                except OSError:
+                    pass
 
         preexec = _preexec_attach_to_cgroup if cgroup_procs_paths else None
 
@@ -2497,6 +2566,21 @@ class ProcessRuntime(RuntimeAdapter):
             self._fastpath_activated.add(sandbox_id)
             return True
 
+    def _fastpath_cgroup_allows(self, sandbox_id: str) -> bool:
+        """False when this sandbox's cgroup cannot spare a resident worker pool.
+
+        The pool lives in the same cgroup and pid namespace as the user
+        command. A tight ``pids.max`` is already full once the workers
+        exist, so the command fails with EAGAIN before it runs. A tight
+        ``memory.max`` lets the OOM killer take the daemon instead of the
+        allocating child. Either case falls through to a single
+        ``subprocess`` spawn, which only needs one extra process.
+        """
+        policy = self._runtime_policies.get(sandbox_id)
+        if policy is None:
+            return True
+        return _cgroup_allows_fastpath(policy.cgroup)
+
     def _exec_via_daemon_blocking(self, call: _DaemonExecCall) -> ExecResult:
         """Run one ``exec`` over the IPC channel and return an ``ExecResult``.
 
@@ -2518,6 +2602,7 @@ class ProcessRuntime(RuntimeAdapter):
             # could fill ``_fastpath_activated`` with sandboxes that never use
             # the fast path and silently degrade later Python requests.
             and _python_fastpath_candidate(list(call.command))
+            and self._fastpath_cgroup_allows(call.sandbox_id)
             and self._fastpath_admit(call.sandbox_id)
         ):
             request_payload["python_fastpath"] = True
@@ -2656,6 +2741,12 @@ class ProcessRuntime(RuntimeAdapter):
             except OSError:
                 pass
 
+    def _cgroup_oom_kill_count(self, sandbox_id: str) -> int:
+        handle = self._cgroup_handles.get(sandbox_id)
+        if handle is None:
+            return 0
+        return cgroup_module.oom_kill_count(handle)
+
     async def _exec_via_daemon(
         self,
         sandbox_id: str,
@@ -2682,6 +2773,7 @@ class ProcessRuntime(RuntimeAdapter):
             )
 
         loop = asyncio.get_running_loop()
+        oom_before = self._cgroup_oom_kill_count(sandbox_id)
         try:
             return await loop.run_in_executor(
                 None,
@@ -2699,6 +2791,21 @@ class ProcessRuntime(RuntimeAdapter):
         except (ConnectionError, ValueError) as exc:
             # ``ValueError`` already covers ``json.JSONDecodeError`` (G.ERR.09).
             self._daemon_socket_ready[sandbox_id] = False
+            if self._cgroup_oom_kill_count(sandbox_id) > oom_before:
+                # The memory cap killed a process in this cgroup and the
+                # daemon died with it, so no response frame was written.
+                # Report the kill instead of a transport error.
+                logger.warning(
+                    "Sandbox %s cgroup OOM-killed a process during exec; "
+                    "daemon IPC dropped: %s",
+                    sandbox_id,
+                    exc,
+                )
+                return ExecResult(
+                    exit_code=137,
+                    stdout="",
+                    stderr="Killed\n",
+                )
             logger.warning(
                 "Daemon IPC transport failure for sandbox %s: %s",
                 sandbox_id,

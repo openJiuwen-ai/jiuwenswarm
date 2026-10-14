@@ -2618,8 +2618,11 @@ class TestPolicyEnforcement:
             },
         )
 
+        # ``-I`` keeps this probe off the Python fast path. The resident
+        # workers live in the same pid namespace and would push getpid()
+        # past the bound that still distinguishes a fresh namespace.
         response = client.post(f"/api/v1/sandboxes/{sandbox['id']}/exec", json={
-            "command": ["python3", "-c", "import os; print(os.getpid())"],
+            "command": ["python3", "-I", "-c", "import os; print(os.getpid())"],
             "timeout_seconds": 5,
         })
         assert response.status_code == 200
