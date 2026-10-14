@@ -243,7 +243,7 @@ function ConversationListItem({
       data-testid="multi-session-conversation-list-item"
       data-variant={session.session_id}
     >
-      <button type="button" className="conversation-list-item__main" onClick={onSelect} data-testid="multi-session-conversation-list-item-main">
+      <button type="button" className="conversation-list-item__main" onClick={onSelect} title={title} data-testid="multi-session-conversation-list-item-main">
         <span className="conversation-list-item__title" data-testid="multi-session-conversation-list-item-title" data-tooltip="" {...titleTooltipHandlers}>
           {title}
         </span>
