@@ -352,7 +352,9 @@ def _parse_script(
             loop_depth += 1
             # Parse the remainder of the header segment (the condition) with
             # the loop already open — `while sleep 5; ...` is a poll too.
-            _parse_segment(segment, depth, max_depth, result, in_loop=True)
+            # The keyword itself must be stripped first or it occupies the
+            # command position and the condition's sleep goes undetected.
+            _parse_segment(segment[1:], depth, max_depth, result, in_loop=True)
             continue
         if head == "done":
             loop_depth = max(0, loop_depth - 1)
