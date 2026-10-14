@@ -1,0 +1,151 @@
+"""Run one Execution through agent-core and report how it ended.
+
+The driver builds this Execution's ports (the shared commit and budget ports and
+a window backend bound to its own Session), consumes core's event stream to the
+end, and maps the terminal event to a Request outcome. When the stream ends,
+core has already released its instance. Whatever happens, candidate copies are
+forgotten and admitted model calls that were never reported are settled as
+unknown usage. The driver never changes the Request's state itself.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import aclosing
+from datetime import datetime, timezone
+from typing import Literal
+
+from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
+from jiuwenswarm.server.jiuwenmate.execution_models import ExecutionRecord, RequestState
+from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
+from jiuwenswarm.server.jiuwenmate.ports.budget import HostBudgetPort
+from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
+from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
+from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation
+from openjiuwen.harness import persistent_agent as core
+
+logger = logging.getLogger(__name__)
+
+AbortReason = Literal["cancel", "stop"]
+ExecuteEntry = Callable[..., AsyncIterator[core.AgentEvent]]
+AbortEntry = Callable[..., Awaitable[None]]
+SnapshotSource = Callable[[str, str, str], ConfigSnapshot]
+
+_TERMINAL = frozenset({core.EventType.EXECUTION_FINAL, core.EventType.EXECUTION_PAUSED})
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _default_execute(spec, context, inputs) -> AsyncIterator[core.AgentEvent]:
+    return core.execute_persistent_request(spec, context, inputs)
+
+
+async def _default_abort(context, *, reason: AbortReason) -> None:
+    await core.abort_persistent_request(context, reason=reason)
+
+
+def outcome_of(terminal: core.AgentEvent | None) -> str:
+    """Request outcome for the Execution's terminal event; none at all means it failed."""
+    if terminal is None:
+        return "failed"
+    if terminal.event_type == core.EventType.EXECUTION_FINAL:
+        return terminal.payload.status
+    return "stopped" if terminal.payload.reason == "stopped" else "paused"
+
+
+class ExecutionHandle:
+    """Control of one running Execution; a reason given before core starts is handed over on start."""
+
+    def __init__(self, abort: AbortEntry) -> None:
+        self._abort = abort
+        self._context: core.PersistentBuildContext | None = None
+        self.reason: AbortReason | None = None
+
+    async def abort(self, reason: AbortReason) -> None:
+        if self.reason is None:
+            self.reason = reason
+        if self._context is not None:
+            await self._abort(self._context, reason=reason)
+
+    async def _attach(self, context: core.PersistentBuildContext) -> None:
+        self._context = context
+        if self.reason is not None:
+            await self._abort(context, reason=self.reason)
+
+
+class ExecutionDriver:
+    def __init__(
+        self,
+        *,
+        snapshots: SnapshotSource,
+        commit_port: HostCommitPort,
+        queue: CommitQueue,
+        budget_port: HostBudgetPort,
+        budgets: BudgetRepository,
+        windows: WindowBackendStore,
+        execute: ExecuteEntry = _default_execute,
+        abort: AbortEntry = _default_abort,
+        clock: Callable[[], datetime] = _utc_now,
+    ) -> None:
+        self._snapshots = snapshots
+        self._commit_port = commit_port
+        self._queue = queue
+        self._budget_port = budget_port
+        self._budgets = budgets
+        self._windows = windows
+        self._execute = execute
+        self._abort = abort
+        self._clock = clock
+
+    def new_handle(self) -> ExecutionHandle:
+        return ExecutionHandle(self._abort)
+
+    async def run(self, state: RequestState, execution: ExecutionRecord, handle: ExecutionHandle) -> str:
+        record = state.record
+        try:
+            snapshot = await asyncio.to_thread(
+                self._snapshots, record.namespace_id, record.agent_id, record.config_version
+            )
+            ports = core.PersistentPorts(
+                commit=self._commit_port,
+                budget=self._budget_port,
+                window_backend=self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
+            )
+            spec, context = build_invocation(snapshot, record, execution, ports=ports)
+            await handle._attach(context)
+            terminal = None
+            async with aclosing(self._execute(spec, context, record.request_input)) as events:
+                async for event in events:
+                    if event.event_type in _TERMINAL:
+                        terminal = event
+            if terminal is None:
+                logger.warning(
+                    "[JiuwenMate] execution ended without a terminal event: request=%s execution=%s",
+                    record.request_id,
+                    execution.execution_id,
+                )
+            return outcome_of(terminal)
+        except Exception as exc:
+            logger.warning(
+                "[JiuwenMate] execution failed: request=%s execution=%s error=%s",
+                record.request_id,
+                execution.execution_id,
+                exc,
+            )
+            return "failed"
+        finally:
+            self._queue.forget(record.namespace_id, execution.execution_id)
+            try:
+                await asyncio.to_thread(
+                    self._budgets.settle_unreported, record.namespace_id, execution.execution_id, now=self._clock()
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[JiuwenMate] unreported model calls not settled: execution=%s error=%s",
+                    execution.execution_id,
+                    exc,
+                )

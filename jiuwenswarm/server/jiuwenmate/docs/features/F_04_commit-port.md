@@ -158,7 +158,7 @@ sequenceDiagram
 | I-01 | [`execution_repository.py`](../../execution_repository.py) | 两张表与 `record_events`、`read_execution_log`、`candidate_output` | JM-04-V-01、V-03～V-05 |
 | I-02 | [`ports/commit.py`](../../ports/commit.py)、[`ports/__init__.py`](../../ports/__init__.py) | `HostCommitPort`、`CommitQueue` | JM-04-V-02、V-06 |
 | I-03 | [`test_commit_port.py`](../../../../../tests/unit_tests/server/jiuwenmate/test_commit_port.py) | 测试与故障注入 | — |
-| I-04（未实施） | AgentServer 启停流程 | 持有 `CommitQueue`；执行收尾时调用 `forget` | 由 JM-07 完成 |
+| I-04（部分实施） | AgentServer 启停流程 | 持有 `CommitQueue`；执行收尾时调用 `forget` | JM-07 的 `AgentManager` 已持有队列，执行收尾已调用 `forget`（见 [F_07](F_07_execution-driver.md)）；AgentServer 接线推迟到 S1 |
 
 兼容核对：新增表位于新版专用数据库；个人版事件链路不受影响。
 
@@ -196,14 +196,14 @@ sequenceDiagram
 
 | 风险 / 触发条件 | 影响 | 已有应对措施 | 核实方式 |
 | --- | --- | --- | --- |
-| 执行异常且未调用 `forget` | 候选副本持续占用内存 | 无 | JM-07 增加收尾测试 |
+| 执行异常且未调用 `forget` | 候选副本持续占用内存 | JM-07 执行收尾统一调用 `forget` | [F_07](F_07_execution-driver.md) 的 JM-07-V-04 |
 | 普通事件量超过队列上限 | `QueueFull` 传给 core，可能中断执行 | 默认上限 10000 | JM-07 接入真实负载后测量 |
 
 ### 9.2 已知遗留
 
 | 遗留项 | 性质 | 影响与现有处置 | 后续入口 |
 | --- | --- | --- | --- |
-| 队列未接入 AgentServer | 未实现 | 端口目前只能在测试中使用 | JM-07 |
+| 队列未接入 AgentServer | 未实现 | 队列已随 `AgentManager` 启停，管理器尚未接入 AgentServer | S1（JM-07 I-06） |
 | 事件与候选无保留期清理 | 未实现 | 数据持续增长 | 待评估，与 JM-05 保留期一起考虑 |
 
 ## 10. 设计演进与修订
