@@ -1,4 +1,3 @@
-import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { openAssetPublish } from '../../features/assetPublishEvents';
 import { canShowAssetPublish } from '../../features/assetPublishState';
 import { useEffect, useState } from 'react';
@@ -235,7 +234,6 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
         {/* 头部：与 skill/agent 详情共用的 EntityHeader（头像/标题 20px/30px/标签行/操作区）。
             2026-09-11 集成类型徽标从 titleEnd 移入 tags 标签行，统一走 EntityHeader 的
             结构化标签（.entity-header__tag 标准 tag 视觉），titleEnd 只留瞬态 error 提示 */}
-        <PublicationDetailStatus kind="mcp" localId={runtimeName} />
         <EntityHeader
           testId="connector-market-mcp-detail-header"
           avatar={{ name: connector.displayName, iconUrl: connector.icon, testId: 'connector-market-mcp-detail-avatar' }}

@@ -13,6 +13,27 @@ export function publishOutcome(record: PublishRecord): string {
   if (result === 'publish_failed') return 'failed';
   return 'unknown';
 }
+
+/**
+ * 记录卡片展示用：只表达“本地能确定”的状态。
+ * 远端（Hub）的审核/发布结果不在 App 内声称，因此 pending_moderation / published / unknown
+ * 一律不上屏，统一表现为“已提交”或“提交结果未确认”。
+ */
+export type LocalRecordState = 'queued' | 'uploading' | 'failed' | 'submitted' | 'unconfirmed';
+
+export function localRecordState(record: PublishRecord): LocalRecordState {
+  switch (record.execution_status) {
+    case 'queued':
+    case 'uploading':
+    case 'failed':
+      return record.execution_status;
+    case 'completed':
+      return 'submitted';
+    default:
+      // execution_status === 'unknown'：提交结果未被确认
+      return 'unconfirmed';
+  }
+}
 export function validateMetadata(metadata: PublishMetadata): string[] {
   const errors: string[] = [];
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(metadata.asset_name)) errors.push('asset_name');

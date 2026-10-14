@@ -327,7 +327,9 @@ test('polling completion updates the matching history row', async () => {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 2100));
   });
-  assert.match(find('asset-publish-record').textContent, /pending moderation/i);
+  const polledRow = find('asset-publish-record').textContent;
+  assert.match(polledRow, /submitted/i);
+  assert.doesNotMatch(polledRow, /pending moderation/i);
   await act(async () => find('asset-publish-close').click());
 });
 test('OAuth restore contains metadata and does not auto prepare or commit', async () => {

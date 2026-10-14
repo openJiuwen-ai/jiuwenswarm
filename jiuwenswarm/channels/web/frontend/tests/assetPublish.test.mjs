@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   canShowAssetPublish,
   publishOutcome,
+  localRecordState,
   validateMetadata,
   createCommitAttempt,
 } from '../node_modules/.cache/asset-publish/assetPublishState.js';
@@ -161,4 +162,15 @@ test('exhausted refresh stops loading and exposes an error notice', (context) =>
       assert.equal(pending.refreshing, true);
     },
   );
+});
+
+test('records expose only locally confirmed states', () => {
+  assert.equal(localRecordState({ execution_status: 'queued' }), 'queued');
+  assert.equal(localRecordState({ execution_status: 'uploading' }), 'uploading');
+  assert.equal(localRecordState({ execution_status: 'failed' }), 'failed');
+  assert.equal(localRecordState({ execution_status: 'completed' }), 'submitted');
+  // 远端态（pending_moderation / published）不再上屏
+  assert.equal(localRecordState({ execution_status: 'completed', result: { publish_result: 'pending_moderation' } }), 'submitted');
+  assert.equal(localRecordState({ execution_status: 'completed', result: { publish_result: 'published' } }), 'submitted');
+  assert.equal(localRecordState({ execution_status: 'unknown' }), 'unconfirmed');
 });
