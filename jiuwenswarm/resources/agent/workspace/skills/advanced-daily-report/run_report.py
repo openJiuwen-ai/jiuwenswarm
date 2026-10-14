@@ -11,6 +11,7 @@
 
 import argparse
 import io
+import logging
 import os
 import re
 import sys
@@ -206,8 +207,8 @@ def collect_email_stats(date: str = None) -> dict:
         try:
             args = '("name" "python-imap" "version" "1.0" "vendor" "python")'
             mail._simple_command("ID", args)
-        except:
-            pass
+        except (imaplib.IMAP4.error, OSError):
+            logging.getLogger(__name__).debug("IMAP ID command failed", exc_info=True)
 
         # 使用 STATUS 命令获取邮件统计（绕过 SELECT 的 Unsafe Login 限制）
         total_emails = 0

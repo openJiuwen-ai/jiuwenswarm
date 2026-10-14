@@ -45,13 +45,25 @@ class LoadedAgentGroupPackage:
         return tuple(names)
 
 
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous manifests instead of silently keeping the last key."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key!r}")
+        result[key] = value
+    return result
+
+
 def _read_mapping(path: Path, *, label: str) -> dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object,
+        )
     except FileNotFoundError as exc:
         raise ValueError(f"{label} missing: {path}") from exc
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{label} is not valid JSON: {path}") from exc
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{label} is not valid JSON: {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"{label} must contain a JSON object: {path}")
     return payload
@@ -61,30 +73,56 @@ def _safe_component(value: Any, *, label: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"invalid {label}: expected a string")
     name = value.strip()
-    if not name or name in {".", ".."}:
+    if not name or name in {".", ".."} or any(ord(char) < 32 for char in name):
         raise ValueError(f"invalid {label}: {value!r}")
     if "/" in name or "\\" in name:
         raise ValueError(f"invalid {label} (path separator): {name}")
-    if Path(name).is_absolute() or PureWindowsPath(name).is_absolute():
+    if Path(name).is_absolute() or PureWindowsPath(name).drive:
         raise ValueError(f"invalid {label} (absolute path): {name}")
     return name
 
 
+def _relative_package_path(value: str, *, label: str) -> Path:
+    """Interpret portable package paths without accepting host paths.
+
+    Check Windows drives even on POSIX: ``C:persona`` is drive-relative on
+    Windows, while POSIX treats it as an ordinary filename. Relative paths
+    retain their native spelling for the underlying AgentTemplate loader.
+    """
+    windows_path = PureWindowsPath(value)
+    if (
+        not value.strip()
+        or "\x00" in value
+        or windows_path.drive
+        or windows_path.root
+        or Path(value).expanduser().is_absolute()
+    ):
+        raise ValueError(f"{label} must be package-relative: {value!r}")
+    return Path(value)
+
+
+def _resolve_inside(path: Path, *, root: Path, label: str) -> Path:
+    """Resolve symlinks and translate filesystem failures to loader errors."""
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, ValueError, RuntimeError) as exc:
+        # RuntimeError is the symlink-loop exception on Python 3.11/3.12.
+        raise ValueError(f"{label} missing or invalid: {path}") from exc
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"{label} escapes AgentGroup package: {path}")
+    return resolved
+
+
 def _child_dir(root: Path, name: str, *, label: str) -> Path:
-    candidate = (root / name).resolve(strict=True)
-    if not candidate.is_relative_to(root):
-        raise ValueError(f"{label} escapes AgentGroup package: {name}")
+    candidate = _resolve_inside(root / name, root=root, label=label)
     if not candidate.is_dir():
         raise ValueError(f"{label} is not a directory: {candidate}")
     return candidate
 
 
 def _package_file(path: Path, *, root: Path, label: str) -> Path:
-    try:
-        resolved = path.resolve(strict=True)
-    except OSError as exc:
-        raise ValueError(f"{label} missing: {path}") from exc
-    if not resolved.is_relative_to(root) or not resolved.is_file():
+    resolved = _resolve_inside(path, root=root, label=label)
+    if not resolved.is_file():
         raise ValueError(f"{label} must be a file inside {root}: {path}")
     return resolved
 
@@ -100,18 +138,10 @@ def _persona_dir(
         raise ValueError(
             f"AgentTemplate {agent_name!r} must declare persona.dir"
         )
-    raw_dir = persona["dir"]
-    if Path(raw_dir).expanduser().is_absolute():
-        raise ValueError(
-            f"AgentTemplate {agent_name!r} persona.dir must be package-relative"
-        )
-    try:
-        resolved = (agent_dir / raw_dir).resolve(strict=True)
-    except OSError as exc:
-        raise ValueError(
-            f"AgentTemplate {agent_name!r} persona.dir does not exist: {raw_dir}"
-        ) from exc
-    if not resolved.is_relative_to(agent_dir) or not resolved.is_dir():
+    label = f"AgentTemplate {agent_name!r} persona.dir"
+    relative_dir = _relative_package_path(persona["dir"], label=label)
+    resolved = _resolve_inside(agent_dir / relative_dir, root=agent_dir, label=label)
+    if not resolved.is_dir():
         raise ValueError(
             f"AgentTemplate {agent_name!r} persona.dir escapes its package"
         )
@@ -160,17 +190,14 @@ def _shared_skills(package_dir: Path, payload: dict[str, Any]) -> list[SkillSpec
             name = _safe_component(raw, label="skill name")
             values: dict[str, Any] = {"dir": str(skills_path / name), "mode": "all"}
         elif isinstance(raw, dict) and isinstance(raw.get("dir"), str):
-            raw_dir = raw["dir"]
-            if Path(raw_dir).expanduser().is_absolute():
-                raise ValueError("agent_group skill dir must be package-relative")
-            values = {**raw, "dir": str(package_dir / raw_dir)}
+            relative_dir = _relative_package_path(raw["dir"], label="agent_group skill dir")
+            values = {**raw, "dir": str(package_dir / relative_dir)}
         else:
             raise ValueError("agent_group manifest skills entries must be names or dir mappings")
-        try:
-            skill_dir = Path(values["dir"]).resolve(strict=True)
-        except OSError as exc:
-            raise ValueError(f"shared skill not found: {raw!r}") from exc
-        if not skill_dir.is_relative_to(package_dir) or not skill_dir.is_dir():
+        skill_dir = _resolve_inside(
+            Path(values["dir"]), root=package_dir, label=f"shared skill {raw!r}",
+        )
+        if not skill_dir.is_dir():
             raise ValueError(f"shared skill escapes AgentGroup package: {raw!r}")
         _package_file(
             skill_dir / "SKILL.md",
@@ -200,11 +227,8 @@ def _load_member_template(
     package_dir: Path,
     agent_name: str,
 ) -> AgentTemplateSpec:
-    agents_root = (package_dir / "agents").resolve(strict=True)
-    try:
-        agent_dir = _child_dir(agents_root, agent_name, label="agent directory")
-    except FileNotFoundError as exc:
-        raise ValueError(f"agent directory not found: {agent_name}") from exc
+    agents_root = _child_dir(package_dir, "agents", label="agents directory")
+    agent_dir = _child_dir(agents_root, agent_name, label=f"agent directory {agent_name!r}")
     manifest_path = _package_file(
         agent_dir / "manifest.json",
         root=agent_dir,
@@ -268,7 +292,7 @@ def load_agent_group_package_bundle(path: Path) -> LoadedAgentGroupPackage:
     """Load and validate one AgentGroup package once."""
     try:
         package_dir = Path(path).expanduser().resolve(strict=True)
-    except OSError as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         raise ValueError(f"agent_group package directory not found: {path}") from exc
     if not package_dir.is_dir():
         raise ValueError(f"agent_group package path is not a directory: {path}")

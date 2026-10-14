@@ -2,6 +2,30 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { validateHeartbeatCronExpr } from '../node_modules/.cache/heartbeat-cron-validation/components/HeartbeatPanel/heartbeatCronValidation.js';
+import { validateCronExpr } from '../node_modules/.cache/heartbeat-cron-validation/components/CronPanel/cronExprValidation.js';
+
+test('accepts numeric-start steps in manual cron and heartbeat schedules (#7990)', () => {
+  for (const expr of ['0 0/30 9-18 * * ? *', '5/10 0 9 * * ? *', '0 0 9/2 * * ? *']) {
+    assert.deepEqual(validateCronExpr(expr), { valid: true }, expr);
+  }
+  assert.deepEqual(validateHeartbeatCronExpr('0/30 9-18 * * ?'), { valid: true });
+});
+
+test('preserves wildcard and range steps', () => {
+  for (const minute of ['*/9', '0-59/30', '5/10,40-50/5']) {
+    assert.deepEqual(validateCronExpr(`0 ${minute} 9 * * ? *`), { valid: true }, minute);
+  }
+});
+
+test('rejects invalid numeric-start steps', () => {
+  for (const minute of ['60/30', '-1/30', '0/0', '0/-1', '0/', '0/1.5', '0/30x', '0/30/2']) {
+    assert.deepEqual(
+      validateCronExpr(`0 ${minute} 9 * * ? *`),
+      { valid: false, error: 'cron.errors.cronSecondOrMinute' },
+      minute,
+    );
+  }
+});
 
 test('accepts a valid 5-field weekday cron expression', () => {
   assert.deepEqual(validateHeartbeatCronExpr('0 9 * * 1-5'), { valid: true });

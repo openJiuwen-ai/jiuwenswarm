@@ -1864,7 +1864,11 @@ class CronSchedulerService:
                 try:
                     await stream_gen.aclose()
                 except Exception:
-                    pass
+                    logger.debug(
+                        "[Cron] stream_gen.aclose failed request_id=%s",
+                        getattr(envelope, "request_id", ""),
+                        exc_info=True,
+                    )
 
             if interrupted:
                 logger.warning(
@@ -2008,7 +2012,11 @@ class CronSchedulerService:
                 try:
                     await stream_gen.aclose()
                 except Exception:
-                    pass
+                    logger.debug(
+                        "[Cron] stream_gen.aclose failed request_id=%s",
+                        getattr(envelope, "request_id", ""),
+                        exc_info=True,
+                    )
 
             if consume_meta.get("interrupted"):
                 # 中断意味着本轮已停在等人回答的点上，leader/workflow 的部分输出
@@ -2058,7 +2066,11 @@ class CronSchedulerService:
             try:
                 await stream_gen.aclose()
             except Exception:
-                pass
+                logger.debug(
+                    "[Cron] stream_gen.aclose failed request_id=%s",
+                    getattr(envelope, "request_id", ""),
+                    exc_info=True,
+                )
             await self._cancel_cron_team_agent_session(
                 envelope=envelope,
                 exec_session_id=exec_session_id,
@@ -2080,7 +2092,11 @@ class CronSchedulerService:
             try:
                 await stream_gen.aclose()
             except Exception:
-                pass
+                logger.debug(
+                    "[Cron] stream_gen.aclose failed request_id=%s",
+                    getattr(envelope, "request_id", ""),
+                    exc_info=True,
+                )
             await self._cancel_cron_team_agent_session(
                 envelope=envelope,
                 exec_session_id=exec_session_id,

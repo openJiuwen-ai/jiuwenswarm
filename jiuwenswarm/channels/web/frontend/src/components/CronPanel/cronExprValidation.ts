@@ -18,11 +18,16 @@ function isValidCronField(value: string, min: number, max: number, allowQuestion
   const parts = value.split(',');
   for (const part of parts) {
     if (part.includes('/')) {
-      const [range, stepStr] = part.split('/');
-      const step = parseInt(stepStr, 10);
-      if (isNaN(step) || step <= 0) return { valid: false, error: getFieldError(min, max) };
+      const segments = part.split('/');
+      const [range, stepStr] = segments;
+      if (segments.length !== 2 || !/^\d+$/.test(stepStr) || Number(stepStr) <= 0) {
+        return { valid: false, error: getFieldError(min, max) };
+      }
       if (range === '*') continue;
-      const rangeValid = isValidCronRange(range, min, max);
+      // A single start value is valid too: 0/30 means 0,30 in the minute field.
+      const rangeValid = /^\d+$/.test(range)
+        ? Number(range) >= min && Number(range) <= max
+        : isValidCronRange(range, min, max);
       if (!rangeValid) return { valid: false, error: getFieldError(min, max) };
     } else if (part.includes('-')) {
       if (!isValidCronRange(part, min, max)) return { valid: false, error: getFieldError(min, max) };

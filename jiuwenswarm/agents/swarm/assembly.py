@@ -214,7 +214,7 @@ def _apply_agent_group(
     agent_group_name: str,
     package: LoadedAgentGroupPackage | None = None,
 ) -> None:
-    """Seed a hybrid roster from one resolved AgentGroup package."""
+    """Seed a hybrid roster, publishing it only after every member is valid."""
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_member_display_name,
     )
@@ -240,12 +240,16 @@ def _apply_agent_group(
         )
     leader_template = templates["leader"]
     leader_prompt = _template_team_prompt(leader_template, leader_base)
-    spec.leader = spec.leader.model_copy(
+    # Conversion can fail for any member (for example an invalid CLI runtime).
+    # Stage the new roster so callers can retry without inheriting a partially
+    # applied leader prompt or leftover members from a failed attempt.
+    staged_agents = dict(spec.agents)
+    staged_leader = spec.leader.model_copy(
         update={
             "prompt": _merge_team_prompt(spec.leader.prompt, leader_prompt),
         }
     )
-    spec.agents["leader"] = _with_agent_template(
+    staged_agents["leader"] = _with_agent_template(
         leader_base,
         leader_template,
     )
@@ -257,7 +261,7 @@ def _apply_agent_group(
         member_prompt = _template_team_prompt(template, teammate_base)
         external_config = external_cli_agent_spec_from_template(template)
         if external_config is None:
-            spec.agents[agent_name] = _with_agent_template(
+            staged_agents[agent_name] = _with_agent_template(
                 teammate_base.model_copy(deep=True),
                 template,
             )
@@ -273,7 +277,7 @@ def _apply_agent_group(
                 role_type=TeamRole.TEAMMATE,
             )
         else:
-            spec.agents[agent_name] = teammate_base.model_copy(deep=True)
+            staged_agents[agent_name] = teammate_base.model_copy(deep=True)
             member = ExternalCliMemberSpec(
                 member_name=agent_name,
                 display_name=resolve_agent_group_member_display_name(
@@ -287,6 +291,8 @@ def _apply_agent_group(
             )
         predefined_members.append(member)
 
+    spec.leader = staged_leader
+    spec.agents = staged_agents
     spec.predefined_members = predefined_members
     spec.team_mode = "hybrid"
 

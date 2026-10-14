@@ -14,12 +14,15 @@ config source (``config.yaml``), not by inheriting a pre-built single agent.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from openjiuwen.agent_teams import paths as ojw_paths
 from openjiuwen.agent_teams.schema.build_context import BuildContext
+
+from jiuwenswarm.agents.swarm.context_seed import snapshot_swarm_seed
 
 
 _heartbeat_job_service: Any | None = None
@@ -136,8 +139,19 @@ class SwarmBuildContext(BuildContext):
         pick the same signal up via ``extras.get("is_cron")`` after
         ``context.derive(...)`` flows the dict through.
         """
-        if (self.request_metadata or {}).get("cron"):
-            self.extras["is_cron"] = True
+        # Own the request containers and extras slots, while retaining live
+        # handles in extras by identity.
+        self.extras = dict(self.extras)
+        self.request_metadata = deepcopy(self.request_metadata)
+        self.trusted_dirs = list(self.trusted_dirs) if self.trusted_dirs is not None else None
+        if self.request_metadata is not None and "cron" in self.request_metadata:
+            self.extras["is_cron"] = bool(self.request_metadata["cron"])
+
+    def derive(self, **overrides: Any) -> "SwarmBuildContext":
+        """Isolate member request data while preserving process-local handles."""
+        clone = super().derive(**overrides)
+        clone.__post_init__()
+        return clone
 
     def resolve_member_skill_visibility_path(self) -> str | None:
         """Resolve the current member's Skill visibility metadata file path.
@@ -207,7 +221,7 @@ class SwarmBuildContext(BuildContext):
         Returns:
             A plain mapping of serializable primitives.
         """
-        return {
+        return snapshot_swarm_seed({
             "session_id": self.session_id,
             "request_id": self.request_id,
             "user_id": self.user_id,
@@ -216,7 +230,7 @@ class SwarmBuildContext(BuildContext):
             "request_metadata": self.request_metadata,
             "mode": self.mode,
             "project_dir": self.project_dir,
-            "trusted_dirs": list(self.trusted_dirs) if self.trusted_dirs else None,
+            "trusted_dirs": self.trusted_dirs,
             "disable_teammate_worktree": self.disable_teammate_worktree,
             "team_id": self.team_id,
             "team_ws_root": self.team_ws_root,
@@ -224,7 +238,7 @@ class SwarmBuildContext(BuildContext):
             "team_outputs_dir": self.team_outputs_dir,
             "team_skill_visibility_path": self.team_skill_visibility_path,
             "global_skills_dir": self.global_skills_dir,
-        }
+        })
 
     @classmethod
     def from_seed(
@@ -245,6 +259,7 @@ class SwarmBuildContext(BuildContext):
             A ``SwarmBuildContext`` with the seed fields restored and the
             non-serializable handles sourced from the receiving process.
         """
+        seed = snapshot_swarm_seed(seed)
         return cls(
             session_id=seed.get("session_id", ""),
             request_id=seed.get("request_id"),
