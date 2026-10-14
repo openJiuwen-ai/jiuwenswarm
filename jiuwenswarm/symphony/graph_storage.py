@@ -59,7 +59,7 @@ def resolve_graph_artifact_dir(graph_dir: str | Path) -> Path:
             raise ValueError(
                 f"Symphony graph pointer escapes graph_dir: {candidate}"
             )
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, ValueError):
         return root
     return candidate
 
