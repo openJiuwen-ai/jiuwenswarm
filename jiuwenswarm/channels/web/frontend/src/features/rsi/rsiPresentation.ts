@@ -158,10 +158,7 @@ export function nodeStageLabel(node: RsiTreeNode): string | null {
     return clampText(namedStage, 40);
   }
   const raw =
-    namedStage ??
-    asText(node.extra?.stage) ??
-    id ??
-    (isStageDescription(node.description) ? node.description : null);
+    namedStage ?? asText(node.extra?.stage) ?? id ?? (isStageDescription(node.description) ? node.description : null);
   if (!raw) return null;
   if (id) {
     const normalizedId = id.replace(/_/g, '');
@@ -200,16 +197,10 @@ function isStageDescription(value: string | null): boolean {
   );
 }
 
-export type RsiI18nFunction = (
-  key: string,
-  options?: Record<string, unknown>,
-) => string | null;
+export type RsiI18nFunction = (key: string, options?: Record<string, unknown>) => string | null;
 
 /** Localized stage label based on structured provider fields. */
-export function nodeStageLocalizedLabel(
-  node: RsiTreeNode,
-  t: RsiI18nFunction | null | undefined,
-): string | null {
+export function nodeStageLocalizedLabel(node: RsiTreeNode, t: RsiI18nFunction | null | undefined): string | null {
   const spec = nodeStageSpec(node);
   if (!spec) return null;
   if (spec.id.startsWith('evaluate.case.')) {
@@ -229,10 +220,11 @@ export function nodeStageLocalizedLabel(
     const label = t?.(`rsi.stage.${key}`, { ...params, defaultValue: spec.name ?? '' });
     if (!label) return spec.name ?? nodeStageLabel(node);
     if (spec.score != null && (spec.status === 'passed' || spec.status === 'failed')) {
-      const suffix = t?.('rsi.stage.scoreSuffix', {
-        score: spec.score.toFixed(2),
-        defaultValue: ` · 得分 ${spec.score.toFixed(2)}`,
-      }) ?? ` · 得分 ${spec.score.toFixed(2)}`;
+      const suffix =
+        t?.('rsi.stage.scoreSuffix', {
+          score: spec.score.toFixed(2),
+          defaultValue: ` · 得分 ${spec.score.toFixed(2)}`,
+        }) ?? ` · 得分 ${spec.score.toFixed(2)}`;
       return `${label}${suffix}`;
     }
     return label;
@@ -694,12 +686,23 @@ export function formatTokens(tokens: { input: number; output: number; cache_hit:
   return `${total}tokens`;
 }
 
-// token 用量格式化（K 单位）：示例 123K tokens（对齐样式概要）
-export function formatTokensK(tokens: { input: number; output: number; cache_hit: number }): string {
+// token 用量格式化（K/M 单位）：数值与单位分离返回，供摘要条「数值大字 + 单位小字」排版。K/M 归入数值（不用小字），数值与单位间的空隙由 unit 前导空格自带。示例 { value: '123K', unit: ' tokens' }
+// K 档数值超过 4 位（含取整进位，如 9999.6K）时换用 M（1000K=1M）并保留两位小数，避免大数值拉宽摘要条：
+// 1230K → '1230K'，9999K → '9999K'，9999.6K → '10.00M'，12345678 → '12.35M'
+export function formatTokensK(tokens: { input: number; output: number; cache_hit: number }): {
+  value: string;
+  unit: string;
+} {
   // cache_hit 是 input 的子集，不应重复计入总量。
   const total = tokens.input + tokens.output;
-  if (total >= 1000) return Math.round(total / 1000) + 'K tokens';
-  return total + ' tokens';
+  const kValue = total / 1000;
+  if (kValue >= 1) {
+    // 先取整再判档：进位跨入 M 档（如 9999.6K → 10000K）同样按 M 输出，保证 K 档最多 4 位
+    const roundedK = Math.round(kValue);
+    if (roundedK >= 10000) return { value: `${(kValue / 1000).toFixed(2)}M`, unit: ' tokens' };
+    return { value: `${roundedK}K`, unit: ' tokens' };
+  }
+  return { value: String(total), unit: ' tokens' };
 }
 
 // 费用格式化：元
@@ -877,7 +880,8 @@ export function nodeScoreLines(node: RsiTreeNode, artifactType?: RsiArtifactType
   const extra = node.extra;
   if (extra && typeof extra === 'object') {
     const potential = extra['potential_score'];
-    if (typeof potential === 'number') lines.push({ value: formatArtifactScore(potential, artifactType), label: '潜力分' });
+    if (typeof potential === 'number')
+      lines.push({ value: formatArtifactScore(potential, artifactType), label: '潜力分' });
     const other = extra['other_score'];
     if (typeof other === 'number') lines.push({ value: formatArtifactScore(other, artifactType), label: '其他分' });
     for (const [k, v] of Object.entries(extra)) {
