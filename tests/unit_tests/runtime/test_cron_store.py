@@ -86,3 +86,24 @@ async def test_model_selection_preserved_when_not_overridden_by_name(
     saved = await CronJobStore(path=store.path).get_job(job.id)
     assert saved.name == "renamed"
     assert saved.model_selection == ModelSelection.model_validate(selection).model_dump()
+
+
+async def test_create_job_preserves_telegram_slack_discord_targets(tmp_path):
+    """Cron targets for telegram/slack/discord must not be silently rewritten
+    to web (issue #4897 / GitHub #7363).
+    """
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    for channel in ("telegram", "slack", "discord"):
+        job = await store.create_job(
+            name=f"job-{channel}",
+            cron_expr="0 0 9 * * * *",
+            timezone="Asia/Shanghai",
+            description="test",
+            targets=channel,
+            session_id=f"{channel}_123",
+        )
+        assert job.targets == channel, f"create_job returned {job.targets!r} for {channel}"
+
+        reloaded = await CronJobStore(path=store.path).get_job(job.id)
+        assert reloaded is not None
+        assert reloaded.targets == channel, f"list_jobs returned {reloaded.targets!r} for {channel}"
