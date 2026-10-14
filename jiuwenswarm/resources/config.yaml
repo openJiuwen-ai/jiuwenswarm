@@ -631,6 +631,23 @@ debug_trace:
 kv_cache_affinity_config:
   enable_kv_cache_affinity: false
 
+# Computer Use 原生运行时独立于 JiuwenSwarm 的 Python 环境；首次调用自动准备。
+# 自定义 MCP（包括通过 ssh 启动远端）可设置 command/args/cwd/env。
+# 同一桌面必须使用相同 desktop_id；锁覆盖整个子任务，避免多会话交叉输入。
+computer_use:
+  desktop_id: local
+  startup_timeout: 180
+  call_timeout: 180
+  cleanup_timeout: 30
+  skill_path: null
+  lock_dir: null
+  mcp:
+    command: null # null 使用内置启动器
+    args: null
+    cwd: null
+    env:
+      COMPUTER_USE_DESKTOP: shared
+
 react:
   agent_name: main_agent
   enable_task_loop: true
@@ -661,6 +678,9 @@ react:
       enabled: true
       # Browser Agent 独立轮次预算；未配置时默认 100。
       # max_iterations: 100
+    computer_use_agent:
+      enabled: false # agent 与 swarm/code 模式均通过此开关注册桌面子 Agent
+      max_iterations: null # null 继承主 Agent；未设置上限时不限轮次
   # 常驻 subagent 运行时。开启后 task_tool 被 subagent_spawn/wait/list/
   # send_input/close/resume 六个工具替换（两者互斥）。默认开启。
   subagent_runtime:

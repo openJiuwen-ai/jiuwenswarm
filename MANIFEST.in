@@ -13,3 +13,23 @@ recursive-include jiuwenswarm/agents/harness/code/rails/sdd/design_rail/skills *
 # 排除 node_modules，避免打包进 wheel
 prune jiuwenswarm/channels/web/frontend/node_modules
 global-exclude node_modules
+
+# Computer Use runtime inputs for JiuwenSwarm (macOS and Windows).
+include jiuwenswarm/cua_engine/pyproject.toml jiuwenswarm/cua_engine/uv.lock
+include jiuwenswarm/cua_engine/setup.py jiuwenswarm/cua_engine/MANIFEST.in
+include jiuwenswarm/cua_engine/SOURCE.json jiuwenswarm/cua_engine/THIRD_PARTY_NOTICES.md
+recursive-include jiuwenswarm/cua_engine/src *.py *.pyi *.typed *.json
+include jiuwenswarm/cua_engine/backends/macos/Package.swift
+recursive-include jiuwenswarm/cua_engine/backends/macos/Sources *.swift
+recursive-include jiuwenswarm/cua_engine/backends/windows *.cs
+recursive-include jiuwenswarm/cua_engine/assets/agent-pointer *.svg *.json
+recursive-include jiuwenswarm/cua_engine/skills/computer-use-macos *.md
+recursive-include jiuwenswarm/cua_engine/skills/computer-use-windows *.md
+include jiuwenswarm/cua_engine/skills/computer-use/base.md
+prune jiuwenswarm/cua_engine/backends/windows/Tests
+prune jiuwenswarm/cua_engine/.artifacts
+prune jiuwenswarm/cua_engine/.build
+prune jiuwenswarm/cua_engine/.venv
+prune jiuwenswarm/cua_engine/backends/macos/.build
+prune jiuwenswarm/cua_engine/backends/windows/.build
+global-exclude *.pyc *.pyo
