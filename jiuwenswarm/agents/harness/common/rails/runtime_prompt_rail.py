@@ -382,7 +382,8 @@ class RuntimePromptRail(DeepAgentRail):
                     f"- Temporary working directory: `{self._task_work_dir}`\n"
                     f"- Final deliverables directory: `{self._task_outputs_dir}`\n\n"
                     "- Resolve relative paths against the temporary working directory.\n"
-                    "- Put intermediate files in the temporary working directory and final deliverables in the final deliverables directory."
+                    "- Put intermediate files in the temporary working directory "
+                    "and final deliverables in the final deliverables directory."
                 )
             self.system_prompt_builder.add_section(PromptSection(
                 name="directory_boundaries",
