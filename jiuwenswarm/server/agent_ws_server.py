@@ -598,9 +598,13 @@ class AgentWebSocketServer:
         try:
             from jiuwenswarm.server.event_loop_monitor import (
                 ensure_event_loop_monitor,
+                set_stall_reporter,
             )
 
             await ensure_event_loop_monitor()
+            # 停摆告警除本地日志外，同步转为 runtime 推送帧
+            # 上报网关/诊断面板（无订阅者时 send_push 仅记 warning 并返回 0）。
+            set_stall_reporter(self._report_loop_stall)
         except Exception:
             logger.exception(
                 "[AgentWebSocketServer] 事件循环监控装载失败（已忽略）"
@@ -611,6 +615,33 @@ class AgentWebSocketServer:
             self._loop_lag_monitor(),
             name="ws-loop-lag-monitor",
         )
+
+    def _report_loop_stall(self, gap_seconds: float, end_ts: float) -> None:
+        """LoopMonitor 停摆告警 → runtime 推送帧。
+
+        由事件循环心跳协程同步调用，因此这里**只调度发送、绝不阻塞**；
+        推送失败由 ``send_push`` 内部记 warning（与本地日志互为兜底）。
+        """
+        del end_ts  # monotonic 时刻对上报方无意义，丢弃；上报带墙钟时间
+        try:
+            asyncio.get_running_loop().create_task(
+                self.send_push({
+                    "channel_id": "",
+                    "session_id": "",
+                    "payload": {
+                        "event_type": "runtime.loop_stall",
+                        "stall_seconds": round(gap_seconds, 1),
+                        "ended_at": time.strftime("%H:%M:%S"),
+                    },
+                })
+            )
+        except RuntimeError:
+            # 无运行中的事件循环（极端边界，理论不可达）：退回日志
+            logger.warning(
+                "[AgentWebSocketServer] loop stall 上报跳过（无运行中事件循环）"
+                " stall_s=%.1f",
+                gap_seconds,
+            )
 
     async def _loop_lag_monitor(self) -> None:
         """每隔约 1s 测量预期唤醒 vs 实际唤醒延迟。
