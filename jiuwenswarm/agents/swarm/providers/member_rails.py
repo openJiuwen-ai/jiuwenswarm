@@ -46,6 +46,7 @@ from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyOrchestrationRail,
 )
 from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
+from jiuwenswarm.agents.harness.common.tools.heartbeat_policy import is_heartbeat_supported
 from jiuwenswarm.agents.harness.team.rails.team_skill_storage_policy_rail import (
     TeamSkillStoragePolicyRail,
 )
@@ -113,6 +114,16 @@ def _build_heartbeat_rail(
     ):
         logger.info(
             "[swarm.heartbeat] skip HeartbeatRail for cron execution session %s",
+            session_id,
+        )
+        return None
+    # 小艺等渠道没有可用的主动投递路径（见 heartbeat_policy），不挂心跳工具，
+    # 否则成员会回答"心跳已创建"而结果永远送不到手机。
+    if not is_heartbeat_supported(getattr(context, "channel_id", None)):
+        logger.info(
+            "[swarm.heartbeat] skip HeartbeatRail for channel without heartbeat "
+            "support channel=%s session=%s",
+            getattr(context, "channel_id", None),
             session_id,
         )
         return None

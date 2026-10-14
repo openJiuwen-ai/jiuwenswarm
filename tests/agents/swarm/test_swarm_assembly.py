@@ -177,6 +177,21 @@ def test_team_heartbeat_rail_skipped_for_cron_execution_session(ctx_kwargs: dict
     assert member_rails._build_heartbeat_rail({}, context) is None
 
 
+def test_team_heartbeat_rail_skipped_for_xiaoyi_channel() -> None:
+    """小艺渠道的成员不挂心跳工具（渠道没有可用的主动投递路径）。"""
+    context = SwarmBuildContext(
+        session_id="xiaoyi_1a13511901d_32eb921d481b",
+        channel_id="xiaoyi",
+        user_id="user-1",
+        request_metadata={"mode": "team.work.normal"},
+        mode="team.work.normal",
+        member_card_id="leader-card",
+        heartbeat_job_service=object(),
+    )
+
+    assert member_rails._build_heartbeat_rail({}, context) is None
+
+
 @pytest.mark.parametrize(
     "mode",
     [

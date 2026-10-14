@@ -997,7 +997,9 @@ channels:
     #   chat_id:
     #   enabled: false
   xiaoyi:
-    send_file_allowed: true
+    # 小艺渠道不做文件回传：send_file_to_user 不注册给模型，
+    # 相关提示词也不再要求它发文件（见 file_delivery_policy / TeamWorkspaceReportPathRail）。
+    send_file_allowed: false
     apps:
       - name: 小艺默认应用
         # 华为小艺 A2A 配置
