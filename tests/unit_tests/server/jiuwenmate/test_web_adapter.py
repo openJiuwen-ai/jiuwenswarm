@@ -207,12 +207,21 @@ def test_configured_model_catalog_carries_no_secret(monkeypatch):
     assert "api_base" not in json.dumps(catalog)
 
 
-def test_every_method_is_forwarded_by_the_web_gateway_without_a_local_handler():
+def test_web_gateway_does_not_forward_internal_feishu_inbound_method():
     methods = JiuwenMateWebAdapter.methods
+    internal_methods = {ReqMethod.JIUWENMATE_FEISHU_INBOUND.value}
+    web_methods = {
+        method.value
+        for method in ReqMethod
+        if method.value.startswith("jiuwenmate.")
+    } - internal_methods
 
-    assert {method.value for method in ReqMethod if method.value.startswith("jiuwenmate.")} == methods
+    assert web_methods == methods
+    assert internal_methods.isdisjoint(methods)
     assert methods <= app_web_handlers._FORWARD_REQ_METHODS
     assert methods <= app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
+    assert internal_methods.isdisjoint(app_web_handlers._FORWARD_REQ_METHODS)
+    assert internal_methods.isdisjoint(app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS)
 
 
 async def test_agent_server_dispatches_the_methods_to_the_adapter(host):

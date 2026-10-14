@@ -73,6 +73,10 @@ from jiuwenswarm.common.mode_matrix import (
 from jiuwenswarm.gateway.hooks.handler import GatewayHookHandler
 from jiuwenswarm.gateway.routing.keys import RoutingKey, AgentRef, make_delivery_target
 from jiuwenswarm.gateway.routing.session_sharing import SessionSharingRegistry, SubRole
+from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
+    FeishuInboundEvent,
+    InboundDisposition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -409,6 +413,9 @@ class MessageHandler(ABC):
         # IM Pipeline（数字分身）— None 时不执行，不影响原有逻辑
         self._inbound_pipeline = None   # type: Any  # IMInboundPipeline | None
         self._outbound_pipeline = None  # type: Any  # IMOutboundPipeline | None
+        # Optional JM-08 route. None keeps the gateway on its personal-agent
+        # path; Feishu's pre-handler adapter uses this method as a tri-state gate.
+        self._persistent_group_fanout = None
 
         # 初始化 Gateway hooks handler
         try:
@@ -423,6 +430,45 @@ class MessageHandler(ABC):
     def get_session_sharing_registry(self) -> SessionSharingRegistry:
         """返回 SessionSharingRegistry 实例，供 V2 共享会话路由使用."""
         return self._session_sharing
+
+    def set_persistent_group_fanout(self, fanout: Any | None) -> None:
+        """Inject the optional JM-08 event router without changing personal mode."""
+        self._persistent_group_fanout = fanout
+
+    async def handle_persistent_feishu_event(
+        self, event: FeishuInboundEvent
+    ) -> InboundDisposition:
+        """Hand a bound Feishu event to AgentServer before personal message handling."""
+        fanout = getattr(self, "_persistent_group_fanout", None)
+        if fanout is not None:
+            return await fanout.handle(event)
+        if not isinstance(event, FeishuInboundEvent) or not (
+            isinstance(event.expected_agent_id, str) and event.expected_agent_id.strip()
+        ):
+            return InboundDisposition.UNCLAIMED
+
+        from uuid import uuid4
+
+        from jiuwenswarm.common.e2a.models import E2AEnvelope
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        response = await self.agent_client.send_request(
+            E2AEnvelope(
+                request_id=f"jm08_{uuid4().hex}",
+                channel="feishu",
+                user_id=event.sender_id,
+                chat_id=event.chat_id,
+                method=ReqMethod.JIUWENMATE_FEISHU_INBOUND.value,
+                params={"event": event.to_payload()},
+            )
+        )
+        payload = getattr(response, "payload", None)
+        if not getattr(response, "ok", False) or not isinstance(payload, dict):
+            return InboundDisposition.REJECTED
+        try:
+            return InboundDisposition(payload.get("disposition"))
+        except (TypeError, ValueError):
+            return InboundDisposition.REJECTED
 
     async def unregister_ws_subscriptions(self, channel_id: str, ws_id: str) -> int:
         """Remove physical subscriptions owned by a disconnected WebSocket."""
