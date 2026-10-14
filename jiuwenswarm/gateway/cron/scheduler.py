@@ -56,6 +56,29 @@ def _is_cron_interrupt_event(event_type: str) -> bool:
     return str(event_type or "").strip() in CRON_INTERRUPT_EVENT_TYPES
 
 
+
+async def _safe_aclose(stream_gen: Any, request_id: str = "") -> None:
+    """Best-effort close of a stream generator; log failures instead of swallowing them.
+
+    ``aclose()`` can raise when generator cleanup or the underlying connection fails.
+    Cron jobs must still finish, but silent ``except Exception: pass`` leaves no trail
+    when sessions linger or resources leak.
+    """
+    if stream_gen is None:
+        return
+    closer = getattr(stream_gen, "aclose", None)
+    if closer is None:
+        return
+    try:
+        await closer()
+    except Exception:  # noqa: BLE001 — best-effort cleanup
+        logger.warning(
+            "[Cron] stream_gen.aclose failed request_id=%s",
+            request_id,
+            exc_info=True,
+        )
+
+
 def _now_utc_ts() -> float:
     return time.time()
 
@@ -1861,10 +1884,9 @@ class CronSchedulerService:
                         interrupted = True
                         break
             finally:
-                try:
-                    await stream_gen.aclose()
-                except Exception:
-                    pass
+                await _safe_aclose(
+                    stream_gen, getattr(envelope, "request_id", "")
+                )
 
             if interrupted:
                 logger.warning(
@@ -2005,10 +2027,9 @@ class CronSchedulerService:
                         consume_meta["ended_early"] = not chunk.is_complete
                         break
             finally:
-                try:
-                    await stream_gen.aclose()
-                except Exception:
-                    pass
+                await _safe_aclose(
+                    stream_gen, getattr(envelope, "request_id", "")
+                )
 
             if consume_meta.get("interrupted"):
                 # 中断意味着本轮已停在等人回答的点上，leader/workflow 的部分输出
@@ -2055,10 +2076,9 @@ class CronSchedulerService:
                 timeout_seconds,
                 getattr(envelope, "request_id", ""),
             )
-            try:
-                await stream_gen.aclose()
-            except Exception:
-                pass
+            await _safe_aclose(
+                stream_gen, getattr(envelope, "request_id", "")
+            )
             await self._cancel_cron_team_agent_session(
                 envelope=envelope,
                 exec_session_id=exec_session_id,
@@ -2077,10 +2097,9 @@ class CronSchedulerService:
                 getattr(envelope, "request_id", ""),
                 exc_info=True,
             )
-            try:
-                await stream_gen.aclose()
-            except Exception:
-                pass
+            await _safe_aclose(
+                stream_gen, getattr(envelope, "request_id", "")
+            )
             await self._cancel_cron_team_agent_session(
                 envelope=envelope,
                 exec_session_id=exec_session_id,
