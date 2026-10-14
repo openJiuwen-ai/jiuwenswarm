@@ -40,6 +40,7 @@
   - [Agent & workspace](Agent.md)
   - [Session management](Session.md)
   - [Browser tools](Browser.md)
+  - [Desktop automation (cua_agent)](DesktopAutomation.md)
   - [Browser Extension](browser-extension/BrowserExtension.md)
     - [Browser Extension Guide](browser-extension/BrowserExtensionGuide.md)
     - [Browser Extension Install](browser-extension/BrowserExtensionInstall.md)

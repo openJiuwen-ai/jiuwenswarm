@@ -47,6 +47,10 @@ from openjiuwen.harness.rails import SkillUseRail
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common.cua_defaults import (
+    DEFAULT_CUA_AGENT_MAX_ITERATIONS,
+    resolve_cua_factory_options,
+)
 from jiuwenswarm.common.config import (
     get_default_model_provider,
     get_evolution_auto_save_enabled,
@@ -793,6 +797,8 @@ def _code_subagent_spec(
     sub_cfg = subagents_cfg.get(name) if isinstance(subagents_cfg, dict) else None
     if name == "browser_agent":
         max_iterations = DEFAULT_BROWSER_AGENT_MAX_ITERATIONS
+    elif name == "cua_agent":
+        max_iterations = DEFAULT_CUA_AGENT_MAX_ITERATIONS
     elif name == "statusline-setup":
         max_iterations = registry.DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS
     else:
@@ -804,14 +810,19 @@ def _code_subagent_spec(
     card_kwargs: dict[str, Any] = {"name": name}
     if name == "statusline-setup":
         card_kwargs["id"] = "jiuwenswarm.statusline-setup"
+    factory_kwargs: dict[str, Any] = {
+        "max_iterations": max_iterations,
+        "language": language,
+    }
+    if name == "cua_agent":
+        # Provider param names (see CuaAgentInput) drop the agent-core prefix.
+        for key, value in resolve_cua_factory_options(sub_cfg).items():
+            factory_kwargs[key.removeprefix("cua_")] = value
     return SubAgentSpec(
         agent_card=AgentCard(**card_kwargs),
         system_prompt="",
         factory_name=factory_name,
-        factory_kwargs={
-            "max_iterations": max_iterations,
-            "language": language,
-        },
+        factory_kwargs=factory_kwargs,
     )
 
 
@@ -847,7 +858,8 @@ def build_member_subagent_specs(
     Code modes additionally include explore / plan. Every sub-agent is gated by
     ``react.subagents.<name>.enabled``; status-line setup, explore and plan
     default to on (only an explicit ``false`` drops them), while code / browser
-    require an explicit ``true``.
+    require an explicit ``true``. The cua (desktop) sub-agent is mode-agnostic
+    and likewise requires an explicit ``true``.
 
     Args:
         config: The resolved ``config.yaml`` mapping.
@@ -876,6 +888,15 @@ def build_member_subagent_specs(
                 react,
                 language,
             )
+        )
+
+    # cua_agent drives the host desktop, which is not a code-profile concern,
+    # so it is offered in every mode when the operator opts in explicitly.
+    if isinstance(subagents_cfg, dict) and _is_subagent_enabled(
+        subagents_cfg.get("cua_agent")
+    ):
+        specs.append(
+            _code_subagent_spec("cua_agent", registry.SWARM_CUA_AGENT, react, language)
         )
 
     if not _is_code_mode(mode):

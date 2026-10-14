@@ -110,6 +110,7 @@ except ImportError:
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
+from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
 from openjiuwen.harness.subagent_runtime import (
     SUBAGENT_ACTIVITY_EVENT_TYPE,
@@ -287,6 +288,12 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
 from jiuwenswarm.agents.harness.common.electron_sideview import apply_session_sideview_target
+from jiuwenswarm.agents.harness.common.cua_defaults import (
+    DEFAULT_CUA_AGENT_MAX_ITERATIONS,
+    build_cua_agent_card,
+    cua_model_rejects_images,
+    resolve_cua_factory_options,
+)
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (  # noqa: E402
     SessionMessagingRouteRail,
@@ -5115,6 +5122,32 @@ class JiuWenSwarmDeepAdapter:
                 "skipping browser subagent registration"
             )
 
+        # cua_agent (desktop automation via screenshots + real input) — 按配置启用。
+        # No runtime switch beyond the config gate: it drives the host desktop.
+        cua_agent_cfg = (
+            subagents_cfg.get("cua_agent") if isinstance(subagents_cfg, dict) else None
+        )
+        if self._is_subagent_enabled(cua_agent_cfg) and cua_model_rejects_images(model):
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] cua_agent skipped: the model rejects image input "
+                "and cua_agent sees the screen only through screenshots"
+            )
+        elif self._is_subagent_enabled(cua_agent_cfg):
+            subagents.append(
+                build_cua_agent_config(
+                    model,
+                    card=build_cua_agent_card(resolved_language),
+                    workspace=workspace,
+                    sys_operation=sys_operation,
+                    language=resolved_language,
+                    max_iterations=parse_int(
+                        cua_agent_cfg.get("max_iterations"),
+                        DEFAULT_CUA_AGENT_MAX_ITERATIONS,
+                    ),
+                    **resolve_cua_factory_options(cua_agent_cfg),
+                )
+            )
+
         # ── 加载自定义 agent（.jiuwenswarm/agents/*.md）──
         try:
             subagents.extend(
@@ -9340,8 +9373,11 @@ class JiuWenSwarmDeepAdapter:
         """
         enable_runtime = self._resolve_enable_subagent_runtime(config_base)
         try:
+            subagents_cfg = ((config_base or {}).get("react") or {}).get("subagents")
             subagent_rail = BrowserTaskPromptRail(
                 enable_subagent_runtime=enable_runtime,
+                cua_agent_enabled=isinstance(subagents_cfg, dict)
+                and self._is_subagent_enabled(subagents_cfg.get("cua_agent")),
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] SubagentRail create success "

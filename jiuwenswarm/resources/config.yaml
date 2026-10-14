@@ -661,6 +661,16 @@ react:
       enabled: true
       # Browser Agent 独立轮次预算；未配置时默认 100。
       # max_iterations: 100
+    # cua_agent: 桌面自动化子代理，通过截图和真实鼠标键盘输入操作本机应用窗口；
+    # 需安装 cua 可选依赖（pip install "workswarm[cua]" 或 uv sync --extra cua），并使用支持图片输入的模型。
+    # 运行时会真实移动鼠标、向前台窗口输入，执行期间请勿操作电脑。
+    cua_agent:
+      enabled: false
+      # max_iterations: 100
+      # 上下文中完整保留的窗口截图数量；单窗口任务可设为 1 以大幅缩减上下文。默认 3。
+      # snapshot_keep_last_k: 3
+      # 用户接管屏幕（检测到鼠标/键盘输入）时暂停桌面操作，空闲后自动继续（Windows 与 Linux X11 支持探测）。
+      pause_on_user_input: false
   # 常驻 subagent 运行时。开启后 task_tool 被 subagent_spawn/wait/list/
   # send_input/close/resume 六个工具替换（两者互斥）。默认开启。
   subagent_runtime:

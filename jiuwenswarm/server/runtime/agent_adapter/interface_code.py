@@ -44,6 +44,7 @@ from openjiuwen.harness.schema.deep_agent_spec import (
     WorkspaceSpec,
 )
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
+from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
@@ -89,6 +90,12 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
 from jiuwenswarm.agents.harness.common.electron_sideview import apply_session_sideview_target
+from jiuwenswarm.agents.harness.common.cua_defaults import (
+    DEFAULT_CUA_AGENT_MAX_ITERATIONS,
+    build_cua_agent_card,
+    cua_model_rejects_images,
+    resolve_cua_factory_options,
+)
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     build_code_system_prompt,
 )
@@ -2280,7 +2287,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """Build subagents for code mode, including the built-in status-line setup agent.
 
         explore_agent / plan_agent 固定挂载（Code 模式核心子代理）。
-        code_agent / browser_agent 按配置启用。
+        code_agent / browser_agent / cua_agent 按配置启用。
 
         每个 spec 都带上主 Agent 的 ``sys_operation``：子 Agent 必须和父 Agent 处在
         同一个文件系统边界里。若留空，``DeepAgent.create_subagent`` 会给子 Agent
@@ -2444,6 +2451,29 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     )
                 browser_spec.factory_kwargs["auto_create_workspace"] = False
                 subagents.append(browser_spec)
+
+            # cua_agent (desktop automation via screenshots + real input) — 按配置启用
+            cua_agent_cfg = subagents_cfg.get("cua_agent")
+            if self._is_subagent_enabled(cua_agent_cfg) and cua_model_rejects_images(model):
+                logger.warning(
+                    "[JiuwenSwarmCodeAdapter] cua_agent skipped: the model rejects image input "
+                    "and cua_agent sees the screen only through screenshots"
+                )
+            elif self._is_subagent_enabled(cua_agent_cfg):
+                cua_spec = build_cua_agent_config(
+                    model,
+                    card=build_cua_agent_card(resolved_language),
+                    workspace=workspace,
+                    sys_operation=sys_operation,
+                    language=resolved_language,
+                    max_iterations=parse_int(
+                        cua_agent_cfg.get("max_iterations"),
+                        DEFAULT_CUA_AGENT_MAX_ITERATIONS,
+                    ),
+                    **resolve_cua_factory_options(cua_agent_cfg),
+                )
+                cua_spec.factory_kwargs["auto_create_workspace"] = False
+                subagents.append(cua_spec)
 
         # ── 自定义 agent 不加入 deep_config.subagents ──
         # Code 模式下，自定义 agent 由 CodeAgentRail 的 Agent 工具管理，

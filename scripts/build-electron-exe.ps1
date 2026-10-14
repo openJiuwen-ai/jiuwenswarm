@@ -5,7 +5,7 @@
 #   前端测试: .\scripts\build-electron-exe.ps1 -Test -FrontendOnly
 #
 # 打包流程:
-# 1. 安装 Python 依赖 (uv sync --extra dev) [跳过: FrontendOnly]
+# 1. 安装 Python 依赖 (uv sync --extra dev --extra cua) [跳过: FrontendOnly]
 # 2. 构建前端 (vite build with ELECTRON=true)
 # 3. 安装 Electron 桌面端依赖 (npm install in channels/desktop/electron)
 # 4. PyInstaller 打包后端 (jiuwenswarm.spec)           [跳过: FrontendOnly]
@@ -412,7 +412,7 @@ Write-Host "Test: $Test  FrontendOnly: $FrontendOnly`n" -ForegroundColor Gray
 # ── 1. Install Python dependencies ────────────────────────────────────────────
 if (-not $FrontendOnly) {
     Write-Host "`n[1/6] Installing Python dependencies for Windows x64..." -ForegroundColor Yellow
-    uv sync --locked --extra dev --python-platform x86_64-pc-windows-msvc
+    uv sync --locked --extra dev --extra cua --python-platform x86_64-pc-windows-msvc
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {
     Write-Host "`n[1/6] Skipping Python dependencies (FrontendOnly)" -ForegroundColor Gray

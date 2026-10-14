@@ -121,6 +121,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">Web access, information retrieval, and browser tool invocation capabilities.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Desktop Automation</strong></td>
+      <td width="28%"><a href="en/DesktopAutomation.md">Desktop automation (cua_agent)</a></td>
+      <td width="50%">Operate native application windows through screenshots and real mouse/keyboard input.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Browser Extension</strong></td>
       <td width="28%"><a href="en/browser-extension/BrowserExtension.md">Browser Extension</a> / <a href="en/browser-extension/BrowserExtensionGuide.md">Guide</a> / <a href="en/browser-extension/BrowserExtensionInstall.md">Install</a></td>
       <td width="50%">A Chromium extension that puts the JiuwenSwarm agent beside any page you read.</td>
