@@ -13,7 +13,8 @@ const pluginRoot = resolve('../../../extensions/video_duplex/frontend');
 const outfile = resolve('node_modules/.cache/task-duplex-lifecycle/runtime.mjs');
 await build({
   stdin: {
-    contents: `export { TaskFullDuplexRuntime } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
+    contents: `export { TaskFullDuplexAction } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexAction.tsx`)};
+      export { TaskFullDuplexRuntime } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
       export { JoyAIProvider } from ${JSON.stringify(`${pluginRoot}/VideoLivePanel/joyaiProvider.ts`)};
       export { useChatStore } from './src/stores/chatStore.ts';
       export { buildArtifacts } from './src/components/ArtifactsPanel/artifactCollection.ts';
@@ -30,6 +31,7 @@ await build({
   packages: 'external',
   external: ['react', 'react/*'],
   jsx: 'automatic',
+  loader: { '.css': 'empty' },
   define: { 'import.meta.env.DEV': 'false' },
   plugins: [
     {
@@ -46,11 +48,15 @@ await build({
           import { forwardRef, useImperativeHandle } from 'react';
           export const VideoLivePanel = forwardRef(function Panel(props, ref) {
             useImperativeHandle(ref, () => ({
-              async startScreenDuplex(id) {
+              async startScreenDuplex(id, shareScreen) {
+                globalThis.__duplexHarness.sharingRequests.push(shareScreen);
                 globalThis.__duplexHarness.starts.push(id);
                 props.onRuntimeState('active');
                 return true;
               },
+              setMicrophoneMuted(value) { globalThis.__duplexHarness.mic.push(value); },
+              setSpeakerMuted(value) { globalThis.__duplexHarness.speaker.push(value); },
+              stopScreenSharing() { props.onScreenSharingChange(false); },
               stop() { props.onRuntimeState('idle'); },
               deliverToolResult(payload) { globalThis.__duplexHarness.mediaResults.push(payload); }
             }));
@@ -63,7 +69,7 @@ await build({
           export const requestAgentDetail = async () => null;
           export const requestPhaseAgents = async () => [];`
               : path.endsWith('featureFlag')
-                ? 'export const useTaskFullDuplexEnabled = () => true;'
+                ? 'export const useTaskFullDuplexEnabled = () => true; export const setTaskFullDuplexEnabled = () => {};'
                 : `export const useApplicationTaskStore = { getState: () => globalThis.__duplexHarness.tasks };
                    export const registerApplicationTaskController = () => () => {};`,
         }));
@@ -73,9 +79,13 @@ await build({
 });
 const {
   TaskFullDuplexRuntime,
+  TaskFullDuplexAction,
   startTaskFullDuplex,
   stopTaskFullDuplex,
   JoyAIProvider,
+  toggleTaskDuplexMicrophone,
+  toggleTaskDuplexSpeaker,
+  stopTaskDuplexScreenSharing,
   useChatStore,
   buildArtifacts,
   parseHistoryJsonFileToPreviewMessages,
@@ -110,6 +120,9 @@ beforeEach(async () => {
   window.clearInterval = (id) => timers.delete(id);
   harness = {
     starts: [],
+    sharingRequests: [],
+    mic: [],
+    speaker: [],
     mediaResults: [],
     requests: [],
     messages: [],
@@ -463,4 +476,54 @@ test('recovery restores persisted tasks without replaying history or audio', asy
   await event('completed', job(scope, { status: 'completed', sequence: 8, display_result: 'Saved result' }));
   assert.equal(harness.messages.length, 0);
   assert.equal(harness.requests.filter(r => r.method === 'video.conversation.append').length, 0);
+});
+
+
+test('voice starts without screen capture and forwards mute controls without stopping the session', async () => {
+  await start();
+  assert.deepEqual(harness.sharingRequests, [false]);
+  await act(async () => {
+    toggleTaskDuplexMicrophone();
+    toggleTaskDuplexMicrophone();
+    toggleTaskDuplexSpeaker();
+    stopTaskDuplexScreenSharing();
+  });
+  assert.deepEqual(harness.mic, [true, false]);
+  assert.deepEqual(harness.speaker, [true]);
+  assert.equal(harness.starts.length, 1);
+  await act(async () => stopTaskFullDuplex());
+  await act(async () => toggleTaskDuplexMicrophone());
+  assert.deepEqual(harness.mic, [true, false]);
+});
+
+test('screen sharing is opt-in on start and stopping sharing leaves voice controls active', async () => {
+  window.localStorage.setItem('jiuwen.taskFullDuplex.screenSharing', 'true');
+  await start();
+  assert.deepEqual(harness.sharingRequests, [true]);
+  await act(async () => { stopTaskDuplexScreenSharing(); toggleTaskDuplexSpeaker(); });
+  assert.deepEqual(harness.speaker, [true]);
+});
+
+
+test('typing keeps the native send button alongside the active orb and accessible exit controls', async () => {
+  await act(async () => root.render(null));
+  await act(async () => root.render(createElement('div', { className: 'chat-input-frame' },
+    createElement(TaskFullDuplexRuntime, props),
+    createElement(TaskFullDuplexAction, {
+      eligible: true, sessionId: props.sessionId, hasTextDraft: true,
+      ensureSession: async () => props.sessionId,
+      labels: { start: 'start', stop: 'stop', starting: 'starting' },
+      fallback: createElement('button', { 'data-testid': 'native-send' }, 'Send'),
+    }),
+  )));
+  await start();
+  assert.ok(document.querySelector('[data-testid="native-send"]'));
+  assert.ok(document.querySelector('[data-testid="chat-panel-duplex-orb"]'));
+  assert.equal(document.querySelector('[data-testid="chat-panel-input-full-duplex"]'), null);
+  const microphone = document.querySelector('[data-testid="chat-panel-duplex-microphone"]');
+  await act(async () => microphone.click());
+  assert.equal(microphone.getAttribute('aria-pressed'), 'true');
+  await act(async () => document.querySelector('[data-testid="chat-panel-duplex-exit"]').click());
+  assert.equal(document.querySelector('[data-testid="chat-panel-duplex-orb"]'), null);
+  assert.ok(document.querySelector('[data-testid="native-send"]'));
 });

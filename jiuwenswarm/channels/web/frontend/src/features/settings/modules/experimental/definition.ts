@@ -5,8 +5,6 @@ import {
   ExternalCliSettingsItem,
   ProactiveLimitsSetting,
   RSISetting,
-  TaskAsrSetting,
-  TaskFullDuplexSetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
 import { A4PSettings } from './A4PSettings';
@@ -17,16 +15,6 @@ export const experimentalModule: SettingsModuleDefinition = {
   icon: settingsNavigationIcons.experimental,
   source: 'config',
   sections: [
-    {
-      id: 'asr',
-      titleKey: 'settingsPanel.experimental.taskAsr',
-      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
-    },
-    {
-      id: 'task-full-duplex',
-      titleKey: 'settingsPanel.experimental.taskFullDuplex',
-      items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
-    },
     {
       id: 'external-cli-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',

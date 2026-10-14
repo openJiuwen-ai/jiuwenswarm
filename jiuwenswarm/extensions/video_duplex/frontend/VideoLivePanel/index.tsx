@@ -79,8 +79,11 @@ function isUsefulTranscript(text: string): boolean {
 }
 
 export interface VideoLivePanelHandle {
-  startScreenDuplex: (searchSessionId?: string) => Promise<boolean>;
+  startScreenDuplex: (searchSessionId?: string, shareScreen?: boolean) => Promise<boolean>;
   stop: () => void;
+  setMicrophoneMuted: (muted: boolean) => void;
+  setSpeakerMuted: (muted: boolean) => void;
+  stopScreenSharing: () => void;
   deliverToolResult: (payload: SearchJobPayload) => void;
 }
 
@@ -90,11 +93,12 @@ interface VideoLivePanelProps {
   onAssistantStream?: (update: { streamId: string; content: string; final: boolean }) => void;
   onRuntimeState?: (state: 'idle' | 'starting' | 'active') => void;
   onError?: (message: string) => void;
+  onScreenSharingChange?: (sharing: boolean) => void;
   onCoreAgentProgress?: (event: 'started' | 'progress' | 'completed' | 'failed', payload: SearchJobPayload) => void;
 }
 
 export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelProps>(function VideoLivePanel(
-  { headless = false, onConversationItem, onAssistantStream, onRuntimeState, onError, onCoreAgentProgress },
+  { headless = false, onConversationItem, onAssistantStream, onRuntimeState, onError, onCoreAgentProgress, onScreenSharingChange },
   ref,
 ) {
   const { t } = useTranslation();
@@ -121,7 +125,6 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const searchJobsRef = useRef<Map<string, SearchJobState>>(new Map());
   const pollingSearchJobsRef = useRef<Set<string>>(new Set());
   const pendingScreenAutostartRef = useRef(false);
-  const hadHeadlessScreenRef = useRef(false);
 
   const [source, setSource] = useState<VideoSource>(null);
   const [sourceName, setSourceName] = useState('');
@@ -1018,16 +1021,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
 
   useEffect(() => {
     if (!pendingScreenAutostartRef.current || source !== 'screen' || screens.length === 0 || !isPlaying) return;
-    hadHeadlessScreenRef.current = headless;
     pendingScreenAutostartRef.current = false;
     void startRealtime();
   }, [headless, isPlaying, screens, source]);
-
-  useEffect(() => {
-    if (!headless || screens.length > 0 || !hadHeadlessScreenRef.current) return;
-    hadHeadlessScreenRef.current = false;
-    stopRealtime();
-  }, [headless, screens.length]);
 
   useEffect(() => {
     if (!isRecording && !isRealtimeStarting) return;
@@ -1046,9 +1042,17 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     if (error) onError?.(describeDuplexError(error));
   }, [error, onError]);
 
+  useEffect(() => {
+    onScreenSharingChange?.(screens.length > 0);
+  }, [screens.length, onScreenSharingChange]);
+
   useImperativeHandle(ref, () => ({
-    startScreenDuplex: async (searchSessionId) => {
+    startScreenDuplex: async (searchSessionId, shareScreen = true) => {
       conversationSearchSessionRef.current = searchSessionId || '';
+      if (!shareScreen) {
+        await startRealtime();
+        return Boolean(duplexRef.current || joyaiProviderRef.current?.active);
+      }
       const started = await startScreen();
       pendingScreenAutostartRef.current = started;
       return started;
@@ -1056,6 +1060,17 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     stop: () => {
       pendingScreenAutostartRef.current = false;
       resetSource();
+    },
+    setMicrophoneMuted: (muted) => {
+      duplexRef.current?.setMicrophoneMuted(muted);
+      joyaiProviderRef.current?.setMicrophoneMuted(muted);
+    },
+    setSpeakerMuted: (muted) => {
+      duplexRef.current?.setSpeakerMuted(muted);
+      joyaiProviderRef.current?.setSpeakerMuted(muted);
+    },
+    stopScreenSharing: () => {
+      [...screenStreamsRef.current.keys()].forEach(removeScreen);
     },
     deliverToolResult: (payload) => {
       if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current) return;

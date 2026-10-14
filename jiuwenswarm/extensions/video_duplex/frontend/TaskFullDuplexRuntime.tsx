@@ -21,6 +21,7 @@ import {
   registerTaskFullDuplexController,
   setTaskFullDuplexRuntimeError,
   setTaskFullDuplexRuntimeState,
+  setTaskDuplexScreenSharing,
   stopTaskFullDuplex,
 } from "./taskFullDuplexRuntimeStore";
 
@@ -595,6 +596,7 @@ export function TaskFullDuplexRuntime({
         if (state === "idle") runtimeSessionIdRef.current = null;
         setTaskFullDuplexRuntimeState(state);
       }}
+      onScreenSharingChange={setTaskDuplexScreenSharing}
       onError={setTaskFullDuplexRuntimeError}
       onCoreAgentProgress={handleCoreAgentProgress}
     />

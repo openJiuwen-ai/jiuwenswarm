@@ -124,6 +124,11 @@
     }
   },
   "settingsPanel": {
+    "voice": {
+      "description": "Configure microphone input, full-duplex voice and screen sharing.",
+      "screenSharing": "Screen sharing",
+      "screenSharingDescription": "When enabled, choose a screen when starting full duplex. Otherwise, use voice only. This preference is saved in this browser."
+    },
     "title": "Settings",
     "freeModels": {
       "title": "Free models",
@@ -144,6 +149,7 @@
       "configDescription": "Set the context window and other options for the limited-time free models"
     },
     "categories": {
+      "voice": "Voice",
       "general": "General",
       "models": "Models",
       "agent": "Agent",
@@ -658,7 +664,7 @@
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
-        "description": "Show a Full-duplex action when the composer is empty; it shares the entire screen and continuously listens to the microphone."
+        "description": "Show a Full-duplex action when the composer is empty. Start a continuous voice conversation; the switch below controls optional screen sharing."
       },
       "kv_cache_affinity_enabled": {
         "title": "Enable compute affinity",
@@ -985,6 +991,16 @@
     }
   },
   "chat": {
+    "duplexControls": {
+      "muteMic": "Mute microphone",
+      "unmuteMic": "Unmute microphone",
+      "muteSpeaker": "Mute model audio",
+      "unmuteSpeaker": "Unmute model audio",
+      "stopSharing": "Stop screen sharing",
+      "listening": "Listening",
+      "connecting": "Connecting",
+      "exit": "Exit full-duplex voice"
+    },
     "slashPicker": {
       "commands": "Commands",
       "skills": "Skills",
@@ -1067,7 +1083,7 @@
     "agentGroupDeletedDescription": "The Expert Team bound to this conversation has been deleted and can no longer be used. Chat history is still available.",
     "placeholderAgentGroupDeleted": "This Expert Team has been deleted",
     "stop": "Stop",
-    "taskFullDuplexStart": "Share the entire screen and start a Full-duplex conversation",
+    "taskFullDuplexStart": "Start full-duplex voice",
     "taskFullDuplexStarting": "Starting Full-duplex conversation",
     "taskFullDuplexStop": "Stop Full-duplex conversation and screen sharing",
     "modelSelector": {

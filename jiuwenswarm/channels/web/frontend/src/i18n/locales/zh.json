@@ -117,6 +117,11 @@
     }
   },
   "settingsPanel": {
+    "voice": {
+      "description": "配置麦克风、全双工实时语音及屏幕共享。",
+      "screenSharing": "屏幕共享",
+      "screenSharingDescription": "开启后，启动全双工时选择要共享的屏幕；关闭时仅进行语音对话。此偏好仅保存在当前浏览器。"
+    },
     "title": "设置",
     "freeModels": {
       "title": "免费模型",
@@ -137,6 +142,7 @@
       "configDescription": "为限时免费模型单独设置上下文窗口等参数"
     },
     "categories": {
+      "voice": "语音",
       "general": "常规",
       "models": "模型",
       "agent": "智能体",
@@ -642,7 +648,7 @@
       },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
-        "description": "输入框为空时显示全双工按钮；点击后共享整个屏幕并持续使用麦克风。"
+        "description": "输入框为空时显示全双工按钮；启动后持续进行语音对话，屏幕共享由下方开关控制。"
       },
       "kv_cache_affinity_enabled": {
         "title": "启用算力亲和",
@@ -969,6 +975,16 @@
     }
   },
   "chat": {
+    "duplexControls": {
+      "muteMic": "关闭麦克风",
+      "unmuteMic": "开启麦克风",
+      "muteSpeaker": "静音模型回应",
+      "unmuteSpeaker": "开启模型声音",
+      "stopSharing": "停止屏幕共享",
+      "listening": "正在聆听",
+      "connecting": "正在连接",
+      "exit": "退出全双工语音"
+    },
     "slashPicker": {
       "commands": "指令",
       "skills": "技能",
@@ -1051,7 +1067,7 @@
     "agentGroupDeletedDescription": "该会话绑定的专家团已被删除，无法继续对话。历史消息仍可查看。",
     "placeholderAgentGroupDeleted": "专家团已删除，无法继续对话",
     "stop": "停止",
-    "taskFullDuplexStart": "共享整个屏幕并开始全双工对话",
+    "taskFullDuplexStart": "开始全双工语音对话",
     "taskFullDuplexStarting": "正在启动全双工对话",
     "taskFullDuplexStop": "停止全双工对话和屏幕共享",
     "modelSelector": {

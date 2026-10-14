@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AudioWaveform } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { settingsActionIcons } from '../../../../assets/settings';
 import { Button, Select } from '../../../../components/ui';
@@ -236,6 +237,7 @@ export function VideoDuplexModelSettings() {
       {error ? <div className="video-duplex-model-settings__error" role="alert">{error}</div> : null}
       {configured ? (
         <div className="settings-agent-media__model-card">
+          <AudioWaveform className="video-duplex-model-settings__model-icon" aria-hidden data-testid="settings-video-duplex-model-icon" />
           <div className="video-duplex-model-settings__model-copy">
             <strong className="settings-agent-media__model-name">{modelName}</strong>
             <small>{providerName}</small>

@@ -2534,7 +2534,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const fullDuplexActionEligible =
     !showStop &&
     !composerDisabled &&
-    !hasTextDraft &&
     attachments.length === 0 &&
     !isListening &&
     !isTranscribing &&
@@ -4830,6 +4829,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
                 <ApplicationPluginTaskInputActions
                   eligible={fullDuplexActionEligible && !isTeamMode}
+                  hasTextDraft={hasTextDraft}
                   sessionId={activeSessionId}
                   ensureSession={onEnsureSession}
                   labels={{
