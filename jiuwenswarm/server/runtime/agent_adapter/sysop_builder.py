@@ -985,13 +985,12 @@ def registered_sandbox_owner_by_key(
         return None
 
 
-# 自持沙箱（team owner 未命中时注册）的记账表：
+# 自持沙箱（team owner 未命中时注册）**与借用句柄别名**的记账表：
 # ``运行态(session-scoped) team 名 -> 该 team 名下的注册 id 集合``。
-#
-# 注册 id 是 ``team_sandbox_owned_<team_id>``，与成员 spec 的借用句柄
-# ``team_sandbox_ref_<team_id>`` **刻意不同**——成员 dispose 只看到借用句柄
-# （``_BorrowedSandboxHandle``），因此永不触碰自持沙箱；回收由
-# release_team_owned_sandbox 在 team 生命周期结束时统一执行。
+# 成员 dispose 只摘自己那条别名（keyless，不动 owner 行），本表是 team 生命周期
+# 结束时把两类注册一并回收的兜底：``team_sandbox_owned_<team_id>``（自持，拥有
+# isolation key）与 ``team_sandbox_ref_<team_id>``（别名，keyless，成员崩溃未走
+# dispose 时会残留）。
 #
 # ⚠️ 必须按**运行态全名精确查表**，不能靠"``team_sandbox_owned_<name>`` 前缀反推
 # 归属"：运行态名是 ``{base}_{session_suffix}``，而 team 名几乎无约束
@@ -1042,31 +1041,36 @@ def release_team_owned_sandbox(team_name: str) -> None:
 
 
 class _BorrowedSandboxHandle(SysOperation):
-    """借用句柄视图：``.id`` 指向**永不注册**的句柄名，其余全部委托真实实例。
+    """借用句柄视图：``.id`` 指向本 team 的**句柄别名 id**，其余全部委托真实实例。
 
-    库在成员销毁时（``team_harness.py:215`` → ``native_harness.py:467-474``）
-    读 ``config.sys_operation`` 的 ``.id`` 决定是否注销。而 ``config.sys_operation``
+    库在成员销毁时（``team_harness.py:215`` → ``native_harness.dispose``）读
+    ``config.sys_operation`` 的 ``.id`` 决定是否注销。而 ``config.sys_operation``
     是 ``resolve()`` 的**返回值**（``deep_agent_spec.py:587`` 把 spec 整个换成了
     实例，``factory.py:391`` 原样塞进 DeepAgentConfig）——``spec.id`` 在那一刻
-    就被丢弃了，从未进入任何注销判定。故"句柄永不注册"这条保护必须落在**实例的
-    ``.id``** 上，而不是 spec 上：句柄未注册 ⇒ 库那句 ``get_sys_operation(id) is
-    not None`` 判定恒假 ⇒ 成员 shutdown / team 销毁不摘任何他方资源，也不经
-    ``sys_operation_manager.py:67-68`` 释放其 isolation key。
+    就被丢弃了，从未进入任何注销判定。故别名 id 必须落在**实例的 ``.id``** 上。
+
+    **别名必须"不拥有 isolation key"**（见 :attr:`isolation_key_template`）：这是
+    dispose 不伤及 owner 的唯一机制。库那句判定是
+    ``if get_sys_operation(id) is not None: remove_sys_operation(id)``，
+    而 ``SysOperationMgr.remove_sys_operation`` 会**无条件 pop 掉该实例所声明
+    isolation key 的 owner 行**（``sys_operation_manager.py:67-68``）——若句柄声明
+    真实 key，成员 dispose 就会把 owner 无主化，下次成员按 key 查 owner 落空即
+    自持新容器（静默易主）。
 
     刻意**不**改真实实例的 ``.id``：``config.sys_operation`` 与
-    ``get_sys_operation(owner_id)`` 是**同一个对象**，就地改会污染主 agent 的
+    ``get_sys_operation(owner_id)`` 上游是**同一个对象**，就地改会污染主 agent 的
     注册簿（owner map 仍指向旧 id 而实例已改名）。
 
     **必须**继承 ``SysOperation``：``factory.py:337`` 用
     ``isinstance(sys_operation, SysOperation)`` 区分"库已 resolve 的实例"与"未
     设置"，判定失败会把本句柄当 ``None`` 丢弃并重建 LOCAL。
 
-    依赖（上游一旦改动即为失效点，届时需重新审计）：消费方一律把
-    ``deep_config.sys_operation`` 当**Python 引用**用，不回查注册表、不读
-    ``.id``——``SysOperationRail.init`` 的工具 id 形如 ``write_file_<agent_id>``，
-    与 SysOperation 实例无关（``sys_operation_rail.py:52, 87-91`` 的注释明写），
-    工具直接持引用调 ``sysop.fs() / .shell() / .code()``。故换 ``.id`` 不影响
-    任何工具行为，只影响 dispose 的那一行判定。
+    依赖（上游一旦改动即为失效点，届时需重新审计）：``SysOperationRail.init`` 的
+    工具 id 形如 ``write_file_<agent_id>``，与 SysOperation 实例无关
+    （``sys_operation_rail.py:52, 87-91`` 的注释明写），工具直接持**引用**调
+    ``sysop.fs() / .shell() / .code()``。故别名 id 只影响两处：dispose 摘的那一行，
+    以及"按 id 回查注册表"的消费方（``deep_agent.py:879`` →
+    ``react_agent.py:646`` 的 ContextEngine、``skill_manager.py:66/178``）。
     """
 
     def __init__(self, source: SysOperation, handle_id: str) -> None:
@@ -1077,7 +1081,9 @@ class _BorrowedSandboxHandle(SysOperation):
 
         Args:
             source: 真实已注册的 SANDBOX 实例（owner 复用的或 team 自持的）。
-            handle_id: 借用句柄名（``team_sandbox_ref_<team>``），刻意不注册。
+            handle_id: 借用句柄名（``team_sandbox_ref_<team>``）。它会作为**别名
+                id** 被登记（见 :func:`_register_borrowed_sandbox_handle`），但
+                该登记不拥有任何 isolation key。
         """
         self.id = handle_id
         self.mode = source.mode
@@ -1087,13 +1093,108 @@ class _BorrowedSandboxHandle(SysOperation):
         self._run_config = source._run_config
         self._instances = source._instances
 
+    @property
+    def isolation_key_template(self) -> str | None:  # type: ignore[override]
+        """恒为 ``None``：句柄别名**不拥有** isolation key。
+
+        这是 ``SysOperationMgr`` 的 add / remove 两处分支的开关
+        （``sys_operation_manager.py:38-49`` 与 ``:67-68``）：
+
+        - add：空 key 直接跳过冲突校验与 owner 行写入，故别名能与 owner 共存
+          （不抢 owner 行，也不被"一个 key 一个 owner"挡下）；
+        - remove：空 key 不 pop owner 行，故成员 dispose 摘别名时不会把 owner
+          无主化。
+
+        基类实现读 ``self._run_config.isolation_key_template``——那正是真实 key，
+        必须在此切断，否则上述两条保护全部失效。
+        """
+        return None
+
+
+def _register_borrowed_sandbox_handle(
+    handle: "_BorrowedSandboxHandle",
+    *,
+    team_id: str,
+    card: SysOperationCard,
+) -> None:
+    """把句柄以自己的别名 id 登记进 ``Runner.resource_mgr``（幂等）。
+
+    **为什么必须登记**：库有多条"按 id 回查注册表"的消费方，句柄不登记就全部拿到
+    ``None``——``deep_agent.py:879`` 把 ``cfg.sys_operation.id`` 写进
+    ``ReActAgentConfig.sys_operation_id``，``react_agent.py:646`` 据此
+    ``get_sys_operation`` 并用它构造 ``ContextEngine``；``skill_util/base.py:135``
+    再把同一个 id 灌给 ``SkillManager``。句柄未登记时成员的 ContextEngine 拿到
+    ``None``：offload 写退化成宿主 ``open()``（绕沙箱）而读恒返回 ``[]``
+    （``message_buffer.py:124``），``SkillManager`` 则 ``None.fs()`` 抛
+    AttributeError。
+
+    **登记方式**：不能用 ``ResourceMgr.add_sys_operation(card)``——它强制
+    ``SysOperation(card)`` 新建实例，拿不到与 owner 共享的 ``_run_config``。这里直接
+    走 ``SysOperationMgr.add_sys_operation(id, handle)``（句柄 keyless，故跳过
+    冲突校验），再补 ``ResourceMgr`` 的 tag 盖章——``_inner_get_resources`` 要求
+    ``_tag_mgr.has_resource(id)`` 才 dispatch（``resource_manager.py:171``），
+    只写 ``_sys_operations`` 是隐形的。
+
+    刻意**不**走 ``ResourceMgr.add_sys_operation`` 的工具自动注册：句柄 id 下再挂
+    一套 ``handle_id.*`` 的 16 个 op 工具纯属冗余——成员真正对外暴露的 fs/shell/
+    code 工具由 ``SysOperationRail`` 按 agent id 注册并持引用，与 sysop id 无关。
+
+    **刷新语义**：owner 换人（重注册出新的 ``_run_config``）时旧别名是**陈旧**的，
+    会让 ContextEngine 继续写旧容器。故检测到 ``_run_config`` 不同就先摘旧再登记新
+    （摘的是 keyless 别名，不动 owner 行）。owner 未变时是纯 no-op，不制造
+    "登记抖动"窗口。
+
+    登记 id 记入 :data:`_TEAM_OWNED_SYSOP_IDS`，成员崩溃未走 dispose 时由
+    :func:`release_team_owned_sandbox` 兜底回收。
+
+    Args:
+        handle: 待登记的借用句柄。
+        team_id: 运行态 team 全名，记账表键（句柄 id 的后缀）。
+        card: 句柄对应的 card（``build_card()`` 的结果），仅用于在 ``_id_to_card``
+            留档；不据它新建实例，故不影响与 owner 共享的 ``_run_config``。
+
+    登记失败只告警——拿不到别名登记只是退回"未登记"这一旧行为（fs/shell/code 工具
+    仍持引用正常工作），不该连带打挂成员构建。
+    """
+    handle_id = handle.id
+    try:
+        from openjiuwen.core.runner.resources_manager.base import GLOBAL
+        from openjiuwen.core.runner.runner import Runner
+
+        resource_mgr = Runner.resource_mgr
+        existing = resource_mgr.get_sys_operation(handle_id)
+        if existing is not None:
+            if getattr(existing, "_run_config", None) is handle._run_config:
+                return
+            # owner 换过容器：旧别名已陈旧，摘掉重登记（keyless，不会动 owner 行）
+            resource_mgr.remove_sys_operation(handle_id)
+
+        resource_mgr._resource_registry.sys_operation().add_sys_operation(handle_id, handle)
+        resource_mgr._tag_mgr.tag_resource(handle_id, GLOBAL)
+        resource_mgr._id_to_card[handle_id] = card
+    except Exception as exc:  # noqa: BLE001 — 登记失败只降级，不打挂成员构建
+        logger.warning(
+            "[sysop_builder] 借用句柄别名登记失败：id=%s err=%s", handle_id, exc
+        )
+        return
+
+    if team_id:
+        with _TEAM_OWNED_SYSOP_IDS_LOCK:
+            _TEAM_OWNED_SYSOP_IDS.setdefault(team_id, set()).add(handle_id)
+    logger.info(
+        "[sysop_builder] 借用句柄已按别名登记（不拥有 isolation key，dispose 只摘自己）：id=%s",
+        handle_id,
+    )
+
 
 class TeamSharedSandboxSpec(SysOperationSpec):
-    """team 成员**借用**已注册沙箱的句柄；自身不持有任何注册。
+    """team 成员**借用**已注册沙箱的句柄；自身不拥有任何 isolation key。
 
-    ``id`` 是借用句柄名（``team_sandbox_ref_<team>``），**刻意永不注册**进
-    ``Runner.resource_mgr``，并经 :class:`_BorrowedSandboxHandle` 成为
-    ``resolve()`` 返回实例的 ``.id``——这是 dispose 唯一读到的 id。
+    ``id`` 是借用句柄名（``team_sandbox_ref_<team>``），经 :class:`_BorrowedSandboxHandle`
+    成为 ``resolve()`` 返回实例的 ``.id``——这是 dispose 唯一读到的 id。该 id 会作为
+    **别名**登记进 ``Runner.resource_mgr``（使"按 id 回查"的库消费方能命中，见
+    :func:`_register_borrowed_sandbox_handle`），但别名**不拥有** isolation key，
+    因此既不参与"一个 key 一个 owner"的冲突判定，也不会在 dispose 时把 owner 行摘掉。
 
     对齐 owner id 来"零 add 命中"是**错的**：那样 dispose 会连带注销 owner 的
     沙箱（并释放其 isolation key），下次 owner 重新 add 出新 uuid 即重新易主，
@@ -1104,13 +1205,14 @@ class TeamSharedSandboxSpec(SysOperationSpec):
     下 owner 侧的 project_dir 与成员侧不同源，key 必然不匹配，此时若不
     自持就直接把成员丢回宿主机——比"多一个容器"糟得多。
 
-    **前两级都包一层借用句柄**：成员 dispose 时拿到的是包出来的实例，其 ``.id``
-    未注册 ⇒ 库那句判定恒假 ⇒ 既不会摘掉别人的沙箱，也**不会摘掉本 team 的自持
-    沙箱**（自持沙箱全队共用，由 :func:`release_team_owned_sandbox` 在 team 生命
-    周期结束时统一回收）。此前"注册 id 与句柄解耦 ⇒ dispose 碰不到自持沙箱"的
-    推理漏了这一层——解耦的是 spec.id，而 dispose 读的是 resolve 后的实例 id。
+    **前两级都包一层借用句柄**：成员 dispose 读到的是包出来的实例，其 ``.id`` 是
+    别名 id ⇒ 库只摘别名那条（keyless，不 pop owner 行）⇒ 既不会摘掉别人的沙箱，
+    也不会摘掉本 team 的自持沙箱（自持沙箱全队共用，由
+    :func:`release_team_owned_sandbox` 在 team 生命周期结束时统一回收；别名 id
+    也一并记入同一张表作崩溃兜底）。
 
-    ``team_id`` 只用于推导自持 id，不进 ``build_card()``（key 与 id 无关）。
+    ``team_id`` 只用于推导自持 id 与记账表键，不进 ``build_card()``
+    （key 与 id 无关）。
     """
 
     team_id: str = ""
@@ -1118,8 +1220,10 @@ class TeamSharedSandboxSpec(SysOperationSpec):
     def resolve(self) -> "SysOperation | None":  # type: ignore[name-defined]
         """复用 owner；无 owner 时自持；均不可用则返回 None（成员维持 LOCAL）。
 
-        返回的一律是 :class:`_BorrowedSandboxHandle` 句柄视图而非真实实例，
-        使 ``.id`` 永不命中注册表。
+        返回的一律是 :class:`_BorrowedSandboxHandle` 句柄视图，并**在返回前**按别名
+        id 登记——登记必须早于 ``apply_deep_agent_parts``，因为库随后会用
+        ``deep_config.sys_operation.id`` 回查注册表去构造 ContextEngine
+        （``deep_agent.py:879`` → ``react_agent.py:646``）。
         """
         card = self.build_card()
         key = sandbox_isolation_key_of(card)
@@ -1133,7 +1237,9 @@ class TeamSharedSandboxSpec(SysOperationSpec):
                 key,
             )
             return None
-        return _BorrowedSandboxHandle(owner, self.id)
+        handle = _BorrowedSandboxHandle(owner, self.id)
+        _register_borrowed_sandbox_handle(handle, team_id=self.team_id, card=card)
+        return handle
 
     def _ensure_team_owned_sandbox(
         self,
@@ -1142,16 +1248,16 @@ class TeamSharedSandboxSpec(SysOperationSpec):
     ) -> "SysOperation | None":  # type: ignore[name-defined]
         """owner 未命中时，为本 team 注册一个自持沙箱。
 
-        注册 id 与借用句柄 ``self.id`` **刻意不同**：前者是我们真正持有的资源，
-        后者永不注册。回收由 :func:`release_team_owned_sandbox` 在 team 生命
-        周期结束时统一执行。
+        注册 id 与借用句柄 ``self.id`` **刻意不同**：前者是我们真正持有的资源
+        （拥有 isolation key），后者是借用的别名 id（keyless，由
+        :func:`_register_borrowed_sandbox_handle` 登记）。回收由
+        :func:`release_team_owned_sandbox` 在 team 生命周期结束时统一执行。
 
         ⚠️ "id 解耦 ⇒ 成员 dispose 碰不到自持沙箱" 这条推理**不成立**：库 dispose
         读的是 ``resolve()`` 返回**实例**的 ``.id``（``deep_agent_spec.py:587``
-        起 spec 已被丢弃），而本函数返回的正是自持实例本身，其 ``.id`` 就是
-        ``owned_id``——解耦只发生在 spec 上。真正兜住的是
-        :meth:`TeamSharedSandboxSpec.resolve` 把返回值包成
-        :class:`_BorrowedSandboxHandle`，让 dispose 看到未注册的句柄名。
+        起 spec 已被丢弃）。真正兜住的是 :meth:`TeamSharedSandboxSpec.resolve` 把
+        返回值包成 :class:`_BorrowedSandboxHandle`——dispose 摘的是那个 keyless 别名，
+        而别名删除时不会 pop owner 行，故 ``team_sandbox_owned_*`` 那条纹丝不动。
         **本函数不得被绕过 ``resolve()`` 直接使用。**
 
         Args:
@@ -1223,22 +1329,26 @@ def create_sandbox_sysop_spec(
     命中——成员 spec 设此项后，``DeepAgentSpec.build()`` 会 ``.resolve()`` 成
     SANDBOX ``SysOperation`` 实例，成员的 fs/shell/code 工具随之走沙箱。
 
-    id 策略：``team_sandbox_ref_<team_id>`` 是**借用句柄名**，永不注册。库
-    ``resolve()`` 只按 id get-or-create，若此 id 恰好等于已注册的 owner id 固然能
-    零 add 命中，但成员销毁时 ``native_harness.dispose()`` 会按同一 id 执行
-    ``remove_sys_operation``，连带摘掉主 agent 的沙箱并释放其 isolation key——
-    下次主 agent 重新 add 出新 uuid 即重新易主，又构成一次静默回落 LOCAL。
-    故 id 刻意与 owner 解耦，由 ``TeamSharedSandboxSpec.resolve()`` 在 harness
-    构建期按 owner map 复用实例，并把复用到的实例包成
-    :class:`_BorrowedSandboxHandle`——**只有包了它，dispose 才只看到未注册的句柄名**。
+    id 策略：``team_sandbox_ref_<team_id>`` 是**借用句柄名**。库 ``resolve()`` 只按
+    id get-or-create，若此 id 恰好等于已注册的 owner id 固然能零 add 命中，但成员
+    销毁时 ``native_harness.dispose()`` 会按同一 id 执行 ``remove_sys_operation``，
+    连带摘掉主 agent 的沙箱并释放其 isolation key——下次主 agent 重新 add 出新
+    uuid 即重新易主，又构成一次静默回落 LOCAL。故 id 刻意与 owner 解耦，由
+    ``TeamSharedSandboxSpec.resolve()`` 在 harness 构建期按 owner map 复用实例，
+    并把复用到的实例包成 :class:`_BorrowedSandboxHandle`——**只有包了它，dispose
+    才只看到 keyless 的别名 id**，摘的也只是别名那条，不会动 owner 行与 owner 行
+    的 key 归属。别名会登记进注册表（否则库里"按 id 回查"的消费方——ContextEngine
+    与 SkillManager——全部拿到 None），但不拥有任何 isolation key。
 
     无 owner 且自持也失败时 ``resolve()`` 返回 ``None``，库 factory 兜底出 LOCAL sysop
-    ——即本特性上线前的既有行为，零回归。本版复用主 agent 的项目级沙箱，同一
-    isolation key 下不存在合法的第二个注册路径（库强制一 key 一 owner）。
+    ——即本特性上线前的既有行为，零回归。本版复用主 agent 的项目级沙箱；同一
+    isolation key 下不存在第二个**拥有者**（库强制一 key 一 owner），别名登记不占
+    key，见 :func:`_register_borrowed_sandbox_handle`。
 
     Args:
-        team_id: 借用句柄名后缀（用 ``spec.team_name``）。全队共用一个 spec 对象；
-            由于 dispose 只看到未注册的句柄名，成员间不存在 add/dispose 争用。
+        team_id: 借用句柄名后缀（用 ``spec.team_name``）。全队共用一个 spec 对象，
+            即全队共用一个别名 id——故 ``resolve()`` 内的登记是幂等的（同一
+            ``_run_config`` 下直接 no-op），成员间不存在 add/dispose 争用。
     """
     card = create_sandbox_sysop_card(
         sandbox_url,

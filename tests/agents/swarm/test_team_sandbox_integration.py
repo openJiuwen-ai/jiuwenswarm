@@ -155,10 +155,67 @@ def test_enrich_skips_sandbox_when_endpoint_unresolved(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# create_sandbox_sysop_spec id 策略：借用句柄永不注册，resolve() 时才查 owner
+# create_sandbox_sysop_spec id 策略：借用句柄别名 id（keyless），resolve() 时登记
 # ---------------------------------------------------------------------------
 
 _OWNER_ID = "f0d3af13c98a45d084f483cf1fb4c87b"
+
+
+class _FakeTagMgr:
+    """``ResourceMgr._tag_mgr`` 的最小替身。
+
+    库 ``_inner_get_resources`` 要求 ``_tag_mgr.has_resource(id)`` 才 dispatch
+    （``resource_manager.py:171``）——只写 ``_sys_operations`` 是隐形的，
+    故假注册表必须照抄这道门，否则测试会漏掉"登记了但查不到"。
+    """
+
+    def __init__(self, seeded=()):
+        self._tagged = set(seeded)
+
+    def has_resource(self, resource_id):
+        return resource_id in self._tagged
+
+    def tag_resource(self, resource_id, tag=None):
+        self._tagged.add(resource_id)
+
+    def remove_resource(self, resource_id):
+        self._tagged.discard(resource_id)
+
+
+class _FakeSysOpMgr:
+    """``SysOperationMgr`` 的最小替身：照抄 key 冲突与 row pop 两条真实语义。
+
+    - add：同 isolation key 已有**别的** id 时抛 ValueError（一个 key 一个 owner）；
+    - remove：无条件 pop 该实例所声明 key 的 owner 行 —— 这正是借用句柄必须
+      keyless 的原因（``sys_operation_manager.py:67-68``）。
+    """
+
+    def __init__(self, owner_map, sysops):
+        self._sandbox_key_owner_map = owner_map
+        self._sys_operations = sysops
+
+    def add_sys_operation(self, sys_operation_id, sys_operation_instance):
+        if sys_operation_id in self._sys_operations:
+            raise ValueError(f"already exists sys_operation_card {sys_operation_id}")
+        template = sys_operation_instance.isolation_key_template
+        if template:
+            existing = self._sandbox_key_owner_map.get(template)
+            if existing is not None and existing != sys_operation_id:
+                raise ValueError(
+                    f"Isolation key template '{template}' is already registered by "
+                    f"operation '{existing}'."
+                )
+            self._sandbox_key_owner_map[template] = sys_operation_id
+        self._sys_operations[sys_operation_id] = sys_operation_instance
+
+    def remove_sys_operation(self, sys_operation_id):
+        instance = self._sys_operations.pop(sys_operation_id, None)
+        if instance is not None and instance.isolation_key_template:
+            self._sandbox_key_owner_map.pop(instance.isolation_key_template, None)
+        return instance
+
+    def get_sys_operation(self, sys_operation_id):
+        return self._sys_operations.get(sys_operation_id)
 
 
 class _FakeRegistry:
@@ -167,7 +224,7 @@ class _FakeRegistry:
         self._sysops = sysops
 
     def sys_operation(self):
-        return SimpleNamespace(_sandbox_key_owner_map=self._owner_map)
+        return _FakeSysOpMgr(self._owner_map, self._sysops)
 
 
 class _FakeOk:
@@ -214,13 +271,23 @@ class _FakeResourceMgr:
     def __init__(self, owner_map, sysops):
         self._resource_registry = _FakeRegistry(owner_map, sysops)
         self._sysops = sysops
+        # 初始 sysops 视为已登记资源（库只有经 ResourceMgr.add 才盖章）
+        self._tag_mgr = _FakeTagMgr(seeded=list(sysops))
+        self._id_to_card: dict[str, object] = {}
         self.removed: list[str] = []
         self.added: list[str] = []
         #: 测试可置为 False 让 add 一律失败（验证 Result 检查路径）
         self.add_succeeds = True
 
-    def get_sys_operation(self, sysop_id):
-        return self._sysops.get(sysop_id)
+    def get_sys_operation(self, sysop_id=None, **_kwargs):
+        # 无参调用（库按 GLOBAL tag 列全部）是沙箱开关 teardown 的用法
+        if sysop_id is None:
+            return [
+                op for rid, op in self._sysops.items() if self._tag_mgr.has_resource(rid)
+            ]
+        if not self._tag_mgr.has_resource(sysop_id):
+            return None
+        return self._resource_registry.sys_operation().get_sys_operation(sysop_id)
 
     def add_sys_operation(self, card):
         if not self.add_succeeds:
@@ -229,23 +296,26 @@ class _FakeResourceMgr:
         # ``_BorrowedSandboxHandle`` 会读 source._run_config / source._instances 并
         # 委托 fs()/shell()，替身没有这些成员。
         instance = SysOperation(card)
-        self._sysops[card.id] = instance
+        try:
+            self._resource_registry.sys_operation().add_sys_operation(card.id, instance)
+        except ValueError as exc:
+            # 与库一致：key 冲突 / id 重复被吞成 Error 而非抛出
+            return _FakeErr(str(exc))
         self.added.append(card.id)
-        registry = self._resource_registry
-        template = instance.isolation_key_template
-        if template:
-            registry._owner_map[template] = card.id
+        self._tag_mgr.tag_resource(card.id)
+        self._id_to_card[card.id] = card
         return _FakeOk(card.id)
 
     def remove_sys_operation(self, sysop_id):
-        op = self._sysops.pop(sysop_id, None)
+        if not self._tag_mgr.has_resource(sysop_id):
+            # 库对未盖章 id 不 dispatch；此处保持"摘不到"的语义
+            return None
+        self._tag_mgr.remove_resource(sysop_id)
+        op = self._resource_registry.sys_operation().remove_sys_operation(sysop_id)
+        self._id_to_card.pop(sysop_id, None)
         if op is None:
             return None
         self.removed.append(sysop_id)
-        registry = self._resource_registry
-        template = getattr(op, "isolation_key_template", None)
-        if template:
-            registry._owner_map.pop(template, None)
         return op
 
 
@@ -320,7 +390,7 @@ def _simulate_native_harness_dispose(rm, sysop_id):
     ``deep_agent_spec.py:587`` 用 ``resolve()`` 的返回值整个替换 spec，
     ``factory.py:391`` 再把它塞进 DeepAgentConfig，dispose 读的是这个实例的
     ``.id``——``spec.id`` 在那一刻已被丢弃，从未进入任何注销判定。传错参数
-    会让本用例恒真（句柄未注册，判定必然为假），是假阴性的直接来源。
+    会让本用例恒真（传 spec.id 查不到任何东西，判定必然为假），是假阴性的直接来源。
     """
     if rm.get_sys_operation(sysop_id) is not None:
         rm.remove_sys_operation(sysop_id)
@@ -358,29 +428,32 @@ def test_spec_id_is_stable_ref_handle_without_owner(monkeypatch):
 def test_spec_ignores_local_owner(monkeypatch):
     """owner map 指向 LOCAL 实例时不复用（避免成员对齐到 LOCAL）。
 
-    LOCAL owner 不可复用，但**不应**阻断自持兑底——否则会退化成 LOCAL。
+    LOCAL 实例在真实库里**永远不会**占 isolation key 行——``SysOperation.__init__``
+    对 LOCAL 走 ``_run_config = card.work_config``（``LocalWorkConfig``，无
+    ``isolation_key_template``），``add_sys_operation`` 的写行分支不执行。这里手工
+    塞一行是"被污染的行"场景：成员**不得**借用它；该行同时会挡住自持 add（库强制
+    一个 key 一个 owner），成员因此回落 LOCAL——降级的告警由
+    ``test_resolve_returns_none_when_no_owner_and_add_fails`` 覆盖。
     """
     from openjiuwen.core.sys_operation.sys_operation import SysOperation
 
     card = _make_sandbox_card()
     template = SysOperation(card).isolation_key_template
     fake_local = SimpleNamespace(id="local_owner", mode=OperationMode.LOCAL)
-    spec, _rm = _build_spec(
+    spec, rm = _build_spec(
         monkeypatch,
         owner_map={template: fake_local.id},
         sysops={fake_local.id: fake_local},
     )
 
     assert spec.id == "team_sandbox_ref_unit_team"
-    resolved = spec.resolve()
-    assert resolved is not None, "LOCAL owner 不该阻断自持兑底"
-    assert resolved.id == "team_sandbox_ref_unit_team", (
-        "resolve() 必须返回借用句柄视图，其 .id 永不注册"
+    assert builder.registered_sandbox_owner_by_key(template) is None, (
+        "指向 LOCAL 的 owner 行不得被复用"
     )
-    assert resolved.mode == OperationMode.SANDBOX
-    assert _rm.get_sys_operation("team_sandbox_owned_unit_team") is not None, (
-        "自持沙箱应已注册，且其注册 id 与句柄 id 解耦"
-    )
+
+    assert spec.resolve() is None, "被污染的 owner 行挡住自持 add 时应回落 LOCAL"
+    assert rm.added == [], f"不该新建任何 card 注册：{rm.added}"
+    assert rm.get_sys_operation("team_sandbox_owned_unit_team") is None
 
 
 # ---------------------------------------------------------------------------
@@ -395,8 +468,14 @@ def test_resolve_returns_registered_sandbox_owner(monkeypatch):
     成员工具落宿主机。此处直接断言拿到的是 mode=SANDBOX 的 owner 实例。
 
     关键不变式：``resolve()`` 返回的是 :class:`_BorrowedSandboxHandle` 视图，
-    它的 ``.id`` 是**未注册的句柄名**（dispose 唯一读到的 id），而底层绑定的
+    它的 ``.id`` 是**与 owner 解耦的别名 id**（dispose 唯一读到的 id），底层绑定的
     仍是 owner 实例。返回 owner 本身会让成员 dispose 摘掉主 agent 的沙箱。
+
+    别名**必须已登记**：库有多条"按 id 回查注册表"的链路
+    （``deep_agent.py:879`` → ``react_agent.py:646`` 的 ContextEngine、
+    ``skill_manager.py:66``），未登记时它们全部拿到 ``None``——成员 offload 写
+    退化成宿主 ``open()``（绕沙箱）而读恒返回 ``[]``。但别名**不拥有** isolation key，
+    否则 dispose 时会被 ``sys_operation_manager.py:67-68`` 连带摘掉 owner 行。
     """
     card = _make_sandbox_card()
     owner_map, sysops = _owner_map_with(card)
@@ -407,9 +486,17 @@ def test_resolve_returns_registered_sandbox_owner(monkeypatch):
     assert resolved is not None, "resolve() 返回 None，成员会回落 LOCAL"
     assert resolved.mode == OperationMode.SANDBOX
     assert resolved.id == "team_sandbox_ref_unit_team", (
-        "返回的实例 .id 必须是指向未注册句柄的视图，而非 owner id"
+        "返回的实例 .id 必须是指向别名的视图，而非 owner id"
     )
-    assert rm.get_sys_operation(resolved.id) is None, "句柄不得真的注册进 registry"
+    # 按 id 回查必须命中，且拿到的正是与 owner 共享容器配置的那一个
+    by_id = rm.get_sys_operation(resolved.id)
+    assert by_id is not None, "别名未登记：库按 id 回查 ContextEngine / SkillManager 会拿到 None"
+    assert by_id._run_config is sysops[_OWNER_ID]._run_config, "别名必须复用 owner 的容器配置"
+    # 别名不拥有 key：dispose 摘它时才不会 pop owner 行
+    assert by_id.isolation_key_template is None, "别名不得声明 isolation key"
+    assert rm._resource_registry._owner_map[next(iter(owner_map))] == _OWNER_ID, (
+        "别名登记不得顶掉 owner 行"
+    )
     assert rm.get_sys_operation(_OWNER_ID) is sysops[_OWNER_ID], "底层 owner 未被动过"
 
 
@@ -467,9 +554,11 @@ def test_team_owned_sandbox_registered_once(monkeypatch):
 
 
 def test_member_dispose_does_not_remove_team_owned_sandbox(monkeypatch):
-    """**走兑底后**，成员 dispose 仍不得摘掉自持沙箱。
+    """**走兜底后**，成员 dispose 仍不得摘掉自持沙箱。
 
-    自持沙箱全队共用一个注册 id：一个成员退出会打断其余所有人。本条与
+    自持沙箱全队共用一个注册 id：一个成员退出会打断其余所有人。dispose 摘的是那个
+    **keyless 别名**（别名登记只是为了让库按 id 回查能命中），摘它不 pop owner 行，
+    故 ``team_sandbox_owned_*`` 条目分毫不动。本条与
     ``test_member_dispose_leaves_owner_registered`` 一起锁住两条分支各自的不变式。
     """
     spec, rm = _build_spec(monkeypatch, owner_map={}, sysops={})
@@ -478,12 +567,58 @@ def test_member_dispose_does_not_remove_team_owned_sandbox(monkeypatch):
 
     _simulate_native_harness_dispose(rm, resolved.id)
 
-    assert rm.removed == [], f"成员销毁摘掉了自持沙箱：{rm.removed}"
-    assert rm.get_sys_operation("team_sandbox_owned_unit_team") is not None
+    assert rm.removed == ["team_sandbox_ref_unit_team"], (
+        f"dispose 只该摘别名自己：{rm.removed}"
+    )
+    assert rm.get_sys_operation("team_sandbox_owned_unit_team") is not None, (
+        "自持沙箱被摘掉了"
+    )
+
+
+def test_member_dispose_keeps_owner_row_and_key_lookup(monkeypatch):
+    """dispose 摘别名后，**owner 行与按 key 回查必须完好**。
+
+    这是别名必须 keyless 的直接理由：库 ``SysOperationMgr.remove_sys_operation``
+    会无条件 pop 掉被删实例所声明 isolation key 的 owner 行
+    （``sys_operation_manager.py:67-68``）。若别名声明真实 key，成员 dispose 就会把
+    owner 无主化——下一个成员按 key 查 owner 落空 → 自持新容器 → 静默易主。
+    """
+    card = _make_sandbox_card()
+    owner_map, sysops = _owner_map_with(card)
+    spec, rm = _build_spec(monkeypatch, owner_map=owner_map, sysops=sysops)
+    resolved = spec.resolve()
+    assert resolved is not None
+    key_template = next(iter(owner_map))
+
+    _simulate_native_harness_dispose(rm, resolved.id)
+
+    assert rm.get_sys_operation(resolved.id) is None, "别名应已注销"
+    assert rm.get_sys_operation(_OWNER_ID) is sysops[_OWNER_ID], "dispose 摘掉了 owner"
+    assert rm._resource_registry._owner_map.get(key_template) == _OWNER_ID, (
+        "owner 行被连带摘掉 → 下一个成员会自持新容器"
+    )
+    owner = builder.registered_sandbox_owner_by_key(key_template)
+    assert owner is sysops[_OWNER_ID], "按 key 回查必须仍能命中 owner"
+
+    # 下一个成员重新 resolve：仍借到 owner，而不是自持新容器
+    again = spec.resolve()
+    assert again is not None
+    assert again._run_config is sysops[_OWNER_ID]._run_config, "下一个成员丢了 owner 容器"
+    assert rm.added == [], f"不该新增任何 card 注册：{rm.added}"
+
 
 
 def test_sibling_member_survives_peer_dispose(monkeypatch):
-    """成员 A dispose 后，成员 B 的绑定必须仍然可用（自持沙箱是全队共用）。"""
+    """成员 A dispose 后，成员 B 的绑定必须仍然可用（自持沙箱是全队共用）。
+
+    ⚠️ 已知的共享别名窗口：全队共用**一个**别名 id，而 dispose 由库驱动
+    （``native_harness.dispose`` 读 ``config.sys_operation.id`` 就摘），无法在库外
+    拦下。故 A 退出会把别名那条一并摘掉。影响面被限定在三处，且都比"从不登记"
+    更好：B 的 ContextEngine 持的是**句柄对象**（不受影响）；B 若重建 harness 会在
+    ``resolve()`` 里重新登记（顺序保证：先 resolve 再 ``apply_deep_agent_parts``）；
+    唯一残留是 B 在 A 退出之后、自身重建之前去按 id 回查（如
+    ``SkillManager._load_yaml``），那与本次改动之前一致，不算回归。
+    """
     rm = _patch_resource_mgr(monkeypatch, {}, {})
     _patch_card_build(monkeypatch, _make_sandbox_card())
     specs = [
@@ -501,17 +636,86 @@ def test_sibling_member_survives_peer_dispose(monkeypatch):
     owned = rm.get_sys_operation("team_sandbox_owned_unit_team")
     assert owned is not None, "A 退出会摘掉 B 仍在用的自持沙箱"
     assert handle_b.shell() is owned.shell(), "B 的绑定应仍指向同一个容器连接"
+    # B 重建（每次 TeamHarness.build 都会 resolve）后别名重新登记
+    re_registered = specs[1].resolve()
+    assert re_registered is not None
+    assert rm.get_sys_operation(handle_b.id) is not None, "B 重建后别名未重新登记"
+
+
+def test_sandbox_toggle_teardown_also_removes_keyless_alias(monkeypatch):
+    """关沙箱开关时，keyless 别名（mode=SANDBOX）也必须被清掉，LOCAL 留下。
+
+    别名刻意声明 ``isolation_key_template = None``（否则成员 dispose 会连带 pop 掉主
+    agent 的 key 归属）。只按 key 过滤的旧判据会把它当成 local 留下 → 关开关后仍能经
+    ``get_sys_operation()`` 无参兜底命中沙箱实例，正是该 teardown 要防的事。
+    """
+    from jiuwenswarm.server import sandbox_config_rpc
+
+    card = _make_sandbox_card()
+    owner_map, sysops = _owner_map_with(card)
+    rm = _patch_resource_mgr(monkeypatch, owner_map, sysops)
+    _patch_card_build(monkeypatch, card)
+    spec = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid", "jiuwenbox", team_id="unit_team", startup_mode="external",
+    )
+    handle = spec.resolve()
+    assert handle is not None
+    rm.add_sys_operation(
+        SysOperationCard(
+            id="local_keep.sysop",
+            mode=OperationMode.LOCAL,
+            work_config=LocalWorkConfig(shell_allowlist=None),
+        )
+    )
+    template = next(iter(owner_map))
+
+    removed = sandbox_config_rpc._teardown_registered_sandbox_sysops()
+
+    assert removed == 2, f"owner 与别名都该清掉，实际 {removed}"
+    assert rm.get_sys_operation(handle.id) is None, "keyless 别名被当成 local 留下了"
+    assert rm.get_sys_operation(_OWNER_ID) is None
+    assert rm.get_sys_operation("local_keep.sysop") is not None, "local sysop 不该被动"
+    assert rm._resource_registry._owner_map.get(template) is None
+
+
+def test_resolve_is_idempotent_across_members(monkeypatch):
+    """全队共用一个别名 id：N 个成员 resolve 只登记一次，owner 不换人。"""
+    card = _make_sandbox_card()
+    owner_map, sysops = _owner_map_with(card)
+    rm = _patch_resource_mgr(monkeypatch, owner_map, sysops)
+    _patch_card_build(monkeypatch, card)
+    spec = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid", "jiuwenbox", team_id="unit_team", startup_mode="external",
+    )
+
+    handles = [spec.resolve() for _ in range(3)]
+
+    assert all(h is not None for h in handles)
+    assert rm.added == [], f"复用 owner 时不该新增 card 注册：{rm.added}"
+    assert rm.removed == [], f"重复 resolve 不该反复摘登：{rm.removed}"
+    registered = rm.get_sys_operation("team_sandbox_ref_unit_team")
+    assert registered is not None
+    assert registered._run_config is sysops[_OWNER_ID]._run_config
+    assert all(h._run_config is registered._run_config for h in handles), (
+        "三次 resolve 必须指向同一个容器配置"
+    )
+    assert rm._resource_registry._owner_map[next(iter(owner_map))] == _OWNER_ID
 
 
 def test_release_removes_team_owned_sandbox(monkeypatch):
-    """release 后 registry 与记账表都清空。"""
+    """release 后 registry 与记账表都清空（自持 id + 借用别名一并回收）。"""
     spec, rm = _build_spec(monkeypatch, owner_map={}, sysops={})
     assert spec.resolve() is not None
 
     builder.release_team_owned_sandbox("unit_team")
 
-    assert rm.removed == ["team_sandbox_owned_unit_team"]
+    # 记账表是 set，遍历顺序不定
+    assert sorted(rm.removed) == [
+        "team_sandbox_owned_unit_team",
+        "team_sandbox_ref_unit_team",
+    ]
     assert rm.get_sys_operation("team_sandbox_owned_unit_team") is None
+    assert rm.get_sys_operation("team_sandbox_ref_unit_team") is None
 
 
 def test_release_requires_runtime_scoped_name(monkeypatch):
@@ -535,7 +739,10 @@ def test_release_requires_runtime_scoped_name(monkeypatch):
 
     builder.release_team_owned_sandbox("abc_sess1")
 
-    assert rm.removed == ["team_sandbox_owned_abc_sess1"], "运行态名必须精确命中"
+    assert sorted(rm.removed) == [
+        "team_sandbox_owned_abc_sess1",
+        "team_sandbox_ref_abc_sess1",
+    ], "运行态名必须精确命中（自持 id + 借用别名）"
 
 
 @pytest.mark.parametrize(
@@ -575,11 +782,14 @@ def test_release_never_crosses_team_name_prefix(monkeypatch, released, survivor)
 
     builder.release_team_owned_sandbox(released)
 
-    assert rm.removed == [f"team_sandbox_owned_{released}"], (
-        f"释放 {released} 摘掉了不属于它的资源：{rm.removed}"
-    )
+    assert sorted(rm.removed) == sorted(
+        [f"team_sandbox_owned_{released}", f"team_sandbox_ref_{released}"]
+    ), f"释放 {released} 摘掉了不属于它的资源：{rm.removed}"
     assert rm.get_sys_operation(f"team_sandbox_owned_{survivor}") is not None, (
         f"释放 {released} 误伤了 {survivor} 正在用的沙箱"
+    )
+    assert rm.get_sys_operation(f"team_sandbox_ref_{survivor}") is not None, (
+        f"释放 {released} 误伤了 {survivor} 的借用别名"
     )
 
 
@@ -595,7 +805,10 @@ def test_release_is_idempotent_per_team(monkeypatch):
     builder.release_team_owned_sandbox("dup_sess1")
     builder.release_team_owned_sandbox("dup_sess1")
 
-    assert rm.removed == ["team_sandbox_owned_dup_sess1"]
+    assert sorted(rm.removed) == [
+        "team_sandbox_owned_dup_sess1",
+        "team_sandbox_ref_dup_sess1",
+    ]
 
 
 def test_teams_with_same_isolation_key_share_sandbox(monkeypatch):
@@ -651,8 +864,9 @@ def test_member_dispose_leaves_owner_registered(monkeypatch):
     """成员 harness 销毁后，主 agent 沙箱实例与其 isolation key 必须仍在。
 
     这是本次修复的核心不变量：``resolve()`` 返回 :class:`_BorrowedSandboxHandle`
-    视图，其 ``.id`` 是未注册的借用句柄 ⇒ ``native_harness.dispose()`` 的
-    ``get_sys_operation(id) is not None`` 判定恒假 ⇒ 不会走到 remove。
+    视图，其 ``.id`` 是**keyless 的借用别名 id** ⇒ ``native_harness.dispose()`` 只
+    摘掉别名那一条，而别名声明 ``isolation_key_template = None``
+    ⇒ ``sys_operation_manager.py:67-68`` 不会连带 pop 掉 owner 的 key 归属。
 
     传入的是 ``resolve().id``（实例 id，dispose 实际读到的那个），不是
     ``spec.id``——后者已被 ``deep_agent_spec.py:587`` 丢弃，传它会让本用例恒真。
@@ -667,9 +881,11 @@ def test_member_dispose_leaves_owner_registered(monkeypatch):
 
     _simulate_native_harness_dispose(rm, resolved.id)
 
-    assert rm.removed == [], f"成员销毁摘掉了非己方资源：{rm.removed}"
+    assert rm.removed == ["team_sandbox_ref_unit_team"], (
+        f"dispose 只该摘别名自己：{rm.removed}"
+    )
     assert rm.get_sys_operation(_OWNER_ID) is not None, "主 agent沙箱被误注销"
-    assert template in rm._resource_registry._owner_map, "isolation key 被误释放"
+    assert rm._resource_registry._owner_map.get(template) == _OWNER_ID, "isolation key 被误释放"
 
 
 def test_id_aligned_handle_would_break_owner_on_dispose(monkeypatch):
@@ -835,11 +1051,12 @@ def test_rebind_restores_subclass_and_team_id_after_roundtrip(monkeypatch):
 
 
 def test_rebind_after_roundtrip_restores_sandbox_binding(monkeypatch):
-    """行为断言：rebind 后 resolve 仍返回借用句柄，dispose 不摘他人资源。
+    """行为断言：rebind 后 resolve 返回借用句柄，别名可回查且 dispose 不摘 owner。
 
-    这是 P0-2 的真正不变量。压平状态下基类 ``resolve()`` 是纯 get-or-create，会把
-    ``team_sandbox_ref_<team>`` 真正注册进 registry——既泄漏（不在自持记账表里，
-    ``release_team_owned_sandbox`` 收不到），又会被成员 dispose 照摘。
+    这是 P0-2 的真正不变量。压平状态下基类 ``resolve()`` 是纯 get-or-create，会拿
+    别名 id 去 add——而别名与 owner 同 isolation key，撞上"一个 key 一个 owner"被
+    静默吞成 ``None``，成员回落 LOCAL（工具落宿主机）；key 不同源时才会真注册，
+    那时又泄漏（不在记账表里）+ dispose 照摘。
     """
     card = _make_sandbox_card()
     owner_map, sysops = _owner_map_with(card)
@@ -855,27 +1072,32 @@ def test_rebind_after_roundtrip_restores_sandbox_binding(monkeypatch):
         }
     )
 
-    # 反证（脏环境）：未 rebind 时基类 resolve 会把借用句柄真正注册，并把 owner map
-    # 那一行顶成句柄 id——此后主 agent 的 isolation-key 复用也会命中成员的私有注册。
+    # 反证（脏环境）：未 rebind 时基类 resolve 拿别名 id 去 add，撞同 key 冲突 →
+    # 被吞成 None → 成员静默回落 LOCAL（这正是线上症状）。
     dirty = _patch_resource_mgr(monkeypatch, dict(owner_map), dict(sysops))
-    _nested_roundtrip(spec).agents["leader"].sys_operation.resolve()
-    assert dirty.get_sys_operation("team_sandbox_ref_unit_team") is not None, (
-        "前置条件：压平状态下基类 resolve 会真注册借用句柄"
+    assert _nested_roundtrip(spec).agents["leader"].sys_operation.resolve() is None, (
+        "前置条件：压平状态下基类 resolve 撞 key 冲突后静默返回 None"
     )
-    assert dirty._resource_registry._owner_map[isolation_key] == "team_sandbox_ref_unit_team"
+    assert dirty.get_sys_operation("team_sandbox_ref_unit_team") is None
+    assert dirty._resource_registry._owner_map[isolation_key] == _OWNER_ID
 
-    # 干净环境：rebind 后借主 agent 的沙箱，句柄不落注册表
+    # 干净环境：rebind 后借主 agent 的沙箱，别名登记但 keyless
     rm = _patch_resource_mgr(monkeypatch, owner_map, sysops)
     restored = _nested_roundtrip(spec)
     assert builder.rebind_team_sandbox_specs(restored) == 1
     resolved = restored.agents["leader"].sys_operation.resolve()
 
     assert resolved.id == "team_sandbox_ref_unit_team"
-    assert rm.get_sys_operation(resolved.id) is None, "句柄不得落注册表"
-    assert resolved._run_config is rm.get_sys_operation(_OWNER_ID)._run_config
+    assert resolved.isolation_key_template is None, "别名不得声明 isolation key"
+    by_id = rm.get_sys_operation(resolved.id)
+    assert by_id is not None, "别名必须可按 id 回查（ContextEngine / SkillManager 依赖它）"
+    assert by_id._run_config is rm.get_sys_operation(_OWNER_ID)._run_config
+    assert rm._resource_registry._owner_map[isolation_key] == _OWNER_ID
 
     _simulate_native_harness_dispose(rm, resolved.id)
-    assert rm.removed == [], f"成员销毁摘掉了非己方资源：{rm.removed}"
+    assert rm.removed == ["team_sandbox_ref_unit_team"], (
+        f"成员销毁只该摘自己那条别名：{rm.removed}"
+    )
     assert rm.get_sys_operation(_OWNER_ID) is sysops[_OWNER_ID]
     assert rm._resource_registry._owner_map[isolation_key] == _OWNER_ID
 
@@ -980,14 +1202,14 @@ def test_rebind_restored_at_validate_exit_before_configure(
     assert sysop.id == "team_sandbox_ref_unit_team"
 
 
-def test_build_spec_from_boundary_shares_owner_and_registers_nothing(
+def test_build_spec_from_boundary_shares_owner_and_registers_keyless_alias(
     team_spec_rebind_installed, monkeypatch
 ):
     """接缝之后的行为：按库的方式取 spec（``agent_configurator.py:473`` 的 model_copy）。
 
-    这一步之后 harness 立刻 resolve()，故必须出借用句柄：与 owner 共享容器配置、
-    句柄永不落注册表、dispose 不摘 owner。反证：若此时仍是基类，``resolve()`` 会
-    把 ``team_sandbox_ref_*`` 真注册进 ``Runner.resource_mgr``。
+    这一步之后 harness 立刻 ``resolve()``，故必须出借用句柄：与 owner 共享容器配置，
+    别名可按 id 回查（否则 ``deep_agent.py:879`` → ``react_agent.py:646`` 给
+    ContextEngine 的就是 None），且别名 keyless（否则 dispose 会摘掉 owner 行）。
     """
     card = _make_sandbox_card()
     owner_map, sysops = _owner_map_with(card)
@@ -1003,14 +1225,23 @@ def test_build_spec_from_boundary_shares_owner_and_registers_nothing(
         f"成员拿到的是 {type(resolved).__name__}，不是借用句柄"
     )
     assert resolved.id == "team_sandbox_ref_unit_team"
-    assert rm.get_sys_operation(resolved.id) is None, "借用句柄不得落注册表"
-    assert rm.added == [], f"成员不该新增任何注册：{rm.added}"
-    assert resolved._run_config is rm.get_sys_operation(_OWNER_ID)._run_config
+    assert rm.added == [], f"复用 owner 时不该新建 card 注册：{rm.added}"
+
+    # 库按 id 回查的那条链必须命中，且拿到的正是共享 owner 容器配置的那一个
+    by_id = rm.get_sys_operation(resolved.id)
+    assert by_id is not None, "别名未登记：ContextEngine / SkillManager 会拿到 None"
+    assert by_id._run_config is sysops[_OWNER_ID]._run_config
+    assert resolved.isolation_key_template is None, "别名不得声明 isolation key"
+    assert rm._resource_registry._owner_map[next(iter(owner_map))] == _OWNER_ID
 
     _simulate_native_harness_dispose(rm, resolved.id)
-    assert rm.removed == [], f"成员销毁摘掉了非己方资源：{rm.removed}"
+    assert rm.removed == ["team_sandbox_ref_unit_team"], (
+        f"成员销毁只该摘自己那条别名：{rm.removed}"
+    )
     assert rm.get_sys_operation(_OWNER_ID) is sysops[_OWNER_ID]
-    assert rm._resource_registry._owner_map[next(iter(owner_map))] == _OWNER_ID
+    assert rm._resource_registry._owner_map[next(iter(owner_map))] == _OWNER_ID, (
+        "dispose 连带摘掉了 owner 行 → 下一个成员会自持新容器"
+    )
 
 
 def test_installed_wrapper_leaves_foreign_sys_operation_untouched(
