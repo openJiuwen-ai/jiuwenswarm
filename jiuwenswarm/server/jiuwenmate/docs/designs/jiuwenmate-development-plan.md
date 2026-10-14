@@ -261,9 +261,9 @@
   2. JM-10-V-02：Web 断开后任务继续执行，重连能查询到结果；收到 final / paused 后仍消费到流结束。
   3. JM-10-V-03：不把模型中间文本误报成最终结果；个人版事件的含义不变。
 - **来源验证点与共享场景：** “前端断线导致后台任务退出” → JM-10-V-02 → 主责 JM-10，协同 JM-07 → S1。
-- **前端独立验证：** 在同事页使用模拟接口，核对加载、空列表、成功、失败和重复操作等状态。当前页面从空列表初始化，尚未调用后端。
+- **前端独立验证：** 在同事页使用模拟接口，核对加载、空列表、成功、失败和重复操作等状态。同事管理子范围已改为调用后端；私聊、历史与状态尚未接入。
 - **联合交付与开放条件：** 参与 S1；IM 记录展示参与 S2a。
-- **设计索引：** feature 开工前建档；架构第 4.4 节。
+- **设计索引：** 同事管理子范围见 [F_10 Web 同事管理接入](../features/F_10_web-colleague-management.md)；其余子范围开工前建档；架构第 4.4 节。
 
 ### JM-11 群公共记录与搜索
 
@@ -556,7 +556,7 @@ flowchart LR
 | ID / 名称 | 类型 / 交付分类 | 本轮安排 | 当前实现或交付范围 | 优先级 / 开发批次 | 工作线 / 关联节点 | 计划时间 | 状态 | 负责人 | 关联 PR | 证据 | 最近更新 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | JM-01 核心契约适配 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S0 | — / S0 | 未排期 | 待验收 | 常钰聪 | — | JM-01-V-01～V-05 → 真实 core 类型与宿主端口替身，agent-core `12cf92bd` → 提交 `7a78a10f`，2026-10-13 于 `12b619ad` 复核 32 passed，记录见 [F_01](../features/F_01_core-contract.md) → 宿主组件通过，联合验收待完成；正式执行待 PA-10，续做待 PA-18 | 2026-10-13；补 feature 链接 |
-| JM-02 同事定义与配置发布 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S0 | A / S0 | 未排期 | 待验收 | 常钰聪 | — | JM-02-V-01～V-05 → 真实 SQLite 与 Template 文件，模型目录替身；本机模型配置冒烟发布 v1 → 提交 `5f12ea8a`，2026-10-13 复核 22 passed，记录见 [F_02](../features/F_02_colleague-management.md) → 宿主组件通过，联合验收待完成；页面不显示小九，入口待 JM-10；资源装配待 JM-14 | 2026-10-13；补 feature 链接 |
+| JM-02 同事定义与配置发布 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S0 | A / S0 | 未排期 | 待验收 | 常钰聪 | — | JM-02-V-01～V-05 → 真实 SQLite 与 Template 文件，模型目录替身；本机模型配置冒烟发布 v1 → 提交 `5f12ea8a`，2026-10-13 复核 22 passed，记录见 [F_02](../features/F_02_colleague-management.md) → 宿主组件通过，联合验收待完成；页面入口已由 JM-10 同事管理子范围接入（未提交）；资源装配待 JM-14 | 2026-10-13；补 feature 链接 |
 | JM-03 会话定位与请求受理 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S0 | A / S0 | 未排期 | 待验收 | 常钰聪 | — | JM-03-V-01～V-05 → 真实 SQLite 与真实 core 类型，与 JM-02 配置快照联调 → 提交 `952726c1`，2026-10-13 复核 16 passed，记录见 [F_03](../features/F_03_session-request.md) → 宿主组件通过，联合验收待完成；串行调度与删除同事时的排队处理已由 JM-07 承接 | 2026-10-14；同步 JM-07 |
 | JM-04 事件提交端口 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S0 | B / S0 | 未排期 | 待验收 | 常钰聪 | — | JM-04-V-01～V-06 → 真实 SQLite、故障注入替身、真实 core 事件类型 → 提交 `d0a6999c`，2026-10-13 复核 16 passed，记录见 [F_04](../features/F_04_commit-port.md) → 宿主组件通过，联合验收待完成；队列已由 JM-07 持有，AgentServer 接线待 S1，真实执行联调待 PA-04、PA-08 | 2026-10-14；同步 JM-07 |
 | JM-05 窗口持久化后端 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S0 | B / S0 | 未排期 | 待验收 | 常钰聪 | — | 宿主组件 18 项测试通过，全目录 104 项，见 [F_05](../features/F_05_window-backend.md)；执行入口注入与定时清理已由 JM-07 完成，AgentServer 接线待 S1；联合验证待 PA-10～PA-12 | 2026-10-14；同步 JM-07 |
@@ -564,7 +564,7 @@ flowchart LR
 | JM-07 管理器、排队器与执行驱动 | 特性 / 本期 | 纳入 | 第 2 节全部范围；AgentServer 启停接线经负责人确认推迟到 S1 | 未评估 / 随 S1 | A / S1 | 未排期 | 待验收 | 常钰聪 | — | JM-07-V-01～V-04 → 真实 SQLite 与真实宿主端口，core 执行与中断入口为替身 → 27 项测试通过，全目录 146 项，记录见 [F_07](../features/F_07_execution-driver.md) → 宿主组件通过，联合验收待完成；AgentServer 接线待 S1；正式执行待 PA-05、PA-06、PA-10；续做入口只预留，待 JM-13 与 PA-17、PA-18 | 2026-10-14 |
 | JM-08 飞书接入与群内分发 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2a | C / S2a | 未排期 | 待开始 | 常钰聪 | — | 未执行；PA-07 就绪后放行群执行 | 2026-10-13；编号更名 |
 | JM-09 结果投递服务 | 特性 / 本期 | 纳入 | Web 投递与飞书投递两个子范围 | 未评估 / Web 随 S1，飞书随 S2a | C / S1、S2a | 未排期 | 待开始 | 常钰聪 | — | 未执行；对端 PA-08，中途协作发送接入 PA-15 | 2026-10-13；编号更名 |
-| JM-10 Web 接入与同事页面 | 特性 / 本期 | 纳入 | 同事管理、会话与状态、IM 记录展示 | 未评估 / 随 S1 | A / S1、S2a | 未排期 | 待开始 | 常钰聪 | — | 未执行；前端 `features/jiuwenmate/` 当前从空列表初始化，未调用后端 | 2026-10-13；更正前端目录 |
+| JM-10 Web 接入与同事页面 | 特性 / 本期 | 纳入 | 同事管理、会话与状态、IM 记录展示；本轮经负责人确认只做同事管理子范围（固定 namespace `local`，模板只提交设置内容） | 未评估 / 随 S1 | A / S1、S2a | 未排期 | 进行中 | 常钰聪 | — | JM-10-V-01 同事管理部分 → 后端适配器真实 SQLite、模型目录替身，前端接口与状态测试 → 后端 15 项新增测试通过，全目录 161 项；前端 `test:jiuwenmate-api` 6 项、`test:jiuwenmate-create-flow` 7 项通过；记录见 [F_10](../features/F_10_web-colleague-management.md) → 未提交；浏览器端到端确认待重启 AgentServer；私聊、历史、状态与 V-02、V-03 待后续子范围 | 2026-10-14 |
 | JM-11 群公共记录与搜索 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2a | C / S2a | 未排期 | 待开始 | 闫祉君 | — | 未执行；对端 PA-23，联合 PA-07、PA-11、PA-12 | 2026-10-13；编号更名 |
 | JM-12 执行控制服务 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S1 | A / S1 | 未排期 | 待开始 | 常钰聪 | — | 未执行；对端 PA-05 | 2026-10-13；编号更名 |
 | JM-13 续做与恢复服务 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2c | E / S2c | 未排期 | 待开始 | 常钰聪 | — | 未执行；自动续做放行依赖 PA-11、PA-15、PA-17、PA-18 | 2026-10-13；编号更名 |
@@ -620,7 +620,7 @@ flowchart LR
 | 拟定 `conversation_archive.py`、`conversation_search.py`、`conversation_resources.py` | 公开聊天记录、最近消息和搜索、附件引用及权限过滤 | core 经 GroupChatPort 读取，不直接访问归档路径 | JM-11 |
 | `feishu_sync.py`、`lark_cli_provisioner.py`；`gateway/channel_manager/`；拟定 `gateway/message_handler/persistent_group_fanout.py` | Bot 配置同步、连接生命周期、飞书收发、入站标准化与逐 Agent 去重 | 飞书 SDK、app_id、凭据和 Bot 发送逻辑留在 Swarm；Gateway 不判断消息的业务价值 | JM-08 |
 | 拟定 `execution_result_handler.py`、`delivery_service.py` | 候选输出的可靠交接、Bot 身份选择、投递与重试 | core 产出候选；Swarm 负责送达 | JM-09 |
-| `server/agent_ws_server.py`、`channels/web/frontend/src/features/jiuwenmate/` | 管理接口、聊天展示、停止 / 取消操作、断线重连查询 | 转换产品协议，不向前端暴露 core 运行对象 | JM-10 |
+| `server/jiuwenmate/web_adapter.py`、`server/agent_ws_server.py`、`channels/web/frontend/src/features/jiuwenmate/` | 管理接口、聊天展示、停止 / 取消操作、断线重连查询 | 转换产品协议，不向前端暴露 core 运行对象 | JM-10 |
 | agent-core 仓 `openjiuwen/harness/persistent_agent/` | Spec、原生 DeepAgent 构造、执行入口、参与判断、上下文装配、窗口保存与换窗、工具记账适配与续做 | Swarm 不保留同等职责的第二套 ContextAssembler、窗口控制器或参与判断器 | 对端 PA |
 
 ```mermaid
@@ -721,3 +721,4 @@ python -m pytest tests/integration_tests/jiuwenmate -q
 | 2026-10-13 | JM-05 | 先建 [F_05](../features/F_05_window-backend.md)，再新增 `ports/window_backend.py`（按 namespace / Agent / Session 作用域存储的 SQLite 后端）；`build_invocation` 拒绝非宿主或未绑定本 Session 的后端；删除同事时清理其窗口数据；执行入口注入与定时清理并入 JM-07 | 宿主组件；core WindowStore 未接入 | 18 项测试通过，全目录 104 项；状态待验收 |
 | 2026-10-13 | JM-06 | 先建 [F_06](../features/F_06_budget-port.md)，再新增 `budget_repository.py` 与 `ports/budget.py`：群会话共享群账户，其余按同事计账；准入单事务检查并预留；按 `model_call_id` 幂等结算；未知用量按预留量扣减并标记待对账；额度调整写修订记录；额度规则经负责人确认（未设上限不限额、只经管理调整恢复）；注入与悬挂预留回收并入 JM-07 | 宿主组件；core 调用方未联调 | 15 项测试通过，全目录 119 项；状态待验收 |
 | 2026-10-14 | JM-07 | 按变更闸门先提交分析与改动方案，经负责人确认（暂不接入 AgentServer、续做只预留入口）后建 [F_07](../features/F_07_execution-driver.md)，再新增 `execution_driver.py`、`session_scheduler.py`、`agent_manager.py`，并在 `budget_repository.py` 增加 `settle_unreported`：Session 内串行、两级并发上限与排队上限；控制只作用于目标，流结束后才释放 Session；无终态记为 `failed`；收尾释放候选副本并结算悬挂预留；删除同事先结束其工作；定时清理窗口归档 | 宿主组件；core 入口为替身 | 27 项测试通过，全目录 146 项；状态待验收；AgentServer 接线推迟到 S1 |
+| 2026-10-14 | JM-10（同事管理子范围） | 按变更闸门先提交分析与改动方案，经负责人确认（只做同事管理、固定 namespace `local`、模板只提交设置内容、新增不含密钥的 `jiuwenmate.models.list`）后建 [F_10](../features/F_10_web-colleague-management.md)，再新增 `web_adapter.py` 与九个 `jiuwenmate.*` 方法并接入 AgentServer 与 Gateway 转发；前端新增 `jiuwenmateApi.ts`，同事页改为加载服务端同事（含小九），创建与删除调用后端，模型列表来自服务端 | 宿主组件；浏览器端到端未执行 | 后端 15 项新增测试通过，全目录 161 项；前端 13 项相关测试通过；状态进行中；未提交 |

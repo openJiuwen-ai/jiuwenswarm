@@ -288,6 +288,7 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _workflow_run_meta,
     split_history_record_for_stream,
 )
+from jiuwenswarm.server.jiuwenmate.web_adapter import JiuwenMateWebAdapter
 from jiuwenswarm.server.ws_send import send_wire_payload
 
 logger = logging.getLogger(__name__)
@@ -1349,6 +1350,7 @@ class AgentWebSocketServer:
             DesignerAdapter(),
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
+            JiuwenMateWebAdapter(),
         ):
             self._adapter_registry.register(adapter)
         self._ensure_app_services().adapter_registry = self._adapter_registry
@@ -2377,6 +2379,7 @@ class AgentWebSocketServer:
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
+                    JiuwenMateWebAdapter(),
                 ):
                     self._adapter_registry.register(adapter)
                 self._ensure_app_services().adapter_registry = self._adapter_registry

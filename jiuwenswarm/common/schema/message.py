@@ -112,6 +112,18 @@ _ensure_req_method("HUB_EXPERT_PACKAGES_CATALOG", "hub.expert_packages.catalog")
 _ensure_req_method("MCP_APP_LIST_TOOLS", "mcp_app.list_tools")
 _ensure_req_method("MCP_APP_READ_RESOURCE", "mcp_app.read_resource")
 _ensure_req_method("MCP_APP_CALL_TOOL", "mcp_app.call_tool")
+# JiuwenMate colleague management: the web colleague pages call these wire
+# methods against the AgentServer. The pinned protocol package does not
+# define them yet.
+_ensure_req_method("JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT", "jiuwenmate.colleague.ensure_default")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_LIST", "jiuwenmate.colleague.list")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_GET", "jiuwenmate.colleague.get")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_CREATE", "jiuwenmate.colleague.create")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_SETTINGS_GET", "jiuwenmate.colleague.settings.get")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_SETTINGS_UPDATE", "jiuwenmate.colleague.settings.update")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_PUBLISH", "jiuwenmate.colleague.publish")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_DELETE", "jiuwenmate.colleague.delete")
+_ensure_req_method("JIUWENMATE_MODELS_LIST", "jiuwenmate.models.list")
 # The Gateway forwards an event only when the protocol EventType knows it; the
 # pinned protocol package does not define this one yet.
 _ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_REQUEST", "chat.client_tool_request")

@@ -1,5 +1,6 @@
-import { useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { webRequest } from '../../services/webClient';
 import { ImAuthorizeDialog } from './components/ImAuthorizeDialog';
 import { JiuwenMateConfirmDialog } from './components/JiuwenMateDialog';
 import { JiuwenMateRail, type JiuwenMateRailView } from './components/JiuwenMateRail';
@@ -8,7 +9,6 @@ import {
   closeCustomColleagueDialog,
   closeTemplateDetail,
   completeColleagueCreation,
-  createColleagueId,
   createInitialJiuwenMateState,
   deleteColleague,
   finishColleagueAuthorization,
@@ -19,12 +19,14 @@ import {
   openColleagueWorkspace,
   openCustomColleagueCreation,
   openOffice,
+  replaceColleagues,
   selectColleagueTemplate,
   setColleagueDisabled,
   startColleagueRefinement,
   updateColleagueDraft,
   type JiuwenMateState,
 } from './createFlowState';
+import { createJiuwenMateApi, errorMessage, type JiuwenMateModelCatalog } from './jiuwenmateApi';
 import { emptyCapabilities } from './mockData';
 import { ColleagueCreatePage } from './pages/ColleagueCreatePage';
 import { ColleagueEmptyPage } from './pages/ColleagueEmptyPage';
@@ -42,10 +44,19 @@ export interface JiuwenMateAppProps {
 }
 
 type PendingConfirm = { kind: 'delete' | 'disable'; colleague: JiuwenMateColleague };
+type LoadStatus = 'loading' | 'ready' | 'failed';
+
+const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
 
 export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettings }: JiuwenMateAppProps) {
   const { t } = useTranslation();
+  const api = useMemo(() => createJiuwenMateApi((method, params) => webRequest(method, params)), []);
   const [state, setState] = useState(() => createInitialJiuwenMateState([]));
+  const [loadStatus, setLoadStatus] = useState<LoadStatus>('loading');
+  const [loadError, setLoadError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [modelCatalog, setModelCatalog] = useState<JiuwenMateModelCatalog>(EMPTY_MODEL_CATALOG);
   const [activeRailView, setActiveRailView] = useState<JiuwenMateRailView>('office');
   const [existingPage, setExistingPage] = useState<JiuwenMateExistingPage | null>(null);
   const [publicLabel, setPublicLabel] = useState<string | null>(null);
@@ -58,6 +69,36 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     nonce: 0,
     section: 'overview',
   });
+
+  const loadColleagues = useCallback(async () => {
+    setLoadStatus('loading');
+    setLoadError('');
+    try {
+      const colleagues = await api.loadColleagues();
+      setState((current) => replaceColleagues(current, colleagues));
+      setLoadStatus('ready');
+    } catch (error) {
+      setLoadError(errorMessage(error));
+      setLoadStatus('failed');
+    }
+  }, [api]);
+
+  useEffect(() => {
+    void loadColleagues();
+  }, [loadColleagues]);
+
+  useEffect(() => {
+    let active = true;
+    api.listModels().then(
+      (catalog) => {
+        if (active) setModelCatalog(catalog);
+      },
+      () => undefined,
+    );
+    return () => {
+      active = false;
+    };
+  }, [api]);
 
   const canLeaveSettings = (nextPage: JiuwenMateExistingPage | null) => {
     if (existingPage !== 'settings' || nextPage === 'settings') return true;
@@ -111,28 +152,39 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     if (colleague) setPendingConfirm({ kind: 'delete', colleague });
   };
 
-  const confirmPending = () => {
+  const confirmPending = async () => {
     if (!pendingConfirm) return;
     const { kind, colleague } = pendingConfirm;
     setPendingConfirm(null);
-    setState((current) =>
-      kind === 'delete' ? deleteColleague(current, colleague.id) : setColleagueDisabled(current, colleague.id, true),
-    );
+    if (kind === 'disable') {
+      setState((current) => setColleagueDisabled(current, colleague.id, true));
+      return;
+    }
+    setActionError('');
+    try {
+      await api.deleteColleague(colleague.id);
+      setState((current) => deleteColleague(current, colleague.id));
+    } catch (error) {
+      setActionError(t('jiuwenmate.load.deleteFailed', { reason: errorMessage(error) }));
+    }
   };
 
-  const completeCreation = () => {
+  const completeCreation = async () => {
     const draft = state.draft;
-    if (!draft) return;
-    const colleague: JiuwenMateColleague = {
-      ...draft,
-      id: createColleagueId(draft.name, state.colleagues.map((item) => item.id)),
-      imConfigured: false,
-      disabled: false,
-      joinedAt: new Date().toISOString(),
-    };
-    setProfileIntent((current) => ({ nonce: current.nonce + 1, section: 'overview' }));
-    setActiveRailView('office');
-    setState((current) => completeColleagueCreation(current, colleague));
+    if (!draft || submitting) return;
+    setSubmitting(true);
+    setActionError('');
+    try {
+      const created = await api.createColleague(draft, modelCatalog.models);
+      const colleague: JiuwenMateColleague = { ...created, avatarUrl: created.avatarUrl ?? draft.avatarUrl };
+      setProfileIntent((current) => ({ nonce: current.nonce + 1, section: 'overview' }));
+      setActiveRailView('office');
+      setState((current) => completeColleagueCreation(current, colleague));
+    } catch (error) {
+      setActionError(t('jiuwenmate.load.createFailed', { reason: errorMessage(error) }));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const listHandlers = {
@@ -148,6 +200,22 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
   const authorizeColleague = state.colleagues.find((item) => item.id === state.authorizeColleagueId) ?? null;
 
   const renderFeature = () => {
+    if (loadStatus !== 'ready' && state.view !== 'colleague-create') {
+      return (
+        <div className="jiuwenmate-load-state" data-testid="jiuwenmate-load-state" data-variant={loadStatus}>
+          {loadStatus === 'loading' ? (
+            <p>{t('jiuwenmate.load.loading')}</p>
+          ) : (
+            <>
+              <p role="alert">{t('jiuwenmate.load.failed', { reason: loadError })}</p>
+              <button type="button" className="jiuwenmate-outline-button" onClick={() => void loadColleagues()}>
+                {t('jiuwenmate.load.retry')}
+              </button>
+            </>
+          )}
+        </div>
+      );
+    }
     switch (state.view) {
       case 'office-intro':
         return <OfficeIntroPage onCreate={startCreation} />;
@@ -161,6 +229,8 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             detailTemplateId={state.detailTemplateId}
             customDialogOpen={state.customDialogOpen}
             draft={state.draft}
+            modelCatalog={modelCatalog}
+            submitting={submitting}
             onOpenTemplateDetail={(id) => setState((current) => selectColleagueTemplate(current, id))}
             onCloseTemplateDetail={() => setState((current) => closeTemplateDetail(current))}
             onChooseTemplate={(template) =>
@@ -198,7 +268,7 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             onOpenPlaza={openPlaza}
             onDraftChange={(patch) => setState((current) => updateColleagueDraft(current, patch))}
             onCancel={() => setState((current) => cancelColleagueCreation(current))}
-            onComplete={completeCreation}
+            onComplete={() => void completeCreation()}
           />
         );
       case 'office-dashboard':
@@ -218,6 +288,7 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
           <ColleagueProfilePage
             key={`${selectedColleague.id}-${profileIntent.nonce}`}
             colleague={selectedColleague}
+            modelCatalog={modelCatalog}
             initialSection={profileIntent.section}
             onOpenOffice={() => showFeature('office', openOffice)}
             onChat={() => openWorkspace(selectedColleague.id)}
@@ -267,6 +338,14 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
           renderFeature()
         )}
       </main>
+      {actionError && !existingPage ? (
+        <div className="jiuwenmate-action-error" role="alert" data-testid="jiuwenmate-action-error">
+          <span>{actionError}</span>
+          <button type="button" className="jiuwenmate-outline-button" onClick={() => setActionError('')}>
+            {t('jiuwenmate.common.confirm')}
+          </button>
+        </div>
+      ) : null}
       {authorizeColleague && !existingPage ? (
         <ImAuthorizeDialog
           onSkip={() => setState((current) => finishColleagueAuthorization(current, false))}
@@ -284,7 +363,7 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             </>
           }
           onCancel={() => setPendingConfirm(null)}
-          onConfirm={confirmPending}
+          onConfirm={() => void confirmPending()}
         />
       ) : null}
     </div>
