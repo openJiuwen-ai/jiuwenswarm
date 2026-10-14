@@ -19,6 +19,12 @@ export interface ElectronBrowserBounds {
   height: number;
 }
 
+export interface ElectronShareImageExportProgress {
+  sessionId: string;
+  phase: 'loading_snapshot' | 'rendering' | 'saving';
+  progress: number | null;
+}
+
 export interface JiuwenElectronDesktopApi {
   readonly isElectron: true;
   readonly apiBase?: string;
@@ -38,6 +44,7 @@ export interface JiuwenElectronDesktopApi {
     title?: string;
   }) => Promise<{ accessToken: string } | null>;
   exportShareImage: (sessionId: string, locale: string) => Promise<boolean>;
+  onShareImageExportProgress: (callback: (progress: ElectronShareImageExportProgress) => void) => () => void;
   downloadFile: (url: string, filename: string) => Promise<boolean | { ok: boolean; cancelled?: boolean }>;
   installUpdate: (installerPath: string) => Promise<boolean>;
   saveDataUrl: (dataUrl: string, filename: string) => Promise<{ ok: boolean; cancelled?: boolean }>;
