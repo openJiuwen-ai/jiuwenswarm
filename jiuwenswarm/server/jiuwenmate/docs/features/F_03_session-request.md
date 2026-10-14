@@ -189,7 +189,7 @@ stateDiagram-v2
 
 | 遗留项 | 性质 | 影响与现有处置 | 后续入口 |
 | --- | --- | --- | --- |
-| 删除同事时排队 Request 未处理 | 未实现 | 排队任务所固定的版本已被删除 | JM-07 |
+| 删除同事时排队 Request 未处理 | 已处理 | 经 JM-07 的 `AgentManager.delete_colleague` 删除时，排队中的 Request 记为 `cancelled`；直接调用 `PersistentAgentService.delete_colleague` 不做此处理 | 见 [F_07](F_07_execution-driver.md)；管理入口须经 `AgentManager`（JM-10） |
 | 续做 Execution 未支持 | 范围外 | `start_execution` 只创建首个 Execution | JM-13 |
 | 公共群记录与搜索 | 范围外 | `group_chat_repository.py` 仅含映射 | JM-11 |
 

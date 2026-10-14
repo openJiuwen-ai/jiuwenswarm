@@ -204,6 +204,35 @@ class BudgetRepository(SQLiteStore):
             )
             return CallDecision("confirmed")
 
+    def settle_unreported(self, namespace_id: str, execution_id: str, *, now: datetime) -> int:
+        """Settle calls of an ended Execution that were admitted but never reported, as unknown usage."""
+        usage = ModelUsage(status="unknown", reason="no usage reported before the Execution ended")
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT * FROM budget_calls WHERE namespace_id = ? AND status = 'reserved'"
+                " AND json_extract(ref_json, '$.execution_id') = ?",
+                (namespace_id, execution_id),
+            ).fetchall()
+            for call in rows:
+                conn.execute(
+                    "UPDATE budget_calls SET status = 'settled', usage_json = ?, charged_tokens = reserved_tokens,"
+                    " needs_reconciliation = 1, settled_at = ? WHERE namespace_id = ? AND model_call_id = ?",
+                    (usage.model_dump_json(), now.isoformat(), namespace_id, call["model_call_id"]),
+                )
+                conn.execute(
+                    "UPDATE budget_accounts SET used_tokens = used_tokens + ?, reserved_tokens = reserved_tokens - ?,"
+                    " updated_at = ? WHERE namespace_id = ? AND account_kind = ? AND account_key = ?",
+                    (
+                        call["reserved_tokens"],
+                        call["reserved_tokens"],
+                        now.isoformat(),
+                        namespace_id,
+                        call["account_kind"],
+                        call["account_key"],
+                    ),
+                )
+        return len(rows)
+
     def account(self, namespace_id: str, account: BudgetAccountRef) -> BudgetAccountView:
         with self._transaction() as conn:
             row = conn.execute(
