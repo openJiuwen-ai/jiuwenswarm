@@ -160,7 +160,7 @@ sequenceDiagram
 | I-03 | [`service.py`](../../service.py) | 新增可选依赖 `windows`；`create_default` 在同一数据库上创建；`delete_colleague` 调用 `purge_agent` | JM-05-V-03 |
 | I-04 | [`test_window_backend.py`](../../../../../tests/unit_tests/server/jiuwenmate/test_window_backend.py)、[`test_persistent_agent_service.py`](../../../../../tests/unit_tests/server/jiuwenmate/test_persistent_agent_service.py) | 新增测试 | — |
 | I-05 | `test_core_contract.py`、`test_persistent_agent_service.py`、`test_request_routing.py` | 原 `InMemoryKVStore` 替身改为绑定到临时目录的真实后端 | 原有测试全部通过 |
-| I-06（未实施） | 宿主执行入口 | 每次执行调用 `bind` 并注入；定时调用 `purge_expired` | 由 JM-07 完成 |
+| I-06（已由 JM-07 实施） | 宿主执行入口 | 每次执行调用 `bind` 并注入；定时调用 `purge_expired` | 见 [F_07](F_07_execution-driver.md) |
 
 兼容核对：新增表位于新版专用数据库；个人版不受影响。
 
@@ -198,15 +198,15 @@ sequenceDiagram
 | 风险 / 触发条件 | 影响 | 已有应对措施 | 核实方式 |
 | --- | --- | --- | --- |
 | core 调整键布局 | 单键操作被拒绝，执行报错 | 错误信息明确指出越界 | 跟随 core 版本升级运行契约测试 |
-| 删除同事时该同事仍有执行在进行 | 执行后续写入会产生无主数据 | 无 | JM-07 处理删除与在途请求的关系（架构第 7.3 节） |
+| 删除同事时该同事仍有执行在进行 | 执行后续写入会产生无主数据 | JM-07 先结束该同事的 Request，再删除资料与窗口数据 | [F_07](F_07_execution-driver.md) 的 JM-07-V-04 |
 | 归档体积较大 | 数据库增长，写锁争用 | 保留期清理接口 | JM-07 接入真实负载后测量 |
 
 ### 9.2 已知遗留
 
 | 遗留项 | 性质 | 影响与现有处置 | 后续入口 |
 | --- | --- | --- | --- |
-| 执行入口未调用 `bind` 注入后端 | 未实现 | 后端目前只能在测试中使用 | JM-07 |
-| `purge_expired` 无定时调用，保留期取值未定 | 未实现 | 归档持续保留 | JM-07；保留期取值与 PA-11 共同确定 |
+| 执行入口接入 AgentServer | 未实现 | JM-07 的执行驱动已注入后端，管理器尚未接入 AgentServer | S1（JM-07 I-06） |
+| 保留期取值未定 | 待确认 | JM-07 按占位值（归档 90 天、每小时一次）定时清理 | 保留期取值与 PA-11 共同确定 |
 | 没有 Session 删除入口 | 未实现 | `purge_session` 暂无调用方 | 新增 Session 删除功能时接入 |
 | 保留期清理后归档索引引用已删除的原文 | 待确认 | 由 core 将其视为“原文不可用” | PA-11 联合验证 |
 
