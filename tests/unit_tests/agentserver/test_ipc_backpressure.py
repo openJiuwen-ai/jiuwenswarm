@@ -456,6 +456,11 @@ async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
 
 @pytest.mark.asyncio
 @pytest.mark.slow
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows answers heartbeats off-loop; a stalled loop no longer "
+    "times out transport (see test_real_freeze_worker_survives_loop_stall)",
+)
 async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
     tmp_path, monkeypatch, caplog
 ):
@@ -514,6 +519,98 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
                     ),
                     encoding="utf-8",
                 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows named-pipe heartbeat fast path"
+)
+async def test_real_freeze_worker_survives_loop_stall(tmp_path, monkeypatch, caplog):
+    """A blocked business loop keeps transport liveness and must not be killed.
+
+    The freeze fixture blocks the Worker loop for 60 seconds. Off-loop pongs
+    carry the growing stall age, so the Supervisor warns instead of executing
+    the Worker, and the request completes once the loop resumes.
+    """
+    from websockets.asyncio.client import connect as ws_connect
+
+    async with _worker("freeze", tmp_path, monkeypatch) as (supervisor, process):
+        pid = supervisor.worker_pid
+        async with _gateway(supervisor) as (url, gateway, attached):
+            async with ws_connect(url) as client:
+                await asyncio.wait_for(attached.wait(), 2)
+                dispatch = asyncio.create_task(
+                    supervisor.dispatch_parsed_request(
+                        gateway["ws"],
+                        _request(1),
+                        gateway["lock"],
+                    )
+                )
+                assert (
+                    json.loads(await asyncio.wait_for(client.recv(), 3))["phase"]
+                    == "freezing"
+                )
+                started = time.monotonic()
+                await asyncio.wait_for(dispatch, 90)
+                assert time.monotonic() - started >= 55, "loop really froze"
+                assert supervisor.worker_pid == pid
+                assert supervisor._restart_count == 0
+                assert process.returncode is None
+                assert "worker loop unresponsive" in caplog.text
+                assert "heartbeat timed out" not in caplog.text
+                assert "business loop stalled" not in caplog.text
+                (tmp_path / "acceptance.json").write_text(
+                    json.dumps(
+                        {
+                            "case": "transient_loop_stall_survives",
+                            "pid": pid,
+                            "restarts": supervisor._restart_count,
+                            "dispatch": "completed",
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows named-pipe heartbeat fast path"
+)
+async def test_real_sustained_stall_replaces_worker(
+    tmp_path, monkeypatch, caplog
+):
+    """Sustained stalls stay detectable: pongs report the stall, we replace."""
+    from websockets.asyncio.client import connect as ws_connect
+
+    monkeypatch.setattr(supervisor_module, "_WORKER_STALL_RESTART", 40.0)
+    async with _worker("freeze", tmp_path, monkeypatch) as (supervisor, process):
+        pid = supervisor.worker_pid
+        async with _gateway(supervisor) as (url, gateway, attached):
+            async with ws_connect(url) as client:
+                await asyncio.wait_for(attached.wait(), 2)
+                dispatch = asyncio.create_task(
+                    supervisor.dispatch_parsed_request(
+                        gateway["ws"],
+                        _request(1),
+                        gateway["lock"],
+                    )
+                )
+                assert (
+                    json.loads(await asyncio.wait_for(client.recv(), 3))["phase"]
+                    == "freezing"
+                )
+                started = time.monotonic()
+                await asyncio.wait_for(dispatch, 60)
+                assert time.monotonic() - started >= 35
+                assert supervisor.worker_pid != pid or supervisor._restart_count >= 1
+                assert "business loop stalled" in caplog.text
+                assert "heartbeat timed out" not in caplog.text
+                assert supervisor._readiness.state is ReadinessState.FAILED
+                failure = json.loads(await asyncio.wait_for(client.recv(), 3))
+                assert "WORKER_CLOSED" in json.dumps(failure)
 
 
 @pytest.mark.asyncio

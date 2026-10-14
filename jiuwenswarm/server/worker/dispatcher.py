@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -22,6 +21,7 @@ from jiuwenswarm.server.ipc.protocol import (
     load_agent_request,
 )
 from jiuwenswarm.server.ipc.stream import IpcConnection
+from jiuwenswarm.server.worker.diagnostics import LoopBeat, heartbeat_reply
 from jiuwenswarm.server.worker.gateway_bridge import (
     WorkerGatewayBridge,
     begin_delivery_tracking,
@@ -39,8 +39,9 @@ _DRAIN_TIMEOUT = 5.0
 class WorkerDispatcher:
     """Turn IPC messages into Runtime calls and stream wire frames back."""
 
-    def __init__(self, bridge: WorkerGatewayBridge) -> None:
+    def __init__(self, bridge: WorkerGatewayBridge, beat: LoopBeat | None = None) -> None:
         self._bridge = bridge
+        self._beat = beat
         self._lock = asyncio.Lock()
         self._runtime: Any = None
         self._attached = False
@@ -83,7 +84,10 @@ class WorkerDispatcher:
             )
             return True
         if kind == KIND_HEARTBEAT:
-            await conn.send({"kind": KIND_HEARTBEAT, "pid": os.getpid()})
+            # Loop-driven fallback: the named-pipe fast path already answered
+            # this ping off-loop, so this branch serves stream transports.
+            beat_age = self._beat.age if self._beat is not None else None
+            await conn.send(heartbeat_reply(beat_age))
             return True
         if kind == KIND_SHUTDOWN:
             self.shutdown_requested = True

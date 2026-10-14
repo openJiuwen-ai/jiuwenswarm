@@ -57,6 +57,11 @@ _WATCHDOG_INTERVAL = 5.0
 _FORWARD_QUEUE_SIZE = 256
 _FORWARD_TIMEOUT = 10.0
 _FORWARD_DRAIN_TIMEOUT = 1.0
+# Transport stays alive (pongs flow) but the Worker's business loop has not
+# run: warn once it outlasts a heartbeat window, replace the Worker only when
+# the stall is sustained.
+_WORKER_STALL_WARN = 30.0
+_WORKER_STALL_RESTART = 180.0
 
 _GatewayRoute = tuple[Any, asyncio.Lock]
 _ForwardQueue = asyncio.Queue[tuple[dict[str, Any], _GatewayRoute | None]]
@@ -116,10 +121,13 @@ class RuntimeSupervisor:
         self._generation = 0
         self._peer_generation: int | None = None
         self._last_rx = 0.0
+        self._worker_last_beat = 0.0
+        self._stall_warned_at = 0.0
         self._forward_queue: _ForwardQueue | None = None
         self._forward_started = 0.0
         self._forward_request_id = ""
         self._event_loop_lag = 0.0
+        self._observed_loop_lag = 0.0
         self._last_dump_at = 0.0
         self._last_dump_path: Path | None = None
         self._session_lock = asyncio.Lock()
@@ -341,6 +349,9 @@ class RuntimeSupervisor:
         self._peer_generation = peer if isinstance(peer, int) else self._generation
         self._runtime_loaded = bool(hello.get("runtime_loaded"))
         self._last_rx = time.monotonic()
+        # The hello itself was produced by the Worker's event loop.
+        self._worker_last_beat = self._last_rx
+        self._stall_warned_at = 0.0
         pid = hello.get("pid")
         self._worker_pid = int(pid) if isinstance(pid, int) else None
         instance = hello.get("instance")
@@ -443,7 +454,12 @@ class RuntimeSupervisor:
             "forward_seconds": now - self._forward_started
             if self._forward_started
             else 0.0,
-            "event_loop_lag_seconds": self._event_loop_lag,
+            "event_loop_lag_seconds": max(
+                self._event_loop_lag, self._observed_loop_lag
+            ),
+            "worker_loop_beat_age": now - self._worker_last_beat
+            if self._worker_last_beat
+            else None,
             "worker_stderr": str(stderr_path) if stderr_path is not None else None,
         }
         logger.warning("[Supervisor] runtime diagnostics: %s", json.dumps(snapshot))
@@ -458,6 +474,7 @@ class RuntimeSupervisor:
 
                 directory = get_logs_dir() / "runtime_diagnostics"
             self._last_dump_path = dump_runtime_state(directory, snapshot)
+            self._observed_loop_lag = 0.0
             logger.warning(
                 "[Supervisor] runtime diagnostic dump=%s", self._last_dump_path
             )
@@ -488,6 +505,7 @@ class RuntimeSupervisor:
 
     async def _handle(self, message: dict[str, Any]) -> None:
         kind = str(message.get("kind") or "")
+        self._note_worker_beat(message)
         if kind == KIND_WIRE:
             if not self._accepts_peer_generation(message):
                 logger.warning(
@@ -584,6 +602,19 @@ class RuntimeSupervisor:
     def _accepts_peer_generation(self, message: dict[str, Any]) -> bool:
         raw = message.get("generation")
         return isinstance(raw, int) and raw == self._peer_generation
+
+    def _note_worker_beat(self, message: dict[str, Any]) -> None:
+        """Track when the Worker's event loop last provably ran.
+
+        Every frame is loop-produced except the off-loop heartbeat pong, which
+        reports its own stall age instead. A missing field (legacy Worker)
+        counts as a fresh beat, keeping old Workers outside stall detection.
+        """
+        age = message.get("loop_beat_age")
+        if isinstance(age, (int, float)) and age >= 0:
+            self._worker_last_beat = time.monotonic() - float(age)
+        else:
+            self._worker_last_beat = time.monotonic()
 
     def _finish_request(self, message: dict[str, Any]) -> None:
         request_id = str(message.get("request_id") or "")
@@ -735,21 +766,74 @@ class RuntimeSupervisor:
             self._event_loop_lag = max(0.0, time.monotonic() - expected_wakeup)
             if generation != self._generation:
                 return
-            if time.monotonic() - self._last_rx <= _HEARTBEAT_TIMEOUT:
-                continue
+            now = time.monotonic()
+            if now - self._last_rx > _HEARTBEAT_TIMEOUT:
+                if self._event_loop_lag >= _WATCHDOG_INTERVAL:
+                    # This Front's own loop stalled, so pending pongs may be
+                    # sitting in resolved futures. Do not execute the Worker
+                    # for our own stall; the next cycle re-checks with fresh
+                    # evidence once the pump has drained. Keep the peak lag
+                    # so the deferred verdict still carries the evidence.
+                    self._observed_loop_lag = max(
+                        self._observed_loop_lag, self._event_loop_lag
+                    )
+                    logger.warning(
+                        "[Supervisor] supervisor event loop stalled %.1fs; "
+                        "deferring worker health verdict",
+                        self._event_loop_lag,
+                    )
+                    continue
+                logger.warning(
+                    "[Supervisor] runtime worker heartbeat timed out; last_rx_age=%.1fs "
+                    "forward_queued=%s generation=%s pid=%s",
+                    now - self._last_rx,
+                    self._forward_queue.qsize() if self._forward_queue is not None else 0,
+                    generation,
+                    self._worker_pid,
+                )
+                self._log_diagnostics("runtime worker heartbeat timed out")
+                conn = self._conn
+                if conn is not None:
+                    await conn.close()
+                return
+            if self._worker_last_beat and await self._classify_worker_stall(now):
+                return
+            continue
+
+    async def _classify_worker_stall(self, now: float) -> bool:
+        """Separate a stalled business loop from a healthy transport.
+
+        Returns True when the session was terminated and the Worker is being
+        replaced, so the caller stops checking this generation.
+        """
+        beat_age = now - self._worker_last_beat
+        if beat_age <= _WORKER_STALL_WARN:
+            self._stall_warned_at = 0.0
+            return False
+        if beat_age > _WORKER_STALL_RESTART:
             logger.warning(
-                "[Supervisor] runtime worker heartbeat timed out; last_rx_age=%.1fs "
-                "forward_queued=%s generation=%s pid=%s",
-                time.monotonic() - self._last_rx,
-                self._forward_queue.qsize() if self._forward_queue is not None else 0,
-                generation,
+                "[Supervisor] runtime worker business loop stalled %.1fs "
+                "(transport alive); restarting generation=%s pid=%s",
+                beat_age,
+                self._generation,
                 self._worker_pid,
             )
-            self._log_diagnostics("runtime worker heartbeat timed out")
+            self._log_diagnostics("worker business loop stalled")
             conn = self._conn
             if conn is not None:
                 await conn.close()
-            return
+            return True
+        if now - self._stall_warned_at >= _WATCHDOG_INTERVAL * 2:
+            self._stall_warned_at = now
+            logger.warning(
+                "[Supervisor] runtime worker loop unresponsive %.1fs "
+                "(transport alive, waiting up to %.0fs); pid=%s",
+                beat_age,
+                _WORKER_STALL_RESTART,
+                self._worker_pid,
+            )
+            self._log_diagnostics("worker loop unresponsive")
+        return False
 
     async def _watch_process(self, generation: int) -> None:
         process = self._process if self._owns_process else None

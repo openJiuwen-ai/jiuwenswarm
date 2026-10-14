@@ -18,7 +18,12 @@ from jiuwenswarm.server.ipc.protocol import KIND_HELLO, PROTOCOL_VERSION
 from jiuwenswarm.server.ipc.server import IpcServer
 from jiuwenswarm.server.ipc.stream import IpcConnection
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
-from jiuwenswarm.server.worker.diagnostics import arm_stall_dump, cancel_stall_dump
+from jiuwenswarm.server.worker.diagnostics import (
+    LoopBeat,
+    arm_stall_dump,
+    cancel_stall_dump,
+    heartbeat_reply,
+)
 from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBridge
 from jiuwenswarm.server.worker.signals import RuntimeSignalSink
 
@@ -37,16 +42,19 @@ async def serve_worker(socket_path: str, *, host: str, port: int) -> None:
     holder = ConnHolder()
     bridge = WorkerGatewayBridge(holder)
     signals = RuntimeSignalSink(holder)
-    dispatcher = WorkerDispatcher(bridge)
+    beat = LoopBeat()
+    dispatcher = WorkerDispatcher(bridge, beat=beat)
     server = IpcServer(socket_path)
     await server.start()
     logger.info("[Worker] ipc listening: %s", socket_path)
     loaded: dict[str, Any] = {"runtime": None}
     runtime_task: asyncio.Task | None = None
+    beat_task = asyncio.create_task(_beat_loop(beat), name="worker-loop-beat")
     instance = uuid.uuid4().hex
     try:
         while True:
             conn = await server.accept()
+            _install_heartbeat_fast_path(conn, beat)
             generation = holder.open_session(conn)
             await _send_hello(
                 conn,
@@ -73,7 +81,32 @@ async def serve_worker(socket_path: str, *, host: str, port: int) -> None:
     except asyncio.CancelledError:
         logger.info("[Worker] stop requested")
     finally:
+        beat_task.cancel()
+        await asyncio.gather(beat_task, return_exceptions=True)
         await _close_worker(dispatcher, runtime_task, loaded, server)
+
+
+async def _beat_loop(beat: LoopBeat) -> None:
+    while True:
+        beat.beat()
+        await asyncio.sleep(1.0)
+
+
+def _install_heartbeat_fast_path(conn: IpcConnection, beat: LoopBeat) -> None:
+    """Answer pings on the reader thread where the transport supports it.
+
+    The pong reports the business loop's stall age, so heartbeats keep
+    flowing during a blocked loop without masking the stall itself.
+    """
+    set_responder = getattr(conn, "set_heartbeat_responder", None)
+    if not callable(set_responder) or not hasattr(conn, "send_direct"):
+        return
+
+    def respond(message: dict[str, Any]) -> None:
+        arm_stall_dump()
+        conn.send_direct(heartbeat_reply(beat.age))
+
+    set_responder(respond)
 
 
 def _log_late_runtime_load(task: asyncio.Task) -> None:
