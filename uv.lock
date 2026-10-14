@@ -1495,14 +1495,6 @@ wheels = [
 ]
 
 [[package]]
-name = "gateway-protocol"
-version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=gateway-protocol&rev=dd005b9bdd684d079627bce3f4413e92a8a4069b#dd005b9bdd684d079627bce3f4413e92a8a4069b" }
-dependencies = [
-    { name = "pyyaml" },
-]
-
-[[package]]
 name = "gitcode-api"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5853,7 +5845,6 @@ dependencies = [
     { name = "faiss-cpu" },
     { name = "fastapi" },
     { name = "fastmcp" },
-    { name = "gateway-protocol" },
     { name = "gitcode-api" },
     { name = "gitcode-cli" },
     { name = "google-adk" },
@@ -6034,7 +6025,6 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "fastapi", marker = "extra == 'harmony'", specifier = ">=0.115" },
     { name = "fastmcp", specifier = ">=2.14.2,<3.4.1" },
-    { name = "gateway-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=gateway-protocol&rev=dd005b9bdd684d079627bce3f4413e92a8a4069b" },
     { name = "gitcode-api", specifier = ">=1.2.20,<2" },
     { name = "gitcode-api", marker = "extra == 'harmony'", specifier = ">=1.2.20" },
     { name = "gitcode-cli", specifier = "==0.12.0" },
