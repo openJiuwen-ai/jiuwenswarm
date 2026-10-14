@@ -21,6 +21,11 @@ from typing import Any
 from pydantic import ValidationError
 
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
+from jiuwenswarm.server.jiuwenmate.execution_control_service import (
+    ControlStore,
+    ExecutionControlService,
+    RequestControl,
+)
 from jiuwenswarm.server.jiuwenmate.execution_driver import (
     AbortEntry,
     ExecuteEntry,
@@ -91,6 +96,7 @@ class RequestView:
     reason: str | None
     draft: ReplyDraft | None = None
     conversation_key: str | None = None
+    control: RequestControl | None = None
 
     def to_dict(self) -> dict[str, Any]:
         record = self.state.record
@@ -109,6 +115,7 @@ class RequestView:
             "replies": list(self.replies),
             "reason": self.reason,
             "draft": None if self.draft is None else self.draft.to_dict(),
+            "control": None if self.control is None else self.control.to_dict(),
             "updated_at": self.state.updated_at.isoformat(),
         }
 
@@ -153,6 +160,7 @@ class AgentManager:
             clock=clock,
         )
         self._scheduler = SessionScheduler(sessions, driver, limits=limits, clock=clock)
+        self._control = ExecutionControlService(sessions, self._scheduler, ControlStore(sessions.db_path), clock=clock)
         self._purge_task: asyncio.Task[None] | None = None
 
     @classmethod
@@ -251,6 +259,13 @@ class AgentManager:
         session = await asyncio.to_thread(self._sessions.get_session, namespace_id, state.record.session_id)
         return await self._view(state, session.conversation.key)
 
+    async def control_request(
+        self, namespace_id: str, request_id: str, *, reason: str, access: AccessSnapshot
+    ) -> RequestView:
+        """Stop or cancel the Request on behalf of ``access``; the view carries the stored control."""
+        await self._control.control(namespace_id, request_id, reason=reason, principal_ref=access.principal_ref)
+        return await self.request_view(namespace_id, request_id)
+
     @property
     def db_path(self) -> Path:
         """The SQLite file of this runtime; host tables kept beside the Sessions use it too."""
@@ -260,8 +275,15 @@ class AgentManager:
         # The scheduler's running set changes on the event loop, so it is read here and not in the thread.
         running = any(run.record.request_id == state.record.request_id for run in self._scheduler.running)
         replies, reason, draft = await asyncio.to_thread(self._result, state)
+        control = await asyncio.to_thread(self._control.control_of, state.record.namespace_id, state.record.request_id)
         return RequestView(
-            state=state, running=running, replies=replies, reason=reason, draft=draft, conversation_key=conversation_key
+            state=state,
+            running=running,
+            replies=replies,
+            reason=reason,
+            draft=draft,
+            conversation_key=conversation_key,
+            control=control,
         )
 
     def _result(self, state: RequestState) -> tuple[tuple[str, ...], str | None, ReplyDraft | None]:

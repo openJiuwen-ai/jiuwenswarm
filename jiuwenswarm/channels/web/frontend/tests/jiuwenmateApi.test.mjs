@@ -236,6 +236,26 @@ test('chat calls send the agent, conversation, text and message id and read requ
   ]);
 });
 
+test('a stop or cancel sends the request id and reason and reads the control back', async () => {
+  const stopped = {
+    ...wireRequest,
+    status: 'dispatched',
+    outcome: null,
+    running: true,
+    control: { request_id: 'req-1', reason: 'stop', status: 'accepted', detail: null },
+  };
+  const { calls, api } = recorder({ [JIUWENMATE_METHODS.requestAbort]: { request: stopped } });
+
+  const controlled = await api.abortRequest('req-1', 'stop');
+
+  assert.deepEqual(controlled.control, { reason: 'stop', status: 'accepted', detail: null });
+  assert.deepEqual(calls, [[JIUWENMATE_METHODS.requestAbort, { request_id: 'req-1', reason: 'stop' }]]);
+  assert.equal(toChatRequest(wireRequest).control, null);
+  const failed = toChatRequest({ ...wireRequest, control: { reason: 'cancel', status: 'failed', detail: '中断失败' } });
+  assert.deepEqual(failed.control, { reason: 'cancel', status: 'failed', detail: '中断失败' });
+  assert.equal(toChatRequest({ ...wireRequest, control: { reason: 'pause' } }).control, null);
+});
+
 test('conversation calls list, rename and delete by agent and conversation id', async () => {
   const { calls, api } = recorder({
     [JIUWENMATE_METHODS.conversationList]: { conversations: [wireConversation, { ...wireConversation, conversation_id: 'conv-0' }] },

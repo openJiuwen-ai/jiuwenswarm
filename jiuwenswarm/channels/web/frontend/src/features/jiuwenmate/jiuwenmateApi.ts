@@ -19,6 +19,7 @@ export const JIUWENMATE_METHODS = {
   chatSend: 'jiuwenmate.chat.send',
   chatHistory: 'jiuwenmate.chat.history',
   requestGet: 'jiuwenmate.request.get',
+  requestAbort: 'jiuwenmate.request.abort',
   conversationList: 'jiuwenmate.conversation.list',
   conversationRename: 'jiuwenmate.conversation.rename',
   conversationDelete: 'jiuwenmate.conversation.delete',
@@ -96,6 +97,16 @@ export interface JiuwenMateChatRequest {
   replies: string[];
   reason: string | null;
   draft: JiuwenMateChatDraft | null;
+  control: JiuwenMateRequestControl | null;
+}
+
+export type JiuwenMateControlReason = 'stop' | 'cancel';
+
+/** The sender's stop or cancel of a message; ``failed`` means interrupting it raised and ``detail`` says why. */
+export interface JiuwenMateRequestControl {
+  reason: JiuwenMateControlReason;
+  status: 'accepted' | 'failed';
+  detail: string | null;
 }
 
 /**
@@ -269,6 +280,17 @@ export function toChatRequest(value: unknown): JiuwenMateChatRequest {
     replies: texts(wire.replies),
     reason: typeof wire.reason === 'string' && wire.reason ? wire.reason : null,
     draft: status === 'ended' ? null : toDraft(wire.draft),
+    control: toControl(wire.control),
+  };
+}
+
+function toControl(value: unknown): JiuwenMateRequestControl | null {
+  const wire = record(value);
+  if (wire.reason !== 'stop' && wire.reason !== 'cancel') return null;
+  return {
+    reason: wire.reason,
+    status: wire.status === 'failed' ? 'failed' : 'accepted',
+    detail: typeof wire.detail === 'string' && wire.detail ? wire.detail : null,
   };
 }
 
@@ -399,6 +421,10 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     },
     async deleteConversation(agentId: string, conversationId: string): Promise<void> {
       await request(JIUWENMATE_METHODS.conversationDelete, { agent_id: agentId, conversation_id: conversationId });
+    },
+    /** Stops a running message or cancels a queued one; a repeated control returns the first one. */
+    async abortRequest(requestId: string, reason: JiuwenMateControlReason): Promise<JiuwenMateChatRequest> {
+      return toChatRequest(record(await request(JIUWENMATE_METHODS.requestAbort, { request_id: requestId, reason })).request);
     },
     async getRequest(requestId: string): Promise<JiuwenMateChatRequest> {
       return toChatRequest(record(await request(JIUWENMATE_METHODS.requestGet, { request_id: requestId })).request);
