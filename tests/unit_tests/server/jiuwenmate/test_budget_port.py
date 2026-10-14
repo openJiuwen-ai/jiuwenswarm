@@ -23,7 +23,7 @@ from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStor
 from jiuwenswarm.server.jiuwenmate.spec_provider import publish_spec
 
 from openjiuwen.harness import persistent_agent as core
-from openjiuwen.harness.persistent_agent.persistent_agent import ports as core_ports
+from openjiuwen.harness.persistent_agent import ports as core_ports
 
 NS = "workspace-1"
 NOW = datetime(2026, 10, 13, 9, 0, tzinfo=timezone.utc)

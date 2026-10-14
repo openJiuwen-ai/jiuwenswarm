@@ -5,7 +5,9 @@ only after they are stored, and a storage failure is raised so core stops the
 Execution. Ordinary events are handed to ``CommitQueue`` and written in the
 background; a failed ordinary write leaves a gap in the log and never delays a
 later critical event. A final also stores, in the same transaction, every
-candidate output it references that the queue has not written yet.
+candidate output it references that the queue has not written yet. An optional
+observer sees each accepted event as it is recorded, before an ordinary event is
+written; it serves live display only and cannot affect the Execution.
 """
 
 from __future__ import annotations
@@ -122,10 +124,12 @@ class HostCommitPort:
         queue: CommitQueue,
         *,
         clock: Callable[[], datetime] = _utc_now,
+        observer: Callable[[AgentEvent], None] | None = None,
     ) -> None:
         self._repository = repository
         self._queue = queue
         self._clock = clock
+        self._observer = observer
 
     async def record(self, execution: ExecutionContext, event: AgentEvent) -> None:
         if not isinstance(event, AgentEvent):
@@ -133,6 +137,7 @@ class HostCommitPort:
         event.assert_matches(execution)
         if event.event_type not in CRITICAL_EVENTS:
             self._queue.submit(event)
+            self._observe(event)
             return
         batch = [event]
         if event.event_type == EventType.EXECUTION_FINAL:
@@ -140,6 +145,20 @@ class HostCommitPort:
         await asyncio.to_thread(self._repository.record_events, batch, now=self._clock())
         if event.event_type in _TERMINAL_EVENTS:
             self._queue.forget(event.namespace_id, event.execution_id)
+        self._observe(event)
+
+    def _observe(self, event: AgentEvent) -> None:
+        if self._observer is None:
+            return
+        try:
+            self._observer(event)
+        except Exception as exc:
+            logger.warning(
+                "[JiuwenMate] event observer failed: execution=%s seq=%s error=%s",
+                event.execution_id,
+                event.local_seq,
+                exc,
+            )
 
     async def read_execution_log(self, execution: ExecutionContext, execution_id: str) -> tuple[AgentEvent, ...]:
         require_identifier("execution_id", execution_id)

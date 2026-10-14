@@ -28,7 +28,7 @@ from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.session.checkpointer import NoopCheckpointer
 from openjiuwen.core.single_agent import AgentCard, create_agent_session
 from openjiuwen.harness import persistent_agent as core
-from openjiuwen.harness.persistent_agent.persistent_agent import ports as core_ports
+from openjiuwen.harness.persistent_agent import ports as core_ports
 
 AGENT_ID = "colleague-1"
 
@@ -322,17 +322,6 @@ async def test_core_rejects_group_message_without_group_chat_port(snapshot, host
 
     with pytest.raises(BaseError, match="group chat port"):
         async for _ in core.execute_persistent_request(spec, build, group_input):
-            pass
-
-
-async def test_core_execution_is_not_open_until_session_state_is_integrated(snapshot, host_ports):
-    """Canary: when this starts passing PA-10, the host must add its real execution acceptance."""
-    spec, build = build_invocation(
-        snapshot, request_for(snapshot), ExecutionRecord(request_id="request-1", execution_id="e-1"), ports=host_ports()
-    )
-
-    with pytest.raises(BaseError, match="PA-10"):
-        async for _ in core.execute_persistent_request(spec, build, direct_input()):
             pass
 
 

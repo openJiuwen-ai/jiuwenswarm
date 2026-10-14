@@ -1844,6 +1844,63 @@
   flex: 1;
 }
 
+.jiuwenmate-chat-messages {
+  display: grid;
+  width: min(720px, calc(100% - 48px));
+  align-content: start;
+  gap: 22px;
+  margin: 0 auto;
+  padding: 8px 0 40px;
+  list-style: none;
+}
+
+.jiuwenmate-chat-messages > li {
+  display: grid;
+  gap: 10px;
+}
+
+.jiuwenmate-chat-message {
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.jiuwenmate-chat-message--user {
+  white-space: pre-wrap;
+  max-width: 80%;
+  justify-self: end;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--jm-muted-2);
+}
+
+.jiuwenmate-chat-message--colleague {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.jiuwenmate-chat-markdown {
+  flex: 1;
+  min-width: 0;
+}
+
+.jiuwenmate-chat-status {
+  color: var(--jm-text-3);
+  font-size: 12px;
+}
+
+.jiuwenmate-chat-status[data-phase='failed'],
+.jiuwenmate-chat-status[data-phase='interrupted'] {
+  color: var(--jm-danger);
+}
+
+.jiuwenmate-chat-error {
+  color: var(--jm-danger);
+  font-size: 12px;
+  text-align: left;
+}
+
 .jiuwenmate-session-view footer {
   display: grid;
   width: min(720px, calc(100% - 48px));
