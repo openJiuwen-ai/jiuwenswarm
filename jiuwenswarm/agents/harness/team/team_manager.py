@@ -1952,9 +1952,14 @@ class TeamManager:
 
         team_agent = self._team_agents.pop(session_id, None)
         # 自持沙箱按运行态（session-scoped）team 名回收；destroy_team 可能清空
-        # spec，故在销毁前先取出名字。
+        # spec，故在销毁前先取出名字。分布式动态成员场景下 team_agent 已被
+        # remote_member_bootstrap._discard_auxiliary_team_agent 从 _team_agents
+        # 摘走，此时回退到 session 元数据解析运行态名——否则那条路径注册的自持
+        # 沙箱永远无人回收（成员 dispose 已被借用句柄挡住，不再兜底摘除）。
         runtime_team_name = str(
-            getattr(getattr(team_agent, "spec", None), "team_name", "") or ""
+            getattr(getattr(team_agent, "spec", None), "team_name", "")
+            or self._resolve_session_team_name(session_id)
+            or ""
         )
         cleaned = False
         try:
@@ -1967,7 +1972,6 @@ class TeamManager:
                 try:
                     cleaned = await team_agent.destroy_team(force=True)
                 finally:
-                    release_team_owned_sandbox(runtime_team_name)
                     await release_a2x_reservations_for_session(session_id, team_agent=team_agent)
                     await _stop_team_messager(team_agent, session_id=session_id)
             finally:
@@ -1984,6 +1988,13 @@ class TeamManager:
                 session_id,
                 exc,
             )
+        finally:
+            # 必须落在 team_agent 为 None 的早返回**之外**：那个分支正是分布式动态
+            # 成员的销毁入口（remote_member_bootstrap.py:2877 → destroy_team）。
+            # 无在内存 team ⇒ 本进程内已无成员 harness 引用该沙箱 ⇒ 释放安全；
+            # 反之若留在内层 finally，分布式场景下沙箱与 _TEAM_OWNED_SYSOP_IDS 条目
+            # 都会泄漏，且每个 session 叠加一个容器。
+            release_team_owned_sandbox(runtime_team_name)
 
         return cleaned
 

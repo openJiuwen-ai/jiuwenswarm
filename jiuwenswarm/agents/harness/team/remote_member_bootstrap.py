@@ -25,6 +25,10 @@ import types
 import uuid
 from typing import Any, NamedTuple
 
+from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+    rebind_team_sandbox_specs,
+)
+
 logger = logging.getLogger(__name__)
 
 # team.metadata.jiuwen_remote_member_names: str | list[str]
@@ -2539,6 +2543,13 @@ async def _ensure_dynamic_member_execution_loop(
         )
         await _stop_dynamic_member_agent(sid, member)
         teammate_agent = await TeamAgent.from_spawn_payload(payload)
+        # from_spawn_payload 走 TeamAgentSpec.model_validate(payload["spec"])，而
+        # agents[*].sys_operation 的声明类型是基类 SysOperationSpec —— pydantic 按
+        # 声明类型反序列化，把 TeamSharedSandboxSpec 压平（team_id 静默丢弃）。
+        # 不换回来的话成员的 resolve() 退回库实现，把借用句柄 id 真正注册进
+        # Runner.resource_mgr：该注册不在自持记账表里故永不回收，成员 dispose 又会
+        # 照摘，容器反复重建。team_id 从句柄 id 后缀反解，不依赖被丢弃的字段。
+        rebind_team_sandbox_specs(getattr(teammate_agent, "spec", None))
         _DYNAMIC_MEMBER_AGENTS[(sid, member)] = teammate_agent
         await _initialize_team_agent_db(
             teammate_agent,

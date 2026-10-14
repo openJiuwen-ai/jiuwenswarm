@@ -23,6 +23,10 @@ from jiuwenswarm.agents.harness.team.team_manager import (
 from jiuwenswarm.agents.harness.team.team_session_scope import TeamBootstrapParams
 
 
+async def _noop_async(*args, **kwargs) -> None:
+    return None
+
+
 class _TeamManagerHarness(TeamManager):
     def set_active_runtime_for_test(self, session_id: str, team_name: str) -> None:
         self.commit_runtime_ready(session_id, team_name)
@@ -374,6 +378,97 @@ async def test_destroy_team_cleans_registered_evolution_rails(
     assert cleaned is False
     assert manager.get_team_skill_rail("sess-1") is None
     assert manager.get_team_skill_create_rail("sess-1") is None
+
+
+@pytest.mark.asyncio
+async def test_destroy_team_releases_owned_sandbox_when_agent_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_team_agents`` 已空时仍须释放自持沙箱——这是分布式动态成员的销毁路径。
+
+    ``remote_member_bootstrap`` 销毁动态成员时，先用
+    ``_discard_auxiliary_team_agent`` 把 TeamAgent 从 ``_team_agents`` 摘掉，再调
+    ``destroy_team``（remote_member_bootstrap.py:2872-2877）。于是
+    ``_destroy_team`` 走的是 ``team_agent is None`` 的早返回分支。
+
+    释放若挂在该早返回**之后**，分布式场景注册的自持沙箱就永远没人回收：成员
+    dispose 已被 ``_BorrowedSandboxHandle`` 挡住不再兜底摘除，而
+    ``release_team_owned_sandbox`` 从未执行——容器与记账条目随每个 session 叠加。
+    名称来源回退到 session 元数据（``commit_runtime_ready`` 写入的运行态全名）。
+    """
+    manager = TeamManager()
+    released: list[str] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.release_team_owned_sandbox",
+        released.append,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.release_a2x_reservations_for_session",
+        lambda session_id, *, team_agent=None: None,
+    )
+    # 运行态名已知，但内存里已无 team agent（= 动态成员被 discard 后的状态）
+    manager.commit_runtime_ready("sess-1", "abc_sess1")
+    assert getattr(manager, "_team_agents").get("sess-1") is None
+
+    cleaned = await manager.destroy_team("sess-1")
+
+    assert cleaned is False
+    assert released == ["abc_sess1"], "team_agent 缺失时不得跳过自持沙箱回收"
+
+
+@pytest.mark.asyncio
+async def test_destroy_team_releases_owned_sandbox_with_empty_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """运行态名也解析不出时释放空串（no-op），不得抛异常。"""
+    manager = TeamManager()
+    released: list[str] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.release_team_owned_sandbox",
+        released.append,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.release_a2x_reservations_for_session",
+        lambda session_id, *, team_agent=None: None,
+    )
+
+    cleaned = await manager.destroy_team("sess-unknown")
+
+    assert cleaned is False
+    assert released == [""], "release_team_owned_sandbox 收到空串，内部 no-op"
+
+
+@pytest.mark.asyncio
+async def test_destroy_team_releases_owned_sandbox_on_destroy_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``destroy_team(force=True)`` 抛异常时仍须释放（释放挂在最外层 finally）。"""
+    manager = TeamManager()
+    released: list[str] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.release_team_owned_sandbox",
+        released.append,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.release_a2x_reservations_for_session",
+        lambda session_id, *, team_agent=None: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager._stop_team_messager",
+        _noop_async,
+    )
+
+    class _Boom:
+        spec = SimpleNamespace(team_name="abc_sess1")
+
+        async def destroy_team(self, force: bool = False):
+            raise RuntimeError("boom")
+
+    manager.cache_local_team_agent_for_test("sess-1", _Boom())
+
+    await manager.destroy_team("sess-1")
+
+    assert released == ["abc_sess1"], "销毁失败不得跳过自持沙箱回收"
 
 
 def test_team_manager_tracks_deferred_evolution_watcher() -> None:
