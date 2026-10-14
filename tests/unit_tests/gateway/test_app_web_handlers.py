@@ -147,7 +147,7 @@ async def test_models_get_returns_desensitized_editable_detail(monkeypatch) -> N
                 "write_only_fields": ["model_client_config.api_key"],
             }
 
-    monkeypatch.setattr(app_web_handlers, "ModelCatalog", FakeCatalog)
+    monkeypatch.setattr("jiuwenswarm.common.config_panel.model_resource_handlers.ModelCatalog", FakeCatalog)
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel))
 
@@ -1787,7 +1787,7 @@ async def test_media_capability_provider_identity_round_trips_through_config_rpc
     ("permissions", "expected_profile", "expected_enabled"),
     [
         ({"enabled": True, "mode": "manual"}, "default", "true"),
-        ({"enabled": True, "mode": "auto"}, "default", "true"),
+        ({"enabled": True, "mode": "auto"}, "automatic", "true"),
         ({"enabled": False, "mode": "auto"}, "full_access", "false"),
         ({"enabled": True, "mode": "future"}, "default", "true"),
     ],
@@ -1841,9 +1841,9 @@ async def test_config_set_rejects_invalid_permission_facade(monkeypatch, params)
     ("params", "saved_profile", "canonical"),
     [
         (
-            {"permissions_profile": "default"},
-            "default",
-            {"permissions_profile": "default", "permissions_enabled": "true"},
+            {"permissions_profile": "automatic"},
+            "automatic",
+            {"permissions_profile": "automatic", "permissions_enabled": "true"},
         ),
         (
             {"permissions_enabled": "false"},
@@ -1959,7 +1959,7 @@ async def test_permission_profile_write_failure_returns_no_canonical_success(
     await channel.methods["config.set"](
         object(),
         "req-profile-write-failure",
-        {"permissions_profile": "default"},
+        {"permissions_profile": "automatic"},
         "sess-profile",
     )
 
@@ -2014,7 +2014,7 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
         object(),
         "req-save-all-invalid-kvc",
         {
-            "config": {"permissions_profile": "default"},
+            "config": {"permissions_profile": "automatic"},
             "models": [
                 {
                     "model_name": "model-one",
@@ -2042,6 +2042,10 @@ async def test_models_replace_all_applies_scoped_reload_before_responding(monkey
     persisted: list[list[dict]] = []
     reload_options_seen: list[dict] = []
 
+    def save_models(models, *, cron_references_checked):
+        assert cron_references_checked is True
+        persisted.append(list(models))
+
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.models_handlers.get_config_raw",
         lambda: {"models": {"defaults": []}},
@@ -2052,7 +2056,7 @@ async def test_models_replace_all_applies_scoped_reload_before_responding(monkey
     )
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.models_handlers.update_default_models_in_config",
-        lambda models: persisted.append(list(models)),
+        save_models,
     )
     monkeypatch.setattr(
         models_handlers,

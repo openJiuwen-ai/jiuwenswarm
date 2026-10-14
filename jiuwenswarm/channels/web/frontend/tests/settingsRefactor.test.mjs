@@ -245,11 +245,11 @@ function translationAt(locale, key) {
   return key.split('.').reduce((value, part) => value?.[part], locale);
 }
 
-test('registry definition preserves the fixed six-module order and fails invalid registrations', () => {
+test('registry definition preserves the eight-module order and fails invalid registrations', () => {
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
   assert.match(
     definition,
-    /generalModule,\s*modelsModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*experimentalModule/,
+    /generalModule,\s*modelsModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule/,
   );
   assert.doesNotMatch(definition, /securityModule/);
   for (const removedPath of [
@@ -1004,6 +1004,14 @@ test('settings contract rejects unknown keys and normalizes supported values', (
   assert.throws(() => normalizeSettingsConfigUpdates({ unknown: 'x' }), /Unknown settings config key/);
   assert.deepEqual(buildModelsSavePayload([{ model_name: 'test' }]), { models: [{ model_name: 'test' }] });
   assert.deepEqual(
+    buildModelsSavePayload([{ model_name: 'stored', api_key: '', has_api_key: true }]),
+    { models: [{ model_name: 'stored' }] },
+  );
+  assert.deepEqual(
+    buildModelsSavePayload([{ model_name: 'updated', api_key: 'new-secret', has_api_key: true }]),
+    { models: [{ model_name: 'updated', api_key: 'new-secret' }] },
+  );
+  assert.deepEqual(
     buildModelValidationPayload({
       model_name: 'm',
       api_base: 'https://example.test',
@@ -1073,15 +1081,21 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     ...findSettingDefinitionKeys(agentDefinition),
     ...findVariableArrayStrings(agentFile, 'keyFields'),
     ...findVariableArrayStrings(agentFile, 'modalities').flatMap((modality) => [
-      ...['api_base', 'api_key', 'model', 'provider', 'endpoint_profile', 'vendor_key', 'plan'].map(
+      ...['api_base', 'api_key', 'model', 'provider', 'endpoint_profile', 'vendor_key', 'plan', 'context_window_tokens'].map(
         (suffix) => `${modality}_${suffix}`,
       ),
       `${modality}_enabled`,
     ]),
+    ...['video_gen', 'visual_gen'].flatMap((slot) =>
+      ['api_base', 'api_key', 'model', 'provider', 'protocol', 'context_window_tokens', 'enabled'].map(
+        (suffix) => `${slot}_${suffix}`,
+      ),
+    ),
   ]);
   assert.deepEqual(
     [...agentVisible].sort(),
-    [...contractByCategory('agent')].filter((key) => key !== 'github_token').sort(),
+    // These fields are persisted internally and have no independent Settings control.
+    [...contractByCategory('agent')].filter((key) => !['github_token', 'skill_retrieval_index_enabled'].includes(key)).sort(),
   );
 
   const modelVisible = new Set(
@@ -1092,10 +1106,9 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     [...contractByCategory('models')].filter((key) => !key.startsWith('embed_')),
   );
   assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/experimental/definition.ts')), [
-    'asr_api_base',
-    'asr_api_key',
-    'asr_model',
+    'symphony_evolution_enabled',
     'kv_cache_affinity_enabled',
+    'team_organization_ui_enabled',
     'proactive_recommendation_enabled',
   ]);
   assert.deepEqual([...contractByCategory('experimental')].sort(), [
@@ -1113,7 +1126,11 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'proactive_recommendation_enabled',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
+    'rsi_enabled',
+    'symphony_evolution_enabled',
+    'task_asr_enabled',
     'task_full_duplex_enabled',
+    'team_organization_ui_enabled',
     'trajectory_ui_enabled',
   ]);
 
@@ -1125,7 +1142,6 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'telegram',
     'discord',
     'slack',
-    'whatsapp',
   ]);
   const channelAdaptersFile = parseTsx('src/features/settings/modules/channels/channelAdapters.ts');
   const channelPayloadKeys = {
@@ -1195,16 +1211,14 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   }
 });
 
-test('saving the free-model switch refreshes the shared model catalog after persistence', () => {
-  const settingsConfig = source('src/features/settings/services/useSettingsConfig.ts');
-  const settingsPage = source('src/features/settings/SettingsPage.tsx');
-  const settingsServices = source('src/features/settings/services/SettingsServicesProvider.tsx');
+test('authorization changes refresh models and model groups and unregister the listener on cleanup', () => {
   const app = source('src/App.tsx');
-  assert.match(settingsServices, /onConfigSaved\?: \(updatedKeys: readonly string\[\]\) => Promise<void> \| void/);
-  assert.match(settingsConfig, /setConfig\([\s\S]{0,120}await onConfigSaved\?\.\(Object\.keys\(updates\)\)/);
-  assert.match(settingsPage, /onConfigSaved=\{onConfigSaved\}/);
-  assert.match(app, /updatedKeys\.includes\('enable_free_models'\)\) await handleModelsRefresh\(\)/);
-  assert.match(app, /onConfigSaved=\{handleSettingsConfigSaved\}/);
+  assert.match(app, /const onAuthChanged = \(event: Event\) => \{\s*void handleModelsRefresh\(\)/);
+  assert.match(app, /window\.addEventListener\('jiuwen:auth-changed', onAuthChanged\)/);
+  assert.match(app, /window\.removeEventListener\('jiuwen:auth-changed', onAuthChanged\)/);
+  assert.match(app, /setAvailableModels\(resp\.models, resp\.active_model\)/);
+  assert.match(app, /setAvailableModelGroups\(parseModelGroups\(resp\?\.model_groups\)\)/);
+  assert.equal(SETTINGS_CONFIG_FIELDS.some((field) => field.key === 'enable_free_models'), false);
 });
 
 test('Settings form dialogs share the same dirty-close contract without disabling save', () => {
@@ -1264,8 +1278,26 @@ test('Settings form dialogs share the same dirty-close contract without disablin
 
 test('Agent configuration entry points are disabled while the backend is connecting', () => {
   const agentSettings = source('src/features/settings/modules/agent/AgentSettings.tsx');
-  assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected\}/g)?.length, 2);
-  assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected \|\| busy\}/g)?.length, 3);
+  const agentFile = parseTsx('src/features/settings/modules/agent/AgentSettings.tsx');
+  const controls = [];
+  const visit = (node) => {
+    if (ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) {
+      if (['Button', 'Switch'].includes(node.tagName.getText(agentFile))) {
+        const disabled = node.attributes.properties.find(
+          (attribute) => ts.isJsxAttribute(attribute) && attribute.name.getText(agentFile) === 'disabled',
+        );
+        controls.push({ tag: node.tagName.getText(agentFile), disabled: disabled?.getText(agentFile) ?? '' });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(agentFile);
+  for (const tag of ['Button', 'Switch']) {
+    assert.ok(controls.some((control) => control.tag === tag), `${tag} entries must be covered`);
+    for (const control of controls.filter((control) => control.tag === tag)) {
+      assert.match(control.disabled, /!isConnected/, `${tag} must be disabled while disconnected`);
+    }
+  }
   assert.match(agentSettings, /<FormDialog[\s\S]*confirmDisabled=\{!isConnected\}/);
 });
 
@@ -1292,6 +1324,7 @@ test('media capability configuration and hot-apply state use exact fields', () =
     'vision_endpoint_profile',
     'vision_vendor_key',
     'vision_plan',
+    'vision_context_window_tokens',
   ]);
   assert.equal(isMediaCapabilityConfigured(values, 'vision'), true);
   assert.equal(isMediaCapabilityConfigured({ ...values, vision_provider: '  ' }, 'vision'), false);
@@ -1384,6 +1417,7 @@ test('legacy multimodal configuration remains custom while provider selections p
     vision_endpoint_profile: 'example-profile',
     vision_vendor_key: 'example',
     vision_plan: 'token_plan',
+    vision_context_window_tokens: '262144',
     vision_enabled: 'true',
   });
   const editedDraft = createMediaModelDraft(updates, 'vision');
@@ -1391,6 +1425,8 @@ test('legacy multimodal configuration remains custom while provider selections p
   assert.equal(editedDraft.model_input_mode, 'options');
   assert.equal(editedDraft.vendor_key, 'example');
   assert.equal(editedDraft.plan, 'token_plan');
+  assert.equal(editedDraft.context_window_tokens, '256K');
+  assert.equal(buildMediaModelConfigUpdates(editedDraft, catalog, 'vision', true).vision_context_window_tokens, '262144');
 });
 
 test('SettingRow exposes a business-agnostic subSettings slot for dependent rows', () => {
@@ -1469,11 +1505,11 @@ test('Settings tags use the shared UI Tag component and semantic variants', () =
   const modelsSettings = source('src/features/settings/modules/models/ModelsSettings.tsx');
   const settingRow = source('src/features/settings/components/SettingRow.tsx');
 
-  assert.match(generalSettings, /<Tag\s+variant=\{connectionVariant\}\s+role="status">/s);
+  assert.match(generalSettings, /<Tag\s+variant=\{connectionVariant\}\s+role="status"/s);
   assert.match(generalSettings, /const connectionVariant:\s*TagVariant/);
-  assert.match(modelsSettings, /<Tag\s+variant="info">\{t\('settingsPanel\.models\.primary'\)\}<\/Tag>/);
-  assert.match(modelsSettings, /<Tag\s+variant="neutral">\{t\('settingsPanel\.models\.groupDefault'\)\}<\/Tag>/);
-  assert.match(modelsSettings, /<Tag\s+variant="neutral">\{t\('settingsPanel\.models\.agentOsReadonly'\)\}<\/Tag>/);
+  assert.doesNotMatch(modelsSettings, /settings-models-card-primary-tag|settingsPanel\.models\.setPrimary/);
+  assert.match(modelsSettings, /<Tag\s+variant="neutral"[\s\S]*?settingsPanel\.models\.agentOsReadonly/);
+  assert.doesNotMatch(modelsSettings, /settingsPanel\.models\.groupDefault/);
   assert.match(uiIndex, /export \{ Tag, type TagProps, type TagVariant \} from '\.\/Tag\/Tag'/);
   assert.match(tagSource, /export type TagVariant = 'success' \| 'info' \| 'warning' \| 'danger' \| 'neutral'/);
   assert.match(
@@ -1494,11 +1530,8 @@ test('Settings tags use the shared UI Tag component and semantic variants', () =
     /\.ui-tag--danger\s*\{[^}]*var\(--color-feedback-danger\)[^}]*var\(--color-feedback-danger-subtle\)/s,
   );
   assert.match(tagCss, /\.ui-tag--neutral\s*\{[^}]*var\(--color-tag-neutral-text\)[^}]*var\(--color-tag-neutral-surface\)/s);
-  assert.match(modelsSettings, /className="settings-model-card__text-action"/);
-  assert.match(
-    settingsPageCss,
-    /\.settings-model-card__actions \.settings-model-card__text-action\s*\{[^}]*color:\s*var\(--color-settings-link\)/s,
-  );
+  assert.doesNotMatch(modelsSettings, /settings-model-card__text-action/);
+  assert.doesNotMatch(settingsPageCss, /settings-model-card__text-action/);
   assert.doesNotMatch(
     settingsPageCss,
     /settings-page__badge|settings-general__connection|settings-model-card__group-default|settings-model-card__readonly/,
@@ -1577,9 +1610,12 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   );
   assert.doesNotMatch(generalDefinition, /groupedRows|separatedRows/);
   assert.match(modelsDefinition, /id: 'model-manager',[\s\S]{0,80}separatedRows: true/);
+  assert.doesNotMatch(modelsDefinition, /id: 'limited-free-models'|id: 'free-models'/);
+  assert.match(modelsSettings, /<FreeModelsSettings\s*\/>/);
+  assert.match(modelsSettings, /settingsPanel\.models\.customModels/);
   assert.ok(
-    modelsDefinition.indexOf("id: 'model-manager'") < modelsDefinition.indexOf("id: 'free-models'"),
-    'free models should render after the chat model manager',
+    modelsSettings.indexOf('<FreeModelsSettings') < modelsSettings.indexOf("settingsPanel.models.customModels"),
+    'free models banner should render above the custom model manager',
   );
   assert.match(channelsDefinition, /id: 'channels',[\s\S]{0,80}separatedRows: true/);
   assert.match(modelsSettings, /<SettingsSection[\s\S]{0,120}separatedRows/);
@@ -1629,14 +1665,10 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
     settingsPageCss,
     /\.settings-models__toast--error\s*\{[^}]*border-color:\s*var\(--color-feedback-danger\)[^}]*background:\s*var\(--color-feedback-danger-toast\)/s,
   );
-  assert.match(
-    settingsPageCss,
-    /\.settings-model-group\s*\{[^}]*border:\s*1px solid var\(--color-settings-border\)[^}]*border-radius:\s*var\(--radius-xl\)[^}]*background:\s*var\(--color-surface-card\)/s,
-  );
-  assert.match(
-    settingsPageCss,
-    /\.settings-model-group__items > \.settings-model-card--grouped\s*\{[^}]*border:\s*0[^}]*border-radius:\s*0[^}]*background:\s*transparent/s,
-  );
+  assert.doesNotMatch(settingsPageCss, /\.settings-model-group\s*\{/);
+  assert.doesNotMatch(settingsPageCss, /\.settings-model-group__items/);
+  assert.match(settingsPageCss, /\.settings-models-group-card\s*\{/);
+  assert.match(settingsPageCss, /\.settings-models-group-route\s*\{/);
   assert.match(settingsPageCss, /container:\s*settings-models-list\s*\/\s*inline-size/);
   assert.match(settingsPageCss, /\.settings-model-card__actions\s*\{[^}]*flex-wrap:\s*nowrap/s);
   assert.match(settingsPageCss, /@container\s+settings-models-list\s*\(max-width:\s*36rem\)/);
@@ -1659,7 +1691,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   assert.doesNotMatch(modelsSettings, /getConfiguredProviderLogoUrl/);
   assert.match(providerAssets, /VENDOR_ICON_KEYS/);
   assert.match(providerAssets, /\['openrouter', 'openrouter'\]/);
-  assert.match(providerAssets, /model\.is_free === true/);
+  assert.match(providerAssets, /vendorKey \? getVendorLogoUrl\(vendorKey\) \?\? customModelIcon : customModelIcon/);
   assert.match(providerAssets, /model\.model_provider === 'OpenAIAccount'/);
   assert.match(providerAssets, /model\.vendor_key\?\.trim\(\)/);
   assert.match(modelProviderIcon, /return getModelLogoUrl\(model\)/);
@@ -1740,8 +1772,8 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   assert.match(channelList, /className="settings-channels-panel__add-configuration"/);
   assert.match(channelList, /className="settings-channels-panel__account-actions"/);
   assert.match(channelList, /import \{ Button, Tag \} from '[^']*components\/ui'/);
-  assert.match(channelList, /<Tag variant=\{account\.configured \? 'success' : 'neutral'\}>/);
-  assert.match(channelList, /<Tag variant=\{account\.enabled \? 'success' : 'neutral'\}>/);
+  assert.match(channelList, /<Tag\s+variant=\{account\.configured \? 'success' : 'neutral'\}[\s\S]*?>/);
+  assert.match(channelList, /<Tag\s+variant=\{account\.enabled \? 'success' : 'neutral'\}[\s\S]*?>/);
   assert.match(channelList, /t\('common\.modify'\)/);
   assert.match(channelList, /t\('channels\.unbind'\)/);
   assert.match(channelList, /title=\{t\(account\.enabled \? 'channels\.disable' : 'channels\.enable'\)\}/);
@@ -1950,7 +1982,7 @@ test('legacy page translations and Harness package state are removed without del
   ];
 
   for (const locale of [zh, en]) {
-    assert.deepEqual(Object.keys(locale.browser).sort(), ['errors']);
+    assert.deepEqual(Object.keys(locale.browser).sort(), ['errors', 'pane']);
     assert.deepEqual(Object.keys(locale.channels.labels).sort(), supportedChannelIds);
     assert.deepEqual(Object.keys(locale.config).sort(), expectedConfigSections);
     assert.equal(locale.extensions, undefined);

@@ -85,7 +85,6 @@ from jiuwenswarm.common.config_panel.config_set_handlers import (  # noqa: F401 
     team_item_requests_codex as _team_item_requests_codex,
     team_payload_requests_codex as _team_payload_requests_codex,
 )
-from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.config_panel.models_handlers import (  # noqa: F401  — 兼容别名
     reasoning_level_display as _reasoning_level_display,
     normalize_provider_value as _normalize_provider_value,
@@ -2175,45 +2174,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _config_validate_model(ws, req_id, params, session_id)
 
     async def _model_resource_rpc(ws, req_id, params, session_id, operation):
-        from jiuwenswarm.common.config import (
-            delete_model_resource, upsert_model_group_resource, upsert_model_resource,
+        from jiuwenswarm.common.config_panel.model_resource_handlers import model_resource_handler
+
+        await model_resource_handler(
+            channel, ws, req_id, params, session_id, operation=operation,
+            on_config_saved=on_config_saved, agent_client=_resolve(agent_client),
         )
-        from jiuwenswarm.common.model_errors import (
-            MODEL_SELECTION_NOT_FOUND, MODEL_SELECTION_REFERENCED, ModelSelectionError,
-        )
-        from jiuwenswarm.common.model_selection import ModelSelection
-        try:
-            catalog = ModelCatalog()
-            if operation == "groups.list":
-                payload = {"groups": catalog.list_public_groups()}
-            elif operation == "models.get":
-                model_id = str((params or {}).get("model_id") or "").strip()
-                payload = {"model": catalog.get_public_model_detail(model_id)}
-            elif operation == "models.references":
-                selection = ModelSelection.model_validate(params)
-                payload = {"references": [r.__dict__ for r in catalog.find_references(selection)]}
-            elif operation in {"models.delete", "groups.delete"}:
-                resource_type = "model_group" if operation.startswith("groups") else "model"
-                key = "model_group_id" if resource_type == "model_group" else "model_id"
-                resource_id = str((params or {}).get(key) or "").strip()
-                selection = ModelSelection(type=resource_type, id=resource_id)
-                references = catalog.find_references(selection)
-                if references:
-                    raise ModelSelectionError(MODEL_SELECTION_REFERENCED, "resource is still referenced",
-                        references=[r.__dict__ for r in references])
-                if not delete_model_resource(resource_type, resource_id):
-                    raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, "resource does not exist")
-                payload = {key: resource_id, "deleted": True}
-            elif operation == "models.upsert":
-                saved = upsert_model_resource((params or {}).get("model") or {})
-                payload = {"model": ModelCatalog().get_public_model_detail(saved["model_id"])}
-            else:
-                payload = {"group": upsert_model_group_resource((params or {}).get("group") or {})}
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
-        except ModelSelectionError as exc:
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code, payload=exc.to_payload())
-        except Exception as exc:
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
 
     async def _session_selection_set(ws, req_id, params, session_id):
         from jiuwenswarm.common.model_selection import ModelSelection

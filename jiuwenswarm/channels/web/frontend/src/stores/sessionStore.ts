@@ -14,6 +14,8 @@ import {
   Session,
   AgentMode,
   ModelEntry,
+  ModelGroup,
+  ModelSelection,
   Message,
   ContextCompressionRuntime,
   ContextCompressionSummary,
@@ -49,9 +51,102 @@ import {
 
 const MODE_STORAGE_KEY = 'jiuwenclaw_mode';
 const MODEL_STORAGE_KEY = 'jiuwenclaw_selected_model';
+const MODEL_SELECTION_STORAGE_KEY = 'jiuwenclaw_last_model_selection';
 const AGENT_SELECTION_STORAGE_KEY = 'jiuwenclaw_agent_selection';
 const AGENT_GROUP_SELECTION_STORAGE_KEY = 'jiuwenclaw_agent_group_selection';
 const TRANSIENT_NEW_CONVERSATION_ID = 'new';
+
+function loadLastModelSelection(): ModelSelection | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(MODEL_SELECTION_STORAGE_KEY);
+    if (!raw) return null;
+    const value: unknown = JSON.parse(raw);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const selection = value as Partial<ModelSelection>;
+    if ((selection.type !== 'model' && selection.type !== 'model_group') || typeof selection.id !== 'string') {
+      return null;
+    }
+    const id = selection.id.trim();
+    if (!id) return null;
+    if (selection.type === 'model') return { type: 'model', id };
+    return {
+      type: 'model_group',
+      id,
+      ...(typeof selection.route_id === 'string' && selection.route_id.trim()
+        ? { route_id: selection.route_id.trim() }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function cacheLastModelSelection(selection: ModelSelection): void {
+  if (typeof localStorage === 'undefined') return;
+  try { localStorage.setItem(MODEL_SELECTION_STORAGE_KEY, JSON.stringify(selection)); } catch { /* noop */ }
+}
+
+/** New chats restore the last stable selection, then fall back custom -> free -> empty. */
+export function resolveNewConversationModelSelection(
+  models: ModelEntry[],
+  groups: ModelGroup[],
+  cachedSelection: ModelSelection | null,
+): ModelSelection | null {
+  if (cachedSelection?.type === 'model') {
+    const cachedModel = models.find((model) => model.model_id === cachedSelection.id);
+    if (cachedModel) return { type: 'model', id: cachedSelection.id };
+  } else if (cachedSelection?.type === 'model_group') {
+    const cachedGroup = groups.find(
+      (group) => group.model_group_id === cachedSelection.id && group.enabled !== false,
+    );
+    if (cachedGroup) {
+      const routeId = cachedSelection.route_id?.trim();
+      if (!routeId || cachedGroup.routes.some((route) => route.route_id === routeId && route.enabled !== false)) {
+        return routeId
+          ? { type: 'model_group', id: cachedSelection.id, route_id: routeId }
+          : { type: 'model_group', id: cachedSelection.id };
+      }
+    }
+  }
+  const fallback = models.find((model) => model.is_free !== true && Boolean(model.model_id?.trim()))
+    ?? models.find((model) => model.is_free === true && Boolean(model.model_id?.trim()));
+  return fallback?.model_id ? { type: 'model', id: fallback.model_id } : null;
+}
+
+function isModelSelectionAvailable(
+  selection: ModelSelection | null,
+  models: ModelEntry[],
+  groups: ModelGroup[],
+): boolean {
+  if (selection?.type === 'model') return models.some((model) => model.model_id === selection.id);
+  if (selection?.type !== 'model_group') return false;
+  const group = groups.find((item) => item.model_group_id === selection.id && item.enabled !== false);
+  if (!group) return false;
+  const routeId = selection.route_id?.trim();
+  return !routeId || group.routes.some((route) => route.route_id === routeId && route.enabled !== false);
+}
+
+function restoreNewConversationSelection(
+  runtime: SessionRuntime,
+  models: ModelEntry[],
+  groups: ModelGroup[],
+): SessionRuntime {
+  const cached = loadLastModelSelection();
+  const selection = isModelSelectionAvailable(cached, models, groups)
+    ? cached
+    : isModelSelectionAvailable(runtime.selectedModelSelection, models, groups)
+      ? runtime.selectedModelSelection
+      : resolveNewConversationModelSelection(models, groups, cached);
+  const selectedModel = selection?.type === 'model'
+    ? models.find((model) => model.model_id === selection.id)
+    : null;
+  return {
+    ...runtime,
+    selectedModelSelection: selection,
+    selectedModelName: selectedModel?.model_name ?? null,
+  };
+}
 
 function clearStoredAgentSelection(sessionId: string): void {
   if (typeof localStorage === 'undefined') return;
@@ -494,6 +589,8 @@ export interface TeamMemberExecutionEvent {
 export interface SessionRuntime {
   mode: AgentMode;
   selectedModelName: string | null;
+  /** Stable `{type,id}` selection; preferred over model_name for runtime/session APIs. */
+  selectedModelSelection: ModelSelection | null;
   projectDirectory: string | null;
   /** 新会话草稿值；真实 Session 创建后由后端 metadata 的权威值覆盖。 */
   persistSession: boolean;
@@ -546,13 +643,21 @@ export interface SessionRuntime {
   workflowRuns: WorkflowRun[];
 }
 
-function createEmptyRuntime(sessionId?: string): SessionRuntime {
+function createEmptyRuntime(
+  sessionId?: string,
+  availableModels: ModelEntry[] = [],
+  availableModelGroups: ModelGroup[] = [],
+): SessionRuntime {
+  const restoredSelection = sessionId === TRANSIENT_NEW_CONVERSATION_ID
+    ? resolveNewConversationModelSelection(availableModels, availableModelGroups, loadLastModelSelection())
+    : null;
+  const restoredModel = restoredSelection?.type === 'model'
+    ? availableModels.find((model) => model.model_id === restoredSelection.id)
+    : null;
   return {
     mode: loadModeFromStorage(),
-    selectedModelName: (() => {
-      if (typeof localStorage === 'undefined') return null;
-      try { return localStorage.getItem(MODEL_STORAGE_KEY); } catch { return null; }
-    })(),
+    selectedModelName: restoredModel?.model_name ?? null,
+    selectedModelSelection: restoredSelection,
     projectDirectory: null,
     persistSession: false,
     contextUsageSnapshot: null,
@@ -592,6 +697,8 @@ interface SessionState {
   availableModels: ModelEntry[];
   /** 过滤 is_default=true 的模型，供聊天窗口 ModelSelector 使用 */
   chatAvailableModels: ModelEntry[];
+  /** models.list 返回的模型组目录，供选择器与设置页共用 */
+  availableModelGroups: ModelGroup[];
   /** 后端配置的默认模型 ID，供集群模式和新建会话取用，不受任何会话手动切换模型影响 */
   defaultModelName: string | null;
 
@@ -615,7 +722,11 @@ interface SessionState {
   receiveContextUsage: (payload: unknown) => void;
   setMemoryUsage: (memoryUsage: Partial<MemoryUsage> | null) => void;
   setAvailableModels: (models: ModelEntry[], activeModel?: string) => void;
-  setSelectedModelName: (sessionId: string, name: string) => void;
+  setAvailableModelGroups: (groups: ModelGroup[]) => void;
+  setSelectedModelName: (sessionId: string, name: string | null) => void;
+  setSelectedModelSelection: (sessionId: string, selection: ModelSelection | null) => void;
+  /** Prefer stable selection; fall back to model_name only when no selection is set. */
+  getOutgoingModelParams: (sessionId: string) => Record<string, unknown>;
 
   // B 类 actions（加 sessionId）
   setMode: (sessionId: string, mode: AgentMode) => void;
@@ -722,13 +833,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
   availableModels: [],
   chatAvailableModels: [],
+  availableModelGroups: [],
   defaultModelName: null,
   runtimes: {},
 
   ensureRuntime: (sessionId) => {
-    const existing = get().runtimes[sessionId];
+    const state = get();
+    const existing = state.runtimes[sessionId];
     if (existing) return existing;
-    const runtime = createEmptyRuntime(sessionId);
+    const runtime = createEmptyRuntime(sessionId, state.chatAvailableModels, state.availableModelGroups);
     set((state) => ({
       runtimes: { ...state.runtimes, [sessionId]: runtime },
     }));
@@ -745,6 +858,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const state = get();
     const runtime = state.runtimes[sessionId];
     if (!runtime) return null;
+    // Group selections intentionally have no model_name identity; callers that still
+    // need a display/legacy name should not invent one from active_model/default.
+    if (runtime.selectedModelSelection?.type === 'model_group') {
+      return null;
+    }
+    if (runtime.selectedModelSelection?.type === 'model') {
+      const byId = state.availableModels.find((model) => model.model_id === runtime.selectedModelSelection?.id)
+        ?? state.chatAvailableModels.find((model) => model.model_id === runtime.selectedModelSelection?.id);
+      if (byId) return byId.model_name;
+    }
     // 不再原样吐出 runtime.selectedModelName（可能是模型改名后失配的陈旧字符串），
     // 而是走与 UI 显示（ModelSelector）相同的解析逻辑，确保发给后端的 model_name
     // 参数与界面上显示的模型永远指向同一个 entry（bug003）。
@@ -759,6 +882,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       state.defaultModelName,
     );
     return resolved ? resolved.model_name : runtime.selectedModelName;
+  },
+
+  getOutgoingModelParams: (sessionId) => {
+    const runtime = get().runtimes[sessionId];
+    const selection = runtime?.selectedModelSelection;
+    if (selection?.type && selection.id) {
+      return { model_selection: { ...selection } };
+    }
+    const modelName = get().getEffectiveModelName(sessionId);
+    return modelName ? { model_name: modelName } : {};
   },
 
   removeRuntime: (sessionId) => {
@@ -1971,15 +2104,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // 选择的模型不受影响。已创建的真实会话 runtime 依然不在此处重置。
       const runtimes = { ...state.runtimes };
       const pendingNewRuntime = runtimes['new'];
-      if (
-        pendingNewRuntime
-        && selected
-        && state.defaultModelName
-        && pendingNewRuntime.selectedModelName === state.defaultModelName
-      ) {
-        runtimes['new'] = { ...pendingNewRuntime, selectedModelName: selected };
+      if (pendingNewRuntime) {
+        runtimes['new'] = restoreNewConversationSelection(
+          pendingNewRuntime,
+          chatModels,
+          state.availableModelGroups,
+        );
       }
       return { availableModels: models, chatAvailableModels: chatModels, defaultModelName: selected, runtimes };
+    });
+  },
+
+  setAvailableModelGroups: (groups) => {
+    set((state) => {
+      const pendingNewRuntime = state.runtimes[TRANSIENT_NEW_CONVERSATION_ID];
+      if (!pendingNewRuntime) return { availableModelGroups: groups };
+      return {
+        availableModelGroups: groups,
+        runtimes: {
+          ...state.runtimes,
+          [TRANSIENT_NEW_CONVERSATION_ID]: restoreNewConversationSelection(
+            pendingNewRuntime,
+            state.chatAvailableModels,
+            groups,
+          ),
+        },
+      };
     });
   },
 
@@ -1990,7 +2140,55 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      return { runtimes: { ...state.runtimes, [sessionId]: { ...runtime, selectedModelName: name } } };
+      const model = name
+        ? state.availableModels.find((entry) => entry.model_name === name)
+          ?? state.chatAvailableModels.find((entry) => entry.model_name === name)
+        : null;
+      const selectionFromName: ModelSelection | null =
+        model?.model_id && model.model_id.trim()
+          ? { type: 'model', id: model.model_id.trim() }
+          : null;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            selectedModelName: name,
+            // Legacy name restore should not invent a group selection; keep an
+            // existing group selection only when the caller clears the name.
+            selectedModelSelection:
+              selectionFromName
+              ?? (name ? null : runtime.selectedModelSelection?.type === 'model_group'
+                ? runtime.selectedModelSelection
+                : null),
+          },
+        },
+      };
+    });
+  },
+
+  setSelectedModelSelection: (sessionId, selection) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      let selectedModelName = runtime.selectedModelName;
+      if (selection?.type === 'model') {
+        const model = state.availableModels.find((entry) => entry.model_id === selection.id)
+          ?? state.chatAvailableModels.find((entry) => entry.model_id === selection.id);
+        if (model) selectedModelName = model.model_name;
+      } else if (selection?.type === 'model_group') {
+        selectedModelName = null;
+      }
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            selectedModelSelection: selection,
+            selectedModelName,
+          },
+        },
+      };
     });
   },
 }));

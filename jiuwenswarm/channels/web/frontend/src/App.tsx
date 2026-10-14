@@ -80,6 +80,7 @@ import {
   type MessageForkPoint,
   type Session,
 } from './types';
+import { parseModelGroups, parseModelSelection } from './features/settings/modules/models/modelGroupAdapters';
 import type { WorkMode } from './features/workspace/projectTypes';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
@@ -646,6 +647,7 @@ function AppContent({
   const {
     setCurrentSession,
     setAvailableModels,
+    setAvailableModelGroups,
     setMode,
     setTeamLeaderMemberIds,
   } = useSessionStore.getState();
@@ -1667,7 +1669,11 @@ function AppContent({
         // 同 handleRestoreSession：拿到后端 metadata 里的 model 后还原 selectedModelName，
         // 覆盖"targetSession 为空、走 loadSessionMetadata"这条恢复路径（如从 cron 触发
         // 会话列表点进来的占位 session 之后补全元数据的场景，bug002）。
-        if (session?.model) {
+        // Prefer stable model_selection when present; never restore a group from active_model/model name.
+        const restoredSelection = parseModelSelection(session?.model_selection);
+        if (restoredSelection) {
+          useSessionStore.getState().setSelectedModelSelection(targetSessionId, restoredSelection);
+        } else if (session?.model) {
           useSessionStore.getState().setSelectedModelName(targetSessionId, session.model);
         }
         // 恢复会话时同步 swarmflow 开关 + budget：后端 metadata 里的
@@ -1746,16 +1752,17 @@ function AppContent({
       setServerConfig(null);
       setConfigError(t('app.configError'));
     }
-    // 同步获取多模型列表
+    // 同步获取多模型列表与模型组目录
     try {
-      const resp = await request<{ models: ModelEntry[]; active_model: string }>('models.list');
+      const resp = await request<{ models: ModelEntry[]; active_model: string; model_groups?: unknown }>('models.list');
       if (resp?.models) {
         setAvailableModels(resp.models, resp.active_model);
       }
+      setAvailableModelGroups(parseModelGroups(resp?.model_groups));
     } catch (error) {
       console.warn('Failed to fetch models list:', error);
     }
-  }, [request, t, setAvailableModels]);
+  }, [request, t, setAvailableModelGroups, setAvailableModels]);
 
   useEffect(() => {
     if (!FEATURE_APP_UPDATER_UI || !isConnected || startupUpdateCheckRef.current) {
@@ -1845,14 +1852,15 @@ function AppContent({
 
   const handleModelsRefresh = useCallback(async () => {
     try {
-      const resp = await request<{ models: ModelEntry[]; active_model: string }>('models.list');
+      const resp = await request<{ models: ModelEntry[]; active_model: string; model_groups?: unknown }>('models.list');
       if (resp?.models) {
         setAvailableModels(resp.models, resp.active_model);
       }
+      setAvailableModelGroups(parseModelGroups(resp?.model_groups));
     } catch (error) {
       console.warn('Failed to refresh models list:', error);
     }
-  }, [request, setAvailableModels]);
+  }, [request, setAvailableModelGroups, setAvailableModels]);
 
   useEffect(() => {
     const onAuthChanged = (event: Event) => {
@@ -2838,7 +2846,11 @@ function AppContent({
         createParams.previous_session_id = previousSession.sessionId;
         createParams.previous_mode = previousSession.mode;
       }
-      if (runtimeSettings.selectedModelName) createParams.model_name = runtimeSettings.selectedModelName;
+      if (pendingRuntime?.selectedModelSelection) {
+        createParams.model_selection = pendingRuntime.selectedModelSelection;
+      } else if (runtimeSettings.selectedModelName) {
+        createParams.model_name = runtimeSettings.selectedModelName;
+      }
       if (workContext.project_id) createParams.project_id = workContext.project_id;
       if (workContext.project_dir) createParams.project_dir = workContext.project_dir;
 
@@ -2861,6 +2873,15 @@ function AppContent({
       (pendingRuntime?.enabledPlugins ?? []).forEach((id) => sessionStore.addEnabledPlugin(newSid, id));
       (pendingRuntime?.enabledMcps ?? []).forEach((name) => sessionStore.addEnabledMcp(newSid, name));
       if (pendingRuntime?.metadata) sessionStore.setSessionMetadata(newSid, pendingRuntime.metadata);
+      if (pendingRuntime?.selectedModelSelection) {
+        sessionStore.setSelectedModelSelection(newSid, pendingRuntime.selectedModelSelection);
+        void request('session.selection.set', {
+          session_id: newSid,
+          model_selection: pendingRuntime.selectedModelSelection,
+        }).catch((error) => {
+          console.warn('Failed to persist model selection for new session:', error);
+        });
+      }
       sessionStore.setAgentSelectionIntent(
         newSid,
         pendingRuntime?.agentSelectionIntent ?? { kind: 'keep' as const },
@@ -2976,7 +2997,9 @@ function AppContent({
           createParams.previous_session_id = previousSession.sessionId;
           createParams.previous_mode = previousSession.mode;
         }
-        if (runtimeSettings.selectedModelName) {
+        if (newRuntime?.selectedModelSelection) {
+          createParams.model_selection = newRuntime.selectedModelSelection;
+        } else if (runtimeSettings.selectedModelName) {
           createParams.model_name = runtimeSettings.selectedModelName;
         }
         if (workContext.project_id) {
@@ -3009,6 +3032,15 @@ function AppContent({
         if (pendingMetadata) {
           useSessionStore.getState().setSessionMetadata(newSid, pendingMetadata);
           useSessionStore.getState().setSessionMetadata(NEW_CONVERSATION_ID, null);
+        }
+        if (newRuntime?.selectedModelSelection) {
+          useSessionStore.getState().setSelectedModelSelection(newSid, newRuntime.selectedModelSelection);
+          void request('session.selection.set', {
+            session_id: newSid,
+            model_selection: newRuntime.selectedModelSelection,
+          }).catch((error) => {
+            console.warn('Failed to persist model selection for new session:', error);
+          });
         }
         // 同样搬家：欢迎页（'new'）上如果已经通过"+"菜单"扩展"面板开了某些插件/MCP 的会话内
         // 开关（或者是"使用"按钮带过来的 initialEnabledPlugins/initialEnabledMcps），真实
@@ -3308,7 +3340,11 @@ function AppContent({
         // 会话打开时若后端 metadata 带 model（首条 chat.send 显式携带 model_name 时
         // 由后端落盘），写进 runtime.selectedModelName——单 Agent 与集群（team）会话
         // 同样恢复，保证刷新页面后模型选择不回退到默认模型。
-        if (targetSession.model) {
+        // Prefer stable model_selection when present; never restore a group from active_model/model name.
+        const restoredSelection = parseModelSelection(targetSession.model_selection);
+        if (restoredSelection) {
+          useSessionStore.getState().setSelectedModelSelection(targetSessionId, restoredSelection);
+        } else if (targetSession.model) {
           useSessionStore.getState().setSelectedModelName(targetSessionId, targetSession.model);
         }
       } else {

@@ -66,7 +66,6 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('embed_api_base', 'models', 'text', 'EMBED_API_BASE'),
   envField('embed_api_key', 'models', 'text', 'EMBED_API_KEY'),
   envField('embed_model', 'models', 'text', 'EMBED_MODEL'),
-  yamlField('enable_free_models', 'models', 'boolean', 'models.enable_free_models'),
 
   yamlField('skill_evolution', 'agent', 'boolean', 'react.evolution.skill_evolution'),
   yamlField('skill_retrieval_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.enabled'),
@@ -321,5 +320,13 @@ export function buildModelsSavePayload(models: ModelEntry[]): Record<string, unk
   if (models.length === 0) {
     throw new Error('At least one model is required');
   }
-  return { models };
+  return {
+    models: models.map(({ has_api_key: hasApiKey, ...model }) => {
+      if (hasApiKey && !model.api_key.trim()) {
+        const { api_key: _unchangedApiKey, ...modelWithoutApiKey } = model;
+        return modelWithoutApiKey;
+      }
+      return model;
+    }),
+  };
 }

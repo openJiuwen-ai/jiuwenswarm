@@ -1802,13 +1802,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           useGoalStore.getState().recordGoalObjectiveText(sessionId, objective);
         }
         try {
-          const selectedModel = useSessionStore.getState().getEffectiveModelName(sessionId);
           await sendGoalStreamCommand({
             sessionId,
             action,
             objective,
             mode,
-            modelName: selectedModel,
+            modelParams: useSessionStore.getState().getOutgoingModelParams(sessionId),
           });
         } catch (error) {
           // WS 层直接发送失败（未连接等）：这是能明确识别的失败，弹提示；set 不做进一步兜底
@@ -2043,7 +2042,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       localSendPendingRef.current.add(sessionId);
 
       // 正常调用接口
-      const selectedModel = useSessionStore.getState().getEffectiveModelName(sessionId);
       const workContext = getSessionWorkContext(sessionId);
       if (currentMode === 'auto_harness') {
         useHarnessStore.getState().reset(sessionId);
@@ -2152,7 +2150,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(outgoingMediaItems ? { media_items: outgoingMediaItems } : {}),
           ...(outgoingFiles ? { files: outgoingFiles } : {}),
           mode: outgoingMode,
-          ...(selectedModel ? { model_name: selectedModel } : {}),
+          ...useSessionStore.getState().getOutgoingModelParams(sessionId),
           ...workContext,
           skills: selectedSkillsForRequest,
           ...agentSelectionPayload,
@@ -2255,7 +2253,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (agentGroupSelectionPayload.agent_group_name) {
         markPendingAgentGroupBinding(sessionId, agentGroupSelectionPayload.agent_group_name);
       }
-      const selectedModel = currentSessionState.getEffectiveModelName(sessionId);
       if (currentMode === 'auto_harness') {
         useHarnessStore.getState().reset(sessionId);
       }
@@ -2272,7 +2269,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           session_id: sessionId,
           content,
           mode: outgoingMode,
-          ...(selectedModel ? { model_name: selectedModel } : {}),
+          ...currentSessionState.getOutgoingModelParams(sessionId),
           ...workContext,
           ...buildExtensionSendPayload(sessionId),
           ...agentSelectionPayload,
@@ -2404,8 +2401,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         if (intent === 'supplement') {
           params.new_input = newInput ?? '';
-          const selectedModel = useSessionStore.getState().getEffectiveModelName(sessionId);
-          if (selectedModel) params.model_name = selectedModel;
+          Object.assign(params, useSessionStore.getState().getOutgoingModelParams(sessionId));
         }
         await request('chat.interrupt', params);
         if (intent === 'supplement' || intent === 'resume') {

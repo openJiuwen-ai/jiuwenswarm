@@ -13,6 +13,7 @@ export function validateModelDraft(
   editingOriginIndex: number | undefined,
   catalog: VendorPresetMap,
   t: (key: string, values?: Record<string, unknown>) => string,
+  hasUnchangedApiKey = false,
 ): ModelDraftErrors {
   const errors: ModelDraftErrors = {};
   const alias = value.alias.trim();
@@ -49,7 +50,7 @@ export function validateModelDraft(
     else if (apiBase.length > 512) errors.api_base = t('config.modelList.apiBaseTooLong');
     else if (!/^https?:\/\//i.test(apiBase)) errors.api_base = t('config.modelList.apiBaseUrlInvalid');
     if (apiKey.length > MAX_API_KEY_LENGTH) errors.api_key = t('settingsPanel.models.apiKeyTooLong');
-    else if (!apiKey) errors.api_key = t('config.modelList.apiKeyRequired');
+    else if (!apiKey && !hasUnchangedApiKey) errors.api_key = t('config.modelList.apiKeyRequired');
   }
 
   const reasoning = resolveModelReasoning(catalog, preset, modelName, value.protocol);
@@ -63,8 +64,7 @@ export function validateModelDraft(
 
   const others = models.filter(
     (model) =>
-      model.is_agentos !== true &&
-      (editingOriginIndex === undefined || model.origin_index !== editingOriginIndex),
+      model.is_agentos !== true && (editingOriginIndex === undefined || model.origin_index !== editingOriginIndex),
   );
   if (
     alias &&

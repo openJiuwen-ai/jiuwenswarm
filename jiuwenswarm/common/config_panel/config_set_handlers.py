@@ -396,7 +396,7 @@ DEFAULT_EXTERNAL_CLI_PUBLISH_HOST = "127.0.0.1"
 DEFAULT_EXTERNAL_CLI_PUBLISH_PORT = "19000"
 EXTERNAL_CLI_PUBLISH_PATH = "/ws"
 UNSUPPORTED_WINDOWS_CLI_SUFFIXES = {".bat", ".cmd", ".ps1"}
-PERMISSIONS_PROFILES = frozenset({"default", "full_access"})
+PERMISSIONS_PROFILES = frozenset({"default", "automatic", "full_access"})
 
 
 def permission_profile(permission_config: object) -> str:

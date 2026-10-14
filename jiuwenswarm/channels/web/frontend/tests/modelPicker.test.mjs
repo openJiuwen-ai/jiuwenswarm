@@ -74,6 +74,13 @@ async function withFixture(run, language = 'en') {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'http://localhost/',
   });
+  if (!dom.window.ResizeObserver) {
+    dom.window.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  }
   const previousGlobals = new Map();
   for (const [name, value] of Object.entries({
     window: dom.window,
@@ -82,6 +89,8 @@ async function withFixture(run, language = 'en') {
     // 组件里会 new CustomEvent（如 requestLogin 派发的 jiuwen:auth-required），
     // 不挂到全局的话那句直接 ReferenceError
     CustomEvent: dom.window.CustomEvent,
+    ResizeObserver: dom.window.ResizeObserver,
+    MutationObserver: dom.window.MutationObserver,
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
     previousGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -140,6 +149,17 @@ function cronDrawer(overrides = {}) {
   });
 }
 
+test('Team conversations keep model-group selection enabled', () => {
+  const selectorSource = readFileSync(
+    new URL('../src/components/ChatPanel/ChatModelSelector.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(selectorSource, /mode\s*!==\s*['"]team['"]/);
+  assert.doesNotMatch(selectorSource, /next\.type\s*===\s*['"]model_group['"]\)\s*return/);
+  assert.match(selectorSource, /includeModelGroups/);
+  assert.match(selectorSource, /model_selection:\s*next/);
+});
+
 test('chat and scheduled tasks show identical grouped options, excluding secondary connections', async () => {
   await withFixture(async ({ mount, click, byId }) => {
     await mount(createElement(ChatModelSelector), cronDrawer());
@@ -148,11 +168,11 @@ test('chat and scheduled tasks show identical grouped options, excluding seconda
       const menu = byId(`${prefix}-menu`);
       assert.deepEqual(
         [...menu.querySelectorAll('.model-select__section-header')].map((node) => node.textContent),
-        ['Configured Models', 'Limited-time Free Models'],
+        ['Limited-time Free Models', 'Configured Models'],
       );
       assert.deepEqual(
         [...menu.querySelectorAll('[role="menuitemradio"]')].map((node) => node.textContent),
-        ['Configured A', 'Configured B', 'Free Alias'],
+        ['Free Alias', 'Configured A', 'Configured B'],
       );
       assert.equal(menu.querySelector('[aria-checked="true"]').dataset.variant, 'configured-a');
       await click(document.body);
@@ -163,7 +183,7 @@ test('chat and scheduled tasks show identical grouped options, excluding seconda
 test('限时免费模型：没登录拿到之前，这一栏只放一个「获取」入口', async () => {
   await withFixture(async ({ mount, click, byId }) => {
     // 活动在跑但还没登录：免费模型一个都没有
-    useAuthStore.setState({ enabled: true, initialized: true, islogin: false });
+    useAuthStore.setState({ enabled: true, initialized: true, islogin: false, campaignState: 'active' });
     useSessionStore.getState().setAvailableModels(
       catalog.filter((model) => model.is_free !== true),
       'configured-a',
@@ -175,7 +195,7 @@ test('限时免费模型：没登录拿到之前，这一栏只放一个「获�
     // 分组标题还在——用户得先知道有这回事，再点进去拿
     assert.deepEqual(
       [...menu.querySelectorAll('.model-select__section-header')].map((node) => node.textContent),
-      ['Configured Models', 'Limited-time Free Models'],
+      ['Limited-time Free Models', 'Configured Models'],
     );
     const cta = byId('chat-panel-model-selector-free-cta');
     assert.ok(cta, '未登录时应出现「获取限时免费模型」入口');

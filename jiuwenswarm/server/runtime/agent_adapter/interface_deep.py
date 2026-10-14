@@ -2111,6 +2111,7 @@ class JiuWenSwarmDeepAdapter:
         self._model_name_to_keys: dict[str, list[str]] = {}
         self._model_id_to_key: dict[str, str] = {}
         self._model_group_cache: dict[str, Model] = {}
+        self._stable_selection_cache: dict[str, tuple[str, Model]] = {}
         # 全局列表下标 → cache_key。通道侧（Web）用全局 origin_index 拼请求 key，
         # 与后端 per-name 的 cache_key 序号语义分叉；此映射在 _resolve_model_by_name
         # 回退分支把通道传入的全局序号换算成真实 cache_key，避免同名条目
@@ -6568,6 +6569,7 @@ class JiuWenSwarmDeepAdapter:
         self._global_index_to_cache_key.clear()
         self._model_id_to_key.clear()
         self._model_group_cache.clear()
+        self._stable_selection_cache = {}
         self._inject_attribution_to_config(config)
         self._build_model_cache_from_defaults(config)
         if not self._model_cache:
@@ -6709,6 +6711,8 @@ class JiuWenSwarmDeepAdapter:
         while keeping the pure-name path (format 1) intact.
         """
         requested = (requested_model_name or "").strip()
+        if requested.startswith(("model:", "model_group:")):
+            return self._resolve_stable_model(requested)
         if not requested:
             # ask_user_interrupt 等中断恢复请求不带 model_name，
             # 回退到 session 上次应用的模型，而非 config.yaml 默认占位模型。
@@ -6797,13 +6801,11 @@ class JiuWenSwarmDeepAdapter:
     def _requested_model_name(self, request: AgentRequest) -> str:
         """Resolve the model name this request should use.
 
-        Explicit ``model_name`` wins. Otherwise, if this adapter has not yet
-        applied a model, fall back to the session's persisted ``model`` so
-        ``command.goal`` / interrupt resume can still hit the user's choice.
+        Stable explicit/session selections win over legacy display names.
         """
         params = request.params if isinstance(request.params, dict) else {}
         raw_selection = params.get("model_selection")
-        if isinstance(raw_selection, dict):
+        if raw_selection is not None:
             try:
                 from jiuwenswarm.common.model_selection import ModelSelection
                 selection = ModelSelection.model_validate(raw_selection)
@@ -6811,9 +6813,6 @@ class JiuWenSwarmDeepAdapter:
                 return f"{selection.type}:{selection.id}{suffix}"
             except ValidationError as exc:
                 raise ValueError(f"invalid model_selection: {exc}") from exc
-        requested = str(params.get("model_name") or "").strip()
-        if requested:
-            return requested
         session_id = str(getattr(request, "session_id", None) or "").strip()
         if session_id:
             try:
@@ -6824,7 +6823,53 @@ class JiuWenSwarmDeepAdapter:
                     return f"{selection.type}:{selection.id}{suffix}"
             except ValueError:
                 logger.warning("invalid session id while resolving model selection: %r", session_id)
-        return self._session_stored_model_name(getattr(request, "session_id", None))
+        from jiuwenswarm.common.model_catalog import ModelCatalog
+        from jiuwenswarm.common.model_selection import ModelSelection
+        from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
+
+        catalog = ModelCatalog()
+        definition = getattr(self, "_session_instance_agent_definition", None) or {}
+        instance_config = getattr(self, "_session_instance_config", None) or {}
+        raw_spec_selection = definition.get("model_selection", instance_config.get("model_selection"))
+        spec_selection = ModelSelection.model_validate(raw_spec_selection) if raw_spec_selection is not None else None
+        requested = str(params.get("model_name") or "").strip()
+        requested = requested or self._session_stored_model_name(getattr(request, "session_id", None))
+        context = ModelExecutionContext(spec_selection=spec_selection, legacy_model_name=requested)
+        has_default_group = any(g.get("is_default") and g.get("enabled", True) for g in catalog.snapshot["groups"])
+        matches = []
+        for model in catalog.list_public_models():
+            if requested and requested in {model["model_name"], model["alias"]}:
+                matches.append(model)
+        if len(matches) > 1 and spec_selection is None and not has_default_group:
+            from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
+            raise ModelSelectionError(MODEL_GROUP_INVALID, "ambiguous legacy model name; select a stable model_id")
+        if spec_selection is not None or has_default_group or matches:
+            selection = ModelSelectionResolver(catalog).choose(None, context)
+            suffix = f":{selection.route_id}" if selection.route_id else ""
+            return f"{selection.type}:{selection.id}{suffix}"
+        # Login/free models and old TUI index selectors remain boundary-only.
+        return requested
+
+    def _resolve_stable_model(self, requested: str, can_access=None) -> Model:
+        """Cache by resolved content, not only ID: edits take effect without restart."""
+        from jiuwenswarm.common.model_selection import ModelSelection
+        from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
+        from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
+
+        selection_type, selection_id, *route_parts = requested.split(":", 2)
+        selection = ModelSelection(
+            type=selection_type, id=selection_id, route_id=route_parts[0] if route_parts else None,
+        )
+        resolved = ModelSelectionResolver().resolve(selection, ModelExecutionContext(can_access=can_access))
+        fingerprint = hashlib.sha256(resolved.model_dump_json().encode()).hexdigest()
+        cache = getattr(self, "_stable_selection_cache", {})
+        cached = cache.get(requested)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+        model = build_model_from_selection(resolved)
+        # Bound to the current selection; do not retain obsolete credentials.
+        self._stable_selection_cache = {requested: (fingerprint, model)}
+        return model
 
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
         """根据请求中的 model_name 参数查找对应模型（支持别名），未匹配则回退默认模型。
@@ -6844,39 +6889,12 @@ class JiuWenSwarmDeepAdapter:
         # 模型组 / 模型稳定 ID 路由（模型ID迁移后的 model_selection 语义）：
         # requested 形如 "model:<model_id>" 或 "model_group:<group_id>[:<route_id>]"。
         if requested.startswith(("model:", "model_group:")):
-            from jiuwenswarm.common.model_selection import ModelSelection
-            from jiuwenswarm.server.runtime.model_routing_registry import (
-                ModelExecutionContext,
-                ModelSelectionResolver,
-            )
-            selection_type, selection_id, *route_parts = requested.split(":", 2)
-            route_id = route_parts[0] if route_parts else None
-            selection = ModelSelection(type=selection_type, id=selection_id, route_id=route_id)
+            from functools import partial
+
             checker = getattr(self, "_model_selection_can_access", None)
-            can_access = None
             if callable(checker):
-                def can_access(kind: str, resource_id: str) -> bool:
-                    return bool(checker(request, kind, resource_id))
-            resolved_selection = ModelSelectionResolver().resolve(
-                selection,
-                ModelExecutionContext(can_access=can_access),
-            )
-            if requested.startswith("model_group:"):
-                cache_key = requested.removeprefix("model_group:")
-                cached = self._model_group_cache.get(cache_key)
-                if cached is not None and getattr(self, "_model_selection_can_access", None) is None:
-                    return cached
-                from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
-                model = build_model_from_selection(resolved_selection)
-                self._model_group_cache[cache_key] = model
-                return model
-            # model:<model_id>
-            model_id = requested.split(":", 1)[1]
-            cache_key = self._model_id_to_key.get(model_id)
-            if cache_key is None or cache_key not in self._model_cache:
-                from jiuwenswarm.common.model_errors import MODEL_SELECTION_NOT_FOUND, ModelSelectionError
-                raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, f"unknown model_id {model_id!r}")
-            return self._model_cache[cache_key]
+                return self._resolve_stable_model(requested, partial(checker, request))
+            return self._resolve_stable_model(requested)
         if not requested:
             last = getattr(self, "_last_resolved_model", None)
             if last is not None:
@@ -6946,7 +6964,14 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.common.auth.login_credentials import note_session_model
 
         params = request.params if isinstance(request.params, dict) else {}
-        if not uses_login_model and not str(params.get("model_name") or "").strip():
+        # Stable model/group selections are explicit switches even without a legacy
+        # model_name. Clear the previous login-model marker for these requests.
+        has_explicit_selection = params.get("model_selection") is not None
+        if (
+            not uses_login_model
+            and not has_explicit_selection
+            and not str(params.get("model_name") or "").strip()
+        ):
             return
         note_session_model(getattr(request, "session_id", None), uses_login_model=uses_login_model)
 
