@@ -199,19 +199,3 @@ The host chooses the desktop policy. Default shared mode targets app windows wit
 Errors usually preserve Python variables. Timeout, cancellation, failure of the execution process or disconnection can reset them; recreate handles and read again after reset. Previously executed effects remain. Execution resets after 45 seconds without native command progress; command starts/completions renew this watchdog, printing and timers do not. Individual commands have their own deadlines. Do not leave background tasks or timers operating the UI. The executor runs with the MCP user's permissions, not in a security sandbox.
 
 Keep recovery within the requested scope. Resolve loading, filters and truncation before concluding required input is absent; then report it instead of inventing a substitute or searching unrelated locations. Stop after verifying completion, or report the limitation when no supported route remains.
-
-<!-- experience:start -->
-## Application experience packages
-
-When the host enables experience, it also provides `libraryRoot`, `loadPackage(entryURL)` and `learningModule`.
-
-Before first working in an app, check the application index using `from computer_use.library import fileURLToPath`, then `(fileURLToPath(libraryRoot) / "README.md").read_text(encoding="utf-8")` in this MCP environment. Reuse an index already read; refresh after installation changes. Missing/empty package directories mean no installed experience. A missing index in a nonempty directory may require inspecting package READMEs; report other read errors accurately.
-
-For a relevant package, read its README and needed source, check its scope and preconditions, then use `api = await loadPackage(entryURL)` with its documented Entry file URL inside `libraryRoot`. This imports the existing module and calls `create(computer)` with the current environment. Obtain business arguments from the user's task or current UI; README examples are not current task data. Invoke its methods sequentially and print useful return values. Prefer applicable functions and use ordinary SDK calls elsewhere. Package initialization must not operate the UI. GUI-only business documents still go through the Computer API.
-
-`loadPackage` methods keep internal reads and action receipts in the execution log, presenting a call summary and the last captured observation. An earlier observation is labelled when later commands or invalidation followed; it is not current state. Other windows and intermediate reads are not all shown. `returned` only means the function returned; inspect its result and verify the requested outcome as needed. Caught command failures remain visible. Explicit `print`/`printImage` still work; hidden screenshots cannot authorize coordinate clicks. Failures do not roll back or retry actions. Direct `import` plus `create(computer)` also works, with ordinary per-operation output.
-
-Ordinary tasks only read/reuse packages. Generate or revise them only in a host-enabled learning phase using that phase's instructions and `learningModule`. New immutable revision URLs can be imported in the same session; reread the README and recreate bindings. Overwriting an imported file does not reload cached module code. Package failures may follow completed actions; the same scope and recovery rules apply.
-
-In Compile mode, extract a useful operation from recorded evidence, parameterize the data that varies, and validate with different inputs on disposable state. Discovery is read-only; stored candidates and test setup perform input through the phase's check API. Keep UI prerequisites and language/platform limits explicit. Tested functions are listed separately in the app README; publishing another method preserves existing entries. Detailed compilation APIs, native target hints and checks are supplied only during that phase.
-<!-- experience:end -->

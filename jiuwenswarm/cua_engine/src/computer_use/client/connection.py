@@ -17,10 +17,9 @@ from ..protocol.captures import captureMetadata
 from ..protocol.execution import decodeBegin, decodeCaptureRequest, decodeExecutionResult, decodeInspectQuery, decodeUnitCommand
 from ..paths import nativeDriver
 from .preview import getPreviewHandler, readPreviews
-from .diagnostics import diagnostic, localFailure, sdkVersion, wantsStructuredObservations
+from .diagnostics import diagnostic, localFailure, sdkVersion
 
 requestCleanupGraceMs, driverTerminationGraceMs = 750, 1000
-_PURE = {"listApps", "readDesktop", "readElementText", "findElement"}
 
 
 def _json(value):
@@ -33,8 +32,8 @@ def _now(): return asyncio.get_running_loop().time() * 1000
 
 class Connection:
     def __init__(self, invalidate, driver=None, *, protocol_version=protocolVersion):
-        if type(protocol_version) is not int or protocol_version not in (3, 5):
-            raise ValueError("Unsupported native protocol version")
+        if type(protocol_version) is not int or protocol_version != protocolVersion:
+            raise ValueError("The native connection requires protocol 5")
         self.protocol_version = protocol_version
         self.invalidate, self.driver = invalidate, driver
         self._child = self._pending = self._hello = self._handshake = self._retiring = None
@@ -42,7 +41,7 @@ class Connection:
         self._requesting = self._waitingForExit = False
         self._nextId, self._generation = 1, 0
         self._diagnostic = self._stderrBuffer = ""
-        self._traces, self._observations, self._readers = {}, {}, set()
+        self._traces, self._readers = {}, set()
         self._previewTransport = None
         self._childUsesEOF = False
 
@@ -186,22 +185,24 @@ class Connection:
 
     async def _request(self, method, params, budget):
         if self._pending is not None or self._waitingForExit: raise localFailure("another system call is in progress", "await it before starting the next")
-        if self.protocol_version == 5 and method == "begin":
+        if method is not None and method not in ("begin", "inspect", "capture", "execute", "finish"):
+            raise localFailure("unsupported native protocol method: " + str(method), "use the current Computer API", "invalid_request", str(method))
+        if method == "begin":
             try:
                 params = decodeBegin(params)
             except (TypeError, ValueError) as error:
                 raise localFailure(str(error), "correct the native operation intent", "invalid_request", method) from error
-        if self.protocol_version == 5 and method == "inspect":
+        if method == "inspect":
             try:
                 params = {**params, "query": decodeInspectQuery(params.get("query"))}
             except (TypeError, ValueError) as error:
                 raise localFailure(str(error), "correct the native inspection request", "invalid_request", method) from error
-        if self.protocol_version == 5 and method == 'capture':
+        if method == 'capture':
             try:
                 params = decodeCaptureRequest(params)
             except (TypeError, ValueError) as error:
                 raise localFailure(str(error), 'correct the native capture scope or budget', 'invalid_request', method) from error
-        if self.protocol_version == 5 and method == 'execute':
+        if method == 'execute':
             try:
                 params = {**params, 'command': decodeUnitCommand(params.get('command'))}
             except (TypeError, ValueError) as error:
@@ -232,17 +233,12 @@ class Connection:
         if not safeInteger(self._nextId):
             error = localFailure("request id space exhausted", "read the app in a new session", "execution_failed", method)
             self.close(error); raise error
-        if method == "findElement" and "elementPathLookup" not in self._hello["capabilities"]:
-            raise localFailure("backend does not support element paths", "update the backend or use observed numeric elements", "mode_unsupported", "find")
         capability = ("nativeApplicationRoots" if method == "inspect" and params.get('query', {}).get('kind') == 'roots' else
             "nativeRelationPages" if method == "inspect" and 'relationPage' in params.get('query', {}) else
             "nativeNodePages" if method == "inspect" and 'childrenPage' in params.get('query', {}) else
             "nativeCapturedText" if method == "inspect" and params.get("query", {}).get("kind") == "capturedText" else
             "nativeRelations" if method == "inspect" and params.get("query", {}).get("kind") == "relation" else
-            "nativeCapture" if method == "capture" else "nativeOperations" if method in ("begin", "inspect", "execute", "finish") else
-            "desktopObservation" if method == "readDesktop" else "desktopInput" if "desktopRef" in params
-            else "elementInput" if method in ("clickElement", "openElementMenu", "focusElement", "typeTextElement", "pasteElement", "pressKeyElement", "performElementAction") or method == "scroll" and "ref" in params
-            else "windowInput" if method in ("click", "scroll", "drag", "typeText", "paste", "pressKey") else None)
+            "nativeCapture" if method == "capture" else "nativeOperations")
         if capability is not None and capability not in self._hello["capabilities"]:
             raise localFailure(f"backend does not provide {capability} in this desktop session", "use supported native elements, or connect a desktop with the required capture/input capabilities", "mode_unsupported", method)
         if (method == 'inspect' and 'followRelations' in params.get('query', {})
@@ -316,7 +312,7 @@ class Connection:
         diagnostic(dict(kind="command_start", traceId=traceId, id=id_, method=method, params=params, target=target, timeoutMs=timeoutMs))
         loop = asyncio.get_running_loop()
         future = loop.create_future()
-        pure = (method in _PURE or self.protocol_version == 5 and method == 'capture'
+        pure = (method == 'capture'
                 or method == 'inspect' and params.get('query', {}).get('kind') == 'capturedText')
         pending = dict(id=id_, method=method, traceId=traceId, target=target, future=future, cancelSent=False, startedAt=_now(), pure=pure)
         def timeout():
@@ -350,7 +346,7 @@ class Connection:
                 if not isinstance(value, dict): raise ValueError("protocol: expected response object")
                 if self._handshake is not None:
                     if self._buffer: raise ValueError("protocol: unsolicited data after hello")
-                    self._hello = decodeHello(value, desktopMode(), self.protocol_version)
+                    self._hello = decodeHello(value, desktopMode())
                     if os.environ.get("COMPUTER_USE_DEMO_FOREGROUND") == "1" and "demoForeground" not in self._hello["capabilities"]:
                         raise localFailure("demoForeground is not supported by this native backend", "rebuild the backend on the MCP host or disable demoForeground", "mode_unsupported", "connection")
                     handshake, self._handshake = self._handshake, None
@@ -368,38 +364,15 @@ class Connection:
                 if "error" in response:
                     failure = decodeFailure(response["error"]); error = failureError(pending["method"], failure)
                 else:
-                    if self.protocol_version == 5:
-                        result = decodeExecutionResult(pending["method"], response["result"])
-                    else:
-                        # Protocol 3 is an explicit diagnostic/parity connection;
-                        # its high-level renderer is not part of native startup.
-                        from .results import decodeResult
-                        result = decodeResult(pending["method"], response["result"])
-                if error is None and pending["method"] == "readApp" and wantsStructuredObservations():
-                    raw = response["result"]
-                    diagnostic(dict(kind="native_observation", traceId=pending["traceId"], target=pending["target"], observation=raw["observation"], observed=raw["observed"], scope=raw["scope"]))
+                    result = decodeExecutionResult(pending["method"], response["result"])
                 desktop_capture = (pending['method'] == 'capture' and result is not None and result.get('kind') == 'desktopCapture')
-                if (pending["method"] == "readDesktop" or desktop_capture) and result is not None and result["observation"]["mode"] != self._hello["desktopMode"]:
+                if desktop_capture and result["observation"]["mode"] != self._hello["desktopMode"]:
                     raise ValueError("protocol: desktop observation mode differs from the negotiated session")
                 summary = result
-                if pending["method"] == "readApp" and result is not None:
-                    window = next((line for line in result["text"].split("\n") if line.startswith("Window:")), None)
-                    if pending["target"] is not None and pending["target"].get("selector"):
-                        target = dict(selector=pending["target"]["selector"], **({"window": window} if window is not None else {}))
-                        pending["target"] = target
-                        key = (result["instance"], result["scope"])
-                        self._observations.pop(key, None)
-                        self._observations[key] = dict(appRef=result["appRef"], refs=set(result["refs"].values()), target=target)
-                        while len(self._observations) > 64: self._observations.pop(next(iter(self._observations)))
-                    summary = {**result, "screenshot": dict(source="window", **(captureMetadata(result["screenshot"]) or {})) if result["screenshot"] is not None else None,
-                               "overview": dict(source="overview", **(captureMetadata(result["overview"]) or {})) if result.get("overview") is not None else None}
-                elif (pending["method"] == "readDesktop" or desktop_capture) and result is not None:
+                if desktop_capture:
                     summary = {**result, "screenshot": dict(source="desktop", **(captureMetadata(result["screenshot"]) or {})) if result["screenshot"] is not None else None}
                 elif pending['method'] == 'capture' and result is not None:
                     summary = {**result, 'image': dict(source='window', **(captureMetadata(result['image']) or {}))}
-                if pending["method"] == "readApp" and error is not None and pending["target"] is not None and pending["target"].get("selector"):
-                    for scope, observation in list(self._observations.items()):
-                        if observation["target"]["selector"] == pending["target"]["selector"]: self._observations.pop(scope)
                 diagnostic(dict(kind="command_end", traceId=pending["traceId"], id=pending["id"], method=pending["method"], durationMs=_now()-pending["startedAt"], target=pending["target"], status="error" if error is not None else "ok",
                                 **(dict(error=str(error), failure=failure, stage="backend") if error is not None else dict(result=summary))))
                 pending["timer"].cancel(); self._pending = None
@@ -408,9 +381,7 @@ class Connection:
         except Exception as error: self.close(error)
 
     def _commandTarget(self, method, params):
-        if method == "readDesktop" or "desktopRef" in params or method == 'capture' and params.get('kind') == 'desktop': return dict(screen="desktop")
-        if method == "readApp": return dict(selector=params["selector"])
-        return next((o["target"] for o in self._observations.values() if params.get("appRef") == o["appRef"] or "ref" in params and params["ref"] in o["refs"]), None)
+        return dict(screen="desktop") if method == 'capture' and params.get('kind') == 'desktop' else None
 
     def _cancelPending(self, pending):
         if pending["cancelSent"]: return
@@ -439,7 +410,7 @@ class Connection:
                             failure={key: getattr(failure, key) for key in ("code", "effect", "target", "detail", "next")}))
             pending["timer"].cancel()
             if not pending["future"].done(): pending["future"].set_exception(failure)
-        self._observations.clear(); self.invalidate(); self._buffer = b""
+        self.invalidate(); self._buffer = b""
         atexit.unregister(self._onExit)
         if self._previewTransport is not None:
             self._previewTransport.close(); self._previewTransport = None

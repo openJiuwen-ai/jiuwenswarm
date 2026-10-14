@@ -22,7 +22,7 @@ from ..observation.numbering import numberSnapshots
 from ..observation.pages import ContentPages
 from ..protocol.captures import captureMetadata
 from ..protocol.primitives import finite, frozen, reference
-from ..protocol.session import desktopMode, nativeProtocolVersion
+from ..protocol.session import desktopMode
 from .actions import actionCompleted
 from .computer import App, computerForController, observationState
 from .connection import Connection
@@ -64,7 +64,7 @@ class NativeController:
         self._states = WeakIdentityMap()
         self._boundApps = weakref.WeakValueDictionary()
         self.desktop = DesktopStore()
-        self.transport = port.connection if port is not None else Connection(self.invalidate, protocol_version=nativeProtocolVersion)
+        self.transport = port.connection if port is not None else Connection(self.invalidate)
         self.port = port or ConnectionPort(self.transport, HostPolicy(desktopMode(),
             os.environ.get('COMPUTER_USE_FOREGROUND_ASSIST') == '1'))
         self.reader = NativeAppReader(self.port)

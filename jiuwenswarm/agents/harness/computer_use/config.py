@@ -110,9 +110,4 @@ def load_skill(settings: ComputerUseSettings, platform: str | None) -> str:
             "using platform-specific selectors or shortcuts.\n\n"
             + (root / "skills" / "computer-use" / "base.md").read_text(encoding="utf-8")
         )
-    # This integration does not enable learning or experience imports.
-    start, end = "<!-- experience:start -->", "<!-- experience:end -->"
-    if start in text and end in text:
-        before, rest = text.split(start, 1)
-        text = before + rest.split(end, 1)[1]
     return text

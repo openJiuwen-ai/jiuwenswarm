@@ -35,7 +35,6 @@ class ComputerUseRuntime:
         self._used = False
         self._closing = False
         self._cleanup_error: Exception | None = None
-        self._experience_supported = False
 
     async def open(self) -> None:
         async with self._open_lock:
@@ -94,10 +93,6 @@ class ComputerUseRuntime:
                     self.platform = (
                         host.get("platform") if host.get("version") == 1 else None
                     )
-                    self._experience_supported = (
-                        experimental.get("computer-use-experience", {}).get("version")
-                        == 1
-                    )
                     self._client = client
                     self._ready.set_result(None)
                     try:
@@ -151,15 +146,10 @@ class ComputerUseRuntime:
                 raise RuntimeError(
                     "Computer Use connection ended. Actions may have executed; observe in a fresh task before continuing."
                 )
-            metadata = (
-                {"computer-use-experience": {"enabled": False}}
-                if self._experience_supported
-                else None
-            )
             # No history capability/cursor is advertised: the first integration
             # delivers full observations, even after context compaction.
             request = asyncio.create_task(
-                self._client.call_tool(name, arguments=arguments, meta=metadata)
+                self._client.call_tool(name, arguments=arguments)
             )
             self._calls.add(request)
             self._used = True

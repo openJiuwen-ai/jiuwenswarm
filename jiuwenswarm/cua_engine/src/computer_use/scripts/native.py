@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import sys
 from ..paths import nativeDriver, repositoryRoot
-from ..protocol.session import nativeProtocolVersion
 
 
 def run(command, args, cwd=None, capture=False):
@@ -47,19 +46,10 @@ def buildMacOS(root=None):
     return executable
 
 
-def _protocolVersion(version):
-    if type(version) is not int or version not in (3, 5):
-        raise ValueError('Protocol version must be 3 or 5.')
-    return version
-
-
-def buildNative(root=None, *, protocol_version=nativeProtocolVersion):
-    _protocolVersion(protocol_version)
+def buildNative(root=None):
     if sys.platform == "darwin":
-        if protocol_version != 5: raise ValueError('The macOS backend requires protocol 5; upgrade the client.')
         return buildMacOS(root)
     if sys.platform == "win32":
-        if protocol_version != 5: raise ValueError('The Windows backend requires protocol 5; upgrade the client.')
         return buildWindows(root)
     raise RuntimeError(f"platform {sys.platform} is not implemented")
 
@@ -96,11 +86,7 @@ def buildWindows(root=None):
     return output
 
 
-def readPermissions(request=False, root=None, timeout=None, *, protocol_version=nativeProtocolVersion):
-    _protocolVersion(protocol_version)
-    if sys.platform in ('darwin', 'win32') and protocol_version != 5:
-        platform = {'darwin': 'macOS', 'win32': 'Windows'}[sys.platform]
-        raise ValueError(f'The {platform} backend requires protocol 5; upgrade the client.')
+def readPermissions(request=False, root=None, timeout=None):
     native = nativeDriver(root=root)
     try:
         result = subprocess.run([native["command"], *native["args"], "--request-permissions" if request else "--check-permissions"], stdout=subprocess.PIPE, text=True, timeout=timeout)
@@ -120,10 +106,8 @@ def permissionState(status, platform=None):
 def permissions(argv=None):
     parser = argparse.ArgumentParser(description="检查目标桌面权限；--request 在 macOS 发起系统授权提示。请使用与 MCP 相同的终端或 SSH 会话。")
     parser.add_argument("--request", action="store_true")
-    parser.add_argument('--protocol-version', type=int, choices=(3, 5), default=nativeProtocolVersion,
-                        help='Inspect native protocol 5 resources by default; 3 is for legacy diagnostics.')
     args = parser.parse_args(argv)
-    status = readPermissions(args.request, protocol_version=args.protocol_version)
+    status = readPermissions(args.request)
     print(json.dumps(status, ensure_ascii=False, separators=(",", ":")))
     ready, missing = permissionState(status)
     if not ready:
@@ -140,8 +124,6 @@ def _cli(action):
 
 def buildCli(argv=None):
     parser = argparse.ArgumentParser(description='Install/build native driver dependencies; this does not verify desktop access.')
-    parser.add_argument('--protocol-version', type=int, choices=(3, 5), default=nativeProtocolVersion,
-                        help='Prepare native protocol 5 resources by default; 3 is for legacy diagnostics. This does not change the SDK protocol.')
-    args = parser.parse_args(argv)
-    _cli(lambda: buildNative(protocol_version=args.protocol_version))
+    parser.parse_args(argv)
+    _cli(buildNative)
 def permissionsCli(): raise SystemExit(_cli(permissions))

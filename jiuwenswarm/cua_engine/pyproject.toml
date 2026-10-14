@@ -25,7 +25,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 computer_use = ["*.pyi", "py.typed"]
-"computer_use.experimental.decision" = ["*.json"]
 
 [[tool.uv.index]]
 name = "pypi"

@@ -8,7 +8,6 @@ import sys
 from .._json import dumps
 from ..client.execution import eager
 from ..client.preview import isPreviewEvent
-from ..library import resolveLibraryRoot,fileURLToPath
 from .history import HistoryGate,historyKey
 from .journal import Journal
 from .output import OutputBuffer,isOutput
@@ -21,7 +20,7 @@ def executionError(message):return dict(content=[dict(type="text",text=message)]
 
 class ExecutionSession:
     def __init__(self,timeoutMs=45000,onPreview=None,demoForeground=False):
-        self.demoForeground,self._experience=demoForeground,True
+        self.demoForeground=demoForeground
         self.timeoutMs,self.onPreview=timeoutMs,onPreview
         self._child=self._pending=self._retiring=self._resetting=self._exited=None
         self._writer=self._reader=None
@@ -30,7 +29,6 @@ class ExecutionSession:
         self._generation=0
         self._nextId=1
         self._journal,self._history=Journal(),HistoryGate()
-        self._libraryRoot=None
         self._tasks=set()
 
     def _track(self,coroutine):
@@ -39,22 +37,14 @@ class ExecutionSession:
         return task
 
     @eager
-    async def execute(self,code,signal=None,history=None,learning=None,title=None,onProgress=None,experience=True):
+    async def execute(self,code,signal=None,history=None,title=None,onProgress=None):
         if self._closed:return executionError("Execution session is closed.")
         if self._resetting is not None:
             result=await asyncio.shield(self._resetting)
-            return result if result.get("isError") else await self.execute(code,signal,history,learning,title,onProgress,experience)
+            return result if result.get("isError") else await self.execute(code,signal,history,title,onProgress)
         if self._retiring is not None:return executionError("Native cleanup is still pending. Call computer_use_reset before continuing; no code was executed.")
         if self._pending is not None or self._starting:return executionError("Another call is running; await it before starting the next.")
         if signal is not None and signal.is_set():return executionError("Call cancelled before execution.")
-        if not experience and learning is not None:return executionError("Experience is disabled; learning metadata was refused. No code was executed.")
-        if self._child is not None and self._experience != experience:
-            reset=await self.reset("Experience mode changed.")
-            if reset.get("isError"):return reset
-            result=await self.execute(code,signal,history,learning,title,onProgress,experience)
-            result["content"].insert(0,dict(type="text",text="Experience mode changed; previous Python variables, imports and observations were cleared. Recreate handles and read again; completed actions remain."))
-            return result
-        self._experience=experience
         self._starting=True
         generation=self._generation
         starting=self._track(self._start());self._startTask=starting
@@ -69,7 +59,7 @@ class ExecutionSession:
         if signal is not None and signal.is_set():return executionError("Call cancelled before execution.")
         id_=self._nextId;self._nextId+=1
         policy=self._history.begin(history)
-        self._journal.record(dict(kind="execution_start",executionId=id_,title=title,code=code,history=policy,learning=learning,experience=experience))
+        self._journal.record(dict(kind="execution_start",executionId=id_,title=title,code=code,history=policy))
         loop=asyncio.get_running_loop()
         future=loop.create_future()
         pending=dict(id=id_,title=title,startedAt=loop.time(),output=OutputBuffer(),future=future,timer=None,cancel=None)
@@ -93,7 +83,7 @@ class ExecutionSession:
                 await signal.wait();self.reset("Call cancelled.")
             pending["cancel"]=self._track(cancel())
         try:
-            self._writer.write((dumps(dict(code=code,executionId=id_,history=policy,**({"learning":learning} if learning is not None else {})))+"\n").encode("utf-8"))
+            self._writer.write((dumps(dict(code=code,executionId=id_,history=policy))+"\n").encode("utf-8"))
             await self._writer.drain()
         except Exception as error:self.reset(f"Cannot send code: {error}")
         try:return await asyncio.shield(future)
@@ -102,11 +92,7 @@ class ExecutionSession:
 
     async def _start(self):
         if self._child is not None:return
-        if self._experience:
-            if self._libraryRoot is None:self._libraryRoot=resolveLibraryRoot()
-            self._journal.record(dict(kind="library_root",url=self._libraryRoot))
-        env=dict(os.environ,COMPUTER_USE_EXPERIENCE="1" if self._experience else "0",COMPUTER_USE_REMOTE_PREVIEW="1" if self.onPreview is not None else "",COMPUTER_USE_DEMO_FOREGROUND="1" if self.demoForeground else "0",COMPUTER_USE_LIFETIME_FD="4")
-        if self._experience:env["COMPUTER_USE_PACKAGES_DIR"]=str(fileURLToPath(self._libraryRoot))
+        env=dict(os.environ,COMPUTER_USE_REMOTE_PREVIEW="1" if self.onPreview is not None else "",COMPUTER_USE_DEMO_FOREGROUND="1" if self.demoForeground else "0",COMPUTER_USE_LIFETIME_FD="4")
         if os.name=="nt":
             from .windows_worker import startWindowsWorker
             child,self._reader,self._writer,job,listener=await startWindowsWorker(env)

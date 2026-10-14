@@ -8,14 +8,12 @@ from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from ..client.preview import latestPreviewSink
 from ..client.diagnostics import sdkVersion
-from ..experimental.decision.contract import decisionKey, modelDelegationParameters, modelCommandParameters
-from ..library.learning.context import learningKey, taskSchema
-from ..protocol.schema import obj, string, boolean
+from ..protocol.schema import obj, string
 from ..protocol.primitives import trim
 from .session import ExecutionSession
 from .history import historyKey, historyRequest
 
-DESCRIPTION = "Execute Python with top-level await in a persistent Computer Use session on the MCP host. App selectors and file paths refer to that computer. Preloaded: computer, print(*values), printImage(PNG bytes). Follow the Skill for any host-enabled extensions. Variables survive calls. Await every operation. Read the computer-use skill for the SDK API and input rules. Actions emit dispatched/verified receipts only, without automatically reading trees or screenshots, even on failure. Explicitly call read() to observe current UI and verify outcomes. Reads automatically present text; diffs require host-confirmed retained history, otherwise full text is used. state.text is always complete for its bounded view. Use read({'full': True}) for full presentation, print() for other values, and printImage() for images. printImage labels dimensions and source without reading again. One call at a time; 45 s without native command progress; command starts/completions renew the watchdog, printing does not. Individual commands keep their own deadlines. Timeout/cancellation clears variables and observations; never automatically replay actions. Executes with the MCP server user's permissions."
+DESCRIPTION = "Execute Python with top-level await in a persistent Computer Use session on the MCP host. App selectors and file paths refer to that computer. Preloaded: computer, print(*values), printImage(PNG bytes). Variables survive calls. Await every operation. Read the computer-use skill for the SDK API and input rules. Actions emit dispatched/verified receipts only, without automatically reading trees or screenshots, even on failure. Explicitly call read() to observe current UI and verify outcomes. Reads automatically present text; diffs require host-confirmed retained history, otherwise full text is used. state.text is always complete for its bounded view. Use read({'full': True}) for full presentation, print() for other values, and printImage() for images. printImage labels dimensions and source without reading again. One call at a time; 45 s without native command progress; command starts/completions renew the watchdog, printing does not. Individual commands keep their own deadlines. Timeout/cancellation clears variables and observations; never automatically replay actions. Executes with the MCP server user's permissions."
 RESET_DESCRIPTION = "Reset this connection's Computer Use execution session and stop its window capture streams. Clears all Python variables, imports, tasks, App/Element handles and observations. Works even if a script is stuck. Does not close apps, undo actions or delete files, logs or saved packages. Call when finished using the computer, or to start a clean environment; afterwards recreate variables and read before acting. Idempotent; no parameters."
 _input = obj(dict(title=string(min=1, max=200).optional(), code=string(min=1, max=65536)))
 _empty = obj({})
@@ -25,9 +23,7 @@ def capabilities():
     platform = "macos" if sys.platform == "darwin" else "windows" if sys.platform == "win32" else sys.platform
     return types.ServerCapabilities(tools=types.ToolsCapability(), experimental={
         "computer-use-host": dict(version=1, platform=platform), "computer-use-preview": dict(version=2),
-        "computer-use-demo-foreground": dict(version=1), "computer-use-experience": dict(version=1),
-        historyKey: dict(version=1), learningKey: dict(version=2, bindInput=1, expectedRejection=1, publication=1),
-        decisionKey: dict(version=6, inputSchema=modelDelegationParameters, commandParameters=modelCommandParameters)})
+        "computer-use-demo-foreground": dict(version=1), historyKey: dict(version=1)})
 
 
 def _supports(capabilities, key, version):
@@ -66,15 +62,15 @@ class ComputerUseServer:
             context = self.server.request_context
             client = context.session.client_params
             experimental = client.capabilities.experimental or {} if client is not None else {}
+            metadata = context.meta.model_dump() if context.meta is not None else {}
+            if any(key in metadata for key in ("computer-use-learning", "computer-use/decision", "computer-use-experience")):
+                raise ValueError("Learning, model delegation and experience extensions are not supported. No code was executed.")
             if self.session is None:
                 async def preview(event):
                     notice = types.ServerNotification.model_construct(root=types.Notification(method="notifications/computer-use/preview", params=event))
                     await context.session.send_notification(notice)
                 self.session = ExecutionSession(45000, latestPreviewSink(preview) if _supports(experimental, "computer-use-preview", 2) else None,
                     _supports(experimental, "computer-use-demo-foreground", 1) and experimental["computer-use-demo-foreground"].get("enabled") is True)
-            metadata = context.meta.model_dump() if context.meta is not None else {}
-            learning = taskSchema.parse(metadata[learningKey]) if learningKey in metadata else None
-            experience = obj(dict(enabled=boolean())).parse(metadata["computer-use-experience"])["enabled"] if "computer-use-experience" in metadata else True
             progressToken = metadata.get("progressToken"); progress = 0
             async def reportProgress():
                 nonlocal progress
@@ -82,7 +78,7 @@ class ComputerUseServer:
                 try: await context.session.send_progress_notification(progressToken, progress, related_request_id=context.request_id)
                 except Exception: pass
             result = await self.session.execute(args["code"], history=historyRequest(metadata.get(historyKey)) if _supports(experimental, historyKey, 1) else None,
-                learning=learning, title=args.get("title"), onProgress=reportProgress if progressToken is not None else None, experience=experience)
+                title=args.get("title"), onProgress=reportProgress if progressToken is not None else None)
             return types.CallToolResult.model_validate(result)
 
     async def close(self):

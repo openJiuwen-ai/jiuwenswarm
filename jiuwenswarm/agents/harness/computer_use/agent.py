@@ -19,7 +19,6 @@ Respect the specified application, document, regions and desktop mode. Keep desk
 control within this task. Do not bypass the SDK's routing, focus or input checks.
 The Python environment is persistent during this invocation and fresh on each new invocation.
 Observations use full presentation in this integration; no retained-history diff is enabled.
-Application experience/learning and model delegation extensions are disabled here.
 Do not retry actions whose effects are uncertain; observe and report unresolved effects.
 Return a concise answer with what was accomplished, UI verification, output locations,
 and any remaining work. Preserve useful partial results. Cleanup is managed by the host.

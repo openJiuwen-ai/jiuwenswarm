@@ -1,12 +1,11 @@
-"""Session negotiation and structured failures for native v5 and legacy v3."""
+"""Session negotiation and structured failures for native protocol 5."""
 import os
 
 from ..errors import ComputerUseError, publicErrorCode
 from .action_context import decodeActionContext
 from .primitives import finite, nonempty, record, safeInteger
 
-protocolVersion = 3  # Retained by the legacy controller and parity fixtures.
-nativeProtocolVersion = 5  # Public Computer and host setup use the same protocol.
+protocolVersion = 5
 
 
 def rememberFailureContext(error, context=None):
@@ -45,10 +44,10 @@ def failureError(method, failure):
     return error
 
 
-def decodeHello(value, mode, version=protocolVersion):
+def decodeHello(value, mode):
     errorReply = isinstance(value, dict) and "error" in value
     reply = record(value, ["version", "session", "id", "error" if errorReply else "result"])
-    if (not finite(reply["version"]) or reply["version"] != version
+    if (not finite(reply["version"]) or reply["version"] != protocolVersion
             or not finite(reply["id"]) or reply["id"] != 0):
         raise ValueError("protocol: incompatible hello version or id")
     nonempty(reply["session"], "protocol session")
@@ -63,9 +62,8 @@ def decodeHello(value, mode, version=protocolVersion):
     capabilities = result["capabilities"]
     if not isinstance(capabilities, list) or any(not isinstance(v, str) or not v for v in capabilities) or len(set(capabilities)) != len(capabilities):
         raise ValueError("protocol: invalid capabilities")
-    required = (("cancel", "requestDedup", "nativeOperations") if version == 5 else
-                ("structuredObservations", "cancel", "requestDedup", "captureMetadata", "retainedCaptures", "desktopCoordination"))
-    if version == 5 and 'nativeBoundContracts' in capabilities:
+    required = ("cancel", "requestDedup", "nativeOperations")
+    if 'nativeBoundContracts' in capabilities:
         required += ('desktopCoordination',)
     for capability in required:
         if capability not in capabilities:

@@ -3,20 +3,11 @@ from ..errors import ComputerUseError
 
 sdkVersion = "0.0.1"
 _handler = None
-_structured = False
 
 
 def setDiagnosticHandler(handler):
     global _handler
     _handler = handler
-
-
-def recordStructuredObservations(enabled):
-    global _structured
-    _structured = enabled
-
-
-def wantsStructuredObservations(): return _structured
 
 
 def diagnostic(event):
