@@ -7467,9 +7467,17 @@ class JiuWenSwarmDeepAdapter:
                 # Quiet idempotence: only remove what is still registered, so a
                 # second cleanup (or one after Runner.stop cleared everything) is
                 # a no-op rather than an error.
-                if Runner.resource_mgr.get_sys_operation(sys_operation_id) is None:
+                held_instance = Runner.resource_mgr.get_sys_operation(sys_operation_id)
+                if held_instance is None:
                     continue
                 Runner.resource_mgr.remove_sys_operation(sys_operation_id)
+                # team 成员的借用别名共享这份实例（keyless 别名，见 sysop_builder）；
+                # owner 被注销时联动摘掉别名，避免残留一个无人认领的沙箱注册。
+                from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+                    release_borrowed_sandbox_aliases_of,
+                )
+
+                release_borrowed_sandbox_aliases_of(held_instance)
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] sys_operation released: %s",
                     sys_operation_id,

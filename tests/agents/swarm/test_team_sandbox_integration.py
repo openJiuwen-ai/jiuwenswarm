@@ -702,6 +702,134 @@ def test_resolve_is_idempotent_across_members(monkeypatch):
     assert rm._resource_registry._owner_map[next(iter(owner_map))] == _OWNER_ID
 
 
+def test_owner_teardown_cascades_to_its_aliases(monkeypatch):
+    """owner 被 adapter cleanup 注销时，委托给它的别名必须联动摘除（P1）。
+
+    别名注册不知道 owner 的生命周期：owner 先亡时别名悬空（非 None 但无人认领）。
+    悬空别名不是"拿到 None"的回归——句柄共享的 ``_run_config``/``_instances`` 是
+    Python 对象，解引用依然有效——问题是残留注册会被无参兜底命中。联动清理按
+    ``_run_config`` 同一性精确摘除，不波及其他 team 的别名。
+    """
+    from openjiuwen.core.sys_operation.sys_operation import SysOperation
+
+    card_a = _make_sandbox_card(custom_id="cascade_a")
+    owner_map_a, sysops_a = _owner_map_with(card_a)
+    # 第二个 team 的别名指向别的 owner，不得被误伤
+    card_b = _make_sandbox_card(custom_id="cascade_b")
+    owner_b = SysOperation(card_b.model_copy(update={"id": "owner_b"}))
+    owner_map_a[owner_b.isolation_key_template] = "owner_b"
+    sysops_a["owner_b"] = owner_b
+
+    rm = _patch_resource_mgr(monkeypatch, owner_map_a, sysops_a)
+    _patch_card_build(monkeypatch, card_a)
+    spec_a = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid", "jiuwenbox", team_id="team_a", startup_mode="external",
+    )
+    # team_b 的 spec 指向 owner_b（手工构造，绕开 _patch_card_build 的固定 card）
+    spec_b = builder.TeamSharedSandboxSpec(
+        id="team_sandbox_ref_team_b",
+        mode=OperationMode.SANDBOX,
+        work_config=LocalWorkConfig(shell_allowlist=None),
+        gateway_config=card_b.gateway_config,
+        team_id="team_b",
+    )
+    alias_a = spec_a.resolve()
+    alias_b = spec_b.resolve()
+    assert alias_a is not None and alias_b is not None
+
+    removed = builder.release_borrowed_sandbox_aliases_of(sysops_a[_OWNER_ID])
+
+    assert removed == 1, f"只该摘 team_a 的别名，实际 {removed}"
+    assert rm.get_sys_operation(alias_a.id) is None, "team_a 的别名未随 owner 联动摘除"
+    assert rm.get_sys_operation(alias_b.id) is not None, "误摘了 team_b 的别名"
+    assert rm.get_sys_operation("owner_b") is owner_b
+    # 幂等
+    assert builder.release_borrowed_sandbox_aliases_of(sysops_a[_OWNER_ID]) == 0
+
+
+def test_flattened_subagent_spec_self_heals_via_registered_alias(monkeypatch):
+    """压平的 subagent spec（rebind 不下潜 subagents）经库基类 resolve() 自愈（P3b）。
+
+    ``SubAgentSpec.build():406`` 对嵌套的 ``sys_operation`` 调库基类 ``resolve()``——
+    get-or-create 恰好命中父成员先注册的别名：拿到共享 owner 容器的句柄，dispose 时
+    keyless 不伤 owner 行。故 rebind 只扫 ``spec.agents`` 顶层是**够**的——前提是
+    父成员先构建（实际顺序由 ``resolve_parts`` 先成员后 subagents 保证）。
+    """
+    card = _make_sandbox_card()
+    owner_map, sysops = _owner_map_with(card)
+    rm = _patch_resource_mgr(monkeypatch, owner_map, sysops)
+    _patch_card_build(monkeypatch, card)
+    spec = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid", "jiuwenbox", team_id="unit_team", startup_mode="external",
+    )
+    assert spec.resolve() is not None, "前置条件：父成员先注册别名"
+
+    # 压平的 subagent spec（无 team_id、无 rebind）
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec as _Base
+
+    flat = _Base(
+        id="team_sandbox_ref_unit_team",
+        mode=OperationMode.SANDBOX,
+        work_config=LocalWorkConfig(shell_allowlist=None),
+        gateway_config=card.gateway_config,
+    )
+    resolved = flat.resolve()
+
+    assert type(resolved).__name__ == "_BorrowedSandboxHandle", (
+        f"自愈失败：{type(resolved).__name__}"
+    )
+    assert resolved._run_config is sysops[_OWNER_ID]._run_config, "未借到 owner 容器"
+    assert resolved.isolation_key_template is None
+    _simulate_native_harness_dispose(rm, resolved.id)
+    assert rm.get_sys_operation(_OWNER_ID) is sysops[_OWNER_ID], "subagent dispose 误伤 owner"
+    assert rm._resource_registry._owner_map[next(iter(owner_map))] == _OWNER_ID
+
+
+def test_register_refreshes_stale_alias_when_owner_changed(monkeypatch):
+    """owner 换容器后重建成员：别名必须刷新到新容器（P4 刷新路径）。
+
+    摘旧登新整段同步、无 await 边界，不存在可观察的半登记窗口；旧别名指向已废弃
+    容器，刷新只会更好。
+    """
+    from openjiuwen.core.sys_operation.sys_operation import SysOperation
+
+    card_v1 = _make_sandbox_card(custom_id="refresh_v1")
+    owner_map, sysops = _owner_map_with(card_v1)
+    rm = _patch_resource_mgr(monkeypatch, owner_map, sysops)
+
+    # owner v1：别名登记指向 v1
+    _patch_card_build(monkeypatch, card_v1)
+    spec_v1 = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid", "jiuwenbox", team_id="unit_team", startup_mode="external",
+    )
+    assert spec_v1.resolve() is not None
+    alias_v1 = rm.get_sys_operation("team_sandbox_ref_unit_team")
+    assert alias_v1._run_config is sysops[_OWNER_ID]._run_config
+
+    # owner v2：新容器（新 id、新 key）。走注册表 API 换血——与真实 re-register 一致
+    # （直接改 sysops 字典会绕过 tag 盖章，get 就看不见了）。
+    card_v2 = _make_sandbox_card(custom_id="refresh_v2")
+    rm.remove_sys_operation(_OWNER_ID)
+    rm.add_sys_operation(card_v2.model_copy(update={"id": "owner_v2"}))
+    owner_v2 = rm.get_sys_operation("owner_v2")
+    assert owner_v2 is not None, "前置条件：owner v2 已注册"
+
+    spec_v2 = builder.TeamSharedSandboxSpec(
+        id="team_sandbox_ref_unit_team",
+        mode=OperationMode.SANDBOX,
+        work_config=LocalWorkConfig(shell_allowlist=None),
+        gateway_config=card_v2.gateway_config,
+        team_id="unit_team",
+    )
+    handle_v2 = spec_v2.resolve()
+
+    refreshed = rm.get_sys_operation("team_sandbox_ref_unit_team")
+    assert refreshed is not None
+    assert refreshed._run_config is owner_v2._run_config, "别名未刷新到新容器"
+    assert refreshed._run_config is handle_v2._run_config
+    assert rm._resource_registry._owner_map[owner_v2.isolation_key_template] == "owner_v2"
+
+
 def test_release_removes_team_owned_sandbox(monkeypatch):
     """release 后 registry 与记账表都清空（自持 id + 借用别名一并回收）。"""
     spec, rm = _build_spec(monkeypatch, owner_map={}, sysops={})
@@ -1116,6 +1244,24 @@ def test_rebind_ignores_non_team_sys_operation(monkeypatch):
     assert builder.rebind_team_sandbox_specs(spec) == 0
     assert spec.agents["leader"].sys_operation is local
     assert spec.agents["teammate"].sys_operation is None
+
+
+def test_rebind_skips_bare_prefix_id(monkeypatch):
+    """空后缀（id 恰为前缀本身）反解不出 team_id，换回去只是个查不到 owner 的空壳。"""
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec as _Base
+
+    spec = _make_team_spec()
+    bare = _Base(
+        id=builder._TEAM_SANDBOX_REF_ID_PREFIX,
+        mode=OperationMode.SANDBOX,
+        work_config=LocalWorkConfig(shell_allowlist=None),
+    )
+    spec.agents["leader"] = spec.agents["leader"].model_copy(
+        update={"sys_operation": bare}
+    )
+
+    assert builder.rebind_team_sandbox_specs(spec) == 0
+    assert type(spec.agents["leader"].sys_operation) is _Base
 
 
 # ---------------------------------------------------------------------------

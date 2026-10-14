@@ -1111,6 +1111,60 @@ class _BorrowedSandboxHandle(SysOperation):
         return None
 
 
+def release_borrowed_sandbox_aliases_of(source: SysOperation) -> int:
+    """摘掉委托给 *source* 的所有借用别名（owner 注销时联动，供清理路径调用）。
+
+    **为什么需要**：别名登记不知道 owner 的生命周期——owner（主 agent 沙箱 /
+    team 自持沙箱）被 adapter cleanup 注销时，别名那条登记还挂着。悬空别名**不是**
+    "消费方拿到 None"的回归：句柄共享的是 ``_run_config``/``_instances`` 的
+    Python 对象，解引用依然有效（注销只摘注册簿条目，不拆容器）。真正的问题是
+    残留注册——``Runner.resource_mgr.get_sys_operation()`` 无参兜底仍能命中一个
+    已无人认领的沙箱条目。
+
+    调用时机：owner 从注册簿摘除**之后**，传入刚被摘的实例（不是 id——要用它的
+    ``_run_config`` 做同一性判定）。幂等：无别名时返回 0。
+
+    Args:
+        source: 刚被注销的 owner 实例。
+
+    Returns:
+        被摘掉的别名条数。
+    """
+    if source is None:
+        return 0
+    try:
+        from openjiuwen.core.runner.runner import Runner
+
+        resource_mgr = Runner.resource_mgr
+        registered = resource_mgr.get_sys_operation()
+    except Exception as exc:  # noqa: BLE001 — 清理路径失败只降级
+        logger.debug("[sysop_builder] 别名联动清理跳过（注册表不可达）：%r", exc)
+        return 0
+    if registered is None:
+        return 0
+    if not isinstance(registered, list):
+        registered = [registered]
+
+    removed = 0
+    for entry in registered:
+        if not isinstance(entry, _BorrowedSandboxHandle):
+            continue
+        if entry._run_config is not source._run_config:
+            continue
+        try:
+            if resource_mgr.get_sys_operation(entry.id) is not None:
+                resource_mgr.remove_sys_operation(entry.id)
+                removed += 1
+                logger.info(
+                    "[sysop_builder] owner 已注销，联动摘掉借用别名：id=%s", entry.id
+                )
+        except Exception as exc:  # noqa: BLE001 — 清理路径失败只降级
+            logger.warning(
+                "[sysop_builder] 借用别名联动清理失败：id=%s err=%s", entry.id, exc
+            )
+    return removed
+
+
 def _register_borrowed_sandbox_handle(
     handle: "_BorrowedSandboxHandle",
     *,
@@ -1140,9 +1194,12 @@ def _register_borrowed_sandbox_handle(
     code 工具由 ``SysOperationRail`` 按 agent id 注册并持引用，与 sysop id 无关。
 
     **刷新语义**：owner 换人（重注册出新的 ``_run_config``）时旧别名是**陈旧**的，
-    会让 ContextEngine 继续写旧容器。故检测到 ``_run_config`` 不同就先摘旧再登记新
-    （摘的是 keyless 别名，不动 owner 行）。owner 未变时是纯 no-op，不制造
-    "登记抖动"窗口。
+    会让 ContextEngine 继续写旧容器。故检测到 ``_run_config`` 不同就先摘旧再登记新。
+    摘与登之间**没有可观察的窗口**：整段（get → remove → add → tag）同步执行、
+    无 await 边界，单线程 asyncio 下其他协程（包括重建中的成员）不可能插入观察到
+    半登记状态；且旧值本就指向已废弃的容器，先摘后登不存在"更差"的中间态。
+    owner 未变时是纯 no-op，不制造"登记抖动"。已构建成员仍持旧句柄对象，指向
+    旧容器直到自身重建——这是别名无法回填的固有滞后，非本函数可解。
 
     登记 id 记入 :data:`_TEAM_OWNED_SYSOP_IDS`，成员崩溃未走 dispose 时由
     :func:`release_team_owned_sandbox` 兜底回收。
@@ -1210,6 +1267,21 @@ class TeamSharedSandboxSpec(SysOperationSpec):
     也不会摘掉本 team 的自持沙箱（自持沙箱全队共用，由
     :func:`release_team_owned_sandbox` 在 team 生命周期结束时统一回收；别名 id
     也一并记入同一张表作崩溃兜底）。
+
+    **别名按 team 一把、刻意不做 agent 维度**（已知取舍）：全队共用一个别名 id，
+    成员 A 的 dispose 会摘掉别名，B 在"A 退出后、B 自身重建前"按 id 回查落空。
+    影响有界：B 的 ContextEngine 持**句柄对象**不受影响；B 重建时 ``resolve()``
+    会重新登记（先 resolve 再 ``apply_deep_agent_parts`` 的顺序保证）；唯一暴露面
+    是 A 退出后、B 重建前的按 id 回查（如 ``SkillManager``）。改成
+    ``team_sandbox_ref_<team>_<agent>`` 可以让 dispose 只摘自己，但 ``team_id``
+    只能从 id 后缀反解（子类字段不进 dump），team 名本身允许 ``_``/``__``
+    （``TEAM_NAME_RE`` 只排路径分隔符），拆分无歧义锚点——需要一套编码约定
+    （如 team 名 hex 化）并审计全部四条边界，属后续决策，未做。
+
+    **owner 先亡的联动**：别名注册不知道 owner 生命周期，owner 被 adapter cleanup
+    注销时别名会悬空（非 None 但无人认领）。联动清理见
+    :func:`release_borrowed_sandbox_aliases_of`（``interface_deep`` 的
+    ``_release_sys_operations`` 在摘 owner 后调用）。
 
     ``team_id`` 只用于推导自持 id 与记账表键，不进 ``build_card()``
     （key 与 id 无关）。
@@ -1408,6 +1480,21 @@ def rebind_team_sandbox_specs(spec: Any) -> int:
     ``team_sandbox_ref_<team_id>``，team_id 本身就是运行态全名，不含前缀，故
     ``id[len(prefix):]`` 精确还原。不依赖任何被丢弃的字段。
 
+    **契约与边界**：后缀即运行态 team 全名，这是 ``create_sandbox_sysop_spec`` 的
+    调用约定（jiuwenswarm 唯一调用方 ``assembly`` 恒传非空的 ``spec.team_name``）。
+    若 team_id 为空，``create_sandbox_sysop_spec`` 会退回用 isolation custom id 拼后缀
+    ——此时反解出的是"伪 team_id"（语义漂移），且 :func:`_register_borrowed_sandbox_handle`
+    的 ``if team_id:`` 让这种别名不入账、team 生命周期收不到；回收只能靠沙箱开关
+    teardown（mode==SANDBOX 分支仍会摘它）。故 assembly 不得传空 team_id；
+    前缀本身（空后缀）在此直接跳过。
+
+    **只扫 ``spec.agents`` 顶层，不下潜 ``subagents``**：嵌套 ``SubAgentSpec.sys_operation``
+    同样会被压平，但实测它是**自愈**的——父成员 ``resolve()`` 先注册别名，压平的
+    子代理 spec 走库基类 ``resolve()`` 的 get-or-create 恰好命中别名（共享 owner 容器、
+    dispose 时 keyless 不伤 owner 行），行为正确（见
+    ``test_flattened_subagent_spec_self_heals_via_registered_alias``）。
+    若未来自持/无 owner 顺序发生变化，需重新审计这里。
+
     Args:
         spec: ``TeamAgentSpec``（或任何带 ``.agents`` 映射的对象）。就地修改。
 
@@ -1424,6 +1511,13 @@ def rebind_team_sandbox_specs(spec: Any) -> int:
             continue
         raw_id = str(getattr(current, "id", "") or "")
         if not raw_id.startswith(_TEAM_SANDBOX_REF_ID_PREFIX):
+            continue
+        if raw_id == _TEAM_SANDBOX_REF_ID_PREFIX:
+            # 空后缀反解不出 team_id，换回去也只是个永远查不到 owner 的空壳
+            logger.warning(
+                "[sysop_builder] team sandbox spec 的句柄 id 缺少 team 后缀，跳过换回：member=%s",
+                key,
+            )
             continue
         restored = TeamSharedSandboxSpec(
             id=raw_id,
