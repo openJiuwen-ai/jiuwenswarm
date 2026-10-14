@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import {
   buildAgentGroupCreatePayload,
@@ -239,4 +240,24 @@ test('catalog filtering keeps description matches while mine excludes them', () 
   const options = { category: '', query: 'description-only', page: 1, pageSize: 12 };
   assert.equal(buildGroupCatalogViewModel([item], { ...options, scope: 'catalog' }).totalItems, 1);
   assert.equal(buildGroupCatalogViewModel([item], { ...options, scope: 'mine' }).totalItems, 0);
+});
+
+test('chat group picker submits runtime package names and keeps selection checked', () => {
+  const source = readFileSync(new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8');
+  const picker = source.slice(source.indexOf('filteredGroupOptions.map((item) => {'));
+  const handler = picker.match(/onClick=\{\(\) => \{([\s\S]*?)\}\}/)[1];
+  const selectedExpression = picker.match(/const isSelected = ([^;]+);/)[1];
+  for (const item of [
+    { id: 'hub-asset-uuid', name: 'presentation-generation' },
+    { id: 'local-team', name: 'local-team' },
+  ]) {
+    let intent;
+    new Function('item', 'agentGroupSelectionDisabled', 'activeSessionId', 'useSessionStore',
+      'setAgentGroupSelectionIntent', 'setAgentSelectionIntent', 'clearSelectedSkills', 'setAttachMenuOpen', handler)(
+      item, false, 'new', { getState: () => ({ setMode() {} }) },
+      (_session, value) => { intent = value; }, () => {}, () => {}, () => {},
+    );
+    assert.deepEqual(buildAgentGroupSelectionPayloadForMode('team', intent), { agent_group_name: item.name });
+    assert.equal(new Function('item', 'selectedGroupId', `return ${selectedExpression}`)(item, item.name), true);
+  }
 });
