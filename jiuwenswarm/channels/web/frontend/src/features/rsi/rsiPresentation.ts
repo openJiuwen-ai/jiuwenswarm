@@ -14,6 +14,16 @@ import type {
 // 节点类型 → 展示用状态色类名（对应 rsi.css 的 bar--* 与图例 dot）
 export type NodeStatusKind = 'best-path' | 'evaluated' | 'pending' | 'failed' | 'pruned';
 
+/** Hide candidates abandoned after a program reaches its target score. */
+export function visibleRsiTree(
+  tree: RsiTreeGetResult | null,
+  artifactType: RsiArtifactType | null,
+): RsiTreeGetResult | null {
+  if (!tree || artifactType !== 'PROGRAM') return tree;
+  const nodes = tree.nodes.filter((node) => node.extra?.threshold_stop_cancelled !== true);
+  return nodes.length === tree.nodes.length ? tree : { ...tree, nodes };
+}
+
 // 节点 type → 状态色映射（对齐样式概要：最优路径/已评测/待评测/已剪枝）
 // adopted/root → best-path；rejected → evaluated；provisional → pending；pruned → pruned
 export function nodeTypeToStatusKind(type: RsiNodeType): NodeStatusKind {
@@ -378,7 +388,7 @@ function attemptInfo(
 }
 
 export type RsiNodeLifecycle =
-  'baseline' | 'generating' | 'evaluating' | 'pending' | 'adopted' | 'rejected' | 'failed' | 'pruned';
+  'baseline' | 'generating' | 'evaluating' | 'pending' | 'adopted' | 'rejected' | 'failed' | 'pruned' | 'skipped';
 
 export interface RsiNodePresentationContext {
   scenario: RsiScenario;
@@ -414,8 +424,23 @@ function artifactObjectLabel(scenario: RsiScenario, artifactType: RsiArtifactTyp
   return artifactType === 'PROGRAM' ? '程序' : '论文';
 }
 
+export const SKIPPED_TARGET_REACHED = 'SKIPPED_TARGET_REACHED';
+export const SKIPPED_TARGET_REACHED_REASON = '其他候选已达到目标分数';
+
+/**
+ * A program candidate abandoned because another candidate already reached the
+ * target score was skipped, not failed. Never present it as a failure.
+ */
+export function isSkippedForTargetReached(node: RsiTreeNode): boolean {
+  if (node.type === 'ROOT' || node.type === 'ADOPTED' || node.adopted) return false;
+  if ((node.failure_class ?? '').toUpperCase() === SKIPPED_TARGET_REACHED) return true;
+  if (node.extra?.threshold_stop_cancelled === true) return true;
+  return asText(node.failure_reason)?.trim() === SKIPPED_TARGET_REACHED_REASON;
+}
+
 function lifecycleForNode(node: RsiTreeNode, taskRunning: boolean): RsiNodeLifecycle {
   if (node.type === 'ROOT') return 'baseline';
+  if (isSkippedForTargetReached(node)) return 'skipped';
   if (node.type === 'PRUNED') return 'pruned';
   if (node.type === 'PROVISIONAL') {
     if (!taskRunning) return 'pending';
@@ -454,6 +479,7 @@ function failureLabel(
     return '未达到采纳条件';
   }
   if (lifecycle === 'pruned') return asText(node.failure_reason) || '搜索空间已剪枝';
+  if (lifecycle === 'skipped') return SKIPPED_TARGET_REACHED_REASON;
   return null;
 }
 
@@ -469,6 +495,7 @@ function lifecycleStatusKind(lifecycle: RsiNodeLifecycle): NodeStatusKind {
     case 'failed':
       return 'failed';
     case 'pruned':
+    case 'skipped':
       return 'pruned';
     case 'rejected':
       return 'evaluated';
@@ -491,6 +518,7 @@ function lifecycleRuntimeKind(lifecycle: RsiNodeLifecycle): NodeRuntimeKind {
     case 'rejected':
       return 'evaluated';
     case 'pruned':
+    case 'skipped':
       return 'pruned';
   }
 }
@@ -518,6 +546,8 @@ function lifecycleRuntimeLabel(lifecycle: RsiNodeLifecycle): string {
       return '失败';
     case 'pruned':
       return '已剪枝';
+    case 'skipped':
+      return '已跳过';
   }
 }
 
@@ -529,7 +559,10 @@ function titleForNode(
 ): string {
   const objectLabel = artifactObjectLabel(context.scenario, context.artifactType);
   if (lifecycle === 'baseline') return `基线${objectLabel}`;
-  if (lifecycle === 'adopted') return `${objectLabel}版本 ${round} · 当前最优`;
+  if (lifecycle === 'adopted') {
+    const runningProgram = context.artifactType === 'PROGRAM' && context.taskRunning;
+    return `${objectLabel}版本 ${round} · ${runningProgram ? '当前领先' : '当前最优'}`;
+  }
   const suffix = lifecycle === 'failed' ? '尝试' : lifecycle === 'pruned' ? '候选' : '候选';
   const attemptLabel = attempt ? ` ${attempt.index}/${attempt.total}` : '';
   return `第 ${round} 轮 · ${objectLabel}${suffix}${attemptLabel}`;
@@ -546,6 +579,8 @@ export function presentRsiNode(node: RsiTreeNode, context: RsiNodePresentationCo
   const changeItems = (node.changes ?? []).map(nodeChangeDisplayLabel).filter(Boolean);
   const summary = changeItems[0] ?? nodeDescriptionSummary(node);
   const reasonLabel = failureLabel(node, lifecycle, score, parentScore);
+  // Other program candidates can still overtake an adopted node while the task runs.
+  const runningProgramLeader = lifecycle === 'adopted' && context.artifactType === 'PROGRAM' && taskRunning;
   return {
     title: titleForNode(context, lifecycle, round, attempt),
     subtitle:
@@ -557,13 +592,13 @@ export function presentRsiNode(node: RsiTreeNode, context: RsiNodePresentationCo
     lifecycle,
     statusKind: lifecycleStatusKind(lifecycle),
     runtimeKind: lifecycleRuntimeKind(lifecycle),
-    runtimeLabel: lifecycleRuntimeLabel(lifecycle),
+    runtimeLabel: runningProgramLeader ? '当前领先' : lifecycleRuntimeLabel(lifecycle),
     runtimeIcon: runtimeIconKind(lifecycleRuntimeKind(lifecycle)),
     stageLabel: nodeStageLabel(node),
     summary,
     changeItems,
     reasonLabel,
-    reasonDetail: lifecycle === 'pruned' ? null : clampText(asText(node.failure_reason), 500),
+    reasonDetail: lifecycle === 'pruned' || lifecycle === 'skipped' ? null : clampText(asText(node.failure_reason), 500),
     parentTitle: parent ? presentRsiNode(parent, { ...context, allNodes }).title : null,
     iteration: round,
     attempt,

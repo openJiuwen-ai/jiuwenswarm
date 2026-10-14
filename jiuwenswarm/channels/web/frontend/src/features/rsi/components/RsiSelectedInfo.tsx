@@ -185,7 +185,9 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
                   ? t('rsi.detail.failureReason', { defaultValue: '失败原因' })
                   : presentation.lifecycle === 'pruned'
                     ? t('rsi.detail.prunedReason', { defaultValue: '剪枝原因' })
-                    : t('rsi.detail.rejectionReason', { defaultValue: '未采用原因' })}
+                    : presentation.lifecycle === 'skipped'
+                      ? t('rsi.detail.skippedReason', { defaultValue: '跳过原因' })
+                      : t('rsi.detail.rejectionReason', { defaultValue: '未采用原因' })}
               </div>
               <div className="rsi-selected-info__reason-label">{presentation.reasonLabel}</div>
               {presentation.reasonDetail && (
