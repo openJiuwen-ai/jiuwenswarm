@@ -59,6 +59,7 @@ _STREAM_KINDS = {
 PushSink = Callable[[dict[str, Any]], Awaitable[Any]]
 ManagerFactory = Callable[..., AgentManager]
 
+_REQUEST_METHODS = frozenset({ReqMethod.JIUWENMATE_REQUEST_GET.value, ReqMethod.JIUWENMATE_REQUEST_ABORT.value})
 _COLLEAGUE_METHODS = frozenset(
     {
         ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT.value,
@@ -76,6 +77,7 @@ _RUNTIME_METHODS = frozenset(
         ReqMethod.JIUWENMATE_CHAT_SEND.value,
         ReqMethod.JIUWENMATE_CHAT_HISTORY.value,
         ReqMethod.JIUWENMATE_REQUEST_GET.value,
+        ReqMethod.JIUWENMATE_REQUEST_ABORT.value,
         ReqMethod.JIUWENMATE_CONVERSATION_LIST.value,
         ReqMethod.JIUWENMATE_CONVERSATION_RENAME.value,
         ReqMethod.JIUWENMATE_CONVERSATION_DELETE.value,
@@ -259,7 +261,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 self._watch(method, params.get("agent_id"), request)
                 payload = await self._run(method, params)
                 view = payload.get("request")
-                if method == ReqMethod.JIUWENMATE_REQUEST_GET.value and isinstance(view, dict):
+                if method in _REQUEST_METHODS and isinstance(view, dict):
                     self._watch(method, view["agent_id"], request)
             else:
                 payload = await asyncio.to_thread(self._call, method, params)
@@ -288,6 +290,11 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         conversations = self._conversations
         if method == ReqMethod.JIUWENMATE_REQUEST_GET.value:
             view = await manager.request_view(WEB_NAMESPACE, _text_param(params, "request_id"))
+            return {"request": view.to_dict()}
+        if method == ReqMethod.JIUWENMATE_REQUEST_ABORT.value:
+            view = await manager.control_request(
+                WEB_NAMESPACE, _text_param(params, "request_id"), reason=params.get("reason"), access=WEB_ACCESS
+            )
             return {"request": view.to_dict()}
         agent_id = _text_param(params, "agent_id")
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value:

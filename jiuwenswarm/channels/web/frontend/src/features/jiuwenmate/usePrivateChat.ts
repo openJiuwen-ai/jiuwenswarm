@@ -6,12 +6,20 @@ import {
   mergeChatRequest,
   type JiuwenMateApi,
   type JiuwenMateChatRequest,
+  type JiuwenMateControlReason,
   type JiuwenMateConversation,
 } from './jiuwenmateApi';
 
 export type JiuwenMateChatApi = Pick<
   JiuwenMateApi,
-  'sendMessage' | 'history' | 'getRequest' | 'onStream' | 'listConversations' | 'renameConversation' | 'deleteConversation'
+  | 'sendMessage'
+  | 'history'
+  | 'getRequest'
+  | 'abortRequest'
+  | 'onStream'
+  | 'listConversations'
+  | 'renameConversation'
+  | 'deleteConversation'
 >;
 
 /** Messages run on the server; pushed fragments show progress, and asking again covers missed pushes. */
@@ -142,5 +150,18 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
     [api, agentId, conversationId, scope],
   );
 
-  return { requests, error, sending, send };
+  const abort = useCallback(
+    async (requestId: string, reason: JiuwenMateControlReason): Promise<void> => {
+      setError(null);
+      try {
+        const controlled = await api.abortRequest(requestId, reason);
+        if (scopeRef.current === scope) setRequests((current) => mergeChatRequest(current, controlled));
+      } catch (reason) {
+        if (scopeRef.current === scope) setError(errorMessage(reason));
+      }
+    },
+    [api, scope],
+  );
+
+  return { requests, error, sending, send, abort };
 }

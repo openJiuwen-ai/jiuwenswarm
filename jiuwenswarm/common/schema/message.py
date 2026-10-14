@@ -424,6 +424,7 @@ def _ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None
     JIUWENMATE_CHAT_SEND = "jiuwenmate.chat.send"
     JIUWENMATE_CHAT_HISTORY = "jiuwenmate.chat.history"
     JIUWENMATE_REQUEST_GET = "jiuwenmate.request.get"
+    JIUWENMATE_REQUEST_ABORT = "jiuwenmate.request.abort"
     JIUWENMATE_CONVERSATION_LIST = "jiuwenmate.conversation.list"
     JIUWENMATE_CONVERSATION_RENAME = "jiuwenmate.conversation.rename"
     JIUWENMATE_CONVERSATION_DELETE = "jiuwenmate.conversation.delete"

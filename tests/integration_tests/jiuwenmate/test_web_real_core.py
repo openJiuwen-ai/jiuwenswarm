@@ -52,6 +52,7 @@ class LocalModel:
 
     def __init__(self) -> None:
         self.calls: list[list] = []
+        self.hold: asyncio.Event | None = None
 
     async def invoke(self, messages, **kwargs):
         raise AssertionError("core streams the native agent")
@@ -59,6 +60,8 @@ class LocalModel:
     async def stream(self, messages, **kwargs):
         self.calls.append(list(messages))
         yield AssistantMessageChunk(content=f"第{len(self.calls)}次")
+        if self.hold is not None:
+            await self.hold.wait()
         yield AssistantMessageChunk(
             content="回复",
             finish_reason="stop",
@@ -101,7 +104,7 @@ class Server:
         assert response.ok, response.payload
         return response.payload
 
-    async def ask(self, agent_id: str, text: str) -> dict:
+    async def send(self, agent_id: str, text: str) -> str:
         sent = await self.call(
             ReqMethod.JIUWENMATE_CHAT_SEND,
             agent_id=agent_id,
@@ -109,7 +112,12 @@ class Server:
             text=text,
             message_id=f"msg-{text}",
         )
-        request_id = sent["request"]["request_id"]
+        return sent["request"]["request_id"]
+
+    async def ask(self, agent_id: str, text: str) -> dict:
+        return await self.ended(await self.send(agent_id, text))
+
+    async def ended(self, request_id: str) -> dict:
         for _ in range(500):
             view = (await self.call(ReqMethod.JIUWENMATE_REQUEST_GET, request_id=request_id))["request"]
             if view["status"] == "ended" and not view["running"]:
@@ -174,3 +182,27 @@ async def test_reply_fragments_are_pushed_while_the_model_streams(tmp_path, mode
     streamed = "".join(frame["text"] for frame in server.pushed if frame["kind"] == "delta")
     assert streamed == answered["replies"][0] == "第1次回复"
     assert [frame["kind"] for frame in server.pushed][-2:] == ["segment", "ended"]
+
+
+@pytest.mark.parametrize(("reason", "outcome"), [("stop", "stopped"), ("cancel", "cancelled")])
+async def test_a_running_reply_is_interrupted_and_the_conversation_continues(tmp_path, model, reason, outcome):
+    server = Server(tmp_path)
+    agent_id = (await server.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT))["colleague"]["agent_id"]
+    model.hold = asyncio.Event()
+
+    request_id = await server.send(agent_id, "写一篇长文")
+    for _ in range(500):
+        if any(frame["kind"] == "delta" for frame in server.pushed):
+            break
+        await asyncio.sleep(0.01)
+    controlled = (await server.call(ReqMethod.JIUWENMATE_REQUEST_ABORT, request_id=request_id, reason=reason))[
+        "request"
+    ]
+    interrupted = await server.ended(request_id)
+    model.hold = None
+    answered = await server.ask(agent_id, "换个问题")
+    await server.adapter.aclose()
+
+    assert controlled["control"]["reason"] == reason
+    assert (interrupted["outcome"], interrupted["control"]["status"]) == (outcome, "accepted")
+    assert answered["outcome"] == "completed"

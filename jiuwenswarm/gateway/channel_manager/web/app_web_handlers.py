@@ -613,6 +613,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "jiuwenmate.chat.send",
     "jiuwenmate.chat.history",
     "jiuwenmate.request.get",
+    "jiuwenmate.request.abort",
     "jiuwenmate.conversation.list",
     "jiuwenmate.conversation.rename",
     "jiuwenmate.conversation.delete",
@@ -640,8 +641,12 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "jiuwenmate.chat.history",
     "jiuwenmate.request.get",
 <<<<<<< HEAD
+<<<<<<< HEAD
 >>>>>>> ceae12037 (feat(JM10): add private chat, history and request status)
 =======
+=======
+    "jiuwenmate.request.abort",
+>>>>>>> a19e2db98 (feat(JM12): let the sender stop a running reply or cancel a queued message)
     "jiuwenmate.conversation.list",
     "jiuwenmate.conversation.rename",
     "jiuwenmate.conversation.delete",
