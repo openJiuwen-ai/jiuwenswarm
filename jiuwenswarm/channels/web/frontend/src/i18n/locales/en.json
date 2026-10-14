@@ -89,6 +89,22 @@
       "createFailed": "Failed to create the colleague: {{reason}}",
       "deleteFailed": "Failed to delete the colleague: {{reason}}"
     },
+    "chat": {
+      "title": "Private chat",
+      "failed": "Message failed: {{reason}}",
+      "noReply": "The colleague sent no reply",
+      "status": {
+        "queued": "Queued",
+        "running": "Working",
+        "interrupted": "Interrupted by a server restart",
+        "completed": "Completed",
+        "ignored": "No reply needed",
+        "paused": "Paused",
+        "stopped": "Stopped",
+        "cancelled": "Cancelled",
+        "failed": "Failed"
+      }
+    },
     "intro": {
       "title": "Office",
       "subtitle": "Create and manage AI colleagues, then send them to IM groups to work on their own",

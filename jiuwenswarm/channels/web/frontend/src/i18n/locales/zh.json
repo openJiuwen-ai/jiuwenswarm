@@ -89,6 +89,22 @@
       "createFailed": "创建同事失败：{{reason}}",
       "deleteFailed": "删除同事失败：{{reason}}"
     },
+    "chat": {
+      "title": "私聊",
+      "failed": "消息处理失败：{{reason}}",
+      "noReply": "同事没有回复消息",
+      "status": {
+        "queued": "排队中",
+        "running": "处理中",
+        "interrupted": "服务重启，处理已中断",
+        "completed": "已完成",
+        "ignored": "无需回复",
+        "paused": "已暂停",
+        "stopped": "已停止",
+        "cancelled": "已取消",
+        "failed": "处理失败"
+      }
+    },
     "intro": {
       "title": "办公室",
       "subtitle": "创建和管理 AI 同事，派送至 IM 群内自主履职",

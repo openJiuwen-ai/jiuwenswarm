@@ -211,11 +211,11 @@ sequenceDiagram
 
 | 遗留项 | 性质 | 影响与现有处置 | 后续入口 |
 | --- | --- | --- | --- |
-| AgentServer 启停接线 | 推迟 | 管理器目前只能在测试中启停 | S1 |
+| AgentServer 启停接线 | 已处理 | 由 JM-10 的 Web 适配器在首次调用时启动、随 AgentServer 停止关闭 | [F_10_02](F_10_02_web-private-chat.md) |
 | 续做执行 | 未开放 | `resume` 拒绝 | JM-13 |
 | 群消息执行 | 依赖缺失 | 缺少群聊端口时 core 拒绝，结局为 `failed` | JM-11 |
 | 真实执行 | 依赖缺失 | core 会话状态记录未接入，真实执行均失败 | PA-10 |
 
 ## 10. 设计演进与修订
 
-暂无。
+- 2026-10-14：JM-10 私聊子范围为 `AgentManager` 增加 `create_default`、私聊入口与请求视图，并完成 AgentServer 启停接线（见 [F_10_02](F_10_02_web-private-chat.md)）；本文的调度与执行设计不变。

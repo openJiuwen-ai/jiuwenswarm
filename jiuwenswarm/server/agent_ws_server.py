@@ -1188,6 +1188,7 @@ class AgentWebSocketServer:
         # Gateway user-business RPCs execute in the current AgentServer's
         # injected data directory. Register adapters once per server; request
         # dispatch occurs before the legacy handler chain below.
+        self._jiuwenmate_web = JiuwenMateWebAdapter(push=self.send_push)
         self._adapter_registry = AdapterRegistry()
         for adapter in (
             VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
@@ -1201,8 +1202,12 @@ class AgentWebSocketServer:
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
 =======
             ConfigAdapter(),
+<<<<<<< HEAD
             JiuwenMateWebAdapter(),
 >>>>>>> d934f611f (feat(JM10): connect the colleague pages to server-side colleague management)
+=======
+            self._jiuwenmate_web,
+>>>>>>> ceae12037 (feat(JM10): add private chat, history and request status)
         ):
             self._adapter_registry.register(adapter)
         # AgentServer-side tokenizer cache/download service. The Gateway only
@@ -1984,6 +1989,9 @@ class AgentWebSocketServer:
         session_message_service = getattr(self, "_session_message_service", None)
         if session_message_service is not None:
             await session_message_service.stop()
+        jiuwenmate_web = getattr(self, "_jiuwenmate_web", None)
+        if jiuwenmate_web is not None:
+            await jiuwenmate_web.aclose()
         # 先取消 checkpointer 预热任务, 避免在 server 关闭后仍在后台跑.
         warmup = self._checkpointer_warmup_task
         self._checkpointer_warmup_task = None
@@ -2093,8 +2101,12 @@ class AgentWebSocketServer:
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
 =======
                     ConfigAdapter(),
+<<<<<<< HEAD
                     JiuwenMateWebAdapter(),
 >>>>>>> d934f611f (feat(JM10): connect the colleague pages to server-side colleague management)
+=======
+                    self._jiuwenmate_web,
+>>>>>>> ceae12037 (feat(JM10): add private chat, history and request status)
                 ):
                     self._adapter_registry.register(adapter)
 

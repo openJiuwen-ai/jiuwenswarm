@@ -11,7 +11,7 @@
 | 负责人 | 常钰聪 |
 | 状态 | 待验收（同事管理子范围；与开发计划一致） |
 | 设计依据 | [JiuwenMate 服务端架构设计](../designs/jiuwenmate-architecture.md) 第 4.4 节“管理查询与状态解释” |
-| 关联 feature | 前置：[F_02 同事定义与配置发布](F_02_colleague-management.md)；后续：私聊、历史与状态子范围另行建档 |
+| 关联 feature | 前置：[F_02 同事定义与配置发布](F_02_colleague-management.md)；后续：[F_10_02 Web 私聊、历史与状态接入](F_10_02_web-private-chat.md) |
 | 验证摘要 | 见第 8 节 |
 | Refs | 无独立 issue；需求来源为开发计划 JM-10 |
 
@@ -208,8 +208,8 @@ sequenceDiagram
 
 | 遗留项 | 性质 | 影响与现有处置 | 后续入口 |
 | --- | --- | --- | --- |
-| 私聊、历史、状态、断线续跑 | 未实施 | 发送按钮仍不可用 | JM-10 后续子范围 |
-| 删除同事未经 `AgentManager` | 暂时安全 | 当前没有执行入口，不会留下未结束的 Request | 接入 `AgentManager` 时改为经由其删除 |
+| 私聊、历史、状态、断线续跑 | 已由后续子范围实施 | — | [F_10_02](F_10_02_web-private-chat.md) |
+| 删除同事未经 `AgentManager` | 已处理 | 删除改为经由 `AgentManager.delete_colleague`，先结束该同事的执行 | [F_10_02](F_10_02_web-private-chat.md) |
 | 设置编辑与发布入口 | 未设计 | 接口已可用 | 待 UCD |
 | 停用与 IM 状态 | 页面内状态 | 刷新后丢失 | JM-08 |
 | 模板目录 | mock | 不记录来源模板 | 待评估 |
@@ -218,4 +218,4 @@ sequenceDiagram
 
 ## 10. 设计演进与修订
 
-暂无。
+- 2026-10-14：私聊子范围接入后，`jiuwenmate.colleague.delete` 改为经由 `AgentManager` 执行（见 F_10_02 D-01）；本文其余设计不变。

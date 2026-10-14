@@ -1,24 +1,82 @@
-"""Web management RPCs for JiuwenMate colleagues, served from the AgentServer adapter registry.
+"""Web RPCs for JiuwenMate colleagues, served from the AgentServer adapter registry.
 
 Every call works in the single local namespace. Results are the public views of
-``PersistentAgentService``: no Spec, model connection or secret is returned, and
-a refused operation keeps its service error code so the page can show it.
+``PersistentAgentService`` and ``AgentManager``: no Spec, model connection or
+secret is returned, and a refused operation keeps its error code so the page can
+show it. Private messages run in the AgentServer process, so a page that closes
+or reconnects does not end them; the page reads progress again by querying.
+While a reply is streaming, its fragments are also pushed as
+``jiuwenmate.chat.stream`` events to the Web connections that last asked about
+that colleague; a missed push is made up by the next query.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from contextlib import suppress
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
+from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef, PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import ColleagueSettings, PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
+from openjiuwen.harness.persistent_agent import AgentEvent, EventType
+
+logger = logging.getLogger(__name__)
 
 WEB_NAMESPACE = "local"
+# The local Web user has one private conversation with each colleague.
+WEB_CONVERSATION = ConversationRef.web("local")
+WEB_ACCESS = AccessSnapshot(
+    principal_ref="local",
+    startup_scope=frozenset({"direct_message"}),
+    source_scope=frozenset({"direct_message"}),
+    policy_revision="local",
+)
+WEB_SENDER_NAME = "用户"
+STREAM_EVENT = "jiuwenmate.chat.stream"
+# Fragments arriving within this window are sent as one push.
+STREAM_COALESCE_SECONDS = 0.03
+MAX_WATCHERS = 8
+_STREAM_KINDS = {
+    EventType.REPLY_DELTA: "delta",
+    EventType.MODEL_COMPLETED: "segment",
+    EventType.EXECUTION_FINAL: "ended",
+    EventType.EXECUTION_PAUSED: "ended",
+}
+
+PushSink = Callable[[dict[str, Any]], Awaitable[Any]]
+ManagerFactory = Callable[..., AgentManager]
+
+_COLLEAGUE_METHODS = frozenset(
+    {
+        ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_LIST.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_GET.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_CREATE.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_GET.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_UPDATE.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_PUBLISH.value,
+    }
+)
+_RUNTIME_METHODS = frozenset(
+    {
+        ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value,
+        ReqMethod.JIUWENMATE_CHAT_SEND.value,
+        ReqMethod.JIUWENMATE_CHAT_HISTORY.value,
+        ReqMethod.JIUWENMATE_REQUEST_GET.value,
+    }
+)
+
+
+def _ignore(event: AgentEvent) -> None:
+    return None
 
 
 def configured_model_catalog() -> dict[str, Any]:
@@ -29,10 +87,10 @@ def configured_model_catalog() -> dict[str, Any]:
     return build_model_catalog(get_default_models()).to_dict()
 
 
-def _agent_id(params: Mapping[str, Any]) -> str:
-    value = params.get("agent_id")
+def _text_param(params: Mapping[str, Any], name: str) -> str:
+    value = params.get(name)
     if not isinstance(value, str) or not value:
-        raise PersistentAgentError("agent_id is required")
+        raise PersistentAgentError(f"{name} is required")
     return value
 
 
@@ -40,30 +98,115 @@ def _settings(params: Mapping[str, Any]) -> ColleagueSettings:
     return ColleagueSettings.from_dict(params.get("settings"))
 
 
-class JiuwenMateWebAdapter(GatewayAdapter):
-    methods = frozenset(
-        {
-            ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT.value,
-            ReqMethod.JIUWENMATE_COLLEAGUE_LIST.value,
-            ReqMethod.JIUWENMATE_COLLEAGUE_GET.value,
-            ReqMethod.JIUWENMATE_COLLEAGUE_CREATE.value,
-            ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_GET.value,
-            ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_UPDATE.value,
-            ReqMethod.JIUWENMATE_COLLEAGUE_PUBLISH.value,
-            ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value,
-            ReqMethod.JIUWENMATE_MODELS_LIST.value,
+def _default_manager(service: PersistentAgentService, *, on_event: Callable[[AgentEvent], None]) -> AgentManager:
+    return AgentManager.create_default(service, on_event=on_event)
+
+
+def _coalesce(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    for frame in frames:
+        last = merged[-1] if merged else None
+        if (
+            last is not None
+            and frame["kind"] == "delta"
+            and last["kind"] == "delta"
+            and last["execution_id"] == frame["execution_id"]
+        ):
+            merged[-1] = {**last, "seq": frame["seq"], "text": last["text"] + frame["text"]}
+        else:
+            merged.append(frame)
+    return merged
+
+
+class StreamPublisher:
+    """Pushes reply progress of each colleague, in event order, to the Web connections watching it."""
+
+    def __init__(self, push: PushSink) -> None:
+        self._push = push
+        self._watchers: dict[str, dict[str, str]] = {}
+        self._queue: asyncio.Queue[dict[str, Any]] | None = None
+        self._task: asyncio.Task[None] | None = None
+
+    def watch(self, agent_id: str, request: AgentRequest) -> None:
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        ws_id = metadata.get("ws_id")
+        if not isinstance(ws_id, str) or not ws_id:
+            return
+        watchers = self._watchers.setdefault(agent_id, {})
+        watchers.pop(ws_id, None)
+        watchers[ws_id] = request.channel_id
+        while len(watchers) > MAX_WATCHERS:
+            watchers.pop(next(iter(watchers)))
+
+    def observe(self, event: AgentEvent) -> None:
+        kind = _STREAM_KINDS.get(event.event_type)
+        if kind is None or self._queue is None:
+            return
+        self._queue.put_nowait(
+            {
+                "kind": kind,
+                "agent_id": event.agent_id,
+                "request_id": event.request_id,
+                "execution_id": event.execution_id,
+                "seq": event.local_seq,
+                "text": event.payload.text if kind == "delta" else "",
+            }
+        )
+
+    def start(self) -> None:
+        if self._task is None:
+            self._queue = asyncio.Queue()
+            self._task = asyncio.create_task(self._run(self._queue), name="jiuwenmate-stream-push")
+
+    async def aclose(self) -> None:
+        """Stop pushing; frames not yet sent are dropped, the page reads them by querying."""
+        task, self._task, self._queue = self._task, None, None
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    async def _run(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        while True:
+            frames = [await queue.get()]
+            await asyncio.sleep(STREAM_COALESCE_SECONDS)
+            while not queue.empty():
+                frames.append(queue.get_nowait())
+            for frame in _coalesce(frames):
+                for ws_id, channel_id in list(self._watchers.get(frame["agent_id"], {}).items()):
+                    await self._send(frame, ws_id, channel_id)
+
+    async def _send(self, frame: dict[str, Any], ws_id: str, channel_id: str) -> None:
+        message = {
+            "request_id": f"{frame['execution_id']}:{frame['seq']}",
+            "channel_id": channel_id,
+            "payload": {"event_type": STREAM_EVENT, **frame},
+            "metadata": {"ws_id": ws_id},
         }
-    )
+        try:
+            await self._push(message)
+        except Exception as exc:
+            logger.warning("[JiuwenMate] stream push failed: request=%s error=%s", frame["request_id"], exc)
+
+
+class JiuwenMateWebAdapter(GatewayAdapter):
+    methods = _COLLEAGUE_METHODS | _RUNTIME_METHODS | {ReqMethod.JIUWENMATE_MODELS_LIST.value}
 
     def __init__(
         self,
         service_factory: Callable[[], PersistentAgentService] = PersistentAgentService.create_default,
         model_catalog: Callable[[], dict[str, Any]] = configured_model_catalog,
+        manager_factory: ManagerFactory = _default_manager,
+        push: PushSink | None = None,
     ) -> None:
         self._service_factory = service_factory
         self._model_catalog = model_catalog
+        self._manager_factory = manager_factory
+        self._stream = None if push is None else StreamPublisher(push)
         self._service: PersistentAgentService | None = None
         self._service_lock = threading.Lock()
+        self._manager: AgentManager | None = None
+        self._manager_lock = asyncio.Lock()
 
     def _colleagues(self) -> PersistentAgentService:
         with self._service_lock:
@@ -71,12 +214,39 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 self._service = self._service_factory()
             return self._service
 
+    async def _runtime(self) -> AgentManager:
+        """Start the runtime on first use and queue again the Requests a previous process left waiting."""
+        async with self._manager_lock:
+            if self._manager is None:
+                service = await asyncio.to_thread(self._colleagues)
+                observer = self._stream.observe if self._stream is not None else _ignore
+                manager = await asyncio.to_thread(self._manager_factory, service, on_event=observer)
+                if self._stream is not None:
+                    self._stream.start()
+                await manager.start()
+                await manager.scheduler.recover(WEB_NAMESPACE)
+                self._manager = manager
+            return self._manager
+
+    async def aclose(self) -> None:
+        """Stop running Executions with the host; a later call starts a new runtime."""
+        async with self._manager_lock:
+            manager, self._manager = self._manager, None
+        if manager is not None:
+            await manager.aclose()
+        if self._stream is not None:
+            await self._stream.aclose()
+
     async def handle(self, request: AgentRequest) -> AgentResponse:
         method = request.req_method.value if request.req_method is not None else ""
         params = request.params if isinstance(request.params, dict) else {}
         try:
-            payload = await asyncio.to_thread(self._call, method, params)
-        except PersistentAgentError as exc:
+            if method in _RUNTIME_METHODS:
+                payload = await self._run(method, params)
+                self._watch(method, params, payload, request)
+            else:
+                payload = await asyncio.to_thread(self._call, method, params)
+        except (PersistentAgentError, PersistentContractError) as exc:
             return build_error_response(request, str(exc), code=exc.code)
         return AgentResponse(
             request_id=request.request_id,
@@ -85,6 +255,38 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             payload=payload,
             metadata=request.metadata,
         )
+
+    def _watch(self, method: str, params: Mapping[str, Any], payload: dict[str, Any], request: AgentRequest) -> None:
+        """The connection that sent, listed or polled a conversation receives its stream."""
+        if self._stream is None or method == ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value:
+            return
+        view = payload.get("request")
+        agent_id = view["agent_id"] if isinstance(view, dict) else params.get("agent_id")
+        if isinstance(agent_id, str) and agent_id:
+            self._stream.watch(agent_id, request)
+
+    async def _run(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
+        manager = await self._runtime()
+        if method == ReqMethod.JIUWENMATE_REQUEST_GET.value:
+            view = await manager.request_view(WEB_NAMESPACE, _text_param(params, "request_id"))
+            return {"request": view.to_dict()}
+        agent_id = _text_param(params, "agent_id")
+        if method == ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value:
+            await manager.delete_colleague(WEB_NAMESPACE, agent_id)
+            return {"deleted": True}
+        if method == ReqMethod.JIUWENMATE_CHAT_SEND.value:
+            view = await manager.submit_direct_message(
+                WEB_NAMESPACE,
+                agent_id,
+                WEB_CONVERSATION,
+                message_id=_text_param(params, "message_id"),
+                text=_text_param(params, "text"),
+                access=WEB_ACCESS,
+                sender_name=WEB_SENDER_NAME,
+            )
+            return {"request": view.to_dict()}
+        views = await manager.conversation_requests(WEB_NAMESPACE, agent_id, WEB_CONVERSATION)
+        return {"requests": [view.to_dict() for view in views]}
 
     def _call(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
         if method == ReqMethod.JIUWENMATE_MODELS_LIST.value:
@@ -97,7 +299,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             return {"colleagues": [view.to_dict() for view in service.list_colleagues(WEB_NAMESPACE)]}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_CREATE.value:
             return {"colleague": service.create_colleague(WEB_NAMESPACE, _settings(params)).to_dict()}
-        agent_id = _agent_id(params)
+        agent_id = _text_param(params, "agent_id")
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_GET.value:
             return {"colleague": service.get_colleague(WEB_NAMESPACE, agent_id).to_dict()}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_GET.value:
@@ -106,7 +308,4 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             return {"colleague": service.update_settings(WEB_NAMESPACE, agent_id, _settings(params)).to_dict()}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_PUBLISH.value:
             return {"version": service.publish(WEB_NAMESPACE, agent_id).to_dict()}
-        if method == ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value:
-            service.delete_colleague(WEB_NAMESPACE, agent_id)
-            return {"deleted": True}
         raise PersistentAgentError(f"unsupported method {method!r}")

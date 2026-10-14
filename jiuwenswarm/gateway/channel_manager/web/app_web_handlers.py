@@ -610,6 +610,9 @@ _FORWARD_REQ_METHODS = frozenset({
     "jiuwenmate.colleague.publish",
     "jiuwenmate.colleague.delete",
     "jiuwenmate.models.list",
+    "jiuwenmate.chat.send",
+    "jiuwenmate.chat.history",
+    "jiuwenmate.request.get",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
@@ -627,7 +630,13 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "jiuwenmate.colleague.publish",
     "jiuwenmate.colleague.delete",
     "jiuwenmate.models.list",
+<<<<<<< HEAD
 >>>>>>> d934f611f (feat(JM10): connect the colleague pages to server-side colleague management)
+=======
+    "jiuwenmate.chat.send",
+    "jiuwenmate.chat.history",
+    "jiuwenmate.request.get",
+>>>>>>> ceae12037 (feat(JM10): add private chat, history and request status)
     "initialize",
     "session.switch",
     "session.fork",

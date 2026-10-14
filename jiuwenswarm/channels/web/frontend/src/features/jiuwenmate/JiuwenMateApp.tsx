@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { webRequest } from '../../services/webClient';
+import { webClient, webRequest } from '../../services/webClient';
 import { ImAuthorizeDialog } from './components/ImAuthorizeDialog';
 import { JiuwenMateConfirmDialog } from './components/JiuwenMateDialog';
 import { JiuwenMateRail, type JiuwenMateRailView } from './components/JiuwenMateRail';
@@ -50,7 +50,14 @@ const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId
 
 export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettings }: JiuwenMateAppProps) {
   const { t } = useTranslation();
-  const api = useMemo(() => createJiuwenMateApi((method, params) => webRequest(method, params)), []);
+  const api = useMemo(
+    () =>
+      createJiuwenMateApi(
+        (method, params) => webRequest(method, params),
+        (event, handler) => webClient.on(event, (frame) => handler(frame.payload)),
+      ),
+    [],
+  );
   const [state, setState] = useState(() => createInitialJiuwenMateState([]));
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('loading');
   const [loadError, setLoadError] = useState('');
@@ -69,6 +76,7 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     nonce: 0,
     section: 'overview',
   });
+  const [connectionEpoch, setConnectionEpoch] = useState(0);
 
   const loadColleagues = useCallback(async () => {
     setLoadStatus('loading');
@@ -86,6 +94,14 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
   useEffect(() => {
     void loadColleagues();
   }, [loadColleagues]);
+
+  useEffect(() => {
+    let last = webClient.getState();
+    return webClient.onStateChange((next) => {
+      if (next === 'ready' && last !== 'ready') setConnectionEpoch((epoch) => epoch + 1);
+      last = next;
+    });
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -304,6 +320,8 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             colleagues={state.colleagues}
             selectedColleagueId={selectedColleague.id}
             intent={workspaceIntent.intent}
+            chat={api}
+            connectionEpoch={connectionEpoch}
             onSelectColleague={(id) => setState((current) => ({ ...current, selectedColleagueId: id }))}
             onCreateSchedule={(id) => openProfile(id, 'schedules')}
             {...listHandlers}
