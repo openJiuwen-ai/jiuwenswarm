@@ -32,13 +32,32 @@ def test_catalog_search_roots_preserve_sources_and_paths(monkeypatch, tmp_path, 
         ("resources", resources),
     ]
     assert extension_package_manager.get_agent_group_search_roots() == roots
-    observed = []
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.expert_org.agent_group_scan.scan_agent_group_dirs",
-        lambda search_roots: observed.extend(search_roots) or [],
+        extension_package_manager, "read_agent_group_marketplace_entries", lambda: []
     )
     assert _iter_agent_group_dirs() == []
-    assert observed == roots
+
+
+def test_catalog_only_resolves_installed_packages(monkeypatch, tmp_path):
+    from jiuwenswarm.agents.harness.team.expert_org.catalog import _iter_agent_group_dirs
+    from jiuwenswarm.server.runtime import extension_package_manager
+
+    monkeypatch.setattr(extension_package_manager, "read_agent_group_marketplace_entries", lambda: [
+        {"id": "installed", "installed": True},
+        {"id": "uninstalled", "installed": False},
+        {"id": "missing", "installed": True},
+    ])
+    calls = []
+
+    def resolve(name):
+        calls.append(name)
+        if name == "missing":
+            raise ValueError("package missing")
+        return tmp_path / name
+
+    monkeypatch.setattr(extension_package_manager, "resolve_agent_group_dir", resolve)
+    assert _iter_agent_group_dirs() == [("installed", tmp_path / "installed")]
+    assert calls == ["installed", "missing"]
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -168,6 +187,18 @@ def test_descriptor_from_dir_uses_load_result(
     assert descriptor.display_name == "专家团负责人"
     assert descriptor.description == "do analysis"
     assert descriptor.capabilities == ("analysis",)
+
+
+def test_descriptor_prefers_group_display_name_to_leader(tmp_path):
+    package = _install_group(tmp_path, "legal", display_name="Lead Lawyer")
+    manifest_path = package / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({"display_name": {"zh": "法律专家团", "en": "Legal Group"},
+                     "tags": [{"id": "legal", "zh": "法律", "en": "Legal"}]})
+    _write_json(manifest_path, manifest)
+    descriptor = descriptor_from_agent_group_dir("legal", package)
+    assert descriptor.display_name == "法律专家团"
+    assert descriptor.capabilities == ("legal",)
 
 
 def test_load_bundle_missing_manifest_raises_value_error(tmp_path: Path) -> None:

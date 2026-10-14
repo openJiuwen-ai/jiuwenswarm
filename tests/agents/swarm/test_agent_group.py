@@ -96,6 +96,28 @@ def test_load_agent_group_rejects_member_agent_md(tmp_path: Path) -> None:
         load_agent_group_package(group)
 
 
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        ({"tags": [{"id": "legal", "zh": "法律", "en": "Legal"}]}, ("legal",)),
+        ({"tags": [{"zh": "法律", "en": "Legal"}, {"en": "Risk"}, "finance"]},
+         ("法律", "Risk", "finance")),
+        ({"tags": [{"id": "legal"}, {"id": "legal"}, {}, " "]}, ("legal",)),
+        ({"capabilities": ["finance"], "tags": [{"id": "legal"}]}, ("finance",)),
+        ({"capabilities": [], "tags": [{"id": "legal"}]}, ()),
+        ({}, ()),
+    ],
+)
+def test_group_capabilities_use_stable_tags_unless_explicit(tmp_path, fields, expected):
+    group = _minimal_group(tmp_path)
+    manifest_path = group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(fields)
+    _write_json(manifest_path, manifest)
+
+    assert load_agent_group_package_bundle(group).capabilities == expected
+
+
 def test_load_agent_group_discovers_unlisted_skills(tmp_path: Path) -> None:
     group = _minimal_group(tmp_path)
     skill_dir = group / "skills" / "discovered_skill"

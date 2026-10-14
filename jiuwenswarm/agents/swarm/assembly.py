@@ -231,6 +231,11 @@ def _apply_agent_group(
         )
     templates = package.templates
     package_dir = package.package_dir
+    spec.metadata = {
+        **(spec.metadata or {}),
+        "agent_group_name": agent_group_name,
+        "capabilities": list(package.capabilities),
+    }
 
     leader_base = spec.agents.get("leader")
     teammate_base = spec.agents.get("teammate")

@@ -31,15 +31,22 @@ class ExpertGroupDescriptor:
 
 
 def _iter_agent_group_dirs() -> list[tuple[str, Path]]:
-    """Enumerate AgentGroup packages using the extension manager search roots."""
-    from jiuwenswarm.agents.harness.team.expert_org.agent_group_scan import (
-        scan_agent_group_dirs,
-    )
+    """Enumerate installed packages through the same resolver used for launch."""
     from jiuwenswarm.server.runtime.extension_package_manager import (
-        get_agent_group_search_roots,
+        read_agent_group_marketplace_entries,
+        resolve_agent_group_dir,
     )
 
-    return scan_agent_group_dirs(get_agent_group_search_roots())
+    results: list[tuple[str, Path]] = []
+    for entry in read_agent_group_marketplace_entries():
+        if not entry.get("installed", False):
+            continue
+        name = entry["id"]
+        try:
+            results.append((name, resolve_agent_group_dir(name)))
+        except (ValueError, OSError) as exc:
+            logger.warning("[ExpertGroupCatalog] skip unavailable agent_group %s: %s", name, exc)
+    return sorted(results)
 
 
 def _resolve_agent_group_dir(name: str) -> Path:
@@ -66,7 +73,10 @@ def descriptor_from_agent_group_dir(
     package = _load_agent_group_package_bundle(package_dir)
     leader = package.templates.get("leader")
     leader_card = getattr(leader, "agent_card", None) if leader is not None else None
-    display_name = str(getattr(leader_card, "name", "") or "").strip() or agent_group_name
+    display_name = package.manifest.get("display_name")
+    if isinstance(display_name, dict):
+        display_name = display_name.get("zh") or display_name.get("en")
+    display_name = str(display_name or getattr(leader_card, "name", "") or "").strip() or agent_group_name
     description = package.instruction or str(
         getattr(leader_card, "description", "") or ""
     ).strip()
