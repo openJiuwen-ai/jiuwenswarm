@@ -230,6 +230,10 @@
   --color-settings-link: #1476ff;
   --color-settings-status-danger-text: #bf0a1c;
   --color-settings-status-danger-surface: #fce3e0;
+  /* Free-models promo banner on the Models settings tab */
+  --color-free-models-banner-from: #eef6ff;
+  --color-free-models-banner-mid: #f7f7ff;
+  --color-free-models-banner-to: #fff8fb;
   --color-conversation-active-surface: var(--color-sidebar-nav-active);
   --color-chat-active-group-border: var(--color-chat-group-border);
   --color-chat-active-group-hover: rgba(var(--color-action-secondary-rgb), 0.44);

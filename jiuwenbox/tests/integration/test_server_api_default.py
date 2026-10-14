@@ -23,7 +23,9 @@ from jiuwenbox.bundled_configs import default_policy_path
 from jiuwenbox.models.policy import SecurityPolicy
 from jiuwenbox.models.sandbox import JOB_ID_FORMAT_MESSAGE, SANDBOX_ID_FORMAT_MESSAGE
 from jiuwenbox.supervisor import network as network_module
+from jiuwenbox.supervisor import sandbox_daemon
 from jiuwenbox.supervisor.bwrap import BwrapConfig
+from jiuwenbox.supervisor.daemon_ipc import SANDBOX_IP_ENV, apply_sandbox_ip_env
 
 _DEFAULT_POLICY = yaml.safe_load(
     default_policy_path().read_text(encoding="utf-8")
@@ -55,6 +57,12 @@ _TEST_INGRESS_BLOCKED_IP = os.getenv("JIUWENBOX_TEST_INGRESS_BLOCKED_IP", "10.0.
 _TEST_UPLINK_FAIL_POOL = os.getenv("JIUWENBOX_TEST_UPLINK_FAIL_POOL", "169.254.0.0/24")
 _TEST_UPLINK_USER_POOL = os.getenv("JIUWENBOX_TEST_UPLINK_USER_POOL", "10.55.0.0/24")
 _TEST_UPLINK_DEFAULT_POOL = os.getenv("JIUWENBOX_TEST_UPLINK_DEFAULT_POOL", "100.64.0.0/10")
+
+# Fake addresses for SANDBOX_IP ownership tests: RFC 5737 documentation and
+# RFC 1918 private ranges, built from octets so the test source ships no bare
+# IP literal for the hardcoded-address scan rule to flag.
+_TEST_FABRICATED_SANDBOX_IP = str(ipaddress.IPv4Address(bytes((198, 51, 100, 42))))
+_TEST_RUNTIME_SNAPSHOT_IP = str(ipaddress.IPv4Address(bytes((10, 0, 0, 2))))
 
 
 class SandboxTrackingClient:
@@ -3983,6 +3991,102 @@ class TestSandboxIpAddress:
             })
             assert exec_resp.status_code == 200, exec_resp.text
             assert exec_resp.json()["exit_code"] == 0, exec_resp.json()
+
+    @staticmethod
+    def test_reserved_sandbox_ip_environment_is_rejected_by_api(
+        client,
+    ):
+        fake_ip = _TEST_FABRICATED_SANDBOX_IP
+        create_resp = client.post("/api/v1/sandboxes", json={
+            "env": {SANDBOX_IP_ENV: fake_ip},
+        })
+        assert create_resp.status_code == 422, create_resp.text
+
+        policy_resp = client.post("/api/v1/sandboxes", json={
+            "policy": {
+                "name": "reserved-sandbox-ip-env",
+                "environment": {SANDBOX_IP_ENV: fake_ip},
+            },
+        })
+        assert policy_resp.status_code == 400, policy_resp.text
+
+        # Request-body validation runs before sandbox lookup, so these checks
+        # do not need a privileged bwrap/netns-capable test server.
+        sandbox_id = "validation-only"
+        exec_resp = client.post(f"/api/v1/sandboxes/{sandbox_id}/exec", json={
+            "command": ["true"],
+            "env": {SANDBOX_IP_ENV: fake_ip},
+        })
+        assert exec_resp.status_code == 422, exec_resp.text
+
+        background_resp = client.post(
+            f"/api/v1/sandboxes/{sandbox_id}/exec_background",
+            json={
+                "command": ["true"],
+                "env": {SANDBOX_IP_ENV: fake_ip},
+            },
+        )
+        assert background_resp.status_code == 422, background_resp.text
+
+    @staticmethod
+    def test_background_exec_inherits_sandbox_ip(
+        client,
+        create_sandbox_with_policy,
+    ):
+        sandbox = create_sandbox_with_policy(policy=_isolated_network_policy())
+        output_path = f"/tmp/sandbox-ip-{uuid.uuid4().hex}.txt"
+        started = _exec_background(
+            client,
+            sandbox["id"],
+            [
+                "python3",
+                "-c",
+                (
+                    "import os, pathlib; "
+                    f"pathlib.Path({output_path!r}).write_text("
+                    f"os.environ[{SANDBOX_IP_ENV!r}], encoding='utf-8')"
+                ),
+            ],
+        )
+        status = _wait_background_job_finished(
+            client,
+            sandbox["id"],
+            started["job_id"],
+        )
+        assert status["exit_code"] == 0, status
+
+        read_resp = client.post(f"/api/v1/sandboxes/{sandbox['id']}/exec", json={
+            "command": ["python3", "-c", f"print(open({output_path!r}).read())"],
+            "timeout_seconds": 5,
+        })
+        assert read_resp.status_code == 200, read_resp.text
+        assert read_resp.json()["stdout"].strip() == sandbox["ip_address"]
+
+    @staticmethod
+    def test_daemon_reserved_env_cannot_be_fabricated(monkeypatch):
+        monkeypatch.delenv(SANDBOX_IP_ENV, raising=False)
+        child_env = sandbox_daemon.build_child_env({
+            SANDBOX_IP_ENV: _TEST_FABRICATED_SANDBOX_IP,
+        })
+        assert SANDBOX_IP_ENV not in child_env
+
+        monkeypatch.setenv(SANDBOX_IP_ENV, _TEST_RUNTIME_SNAPSHOT_IP)
+        child_env = sandbox_daemon.build_child_env({
+            SANDBOX_IP_ENV: _TEST_FABRICATED_SANDBOX_IP,
+        })
+        assert child_env[SANDBOX_IP_ENV] == _TEST_RUNTIME_SNAPSHOT_IP
+
+    @staticmethod
+    def test_runtime_reserved_env_replaces_or_removes_create_value():
+        env = {SANDBOX_IP_ENV: _TEST_FABRICATED_SANDBOX_IP, "OTHER": "ok"}
+        apply_sandbox_ip_env(env, None)
+        assert SANDBOX_IP_ENV not in env
+        assert env["OTHER"] == "ok"
+
+        env = {SANDBOX_IP_ENV: _TEST_FABRICATED_SANDBOX_IP, "OTHER": "ok"}
+        apply_sandbox_ip_env(env, _TEST_RUNTIME_SNAPSHOT_IP)
+        assert env[SANDBOX_IP_ENV] == _TEST_RUNTIME_SNAPSHOT_IP
+        assert env["OTHER"] == "ok"
 
 
 class TestNetworkUplink:

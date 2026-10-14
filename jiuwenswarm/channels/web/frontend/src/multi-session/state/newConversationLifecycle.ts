@@ -46,7 +46,9 @@ function applyRuntimeSettings(
 ): void {
   ensureSessionRuntimes(sessionId);
   useSessionStore.getState().setMode(sessionId, mode);
-  if (selectedModelName) {
+  // 新会话的模型由 sessionStore 按“上次稳定选择 -> 自定义 -> 免费 -> 空”初始化；
+  // 这里的旧名称只用于恢复已创建会话，避免再次覆盖稳定 ID 选择。
+  if (selectedModelName && sessionId !== NEW_CONVERSATION_ID) {
     useSessionStore.getState().setSelectedModelName(sessionId, selectedModelName);
   }
   if (projectDir) {

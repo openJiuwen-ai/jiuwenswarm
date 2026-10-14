@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:asset-name-search": "esbuild src/features/assetNameSearch.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/asset-name-search && node --test tests/assetNameSearch.test.mjs",
     "test:team-organization": "esbuild tests/fixtures/teamOrganizationExports.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.cache/team-organization/organization.mjs --define:import.meta.env={} && node --test tests/teamOrganization.test.mjs",
     "test:browser-agent-activity": "esbuild src/features/browserAgentActivity.ts src/stores/sessionStore.ts src/stores/subagentStore.ts --bundle --splitting --packages=external --platform=node --format=esm --outdir=node_modules/.cache/browser-agent-activity --define:import.meta.env={} && node --test tests/browserAgentActivity.test.mjs",
     "test:a4p-authorization": "node --test tests/a4pAuthorization.test.mjs",
@@ -38,6 +39,8 @@
     "test:team-panel-state": "tsc src/features/teamPanelStateNormalize.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/team-panel-state --skipLibCheck --noEmitOnError && node --test tests/teamPanelState.test.mjs",
     "test:team-connection-presentation": "esbuild src/features/teamConnectionPresentation.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/team-connection-presentation/teamConnectionPresentation.mjs && node --test tests/teamConnectionPresentation.test.mjs",
     "test:team-member-avatar": "esbuild src/utils/teamMemberAvatar.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/team-member-avatar --loader:.svg=file --loader:.png=file && node --test tests/teamMemberAvatar.test.mjs",
+    "test:workflow-agent-identity": "esbuild src/components/teamArea/workflowTypes.ts --bundle --platform=node --format=esm --packages=external --outdir=node_modules/.cache/workflow-agent-identity && node --test tests/workflowAgentIdentity.test.mjs",
+    "test:run-grouping": "esbuild src/components/teamArea/runGrouping.ts src/components/teamArea/RunGroupHeader.tsx --bundle --platform=node --format=esm --jsx=automatic --packages=external --outdir=node_modules/.cache/run-grouping --define:import.meta.env.DEV=false && node --test tests/runGrouping.test.mjs",
     "test:team-member-merge": "esbuild src/stores/sessionStore.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/team-member-merge/sessionStore.mjs --define:import.meta.env.DEV=false && node --test tests/teamMemberMerge.test.mjs",
     "test:chat-model-selection": "esbuild src/stores/sessionStore.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/chat-model-selection/sessionStore.mjs --define:import.meta.env.DEV=false && node --test tests/chatModelSelection.test.mjs",
     "test:model-picker": "node --test tests/modelPicker.test.mjs",

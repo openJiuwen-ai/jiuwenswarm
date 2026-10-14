@@ -147,7 +147,7 @@ async def test_models_get_returns_desensitized_editable_detail(monkeypatch) -> N
                 "write_only_fields": ["model_client_config.api_key"],
             }
 
-    monkeypatch.setattr(app_web_handlers, "ModelCatalog", FakeCatalog)
+    monkeypatch.setattr("jiuwenswarm.common.config_panel.model_resource_handlers.ModelCatalog", FakeCatalog)
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel))
 
@@ -835,6 +835,7 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
     agent_client = WebSocketAgentServerClient()
     saved_configs: list[dict] = []
     lifecycle_calls: list[tuple[str, object]] = []
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
 
     monkeypatch.setattr(
         app_web_handlers,
@@ -890,10 +891,45 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
         "payload": {
             "chrome_path": "C:\\Chrome\\chrome.exe",
             "headless": False,
+            "decision_mode": "llm",
+            "decision_provider": "typesafe",
+            "jev_key_configured": False,
         },
         "error": None,
         "code": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_path_set_refuses_jev_without_its_key_and_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Jev without a key would fail at every browser step; the save is refused before any write."""
+    channel = FakeWebChannel()
+    agent_client = WebSocketAgentServerClient()
+    writes: list[object] = []
+    monkeypatch.delenv("TEST_JEV_UI_KEY", raising=False)
+    monkeypatch.setattr(app_web_handlers, "update_browser_in_config", writes.append)
+    monkeypatch.setattr(
+        app_web_handlers,
+        "get_config",
+        lambda: {"browser": {"decision": {"provider": "openrouter", "api_key_env": "TEST_JEV_UI_KEY"}}},
+    )
+
+    async def fail_if_called(*_args, **_kwargs):
+        writes.append("runtime touched")
+
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", fail_if_called)
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", fail_if_called)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=agent_client))
+
+    await channel.methods["path.set"](
+        object(), "req-jev", {"chrome_path": "", "headless": True, "decision_mode": "hybrid"}, "sess-1"
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+    assert writes == []
 
 
 class FakeUpdaterService:
@@ -1459,6 +1495,30 @@ async def test_config_get_returns_setup_guide_switch(monkeypatch, raw_config, ex
 
 
 @pytest.mark.asyncio
+async def test_config_get_never_returns_the_jev_keys(monkeypatch):
+    """The Jev keys are saved through config.save_all but must not be sent back to the browser."""
+    channel = FakeWebChannel()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-openrouter-secret")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "synthetic-typesafe-secret")
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: {})
+    monkeypatch.setattr(
+        ExtensionRegistry,
+        "get_instance",
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.get"](object(), "req-get-jev", {}, "sess-get-jev")
+
+    payload = channel.responses[-1]["payload"]
+    assert payload["jev_openrouter_api_key"] == "" and payload["jev_typesafe_api_key"] == ""
+    assert "synthetic-" not in repr(payload)
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_openrouter_api_key"] == "OPENROUTER_API_KEY"
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_typesafe_api_key"] == "TYPESAFE_API_KEY"
+
+
+@pytest.mark.asyncio
 async def test_trajectory_ui_switch_round_trips_through_config_rpc(monkeypatch):
     channel = FakeWebChannel()
     persisted: list[bool] = []
@@ -1727,7 +1787,7 @@ async def test_media_capability_provider_identity_round_trips_through_config_rpc
     ("permissions", "expected_profile", "expected_enabled"),
     [
         ({"enabled": True, "mode": "manual"}, "default", "true"),
-        ({"enabled": True, "mode": "auto"}, "default", "true"),
+        ({"enabled": True, "mode": "auto"}, "automatic", "true"),
         ({"enabled": False, "mode": "auto"}, "full_access", "false"),
         ({"enabled": True, "mode": "future"}, "default", "true"),
     ],
@@ -1781,9 +1841,9 @@ async def test_config_set_rejects_invalid_permission_facade(monkeypatch, params)
     ("params", "saved_profile", "canonical"),
     [
         (
-            {"permissions_profile": "default"},
-            "default",
-            {"permissions_profile": "default", "permissions_enabled": "true"},
+            {"permissions_profile": "automatic"},
+            "automatic",
+            {"permissions_profile": "automatic", "permissions_enabled": "true"},
         ),
         (
             {"permissions_enabled": "false"},
@@ -1899,7 +1959,7 @@ async def test_permission_profile_write_failure_returns_no_canonical_success(
     await channel.methods["config.set"](
         object(),
         "req-profile-write-failure",
-        {"permissions_profile": "default"},
+        {"permissions_profile": "automatic"},
         "sess-profile",
     )
 
@@ -1954,7 +2014,7 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
         object(),
         "req-save-all-invalid-kvc",
         {
-            "config": {"permissions_profile": "default"},
+            "config": {"permissions_profile": "automatic"},
             "models": [
                 {
                     "model_name": "model-one",
@@ -1982,6 +2042,10 @@ async def test_models_replace_all_applies_scoped_reload_before_responding(monkey
     persisted: list[list[dict]] = []
     reload_options_seen: list[dict] = []
 
+    def save_models(models, *, cron_references_checked):
+        assert cron_references_checked is True
+        persisted.append(list(models))
+
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.models_handlers.get_config_raw",
         lambda: {"models": {"defaults": []}},
@@ -1992,7 +2056,7 @@ async def test_models_replace_all_applies_scoped_reload_before_responding(monkey
     )
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.models_handlers.update_default_models_in_config",
-        lambda models: persisted.append(list(models)),
+        save_models,
     )
     monkeypatch.setattr(
         models_handlers,
@@ -2714,6 +2778,37 @@ def test_external_cli_dependency_install_starts_managed_runtime_in_frozen_deskto
     assert created_threads[0].name == f"{cli_agent}-managed-runtime-install"
     assert created_threads[0].daemon is True
     assert created_threads[0].started is True
+
+
+def test_optional_dependency_install_restates_openjiuwen_url_requirements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """uv pip refuses a URL dependency that is only transitive, so openjiuwen's
+    git-pinned requirements must ride the install command as direct requirements;
+    requirements gated on another extra stay out."""
+    from jiuwenswarm.common import external_cli_runtime
+
+    monkeypatch.setattr(external_cli_runtime, "pinned_sdk_requirements", lambda _cli_agent: ["claude-agent-sdk==0.2.115"])
+    monkeypatch.setattr(app_web_handlers.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        app_web_handlers.importlib.metadata,
+        "requires",
+        lambda _name: [
+            "pydantic>=2",
+            "intelli-router @ git+https://example.invalid/agent-protocol.git@feature/intelliRouter#subdirectory=intelli_router",
+            'codex-only @ git+https://example.invalid/codex.git ; extra == "codex"',
+            'claude-only @ git+https://example.invalid/claude.git ; extra == "claude"',
+        ],
+    )
+
+    args = app_web_handlers._build_optional_dependency_install_args("openjiuwen[claude]", "claude")
+
+    assert args[-4:] == [
+        "openjiuwen[claude]",
+        "intelli-router @ git+https://example.invalid/agent-protocol.git@feature/intelliRouter#subdirectory=intelli_router",
+        "claude-only @ git+https://example.invalid/claude.git",
+        "claude-agent-sdk==0.2.115",
+    ]
 
 
 def test_optional_dependency_install_times_out_after_one_hour(

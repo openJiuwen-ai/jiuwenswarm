@@ -148,6 +148,7 @@ _REVIEWED_MEMORY_READ_TOOLS = {
     "viking_search",
 }
 _FIXED_BROWSER_TOOLS = {
+    "browser_phase",
     "browser_probe_cards",
     "browser_probe_interactives",
     "browser_recall_offload",

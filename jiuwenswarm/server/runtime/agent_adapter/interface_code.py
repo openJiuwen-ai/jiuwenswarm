@@ -426,6 +426,7 @@ _TOOL_BUILD_NAMES: dict[str, str] = {
     "user_todos": "_build_user_todos_tool",
     "skill_toolkit": "_build_skill_toolkit",
     "skill_retrieval": "_build_skill_retrieval_toolkit",
+    "tool_retrieval": "_build_tool_retrieval_toolkit",
     "acp_chat": "_build_acp_chat_tool",
     "request_a4p_intent_authorization": "_build_a4p_tools",
 }
@@ -1195,6 +1196,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 # participate in DeepAgent's full-replacement branch.
                 rollback_config.rails = []
                 self._instance.configure(rollback_config)
+                # configure() re-queues the bundled ProgressiveToolRail
+                # whenever progressive_tool_enabled is True; re-drop so the
+                # rollback does not resurrect the engine disclosure.
+                self._drop_pending_progressive_tool_rail()
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[JiuwenSwarmCodeAdapter] rollback config restore failed: %s",
@@ -2425,6 +2430,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                     ),
                 )
+                from jiuwenswarm.agents.harness.common.browser_config import (
+                    apply_browser_decision_config,
+                )
+
+                apply_browser_decision_config(browser_spec, config_base)
                 self._prepare_browser_runtime_security(browser_spec)
                 # Electron 每会话隔离：把本会话 sideview 的 CDP TargetID 注入
                 # browser subagent 的 MCP env（与 swarm.browser_agent 同一契约；
@@ -2962,6 +2972,39 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             return tools
         except Exception as exc:
             logger.warning("[JiuwenSwarmCodeAdapter] skill_retrieval build failed: %s", exc)
+            return None
+
+    def _resolve_tool_retrieval_session_enabled(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> bool:
+        """Respect code-mode configured tools during tool retrieval sync."""
+        config = (
+            config_base
+            if isinstance(config_base, dict)
+            else self._active_code_config()
+        )
+        if not super()._resolve_tool_retrieval_session_enabled(config):
+            return False
+        configured_tools = config.get("modes", {}).get("code", {}).get("tools") or []
+        return "tool_retrieval" in configured_tools
+
+    def _build_tool_retrieval_toolkit(self, agent_id: str) -> list[Any] | None:
+        """构建 ToolRetrievalToolkit 工具（不注册到 Runner，由 _get_tool_cards 统一注册）."""
+        if not self._tool_retrieval_tools_enabled_for_runtime():
+            logger.info("[JiuwenSwarmCodeAdapter] ToolRetrievalToolkit skipped: disabled")
+            return None
+        try:
+            tools = self._create_tool_retrieval_tools()
+            self._tool_retrieval_tools = tools
+            self._tool_retrieval_tools_registered = bool(tools)
+            logger.info(
+                "[JiuwenSwarmCodeAdapter] ToolRetrievalToolkit built: tools=%s",
+                [tool.card.name for tool in tools],
+            )
+            return tools
+        except Exception as exc:
+            logger.warning("[JiuwenSwarmCodeAdapter] tool_retrieval build failed: %s", exc)
             return None
 
     def _build_acp_chat_tool(self, agent_id: str) -> Any | None:

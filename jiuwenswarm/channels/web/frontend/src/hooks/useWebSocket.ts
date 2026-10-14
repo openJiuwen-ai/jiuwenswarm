@@ -1025,6 +1025,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   // 用于区分"旧任务被打断的 false"和"任务正常结束的 false"——前者应跳过自动排空，
   // 因为新任务即将由后端启动（会紧跟一条 processing_status=true）。
   const localSendPendingRef = useRef<Set<string>>(new Set());
+  // sendMessage 登记的乐观 user 气泡（request_id -> 气泡）。乐观气泡只能盖浏览器钟，
+  // 与执行机钟有偏差时，本轮首个输出事件会按时间戳排到用户消息之前（「任务用时」行
+  // 插到时间线顶部）。runtime.accepted 由执行机在产出任何输出事件之前盖章，到达时
+  // 按单号用服务端权威时间回填气泡。steer/跨会话/心跳气泡自带服务端时间，不进本表。
+  const optimisticUserBubblesRef = useRef<Map<string, { sessionId: string; messageId: string }>>(new Map());
   const pendingAgentGroupBindingRef = useRef<Map<string, { id: string; timer: number }>>(new Map());
   const groupBindingReconcileRef = useRef<Map<string, Promise<void>>>(new Map());
   const reconcileAgentGroupBindingRef = useRef<((sessionId: string) => Promise<void>) | null>(null);
@@ -1200,6 +1205,36 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     streamDeltaBatcherRef.current?.flush(streamDeltaBatchKey(sessionId, streamId));
   }, []);
 
+  // 权威时间回填：乐观 user 气泡只有浏览器钟可盖，与执行机钟有偏差时本轮首个输出
+  // 事件会按时间戳排到用户消息之前（「任务用时」行插到时间线顶部）。runtime.accepted
+  // 的 timestamp 和 chat.output_phase 的 input_timestamp 都携带执行机记录的输入时间，
+  // 按发送时登记的单号回填；旧后端的 output_phase 则退回使用事件时间。
+  // 仅匹配 sendMessage 登记的乐观气泡——steer/跨会话/心跳气泡自带服务端时间，不进
+  // 登记表；帧无时间戳（旧后端）时保持现状不回填。
+  const backfillOptimisticBubbleTimestamp = useCallback((sessionId: string, payload: Record<string, unknown>) => {
+    const directRequestId = typeof payload.request_id === 'string' && payload.request_id ? payload.request_id : '';
+    const requestId = directRequestId || readOutputOrder(payload)?.requestId || '';
+    if (!requestId) return;
+    const optimisticBubble = optimisticUserBubblesRef.current.get(requestId);
+    if (!optimisticBubble || optimisticBubble.sessionId !== sessionId) return;
+    const acceptedIso =
+      timestampMsToIso(parseTimestampToMs(payload.input_timestamp)) ||
+      timestampMsToIso(parseTimestampToMs(payload.timestamp));
+    if (!acceptedIso) return;
+    const chatStore = useChatStore.getState();
+    chatStore.updateMessage(optimisticBubble.sessionId, optimisticBubble.messageId, {
+      timestamp: acceptedIso,
+    });
+    // 图片提示可先于 ACK/phase 到达；旧后端不带时间戳，提示会盖浏览器钟。
+    // 将早于用户边界的同单提示移到边界上，避免落入上一轮；同刻按消息插入顺序排序。
+    const noticeId = `notice-image_tool_fallback-${requestId}`;
+    const notice = chatStore.getRuntime(sessionId)?.messages.find((message) => message.id === noticeId);
+    if (notice && !(parseTimestampToMs(notice.timestamp) >= Date.parse(acceptedIso))) {
+      chatStore.updateMessage(sessionId, noticeId, { timestamp: acceptedIso });
+    }
+    optimisticUserBubblesRef.current.delete(requestId);
+  }, []);
+
   const handleTtsPlayback = useCallback(
     (sessionId: string, messageId: string, content: string) => {
       const sanitized = sanitizeTtsText(content);
@@ -1316,6 +1351,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             snapshotMember.cli_agent === null || typeof snapshotMember.cli_agent === 'string'
               ? snapshotMember.cli_agent
               : existing?.cli_agent,
+          workflow_run_id:
+            typeof snapshotMember.workflow_run_id === 'string'
+              ? snapshotMember.workflow_run_id
+              : existing?.workflow_run_id,
         }];
       });
       if (snapshotMembers.length !== response.members.length || snapshotMembers.length === 0) return;
@@ -1763,13 +1802,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           useGoalStore.getState().recordGoalObjectiveText(sessionId, objective);
         }
         try {
-          const selectedModel = useSessionStore.getState().getEffectiveModelName(sessionId);
           await sendGoalStreamCommand({
             sessionId,
             action,
             objective,
             mode,
-            modelName: selectedModel,
+            modelParams: useSessionStore.getState().getOutgoingModelParams(sessionId),
           });
         } catch (error) {
           // WS 层直接发送失败（未连接等）：这是能明确识别的失败，弹提示；set 不做进一步兜底
@@ -2004,7 +2042,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       localSendPendingRef.current.add(sessionId);
 
       // 正常调用接口
-      const selectedModel = useSessionStore.getState().getEffectiveModelName(sessionId);
       const workContext = getSessionWorkContext(sessionId);
       if (currentMode === 'auto_harness') {
         useHarnessStore.getState().reset(sessionId);
@@ -2113,7 +2150,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(outgoingMediaItems ? { media_items: outgoingMediaItems } : {}),
           ...(outgoingFiles ? { files: outgoingFiles } : {}),
           mode: outgoingMode,
-          ...(selectedModel ? { model_name: selectedModel } : {}),
+          ...useSessionStore.getState().getOutgoingModelParams(sessionId),
           ...workContext,
           skills: selectedSkillsForRequest,
           ...agentSelectionPayload,
@@ -2133,6 +2170,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(sessionRt?.swarmflowWorktree !== undefined
             ? { swarmflow_worktree: sessionRt.swarmflowWorktree }
             : {}),
+        }, {
+          // 登记乐观 user 气泡的单号：runtime.accepted 到达时按单号回填服务端权威
+          // 时间戳（见 optimisticUserBubblesRef 注释与 runtime.accepted 处理器）。
+          onRequestId: (requestId) => {
+            const registry = optimisticUserBubblesRef.current;
+            // 兜底清理：accepted 丢失（发送失败/断连）时登记项不会被消费，限制驻留规模
+            if (registry.size >= 64) {
+              const oldest = registry.keys().next().value;
+              if (oldest !== undefined) registry.delete(oldest);
+            }
+            registry.set(requestId, { sessionId, messageId: userMessageId });
+          },
         });
         clearConnectionPresentationForUserAction(sessionId);
         if (sessionMetadata) {
@@ -2204,7 +2253,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (agentGroupSelectionPayload.agent_group_name) {
         markPendingAgentGroupBinding(sessionId, agentGroupSelectionPayload.agent_group_name);
       }
-      const selectedModel = currentSessionState.getEffectiveModelName(sessionId);
       if (currentMode === 'auto_harness') {
         useHarnessStore.getState().reset(sessionId);
       }
@@ -2221,7 +2269,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           session_id: sessionId,
           content,
           mode: outgoingMode,
-          ...(selectedModel ? { model_name: selectedModel } : {}),
+          ...currentSessionState.getOutgoingModelParams(sessionId),
           ...workContext,
           ...buildExtensionSendPayload(sessionId),
           ...agentSelectionPayload,
@@ -2353,8 +2401,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         if (intent === 'supplement') {
           params.new_input = newInput ?? '';
-          const selectedModel = useSessionStore.getState().getEffectiveModelName(sessionId);
-          if (selectedModel) params.model_name = selectedModel;
+          Object.assign(params, useSessionStore.getState().getOutgoingModelParams(sessionId));
         }
         await request('chat.interrupt', params);
         if (intent === 'supplement' || intent === 'resume') {
@@ -3011,6 +3058,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
         flushPendingStreamDelta(sessionId);
+        // output_phase 是每轮第一次模型调用前必发的帧（先于所有 reasoning/tool 事件），
+        // 作为 runtime.accepted（仅 permission_dispatched 时才发）的保底回填载体。
+        if (event === 'chat.output_phase') {
+          backfillOptimisticBubbleTimestamp(sessionId, payload);
+        }
         handleSessionOutputBoundary(event, { ...payload, session_id: sessionId });
       })),
       webClient.on('chat.delta', ({ payload }) => {
@@ -4325,6 +4377,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('runtime.accepted', ({ payload }) => {
         if (handleTaskInputReceipt('runtime.accepted', payload)) return;
         if (shouldDropDuplicatedEvent('runtime.accepted', payload)) return;
+        // 权威时间回填：accepted 携带执行机在输出前记录的输入时间（见
+        // backfillOptimisticBubbleTimestamp 注释）。仅命中 sendMessage 登记的乐观气泡。
+        const acceptedSessionId = getPayloadSessionId(payload);
+        if (acceptedSessionId) {
+          backfillOptimisticBubbleTimestamp(acceptedSessionId, payload);
+        }
         // Goal 的 loading 正常路径下统一以 goal.snapshot 为准（文档 §4 中 set/resume 均先于
         // runtime.accepted 下发 goal.snapshot，实测 bug001 复现日志里 16/16 次 resume 也确认了
         // 这个顺序），所以这里大多数时候只是个通用 ACK 占位。但 goalStore.ts 里 pendingAction
@@ -4653,7 +4711,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (existing) {
           chatState.updateMessage(sessionId, messageId, {
             content,
-            timestamp: new Date().toISOString(),
+            timestamp: normalizeEventTimestampIso(payload.timestamp),
           });
           return;
         }
@@ -4661,7 +4719,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           id: messageId,
           role: 'system',
           content,
-          timestamp: new Date().toISOString(),
+          timestamp: normalizeEventTimestampIso(payload.timestamp),
         });
       }),
       webClient.on('config.changed', ({ payload }) => {
@@ -5276,6 +5334,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             mode?: string;
             role?: string;
             cli_agent?: string | null;
+            workflow_run_id?: string;
           };
           if (e.member_id) markTeamConnectionStateChanged(sessionId, e.member_id);
           if (e.member_id && (e.status || e.new_status || e.execution_status)) {
@@ -5306,6 +5365,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 name: e.name,
                 execution_status: e.execution_status || e.new_status,
                 mode: e.mode,
+                workflow_run_id: e.workflow_run_id,
               });
             }
           } else if (
@@ -5327,6 +5387,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               mode: e.mode,
               role: e.role,
               cli_agent: e.cli_agent,
+              workflow_run_id: e.workflow_run_id,
             });
           }
         }
@@ -5551,6 +5612,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     reconcileAgentGroupBinding,
     updateSession,
     resolveEventSessionId,
+    backfillOptimisticBubbleTimestamp,
     shouldDropDuplicatedEvent,
     t,
     takeTeamMemberOutputEventId,

@@ -181,11 +181,20 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
       const s = overrides?.[idx] ?? states[idx] ?? emptyPage();
       const customText = s.custom.trim();
       if (s.skippedNoSelection && s.selected.length === 0 && !customText) {
-        return { header: q.header, question: q.question, answers: [t('interactionPrompt.skippedSummary')] };
+        return {
+          header: q.header,
+          question: q.question,
+          answers: [t('interactionPrompt.skippedSummary')],
+          answerSources: ['skipped'],
+        };
       }
       const answers: string[] = [...s.selected];
-      if (customText) answers.push(customText);
-      return { header: q.header, question: q.question, answers };
+      const answerSources: NonNullable<QaSummaryItem['answerSources']> = s.selected.map(() => 'option');
+      if (customText) {
+        answers.push(customText);
+        answerSources.push('input');
+      }
+      return { header: q.header, question: q.question, answers, answerSources };
     });
     return { title: t('qaSummary.title'), items };
   }, [questions, states, t]);

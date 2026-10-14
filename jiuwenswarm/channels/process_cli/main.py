@@ -15,8 +15,18 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
 
-from jiuwenswarm.channels.process_cli.display_context import resolve_cli_work_mode
+from jiuwenswarm.channels.process_cli.display_context import (
+    resolve_cli_work_mode,
+    resolve_display_mode,
+)
 from jiuwenswarm.channels.process_cli.diagnostics import capture_diagnostics
+from jiuwenswarm.channels.process_cli.model_options import (
+    ModelOptionsError,
+    prepare_model_options,
+    validate_model_options,
+)
+from jiuwenswarm.common.mode_matrix import is_plan_mode, is_team_mode
+from jiuwenswarm.common.runtime_model_config import runtime_model_config
 
 
 def _configure_forwarded_stdio(args: argparse.Namespace) -> None:
@@ -185,6 +195,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--offset", type=int, help="会话列表跳过的条数，非负整数；默认 0。"
     )
     parser.add_argument(
+        "-m", "--model", metavar="MODEL",
+        help="本次任务的模型名称、唯一别名或 name#索引；省略时使用已有默认配置。",
+    )
+    parser.add_argument(
+        "--api-base", metavar="URL",
+        help="本次任务的 HTTP(S) 模型 API 基础地址；需同时指定 --model 和 --api-key-env。",
+    )
+    parser.add_argument(
+        "--api-key-env", metavar="ENV_NAME",
+        help="保存本次模型密钥的环境变量名称（不是密钥值）；需同时指定 --model。",
+    )
+    parser.add_argument(
+        "--model-provider", choices=("OpenAI", "Anthropic"),
+        help="API 协议提供方；需同时指定 --api-base；新模型默认 OpenAI，已配置模型沿用其提供方。",
+    )
+    parser.add_argument(
         "--query-json",
         metavar="FILE|-",
         help="执行一次只读 Runtime 查询，输出 query_result 后关闭 Runtime 并退出。",
@@ -207,13 +233,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="可信目录；可重复指定多个目录。",
     )
-    parser.add_argument("--mode", default="code.normal", help="Runtime 运行模式。")
     parser.add_argument(
-        "--work-mode",
-        choices=("code", "work"),
-        default="code",
-        help="Runtime 工作模式配置。",
+        "--mode",
+        default="code.normal",
+        help="Runtime 运行模式；非交互命令仅支持单 Agent 普通模式，不支持 Plan 或 Team。",
     )
+    # Runtime/session metadata still uses work_mode; the public mode selects it.
+    parser.set_defaults(work_mode="code")
     parser.add_argument(
         "--output",
         choices=("human", "json", "jsonl"),
@@ -365,6 +391,16 @@ def main() -> None:
             if args.prompt is not None:
                 parser.error("内部 prompt 文件不能与位置参数同时使用")
             args.prompt = Path(prompt_file).read_text(encoding="utf-8")
+        if (
+            args.prompt is not None
+            and not getattr(args, "_interactive_worker", False)
+        ):
+            mode = resolve_display_mode(args.mode, args.work_mode)
+            if is_plan_mode(mode) or is_team_mode(mode):
+                parser.error(
+                    "非交互式命令仅支持单 Agent 普通模式，不能通过 --mode 进入 Plan 或 Team 模式；"
+                    "请使用 agent.code.normal 或 agent.work.normal，或进入交互式 CLI"
+                )
         _activate_requested_cwd(args, parser)
         if args.timeout is not None and args.timeout <= 0:
             parser.error("--timeout 必须大于零")
@@ -372,6 +408,10 @@ def main() -> None:
             parser.error("交互模式仅支持 --output human")
         if args.prompt is None and args.debug:
             parser.error("--debug 仅支持非交互式运行")
+        try:
+            api_key = validate_model_options(args)
+        except ModelOptionsError as exc:
+            parser.error(str(exc))
         if args.prompt is None:
             from jiuwenswarm.channels.process_cli.repl import run_repl
 
@@ -386,7 +426,15 @@ def main() -> None:
             debug=args.debug or worker,
         ) as streams:
             diagnostic_log_path = streams.log_path
-            with contextlib.redirect_stdout(sys.stderr):
+            try:
+                model_entry = prepare_model_options(args, api_key)
+            except ModelOptionsError as exc:
+                _write_stderr(streams.stderr, f"jiuwenswarm-process: 错误：{exc}")
+                sys.exit(2)
+            with (
+                runtime_model_config(model_entry),
+                contextlib.redirect_stdout(sys.stderr),
+            ):
                 from jiuwenswarm.channels.process_cli.app import run
 
                 async def run_command() -> int:

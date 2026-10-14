@@ -1,7 +1,22 @@
+import { createElement } from 'react';
 import { settingsNavigationIcons } from '../../../../assets/settings';
+import type { SettingsTabDefinition } from '../../components';
 import type { SettingsModuleDefinition } from '../../registry/types';
-import { FreeModelsSettings } from './FreeModelsSettings';
-import { ModelsSettings } from './ModelsSettings';
+import { ModelsSettings, type ModelSettingsTabId } from './ModelsSettings';
+
+export const modelSettingsTabs = [
+  { id: 'models', labelKey: 'settingsPanel.models.modelsTab' },
+  { id: 'groups', labelKey: 'settingsPanel.models.modelGroups' },
+] as const satisfies readonly SettingsTabDefinition<ModelSettingsTabId>[];
+
+export const defaultModelSettingsTab: ModelSettingsTabId = 'models';
+
+function ModelsSettingsModule() {
+  return createElement(ModelsSettings, {
+    tabs: modelSettingsTabs,
+    defaultTab: defaultModelSettingsTab,
+  });
+}
 
 export const modelsModule: SettingsModuleDefinition = {
   id: 'models',
@@ -10,14 +25,9 @@ export const modelsModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
-      id: 'limited-free-models',
-      separatedRows: true,
-      items: [{ id: 'limited-free-models', component: 'custom', render: FreeModelsSettings }],
-    },
-    {
       id: 'model-manager',
       separatedRows: true,
-      items: [{ id: 'model-manager', component: 'custom', render: ModelsSettings }],
+      items: [{ id: 'model-manager', component: 'custom', render: ModelsSettingsModule }],
     },
   ],
 };

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import importlib.util
 import json
 import logging
@@ -84,7 +85,6 @@ from jiuwenswarm.common.config_panel.config_set_handlers import (  # noqa: F401 
     team_item_requests_codex as _team_item_requests_codex,
     team_payload_requests_codex as _team_payload_requests_codex,
 )
-from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.config_panel.models_handlers import (  # noqa: F401  — 兼容别名
     reasoning_level_display as _reasoning_level_display,
     normalize_provider_value as _normalize_provider_value,
@@ -1255,6 +1255,29 @@ _OPTIONAL_DEPENDENCY_INDEX_URL = os.getenv("PIP_INDEX_URL") or os.getenv("UV_IND
 )
 
 
+def _openjiuwen_url_requirements(extra: str) -> list[str]:
+    """URL-pinned requirements of the installed openjiuwen, restated as direct ones.
+
+    uv pip rejects a URL dependency that only appears transitively (openjiuwen
+    pins protocol packages to git), so the extra install must name them itself.
+    Requirements gated on a different extra are left out.
+    """
+    try:
+        requires = importlib.metadata.requires("openjiuwen") or []
+    except importlib.metadata.PackageNotFoundError:
+        return []
+    forwarded: list[str] = []
+    for raw in requires:
+        spec, _, marker = raw.partition(";")
+        spec = spec.strip()
+        if " @ " not in spec:
+            continue
+        if "extra" in marker and f'"{extra}"' not in marker and f"'{extra}'" not in marker:
+            continue
+        forwarded.append(spec)
+    return forwarded
+
+
 def _build_optional_dependency_install_args(package: str, cli_agent: str) -> list[str]:
     """Build the pip/uv command that installs an optional CLI agent SDK.
 
@@ -1267,6 +1290,7 @@ def _build_optional_dependency_install_args(package: str, cli_agent: str) -> lis
     from jiuwenswarm.common.external_cli_runtime import pinned_sdk_requirements
 
     pinned = pinned_sdk_requirements(cli_agent)
+    requirements = [package, *_openjiuwen_url_requirements(cli_agent), *pinned]
     uv_cmd = shutil.which("uv")
     if uv_cmd and sys.prefix != sys.base_prefix:
         # Pin the target interpreter: without --python, uv resolves its own
@@ -1281,8 +1305,7 @@ def _build_optional_dependency_install_args(package: str, cli_agent: str) -> lis
             sys.executable,
             "--index-url",
             _OPTIONAL_DEPENDENCY_INDEX_URL,
-            package,
-            *pinned,
+            *requirements,
         ]
     return [
         sys.executable,
@@ -1291,8 +1314,7 @@ def _build_optional_dependency_install_args(package: str, cli_agent: str) -> lis
         "install",
         "--index-url",
         _OPTIONAL_DEPENDENCY_INDEX_URL,
-        package,
-        *pinned,
+        *requirements,
     ]
 
 
@@ -2152,45 +2174,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _config_validate_model(ws, req_id, params, session_id)
 
     async def _model_resource_rpc(ws, req_id, params, session_id, operation):
-        from jiuwenswarm.common.config import (
-            delete_model_resource, upsert_model_group_resource, upsert_model_resource,
+        from jiuwenswarm.common.config_panel.model_resource_handlers import model_resource_handler
+
+        await model_resource_handler(
+            channel, ws, req_id, params, session_id, operation=operation,
+            on_config_saved=on_config_saved, agent_client=_resolve(agent_client),
         )
-        from jiuwenswarm.common.model_errors import (
-            MODEL_SELECTION_NOT_FOUND, MODEL_SELECTION_REFERENCED, ModelSelectionError,
-        )
-        from jiuwenswarm.common.model_selection import ModelSelection
-        try:
-            catalog = ModelCatalog()
-            if operation == "groups.list":
-                payload = {"groups": catalog.list_public_groups()}
-            elif operation == "models.get":
-                model_id = str((params or {}).get("model_id") or "").strip()
-                payload = {"model": catalog.get_public_model_detail(model_id)}
-            elif operation == "models.references":
-                selection = ModelSelection.model_validate(params)
-                payload = {"references": [r.__dict__ for r in catalog.find_references(selection)]}
-            elif operation in {"models.delete", "groups.delete"}:
-                resource_type = "model_group" if operation.startswith("groups") else "model"
-                key = "model_group_id" if resource_type == "model_group" else "model_id"
-                resource_id = str((params or {}).get(key) or "").strip()
-                selection = ModelSelection(type=resource_type, id=resource_id)
-                references = catalog.find_references(selection)
-                if references:
-                    raise ModelSelectionError(MODEL_SELECTION_REFERENCED, "resource is still referenced",
-                        references=[r.__dict__ for r in references])
-                if not delete_model_resource(resource_type, resource_id):
-                    raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, "resource does not exist")
-                payload = {key: resource_id, "deleted": True}
-            elif operation == "models.upsert":
-                saved = upsert_model_resource((params or {}).get("model") or {})
-                payload = {"model": ModelCatalog().get_public_model_detail(saved["model_id"])}
-            else:
-                payload = {"group": upsert_model_group_resource((params or {}).get("group") or {})}
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
-        except ModelSelectionError as exc:
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code, payload=exc.to_payload())
-        except Exception as exc:
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
 
     async def _session_selection_set(ws, req_id, params, session_id):
         from jiuwenswarm.common.model_selection import ModelSelection
@@ -3365,9 +3354,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             raw_headless = browser_cfg.get("headless", True)
             headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
 
+        from jiuwenswarm.agents.harness.common.browser_config import browser_decision_state
+
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={"chrome_path": chrome_path, "headless": headless},
+            payload={
+                "chrome_path": chrome_path,
+                "headless": headless,
+                **browser_decision_state(config),
+            },
         )
 
     async def _path_set(ws, req_id, params, session_id, user_id=None):
@@ -3384,6 +3379,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         raw_headless = params.get("headless", True)
         headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
+        # Older clients omit the decision fields; the saved values are then left untouched.
+        set_params = {"chrome_path": chrome_path, "headless": headless}
+        for decision_key in ("decision_mode", "decision_provider"):
+            if params.get(decision_key) is not None:
+                set_params[decision_key] = params[decision_key]
 
         from jiuwenswarm.gateway.routing.e2a_proxy import (
             fetch_agent_unary,
@@ -3437,7 +3437,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
             await proxy_unary_request(
                 channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                params={"chrome_path": chrome_path, "headless": headless},
+                params=set_params,
                 session_id=session_id, user_id=user_id,
                 req_method=ReqMethod.PATH_SET, label="path.set",
                 on_done=_on_path_set_done,
@@ -3457,8 +3457,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             else True
         )
 
+        from jiuwenswarm.agents.harness.common.browser_config import (
+            browser_decision_state,
+            browser_decision_updates,
+        )
+        from jiuwenswarm.common.config import update_browser_decision_in_config
+
+        decision_updates, error = browser_decision_updates(
+            set_params.get("decision_mode"), set_params.get("decision_provider"), get_config()
+        )
+        if error:
+            await channel.send_response(ws, req_id, ok=False, error=error, code="BAD_REQUEST")
+            return
+
         try:
             update_browser_in_config({"chrome_path": chrome_path, "headless": headless})
+            if decision_updates:
+                update_browser_decision_in_config(decision_updates)
             resolved_agent_client = _resolve(agent_client)
             await _clear_agent_config_cache(resolved_agent_client)
         except Exception as e:  # noqa: BLE001
@@ -3480,7 +3495,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={"chrome_path": chrome_path, "headless": headless},
+            payload={"chrome_path": chrome_path, "headless": headless, **browser_decision_state(get_config())},
         )
 
     async def _path_select_directory(ws, req_id, params, session_id, user_id=None):

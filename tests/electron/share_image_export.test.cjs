@@ -120,4 +120,6 @@ test('both Electron packagers include the export runtime', async () => {
     const source = await fs.readFile(path.join(__dirname, '../../scripts', script), 'utf8');
     assert.match(source, /(?:Copy-Item|cp).*share_image_export\.cjs/);
   }
+  const macOSBuild = await fs.readFile(path.join(__dirname, '../../scripts/build-electron-exe.sh'), 'utf8');
+  assert.match(macOSBuild, /REQUIRED_FILES=\([\s\S]*?share_image_export\.cjs/);
 });

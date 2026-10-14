@@ -257,7 +257,7 @@ class ConfigAdapter(GatewayAdapter):
                 channel,
                 on_config_saved=self._on_config_saved,
             )
-            register_models_handlers(channel)
+            register_models_handlers(channel, user_id=request.user_id)
         handler = channel.methods.get(request.req_method.value)
         if handler is None:
             return build_error_response(request, "unsupported config method", code="BAD_REQUEST")
@@ -296,10 +296,19 @@ class ConfigAdapter(GatewayAdapter):
         )
 
     async def _handle_browser_config(self, request: AgentRequest) -> AgentResponse:
-        from jiuwenswarm.common.config import get_config, update_browser_in_config
+        from jiuwenswarm.agents.harness.common.browser_config import (
+            browser_decision_state,
+            browser_decision_updates,
+        )
+        from jiuwenswarm.common.config import (
+            get_config,
+            update_browser_decision_in_config,
+            update_browser_in_config,
+        )
 
+        config = get_config() or {}
         if request.req_method == ReqMethod.PATH_GET:
-            browser = (get_config() or {}).get("browser") or {}
+            browser = config.get("browser") or {}
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -307,6 +316,7 @@ class ConfigAdapter(GatewayAdapter):
                 payload={
                     "chrome_path": _resolve_browser_path(browser) if isinstance(browser, dict) else "",
                     "headless": browser.get("headless") if isinstance(browser.get("headless"), bool) else True,
+                    **browser_decision_state(config),
                 },
                 metadata=request.metadata,
             )
@@ -319,7 +329,15 @@ class ConfigAdapter(GatewayAdapter):
         headless = params.get("headless", True)
         if not isinstance(headless, bool):
             headless = True
+        # Older clients omit the decision fields; the saved values then stay untouched.
+        decision_updates, error = browser_decision_updates(
+            params.get("decision_mode"), params.get("decision_provider"), config
+        )
+        if error:
+            return build_error_response(request, error, code="BAD_REQUEST")
         update_browser_in_config({"chrome_path": chrome_path, "headless": headless})
+        if decision_updates:
+            update_browser_decision_in_config(decision_updates)
         metadata = dict(request.metadata or {})
         metadata["config_changed"] = True
         metadata["browser_runtime_restart"] = True
@@ -327,7 +345,11 @@ class ConfigAdapter(GatewayAdapter):
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload={"chrome_path": chrome_path, "headless": headless},
+            payload={
+                "chrome_path": chrome_path,
+                "headless": headless,
+                **browser_decision_state(get_config() or {}),
+            },
             metadata=metadata,
         )
 

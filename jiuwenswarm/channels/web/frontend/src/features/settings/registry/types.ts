@@ -36,6 +36,8 @@ export type SettingSelectOption = {
 export type SettingSubItems = {
   show: 'always' | 'when-parent-checked';
   disabled: 'never' | 'when-parent-unchecked';
+  /** Turning the parent switch off also turns off every sub-item switch in the same save. */
+  uncheckWithParent?: boolean;
   items: readonly SettingItemDefinition[];
 };
 export type SettingsCustomItemProps = {

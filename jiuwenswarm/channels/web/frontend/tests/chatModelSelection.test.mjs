@@ -4,11 +4,13 @@ import test from 'node:test';
 import {
   resolveChatModelSelection,
   resolveConfiguredModelName,
+  resolveNewConversationModelSelection,
   useSessionStore,
 } from '../node_modules/.cache/chat-model-selection/sessionStore.mjs';
 
 const models = [
   {
+    model_id: 'mdl-main',
     model_name: 'main-model',
     alias: '主对话默认模型',
     api_base: 'https://example.test/main',
@@ -16,6 +18,7 @@ const models = [
     model_provider: 'OpenAI',
   },
   {
+    model_id: 'mdl-agent',
     model_name: 'single-agent-model',
     alias: '单Agent模型',
     api_base: 'https://example.test/agent',
@@ -23,6 +26,43 @@ const models = [
     model_provider: 'OpenAI',
   },
 ];
+
+test('new conversations restore a valid cached model or model-group route', () => {
+  const selectableModels = [
+    { ...models[0], model_id: 'mdl-main' },
+    { ...models[1], model_id: 'mdl-agent' },
+  ];
+  const groups = [{
+    model_group_id: 'grp-fast',
+    enabled: true,
+    routes: [{ route_id: 'route-main', model_id: 'mdl-main', enabled: true }],
+  }];
+
+  assert.deepEqual(
+    resolveNewConversationModelSelection(selectableModels, groups, { type: 'model', id: 'mdl-agent' }),
+    { type: 'model', id: 'mdl-agent' },
+  );
+  assert.deepEqual(
+    resolveNewConversationModelSelection(selectableModels, groups, {
+      type: 'model_group', id: 'grp-fast', route_id: 'route-main',
+    }),
+    { type: 'model_group', id: 'grp-fast', route_id: 'route-main' },
+  );
+});
+
+test('invalid cached selections fall back custom -> free -> empty', () => {
+  const custom = { ...models[0], model_id: 'mdl-custom', is_free: false };
+  const free = { ...models[1], model_id: 'mdl-free', is_free: true };
+  const missing = { type: 'model', id: 'missing' };
+
+  assert.deepEqual(resolveNewConversationModelSelection([free, custom], [], missing), {
+    type: 'model', id: 'mdl-custom',
+  });
+  assert.deepEqual(resolveNewConversationModelSelection([free], [], missing), {
+    type: 'model', id: 'mdl-free',
+  });
+  assert.equal(resolveNewConversationModelSelection([], [], missing), null);
+});
 
 test('team mode keeps the explicitly selected model (not locked to default anymore)', () => {
   const selected = resolveChatModelSelection(
@@ -86,7 +126,7 @@ test('team runtime keeps the user-selected model and sends it as effective model
   useSessionStore.getState().removeRuntime(sessionId);
 });
 
-test('pending new conversation follows the default model when it changes', () => {
+test('pending new conversation keeps its last valid selection when the configured default changes', () => {
   const store = useSessionStore.getState();
   // 初始默认模型为 main-model
   store.setAvailableModels(models, 'main-model');
@@ -96,9 +136,9 @@ test('pending new conversation follows the default model when it changes', () =>
   // 用户在配置面板把默认模型切换为 single-agent-model 后刷新模型列表
   store.setAvailableModels(models, 'single-agent-model');
 
-  // 未发送的新建会话应跟随新默认模型
-  assert.equal(useSessionStore.getState().getRuntime('new')?.selectedModelName, 'single-agent-model');
-  assert.equal(useSessionStore.getState().getEffectiveModelName('new'), 'single-agent-model');
+  // 新建会话优先保留上次有效选择，不再跟随后端默认模型漂移。
+  assert.equal(useSessionStore.getState().getRuntime('new')?.selectedModelName, 'main-model');
+  assert.equal(useSessionStore.getState().getEffectiveModelName('new'), 'main-model');
 
   useSessionStore.getState().removeRuntime('new');
 });

@@ -1,3 +1,4 @@
+import { assetSearchNames } from '../features/assetNameSearch';
 import { withCatalogCache, type CatalogItems, type CatalogCacheMetadata } from '../features/catalogCache';
 import { webRequest } from './webClient';
 import type {
@@ -34,6 +35,7 @@ interface RawConnectorSummary {
   name: string;
   package_name?: string;
   display_name: string;
+  display_name_i18n?: { zh?: string; en?: string };
   description: string;
   category: string;
   integration_type: ConnectorSummary['integrationType'];
@@ -67,6 +69,7 @@ function fromRawSummary(raw: RawConnectorSummary): ConnectorSummary {
     runtimePackageName: identity.runtimePackageName,
     hubAssetId: identity.hubAssetId,
     displayName: raw.display_name,
+    searchNames: assetSearchNames(raw.display_name_i18n, raw.display_name || raw.name),
     description: raw.description,
     category: raw.category,
     integrationType: raw.integration_type,

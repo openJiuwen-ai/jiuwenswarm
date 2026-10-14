@@ -68,7 +68,9 @@ Supported on `agent()`, `human()`, and `agent_session()` / `human_session()` via
 | `model` | `agent` / `agent_session` | Override this worker's model name; **omit by default** to inherit teammate model |
 | `timeout` | `agent` / `human` | Timeout in seconds: backend call for `agent`; wait-for-human for `human` |
 | `isolation` | `agent` | Only `'worktree'`: run worker in an isolated git worktree (parallel file edits; costly) |
-| `agent_type` | `agent` | Use a named expert subagent instead of the default worker (composable with `schema`) |
+| `agent_type` | `agent` / `agent_session` | Hand the node to a third-party CLI agent (`'claude'` / `'codex'`, must be on the team's third-party agent allowlist); composable with `schema`, see "Third-party agents" below |
+| `builtin_model` | `agent` / `agent_session` | Third-party nodes only: run a model from the CLI's declared built-in catalog on its own login; mutually exclusive with `model`, see "Third-party agents → Model" below |
+| `effort` | `agent` / `agent_session` | Third-party nodes only, and only alongside `builtin_model`: reasoning effort tier, must be one the model declares; omit for the default tier |
 
 Example:
 
@@ -160,13 +162,15 @@ On first use, you need to set up the model API in the configuration. You can do 
 
 Runtime config: `~/.jiuwenswarm/config/config.yaml` (initialized by `jiuwenswarm-init` from **`jiuwenswarm/resources/config.yaml`**).
 
-SwarmFlow uses only two fields under `modes.team.jiuwen_team` (excerpt from the repo template):
+SwarmFlow involves four fields under `modes.team.jiuwen_team` (excerpt from the repo template; keys unrelated to SwarmFlow such as `external_transport` are omitted):
 
 ```yaml
 modes:
   team:
     jiuwen_team:
       enable_swarmflow: false
+      swarmflow_progressive_tool: false
+      external_cli_agents: []
 
       # Team-level token budget ceiling for swarmflow runs.
       # Unset / null = unbounded (no ceiling).  Set to a positive integer to
@@ -178,6 +182,8 @@ modes:
 |-------|-------------|---------|
 | `enable_swarmflow` | When `true`, the Leader may call `swarmflow()` to start runs; when `false`, SwarmFlow **does not** run even in `/mode team` | `false` |
 | `swarmflow_budget` | Leader-level token cap shared by **all** runs in this team; readable in scripts via `budget.total` / `spent()` / `remaining()`. A **positive integer** sets a cap; **unset or `null`** means unbounded | unset (commented in template) |
+| `swarmflow_progressive_tool` | Progressive tool exposure for workers (`tool_search` fetches tools on demand); only effective when `enable_swarmflow: true`; independent of the single-agent `progressive_tool_enabled`; **config.yaml only** — no Web toggle, no `/swarmflow` flag | `false` |
+| `external_cli_agents` | Third-party CLI member declarations (`claude` / `codex`); doubles as the allowlist for the script's `agent_type` — an undeclared backend cannot be dispatched by a workflow; the Web "Third-Party Agents" setting edits this field | `[]` |
 
 The shipped template defaults SwarmFlow to **off** (`enable_swarmflow: false`). Enable it via one of the paths below on first use.
 
@@ -185,7 +191,7 @@ The shipped template defaults SwarmFlow to **off** (`enable_swarmflow: false`). 
 
 | Path | Fields | How | When it takes effect |
 |------|--------|-----|----------------------|
-| **1. Edit `config.yaml`** | `enable_swarmflow`, `swarmflow_budget` | Edit `modes.team.jiuwen_team` in `~/.jiuwenswarm/config/config.yaml` | **Restart the backend** for global effect |
+| **1. Edit `config.yaml`** | `enable_swarmflow`, `swarmflow_budget`, `swarmflow_progressive_tool` | Edit `modes.team.jiuwen_team` in `~/.jiuwenswarm/config/config.yaml` | **Restart the backend** for global effect |
 | **2. Web UI** | `enable_swarmflow` only | Go to **More → Configuration Info → Other Config → SwarmFlow** and toggle on "Enable SwarmFlow" (**cluster mode**; the Web UI does **not** expose `swarmflow_budget` — set the budget via `config.yaml` or TUI `/swarmflow on --budget`) | **No hot reload**: after saving, **start a new session** (new chat or equivalent); active workflows are not interrupted |
 | **3. TUI `/swarmflow`** | `enable_swarmflow`; budget via `on --budget` | `/swarmflow on` / `off`; `/swarmflow on --budget <tokens\|none>`; `/swarmflow` to query | Writes config, then **`Use /new to apply.`** — current session is not hot-reloaded; run **`/new`** for a fresh session |
 
@@ -346,6 +352,38 @@ When the script uses `human` / `human_session`, nodes enter **`waiting_for_human
 | **`/swarmflow` / `on` / `off`** | Toggle SwarmFlow, query status |
 | **`/swarmflows`** | Full-screen run tree |
 | **`h`** | Pending human replies on the main view |
+
+---
+
+## Third-party agents (Claude Code / Codex)
+
+> **Prerequisite**: requires an agent-core build that includes swarmflow third-party agent support (`agent()` consumes `agent_type`). On an older engine `agent_type` is silently ignored and the node runs as a native worker with no error — this section only takes effect after the `openjiuwen` dependency is upgraded.
+
+A script can hand a single node to an external CLI agent:
+
+```python
+result = await agent("review this diff", label="review",
+                     options={"agent_type": "codex", "model": "gpt-5-codex"})
+sess = agent_session(label="iter", options={"agent_type": "claude"})
+```
+
+| Topic | Notes |
+|-------|-------|
+| Allow-list | `agent_type` must be an engine-supported SDK backend (`claude` / `codex`) **and** declared in this team's `modes.team.<team>.external_cli_agents` (Web: Settings → Experimental → Third-Party Agents (Team mode only)). Otherwise the node fails immediately and the error lists both sets |
+| Session memory | `agent_session` memory is scoped per **run**: resuming the same run restores context; a fresh run of the same script starts empty |
+| fork | `fork()` on a third-party `agent_session` supports only `full` / `before` (CLI-native branching: Claude copies the transcript offline, Codex uses `thread/fork`); `after` and both compact modes raise. For `before`, an out-of-range `keep_rounds` or a round without a marker **raises instead of degrading to full**; child and parent must share the same `agent_type`. Credentials are not journaled: on resume the script re-runs `fork()`, and a child that already persisted its own pointer resumes it without creating a second branch |
+| Structured output | `schema=` uses a prompt instruction plus JSON parsing; a CLI that does not return JSON behaves like a native worker that never submitted (retries, then `None`) |
+| Model | A `model` that matches the team's model pool with a compatible protocol (Claude ↔ Anthropic protocol entries, Codex ↔ everything else) runs the CLI against the pool endpoint; a `builtin_model` that matches the CLI's declared built-in catalog runs that model under the CLI's own login (optionally with `effort`, defaulting to the default level). The two are mutually exclusive; if neither is set the CLI uses its own login's default model. Validation failures (not in pool / not in catalog / mutual exclusion / `effort` out of range) error out before launch and list the available options — **no fallback**: environment errors like a dead CLI login surface as `AGENT_FAILED` (the message includes the root cause and a "add `model=` to work around" suggestion); edit the script and re-run (already-cached nodes are not recomputed). Note: the old usage of "`model` passed directly as the CLI's native model name" has been removed; use `builtin_model` instead (declare the built-in catalog in settings). |
+| Budget | Third-party turns are billed to the Team / run ledgers at turn end; worst case one turn of overrun |
+| Web display | Every node row in the run tree shows an avatar: CLI brand for third-party nodes, the human face for `human` / `human_session`, the default illustration for native; an `agent_session` group shows one avatar on its header only; the `model` column shows known-at-assembly values (pool model / builtin name), otherwise empty while running and the CLI's actually reported model after completion |
+| TUI | The `/swarmflows` viewer does not distinguish third-party nodes (not adapted) |
+
+### Web display: tool activity and run grouping
+
+These two extra Web-side display behaviors apply to all workflow nodes, third-party and native alike:
+
+- **Tool activity (live-only)**: A running tree node shows the latest tool name as an inline hint, the node detail panel lists the tool-activity pairs (`tool_call` / `tool_result`), and once a turn completes the member call list shows that workflow member's call records (existing chain); activity is **live-only** (cache hits and resume replays do not resend it), and after a full page refresh tree activity is restored from the checkpoint.
+- **Run grouping**: The member list, session thumbnails, and task panel are grouped by workflow run; a group header shows the workflow name + short run id + status badge. Real teammates and normal tasks are unaffected. After a full page refresh, mirror members (including finished runs) are restored with the team snapshot and keep their grouping.
 
 ---
 

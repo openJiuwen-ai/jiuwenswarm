@@ -108,6 +108,8 @@ _CONFIG_SET_ENV_MAP = {
 
 _SWARMFLOW_ENABLED_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 _SWARMFLOW_BUDGET_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
+_TEAM_DISPATCH_MODE_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
+_TEAM_TASK_VERIFICATION_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
 _EXTERNAL_CLI_AGENTS_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
 _KV_CACHE_CONFIG_KEY = "kv_cache_affinity_config"
 _KV_CACHE_ENABLED_KEY = "enable_kv_cache_affinity"
@@ -419,6 +421,12 @@ def get_panel() -> dict[str, Any]:
         payload["swarmflow_enabled"] = _bool_text(
             _nested(raw, _SWARMFLOW_ENABLED_PATH, False)
         )
+        payload["team_scheduled_dispatch_enabled"] = (
+            "true" if str(_nested(raw, _TEAM_DISPATCH_MODE_PATH, "autonomous")).strip() == "scheduled" else "false"
+        )
+        payload["team_task_verification_enabled"] = _bool_text(
+            _nested(raw, _TEAM_TASK_VERIFICATION_PATH, False)
+        )
         budget = _nested(raw, _SWARMFLOW_BUDGET_PATH)
         if budget is not None:
             payload["swarmflow_budget"] = str(budget)
@@ -456,6 +464,8 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
         payload.setdefault("swarmflow_enabled", "false")
+        payload.setdefault("team_scheduled_dispatch_enabled", "false")
+        payload.setdefault("team_task_verification_enabled", "false")
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
         payload.setdefault("proactive_recommendation_enabled", "false")

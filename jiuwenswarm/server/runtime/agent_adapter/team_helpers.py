@@ -12,7 +12,7 @@ import re
 import time
 from contextlib import AsyncExitStack, aclosing
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -1714,6 +1714,45 @@ async def _broadcast_team_state_snapshot(
             }
             await run_history_io(_persist_team_history_event, channel_id, session_id, event)
             await _broadcast_event(channel_id, session_id, event)
+
+        # Replay mirrored workflow members from the checkpointed run states so
+        # a full page refresh restores them grouped by ``workflow_run_id`` —
+        # including members of already-finished runs, whose live events will
+        # never come again. Mirrored members have no DB row, so the DB snapshot
+        # cannot cover them; DB members stay authoritative, so a run member
+        # sharing a DB member_id is skipped.
+        get_wf_handler = getattr(team_manager, "get_workflow_handler", None)
+        if get_wf_handler is not None:
+            wf_handler = get_wf_handler(session_id)
+            if wf_handler is not None:
+                db_member_ids = {m.get("member_id", "") for m in snapshot.get("members", [])}
+                # Iterative loops reuse an agent id across phases of one run;
+                # like the live path's session-wide spawned_members, each
+                # mirrored member is emitted exactly once per replay.
+                replayed_member_ids: set[str] = set()
+                for run in getattr(wf_handler, "get_run_states", lambda: {})().values():
+                    if not run.id:
+                        continue
+                    for phase in run.phases:
+                        for agent in phase.agents:
+                            member_id = f"{run.id}:{agent.id}"
+                            if member_id in db_member_ids or member_id in replayed_member_ids:
+                                continue
+                            replayed_member_ids.add(member_id)
+                            event = _team_event_envelope(
+                                "team.member",
+                                session_id,
+                                _wf_spawned_member_event(
+                                    run.id,
+                                    team_id,
+                                    agent.model_dump(exclude_none=True),
+                                    status=_wf_agent_status_to_member_status(agent.status),
+                                ),
+                            )
+                            await run_history_io(
+                                _persist_team_history_event, channel_id, session_id, event
+                            )
+                            await _broadcast_event(channel_id, session_id, event)
 
         # Broadcast task status snapshot
         for t in snapshot.get("tasks", []):
@@ -4035,23 +4074,101 @@ _WF_TERMINAL_PLANNED_CONTENT = "i18n:team.taskDetail.skipReasonPlanned"
 def _team_event_envelope(
     category: str, session_id: str, event: dict[str, Any]
 ) -> dict[str, Any]:
-    """Wrap an inner team event dict in the standard broadcast envelope."""
+    """Wrap an inner team event dict in the standard broadcast envelope.
+
+    The emission time rides on the inner event: the frontend dedups identical
+    payloads within 1.5s, so a phase status that legitimately repeats (a card
+    re-entered between same-phase agent events) must carry a distinguishing
+    timestamp or the second emission is dropped as a redelivery and the task
+    card sticks on the stale status.
+    """
+    event = {**event, "timestamp": int(time.time() * 1000)}
     return {"event_type": category, "session_id": session_id, "event": event}
+
+
+def _wf_spawned_member_event(
+    run_id: str,
+    team_id: str,
+    agent: dict[str, Any],
+    *,
+    status: str,
+) -> dict[str, Any]:
+    """Build the spawned ``team.member`` event for a workflow worker.
+
+    Single construction point shared by the live conversion
+    (``_workflow_updated_to_team_events``) and the team snapshot replay, so a
+    mirrored member always carries the same identity fields. The caller
+    supplies the member ``status``: the live path always spawns ``busy`` and
+    lands the real status in a later status_changed, while the snapshot replay
+    maps the agent node status directly (no follow-up delta exists there).
+    """
+    agent_id = str(agent.get("id") or "")
+    event: dict[str, Any] = {
+        "type": "team.member.spawned",
+        "team_id": team_id,
+        "member_id": f"{run_id}:{agent_id}",
+        "name": agent.get("name") or agent_id,
+        "status": status,
+        "workflow_run_id": run_id,
+    }
+    # Same identity fields the roster uses for real members, so the member
+    # list resolves the same avatar as the workflow tree.
+    if agent.get("agent_type"):
+        event["cli_agent"] = agent["agent_type"]
+    elif agent.get("kind") == "human":
+        event["role"] = TeamRole.HUMAN_AGENT.value
+        event["mode"] = "human"
+    return event
+
+
+def _wf_agent_status_to_member_status(agent_status: str) -> str:
+    """Map a workflow agent node status onto the member busy/idle convention.
+
+    The live mirror spawns a worker ``busy`` and only lands the raw terminal
+    status through a later status_changed. The snapshot replay emits a single
+    spawned event per node with no follow-up delta, so it folds that two-step
+    result in: a node still producing (running, or awaiting a human reply) stays
+    ``busy``, anything terminal maps to ``idle``.
+    """
+    return "busy" if agent_status in ("running", "waiting_for_human") else "idle"
+
+
+@dataclass(slots=True)
+class _WorkflowMirrorDedup:
+    """Session-scoped dedup tables behind the ``workflow.updated`` → team mirror.
+
+    The tables belong to the workflow handler (they must outlive one consumer
+    loop so a resume replay is not re-emitted); this bundle only carries them
+    by reference into the converter.
+    """
+
+    seen_phase: dict[str, str] = field(default_factory=dict)
+    seen_agent: dict[str, str] = field(default_factory=dict)
+    spawned_members: set[str] = field(default_factory=set)
+    seen_activity: dict[str, set[tuple[str, str]]] = field(default_factory=dict)
 
 
 def _workflow_updated_to_team_events(
     event: dict[str, Any],
     session_id: str,
-    seen_phase: dict[str, str],
-    seen_agent: dict[str, str],
-    spawned_members: set[str],
+    dedup: _WorkflowMirrorDedup,
 ) -> list[dict[str, Any]]:
     """Convert one ``workflow.updated`` event into web ``team.member`` / ``team.task`` events.
 
     Each swarmflow phase becomes a ``team.task`` and each worker (agent) becomes a
     ``team.member``. Only status *changes* produce events — the ``workflow.updated``
     delta repeatedly re-includes a running phase (once per agent that starts inside
-    it), so ``seen_phase`` / ``seen_agent`` dedup by last-observed status.
+    it), so ``dedup.seen_phase`` / ``dedup.seen_agent`` dedup by last-observed status.
+
+    Worker tool activity mirrors onto the member call list through the same
+    ``chat.tool_call`` / ``chat.tool_result`` frames real teammates produce
+    (``role="teammate"`` + ``member_name`` gate the frontend into its existing
+    hidden-teammate execution-event chain): a ``tool_call`` row emits one
+    ``chat.tool_call`` frame, a paired ``tool_result_preview`` emits a matching
+    ``chat.tool_result`` frame with the same ``tool_call_id`` (the frontend's
+    existing call/result pairing links them), and an orphan ``tool_result`` row
+    emits a lone ``chat.tool_result`` frame. ``dedup.seen_activity`` (per member,
+    ``(type, tool_call_id)`` keys) dedups rows that a later delta re-includes.
     """
     if event.get("event_type") != "workflow.updated":
         return []
@@ -4061,6 +4178,10 @@ def _workflow_updated_to_team_events(
     team_id = str(wf.get("name") or run_id or "swarmflow")
     if not run_id:
         return []
+    seen_phase = dedup.seen_phase
+    seen_agent = dedup.seen_agent
+    spawned_members = dedup.spawned_members
+    seen_activity = dedup.seen_activity
 
     # At workflow terminal status, a still-planned phase never started; map it
     # via _WF_TERMINAL_PLANNED_TASK to skipped/cancelled with a reason string,
@@ -4123,14 +4244,7 @@ def _workflow_updated_to_team_events(
                     _team_event_envelope(
                         "team.member",
                         session_id,
-                        {
-                            "type": "team.member.spawned",
-                            "team_id": team_id,
-                            "member_id": member_id,
-                            "name": agent.get("name") or agent_id,
-                            "status": "busy",
-                            "workflow_run_id": run_id,
-                        },
+                        _wf_spawned_member_event(run_id, team_id, agent, status="busy"),
                     )
                 )
 
@@ -4153,7 +4267,85 @@ def _workflow_updated_to_team_events(
                         )
                     )
 
+            # Mirror worker tool activity into the member call list. Each row
+            # becomes the same chat.tool_call / chat.tool_result frame real
+            # teammates produce, keyed on the worker mirror; a paired
+            # tool_result_preview emits a matching chat.tool_result frame with
+            # the same tool_call_id so the frontend pairs call + result.
+            activity = agent.get("activity") or []
+            if activity:
+                seen_rows = seen_activity.setdefault(member_id, set())
+                for row in activity:
+                    if not isinstance(row, dict):
+                        continue
+                    row_type = row.get("type")
+                    tool_call_id = row.get("tool_call_id")
+                    row_content = row.get("content") or ""
+                    row_key = (
+                        row_type,
+                        tool_call_id if tool_call_id else f"no-id:{row_content}",
+                    )
+                    # role=teammate + member_name gate the frame into the
+                    # frontend's hidden-teammate execution-event chain, exactly
+                    # like _enrich_teammate_event does for real teammate frames.
+                    base: dict[str, Any] = {
+                        "session_id": session_id,
+                        "role": TeamRole.TEAMMATE.value,
+                        "member_name": member_id,
+                    }
+                    if row.get("timestamp"):
+                        base["timestamp"] = row["timestamp"]
+                    preview = row.get("tool_result_preview") if row_type == "tool_call" else None
+                    preview_key = (
+                        "tool_result",
+                        tool_call_id if tool_call_id else f"no-id:{preview or ''}",
+                    )
+                    if row_key in seen_rows:
+                        # The call row was mirrored before its result paired back
+                        # (the call outlived the activity batch window): the
+                        # preview is the only new information, so emit just its
+                        # result frame — once.
+                        if preview is not None and preview_key not in seen_rows:
+                            seen_rows.add(preview_key)
+                            out.append(_activity_result_frame(base, row, tool_call_id, preview))
+                        continue
+                    seen_rows.add(row_key)
+                    if row_type == "tool_call":
+                        frame: dict[str, Any] = {
+                            **base,
+                            "event_type": "chat.tool_call",
+                            # name rides the nested tool_call (the normalizer's
+                            # first candidate); description carries the row
+                            # content so the member call list renders it
+                            # (description is its first display candidate).
+                            "tool_call": {
+                                "name": row.get("tool_name") or "unknown",
+                                "description": row_content,
+                            },
+                        }
+                        if tool_call_id:
+                            frame["tool_call"]["id"] = tool_call_id
+                        out.append(frame)
+                        if preview is not None:
+                            seen_rows.add(preview_key)
+                            out.append(_activity_result_frame(base, row, tool_call_id, preview))
+                    elif row_type == "tool_result":
+                        out.append(_activity_result_frame(base, row, tool_call_id, row_content))
+
     return out
+
+
+def _activity_result_frame(
+    base: dict[str, Any], row: dict[str, Any], tool_call_id: Any, result: str,
+) -> dict[str, Any]:
+    """One ``chat.tool_result`` frame for a mirrored activity row (paired or orphan)."""
+    return {
+        **base,
+        "event_type": "chat.tool_result",
+        "tool_name": row.get("tool_name") or "unknown",
+        **({"tool_call_id": tool_call_id} if tool_call_id else {}),
+        "result": result or "",
+    }
 
 
 def _detect_human_waiting_prompts(
@@ -4225,9 +4417,12 @@ async def _consume_workflow_events(
     # Phase/agent dedup lives on the handler (session-scoped): this loop is
     # cancelled on team pause, and a resume relaunch replays the cached
     # prefix — a fresh per-loop table would re-emit the replay as new tasks.
-    seen_phase = workflow_handler.seen_phase
-    seen_agent = workflow_handler.seen_agent
-    spawned_members = workflow_handler.spawned_members
+    mirror_dedup = _WorkflowMirrorDedup(
+        seen_phase=workflow_handler.seen_phase,
+        seen_agent=workflow_handler.seen_agent,
+        spawned_members=workflow_handler.spawned_members,
+        seen_activity=workflow_handler.seen_activity,
+    )
     seen_human_waiting: set[str] = set()
     try:
         logger.info(
@@ -4304,7 +4499,7 @@ async def _consume_workflow_events(
 
             # ── 非 TUI: 额外转换扁平 team.task/team.member 事件（向后兼容）──
             for team_ev in _workflow_updated_to_team_events(
-                event, session_id, seen_phase, seen_agent, spawned_members
+                event, session_id, mirror_dedup,
             ):
                 await run_history_io(_persist_team_history_event, channel_id, session_id, team_ev)
                 await _broadcast_event(channel_id, session_id, team_ev)

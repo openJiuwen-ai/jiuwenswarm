@@ -163,7 +163,7 @@ def upload_file_bytes(content: bytes, target_rel_path: str) -> tuple[bool, dict[
     import urllib.request
     from urllib.parse import quote
 
-    from jiuwenswarm.agents.harness.common.tools.web_file_download import (
+    from jiuwenswarm.common.file_download_token import (
         generate_file_upload_token,
     )
 
