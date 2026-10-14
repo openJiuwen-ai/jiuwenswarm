@@ -648,7 +648,7 @@
       },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
-        "description": "输入框为空时显示全双工按钮；启动后持续进行语音对话，屏幕共享由下方开关控制。"
+        "description": "全双工仅在单 Agent 模式下生效，集群/团队模式下不显示入口。输入框为空时显示全双工按钮；启动后持续进行语音对话，屏幕共享由下方开关控制。"
       },
       "kv_cache_affinity_enabled": {
         "title": "启用算力亲和",

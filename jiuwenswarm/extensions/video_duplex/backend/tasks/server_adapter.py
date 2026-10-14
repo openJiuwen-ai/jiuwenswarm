@@ -1,7 +1,6 @@
 """AgentServer endpoints for checkpoint ACKs and task-produced files."""
 
 import asyncio
-import re
 
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -28,7 +27,7 @@ class VoiceTaskServerAdapter(GatewayAdapter):
 
             session = request.session_id or ""
             execution_id = (request.params or {}).get("execution_request_id")
-            if not re.fullmatch(r"managed-task-[0-9a-f]{32}", session) or not execution_id:
+            if not session or not execution_id:
                 raise ValueError("Invalid task execution identity")
             guard(session)
             metadata = await asyncio.to_thread(

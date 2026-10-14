@@ -13889,6 +13889,18 @@ class JiuWenSwarmDeepAdapter:
         request: AgentRequest,
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
+        from jiuwenswarm.extensions.video_duplex.backend.conversation_context import sync_conversation_context
+
+        rail = getattr(self, "_voice_agent_task_rail", None)
+        bindings = getattr(rail, "managed_tasks", {})
+        binding = bindings.get(request.session_id)
+        if (binding is not None and binding.request_id != request.request_id
+                and not (request.channel_id == "video_tool"
+                         and isinstance(inputs.get("query"), InteractiveInput))):
+            raise RuntimeError("全双工工具任务正在执行，请等待任务完成后再发送文字消息。")
+        # An interrupt resume must preserve the pending assistant/tool ordering.
+        if not isinstance(inputs.get("query"), InteractiveInput):
+            await sync_conversation_context(self._instance, request.session_id)
         if not self._enable_auto_permission:
             await self._discard_pending_core_interrupt_for_fresh_input(request, inputs)
             return inputs

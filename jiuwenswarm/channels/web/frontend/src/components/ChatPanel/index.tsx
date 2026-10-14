@@ -86,7 +86,7 @@ import {
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady, useWelcomeBubblePosition } from '../../hooks';
-import { ApplicationPluginTaskRuntimes } from '../../applicationPlugins/ApplicationPluginOutlet';
+import { ApplicationPluginTaskRuntimes, flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { generateUuidV4 } from '../../utils/uuid';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { requestLogin, useAuthStore } from '../../stores/authStore';
@@ -1658,11 +1658,12 @@ export const ChatPanel = React.memo(function ChatPanel({
 
   // 包装发送消息函数，添加滚动逻辑
   const handleSendMessage = useCallback(
-    (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
+    async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
+      if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
       setIsSending(true);
       onSendMessage(content, mediaItems, options);
     },
-    [onSendMessage],
+    [activeSessionId, onSendMessage],
   );
 
   // 当发送消息时强制滚动到底部

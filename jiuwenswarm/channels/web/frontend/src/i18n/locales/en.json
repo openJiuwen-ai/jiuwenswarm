@@ -664,7 +664,7 @@
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
-        "description": "Show a Full-duplex action when the composer is empty. Start a continuous voice conversation; the switch below controls optional screen sharing."
+        "description": "Full-duplex is only available in single-Agent mode; its entry is hidden in swarm/team mode. Show a Full-duplex action when the composer is empty. Start a continuous voice conversation; the switch below controls optional screen sharing."
       },
       "kv_cache_affinity_enabled": {
         "title": "Enable compute affinity",

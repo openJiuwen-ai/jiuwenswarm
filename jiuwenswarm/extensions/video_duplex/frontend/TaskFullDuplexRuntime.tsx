@@ -39,6 +39,12 @@ type PersistedTimelineEvent = Record<string, unknown> & {
 
 const historyQueues = new Map<string, Promise<void>>();
 
+export async function flushConversationHistory(sessionId: string): Promise<void> {
+  while (historyQueues.has(sessionId)) {
+    await historyQueues.get(sessionId);
+  }
+}
+
 function timelineEventId(): string {
   return (
     globalThis.crypto?.randomUUID?.() ??
