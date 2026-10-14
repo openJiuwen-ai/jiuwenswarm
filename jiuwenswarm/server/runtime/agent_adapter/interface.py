@@ -3859,7 +3859,7 @@ class JiuWenSwarm:
         try:
             from jiuwenswarm.agents.harness.common.cron_guard.watchdog import (
                 cron_guard_begin,
-                cron_guard_end,
+                cron_guard_end_async,
             )
             from jiuwenswarm.agents.harness.common.cron_guard.checkpoint_guard import (
                 CronCheckpointQuarantined,
@@ -5137,7 +5137,7 @@ class JiuWenSwarm:
                 # terminal ledger state, unregister the run.
                 if cron_ctx is not None:
                     try:
-                        cron_guard_end(
+                        await cron_guard_end_async(
                             cron_ctx,
                             cron_ctxvar_token,
                             cron_soft_timer,

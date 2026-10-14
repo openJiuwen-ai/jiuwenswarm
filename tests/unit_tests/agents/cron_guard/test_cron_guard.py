@@ -1014,3 +1014,87 @@ def test_watchdog_begin_quarantine_rolls_back_registry(tmp_path, monkeypatch):
         assert led_mod.get_run_ledger().lookup_run("rQ")["state"] == STATE_TRIPPED
     finally:
         led_mod.reset_run_ledger()
+
+
+# ---------------------------------------------------------------- async end path + terminal state (AI review 2026-10-14)
+
+def test_cron_guard_end_async_lifecycle(tmp_path, monkeypatch):
+    """cron_guard_end_async mirrors the sync end: terminal ledger row + unregister; ctx=None is a no-op."""
+    import asyncio
+    import copy
+
+    base = copy.deepcopy(cfg_mod.DEFAULTS)
+    base["enabled"] = True
+    base["budget_ledger"]["path"] = str(tmp_path / "ledger.db")
+    monkeypatch.setattr(cfg_mod, "get_cron_guard_config", lambda: base)
+    monkeypatch.setenv("JIUWENSWARM_CRON_RUN_SECRET", "sec")
+    from jiuwenswarm.agents.harness.common.cron_guard import watchdog as wd
+    from jiuwenswarm.agents.harness.common.cron_guard import ledger as led_mod
+
+    led_mod.reset_run_ledger()
+    try:
+        monkeypatch.setattr(wd, "_orphans_marked", True)
+        asyncio.run(wd.cron_guard_end_async(None, None, None))  # no-op, no raise
+        tok = sign_run_token("rWA", "jWA", "sWA", b"sec")
+        req = SimpleNamespace(
+            metadata={"cron": {"job_id": "jWA", "run_id": "rWA", "run_token": tok, "timeout_seconds": 3600}},
+            params={},
+        )
+        ctx, cvar_token, timer = wd.cron_guard_begin(req, "sWA")
+        assert ctx is not None
+        led = led_mod.get_run_ledger()
+        asyncio.run(wd.cron_guard_end_async(ctx, cvar_token, timer, final_state="finished"))
+        assert led.lookup_run("rWA")["state"] == STATE_FINISHED
+        assert wd.get_run_registry().get("rWA") is None
+    finally:
+        led_mod.reset_run_ledger()
+
+
+def test_cron_guard_end_async_reap_off_event_loop(tmp_path, monkeypatch):
+    """The blocking reap poll must run on a worker thread: a loop task proceeds
+    while reap is still blocked (and reap itself runs off the main thread)."""
+    import asyncio
+    import copy
+    import threading
+
+    base = copy.deepcopy(cfg_mod.DEFAULTS)
+    base["enabled"] = True
+    base["budget_ledger"]["path"] = str(tmp_path / "ledger.db")
+    monkeypatch.setattr(cfg_mod, "get_cron_guard_config", lambda: base)
+    from jiuwenswarm.agents.harness.common.cron_guard import watchdog as wd
+    from jiuwenswarm.agents.harness.common.cron_guard import ledger as led_mod
+
+    led_mod.reset_run_ledger()
+    try:
+        ctx = SimpleNamespace(run_id="rOff", budget=SimpleNamespace(snapshot=lambda: {}))
+        release = threading.Event()
+        order = []
+        ran_off_main = {}
+
+        def blocked_reap(run_id, kill_grace_seconds=3.0):
+            ran_off_main["value"] = threading.current_thread() is not threading.main_thread()
+            order.append("reap_start")
+            release.wait(timeout=5)
+            order.append("reap_end")
+            return True
+
+        reg = wd.get_run_registry()
+        monkeypatch.setattr(reg, "reap", blocked_reap)
+
+        async def probe():
+            order.append("probe")
+            release.set()
+
+        async def main():
+            task = asyncio.create_task(
+                wd.cron_guard_end_async(ctx, None, None, final_state="finished")
+            )
+            await asyncio.sleep(0.05)  # let the end path enter to_thread(reap)
+            await probe()
+            await task
+
+        asyncio.run(main())
+        assert ran_off_main["value"] is True
+        assert order == ["reap_start", "probe", "reap_end"]
+    finally:
+        led_mod.reset_run_ledger()

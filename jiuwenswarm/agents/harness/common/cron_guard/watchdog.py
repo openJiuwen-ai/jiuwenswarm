@@ -23,6 +23,7 @@ running as if the guard were absent.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -137,6 +138,29 @@ def cron_guard_begin(
     return ctx, token, soft_timer
 
 
+def _end_common(ctx: CronRunContext, token: Any, soft_timer: Any) -> float:
+    """Teardown shared by the sync and async end paths; returns the reap grace."""
+    if soft_timer is not None:
+        try:
+            soft_timer.cancel()
+        except Exception:  # noqa: BLE001
+            pass
+    if token is not None:
+        try:
+            current_cron_run.reset(token)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cron_guard] contextvar reset failed: %s", exc)
+
+    cfg = None
+    try:
+        from .config import get_cron_guard_config
+
+        cfg = get_cron_guard_config()
+    except Exception:  # noqa: BLE001
+        cfg = {}
+    return float(((cfg or {}).get("deadline") or {}).get("kill_grace_seconds", 3))
+
+
 def cron_guard_end(
     ctx: CronRunContext | None,
     token: Any,
@@ -153,28 +177,48 @@ def cron_guard_end(
     if ctx is None:
         return
     try:
-        if soft_timer is not None:
-            try:
-                soft_timer.cancel()
-            except Exception:  # noqa: BLE001
-                pass
-        if token is not None:
-            try:
-                current_cron_run.reset(token)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[cron_guard] contextvar reset failed: %s", exc)
-
-        cfg = None
-        try:
-            from .config import get_cron_guard_config
-
-            cfg = get_cron_guard_config()
-        except Exception:  # noqa: BLE001
-            cfg = {}
-        grace = float(((cfg or {}).get("deadline") or {}).get("kill_grace_seconds", 3))
+        grace = _end_common(ctx, token, soft_timer)
         reaped = True
         try:
             reaped = get_run_registry().reap(ctx.run_id, kill_grace_seconds=grace)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[cron_guard] reap raised (non-blocking): %s", exc)
+            reaped = False
+
+        _finish(ctx, final_state, trip_reason, reaped=reaped)
+    finally:
+        try:
+            get_run_registry().unregister(ctx.run_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def cron_guard_end_async(
+    ctx: CronRunContext | None,
+    token: Any,
+    soft_timer: Any,
+    *,
+    final_state: str = "finished",
+    trip_reason: str | None = None,
+) -> None:
+    """Async twin of :func:`cron_guard_end` for async cleanup paths.
+
+    The reap poll (SIGTERM → wait up to ``kill_grace_seconds`` → SIGKILL)
+    sleeps in 0.1s steps; on the stream ``finally`` path that poll runs on the
+    event loop thread and would block every concurrent request for up to the
+    whole grace window.  Offload it to a worker thread via
+    ``asyncio.to_thread`` — the two-wave reap semantics and the never-raises
+    contract are unchanged, only the thread they run on.
+    """
+    if ctx is None:
+        return
+    try:
+        grace = _end_common(ctx, token, soft_timer)
+        reaped = True
+        try:
+            reaped = await asyncio.to_thread(
+                get_run_registry().reap, ctx.run_id, kill_grace_seconds=grace
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[cron_guard] reap raised (non-blocking): %s", exc)
             reaped = False
