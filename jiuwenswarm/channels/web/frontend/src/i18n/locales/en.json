@@ -645,8 +645,8 @@
         "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path."
       },
       "team_organization_ui_enabled": {
-        "title": "Enable Team Organization UI",
-        "description": "Show experimental multi-Team views and the organization task pool. This switch does not disable backend organization capabilities."
+        "title": "Enable Team Organization",
+        "description": "Enable organization views and backend organization tools. Fully restart the backend and create a new session after changing this setting; existing organization tasks are not stopped immediately."
       },
       "team_scheduled_dispatch_enabled": {
         "title": "Enable scheduled dispatch",
