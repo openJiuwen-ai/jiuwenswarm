@@ -1082,9 +1082,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if session is not None and isinstance(ctx.inputs, ToolCallInputs):
             # 主模型随 tool_call 产出的目标文案（call_goal）：取出后剥掉，避免 schema 拒收。
             # 绝不碰 display_name（team 成员名等业务字段）。
-            call_goal, cleaned_args = extract_call_goal(
-                getattr(tc, "arguments", {}) if tc else {}
-            )
+            # Clean the arguments as earlier rails left them: an interrupt rail
+            # that approved the call with rewritten arguments (``new_args``)
+            # must not be undone by going back to the model's original ones.
+            current_args = ctx.inputs.tool_args
+            if current_args is None:
+                current_args = getattr(tc, "arguments", {}) if tc else {}
+            call_goal, cleaned_args = extract_call_goal(current_args)
             # 无论是否填了 call_goal，都写回清洗后的 arguments，避免执行侧拿到该字段。
             if tc is not None:
                 try:
