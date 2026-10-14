@@ -78,6 +78,25 @@ _XIAOYI_RUNTIME_KEEP_KEYS: tuple[str, ...] = (
 )
 
 
+def _to_builtin(value: Any) -> Any:
+    """把 ruamel 节点收成 PyYAML SafeDumper 能表示的内建类型。
+
+    ``CommentedMap`` / ``ScalarString`` 是 dict、str 的子类。SafeDumper 只注册了
+    精确类型，直接 ``safe_dump`` 会抛 ``RepresenterError: cannot represent an object``，
+    永久允许因此写不进 config.yaml。
+    """
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, dict):
+        return {
+            (str(key) if isinstance(key, str) else key): _to_builtin(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_to_builtin(item) for item in value]
+    return value
+
+
 def _plain(value: Any) -> Any:
     """ruamel / 自定义类型 → 可比较的纯 Python 对象。
 
@@ -87,7 +106,7 @@ def _plain(value: Any) -> Any:
     if value is None:
         return None
     return yaml.safe_load(
-        yaml.safe_dump(value, allow_unicode=True, sort_keys=False)
+        yaml.safe_dump(_to_builtin(value), allow_unicode=True, sort_keys=False)
     )
 
 

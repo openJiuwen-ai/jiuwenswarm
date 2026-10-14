@@ -10,6 +10,11 @@ from openjiuwen.harness.rails.interrupt.interrupt_base import BaseInterruptRail
 
 from jiuwenswarm.common.behavior_security import ACTIVE_BEHAVIOR, _event_id, raw_event
 
+OUTPUT_BLOCK_MESSAGE = (
+    "当前工具输出未通过安全检测，已终止本轮操作。"
+    "请确认内容来源可信后清空上下文并重试。"
+)
+
 
 class BehaviorSecurityRail(DeepAgentRail):
     priority = 100
@@ -68,7 +73,16 @@ class BehaviorSecurityRail(DeepAgentRail):
         if decision is not None and type(decision).__name__ != "ApproveResult":
             return
         if getattr(ctx.inputs, "execution_started", False):
-            self.bridge.report(raw_event(ctx, "tool.after"))
+            result = await self.bridge.inspect(raw_event(ctx, "tool.after"))
+            if result.is_denied:
+                ctx.inputs.tool_result = OUTPUT_BLOCK_MESSAGE
+                tool_msg = getattr(ctx.inputs, "tool_msg", None)
+                if tool_msg is not None and hasattr(tool_msg, "content"):
+                    tool_msg.content = OUTPUT_BLOCK_MESSAGE
+                ctx.request_force_finish({
+                    "output": OUTPUT_BLOCK_MESSAGE,
+                    "result_type": "answer",
+                })
 
     def uninit(self, agent):
         for task in self.bridge.tasks:

@@ -14,7 +14,10 @@ from openjiuwen.harness.security import PermissionLevel, PermissionResult
 from jiuwenswarm.common.behavior_security import (
     BehaviorSecurityBridge, check_agent_skill_install, cloud_authorization_enabled, raw_event,
 )
-from jiuwenswarm.agents.harness.common.rails.behavior_security_rail import BehaviorSecurityRail
+from jiuwenswarm.agents.harness.common.rails.behavior_security_rail import (
+    BehaviorSecurityRail,
+    OUTPUT_BLOCK_MESSAGE,
+)
 
 
 def context(session=None):
@@ -22,8 +25,22 @@ def context(session=None):
         data = {}
         session = SimpleNamespace(get_session_id=lambda: 'session', get_state=data.get, update_state=data.update)
     call = ToolCall(id='call-1', type='function', name='install_skill', arguments='{}')
-    return SimpleNamespace(session=session, exception=None, extra={}, inputs=SimpleNamespace(
-        tool_call=call, tool_name=call.name, tool_args=call.arguments, tool_result=None, execution_started=False))
+    force_finish_requests = []
+    return SimpleNamespace(
+        session=session,
+        exception=None,
+        extra={},
+        inputs=SimpleNamespace(
+            tool_call=call,
+            tool_name=call.name,
+            tool_args=call.arguments,
+            tool_result=None,
+            tool_msg=None,
+            execution_started=False,
+        ),
+        force_finish_requests=force_finish_requests,
+        request_force_finish=force_finish_requests.append,
+    )
 
 
 def bridge(enabled=True, decision='allow'):
@@ -136,7 +153,7 @@ async def test_install_confirmation_stops_before_write_and_resumes_once(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_output_is_report_only_and_deny_has_no_output():
+async def test_output_inspection_waits_and_rejects_before_model_continues():
     b, events = bridge(decision='deny')
     rail = BehaviorSecurityRail(b)
     ctx = context()
@@ -145,9 +162,52 @@ async def test_output_is_report_only_and_deny_has_no_output():
     ctx.inputs.tool_result = {'result': 'ok'}
     ctx.inputs.execution_started = True
     await rail.after_tool_call(ctx)
-    await asyncio.gather(*b.tasks)
-    assert len(events) == 1 and events[0]['stage'] == 'tool.after' and events[0]['mode'] == 'report'
-    assert ctx.inputs.tool_result == {'result': 'ok'}
+    assert len(events) == 1 and events[0]['stage'] == 'tool.after' and events[0]['mode'] == 'inspect'
+    assert ctx.inputs.tool_result == OUTPUT_BLOCK_MESSAGE
+    assert ctx.force_finish_requests == [{
+        'output': OUTPUT_BLOCK_MESSAGE,
+        'result_type': 'answer',
+    }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('decision,blocked', [
+    ('allow', False), ('deny', True), ('unavailable', True),
+])
+async def test_output_inspection_is_fail_closed(decision, blocked):
+    b, events = bridge(decision=decision)
+    rail = BehaviorSecurityRail(b)
+    ctx = context()
+    await rail.before_tool_call(ctx)
+    ctx.inputs.tool_result = {'result': 'ok'}
+    ctx.inputs.execution_started = True
+    await rail.after_tool_call(ctx)
+    assert events[0]['mode'] == 'inspect'
+    assert bool(ctx.force_finish_requests) is blocked
+    assert ctx.inputs.tool_result == (OUTPUT_BLOCK_MESSAGE if blocked else {'result': 'ok'})
+
+
+@pytest.mark.asyncio
+async def test_large_output_is_fully_chunked_for_inspection():
+    b, events = bridge(decision='allow')
+    ctx = context()
+    ctx.inputs.tool_result = {'content': 'A' * 7000 + 'MIDDLE_MARKER' + 'B' * 7000}
+    result = await b.inspect(raw_event(ctx, 'tool.after'))
+    assert result.permission == PermissionLevel.ALLOW
+    assert len(events) >= 3
+    assert all(event['mode'] == 'inspect' for event in events)
+    assert all(len(event['tool']['result']['content']) <= 5500 for event in events)
+    assert any('MIDDLE_MARKER' in event['tool']['result']['content'] for event in events)
+
+
+@pytest.mark.asyncio
+async def test_oversized_output_fails_closed_without_partial_scan():
+    b, events = bridge(decision='allow')
+    ctx = context()
+    ctx.inputs.tool_result = {'content': 'A' * (65 * 1024)}
+    result = await b.inspect(raw_event(ctx, 'tool.after'))
+    assert result.permission == PermissionLevel.DENY
+    assert events == []
 
 
 @pytest.mark.asyncio
@@ -364,3 +424,33 @@ def test_full_access_hot_reload_keeps_permission_checks(monkeypatch):
         assert permission._engine.config['enabled'] is True
         assert permission._engine.config['defer_unmatched'] is True
         assert config['permissions']['enabled'] is enabled
+
+
+@pytest.mark.asyncio
+async def test_desktop_full_access_cannot_write_control_plane(monkeypatch, tmp_path):
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
+    from jiuwenswarm.common import utils
+
+    config_dir = tmp_path / 'config'
+    skills_dir = tmp_path / 'skills'
+    workspace = tmp_path / 'workspace'
+    for path in (config_dir, skills_dir, workspace):
+        path.mkdir()
+    monkeypatch.setenv('CLAW_BEHAVIOR_SECURITY', '1')
+    monkeypatch.setenv('CLAW_SKILL_TOKEN', 'test-token')
+    monkeypatch.setattr(utils, 'get_config_dir', lambda: config_dir)
+    monkeypatch.setattr(utils, 'get_config_file', lambda: config_dir / 'config.yaml')
+    monkeypatch.setattr(utils, 'get_agent_skills_dir', lambda: skills_dir)
+    monkeypatch.setattr(utils, 'get_workspace_dir', lambda: workspace)
+
+    rail = build_permission_rail({
+        'permissions': {'enabled': False, 'package_builtin_rules': False},
+        'xiaoyi_work_security': {'cloud_authorization': {'enabled': False}},
+    })
+    assert rail is not None
+    result = await rail._engine.check_permission(
+        'write_file',
+        {'file_path': str(config_dir / 'config.yaml'), 'content': 'permissions:\n  enabled: false\n'},
+    )
+    assert result.permission == PermissionLevel.DENY
+    assert result.matched_rule == 'immutable_control_plane'

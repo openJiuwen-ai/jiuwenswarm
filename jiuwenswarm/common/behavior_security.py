@@ -21,6 +21,9 @@ from jiuwenswarm.common.utils import logger
 
 ACTIVE_BEHAVIOR: contextvars.ContextVar[tuple | None] = contextvars.ContextVar("active_behavior", default=None)
 PENDING_SKILL = "behavior_security.pending_skill"
+_OUTPUT_CHUNK_CHARS = 5500
+_OUTPUT_CHUNK_OVERLAP = 256
+_MAX_OUTPUT_INSPECTION_CHARS = 64 * 1024
 
 
 def desktop_security_active() -> bool:
@@ -111,6 +114,67 @@ class BehaviorSecurityBridge:
         task = asyncio.create_task(self._send({**event, "mode": "report"}))
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
+
+    @staticmethod
+    def _output_inspection_events(event: dict) -> list[dict] | None:
+        """Bound output requests without dropping an unscanned middle section."""
+        tool = event.get("tool")
+        result = tool.get("result") if isinstance(tool, dict) else None
+        text = json.dumps(result, ensure_ascii=False, separators=(",", ":"), default=str)
+        if len(text) <= _OUTPUT_CHUNK_CHARS:
+            return [event]
+        if len(text) > _MAX_OUTPUT_INSPECTION_CHARS:
+            return None
+        step = _OUTPUT_CHUNK_CHARS - _OUTPUT_CHUNK_OVERLAP
+        chunks = [text[start:start + _OUTPUT_CHUNK_CHARS] for start in range(0, len(text), step)]
+        output = []
+        for index, chunk in enumerate(chunks):
+            item = copy.deepcopy(event)
+            item["eventId"] = hashlib.sha256(
+                f"{event['eventId']}:{index}:{len(chunks)}".encode(),
+            ).hexdigest()
+            item["tool"]["arguments"] = {}
+            item["tool"]["result"] = {
+                "chunkIndex": index,
+                "chunkCount": len(chunks),
+                "content": chunk,
+            }
+            output.append(item)
+        return output
+
+    async def inspect(self, event: dict) -> PermissionResult:
+        """Synchronously decide whether a tool result may be exposed to the model.
+
+        Output inspection is fail-closed: unlike pre-tool authorization there is
+        no safe user-approval fallback for exposing an untrusted payload.
+        """
+        events = self._output_inspection_events(event)
+        if events is None:
+            return PermissionResult(
+                PermissionLevel.DENY,
+                reason="工具输出超过安全检测上限",
+            )
+        replies = await asyncio.gather(*(
+            self._send({**item, "mode": "inspect"}) for item in events
+        ))
+        for reply in replies:
+            decision = reply.get("decision")
+            if decision == "deny":
+                return PermissionResult(
+                    PermissionLevel.DENY,
+                    reason=str(reply.get("reason") or "工具输出安全检测未通过"),
+                )
+            if decision != "allow":
+                return PermissionResult(
+                    PermissionLevel.DENY,
+                    reason="工具输出安全检测不可用",
+                )
+        if replies:
+            return PermissionResult(PermissionLevel.ALLOW, reason="cloud:allow")
+        return PermissionResult(
+            PermissionLevel.DENY,
+            reason="工具输出安全检测不可用",
+        )
 
     async def decide(self, event: dict, local: PermissionResult) -> PermissionResult:
         key = event["eventId"]

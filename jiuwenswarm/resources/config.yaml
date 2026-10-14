@@ -1095,10 +1095,6 @@ permissions:
       tools: [bash, mcp_exec_command, create_terminal]
       pattern: "git branch *"
       severity: LOW
-    - id: shell_ask_rm
-      tools: [bash, mcp_exec_command, create_terminal]
-      pattern: 're:(?i)(^|(?:&&|\|\||[;|&()\n])\s*)rm(?:\s|$)'
-      severity: HIGH
     - id: shell_ask_del
       tools: [bash, mcp_exec_command, create_terminal]
       pattern: 're:(?i)(^|(?:&&|\|\||[;|&()\n])\s*)del(?:\s|$)'
@@ -1114,10 +1110,6 @@ permissions:
     - id: shell_ask_chown
       tools: [bash, mcp_exec_command, create_terminal]
       pattern: 're:(?i)(^|(?:&&|\|\||[;|&()\n])\s*)chown(?:\s|$)'
-      severity: HIGH
-    - id: shell_ask_remove_item
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: 're:(?i)(^|(?:&&|\|\||[;|&()\n])\s*)Remove-Item(?:\s|$)'
       severity: HIGH
     - id: shell_ask_ri
       tools: [bash, powershell, mcp_exec_command, create_terminal]

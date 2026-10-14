@@ -145,3 +145,30 @@ def test_persist_merged_allow_rule_snapshot_writes_yaml_not_overlay(
     assert system["permissions"]["file_guard"]["paths"][0]["path"] == "C:/docs"
     overlay = config_yaml.with_name("config.user.yaml")
     assert not overlay.is_file()
+
+
+def test_persist_merged_allow_rule_snapshot_appends_after_existing_overrides(
+    config_yaml,
+):
+    """第二次永久允许要能读回 ruamel CommentedMap，不能因 RepresenterError 丢规则。"""
+    pp = _load_permissions_persist()
+    from jiuwenswarm.common.config import _load_yaml_round_trip
+
+    first = {
+        "id": "operation_first",
+        "tools": ["bash"],
+        "match_type": "exact_operation",
+        "pattern": '{"scope":"exact","subject":{"command":"rm a.txt"}}',
+        "action": "allow",
+    }
+    second = {
+        "id": "operation_second",
+        "tools": ["bash"],
+        "match_type": "exact_operation",
+        "pattern": '{"scope":"exact","subject":{"command":"rm b.txt"}}',
+        "action": "allow",
+    }
+    assert pp.persist_merged_allow_rule_snapshot({}, approval_grant=first) is True
+    assert pp.persist_merged_allow_rule_snapshot({}, approval_grant=second) is True
+    stored = _load_yaml_round_trip(config_yaml)["permissions"]["approval_overrides"]
+    assert [item["id"] for item in stored] == ["operation_first", "operation_second"]

@@ -288,7 +288,12 @@ def build_permission_rail(
     )
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
-    from jiuwenswarm.common.utils import get_config_file, get_workspace_dir
+    from jiuwenswarm.common.utils import (
+        get_agent_skills_dir,
+        get_config_dir,
+        get_config_file,
+        get_workspace_dir,
+    )
 
     from jiuwenswarm.common.behavior_security import (
         ACTIVE_BEHAVIOR, cloud_authorization_enabled, desktop_security_active, runtime_permission_config, skill_confirmation_pending,
@@ -586,6 +591,10 @@ def build_permission_rail(
             persist_allow_rule=_persist_allow_rule,
             persist_session_allow_rule=_persist_session_allow_rule,
             resolve_workspace_dir=get_workspace_dir,
+            resolve_immutable_control_roots=lambda: [
+                get_config_dir(),
+                get_agent_skills_dir(),
+            ],
             permission_yaml_path=get_config_file(),
             request_permission_confirmation=_request_permission_confirmation,
             permission_scene_hook=_permission_scene_hook,
