@@ -82,6 +82,13 @@
       "noData": "暂无数据",
       "searchPlaceholder": "请输入搜索内容"
     },
+    "load": {
+      "loading": "正在加载同事…",
+      "failed": "同事列表加载失败：{{reason}}",
+      "retry": "重新加载",
+      "createFailed": "创建同事失败：{{reason}}",
+      "deleteFailed": "删除同事失败：{{reason}}"
+    },
     "intro": {
       "title": "办公室",
       "subtitle": "创建和管理 AI 同事，派送至 IM 群内自主履职",
@@ -136,6 +143,7 @@
       "capabilitiesHint": "根据名称和能力介绍自动生成能力配置",
       "generate": "智能生成",
       "switchModel": "切换模型",
+      "defaultModel": "默认模型",
       "remove": "移除",
       "sections": {
         "model": "模型配置",

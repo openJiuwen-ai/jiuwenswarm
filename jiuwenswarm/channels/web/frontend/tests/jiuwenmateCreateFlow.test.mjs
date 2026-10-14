@@ -14,6 +14,7 @@ import {
   openColleagueMessages,
   openCustomColleagueCreation,
   openOffice,
+  replaceColleagues,
   selectColleagueTemplate,
   setColleagueDisabled,
   startColleagueRefinement,
@@ -98,4 +99,23 @@ test('disable and delete update the colleague collection', () => {
 test('colleague ids stay readable and unique', () => {
   assert.equal(createColleagueId('Brand Advisor', []), 'brand-advisor');
   assert.equal(createColleagueId('品牌顾问', ['colleague']), 'colleague-2');
+});
+
+test('server colleagues replace the list and keep page-local IM and disabled marks', () => {
+  const xiaojiu = { ...colleague, id: 'xiaojiu', name: '小九', isDefault: true };
+  const loaded = replaceColleagues(createInitialJiuwenMateState([]), [xiaojiu]);
+  assert.equal(loaded.view, 'office-dashboard');
+  assert.equal(loaded.selectedColleagueId, 'xiaojiu');
+
+  const marked = setColleagueDisabled(finishColleagueAuthorization(openColleagueAuthorization(loaded, 'xiaojiu'), true), 'xiaojiu', true);
+  const reloaded = replaceColleagues(marked, [{ ...xiaojiu, name: '小九 2' }, colleague]);
+  assert.deepEqual(
+    reloaded.colleagues.map((item) => [item.id, item.name, item.imConfigured, item.disabled]),
+    [
+      ['xiaojiu', '小九 2', true, true],
+      ['brand-advisor', colleague.name, false, false],
+    ],
+  );
+  assert.equal(reloaded.selectedColleagueId, 'xiaojiu');
+  assert.equal(replaceColleagues(reloaded, []).view, 'office-intro');
 });

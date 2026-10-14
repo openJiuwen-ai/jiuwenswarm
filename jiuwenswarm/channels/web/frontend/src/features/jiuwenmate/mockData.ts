@@ -3,16 +3,10 @@ import type {
   JiuwenMateChannel,
   JiuwenMateChannelMessage,
   JiuwenMateDailyActivity,
-  JiuwenMateModelId,
   JiuwenMateTask,
   JiuwenMateTemplate,
   JiuwenMateTraceRow,
 } from './types';
-
-export const JIUWENMATE_MODELS: readonly { id: JiuwenMateModelId; label: string }[] = [
-  { id: 'deepseek-v3.2', label: 'DeepSeek-V3.2' },
-  { id: 'kimi-k2', label: 'Kimi-K2' },
-];
 
 export const JIUWENMATE_WORK_DOMAINS: readonly string[] = [
   '效率提升',
@@ -40,14 +34,14 @@ export const JIUWENMATE_GENERATED_CAPABILITIES: Omit<JiuwenMateCapabilities, 'mo
 };
 
 export function emptyCapabilities(): JiuwenMateCapabilities {
-  return { model: 'deepseek-v3.2', skills: [], connectors: [], plugins: [], knowledge: [], starterPrompts: [] };
+  return { model: '', skills: [], connectors: [], plugins: [], knowledge: [], starterPrompts: [] };
 }
 
 const DESIGN_TAGS = ['效率提升', '内容创作'];
 
 function templateCapabilities(skills: string[], starterPrompts: string[]): JiuwenMateCapabilities {
   return {
-    model: 'deepseek-v3.2',
+    model: '',
     skills,
     connectors: ['腾讯问卷', '飞书文档'],
     plugins: ['网页搜索', '文件解析'],

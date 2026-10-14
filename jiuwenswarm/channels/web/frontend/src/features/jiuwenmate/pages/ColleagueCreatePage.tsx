@@ -1,8 +1,6 @@
 import { ArrowRightLeft, Check, ChevronDown, Plus, Trash2, X } from 'lucide-react';
 import { useRef, useState, type ChangeEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import deepseekIcon from '../../../assets/jiuwenmate/icons/model-deepseek.svg';
-import kimiIcon from '../../../assets/jiuwenmate/icons/model-kimi.png';
 import sparkleIcon from '../../../assets/jiuwenmate/icons/sparkle.svg';
 import { ActionMenu } from '../components/ActionMenu';
 import { CapabilitySection, CollapsibleSection, type CapabilityKind } from '../components/CapabilitySection';
@@ -10,10 +8,11 @@ import { ColleagueCard } from '../components/ColleagueCard';
 import { CustomCreateDialog } from '../components/CustomCreateDialog';
 import { TemplateDetailDrawer } from '../components/TemplateDetailDrawer';
 import { colleaguePortrait } from '../colleaguePortraits';
+import type { JiuwenMateModelCatalog } from '../jiuwenmateApi';
+import { ModelLabel } from '../components/ModelLabel';
 import {
   JIUWENMATE_CAPABILITY_CATALOG,
   JIUWENMATE_GENERATED_CAPABILITIES,
-  JIUWENMATE_MODELS,
   JIUWENMATE_TEMPLATES,
   JIUWENMATE_WORK_DOMAINS,
 } from '../mockData';
@@ -29,7 +28,6 @@ const DESCRIPTION_LIMIT = 200;
 const AVATAR_SIZE_LIMIT = 200 * 1024;
 const AVATAR_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/jpg'];
 const CAPABILITY_KINDS: readonly CapabilityKind[] = ['skills', 'connectors', 'plugins', 'knowledge'];
-const MODEL_ICONS = { 'deepseek-v3.2': deepseekIcon, 'kimi-k2': kimiIcon } as const;
 
 export interface ColleagueCreatePageProps {
   step: JiuwenMateCreationStep;
@@ -37,6 +35,8 @@ export interface ColleagueCreatePageProps {
   detailTemplateId: string | null;
   customDialogOpen: boolean;
   draft: JiuwenMateColleagueDraft | null;
+  modelCatalog: JiuwenMateModelCatalog;
+  submitting: boolean;
   onOpenTemplateDetail: (id: string) => void;
   onCloseTemplateDetail: () => void;
   onChooseTemplate: (template: JiuwenMateTemplate) => void;
@@ -59,6 +59,8 @@ export function ColleagueCreatePage(props: ColleagueCreatePageProps) {
       <ColleagueRefineForm
         source={source}
         draft={draft}
+        modelCatalog={props.modelCatalog}
+        submitting={props.submitting}
         onDraftChange={props.onDraftChange}
         onCancel={props.onCancel}
         onComplete={props.onComplete}
@@ -110,19 +112,28 @@ export function ColleagueCreatePage(props: ColleagueCreatePageProps) {
 interface ColleagueRefineFormProps {
   source: JiuwenMateCreationSource;
   draft: JiuwenMateColleagueDraft;
+  modelCatalog: JiuwenMateModelCatalog;
+  submitting: boolean;
   onDraftChange: (patch: Partial<JiuwenMateColleagueDraft>) => void;
   onCancel: () => void;
   onComplete: () => void;
 }
 
-function ColleagueRefineForm({ source, draft, onDraftChange, onCancel, onComplete }: ColleagueRefineFormProps) {
+function ColleagueRefineForm({
+  source,
+  draft,
+  modelCatalog,
+  submitting,
+  onDraftChange,
+  onCancel,
+  onComplete,
+}: ColleagueRefineFormProps) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
-  const canSubmit = draft.name.trim().length > 0 && draft.description.trim().length > 0;
+  const canSubmit = !submitting && draft.name.trim().length > 0 && draft.description.trim().length > 0;
   const updateCapabilities = (patch: Partial<JiuwenMateCapabilities>) =>
     onDraftChange({ capabilities: { ...draft.capabilities, ...patch } });
-  const model = JIUWENMATE_MODELS.find((item) => item.id === draft.capabilities.model) ?? JIUWENMATE_MODELS[0];
 
   const handleAvatarFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -151,8 +162,10 @@ function ColleagueRefineForm({ source, draft, onDraftChange, onCancel, onComplet
   };
 
   const cycleModel = () => {
-    const index = JIUWENMATE_MODELS.findIndex((item) => item.id === draft.capabilities.model);
-    updateCapabilities({ model: JIUWENMATE_MODELS[(index + 1) % JIUWENMATE_MODELS.length].id });
+    const { models, defaultModelId } = modelCatalog;
+    if (models.length === 0) return;
+    const index = models.findIndex((item) => item.id === (draft.capabilities.model || defaultModelId));
+    updateCapabilities({ model: models[(index + 1) % models.length].id });
   };
 
   return (
@@ -252,9 +265,13 @@ function ColleagueRefineForm({ source, draft, onDraftChange, onCancel, onComplet
             </header>
             <CollapsibleSection title={t('jiuwenmate.create.sections.model')} testId="jiuwenmate-capability-section">
               <div className="jiuwenmate-model-card">
-                <img src={MODEL_ICONS[model.id]} alt="" aria-hidden />
-                <span>{model.label}</span>
-                <button type="button" aria-label={t('jiuwenmate.create.switchModel')} onClick={cycleModel}>
+                <ModelLabel catalog={modelCatalog} modelId={draft.capabilities.model} />
+                <button
+                  type="button"
+                  aria-label={t('jiuwenmate.create.switchModel')}
+                  onClick={cycleModel}
+                  disabled={modelCatalog.models.length < 2}
+                >
                   <ArrowRightLeft aria-hidden />
                 </button>
               </div>

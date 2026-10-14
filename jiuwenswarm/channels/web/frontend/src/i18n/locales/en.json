@@ -82,6 +82,13 @@
       "noData": "No data",
       "searchPlaceholder": "Search"
     },
+    "load": {
+      "loading": "Loading colleagues…",
+      "failed": "Failed to load colleagues: {{reason}}",
+      "retry": "Reload",
+      "createFailed": "Failed to create the colleague: {{reason}}",
+      "deleteFailed": "Failed to delete the colleague: {{reason}}"
+    },
     "intro": {
       "title": "Office",
       "subtitle": "Create and manage AI colleagues, then send them to IM groups to work on their own",
@@ -136,6 +143,7 @@
       "capabilitiesHint": "Generate the capability configuration from the name and abilities",
       "generate": "Smart generate",
       "switchModel": "Switch model",
+      "defaultModel": "Default model",
       "remove": "Remove",
       "sections": {
         "model": "Model",

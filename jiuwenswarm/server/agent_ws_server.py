@@ -193,6 +193,7 @@ from jiuwenswarm.runtime.host_services import (
 )
 from jiuwenswarm.runtime.plan import PlanModeController
 from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import VoiceTaskServerAdapter
+from jiuwenswarm.server.jiuwenmate.web_adapter import JiuwenMateWebAdapter
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
@@ -1196,7 +1197,12 @@ class AgentWebSocketServer:
             ProjectAdapter(runtime_probe=self._execution_runtime),
             DesignerAdapter(),
             HarmonyOSAdapter(),
+<<<<<<< HEAD
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
+=======
+            ConfigAdapter(),
+            JiuwenMateWebAdapter(),
+>>>>>>> d934f611f (feat(JM10): connect the colleague pages to server-side colleague management)
         ):
             self._adapter_registry.register(adapter)
         # AgentServer-side tokenizer cache/download service. The Gateway only
@@ -2083,7 +2089,12 @@ class AgentWebSocketServer:
                     ProjectAdapter(runtime_probe=self._execution_runtime),
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
+<<<<<<< HEAD
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
+=======
+                    ConfigAdapter(),
+                    JiuwenMateWebAdapter(),
+>>>>>>> d934f611f (feat(JM10): connect the colleague pages to server-side colleague management)
                 ):
                     self._adapter_registry.register(adapter)
 

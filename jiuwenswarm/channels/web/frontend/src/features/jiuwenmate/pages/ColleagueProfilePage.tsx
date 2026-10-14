@@ -16,13 +16,12 @@ import {
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import feishuIcon from '../../../assets/jiuwenmate/icons/feishu.svg';
-import deepseekIcon from '../../../assets/jiuwenmate/icons/model-deepseek.svg';
-import kimiIcon from '../../../assets/jiuwenmate/icons/model-kimi.png';
 import scheduleEmpty from '../../../assets/jiuwenmate/illustrations/schedule-empty.png';
 import { ActionMenu } from '../components/ActionMenu';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
-import { JIUWENMATE_MODELS } from '../mockData';
+import { ModelLabel } from '../components/ModelLabel';
+import type { JiuwenMateModelCatalog } from '../jiuwenmateApi';
 import { halfYearHeatmap } from '../officeState';
 import type { JiuwenMateColleague } from '../types';
 
@@ -51,11 +50,12 @@ export const PROFILE_SECTIONS: readonly JiuwenMateProfileSection[] = [
 
 type WorkLogPeriod = '7d' | '1m' | '3m' | 'all';
 const WORK_LOG_PERIODS: readonly WorkLogPeriod[] = ['7d', '1m', '3m', 'all'];
-const MODEL_ICONS = { 'deepseek-v3.2': deepseekIcon, 'kimi-k2': kimiIcon } as const;
+const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 interface ColleagueProfilePageProps {
   colleague: JiuwenMateColleague;
+  modelCatalog?: JiuwenMateModelCatalog;
   initialSection?: JiuwenMateProfileSection;
   today?: Date;
   onOpenOffice: () => void;
@@ -82,6 +82,7 @@ function joinedDays(joinedAt: string, today: Date): number {
 
 export function ColleagueProfilePage({
   colleague,
+  modelCatalog = EMPTY_MODEL_CATALOG,
   initialSection = 'overview',
   today = new Date(),
   onOpenOffice,
@@ -151,7 +152,12 @@ export function ColleagueProfilePage({
           {section === 'overview' ? (
             <ProfileOverview colleague={colleague} today={today} onConfigureIm={onConfigureIm} />
           ) : (
-            <ProfileSectionDetail colleague={colleague} section={section} onConfigureIm={onConfigureIm} />
+            <ProfileSectionDetail
+              colleague={colleague}
+              modelCatalog={modelCatalog}
+              section={section}
+              onConfigureIm={onConfigureIm}
+            />
           )}
         </div>
       </div>
@@ -344,10 +350,12 @@ function ExecutionHistory() {
 
 function ProfileSectionDetail({
   colleague,
+  modelCatalog,
   section,
   onConfigureIm,
 }: {
   colleague: JiuwenMateColleague;
+  modelCatalog: JiuwenMateModelCatalog;
   section: Exclude<JiuwenMateProfileSection, 'overview'>;
   onConfigureIm: () => void;
 }) {
@@ -371,13 +379,11 @@ function ProfileSectionDetail({
   }
 
   if (section === 'model') {
-    const model = JIUWENMATE_MODELS.find((item) => item.id === colleague.capabilities.model) ?? JIUWENMATE_MODELS[0];
     return (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <h2>{title}</h2>
         <div className="jiuwenmate-model-card">
-          <img src={MODEL_ICONS[model.id]} alt="" aria-hidden />
-          <strong>{model.label}</strong>
+          <ModelLabel catalog={modelCatalog} modelId={colleague.capabilities.model} />
         </div>
       </section>
     );

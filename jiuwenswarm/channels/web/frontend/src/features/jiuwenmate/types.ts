@@ -22,10 +22,15 @@ export type JiuwenMateCategory =
   | 'content'
   | 'custom';
 
-export type JiuwenMateModelId = 'deepseek-v3.2' | 'kimi-k2';
+export interface JiuwenMateModelOption {
+  id: string;
+  label: string;
+  provider: string;
+}
 
 export interface JiuwenMateCapabilities {
-  model: JiuwenMateModelId;
+  /** A model selection key from the model list; empty means the server default model. */
+  model: string;
   skills: string[];
   connectors: string[];
   plugins: string[];
@@ -47,6 +52,9 @@ export interface JiuwenMateColleague extends JiuwenMateColleagueDraft {
   imConfigured: boolean;
   disabled: boolean;
   joinedAt: string;
+  isDefault?: boolean;
+  currentVersion?: string | null;
+  hasUnpublishedChanges?: boolean;
 }
 
 export interface JiuwenMateCoreAbility {

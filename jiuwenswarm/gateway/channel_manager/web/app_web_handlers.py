@@ -600,11 +600,34 @@ _FORWARD_REQ_METHODS = frozenset({
     # 主动推荐反馈（点赞/点踩）：经 E2A 转发到 AgentServer 的
     # _handle_proactive_feedback，写入 recommendation.json 的 feedback_buffer。
     "proactive.feedback",
+    # JiuwenMate 同事管理：由 AgentServer 的 JiuwenMateWebAdapter 处理，Gateway 无本地实现。
+    "jiuwenmate.colleague.ensure_default",
+    "jiuwenmate.colleague.list",
+    "jiuwenmate.colleague.get",
+    "jiuwenmate.colleague.create",
+    "jiuwenmate.colleague.settings.get",
+    "jiuwenmate.colleague.settings.update",
+    "jiuwenmate.colleague.publish",
+    "jiuwenmate.colleague.delete",
+    "jiuwenmate.models.list",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
+<<<<<<< HEAD
     "group.create", "group.delete", "group.list", "group.get", "group.update",
     "group.member.add", "group.history.get",
+=======
+    # JiuwenMate 同事管理：由 AgentServer 的 JiuwenMateWebAdapter 处理，Gateway 无本地实现。
+    "jiuwenmate.colleague.ensure_default",
+    "jiuwenmate.colleague.list",
+    "jiuwenmate.colleague.get",
+    "jiuwenmate.colleague.create",
+    "jiuwenmate.colleague.settings.get",
+    "jiuwenmate.colleague.settings.update",
+    "jiuwenmate.colleague.publish",
+    "jiuwenmate.colleague.delete",
+    "jiuwenmate.models.list",
+>>>>>>> d934f611f (feat(JM10): connect the colleague pages to server-side colleague management)
     "initialize",
     "session.switch",
     "session.fork",

@@ -64,6 +64,36 @@
   flex-direction: column;
 }
 
+.jiuwenmate-load-state {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: var(--jm-text-2);
+  font-size: 14px;
+}
+
+.jiuwenmate-action-error {
+  position: fixed;
+  z-index: 40;
+  bottom: 24px;
+  left: 50%;
+  display: flex;
+  max-width: min(560px, calc(100vw - 48px));
+  align-items: center;
+  gap: 16px;
+  padding: 10px 12px 10px 16px;
+  border: 1px solid var(--jm-border);
+  border-radius: 8px;
+  color: var(--jm-danger);
+  background: #fff;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+  font-size: 13px;
+  transform: translateX(-50%);
+}
+
 .jiuwenmate-reused-page {
   display: flex;
   flex: 1 1 auto;
