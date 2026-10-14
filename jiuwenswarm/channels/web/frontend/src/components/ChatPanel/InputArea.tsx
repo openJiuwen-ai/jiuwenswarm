@@ -1096,8 +1096,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // 与 swarmflow 开关同一把锁（仅新建对话页可拨）。
   const teamScheduledDispatchEnabled = useTeamScheduledDispatchEnabled();
   const sessionTeamDispatchMode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamDispatchMode);
-  const teamDispatchScheduled =
-    resolveTeamDispatchMode(sessionTeamDispatchMode, teamScheduledDispatchEnabled) === 'scheduled';
+  const teamDispatchScheduled = resolveTeamDispatchMode(sessionTeamDispatchMode) === 'scheduled';
   const teamDispatchToggleDisabled = swarmflowToggleDisabled;
   const canUsePlanMenu = supportsPlanMode(mode);
   const planTagVisible = canUsePlanMenu && planActive;

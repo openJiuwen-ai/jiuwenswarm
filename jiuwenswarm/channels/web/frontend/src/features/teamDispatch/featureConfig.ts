@@ -36,15 +36,10 @@ export function useTeamScheduledDispatchEnabled(): boolean {
 
 /**
  * 会话实际生效的调度模式：用户在本会话拨过开关（或从会话 metadata 恢复）就用该值；
- * 否则跟随实验开关——总开关打开即团队配置为 scheduled，与 TUI / 定时任务等不下发该字段的
- * 入口行为一致。
+ * 否则默认自主模式，开关默认关闭。
  */
-export function resolveTeamDispatchMode(
-  sessionMode: TeamDispatchMode | undefined,
-  featureEnabled: boolean,
-): TeamDispatchMode {
-  if (sessionMode) return sessionMode;
-  return featureEnabled ? 'scheduled' : 'autonomous';
+export function resolveTeamDispatchMode(sessionMode: TeamDispatchMode | undefined): TeamDispatchMode {
+  return sessionMode ?? 'autonomous';
 }
 
 export function normalizeTeamDispatchMode(value: unknown): TeamDispatchMode | undefined {
@@ -53,11 +48,12 @@ export function normalizeTeamDispatchMode(value: unknown): TeamDispatchMode | un
 
 /**
  * 欢迎页的调度模式在建会话时落成显式值，使首条 chat.send 带上 team_dispatch_mode 并由后端持久化。
+ * 实验开关打开时团队配置为 scheduled，因此用户没拨过开关也要显式下发 autonomous，保证开关默认关闭；
  * 实验开关关闭且用户没拨过开关时返回 undefined：不下发，后端沿用团队配置。
  */
 export function resolveNewSessionDispatchMode(
   pendingMode: TeamDispatchMode | undefined,
 ): TeamDispatchMode | undefined {
   if (pendingMode) return pendingMode;
-  return isTeamScheduledDispatchEnabled() ? 'scheduled' : undefined;
+  return isTeamScheduledDispatchEnabled() ? resolveTeamDispatchMode(undefined) : undefined;
 }
