@@ -289,18 +289,20 @@
 - **目标与范围：** 新增 `execution_control_service.py`，接入 Web 和飞书的停止与取消入口。不接入确认卡片，也不接入 `resume_persistent_request`。
 - **责任与契约：** 校验控制权限，记录控制事实，经 JM-07 调用 `abort_persistent_request(context, reason="stop" / "cancel")`。
 - **开工硬前置：** JM-07 的执行驱动（JM-03 经 JM-07 间接满足）。
-- **独立验证入口：** `tests/unit_tests/server/jiuwenmate/test_execution_control_service.py`（待建立）。
-- **独立验证条件：** 可用执行驱动替身验证；真实停止须待 PA-05 接通。
+- **独立验证入口：** `tests/unit_tests/server/jiuwenmate/test_execution_control_service.py`。
+- **独立验证条件：** 可用执行驱动替身验证；真实中止已在 core `9eb336b4` 下以模型替身验证。
 - **验收标准：**
   1. JM-12-V-01：只有发起人或被授权的管理者可以控制目标 Execution。
   2. JM-12-V-02：重复的控制请求不重复执行；停止 / 取消只影响当前 Session。
   3. JM-12-V-03：收尾异常时仍保留控制事实，不误触发自动续做。
+  4. JM-12-V-04：经 core 正式中止入口，停止与取消在模型输出中途生效，会话随后可继续。
+  5. JM-12-V-05：Web 页面可停止处理中的消息、取消排队中的消息。
 - **来源验证点与共享场景：**
   - “停止 / 取消误伤其他 Session” → JM-12-V-02 → 主责 JM-12，协同 JM-07 → S1。
   - 架构第 11.5 节“权限与凭据”的业务主体检查部分 → JM-12-V-01 → 主责 JM-12，协同 JM-10 → S1。
 - **前端独立验证：** 停止 / 取消按钮的交互随 JM-10 验证。
 - **联合交付与开放条件：** 参与 S1，对端为 PA-05。
-- **设计索引：** feature 开工前建档；架构第 8.3、9.1 节。
+- **设计索引：** [F_12](../features/F_12_execution-control.md)；架构第 8.3、9.1 节。
 
 ### JM-13 续做与恢复服务
 
@@ -566,7 +568,7 @@ flowchart LR
 | JM-09 结果投递服务 | 特性 / 本期 | 纳入 | Web 投递与飞书投递两个子范围 | 未评估 / Web 随 S1，飞书随 S2a | C / S1、S2a | 未排期 | 待开始 | 常钰聪 | — | 未执行；对端 PA-08，中途协作发送接入 PA-15 | 2026-10-13；编号更名 |
 | JM-10 Web 接入与同事页面 | 特性 / 本期 | 纳入 | 同事管理、会话与状态、IM 记录展示；经负责人确认分两个子范围交付：同事管理（固定 namespace `local`，模板只提交设置内容）；私聊、历史与状态（轮询，不新增推送事件；回复只读候选输出，投递记录留给 JM-09） | 未评估 / 随 S1 | A / S1、S2a | 未排期 | 进行中 | 常钰聪 | — | 同事管理：JM-10-V-01 同事管理部分 → 提交 `d934f611`，记录见 [F_10](../features/F_10_web-colleague-management.md)；私聊：JM-10-V-01 私聊部分、V-02、V-03 → 真实 SQLite 与调度器，执行入口替身 → 单测 15 项、集成测试 4 项通过（其中 2 项经 core `9eb336b4` 正式执行入口，模型为替身），jiuwenmate 单测与集成测试共 179 项；前端 `test:jiuwenmate-api` 9 项通过；记录见 [F_10_02](../features/F_10_02_web-private-chat.md) → 未提交；真实模型浏览器验收待 S1，IM 记录展示待 S2a | 2026-10-14 |
 | JM-11 群公共记录与搜索 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2a | C / S2a | 未排期 | 待开始 | 闫祉君 | — | 未执行；对端 PA-23，联合 PA-07、PA-11、PA-12 | 2026-10-13；编号更名 |
-| JM-12 执行控制服务 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S1 | A / S1 | 未排期 | 待开始 | 常钰聪 | — | 未执行；对端 PA-05 | 2026-10-13；编号更名 |
+| JM-12 执行控制服务 | 特性 / 本期 | 纳入 | 第 2 节全部范围；经负责人确认先接 Web 入口，只有发起人可以控制，管理者授权与飞书入口随 JM-08 | 未评估 / 随 S1 | A / S1 | 未排期 | 待验收 | 常钰聪 | — | JM-12-V-01～V-05 → 真实 SQLite 与调度器，core 入口替身；另经 core `9eb336b4` 正式中止入口（模型为替身）→ 单测 10 项、Web 4 项、真实 core 2 项通过，jiuwenmate 单测与集成测试共 210 项；前端 `test:jiuwenmate-api` 16 项通过；记录见 [F_12](../features/F_12_execution-control.md) → 未提交；浏览器验收待 S1；不续做的执行侧待 JM-13 | 2026-10-14 |
 | JM-13 续做与恢复服务 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2c | E / S2c | 未排期 | 待开始 | 常钰聪 | — | 未执行；自动续做放行依赖 PA-11、PA-15、PA-17、PA-18 | 2026-10-13；编号更名 |
 | JM-14 同事资源选择与隔离 | 特性 / 本期 | 纳入 | 最小只读配置与完整范围两个子范围 | 未评估 / 只读随 S1，完整随 S2b | D / S1、S2b | 未排期 | 待开始 | 常钰聪 | — | 未执行；读取依赖 PA-14，写入依赖 PA-15、PA-16 | 2026-10-13；编号更名 |
 | JM-16 管理查询 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2b | D / S2b | 未排期 | 待开始 | 常钰聪 | — | 未执行 | 2026-10-13；编号更名 |
@@ -722,6 +724,7 @@ python -m pytest tests/integration_tests/jiuwenmate -q
 | 2026-10-13 | JM-06 | 先建 [F_06](../features/F_06_budget-port.md)，再新增 `budget_repository.py` 与 `ports/budget.py`：群会话共享群账户，其余按同事计账；准入单事务检查并预留；按 `model_call_id` 幂等结算；未知用量按预留量扣减并标记待对账；额度调整写修订记录；额度规则经负责人确认（未设上限不限额、只经管理调整恢复）；注入与悬挂预留回收并入 JM-07 | 宿主组件；core 调用方未联调 | 15 项测试通过，全目录 119 项；状态待验收 |
 | 2026-10-14 | JM-07 | 按变更闸门先提交分析与改动方案，经负责人确认（暂不接入 AgentServer、续做只预留入口）后建 [F_07](../features/F_07_execution-driver.md)，再新增 `execution_driver.py`、`session_scheduler.py`、`agent_manager.py`，并在 `budget_repository.py` 增加 `settle_unreported`：Session 内串行、两级并发上限与排队上限；控制只作用于目标，流结束后才释放 Session；无终态记为 `failed`；收尾释放候选副本并结算悬挂预留；删除同事先结束其工作；定时清理窗口归档 | 宿主组件；core 入口为替身 | 27 项测试通过，全目录 146 项；状态待验收；AgentServer 接线推迟到 S1 |
 | 2026-10-14 | JM-10（同事管理子范围） | 按变更闸门先提交分析与改动方案，经负责人确认（只做同事管理、固定 namespace `local`、模板只提交设置内容、新增不含密钥的 `jiuwenmate.models.list`）后建 [F_10](../features/F_10_web-colleague-management.md)，再新增 `web_adapter.py` 与九个 `jiuwenmate.*` 方法并接入 AgentServer 与 Gateway 转发；前端新增 `jiuwenmateApi.ts`，同事页改为加载服务端同事（含小九），创建与删除调用后端，模型列表来自服务端 | 宿主组件；浏览器端到端未执行 | 后端 15 项新增测试通过，全目录 161 项；前端 13 项相关测试通过；状态进行中；未提交 |
+| 2026-10-14 | JM-12 | 按变更闸门先提交分析与改动方案，经负责人确认（只有发起人可控制；执行中发送按钮变为“停止”，排队消息显示“取消”）后建 [F_12](../features/F_12_execution-control.md)；新增 `execution_control_service.py` 与 `request_controls` 表，先写控制事实再中断，每个 Request 只接受一次控制；`SessionScheduler.abort` 对上一进程遗留的 Request 改为直接结束并继续该 Session 的排队；新增 `jiuwenmate.request.abort` 与 `RequestView.control`；前端接入停止与取消 | 宿主组件；core 正式中止入口，模型为替身 | 新增 16 项测试通过，jiuwenmate 共 210 项；前端 16 项；状态待验收；未提交 |
 | 2026-10-14 | JM-10（私聊、历史与状态子范围） | 按变更闸门先提交分析与改动方案，经负责人确认（现在接线并以替身验证、回复只读候选输出、轮询更新）后建 [F_10_02](../features/F_10_02_web-private-chat.md)；`AgentManager` 随首次调用启动并恢复排队消息，随 AgentServer 停止关闭；新增 `jiuwenmate.chat.send`、`jiuwenmate.chat.history`、`jiuwenmate.request.get`；删除同事改为经由 `AgentManager`；前端私聊区可发送并显示历史与状态；建立 `tests/integration_tests/jiuwenmate/` | 宿主组件；真实执行未接通 | 单测 15 项、集成测试 2 项、前端 9 项通过；状态进行中；未提交 |
 | 2026-10-14 | JM-10（core 接通后补验） | core `jiuwenmate` 分支 `9eb336b4` 接通 PA-10、PA-06；本地依赖升级后，宿主代码无需修改；新增 `test_web_real_core.py` 正式执行验收，删除已失效的 canary，并按 core 新包结构调整两处测试导入 | 宿主组件 + core 正式执行入口；模型为替身 | 集成测试 4 项、jiuwenmate 共 179 项、server 与 gateway 单测 2527 项通过；未提交 |
 | 2026-10-14 | JM-10（流式输出与 Markdown） | 浏览器试用后负责人要求回复流式输出、渲染 Markdown；按变更闸门提交分析与方案并经确认后，`HostCommitPort` 增加事件观察者，适配器把 `reply.delta` 等事件经 `send_push` 推送为 `jiuwenmate.chat.stream`，Gateway 保留其完整 payload，`RequestView` 增加查询补齐用的 `draft`；前端订阅推送、按 `seq` 合并，回复与草稿以 `MarkdownRenderer` 渲染（[F_10_02](../features/F_10_02_web-private-chat.md) D-05、D-06） | 跨 AgentServer、Gateway、前端；core 未改 | jiuwenmate 186 项、server/gateway/channel 2741 项、前端 13 项通过；浏览器验收待执行；未提交 |

@@ -561,3 +561,47 @@ async def test_deleting_a_colleague_removes_its_conversation_list(host):
 
     with sqlite3.connect(host.db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM web_conversations").fetchone()[0] == 0
+
+
+# JM-12-V-05 the page stops a running reply and cancels a queued message
+
+
+async def test_the_page_stops_a_running_reply_and_cancels_a_queued_one(host):
+    agent_id = await host.colleague()
+    running = (await host.send(agent_id, "第一条")).payload["request"]["request_id"]
+    queued = (await host.send(agent_id, "第二条")).payload["request"]["request_id"]
+    for _ in range(400):
+        if host.core.started:
+            break
+        await asyncio.sleep(0.005)
+
+    cancelled = await host.call(ReqMethod.JIUWENMATE_REQUEST_ABORT, request_id=queued, reason="cancel")
+    stopped = await host.call(ReqMethod.JIUWENMATE_REQUEST_ABORT, request_id=running, reason="stop")
+    done = await host.settled(running)
+
+    assert cancelled.ok and cancelled.payload["request"]["outcome"] == "cancelled"
+    assert cancelled.payload["request"]["control"]["reason"] == "cancel"
+    assert stopped.ok and stopped.payload["request"]["control"]["reason"] == "stop"
+    assert done["outcome"] == "stopped" and done["control"]["status"] == "accepted"
+    assert host.core.started == ["第一条"]
+    history = (await host.history(agent_id)).payload["requests"]
+    assert [item["control"]["reason"] for item in history] == ["stop", "cancel"]
+
+
+@pytest.mark.parametrize(
+    ("params", "code"),
+    [
+        ({"request_id": "req_missing", "reason": "stop"}, "NOT_FOUND"),
+        ({"request_id": "{request}", "reason": "pause"}, "BAD_REQUEST"),
+        ({"reason": "stop"}, "BAD_REQUEST"),
+    ],
+)
+async def test_refused_controls_keep_their_error_code(host, params, code):
+    agent_id = await host.colleague()
+    request_id = (await host.send(agent_id, "任务")).payload["request"]["request_id"]
+    params = {key: value.format(request=request_id) for key, value in params.items()}
+
+    response = await host.call(ReqMethod.JIUWENMATE_REQUEST_ABORT, **params)
+
+    assert not response.ok and response.payload["code"] == code
+    host.core.release("任务")

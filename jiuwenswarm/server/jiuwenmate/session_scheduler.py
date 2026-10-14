@@ -111,20 +111,35 @@ class SessionScheduler:
         await self._pump()
         return left
 
+    def _run_of(self, namespace_id: str, request_id: str) -> _Running | None:
+        return next(
+            (
+                run
+                for (ns, _), run in self._running.items()
+                if ns == namespace_id and run.state.record.request_id == request_id
+            ),
+            None,
+        )
+
     async def abort(self, namespace_id: str, request_id: str, reason: AbortReason) -> None:
-        for (ns, _), run in self._running.items():
-            if ns == namespace_id and run.state.record.request_id == request_id:
-                await run.handle.abort(reason)
-                return
+        """End only the target Request: interrupt it if it runs here, otherwise close it as stopped or cancelled.
+
+        A Request left dispatched by a previous process is closed too, and its Session's queue moves on.
+        """
         async with self._lock:
-            state = await asyncio.to_thread(self._sessions.get_request, namespace_id, request_id)
-            if state.status == "queued":
-                outcome = "cancelled" if reason == "cancel" else "stopped"
-                await asyncio.to_thread(
-                    self._sessions.finish_request, namespace_id, request_id, outcome, now=self._clock()
-                )
-            elif state.status == "dispatched":
-                raise PersistentAgentError("request is not running in this process", code="CONFLICT")
+            run = self._run_of(namespace_id, request_id)
+            if run is None:
+                state = await asyncio.to_thread(self._sessions.get_request, namespace_id, request_id)
+                if state.status != "ended":
+                    outcome = "cancelled" if reason == "cancel" else "stopped"
+                    await asyncio.to_thread(
+                        self._sessions.finish_request, namespace_id, request_id, outcome, now=self._clock()
+                    )
+                    self._waiting[(namespace_id, state.record.session_id)] = None
+        if run is not None:
+            await run.handle.abort(reason)
+        else:
+            await self._pump()
 
     async def end_agent(self, namespace_id: str, agent_id: str) -> None:
         """Refuse new Requests of the colleague, cancel its queued ones and wait for its running ones."""

@@ -103,6 +103,12 @@
         "stopped": "已停止",
         "cancelled": "已取消",
         "failed": "处理失败"
+      },
+      "control": {
+        "stopping": "正在停止…",
+        "cancelling": "正在取消…",
+        "cancel": "取消",
+        "failed": "停止失败：{{reason}}"
       }
     },
     "intro": {
@@ -296,6 +302,7 @@
       "autoMode": "Auto",
       "attach": "添加附件",
       "send": "发送",
+      "stop": "停止",
       "aiDisclaimer": "内容由AI生成，仅供参考",
       "defaultPrompts": [
         "统计今日咨询热点",

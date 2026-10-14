@@ -103,6 +103,12 @@
         "stopped": "Stopped",
         "cancelled": "Cancelled",
         "failed": "Failed"
+      },
+      "control": {
+        "stopping": "Stopping…",
+        "cancelling": "Cancelling…",
+        "cancel": "Cancel",
+        "failed": "Could not stop: {{reason}}"
       }
     },
     "intro": {
@@ -296,6 +302,7 @@
       "autoMode": "Auto",
       "attach": "Add attachment",
       "send": "Send",
+      "stop": "Stop",
       "aiDisclaimer": "AI-generated content is for reference only",
       "defaultPrompts": [
         "Summarize today's hot questions",

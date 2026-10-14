@@ -162,6 +162,8 @@ export function ColleagueWorkspacePage({
     conversationList.upsert(conversation);
   };
 
+  const running = privateChat.requests.find((item) => chatPhase(item) === 'running') ?? null;
+
   const composer = (
     <>
       {privateChat.error || conversationList.error ? (
@@ -169,13 +171,30 @@ export function ColleagueWorkspacePage({
           {t('jiuwenmate.chat.failed', { reason: privateChat.error ?? conversationList.error })}
         </p>
       ) : null}
-      <ConversationComposer value={draft} onChange={setDraft} onSend={() => void sendDraft()} sending={privateChat.sending} />
+      <ConversationComposer
+        value={draft}
+        onChange={setDraft}
+        onSend={() => void sendDraft()}
+        sending={privateChat.sending}
+        onStop={running ? () => void privateChat.abort(running.requestId, 'stop') : undefined}
+        stopping={running?.control?.status === 'accepted'}
+      />
     </>
   );
 
   const renderRequest = (request: JiuwenMateChatRequest) => {
     const phase = chatPhase(request);
-    const note = phase === 'completed' ? (request.replies.length === 0 ? t('jiuwenmate.chat.noReply') : null) : t(`jiuwenmate.chat.status.${phase}`);
+    const control = request.control;
+    const note =
+      control?.status === 'failed'
+        ? t('jiuwenmate.chat.control.failed', { reason: control.detail ?? '' })
+        : isPending(request) && control
+          ? t(control.reason === 'stop' ? 'jiuwenmate.chat.control.stopping' : 'jiuwenmate.chat.control.cancelling')
+          : phase === 'completed'
+            ? request.replies.length === 0
+              ? t('jiuwenmate.chat.noReply')
+              : null
+            : t(`jiuwenmate.chat.status.${phase}`);
     const draft = isPending(request) && request.draft?.text ? request.draft.text : null;
     return (
       <li key={request.requestId} data-testid="jiuwenmate-chat-request" data-phase={phase}>
@@ -195,6 +214,16 @@ export function ColleagueWorkspacePage({
         {note ? (
           <small className="jiuwenmate-chat-status" data-phase={phase}>
             {request.reason ? `${note}：${request.reason}` : note}
+            {phase === 'queued' && !control ? (
+              <button
+                type="button"
+                className="jiuwenmate-chat-cancel"
+                onClick={() => void privateChat.abort(request.requestId, 'cancel')}
+                data-testid="jiuwenmate-chat-cancel"
+              >
+                {t('jiuwenmate.chat.control.cancel')}
+              </button>
+            ) : null}
           </small>
         ) : null}
       </li>
