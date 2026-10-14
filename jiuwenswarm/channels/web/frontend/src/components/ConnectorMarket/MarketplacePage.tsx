@@ -375,7 +375,6 @@ export function MarketplacePage({
     installed,
     pluginConnectionStateMap,
     query,
-    i18n.language,
     marketPluginResults,
   ]);
 

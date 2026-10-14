@@ -1289,7 +1289,7 @@ export function AgentManagementPanel({
                 wrapperTestId="agent-management-search"
                 inputTestId="agent-management-search-input"
                 name="agent-management-search"
-                aria-label={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView ? 'common.searchName' : isMine ? 'common.searchName' : 'agentManagement.searchCatalog')}
+                aria-label={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView || isMine ? 'common.searchName' : 'agentManagement.searchCatalog')}
                 autoComplete="off"
                 disabled={connectorFlowId !== null}
                 value={view === 'teams' ? groupCatalogQuery : isGroupView ? groupMineQuery : isMine ? mineQuery : query}
@@ -1316,7 +1316,7 @@ export function AgentManagementPanel({
                     setQuery('');
                   }
                 }}
-                placeholder={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView ? 'common.searchName' : isMine ? 'common.searchName' : 'agentManagement.searchCatalog')}
+                placeholder={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView || isMine ? 'common.searchName' : 'agentManagement.searchCatalog')}
               />
               {isMine ? (
                 <div className="agent-management-create-menu" data-testid="agent-management-create-menu">

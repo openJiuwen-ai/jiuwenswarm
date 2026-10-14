@@ -4071,7 +4071,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                 </div>
                               ) : (
                                 filteredGroupOptions.map((item) => {
-                                  const isSelected = selectedGroupId === item.id;
+                                  const isSelected = selectedGroupId === item.name;
                                   const groupAvatarUrl =
                                     item.avatarUrl && !failedGroupAvatarIds.has(item.id) ? item.avatarUrl : null;
                                   return (
@@ -4101,7 +4101,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                       onClick={() => {
                                         if (agentGroupSelectionDisabled || !activeSessionId) return;
                                         useSessionStore.getState().setMode(activeSessionId, 'team');
-                                        setAgentGroupSelectionIntent(activeSessionId, { kind: 'select', id: item.id });
+                                        setAgentGroupSelectionIntent(activeSessionId, { kind: 'select', id: item.name });
                                         setAgentSelectionIntent(activeSessionId, { kind: 'clear' });
                                         clearSelectedSkills(activeSessionId);
                                         setAttachMenuOpen(false);
