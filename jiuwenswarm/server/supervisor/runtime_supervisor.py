@@ -9,7 +9,7 @@ import logging
 import time
 from typing import Any
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from openjiuwen_protocol.e2a.agent_models import AgentRequest, AgentResponse
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.front.protocol import encode_response
 from jiuwenswarm.server.ipc.client import connect_with_retry, try_connect
@@ -42,7 +42,7 @@ def _is_server_push(payload: dict[str, Any]) -> bool:
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return False
-    from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+    from openjiuwen_protocol.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 
     return bool(metadata.get(E2A_WIRE_SERVER_PUSH_KEY))
 

@@ -2,7 +2,7 @@
 
 """数据模型."""
 
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
+from openjiuwen_protocol.e2a.agent_models import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import Message
 
 __all__ = [

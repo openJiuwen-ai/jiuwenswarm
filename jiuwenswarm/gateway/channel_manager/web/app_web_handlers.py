@@ -1322,7 +1322,7 @@ async def _clear_agent_config_cache(agent_client=None) -> None:
     """写回 config.yaml 后清除 agent 侧配置缓存，使下次读取时得到最新文件内容。"""
     try:
         if agent_client is not None:
-            from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+            from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
             from jiuwenswarm.common.schema.message import ReqMethod
 
             env = e2a_from_agent_fields(
@@ -1347,7 +1347,7 @@ async def _restart_agent_browser_runtime(
     if agent_client is None:
         return
 
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+    from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
     from jiuwenswarm.common.schema.message import ReqMethod
 
     env = e2a_from_agent_fields(
@@ -1988,7 +1988,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         async def _sync() -> None:
             try:
-                from jiuwenswarm.common.e2a.gateway_normalize import (
+                from openjiuwen_protocol.e2a.gateway_normalize import (
                     e2a_from_agent_fields,
                 )
                 from jiuwenswarm.common.schema.message import ReqMethod
@@ -5647,7 +5647,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _forward_a4p_to_agent(ws, req_id, params, session_id, *, req_method):
         """Forward an A4P User Authorizer RPC over the session's logical Web route."""
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(req_method, ReqMethod):

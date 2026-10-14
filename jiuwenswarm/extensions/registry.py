@@ -4,11 +4,11 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 
+from openjiuwen_protocol.types import ExtensionConfig
 from jiuwenswarm.common.security import base_crypto
 from jiuwenswarm.common.security.base_crypto import CryptoProvider
 from jiuwenswarm.extensions.callback_compat import unregister_callback_sync
 from jiuwenswarm.extensions.sdk.crypto_utility import CryptoUtility
-from jiuwenswarm.extensions.types import ExtensionConfig
 
 if TYPE_CHECKING:
     from jiuwenswarm.extensions.sdk.agent_server_client import (

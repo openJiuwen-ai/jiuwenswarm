@@ -231,7 +231,7 @@ class SandboxBoundaryTest(unittest.TestCase):
 
 class SessionModeBoundaryTest(unittest.IsolatedAsyncioTestCase):
     async def test_metadata_handlers_keep_canonical_mode_with_legacy_wire_field(self):
-        from jiuwenswarm.common.schema.agent import AgentRequest
+        from openjiuwen_protocol.e2a.agent_models import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.server.control.repositories import session_repository
         from jiuwenswarm.server.runtime.gateway_adapter import session_adapter

@@ -1415,7 +1415,7 @@ def _build_facade_with_stub(stub: _StubManager) -> Any:
 
 
 def _sync_reload_request(applied: list[str]) -> Any:
-    from jiuwenswarm.common.schema.agent import AgentRequest
+    from openjiuwen_protocol.e2a.agent_models import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
 
     return AgentRequest(
@@ -1565,7 +1565,7 @@ async def test_ws_rejected_sync_methods_return_error_not_chat(method: str) -> No
     回归：未显式拒绝时，合法枚举方法沿 facade 链路落到聊天处理，
     空 query 触发一次 LLM 调用。
     """
-    from jiuwenswarm.common.schema.agent import AgentRequest
+    from openjiuwen_protocol.e2a.agent_models import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
 
     stub = _StubManager({"success": True, "applied": []})

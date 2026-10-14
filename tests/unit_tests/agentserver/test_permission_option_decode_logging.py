@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from openjiuwen_protocol.e2a.agent_models import AgentRequest
 
 
 class _RecordingLogger:

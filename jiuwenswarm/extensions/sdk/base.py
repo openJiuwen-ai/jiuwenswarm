@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 
-from jiuwenswarm.extensions.types import ExtensionConfig, ExtensionMetadata
+from openjiuwen_protocol.types import ExtensionConfig, ExtensionMetadata
 
 MANIFEST_FILENAME = "extension.yaml"
 
