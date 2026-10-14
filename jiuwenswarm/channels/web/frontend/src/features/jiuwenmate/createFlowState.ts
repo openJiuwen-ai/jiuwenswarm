@@ -38,6 +38,28 @@ export function createInitialJiuwenMateState(colleagues: readonly JiuwenMateColl
   };
 }
 
+/** Applies the server list; IM, disabled and uploaded avatars are not stored by the server yet. */
+export function replaceColleagues(state: JiuwenMateState, colleagues: readonly JiuwenMateColleague[]): JiuwenMateState {
+  const local = new Map(state.colleagues.map((item) => [item.id, item]));
+  const merged = colleagues.map((item) => {
+    const previous = local.get(item.id);
+    if (!previous) return item;
+    return {
+      ...item,
+      imConfigured: previous.imConfigured,
+      disabled: previous.disabled,
+      avatarUrl: item.avatarUrl ?? previous.avatarUrl,
+    };
+  });
+  const selectedColleagueId = merged.some((item) => item.id === state.selectedColleagueId)
+    ? state.selectedColleagueId
+    : (merged[0]?.id ?? null);
+  let view = state.view;
+  if (view === 'office-intro' && merged.length > 0) view = 'office-dashboard';
+  else if (view === 'office-dashboard' && merged.length === 0) view = 'office-intro';
+  return { ...state, view, selectedColleagueId, colleagues: merged };
+}
+
 function officeView(state: JiuwenMateState): JiuwenMateView {
   return state.colleagues.length > 0 ? 'office-dashboard' : 'office-intro';
 }

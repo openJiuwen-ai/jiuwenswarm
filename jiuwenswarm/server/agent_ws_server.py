@@ -222,6 +222,71 @@ from jiuwenswarm.server.runtime.agent_manager import (
     ACP_DEFAULT_CAPABILITIES,
     AgentManager,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
+    get_permissions_config_req_methods,
+)
+from jiuwenswarm.agents.harness.common.a4p.rpc import get_a4p_req_methods
+from jiuwenswarm.common.config import (
+    DEFAULT_SANDBOX_POLICY_FILE,
+    DEFAULT_SANDBOX_STARTUP_MODE,
+    get_config,
+    get_available_models,
+    get_default_models,
+    get_config_yaml_mcp_servers,
+    get_mcp_server_config,
+    get_mcp_servers,
+    get_sandbox_endpoint,
+    get_sandbox_runtime,
+    get_sandbox_startup_mode,
+    get_sandbox_startup_mode_explicit,
+    remove_mcp_server,
+    resolve_preserve_file_sharing_mode_default,
+    resolve_sandbox_api_token,
+    resolve_sandbox_policy_path,
+    remove_subagent_from_config,
+    set_mcp_server_enabled,
+    sync_sandbox_api_token_environ,
+    update_sandbox_endpoint,
+    update_sandbox_runtime,
+    upsert_mcp_server,
+    upsert_subagent_in_config,
+)
+from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+from jiuwenswarm.common.hooks_config import load_hooks_config
+from jiuwenswarm.common.security.ws_origin import (
+    extract_handshake_request,
+    forbidden_origin_response,
+    get_header_value,
+    is_origin_check_enabled,
+    is_allowed_browser_origin,
+)
+from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
+    PLAN_MODE_EXITED_EVENT_TYPE,
+)
+from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server.personal_context import PersonalContextHostAPI
+from jiuwenswarm.server.personal_context.ws_handler import (
+    PERSONAL_CONTEXT_REQUEST_METHODS as _PERSONAL_CONTEXT_REQ_METHODS,
+    handle_personal_context_request,
+)
+from jiuwenswarm.common.log_preview import preview_text
+from jiuwenswarm.runtime.request import (
+    PREVIOUS_SESSION_MODE_KEY as _SESSION_PREVIOUS_MODE_KEY,  # noqa: F401
+    apply_resolved_mode_to_request as _apply_resolved_mode_to_request,
+    prepare_chat_turn,
+    resolve_agent_request_mode,
+    resolve_request_project_dir,
+    resolve_request_runtime_mode,
+    sync_chat_request_metadata as _sync_chat_request_metadata,
+)
+from jiuwenswarm.runtime.events import RuntimeEvent, TERMINAL_ERROR_EVENT_TYPES
+from jiuwenswarm.runtime.host_services import (
+    install_runtime_push_handler,
+    restore_runtime_push_handler,
+)
+from jiuwenswarm.runtime.plan import PlanModeController
+from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import VoiceTaskServerAdapter
+from jiuwenswarm.server.jiuwenmate.web_adapter import JiuwenMateWebAdapter
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
@@ -1353,7 +1418,12 @@ class AgentWebSocketServer:
             ProjectAdapter(runtime_probe=self._execution_runtime),
             DesignerAdapter(),
             HarmonyOSAdapter(),
+<<<<<<< HEAD
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
+=======
+            ConfigAdapter(),
+            JiuwenMateWebAdapter(),
+>>>>>>> d934f611f (feat(JM10): connect the colleague pages to server-side colleague management)
         ):
             self._adapter_registry.register(adapter)
         self._ensure_app_services().adapter_registry = self._adapter_registry
@@ -2350,7 +2420,12 @@ class AgentWebSocketServer:
                     ProjectAdapter(runtime_probe=self._execution_runtime),
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
+<<<<<<< HEAD
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
+=======
+                    ConfigAdapter(),
+                    JiuwenMateWebAdapter(),
+>>>>>>> d934f611f (feat(JM10): connect the colleague pages to server-side colleague management)
                 ):
                     self._adapter_registry.register(adapter)
                 self._ensure_app_services().adapter_registry = self._adapter_registry
