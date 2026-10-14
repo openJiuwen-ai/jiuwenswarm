@@ -168,6 +168,16 @@ class ExecutionRepository(SQLiteStore):
                 row = conn.execute(query, key).fetchone()
         return self._session(row)
 
+    def find_session(self, namespace_id: str, agent_id: str, conversation: ConversationRef) -> SessionRecord | None:
+        """The colleague's Session for a conversation, or None before first contact; nothing is created."""
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE namespace_id = ? AND agent_id = ? AND kind = ? "
+                "AND channel = ? AND conversation_key = ?",
+                (namespace_id, agent_id, conversation.kind, conversation.channel, conversation.key),
+            ).fetchone()
+        return None if row is None else self._session(row)
+
     def get_session(self, namespace_id: str, session_id: str) -> SessionRecord:
         with self._transaction() as conn:
             row = conn.execute(

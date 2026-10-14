@@ -16,7 +16,13 @@ export const JIUWENMATE_METHODS = {
   publish: 'jiuwenmate.colleague.publish',
   delete: 'jiuwenmate.colleague.delete',
   modelsList: 'jiuwenmate.models.list',
+  chatSend: 'jiuwenmate.chat.send',
+  chatHistory: 'jiuwenmate.chat.history',
+  requestGet: 'jiuwenmate.request.get',
 } as const;
+
+/** Server push carrying reply fragments of a running private message. */
+export const JIUWENMATE_STREAM_EVENT = 'jiuwenmate.chat.stream';
 
 const CATEGORIES: readonly JiuwenMateCategory[] = [
   'education',
@@ -34,6 +40,7 @@ const CATEGORIES: readonly JiuwenMateCategory[] = [
 const MAX_AVATAR_URL = 2048;
 
 export type JiuwenMateRequest = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+export type JiuwenMateSubscribe = (event: string, handler: (payload: unknown) => void) => () => void;
 
 export interface JiuwenMateWireCapabilities {
   model: string | null;
@@ -65,6 +72,55 @@ export interface JiuwenMatePublishedVersion {
   configVersion: string;
   publishedAt: string;
 }
+
+/** A private message and what became of it; replies are only the outputs the colleague's final answer adopted. */
+export interface JiuwenMateChatRequest {
+  requestId: string;
+  messageId: string;
+  text: string;
+  receivedAt: string;
+  status: 'queued' | 'dispatched' | 'ended';
+  outcome: string | null;
+  running: boolean;
+  replies: string[];
+  reason: string | null;
+  draft: JiuwenMateChatDraft | null;
+}
+
+/**
+ * Text the model is writing for a running message, up to event ``seq`` of its execution. Each model
+ * call starts new text; ``closed`` means the call that wrote ``text`` has completed.
+ */
+export interface JiuwenMateChatDraft {
+  executionId: string;
+  seq: number;
+  text: string;
+  closed: boolean;
+}
+
+/** One pushed step: model text, the end of a model call, or the end of the execution. */
+export interface JiuwenMateStreamEvent {
+  kind: 'delta' | 'segment' | 'ended';
+  agentId: string;
+  requestId: string;
+  executionId: string;
+  seq: number;
+  text: string;
+}
+
+/** How a message is shown: waiting, running, interrupted by a server restart, or its recorded outcome. */
+export type JiuwenMateChatPhase =
+  | 'queued'
+  | 'running'
+  | 'interrupted'
+  | 'completed'
+  | 'ignored'
+  | 'paused'
+  | 'stopped'
+  | 'cancelled'
+  | 'failed';
+
+const OUTCOMES: readonly JiuwenMateChatPhase[] = ['completed', 'ignored', 'paused', 'stopped', 'cancelled', 'failed'];
 
 type Wire = Record<string, unknown>;
 
@@ -152,11 +208,104 @@ export function toModelCatalog(value: unknown): JiuwenMateModelCatalog {
   };
 }
 
+function toDraft(value: unknown): JiuwenMateChatDraft | null {
+  const wire = record(value);
+  const executionId = text(wire.execution_id);
+  if (!executionId || typeof wire.seq !== 'number') return null;
+  return { executionId, seq: wire.seq, text: text(wire.text), closed: wire.closed === true };
+}
+
+export function toStreamEvent(value: unknown): JiuwenMateStreamEvent | null {
+  const wire = record(value);
+  const kind = text(wire.kind);
+  if (kind !== 'delta' && kind !== 'segment' && kind !== 'ended') return null;
+  const event = {
+    kind,
+    agentId: text(wire.agent_id),
+    requestId: text(wire.request_id),
+    executionId: text(wire.execution_id),
+    seq: typeof wire.seq === 'number' ? wire.seq : 0,
+    text: text(wire.text),
+  } as const;
+  return event.agentId && event.requestId && event.executionId && event.seq > 0 ? event : null;
+}
+
+export function toChatRequest(value: unknown): JiuwenMateChatRequest {
+  const wire = record(value);
+  const status = text(wire.status);
+  return {
+    requestId: text(wire.request_id),
+    messageId: text(wire.message_id),
+    text: text(wire.text),
+    receivedAt: text(wire.received_at),
+    status: status === 'queued' || status === 'ended' ? status : 'dispatched',
+    outcome: typeof wire.outcome === 'string' ? wire.outcome : null,
+    running: wire.running === true,
+    replies: texts(wire.replies),
+    reason: typeof wire.reason === 'string' && wire.reason ? wire.reason : null,
+    draft: status === 'ended' ? null : toDraft(wire.draft),
+  };
+}
+
+export function chatPhase(request: JiuwenMateChatRequest): JiuwenMateChatPhase {
+  if (request.status === 'queued') return 'queued';
+  if (request.status === 'dispatched') return request.running ? 'running' : 'interrupted';
+  const outcome = request.outcome as JiuwenMateChatPhase;
+  return OUTCOMES.includes(outcome) ? outcome : 'failed';
+}
+
+/** Whether the page should ask again: the message is still waiting or running on the server. */
+export function isPending(request: JiuwenMateChatRequest): boolean {
+  const phase = chatPhase(request);
+  return phase === 'queued' || phase === 'running';
+}
+
+function isNewer(draft: JiuwenMateChatDraft | null, than: JiuwenMateChatDraft | null): boolean {
+  if (!draft) return false;
+  return !than || (draft.executionId === than.executionId && draft.seq > than.seq);
+}
+
+/**
+ * Replaces a request with its newer state, or appends it if the list does not have it yet.
+ * Pushed text can be ahead of a query, because the server writes fragments in the background,
+ * so a running request keeps the draft it already has when the queried one is older.
+ */
+export function mergeChatRequest(
+  requests: readonly JiuwenMateChatRequest[],
+  request: JiuwenMateChatRequest,
+): JiuwenMateChatRequest[] {
+  const index = requests.findIndex((item) => item.requestId === request.requestId);
+  if (index < 0) return [...requests, request];
+  const current = requests[index];
+  const merged =
+    request.status !== 'ended' && isNewer(current.draft, request.draft) ? { ...request, draft: current.draft } : request;
+  return requests.map((item, position) => (position === index ? merged : item));
+}
+
+/** Applies a pushed step to its request; returns null when the list does not have the request yet. */
+export function applyStreamEvent(
+  requests: JiuwenMateChatRequest[],
+  event: JiuwenMateStreamEvent,
+): JiuwenMateChatRequest[] | null {
+  const index = requests.findIndex((item) => item.requestId === event.requestId);
+  if (index < 0) return null;
+  const current = requests[index];
+  const draft = current.draft;
+  if (current.status === 'ended' || event.kind === 'ended') return requests;
+  if (draft && draft.executionId === event.executionId && draft.seq >= event.seq) return requests;
+  const continues = draft !== null && draft.executionId === event.executionId && !draft.closed;
+  const next: JiuwenMateChatDraft =
+    event.kind === 'delta'
+      ? { executionId: event.executionId, seq: event.seq, text: (continues ? draft.text : '') + event.text, closed: false }
+      : { executionId: event.executionId, seq: event.seq, text: draft?.executionId === event.executionId ? draft.text : '', closed: true };
+  return requests.map((item, position) => (position === index ? { ...item, draft: next } : item));
+}
+
 export function findModel(catalog: JiuwenMateModelCatalog, id: string): JiuwenMateModelOption | null {
   return catalog.models.find((item) => item.id === (id || catalog.defaultModelId)) ?? null;
 }
 
-export function createJiuwenMateApi(request: JiuwenMateRequest) {
+export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: JiuwenMateSubscribe) {
   const colleague = async (method: string, params?: Record<string, unknown>) =>
     toColleague(record(await request(method, params)).colleague);
 
@@ -188,6 +337,26 @@ export function createJiuwenMateApi(request: JiuwenMateRequest) {
     },
     async listModels(): Promise<JiuwenMateModelCatalog> {
       return toModelCatalog(await request(JIUWENMATE_METHODS.modelsList));
+    },
+    /** Sends a private message; resending the same message id returns the request it already created. */
+    async sendMessage(agentId: string, message: string, messageId: string): Promise<JiuwenMateChatRequest> {
+      const sent = record(await request(JIUWENMATE_METHODS.chatSend, { agent_id: agentId, text: message, message_id: messageId }));
+      return toChatRequest(sent.request);
+    },
+    async history(agentId: string): Promise<JiuwenMateChatRequest[]> {
+      const listed = record(await request(JIUWENMATE_METHODS.chatHistory, { agent_id: agentId }));
+      return (Array.isArray(listed.requests) ? listed.requests : []).map(toChatRequest);
+    },
+    async getRequest(requestId: string): Promise<JiuwenMateChatRequest> {
+      return toChatRequest(record(await request(JIUWENMATE_METHODS.requestGet, { request_id: requestId })).request);
+    },
+    /** Receives pushed reply steps; without a push connection nothing arrives and querying still works. */
+    onStream(handler: (event: JiuwenMateStreamEvent) => void): () => void {
+      if (!subscribe) return () => undefined;
+      return subscribe(JIUWENMATE_STREAM_EVENT, (payload) => {
+        const event = toStreamEvent(payload);
+        if (event) handler(event);
+      });
     },
   };
 }

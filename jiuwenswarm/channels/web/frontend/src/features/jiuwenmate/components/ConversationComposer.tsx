@@ -5,16 +5,25 @@ import autoIcon from '../../../assets/jiuwenmate/icons/auto.svg';
 interface ConversationComposerProps {
   value: string;
   onChange: (value: string) => void;
+  /** Without it the composer only edits text and cannot send. */
+  onSend?: () => void;
+  sending?: boolean;
 }
 
-export function ConversationComposer({ value, onChange }: ConversationComposerProps) {
+export function ConversationComposer({ value, onChange, onSend, sending = false }: ConversationComposerProps) {
   const { t } = useTranslation();
+  const canSend = Boolean(onSend) && !sending && value.trim().length > 0;
   return (
     <div className="jiuwenmate-composer" data-testid="jiuwenmate-conversation-composer">
       <textarea
         rows={2}
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          if (canSend) onSend?.();
+        }}
         placeholder={t('jiuwenmate.workspace.composerPlaceholder')}
         data-testid="jiuwenmate-composer-input"
       />
@@ -39,7 +48,9 @@ export function ConversationComposer({ value, onChange }: ConversationComposerPr
             type="button"
             className="jiuwenmate-composer__send"
             aria-label={t('jiuwenmate.workspace.send')}
-            disabled
+            disabled={!canSend}
+            onClick={onSend}
+            data-testid="jiuwenmate-composer-send"
           >
             <Send aria-hidden />
           </button>

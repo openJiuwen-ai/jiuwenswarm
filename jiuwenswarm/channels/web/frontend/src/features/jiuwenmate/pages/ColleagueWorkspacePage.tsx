@@ -13,6 +13,7 @@ import {
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import collapseIcon from '../../../assets/jiuwenmate/icons/collapse.svg';
+import { MarkdownRenderer } from '../../../components/MarkdownRenderer';
 import documentIcon from '../../../assets/jiuwenmate/icons/document.svg';
 import featureChannel from '../../../assets/jiuwenmate/illustrations/feature-channel.png';
 import featureChat from '../../../assets/jiuwenmate/illustrations/feature-chat.png';
@@ -23,8 +24,10 @@ import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ColleagueList, type ColleagueListHandlers } from '../components/ColleagueList';
 import { ConversationComposer } from '../components/ConversationComposer';
 import { SegmentedTabs } from '../components/SegmentedTabs';
+import { chatPhase, isPending, type JiuwenMateChatRequest } from '../jiuwenmateApi';
 import { JIUWENMATE_CHANNEL_MESSAGES, JIUWENMATE_CHANNELS, JIUWENMATE_TRACE_ROWS, JIUWENMATE_TRACE_STARTED_AT } from '../mockData';
 import type { JiuwenMateChannel, JiuwenMateColleague } from '../types';
+import { usePrivateChat, type JiuwenMateChatApi } from '../usePrivateChat';
 import {
   closeChannelTrace,
   createWorkspaceState,
@@ -52,6 +55,9 @@ interface ColleagueWorkspacePageProps extends ColleagueListHandlers {
   colleagues: readonly JiuwenMateColleague[];
   selectedColleagueId: string;
   intent?: JiuwenMateWorkspaceIntent | null;
+  chat: JiuwenMateChatApi;
+  /** Changes each time the connection to the server is restored. */
+  connectionEpoch: number;
   onSelectColleague: (id: string) => void;
   onCreateSchedule: (id: string) => void;
 }
@@ -85,6 +91,8 @@ export function ColleagueWorkspacePage({
   colleagues,
   selectedColleagueId,
   intent,
+  chat,
+  connectionEpoch,
   onSelectColleague,
   onCreateSchedule,
   ...listHandlers
@@ -97,6 +105,7 @@ export function ColleagueWorkspacePage({
   const [sessions, setSessions] = useState<Record<string, ConversationRecord[]>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const privateChat = usePrivateChat(chat, colleague?.id ?? '', connectionEpoch);
 
   if (!colleague) return null;
 
@@ -139,6 +148,51 @@ export function ColleagueWorkspacePage({
   const deleteSession = (id: string) => {
     setSessions((current) => ({ ...current, [colleague.id]: (current[colleague.id] ?? []).filter((item) => item.id !== id) }));
     if (activeSessionId === id) setActiveSessionId(null);
+  };
+
+  const sendDraft = async () => {
+    const text = draft.trim();
+    if (!text || privateChat.sending) return;
+    if (await privateChat.send(text)) setDraft('');
+  };
+
+  const composer = (
+    <>
+      {privateChat.error ? (
+        <p className="jiuwenmate-chat-error" role="alert" data-testid="jiuwenmate-chat-error">
+          {t('jiuwenmate.chat.failed', { reason: privateChat.error })}
+        </p>
+      ) : null}
+      <ConversationComposer value={draft} onChange={setDraft} onSend={() => void sendDraft()} sending={privateChat.sending} />
+    </>
+  );
+
+  const renderRequest = (request: JiuwenMateChatRequest) => {
+    const phase = chatPhase(request);
+    const note = phase === 'completed' ? (request.replies.length === 0 ? t('jiuwenmate.chat.noReply') : null) : t(`jiuwenmate.chat.status.${phase}`);
+    const draft = isPending(request) && request.draft?.text ? request.draft.text : null;
+    return (
+      <li key={request.requestId} data-testid="jiuwenmate-chat-request" data-phase={phase}>
+        <p className="jiuwenmate-chat-message jiuwenmate-chat-message--user">{request.text}</p>
+        {request.replies.map((reply, index) => (
+          <article key={index} className="jiuwenmate-chat-message jiuwenmate-chat-message--colleague" data-testid="jiuwenmate-chat-reply">
+            <ColleagueAvatar colleague={colleague} size="small" />
+            <MarkdownRenderer content={reply} className="chat-text chat-markdown jiuwenmate-chat-markdown" />
+          </article>
+        ))}
+        {draft ? (
+          <article className="jiuwenmate-chat-message jiuwenmate-chat-message--colleague" data-testid="jiuwenmate-chat-draft">
+            <ColleagueAvatar colleague={colleague} size="small" />
+            <MarkdownRenderer content={draft} isStreaming className="chat-text chat-markdown jiuwenmate-chat-markdown" />
+          </article>
+        ) : null}
+        {note ? (
+          <small className="jiuwenmate-chat-status" data-phase={phase}>
+            {request.reason ? `${note}：${request.reason}` : note}
+          </small>
+        ) : null}
+      </li>
+    );
   };
 
   const tabs = [
@@ -255,7 +309,7 @@ export function ColleagueWorkspacePage({
           <h2>{colleague.name}</h2>
           <p>{colleague.description}</p>
         </div>
-        <ConversationComposer value={draft} onChange={setDraft} />
+        {composer}
         <div className="jiuwenmate-chat-welcome__suggestions">
           {prompts.map((prompt, index) => {
             const Icon = PROMPT_ICONS[index % PROMPT_ICONS.length];
@@ -287,7 +341,7 @@ export function ColleagueWorkspacePage({
     <section className="jiuwenmate-session-view" data-testid="jiuwenmate-session-view">
       <header className="jiuwenmate-main-header">
         <strong>
-          {activeSession?.title}
+          {activeSession?.title ?? t('jiuwenmate.chat.title')}
           <ChevronDown aria-hidden />
         </strong>
         <button type="button" className="jiuwenmate-link-button" onClick={createSession}>
@@ -295,9 +349,11 @@ export function ColleagueWorkspacePage({
           {t('jiuwenmate.workspace.newSession')}
         </button>
       </header>
-      <div className="jiuwenmate-session-view__body" />
+      <ol className="jiuwenmate-session-view__body jiuwenmate-chat-messages" data-testid="jiuwenmate-chat-messages">
+        {privateChat.requests.map(renderRequest)}
+      </ol>
       <footer>
-        <ConversationComposer value={draft} onChange={setDraft} />
+        {composer}
         <small>{t('jiuwenmate.workspace.aiDisclaimer')}</small>
       </footer>
     </section>
@@ -392,7 +448,7 @@ export function ColleagueWorkspacePage({
         </section>
       );
     }
-    return activeSession ? renderSession() : renderWelcome();
+    return activeSession || privateChat.requests.length > 0 ? renderSession() : renderWelcome();
   };
 
   return (

@@ -367,3 +367,28 @@ async def test_port_satisfies_the_core_contract(host):
     _, _, port = host
 
     core.PersistentPorts(commit=port, budget=FakeBudget(), window_backend=InMemoryKVStore()).validate()
+
+
+async def test_observer_sees_recorded_events_and_cannot_break_recording(tmp_path):
+    repository = ExecutionRepository(tmp_path / "agents.sqlite3")
+    queue = CommitQueue(repository)
+    await queue.start()
+    seen = []
+
+    def observer(event):
+        seen.append(event.local_seq)
+        raise RuntimeError("display failed")
+
+    port = HostCommitPort(repository, queue, observer=observer)
+    execution = accept_and_start(repository, "conv-1", "msg-1")
+
+    await port.record(execution, progress(execution, 1))
+    await port.record(execution, candidate(execution, 2))
+    with pytest.raises(PersistentAgentError):
+        await port.record(execution, final(execution, 3, output_refs=("out-missing",)))
+    await port.record(execution, final(execution, 4))
+    await queue.aclose()
+
+    assert seen == [1, 2, 4]
+    log = await port.read_execution_log(execution, execution.execution_id)
+    assert [event.local_seq for event in log] == [1, 2, 4]

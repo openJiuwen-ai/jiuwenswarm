@@ -1340,6 +1340,7 @@ class AgentWebSocketServer:
         # Gateway user-business RPCs execute in the current AgentServer's
         # injected data directory. Register adapters once per server; request
         # dispatch occurs before the legacy handler chain below.
+        self._jiuwenmate_web = JiuwenMateWebAdapter(push=self.send_push)
         self._adapter_registry = AdapterRegistry()
         for adapter in (
             VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
@@ -1350,7 +1351,7 @@ class AgentWebSocketServer:
             DesignerAdapter(),
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
-            JiuwenMateWebAdapter(),
+            self._jiuwenmate_web,
         ):
             self._adapter_registry.register(adapter)
         self._ensure_app_services().adapter_registry = self._adapter_registry
@@ -2284,6 +2285,9 @@ class AgentWebSocketServer:
         session_message_service = getattr(self, "_session_message_service", None)
         if session_message_service is not None:
             await session_message_service.stop()
+        jiuwenmate_web = getattr(self, "_jiuwenmate_web", None)
+        if jiuwenmate_web is not None:
+            await jiuwenmate_web.aclose()
         await self._heartbeat_runtime.stop()
         # 同理取消 MCP 连接缓存预热任务.
         mcp_prewarm = self._mcp_prewarm_task
@@ -2379,7 +2383,7 @@ class AgentWebSocketServer:
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
-                    JiuwenMateWebAdapter(),
+                    self._jiuwenmate_web,
                 ):
                     self._adapter_registry.register(adapter)
                 self._ensure_app_services().adapter_registry = self._adapter_registry
