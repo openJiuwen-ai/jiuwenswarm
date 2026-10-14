@@ -1279,16 +1279,20 @@ def rebind_team_sandbox_specs(spec: Any) -> int:
 
     **为什么需要**：``TeamAgentSpec.agents`` 是 ``dict[str, DeepAgentSpec]``，而
     ``DeepAgentSpec.sys_operation`` 的声明类型是 ``Optional[SysOperationSpec]``。
-    pydantic 嵌套校验按**字段声明类型**反序列化，故 ``TeamAgentSpec.model_dump()``
-    → ``model_validate()`` 往返一次，子类即被压平成基类：``team_id`` 字段按默认
-    ``extra="ignore"`` 静默丢弃，``resolve()`` 退回库实现。库实现是纯 get-or-create，
-    会把 ``team_sandbox_ref_<team>`` **真正注册**进 ``Runner.resource_mgr``——于是
+    pydantic 按**字段声明类型**序列化/反序列化，故 ``model_dump()`` 这一步就
+    已经把子类压平成基类：``team_id`` 作为子类字段不进入 dump（顶层单独 dump
+    ``DeepAgentSpec`` 同样丢），随后 ``model_validate()`` 只能拿到基类形状，
+    ``resolve()`` 退回库实现。库实现是纯 get-or-create，会把
+    ``team_sandbox_ref_<team>`` **真正注册**进 ``Runner.resource_mgr``——于是
     ① 借用句柄变成真资源，② 该注册不在 :data:`_TEAM_OWNED_SYSOP_IDS` 里，
     ``release_team_owned_sandbox`` 永远收不到（跨会话泄漏），③ 成员 dispose 照摘
     不误，容器反复重建。
 
-    注意**顶层** dump 不压平（保留 ``team_id``），所以只测顶层往返的用例永远发现
-    不了这个问题。
+    更糟的是这条路径**不报错**：成员与主 agent 同 isolation key 时，
+    ``add_sys_operation`` 抛的 "already registered" 被 ``_inner_add_resource``
+    吞成 ``Error``（``resource_manager.py:1449``），``SysOperationSpec.resolve()``
+    不检查 Result 直接返回 ``None``，``factory.py:337`` 再兜一个 LOCAL——成员静默
+    跑在宿主机上。
 
     ``team_id`` 从句柄 id 的后缀反解——``create_sandbox_sysop_spec`` 构造的 id 形如
     ``team_sandbox_ref_<team_id>``，team_id 本身就是运行态全名，不含前缀，故
@@ -1330,6 +1334,67 @@ def rebind_team_sandbox_specs(spec: Any) -> int:
             raw_id,
         )
     return rebound
+
+
+#: ``TeamAgentSpec.model_validate`` 是否已被本模块包装（进程级幂等标记）。
+_TEAM_SPEC_REBIND_INSTALLED = False
+#: 安装互斥：adapter 构造可并发，裸标志会叠出多层包装。
+_TEAM_SPEC_REBIND_LOCK = threading.Lock()
+
+
+def install_team_sandbox_spec_rebind() -> None:
+    """把 :func:`rebind_team_sandbox_specs` 前移到 ``TeamAgentSpec.model_validate`` 出口。
+
+    **为什么只能挂在这里**：库的三条序列化边界
+    （``from_spawn_payload`` / ``recover_from_session`` /
+    ``spawn.child_process._run_spawned_agent``）都是 ``model_validate`` 与
+    ``configure`` **背靠背同步**（``team_agent.py:988`` / ``:1006``），中间没有插销。
+    而 ``configure`` 内 ``AgentConfigurator.setup_agent`` 立刻 ``model_copy`` 出
+    ``build_spec``（``agent_configurator.py:473``）并交给 ``TeamHarness.build`` →
+    ``NativeHarness.__init__`` → ``DeepAgentSpec.resolve_parts`` →
+    ``sys_operation.resolve()``（``native_harness.py:170`` /
+    ``deep_agent_spec.py:587``），``apply_deep_agent_parts`` 随即把**解析后的实例**
+    写进 ``deep_config.sys_operation``（``factory.py:391``）。成员 dispose 读的正是
+    该实例的 ``.id``（``native_harness.py`` 的 dispose），harness 后续重建也仍用同一份
+    ``build_spec``——**构造之后再改 spec 对象一律无效**。
+
+    ``model_validate`` 的返回值即 ``configure`` 的入参，是唯一既早于 configure、
+    又不依赖库内部调用顺序的缝。包装它一次即覆盖全部边界；把 rebind 写在调用点
+    之后必然迟到（且会打出"已换回子类"的 INFO 成功日志而实际毫无作用）。
+
+    幂等：重复调用只生效一次；无须修复的 spec 由
+    :func:`rebind_team_sandbox_specs` 返回 0，不产生任何副作用。
+
+    Returns:
+        None。仅在进程内首次调用时真正改写 ``TeamAgentSpec.model_validate``。
+    """
+    global _TEAM_SPEC_REBIND_INSTALLED
+    with _TEAM_SPEC_REBIND_LOCK:
+        if _TEAM_SPEC_REBIND_INSTALLED:
+            return
+
+        from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+
+        original_validate = TeamAgentSpec.model_validate
+
+        def _validate_then_rebind(obj: Any, *args: Any, **kwargs: Any) -> Any:
+            spec = original_validate(obj, *args, **kwargs)
+            try:
+                rebind_team_sandbox_specs(spec)
+            except Exception as exc:  # noqa: BLE001 — 修补失败不得连带打挂反序列化
+                logger.warning(
+                    "[sysop_builder] team sandbox spec rebind after validate failed: %r", exc
+                )
+            return spec
+
+        # setattr（而非直接赋值）：重绑类上的 pydantic classmethod 直接赋值是 mypy
+        # [assignment] 错误，setattr 保持 lint 干净（同 mcp_call_timeout_patch 口径）。
+        setattr(TeamAgentSpec, "model_validate", staticmethod(_validate_then_rebind))
+        _TEAM_SPEC_REBIND_INSTALLED = True
+    logger.info(
+        "[sysop_builder] TeamAgentSpec.model_validate 已包装：序列化边界出口即换回 "
+        "TeamSharedSandboxSpec（早于 configure/harness 构建）"
+    )
 
 
 def create_local_sysop_card(work_dir: str | None = None) -> SysOperationCard:
@@ -1634,9 +1699,11 @@ __all__ = [
     "effective_files_from_policy",
     "find_auto_managed_match",
     "find_nested_files_conflict",
+    "install_team_sandbox_spec_rebind",
     "list_auto_managed_sandbox_paths",
     "list_effective_sandbox_files",
     "registered_sandbox_owner_by_key",
+    "rebind_team_sandbox_specs",
     "release_team_owned_sandbox",
     "resolve_sandbox_endpoint",
     "sandbox_isolation_key_of",

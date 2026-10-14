@@ -2562,6 +2562,17 @@ class JiuWenSwarmDeepAdapter:
         apply_mcp_tool_list_refresh_patch()
         # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
         apply_deepagent_task_plan_binding_patch()
+        # team 成员共享沙箱 spec 的序列化边界修补：库在 model_validate → configure
+        # 之间不留缝，而 configure 内 harness 构造期就 resolve() 掉 spec，故只能在
+        # 反序列化出口换回子类（写在调用点之后必然迟到且无效）。一次安装即覆盖
+        # from_spawn_payload / recover_from_session / child_process 三条边界。
+        # 幂等（_TEAM_SPEC_REBIND_INSTALLED）。局部 import：sysop_builder 会拉起
+        # 沙箱配置链，不必让整个 adapter 模块为它付出导入期依赖。
+        from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+            install_team_sandbox_spec_rebind,
+        )
+
+        install_team_sandbox_spec_rebind()
         self._instance: DeepAgent | None = None
         self._project_dir: str | None = None
         # 多租户：调用方（企业版 AgentManager / 个人版 TenantAgentPool）显式

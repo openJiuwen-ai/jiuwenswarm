@@ -757,22 +757,25 @@ def _nested_roundtrip(spec):
     """模拟 ``TeamAgentSpec.model_dump() -> TeamAgentSpec.model_validate()``。
 
     复现库侧四条边界共用的那一步：``from_spawn_payload`` /
-    ``recover_from_session`` / ``team_runner`` 读持久化 spec。``agents`` 是
-    ``dict[str, DeepAgentSpec]``，而 ``DeepAgentSpec.sys_operation`` 的**声明
-    类型**是基类 ``SysOperationSpec``——pydantic 按声明类型反序列化，子类即被压平。
+    ``recover_from_session`` / ``team_runner`` / ``child_process`` 读序列化 spec。
+    ``agents`` 是 ``dict[str, DeepAgentSpec]``，而 ``DeepAgentSpec.sys_operation``
+    的**声明类型**是基类 ``SysOperationSpec``——pydantic 按声明类型序列化，
+    ``model_dump`` 这一步 ``team_id`` 就已经不进 dump（顶层单独 dump
+    ``DeepAgentSpec`` 同样丢），``model_validate`` 拿到的自然是基类形状。
 
-    注意**顶层** dump 不压平（保留 ``team_id``），所以只测顶层往返的用例永远发现
-    不了这个问题。
+    所以"子类丢失"发生在 dump 而非 validate：只测顶层 dump 的用例看不到
+    team_id，但也别因此以为顶层往返是安全的——该字段一概不进 dump。
     """
     payload = spec.model_dump(mode="json")
     return TeamAgentSpec.model_validate(payload)
 
 
 def test_nested_roundtrip_flattens_team_shared_sandbox_spec(monkeypatch):
-    """**锁住前提**：嵌套往返确实会压平——本组后续用例都建立在它之上。
+    """**锁住前提**：往返确实会丢子类——本组后续用例都建立在它之上。
 
-    若上游把 ``DeepAgentSpec.sys_operation`` 改成 ``SerializeAsAny[...]``，本条会转
-    红；届时 :func:`rebind_team_sandbox_specs` 变成纯冗余（不会出错，但可以删）。
+    若上游把 ``DeepAgentSpec.sys_operation`` 改成 ``SerializeAsAny[...]``（dump 与
+    validate 两侧都要生效），本条会转红；届时
+    :func:`install_team_sandbox_spec_rebind` 变成纯冗余（不会出错，但可以删）。
     """
     card = _make_sandbox_card()
     _patch_card_build(monkeypatch, card)
@@ -891,3 +894,139 @@ def test_rebind_ignores_non_team_sys_operation(monkeypatch):
     assert builder.rebind_team_sandbox_specs(spec) == 0
     assert spec.agents["leader"].sys_operation is local
     assert spec.agents["teammate"].sys_operation is None
+
+
+# ---------------------------------------------------------------------------
+# P0-1：rebind 的**时机**——必须落在反序列化出口（configure 之前）
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def team_spec_rebind_installed():
+    """在 ``TeamAgentSpec.model_validate`` 出口装上 rebind 包装。
+
+    必须精确还原：本文件里 ``test_nested_roundtrip_flattens_team_shared_sandbox_spec``
+    断言的是"未装补丁时确实压平"，泄漏的包装会让它转红。进程里若已存在包装
+    （别的路径装的），则原样复用且不拆卸。
+    """
+    pre_existing = "model_validate" in TeamAgentSpec.__dict__
+    builder.install_team_sandbox_spec_rebind()
+    yield TeamAgentSpec
+    if not pre_existing:
+        _uninstall_validate_rebind()
+
+
+def _uninstall_validate_rebind() -> None:
+    """拆掉本模块对 ``TeamAgentSpec.model_validate`` 的包装（仅测试用）。"""
+    if "model_validate" in TeamAgentSpec.__dict__:
+        delattr(TeamAgentSpec, "model_validate")
+    builder._TEAM_SPEC_REBIND_INSTALLED = False
+
+
+def _member_spec_with_team_sandbox(monkeypatch, *, role: str = "teammate") -> TeamAgentSpec:
+    """造一个已注入借用句柄 spec 的 team spec（沙箱 card 固定，避免真实网关）。"""
+    card = _make_sandbox_card()
+    _patch_card_build(monkeypatch, card)
+    spec = _make_team_spec()
+    spec.agents[role] = spec.agents[role].model_copy(
+        update={
+            "sys_operation": builder.create_sandbox_sysop_spec(
+                "http://sandbox.invalid", "jiuwenbox", team_id="unit_team",
+                startup_mode="external",
+            )
+        }
+    )
+    return spec
+
+
+def test_install_team_sandbox_spec_rebind_is_idempotent(monkeypatch):
+    """重复安装不得叠出多层包装（每层都会重跑一次 rebind）。"""
+    _uninstall_validate_rebind()
+    monkeypatch.setattr(builder, "_TEAM_SPEC_REBIND_INSTALLED", False)
+    try:
+        builder.install_team_sandbox_spec_rebind()
+        once = TeamAgentSpec.model_validate
+        builder.install_team_sandbox_spec_rebind()
+        assert TeamAgentSpec.model_validate is once, "重复安装叠了多层包装"
+        # 无 team 句柄的 spec 走一遍包装也不应被改动
+        spec = _make_team_spec()
+        assert TeamAgentSpec.model_validate(spec.model_dump(mode="json")).agents[
+            "leader"
+        ].sys_operation is None
+    finally:
+        _uninstall_validate_rebind()
+
+
+def test_rebind_restored_at_validate_exit_before_configure(
+    team_spec_rebind_installed, monkeypatch
+):
+    """**P0-1 的真正不变量**：validate 的返回值（= configure 的入参）必须已是子类。
+
+    ``from_spawn_payload`` 把 validate 与 configure 背靠背同步（``team_agent.py:988``
+    / ``:1006``），而 configure 内 ``TeamHarness`` 构造期就 ``resolve()`` 掉 spec、
+    把解析后的实例写进 ``deep_config``（``native_harness.py:170`` /
+    ``deep_agent_spec.py:587`` / ``factory.py:391``）。因此 rebind 写在调用点之后
+    必然迟到——成员拿到的是基类 resolve() 现铸的 LOCAL 句柄。
+    """
+    spec = _member_spec_with_team_sandbox(monkeypatch)
+
+    validated = TeamAgentSpec.model_validate(spec.model_dump(mode="json"))
+
+    sysop = validated.agents["teammate"].sys_operation
+    assert isinstance(sysop, builder.TeamSharedSandboxSpec), (
+        "反序列化出口未换回子类 → configure 会拿到压平的基类"
+    )
+    assert sysop.team_id == "unit_team", "team_id 未从句柄 id 后缀反解"
+    assert sysop.id == "team_sandbox_ref_unit_team"
+
+
+def test_build_spec_from_boundary_shares_owner_and_registers_nothing(
+    team_spec_rebind_installed, monkeypatch
+):
+    """接缝之后的行为：按库的方式取 spec（``agent_configurator.py:473`` 的 model_copy）。
+
+    这一步之后 harness 立刻 resolve()，故必须出借用句柄：与 owner 共享容器配置、
+    句柄永不落注册表、dispose 不摘 owner。反证：若此时仍是基类，``resolve()`` 会
+    把 ``team_sandbox_ref_*`` 真注册进 ``Runner.resource_mgr``。
+    """
+    card = _make_sandbox_card()
+    owner_map, sysops = _owner_map_with(card)
+    rm = _patch_resource_mgr(monkeypatch, owner_map, sysops)
+    spec = _member_spec_with_team_sandbox(monkeypatch)
+
+    validated = TeamAgentSpec.model_validate(spec.model_dump(mode="json"))
+    build_spec = validated.agents["teammate"].model_copy(update={"enable_task_loop": True})
+
+    resolved = build_spec.sys_operation.resolve()
+
+    assert type(resolved).__name__ == "_BorrowedSandboxHandle", (
+        f"成员拿到的是 {type(resolved).__name__}，不是借用句柄"
+    )
+    assert resolved.id == "team_sandbox_ref_unit_team"
+    assert rm.get_sys_operation(resolved.id) is None, "借用句柄不得落注册表"
+    assert rm.added == [], f"成员不该新增任何注册：{rm.added}"
+    assert resolved._run_config is rm.get_sys_operation(_OWNER_ID)._run_config
+
+    _simulate_native_harness_dispose(rm, resolved.id)
+    assert rm.removed == [], f"成员销毁摘掉了非己方资源：{rm.removed}"
+    assert rm.get_sys_operation(_OWNER_ID) is sysops[_OWNER_ID]
+    assert rm._resource_registry._owner_map[next(iter(owner_map))] == _OWNER_ID
+
+
+def test_installed_wrapper_leaves_foreign_sys_operation_untouched(
+    team_spec_rebind_installed,
+):
+    """非本模块写入的 sys_operation 经过包装必须原样通过（包装不得误伤普通 spec）。"""
+    spec = _make_team_spec()
+    spec.agents["leader"] = spec.agents["leader"].model_copy(
+        update={"sys_operation": SysOperationSpec(id="member.fs", mode=OperationMode.LOCAL)}
+    )
+
+    validated = TeamAgentSpec.model_validate(spec.model_dump(mode="json"))
+
+    sysop = validated.agents["leader"].sys_operation
+    assert type(sysop) is SysOperationSpec and not isinstance(
+        sysop, builder.TeamSharedSandboxSpec
+    )
+    assert sysop.id == "member.fs"
+    assert sysop.mode == OperationMode.LOCAL
