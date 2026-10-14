@@ -102,7 +102,13 @@ class Server:
         return response.payload
 
     async def ask(self, agent_id: str, text: str) -> dict:
-        sent = await self.call(ReqMethod.JIUWENMATE_CHAT_SEND, agent_id=agent_id, text=text, message_id=f"msg-{text}")
+        sent = await self.call(
+            ReqMethod.JIUWENMATE_CHAT_SEND,
+            agent_id=agent_id,
+            conversation_id="conv-1",
+            text=text,
+            message_id=f"msg-{text}",
+        )
         request_id = sent["request"]["request_id"]
         for _ in range(500):
             view = (await self.call(ReqMethod.JIUWENMATE_REQUEST_GET, request_id=request_id))["request"]
@@ -144,7 +150,9 @@ async def test_the_conversation_window_survives_a_server_restart(tmp_path, model
 
     second = Server(tmp_path)
     answered = await second.ask(agent_id, "刚才的数字是多少")
-    history = (await second.call(ReqMethod.JIUWENMATE_CHAT_HISTORY, agent_id=agent_id))["requests"]
+    history = (await second.call(ReqMethod.JIUWENMATE_CHAT_HISTORY, agent_id=agent_id, conversation_id="conv-1"))[
+        "requests"
+    ]
     await second.adapter.aclose()
 
     assert answered["replies"] == ["第2次回复"]

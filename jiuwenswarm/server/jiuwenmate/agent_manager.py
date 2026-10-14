@@ -90,6 +90,7 @@ class RequestView:
     replies: tuple[str, ...]
     reason: str | None
     draft: ReplyDraft | None = None
+    conversation_key: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         record = self.state.record
@@ -97,6 +98,7 @@ class RequestView:
         return {
             "request_id": record.request_id,
             "session_id": record.session_id,
+            "conversation_id": self.conversation_key,
             "agent_id": record.agent_id,
             "message_id": getattr(source, "message_id", None),
             "text": record.request_input.text,
@@ -242,17 +244,25 @@ class AgentManager:
         if session is None:
             return []
         states = await asyncio.to_thread(self._sessions.session_requests, namespace_id, session.session_id)
-        return [await self._view(state) for state in states]
+        return [await self._view(state, conversation.key) for state in states]
 
     async def request_view(self, namespace_id: str, request_id: str) -> RequestView:
         state = await asyncio.to_thread(self._sessions.get_request, namespace_id, request_id)
-        return await self._view(state)
+        session = await asyncio.to_thread(self._sessions.get_session, namespace_id, state.record.session_id)
+        return await self._view(state, session.conversation.key)
 
-    async def _view(self, state: RequestState) -> RequestView:
+    @property
+    def db_path(self) -> Path:
+        """The SQLite file of this runtime; host tables kept beside the Sessions use it too."""
+        return self._sessions.db_path
+
+    async def _view(self, state: RequestState, conversation_key: str) -> RequestView:
         # The scheduler's running set changes on the event loop, so it is read here and not in the thread.
         running = any(run.record.request_id == state.record.request_id for run in self._scheduler.running)
         replies, reason, draft = await asyncio.to_thread(self._result, state)
-        return RequestView(state=state, running=running, replies=replies, reason=reason, draft=draft)
+        return RequestView(
+            state=state, running=running, replies=replies, reason=reason, draft=draft, conversation_key=conversation_key
+        )
 
     def _result(self, state: RequestState) -> tuple[tuple[str, ...], str | None, ReplyDraft | None]:
         """Outcome of the latest Execution: adopted replies and reason once it ended, else its draft."""

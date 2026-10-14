@@ -5,6 +5,8 @@ Every call works in the single local namespace. Results are the public views of
 secret is returned, and a refused operation keeps its error code so the page can
 show it. Private messages run in the AgentServer process, so a page that closes
 or reconnects does not end them; the page reads progress again by querying.
+Each colleague has several Web conversations, listed with their titles; every
+conversation is a separate Session with its own history and window.
 While a reply is streaming, its fragments are also pushed as
 ``jiuwenmate.chat.stream`` events to the Web connections that last asked about
 that colleague; a missed push is made up by the next query.
@@ -17,6 +19,7 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
+from datetime import datetime, timezone
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
@@ -25,6 +28,7 @@ from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef, PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import ColleagueSettings, PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
+from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType
 
@@ -32,7 +36,8 @@ logger = logging.getLogger(__name__)
 
 WEB_NAMESPACE = "local"
 # The local Web user has one private conversation with each colleague.
-WEB_CONVERSATION = ConversationRef.web("local")
+# The single Web conversation of each colleague before conversations were listed.
+LEGACY_CONVERSATION_ID = "local"
 WEB_ACCESS = AccessSnapshot(
     principal_ref="local",
     startup_scope=frozenset({"direct_message"}),
@@ -71,8 +76,15 @@ _RUNTIME_METHODS = frozenset(
         ReqMethod.JIUWENMATE_CHAT_SEND.value,
         ReqMethod.JIUWENMATE_CHAT_HISTORY.value,
         ReqMethod.JIUWENMATE_REQUEST_GET.value,
+        ReqMethod.JIUWENMATE_CONVERSATION_LIST.value,
+        ReqMethod.JIUWENMATE_CONVERSATION_RENAME.value,
+        ReqMethod.JIUWENMATE_CONVERSATION_DELETE.value,
     }
 )
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _ignore(event: AgentEvent) -> None:
@@ -206,6 +218,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         self._service: PersistentAgentService | None = None
         self._service_lock = threading.Lock()
         self._manager: AgentManager | None = None
+        self._conversations: WebConversationStore | None = None
         self._manager_lock = asyncio.Lock()
 
     def _colleagues(self) -> PersistentAgentService:
@@ -225,6 +238,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                     self._stream.start()
                 await manager.start()
                 await manager.scheduler.recover(WEB_NAMESPACE)
+                self._conversations = await asyncio.to_thread(WebConversationStore, manager.db_path)
                 self._manager = manager
             return self._manager
 
@@ -242,8 +256,11 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         params = request.params if isinstance(request.params, dict) else {}
         try:
             if method in _RUNTIME_METHODS:
+                self._watch(method, params.get("agent_id"), request)
                 payload = await self._run(method, params)
-                self._watch(method, params, payload, request)
+                view = payload.get("request")
+                if method == ReqMethod.JIUWENMATE_REQUEST_GET.value and isinstance(view, dict):
+                    self._watch(method, view["agent_id"], request)
             else:
                 payload = await asyncio.to_thread(self._call, method, params)
         except (PersistentAgentError, PersistentContractError) as exc:
@@ -256,37 +273,82 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             metadata=request.metadata,
         )
 
-    def _watch(self, method: str, params: Mapping[str, Any], payload: dict[str, Any], request: AgentRequest) -> None:
-        """The connection that sent, listed or polled a conversation receives its stream."""
+    def _watch(self, method: str, agent_id: Any, request: AgentRequest) -> None:
+        """The connection that sent, listed or polled a conversation receives its stream.
+
+        A sending connection is registered before the message is accepted, so the first fragments are not missed.
+        """
         if self._stream is None or method == ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value:
             return
-        view = payload.get("request")
-        agent_id = view["agent_id"] if isinstance(view, dict) else params.get("agent_id")
         if isinstance(agent_id, str) and agent_id:
             self._stream.watch(agent_id, request)
 
     async def _run(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
         manager = await self._runtime()
+        conversations = self._conversations
         if method == ReqMethod.JIUWENMATE_REQUEST_GET.value:
             view = await manager.request_view(WEB_NAMESPACE, _text_param(params, "request_id"))
             return {"request": view.to_dict()}
         agent_id = _text_param(params, "agent_id")
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value:
             await manager.delete_colleague(WEB_NAMESPACE, agent_id)
+            await asyncio.to_thread(conversations.purge_agent, WEB_NAMESPACE, agent_id)
             return {"deleted": True}
+        if method == ReqMethod.JIUWENMATE_CONVERSATION_LIST.value:
+            await self._list_legacy_conversation(manager, conversations, agent_id)
+            listed = await asyncio.to_thread(conversations.list, WEB_NAMESPACE, agent_id)
+            return {"conversations": [item.to_dict() for item in listed]}
+        conversation_id = _text_param(params, "conversation_id")
+        if method == ReqMethod.JIUWENMATE_CONVERSATION_RENAME.value:
+            renamed = await asyncio.to_thread(
+                conversations.rename, WEB_NAMESPACE, agent_id, conversation_id, params.get("title")
+            )
+            return {"conversation": renamed.to_dict()}
+        if method == ReqMethod.JIUWENMATE_CONVERSATION_DELETE.value:
+            await asyncio.to_thread(conversations.delete, WEB_NAMESPACE, agent_id, conversation_id, now=_utc_now())
+            return {"deleted": True}
+        await asyncio.to_thread(conversations.require_open, WEB_NAMESPACE, agent_id, conversation_id)
+        conversation = ConversationRef.web(conversation_id)
         if method == ReqMethod.JIUWENMATE_CHAT_SEND.value:
+            text = _text_param(params, "text")
             view = await manager.submit_direct_message(
                 WEB_NAMESPACE,
                 agent_id,
-                WEB_CONVERSATION,
+                conversation,
                 message_id=_text_param(params, "message_id"),
-                text=_text_param(params, "text"),
+                text=text,
                 access=WEB_ACCESS,
                 sender_name=WEB_SENDER_NAME,
             )
-            return {"request": view.to_dict()}
-        views = await manager.conversation_requests(WEB_NAMESPACE, agent_id, WEB_CONVERSATION)
+            listed = await asyncio.to_thread(
+                conversations.touch, WEB_NAMESPACE, agent_id, conversation_id, text=text, now=_utc_now()
+            )
+            return {"request": view.to_dict(), "conversation": listed.to_dict()}
+        views = await manager.conversation_requests(WEB_NAMESPACE, agent_id, conversation)
         return {"requests": [view.to_dict() for view in views]}
+
+    @staticmethod
+    async def _list_legacy_conversation(
+        manager: AgentManager, conversations: WebConversationStore, agent_id: str
+    ) -> None:
+        """Messages sent before conversations were listed stay reachable as the oldest conversation."""
+        if await asyncio.to_thread(conversations.known, WEB_NAMESPACE, agent_id, LEGACY_CONVERSATION_ID):
+            return
+        views = await manager.conversation_requests(
+            WEB_NAMESPACE, agent_id, ConversationRef.web(LEGACY_CONVERSATION_ID)
+        )
+        if not views:
+            return
+        first, last = views[0].state.record, views[-1].state.record
+        await asyncio.to_thread(
+            conversations.adopt,
+            WEB_NAMESPACE,
+            agent_id,
+            LEGACY_CONVERSATION_ID,
+            text=first.request_input.text,
+            created_at=first.received_at,
+            updated_at=last.received_at,
+        )
 
     def _call(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
         if method == ReqMethod.JIUWENMATE_MODELS_LIST.value:

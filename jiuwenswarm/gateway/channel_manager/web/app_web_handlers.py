@@ -613,6 +613,9 @@ _FORWARD_REQ_METHODS = frozenset({
     "jiuwenmate.chat.send",
     "jiuwenmate.chat.history",
     "jiuwenmate.request.get",
+    "jiuwenmate.conversation.list",
+    "jiuwenmate.conversation.rename",
+    "jiuwenmate.conversation.delete",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
@@ -636,7 +639,13 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "jiuwenmate.chat.send",
     "jiuwenmate.chat.history",
     "jiuwenmate.request.get",
+<<<<<<< HEAD
 >>>>>>> ceae12037 (feat(JM10): add private chat, history and request status)
+=======
+    "jiuwenmate.conversation.list",
+    "jiuwenmate.conversation.rename",
+    "jiuwenmate.conversation.delete",
+>>>>>>> c978f5126 (feat(JM10): keep several private conversations for each colleague)
     "initialize",
     "session.switch",
     "session.fork",

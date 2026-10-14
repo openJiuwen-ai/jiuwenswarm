@@ -6,31 +6,36 @@ import {
   mergeChatRequest,
   type JiuwenMateApi,
   type JiuwenMateChatRequest,
+  type JiuwenMateConversation,
 } from './jiuwenmateApi';
 
-export type JiuwenMateChatApi = Pick<JiuwenMateApi, 'sendMessage' | 'history' | 'getRequest' | 'onStream'>;
+export type JiuwenMateChatApi = Pick<
+  JiuwenMateApi,
+  'sendMessage' | 'history' | 'getRequest' | 'onStream' | 'listConversations' | 'renameConversation' | 'deleteConversation'
+>;
 
 /** Messages run on the server; pushed fragments show progress, and asking again covers missed pushes. */
 const POLL_INTERVAL_MS = 1500;
 
-function newMessageId(): string {
+export function newId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 /**
- * The Web private conversation with one colleague. History is read again when the colleague
- * changes or the connection comes back; a message that failed to send keeps its message id,
+ * One Web private conversation with a colleague. History is read again when the colleague or
+ * conversation changes or the connection comes back; a message that failed to send keeps its message id,
  * so sending it again cannot create a second request. Pushed fragments update the running
  * message's draft; its end, or a fragment of a message not listed yet, is followed by a query.
  */
-export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, connectionEpoch: number) {
+export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversationId: string, connectionEpoch: number) {
   const [requests, setRequests] = useState<JiuwenMateChatRequest[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [pollRound, setPollRound] = useState(0);
-  const agentRef = useRef(agentId);
-  const unsent = useRef<{ agentId: string; text: string; messageId: string } | null>(null);
+  const scope = `${agentId} ${conversationId}`;
+  const scopeRef = useRef(scope);
+  const unsent = useRef<{ scope: string; text: string; messageId: string } | null>(null);
   const listed = useRef(requests);
 
   useEffect(() => {
@@ -38,14 +43,14 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, connecti
   }, [requests]);
 
   useEffect(() => {
-    if (agentRef.current !== agentId) {
-      agentRef.current = agentId;
+    if (scopeRef.current !== scope) {
+      scopeRef.current = scope;
       setRequests([]);
       setError(null);
     }
-    if (!agentId) return;
+    if (!agentId || !conversationId) return;
     let active = true;
-    api.history(agentId).then(
+    api.history(agentId, conversationId).then(
       (listed) => {
         if (active) setRequests(listed);
       },
@@ -56,7 +61,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, connecti
     return () => {
       active = false;
     };
-  }, [api, agentId, connectionEpoch]);
+  }, [api, agentId, conversationId, scope, connectionEpoch]);
 
   useEffect(() => {
     if (!agentId) return;
@@ -68,7 +73,9 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, connecti
       api.getRequest(requestId).then(
         (request) => {
           fetching.delete(requestId);
-          if (active) setRequests((current) => mergeChatRequest(current, request));
+          if (active && request.conversationId === conversationId) {
+            setRequests((current) => mergeChatRequest(current, request));
+          }
         },
         () => {
           fetching.delete(requestId);
@@ -85,7 +92,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, connecti
       active = false;
       unsubscribe();
     };
-  }, [api, agentId]);
+  }, [api, agentId, conversationId]);
 
   const pendingIds = requests
     .filter(isPending)
@@ -112,27 +119,27 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, connecti
     };
   }, [api, agentId, pendingIds, pollRound]);
 
+  /** Resolves with the conversation as now listed, or null when sending failed. */
   const send = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (text: string): Promise<JiuwenMateConversation | null> => {
       const previous = unsent.current;
-      const messageId =
-        previous && previous.agentId === agentId && previous.text === text ? previous.messageId : newMessageId();
-      unsent.current = { agentId, text, messageId };
+      const messageId = previous && previous.scope === scope && previous.text === text ? previous.messageId : newId();
+      unsent.current = { scope, text, messageId };
       setSending(true);
       setError(null);
       try {
-        const request = await api.sendMessage(agentId, text, messageId);
+        const sent = await api.sendMessage(agentId, conversationId, text, messageId);
         unsent.current = null;
-        if (agentRef.current === agentId) setRequests((current) => mergeChatRequest(current, request));
-        return true;
+        if (scopeRef.current === scope) setRequests((current) => mergeChatRequest(current, sent.request));
+        return sent.conversation;
       } catch (reason) {
-        if (agentRef.current === agentId) setError(errorMessage(reason));
-        return false;
+        if (scopeRef.current === scope) setError(errorMessage(reason));
+        return null;
       } finally {
         setSending(false);
       }
     },
-    [api, agentId],
+    [api, agentId, conversationId, scope],
   );
 
   return { requests, error, sending, send };

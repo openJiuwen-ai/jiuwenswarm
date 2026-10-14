@@ -26,6 +26,10 @@ class SQLiteStore:
             conn.executescript(self._schema)
         os.chmod(self._db_path, 0o600)
 
+    @property
+    def db_path(self) -> Path:
+        return self._db_path
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
