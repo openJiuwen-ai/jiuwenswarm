@@ -119,6 +119,8 @@ def _parse_duration_token(token: str) -> float | None:
 
 
 _SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
+_SEPARATOR_CHARS = {";", "&", "|"}
+_PUNCTUATION_CHARS = set("();|&<>")
 
 
 def _split_segments(tokens: list[str]) -> list[list[str]]:
@@ -132,8 +134,34 @@ def _split_segments(tokens: list[str]) -> list[list[str]]:
             if current:
                 segments.append(current)
                 current = []
-        else:
-            current.append(tok)
+            continue
+        if len(tok) > 1 and set(tok) <= _PUNCTUATION_CHARS:
+            # shlex punctuation mode glues adjacent operator characters into a
+            # single token (``&&\\n`` normalises to ``&&;``, ``;;`` from
+            # ``;\\n``) — every ``;``/``&``/``|`` inside such a run is still a
+            # command boundary.  Runs containing ``<``/``>`` are redirection
+            # operators (``>&1``, ``&>file``): not boundaries, kept whole.
+            if "<" in tok or ">" in tok:
+                current.append(tok)
+                continue
+            i = 0
+            while i < len(tok):
+                ch = tok[i]
+                if ch in _SEPARATOR_CHARS:
+                    run = ch
+                    while i + 1 < len(tok) and tok[i + 1] == ch:
+                        run += ch
+                        i += 1
+                    if run == "&":
+                        current.append("&")  # lone & marks background; && does not
+                    if current:
+                        segments.append(current)
+                        current = []
+                else:
+                    current.append(ch)
+                i += 1
+            continue
+        current.append(tok)
     if current:
         segments.append(current)
     return segments
@@ -347,9 +375,14 @@ def _parse_segment(
     if not segment:
         return
 
-    # Skip block openers (`do`, `then`, `else`) to reach command position.
-    while segment and segment[0] in _BLOCK_OPENERS:
+    # Skip block openers (`do`, `then`, `else`) and the subshell group opener
+    # (`(`) to reach command position; a closing `)` only trails the segment.
+    while segment and (segment[0] in _BLOCK_OPENERS or segment[0] == "("):
         segment = segment[1:]
+    if not segment:
+        return
+    while segment and segment[-1] == ")":
+        segment = segment[:-1]
     if not segment:
         return
     command = segment[0]

@@ -845,6 +845,43 @@ def test_parser_multiline_sleep_segmented():
     assert r.sleep_seconds == pytest.approx(60.0)
 
 
+def test_parser_multiline_after_operator_segmented():
+    """A sleep on the line after a trailing ``&&``/``;``/``||`` stays intercepted.
+
+    ``_normalise_newlines`` rewrites that newline to ``;`` so shlex punctuation
+    mode lexes ``&&;``/``;;``/``||;`` as one glued run — the splitter must treat
+    each operator character inside the run as a command boundary.
+    """
+    r = sleep_guard.parse_shell_command("echo a &&\nsleep 120")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(120.0)
+    assert r.background is False  # `&&` is not a background job
+    r = sleep_guard.parse_shell_command("echo a;\nsleep 120")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(120.0)
+    r = sleep_guard.parse_shell_command("echo a ||\nsleep 90")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(90.0)
+
+
+def test_parser_subshell_next_line_segmented():
+    """``(sleep …)`` on its own line is its own command, not a hidden argument.
+
+    The ``(`` opens the next segment; it must be skipped to reach command
+    position, and the trailing ``)`` must not turn the duration unknown.
+    """
+    r = sleep_guard.parse_shell_command("foo\n(sleep 60)")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(60.0)
+    r = sleep_guard.parse_shell_command("foo\n\n(sleep 1m30s)\nbar")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(90.0)
+    # same-line group forms stay caught too
+    r = sleep_guard.parse_shell_command("echo done && (sleep 30)")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(30.0)
+
+
 def test_parser_quoted_multiline_text_not_blocked():
     """Newlines inside quotes are data — no segmentation, no detection."""
     r = sleep_guard.parse_shell_command('grep "foo\nsleep 120" /var/log/x.log')
