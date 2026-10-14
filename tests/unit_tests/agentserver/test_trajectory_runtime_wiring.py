@@ -10,6 +10,8 @@ reaches the exporter pipeline through that path.
 """
 
 import pytest
+from typing import Any
+
 from openjiuwen.agent_teams.observability import setup as team_observability_setup
 from openjiuwen.extensions.observability import demand as observability_demand
 from openjiuwen.extensions.observability import setup as shared_observability_setup
