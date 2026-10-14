@@ -440,6 +440,8 @@ Common settings:
 | `symphony.skill_retrieval.retrieve.flatten_tree` | `false` | Whether retrieval flattens the skill tree |
 | `symphony.skill_retrieval.retrieve.max_exposure_depth` | `1` | Maximum tree depth exposed by one `skill_branch_explore` call |
 
+> ⚠️ `symphony.paths.score_dir` was renamed to `symphony.paths.graph_dir`; the legacy key is ignored and triggers a one-time migration warning. To keep previously built artifacts and evolution data, point `symphony.paths.graph_dir` at the old score directory.
+
 > 📖 For details about Skill Retrieval, the skill score, and Skill Orchestration, see [Symphony: Skill Retrieval, Orchestration, and Dispatch](symphony.md).
 
 ---

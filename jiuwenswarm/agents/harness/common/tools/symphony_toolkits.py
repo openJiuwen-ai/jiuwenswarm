@@ -168,7 +168,6 @@ class SymphonyToolkit:
                 "relation_reused_count",
                 "relation_resolved_count",
                 "version",
-                "graph_created_at",
                 "llm_total_tokens",
                 "reason",
                 "detail",
@@ -352,15 +351,6 @@ class SymphonyToolkit:
             payload["followup_action"] = "external_skill_discovery"
             return
         payload.setdefault("continue_after_display", False)
-
-    @staticmethod
-    def _failure_detail(payload: dict[str, Any], fallback: str) -> str:
-        return str(
-            payload.get("detail")
-            or payload.get("reason")
-            or payload.get("error")
-            or fallback
-        ).strip()
 
     async def plan(
         self,

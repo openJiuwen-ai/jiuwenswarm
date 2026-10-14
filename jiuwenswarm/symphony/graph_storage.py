@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 CURRENT_POINTER_FILENAME = "current.json"
-VERSIONS_DIRNAME = "versions"
 BUILD_RUNS_DIRNAME = ".build_runs"
 
 
@@ -43,7 +41,8 @@ def resolve_graph_artifact_dir(graph_dir: str | Path) -> Path:
 
     New builds publish versioned artifacts behind ``current.json``. Older
     layouts stored artifacts directly in ``graph_dir``; this helper keeps that
-    legacy layout readable.
+    legacy layout readable. A corrupt or escaping pointer falls back to the
+    root directory so status checks and rebuilds can self-heal.
     """
 
     root = Path(graph_dir).resolve()
@@ -51,12 +50,17 @@ def resolve_graph_artifact_dir(graph_dir: str | Path) -> Path:
     if not pointer_path.is_file():
         return root
 
-    pointer = GraphPointer.from_dict(
-        json.loads(pointer_path.read_text(encoding="utf-8"))
-    )
-    candidate = (root / pointer.path).resolve()
-    if not _is_relative_to(candidate, root):
-        raise ValueError(f"Symphony graph pointer escapes graph_dir: {candidate}")
+    try:
+        pointer = GraphPointer.from_dict(
+            json.loads(pointer_path.read_text(encoding="utf-8"))
+        )
+        candidate = (root / pointer.path).resolve()
+        if not _is_relative_to(candidate, root):
+            raise ValueError(
+                f"Symphony graph pointer escapes graph_dir: {candidate}"
+            )
+    except (OSError, json.JSONDecodeError, ValueError):
+        return root
     return candidate
 
 
@@ -85,40 +89,6 @@ def build_runs_dir(graph_dir: str | Path) -> Path:
 
 def build_run_dir(graph_dir: str | Path, run_id: str) -> Path:
     return build_runs_dir(graph_dir) / run_id
-
-
-def build_artifact_dir(graph_dir: str | Path, run_id: str) -> Path:
-    return build_run_dir(graph_dir, run_id) / "artifacts"
-
-
-def publish_artifact_dir(
-    graph_dir: str | Path,
-    artifact_dir: str | Path,
-    *,
-    version: str,
-) -> Path:
-    """Publish a fully built artifact directory as the current graph version."""
-
-    root = Path(graph_dir).resolve()
-    source = Path(artifact_dir).resolve()
-    versions_dir = root / VERSIONS_DIRNAME
-    versions_dir.mkdir(parents=True, exist_ok=True)
-    target = versions_dir / version
-    if target.exists():
-        raise FileExistsError(f"Symphony graph version already exists: {target}")
-    os.replace(source, target)
-
-    pointer = GraphPointer(
-        version=version,
-        path=f"{VERSIONS_DIRNAME}/{version}",
-    )
-    tmp_pointer = root / f".{CURRENT_POINTER_FILENAME}.{version}.tmp"
-    tmp_pointer.write_text(
-        json.dumps(pointer.to_dict(), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    os.replace(tmp_pointer, root / CURRENT_POINTER_FILENAME)
-    return target
 
 
 def latest_incomplete_build(graph_dir: str | Path) -> Path | None:

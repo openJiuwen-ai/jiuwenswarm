@@ -151,10 +151,9 @@ class SwarmSymphonyService:
             build_logger.record("update.cancel_requested")
             task.cancel("skills.graph.cancel")
             build_logger.record("update.cancelled")
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        # 构建可能正处于不可即时中断的区段（to_thread/LLM 调用），
+        # 最多等 5 秒即返回，收尾状态由 skills.graph.status 轮询。
+        await asyncio.wait({task}, timeout=5)
         payload = {
             "success": True,
             "graph_dir": str(graph_dir),
@@ -228,7 +227,7 @@ class SwarmSymphonyService:
         if not status.get("success"):
             return {
                 "success": False,
-                "detail": "Skill Score status check failed before planning",
+                "detail": "规划前技能总谱状态检查失败",
                 "graph_status": status,
             }
         if _graph_needs_build(status):
@@ -237,7 +236,7 @@ class SwarmSymphonyService:
             if not graph_build.get("success"):
                 return {
                     "success": False,
-                    "detail": "Skill Score build failed before planning",
+                    "detail": "规划前技能总谱构建失败",
                     "graph_status": status,
                     "graph_build": graph_build,
                 }
@@ -792,7 +791,6 @@ def _build_token_usage_payload(
         return {}
 
     for usage in (
-        _read_manifest_token_usage(graph_dir),
         _read_json_token_usage(
             resolve_graph_artifact_dir(graph_dir) / "llm_token_usage.json"
         ),
@@ -811,24 +809,6 @@ def _current_token_usage_summary() -> dict[str, Any]:
         usage = get_llm_token_usage_summary()
     except Exception:  # noqa: BLE001
         return {}
-    return usage if isinstance(usage, dict) else {}
-
-
-def _read_manifest_token_usage(graph_dir: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(
-            (resolve_graph_artifact_dir(graph_dir) / "graph_manifest.json").read_text(
-                encoding="utf-8"
-            )
-        )
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    llm = payload.get("llm")
-    if not isinstance(llm, dict):
-        return {}
-    usage = llm.get("token_usage")
     return usage if isinstance(usage, dict) else {}
 
 

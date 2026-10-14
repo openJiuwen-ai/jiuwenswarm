@@ -39,7 +39,11 @@ from jiuwenswarm.symphony.service import (
     _OrderedProgressDispatcher,
     _build_progress,
 )
-from jiuwenswarm.symphony.graph_storage import latest_incomplete_build, graph_exists
+from jiuwenswarm.symphony.graph_storage import (
+    graph_exists,
+    latest_incomplete_build,
+    resolve_graph_artifact_dir,
+)
 
 
 class _FakeGraphModel:
@@ -1138,6 +1142,148 @@ def test_incompatible_graph_pointer_forces_first_public_rebuild(tmp_path):
     assert graph_exists(graph_dir) is False
 
 
+def _write_legacy_score_layout(graph_dir: Path) -> None:
+    """Real pre-rename layout: score pointer v1 + score_state.json artifacts."""
+
+    version_dir = graph_dir / "versions" / "20260101"
+    version_dir.mkdir(parents=True)
+    (version_dir / "skill_graph.json").write_text("{}", encoding="utf-8")
+    (version_dir / "score_state.json").write_text(
+        json.dumps({"schema_version": 1, "active_entries": {}}),
+        encoding="utf-8",
+    )
+    (graph_dir / "current.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "Symphony-score-pointer-v1",
+                "version": "20260101",
+                "path": "versions/20260101",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_legacy_score_pointer_layout_is_not_graph_exists(tmp_path):
+    graph_dir = tmp_path / "graph"
+    _write_legacy_score_layout(graph_dir)
+
+    assert graph_exists(graph_dir) is False
+
+
+@pytest.mark.asyncio
+async def test_legacy_score_layout_rebuild_publishes_graph_pointer(
+    monkeypatch,
+    tmp_path,
+    fake_graph_llm,
+):
+    graph_dir = tmp_path / "graph"
+    _write_legacy_score_layout(graph_dir)
+    (tmp_path / "skills").mkdir()
+    config = symphony_config_from_dict(
+        {
+            "paths": {
+                "skills_root": str(tmp_path / "skills"),
+                "graph_dir": str(graph_dir),
+            }
+        }
+    )
+
+    result = await build_graph(
+        tmp_path / "skills",
+        graph_dir,
+        force=True,
+        schema_extractor=object(),
+        io_name_resolver=object(),
+        symphony_config=config,
+    )
+
+    current = json.loads((graph_dir / "current.json").read_text(encoding="utf-8"))
+    assert result.success is True
+    assert current["schema_version"] == "1.0"
+    assert graph_exists(graph_dir) is True
+
+
+@pytest.mark.parametrize(
+    "pointer_payload",
+    ['{"schema_version": "1.0", "vers', '{"schema_version": "1.0"}'],
+    ids=["truncated-json", "missing-version"],
+)
+@pytest.mark.asyncio
+async def test_corrupt_current_json_self_heals_via_rebuild(
+    monkeypatch,
+    tmp_path,
+    fake_graph_llm,
+    pointer_payload,
+):
+    graph_dir = tmp_path / "graph"
+    graph_dir.mkdir(parents=True)
+    (graph_dir / "current.json").write_text(pointer_payload, encoding="utf-8")
+    (tmp_path / "skills").mkdir()
+    config = symphony_config_from_dict(
+        {
+            "paths": {
+                "skills_root": str(tmp_path / "skills"),
+                "graph_dir": str(graph_dir),
+            }
+        }
+    )
+
+    assert graph_exists(graph_dir) is False
+    assert resolve_graph_artifact_dir(graph_dir) == graph_dir.resolve()
+
+    result = await build_graph(
+        tmp_path / "skills",
+        graph_dir,
+        force=True,
+        schema_extractor=object(),
+        io_name_resolver=object(),
+        symphony_config=config,
+    )
+
+    current = json.loads((graph_dir / "current.json").read_text(encoding="utf-8"))
+    assert result.success is True
+    assert current["schema_version"] == "1.0"
+    assert graph_exists(graph_dir) is True
+
+
+@pytest.mark.asyncio
+async def test_empty_skills_root_builds_empty_graph(tmp_path, fake_graph_llm):
+    (tmp_path / "skills").mkdir()
+    graph_dir = tmp_path / "graph"
+    config = symphony_config_from_dict(
+        {
+            "paths": {
+                "skills_root": str(tmp_path / "skills"),
+                "graph_dir": str(graph_dir),
+            }
+        }
+    )
+
+    result = await build_graph(
+        tmp_path / "skills",
+        graph_dir,
+        force=True,
+        schema_extractor=object(),
+        io_name_resolver=object(),
+        symphony_config=config,
+    )
+
+    current = json.loads((graph_dir / "current.json").read_text(encoding="utf-8"))
+    graph = json.loads((graph_dir / current["artifact"]).read_text(encoding="utf-8"))
+    assert result.success is True
+    assert graph["capabilities"] == []
+    assert graph_exists(graph_dir) is True
+    assert (
+        graph_status(
+            tmp_path / "skills",
+            graph_dir,
+            symphony_config=config,
+        ).stale
+        is False
+    )
+
+
 @pytest.mark.parametrize(
     "resolved_count",
     [float("nan"), float("inf"), float("-inf"), "not-a-number"],
@@ -1589,6 +1735,59 @@ async def test_cancel_build_aborts_blocked_progress_and_releases_guard(
     assert build_result["build_status"] == "cancelled"
     assert service._active_build_task is None
     assert not _named_progress_tasks()
+
+
+@pytest.mark.asyncio
+async def test_cancel_build_returns_before_uninterruptible_section_exits(
+    monkeypatch,
+    tmp_path,
+):
+    config = _config(tmp_path)
+    build_entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_to_cancel_build(*args, **kwargs):
+        del args, kwargs
+        build_entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # 模拟 to_thread/LLM 区段：收到取消后仍需一段时间才能退出
+            await asyncio.wait_for(release.wait(), timeout=30)
+            raise
+
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.load_symphony_config",
+        lambda: config,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.service_build_graph",
+        slow_to_cancel_build,
+    )
+    service = SwarmSymphonyService()
+    task = asyncio.create_task(service.refresh_graph())
+    await build_entered.wait()
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    cancelled = await asyncio.wait_for(service.cancel_build(), timeout=6.5)
+    elapsed = loop.time() - started
+
+    assert cancelled["success"] is True
+    assert cancelled["cancelled"] is True
+    assert cancelled["build_status"] == "cancelled"
+    assert elapsed < 6.5
+    assert not task.done()
+
+    release.set()
+    build_result = await asyncio.wait_for(task, timeout=5)
+
+    assert build_result["success"] is False
+    assert build_result["build_status"] == "cancelled"
 
 
 @pytest.mark.asyncio

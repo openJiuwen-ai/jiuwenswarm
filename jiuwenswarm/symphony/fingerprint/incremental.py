@@ -191,12 +191,16 @@ def load_fingerprints(output_dir: Path) -> list[Fingerprint]:
     path = resolve_graph_artifact_dir(output_dir) / "fingerprints.json"
     if not path.exists():
         return []
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    return [
-        Fingerprint.from_dict(item)
-        for item in payload.get("fingerprints", [])
-        if isinstance(item, dict)
-    ]
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return [
+            Fingerprint.from_dict(item)
+            for item in payload.get("fingerprints", [])
+            if isinstance(item, dict)
+        ]
+    except (OSError, ValueError, AttributeError, TypeError):
+        # fingerprints.json 损坏时按无缓存处理，走重建路径自愈。
+        return []
 
 
 def load_io_name_vocabulary(

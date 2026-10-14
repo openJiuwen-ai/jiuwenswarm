@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from jiuwenswarm.symphony import config as symphony_config
@@ -41,6 +43,41 @@ def test_symphony_config_does_not_accept_legacy_score_dir(monkeypatch, tmp_path)
     assert cfg.paths.graph_dir == (
         tmp_path / "agent" / "workspace" / "symphony" / "graph"
     ).resolve()
+
+
+def test_symphony_config_warns_once_on_legacy_score_dir(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(
+        symphony_config,
+        "get_agent_workspace_dir",
+        lambda: tmp_path / "agent" / "workspace",
+    )
+    monkeypatch.setattr(symphony_config, "_legacy_score_dir_warned", False)
+
+    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.symphony.config"):
+        symphony_config.symphony_config_from_dict(
+            {"paths": {"score_dir": str(tmp_path / "legacy-score")}}
+        )
+        symphony_config.symphony_config_from_dict(
+            {"paths": {"score_dir": str(tmp_path / "legacy-score")}}
+        )
+
+    assert caplog.text.count("score_dir") == 1
+
+
+def test_symphony_config_no_warning_without_legacy_score_dir(
+    monkeypatch, tmp_path, caplog
+):
+    monkeypatch.setattr(
+        symphony_config,
+        "get_agent_workspace_dir",
+        lambda: tmp_path / "agent" / "workspace",
+    )
+    monkeypatch.setattr(symphony_config, "_legacy_score_dir_warned", False)
+
+    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.symphony.config"):
+        symphony_config.symphony_config_from_dict({})
+
+    assert "score_dir" not in caplog.text
 
 
 def test_symphony_config_normalizes_values(monkeypatch, tmp_path):
