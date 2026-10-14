@@ -16,9 +16,7 @@ from dataclasses import dataclass
 
 from jiuwenswarm.common.sqlite_config import normalize_journal_mode
 
-from .types import (
-    MemorySearchResult, MemoryFileEntry, MemoryChunk, MemorySource
-)
+from .types import MemoryChunk
 from .internal import (
     ensure_dir, list_memory_files, build_file_entry, chunk_markdown,
     hash_text, build_fts_query, bm25_rank_to_score, is_memory_path
@@ -959,8 +957,6 @@ class MemoryIndexManager:
             return await self._search_vector_fallback(query_vec, limit)
 
         try:
-            import math
-
             query_blob = vector_to_blob(query_vec)
 
             source_filter = self._build_source_filter()
