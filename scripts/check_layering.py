@@ -88,13 +88,13 @@ BASELINE = {
     # hard 闭包 = 从 gateway 出发仅沿模块级 import 可达的外部（非 gateway/common）模块数。
     # 根包单文件（dotenv_early、llm_provider_compat_patch）计入其所属顶级名。
     "closure_hard": {
-        "agents": 101, "server": 56, "runtime": 32, "extensions": 19,
+        "agents": 101, "server": 56, "runtime": 32, "extensions": 10,
         "observability": 10, "symphony": 8,
         "dotenv_early": 1, "llm_provider_compat_patch": 1,
     },
     # lazy 闭包 = 含函数内延迟 import 的可达模块数
     "closure_lazy": {
-        "agents": 333, "server": 162, "extensions": 52, "runtime": 36,
+        "agents": 333, "server": 162, "extensions": 47, "runtime": 36,
         "symphony": 11, "observability": 11, "instance_manager": 6, "channels": 4,
         "dotenv_early": 1, "llm_provider_compat_patch": 1,
     },
@@ -105,7 +105,7 @@ BASELINE = {
     "embedded_files": 27,
     "embedded_loc": 8540,
     # gateway 直接 import 的外部（非 gateway/common）模块数
-    "gateway_direct_foreign": 38,
+    "gateway_direct_foreign": 32,
 }
 
 

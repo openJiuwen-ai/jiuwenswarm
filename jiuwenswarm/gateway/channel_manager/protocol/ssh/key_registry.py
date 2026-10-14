@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import SshKeyIssuer
-from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import (
+from jiuwenswarm.gateway.extensions.auth.ssh_key_issuer import SshKeyIssuer
+from jiuwenswarm.gateway.extensions.auth.ssh_key_registry import (
     KeyRegistry,
     KeyRegistryEntry,
 )

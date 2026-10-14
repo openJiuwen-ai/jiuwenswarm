@@ -46,12 +46,30 @@ def _dedupe_extension_dirs(paths: list[str]) -> list[str]:
 
 
 def _extension_dir_paths_from_config(cfg: dict) -> list[str]:
-    """读取 ``extensions.extension_dirs``（扩展包搜索目录：仅支持字符串，用 ';' 分割）。"""
+    """读取扩展搜索目录配置。
+
+    - ``extensions.extension_dirs``：额外搜索目录，';' 分割（支持绝对路径）；
+    - ``extensions.include_package_extensions``：是否包含包内默认目录
+      ``jiuwenswarm/extensions``（默认 true 保持兼容）。gateway 独立部署/
+      拆仓形态下置 false，仅经显式目录加载所需扩展，避免扫出母仓包内的
+      server 侧扩展。
+    """
     ext = cfg.get("extensions")
     dirs = ext.get("extension_dirs") if isinstance(ext, dict) else None
+    include_pkg = ext.get("include_package_extensions", True) if isinstance(ext, dict) else True
     paths = _split_extension_dirs(dirs) if isinstance(dirs, str) else []
-    paths.append(_DEFAULT_EXTENSION_DIR)
+    if include_pkg is not False:
+        paths.append(_DEFAULT_EXTENSION_DIR)
     return _dedupe_extension_dirs(paths)
+
+
+def _enabled_extension_filter(cfg: dict) -> set[str] | None:
+    """读取 ``extensions.enabled`` 显式启用清单；缺省/非列表返回 None（全载）。"""
+    ext = cfg.get("extensions")
+    enabled = ext.get("enabled") if isinstance(ext, dict) else None
+    if not isinstance(enabled, list):
+        return None
+    return {str(name).strip() for name in enabled if str(name).strip()}
 
 
 class ExtensionManager:
@@ -85,10 +103,20 @@ class ExtensionManager:
         include_transport_extensions: bool = True,
     ) -> None:
         roots = self.loader.discover_extension_roots()
+        enabled = _enabled_extension_filter(get_config())
         logger.info("[ExtensionManager] 发现扩展路径: %s", roots)
         for path in roots:
             try:
                 manifest = self.loader.load_manifest(path)
+                if enabled is not None:
+                    name = str(
+                        manifest.get("name") or path.name
+                    ).strip()
+                    if name not in enabled:
+                        logger.info(
+                            "[ExtensionManager] 清单外扩展跳过: %s (name=%s)", path, name
+                        )
+                        continue
                 if (
                     not include_transport_extensions
                     and manifest.get("requires_transport") is True

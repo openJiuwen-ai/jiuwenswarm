@@ -55,8 +55,8 @@ from jiuwenswarm.gateway.message_handler.prompts.security_review_prompt import (
     GitPreExecError,
     build_security_review_prompt,
 )
-from jiuwenswarm.extensions.hook_event import GatewayHookEvents
-from jiuwenswarm.extensions.hooks_context import GatewayChatHookContext
+from jiuwenswarm.gateway.extensions.hook_event import GatewayHookEvents
+from jiuwenswarm.gateway.extensions.hooks_context import GatewayChatHookContext
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.mode_matrix import (
     DEPRECATION_MAP,
