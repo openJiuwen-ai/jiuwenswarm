@@ -16665,6 +16665,12 @@ class JiuWenSwarmDeepAdapter:
         # deltas plus the terminal chat.final — see ``_assemble_run_answer``.
         run_answer_deltas: list[str] = []
         run_answer_final = ""
+        # Deltas the client actually rendered (``output_suppressed`` chunks are
+        # skipped by the frontend). The stream-end synthetic final carries their
+        # join so a round whose terminal answer never re-sent its text (dropped
+        # or chunked at parse, or suppressed mid-stream) still ends with a
+        # content-bearing final instead of an empty one.
+        visible_answer_deltas: list[str] = []
         output_phase_id: str | None = None
         pending_input_ids: set[str] = set()
         output_sequence = 0
@@ -16722,6 +16728,8 @@ class JiuWenSwarmDeepAdapter:
                 if isinstance(text, str) and text:
                     if event_type == "chat.delta":
                         run_answer_deltas.append(text)
+                        if not payload.get("output_suppressed"):
+                            visible_answer_deltas.append(text)
                     else:
                         run_answer_final = text
             # Persist goal-completed cards at the stream yield choke point so
@@ -17630,13 +17638,20 @@ class JiuWenSwarmDeepAdapter:
                 emitted_terminal_chat_final=emitted_terminal_chat_final,
             ):
                 self._stream_content_run_kind = None
+                synthetic_payload = await note_chat_payload({
+                    "event_type": "chat.final",
+                    "content": "",
+                }, stream_end=True)
+                # Content is filled in after note_chat_payload on purpose: passing
+                # it up front would consume the steering generation-boundary latch
+                # and record it into the OTel run answer. An empty final keeps
+                # that bookkeeping exactly as before; only the emitted frame
+                # gains the round's already-rendered text.
+                synthetic_payload["content"] = "".join(visible_answer_deltas)
                 yield AgentResponseChunk(
                     request_id=rid,
                     channel_id=cid,
-                    payload=await note_chat_payload({
-                        "event_type": "chat.final",
-                        "content": "",
-                    }, stream_end=True),
+                    payload=synthetic_payload,
                     is_complete=False,
                     runtime_completion=self._stream_completion_state(
                         had_interaction=bool(emitted_ask_user_events),

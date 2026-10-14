@@ -1059,6 +1059,11 @@ class WebChannel(BaseWsChannel):
                 ws = self._ws_by_id.get(request_ws_id)
                 if ws is not None and not getattr(ws, "closed", False):
                     ws_set.add(ws)
+                elif routing_target is None:
+                    # res 与发起请求的连接一一对应（request_id 唯一）；发起连接
+                    # 断开后 session 桶里的其他连接不可能匹配该 id，改投只会串扰。
+                    self._log_orphan_request_drop(msg, request_ws_id)
+                    return
 
             if not ws_set and routing_target is not None:
                 delivery = routing_target.delivery
@@ -1144,6 +1149,14 @@ class WebChannel(BaseWsChannel):
             ws = self._ws_by_id.get(request_ws_id)
             if ws is not None and not getattr(ws, "closed", False):
                 ws_set.add(ws)
+            elif routing_target is None:
+                # 发起该请求的物理连接已断开（unregister_ws 已摘除 ws_id 映射，
+                # 重连必换新 ws_id）：这是在途流的迟到事件。落入 session 桶会投给
+                # 同 session 的新连接，被当作新请求的回复消费，造成跨请求串扰。
+                # 丢弃；重连方通过 history 拉取补齐。team fan_out（带
+                # routing_target）V2 未命中后的回退保留原语义。
+                self._log_orphan_request_drop(msg, request_ws_id)
+                return
 
         if not ws_set and not msg.session_id:
             logger.warning(
@@ -1234,6 +1247,22 @@ class WebChannel(BaseWsChannel):
                 if owner_matched:
                     clients.add(ws)
         return clients
+
+    @staticmethod
+    def _log_orphan_request_drop(msg: Message, request_ws_id: str) -> None:
+        """记录孤儿请求事件的丢弃（RC-3）：发起连接已断，事件不再改投 session 桶。"""
+        event_name = str(getattr(getattr(msg, "event_type", None), "value", "") or "")
+        if not event_name:
+            event_name = str(getattr(msg, "type", "") or "")
+        log = logger.info if event_name in ("chat.final", "chat.error") else logger.debug
+        log(
+            "[WebChannel] orphan request event dropped: originating ws gone"
+            " ws_id=%s session_id=%s event=%s id=%s",
+            request_ws_id,
+            getattr(msg, "session_id", None),
+            event_name,
+            getattr(msg, "id", ""),
+        )
 
     def _track_session_busy(self, msg: Message) -> None:
         """在所有路由分支之前维护 session busy 映射(供 /ws/git 写操作查询)。
