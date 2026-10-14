@@ -1093,6 +1093,57 @@ def test_enrich_team_spec_for_swarm_rewrites_spec_in_place() -> None:
 
 
 @pytest.mark.parametrize(
+    ("mode", "kept_rail", "dropped_rails"),
+    [
+        ("team", registry.RUNTIME_PROMPT, (registry.TASK_PLANNING, registry.CODE_LSP)),
+        ("code.team", registry.CODE_LSP, (registry.CODE_TASK_PLANNING, registry.CODE_AGENT_MODE)),
+    ],
+)
+def test_enrich_team_spec_for_swarm_builds_a_narrow_reviewer_spec(
+    mode: str,
+    kept_rail: str,
+    dropped_rails: tuple[str, ...],
+) -> None:
+    """Temp reviewers get a read-only, inspection-only slice of the teammate spec."""
+    spec = _make_team_spec()
+    spec.enable_permissions = True
+
+    enrich_team_spec_for_swarm(spec, session_id="s", mode=mode, channel_id="web")
+
+    teammate = spec.agents["teammate"]
+    reviewer = spec.reviewer_agent
+    assert reviewer is not None
+    rail_types = [rail.type for rail in reviewer.rails or []]
+    assert kept_rail in rail_types
+    assert TEAM_SKILL_USE in rail_types
+    sys_rails = [rail for rail in reviewer.rails if rail.type == registry.SYS_OPERATION]
+    assert len(sys_rails) == 1 and sys_rails[0].params["read_only"] is True
+    for dropped in (
+        *dropped_rails,
+        registry.HEARTBEAT,
+        registry.MEMBER_SKILL_TOOLKIT,
+        registry.MEMBER_SKILL_EVOLUTION,
+        registry.TEAM_PERMISSION,
+        registry.PLUGIN_RAILS,
+    ):
+        assert dropped not in rail_types
+    # The teammate keeps what the reviewer drops.
+    teammate_rail_types = {rail.type for rail in teammate.rails or []}
+    assert registry.TEAM_PERMISSION in teammate_rail_types
+    assert registry.HEARTBEAT in teammate_rail_types
+
+    tool_types = {tool.type for tool in reviewer.tools or [] if isinstance(tool, BuiltinToolSpec)}
+    assert registry.WEB_FETCH in tool_types
+    assert registry.VISION in tool_types
+    assert not tool_types & {registry.CRON_TOOLS, registry.SEND_FILE, registry.USER_TODOS, registry.IMAGE_GEN}
+
+    assert reviewer.subagents is None
+    assert reviewer.enable_task_planning is False
+    assert reviewer.mcps == teammate.mcps
+    assert reviewer.cwd == teammate.cwd
+
+
+@pytest.mark.parametrize(
     ("channel_id", "port_env", "port", "expected_url"),
     [
         ("web", "WEB_PORT", "29000", "ws://127.0.0.1:29000/ws"),

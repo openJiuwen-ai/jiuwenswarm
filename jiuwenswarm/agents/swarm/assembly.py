@@ -49,7 +49,10 @@ from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
 from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
 
-from jiuwenswarm.agents.swarm.config_specs import build_member_deep_agent_spec
+from jiuwenswarm.agents.swarm.config_specs import (
+    build_member_deep_agent_spec,
+    build_reviewer_deep_agent_spec,
+)
 from jiuwenswarm.agents.swarm.context import (
     SwarmBuildContext,
     get_heartbeat_job_service,
@@ -432,6 +435,8 @@ def enrich_team_spec_for_swarm(
             )
             member_spec = _with_project_cwd(member_spec, project_dir)
             spec.agents[role] = member_spec
+    if "teammate" in spec.agents:
+        spec.reviewer_agent = build_reviewer_deep_agent_spec(mode, spec.agents["teammate"])
 
     if agent_group_name:
         _apply_agent_group(spec, agent_group_name, agent_group_package)

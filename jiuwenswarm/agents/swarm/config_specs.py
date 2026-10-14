@@ -15,6 +15,10 @@ so openjiuwen builds the member from the merged spec. Two profiles are supported
 * ``team`` — the chat team profile (common rails + base tools).
 * ``code.team`` / ``team.plan.code`` — the code profile (``swarm.code_*`` rails, code
     sub-agents, code system prompt), all still purely declarative.
+
+``build_reviewer_deep_agent_spec`` narrows the assembled teammate spec into the
+base spec of the one-shot reviewers that scheduled dispatch spawns per review
+round (``TeamAgentSpec.reviewer_agent``).
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
     RailSpec,
     SubAgentSpec,
 )
+from openjiuwen.agent_teams.agent.scheduling.reviewer_spec import build_reviewer_agent_spec
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
 from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
 from openjiuwen.core.kv_cache import KVCacheAffinityConfig
@@ -194,6 +199,48 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     registry.CODE_EXTRA_TOOLS,
     registry.CRON_TOOLS,
     registry.SEND_FILE,
+)
+
+# Rails a scheduled-dispatch reviewer keeps from the teammate's set, per profile.
+# A reviewer only inspects a deliverable and votes: it keeps prompt framing,
+# read-only file and shell access (SYS_OPERATION is switched to read-only by
+# ``build_reviewer_agent_spec``), event streaming, safety and context handling.
+# Planning, scheduling, Skill management / evolution, permission and plugin
+# rails are left out.
+_REVIEWER_TEAM_RAIL_NAMES: tuple[str, ...] = (
+    registry.RUNTIME_PROMPT,
+    registry.RESPONSE_PROMPT,
+    registry.SYS_OPERATION,
+    registry.STREAM_EVENT,
+    registry.SECURITY,
+    registry.MODEL_ANOMALY_DETECTION,
+    registry.MULTIMODAL_IMAGE,
+    registry.CONTEXT_PROCESSOR,
+)
+_REVIEWER_CODE_RAIL_NAMES: tuple[str, ...] = (
+    registry.CODE_RUNTIME_PROMPT,
+    registry.RESPONSE_PROMPT,
+    registry.SYS_OPERATION,
+    registry.STREAM_EVENT,
+    registry.SECURITY,
+    registry.MODEL_ANOMALY_DETECTION,
+    registry.MULTIMODAL_IMAGE,
+    registry.CONTEXT_PROCESSOR,
+    registry.CODE_LSP,
+    registry.CODE_AGENT_MD,
+)
+# The Skill rail stays so a reviewer can use installed Skills (e.g. to read a
+# PDF deliverable); installing / removing Skills is a separate rail left out.
+_REVIEWER_SKILL_RAIL_TYPES: frozenset[str] = frozenset({CORE_SKILL_USE, TEAM_SKILL_USE})
+# Tools a reviewer keeps: web lookup for fact / originality checks and
+# perception tools for media deliverables.
+_REVIEWER_TOOL_NAMES: tuple[str, ...] = (
+    registry.WEB_SEARCH,
+    registry.WEB_FETCH,
+    registry.WEB_PAID_SEARCH,
+    registry.VISION,
+    registry.AUDIO,
+    registry.VIDEO,
 )
 
 # code_agent sub-agents are always-on (explore / plan) or config-gated.
@@ -974,6 +1021,29 @@ def build_member_deep_agent_spec(
         update["system_prompt"] = build_code_system_prompt()
 
     return base_spec.model_copy(update=update)
+
+
+def build_reviewer_deep_agent_spec(mode: str, teammate_spec: DeepAgentSpec) -> DeepAgentSpec:
+    """Narrow the assembled teammate spec into the scheduled-dispatch reviewer spec.
+
+    Starts from the fully assembled teammate spec so rail params, the project
+    cwd and MCP servers carry over, then keeps only the reviewer allow-lists on
+    top of the framework trimming (read-only file tools, no todo planning, no
+    sub-agents).
+
+    Args:
+        mode: The canonical team request mode; selects the chat or code profile.
+        teammate_spec: The teammate spec after capability assembly.
+
+    Returns:
+        A new ``DeepAgentSpec`` for ``TeamAgentSpec.reviewer_agent``.
+    """
+    rail_names = _REVIEWER_CODE_RAIL_NAMES if _is_code_mode(mode) else _REVIEWER_TEAM_RAIL_NAMES
+    return build_reviewer_agent_spec(
+        teammate_spec,
+        rail_types={*rail_names, *_REVIEWER_SKILL_RAIL_TYPES},
+        tool_types=_REVIEWER_TOOL_NAMES,
+    )
 
 
 def _merge_mcp_configs(
