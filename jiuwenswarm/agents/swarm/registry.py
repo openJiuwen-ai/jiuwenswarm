@@ -51,6 +51,7 @@ from jiuwenswarm.agents.swarm.providers import (
     code_subagents as _code_subagents,
     evolution_rails as _evolution_rails,
     member_rails as _member_rails,
+    research_tools as _research_tools,
     runtime_tools as _runtime_tools,
     skills as _skills,
     tools as _tools,
@@ -71,6 +72,8 @@ SYMPHONY_TOOLKIT = _tools.SYMPHONY_TOOLKIT
 A4P_INTENT_AUTHORIZATION = _tools.A4P_INTENT_AUTHORIZATION
 CRON_TOOLS = _runtime_tools.CRON_TOOLS
 SEND_FILE = _runtime_tools.SEND_FILE
+DEEPSEARCH_TOOLS = _research_tools.DEEPSEARCH_TOOLS
+MEMORY_EVAL_TOOLS = _research_tools.MEMORY_EVAL_TOOLS
 MEMBER_SKILL_TOOLKIT = _skills.MEMBER_SKILL_TOOLKIT
 # Generic tools provided + registered by openjiuwen (referenced by bare name).
 WEB_SEARCH = _OJ_WEB_SEARCH
@@ -85,6 +88,7 @@ TEAM_SKILL_LIBRARY_RELOAD = _member_rails.TEAM_SKILL_LIBRARY_RELOAD
 TEAM_WORKSPACE_REPORT_PATH = _member_rails.TEAM_WORKSPACE_REPORT_PATH
 CONTEXT_PROCESSOR = _member_rails.CONTEXT_PROCESSOR
 MODEL_ANOMALY_DETECTION = _member_rails.MODEL_ANOMALY_DETECTION
+PAPER_GUARD = _member_rails.PAPER_GUARD
 PLUGIN_RAILS = _member_rails.PLUGIN_RAILS
 SKILL_RETRIEVAL_PROMPT = _member_rails.SKILL_RETRIEVAL_PROMPT
 SYMPHONY_ORCHESTRATION_PROMPT = _member_rails.SYMPHONY_ORCHESTRATION_PROMPT
@@ -204,6 +208,8 @@ __all__ = [
     "AUDIO",
     "CRON_TOOLS",
     "SEND_FILE",
+    "DEEPSEARCH_TOOLS",
+    "MEMORY_EVAL_TOOLS",
     "MEMBER_SKILL_TOOLKIT",
     "RUNTIME_PROMPT",
     "TEAM_SKILL_STORAGE_POLICY",
@@ -211,6 +217,7 @@ __all__ = [
     "TEAM_WORKSPACE_REPORT_PATH",
     "CONTEXT_PROCESSOR",
     "MODEL_ANOMALY_DETECTION",
+    "PAPER_GUARD",
     "PLUGIN_RAILS",
     "SKILL_RETRIEVAL_PROMPT",
     "SYMPHONY_ORCHESTRATION_PROMPT",
