@@ -170,7 +170,10 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
     fixture = Path(__file__).parent / "fixtures" / "worker_recovery_process.py"
     path = str(tmp_path / "worker.sock") if os.name == "nt" else f"/tmp/jw-recovery-{uuid.uuid4().hex[:12]}.sock"
     env = {**os.environ, "PYTHONPATH": str(root)}
-    process = await asyncio.create_subprocess_exec(sys.executable, str(fixture), path, cwd=root, env=env,
+    # A Windows venv executable launches a second interpreter. This fixture
+    # observes the native process PID and imports no model SDK.
+    executable = getattr(sys, "_base_executable", sys.executable)
+    process = await asyncio.create_subprocess_exec(executable, str(fixture), path, cwd=root, env=env,
                                                   stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     conn = None
     reader_task = None

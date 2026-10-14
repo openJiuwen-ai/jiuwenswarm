@@ -302,6 +302,7 @@ from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import ( 
     with_session_messaging_route,
 )
 from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
+from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import HEARTBEAT_TOOL_NAMES
 from jiuwenswarm.agents.harness.common.auto_harness import (
     AutoHarnessService,
     validate_harness_config,
@@ -484,6 +485,7 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
 )
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.agents.harness.common.tools.file_delivery_policy import is_send_file_enabled
+from jiuwenswarm.agents.harness.common.tools.heartbeat_policy import is_heartbeat_supported
 from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
 from jiuwenswarm.agents.harness.common.tools.video_gen_tools import (
     generate_video,
@@ -2113,9 +2115,44 @@ class JiuWenSwarmDeepAdapter:
                 getattr(self, "_parent_session_id", None),
             )
             return None
+        # 小艺等渠道没有可用的主动投递路径（见 heartbeat_policy），直接不挂心跳工具：
+        # 模型看不到该能力，也不会回答"心跳已创建"却永远送不到手机。
+        if self._heartbeat_unsupported_for_current_request():
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] skip HeartbeatRail for channel without "
+                "heartbeat support session=%s",
+                getattr(self, "_parent_session_id", None),
+            )
+            return None
         return HeartbeatRail(
             service=self._heartbeat_service,
             context=self._runtime_cron_tool_context,
+        )
+
+    def _heartbeat_unsupported_for_current_request(
+        self, session_id: str | None = None
+    ) -> bool:
+        """当前请求（或本适配器所属会话）的渠道是否不支持心跳任务。
+
+        两个信号任一命中即判定不支持：
+        - 请求上下文的 ``channel_id``（``_bind_runtime_cron_context`` 每请求刷新）；
+        - 会话 ID 的渠道前缀（小艺会话形如 ``xiaoyi_<hex>_<hex>``，由网关分配）。
+
+        用会话前缀兜底是因为 ``_resolve_prompt_channel`` 不认识 xiaoyi，会把小艺
+        归成 web；这里只看"是不是已知不支持心跳的渠道"，不做通用渠道归一。
+        """
+        # 裸构造的适配器（部分单测只 setattr 必要字段）没有该上下文，取不到就只按会话前缀判。
+        context = getattr(self, "_runtime_cron_tool_context", None)
+        candidates = [
+            str(getattr(context, "channel_id", "") or "").strip(),
+            str(session_id or getattr(self, "_parent_session_id", "") or "")
+            .strip()
+            .split("_", 1)[0],
+        ]
+        return any(
+            not is_heartbeat_supported(candidate)
+            for candidate in candidates
+            if candidate
         )
 
     def _schedule_runtime_state_write(
@@ -8989,7 +9026,7 @@ class JiuWenSwarmDeepAdapter:
             self._config_base_cache or get_config()
         ):
             return
-        ability_manager = getattr(self._instance, "ability_manager", None)
+        ability_manager = getattr(getattr(self, "_instance", None), "ability_manager", None)
         if ability_manager is None:
             return
         card = None
@@ -12611,6 +12648,13 @@ class JiuWenSwarmDeepAdapter:
             cron_channel = str(_CRON_TOOL_CHANNEL_ID.get() or "").strip()
             if cron_channel:
                 channel = cron_channel
+        # 心跳工具按渠道能力下发：小艺渠道不下发（见 heartbeat_policy）。
+        # 工具由 HeartbeatRail 在 agent 组装期注册，这里每请求兜一次摘除，
+        # 覆盖 rail 已被缓存、首次构建时渠道尚未确定的情况。
+        if not is_heartbeat_supported(channel) or self._heartbeat_unsupported_for_current_request(
+            session_id
+        ):
+            self._drop_heartbeat_tools(channel)
         send_file_enabled = is_send_file_enabled(config_base, channel)
         if send_file_enabled and request_id and session_id:
             require_send_authorization = self._enable_auto_permission
@@ -12643,6 +12687,44 @@ class JiuWenSwarmDeepAdapter:
                     project_dir=self._project_dir,
                     require_execution_authorization=require_send_authorization,
                 )
+
+    def _drop_heartbeat_tools(self, channel: str) -> None:
+        """把已注册的心跳工具从模型可见工具集里摘掉（渠道不支持心跳）。
+
+        心跳工具由 HeartbeatRail 在 agent 组装期通过 ``add_ability`` 注册，
+        所以这里对称地用 ``remove_ability`` 连实例一起摘除；同时清掉 rail 引用，
+        避免后续重组 rails 时把工具加回来（重新构建时按渠道判定也会返回 None）。
+        """
+        ability_manager = getattr(self._instance, "ability_manager", None)
+        removed: list[str] = []
+        if ability_manager is not None:
+            remover = getattr(ability_manager, "remove_ability", None) or getattr(
+                ability_manager, "remove", None
+            )
+            for existing in list(ability_manager.list() or []):
+                name = getattr(existing, "name", "")
+                if name not in HEARTBEAT_TOOL_NAMES:
+                    continue
+                if remover is None:
+                    break
+                try:
+                    remover(name)
+                    removed.append(name)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "[JiuWenSwarmDeepAdapter] heartbeat tool remove skipped for %s",
+                        name,
+                        exc_info=True,
+                    )
+        if removed:
+            self._prune_tool_cards(set(removed))
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] heartbeat tools removed for channel=%s: %s",
+                channel,
+                sorted(removed),
+            )
+        if getattr(self, "_heartbeat_rail", None) is not None:
+            self._heartbeat_rail = None
 
     def _refresh_acp_runtime_tools(
         self,

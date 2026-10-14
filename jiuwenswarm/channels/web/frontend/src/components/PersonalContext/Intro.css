@@ -10,12 +10,13 @@
 }
 
 .pc-intro__scroll {
-  max-width: 1400px;
+  width: 100%;
+  max-width: min(1400px, 100% - 96px);
   margin: 0 auto;
-  padding: 56px 40px 72px;
+  padding-top: 32px;
   display: flex;
   flex-direction: column;
-  gap: 36px;
+  gap: 48px;
 }
 
 /* 标题区：左对齐 */
@@ -23,7 +24,6 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding-top: 8px;
 }
 
 .pc-intro__title {
@@ -90,6 +90,7 @@
 .pc-intro__step--1 {
   background-color: #fbf1e7;
 }
+
 .pc-intro__step--1::before {
   content: '';
   position: absolute;
@@ -103,6 +104,7 @@
 .pc-intro__step--2 {
   background-color: #f3f3ff;
 }
+
 .pc-intro__step--2::before {
   content: '';
   position: absolute;
@@ -242,12 +244,11 @@
   .pc-intro__features-grid {
     grid-template-columns: 1fr;
   }
+
   .pc-intro__steps-grid {
     grid-template-columns: 1fr;
   }
-  .pc-intro__scroll {
-    padding: 36px 20px 52px;
-  }
+
   .pc-intro__title {
     font-size: 20px;
   }

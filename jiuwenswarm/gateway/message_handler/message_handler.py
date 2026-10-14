@@ -389,6 +389,11 @@ class MessageHandler(ABC):
             "feishu_enterprise",
         })
         self._channel_states: Dict[str, ChannelControlState] = {}
+        # 入站 session_id 是平台侧「逻辑会话 id」的受控渠道（小艺 conversationId）：
+        # _apply_channel_state 清空 session_id 前记住其状态键，gateway 侧 session.create
+        # 分配出真实会话后写回同一状态，后续入站才能复用（见 _ensure_inbound_session）。
+        self._sticky_channel_state_types = frozenset({ChannelType.XIAOYI.value})
+        self._pending_alloc_state_key: Dict[str, str] = {}
         self._session_map = SessionMap()
         self._session_sharing = SessionSharingRegistry()
         # 组合：/join /exit 团队成员管理逻辑（独立文件维护，通过 self._h 访问宿主能力）
@@ -964,6 +969,38 @@ class MessageHandler(ABC):
         if identity_key and self._channel_id_matches_session_map_types(str(msg.channel_id or "")):
             self._session_map.set_session_id(*identity_key, sid)
         return sid
+
+    def _remember_alloc_state_key(self, msg: "Message", channel_id: str) -> None:
+        """受控通道无正式会话时，记录本次状态键供 session 分配写回复用。
+
+        小艺入站 session_id 是手机侧逻辑会话 id（conversationId），
+        ``_apply_channel_state`` 会把它清成 None，再由 gateway 侧 session.create
+        分配真实会话。若此时不记住原始键，_forward_loop 会以 None 重新
+        ``get_or_create_channel_state``（键退化成 channel_id），分配结果写进
+        「channel 级」状态；而下次入站仍按 ``channel:conversation`` 查状态，
+        永远命中不到 → 每条 query 都新建 session、丢上下文。
+        """
+        if str(channel_id or "") not in self._sticky_channel_state_types:
+            return
+        self._pending_alloc_state_key[msg.id] = self._get_channel_state_key(
+            str(channel_id or ""), msg.session_id
+        )
+
+    async def _ensure_inbound_session(self, msg: "Message") -> None:
+        """受控通道入站无 session 时为它分配一个，并写回入站所属的状态。"""
+        channel_type = self._resolve_control_channel_type(msg)
+        if channel_type not in self._control_channel_types:
+            return
+        if str(msg.session_id or "").strip():
+            return
+        key = self._pending_alloc_state_key.pop(msg.id, "")
+        state = self._channel_states.get(key) if key else None
+        if state is None:
+            state = self.get_or_create_channel_state(msg)
+        msg.session_id = await self._allocate_channel_session(msg, state)
+        # 兼容旧行为：同一次分配也留一份 channel 级状态（cancel/disconnect 的
+        # mode 兜底按 channel_id 键读取）。
+        self._channel_states.setdefault(channel_type, state)
 
     async def _resolve_external_channel_session(self, msg: "Message") -> None:
         """Map A2A protocol IDs onto AgentServer-owned product Sessions.
@@ -2526,6 +2563,9 @@ class MessageHandler(ABC):
         elif state.session_id:
             msg.session_id = state.session_id
         else:
+            # 受控通道且状态里没有正式会话：先记住本次状态键（此刻 msg.session_id 仍是
+            # 入站逻辑会话 id），_ensure_inbound_session 分配后写回同一状态复用。
+            self._remember_alloc_state_key(msg, cid)
             msg.session_id = None
 
         # 将 mode 写入 params，后续 E2A / Agent 侧从 params["mode"] 读取
@@ -4412,13 +4452,7 @@ class MessageHandler(ABC):
                 # 将当前 Channel 的控制状态应用到消息上
                 await self._resolve_external_channel_session(msg)
                 self._apply_channel_state(msg)
-                channel_type = self._resolve_control_channel_type(msg)
-                if (
-                    channel_type in self._control_channel_types
-                    and not str(msg.session_id or "").strip()
-                ):
-                    state = self.get_or_create_channel_state(msg)
-                    msg.session_id = await self._allocate_channel_session(msg, state)
+                await self._ensure_inbound_session(msg)
 
                 # IM chat.send has no steer control. A message that arrives
                 # while this Session is processing joins that turn instead of

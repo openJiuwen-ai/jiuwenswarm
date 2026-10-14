@@ -5,7 +5,13 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('..', import.meta.url));
 await build({
   absWorkingDir: root,
-  entryPoints: ['src/components/ChatPanel/InputArea.tsx', 'src/stores/index.ts', 'src/i18n/index.ts'],
+  entryPoints: [
+    'src/components/ChatPanel/InputArea.tsx',
+    'src/stores/index.ts',
+    'src/i18n/index.ts',
+    'src/features/teamOrganization/featureConfig.ts',
+    'src/services/webClient.ts',
+  ],
   outbase: 'src',
   outdir: 'node_modules/.cache/input-area-permission-merge',
   bundle: true,

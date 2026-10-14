@@ -32,13 +32,19 @@ class LoadedAgentGroupPackage:
 
     @property
     def capabilities(self) -> tuple[str, ...]:
-        raw = self.manifest.get("capabilities", [])
+        """Use explicit execution capabilities, otherwise stable package tag identities."""
+        if "capabilities" in self.manifest:
+            raw = self.manifest["capabilities"]
+        else:
+            raw = self.manifest.get("tags", [])
         if not isinstance(raw, list):
             return ()
         names: list[str] = []
         seen: set[str] = set()
         for item in raw:
-            name = str(item or "").strip()
+            if isinstance(item, dict):
+                item = item.get("id") or item.get("zh") or item.get("en")
+            name = item.strip() if isinstance(item, str) else ""
             if name and name not in seen:
                 seen.add(name)
                 names.append(name)

@@ -99,6 +99,11 @@ interface ConversationSidebarProps {
   floating?: boolean;
   /** 切换侧边栏收起/展开 */
   onToggleCollapse?: () => void;
+  /** 收起态 hover 图标触发的临时展开（peek）：以悬浮层显示但不带蒙层，指针移开即收起 */
+  peek?: boolean;
+  /** peek 保活/收起用：面板根的鼠标进出（进入取消排程收起，移出排程收起） */
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
 }
 
 interface ConversationListItemProps {
@@ -210,27 +215,48 @@ function ConversationListItem({
   let status: React.ReactNode;
   if (indicator === 'waiting') {
     status = (
-      <span className="conversation-list-item__status-waiting" title={getTaskStatusLabel(indicator, t)} data-testid="multi-session-conversation-list-item-status-waiting">
+      <span
+        className="conversation-list-item__status-waiting"
+        title={getTaskStatusLabel(indicator, t)}
+        data-testid="multi-session-conversation-list-item-status-waiting"
+      >
         <span>{t('multiSession.status.waiting')}</span>
       </span>
     );
   } else if (indicator === 'processing') {
     status = (
-      <span title={getTaskStatusLabel(indicator, t)} data-testid="multi-session-conversation-list-item-status-processing">
+      <span
+        title={getTaskStatusLabel(indicator, t)}
+        data-testid="multi-session-conversation-list-item-status-processing"
+      >
         <LoadingSpinner />
       </span>
     );
   } else if (indicator === 'unread') {
-    status = <span className="conversation-list-item__status-dot" title={t('multiSession.completedUnread')} aria-hidden="true" data-testid="multi-session-conversation-list-item-status-unread" />;
+    status = (
+      <span
+        className="conversation-list-item__status-dot"
+        title={t('multiSession.completedUnread')}
+        aria-hidden="true"
+        data-testid="multi-session-conversation-list-item-status-unread"
+      />
+    );
   } else if (indicator === 'error') {
     status = (
-      <span title={errorMessage ?? getTaskStatusLabel(indicator, t)} data-testid="multi-session-conversation-list-item-status-error">
+      <span
+        title={errorMessage ?? getTaskStatusLabel(indicator, t)}
+        data-testid="multi-session-conversation-list-item-status-error"
+      >
         <CircleAlert className="conversation-list-item__status-error" size={14} strokeWidth={1.8} aria-hidden="true" />
       </span>
     );
   } else {
     status = (
-      <span className="conversation-list-item__status-read" title={getTaskStatusLabel(indicator, t)} data-testid="multi-session-conversation-list-item-status-read">
+      <span
+        className="conversation-list-item__status-read"
+        title={getTaskStatusLabel(indicator, t)}
+        data-testid="multi-session-conversation-list-item-status-read"
+      >
         <span>{formatRelativeTime(getSessionActivityAt(session), now, i18n.language, t)}</span>
       </span>
     );
@@ -243,11 +269,25 @@ function ConversationListItem({
       data-testid="multi-session-conversation-list-item"
       data-variant={session.session_id}
     >
-      <button type="button" className="conversation-list-item__main" onClick={onSelect} data-testid="multi-session-conversation-list-item-main">
-        <span className="conversation-list-item__title" data-testid="multi-session-conversation-list-item-title" data-tooltip="" {...titleTooltipHandlers}>
+      <button
+        type="button"
+        className="conversation-list-item__main"
+        onClick={onSelect}
+        data-testid="multi-session-conversation-list-item-main"
+      >
+        <span
+          className="conversation-list-item__title"
+          data-testid="multi-session-conversation-list-item-title"
+          data-tooltip=""
+          {...titleTooltipHandlers}
+        >
           {title}
         </span>
-        <span className="conversation-list-item__meta" data-testid="multi-session-conversation-list-item-status" data-variant={indicator}>
+        <span
+          className="conversation-list-item__meta"
+          data-testid="multi-session-conversation-list-item-status"
+          data-variant={indicator}
+        >
           {status}
         </span>
       </button>
@@ -267,8 +307,12 @@ function ConversationListItem({
           event.stopPropagation();
           void toggleSessionPin(session, t);
         }}
-        aria-label={session.pinned ? t('multiSession.project.unpinConversation') : t('multiSession.project.pinConversation')}
-        data-tooltip={session.pinned ? t('multiSession.project.unpinConversation') : t('multiSession.project.pinConversation')}
+        aria-label={
+          session.pinned ? t('multiSession.project.unpinConversation') : t('multiSession.project.pinConversation')
+        }
+        data-tooltip={
+          session.pinned ? t('multiSession.project.unpinConversation') : t('multiSession.project.pinConversation')
+        }
         data-testid="multi-session-conversation-list-item-pin"
         {...itemTooltipHandlers}
       >
@@ -365,9 +409,17 @@ function ProjectEntityRow({
           </span>
         </span>
         {hasUnreadCronResult ? (
-          <span className="conversation-list-item__status-dot" aria-hidden="true" data-testid="multi-session-project-row-cron-unread" />
+          <span
+            className="conversation-list-item__status-dot"
+            aria-hidden="true"
+            data-testid="multi-session-project-row-cron-unread"
+          />
         ) : null}
-        {isExpanded ? <CollapseIcon className="conversation-entity-row__chevron" aria-hidden /> : <ArrowRightIcon className="conversation-entity-row__chevron" aria-hidden />}
+        {isExpanded ? (
+          <CollapseIcon className="conversation-entity-row__chevron" aria-hidden />
+        ) : (
+          <ArrowRightIcon className="conversation-entity-row__chevron" aria-hidden />
+        )}
       </button>
       <button
         type="button"
@@ -463,12 +515,16 @@ function ProjectPathTooltip({
     >
       <div className="project-path-tooltip__row">
         <FolderIcon className="project-path-tooltip__icon" aria-hidden />
-        <span className="project-path-tooltip__name" data-testid="multi-session-project-path-tooltip-name">{title}</span>
+        <span className="project-path-tooltip__name" data-testid="multi-session-project-path-tooltip-name">
+          {title}
+        </span>
       </div>
       <div className="project-path-tooltip__divider" />
       <div className="project-path-tooltip__row project-path-tooltip__row--muted">
         <FolderIcon className="project-path-tooltip__icon project-path-tooltip__icon--muted" aria-hidden />
-        <span className="project-path-tooltip__path" dir="ltr" data-testid="multi-session-project-path-tooltip-path">{path}</span>
+        <span className="project-path-tooltip__path" dir="ltr" data-testid="multi-session-project-path-tooltip-path">
+          {path}
+        </span>
       </div>
     </div>
   );
@@ -526,7 +582,11 @@ function ProjectCreateDialog({
   }, [initial]);
 
   return (
-    <div className="conversation-path-dialog-backdrop" role="presentation" data-testid="multi-session-project-create-dialog-backdrop">
+    <div
+      className="conversation-path-dialog-backdrop"
+      role="presentation"
+      data-testid="multi-session-project-create-dialog-backdrop"
+    >
       <form
         className="conversation-path-dialog"
         data-testid="multi-session-project-create-dialog"
@@ -544,10 +604,12 @@ function ProjectCreateDialog({
         >
           <CloseIcon aria-hidden className="text-text-meta" />
         </button>
-        <div className="conversation-path-dialog__title" data-testid="multi-session-project-create-dialog-title" data-variant={mode}>
-          {mode === 'existing'
-            ? t('multiSession.project.selectExisting')
-            : t('multiSession.project.createBlank')}
+        <div
+          className="conversation-path-dialog__title"
+          data-testid="multi-session-project-create-dialog-title"
+          data-variant={mode}
+        >
+          {mode === 'existing' ? t('multiSession.project.selectExisting') : t('multiSession.project.createBlank')}
         </div>
         <input
           className="conversation-path-dialog__input"
@@ -566,10 +628,18 @@ function ProjectCreateDialog({
             placeholder={t('multiSession.project.pathPlaceholder')}
           />
         ) : null}
-        {error ? <div className="conversation-path-dialog__error" data-testid="multi-session-project-create-dialog-error">{error}</div> : null}
+        {error ? (
+          <div className="conversation-path-dialog__error" data-testid="multi-session-project-create-dialog-error">
+            {error}
+          </div>
+        ) : null}
         <div className="conversation-path-dialog__actions" data-testid="multi-session-project-create-dialog-actions">
-          <button type="button" onClick={onCancel} data-testid="multi-session-project-create-dialog-cancel">{t('multiSession.project.cancel')}</button>
-          <button type="submit" disabled={!canSubmit} data-testid="multi-session-project-create-dialog-confirm">{t('multiSession.project.confirm')}</button>
+          <button type="button" onClick={onCancel} data-testid="multi-session-project-create-dialog-cancel">
+            {t('multiSession.project.cancel')}
+          </button>
+          <button type="submit" disabled={!canSubmit} data-testid="multi-session-project-create-dialog-confirm">
+            {t('multiSession.project.confirm')}
+          </button>
         </div>
       </form>
     </div>
@@ -619,9 +689,26 @@ function CronJobRow({
         data-variant={job.id}
       >
         <CronIcon className="conversation-sidebar__cron-row-icon" aria-hidden />
-        <span className="conversation-sidebar__cron-row-name" data-tooltip="" data-testid="multi-session-cron-job-row-name" {...nameTooltipHandlers}>{job.name}</span>
-        {isCronUnread && <span className="conversation-list-item__status-dot" aria-hidden="true" data-testid="multi-session-cron-job-row-unread" />}
-        {cronExpanded ? <CollapseIcon className="conversation-sidebar__cron-row-chevron" aria-hidden /> : <ArrowRightIcon className="conversation-sidebar__cron-row-chevron" aria-hidden />}
+        <span
+          className="conversation-sidebar__cron-row-name"
+          data-tooltip=""
+          data-testid="multi-session-cron-job-row-name"
+          {...nameTooltipHandlers}
+        >
+          {job.name}
+        </span>
+        {isCronUnread && (
+          <span
+            className="conversation-list-item__status-dot"
+            aria-hidden="true"
+            data-testid="multi-session-cron-job-row-unread"
+          />
+        )}
+        {cronExpanded ? (
+          <CollapseIcon className="conversation-sidebar__cron-row-chevron" aria-hidden />
+        ) : (
+          <ArrowRightIcon className="conversation-sidebar__cron-row-chevron" aria-hidden />
+        )}
       </div>
       {tooltip}
     </>
@@ -637,6 +724,9 @@ export function ConversationSidebar({
   collapsed = false,
   floating = false,
   onToggleCollapse,
+  peek = false,
+  onMouseEnter,
+  onMouseLeave,
 }: ConversationSidebarProps) {
   const { t } = useTranslation();
   const { tooltip: conversationsTooltip, handlers: conversationsTooltipHandlers } = useAdaptiveTooltip();
@@ -712,12 +802,16 @@ export function ConversationSidebar({
   const unreadCronJobs = useCronStore((s) => s.unreadCronJobs);
   const clearCronJobUnread = useCronStore((s) => s.clearCronJobUnread);
 
+  // peek（hover 预览）实例不重复拉取：数据来自共享 store，内联实例负责加载
   useEffect(() => {
+    if (peek) return;
     void loadCronJobs();
-  }, [loadCronJobs]);
+  }, [peek, loadCronJobs]);
 
   // 监听 agent 工具调用结果：当 cron 相关工具执行后刷新侧边栏定时任务
+  // peek 实例不订阅：hover 短暂挂载，避免每次进出重复订阅/退订
   useEffect(() => {
+    if (peek) return;
     const CRON_TOOL_PREFIX = 'cron_';
     const unsubscribe = webClient.on('chat.tool_result', (event) => {
       const payload = event.payload as Record<string, unknown>;
@@ -728,7 +822,7 @@ export function ConversationSidebar({
       }
     });
     return unsubscribe;
-  }, [loadCronJobs]);
+  }, [peek, loadCronJobs]);
 
   // 按项目归属定时任务
   const jobsByProject = useMemo(() => {
@@ -792,13 +886,16 @@ export function ConversationSidebar({
     }
     return byDir;
   }, [projects]);
-  const defaultProject = useMemo(
-    () => projects.find(isDefaultProject),
+  const defaultProject = useMemo(() => projects.find(isDefaultProject), [projects]);
+
+  const pinnedProjects = useMemo(
+    () => projects.filter((project) => project.pinned && !isDefaultProject(project)),
     [projects],
   );
-
-  const pinnedProjects = useMemo(() => projects.filter((project) => project.pinned && !isDefaultProject(project)), [projects]);
-  const regularProjects = useMemo(() => projects.filter((project) => !project.pinned && !isDefaultProject(project)), [projects]);
+  const regularProjects = useMemo(
+    () => projects.filter((project) => !project.pinned && !isDefaultProject(project)),
+    [projects],
+  );
   const sortedProjectSessions = useMemo(() => {
     const sorted: Record<string, Session[]> = {};
     for (const [projectId, list] of Object.entries(projectSessions)) {
@@ -885,7 +982,7 @@ export function ConversationSidebar({
     }
   }
 
-function renderSession(session: Session, options: { nested?: boolean; projectMenu?: boolean } = {}) {
+  function renderSession(session: Session, options: { nested?: boolean; projectMenu?: boolean } = {}) {
     const nested = options.nested === true;
     const projectMenu = options.projectMenu === true;
     return (
@@ -912,7 +1009,10 @@ function renderSession(session: Session, options: { nested?: boolean; projectMen
     const isCronSessionsLoading = cronSessionsLoading[job.id] ?? false;
     const isCronUnread = Boolean(unreadCronJobs[job.id]);
     return (
-      <div key={`cron-wrapper-${job.id}`} className={`conversation-sidebar__session-wrapper${nested ? ' conversation-sidebar__session-wrapper--nested' : ''}`}>
+      <div
+        key={`cron-wrapper-${job.id}`}
+        className={`conversation-sidebar__session-wrapper${nested ? ' conversation-sidebar__session-wrapper--nested' : ''}`}
+      >
         <CronJobRow
           job={job}
           cronExpanded={cronExpanded}
@@ -928,7 +1028,12 @@ function renderSession(session: Session, options: { nested?: boolean; projectMen
         {cronExpanded ? (
           <div className="conversation-sidebar__cron-sessions" data-testid="multi-session-cron-job-sessions">
             {isCronSessionsLoading ? (
-              <div className="conversation-sidebar__cron-sessions-loading" data-testid="multi-session-cron-job-sessions-loading">{t('common.loading')}</div>
+              <div
+                className="conversation-sidebar__cron-sessions-loading"
+                data-testid="multi-session-cron-job-sessions-loading"
+              >
+                {t('common.loading')}
+              </div>
             ) : triggerSessions.length > 0 ? (
               triggerSessions.map((ts) => (
                 <ConversationListItem
@@ -949,7 +1054,12 @@ function renderSession(session: Session, options: { nested?: boolean; projectMen
                 />
               ))
             ) : (
-              <div className="conversation-sidebar__cron-sessions-empty" data-testid="multi-session-cron-job-sessions-empty">{t('multiSession.project.noSessions')}</div>
+              <div
+                className="conversation-sidebar__cron-sessions-empty"
+                data-testid="multi-session-cron-job-sessions-empty"
+              >
+                {t('multiSession.project.noSessions')}
+              </div>
             )}
           </div>
         ) : null}
@@ -972,12 +1082,17 @@ function renderSession(session: Session, options: { nested?: boolean; projectMen
     if (!canShowMore && !canCollapse) return null;
 
     return (
-      <div className={`conversation-sidebar__pagination${nested ? ' conversation-sidebar__pagination--nested' : ''}`} data-testid="multi-session-pagination">
+      <div
+        className={`conversation-sidebar__pagination${nested ? ' conversation-sidebar__pagination--nested' : ''}`}
+        data-testid="multi-session-pagination"
+      >
         {canShowMore ? (
           <button
             type="button"
             className="conversation-sidebar__pagination-button"
-            onClick={() => { void showMoreSessions(projectId); }}
+            onClick={() => {
+              void showMoreSessions(projectId);
+            }}
             data-testid="multi-session-pagination-show-more"
           >
             {t('multiSession.showMore')}
@@ -987,7 +1102,9 @@ function renderSession(session: Session, options: { nested?: boolean; projectMen
           <button
             type="button"
             className="conversation-sidebar__pagination-button"
-            onClick={() => { void collapseSessions(projectId); }}
+            onClick={() => {
+              void collapseSessions(projectId);
+            }}
             data-testid="multi-session-pagination-collapse"
           >
             {t('multiSession.collapse')}
@@ -1000,18 +1117,16 @@ function renderSession(session: Session, options: { nested?: boolean; projectMen
   function renderProject(project: ProjectInfo) {
     const sessionsForProject = sortedProjectSessions[project.project_id] || [];
     const expanded = Boolean(expandedProjectIds[project.project_id]);
-    const hasUnreadCronResult = (jobsByProject.get(project.project_id) || []).some(
-      (job) => Boolean(unreadCronJobs[job.id]),
+    const hasUnreadCronResult = (jobsByProject.get(project.project_id) || []).some((job) =>
+      Boolean(unreadCronJobs[job.id]),
     );
     // 折叠项目可能尚未加载会话列表，不能只看 sessionsForProject.length；
     // 用后端统计的会话总数兜底判断项目是否还有普通会话
-    const nonPinnedSessionCount =
-      projectSessionTotals[project.project_id] ?? project.session_count;
+    const nonPinnedSessionCount = projectSessionTotals[project.project_id] ?? project.session_count;
 
     const hasPinnedOrdinarySession = pinnedSessions.some((session) => {
       const belongsToProject =
-        session.project_id === project.project_id ||
-        getSessionProject(session)?.project_id === project.project_id;
+        session.project_id === project.project_id || getSessionProject(session)?.project_id === project.project_id;
 
       const isCronSession =
         Boolean(session.cron_id) ||
@@ -1021,11 +1136,15 @@ function renderSession(session: Session, options: { nested?: boolean; projectMen
       return belongsToProject && !isCronSession;
     });
 
-    const archiveSessionsDisabled =
-      nonPinnedSessionCount === 0 && !hasPinnedOrdinarySession;
+    const archiveSessionsDisabled = nonPinnedSessionCount === 0 && !hasPinnedOrdinarySession;
 
     return (
-      <div key={project.project_id} className="conversation-sidebar__group" data-testid="multi-session-project-group" data-variant={project.project_id}>
+      <div
+        key={project.project_id}
+        className="conversation-sidebar__group"
+        data-testid="multi-session-project-group"
+        data-variant={project.project_id}
+      >
         <ProjectEntityRow
           project={project}
           title={project.name}
@@ -1043,9 +1162,13 @@ function renderSession(session: Session, options: { nested?: boolean; projectMen
         {expanded ? (
           <div className="conversation-sidebar__group-list" data-testid="multi-session-project-group-list">
             {(jobsByProject.get(project.project_id) || []).map((job) => renderCronJob(job, project.project_id, true))}
-            {sessionsForProject.length > 0 ? sessionsForProject.map((session) => renderSession(session, { nested: true, projectMenu: true })) : (
-              (jobsByProject.get(project.project_id) || []).length === 0 ? <div className="conversation-sidebar__empty" data-testid="multi-session-project-group-empty">{t('multiSession.project.noConversations')}</div> : null
-            )}
+            {sessionsForProject.length > 0 ? (
+              sessionsForProject.map((session) => renderSession(session, { nested: true, projectMenu: true }))
+            ) : (jobsByProject.get(project.project_id) || []).length === 0 ? (
+              <div className="conversation-sidebar__empty" data-testid="multi-session-project-group-empty">
+                {t('multiSession.project.noConversations')}
+              </div>
+            ) : null}
             {renderSessionPagination(project.project_id, true)}
           </div>
         ) : null}
@@ -1055,201 +1178,254 @@ function renderSession(session: Session, options: { nested?: boolean; projectMen
 
   const hasPinnedSection = pinnedProjects.length > 0 || orderedPinnedSessions.length > 0;
 
-  const showOverlay = floating && !collapsed;
+  // peek（hover 预览）不带蒙层：蒙层属于"固定展开"态，peek 的消失由指针移开驱动
+  const showOverlay = floating && !collapsed && !peek;
 
   return (
     <>
-    {showOverlay && (
-      <div className="conversation-sidebar__overlay" data-testid="multi-session-sidebar-overlay" onClick={onToggleCollapse} />
-    )}
-    <aside className={`conversation-sidebar${floating ? ' is-floating' : ''}${collapsed ? ' is-collapsed' : ''}`} aria-label={t('multiSession.conversations')} data-testid="multi-session-sidebar">
-      <div className="conversation-sidebar__inner">
-        <div ref={workModeMenuRef} className="conversation-sidebar__mode" data-testid="multi-session-work-mode">
-        <button
-          type="button"
-          className="conversation-sidebar__mode-trigger"
-          onClick={() => setWorkModeMenuOpen((open) => !open)}
-          aria-haspopup="menu"
-          aria-expanded={workModeMenuOpen}
-          data-testid="multi-session-work-mode-trigger"
-        >
-          <span data-testid="multi-session-work-mode-label" data-variant={workMode}>{workMode === 'code' ? t('codeMode.code') : t('codeMode.work')}</span>
-          <ChevronDown size={15} className={workModeMenuOpen ? 'is-open' : ''} />
-        </button>
-        {workModeMenuOpen ? (
-          <div className="conversation-sidebar__mode-menu" role="menu" data-testid="multi-session-work-mode-menu">
-            <button
-              type="button"
-              className={workMode === 'work' ? 'is-active' : ''}
-              onClick={() => void switchWorkMode('work')}
-              role="menuitemradio"
-              aria-checked={workMode === 'work'}
-              data-testid="multi-session-work-mode-menu-work"
-            >
-              <Workflow size={17} />
-              <span>
-                <strong>{t('codeMode.work')}</strong>
-                <small>{t('codeMode.workDescription')}</small>
-              </span>
-              {workMode === 'work' ? <Check size={16} /> : null}
-            </button>
-            <button
-              type="button"
-              className={workMode === 'code' ? 'is-active' : ''}
-              onClick={() => void switchWorkMode('code')}
-              role="menuitemradio"
-              aria-checked={workMode === 'code'}
-              data-testid="multi-session-work-mode-menu-code"
-            >
-              <Code2 size={17} />
-              <span>
-                <strong>{t('codeMode.code')}</strong>
-                <small>{t('codeMode.codeDescription')}</small>
-              </span>
-              {workMode === 'code' ? <Check size={16} /> : null}
-            </button>
-          </div>
-        ) : null}
-        <button
-          type="button"
-          className="conversation-sidebar__mode-collapse"
+      {showOverlay && (
+        <div
+          className="conversation-sidebar__overlay"
+          data-testid="multi-session-sidebar-overlay"
           onClick={onToggleCollapse}
-          aria-label={t('common.collapse') || 'Collapse'}
-          data-testid="multi-session-sidebar-collapse"
-        >
-          <PanelCollapseIcon aria-hidden />
-        </button>
-        </div>
-        <div className="conversation-sidebar__operations" data-testid="multi-session-operations">
-        <button type="button" className="conversation-sidebar__new" onClick={() => {
-          setSelectedProject(null);
-          onNew();
-        }}
-        data-testid="multi-session-new-conversation-button">
-          <NewTaskIcon aria-hidden />
-          <span data-testid="multi-session-new-conversation-label">{t('multiSession.newConversation')}</span>
-        </button>
-        <button
-          type="button"
-          className={`conversation-sidebar__new${isCronActive ? ' is-active' : ''}`}
-          onClick={onOpenCron}
-          data-testid="multi-session-open-cron-button"
-        >
-          <CronIcon aria-hidden />
-          <span data-testid="multi-session-open-cron-label">{t('nav.cron')}</span>
-        </button>
-        </div>
-        <div className="conversation-sidebar__body" data-testid="multi-session-sidebar-body">
-        {hasPinnedSection ? (
-          <div className="conversation-sidebar__group conversation-sidebar__group--pinned" data-testid="multi-session-pinned-group">
-            <div className="conversation-sidebar__section-heading" data-testid="multi-session-pinned-group-heading">
-              <span className="conversation-sidebar__label" data-testid="multi-session-pinned-group-label">{t('multiSession.project.pinned')}</span>
-            </div>
-            <div className="conversation-sidebar__group-list" data-testid="multi-session-pinned-group-list">
-              {orderedPinnedSessions.map((session) => {
-                const project = getSessionProject(session);
-                return renderSession(session, {
-                  projectMenu: Boolean(project && !isDefaultProject(project)),
-                });
-              })}
-              {pinnedProjects.map((project) => renderProject(project))}
-            </div>
-          </div>
-        ) : null}
-        {pathDialogError && !pathDialogOpen ? (
-          <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="multi-session-path-error-toast">
-            <div className="app-session-toast" role="status" aria-live="polite" data-testid="multi-session-path-error-toast-message">
-              {pathDialogError}
-            </div>
-          </div>
-        ) : null}
-        <div className="conversation-sidebar__group conversation-sidebar__project-add" ref={addMenuRef} data-testid="multi-session-project-add-group">
-          <div className="conversation-sidebar__section-heading" data-testid="multi-session-project-add-heading">
-            <span className="conversation-sidebar__label" data-testid="multi-session-project-add-label">{t('multiSession.project.projects')}</span>
-            <div className="conversation-sidebar__section-actions">
+        />
+      )}
+      <aside
+        className={`conversation-sidebar${floating ? ' is-floating' : ''}${collapsed ? ' is-collapsed' : ''}`}
+        onMouseEnter={onMouseEnter}
+        onMouseLeave={onMouseLeave}
+        aria-label={t('multiSession.conversations')}
+        data-testid="multi-session-sidebar"
+      >
+        <div className="conversation-sidebar__inner">
+          <div ref={workModeMenuRef} className="conversation-sidebar__mode" data-testid="multi-session-work-mode">
             <button
               type="button"
-              className="conversation-sidebar__section-action"
-              onClick={() => {
-                setProjectAddMenuOpen((open) => !open);
-              }}
-              aria-label={t('multiSession.project.newProject')}
+              className="conversation-sidebar__mode-trigger"
+              onClick={() => setWorkModeMenuOpen((open) => !open)}
               aria-haspopup="menu"
-              aria-expanded={projectAddMenuOpen}
-              data-tooltip={t('multiSession.project.newProject')}
-              data-testid="multi-session-new-project-button"
-              {...newProjectTooltipHandlers}
+              aria-expanded={workModeMenuOpen}
+              data-testid="multi-session-work-mode-trigger"
             >
-              <PlusIcon aria-hidden />
+              <span data-testid="multi-session-work-mode-label" data-variant={workMode}>
+                {workMode === 'code' ? t('codeMode.code') : t('codeMode.work')}
+              </span>
+              <ChevronDown size={15} className={workModeMenuOpen ? 'is-open' : ''} />
             </button>
-            </div>
-          </div>
-          {projectAddMenuOpen ? (
-            <ProjectAddMenu
-              onCreateBlank={() => {
-                setProjectAddMenuOpen(false);
-                setProjectCreateMode('blank');
-                setPathDialogError(null);
-                setPathDialogInitial(null);
-                setPathDialogOpen(true);
-              }}
-              onSelectExisting={() => {
-                setProjectAddMenuOpen(false);
-                void handleSelectExistingProjectDirectory();
-              }}
-            />
-          ) : null}
-          <div className="conversation-sidebar__group-list" data-testid="multi-session-project-add-list">
-            {regularProjects.length === 0 ? (
-              <div className="conversation-sidebar__empty" data-testid="multi-session-project-add-empty">{t('multiSession.project.noProjects')}</div>
+            {workModeMenuOpen ? (
+              <div className="conversation-sidebar__mode-menu" role="menu" data-testid="multi-session-work-mode-menu">
+                <button
+                  type="button"
+                  className={workMode === 'work' ? 'is-active' : ''}
+                  onClick={() => void switchWorkMode('work')}
+                  role="menuitemradio"
+                  aria-checked={workMode === 'work'}
+                  data-testid="multi-session-work-mode-menu-work"
+                >
+                  <Workflow size={17} />
+                  <span>
+                    <strong>{t('codeMode.work')}</strong>
+                    <small>{t('codeMode.workDescription')}</small>
+                  </span>
+                  {workMode === 'work' ? <Check size={16} /> : null}
+                </button>
+                <button
+                  type="button"
+                  className={workMode === 'code' ? 'is-active' : ''}
+                  onClick={() => void switchWorkMode('code')}
+                  role="menuitemradio"
+                  aria-checked={workMode === 'code'}
+                  data-testid="multi-session-work-mode-menu-code"
+                >
+                  <Code2 size={17} />
+                  <span>
+                    <strong>{t('codeMode.code')}</strong>
+                    <small>{t('codeMode.codeDescription')}</small>
+                  </span>
+                  {workMode === 'code' ? <Check size={16} /> : null}
+                </button>
+              </div>
             ) : null}
-            {regularProjects.map((project) => renderProject(project))}
+            {!peek && (
+              <button
+                type="button"
+                className="conversation-sidebar__mode-collapse"
+                onClick={onToggleCollapse}
+                aria-label={t('common.collapse') || 'Collapse'}
+                data-testid="multi-session-sidebar-collapse"
+              >
+                <PanelCollapseIcon aria-hidden />
+              </button>
+            )}
           </div>
-        </div>
-        <div className="conversation-sidebar__group conversation-sidebar__group--conversations" data-testid="multi-session-conversations-group">
-          <div className="conversation-sidebar__section-heading" data-testid="multi-session-conversations-heading">
-            <span className="conversation-sidebar__label" data-testid="multi-session-conversations-label">{t('multiSession.conversations')}</span>
+          <div className="conversation-sidebar__operations" data-testid="multi-session-operations">
             <button
               type="button"
-              className="conversation-sidebar__section-new"
+              className="conversation-sidebar__new"
               onClick={() => {
                 setSelectedProject(null);
                 onNew();
               }}
-              aria-label={t('multiSession.project.newConversation')}
-              data-tooltip={t('multiSession.project.newConversation')}
-              data-testid="multi-session-conversations-new-button"
-              {...conversationsTooltipHandlers}
+              data-testid="multi-session-new-conversation-button"
             >
-              <PlusIcon aria-hidden />
+              <NewTaskIcon aria-hidden />
+              <span data-testid="multi-session-new-conversation-label">{t('multiSession.newConversation')}</span>
+            </button>
+            <button
+              type="button"
+              className={`conversation-sidebar__new${isCronActive ? ' is-active' : ''}`}
+              onClick={onOpenCron}
+              data-testid="multi-session-open-cron-button"
+            >
+              <CronIcon aria-hidden />
+              <span data-testid="multi-session-open-cron-label">{t('nav.cron')}</span>
             </button>
           </div>
-          <div className="conversation-sidebar__group-list" data-testid="multi-session-conversations-list">
-            {defaultProject ? (jobsByProject.get(defaultProject.project_id) || []).map((job) => renderCronJob(job, defaultProject.project_id)) : null}
-            {conversationSessions.length > 0 ? conversationSessions.map((session) => renderSession(session)) : (
-              (!defaultProject || (jobsByProject.get(defaultProject.project_id) || []).length === 0) ? <div className="conversation-sidebar__empty" data-testid="multi-session-conversations-empty">{t('multiSession.project.noConversations')}</div> : null
-            )}
-            {defaultProject ? renderSessionPagination(defaultProject.project_id, false) : null}
+          <div className="conversation-sidebar__body" data-testid="multi-session-sidebar-body">
+            {hasPinnedSection ? (
+              <div
+                className="conversation-sidebar__group conversation-sidebar__group--pinned"
+                data-testid="multi-session-pinned-group"
+              >
+                <div className="conversation-sidebar__section-heading" data-testid="multi-session-pinned-group-heading">
+                  <span className="conversation-sidebar__label" data-testid="multi-session-pinned-group-label">
+                    {t('multiSession.project.pinned')}
+                  </span>
+                </div>
+                <div className="conversation-sidebar__group-list" data-testid="multi-session-pinned-group-list">
+                  {orderedPinnedSessions.map((session) => {
+                    const project = getSessionProject(session);
+                    return renderSession(session, {
+                      projectMenu: Boolean(project && !isDefaultProject(project)),
+                    });
+                  })}
+                  {pinnedProjects.map((project) => renderProject(project))}
+                </div>
+              </div>
+            ) : null}
+            {pathDialogError && !pathDialogOpen ? (
+              <div
+                className="app-toast-wrapper app-toast-wrapper--top-center"
+                data-testid="multi-session-path-error-toast"
+              >
+                <div
+                  className="app-session-toast"
+                  role="status"
+                  aria-live="polite"
+                  data-testid="multi-session-path-error-toast-message"
+                >
+                  {pathDialogError}
+                </div>
+              </div>
+            ) : null}
+            <div
+              className="conversation-sidebar__group conversation-sidebar__project-add"
+              ref={addMenuRef}
+              data-testid="multi-session-project-add-group"
+            >
+              <div className="conversation-sidebar__section-heading" data-testid="multi-session-project-add-heading">
+                <span className="conversation-sidebar__label" data-testid="multi-session-project-add-label">
+                  {t('multiSession.project.projects')}
+                </span>
+                <div className="conversation-sidebar__section-actions">
+                  <button
+                    type="button"
+                    className="conversation-sidebar__section-action"
+                    onClick={() => {
+                      setProjectAddMenuOpen((open) => !open);
+                    }}
+                    aria-label={t('multiSession.project.newProject')}
+                    aria-haspopup="menu"
+                    aria-expanded={projectAddMenuOpen}
+                    data-tooltip={t('multiSession.project.newProject')}
+                    data-testid="multi-session-new-project-button"
+                    {...newProjectTooltipHandlers}
+                  >
+                    <PlusIcon aria-hidden />
+                  </button>
+                </div>
+              </div>
+              {projectAddMenuOpen ? (
+                <ProjectAddMenu
+                  onCreateBlank={() => {
+                    setProjectAddMenuOpen(false);
+                    setProjectCreateMode('blank');
+                    setPathDialogError(null);
+                    setPathDialogInitial(null);
+                    setPathDialogOpen(true);
+                  }}
+                  onSelectExisting={() => {
+                    setProjectAddMenuOpen(false);
+                    void handleSelectExistingProjectDirectory();
+                  }}
+                />
+              ) : null}
+              <div className="conversation-sidebar__group-list" data-testid="multi-session-project-add-list">
+                {regularProjects.length === 0 ? (
+                  <div className="conversation-sidebar__empty" data-testid="multi-session-project-add-empty">
+                    {t('multiSession.project.noProjects')}
+                  </div>
+                ) : null}
+                {regularProjects.map((project) => renderProject(project))}
+              </div>
+            </div>
+            <div
+              className="conversation-sidebar__group conversation-sidebar__group--conversations"
+              data-testid="multi-session-conversations-group"
+            >
+              <div className="conversation-sidebar__section-heading" data-testid="multi-session-conversations-heading">
+                <span className="conversation-sidebar__label" data-testid="multi-session-conversations-label">
+                  {t('multiSession.conversations')}
+                </span>
+                <button
+                  type="button"
+                  className="conversation-sidebar__section-new"
+                  onClick={() => {
+                    setSelectedProject(null);
+                    onNew();
+                  }}
+                  aria-label={t('multiSession.project.newConversation')}
+                  data-tooltip={t('multiSession.project.newConversation')}
+                  data-testid="multi-session-conversations-new-button"
+                  {...conversationsTooltipHandlers}
+                >
+                  <PlusIcon aria-hidden />
+                </button>
+              </div>
+              <div className="conversation-sidebar__group-list" data-testid="multi-session-conversations-list">
+                {defaultProject
+                  ? (jobsByProject.get(defaultProject.project_id) || []).map((job) =>
+                      renderCronJob(job, defaultProject.project_id),
+                    )
+                  : null}
+                {conversationSessions.length > 0 ? (
+                  conversationSessions.map((session) => renderSession(session))
+                ) : !defaultProject || (jobsByProject.get(defaultProject.project_id) || []).length === 0 ? (
+                  <div className="conversation-sidebar__empty" data-testid="multi-session-conversations-empty">
+                    {t('multiSession.project.noConversations')}
+                  </div>
+                ) : null}
+                {defaultProject ? renderSessionPagination(defaultProject.project_id, false) : null}
+              </div>
+            </div>
           </div>
         </div>
-        </div>
-      </div>
-      {pathDialogOpen ? (
-        <ProjectCreateDialog
-          mode={projectCreateMode}
-          error={pathDialogError}
-          initial={pathDialogInitial}
-          onCancel={() => {
-            setPathDialogError(null);
-            setPathDialogInitial(null);
-            setPathDialogOpen(false);
-          }}
-          onSubmit={(name, projectDir) => void handleCreateProject(name, projectDir)}
-        />
-      ) : null}
-      {conversationsTooltip}
-      {newProjectTooltip}
-    </aside>
+        {pathDialogOpen ? (
+          <ProjectCreateDialog
+            mode={projectCreateMode}
+            error={pathDialogError}
+            initial={pathDialogInitial}
+            onCancel={() => {
+              setPathDialogError(null);
+              setPathDialogInitial(null);
+              setPathDialogOpen(false);
+            }}
+            onSubmit={(name, projectDir) => void handleCreateProject(name, projectDir)}
+          />
+        ) : null}
+        {conversationsTooltip}
+        {newProjectTooltip}
+      </aside>
     </>
   );
 }

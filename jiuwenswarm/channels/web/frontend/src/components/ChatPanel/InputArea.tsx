@@ -146,6 +146,8 @@ function PersonalContextIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 import { TeamSelector } from './TeamSelector';
+import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
+import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 
 const MENU_GAP = 10;
@@ -903,12 +905,24 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const intent = runtime.agentGroupSelectionIntent;
     return intent?.kind === 'select' ? intent.id : null;
   });
+  const organizationUiEnabled = useTeamOrganizationUiEnabled();
+  const organizationTeam = useTeamSelectorStore((s) => {
+    if (!organizationUiEnabled || !activeSessionId) return undefined;
+    const runtime = s.runtimes[activeSessionId];
+    return runtime?.teams.find((team) => team.team_id === runtime.selectedTeamId && team.organization_id);
+  });
   const agentGroupBinding = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.agentGroupBinding ?? null);
   const agentGroupBindingPending = useSessionStore(
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupBindingPending ?? null,
   );
   const agentGroupLocked = Boolean(agentGroupBinding || agentGroupBindingPending);
   const selectedGroup = groupOptions.find((item) => item.name === selectedGroupId || item.id === selectedGroupId) ?? null;
+  const displayedGroupId = organizationTeam ? organizationTeam.agent_group_name?.trim() || null : selectedGroupId;
+  const displayedGroup = useMemo(
+    () => (organizationTeam ? resolveOrganizationTeamIdentity(organizationTeam, groupOptions) : selectedGroup),
+    [organizationTeam, groupOptions, selectedGroup],
+  );
+  const organizationGroupCatalogNeeded = Boolean(organizationTeam?.agent_group_name);
   const installedGroupOptions = useMemo(
     () => groupOptions.filter((item) => item.installed && item.capabilities.canUse),
     [groupOptions],
@@ -925,8 +939,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   useEffect(() => {
     if (!onAgentGroupIdentityChange) return;
-    onAgentGroupIdentityChange(selectedGroupId && selectedGroup ? selectedGroup : null);
-  }, [onAgentGroupIdentityChange, selectedGroup, selectedGroupId]);
+    onAgentGroupIdentityChange(displayedGroupId && displayedGroup ? displayedGroup : null);
+  }, [onAgentGroupIdentityChange, displayedGroup, displayedGroupId]);
 
   useEffect(() => {
     if (!activeSessionId || (pickerTab !== 'agent' && !selectedAgentId) || (!agentPickerOpen && !selectedAgentId))
@@ -961,7 +975,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   }, [activeSessionId, agentManagementClient, agentPickerOpen, pickerTab, selectedAgentId]);
 
   useEffect(() => {
-    if (!activeSessionId || (!agentPickerOpen && !selectedGroupId) || (pickerTab !== 'group' && !selectedGroupId))
+    if (
+      !activeSessionId ||
+      (!agentPickerOpen && !selectedGroupId && !organizationGroupCatalogNeeded) ||
+      (pickerTab !== 'group' && !selectedGroupId && !organizationGroupCatalogNeeded)
+    )
       return;
     let cancelled = false;
     setGroupOptionsStatus('loading');
@@ -978,7 +996,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return () => {
       cancelled = true;
     };
-  }, [activeSessionId, agentPickerOpen, groupManagementClient, pickerTab, selectedGroupId]);
+  }, [activeSessionId, agentPickerOpen, groupManagementClient, pickerTab, selectedGroupId, organizationGroupCatalogNeeded]);
 
   useEffect(() => {
     if (attachMenuOpen) return;
@@ -1017,7 +1035,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isInterruptible = isProcessing || isPaused || isGoalActive;
   const isAgentMode = mode === 'agent';
   const isTeamMode = mode === 'team';
-  const organizationUiEnabled = useTeamOrganizationUiEnabled();
   const isAutoHarnessMode = mode === 'auto_harness';
   const existingTeamGroupSelectionDisabled = Boolean(
     isTeamMode && activeSessionId !== NEW_CONVERSATION_ID && !agentGroupBinding && !agentGroupBindingPending,
@@ -3798,7 +3815,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             <div className="chat-input-toolbar" data-testid="chat-panel-input-toolbar">
               <div className="chat-input-toolbar-left" data-testid="chat-panel-input-toolbar-left">
                 {isTeamMode && organizationUiEnabled && (
-                  <TeamSelector sessionId={activeSessionId} isProcessing={isProcessing} />
+                  <TeamSelector sessionId={activeSessionId} isProcessing={isProcessing} groups={groupOptions} />
                 )}
                 <input
                   ref={fileInputRef}
@@ -4599,7 +4616,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     </button>
                   </div>
                 )}
-                {selectedGroupId && isTeamMode && (
+                {displayedGroupId && isTeamMode && (
                   <div
                     className={clsx(
                       'chat-agent-tag chat-agent-group-tag',
@@ -4615,22 +4632,22 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     }
                   >
                     <span className="chat-agent-tag__avatar" aria-hidden="true">
-                      {selectedGroup?.avatarUrl && !failedGroupAvatarIds.has(selectedGroup.id) ? (
+                      {displayedGroup?.avatarUrl && !failedGroupAvatarIds.has(displayedGroup.id) ? (
                         <img
-                          src={selectedGroup.avatarUrl}
+                          src={displayedGroup.avatarUrl}
                           alt=""
                           onError={() =>
                             setFailedGroupAvatarIds((current) =>
-                              current.has(selectedGroup.id) ? current : new Set([...current, selectedGroup.id]),
+                              current.has(displayedGroup.id) ? current : new Set([...current, displayedGroup.id]),
                             )
                           }
                         />
                       ) : (
-                        (selectedGroup?.displayName || selectedGroupId).trim().slice(0, 1).toUpperCase() || '?'
+                        (displayedGroup?.displayName || displayedGroupId).trim().slice(0, 1).toUpperCase() || '?'
                       )}
                     </span>
                     <span className="chat-agent-tag__label" data-testid="chat-panel-agent-group-tag-label">
-                      {selectedGroup?.displayName || selectedGroupId}
+                      {displayedGroup?.displayName || displayedGroupId}
                     </span>
                     {agentGroupLocked || existingTeamGroupSelectionDisabled ? (
                       <Lock className="chat-agent-tag__lock" size={12} strokeWidth={2} aria-hidden="true" />

@@ -153,10 +153,10 @@ export function RsiDetailHeader({
           removeListItem(task.task_id);
         } else if (action === 'download') {
           const artifactId =
-            report?.metrics.best_artifact_id
-            ?? report?.best_artifact?.artifact_id
-            ?? task.best_artifact?.artifact_id
-            ?? undefined;
+            report?.metrics.best_artifact_id ??
+            report?.best_artifact?.artifact_id ??
+            task.best_artifact?.artifact_id ??
+            undefined;
           const artifact = await rsiArtifactDownload(task.task_id, artifactId);
           const downloadUrl = rsiArtifactDownloadUrl(artifact);
           if (artifact.is_directory || !downloadUrl) {
@@ -171,8 +171,7 @@ export function RsiDetailHeader({
             // 同源时用隐藏 <a download> 触发下载：桌面 WebView 中 window.open 到后端
             // HTTP URL 会直接导航覆盖应用页面，<a download> 则保持下载不导航；
             // 跨源时 download 属性会被浏览器忽略，仍保留 window.open 的网页版行为。
-            const sameOrigin =
-              new URL(downloadUrl, window.location.href).origin === window.location.origin;
+            const sameOrigin = new URL(downloadUrl, window.location.href).origin === window.location.origin;
             if (sameOrigin) {
               const link = document.createElement('a');
               link.href = downloadUrl;
@@ -189,8 +188,7 @@ export function RsiDetailHeader({
           await rsiHarnessInstall(task.task_id);
           markTaskInstalled(task.task_id);
           await usePluginPackageStore.getState().loadList('mine', { silent: true });
-          const snapshotName =
-            report?.best_artifact?.name || task.best_artifact?.name;
+          const snapshotName = report?.best_artifact?.name || task.best_artifact?.name;
           showActionMessage(
             'success',
             t('rsi.detail.actionInstallSuccess', {
@@ -265,100 +263,105 @@ export function RsiDetailHeader({
 
   return (
     <div className="rsi-detail__header">
-      <div className="rsi-detail__title-block">
+      <div className="rsi-detail__title-row">
         <div className="rsi-detail__name">{task.name}</div>
-        <div className="rsi-detail__tags">
-          {badge.kind ? (
-            <span className="rsi-detail__tag rsi-detail__tag--status">
-              {failureReason ? (
-                <span className="rsi-detail__failure-anchor" ref={failureReasonAnchorRef}>
-                  <button
-                    type="button"
-                    className="rsi-detail__failure-trigger"
-                    onClick={() => setFailureReasonOpen((open) => !open)}
-                    aria-label={t('rsi.detail.failureReason', { defaultValue: '失败原因' })}
-                    aria-expanded={failureReasonOpen}
-                    aria-controls="rsi-failure-reason-popover"
-                    data-testid="rsi-failure-reason-trigger"
-                  >
-                    <StatusIcon kind={badge.kind} title={failureReason} />
-                  </button>
-                  {failureReasonOpen && (
-                    <div
-                      id="rsi-failure-reason-popover"
-                      className="rsi-detail__failure-popover"
-                      role="dialog"
-                      aria-label={t('rsi.detail.failureReason', { defaultValue: '失败原因' })}
-                      data-testid="rsi-failure-reason-popover"
-                    >
-                      {failureReason}
-                    </div>
-                  )}
-                </span>
-              ) : (
-                <StatusIcon kind={badge.kind} />
-              )}
-              {t('rsi.detail.' + badge.labelKey)}
-            </span>
-          ) : (
-            <span className="rsi-detail__tag rsi-detail__tag--status">{t('rsi.detail.' + badge.labelKey)}</span>
+        <div className="rsi-detail__header-actions">
+          {actionSuccess && (
+            <div className="rsi-detail__action-success" role="status">
+              <img className="rsi-detail__action-success-icon" src={completeIcon} alt="" aria-hidden />
+              <span className="rsi-detail__action-success-text">{actionSuccess}</span>
+              <button
+                type="button"
+                className="rsi-detail__action-success-close"
+                onClick={() => setActionSuccess(null)}
+                aria-label={t('rsi.detail.actionClose')}
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
+                  <path
+                    d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            </div>
           )}
-          <span className="rsi-detail__divider" />
-          <span className="rsi-detail__tag rsi-detail__tag--meta">
-            {t('rsi.detail.tagType')}：{typeLabel}
-          </span>
-          <span className="rsi-detail__divider" />
-          <span className="rsi-detail__tag rsi-detail__tag--meta">{maxIter}</span>
-          <span className="rsi-detail__divider" />
-          <span className="rsi-detail__tag rsi-detail__tag--meta">{createdLabel}</span>
+          <div className="rsi-detail__actions">
+            {orderedActions.map((action) => {
+              const className =
+                action === 'delete'
+                  ? 'rsi-btn rsi-detail__action--delete'
+                  : `rsi-btn ${action === 'config' ? 'rsi-btn--ghost' : 'rsi-btn--primary'}`;
+              return (
+                <button
+                  key={action}
+                  type="button"
+                  className={className}
+                  onClick={() => handleAction(action)}
+                  disabled={busy}
+                  aria-label={action === 'delete' ? actionLabel.delete : undefined}
+                  data-testid={`rsi-action-${action}`}
+                >
+                  {action === 'delete' && (
+                    <img className="rsi-detail__action-icon" src={deleteIcon} alt={actionLabel.delete} />
+                  )}
+                  {action !== 'delete' && actionLabel[action]}
+                </button>
+              );
+            })}
+          </div>
+          {actionError && (
+            <div className="rsi-detail__action-error" role="alert">
+              {actionError}
+            </div>
+          )}
         </div>
       </div>
-      <div className="rsi-detail__header-actions">
-        {actionSuccess && (
-          <div className="rsi-detail__action-success" role="status">
-            <img className="rsi-detail__action-success-icon" src={completeIcon} alt="" aria-hidden />
-            <span className="rsi-detail__action-success-text">{actionSuccess}</span>
-            <button
-              type="button"
-              className="rsi-detail__action-success-close"
-              onClick={() => setActionSuccess(null)}
-              aria-label={t('rsi.detail.actionClose')}
-            >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
-                <path d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-              </svg>
-            </button>
-          </div>
-        )}
-        <div className="rsi-detail__actions">
-          {orderedActions.map((action) => {
-            const className =
-              action === 'delete'
-                ? 'rsi-btn rsi-detail__action--delete'
-                : `rsi-btn ${action === 'config' ? 'rsi-btn--ghost' : 'rsi-btn--primary'}`;
-            return (
-              <button
-                key={action}
-                type="button"
-                className={className}
-                onClick={() => handleAction(action)}
-                disabled={busy}
-                aria-label={action === 'delete' ? actionLabel.delete : undefined}
-                data-testid={`rsi-action-${action}`}
-              >
-                {action === 'delete' && (
-                  <img className="rsi-detail__action-icon" src={deleteIcon} alt={actionLabel.delete} />
+      <div className="rsi-detail__tags">
+        {badge.kind ? (
+          <span className="rsi-detail__tag rsi-detail__tag--status">
+            {failureReason ? (
+              <span className="rsi-detail__failure-anchor" ref={failureReasonAnchorRef}>
+                <button
+                  type="button"
+                  className="rsi-detail__failure-trigger"
+                  onClick={() => setFailureReasonOpen((open) => !open)}
+                  aria-label={t('rsi.detail.failureReason', { defaultValue: '失败原因' })}
+                  aria-expanded={failureReasonOpen}
+                  aria-controls="rsi-failure-reason-popover"
+                  data-testid="rsi-failure-reason-trigger"
+                >
+                  <StatusIcon kind={badge.kind} title={failureReason} />
+                </button>
+                {failureReasonOpen && (
+                  <div
+                    id="rsi-failure-reason-popover"
+                    className="rsi-detail__failure-popover"
+                    role="dialog"
+                    aria-label={t('rsi.detail.failureReason', { defaultValue: '失败原因' })}
+                    data-testid="rsi-failure-reason-popover"
+                  >
+                    {failureReason}
+                  </div>
                 )}
-                {action !== 'delete' && actionLabel[action]}
-              </button>
-            );
-          })}
-        </div>
-        {actionError && (
-          <div className="rsi-detail__action-error" role="alert">
-            {actionError}
-          </div>
+              </span>
+            ) : (
+              <StatusIcon kind={badge.kind} />
+            )}
+            {t('rsi.detail.' + badge.labelKey)}
+          </span>
+        ) : (
+          <span className="rsi-detail__tag rsi-detail__tag--status">{t('rsi.detail.' + badge.labelKey)}</span>
         )}
+        <span className="rsi-detail__divider" />
+        <span className="rsi-detail__tag rsi-detail__tag--meta">
+          {t('rsi.detail.tagType')}：{typeLabel}
+        </span>
+        <span className="rsi-detail__divider" />
+        <span className="rsi-detail__tag rsi-detail__tag--meta">{maxIter}</span>
+        <span className="rsi-detail__divider" />
+        <span className="rsi-detail__tag rsi-detail__tag--meta">{createdLabel}</span>
       </div>
       {confirmAction && (
         <div className="rsi-confirm-overlay" role="presentation">

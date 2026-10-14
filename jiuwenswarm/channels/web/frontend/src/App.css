@@ -23,6 +23,29 @@
   background: var(--color-surface-shell);
 }
 
+/* 全局会话栏 peek 宿主（非会话/定时任务页 hover chat 图标时挂载）：
+   fixed 对齐内容区左缘（跟随 shell 导航列宽，icon-rail 形态为 72px），
+   容器不拦截指针（页面可正常交互），仅侧栏本身可交互 */
+.chat-layout--peek-host {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: var(--shell-nav-width);
+  right: 0;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.shell--icon-rail .chat-layout--peek-host,
+.shell--agent-management .chat-layout--peek-host {
+  left: 72px;
+}
+
+.chat-layout--peek-host .conversation-sidebar,
+.chat-layout--peek-host .rsi-rail {
+  pointer-events: auto;
+}
+
 .chat-workspace {
   overflow: hidden;
   background: var(--color-surface-card);
@@ -84,7 +107,7 @@
   height: 48px;
 }
 
-.single-agent-surface--trajectory .chat-panel-shell > :not(.chat-panel-header) {
+.single-agent-surface--trajectory .chat-panel-shell> :not(.chat-panel-header) {
   visibility: hidden;
   pointer-events: none;
 }
@@ -94,9 +117,7 @@
  * an approval or send a message without switching back to the chat. Its own
  * padding is the gap between the trajectory's bottom edge and the input frame.
  */
-.single-agent-surface--trajectory
-  .chat-panel-shell--composer-docked:not(.chat-panel-shell--composer-collapsed)
-  > .chat-compose {
+.single-agent-surface--trajectory .chat-panel-shell--composer-docked:not(.chat-panel-shell--composer-collapsed)>.chat-compose {
   visibility: visible;
   pointer-events: auto;
   z-index: 11;
@@ -106,9 +127,7 @@
 
 /* The docked composer sits at the bottom; the chat disclaimer belongs to the
    reading surface behind it and gives its space back. */
-.single-agent-surface--trajectory
-  .chat-panel-shell--composer-docked
-  > .chat-ai-disclaimer {
+.single-agent-surface--trajectory .chat-panel-shell--composer-docked>.chat-ai-disclaimer {
   display: none;
 }
 
@@ -133,9 +152,7 @@
   background: var(--color-surface-card);
 }
 
-.chat-workspace--trajectory-floating-tools
-  .single-agent-surface--trajectory
-  .chat-surface-view[data-testid='single-agent-trajectory-view'] {
+.chat-workspace--trajectory-floating-tools .single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-trajectory-view'] {
   right: 364px;
 }
 

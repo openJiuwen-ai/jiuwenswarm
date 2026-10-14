@@ -15,7 +15,7 @@ import type {
   McpOption,
   SkillOption,
 } from './types';
-import { resolveAgentTagPayload } from './tagOptions';
+import { resolveAgentGroupTagPayload } from './tagOptions';
 
 export type AgentInstallResult =
   | { kind: 'ok' }
@@ -114,7 +114,7 @@ export function buildAgentGroupCreatePayload(draft: AgentGroupDraft): Record<str
     quickInputs: draft.suggestedPrompts.map(prompt => prompt.trim()).filter(Boolean),
   };
   if (draft.category.trim()) payload.category = draft.category.trim();
-  const tags = resolveAgentTagPayload(draft.tagIds, draft.customTags);
+  const tags = resolveAgentGroupTagPayload(draft.tagIds, draft.customTags);
   if (tags.length > 0) payload.tags = tags;
   return payload;
 }

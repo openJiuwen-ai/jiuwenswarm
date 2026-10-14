@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
 from jiuwenswarm.common.model_selection import ModelSelection
+from jiuwenswarm.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.common.utils import get_agent_sessions_dir
-
-_SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$")
 
 
 def _metadata_path(session_id: str) -> Path:
     session_id = str(session_id or "").strip()
-    if not _SESSION_ID.fullmatch(session_id) or ".." in session_id:
+    if not is_valid_session_id(session_id):
         raise ValueError("invalid session_id")
     root = get_agent_sessions_dir().resolve()
     path = (root / session_id / "metadata.json").resolve()

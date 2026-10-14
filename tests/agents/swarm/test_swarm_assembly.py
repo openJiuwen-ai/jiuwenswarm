@@ -177,6 +177,21 @@ def test_team_heartbeat_rail_skipped_for_cron_execution_session(ctx_kwargs: dict
     assert member_rails._build_heartbeat_rail({}, context) is None
 
 
+def test_team_heartbeat_rail_skipped_for_xiaoyi_channel() -> None:
+    """小艺渠道的成员不挂心跳工具（渠道没有可用的主动投递路径）。"""
+    context = SwarmBuildContext(
+        session_id="xiaoyi_1a13511901d_32eb921d481b",
+        channel_id="xiaoyi",
+        user_id="user-1",
+        request_metadata={"mode": "team.work.normal"},
+        mode="team.work.normal",
+        member_card_id="leader-card",
+        heartbeat_job_service=object(),
+    )
+
+    assert member_rails._build_heartbeat_rail({}, context) is None
+
+
 @pytest.mark.parametrize(
     "mode",
     [
@@ -1476,6 +1491,7 @@ def _write_agent_group_assembly_fixture(root: Path) -> Path:
                 "name": "sample-expert-group",
                 "package_type": "agent_group",
                 "instruction": "Leader 负责理解用户目标",
+                "tags": [{"id": "analysis", "zh": "分析", "en": "Analysis"}],
                 "agents": list(manifests),
                 "skills": ["skill_name_1"],
             }
@@ -1514,8 +1530,9 @@ def _write_agent_group_assembly_fixture(root: Path) -> Path:
     return package_dir
 
 
+@pytest.mark.parametrize("organization_enabled", [False, True])
 def test_enrich_applies_agent_group_as_hybrid_member_snapshots(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, organization_enabled: bool
 ) -> None:
     """AgentGroup prompts stay Team-owned while capabilities use snapshots."""
     from jiuwenswarm.server.runtime import extension_package_manager as package_manager
@@ -1537,6 +1554,7 @@ def test_enrich_applies_agent_group_as_hybrid_member_snapshots(
     )
     spec = _make_team_spec()
     spec.leader.prompt = "existing leader agreement"
+    spec.enable_organization = organization_enabled
 
     enrich_team_spec_for_swarm(
         spec,
@@ -1547,6 +1565,9 @@ def test_enrich_applies_agent_group_as_hybrid_member_snapshots(
     )
 
     assert spec.team_mode == "hybrid"
+    assert spec.metadata["agent_group_name"] == "sample-expert-group"
+    assert spec.metadata["capabilities"] == ["analysis"]
+    assert spec.enable_organization is organization_enabled
     assert [member.member_name for member in spec.predefined_members] == [
         "member1",
         "member2",

@@ -76,6 +76,8 @@ test('builds a group create payload without unsupported Agent fields', () => {
   assert.deepEqual(payload.skills, ['review']);
   assert.deepEqual(payload.quickInputs, ['评审方案']);
   assert.equal(payload.tags[0].zh, '产品研发');
+  assert.equal(payload.tags[0].id, 'product-development');
+  assert.equal(payload.tags[1].id, '交付');
   for (const forbidden of ['model', 'mcps', 'pluginNames', 'apiKey', 'apiBase', 'path']) {
     assert.equal(Object.hasOwn(payload, forbidden), false, forbidden);
   }

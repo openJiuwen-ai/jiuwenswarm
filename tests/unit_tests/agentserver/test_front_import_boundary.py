@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from websockets.legacy.client import connect
 
-from scripts.benchmarks.issue4689_front import free_port, receive, seed, terminate_owned
+from tests.unit_tests.agentserver.fixtures.front_process import free_port, receive, seed, terminate_owned
 
 _OBSERVER = '''
 import importlib.abc

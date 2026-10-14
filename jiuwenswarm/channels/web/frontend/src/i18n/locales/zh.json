@@ -629,8 +629,8 @@
         "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
       },
       "team_organization_ui_enabled": {
-        "title": "启用 Team Organization 界面",
-        "description": "显示实验性的多 Team 视图和组织任务池。此开关不关闭后端组织能力。"
+        "title": "启用 Team Organization",
+        "description": "启用组织视图及后端组织工具。修改后请完整重启后端并新建会话；不会立即停止已有组织任务。"
       },
       "team_scheduled_dispatch_enabled": {
         "title": "启用调度模式",

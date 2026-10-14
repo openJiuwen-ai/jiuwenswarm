@@ -1,10 +1,4 @@
-"""Extension public surface with transport adapters loaded lazily.
-
-SDK 基类与接口为本仓实现副本（gateway_protocol 仓收敛为纯数据结构后，
-接口/基类回各仓持有；两仓经组装期注入对齐）；ExtensionConfig/ExtensionMetadata
-为纯数据结构，仍以 ``gateway_protocol.types`` 为 source of truth；
-ExtensionLoader/Manager/Registry 为具体实现，仍由本仓扩展框架提供。
-"""
+"""Extension public surface with transport adapters loaded lazily."""
 
 from __future__ import annotations
 
@@ -32,8 +26,8 @@ _EXPORTS = {
         "jiuwenswarm.extensions.sdk.third_agent",
         "ThirdAgentExtension",
     ),
-    "ExtensionConfig": ("gateway_protocol.types", "ExtensionConfig"),
-    "ExtensionMetadata": ("gateway_protocol.types", "ExtensionMetadata"),
+    "ExtensionConfig": ("jiuwenswarm.extensions.types", "ExtensionConfig"),
+    "ExtensionMetadata": ("jiuwenswarm.extensions.types", "ExtensionMetadata"),
 }
 
 
