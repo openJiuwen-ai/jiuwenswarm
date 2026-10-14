@@ -149,6 +149,7 @@
 | `components/AssetPublishDrawer` | `asset-publish` | 四类资源发布表单、预检、任务及 OAuth 恢复 |
 | `components/marketplace` | `marketplace` | 公共市场布局与目录缓存状态 |
 | `App.tsx` | `app` | 应用外壳;全局布局与 toast |
+| `features/shareImageExport.tsx` | `share-image-export` | 长图导出独立渲染页 |
 | `components/ui/Select` | `ui-select` | 通用下拉选择控件 |
 | `features/designer` | `designer` | 设计功能页;工作流画布与节点;Director 对话;运行控制;素材与分镜 |
 

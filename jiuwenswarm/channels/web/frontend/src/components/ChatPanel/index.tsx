@@ -142,6 +142,8 @@ interface ChatPanelProps {
   ) => Promise<boolean>;
   onExportShare?: () => void | Promise<void>;
   isExportingShare?: boolean;
+  shareExportProgress?: string;
+  isWaitingShareExportTab?: boolean;
   canExportShare?: boolean;
   sessionTitle?: string;
   sessionProjectName?: string;
@@ -1053,6 +1055,8 @@ export const ChatPanel = React.memo(function ChatPanel({
   onUserAnswer,
   onExportShare,
   isExportingShare = false,
+  shareExportProgress,
+  isWaitingShareExportTab = false,
   canExportShare = false,
   sessionTitle,
   sessionProjectName,
@@ -1186,7 +1190,8 @@ export const ChatPanel = React.memo(function ChatPanel({
       onComposerHeightChange(0);
     };
   }, [composerCollapsed, composerDockVisible, onComposerHeightChange]);
-  const shareExportTitle = getShareExportTitle(t, isExportingShare, canExportShare);
+  const shareExportTitle = isWaitingShareExportTab ? t('share.openExportTab') : isExportingShare && shareExportProgress
+    ? shareExportProgress : getShareExportTitle(t, isExportingShare, canExportShare);
   const shouldShowShareExport = Boolean(onExportShare);
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
@@ -1875,20 +1880,20 @@ export const ChatPanel = React.memo(function ChatPanel({
                 type="button"
                 className={`chat-header-icon-btn icon-btn share-export-btn ${isExportingShare ? 'share-export-btn--loading' : ''}`}
                 data-testid="chat-panel-share-export"
-                data-variant={isExportingShare ? 'exporting' : 'ready'}
+                data-variant={isWaitingShareExportTab ? 'waiting' : isExportingShare ? 'exporting' : 'ready'}
                 title={shareExportTitle}
                 aria-label={shareExportTitle}
-                aria-busy={isExportingShare}
-                disabled={!canExportShare || isExportingShare}
+                aria-busy={isExportingShare && !isWaitingShareExportTab}
+                disabled={!isWaitingShareExportTab && (!canExportShare || isExportingShare)}
                 onClick={() => {
                   void onExportShare?.();
                 }}
               >
                 {isExportingShare ? (
                   <>
-                    <LoaderCircle className="share-export-btn__spinner" size={14} strokeWidth={2} />
-                    <span className="share-export-btn__label" data-testid="chat-panel-share-export-loading-label">
-                      {t('share.generating')}
+                    {!isWaitingShareExportTab && <LoaderCircle className="share-export-btn__spinner" size={14} strokeWidth={2} />}
+                    <span className="share-export-btn__label" aria-live="polite" data-testid="chat-panel-share-export-loading-label">
+                      {isWaitingShareExportTab ? t('share.openExportTab') : shareExportProgress || t('share.generating')}
                     </span>
                   </>
                 ) : (

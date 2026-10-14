@@ -1,3 +1,17 @@
+.share-image-export-notice {
+  margin: 24px;
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+}
+
+.share-image-export-renderer {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 750px;
+  pointer-events: none;
+}
+
 .share-image-document {
   --share-image-footer-note-color: rgb(107.72, 107.72, 107.72);
   --share-image-link-color: rgb(92.68, 92.68, 92.68);
