@@ -5957,6 +5957,7 @@ class AgentWebSocketServer:
             await send_wire_payload(ws, wire)
 
 
+    @staticmethod
     def _organization_stream_key(request: AgentRequest) -> str:
         params = request.params if isinstance(request.params, dict) else {}
         session_id = request.session_id or "default"

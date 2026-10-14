@@ -609,14 +609,16 @@ async def test_agent_reload_config_preserves_agent_owned_a4p_config(monkeypatch)
     )
     monkeypatch.setattr(server._agent_manager, "reload_agents_config", fake_reload)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         lambda resp, response_id: {
             "response_id": response_id,
             "ok": resp.ok,
             "payload": resp.payload,
         },
     )
+    from jiuwenswarm.server.runtime import opencode_zen as _opencode_zen
+
+    monkeypatch.setattr(_opencode_zen, "warm_zen_free_models", AsyncMock())
 
     request = AgentRequest(
         request_id="reload-disable-a4p",
@@ -629,7 +631,12 @@ async def test_agent_reload_config_preserves_agent_owned_a4p_config(monkeypatch)
     )
 
     ws = FakeWebSocket()
-    await server._handle_agent_reload_config(ws, request, asyncio.Lock())
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.ops import handle_agent_reload_config
+
+    await handle_agent_reload_config(
+        build_ws_request_context(server, ws, request, asyncio.Lock())
+    )
 
     assert order == ["reload"]
     reconfigure.assert_not_awaited()
