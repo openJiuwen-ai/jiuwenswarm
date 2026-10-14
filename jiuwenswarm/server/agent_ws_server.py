@@ -1173,6 +1173,9 @@ class AgentWebSocketServer:
         self._previous_runtime_push_handler = None
         self._runtime_services_started = False
         self._group_service = None
+        self._jm08_runtime_lock = asyncio.Lock()
+        self._jm08_fanout = None
+        self._jm08_agent_manager = None
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
         # Trajectory diagnosis host (lazy, see _get_diagnosis_host)
@@ -1198,16 +1201,8 @@ class AgentWebSocketServer:
             ProjectAdapter(runtime_probe=self._execution_runtime),
             DesignerAdapter(),
             HarmonyOSAdapter(),
-<<<<<<< HEAD
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
-=======
-            ConfigAdapter(),
-<<<<<<< HEAD
-            JiuwenMateWebAdapter(),
->>>>>>> d934f611f (feat(JM10): connect the colleague pages to server-side colleague management)
-=======
             self._jiuwenmate_web,
->>>>>>> ceae12037 (feat(JM10): add private chat, history and request status)
         ):
             self._adapter_registry.register(adapter)
         # AgentServer-side tokenizer cache/download service. The Gateway only
@@ -1563,6 +1558,12 @@ class AgentWebSocketServer:
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(30.0, retry_delay * 2)
                     continue
+                try:
+                    await self._ensure_persistent_group_fanout()
+                except Exception:
+                    # JM-08 is optional: a local JM binding must not prevent
+                    # personal-mode AgentServer readiness.
+                    logger.exception("[AgentWebSocketServer] JM-08 startup failed")
                 ready = self._on_runtime_ready
                 if callable(ready):
                     ready()
@@ -1964,6 +1965,10 @@ class AgentWebSocketServer:
                 await diagnosis_host.shutdown()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[AgentWebSocketServer] diagnosis shutdown failed: %s", exc)
+        try:
+            await self._close_persistent_group_fanout()
+        except Exception:
+            logger.exception("[AgentWebSocketServer] JM-08 shutdown failed")
         task = getattr(self, "_asset_start_task", None)
         if task is not None:
             task.cancel()
@@ -2097,16 +2102,8 @@ class AgentWebSocketServer:
                     ProjectAdapter(runtime_probe=self._execution_runtime),
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
-<<<<<<< HEAD
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
-=======
-                    ConfigAdapter(),
-<<<<<<< HEAD
-                    JiuwenMateWebAdapter(),
->>>>>>> d934f611f (feat(JM10): connect the colleague pages to server-side colleague management)
-=======
                     self._jiuwenmate_web,
->>>>>>> ceae12037 (feat(JM10): add private chat, history and request status)
                 ):
                     self._adapter_registry.register(adapter)
 
@@ -2146,6 +2143,47 @@ class AgentWebSocketServer:
             raise runtime_close_error
         self._runtime_services_started = False
         logger.info("[AgentWebSocketServer] 已停止")
+
+    async def _ensure_persistent_group_fanout(self):
+        """Start JM-07 only when the owner's config contains a Feishu Agent binding."""
+        lock = getattr(self, "_jm08_runtime_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._jm08_runtime_lock = lock
+        async with lock:
+            fanout = getattr(self, "_jm08_fanout", None)
+            if fanout is not None:
+                return fanout
+
+            from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
+                configured_feishu_bindings,
+                create_default_persistent_group_fanout,
+            )
+
+            if not configured_feishu_bindings():
+                return None
+            fanout, manager = create_default_persistent_group_fanout()
+            try:
+                await manager.start()
+            except BaseException:
+                await manager.aclose()
+                raise
+            self._jm08_fanout = fanout
+            self._jm08_agent_manager = manager
+            logger.info("[AgentWebSocketServer] JM-08 Feishu fanout started")
+            return fanout
+
+    async def _close_persistent_group_fanout(self) -> None:
+        """Close JM-07's scheduler and commit queue during AgentServer shutdown."""
+        lock = getattr(self, "_jm08_runtime_lock", None)
+        if lock is None:
+            return
+        async with lock:
+            manager = getattr(self, "_jm08_agent_manager", None)
+            self._jm08_agent_manager = None
+            self._jm08_fanout = None
+            if manager is not None:
+                await manager.aclose()
 
     async def _suspend_kv_cache(self) -> None:
         """Detach KVC locally without sending management requests during stop."""
@@ -2459,10 +2497,52 @@ class AgentWebSocketServer:
         )
         await self.dispatch_parsed_request(ws, request, send_lock)
 
+    async def _handle_jm08_feishu_inbound(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """Resolve and persist a bound Feishu event without entering personal chat routing."""
+        from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
+            FeishuInboundEvent,
+            InboundDisposition,
+        )
+
+        disposition = InboundDisposition.REJECTED
+        try:
+            params = request.params if isinstance(request.params, dict) else {}
+            event = FeishuInboundEvent.from_payload(params.get("event"))
+            if not isinstance(event.expected_agent_id, str) or not event.expected_agent_id.strip():
+                disposition = InboundDisposition.REJECTED
+            else:
+                fanout = await self._ensure_persistent_group_fanout()
+                if fanout is not None:
+                    disposition = await fanout.handle(event)
+        except Exception as exc:
+            logger.warning(
+                "[AgentWebSocketServer] JM-08 inbound event rejected: error_type=%s",
+                type(exc).__name__,
+            )
+
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"disposition": disposition.value},
+            metadata=request.metadata,
+        )
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
     async def dispatch_parsed_request(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        if request.req_method == ReqMethod.JIUWENMATE_FEISHU_INBOUND:
+            await self._handle_jm08_feishu_inbound(ws, request, send_lock)
+            return
         if request.req_method == ReqMethod.CHAT_SEND:
             server_logger.info(
                 "[AgentServer] chat input received: request_id=%s session_id=%s channel_id=%s query=%s",

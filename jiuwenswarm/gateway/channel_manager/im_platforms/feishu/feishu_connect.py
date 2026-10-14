@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -11,6 +12,7 @@ import time
 import types
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
@@ -35,6 +37,10 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_streaming_ca
 from jiuwenswarm.gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
 from jiuwenswarm.gateway.routing.keys import DeliveryTarget
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
+    FeishuInboundEvent,
+    InboundDisposition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +50,7 @@ class FeishuConfig(BaseModel):
 
     enabled: bool = False  # 是否启用飞书通道
     app_id: str = ""  # 飞书开放平台的应用ID
+    agent_id: str = ""  # 可选：JM-02 中绑定到此飞书应用的新版同事 ID
     app_secret: str = ""  # 飞书开放平台的应用密钥
     encrypt_key: str = ""  # 事件订阅的加密密钥（可选）
     verification_token: str = ""  # 事件订阅的验证令牌（可选）
@@ -195,6 +202,7 @@ class FeishuChannel(BaseChannel):
         self._main_loop: asyncio.AbstractEventLoop | None = None  # 主线程事件循环
         self._ws_thread_loop: asyncio.AbstractEventLoop | None = None  # WebSocket线程事件循环
         self._message_callback: Callable[[Message], None] | None = None  # 网关模式回调
+        self._persistent_group_fanout_callback: Callable[[FeishuInboundEvent], Any] | None = None
         self._im_platform_adapter = im_platform_adapter
         self._message_storage = MessageStore(api_client=None, platform_adapter=self._im_platform_adapter)
         self._pending_message_batches: dict[tuple[str, str], dict[str, Any]] = {}
@@ -243,6 +251,181 @@ class FeishuChannel(BaseChannel):
             callback: 消息回调函数
         """
         self._message_callback = callback
+
+    def set_persistent_group_fanout_callback(
+        self,
+        callback: Callable[[FeishuInboundEvent], Any] | None,
+    ) -> None:
+        """Inject JM-08's pre-personal-route gate; None preserves legacy behavior."""
+        self._persistent_group_fanout_callback = callback
+
+    @staticmethod
+    def _persistent_event_value(value: Any, name: str, default: Any = None) -> Any:
+        if isinstance(value, dict):
+            return value.get(name, default)
+        return getattr(value, name, default)
+
+    @classmethod
+    def _persistent_platform_id(cls, value: Any) -> str | None:
+        if isinstance(value, str):
+            return value.strip() or None
+        for name in ("open_id", "user_id", "union_id"):
+            candidate = cls._persistent_event_value(value, name)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return None
+
+    @staticmethod
+    def _persistent_received_at(value: Any) -> datetime | None:
+        """Convert Feishu's message create_time (milliseconds) without inventing a time."""
+        if isinstance(value, datetime):
+            if value.tzinfo is None or value.utcoffset() is None:
+                return None
+            return value.astimezone(timezone.utc)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                milliseconds = float(raw)
+            except ValueError:
+                try:
+                    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError:
+                    return None
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    return None
+                return parsed.astimezone(timezone.utc)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            milliseconds = float(value)
+        else:
+            return None
+        if not math.isfinite(milliseconds):
+            return None
+        try:
+            return datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _persistent_content(message: Any) -> dict[str, Any]:
+        raw = FeishuChannel._persistent_event_value(message, "content")
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                decoded = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                return {}
+            return decoded if isinstance(decoded, dict) else {}
+        return {}
+
+    @staticmethod
+    def _persistent_text(content: dict[str, Any], message: Any) -> str | None:
+        message_type = str(FeishuChannel._persistent_event_value(message, "message_type", "") or "")
+        raw = FeishuChannel._persistent_event_value(message, "content")
+        if message_type == "text":
+            text = content.get("text")
+            if isinstance(text, str):
+                return text or None
+            return raw if isinstance(raw, str) and not content else None
+
+        parts: list[str] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                text = value.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                for key, child in value.items():
+                    if key != "text":
+                        collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+
+        collect(content)
+        body = "".join(parts)
+        return body or None
+
+    @staticmethod
+    def _persistent_attachment_refs(message_id: str | None, content: dict[str, Any]) -> tuple[str, ...]:
+        if not message_id:
+            return ()
+        keys: list[str] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key in {"image_key", "file_key", "audio_key", "media_key", "video_key"}:
+                        if isinstance(child, str) and child.strip() and child not in keys:
+                            keys.append(child.strip())
+                    else:
+                        collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+
+        collect(content)
+        return tuple(f"feishu:attachment:{message_id}:{key}" for key in keys)
+
+    def _normalize_persistent_event(self, data: Any) -> FeishuInboundEvent:
+        """Copy only platform event facts; never invoke the personal file service here."""
+        event = self._persistent_event_value(data, "event")
+        message = self._persistent_event_value(event, "message")
+        sender = self._persistent_event_value(event, "sender")
+        content = self._persistent_content(message)
+        message_id = self._persistent_event_value(message, "message_id")
+        message_id = message_id.strip() if isinstance(message_id, str) and message_id.strip() else None
+
+        sender_id_value = self._persistent_event_value(sender, "sender_id")
+        sender_id = self._persistent_platform_id(sender_id_value)
+        sender_name = (
+            self._persistent_event_value(sender, "name")
+            or self._persistent_event_value(sender, "sender_name")
+            or sender_id
+        )
+        sender_name = sender_name.strip() if isinstance(sender_name, str) and sender_name.strip() else None
+
+        mentions: list[str] = []
+        for mention in self._persistent_event_value(message, "mentions", None) or ():
+            mention_id = self._persistent_platform_id(self._persistent_event_value(mention, "id"))
+            if mention_id is None:
+                mention_id = self._persistent_platform_id(mention)
+            if mention_id and mention_id not in mentions:
+                mentions.append(mention_id)
+
+        reply_to = self._persistent_event_value(message, "parent_id") or self._persistent_event_value(
+            message, "root_id"
+        )
+        reply_to = reply_to.strip() if isinstance(reply_to, str) and reply_to.strip() else None
+        sender_app_id = self._persistent_event_value(sender, "app_id") or self._persistent_event_value(
+            event, "sender_app_id"
+        )
+        sender_app_id = (
+            sender_app_id.strip()
+            if isinstance(sender_app_id, str) and sender_app_id.strip()
+            else None
+        )
+
+        return FeishuInboundEvent(
+            receiving_app_id=str(getattr(self.config, "app_id", "") or "").strip(),
+            expected_agent_id=str(getattr(self.config, "agent_id", "") or "").strip() or None,
+            message_id=message_id,
+            chat_id=self._persistent_event_value(message, "chat_id"),
+            chat_type=self._persistent_event_value(message, "chat_type"),
+            sender_type=self._persistent_event_value(sender, "sender_type"),
+            sender_id=sender_id,
+            sender_name=sender_name,
+            sender_app_id=sender_app_id,
+            received_at=self._persistent_received_at(
+                self._persistent_event_value(message, "create_time")
+            ),
+            text=self._persistent_text(content, message),
+            mention_ids=tuple(mentions),
+            reply_to=reply_to,
+            attachment_refs=self._persistent_attachment_refs(message_id, content),
+        )
 
     def set_file_persist_hook(self, hook: Any) -> None:
         """注入 IM 附件落盘钩子（Phase 3）；文件服务未创建时缓存，创建后生效。"""
@@ -2690,6 +2873,23 @@ class FeishuChannel(BaseChannel):
             event = data.event
             message = event.message
             sender = event.sender
+
+            # JM-08 gets the raw event before the personal-only in-memory
+            # dedup, bot filter, and file download. A claimed or rejected
+            # event is terminal here and can never fall through to personal mode.
+            if self._persistent_group_fanout_callback is not None:
+                try:
+                    disposition = await self._persistent_group_fanout_callback(
+                        self._normalize_persistent_event(data)
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[FeishuChannel] Persistent inbound route failed closed: error_type=%s",
+                        type(exc).__name__,
+                    )
+                    return
+                if disposition is not InboundDisposition.UNCLAIMED:
+                    return
 
             # 消息去重检查
             if self._is_duplicate_message(message.message_id):

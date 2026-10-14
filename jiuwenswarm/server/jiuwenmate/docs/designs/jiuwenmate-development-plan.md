@@ -8,7 +8,7 @@
 - 交付分类：本期 17 项（JM-01～JM-14、JM-16、JM-18、JM-19）；扩展 1 项（JM-21）。已移出的 SW-15、SW-17、SW-20 不复用，见附录 B。
 - 本轮安排：本期 17 项均为纳入；JM-21 未排期。
 - 维护人：常钰聪。
-- 更新日期：2026-10-13。
+- 更新日期：2026-10-14。
 - 设计依据：
   - 本仓：[JiuwenMate 设计概览](jiuwenmate-overview.md)、[JiuwenMate 服务端架构设计](jiuwenmate-architecture.md)。
   - 对端：agent-core 仓 `jiuwenmate` 分支 `openjiuwen/harness/persistent_agent/docs/designs/` 下的 [Persistent Agent 开发计划](https://gitcode.com/huenrui_/agent-core/blob/jiuwenmate/openjiuwen/harness/persistent_agent/docs/designs/persistent-agent-development-plan.md) 与 [Persistent Agent 架构设计](https://gitcode.com/huenrui_/agent-core/blob/jiuwenmate/openjiuwen/harness/persistent_agent/docs/designs/persistent-agent-architecture.md)。
@@ -216,18 +216,18 @@
 ### JM-08 飞书接入与群内分发
 
 - **目标与范围：** 为新版 AI 同事接入现有飞书连接能力，新建消息标准化和群内分发逻辑。个人版飞书路由保持原状。
-- **责任与契约：** 新版 `gateway/message_handler/persistent_group_fanout.py`，接入公共 `message_handler.py`。按接收事件的 `app_id` 查新版绑定，得到 `agent_id`；按平台事件身份生成稳定的 `source_ref`，交给 JM-03 受理。
+- **责任与契约：** `server/jiuwenmate/feishu_group_fanout.py` 负责调用绑定解析器、标准化 Feishu 事件并按接收通道 `app_id` 路由到唯一 namespace / Agent；再按平台事件身份生成稳定 `source_ref`，交给 JM-03 受理。入口接入 `message_handler.py` 与 Feishu channel，个人版既有路由保持不变。
 - **开工硬前置：** JM-02 的同事定义；JM-03 的 Session 定位与受理。
-- **独立验证入口：** `tests/unit_tests/gateway/test_persistent_group_fanout.py`（待建立）。
+- **独立验证入口：** `tests/unit_tests/gateway/test_persistent_group_fanout.py`。
 - **独立验证条件：** 组件验证使用飞书事件样本；真机验证须使用测试应用、测试群，并具备应用接收权限。
 - **验收标准：**
   1. JM-08-V-01：绑定 app_id 后正确定位新版 Agent；群聊 / 私聊来源，以及 @、回复、发送者和附件信息完整传入。
-  2. JM-08-V-02：重复事件不重复派发，同一平台事件的 `source_ref` 保持不变；多个目标 Agent 之间不互相去重；只向有群访问依据的同事派发。
+  2. JM-08-V-02：重复事件不重复派发，同一平台事件的 `source_ref` 保持不变；多个目标 Agent 之间不互相去重；绑定 Bot 收到经校验的群事件即允许其 Agent 接入，不新增群白名单或工作空间权限。
   3. JM-08-V-03：人类与 Agent 的消息都进入 core 判断；个人版飞书路由不变。
 - **来源验证点与共享场景：** “多 Bot 收到同一消息时遗漏某个同事或重复执行” → JM-08-V-02 → 主责 JM-08，协同 JM-03 → S2a。
 - **前端独立验证：** 不适用。
 - **联合交付与开放条件：** 参与 S2a；PA-07 就绪后才放行群执行。
-- **设计索引：** feature 开工前建档；架构第 5.3 节。
+- **设计索引：** [F_08 飞书接入与群内分发](../features/F_08_feishu-group-fanout.md)；架构第 5.3、9.1 节及附录 A。
 
 ### JM-09 结果投递服务
 
@@ -564,7 +564,7 @@ flowchart LR
 | JM-05 窗口持久化后端 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S0 | B / S0 | 未排期 | 待验收 | 常钰聪 | — | 宿主组件 18 项测试通过，全目录 104 项，见 [F_05](../features/F_05_window-backend.md)；执行入口注入与定时清理已由 JM-07 完成，AgentServer 接线已由 JM-10 完成（见 [F_10_02](../features/F_10_02_web-private-chat.md)）；联合验证待 PA-10～PA-12 | 2026-10-14；同步 JM-07 |
 | JM-06 模型预算端口 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S0 | B / S0 | 未排期 | 待验收 | 常钰聪 | — | 宿主组件 15 项测试通过，全目录 119 项，见 [F_06](../features/F_06_budget-port.md)；执行入口注入与悬挂预留回收已由 JM-07 完成，AgentServer 接线已由 JM-10 完成（见 [F_10_02](../features/F_10_02_web-private-chat.md)）；联合验证待 PA-05、PA-07、PA-11 | 2026-10-14；同步 JM-07 |
 | JM-07 管理器、排队器与执行驱动 | 特性 / 本期 | 纳入 | 第 2 节全部范围；AgentServer 启停接线经负责人确认推迟到 S1 | 未评估 / 随 S1 | A / S1 | 未排期 | 待验收 | 常钰聪 | — | JM-07-V-01～V-04 → 真实 SQLite 与真实宿主端口，core 执行与中断入口为替身 → 27 项测试通过，全目录 146 项，记录见 [F_07](../features/F_07_execution-driver.md) → 宿主组件通过，联合验收待完成；AgentServer 接线已由 JM-10 完成（见 [F_10_02](../features/F_10_02_web-private-chat.md)）；正式执行入口已在 core `9eb336b4` 下经 JM-10 验收测试跑通（模型为替身，见 [F_10_02](../features/F_10_02_web-private-chat.md)）；续做入口只预留，待 JM-13 与 PA-17、PA-18 | 2026-10-14 |
-| JM-08 飞书接入与群内分发 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2a | C / S2a | 未排期 | 待开始 | 常钰聪 | — | 未执行；PA-07 就绪后放行群执行 | 2026-10-13；编号更名 |
+| JM-08 飞书接入与群内分发 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2a | C / S2a | 未排期 | 进行中 | 闫祉君 | — | 已接入本地 Feishu 配置的 `app_id → agent_id` 解析、Gateway→AgentServer E2A 入站方法及 AgentServer JM-07 条件启动 / 关闭；未绑定个人版通道不发 E2A、不改旧路由。JM-08 及消息 / 附件、JM-03/07 聚焦回归 142 项通过，记录见 [F_08](../features/F_08_feishu-group-fanout.md)。真实飞书应用 / 群联调仍待执行；不新增群白名单或工作空间权限；PA-07 就绪后放行群执行 | 2026-10-14；生产绑定和请求链路接入 |
 | JM-09 结果投递服务 | 特性 / 本期 | 纳入 | Web 投递与飞书投递两个子范围 | 未评估 / Web 随 S1，飞书随 S2a | C / S1、S2a | 未排期 | 待开始 | 常钰聪 | — | 未执行；对端 PA-08，中途协作发送接入 PA-15 | 2026-10-13；编号更名 |
 | JM-10 Web 接入与同事页面 | 特性 / 本期 | 纳入 | 同事管理、会话与状态、IM 记录展示；经负责人确认分两个子范围交付：同事管理（固定 namespace `local`，模板只提交设置内容）；私聊、历史与状态（轮询，不新增推送事件；回复只读候选输出，投递记录留给 JM-09） | 未评估 / 随 S1 | A / S1、S2a | 未排期 | 进行中 | 常钰聪 | — | 同事管理：JM-10-V-01 同事管理部分 → 提交 `d934f611`，记录见 [F_10](../features/F_10_web-colleague-management.md)；私聊：JM-10-V-01 私聊部分、V-02、V-03 → 真实 SQLite 与调度器，执行入口替身 → 单测 15 项、集成测试 4 项通过（其中 2 项经 core `9eb336b4` 正式执行入口，模型为替身），jiuwenmate 单测与集成测试共 179 项；前端 `test:jiuwenmate-api` 9 项通过；记录见 [F_10_02](../features/F_10_02_web-private-chat.md) → 未提交；真实模型浏览器验收待 S1，IM 记录展示待 S2a | 2026-10-14 |
 | JM-11 群公共记录与搜索 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2a | C / S2a | 未排期 | 待开始 | 闫祉君 | — | 未执行；对端 PA-23，联合 PA-07、PA-11、PA-12 | 2026-10-13；编号更名 |
@@ -620,7 +620,7 @@ flowchart LR
 | 拟定 `execution_control_service.py`、`recovery_service.py` | 停止 / 取消事实及续做安排 | 续做推理由 core 负责 | JM-12、JM-13 |
 | 拟定 `scheduled_requests.py`，接入现有定时任务调度器 | 定时计划、触发记录和投递目标 | core 只执行 `scheduled` 请求 | JM-19 |
 | 拟定 `conversation_archive.py`、`conversation_search.py`、`conversation_resources.py` | 公开聊天记录、最近消息和搜索、附件引用及权限过滤 | core 经 GroupChatPort 读取，不直接访问归档路径 | JM-11 |
-| `feishu_sync.py`、`lark_cli_provisioner.py`；`gateway/channel_manager/`；拟定 `gateway/message_handler/persistent_group_fanout.py` | Bot 配置同步、连接生命周期、飞书收发、入站标准化与逐 Agent 去重 | 飞书 SDK、app_id、凭据和 Bot 发送逻辑留在 Swarm；Gateway 不判断消息的业务价值 | JM-08 |
+| `feishu_sync.py`、`lark_cli_provisioner.py`；`gateway/channel_manager/`；`server/jiuwenmate/feishu_group_fanout.py` | Bot 配置同步、连接生命周期、飞书收发、入站标准化与逐 Agent 去重 | 飞书 SDK、app_id、凭据和 Bot 发送逻辑留在 Swarm；Gateway 不判断消息的业务价值 | JM-08 |
 | 拟定 `execution_result_handler.py`、`delivery_service.py` | 候选输出的可靠交接、Bot 身份选择、投递与重试 | core 产出候选；Swarm 负责送达 | JM-09 |
 | `server/jiuwenmate/web_adapter.py`、`server/agent_ws_server.py`、`channels/web/frontend/src/features/jiuwenmate/` | 管理接口、聊天展示、停止 / 取消操作、断线重连查询 | 转换产品协议，不向前端暴露 core 运行对象 | JM-10 |
 | agent-core 仓 `openjiuwen/harness/persistent_agent/` | Spec、原生 DeepAgent 构造、执行入口、参与判断、上下文装配、窗口保存与换窗、工具记账适配与续做 | Swarm 不保留同等职责的第二套 ContextAssembler、窗口控制器或参与判断器 | 对端 PA |
@@ -723,6 +723,12 @@ python -m pytest tests/integration_tests/jiuwenmate -q
 | 2026-10-13 | JM-05 | 先建 [F_05](../features/F_05_window-backend.md)，再新增 `ports/window_backend.py`（按 namespace / Agent / Session 作用域存储的 SQLite 后端）；`build_invocation` 拒绝非宿主或未绑定本 Session 的后端；删除同事时清理其窗口数据；执行入口注入与定时清理并入 JM-07 | 宿主组件；core WindowStore 未接入 | 18 项测试通过，全目录 104 项；状态待验收 |
 | 2026-10-13 | JM-06 | 先建 [F_06](../features/F_06_budget-port.md)，再新增 `budget_repository.py` 与 `ports/budget.py`：群会话共享群账户，其余按同事计账；准入单事务检查并预留；按 `model_call_id` 幂等结算；未知用量按预留量扣减并标记待对账；额度调整写修订记录；额度规则经负责人确认（未设上限不限额、只经管理调整恢复）；注入与悬挂预留回收并入 JM-07 | 宿主组件；core 调用方未联调 | 15 项测试通过，全目录 119 项；状态待验收 |
 | 2026-10-14 | JM-07 | 按变更闸门先提交分析与改动方案，经负责人确认（暂不接入 AgentServer、续做只预留入口）后建 [F_07](../features/F_07_execution-driver.md)，再新增 `execution_driver.py`、`session_scheduler.py`、`agent_manager.py`，并在 `budget_repository.py` 增加 `settle_unreported`：Session 内串行、两级并发上限与排队上限；控制只作用于目标，流结束后才释放 Session；无终态记为 `failed`；收尾释放候选副本并结算悬挂预留；删除同事先结束其工作；定时清理窗口归档 | 宿主组件；core 入口为替身 | 27 项测试通过，全目录 146 项；状态待验收；AgentServer 接线推迟到 S1 |
+| 2026-10-14 | JM-08 | 按最新计划、文档规范和 F_07 接口建 [F_08](../features/F_08_feishu-group-fanout.md) 草稿；明确按接收 `app_id` 路由、逐 Agent 幂等及新旧入口互斥，并记录 Bot 消息过滤、群访问依据、授权快照、附件引用和 Scheduler 容量顺序等待确认点 | 设计草稿；未改代码 | 实现与验证未执行；JM-08 状态仍为待开始 |
+| 2026-10-14 | JM-08 | 按负责人安排将 JM-08 及 F_08 的负责人由常钰聪调整为闫祉君 | 责任人调整；范围、状态与验收标准不变 | 已同步计划进展表和特性方案元信息 |
+| 2026-10-14 | JM-08 | 实现可注入分发组件与飞书入口互斥分流；真实 SQLite / JM-02 / JM-03 / AgentManager-Scheduler 集成验证，core 执行入口使用替身；不新增生产绑定 / 授权存储或 AgentServer 生命周期接线 | 组件与个人版回归范围 | 新增 JM-08 测试 24 项通过；聚焦回归 130 项通过，Ruff 通过；整体状态进行中，生产装配、真机和 PA-07 验收未完成，见 [F_08](../features/F_08_feishu-group-fanout.md) |
+| 2026-10-14 | JM-08 | 根据只读审查补充同一 Agent 并发重投验证；JM-07 队列已满时幂等重放限制继续作为生产启用前置项，不在 JM-08 改 Scheduler | 组件与个人版聚焦回归补充 | 新增 JM-08 测试 25 项通过；聚焦回归共 131 项通过，Ruff 通过；生产装配、真机、PA-07 及 JM-07 队列容量语义仍待验收，见 [F_08](../features/F_08_feishu-group-fanout.md) |
+| 2026-10-14 | JM-08 | 修正文档范围：群准入按“绑定 Bot 收到经校验的群事件即允许”处理，不新增群白名单或工作空间权限；纠正组件文件路径及验证入口，并记录生产绑定源、Gateway→AgentServer 请求交接、请求上下文及 AgentManager 启动装配缺口 | 对当前 Feishu 配置、`app_gateway`、WebSocket `ReqMethod` 和 JM-08 代码的检查 | 组件与入口隔离已实现；生产群—Agent 绑定源与跨进程请求入口尚未在仓库中找到，生产启动接线未完成，见 [F_08](../features/F_08_feishu-group-fanout.md) |
+| 2026-10-14 | JM-08 | 按负责人确认的一对一关系，将 `agent_id` 加入现有 Feishu 应用配置；Gateway 仅为绑定通道发送标准化 E2A 入站请求；AgentServer 按接收 `app_id` 复核配置，并条件装配 / 关闭 JM-07 | 真实 SQLite、E2A→AgentRequest 转换、AgentServer dispatch 与运行时启停测试；个人版消息 / 附件及 JM-03/07 回归 | 聚焦回归 142 项通过；真实 Feishu 测试应用 / 群联调待执行；状态进行中，见 [F_08](../features/F_08_feishu-group-fanout.md) |
 | 2026-10-14 | JM-10（同事管理子范围） | 按变更闸门先提交分析与改动方案，经负责人确认（只做同事管理、固定 namespace `local`、模板只提交设置内容、新增不含密钥的 `jiuwenmate.models.list`）后建 [F_10](../features/F_10_web-colleague-management.md)，再新增 `web_adapter.py` 与九个 `jiuwenmate.*` 方法并接入 AgentServer 与 Gateway 转发；前端新增 `jiuwenmateApi.ts`，同事页改为加载服务端同事（含小九），创建与删除调用后端，模型列表来自服务端 | 宿主组件；浏览器端到端未执行 | 后端 15 项新增测试通过，全目录 161 项；前端 13 项相关测试通过；状态进行中；未提交 |
 | 2026-10-14 | JM-12 | 按变更闸门先提交分析与改动方案，经负责人确认（只有发起人可控制；执行中发送按钮变为“停止”，排队消息显示“取消”）后建 [F_12](../features/F_12_execution-control.md)；新增 `execution_control_service.py` 与 `request_controls` 表，先写控制事实再中断，每个 Request 只接受一次控制；`SessionScheduler.abort` 对上一进程遗留的 Request 改为直接结束并继续该 Session 的排队；新增 `jiuwenmate.request.abort` 与 `RequestView.control`；前端接入停止与取消 | 宿主组件；core 正式中止入口，模型为替身 | 新增 16 项测试通过，jiuwenmate 共 210 项；前端 16 项；状态待验收；未提交 |
 | 2026-10-14 | JM-10（私聊、历史与状态子范围） | 按变更闸门先提交分析与改动方案，经负责人确认（现在接线并以替身验证、回复只读候选输出、轮询更新）后建 [F_10_02](../features/F_10_02_web-private-chat.md)；`AgentManager` 随首次调用启动并恢复排队消息，随 AgentServer 停止关闭；新增 `jiuwenmate.chat.send`、`jiuwenmate.chat.history`、`jiuwenmate.request.get`；删除同事改为经由 `AgentManager`；前端私聊区可发送并显示历史与状态；建立 `tests/integration_tests/jiuwenmate/` | 宿主组件；真实执行未接通 | 单测 15 项、集成测试 2 项、前端 9 项通过；状态进行中；未提交 |

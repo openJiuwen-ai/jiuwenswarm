@@ -2693,6 +2693,7 @@ async def _run(
                     feishu_config = FeishuConfig(
                         enabled=True,
                         app_id=app_id,
+                        agent_id=str(app.get("agent_id") or "").strip(),
                         app_secret=str(app.get("app_secret") or "").strip(),
                         encrypt_key=str(app.get("encrypt_key") or "").strip(),
                         verification_token=str(app.get("verification_token") or "").strip(),
@@ -2773,6 +2774,7 @@ async def _run(
                     feishu_config = FeishuConfig(
                         enabled=True,
                         app_id=app_id,
+                        agent_id=str(bot_conf.get("agent_id") or "").strip(),
                         app_secret=str(bot_conf.get("app_secret") or "").strip(),
                         encrypt_key=str(bot_conf.get("encrypt_key") or "").strip(),
                         verification_token=str(bot_conf.get("verification_token") or "").strip(),

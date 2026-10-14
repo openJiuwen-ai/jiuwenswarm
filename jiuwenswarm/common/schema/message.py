@@ -17,6 +17,7 @@ class ReqMethod(Enum):
     ACP_TOOL_RESPONSE = "acp.tool_response"
 
     CHAT_SEND = "chat.send"
+    JIUWENMATE_FEISHU_INBOUND = "jiuwenmate.feishu.inbound"
     CHAT_RESUME = "chat.resume"
     CHAT_CANCEL = "chat.interrupt"
     CHAT_ANSWER = "chat.user_answer"

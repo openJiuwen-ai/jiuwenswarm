@@ -130,6 +130,7 @@ class ChannelManager(ABC):
         key = ChannelKey(cid, self._resolve_app_id(channel))
         self._channels[key] = channel
         channel.on_message(self._on_channel_message)
+        self._try_wire_persistent_group_fanout(channel)
         self._try_set_event_reporter(channel)
         self._try_wire_file_persist_hook(channel)
         logger.info("[ChannelManager] 已注册 Channel: channel_id=%s, 当前共 %d 个", cid, len(self._channels))
@@ -143,8 +144,23 @@ class ChannelManager(ABC):
         key = ChannelKey(channel.channel_id, self._resolve_app_id(channel))
         self._channels[key] = channel
         channel.on_message(on_message)
+        self._try_wire_persistent_group_fanout(channel)
         self._try_set_event_reporter(channel)
         self._try_wire_file_persist_hook(channel)
+
+    def _try_wire_persistent_group_fanout(self, channel: Any) -> None:
+        """Wire JM-08 only for Feishu apps explicitly bound to a colleague."""
+        setter = getattr(channel, "set_persistent_group_fanout_callback", None)
+        callback = getattr(self._message_handler, "handle_persistent_feishu_event", None)
+        if not callable(setter):
+            return
+        config = getattr(channel, "config", None)
+        agent_id = getattr(config, "agent_id", "")
+        if callable(callback) and isinstance(agent_id, str) and agent_id.strip():
+            setter(callback)
+        else:
+            # Personal-only Feishu apps never make an E2A hop for every message.
+            setter(None)
 
     def _try_wire_file_persist_hook(self, channel: "BaseChannel") -> None:
         """为 IM 通道注入附件落盘钩子（Phase 3：经 E2A 落盘到目标 AgentServer）。
