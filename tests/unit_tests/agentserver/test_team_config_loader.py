@@ -452,6 +452,75 @@ def test_global_permission_switch_controls_team_runtime(
     assert spec["enable_permissions"] is expected
 
 
+def _organization_switch_config(experimental: dict | None, team_extra: dict) -> dict:
+    config = {
+        "models": {
+            "default": {
+                "model_client_config": {
+                    "model_name": "gpt-test",
+                    "client_provider": "openai",
+                },
+                "model_config_obj": {},
+            }
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {"leader": {}},
+                    **team_extra,
+                }
+            }
+        ),
+    }
+    if experimental is not None:
+        config["experimental"] = experimental
+    return config
+
+
+@pytest.mark.parametrize(
+    ("ui_enabled", "expected"),
+    [
+        (True, True),
+        (False, False),
+    ],
+)
+def test_experimental_switch_controls_team_organization_tools(ui_enabled, expected):
+    """The experimental UI switch alone decides whether the team mounts org tools."""
+    spec = load_team_spec_dict(
+        config_base=_organization_switch_config(
+            {"team_organization_ui_enabled": ui_enabled}, {}
+        )
+    )
+
+    assert spec["enable_organization"] is expected
+
+
+@pytest.mark.parametrize(
+    "experimental",
+    [None, {}, {"team_organization_ui_enabled": None}],
+)
+def test_team_organization_defaults_off_without_switch(experimental):
+    """A missing or empty experimental section must not enable org tools."""
+    spec = load_team_spec_dict(
+        config_base=_organization_switch_config(experimental, {})
+    )
+
+    assert spec["enable_organization"] is False
+
+
+def test_legacy_template_enable_organization_cannot_override_switch():
+    """A stale template value must not re-enable org tools once the switch is off."""
+    spec = load_team_spec_dict(
+        config_base=_organization_switch_config(
+            {"team_organization_ui_enabled": False},
+            {"enable_organization": True},
+        )
+    )
+
+    assert spec["enable_organization"] is False
+
+
 def test_load_team_spec_dict_reads_models_defaults_from_repository_config(monkeypatch):
     """Repository config template should provide the default team model from models.defaults."""
     repo_config = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "resources" / "config.yaml"

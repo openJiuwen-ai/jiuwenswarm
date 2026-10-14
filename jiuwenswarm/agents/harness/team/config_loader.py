@@ -570,6 +570,10 @@ def load_team_spec_dict(
     spec_dict["enable_task_verification"] = team_raw.get("enable_task_verification", False)
     spec_dict["enable_hitt"] = team_raw.get("enable_hitt", True)
     spec_dict["enable_permissions"] = _resolve_enable_permissions(config_base)
+    # Experimental switch drives both frontend UI and backend org tools.
+    spec_dict["enable_organization"] = bool(
+        (config_base.get("experimental") or {}).get("team_organization_ui_enabled", False)
+    )
     _apply_swarmflow_budget(spec_dict, team_raw.get("swarmflow_budget"))
     # Team-level key, independent of the single-agent progressive_tool_enabled
     # switch; the spec field is named progressive_tool on the engine side.
