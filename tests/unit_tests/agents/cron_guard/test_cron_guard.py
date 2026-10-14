@@ -882,6 +882,28 @@ def test_parser_subshell_next_line_segmented():
     assert r.sleep_seconds == pytest.approx(30.0)
 
 
+def test_parser_loop_condition_sleep_segmented():
+    """A sleep in the loop header condition is a poll too.
+
+    ``_parse_script`` used to hand the whole header segment (loop keyword
+    still in command position) to ``_parse_segment``, so
+    ``while sleep 5; do echo hi; done`` detected nothing at all.
+    """
+    r = sleep_guard.parse_shell_command("while sleep 5; do echo hi; done")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(5.0)
+    assert r.loop_poll is True
+    r = sleep_guard.parse_shell_command("until sleep 30; do :; done")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(30.0)
+    assert r.loop_poll is True
+    # loop-body detection unchanged
+    r = sleep_guard.parse_shell_command("for i in 1 2; do sleep 10; done")
+    assert r.sleep_calls == 1
+    assert r.sleep_seconds == pytest.approx(10.0)
+    assert r.loop_poll is True
+
+
 def test_parser_quoted_multiline_text_not_blocked():
     """Newlines inside quotes are data — no segmentation, no detection."""
     r = sleep_guard.parse_shell_command('grep "foo\nsleep 120" /var/log/x.log')
