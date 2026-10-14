@@ -324,6 +324,31 @@ function normalizeTask(value: unknown): RsiTaskGetResult {
     best_artifact: normalizeBestArtifact(raw.best_artifact),
     usage: normalizeUsage(raw.usage),
     failure_reason: asNullableString(raw.failure_reason),
+    harness_installable: raw.harness_installable === true,
+    harness_publication_status: asNullableString(raw.harness_publication_status),
+    harness_provenance: (() => {
+      const provenance = asRecord(raw.harness_provenance);
+      const normalize = (value: unknown) => {
+        const item = asRecord(value);
+        if (!item) return null;
+        return {
+          task_id: asString(item.task_id),
+          optimization_id: asNullableString(item.optimization_id),
+          node_id: asNullableString(item.node_id),
+          epoch: asNullableNumber(item.epoch),
+          score: asNullableNumber(item.score),
+          installation_id: asNullableString(item.installation_id),
+          sha256: asNullableString(item.sha256),
+          action_ids: Array.isArray(item.action_ids) ? item.action_ids.map(String) : [],
+          installed_at: asNullableString(item.installed_at),
+          status: asNullableString(item.status),
+        };
+      };
+      return {
+        published: normalize(provenance?.published),
+        installed: normalize(provenance?.installed),
+      };
+    })(),
   };
 }
 

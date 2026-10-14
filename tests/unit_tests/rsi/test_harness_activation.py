@@ -35,6 +35,42 @@ def _write_package(root: Path, name: str = "policy_harness") -> Path:
     return package
 
 
+@pytest.mark.parametrize(
+    "status", ["not_published_no_improvement", "published", "missing_package"]
+)
+def test_publication_availability_requires_real_published_package(tmp_path, status):
+    context = build_rsi_service_context(
+        tmp_path / "tasks", enable_harness_materialization=False
+    )
+    task_id = "rsi-ready"
+    context.store.create(_completed_harness_task(context, task_id))
+    refs = _write_published_state(context, task_id, extension_name="ready_harness")
+    state_path = Path(context.store.get(task_id).run_dir) / "single_harness_state.yaml"
+    if status == "not_published_no_improvement":
+        state_path.write_text(
+            yaml.safe_dump(
+                {
+                    "publication_status": status,
+                    "candidate_gates": [{"accepted": False}],
+                }
+            ),
+            encoding="utf-8",
+        )
+    elif status == "missing_package":
+        refs.unlink()
+    result = context.harness_installer.publication_availability(task_id)
+    assert result["harness_installable"] is (status == "published")
+    if status == "published":
+        published = result["harness_provenance"]["published"]
+        package = refs.parent / "current_harnesses" / "policy_harness"
+        assert published["task_id"] == task_id
+        assert published["node_id"] == "candidate-1"
+        assert published["sha256"] == hash_harness_package(package)
+        assert result["harness_provenance"]["installed"] is None
+    elif status == "not_published_no_improvement":
+        assert result["harness_publication_status"] == status
+
+
 def test_published_refs_resolve_relative_to_refs_parent(tmp_path):
     package = _write_package(tmp_path)
     refs = package.parent.parent / "current_harness_refs.yaml"
@@ -240,6 +276,10 @@ async def test_installer_publishes_and_is_idempotent(tmp_path):
     assert second["already_active"] is True
     assert len(manager.calls) == 1
     assert Path(context.harness_activation_store.get_active()["runtime_path"]).name == "validation_harness"
+    availability = installer.publication_availability(task_id)
+    assert availability["harness_provenance"]["installed"]["installation_id"] == first[
+        "installation_id"
+    ]
     assert Path(context.harness_activation_store.get_active()["runtime_path"]).is_relative_to(
         tasks_root / task_id / "harness" / "versions"
     )

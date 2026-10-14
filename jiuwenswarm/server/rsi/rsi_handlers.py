@@ -153,13 +153,18 @@ class RsiAgentServerHandlers:
         return {"tasks": self.context.task_service.list(params)}
 
     def _do_task_get(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self.context.task_service.get(
+        payload = self.context.task_service.get(
             params,
             projector=self.context.projector,
             usage_recorder=self.context.usage_recorder,
             artifact_service=self.context.artifact_service,
             adapter=self.context.adapter_for_task(params.get("task_id")),
         )
+        installer = getattr(self.context, "harness_installer", None)
+        availability = getattr(installer, "publication_availability", None)
+        if callable(availability):
+            payload.update(availability(str(params.get("task_id") or "")))
+        return payload
 
     def _do_task_delete(self, params: dict[str, Any]) -> dict[str, Any]:
         return self.context.task_service.delete(params, worker=self.context.worker)

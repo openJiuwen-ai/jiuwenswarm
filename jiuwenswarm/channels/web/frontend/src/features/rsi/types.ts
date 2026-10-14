@@ -102,6 +102,18 @@ export interface RsiBestArtifact {
   name: string;
   adopted: boolean;
 }
+export interface RsiHarnessProvenance {
+  task_id: string;
+  optimization_id: string | null;
+  node_id: string | null;
+  epoch: number | null;
+  score: number | null;
+  installation_id: string | null;
+  sha256: string | null;
+  action_ids?: string[];
+  installed_at?: string | null;
+  status?: string | null;
+}
 export interface RsiTaskGetResult {
   task_id: string;
   name: string;
@@ -125,6 +137,12 @@ export interface RsiTaskGetResult {
   best_artifact: RsiBestArtifact | null;
   usage?: RsiUsage | null;
   failure_reason?: string | null;
+  harness_installable?: boolean;
+  harness_publication_status?: string | null;
+  harness_provenance?: {
+    published: RsiHarnessProvenance | null;
+    installed: RsiHarnessProvenance | null;
+  };
 }
 
 // §7 训练控制（start/pause/resume/terminate 统一入参 task_id）
