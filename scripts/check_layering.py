@@ -89,12 +89,10 @@ KNOWN_R4_EMBEDDED_FOREIGN: dict[str, set[str]] = {}
 BASELINE = {
     # hard 闭包 = 从 gateway 出发仅沿模块级 import 可达的外部（非 gateway/common）模块数。
     # 根包单文件（dotenv_early、llm_provider_compat_patch）计入其所属顶级名。
-    # 2026-10-19 rebase 8e0f173b4 实测（上游持续演进 + web_proxy_connect 修后）：
-    # hard 171（server 57：上游新提交再削 3；llm_provider_compat_patch 随 A5'-a
-    # 下沉 common 后从外部依赖消失）
+    # B2.5 后：runtime 子集复制 + host_services 下沉，四大包（agents/server/
+    # runtime/symphony）hard 闭包全部归零。rebase 1372eda94 后待实测校准。
     "closure_hard": {
-        "agents": 39, "server": 57, "runtime": 32, "extensions": 32,
-        "observability": 10, "symphony": 0,
+        "extensions": 19, "observability": 10,
         "dotenv_early": 1, "llm_provider_compat_patch": 0,
     },
     # lazy 闭包 = 含函数内延迟 import 的可达模块数
@@ -111,7 +109,7 @@ BASELINE = {
     "embedded_files": 27,
     "embedded_loc": 8702,
     # gateway 直接 import 的外部（非 gateway/common）模块数
-    "gateway_direct_foreign": 35,
+    "gateway_direct_foreign": 27,
 }
 
 
