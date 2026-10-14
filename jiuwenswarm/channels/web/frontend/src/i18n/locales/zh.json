@@ -4518,6 +4518,11 @@
       "candidateError": "候选 {{index}}/{{total}} 生成失败",
       "scoreSuffix": " · 得分 {{score}}"
     }
+    },
+  "teamDispatch": {
+    "toggleLabel": "调度模式",
+    "toggleHint": "开启后 Leader 将每个任务指派给具名成员；关闭则由成员自主认领任务",
+    "readonlyHint": "团队已启动，调度模式不可修改"
   },
   "swarmflow": {
     "statusPlanned": "已规划",

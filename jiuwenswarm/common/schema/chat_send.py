@@ -1,11 +1,11 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """chat.send 参数契约。
 
 本文件定义 chat.send 的参数结构。
 """
 
-from typing import TypedDict, NotRequired
+from typing import Literal, NotRequired, TypedDict
 
 # ── ``plan_entry_source`` 字面量契约常量 ──
 # 这些字面量是前后端共享的硬契约：
@@ -213,4 +213,15 @@ class ChatSendParams(TypedDict, total=False):
     manager is withheld and isolation calls fail fast. Absent keeps the
     session's persisted value (first request falls back to the team config's
     ``worktree`` section). Requires a project directory to be usable.
+    """
+
+    team_dispatch_mode: NotRequired[Literal["autonomous", "scheduled"]]
+    """Session-level task dispatch mode of the Team (``TeamAgentSpec.dispatch_mode``).
+
+    ``"autonomous"`` puts tasks on the shared board for members to claim;
+    ``"scheduled"`` has the leader assign every task to a named member. The
+    mode is fixed once the session's team is built, so only the first request
+    of a session is expected to change it. Absent keeps the session's
+    persisted value (first request falls back to the team config's
+    ``dispatch_mode``).
     """

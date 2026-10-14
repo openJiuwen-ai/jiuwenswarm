@@ -20,7 +20,7 @@
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { AtSign, ChevronRight, CircleX, Loader2, Lock, Mic, Pencil, Plus, Settings, Square, Workflow, X } from 'lucide-react';
+import { AtSign, ChevronRight, CircleX, ListChecks, Loader2, Lock, Mic, Pencil, Plus, Settings, Square, Workflow, X } from 'lucide-react';
 
 // import { stopAllTts } from '../../utils';
 import {
@@ -149,6 +149,7 @@ import { TeamSelector } from './TeamSelector';
 import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { resolveTeamDispatchMode, useTeamScheduledDispatchEnabled } from '../../features/teamDispatch/featureConfig';
 
 const MENU_GAP = 10;
 /** 智能体选择列表单行高度（与 ChatPanel.css 的 .chat-agent-picker__item min-height 一致） */
@@ -1091,6 +1092,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const swarmflowBudget = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.swarmflowBudget ?? null);
   // 进入真实会话后开关只读：仅新建对话页可修改，真实会话可查看不可改
   const swarmflowToggleDisabled = isProcessing || (activeSessionId !== NEW_CONVERSATION_ID && hasHistory);
+  // 会话级调度模式：实验开关「调度模式」打开才展示；团队按首条消息建好后不可再改，
+  // 与 swarmflow 开关同一把锁（仅新建对话页可拨）。
+  const teamScheduledDispatchEnabled = useTeamScheduledDispatchEnabled();
+  const sessionTeamDispatchMode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamDispatchMode);
+  const teamDispatchScheduled =
+    resolveTeamDispatchMode(sessionTeamDispatchMode, teamScheduledDispatchEnabled) === 'scheduled';
+  const teamDispatchToggleDisabled = swarmflowToggleDisabled;
   const canUsePlanMenu = supportsPlanMode(mode);
   const planTagVisible = canUsePlanMenu && planActive;
 
@@ -4299,6 +4307,40 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               </div>
                             );
                           })()}
+                        {isTeamMode && teamScheduledDispatchEnabled && (
+                          <div
+                            className={cx(
+                              'chat-mode-select__option',
+                              teamDispatchToggleDisabled && 'chat-mode-select__option--disabled',
+                            )}
+                            role="menuitem"
+                            data-testid="chat-panel-input-attach-menu-team-dispatch"
+                            title={t(teamDispatchToggleDisabled ? 'teamDispatch.readonlyHint' : 'teamDispatch.toggleHint')}
+                            onClick={() => {
+                              if (!activeSessionId || teamDispatchToggleDisabled) return;
+                              useSessionStore
+                                .getState()
+                                .setTeamDispatchMode(activeSessionId, teamDispatchScheduled ? 'autonomous' : 'scheduled');
+                            }}
+                          >
+                            <span className="chat-mode-select__option-main">
+                              <span className="chat-mode-select__icon" aria-hidden="true">
+                                <ListChecks className="w-4 h-4" />
+                              </span>
+                              <span className="chat-mode-select__label">{t('teamDispatch.toggleLabel')}</span>
+                            </span>
+                            <Switch
+                              checked={teamDispatchScheduled}
+                              disabled={teamDispatchToggleDisabled}
+                              onChange={(next) => {
+                                if (!activeSessionId || teamDispatchToggleDisabled) return;
+                                useSessionStore
+                                  .getState()
+                                  .setTeamDispatchMode(activeSessionId, next ? 'scheduled' : 'autonomous');
+                              }}
+                            />
+                          </div>
+                        )}
                         {isTeamMode &&
                           (() => {
                             const toggleSwarmflow = (next: boolean) => {

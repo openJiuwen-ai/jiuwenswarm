@@ -2170,6 +2170,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(sessionRt?.swarmflowWorktree !== undefined
             ? { swarmflow_worktree: sessionRt.swarmflowWorktree }
             : {}),
+          // 会话级团队调度模式：新建会话时由欢迎页开关落成显式值，恢复会话时从 metadata 读回；
+          // 未设置时不发送，后端按 会话持久化 > 团队配置 回退。
+          ...(sessionRt?.teamDispatchMode !== undefined
+            ? { team_dispatch_mode: sessionRt.teamDispatchMode }
+            : {}),
         }, {
           // 登记乐观 user 气泡的单号：runtime.accepted 到达时按单号回填服务端权威
           // 时间戳（见 optimisticUserBubblesRef 注释与 runtime.accepted 处理器）。

@@ -184,6 +184,11 @@ import {
 } from './features/trajectory/featureConfig';
 import './App.css';
 import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
+import {
+  normalizeTeamDispatchMode,
+  resolveNewSessionDispatchMode,
+  setTeamScheduledDispatchEnabled,
+} from './features/teamDispatch/featureConfig';
 
 const LazyTrajectoryPanel = lazy(async () => {
   const module = await import('./features/trajectory/TrajectoryPanel');
@@ -1799,6 +1804,13 @@ function AppContent({
             );
           }
         }
+        // 恢复会话时同步团队调度模式：团队建好后不可再改，前端只读展示。
+        const restoredDispatchMode = normalizeTeamDispatchMode(
+          (session as unknown as Record<string, unknown> | null)?.session_team_dispatch_mode,
+        );
+        if (restoredDispatchMode) {
+          useSessionStore.getState().setTeamDispatchMode(targetSessionId, restoredDispatchMode);
+        }
       }
       return session;
     } catch (error) {
@@ -1839,6 +1851,7 @@ function AppContent({
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
       setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
+      setTeamScheduledDispatchEnabled(config.team_scheduled_dispatch_enabled);
       setServerConfig(config);
       setConfigError(null);
       if (!modelSetupGuideEvaluatedRef.current) {
@@ -2993,6 +3006,10 @@ function AppContent({
       if (pendingRuntime?.swarmflowWorktree !== undefined) {
         sessionStore.setSwarmflowWorktree(newSid, pendingRuntime.swarmflowWorktree);
       }
+      const pendingDispatchMode = resolveNewSessionDispatchMode(pendingRuntime?.teamDispatchMode);
+      if (pendingDispatchMode) {
+        sessionStore.setTeamDispatchMode(newSid, pendingDispatchMode);
+      }
       if (usePlanStore.getState().isActive(NEW_CONVERSATION_ID)) {
         usePlanStore.getState().setActive(newSid, true, {
           explicitEntry: usePlanStore.getState().hasPendingExplicitEntry(NEW_CONVERSATION_ID),
@@ -3173,6 +3190,11 @@ function AppContent({
             newSid,
             newConvSwarmflow.swarmflowWorktree,
           );
+        }
+        // 调度模式同理，且在这里落成显式值：团队按首条消息建好后就不能再改。
+        const newConvDispatchMode = resolveNewSessionDispatchMode(newConvSwarmflow?.teamDispatchMode);
+        if (newConvDispatchMode) {
+          useSessionStore.getState().setTeamDispatchMode(newSid, newConvDispatchMode);
         }
         pendingNewConversationRef.current = false;
         useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);

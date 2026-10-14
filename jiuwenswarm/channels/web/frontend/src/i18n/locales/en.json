@@ -4543,6 +4543,11 @@
       "candidateError": "Candidate {{index}}/{{total}} generation failed",
       "scoreSuffix": " · {{score}}"
     }
+    },
+  "teamDispatch": {
+    "toggleLabel": "Scheduled Dispatch",
+    "toggleHint": "When on, the leader assigns every task to a named member; when off, members claim tasks on their own",
+    "readonlyHint": "The team has started; dispatch mode can no longer be changed"
   },
   "swarmflow": {
     "statusPlanned": "Planned",

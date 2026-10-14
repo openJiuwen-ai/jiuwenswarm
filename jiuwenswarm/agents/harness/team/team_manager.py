@@ -1664,6 +1664,7 @@ class TeamManager:
         login_model_entry: dict[str, Any] | None = None,
         agent_group_name: str | None = None,
         swarmflow_config: dict | None = None,
+        dispatch_mode: str | None = None,
         model_selection: SwarmModelSelection | dict[str, Any] | None = None,
     ) -> TeamAgentSpec:
         """Build a team spec via provider-based assembly (no parent DeepAgent).
@@ -1684,6 +1685,10 @@ class TeamManager:
             login_model_entry: Model entry for a page-selected login model,
                 built from the request's forwarded credentials (placeholder
                 api_key; the real token is swapped in per HTTP request).
+            dispatch_mode: Session-level task dispatch mode (``"autonomous"`` /
+                ``"scheduled"``); None keeps the team config's ``dispatch_mode``.
+                Task verification only applies to scheduled dispatch, so it is
+                switched off when the session picks autonomous dispatch.
 
         Returns:
             The enriched ``TeamAgentSpec`` ready to build (``build_context`` set;
@@ -1734,6 +1739,10 @@ class TeamManager:
                     spec.worktree = spec.worktree.model_copy(update={"enabled": True})
             elif worktree_flag is False:
                 spec.worktree = None
+        if dispatch_mode is not None:
+            spec.dispatch_mode = dispatch_mode
+            if dispatch_mode != "scheduled":
+                spec.enable_task_verification = False
         return spec
 
     @staticmethod

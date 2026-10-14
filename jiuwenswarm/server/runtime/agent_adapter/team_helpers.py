@@ -115,6 +115,8 @@ logger = logging.getLogger(__name__)
 _WORKFLOW_RUNS_STATE_KEY = "workflow_runs"
 _SESSION_BUDGET_STATE_KEY = "session_budget"
 _SESSION_SWARMFLOW_CONFIG_KEY = "session_swarmflow_config"
+_SESSION_TEAM_DISPATCH_MODE_KEY = "session_team_dispatch_mode"
+_TEAM_DISPATCH_MODES = frozenset({"autonomous", "scheduled"})
 
 _TEAM_CREATE_KINDS = {
     RunActionKind.CREATE.value,
@@ -1148,6 +1150,51 @@ def _resolve_session_swarmflow_config(
         session_id, result,
     )
     return result
+
+
+def _coerce_team_dispatch_mode(value: Any) -> str | None:
+    """Return ``value`` as a known dispatch mode, else None."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in _TEAM_DISPATCH_MODES else None
+
+
+def persist_session_team_dispatch_mode(session_id: str, dispatch_mode: str) -> None:
+    """Persist the session-level team dispatch mode to session metadata.
+
+    Mirrors persist_session_swarmflow_config (read-modify-write, no-op on read
+    failure) so a refreshed page restores the mode the team was built with.
+    """
+    from jiuwenswarm.server.runtime.session.session_metadata import _read_metadata, _enqueue_write
+    metadata = _read_metadata(session_id, cache_bust=True)
+    if not metadata.get("session_id"):
+        logger.warning(
+            "[TeamHelpers] skipping session_team_dispatch_mode persist: "
+            "failed to read session metadata (session_id=%s)",
+            session_id,
+        )
+        return
+    metadata[_SESSION_TEAM_DISPATCH_MODE_KEY] = dispatch_mode
+    _enqueue_write(session_id, metadata)
+
+
+def _resolve_session_team_dispatch_mode(
+    params: dict | None,
+    *,
+    session_id: str,
+) -> str | None:
+    """Resolve the session-level team dispatch mode: params > persisted > unset.
+
+    ``None`` means "not specified" and the team config's ``dispatch_mode``
+    stands, so clients that never send the key (TUI, cron) keep the global
+    behavior.
+    """
+    if params is not None:
+        requested = _coerce_team_dispatch_mode(params.get("team_dispatch_mode"))
+        if requested is not None:
+            return requested
+    from jiuwenswarm.server.runtime.session.session_metadata import _read_metadata
+    metadata = _read_metadata(session_id, cache_bust=True)
+    return _coerce_team_dispatch_mode(metadata.get(_SESSION_TEAM_DISPATCH_MODE_KEY))
 
 
 def _resolve_channel_id(channel_id: str | None) -> str:
@@ -3127,6 +3174,10 @@ async def _process_team_message_stream(
             get_config(),
             session_id=session_id,
         )
+        team_dispatch_mode = _resolve_session_team_dispatch_mode(
+            params_obj if isinstance(params_obj, dict) else None,
+            session_id=session_id,
+        )
         team_spec = await team_manager.get_swarm_enriched_team_spec(
             session_id=session_id,
             mode=resolved_mode,
@@ -3142,6 +3193,7 @@ async def _process_team_message_stream(
             login_model_entry=login_model_entry,
             agent_group_name=agent_group_name,
             swarmflow_config=swarmflow_config,
+            dispatch_mode=team_dispatch_mode,
             model_selection=runtime_model_selection,
         )
         if isinstance(model_selection, dict) and model_selection.get("type") and model_selection.get("id"):
@@ -3182,6 +3234,11 @@ async def _process_team_message_stream(
             )
         ):
             persist_session_swarmflow_config(session_id, swarmflow_config)
+        if (
+            isinstance(params_obj, dict)
+            and _coerce_team_dispatch_mode(params_obj.get("team_dispatch_mode")) is not None
+        ):
+            persist_session_team_dispatch_mode(session_id, team_spec.dispatch_mode)
         if team_skill_names is not None:
             await _apply_team_skill_selection(
                 team_manager=team_manager,
