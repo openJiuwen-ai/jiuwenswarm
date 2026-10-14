@@ -19,6 +19,9 @@ export const JIUWENMATE_METHODS = {
   chatSend: 'jiuwenmate.chat.send',
   chatHistory: 'jiuwenmate.chat.history',
   requestGet: 'jiuwenmate.request.get',
+  conversationList: 'jiuwenmate.conversation.list',
+  conversationRename: 'jiuwenmate.conversation.rename',
+  conversationDelete: 'jiuwenmate.conversation.delete',
 } as const;
 
 /** Server push carrying reply fragments of a running private message. */
@@ -73,9 +76,17 @@ export interface JiuwenMatePublishedVersion {
   publishedAt: string;
 }
 
+/** A Web private conversation with a colleague; it is listed once its first message is accepted. */
+export interface JiuwenMateConversation {
+  id: string;
+  title: string;
+  updatedAt: string;
+}
+
 /** A private message and what became of it; replies are only the outputs the colleague's final answer adopted. */
 export interface JiuwenMateChatRequest {
   requestId: string;
+  conversationId: string;
   messageId: string;
   text: string;
   receivedAt: string;
@@ -230,11 +241,25 @@ export function toStreamEvent(value: unknown): JiuwenMateStreamEvent | null {
   return event.agentId && event.requestId && event.executionId && event.seq > 0 ? event : null;
 }
 
+export function toConversation(value: unknown): JiuwenMateConversation {
+  const wire = record(value);
+  return { id: text(wire.conversation_id), title: text(wire.title), updatedAt: text(wire.updated_at) };
+}
+
+/** Puts a conversation that just received a message at the top of the list, replacing its old entry. */
+export function upsertConversation(
+  conversations: readonly JiuwenMateConversation[],
+  conversation: JiuwenMateConversation,
+): JiuwenMateConversation[] {
+  return [conversation, ...conversations.filter((item) => item.id !== conversation.id)];
+}
+
 export function toChatRequest(value: unknown): JiuwenMateChatRequest {
   const wire = record(value);
   const status = text(wire.status);
   return {
     requestId: text(wire.request_id),
+    conversationId: text(wire.conversation_id),
     messageId: text(wire.message_id),
     text: text(wire.text),
     receivedAt: text(wire.received_at),
@@ -339,13 +364,41 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
       return toModelCatalog(await request(JIUWENMATE_METHODS.modelsList));
     },
     /** Sends a private message; resending the same message id returns the request it already created. */
-    async sendMessage(agentId: string, message: string, messageId: string): Promise<JiuwenMateChatRequest> {
-      const sent = record(await request(JIUWENMATE_METHODS.chatSend, { agent_id: agentId, text: message, message_id: messageId }));
-      return toChatRequest(sent.request);
+    async sendMessage(
+      agentId: string,
+      conversationId: string,
+      message: string,
+      messageId: string,
+    ): Promise<{ request: JiuwenMateChatRequest; conversation: JiuwenMateConversation }> {
+      const sent = record(
+        await request(JIUWENMATE_METHODS.chatSend, {
+          agent_id: agentId,
+          conversation_id: conversationId,
+          text: message,
+          message_id: messageId,
+        }),
+      );
+      return { request: toChatRequest(sent.request), conversation: toConversation(sent.conversation) };
     },
-    async history(agentId: string): Promise<JiuwenMateChatRequest[]> {
-      const listed = record(await request(JIUWENMATE_METHODS.chatHistory, { agent_id: agentId }));
+    async history(agentId: string, conversationId: string): Promise<JiuwenMateChatRequest[]> {
+      const listed = record(
+        await request(JIUWENMATE_METHODS.chatHistory, { agent_id: agentId, conversation_id: conversationId }),
+      );
       return (Array.isArray(listed.requests) ? listed.requests : []).map(toChatRequest);
+    },
+    /** The colleague's conversations, latest message first. */
+    async listConversations(agentId: string): Promise<JiuwenMateConversation[]> {
+      const listed = record(await request(JIUWENMATE_METHODS.conversationList, { agent_id: agentId }));
+      return (Array.isArray(listed.conversations) ? listed.conversations : []).map(toConversation);
+    },
+    async renameConversation(agentId: string, conversationId: string, title: string): Promise<JiuwenMateConversation> {
+      const renamed = record(
+        await request(JIUWENMATE_METHODS.conversationRename, { agent_id: agentId, conversation_id: conversationId, title }),
+      );
+      return toConversation(renamed.conversation);
+    },
+    async deleteConversation(agentId: string, conversationId: string): Promise<void> {
+      await request(JIUWENMATE_METHODS.conversationDelete, { agent_id: agentId, conversation_id: conversationId });
     },
     async getRequest(requestId: string): Promise<JiuwenMateChatRequest> {
       return toChatRequest(record(await request(JIUWENMATE_METHODS.requestGet, { request_id: requestId })).request);

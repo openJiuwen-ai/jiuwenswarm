@@ -13,6 +13,7 @@ import {
   toChatRequest,
   toColleague,
   toModelCatalog,
+  upsertConversation,
   toWireSettings,
 } from '../node_modules/.cache/jiuwenmate-api/jiuwenmateApi.js';
 
@@ -204,22 +205,61 @@ test('a newer request state replaces the old one in place', () => {
   );
 });
 
-test('chat calls send the agent, text and message id and read requests back', async () => {
+const wireConversation = {
+  agent_id: 'agent-1',
+  conversation_id: 'conv-1',
+  title: '今天进展',
+  created_at: '2026-10-14T09:00:00+00:00',
+  updated_at: '2026-10-14T09:00:00+00:00',
+};
+
+test('chat calls send the agent, conversation, text and message id and read requests back', async () => {
   const { calls, api } = recorder({
-    [JIUWENMATE_METHODS.chatSend]: { request: { ...wireRequest, status: 'queued', outcome: null, replies: [] } },
+    [JIUWENMATE_METHODS.chatSend]: {
+      request: { ...wireRequest, conversation_id: 'conv-1', status: 'queued', outcome: null, replies: [] },
+      conversation: wireConversation,
+    },
     [JIUWENMATE_METHODS.chatHistory]: { requests: [wireRequest] },
     [JIUWENMATE_METHODS.requestGet]: { request: wireRequest },
   });
-  const sent = await api.sendMessage('agent-1', '今天进展', 'msg-1');
-  assert.equal(sent.status, 'queued');
-  assert.deepEqual(sent.replies, []);
-  assert.deepEqual((await api.history('agent-1')).map((item) => item.text), ['今天进展']);
+  const sent = await api.sendMessage('agent-1', 'conv-1', '今天进展', 'msg-1');
+  assert.equal(sent.request.status, 'queued');
+  assert.equal(sent.request.conversationId, 'conv-1');
+  assert.deepEqual(sent.request.replies, []);
+  assert.deepEqual(sent.conversation, { id: 'conv-1', title: '今天进展', updatedAt: '2026-10-14T09:00:00+00:00' });
+  assert.deepEqual((await api.history('agent-1', 'conv-1')).map((item) => item.text), ['今天进展']);
   assert.deepEqual((await api.getRequest('req-1')).replies, ['进展如下']);
   assert.deepEqual(calls, [
-    [JIUWENMATE_METHODS.chatSend, { agent_id: 'agent-1', text: '今天进展', message_id: 'msg-1' }],
-    [JIUWENMATE_METHODS.chatHistory, { agent_id: 'agent-1' }],
+    [JIUWENMATE_METHODS.chatSend, { agent_id: 'agent-1', conversation_id: 'conv-1', text: '今天进展', message_id: 'msg-1' }],
+    [JIUWENMATE_METHODS.chatHistory, { agent_id: 'agent-1', conversation_id: 'conv-1' }],
     [JIUWENMATE_METHODS.requestGet, { request_id: 'req-1' }],
   ]);
+});
+
+test('conversation calls list, rename and delete by agent and conversation id', async () => {
+  const { calls, api } = recorder({
+    [JIUWENMATE_METHODS.conversationList]: { conversations: [wireConversation, { ...wireConversation, conversation_id: 'conv-0' }] },
+    [JIUWENMATE_METHODS.conversationRename]: { conversation: { ...wireConversation, title: '周报' } },
+    [JIUWENMATE_METHODS.conversationDelete]: { deleted: true },
+  });
+  assert.deepEqual((await api.listConversations('agent-1')).map((item) => item.id), ['conv-1', 'conv-0']);
+  assert.equal((await api.renameConversation('agent-1', 'conv-1', '周报')).title, '周报');
+  await api.deleteConversation('agent-1', 'conv-1');
+  assert.deepEqual(calls, [
+    [JIUWENMATE_METHODS.conversationList, { agent_id: 'agent-1' }],
+    [JIUWENMATE_METHODS.conversationRename, { agent_id: 'agent-1', conversation_id: 'conv-1', title: '周报' }],
+    [JIUWENMATE_METHODS.conversationDelete, { agent_id: 'agent-1', conversation_id: 'conv-1' }],
+  ]);
+});
+
+test('a conversation that received a message moves to the top once', () => {
+  const list = [
+    { id: 'conv-2', title: '乙', updatedAt: '2' },
+    { id: 'conv-1', title: '甲', updatedAt: '1' },
+  ];
+  const moved = upsertConversation(list, { id: 'conv-1', title: '甲', updatedAt: '3' });
+  assert.deepEqual(moved.map((item) => [item.id, item.updatedAt]), [['conv-1', '3'], ['conv-2', '2']]);
+  assert.deepEqual(upsertConversation(list, { id: 'conv-3', title: '丙', updatedAt: '4' }).map((item) => item.id), ['conv-3', 'conv-2', 'conv-1']);
 });
 
 const running = { ...wireRequest, status: 'dispatched', outcome: null, running: true, replies: [] };

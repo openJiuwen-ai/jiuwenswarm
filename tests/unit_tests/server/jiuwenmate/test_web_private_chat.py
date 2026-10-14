@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from itertools import count
 
@@ -12,13 +13,14 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
+from jiuwenswarm.server.jiuwenmate.execution_models import ConversationRef
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.web_adapter import (
+    LEGACY_CONVERSATION_ID,
     STREAM_EVENT,
-    WEB_CONVERSATION,
     WEB_NAMESPACE,
     JiuwenMateWebAdapter,
     _coalesce,
@@ -30,6 +32,7 @@ from openjiuwen.harness.schema.deep_agent_spec import TeamModelConfig
 
 SECRET = "sk-test-secret-value"
 NOW = datetime(2026, 10, 14, 9, 0, tzinfo=timezone.utc)
+CONVERSATION = "conv-1"
 
 
 class FakeModels:
@@ -176,14 +179,32 @@ class Host:
         created = await self.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings)
         return created.payload["colleague"]["agent_id"]
 
-    async def send(self, agent_id: str, text: str, message_id: str | None = None, ws_id: str | None = "ws-1"):
+    async def send(
+        self,
+        agent_id: str,
+        text: str,
+        message_id: str | None = None,
+        ws_id: str | None = "ws-1",
+        conversation_id: str = CONVERSATION,
+    ):
         return await self.call(
             ReqMethod.JIUWENMATE_CHAT_SEND,
             ws_id=ws_id,
             agent_id=agent_id,
+            conversation_id=conversation_id,
             text=text,
             message_id=message_id or f"msg-{text}",
         )
+
+    async def history(self, agent_id: str, conversation_id: str = CONVERSATION, ws_id: str | None = "ws-1"):
+        return await self.call(
+            ReqMethod.JIUWENMATE_CHAT_HISTORY, ws_id=ws_id, agent_id=agent_id, conversation_id=conversation_id
+        )
+
+    async def conversations(self, agent_id: str) -> list[dict]:
+        listed = await self.call(ReqMethod.JIUWENMATE_CONVERSATION_LIST, agent_id=agent_id)
+        assert listed.ok, listed.payload
+        return listed.payload["conversations"]
 
     async def pushed_until_ended(self) -> list[dict]:
         for _ in range(400):
@@ -237,7 +258,7 @@ async def test_history_lists_the_conversation_in_order(host):
     second = (await host.send(agent_id, "第二条")).payload["request"]
     await host.settled(second["request_id"])
 
-    history = await host.call(ReqMethod.JIUWENMATE_CHAT_HISTORY, agent_id=agent_id)
+    history = await host.history(agent_id)
 
     requests = history.payload["requests"]
     assert [item["request_id"] for item in requests] == [first["request_id"], second["request_id"]]
@@ -247,10 +268,10 @@ async def test_history_lists_the_conversation_in_order(host):
 async def test_history_before_the_first_message_is_empty_and_creates_nothing(host):
     agent_id = await host.colleague()
 
-    history = await host.call(ReqMethod.JIUWENMATE_CHAT_HISTORY, agent_id=agent_id)
+    history = await host.history(agent_id)
 
     assert history.ok and history.payload == {"requests": []}
-    assert ExecutionRepository(host.db).find_session(WEB_NAMESPACE, agent_id, WEB_CONVERSATION) is None
+    assert ExecutionRepository(host.db).find_session(WEB_NAMESPACE, agent_id, ConversationRef.web(CONVERSATION)) is None
 
 
 async def test_resending_a_message_id_returns_the_same_request(host):
@@ -262,7 +283,7 @@ async def test_resending_a_message_id_returns_the_same_request(host):
     await host.settled(first["request_id"])
 
     assert again["request_id"] == first["request_id"]
-    history = await host.call(ReqMethod.JIUWENMATE_CHAT_HISTORY, agent_id=agent_id)
+    history = await host.history(agent_id)
     assert len(history.payload["requests"]) == 1 and host.core.started == ["今天进展"]
 
 
@@ -304,11 +325,13 @@ async def test_unsuccessful_requests_show_no_reply(host, mode, outcome):
 @pytest.mark.parametrize(
     ("params", "code"),
     [
-        ({"text": "你好", "message_id": "m-1"}, "BAD_REQUEST"),
-        ({"agent_id": "{agent}", "message_id": "m-1"}, "BAD_REQUEST"),
-        ({"agent_id": "{agent}", "text": "你好"}, "BAD_REQUEST"),
-        ({"agent_id": "{agent}", "text": "你好", "message_id": "has space"}, "BAD_REQUEST"),
-        ({"agent_id": "mate_missing", "text": "你好", "message_id": "m-1"}, "NOT_FOUND"),
+        ({"conversation_id": "c-1", "text": "你好", "message_id": "m-1"}, "BAD_REQUEST"),
+        ({"agent_id": "{agent}", "conversation_id": "c-1", "message_id": "m-1"}, "BAD_REQUEST"),
+        ({"agent_id": "{agent}", "conversation_id": "c-1", "text": "你好"}, "BAD_REQUEST"),
+        ({"agent_id": "{agent}", "conversation_id": "c-1", "text": "你好", "message_id": "has space"}, "BAD_REQUEST"),
+        ({"agent_id": "{agent}", "text": "你好", "message_id": "m-1"}, "BAD_REQUEST"),
+        ({"agent_id": "{agent}", "conversation_id": "has space", "text": "你好", "message_id": "m-1"}, "BAD_REQUEST"),
+        ({"agent_id": "mate_missing", "conversation_id": "c-1", "text": "你好", "message_id": "m-1"}, "NOT_FOUND"),
     ],
 )
 async def test_refused_messages_keep_their_error_code(host, params, code):
@@ -349,11 +372,11 @@ async def test_deleting_a_colleague_ends_its_running_request_first(host):
 
 async def test_runtime_starts_once_and_restarts_after_close(host):
     agent_id = await host.colleague()
-    await asyncio.gather(*(host.call(ReqMethod.JIUWENMATE_CHAT_HISTORY, agent_id=agent_id) for _ in range(5)))
+    await asyncio.gather(*(host.history(agent_id) for _ in range(5)))
     assert len(host.managers) == 1
 
     await host.adapter.aclose()
-    await host.call(ReqMethod.JIUWENMATE_CHAT_HISTORY, agent_id=agent_id)
+    await host.history(agent_id)
 
     assert len(host.managers) == 2
 
@@ -405,7 +428,7 @@ async def test_fragments_are_pushed_in_order_to_the_sending_connection(host):
 
 async def test_stream_goes_to_connections_that_asked_about_the_colleague(host):
     agent_id = await host.colleague()
-    await host.call(ReqMethod.JIUWENMATE_CHAT_HISTORY, ws_id="ws-2", agent_id=agent_id)
+    await host.history(agent_id, ws_id="ws-2")
     host.core.streams["今天进展"] = (("进展",),)
     host.core.release("今天进展")
 
@@ -440,3 +463,101 @@ def test_consecutive_fragments_of_one_execution_are_merged():
         delta("exe_1", 1, "甲"),
         delta("exe_2", 1, "乙"),
     ]
+
+
+# JM-10-V-06 several conversations per colleague
+
+
+async def test_each_conversation_keeps_its_own_history_and_is_listed_latest_first(host):
+    agent_id = await host.colleague()
+    host.core.release("第一个对话的问题", "第二个对话的问题")
+
+    first = (await host.send(agent_id, "第一个对话的问题", conversation_id="conv-a")).payload
+    await host.settled(first["request"]["request_id"])
+    second = (await host.send(agent_id, "第二个对话的问题", conversation_id="conv-b")).payload
+    await host.settled(second["request"]["request_id"])
+
+    assert first["conversation"]["title"] == "第一个对话的问题"
+    assert first["request"]["conversation_id"] == "conv-a"
+    listed = await host.conversations(agent_id)
+    assert [item["conversation_id"] for item in listed] == ["conv-b", "conv-a"]
+    a = (await host.history(agent_id, "conv-a")).payload["requests"]
+    b = (await host.history(agent_id, "conv-b")).payload["requests"]
+    assert [item["text"] for item in a] == ["第一个对话的问题"]
+    assert [item["text"] for item in b] == ["第二个对话的问题"]
+    sessions = ExecutionRepository(host.db)
+    session_a = sessions.find_session(WEB_NAMESPACE, agent_id, ConversationRef.web("conv-a"))
+    session_b = sessions.find_session(WEB_NAMESPACE, agent_id, ConversationRef.web("conv-b"))
+    assert session_a.session_id != session_b.session_id
+
+
+async def test_a_new_conversation_is_listed_only_after_its_first_message(host):
+    agent_id = await host.colleague()
+
+    history = await host.history(agent_id, "conv-new")
+
+    assert history.ok and history.payload == {"requests": []}
+    assert await host.conversations(agent_id) == []
+
+
+async def test_the_title_is_the_start_of_the_first_message_and_can_be_renamed(host):
+    agent_id = await host.colleague()
+    host.core.release("请帮我  整理\n本周研发进展并输出一份详细的周报", "继续")
+
+    await host.send(agent_id, "请帮我  整理\n本周研发进展并输出一份详细的周报", message_id="msg-long")
+    await host.send(agent_id, "继续")
+    titled = await host.conversations(agent_id)
+    renamed = await host.call(
+        ReqMethod.JIUWENMATE_CONVERSATION_RENAME, agent_id=agent_id, conversation_id=CONVERSATION, title="  周报  "
+    )
+    empty = await host.call(
+        ReqMethod.JIUWENMATE_CONVERSATION_RENAME, agent_id=agent_id, conversation_id=CONVERSATION, title=" "
+    )
+
+    assert [item["title"] for item in titled] == ["请帮我 整理 本周研发进展并输出一份详细"]
+    assert renamed.ok and renamed.payload["conversation"]["title"] == "周报"
+    assert not empty.ok and empty.payload["code"] == "BAD_REQUEST"
+    assert [item["title"] for item in await host.conversations(agent_id)] == ["周报"]
+
+
+async def test_a_deleted_conversation_is_hidden_and_refuses_new_messages(host):
+    agent_id = await host.colleague()
+    host.core.release("今天进展")
+    request = (await host.send(agent_id, "今天进展")).payload["request"]
+    await host.settled(request["request_id"])
+
+    deleted = await host.call(ReqMethod.JIUWENMATE_CONVERSATION_DELETE, agent_id=agent_id, conversation_id=CONVERSATION)
+    again = await host.call(ReqMethod.JIUWENMATE_CONVERSATION_DELETE, agent_id=agent_id, conversation_id=CONVERSATION)
+    refused = await host.send(agent_id, "还在吗", message_id="msg-again")
+
+    assert deleted.ok and deleted.payload == {"deleted": True}
+    assert again.payload["code"] == "NOT_FOUND" and refused.payload["code"] == "NOT_FOUND"
+    assert await host.conversations(agent_id) == []
+    assert (await host.request(request["request_id"]))["replies"] == ["回复：今天进展"]
+
+
+async def test_messages_from_the_single_conversation_era_are_listed_as_a_conversation(host):
+    agent_id = await host.colleague()
+    host.core.release("早先的消息")
+    old = (await host.send(agent_id, "早先的消息", conversation_id=LEGACY_CONVERSATION_ID)).payload
+    await host.settled(old["request"]["request_id"])
+    with sqlite3.connect(host.db) as conn:
+        conn.execute("DELETE FROM web_conversations")
+
+    listed = await host.conversations(agent_id)
+
+    assert [(item["conversation_id"], item["title"]) for item in listed] == [(LEGACY_CONVERSATION_ID, "早先的消息")]
+    history = (await host.history(agent_id, LEGACY_CONVERSATION_ID)).payload["requests"]
+    assert [item["text"] for item in history] == ["早先的消息"]
+
+
+async def test_deleting_a_colleague_removes_its_conversation_list(host):
+    agent_id = await host.colleague()
+    host.core.release("今天进展")
+    request = (await host.send(agent_id, "今天进展")).payload["request"]
+    await host.settled(request["request_id"])
+
+    await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_DELETE, agent_id=agent_id)
+
+    with sqlite3.connect(host.db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM web_conversations").fetchone()[0] == 0

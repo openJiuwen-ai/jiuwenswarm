@@ -1836,21 +1836,24 @@
 
 .jiuwenmate-session-view {
   display: flex;
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
   flex-direction: column;
 }
 
 .jiuwenmate-session-view__body {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .jiuwenmate-chat-messages {
   display: grid;
-  width: min(720px, calc(100% - 48px));
+  width: 100%;
   align-content: start;
   gap: 22px;
-  margin: 0 auto;
-  padding: 8px 0 40px;
+  margin: 0;
+  padding: 8px max(24px, calc((100% - 720px) / 2)) 40px;
   list-style: none;
 }
 
@@ -1903,6 +1906,7 @@
 
 .jiuwenmate-session-view footer {
   display: grid;
+  flex-shrink: 0;
   width: min(720px, calc(100% - 48px));
   gap: 6px;
   margin: 0 auto;
