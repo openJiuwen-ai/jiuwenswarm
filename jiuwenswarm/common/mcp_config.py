@@ -17,10 +17,7 @@ from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.tool import McpServerConfig
 
 from jiuwenswarm.common.config import get_mcp_server_config
-from jiuwenswarm.server.runtime.mcp.credential import (
-    CredentialStore,
-    resolve_placeholders,
-)
+from jiuwenswarm.common.external_providers import provider
 
 _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
 
@@ -33,6 +30,11 @@ _PREWARM_MAX_CONCURRENCY = 6
 _PREWARM_STALL_TIMEOUT_S = 120.0
 
 _PLACEHOLDER_RE = re.compile(r"\$\{(\w+)\}")
+
+
+def _credential_store():
+    """CredentialStore 经 common 注入点获取（分层规则 R1：不 import server）。"""
+    return provider("mcp_credential").CredentialStore()
 
 
 def _resolve_string(value: str, resolver) -> str:
@@ -56,7 +58,7 @@ def build_mcp_credential_resolver(name: str) -> Callable[[str], str | None] | No
     if not name:
         return None
     try:
-        store = CredentialStore()
+        store = _credential_store()
         stored = store.get_all(name)
     except Exception:  # noqa: BLE001 — no store / not an MCP → leave as-is
         return None
@@ -373,7 +375,9 @@ async def fetch_mcp_tools_via_temp_connection(entry: dict[str, Any]) -> list[dic
     # ``Bearer ${BAIDU_ACCESS_TOKEN}`` string. No-op for form-A entries
     # (no placeholders) and for non-MCP entries (empty store).
     try:
-        entry = resolve_placeholders(entry, CredentialStore(), name)
+        entry = provider("mcp_credential").resolve_placeholders(
+            entry, _credential_store(), name
+        )
     except Exception as resolve_exc:  # noqa: BLE001
         logger.debug("[mcp-config] placeholder resolve failed: %s", resolve_exc)
 
@@ -406,7 +410,7 @@ async def fetch_mcp_tools_via_temp_connection(entry: dict[str, Any]) -> list[dic
         # task-group teardown) on server errors like 403. That group is NOT
         # an Exception subclass, so it would escape `except Exception` and
         # hang the caller. Coerce it back into a catchable Exception.
-        from jiuwenswarm.server.runtime.mcp.exc_group import reraise_as_exception
+        from jiuwenswarm.common.mcp_exc_group import reraise_as_exception
         reraise_as_exception(exc)
     finally:
         try:
@@ -420,7 +424,7 @@ async def fetch_mcp_tools_via_temp_connection(entry: dict[str, Any]) -> list[dic
             if isinstance(exc, (Exception, asyncio.CancelledError)):
                 logger.warning("[mcp-config] fetch disconnect failed: %s", exc)
             else:
-                from jiuwenswarm.server.runtime.mcp.exc_group import (
+                from jiuwenswarm.common.mcp_exc_group import (
                     reraise_as_exception,
                 )
                 try:
@@ -498,7 +502,7 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
         return True, ""
     resolver = None
     try:
-        stored = CredentialStore().get_all(n)
+        stored = _credential_store().get_all(n)
         if stored:
             def resolver(key: str) -> str | None:  # noqa: B023
                 if key in stored:
@@ -585,12 +589,9 @@ async def prewarm_connected_mcps() -> None:
     don't overwhelm the host during startup.
     """
     try:
-        from jiuwenswarm.server.runtime.mcp.state_store import (
-            list_truly_connected_mcps,
-        )
         names = [
             str(r.get("name", "")).strip()
-            for r in list_truly_connected_mcps()
+            for r in provider("mcp_state").list_truly_connected_mcps()
             if r.get("name")
         ]
         if not names:
