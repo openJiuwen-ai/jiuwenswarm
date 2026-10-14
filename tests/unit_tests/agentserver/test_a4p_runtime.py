@@ -1124,7 +1124,7 @@ async def test_a4p_cron_authorization_success_requires_explicit_enable(
 
 
 @pytest.mark.asyncio
-async def test_a4p_intent_token_matches_session_action_and_identity() -> None:
+async def test_a4p_intent_token_matches_session_action_and_identity(tmp_path) -> None:
     runtime = A4PRuntime({"a4p": {"enabled": True}})
     identity = A4PIdentity(agent_id="agent-1")
 
@@ -1132,7 +1132,9 @@ async def test_a4p_intent_token_matches_session_action_and_identity() -> None:
         {
             "agentId": identity.agent_id,
             "userId": INTERNAL_A4P_USER_ID,
-            "intent": {"actions": [{"name": "read_file", "params": {"path": "/tmp/a.txt"}}]},
+            "intent": {"actions": _normalize_actions([
+                {"name": "read_file", "params": {"file_path": str(tmp_path / "a.txt")}},
+            ])},
             "validitySeconds": 60,
         }
     )
@@ -1147,7 +1149,7 @@ async def test_a4p_intent_token_matches_session_action_and_identity() -> None:
         session_id="session-1",
         identity=identity,
         action="read_file",
-        params={"path": "/tmp/a.txt"},
+        params={"file_path": str(tmp_path / "a.txt")},
     )
     assert matched is not None
 
@@ -1155,7 +1157,7 @@ async def test_a4p_intent_token_matches_session_action_and_identity() -> None:
         session_id="session-1",
         identity=identity,
         action="read_file",
-        params={"path": "/tmp/b.txt"},
+        params={"file_path": str(tmp_path / "b.txt")},
     )
     assert mismatch is None
 
@@ -1163,7 +1165,7 @@ async def test_a4p_intent_token_matches_session_action_and_identity() -> None:
         session_id="session-1",
         identity=A4PIdentity(agent_id="agent-2"),
         action="read_file",
-        params={"path": "/tmp/a.txt"},
+        params={"file_path": str(tmp_path / "a.txt")},
     )
     assert wrong_agent is None
 

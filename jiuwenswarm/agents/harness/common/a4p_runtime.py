@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from copy import deepcopy
 from dataclasses import dataclass
@@ -31,6 +32,11 @@ from jiuwenswarm.agents.harness.common.a4p_cron_token_store import (
     SQLiteCronIntentTokenStore,
 )
 from jiuwenswarm.agents.harness.common.a4p_execution_context import AuthorizerRoute
+from jiuwenswarm.agents.harness.common.a4p_file_scope import (
+    READ_PATH_FIELDS,
+    normalize_read_path_params,
+    read_scope_matches,
+)
 from jiuwenswarm.agents.harness.common.a4p_token_expiry import token_expired
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.utils import get_config_dir, logger
@@ -384,18 +390,31 @@ class A4PRuntime:
         action: str,
         params: dict[str, Any] | None,
     ) -> bool:
+        try:
+            normalized = normalize_read_path_params(
+                action, normalize_a4p_action_params(action, params),
+            )
+        except (ValueError, OSError, RuntimeError):
+            return False
         result = await self.server.verify_intent_token(
             {
                 "token": token,
                 "expected": {
                     "action": action,
-                    "params": normalize_a4p_action_params(action, params),
+                    "params": normalized,
                     "agentId": _agent_subject_id(identity.agent_id),
                     "userId": INTERNAL_A4P_USER_ID,
                 },
             }
         )
-        return bool(result.valid)
+        if not result.valid:
+            return False
+        if action not in READ_PATH_FIELDS:
+            return True
+        try:
+            return await asyncio.to_thread(read_scope_matches, token, action, normalized)
+        except (ValueError, OSError, RuntimeError):
+            return False
 
     def cron_intent_authorization_summary(
         self,
