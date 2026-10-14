@@ -29,8 +29,10 @@ logger = logging.getLogger(__name__)
 # directly and never re-derives it from the event type. Events that carry
 # their own status in the payload (created / plan_request / plan_response /
 # updated) override the table default via ``event.status or ...``. TASK_UPDATED
-# is intentionally absent: its status is purely payload-driven, so a missing
-# status must leave the task unchanged rather than reset it.
+# is intentionally absent: it must never reset the task to a table default. When
+# its payload carries no status, ``_handle_task`` falls back to the task's current
+# status re-queried from the DB (same source as the snapshot), so the frame still
+# carries ``status`` without changing the task.
 #
 # Adding a new task event is now a one-line entry here plus the SDK mapping in
 # ``event_types.py`` — no frontend change required.
@@ -227,14 +229,14 @@ class TeamMonitorHandler(BaseMonitorHandler):
         })
         return base
 
-    async def _lookup_task_body(self, task_id: str) -> tuple[str, str] | None:
-        """Re-query the task's title/content via the monitor's public API.
+    async def _lookup_task_body(self, task_id: str) -> tuple[str, str, str | None] | None:
+        """Re-query the task's title/content/status via the monitor's public API.
 
         Args:
             task_id: The DB task id carried by the monitor event.
 
         Returns:
-            ``(title, content)`` when the task exists, else ``None``. On any
+            ``(title, content, status)`` when the task exists, else ``None``. On any
             exception (monitor None / query error) logs a warning and returns
             ``None`` so the caller can still emit the event with ``task_id`` +
             ``status`` (no body) — never blocks the event stream.
@@ -252,7 +254,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
             return None
         if task is None:
             return None
-        return task.title, task.content
+        return task.title, task.content, getattr(task, "status", None)
 
     async def _handle_task(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
         """Converge every task event into the frontend-ready task shape.
@@ -275,6 +277,10 @@ class TeamMonitorHandler(BaseMonitorHandler):
             base: Pre-filled event dict (type / team_id / member_id).
             event: Source monitor event.
 
+        A ``TASK_UPDATED`` whose payload carries no status (e.g. a title/content
+        edit) takes the task's current DB status, so the frame always carries
+        ``status`` when the task can be found, without resetting it.
+
         Returns:
             The event dict with ``task_id`` and, when known, the resolved ``status``
             and (for CREATED/UPDATED) the ``title`` / ``content`` body.
@@ -286,10 +292,11 @@ class TeamMonitorHandler(BaseMonitorHandler):
         if event.event_type in _TASK_BODY_EVENT_TYPES and event.task_id:
             body = await self._lookup_task_body(event.task_id)
             if body is not None:
-                title_field = _task_text_field("title", body[0])
-                content_field = _task_text_field("content", body[1])
-                base.update(title_field)
-                base.update(content_field)
+                title, content, db_status = body
+                base.update(_task_text_field("title", title))
+                base.update(_task_text_field("content", content))
+                if "status" not in base and db_status:
+                    base["status"] = db_status
         return base
 
     async def _handle_message(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
