@@ -100,6 +100,7 @@ from openjiuwen.harness.rails import (
 )
 from openjiuwen.harness.rails.personal_context import PersonalContextRail
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
+
 try:
     from openjiuwen.harness.rails.evolution import (
         TTSEConfig,
@@ -249,6 +250,7 @@ def _strip_whitespace(text: str) -> str:
     space at the point where a newline was inserted.
     """
     return re.sub(r"\s+", "", text or "")
+
 
 try:
     from openjiuwen.harness.tools import is_paid_search_enabled
@@ -714,6 +716,7 @@ def _permission_user_text_for_request(request: AgentRequest) -> str:
     query = params.get("query")
     return query.strip() if isinstance(query, str) else ""
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -733,6 +736,7 @@ def _diag_auth_headers(cfg: Any) -> str:
         vs = str(v)
         parts.append(f"{k}[len={len(vs)}]: {vs[:15]}")
     return "{" + ", ".join(parts) + "}"
+
 
 # Persistence identity of the single-agent card. It is the entity segment of
 # every checkpointer key ("{session_id}:agent:{card_id}:..."), so it must stay
@@ -997,6 +1001,7 @@ class _RailBuildInfo:
     def __post_init__(self):
         """Normalize the optional params mapping to an empty dict."""
         self.params = self.params or {}
+
 
 _CRON_TOOL_NAMES = frozenset(
     {
@@ -2509,9 +2514,10 @@ class JiuWenSwarmDeepAdapter:
             metadata=request.metadata,
         )
 
-    async def _ensure_chat_extensions(self, request: AgentRequest) -> AgentResponse | None:
-        """Apply agent_template / plugin equipment for the upcoming turn.
-        """
+    async def _ensure_chat_extensions(
+        self, request: AgentRequest
+    ) -> AgentResponse | None:
+        """Apply agent_template / plugin equipment for the upcoming turn."""
         params = dict(request.params) if isinstance(request.params, dict) else {}
         mode = str(params.get("mode") or "").strip() or "agent"
         if mode in self._SKIP_EXTENSION_MODES or is_team_mode(mode):
@@ -2590,8 +2596,7 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _marketplace_equipment_gate(params: dict) -> str | None:
-        """Hard-reject non-empty equipment that marketplace does not allow.
-        """
+        """Hard-reject non-empty equipment that marketplace does not allow."""
         v = params.get("agent_template_name")
         if isinstance(v, str) and v != "":
             if not equipment.is_agent_template_installed(v):
@@ -2607,8 +2612,7 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _connector_equipment_gate(params: dict) -> str | None:
-        """Hard-reject when declared connectors are not connected (read-only).
-        """
+        """Hard-reject when declared connectors are not connected (read-only)."""
         agent_id = None
         plugin_ids: list[str] = []
         v = params.get("agent_template_name")
@@ -3381,6 +3385,7 @@ class JiuWenSwarmDeepAdapter:
         reserve_activity: bool = False,
         host_external_input: bool = False,
         permission_project_dir: str | None = None,
+        execution_request: AgentRequest | None = None,
     ) -> "JiuWenSwarmDeepAdapter":
         """Return the session-owned adapter, creating and initializing it once."""
         if self._is_session_scoped_adapter:
@@ -3396,15 +3401,16 @@ class JiuWenSwarmDeepAdapter:
             existing = self._session_adapters.get(sid)
             # Same-class child cleanup remains serialized by this session lock.
             if (
-                existing is not None
-                and existing._permission_state.permission_isolated  # pylint: disable=protected-access
+                existing is not None and existing._permission_state.permission_isolated  # pylint: disable=protected-access
             ):
                 if not existing._permission_state.permission_cleanup_complete:  # pylint: disable=protected-access
                     await existing._isolate_permission_instance()  # pylint: disable=protected-access
                 if not existing._permission_state.permission_cleanup_complete:  # pylint: disable=protected-access
                     raise RuntimeError("permission_session_cleanup_pending")
                 self._drop_session_adapter_cache_entry(
-                    sid, remove_lock=False, remove_runtime_state=False,
+                    sid,
+                    remove_lock=False,
+                    remove_runtime_state=False,
                 )
                 existing = None
             if existing is not None:
@@ -3475,6 +3481,15 @@ class JiuWenSwarmDeepAdapter:
                 return existing
 
             adapter = self._new_session_scoped_adapter(sid)
+            if execution_request is not None:
+                model_name = self._requested_model_name(execution_request)
+                adapter._initial_execution_request = execution_request
+                checker = getattr(self, "_model_selection_can_access", None)
+                if checker is not None:
+                    adapter._model_selection_can_access = checker
+            # Execution selection is request-local. Do not reuse a persisted
+            # Skill retrieval budget's older model as the construction choice.
+            adapter._initial_execution_model_name = str(model_name or "").strip()
             restored_profile = self._load_skill_retrieval_session_profile(sid)
             restored_mcp_names = (
                 {
@@ -3500,11 +3515,16 @@ class JiuWenSwarmDeepAdapter:
                 config = {**(config or {}), "project_dir": permission_project_dir}
             history_preparation = None
             if history_before_request_id:
-                from jiuwenswarm.agents.harness.common.session_ops_service import prefetch_session_history
+                from jiuwenswarm.agents.harness.common.session_ops_service import (
+                    prefetch_session_history,
+                )
 
                 history_preparation = asyncio.create_task(
-                    run_history_io(prefetch_session_history, sid,
-                        history_before_request_id=history_before_request_id),
+                    run_history_io(
+                        prefetch_session_history,
+                        sid,
+                        history_before_request_id=history_before_request_id,
+                    ),
                     name=f"session-history-prepare:{sid}",
                 )
             try:
@@ -3534,7 +3554,9 @@ class JiuWenSwarmDeepAdapter:
                     try:
                         history_snapshot = await history_preparation
                     except Exception as exc:
-                        logger.debug("session history preparation failed for %s: %s", sid, exc)
+                        logger.debug(
+                            "session history preparation failed for %s: %s", sid, exc
+                        )
                 # Restart/eviction restoration still uses the original context
                 # conversion after SDK initialization, start and config reload.
                 try:
@@ -3546,7 +3568,11 @@ class JiuWenSwarmDeepAdapter:
                         deep_agent=getattr(adapter, "_instance", None),
                         session_id=sid,
                         history_before_request_id=history_before_request_id,
-                        **({"history_snapshot": history_snapshot} if history_snapshot is not None else {}),
+                        **(
+                            {"history_snapshot": history_snapshot}
+                            if history_snapshot is not None
+                            else {}
+                        ),
                     )
                 except Exception as exc:
                     logger.warning(
@@ -5191,6 +5217,7 @@ class JiuWenSwarmDeepAdapter:
         *,
         model_name: str | None = None,
         history_before_request_id: str | None = None,
+        execution_request: AgentRequest | None = None,
     ) -> None:
         """Reconcile this session's MCP set to ``needed`` (idempotent diff).
 
@@ -5211,6 +5238,11 @@ class JiuWenSwarmDeepAdapter:
             model_name=model_name,
             pending_mcp_scan_names=needed_set,
             history_before_request_id=history_before_request_id,
+            **(
+                {"execution_request": execution_request}
+                if execution_request is not None
+                else {}
+            ),
         )
         if child._instance is None:
             pending_holder = getattr(
@@ -5289,6 +5321,27 @@ class JiuWenSwarmDeepAdapter:
         预热失败不阻断其余、不降级 state。
         """
         if self._mcp_prewarm_task is not None and not self._mcp_prewarm_task.done():
+            return
+        from jiuwenswarm.server.worker.preparation import current_preparation_registry
+
+        owner = current_preparation_registry()
+        if owner is not None and "mcp" in owner.snapshot():
+            shared = owner.start("mcp")
+            if shared is not None:
+
+                async def wait_for_shared() -> None:
+                    try:
+                        # Adapter teardown must not cancel the server-owned
+                        # warmup. start(), unlike ensure(), keeps it background
+                        # work and obeys the first execution's admission pause.
+                        await asyncio.shield(shared)
+                    except Exception as exc:
+                        logger.debug("shared MCP prewarm failed: %s", exc)
+
+                self._mcp_prewarm_task = asyncio.create_task(
+                    wait_for_shared(),
+                    name=f"mcp-prewarm-{self._agent_name}",
+                )
             return
         self._mcp_prewarm_task = asyncio.create_task(
             self._do_mcp_prewarm(),
@@ -6562,6 +6615,7 @@ class JiuWenSwarmDeepAdapter:
 
     def _create_model(self, config: dict) -> Model:
         from jiuwenswarm.runtime.kernel import KernelIdentity, process_kernel
+
         identity = KernelIdentity.for_agent(
             project_dir=str(getattr(self, "_project_dir", "") or ""),
             work_mode=str(getattr(self, "_session_instance_mode", "agent")),
@@ -6593,17 +6647,46 @@ class JiuWenSwarmDeepAdapter:
         self._global_index_to_cache_key.clear()
         self._model_id_to_key.clear()
         self._model_group_cache.clear()
+        self._model = None
         self._inject_attribution_to_config(config)
         self._build_model_cache_from_defaults(config)
         recipes = getattr(self, "_model_recipes", {})
         default_keys = [self._model_alias_to_key[name] for name in self._model_name_to_keys
                         if name in getattr(self, "_model_alias_to_key", {})
                         and recipes[self._model_alias_to_key[name]].get("is_default") is True]
-        # Default construction is required by the SDK config. Other recipes
-        # stay lazy until selected by a request or a subagent.
-        for key in [*default_keys, *recipes]:
-            if self._materialize_model_recipe(key) is not None:
-                break
+        self._configured_default_model_keys = list(
+            dict.fromkeys([*default_keys, *recipes])
+        )
+        default_groups = [
+            group for group in (config.get("models", {}).get("groups") or [])
+            if isinstance(group, dict) and group.get("enabled", True) and group.get("is_default")
+        ]
+        self._configured_default_group_id = (
+            str(default_groups[0].get("model_group_id") or "") if default_groups else ""
+        )
+        requested = str(
+            getattr(self, "_initial_execution_model_name", "") or ""
+        ).strip()
+        selected = None
+        execution_request = getattr(self, "_initial_execution_request", None)
+        # The bootstrap context may contain forwarded credentials. Keep it
+        # only for this construction, rather than for the Session's lifetime.
+        self._initial_execution_request = None
+        if execution_request is not None and requested.startswith(
+            ("model:", "model_group:")
+        ):
+            # Reuse the real request's authorization and route resolution. A
+            # fabricated bootstrap request would lose caller access metadata.
+            selected = self._resolve_model_for_request(execution_request)
+            self._model_cache[requested] = selected
+        elif requested.startswith("model:"):
+            key = self._model_id_to_key.get(requested.removeprefix("model:"))
+            if key is not None:
+                selected = self._materialize_model_recipe(key)
+        elif requested and not requested.startswith("model_group:"):
+            selected = self._resolve_model_by_name(requested)
+        if selected is None:
+            selected = self._configured_default_model()
         if not self._model_cache:
             self._build_model_cache_legacy(config)
 
@@ -6613,36 +6696,10 @@ class JiuWenSwarmDeepAdapter:
                 "Check that api_key and api_base are set for at least one model."
             )
 
-        # 优先取 is_default=true 的条目（纯 model_name key），否则取第一个
-        default_name = None
-        for name, keys in self._model_name_to_keys.items():
-            if name in self._model_cache:
-                default_name = name
-                break
-        if default_name is None:
-            # 回退：取第一个 #index key
-            for key in self._model_cache:
-                if "#" in key:
-                    default_name = key
-                    break
-        if default_name is None:
-            default_name = next(iter(self._model_cache))
-
-        # A configured default group outranks the default single model. The
-        # actual router is compiled by agent-core; JiuwenSwarm never builds it.
-        default_groups = [
-            group for group in (config.get("models", {}).get("groups") or [])
-            if isinstance(group, dict) and group.get("enabled", True) and group.get("is_default")
-        ]
-        if default_groups:
-            group_id = str(default_groups[0].get("model_group_id") or "")
-            from jiuwenswarm.common.model_selection import ModelSelection
-            from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
-            from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
-            resolved = ModelSelectionResolver().resolve(ModelSelection(type="model_group", id=group_id))
-            self._model_group_cache[group_id] = build_model_from_selection(resolved)
-            default_name = f"model_group:{group_id}"
-            self._model_cache[default_name] = self._model_group_cache[group_id]
+        if selected is None:
+            selected = next(iter(self._model_cache.values()))
+        names = [name for name, model in self._model_cache.items() if model is selected]
+        default_name = next((name for name in names if "#" not in name), names[0])
 
         # 首次启动兜底：config 默认条目仍为 .env 占位符时，改选 Zen 免费模型
         # （如 DeepSeek V4 Flash）作为默认，避免把占位模型发往厂商。
@@ -6670,6 +6727,41 @@ class JiuWenSwarmDeepAdapter:
             None,
         )
         self._last_models_config_fingerprint = new_fp
+        return self._model
+
+    def _configured_default_model(self) -> Model | None:
+        """Materialize the configured fallback only when a request needs it.
+
+        Session bootstrap may use a different model. Unknown names and empty
+        selections still fall back to the original configuration, never to
+        whichever provider happened to be constructed first.
+        """
+        group_id = getattr(self, "_configured_default_group_id", "")
+        if group_id:
+            cached = self._model_group_cache.get(group_id)
+            if cached is None:
+                from jiuwenswarm.common.model_selection import ModelSelection
+                from jiuwenswarm.server.runtime.model_compiler_adapter import (
+                    build_model_from_selection,
+                )
+                from jiuwenswarm.server.runtime.model_routing_registry import (
+                    ModelSelectionResolver,
+                )
+
+                resolved = ModelSelectionResolver().resolve(
+                    ModelSelection(type="model_group", id=group_id)
+                )
+                cached = build_model_from_selection(resolved)
+                self._model_group_cache[group_id] = cached
+                self._model_cache[f"model_group:{group_id}"] = cached
+            return cached
+        keys = getattr(self, "_configured_default_model_keys", None)
+        if keys is None:
+            return self._model
+        for key in keys:
+            model = self._materialize_model_recipe(key)
+            if model is not None:
+                return model
         return self._model
 
     @staticmethod
@@ -6746,7 +6838,10 @@ class JiuWenSwarmDeepAdapter:
         if not requested:
             # ask_user_interrupt 等中断恢复请求不带 model_name，
             # 回退到 session 上次应用的模型，而非 config.yaml 默认占位模型。
-            return getattr(self, "_last_resolved_model", None) or self._model
+            return (
+                getattr(self, "_last_resolved_model", None)
+                or self._configured_default_model()
+            )
         # 含 # 的请求一律走全局 origin_index 换算（见上文 Note），避免 per-name
         # cache_key 与通道侧全局 index 碰撞时误命中另一同名条目。
         if "#" not in requested:
@@ -6760,23 +6855,27 @@ class JiuWenSwarmDeepAdapter:
         if "#" in requested:
             bare_name, _, index_part = requested.rpartition("#")
             if not bare_name:
-                return self._model
+                return self._configured_default_model()
             try:
                 global_idx = int(index_part)
             except ValueError:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] model resolve: requested %r has "
-                    "non-integer index, falling back to default model", requested,
+                    "non-integer index, falling back to default model",
+                    requested,
                 )
-                return self._model
+                return self._configured_default_model()
             cache_key = self._global_index_to_cache_key.get(global_idx)
             if cache_key is None:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] model resolve: global index %d "
                     "for %r not in cache map (mapped_key=%s), falling back to "
-                    "default model", global_idx, requested, cache_key,
+                    "default model",
+                    global_idx,
+                    requested,
+                    cache_key,
                 )
-                return self._model
+                return self._configured_default_model()
             # Match agent_os's team selector name check while preserving
             # develop's global-to-per-name map (never look up requested as a
             # per-name cache key). A reordered catalog must not pick a different
@@ -6785,10 +6884,14 @@ class JiuWenSwarmDeepAdapter:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] model resolve: requested %r does "
                     "not match global index %d, falling back to default model",
-                    requested, global_idx,
+                    requested,
+                    global_idx,
                 )
-                return self._model
-            return self._materialize_model_recipe(cache_key) or self._model
+                return self._configured_default_model()
+            return (
+                self._materialize_model_recipe(cache_key)
+                or self._configured_default_model()
+            )
 
         # Opencode Zen 免费模型（纯内存态，不入 config.yaml）：从进程内存缓存
         # 取完整 model_client_config / model_config_obj 构建并缓存，供本次及后续请求复用。
@@ -6813,8 +6916,9 @@ class JiuWenSwarmDeepAdapter:
         # 显式请求的模型全部未命中（不在 config / model_cache / Zen 免费缓存）：
         # 打 warning 暴露配置漂移（如 cron job 引用已下线模型、两进程缓存分歧），
         # 不再静默回退默认模型——cron 无人值守场景，静默用错模型难以及时发现。
+        fallback = self._configured_default_model()
         fallback_name = str(
-            getattr(getattr(self._model, "model_config", None), "model_name", "") or ""
+            getattr(getattr(fallback, "model_config", None), "model_name", "") or ""
         )
         logger.warning(
             "[JiuWenSwarmDeepAdapter] requested model %r not found in "
@@ -6823,7 +6927,7 @@ class JiuWenSwarmDeepAdapter:
             requested,
             fallback_name or type(self._model).__name__,
         )
-        return self._model
+        return fallback
 
     def _requested_model_name(self, request: AgentRequest) -> str:
         """Resolve the model name this request should use.
@@ -9919,7 +10023,6 @@ class JiuWenSwarmDeepAdapter:
             if self._permission_rail is not None:
                 logger.info("[JiuWenSwarmDeepAdapter] _permission_rail newly created on hot-reload")
 
-
     def _uses_smart_permission_lifecycle(self, config_base: dict[str, Any]) -> bool:
         return self._auto_permission_capability_enabled() and (
             self._enable_auto_permission
@@ -9987,7 +10090,6 @@ class JiuWenSwarmDeepAdapter:
             sandboxed=getattr(self._sys_operation_card, "mode", None) == OperationMode.SANDBOX,
             language=self._resolve_runtime_language(),
         )
-
 
     def _permission_group_bindings(self, group: PermissionRailGroup) -> dict[str, Any]:
         """Translate a rail recipe using the adapter's existing binding names."""
@@ -10059,7 +10161,6 @@ class JiuWenSwarmDeepAdapter:
             ):
                 return True
         return False
-
 
     async def _isolate_permission_instance(self) -> None:
         """Close old borrowed Host references before any fallible cleanup."""
@@ -13548,7 +13649,6 @@ class JiuWenSwarmDeepAdapter:
             dispatch_mode=dispatch_mode,
         )
 
-
     async def _discard_superseded_permission_before_fresh_input(
         self,
         request: AgentRequest,
@@ -13620,7 +13720,6 @@ class JiuWenSwarmDeepAdapter:
         return self._permission_dispatch.prepare_resume(
             inputs, root_session_id=root_session_id, loop_session=loop_session,
         )
-
 
     async def _attach_and_send_inputs(
         self,
@@ -13704,7 +13803,6 @@ class JiuWenSwarmDeepAdapter:
             await sdk_sender(request)
             return False
         return await self._permission_dispatch.send(request, sdk_sender)
-
 
     def _permission_context_messages(
         self,
@@ -15027,7 +15125,6 @@ class JiuWenSwarmDeepAdapter:
                 self._config_base_cache or self._config_cache
             )
         return None
-
 
     async def _handle_slash_command(
         self,
@@ -18127,12 +18224,16 @@ class JiuWenSwarmDeepAdapter:
                 or projection.get("tool_call_id")
                 or projection.get("toolCallId")
                 or hashlib.sha256(
-                    json.dumps(projection, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+                    json.dumps(
+                        projection, ensure_ascii=False, sort_keys=True, default=str
+                    ).encode("utf-8")
                 ).hexdigest()[:16]
             )
         request_id = f"{subagent_id}:activity:{task_id}:{activity_key}"
         timestamp_ms = projection.get("at_ms")
-        timestamp = float(timestamp_ms) / 1000 if timestamp_ms is not None else time.time()
+        timestamp = (
+            float(timestamp_ms) / 1000 if timestamp_ms is not None else time.time()
+        )
         summary = projection.get("summary")
         append_history_record(
             session_id=parent_session_id,

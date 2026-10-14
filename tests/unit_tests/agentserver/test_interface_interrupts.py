@@ -316,7 +316,7 @@ async def test_deliver_control_input_persists_ask_user_answer_with_original_requ
     monkeypatch.setattr(claw, "_build_inputs", _fake_build_inputs)
 
     # 替身 reconcile_session_mcp：no-op。
-    async def _fake_reconcile(_sid, _mcp, *, model_name=None, history_before_request_id=None):
+    async def _fake_reconcile(_sid, _mcp, *, model_name=None, history_before_request_id=None, execution_request=None):
         return None
     monkeypatch.setattr(claw, "reconcile_session_mcp", _fake_reconcile)
 
@@ -395,7 +395,7 @@ def _build_control_input_harness(claw: _InterruptHarness, monkeypatch: pytest.Mo
     """
     monkeypatch.setattr(claw, "_build_inputs", lambda _request: ({}, "local", None))
 
-    async def _fake_reconcile(_sid, _mcp, *, model_name=None, history_before_request_id=None):
+    async def _fake_reconcile(_sid, _mcp, *, model_name=None, history_before_request_id=None, execution_request=None):
         return None
     monkeypatch.setattr(claw, "reconcile_session_mcp", _fake_reconcile)
 

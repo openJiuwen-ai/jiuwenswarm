@@ -84,13 +84,15 @@ def _request(*, stream: bool = False) -> AgentRequest:
 async def test_unary_chat_passes_history_boundary_to_mcp_reconcile(monkeypatch):
     facade, reconcile = _chat_facade(monkeypatch)
 
-    await facade.process_message(_request())
+    request = _request()
+    await facade.process_message(request)
 
     reconcile.assert_awaited_once_with(
         "session-1",
         [],
         model_name=None,
         history_before_request_id="request-current",
+        execution_request=request,
     )
 
 
@@ -98,7 +100,8 @@ async def test_unary_chat_passes_history_boundary_to_mcp_reconcile(monkeypatch):
 async def test_stream_chat_passes_history_boundary_to_mcp_reconcile(monkeypatch):
     facade, reconcile = _chat_facade(monkeypatch)
 
-    async for _chunk in facade.process_message_stream(_request(stream=True)):
+    request = _request(stream=True)
+    async for _chunk in facade.process_message_stream(request):
         pass
 
     reconcile.assert_awaited_once_with(
@@ -106,6 +109,7 @@ async def test_stream_chat_passes_history_boundary_to_mcp_reconcile(monkeypatch)
         [],
         model_name=None,
         history_before_request_id="request-current",
+        execution_request=request,
     )
 
 
@@ -152,3 +156,21 @@ async def test_facade_mcp_reconcile_keeps_legacy_adapter_signature_compatible():
     )
 
     assert calls == [("session-1", [])]
+
+
+@pytest.mark.asyncio
+async def test_typed_model_request_reaches_child_preparation_without_losing_history_boundary():
+    request = _request()
+    request.params["model_selection"] = {"type": "model", "id": "selected-model"}
+    child = SimpleNamespace(_instance=None, _pending_skill_scan_mcp_names=set())
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._get_or_create_session_adapter = AsyncMock(return_value=child)
+    facade = JiuWenSwarm()
+    facade._adapter = adapter
+    await facade.reconcile_session_mcp(
+        "session-1", [], history_before_request_id="request-current", execution_request=request,
+    )
+    adapter._get_or_create_session_adapter.assert_awaited_once_with(
+        "session-1", model_name=None, pending_mcp_scan_names=set(),
+        history_before_request_id="request-current", execution_request=request,
+    )

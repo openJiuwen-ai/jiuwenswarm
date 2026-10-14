@@ -14,26 +14,37 @@
     token = resolve_id_token()                        # 调 APIG：Authorization: Bearer <token>
 """
 
-from jiuwenswarm.common.auth.account_kit import (
-    AccountKitFlow,
-    Credential,
-    LoginOutcome,
-    OAuthConfig,
-    OAuthError,
-    login_enabled,
-)
-from jiuwenswarm.common.auth.service import (
-    AuthService,
-    ModelAuthRequired,
-    get_auth_service,
-    live_session,
-    resolve_id_token,
-)
-from jiuwenswarm.common.auth.session_store import (
-    AuthSession,
-    AuthSessionStore,
-    get_session_store,
-)
+from importlib import import_module
+
+# Request credential bookkeeping is also used by API-key models. Loading it
+# must not construct the Account Kit / OAuth stack for ordinary chat.
+_EXPORTS = {
+    **{
+        name: ".account_kit"
+        for name in (
+            "AccountKitFlow",
+            "Credential",
+            "LoginOutcome",
+            "OAuthConfig",
+            "OAuthError",
+            "login_enabled",
+        )
+    },
+    **{
+        name: ".service"
+        for name in (
+            "AuthService",
+            "ModelAuthRequired",
+            "get_auth_service",
+            "live_session",
+            "resolve_id_token",
+        )
+    },
+    **{
+        name: ".session_store"
+        for name in ("AuthSession", "AuthSessionStore", "get_session_store")
+    },
+}
 
 __all__ = [
     "AccountKitFlow",
@@ -51,3 +62,11 @@ __all__ = [
     "login_enabled",
     "resolve_id_token",
 ]
+
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(_EXPORTS[name], __name__), name)
+    globals()[name] = value
+    return value

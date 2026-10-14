@@ -1,5 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Ordinary startup constructs required models; explicit routing retains catalogue identity."""
+
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -89,6 +90,65 @@ def test_hot_reload_discards_stale_lazy_recipes(adapter):
     assert ("third", "http://third.invalid") not in built
 
 
+@pytest.mark.parametrize("requested", ["third-alias", "third#2", "model:third"])
+def test_cold_selected_model_does_not_construct_default_provider(adapter, requested):
+    value, built = adapter
+    value._initial_execution_model_name = requested
+    selected = value._create_model(config())
+    assert selected.model_client_config["api_base"] == "http://third.invalid"
+    assert built == [("third", "http://third.invalid")]
+    # A later invalid/empty selection retains the original configured fallback.
+    default = value._resolve_model_by_name("not-configured")
+    assert default.model_client_config["api_base"] == "http://default.invalid"
+    assert value._resolve_model_by_name("") is default
+    assert built == [
+        ("third", "http://third.invalid"),
+        ("default", "http://default.invalid"),
+    ]
+
+
+def test_invalid_cold_selection_preserves_configured_fallback(adapter):
+    value, built = adapter
+    value._initial_execution_model_name = "unused"
+    selected = value._create_model(config())
+    assert selected.model_client_config["api_base"] == "http://default.invalid"
+    assert built == [
+        ("unused", "http://unused.invalid"),
+        ("default", "http://default.invalid"),
+    ]
+
+
+def test_default_group_does_not_construct_unused_single_model(adapter, monkeypatch):
+    from jiuwenswarm.server.runtime import (
+        model_compiler_adapter,
+        model_routing_registry,
+    )
+
+    value, built = adapter
+    group = SimpleNamespace(model_client_config={}, model_config=SimpleNamespace())
+    resolved = object()
+    monkeypatch.setattr(
+        model_routing_registry,
+        "ModelSelectionResolver",
+        lambda: SimpleNamespace(
+            resolve=lambda selection: (
+                resolved if selection.id == "default-group" else None
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        model_compiler_adapter, "build_model_from_selection", lambda selection: group
+    )
+    initial = config()
+    initial["models"]["groups"] = [
+        {"model_group_id": "default-group", "is_default": True}
+    ]
+    assert value._create_model(initial) is group
+    assert value._default_model_name == "model_group:default-group"
+    assert built == []
+    assert value._resolve_model_by_name("") is group
+
+
 def test_invalid_selected_default_tries_next_valid_recipe(adapter):
     value, built = adapter
     initial = config()
@@ -96,6 +156,43 @@ def test_invalid_selected_default_tries_next_valid_recipe(adapter):
     selected = value._create_model(initial)
     assert selected.model_client_config["api_base"] == "http://first.invalid"
     assert all(resource_id in {"default", "first"} for resource_id, _url in built)
+
+
+def test_cold_typed_group_uses_real_request_before_default_construction(
+    adapter, monkeypatch
+):
+    value, built = adapter
+    request = object()
+    group = SimpleNamespace(model_client_config={}, model_config=SimpleNamespace())
+    value._initial_execution_request = request
+    value._initial_execution_model_name = "model_group:selected-group:route"
+    seen = []
+
+    def resolve(actual):
+        seen.append(actual)
+        return group
+
+    monkeypatch.setattr(value, "_resolve_model_for_request", resolve)
+    assert value._create_model(config()) is group
+    assert seen == [request]
+    assert built == []
+    assert value._initial_execution_request is None
+
+
+def test_cold_typed_selection_rejects_access_before_any_provider_construction(
+    adapter, monkeypatch
+):
+    value, built = adapter
+    value._initial_execution_request = object()
+    value._initial_execution_model_name = "model:third"
+
+    def reject(request):
+        raise PermissionError("model access denied")
+
+    monkeypatch.setattr(value, "_resolve_model_for_request", reject)
+    with pytest.raises(PermissionError, match="model access denied"):
+        value._create_model(config())
+    assert built == []
 
 
 def test_duplicate_name_and_alias_skip_invalid_recipes_without_changing_index_identity(adapter):

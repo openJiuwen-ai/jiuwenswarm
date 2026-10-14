@@ -270,6 +270,8 @@ lazy_runtime_submodules = []
 for lazy_package in (
     "jiuwenswarm.agents.harness.common.auto_harness",
     "jiuwenswarm.agents.harness.common.tools",
+    "jiuwenswarm.agents.harness.common.rails",
+    "jiuwenswarm.common.auth",
     "jiuwenswarm.agents.swarm",
 ):
     lazy_runtime_submodules += collect_submodules(lazy_package)

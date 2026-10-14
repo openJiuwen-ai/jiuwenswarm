@@ -1506,6 +1506,7 @@ class AgentWebSocketServer:
             background_concurrency=1,
         )
         preparation = self._preparation_registry
+        preparation.bind_current_loop()
         self._execution_minimum_observed = False
 
         from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveService

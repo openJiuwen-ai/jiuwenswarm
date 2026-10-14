@@ -1365,7 +1365,6 @@ class JiuWenSwarm:
         if callable(refresher):
             await refresher()
 
-
     def set_permissions_changed_notifier(
         self,
         notifier: Callable[[], None] | None,
@@ -3161,6 +3160,7 @@ class JiuWenSwarm:
             compute_chat_send_mcp_needed(params),
             model_name=params.get("model_name"),
             history_before_request_id=request.request_id,
+            execution_request=request,
         )
 
         # cloud memory: before chat hook
@@ -3321,6 +3321,7 @@ class JiuWenSwarm:
             compute_chat_send_mcp_needed(params),
             model_name=params.get("model_name"),
             history_before_request_id=request.request_id,
+            execution_request=request,
         )
         # 问题澄清答案 resume 走的是 control-input 路径（Runtime.session_work_kind 判定
         # 为 CONTROL_INPUT → _deliver_control → 本方法），**不经过** process_message_stream，
@@ -3564,7 +3565,7 @@ class JiuWenSwarm:
         )
 
     async def process_message_stream(
-            self, request: AgentRequest
+        self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
         """处理流式请求.
 
@@ -3743,6 +3744,7 @@ class JiuWenSwarm:
             compute_chat_send_mcp_needed(params),
             model_name=params.get("model_name"),
             history_before_request_id=request.request_id,
+            execution_request=request,
         )
         # Team 的交互回答走普通流式路径，不经过 deliver_control_input。
         # 与单 Agent 使用同一落盘格式，按原问题的 params.request_id 配对。
@@ -5031,6 +5033,7 @@ class JiuWenSwarm:
         *,
         model_name: str | None = None,
         history_before_request_id: str | None = None,
+        execution_request: AgentRequest | None = None,
     ) -> None:
         """Reconcile this session's MCP set to ``needed`` (idempotent diff).
 
@@ -5068,6 +5071,8 @@ class JiuWenSwarm:
                 supported_kwargs["history_before_request_id"] = (
                     history_before_request_id
                 )
+            if execution_request is not None and "execution_request" in parameters:
+                supported_kwargs["execution_request"] = execution_request
         await reconcile(session_id, needed, **supported_kwargs)
 
     def sync_mcp_credentials(self) -> bool:
@@ -5123,8 +5128,7 @@ class JiuWenSwarm:
         operation: str,
         config_path: str,
     ) -> None:
-        """Propagate a harness package load/unload to all live session adapters.
-        """
+        """Propagate a harness package load/unload to all live session adapters."""
         adapter = self._adapter
         if adapter is None:
             return

@@ -217,6 +217,24 @@ def _preload_sdk_execution_modules() -> None:
     _log_preparation_stage("sdk_execution_imports", began)
 
 
+def _preload_shared_execution_code() -> None:
+    """Prepare class/tool definitions after the joined configuration barrier.
+
+    Both single-agent profiles use the Deep base. Code/Team-only code remains
+    selected by the actual request. This constructs no session Rails or model
+    clients and runs before Runner consumers start.
+    """
+    began = time.monotonic()
+    from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
+        resolve_sdk_choice,
+    )
+
+    if resolve_sdk_choice() == "harness":
+        import jiuwenswarm.server.runtime.agent_adapter.interface  # noqa: F401
+        import jiuwenswarm.server.runtime.agent_adapter.interface_deep  # noqa: F401
+    _log_preparation_stage("execution_code", began)
+
+
 def _preload_runtime_backend() -> None:
     """Join independent SDK code/config work before global patches or consumers."""
     if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
@@ -346,7 +364,11 @@ async def start_worker_runtime(
 
 
 async def _start_worker_runtime(
-    host: str, port: int, signals: RuntimeSignalSink, *, on_constructed: Any = None,
+    host: str,
+    port: int,
+    signals: RuntimeSignalSink,
+    *,
+    on_constructed: Any = None,
 ) -> WorkerRuntime:
     """Required preparation keeps configuration migrations ahead of Runtime use."""
     startup_t0 = time.monotonic()
@@ -375,23 +397,31 @@ async def _start_worker_runtime(
     )
     extension_manager = ExtensionManager(registry=extension_registry)
     log_startup_stage("extension_manager_created")
+
     # AgentServer 为运行时直连进程，不加载传输类扩展（agentos / agent_client 等），
     # 与 runtime/service.py 的加载策略保持一致；北向传输能力由独立 Gateway 承担。
     def _construct_runtime_server() -> object:
         return AgentWebSocketServer.get_instance(host=host, port=port)
 
     async def _load_required_extensions() -> None:
+        # Shared adapter imports install SDK compatibility patches. User
+        # extension callbacks must observe those patches before registration.
+        await execution_code_task
         await extension_manager.load_all_extensions(include_transport_extensions=False)
         log_startup_stage("extensions_loaded")
 
     async def _construct_required_server() -> Any:
         return await asyncio.to_thread(_construct_runtime_server)
 
-    # Construction creates neutral owners and adapters; it does not execute
-    # callbacks or start Runner. Extension registration may overlap it, but
-    # both must finish before server.start and request dispatch are released.
-    extensions, server = await asyncio.gather(
-        _load_required_extensions(), _construct_required_server(),
+    # Neutral construction overlaps shared definitions. Extensions follow the
+    # compatibility patch barrier; all three must finish before Runner starts.
+    execution_code_task = asyncio.create_task(
+        asyncio.to_thread(_preload_shared_execution_code)
+    )
+    extensions, server, execution_code = await asyncio.gather(
+        _load_required_extensions(),
+        _construct_required_server(),
+        execution_code_task,
         return_exceptions=True,
     )
     if isinstance(server, BaseException):
@@ -405,6 +435,8 @@ async def _start_worker_runtime(
         await on_constructed(server)
     if isinstance(extensions, BaseException):
         raise extensions
+    if isinstance(execution_code, BaseException):
+        raise execution_code
     logger.info(
         "[Worker] 扩展加载完成，共 %d 个 (elapsed %.2fs)",
         len(extension_manager.list_extensions()), time.monotonic() - startup_t0,
@@ -482,6 +514,7 @@ async def _start_worker_runtime(
         trajectory_gateway_hint_bridge.bind(asyncio.get_running_loop(), send_push)
 
     from jiuwenswarm.common.config import get_config
+
     full_cfg = get_config()
     proactive_config = full_cfg.get("proactive_recommendation", {}) if isinstance(full_cfg, dict) else {}
 

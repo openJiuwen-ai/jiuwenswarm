@@ -6,6 +6,7 @@ Factories initialize a capability or complete its first warm pass. They must
 not await the lifetime of a daemon. Core/config preparation remains with the
 Worker lifecycle; registering optional work never makes the core ready.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,11 +14,25 @@ import importlib
 import inspect
 import logging
 import time
+import weakref
 from dataclasses import dataclass
 from typing import Any, Callable
 
 CAPABILITY_STATES = frozenset({"pending", "ready", "disabled", "failed"})
 logger = logging.getLogger(__name__)
+
+_loop_registries: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def current_preparation_registry() -> "PreparationRegistry | None":
+    """Return the running AgentServer's owner, without creating a server.
+
+    Standalone Process CLI/SDK adapters have no owner and retain their own
+    preparation. Weak references prevent a closed loop retaining a Runtime.
+    """
+    reference = _loop_registries.get(asyncio.get_running_loop())
+    registry = reference() if reference is not None else None
+    return registry if registry is not None and not registry._closed else None
 
 
 async def log_event_loop_lag(stage: str, *, interval: float = 0.01) -> None:
@@ -85,6 +100,10 @@ class PreparationRegistry:
         self._notify()
         if self._minimum_ready.is_set() and warm and enabled:
             self.start(name)
+
+    def bind_current_loop(self) -> None:
+        """Expose this AgentServer owner to loop-local adapter warmups."""
+        _loop_registries[asyncio.get_running_loop()] = weakref.ref(self)
 
     def snapshot(self) -> dict[str, str]:
         return {name: capability.state for name, capability in self._capabilities.items()}

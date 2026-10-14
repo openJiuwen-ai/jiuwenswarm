@@ -1,4 +1,5 @@
 """Required code/configuration overlap while consumers retain a joined barrier."""
+
 import asyncio
 import threading
 from types import SimpleNamespace
@@ -95,6 +96,42 @@ async def test_successful_construction_retains_cleanup_owner_when_parallel_exten
 
 async def _raise(error):
     raise error
+
+
+@pytest.mark.asyncio
+async def test_execution_code_overlaps_construction_and_failure_retains_owner(
+    monkeypatch,
+):
+    from jiuwenswarm.extensions.manager import ExtensionManager
+    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    barrier = threading.Barrier(2, timeout=2)
+    server = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+    owners = []
+
+    def construct(**kwargs):
+        barrier.wait()
+        return server
+
+    def prepare_code():
+        barrier.wait()
+        raise ImportError("required execution module failed")
+
+    async def own(value):
+        owners.append(value)
+
+    monkeypatch.setattr(lifecycle, "_preload_runtime_backend", lambda: None)
+    monkeypatch.setattr(lifecycle, "_preload_shared_execution_code", prepare_code)
+    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
+    monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
+    monkeypatch.setattr(ExtensionManager, "load_all_extensions", AsyncMock())
+    with pytest.raises(ImportError, match="required execution module failed"):
+        await lifecycle._start_worker_runtime(
+            "127.0.0.1", 18000, SimpleNamespace(), on_constructed=own
+        )
+    assert owners == [server]
+    server.start.assert_not_awaited()
 
 
 def test_team_controller_preserves_reporter_without_constructing_unused_team_mode():
