@@ -376,7 +376,7 @@ async def handle_memory_status(
     if detailed:
         manager = await get_memory_manager(agent_id="default", workspace_dir=workspace)
         if manager is not None:
-            status = manager.status()
+            status = await manager.status()
             result["index"] = {
                 "available": status.get("available", False),
                 "provider": status.get("provider"),
