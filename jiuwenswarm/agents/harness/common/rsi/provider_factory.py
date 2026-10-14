@@ -73,13 +73,13 @@ def build_rsi_adapters(
         if "ARTIFACT:PROGRAM" not in adapters:
             # The public ``program_opt.provider`` module is the Protocol;
             # agent-core's concrete implementation is the PUCT provider.
-            from openjiuwen.rsi.artifact_rsi.program_opt import (
-                PuctProgramArtifactProvider,
+            from jiuwenswarm.agents.harness.common.rsi.program_threshold_provider import (
+                ThresholdStoppingProgramProvider,
             )
 
             adapters["ARTIFACT:PROGRAM"] = ArtifactEngineAdapter(
                 "PROGRAM",
-                PuctProgramArtifactProvider(),
+                ThresholdStoppingProgramProvider(),
                 model_resolver=model_resolver,
                 tasks_root=tasks_root,
             )

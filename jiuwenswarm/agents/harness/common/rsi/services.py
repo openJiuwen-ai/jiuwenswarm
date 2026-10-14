@@ -624,6 +624,10 @@ class RsiTreeService:
         # view before asking the Provider for optional recovery/backfill data.
         self.projector.load_from_disk(task_id)
         self.projector.register_root(task_id)
+        if (task is not None and task.status == TaskStatus.COMPLETED.value
+                and task.scenario == Scenario.ARTIFACT.value
+                and task.artifact_type == ArtifactType.PROGRAM.value):
+            self.projector.reconcile_program_threshold_stops(task_id)
         if adapter is not None:
             tree = _read_provider_snapshot(adapter, "get_tree", task_id)
             if tree is not None:
