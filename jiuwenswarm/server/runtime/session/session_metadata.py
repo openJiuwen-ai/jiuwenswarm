@@ -1205,15 +1205,16 @@ def update_session_metadata(
         if touch_last_message_at:
             metadata["last_message_at"] = _current_timestamp()
 
+    explicit_fields = (("accent_color", accent_color), ("pinned", pinned), ("pin_order", pin_order))
+    changed = _changed_fields(before, metadata) | frozenset(
+        name for name, value in explicit_fields if value is not None
+    )
     _enqueue_write(
         session_id,
         metadata,
         sync_write=sync_write or sync,
         preserve_pin_fields=pinned is None and pin_order is None,
-        merge_fields=_changed_fields(before, metadata) | frozenset(
-            name for name, value in (("accent_color", accent_color), ("pinned", pinned),
-                                     ("pin_order", pin_order)) if value is not None
-        ),
+        merge_fields=changed,
     )
 
 

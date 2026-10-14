@@ -96,9 +96,10 @@ def bind_runtime_signals(server: Any, signals: Any) -> None:
     if "on_capabilities" in parameters or any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
     ):
-        hooks["on_capabilities"] = lambda readiness, fully_warm: signals.capabilities(
-            readiness, fully_warm=fully_warm,
-        )
+        def on_capabilities(readiness: Any, fully_warm: bool) -> None:
+            signals.capabilities(readiness, fully_warm=fully_warm)
+
+        hooks["on_capabilities"] = on_capabilities
     if "on_execution_min_ready" in parameters:
         hooks["on_execution_min_ready"] = signals.execution_min_ready
     set_hooks(**hooks)

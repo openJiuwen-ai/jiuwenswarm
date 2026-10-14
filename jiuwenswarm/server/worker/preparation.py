@@ -32,7 +32,7 @@ def current_preparation_registry() -> "PreparationRegistry | None":
     """
     reference = _loop_registries.get(asyncio.get_running_loop())
     registry = reference() if reference is not None else None
-    return registry if registry is not None and not registry._closed else None
+    return registry if registry is not None and not registry.closed else None
 
 
 async def log_event_loop_lag(stage: str, *, interval: float = 0.01) -> None:
@@ -71,6 +71,10 @@ class _Capability:
 
 class PreparationRegistry:
     """One shielded Future per capability; no Runtime/SDK imports."""
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     def __init__(self, *, on_change: Callable[[dict[str, str], bool], None] | None = None,
                  background_concurrency: int = 1) -> None:

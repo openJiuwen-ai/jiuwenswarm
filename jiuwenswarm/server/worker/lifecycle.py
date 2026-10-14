@@ -49,7 +49,8 @@ async def _start_worker_runtime(
     server = await runtime_bootstrap.construct_runtime_server(
         host, port, on_constructed=retain_constructed, telemetry=measurements,
     )
-    assert runtime is not None
+    if runtime is None:
+        raise RuntimeError("Runtime construction did not publish its cleanup owner")
     runtime_bootstrap.bind_runtime_signals(server, signals)
     await server.start(bind_transport=False)
     measurements.stage("runtime_started")

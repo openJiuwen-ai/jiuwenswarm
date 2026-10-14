@@ -135,7 +135,8 @@ def _ntfs_marker(path: Path):
         if kernel.DeviceIoControl(handle, 0x000900EB, None, 0,
                 buffer, len(buffer), ctypes.byref(returned), None) and returned.value >= 60:
             length, major, minor, record_id, parent_id, usn = struct.unpack_from("<IHHQQq", buffer.raw)
-            if major == 2 and minor == 0 and length <= returned.value and usn > 0:
+            valid_record = major == 2 and minor == 0 and length <= returned.value
+            if valid_record and usn > 0:
                 return [volume, record_id, parent_id, usn, created, written, changed, attributes, size]
         # NTFS ChangeTime updates on writes even when callers restore mtime.
         # Keep the same exclusive-writer observation and file/volume identity;
@@ -183,10 +184,9 @@ def _content_hashes(path: Path) -> dict[str, str]:
 
 
 def _dependencies(checkout: Path) -> dict:
-    return {name: _content_hashes(checkout / name) if (checkout / name).exists() else None
-        for name in ("pyproject.toml", "uv.lock",
-                     "jiuwenswarm/channels/web/frontend/package.json",
-                     "jiuwenswarm/channels/web/frontend/package-lock.json")}
+    names = ("pyproject.toml", "uv.lock", "jiuwenswarm/channels/web/frontend/package.json",
+             "jiuwenswarm/channels/web/frontend/package-lock.json")
+    return {name: _content_hashes(checkout / name) if (checkout / name).exists() else None for name in names}
 
 
 def _index_paths(value: bytes) -> dict[str, str] | None:
@@ -209,7 +209,7 @@ def _index_paths(value: bytes) -> dict[str, str] | None:
                 return None  # Unmerged index: use the safe full-content path.
             entries[name] = digest
             position = begin + ((end + 1 - begin + 7) // 8) * 8
-    except (ValueError, UnicodeError, struct.error):
+    except (ValueError, struct.error):
         return None
     return entries
 
@@ -217,7 +217,7 @@ def _index_paths(value: bytes) -> dict[str, str] | None:
 def _git_metadata(checkout: Path) -> tuple[dict, dict[str, str] | None]:
     try:
         return _read_git_metadata(checkout)
-    except (OSError, ValueError, UnicodeError, configparser.Error):
+    except (OSError, ValueError, configparser.Error):
         # Git metadata is only an accelerator/classifier. Its absence must
         # select full content verification, not make source identity weaker.
         return {"unavailable": True}, None
@@ -273,7 +273,9 @@ def _load_cache(path: Path, checkout: str, version: dict) -> dict:
             return {}
         checksum = result.pop("checksum")
         if (result.get("schema") != _SCHEMA or result.get("checkout") != checkout
-                or result.get("version") != version or checksum != _bytes_digest(_encoded(result))):
+                or result.get("version") != version):
+            return {}
+        if checksum != _bytes_digest(_encoded(result)):
             return {}
         if not isinstance(result.get("files"), dict):
             return {}
@@ -325,16 +327,16 @@ def _compute(package: Path, cache_path: Path | None) -> str:
         markers = {str(path.relative_to(checkout)): marker for path, marker in zip(paths, observed)}
         reusable = tracked is not None and all(marker is not None for marker in markers.values())
 
-        def collect(path):
+        def collect(path, *, reuse_cached=reusable, observed_markers=markers):
             name = str(path.relative_to(checkout))
             old = cached.get("files", {}).get(name, {})
-            if reusable and old.get("marker") == markers[name]:
+            if reuse_cached and old.get("marker") == observed_markers[name]:
                 content = {key: old[key] for key in ("sha256", "git_blob", "git_blob_lf")}
                 rehashed = 0
             else:
                 content = _content_hashes(path)
                 rehashed = 1
-            return name, {**content, "marker": markers[name]}, rehashed
+            return name, {**content, "marker": observed_markers[name]}, rehashed
 
         needs_content = not reusable or any(cached.get("files", {}).get(name, {}).get("marker") != marker
                                              for name, marker in markers.items())
@@ -364,8 +366,11 @@ def _compute(package: Path, cache_path: Path | None) -> str:
                     dirty.append(name)
             current = {name.replace(os.sep, "/") for name in files}
             current.update(name for name, entry in dependencies.items() if entry is not None)
-            dirty.extend(name for name in tracked if (name.startswith(package.name + "/") and name.endswith(".py")
-                or name in dependencies) and name not in current)
+            for name in tracked:
+                if name in current:
+                    continue
+                if (name.startswith(package.name + "/") and name.endswith(".py")) or name in dependencies:
+                    dirty.append(name)
         identity = _fingerprint(canonical, files, dependencies, version)
         payload = {"schema": _SCHEMA, "checkout": canonical, "version": version,
             "files": files, "dependencies": dependencies, "git": git, "dirty_paths": sorted(set(dirty)),

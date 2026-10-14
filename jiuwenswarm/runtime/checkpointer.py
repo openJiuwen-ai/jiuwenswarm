@@ -67,6 +67,7 @@ async def _get_persistent_checkpointer_lock() -> asyncio.Lock:
             _PERSISTENT_CHECKPOINTER_LOCK_LOOP = current
     return _PERSISTENT_CHECKPOINTER_LOCK
 
+
 async def ensure_persistent_checkpointer() -> None:
     """Ensure the process-wide default checkpointer uses sqlite persistence."""
     global _PERSISTENT_CHECKPOINTER_READY

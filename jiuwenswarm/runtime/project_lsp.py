@@ -24,6 +24,7 @@ def install_project_lsp_leases() -> None:
     from openjiuwen.harness.lsp.core.manager import LSPServerManager
     from openjiuwen.harness.lsp.types import CustomServerConfig, InitializeOptions
     from openjiuwen.harness.tools.lsp_tool import _tool
+    from openjiuwen.harness.tools.lsp_tool._tool import _get_effective_cwd as get_effective_cwd
 
     original = _tool.call_lsp_tool
 
@@ -36,7 +37,7 @@ def install_project_lsp_leases() -> None:
     @wraps(original)
     async def project_call(inputs, *, workspace=None, operation=None, **kwargs):
         from jiuwenswarm.common.config import get_config
-        project = _tool._get_effective_cwd(workspace, operation)
+        project = get_effective_cwd(workspace, operation)
         lsp_config = get_config().get("lsp", {})
         identity = KernelIdentity.for_agent(project_dir=str(project), work_mode="lsp",
                                             definition="lsp-service", capabilities=lsp_config,
@@ -48,7 +49,9 @@ def install_project_lsp_leases() -> None:
                 _instance = None
                 _lock = None
             custom = lsp_config.get("custom_servers") if isinstance(lsp_config, dict) else None
-            custom_servers = {name: CustomServerConfig(**options) for name, options in custom.items()} if custom else None
+            custom_servers = (
+                {name: CustomServerConfig(**options) for name, options in custom.items()} if custom else None
+            )
             await ProjectManager.initialize(InitializeOptions(cwd=project, custom_servers=custom_servers))
             return ProjectManager
 

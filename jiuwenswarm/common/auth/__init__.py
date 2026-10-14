@@ -19,31 +19,20 @@ from importlib import import_module
 # Request credential bookkeeping is also used by API-key models. Loading it
 # must not construct the Account Kit / OAuth stack for ordinary chat.
 _EXPORTS = {
-    **{
-        name: ".account_kit"
-        for name in (
-            "AccountKitFlow",
-            "Credential",
-            "LoginOutcome",
-            "OAuthConfig",
-            "OAuthError",
-            "login_enabled",
-        )
-    },
-    **{
-        name: ".service"
-        for name in (
-            "AuthService",
-            "ModelAuthRequired",
-            "get_auth_service",
-            "live_session",
-            "resolve_id_token",
-        )
-    },
-    **{
-        name: ".session_store"
-        for name in ("AuthSession", "AuthSessionStore", "get_session_store")
-    },
+    "AccountKitFlow": ".account_kit",
+    "Credential": ".account_kit",
+    "LoginOutcome": ".account_kit",
+    "OAuthConfig": ".account_kit",
+    "OAuthError": ".account_kit",
+    "login_enabled": ".account_kit",
+    "AuthService": ".service",
+    "ModelAuthRequired": ".service",
+    "get_auth_service": ".service",
+    "live_session": ".service",
+    "resolve_id_token": ".service",
+    "AuthSession": ".session_store",
+    "AuthSessionStore": ".session_store",
+    "get_session_store": ".session_store",
 }
 
 __all__ = [

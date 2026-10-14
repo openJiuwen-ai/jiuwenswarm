@@ -31,6 +31,7 @@ def router(monkeypatch, child):
 
 def child_adapter():
     return SimpleNamespace(restore_skill_retrieval_session=Mock(),
+        configure_initial_execution=Mock(),
         persist_skill_retrieval_session_profile=Mock(), create_instance=AsyncMock(),
         start_interaction=AsyncMock(), _instance=object())
 
@@ -107,7 +108,7 @@ async def test_failed_or_cancelled_assembly_drains_read_inside_session_lock(monk
     monkeypatch.setattr(session_ops_service, "warmup_session_context", restore)
     task = asyncio.create_task(parent._get_or_create_session_adapter("session-drain",
         history_before_request_id="one-input"))
-    await assembly_entered.wait()
+    await asyncio.wait_for(assembly_entered.wait(), 5)
     if failure == "cancel":
         task.cancel()
     await asyncio.sleep(0)

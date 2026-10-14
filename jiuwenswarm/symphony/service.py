@@ -814,7 +814,10 @@ class SwarmSymphonyService:
             if not task.done():
                 raise RuntimeError("Symphony Flow is preparing for another runtime")
             task = None
-        if task is None or task.cancelled() or (task.done() and task.exception() is not None):
+        retry = task is None
+        if task is not None:
+            retry = task.cancelled() or (task.done() and task.exception() is not None)
+        if retry:
             task = asyncio.create_task(runtime.flow_engine.start(), name="symphony-flow-start")
             self._flow_start_task = task
             self._flow_start_runtime = runtime

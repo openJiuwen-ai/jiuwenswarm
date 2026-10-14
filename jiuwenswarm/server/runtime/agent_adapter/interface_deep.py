@@ -54,9 +54,6 @@ from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.core.foundation.tool import ToolCard, McpServerConfig, ToolExposure, ToolInfo
 from openjiuwen.core.common.logging import server_logger
 from openjiuwen.core.runner import Runner
-from jiuwenswarm.runtime.checkpointer import (
-    ensure_persistent_checkpointer, close_persistent_checkpointer as close_persistent_checkpointer,
-)
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent import (
     AgentCard,
@@ -133,6 +130,10 @@ from openjiuwen.harness.schema.interaction import (
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 from openjiuwen.harness.schema.config import SubAgentConfig
+
+from jiuwenswarm.runtime.checkpointer import (
+    ensure_persistent_checkpointer, close_persistent_checkpointer as close_persistent_checkpointer,
+)
 
 from jiuwenswarm.server.runtime.session.history_io import (
     run_history_io, run_stream_parser, stream_chunk_writes_history,
@@ -1709,7 +1710,7 @@ class _RecipeModelCache(dict):
         if model is not None:
             return model
         adapter = self._adapter
-        model = adapter._model_for_catalog_name(key)
+        model = adapter.model_for_catalog_name(key)
         return model if model is not None else default
 
 
@@ -2003,6 +2004,11 @@ class JiuWenSwarmDeepAdapter:
         self._model_name_to_keys: dict[str, list[str]] = {}
         self._model_id_to_key: dict[str, str] = {}
         self._model_group_cache: dict[str, Model] = {}
+        self._configured_default_model_keys: list[str] = []
+        self._configured_default_group_id: str = ""
+        self._initial_execution_request: AgentRequest | None = None
+        self._initial_execution_model_name: str = ""
+        self._model_selection_can_access: Callable | None = None
         self._stable_selection_cache: dict[str, tuple[str, Model]] = {}
         # 全局列表下标 → cache_key。通道侧（Web）用全局 origin_index 拼请求 key，
         # 与后端 per-name 的 cache_key 序号语义分叉；此映射在 _resolve_model_by_name
@@ -3499,13 +3505,12 @@ class JiuWenSwarmDeepAdapter:
             adapter = self._new_session_scoped_adapter(sid)
             if execution_request is not None:
                 model_name = self._requested_model_name(execution_request)
-                adapter._initial_execution_request = execution_request
-                checker = getattr(self, "_model_selection_can_access", None)
-                if checker is not None:
-                    adapter._model_selection_can_access = checker
-            # Execution selection is request-local. Do not reuse a persisted
-            # Skill retrieval budget's older model as the construction choice.
-            adapter._initial_execution_model_name = str(model_name or "").strip()
+            # Execution selection is request-local, rather than a persisted
+            # Skill retrieval budget's older model construction choice.
+            adapter.configure_initial_execution(
+                model_name=model_name, request=execution_request,
+                can_access=getattr(self, "_model_selection_can_access", None),
+            )
             restored_profile = self._load_skill_retrieval_session_profile(sid)
             restored_mcp_names = (
                 {
@@ -6796,7 +6801,16 @@ class JiuWenSwarmDeepAdapter:
                 self._model_cache[alias] = model
         return model
 
-    def _model_for_catalog_name(self, name: str) -> Model | None:
+    def configure_initial_execution(
+        self, *, model_name: str | None, request: AgentRequest | None = None, can_access: Callable | None = None,
+    ) -> None:
+        """Keep first-turn model and authorization context with its child owner."""
+        self._initial_execution_model_name = str(model_name or "").strip()
+        self._initial_execution_request = request
+        if request is not None and can_access is not None:
+            self._model_selection_can_access = can_access
+
+    def model_for_catalog_name(self, name: str) -> Model | None:
         recipes = getattr(self, "_model_recipes", {})
         if name in recipes:
             return self._materialize_model_recipe(name)
@@ -6908,12 +6922,8 @@ class JiuWenSwarmDeepAdapter:
         self._kernel_identity = identity
         # 指纹比对：模型配置未变且缓存非空时跳过重建，避免热更新时反复销毁/重建 Model 实例
         new_fp = self._models_config_fingerprint(config)
-        if (
-            previous == identity
-            and new_fp == self._last_models_config_fingerprint
-            and self._model_cache
-            and self._model is not None
-        ):
+        same_config = previous == identity and new_fp == self._last_models_config_fingerprint
+        if same_config and self._model_cache and self._model is not None:
             logger.debug(
                 "[JiuWenSwarmDeepAdapter] skip model cache rebuild: config unchanged"
             )
@@ -6931,9 +6941,13 @@ class JiuWenSwarmDeepAdapter:
         self._inject_attribution_to_config(config)
         self._build_model_cache_from_defaults(config)
         recipes = getattr(self, "_model_recipes", {})
-        default_keys = [self._model_alias_to_key[name] for name in self._model_name_to_keys
-                        if name in getattr(self, "_model_alias_to_key", {})
-                        and recipes[self._model_alias_to_key[name]].get("is_default") is True]
+        default_keys = []
+        for name in self._model_name_to_keys:
+            if name not in self._model_alias_to_key:
+                continue
+            key = self._model_alias_to_key[name]
+            if recipes[key].get("is_default") is True:
+                default_keys.append(key)
         self._configured_default_model_keys = list(
             dict.fromkeys([*default_keys, *recipes])
         )
@@ -7130,7 +7144,7 @@ class JiuWenSwarmDeepAdapter:
             # 纯 model_name 精确命中（仅 is_default=true 的条目注册了纯名 key）
             if requested in self._model_cache:
                 return self._model_cache[requested]
-            resolved = self._model_for_catalog_name(requested)
+            resolved = self.model_for_catalog_name(requested)
             if resolved is not None:
                 return resolved
         # 通道侧使用全局 origin_index；将其换算成后端 per-name cache key。
@@ -7370,8 +7384,9 @@ class JiuWenSwarmDeepAdapter:
         """
         from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT
         context = CURRENT_RUN_CONTEXT.get()
-        if (context is not None and context.request_id == request.request_id
-                and context.session_id == str(request.session_id or "") and context.credential_context is not None):
+        same_request = (context is not None and context.request_id == request.request_id
+                        and context.session_id == str(request.session_id or ""))
+        if same_request and context.credential_context is not None:
             return context.credential_context
         from jiuwenswarm.common.auth.login_credentials import login_auth_from_params
 
@@ -16043,7 +16058,9 @@ class JiuWenSwarmDeepAdapter:
             request_id=str(request.request_id or ""),
             session_id=str(request.session_id or ""),
             max_turns=inherited.max_turns if inherited and inherited.request_id == request.request_id else None,
-            max_budget_usd=inherited.max_budget_usd if inherited and inherited.request_id == request.request_id else None,
+            max_budget_usd=inherited.max_budget_usd
+            if inherited and inherited.request_id == request.request_id
+            else None,
             host_tools=inherited.host_tools if inherited and inherited.request_id == request.request_id else (),
             tool_permissions=tuple(tool_levels.items()) if isinstance(tool_levels, dict) else None,
             credential_context=self._scoped_login_auth(request),

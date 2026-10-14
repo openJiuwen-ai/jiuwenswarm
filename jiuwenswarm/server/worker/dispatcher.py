@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -220,10 +221,11 @@ class WorkerDispatcher:
         for record in list(self._bridge.events.records.values()):
             if record.scope != request_scope(request):
                 continue
-            executions = [item for item in state.executions
-                          if (record.last_execution_id and item.execution_id == record.last_execution_id)
-                          or (not record.last_execution_id
-                              and record.request.request_id in {item.request_id, item.root_request_id})]
+            if record.last_execution_id:
+                executions = [item for item in state.executions if item.execution_id == record.last_execution_id]
+            else:
+                executions = [item for item in state.executions
+                              if record.request.request_id in {item.request_id, item.root_request_id}]
             if not executions:
                 continue
             ongoing = [item for item in executions if not item.state.terminal]
@@ -464,7 +466,7 @@ class WorkerDispatcher:
                                      ok=True, payload={"event_type": "chat.interrupt_result",
                                                        "success": True, "queued": True},
                                      metadata=request.metadata)
-            await self._bridge.send(__import__("json").dumps(encode_response(response, response_id=request.request_id)))
+            await self._bridge.send(json.dumps(encode_response(response, response_id=request.request_id)))
             await self._finish(generation, request.request_id, ok=True, error="", delivered=True,
                                dispatch_id=dispatch_id)
         except Exception as exc:
@@ -505,7 +507,11 @@ class WorkerDispatcher:
                     allowed = {item["request_id"] for item in snapshot["dispatches"]}
                     executions = [asdict(item) for item in state.executions
                                   if item.request_id in allowed or item.root_request_id in allowed]
-                    snapshot["executions"] = json.loads(json.dumps(executions, default=lambda value: value.value if isinstance(value, Enum) else str(value)))
+                    snapshot["executions"] = json.loads(
+                        json.dumps(
+                            executions, default=lambda value: value.value if isinstance(value, Enum) else str(value)
+                        )
+                    )
                     # Accepted warming/queued dispatches have no Coordinator
                     # execution yet. An empty execution list must not clear them.
                     snapshot["is_processing"] = snapshot["is_processing"] or any(

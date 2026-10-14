@@ -651,7 +651,7 @@ class AgentManager:
         facade = await asyncio.to_thread(
             importlib.import_module, "jiuwenswarm.server.runtime.agent_adapter.interface",
         )
-        JiuWenSwarm = facade.JiuWenSwarm
+        agent_class = facade.JiuWenSwarm
 
         for env_key, env_value in self._latest_env_overrides.items():
             key = str(env_key)
@@ -686,7 +686,7 @@ class AgentManager:
             sub_mode_key or None,
             project_dir or None,
         )
-        agent = JiuWenSwarm()
+        agent = agent_class()
         agent.set_heartbeat_service(self._heartbeat_service)
         setter = getattr(agent, "set_personal_context_runtime_enabled", None)
         if callable(setter):

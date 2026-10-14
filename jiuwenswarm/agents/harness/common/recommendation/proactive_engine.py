@@ -216,6 +216,7 @@ class ProactiveEngine:
 
                 task = asyncio.create_task(prepare(), name=f"proactive-agent-prepare:{generation}")
                 self._prepare_tasks[generation] = task
+
                 def consumed(completed, generation=generation):
                     if self._prepare_tasks.get(generation) is completed:
                         self._prepare_tasks.pop(generation, None)

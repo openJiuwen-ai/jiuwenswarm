@@ -48,10 +48,8 @@ class WorkerRuntime:
     async def shutdown(self) -> None:
         """Drain resources within the enclosing Worker service's deadline."""
         self.stop_event.set()
-        tasks = list(dict.fromkeys(task for task in (
-            self.image_task, self.proactive_task, self.teammate_task, self.zen_task,
-            *self.background_tasks,
-        ) if task is not None))
+        owned = (self.image_task, self.proactive_task, self.teammate_task, self.zen_task, *self.background_tasks)
+        tasks = list(dict.fromkeys(task for task in owned if task is not None))
         for task in tasks:
             task.cancel()
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -72,7 +70,9 @@ class WorkerRuntime:
         )
         if not all(flushed):
             raise RuntimeError("Worker shutdown persistence barrier did not complete")
-        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import get_kv_cache_application_owner
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
+            get_kv_cache_application_owner,
+        )
 
         await get_kv_cache_application_owner().close()
         telemetry.shutdown_runtime_observability()

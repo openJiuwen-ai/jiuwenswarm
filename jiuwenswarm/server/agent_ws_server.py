@@ -309,7 +309,7 @@ def _strip_untrusted_session_message_context(request: AgentRequest) -> None:
         request.metadata = metadata
 
 
-def AutoHarnessService(*args: Any, **kwargs: Any) -> Any:
+def create_auto_harness_service(*args: Any, **kwargs: Any) -> Any:
     """Construct the optional service at its first RPC, outside startup."""
     from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService as Service
     return Service(*args, **kwargs)
@@ -1196,7 +1196,7 @@ class AgentWebSocketServer:
         # output ownership.
         self._session_stream_tasks: dict[str, dict[asyncio.Task, asyncio.Event]] = {}
         # Scheduler service instance (for scheduled auto_harness tasks)
-        self._scheduler_service: Optional[AutoHarnessService] = None
+        self._scheduler_service: Any = None
         self._scheduler_agent: Any = None
         # Model cache for scheduled task execution (same approach as interface_deep)
         self._model_cache: dict[str, Any] = {}
@@ -1227,6 +1227,8 @@ class AgentWebSocketServer:
         self._on_execution_min_ready: Any = None
         self._execution_minimum_observed = False
         self._preparation_registry: Any = None
+        self._startup_preparation_tokens: set = set()
+        self.proactive_preparation_task: asyncio.Task | None = None
         get_acp_output_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
@@ -1622,6 +1624,7 @@ class AgentWebSocketServer:
         preparation.register("symphony", self._start_symphony_recovery,
                              imports=("jiuwenswarm.symphony.config",))
         # 登录模型的 id_token 一小时过期：在用且快过期的，请Gateway续期后推回来
+
         async def _start_login_refresh() -> None:
             from jiuwenswarm.common.auth.login_credentials import run_refresh_requests
             from jiuwenswarm.common.auth.remote_config import warm_up_in_background
@@ -2556,7 +2559,7 @@ class AgentWebSocketServer:
                         # resolution available after a failed warm pass.
                         logger.warning("[AgentServer] Sandbox bootstrap unavailable")
             if request.req_method is not None and request.req_method.value.startswith("proactive."):
-                preparation = getattr(self, "_proactive_prepare_task", None)
+                preparation = getattr(self, "proactive_preparation_task", None)
                 if preparation is not None:
                     if registry is not None:
                         await registry.ensure("proactive")
@@ -12581,7 +12584,7 @@ class AgentWebSocketServer:
             resolve_native_harness_baseline,
         )
         from jiuwenswarm.agents.harness.common.rsi.context import get_rsi_workspace_root
-        from jiuwenswarm.common.utils import get_user_workspace_dir
+        from jiuwenswarm.common.utils import get_user_workspace_dir as current_workspace_dir
         requested_id = str(
             (params or {}).get("package_id") or ""
         ).strip()
@@ -12613,7 +12616,7 @@ class AgentWebSocketServer:
         harness_root = (
             Path(configured_harness_root).expanduser().resolve()
             if configured_harness_root
-            else (Path(get_user_workspace_dir()) / "rsi" / "harness").resolve()
+            else (Path(current_workspace_dir()) / "rsi" / "harness").resolve()
         )
         initial_refs = harness_root / "initial_harness_refs.yaml"
         if initial_refs.is_file():
@@ -12660,7 +12663,7 @@ class AgentWebSocketServer:
     ) -> None:
         """Handle harness.packages.get request - retrieve packages info."""
         try:
-            service = AutoHarnessService(rail=None, agent=None)
+            service = create_auto_harness_service(rail=None, agent=None)
             payload = await asyncio.to_thread(service.get_packages_info)
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -12686,7 +12689,7 @@ class AgentWebSocketServer:
     ) -> None:
         """Handle harness.packages.scan request - scan runtime extensions."""
         try:
-            service = AutoHarnessService(rail=None, agent=None)
+            service = create_auto_harness_service(rail=None, agent=None)
             payload = await asyncio.to_thread(service.scan_runtime_extensions)
             await asyncio.to_thread(service.save_packages, payload)
             resp = AgentResponse(
@@ -12747,7 +12750,7 @@ class AgentWebSocketServer:
                     hasattr(agent_instance, "load_harness_config") if agent_instance else False,
                 )
 
-            service = AutoHarnessService(
+            service = create_auto_harness_service(
                 rail=None,
                 agent=agent_instance,
                 agent_manager=self._agent_manager,
@@ -12814,7 +12817,7 @@ class AgentWebSocketServer:
             if agent is not None:
                 agent_instance = await agent.ensure_instance()
 
-            service = AutoHarnessService(
+            service = create_auto_harness_service(
                 rail=None,
                 agent=agent_instance,
                 agent_manager=self._agent_manager,
@@ -12891,7 +12894,7 @@ class AgentWebSocketServer:
             if agent is not None:
                 agent_instance = await agent.ensure_instance()
 
-            service = AutoHarnessService(
+            service = create_auto_harness_service(
                 rail=None,
                 agent=agent_instance,
                 agent_manager=self._agent_manager,
@@ -13095,7 +13098,7 @@ class AgentWebSocketServer:
             # Lazy initialization: create scheduler service on first request
             if self._scheduler_service is None:
                 logger.info("[AgentServer] Initializing scheduler service on first request")
-                self._scheduler_service = AutoHarnessService(None, agent=None)
+                self._scheduler_service = create_auto_harness_service(None, agent=None)
                 # Start the scheduler loop
                 await self._scheduler_service.start_scheduler()
 

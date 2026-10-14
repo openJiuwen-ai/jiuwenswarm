@@ -6,6 +6,7 @@ import asyncio
 import argparse
 import json
 import logging
+import sys
 import time
 
 from jiuwenswarm.server.ipc.client import connect, endpoint_is_listening
@@ -93,7 +94,9 @@ async def shutdown_resident_worker(*, timeout: float = 30.0) -> dict:
             import psutil
             try:
                 if worker.create_time() == created and worker.is_running():
-                    logger.error("Worker final exit forced; shutdown acknowledgement/persistence incomplete pid=%s", worker.pid)
+                    logger.error(
+                        "Worker final exit forced; shutdown acknowledgement/persistence incomplete pid=%s", worker.pid
+                    )
                     for child in reversed(worker.children(recursive=True)):
                         try:
                             child.kill()
@@ -116,7 +119,8 @@ def main() -> None:
     if args.detach_front:
         detach_front_process(args.detach_front)
     if args.shutdown_worker:
-        print(json.dumps(asyncio.run(shutdown_resident_worker(timeout=max(.001, args.timeout)))))
+        result = asyncio.run(shutdown_resident_worker(timeout=max(.001, args.timeout)))
+        sys.stdout.write(json.dumps(result) + "\n")
 
 
 if __name__ == "__main__":

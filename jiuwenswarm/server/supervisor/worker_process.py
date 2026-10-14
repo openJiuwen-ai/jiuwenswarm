@@ -126,7 +126,7 @@ class WorkerProcess:
         try:
             self._proc.stdin.write(payload)
             self._proc.stdin.close()
-        except (OSError, BrokenPipeError):
+        except OSError:
             self._proc.kill()
             await self.wait(timeout=5)
             raise

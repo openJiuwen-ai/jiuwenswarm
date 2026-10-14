@@ -57,8 +57,11 @@ class RuntimeSignalSink:
 
     def capabilities(self, readiness: dict[str, str], *, fully_warm: bool = False) -> None:
         """Report optional progress without asserting that the core is ready."""
-        self._capability_readiness = {name: state for name, state in readiness.items()
-                                      if isinstance(name, str) and isinstance(state, str) and state in CAPABILITY_STATES}
+        self._capability_readiness = {
+            name: state
+            for name, state in readiness.items()
+            if isinstance(name, str) and isinstance(state, str) and state in CAPABILITY_STATES
+        }
         self._fully_warm = fully_warm and "failed" not in self._capability_readiness.values()
         if self._agent_ready:
             self._runtime_phase = (

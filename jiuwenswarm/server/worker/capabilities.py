@@ -105,4 +105,4 @@ async def start_optional_preparation(
             await prepare_teammate()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[Worker] teammate bootstrap daemon start failed: %s", exc)
-    server._proactive_prepare_task = runtime.proactive_task
+    server.proactive_preparation_task = runtime.proactive_task

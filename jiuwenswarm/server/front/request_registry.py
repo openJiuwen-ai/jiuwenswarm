@@ -86,12 +86,13 @@ class RequestRegistry:
         if not sid:
             return []
         async with self._lock:
-            matches = [
-                item
-                for item in self._items.values()
-                if item.session_id == sid and not item.cancelled.is_set()
-                and (owner is None or request_scope(item.request)[:4] == request_scope(owner)[:4])
-            ]
+            candidates = [item for item in self._items.values() if item.session_id == sid]
+            matches = []
+            for item in candidates:
+                if item.cancelled.is_set():
+                    continue
+                if owner is None or request_scope(item.request)[:4] == request_scope(owner)[:4]:
+                    matches.append(item)
         cancelled: list[TrackedRequest] = []
         for item in matches:
             item.cancelled.set()
@@ -99,8 +100,9 @@ class RequestRegistry:
         return cancelled
 
     def get(self, request_id: str, *, owner: AgentRequest | None = None) -> TrackedRequest | None:
-        matches = [item for item in self._items.values() if item.request_id == request_id
-                   and (owner is None or request_scope(item.request)[:4] == request_scope(owner)[:4])]
+        candidates = [item for item in self._items.values() if item.request_id == request_id]
+        matches = [item for item in candidates
+                   if owner is None or request_scope(item.request)[:4] == request_scope(owner)[:4]]
         return matches[0] if len(matches) == 1 else None
 
     def snapshot(self) -> list[dict[str, Any]]:

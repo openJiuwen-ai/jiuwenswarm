@@ -333,7 +333,9 @@ class RuntimeSupervisor:
             if self._stopping or self._terminating:
                 await self._fail_pending("runtime worker stopped")
                 if self._shutdown_done is not None and not self._shutdown_done.done():
-                    self._shutdown_done.set_result({"ok": False, "error": "worker closed before shutdown acknowledgement"})
+                    self._shutdown_done.set_result(
+                        {"ok": False, "error": "worker closed before shutdown acknowledgement"}
+                    )
                 break
             await self._fail_pending("runtime worker closed")
             self._conn = None
@@ -786,9 +788,13 @@ class RuntimeSupervisor:
         if conn is not None:
             self._shutdown_done = asyncio.get_running_loop().create_future()
             try:
-                await asyncio.wait_for(conn.send({"kind": KIND_SHUTDOWN}), timeout=max(0.0, deadline - time.monotonic()))
+                await asyncio.wait_for(
+                    conn.send({"kind": KIND_SHUTDOWN}), timeout=max(0.0, deadline - time.monotonic())
+                )
                 if self._loop_task is not None:
-                    outcome = await asyncio.wait_for(asyncio.shield(self._shutdown_done), timeout=max(0.0, deadline - time.monotonic()))
+                    outcome = await asyncio.wait_for(
+                        asyncio.shield(self._shutdown_done), timeout=max(0.0, deadline - time.monotonic())
+                    )
                     if not outcome.get("ok"):
                         logger.error("[Supervisor] Worker shutdown incomplete: %s", outcome.get("error"))
             except (OSError, RuntimeError, asyncio.TimeoutError):
@@ -808,15 +814,17 @@ class RuntimeSupervisor:
                 raise RuntimeError("Worker PID identity changed during final exit")
             try:
                 process.wait(timeout=max(0.0, deadline - time.monotonic()))
-            except psutil.TimeoutExpired:
+            except psutil.TimeoutExpired as exc:
                 if process.create_time() != self._worker_create_time:
-                    raise RuntimeError("Worker PID identity changed during final exit")
+                    raise RuntimeError("Worker PID identity changed during final exit") from exc
                 logger.error("[Supervisor] Worker final exit timed out; forcing validated process termination")
                 process.kill()
                 try:
                     process.wait(timeout=max(0.0, deadline - time.monotonic()))
                 except psutil.TimeoutExpired:
-                    logger.error("[Supervisor] validated Worker exit could not be observed before the shutdown deadline")
+                    logger.error(
+                        "[Supervisor] validated Worker exit could not be observed before the shutdown deadline"
+                    )
         except psutil.NoSuchProcess:
             pass
         self._owns_process = False

@@ -48,6 +48,10 @@ def launch_identity_payload(fingerprint: str) -> bytes:
         "code_identity": fingerprint, "source_observation": observation}) + "\n").encode()
 
 
+def _valid_fingerprint(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(letter in "0123456789abcdef" for letter in value)
+
+
 def read_launch_identity() -> str:
     """Consume a one-use parent pipe; environment build labels cannot bypass validation."""
     if sys.stdin is not None:
@@ -74,14 +78,15 @@ def read_launch_identity() -> str:
     try:
         payload = json.loads(value)
         fingerprint = payload["code_identity"]
-        if (len(value) > 4096 or payload.get("schema") != 1
-                or not isinstance(payload.get("parent_pid"), int)
-                or not _is_launch_parent(payload["parent_pid"])
-                or payload.get("package") != _deployment_path()
-                or payload.get("data_scope") != data_scope()
-                or payload.get("build_label") != os.environ.get("JIUWENSWARM_BUILD_ID", "").strip()
-                or not isinstance(fingerprint, str) or len(fingerprint) != 64
-                or any(letter not in "0123456789abcdef" for letter in fingerprint)):
+        if len(value) > 4096 or payload.get("schema") != 1:
+            raise ValueError("identity pipe does not describe this child deployment")
+        if not isinstance(payload.get("parent_pid"), int) or not _is_launch_parent(payload["parent_pid"]):
+            raise ValueError("identity pipe does not describe this child deployment")
+        if payload.get("package") != _deployment_path() or payload.get("data_scope") != data_scope():
+            raise ValueError("identity pipe does not describe this child deployment")
+        if payload.get("build_label") != os.environ.get("JIUWENSWARM_BUILD_ID", "").strip():
+            raise ValueError("identity pipe does not describe this child deployment")
+        if not _valid_fingerprint(fingerprint):
             raise ValueError("identity pipe does not describe this child deployment")
         observed_identity = None
         observation = payload.get("source_observation")
@@ -114,12 +119,13 @@ def data_scope() -> str:
 def code_identity() -> str:
     override = os.environ.get("JIUWENSWARM_BUILD_ID", "").strip()
     if getattr(sys, "frozen", False):
-        bundled = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "jiuwenswarm" / "_worker_build_identity.json"
+        bundled = (
+            Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "jiuwenswarm" / "_worker_build_identity.json"
+        )
         try:
             payload = json.loads(bundled.read_text(encoding="utf-8"))
             fingerprint = payload["fingerprint"]
-            if (payload.get("schema") != 1 or not isinstance(fingerprint, str)
-                    or len(fingerprint) != 64 or any(letter not in "0123456789abcdef" for letter in fingerprint)):
+            if payload.get("schema") != 1 or not _valid_fingerprint(fingerprint):
                 raise ValueError("invalid controlled build identity")
         except (OSError, ValueError, KeyError, TypeError):
             fingerprint = ""

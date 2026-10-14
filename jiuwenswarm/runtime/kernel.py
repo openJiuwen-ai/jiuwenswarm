@@ -95,12 +95,18 @@ class ResourceLease:
     async def release(self) -> None:
         if self._released:
             return
-        self._released = True
-        retired = self._kernel._release(self.key, self._entry)
-        entries = self._kernel._take_disposals()
+        retired = self.release_reference()
+        entries = self._kernel.take_disposals()
         if retired is not None:
             entries.insert(0, retired)
-        await self._kernel._close_entries(entries)
+        await self._kernel.close_entries(entries)
+
+    def release_reference(self) -> _Entry | None:
+        """Drop this lease once; its owner decides when queued disposal runs."""
+        if self._released:
+            return None
+        self._released = True
+        return self._kernel.release_entry(self.key, self._entry)
 
 
 class ResourceKernel:
@@ -223,18 +229,17 @@ class ResourceKernel:
         """Share immutable definitions/factories, never their stateful instances."""
         lease = self.acquire(key, factory)
         value = lease.value
-        lease._released = True
-        self._release(key, lease._entry)
+        lease.release_reference()
         return value
 
-    def _take_disposals(self) -> list[_Entry]:
+    def take_disposals(self) -> list[_Entry]:
         with self._lock:
             entries, self._disposals = self._disposals, []
         return entries
 
     async def _drain_disposals(self) -> None:
-        entries = self._take_disposals()
-        await self._close_entries(entries)
+        entries = self.take_disposals()
+        await self.close_entries(entries)
 
     @staticmethod
     async def _wait_preparation(preparing: _Preparation) -> None:
@@ -257,7 +262,7 @@ class ResourceKernel:
             raise error
 
     @staticmethod
-    async def _close_entries(entries: list[_Entry]) -> None:
+    async def close_entries(entries: list[_Entry]) -> None:
         failures = []
         for entry in entries:
             if entry.close is not None:
@@ -357,7 +362,7 @@ class ResourceKernel:
             self._entries.clear()
             self._disposals = []
         try:
-            await self._close_entries(entries)
+            await self.close_entries(entries)
         except Exception as exc:
             failures.append(exc)
         if failures:
@@ -365,7 +370,7 @@ class ResourceKernel:
                 raise failures[0]
             raise RuntimeError(f"Kernel shutdown failed in {len(failures)} step(s)") from failures[0]
 
-    def _release(self, key: ResourceKey, entry: _Entry) -> _Entry | None:
+    def release_entry(self, key: ResourceKey, entry: _Entry) -> _Entry | None:
         with self._lock:
             entry.references -= 1
             self._active_references -= 1

@@ -3,8 +3,11 @@
 from importlib import import_module
 
 _EXPORTS = {
-    **{name: ".service" for name in ("AutoHarnessService", "ActiveAutoHarnessRun",
-       "validate_harness_config_fields", "validate_harness_config_paths", "validate_harness_config")},
+    "AutoHarnessService": ".service",
+    "ActiveAutoHarnessRun": ".service",
+    "validate_harness_config_fields": ".service",
+    "validate_harness_config_paths": ".service",
+    "validate_harness_config": ".service",
     "reset_harness_packages_state": ".state",
     "Scheduler": ".scheduler",
     "TaskStore": ".task_store",

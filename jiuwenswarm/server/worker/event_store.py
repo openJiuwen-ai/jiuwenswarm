@@ -99,11 +99,14 @@ class WorkerEventStore:
         record.terminal = {"event_type": "runtime.completed", "state": state, "error": error}
         self.finish(dispatch_id)
 
-    def _push_request(self, wire: dict[str, Any], record: DispatchRecord | None) -> AgentRequest | None:
+    @staticmethod
+    def _push_request(wire: dict[str, Any], record: DispatchRecord | None) -> AgentRequest | None:
         """Resolve a server push target before acquiring its publication lock."""
         metadata = wire.get("metadata") or {}
         target = str(wire.get("session_id") or "")
-        if metadata.get(E2A_WIRE_SERVER_PUSH_KEY) and target and (record is None or target != record.scope[-1]):
+        if metadata.get(E2A_WIRE_SERVER_PUSH_KEY) and target:
+            if record is not None and target == record.scope[-1]:
+                return None
             # This is an authorized AgentServer push, often produced by a
             # mailbox task inheriting the source request's ContextVars. Its
             # target must own the journal and processing state, not the source.
@@ -182,8 +185,8 @@ class WorkerEventStore:
                     record.is_processing = True
                 # A suspended interaction emits chat.final for the output
                 # segment. Only execution completion clears its pending input.
-                if ("runtime.completed" in event or "chat.error" in event
-                        or ("chat.final" in event and body.get("final_mode") != "patch_segment")):
+                final_segment = "chat.final" in event and body.get("final_mode") != "patch_segment"
+                if "runtime.completed" in event or "chat.error" in event or final_segment:
                     record.terminal = copy.deepcopy(body)
                     record.is_processing = False
                     record.interactions.clear()

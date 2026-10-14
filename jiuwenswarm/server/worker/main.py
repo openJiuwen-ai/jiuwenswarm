@@ -7,7 +7,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
+from os import _exit as exit_process
 import signal
 
 
@@ -65,7 +65,7 @@ def main() -> None:
         logging.shutdown()
         # A cancelled to_thread load may still own non-daemon executor threads.
         # SystemExit waits for those threads and can exceed the shared deadline.
-        os._exit(1)
+        exit_process(1)
     finally:
         loop.close()
 

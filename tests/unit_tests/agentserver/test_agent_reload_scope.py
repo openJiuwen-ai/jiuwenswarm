@@ -71,6 +71,12 @@ class FakeAgent:
     def restore_skill_retrieval_session(self, *args, **kwargs) -> None:
         """Match the child adapter's Skill retrieval restore hook."""
 
+    def configure_initial_execution(self, *, model_name, request=None, can_access=None) -> None:
+        """Accept the first-turn context through the child adapter's public API."""
+        self._initial_execution_model_name = str(model_name or "").strip()
+        self._initial_execution_request = request
+        self._model_selection_can_access = can_access
+
     def persist_skill_retrieval_session_profile(self) -> None:
         """Match the child adapter's public profile persistence hook."""
 
