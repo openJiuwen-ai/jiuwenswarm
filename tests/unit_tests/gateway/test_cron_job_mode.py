@@ -485,7 +485,7 @@ class TestCronJobLazyMigration:
         )
 
         with patch(
-            "jiuwenswarm.runtime.cron.cron_job_mutations.logger.warning"
+            "jiuwenswarm.gateway.runtime.cron.cron_job_mutations.logger.warning"
         ) as warning_mock:
             jobs = await CronJobStore(path=store_path).list_jobs()
 

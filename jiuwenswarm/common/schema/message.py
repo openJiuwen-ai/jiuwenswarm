@@ -12,6 +12,11 @@ from jiuwenswarm.common.mode_matrix import deprecate_mode
 logger = logging.getLogger(__name__)
 
 
+# ``chat.send`` 请求携带该 truthy 参数时，仅为已在运行的 Team Session 附加
+# 响应订阅，不提交新输入（gateway / runtime / server 三方共用的协议参数名）。
+TEAM_ATTACH_ONLY_PARAM = "attach_only"
+
+
 class ReqMethod(Enum):
     INITIALIZE = "initialize"
     ACP_TOOL_RESPONSE = "acp.tool_response"
