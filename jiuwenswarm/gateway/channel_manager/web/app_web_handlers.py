@@ -5637,6 +5637,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_perm("permissions.tools.get", _PermReq.PERMISSIONS_TOOLS_GET)
     _register_perm("permissions.tools.set", _PermReq.PERMISSIONS_TOOLS_SET)
     _register_perm("permissions.tools.update", _PermReq.PERMISSIONS_TOOLS_UPDATE)
+    _register_perm("permissions.tools.update_user", _PermReq.PERMISSIONS_TOOLS_UPDATE_USER)
     _register_perm("permissions.tools.delete", _PermReq.PERMISSIONS_TOOLS_DELETE)
     _register_perm("permissions.rules.get", _PermReq.PERMISSIONS_RULES_GET)
     _register_perm("permissions.rules.create", _PermReq.PERMISSIONS_RULES_CREATE)
