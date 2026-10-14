@@ -1031,11 +1031,159 @@ class TenantAgentPool:
                 cache_key,
             )
 
+    def find_agent_for_session_nowait(self, session_id: str) -> Any | None:
+        """Scan every cached tenant manager for the agent that owns ``session_id``."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        for manager in self.iter_agent_managers_nowait():
+            find = getattr(manager, "find_agent_for_session_nowait", None)
+            if not callable(find):
+                continue
+            try:
+                agent = find(sid)
+            except Exception:
+                logger.exception(
+                    "[TenantAgentPool] session owner scan failed session_id=%s",
+                    sid,
+                )
+                continue
+            if agent is not None:
+                return agent
+        return None
+
+    def find_agent_for_interrupt_resume_nowait(self, session_id: str) -> Any | None:
+        """Cross-tenant: the agent that still holds this pause, not any old owner."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        best: Any = None
+        best_rank: tuple[int, float] | None = None
+        for manager in self.iter_agent_managers_nowait():
+            scan = getattr(manager, "iter_interrupt_resume_candidates_nowait", None)
+            if not callable(scan):
+                continue
+            try:
+                candidates = scan(sid)
+            except Exception:
+                logger.exception(
+                    "[TenantAgentPool] interrupt resume scan failed session_id=%s",
+                    sid,
+                )
+                continue
+            for rank, agent in candidates:
+                if best_rank is None or rank > best_rank:
+                    best_rank = rank
+                    best = agent
+        return best
+
+    @staticmethod
+    def _is_cron_session_request(request: AgentRequest) -> bool:
+        """Whether this request targets a cron_* execution session."""
+        return str(getattr(request, "session_id", "") or "").strip().startswith("cron_")
+
+    _INTERRUPT_RESUME_SOURCES = frozenset(
+        {"permission_interrupt", "confirm_interrupt", "ask_user_interrupt"}
+    )
+
+    @staticmethod
+    def _is_interrupt_resume_request(request: AgentRequest) -> bool:
+        """HITL / permission resume — not a plain follow-up chat.send."""
+        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
+        source = str(params.get("source") or "").strip()
+        if source not in TenantAgentPool._INTERRUPT_RESUME_SOURCES:
+            return False
+        if not isinstance(params.get("answers"), list):
+            return False
+        return bool(str(params.get("request_id") or "").strip())
+
+    @staticmethod
+    def _is_cron_permission_resume(request: AgentRequest) -> bool:
+        """Legacy helper: cron_* + permission_interrupt (prefer interrupt-resume)."""
+        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
+        return (
+            TenantAgentPool._is_cron_session_request(request)
+            and str(params.get("source") or "") == "permission_interrupt"
+        )
+
+    @staticmethod
+    def _cron_resume_session_allowed(request: AgentRequest, session_id: str) -> bool:
+        """Cross-tenant cron_* reuse must still pass session ownership (fail-closed)."""
+        try:
+            from jiuwenswarm.gateway.routing.session_index import is_remote_storage
+        except Exception:  # noqa: BLE001
+            return False
+        if not is_remote_storage():
+            return True
+        sid = str(session_id or "").strip()
+        if not sid:
+            return False
+        uid = str(getattr(request, "user_id", None) or "").strip() or "guest"
+        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
+        meta = getattr(request, "metadata", None)
+        meta_dict = meta if isinstance(meta, dict) else {}
+        group_id = (
+            str(meta_dict.get("group_id") or params.get("group_id") or "").strip() or None
+        )
+        bot_id = str(meta_dict.get("bot_id") or params.get("bot_id") or "").strip() or None
+        try:
+            from jiuwenswarm.channels.web.history_store.api import get_session_detail_sync
+
+            detail = get_session_detail_sync(
+                sid, user=uid, group_id=group_id, bot_id=bot_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[TenantAgentPool] cron session ownership check failed session_id=%s",
+                sid,
+            )
+            return False
+        return detail is not None
+
+    _CRON_RESUME_FORBIDDEN_TEXT = (
+        "无权操作该定时任务会话，或会话不属于当前用户。"
+    )
+
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """处理非流式请求."""
         guard = self.require_officeclaw_agent(request)
         if guard is not None:
             return guard
+        # Scheme A: 仅审批/HITL 续跑跨租户找回挂着 interrupt 的 Agent；
+        # 普通 cron_* 续聊走本租户 web channel，不强制绑回 __cron__。
+        if self._is_interrupt_resume_request(request):
+            sid = str(request.session_id or "")
+            owned = self.find_agent_for_interrupt_resume_nowait(sid)
+            if owned is not None:
+                if self._is_cron_session_request(request) and (
+                    not self._cron_resume_session_allowed(request, sid)
+                ):
+                    logger.warning(
+                        "[TenantAgentPool] interrupt resume denied by ownership: "
+                        "session_id=%s user_id=%s",
+                        sid,
+                        getattr(request, "user_id", None),
+                    )
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=False,
+                        payload={
+                            "event_type": "chat.error",
+                            "error": self._CRON_RESUME_FORBIDDEN_TEXT,
+                            "code": "FORBIDDEN",
+                        },
+                        metadata=getattr(request, "metadata", None),
+                    )
+                logger.info(
+                    "[TenantAgentPool] interrupt resume reuse cross-tenant owner: "
+                    "session_id=%s source=%s",
+                    request.session_id,
+                    (request.params or {}).get("source")
+                    if isinstance(request.params, dict)
+                    else None,
+                )
+                return await owned.process_message(request)
         agent_id, service_id, workspace_key = self.extract_ids(request)
         agent_id, service_id = self.resolve_control_rpc_tenant(request, agent_id, service_id)
         cache_key = self._build_cache_key(agent_id, service_id, workspace_key)
@@ -1138,6 +1286,49 @@ class TenantAgentPool:
                 is_complete=True,
             )
             return
+        # Scheme A: 审批/HITL 才跨租户找回挂 pause 的实例；普通续聊走本租户。
+        # 找回后仍须校验会话归属，防止仅凭 session_id 操作他人任务。
+        if self._is_interrupt_resume_request(request):
+            sid = str(request.session_id or "")
+            owned = self.find_agent_for_interrupt_resume_nowait(sid)
+            if owned is not None:
+                if self._is_cron_session_request(request) and (
+                    not self._cron_resume_session_allowed(request, sid)
+                ):
+                    logger.warning(
+                        "[TenantAgentPool] interrupt resume denied by ownership: "
+                        "session_id=%s user_id=%s",
+                        sid,
+                        getattr(request, "user_id", None),
+                    )
+                    yield AgentResponseChunk(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        payload={
+                            "event_type": "chat.error",
+                            "error": self._CRON_RESUME_FORBIDDEN_TEXT,
+                            "code": "FORBIDDEN",
+                        },
+                        is_complete=True,
+                    )
+                    return
+                logger.info(
+                    "[TenantAgentPool] interrupt resume reuse cross-tenant owner: "
+                    "session_id=%s source=%s",
+                    request.session_id,
+                    (request.params or {}).get("source")
+                    if isinstance(request.params, dict)
+                    else None,
+                )
+                async for chunk in owned.process_message_stream(request):
+                    yield chunk
+                return
+            if self._is_cron_session_request(request):
+                logger.warning(
+                    "[TenantAgentPool] interrupt resume has no cross-tenant owner: "
+                    "session_id=%s",
+                    request.session_id,
+                )
         agent_id, service_id, workspace_key = self.extract_ids(request)
         agent_id, service_id = self.resolve_control_rpc_tenant(request, agent_id, service_id)
         cache_key = self._build_cache_key(agent_id, service_id, workspace_key)

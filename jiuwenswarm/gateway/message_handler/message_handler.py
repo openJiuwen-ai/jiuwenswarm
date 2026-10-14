@@ -3384,6 +3384,134 @@ class MessageHandler(FileTransferMixin, ABC):
     def set_cron_registry(self, registry: Any) -> None:
         self._cron_registry = registry
 
+    def _release_cron_permission_hold(self, session_id: str) -> None:
+        registry = self._cron_registry or self._cron_controller
+        if registry is None:
+            return
+        release = getattr(registry, "release_cron_permission_hold", None)
+        if callable(release):
+            release(session_id)
+            return
+        scheduler = getattr(registry, "_scheduler", None)
+        direct = getattr(scheduler, "release_permission_hold_for_session", None)
+        if callable(direct):
+            direct(session_id)
+
+    @classmethod
+    def _is_cron_interrupt_resume_env(
+        cls,
+        env: Any,
+        session_id: str | None,
+    ) -> bool:
+        """Whether this stream is a cron_* interrupt-resume ``chat.send``."""
+        sid = str(session_id or "").strip()
+        if not sid.startswith("cron_"):
+            return False
+        params = getattr(env, "params", None)
+        if not isinstance(params, dict):
+            return False
+        source = str(params.get("source") or "").strip()
+        if source not in _INTERRUPT_RESUME_SOURCES:
+            return False
+        answers = params.get("answers")
+        request_id = str(params.get("request_id") or "").strip()
+        return bool(request_id) and isinstance(answers, list)
+
+    @staticmethod
+    def _is_outer_hitl_ask_user_payload(payload: dict[str, Any]) -> bool:
+        """Outer-round HITL ask (excludes subagent-forwarded cards that do not pause)."""
+        if payload.get("event_type") != "chat.ask_user_question":
+            return False
+        source = str(payload.get("source") or "").strip()
+        # Align with AgentServer ``_is_ask_user_payload``: these sources do not
+        # end the outer round with invocation_paused.
+        return source not in {"subagent_skill_load", "subagent_tool_permission"}
+
+    def _settle_cron_permission_hold_after_interrupt_stream(
+        self,
+        *,
+        env: Any,
+        session_id: str | None,
+        still_awaiting_hitl: bool,
+        cancelled: bool,
+        request_error: BaseException | None,
+    ) -> None:
+        """Release cron hold only when a permission-resume turn fully settled.
+
+        Keep hold when this resume stream saw another outer HITL ask / pause
+        (multi-tool approval), was cancelled, or errored (interrupt may still
+        be live). Do not release at ``chat.send`` entry. Do not treat
+        intermediate ``chat.final`` as success (see mirror).
+        """
+        if still_awaiting_hitl or cancelled or request_error is not None:
+            return
+        if not self._is_cron_interrupt_resume_env(env, session_id):
+            return
+        sid = str(session_id or "").strip()
+        try:
+            self._release_cron_permission_hold(sid)
+            logger.info(
+                "[MessageHandler] released cron permission hold after interrupt "
+                "resume settled session_id=%s",
+                sid,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[MessageHandler] release cron permission hold after resume "
+                "failed session_id=%s",
+                sid,
+                exc_info=True,
+            )
+
+    def _mirror_cron_live_stream_chunk(
+        self,
+        session_id: str | None,
+        message: Any,
+    ) -> None:
+        """Mirror cron resume ``chat.final`` onto the session live bus.
+
+        After tool permission the scheduler stops reading the agent stream.
+        Resume frames go to the browser ``chat.send`` SSE; also publish the
+        final here so the open ``cron_*`` live watch can show the reply if
+        the SSE path drops it. Deltas are not mirrored (would double-append).
+        Frontend dedupes identical finals.
+
+        Hold release and live ``clear_session`` happen only when the interrupt
+        resume stream settles without another HITL ask/pause — not on each
+        contentful final (multi-tool rounds may emit finals between asks).
+        """
+        sid = str(session_id or "").strip()
+        if not sid.startswith("cron_"):
+            return
+        payload = getattr(message, "payload", None)
+        if not isinstance(payload, dict):
+            return
+        event_name = str(
+            getattr(getattr(message, "event_type", None), "value", None)
+            or payload.get("event_type")
+            or ""
+        ).strip()
+        if event_name != "chat.final":
+            return
+        content = payload.get("content")
+        if not (isinstance(content, str) and content.strip()):
+            return
+        live_bus = None
+        try:
+            from jiuwenswarm.gateway.cron.live_bus import cron_live_bus as live_bus
+        except ImportError:
+            live_bus = None
+        if live_bus is None:
+            return
+        body = dict(payload)
+        body.setdefault("session_id", sid)
+        body.setdefault("exec_session_id", sid)
+        live_bus.publish(sid, {
+            "type": "event",
+            "event": event_name,
+            "payload": body,
+        })
+
     async def _handle_long_horizon_schedule_intent(
         self,
         *,
@@ -3745,6 +3873,9 @@ class MessageHandler(FileTransferMixin, ABC):
             app_id=self._stream_app_ids.get(chunk.request_id, ""),
         )
         await self.publish_robot_messages(out)
+        # 企业版 cron_* 窗口靠 live SSE；审批续跑走 chat.send，调度器已停读。
+        # 把终态正文再镜像到 live bus，避免只有思考/工具、刷新后才见回复。
+        self._mirror_cron_live_stream_chunk(session_id, out)
         return True
 
     async def _publish_stream_cancelled_final(
@@ -4766,6 +4897,11 @@ class MessageHandler(FileTransferMixin, ABC):
 
                     continue
 
+                # 定时任务审批 hold 在 interrupt 续跑流 settle 后释放，见
+                # _settle_cron_permission_hold_after_interrupt_stream。
+                # 入口过早 release 会在 resume 失败时被下一轮调度切入；
+                # 中间 chat.final 也不再单独释放（多工具二次审批会误清）。
+
                 # ---- Inbound Pipeline（数字分身入站过滤）----
                 if self._inbound_pipeline is not None and msg.req_method == ReqMethod.CHAT_SEND:
                     try:
@@ -5086,6 +5222,12 @@ class MessageHandler(FileTransferMixin, ABC):
         )
         cancelled = False
         has_processing_status_false = False
+        # Agent HITL 以 invocation_paused 收尾，故意不发 processing=false。
+        # 若此处仍补发 false，cron 审批续跑的第二次权限卡会被前端当「已完成」清掉。
+        # 另计 saw_outer_hitl_ask：pause 帧丢失时仍凭权限 ask 判定「仍在等用户」。
+        awaiting_user_input_pause = False
+        saw_outer_hitl_ask = False
+        track_cron_interrupt_resume = self._is_cron_interrupt_resume_env(env, session_id)
         _proc_count = 0
         logger.info(
             "[MessageHandler] process_stream started: request_id=%s channel=%s session=%s",
@@ -5126,6 +5268,12 @@ class MessageHandler(FileTransferMixin, ABC):
                         # ends, and is NOT forwarded to the frontend.
                         has_processing_status_false = True
                         continue
+                    elif event_type == "chat.invocation_paused" or payload.get(
+                        "awaiting_user_input"
+                    ):
+                        awaiting_user_input_pause = True
+                    elif self._is_outer_hitl_ask_user_payload(payload):
+                        saw_outer_hitl_ask = True
 
                 _has_fanout = bool((getattr(chunk, "metadata", None) or {}).get("fan_out_targets"))
                 logger.debug(
@@ -5214,16 +5362,26 @@ class MessageHandler(FileTransferMixin, ABC):
             session_blocks_processing_false = (
                 self._session_has_streams_blocking_processing_false(session_id)
             )
+            # HITL 暂停：流读完了但轮次仍在等用户；cancelled 仍要补 false 停转圈。
+            # 外层权限 ask（含 pause 帧丢失）同样视为仍在等用户，避免二次审批假完成。
+            still_awaiting_hitl = bool(
+                awaiting_user_input_pause or saw_outer_hitl_ask
+            )
+            skip_processing_false_for_hitl = (
+                still_awaiting_hitl and not cancelled
+            )
             _will_broadcast = (
                 emit_processing_status
                 and not has_processing_status_false
                 and not session_blocks_processing_false
+                and not skip_processing_false_for_hitl
             )
             logger.info(
                 "[task.global_running] stream 退出: rid=%s cancelled=%s emit=%s "
-                "has_status_false=%s remaining_stream=%d remaining_chat=%d "
-                "will_broadcast_processing_status=%s",
+                "has_status_false=%s hitl_pause=%s hitl_ask=%s remaining_stream=%d "
+                "remaining_chat=%d will_broadcast_processing_status=%s",
                 rid, cancelled, emit_processing_status, has_processing_status_false,
+                awaiting_user_input_pause, saw_outer_hitl_ask,
                 len(self._stream_modes), len(self._active_chat_tasks),
                 _will_broadcast,
             )
@@ -5239,8 +5397,19 @@ class MessageHandler(FileTransferMixin, ABC):
             # 让 TUI 立刻停转圈，不等 AgentServer 回 interrupt_result。
             # 守卫：同 session 还有 chat.send 或 command.goal 时不误发 false
             # （避免权限同意短流在 Goal 仍跑时清前端；history.get 不挡）。
+            # 守卫：invocation_paused / awaiting_user_input / 外层权限 ask 收尾时不补发。
             if emit_processing_status and not has_processing_status_false:
-                if not session_blocks_processing_false:
+                if skip_processing_false_for_hitl:
+                    logger.info(
+                        "[MessageHandler] stream paused for user input, "
+                        "skip is_processing=false: session_id=%s request_id=%s "
+                        "pause=%s ask=%s",
+                        session_id,
+                        rid,
+                        awaiting_user_input_pause,
+                        saw_outer_hitl_ask,
+                    )
+                elif not session_blocks_processing_false:
                     await self._send_processing_status(
                         rid, session_id, channel_id,
                         is_processing=False, app_id=stream_app_id,
@@ -5251,6 +5420,16 @@ class MessageHandler(FileTransferMixin, ABC):
                         cancelled,
                         session_id,
                     )
+            # cron 审批续跑：仅在本流未再出现外层 HITL ask/pause、且未取消时释放 hold。
+            # clear_session 随 mark/release 一并发生；中间 contentful final 不再清 hold。
+            if track_cron_interrupt_resume:
+                self._settle_cron_permission_hold_after_interrupt_stream(
+                    env=env,
+                    session_id=session_id,
+                    still_awaiting_hitl=still_awaiting_hitl,
+                    cancelled=cancelled,
+                    request_error=request_error,
+                )
 
     async def _send_stream_cancelled_notification(
         self, request_id: str | None, channel_id: str, session_id: str | None

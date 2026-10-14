@@ -158,6 +158,11 @@ class WebClient {
     this.dispatchEventToHandlers(event);
   }
 
+  /** 把定时任务监听流上的帧送进现有 chat.* 处理。 */
+  injectEvent(event: WsEvent): void {
+    this.dispatchEvent(event);
+  }
+
   async connect(options: WebConnectOptions = {}): Promise<void> {
     if (this.ws?.readyState === WebSocket.OPEN) {
       return;

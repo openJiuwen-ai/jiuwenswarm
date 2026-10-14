@@ -2678,6 +2678,9 @@ class JiuWenSwarmDeepAdapter:
         self._audio_tools: list[Any] = []
         self._instance_overrides: dict[str, Any] = {}
         self._is_session_scoped_adapter: bool = False
+        self._session_parent_adapter: "JiuWenSwarmDeepAdapter | None" = None
+        # Parent-only: cron/tool pause pins so eviction and session lookup keep the owner.
+        self._sessions_awaiting_tool_permission: set[str] = set()
         self._steering_control: SteeringSession | None = None
         self._parent_session_id: str | None = None
         # 业务对话 ID（thread_id）：由 mark_as_session_scoped 从 bootstrap request 透传。
@@ -2979,6 +2982,7 @@ class JiuWenSwarmDeepAdapter:
             if value is not None:
                 setattr(adapter, attribute, value)
         adapter.mark_as_session_scoped(session_id, thread_id=thread_id)
+        adapter.bind_session_parent_adapter(self)
         # Session adapters must inherit the parent's tenant env namespace. A fresh
         # adapter defaults to default/default and would read placeholder .env
         # model credentials instead of the synced per-agent tip bag.
@@ -2999,6 +3003,18 @@ class JiuWenSwarmDeepAdapter:
         self._is_session_scoped_adapter = True
         self._parent_session_id = session_id
         self._parent_thread_id = thread_id
+
+    def bind_session_parent_adapter(self, parent: "JiuWenSwarmDeepAdapter") -> None:
+        """Wire this session-scoped adapter back to its channel parent."""
+        self._session_parent_adapter = parent
+
+    def ensure_sessions_awaiting_tool_permission(self) -> set[str]:
+        """Return the shared awaiting-permission set, creating it if needed."""
+        awaiting = getattr(self, "_sessions_awaiting_tool_permission", None)
+        if not isinstance(awaiting, set):
+            self._sessions_awaiting_tool_permission = set()
+            awaiting = self._sessions_awaiting_tool_permission
+        return awaiting
 
     def _get_cached_session_adapter(self, session_id: str | None) -> "JiuWenSwarmDeepAdapter | None":
         sid = self._session_adapter_key(session_id)
@@ -3123,6 +3139,8 @@ class JiuWenSwarmDeepAdapter:
             checkpoint_uncertain = bool(
                 getattr(adapter, "_deepresearch_rewrite_tx_uncertain", False)
             )
+            if sid in self._sessions_awaiting_tool_permission:
+                continue
             last_used = self._session_adapter_last_used.get(sid, 0.0)
             if (
                 not checkpoint_uncertain
@@ -3198,6 +3216,7 @@ class JiuWenSwarmDeepAdapter:
                         exc,
                     )
                     return False
+                self.clear_session_awaiting_tool_permission(sid)
                 self._drop_session_adapter_cache_entry(sid, remove_lock=False)
                 remove_lock_after_release = True
                 cleaned = True
@@ -3637,12 +3656,37 @@ class JiuWenSwarmDeepAdapter:
             return ReloadResult(deferred=True)
         return None
 
+    def mark_session_awaiting_tool_permission(self, session_id: str) -> None:
+        """Pin a paused tool-approval session on the channel parent adapter."""
+        sid = self._session_adapter_key(session_id)
+        if not sid or sid == "default":
+            return
+        parent = self
+        if self._is_session_scoped_adapter:
+            parent = self._session_parent_adapter or self
+        awaiting = parent.ensure_sessions_awaiting_tool_permission()
+        awaiting.add(sid)
+        touch = getattr(parent, "_touch_session_adapter", None)
+        if callable(touch):
+            touch(sid)
+
+    def clear_session_awaiting_tool_permission(self, session_id: str) -> None:
+        sid = self._session_adapter_key(session_id)
+        parent = self._session_parent_adapter if self._is_session_scoped_adapter else self
+        if parent is None:
+            parent = self
+        awaiting = getattr(parent, "_sessions_awaiting_tool_permission", None)
+        if isinstance(awaiting, set):
+            awaiting.discard(sid)
+
     def has_session_runtime(self, session_id: str | None = None) -> bool:
         """Return whether this adapter still owns session runtime."""
         if session_id is not None:
             sid = self._session_adapter_key(session_id)
             if self._is_session_scoped_adapter:
                 return self._session_adapter_key(self._parent_session_id) == sid
+            if sid in self._sessions_awaiting_tool_permission:
+                return True
             return bool(
                 sid in self._session_adapters
                 or sid in self._session_adapter_locks
@@ -13207,6 +13251,227 @@ class JiuWenSwarmDeepAdapter:
             pass
         return False
 
+    @staticmethod
+    def _cron_execution_checkpointer(inner_session: Any) -> Any:
+        """cron 落盘用的是 session 自己的 checkpointer，恢复必须读同一份。"""
+        getter = getattr(inner_session, "checkpointer", None)
+        if callable(getter):
+            checkpointer = getter()
+            if checkpointer is not None:
+                return checkpointer
+        return CheckpointerFactory.get_checkpointer()
+
+    def _read_session_interrupt_state(self) -> Any:
+        """当前交互会话里的工具暂停。没有则返回 None。"""
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return None
+        sessions = (
+            getattr(instance, "_interaction_session", None),
+            getattr(instance, "_loop_session", None),
+        )
+        seen: list[Any] = []
+        for session in sessions:
+            if session is None or any(session is item for item in seen):
+                continue
+            seen.append(session)
+            targets = (session, getattr(session, "_inner", None))
+            for target in targets:
+                if target is None:
+                    continue
+                getter = getattr(target, "get_state", None)
+                if not callable(getter):
+                    continue
+                try:
+                    state = getter(INTERRUPTION_KEY)
+                except Exception:  # noqa: BLE001
+                    continue
+                if state is not None:
+                    return state
+        return None
+
+    async def _reload_cron_interrupt(self, cron_inner: Any, session_id: str, request_id: str) -> None:
+        """审批续跑时，从执行落盘的 checkpointer 把暂停中的工具调用读回来。"""
+        if self._read_session_interrupt_state() is not None:
+            return
+        candidates: list[Any] = []
+        primary = self._cron_execution_checkpointer(cron_inner)
+        adapter_cp = self._get_adapter_checkpointer()
+        factory_cp = CheckpointerFactory.get_checkpointer()
+        for candidate in (primary, adapter_cp, factory_cp):
+            if candidate is None or any(candidate is item for item in candidates):
+                continue
+            candidates.append(candidate)
+        for checkpointer in candidates:
+            try:
+                await checkpointer.pre_agent_execute(cron_inner, None)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[CRON-CTX] cron interrupt reload failed: session_id=%s "
+                    "error=%s request_id=%s",
+                    session_id, exc, request_id,
+                )
+                continue
+            if self._read_session_interrupt_state() is not None:
+                logger.info(
+                    "[CRON-CTX] cron interrupt reloaded: session_id=%s request_id=%s",
+                    session_id, request_id,
+                )
+                return
+
+    async def _recover_cron_session_context(
+        self,
+        session_id: str,
+        request_id: str,
+        *,
+        reload_interrupt: bool = False,
+    ) -> None:
+        """cron_* 续聊 / 审批续跑：从执行时写入的 checkpointer 恢复，空上下文再回灌一次历史。"""
+        if not str(session_id).startswith("cron_") or self._instance is None:
+            return
+        cron_session = getattr(self._instance, "_interaction_session", None)
+        cron_inner = getattr(cron_session, "_inner", None) if cron_session is not None else None
+        if cron_inner is None:
+            return
+        if not self._cron_session_has_context(cron_inner):
+            try:
+                await self._cron_execution_checkpointer(cron_inner).pre_agent_execute(
+                    cron_inner, None
+                )
+                logger.info(
+                    "[CRON-CTX] cron session re-recover: session_id=%s request_id=%s",
+                    session_id, request_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[CRON-CTX] cron session re-recover failed: session_id=%s "
+                    "error=%s request_id=%s",
+                    session_id, exc, request_id,
+                )
+        if reload_interrupt:
+            await self._reload_cron_interrupt(cron_inner, session_id, request_id)
+        if self._cron_session_has_context(cron_inner):
+            return
+        await self._rehydrate_empty_cron_context(session_id, request_id)
+
+    _STALE_CRON_PERMISSION_TEXT = (
+        "这次审批没有对上暂停中的命令，已停止，避免重新生成另一条命令。"
+        "请重新执行该定时任务。"
+    )
+
+    async def _block_stale_cron_permission_resume(self, request: Any) -> bool:
+        """cron_* 审批续跑：恢复后仍无 paused tool 则硬拦，避免误开新一轮工具。
+
+        返回 True 表示调用方应拒绝本次 resume，并向用户展示
+        ``_STALE_CRON_PERMISSION_TEXT``。
+        """
+        session_id = str(getattr(request, "session_id", "") or "")
+        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
+        reload_interrupt = (
+            session_id.startswith("cron_")
+            and str(params.get("source") or "") == "permission_interrupt"
+        )
+        if not reload_interrupt:
+            return False
+        await self._recover_cron_session_context(
+            session_id,
+            str(getattr(request, "request_id", "") or ""),
+            reload_interrupt=True,
+        )
+        if self._read_session_interrupt_state() is not None:
+            return False
+        logger.warning(
+            "[CRON-CTX] blocking stale cron permission resume (no paused tool): "
+            "session_id=%s bound_session_id=%s request_id=%s",
+            session_id,
+            self._bound_interaction_session_id(),
+            getattr(request, "request_id", ""),
+        )
+        return True
+
+    def _bound_interaction_session_id(self) -> str:
+        session = getattr(getattr(self, "_instance", None), "_interaction_session", None)
+        if session is None:
+            return ""
+        for target in (session, getattr(session, "_inner", None)):
+            if target is None:
+                continue
+            sid_attr = getattr(target, "session_id", None)
+            if callable(sid_attr):
+                try:
+                    sid = str(sid_attr() or "").strip()
+                except Exception:  # noqa: BLE001
+                    continue
+                if sid:
+                    return sid
+            elif isinstance(sid_attr, str) and sid_attr.strip():
+                return sid_attr.strip()
+        return ""
+
+    async def _commit_cron_hitl_pause(self, session_id: str, request_id: str) -> None:
+        """审批卡发出前先把暂停状态落盘，调度器断开读取后仍能续跑同一条命令。"""
+        if not str(session_id or "").startswith("cron_") or self._instance is None:
+            return
+        session = getattr(self._instance, "_interaction_session", None)
+        if session is None:
+            return
+        react_agent = getattr(self._instance, "react_agent", None)
+        context_engine = getattr(react_agent, "context_engine", None) if react_agent is not None else None
+        if context_engine is not None:
+            try:
+                await context_engine.save_contexts(session)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[CRON-CTX] save contexts before permission card failed: "
+                    "session_id=%s request_id=%s error=%s",
+                    session_id, request_id, exc,
+                )
+        try:
+            await session.commit()
+            self.mark_session_awaiting_tool_permission(session_id)
+            logger.info(
+                "[CRON-CTX] cron interrupt committed before permission card: "
+                "session_id=%s request_id=%s",
+                session_id, request_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[CRON-CTX] cron interrupt commit before permission card failed: "
+                "session_id=%s request_id=%s error=%s",
+                session_id, request_id, exc,
+            )
+
+    async def _rehydrate_empty_cron_context(self, session_id: str, request_id: str) -> None:
+        """仅 cron_*：checkpoint 仍空、内存 context 也没有消息时，用历史回灌一次。"""
+        react_agent = getattr(self._instance, "react_agent", None)
+        context_engine = getattr(react_agent, "context_engine", None) if react_agent is not None else None
+        if context_engine is None:
+            return
+        ctx = context_engine.get_context(session_id=session_id)
+        if ctx is not None:
+            try:
+                if list(ctx.get_messages() or []):
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                await context_engine.clear_context(session_id=session_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[CRON-CTX] clear empty cron context failed: session_id=%s error=%s",
+                    session_id, exc,
+                )
+                return
+        from jiuwenswarm.agents.harness.common.session_ops_service import (
+            warmup_session_context,
+        )
+
+        await warmup_session_context(
+            deep_agent=self._instance,
+            session_id=session_id,
+            history_before_request_id=request_id,
+        )
+
     async def _persist_cron_checkpoint(self, session_id: str, request_id: str) -> None:
         """非流式 cron 执行收尾补 commit：把 context_engine 内存 context 落盘到 checkpointer。
 
@@ -13214,7 +13479,8 @@ class JiuWenSwarmDeepAdapter:
         ``start_interaction`` 已提前绑定 session，``invoke`` 收到现成 session 致 ``need_cleanup=False``，
         commit 被跳过，导致 ``cron_*`` 在 checkpointer 恒为空、web 恢复读不到历史。此处对齐流式路径
         （``_inner_stream`` 的 ``is_agent_session`` 分支会自动 commit），显式补一次落盘。
-        姿势参照 ``session_ops_service.rewind_session_context`` 的 save_contexts + post_run。
+        姿势参照流式收尾：save_contexts 之后走 ``commit()``。
+        ``post_run()`` 在 ``_post_run_done`` 后直接返回，cron 非流式收尾会把落盘跳掉。
         """
         try:
             if self._instance is None:
@@ -13235,7 +13501,7 @@ class JiuWenSwarmDeepAdapter:
                 return
             # 用运行中的 _interaction_session（而非新建 session）：
             # save_contexts 内部 _save_state_to_session 会把 context messages 存回该 session 的
-            # global_state['context']，post_run 再落盘 checkpointer。跨 channel 的 web adapter
+            # global_state['context']，commit 再落盘 checkpointer。跨 channel 的 web adapter
             # 复用本会话时会通过上方的 re-recover 从 checkpoint 读回这些 messages。
             session = getattr(self._instance, "_interaction_session", None)
             if session is None:
@@ -13246,7 +13512,8 @@ class JiuWenSwarmDeepAdapter:
                 )
                 return
             await context_engine.save_contexts(session)
-            await session.post_run()  # → post_agent_execute → _agent_storage.save 落盘
+            # post_run 在 _post_run_done 后会直接返回，cron 非流式收尾必须走 commit。
+            await session.commit()
             logger.info(
                 "[CRON-CTX] cron checkpoint committed: session_id=%s request_id=%s "
                 "msg_count=%s",
@@ -15145,13 +15412,19 @@ class JiuWenSwarmDeepAdapter:
         *,
         segment_streamed_text: str,
         chunk_payload: Any,
+        preserve_final_content: bool = False,
     ) -> list[dict[str, Any]]:
         """Move non-empty ``chat.final`` body onto ``chat.delta`` when needed.
 
-        Always clears ``parsed["content"]`` once the body is known to be (or about
-        to be) on the delta path. Leaving content on ``chat.final`` makes
+        By default clears ``parsed["content"]`` once the body is known to be (or
+        about to be) on the delta path. Leaving content on ``chat.final`` makes
         RelayClaw ``computeFinalTextDelta`` append another copy — especially after
         the post-tool ``\\n\\n`` round-break prefix — triplicating the bubble.
+
+        ``preserve_final_content`` (cron_* web follow-up): still emit rescue
+        deltas, but keep final body so Gateway history / live-bus mirror can
+        fall back when delta frames are dropped. Web UI treats identical final
+        as overwrite, not append.
         """
         if parsed.get("event_type") != "chat.final":
             return []
@@ -15161,20 +15434,24 @@ class JiuWenSwarmDeepAdapter:
             return []
         streamed = str(segment_streamed_text or "")
         if stripped in streamed or streamed.rstrip().endswith(stripped):
-            parsed["content"] = ""
+            if not preserve_final_content:
+                parsed["content"] = ""
             return []
         streamed_visible = streamed.strip()
         # llm_output already delivered a substantial body this segment; keeping
         # final content would re-route a duplicate chat.delta.
         if streamed_visible and len(streamed_visible) >= max(8, len(stripped) // 4):
-            parsed["content"] = ""
+            if not preserve_final_content:
+                parsed["content"] = ""
             return []
         deltas = JiuWenSwarmDeepAdapter._iter_delta_for_unstreamed_final(
             content=content,
             chunk_payload=chunk_payload,
         )
-        # Body rides on delta; final is trailer-only for non-team hosts.
-        parsed["content"] = ""
+        # Body rides on delta; final is trailer-only for non-team hosts —
+        # unless cron_* needs final as history/live fallback.
+        if not preserve_final_content:
+            parsed["content"] = ""
         return deltas
 
     @staticmethod
@@ -18813,26 +19090,19 @@ class JiuWenSwarmDeepAdapter:
         query = request.params.get("query", "")
         mode = request.params.get("mode", "agent")
 
-        # [CRON-CTX] 非流式入口：与流式对称，跨 channel 时强制 recover cron 历史。
-        if str(session_id).startswith("cron_") and self._instance is not None:
-            _cron_sess = getattr(self._instance, "_interaction_session", None)
-            _cron_inner = getattr(_cron_sess, "_inner", None) if _cron_sess is not None else None
-            if _cron_inner is not None and not self._cron_session_has_context(_cron_inner):
-                try:
-                    await self._get_adapter_checkpointer().pre_agent_execute(
-                        _cron_inner, None
-                    )
-                    logger.info(
-                        "[CRON-CTX] cron session re-recover(non-stream): session_id=%s "
-                        "request_id=%s",
-                        session_id, request.request_id,
-                    )
-                except Exception as _e:  # noqa: BLE001
-                    logger.warning(
-                        "[CRON-CTX] cron session re-recover(non-stream) failed: "
-                        "session_id=%s error=%s request_id=%s",
-                        session_id, _e, request.request_id,
-                    )
+        # [CRON-CTX] 非流式入口：与流式对称，只恢复 cron_*。
+        # 对不上暂停工具的审批点击在这里停下，不再当成新的用户消息。
+        if await self._block_stale_cron_permission_resume(request):
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "event_type": "chat.error",
+                    "error": self._STALE_CRON_PERMISSION_TEXT,
+                },
+                metadata=request.metadata,
+            )
 
         token_trace_sid = _LLM_TRACE_SESSION_ID.set(session_id)
         token_log_sid = set_log_session_id(request.session_id)
@@ -19608,33 +19878,19 @@ class JiuWenSwarmDeepAdapter:
         query = request.params.get("query", "")
         mode = request.params.get("mode", "agent")
 
-        # [CRON-CTX] 跨 channel（cron 写 / web 读）恢复：cron 与 web 是不同 channel_key，
-        # 各自持有独立 JiuWenSwarm → 独立 adapter → 独立 _session_adapters 缓存。web adapter
-        # 的 session 在 cron 执行前 pre_run 过、读的是旧 checkpoint；cron 落盘新 context 后
-        # web adapter HIT cache 复用、不重跑 pre_run，session.global_state 无 context。
-        # 此处检测到无 context 时强制重新 recover 一次，把 checkpoint 里 cron 的历史灌进
-        # 当前 session。姿势同 Session.pre_run 内部：直接调
-        # checkpointer.pre_agent_execute(_inner, None)，绕过 _pre_run_done 守卫。
-        # recover→_restore_state→set_state 会覆盖整个 global_state（本场景即所求：从 checkpoint
-        # 还原）。仅 cron_* session 触发，避免影响普通 web 会话。
-        if str(session_id).startswith("cron_") and self._instance is not None:
-            _cron_sess = getattr(self._instance, "_interaction_session", None)
-            _cron_inner = getattr(_cron_sess, "_inner", None) if _cron_sess is not None else None
-            if _cron_inner is not None and not self._cron_session_has_context(_cron_inner):
-                try:
-                    await self._get_adapter_checkpointer().pre_agent_execute(
-                        _cron_inner, None
-                    )
-                    logger.info(
-                        "[CRON-CTX] cron session re-recover: session_id=%s request_id=%s",
-                        session_id, request.request_id,
-                    )
-                except Exception as _e:  # noqa: BLE001
-                    logger.warning(
-                        "[CRON-CTX] cron session re-recover failed: session_id=%s "
-                        "error=%s request_id=%s",
-                        session_id, _e, request.request_id,
-                    )
+        # [CRON-CTX] 跨 channel 续聊：读执行 checkpointer，空上下文再回灌历史。仅 cron_*。
+        # 对不上暂停工具的审批点击在这里停下，不再开一轮新的模型调用。
+        if await self._block_stale_cron_permission_resume(request):
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={
+                    "event_type": "chat.error",
+                    "error": self._STALE_CRON_PERMISSION_TEXT,
+                },
+                is_complete=True,
+            )
+            return
 
         token_trace_sid = _LLM_TRACE_SESSION_ID.set(session_id)
         token_log_sid = set_log_session_id(request.session_id)
@@ -19965,6 +20221,8 @@ class JiuWenSwarmDeepAdapter:
         accumulated_reasoning = ""
         had_assistant_output = False
         emitted_terminal_chat_final = False
+        # cron_* 续聊/审批：delta 若丢帧，仍靠 chat.final 落 PG / live mirror。
+        preserve_cron_final = str(session_id or "").startswith("cron_")
         usage_accumulator = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -20642,6 +20900,7 @@ class JiuWenSwarmDeepAdapter:
                             continue
                         if self._is_ask_user_payload(parsed):
                             hitl_pending_stream = True
+                            await self._commit_cron_hitl_pause(session_id, rid)
                         if accumulated_text:
                             yield AgentResponseChunk(
                                 request_id=rid,
@@ -20813,6 +21072,7 @@ class JiuWenSwarmDeepAdapter:
                                 parsed,
                                 segment_streamed_text=segment_streamed_text,
                                 chunk_payload=chunk.payload,
+                                preserve_final_content=preserve_cron_final,
                             ):
                                 yield AgentResponseChunk(
                                     request_id=rid,
@@ -20824,6 +21084,7 @@ class JiuWenSwarmDeepAdapter:
                                 continue
                             if self._is_ask_user_payload(parsed):
                                 hitl_pending_stream = True
+                                await self._commit_cron_hitl_pause(session_id, rid)
                             if parsed.get("event_type") == "chat.final":
                                 self._stream_content_run_kind = None
                             if parsed.get("event_type") == "chat.error":
@@ -20853,6 +21114,7 @@ class JiuWenSwarmDeepAdapter:
                             parsed,
                             segment_streamed_text=segment_streamed_text,
                             chunk_payload=chunk.payload,
+                            preserve_final_content=preserve_cron_final,
                         ):
                             yield AgentResponseChunk(
                                 request_id=rid,
@@ -20864,6 +21126,7 @@ class JiuWenSwarmDeepAdapter:
                             continue
                         if self._is_ask_user_payload(parsed):
                             hitl_pending_stream = True
+                            await self._commit_cron_hitl_pause(session_id, rid)
                         if parsed.get("event_type") == "chat.final":
                             self._stream_content_run_kind = None
                         if parsed.get("event_type") == "chat.error":
@@ -20925,6 +21188,7 @@ class JiuWenSwarmDeepAdapter:
                         parsed,
                         segment_streamed_text=segment_streamed_text,
                         chunk_payload=getattr(chunk, "payload", None),
+                        preserve_final_content=preserve_cron_final,
                     ):
                         yield AgentResponseChunk(
                             request_id=rid,
@@ -20936,6 +21200,7 @@ class JiuWenSwarmDeepAdapter:
                         continue
                     if self._is_ask_user_payload(parsed):
                         hitl_pending_stream = True
+                        await self._commit_cron_hitl_pause(session_id, rid)
                     if parsed.get("event_type") == "chat.final":
                         self._stream_content_run_kind = None
                     if parsed.get("event_type") == "chat.error":
@@ -21036,8 +21301,10 @@ class JiuWenSwarmDeepAdapter:
                             is_complete=False,
                         )
                     # Body already on delta; keep final empty to avoid RelayClaw
-                    # computeFinalTextDelta appending a duplicate copy.
-                    fallback_content = ""
+                    # computeFinalTextDelta appending a duplicate copy — except
+                    # cron_* which needs final as history/live fallback.
+                    if not preserve_cron_final:
+                        fallback_content = ""
                 yield AgentResponseChunk(
                     request_id=rid,
                     channel_id=cid,
@@ -21071,25 +21338,39 @@ class JiuWenSwarmDeepAdapter:
                     _debug_logger.end_run(status="ok")
             interaction_stream_abort = False
         except asyncio.CancelledError:
-            perf_summary_status = "cancelled"
-            stream_consumer_cancelled = initialization_complete
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] 流式任务被取消: request_id=%s session_id=%s",
-                rid,
-                session_id,
-            )
-            # InteractionOutputStream.close() in ``finally`` owns the targeted
-            # round abort. Do not issue a second adapter-level abort here:
-            # it can race with a newly attached output consumer.
-            # Do not yield chat.final here: CancelledError often means the
-            # consumer is already tearing down, so the frame may never reach
-            # the frontend; user Stop already closes UI via interrupt_result.
-            if _debug_logger is not None:
-                _debug_logger.end_run(status="cancelled")
-            self._revoke_main_skill_authorization(
-                session_id,
-                reason="task_cancelled",
-            )
+            if hitl_pending_stream:
+                # 调度器读到审批卡后会断开自己的流。这不是用户取消：
+                # 暂停中的工具调用留在原会话，等 cron_* 上的审批回复续跑同一条命令。
+                interaction_stream_abort = False
+                stream_consumer_cancelled = False
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] 流式消费者在工具审批暂停后断开，保留中断: "
+                    "request_id=%s session_id=%s",
+                    rid,
+                    session_id,
+                )
+                if _debug_logger is not None:
+                    _debug_logger.end_run(status="ok")
+            else:
+                perf_summary_status = "cancelled"
+                stream_consumer_cancelled = initialization_complete
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] 流式任务被取消: request_id=%s session_id=%s",
+                    rid,
+                    session_id,
+                )
+                # InteractionOutputStream.close() in ``finally`` owns the targeted
+                # round abort. Do not issue a second adapter-level abort here:
+                # it can race with a newly attached output consumer.
+                # Do not yield chat.final here: CancelledError often means the
+                # consumer is already tearing down, so the frame may never reach
+                # the frontend; user Stop already closes UI via interrupt_result.
+                if _debug_logger is not None:
+                    _debug_logger.end_run(status="cancelled")
+                self._revoke_main_skill_authorization(
+                    session_id,
+                    reason="task_cancelled",
+                )
             raise
         except Exception as exc:
             perf_summary_status = "error"
@@ -21117,8 +21398,21 @@ class JiuWenSwarmDeepAdapter:
                 perf_usage_fallback = snapshot_perf_summary_usage(request.request_id)
             if interaction_stream is not None:
                 try:
+                    # 审批卡已发出后，调度器 aclose 会以 GeneratorExit 收流，
+                    # 不一定进 CancelledError 分支。这里必须保留暂停，否则
+                    # abort 清掉中断，后面的 checkpoint 还会把落盘盖成“无暂停”。
+                    abort_active_round = bool(interaction_stream_abort) and not bool(
+                        hitl_pending_stream
+                    )
+                    if hitl_pending_stream and interaction_stream_abort:
+                        logger.info(
+                            "[JiuWenSwarmDeepAdapter] keep tool interrupt on stream close: "
+                            "request_id=%s session_id=%s",
+                            rid,
+                            session_id,
+                        )
                     await interaction_stream.close(
-                        abort_active_round=interaction_stream_abort,
+                        abort_active_round=abort_active_round,
                     )
                 except BaseException as exc:
                     cleanup_error = exc

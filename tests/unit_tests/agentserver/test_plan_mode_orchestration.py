@@ -584,6 +584,7 @@ async def test_tenant_interrupt_continuation_restores_code_route_before_defaults
     manager = MagicMock()
     manager.get_agent = AsyncMock(return_value=agent)
     manager.wait_for_session_prewarm = AsyncMock()
+    manager.find_agent_for_interrupt_resume_nowait = MagicMock(return_value=None)
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._agent_manager = manager
     request = AgentRequest(

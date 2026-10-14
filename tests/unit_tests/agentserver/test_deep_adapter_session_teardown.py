@@ -12,6 +12,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
     """Create a bare adapter with internal state set via setattr."""
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    state.setdefault("_sessions_awaiting_tool_permission", set())
     for name, value in state.items():
         setattr(adapter, name, value)
     return adapter

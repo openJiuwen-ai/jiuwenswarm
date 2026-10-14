@@ -124,6 +124,55 @@ def _build_acp_agent_config(extra_config: dict[str, Any] | None = None) -> dict[
     return config
 
 
+_INTERRUPT_RESUME_SOURCES = frozenset(
+    {"permission_interrupt", "confirm_interrupt", "ask_user_interrupt"}
+)
+
+
+def _is_cron_session_request(request: Any) -> bool:
+    """Whether this request targets a cron_* execution session."""
+    return str(getattr(request, "session_id", "") or "").strip().startswith("cron_")
+
+
+def _is_interrupt_resume_request(request: Any) -> bool:
+    """HITL / permission resume (any channel), not a plain follow-up chat.send."""
+    params = getattr(request, "params", None)
+    if not isinstance(params, dict):
+        return False
+    source = str(params.get("source") or "").strip()
+    if source not in _INTERRUPT_RESUME_SOURCES:
+        return False
+    # Align with ``_prepare_code_mode_chat_turn`` interrupt continuation.
+    if not isinstance(params.get("answers"), list):
+        return False
+    return bool(str(params.get("request_id") or "").strip())
+
+
+def _is_cron_permission_resume(request: Any) -> bool:
+    """cron_* + permission_interrupt (legacy helper; prefer interrupt-resume)."""
+    params = getattr(request, "params", None)
+    return (
+        _is_cron_session_request(request)
+        and isinstance(params, dict)
+        and str(params.get("source") or "") == "permission_interrupt"
+    )
+
+
+def _cron_permission_resume_channel(request: Any) -> str:
+    """Fallback lookup channel when interrupt resume has no live session owner.
+
+    cron_* job pauses live on ``__cron__``; plain web follow-up stays on
+    ``request.channel_id``. Outbound replies always use ``request.channel_id``.
+    """
+    if _is_cron_session_request(request) and _is_interrupt_resume_request(request):
+        return "__cron__"
+    return str(getattr(request, "channel_id", "") or "")
+
+
+# 旧名：曾把所有 cron_* 续聊都绑到 __cron__；现仅审批 fallback 用。
+_cron_agent_channel_for_request = _cron_permission_resume_channel
+
+
 class AgentManager:
     """管理多个 Agent 实例.
 
@@ -999,11 +1048,8 @@ class AgentManager:
             return None
 
         for cache_key, agent in channel_agents.items():
-            has_runtime = getattr(agent, "has_session_runtime", None)
-            if not callable(has_runtime):
-                continue
             try:
-                if has_runtime(sid):
+                if self._agent_owns_session(agent, sid):
                     return self._borrow_agent(agent)
             except Exception:
                 logger.exception(
@@ -1014,6 +1060,236 @@ class AgentManager:
                     cache_key,
                 )
         return None
+
+    @staticmethod
+    def _agent_owns_session(agent: Any, session_id: str) -> bool:
+        """Whether this swarm still holds the session adapter / pause for ``session_id``."""
+        sid = str(session_id or "").strip()
+        if not sid or agent is None:
+            return False
+        has_runtime = getattr(agent, "has_session_runtime", None)
+        if callable(has_runtime):
+            try:
+                if has_runtime(sid):
+                    return True
+            except Exception:
+                logger.debug(
+                    "[AgentManager] has_session_runtime failed session_id=%s",
+                    sid,
+                    exc_info=True,
+                )
+        adapter = getattr(agent, "_adapter", None)
+        if adapter is None:
+            adapter = agent
+        awaiting = getattr(adapter, "_sessions_awaiting_tool_permission", None)
+        if isinstance(awaiting, set) and sid in awaiting:
+            return True
+        session_adapters = getattr(adapter, "_session_adapters", None)
+        if isinstance(session_adapters, dict) and sid in session_adapters:
+            return True
+        for candidate in (
+            adapter,
+            *(session_adapters.values() if isinstance(session_adapters, dict) else ()),
+        ):
+            if candidate is None:
+                continue
+            for session_attr in ("_interaction_session", "_loop_session"):
+                session = getattr(getattr(candidate, "_instance", None), session_attr, None)
+                if session is None:
+                    continue
+                sid_attr = getattr(session, "session_id", None)
+                try:
+                    bound = str(sid_attr() if callable(sid_attr) else (sid_attr or "")).strip()
+                except Exception:
+                    bound = ""
+                if bound == sid:
+                    return True
+        return False
+
+    @staticmethod
+    def _adapter_interaction_session_id(adapter: Any) -> str:
+        instance = getattr(adapter, "_instance", None)
+        if instance is None:
+            return ""
+        for session_attr in ("_interaction_session", "_loop_session"):
+            session = getattr(instance, session_attr, None)
+            if session is None:
+                continue
+            sid_attr = getattr(session, "session_id", None)
+            try:
+                bound = str(sid_attr() if callable(sid_attr) else (sid_attr or "")).strip()
+            except Exception:
+                bound = ""
+            if bound:
+                return bound
+        return ""
+
+    @classmethod
+    def _agent_interrupt_resume_rank(
+        cls,
+        agent: Any,
+        session_id: str,
+    ) -> tuple[int, float] | None:
+        """Rank an agent for HITL resume. None means it is not holding this pause.
+
+        ``(2, last_used)`` = in-memory paused tool for this session.
+        ``(1, last_used)`` = awaiting-permission flag only (interrupt may be on disk).
+        A prior cron owner that merely still has session runtime is not a candidate:
+        follow-up approvals must return to the agent that just raised the card.
+        """
+        sid = str(session_id or "").strip()
+        if not sid or agent is None:
+            return None
+        live = False
+        awaiting = False
+        last_used = 0.0
+        root = getattr(agent, "_adapter", None) or agent
+        adapters: list[Any] = [root]
+        children = getattr(root, "_session_adapters", None)
+        if isinstance(children, dict):
+            adapters.extend(child for child in children.values() if child is not None)
+        for adapter in adapters:
+            parent = adapter
+            if getattr(adapter, "_is_session_scoped_adapter", False):
+                parent = getattr(adapter, "_session_parent_adapter", None) or adapter
+            awaiting_set = getattr(parent, "_sessions_awaiting_tool_permission", None)
+            if isinstance(awaiting_set, set) and sid in awaiting_set:
+                awaiting = True
+            used_map = getattr(parent, "_session_adapter_last_used", None)
+            if isinstance(used_map, dict):
+                try:
+                    last_used = max(last_used, float(used_map.get(sid, 0.0) or 0.0))
+                except (TypeError, ValueError):
+                    pass
+            if cls._adapter_interaction_session_id(adapter) != sid:
+                continue
+            read_state = getattr(adapter, "_read_session_interrupt_state", None)
+            if not callable(read_state):
+                continue
+            try:
+                if read_state() is not None:
+                    live = True
+            except Exception:
+                logger.debug(
+                    "[AgentManager] interrupt state read failed session_id=%s",
+                    sid,
+                    exc_info=True,
+                )
+        if live:
+            return (2, last_used)
+        if awaiting:
+            return (1, last_used)
+        return None
+
+    def iter_interrupt_resume_candidates_nowait(
+        self,
+        session_id: str,
+    ) -> list[tuple[tuple[int, float], Any]]:
+        """Agents that currently hold this session's pause, best rank last-compared by caller."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return []
+        found: list[tuple[tuple[int, float], Any]] = []
+        for _channel_key, channel_agents in list(self.agents.items()):
+            if not isinstance(channel_agents, dict):
+                continue
+            for _cache_key, agent in channel_agents.items():
+                try:
+                    rank = self._agent_interrupt_resume_rank(agent, sid)
+                except Exception:
+                    logger.exception(
+                        "[AgentManager] interrupt resume rank failed session_id=%s",
+                        sid,
+                    )
+                    continue
+                if rank is None:
+                    continue
+                found.append((rank, self._borrow_agent(agent)))
+        return found
+
+    def find_agent_for_interrupt_resume_nowait(self, session_id: str) -> "JiuWenSwarm | None":
+        """Prefer a live paused tool over a stale session owner."""
+        best_rank: tuple[int, float] | None = None
+        best: Any = None
+        for rank, agent in self.iter_interrupt_resume_candidates_nowait(session_id):
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best = agent
+        return best
+
+    def find_agent_for_session_nowait(self, session_id: str) -> "JiuWenSwarm | None":
+        """Find any cached agent that already owns ``session_id`` (any channel/key)."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        for channel_key, channel_agents in list(self.agents.items()):
+            if not isinstance(channel_agents, dict):
+                continue
+            for cache_key, agent in channel_agents.items():
+                try:
+                    if self._agent_owns_session(agent, sid):
+                        return self._borrow_agent(agent)
+                except Exception:
+                    logger.exception(
+                        "[AgentManager] session runtime scan failed: "
+                        "channel_id=%s session_id=%s cache_key=%s",
+                        channel_key,
+                        sid,
+                        cache_key,
+                    )
+        return None
+
+    async def _get_agent_for_request(self, request: Any) -> "JiuWenSwarm | None":
+        """Pick the Agent that should handle this request.
+
+        Scheme A:
+        - Plain follow-up (incl. cron_*): ``request.channel_id`` (usually web).
+        - Interrupt resume: reuse whoever still owns the pause (web or ``__cron__``);
+          cron_* with no live owner falls back to ``get_agent(__cron__)``.
+        """
+        mode, sub_mode, project_dir = self._agent_lookup_from_request(request)
+        session_id = str(getattr(request, "session_id", "") or "").strip()
+        if _is_interrupt_resume_request(request):
+            # 只回到「还挂着这次 pause」的实例。旧 __cron__ 若只是仍占着
+            # session runtime、但没有这条暂停命令，不能拿来续跑。
+            owned = self.find_agent_for_interrupt_resume_nowait(session_id)
+            if owned is not None:
+                logger.info(
+                    "[AgentManager] interrupt resume reuse session owner: "
+                    "session_id=%s channel_id=%s source=%s",
+                    session_id,
+                    getattr(owned, "_jiuwenswarm_agent_channel_id", None)
+                    or getattr(owned, "channel_id", None)
+                    or "-",
+                    (getattr(request, "params", None) or {}).get("source")
+                    if isinstance(getattr(request, "params", None), dict)
+                    else None,
+                )
+                return owned
+            channel_id = _cron_permission_resume_channel(request)
+            if _is_cron_session_request(request):
+                logger.warning(
+                    "[AgentManager] interrupt resume has no live session owner; "
+                    "fallback get_agent(%s) session_id=%s project_dir=%s",
+                    channel_id,
+                    session_id,
+                    project_dir,
+                )
+            return await self.get_agent(
+                channel_id=channel_id,
+                mode=mode,
+                project_dir=project_dir,
+                sub_mode=sub_mode,
+                request=request if is_enterprise() else None,
+            )
+        channel_id = str(getattr(request, "channel_id", "") or "")
+        return await self.get_agent(
+            channel_id=channel_id,
+            mode=mode,
+            project_dir=project_dir,
+            sub_mode=sub_mode,
+            request=request if is_enterprise() else None,
+        )
 
     def get_agent_nowait(
         self,
@@ -1748,16 +2024,9 @@ class AgentManager:
             if isinstance(req_method_value, str) and req_method_value in _DISK_ONLY_EVOLUTION_METHODS:
                 return await self._process_disk_only_evolution(request)
 
-            channel_id = getattr(request, "channel_id", "")
-            mode, sub_mode, project_dir = self._agent_lookup_from_request(request)
-
-            agent = await self.get_agent(
-                channel_id=channel_id,
-                mode=mode,
-                project_dir=project_dir,
-                sub_mode=sub_mode,
-            )
+            agent = await self._get_agent_for_request(request)
             if agent is None:
+                channel_id = _cron_agent_channel_for_request(request)
                 raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")
 
             return await agent.process_message(request)
@@ -1776,16 +2045,9 @@ class AgentManager:
         """
         try:
             await self.wait_for_session_prewarm(getattr(request, "session_id", None))
-            channel_id = getattr(request, "channel_id", "")
-            mode, sub_mode, project_dir = self._agent_lookup_from_request(request)
-
-            agent = await self.get_agent(
-                channel_id=channel_id,
-                mode=mode,
-                project_dir=project_dir,
-                sub_mode=sub_mode,
-            )
+            agent = await self._get_agent_for_request(request)
             if agent is None:
+                channel_id = _cron_agent_channel_for_request(request)
                 raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")
 
             # 流式处理

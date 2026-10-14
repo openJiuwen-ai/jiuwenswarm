@@ -7435,13 +7435,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             run_info = await cc.run_now_with_session(
                 job_id, group_id=g, bot_id=b, user_id=u
             )
+            payload = {
+                "accepted": True,
+                "run_id": run_info.get("run_id", ""),
+                "session_id": run_info.get("session_id", ""),
+            }
+            if run_info.get("reused_pending_session") or run_info.get("awaiting_approval"):
+                payload["awaiting_approval"] = True
+                payload["reused_pending_session"] = True
             await channel.send_response(
                 ws, req_id, ok=True,
-                payload={
-                    "accepted": True,
-                    "run_id": run_info.get("run_id", ""),
-                    "session_id": run_info.get("session_id", ""),
-                },
+                payload=payload,
             )
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")

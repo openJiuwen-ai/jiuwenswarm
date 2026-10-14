@@ -1240,7 +1240,13 @@ class JiuWenSwarm:
         request: AgentRequest,
         session_id: str,
     ) -> None:
-        """Record HITL resume so refresh does not revive an already-answered card."""
+        """Record HITL resume so refresh does not revive an already-answered card.
+
+        Persist the **card** ``request_id`` as the client sent it (including
+        ``{call_id}#{n}``). Harness routing still strips the suffix elsewhere;
+        history restore matches on the card id, and stripping here made refresh
+        resurrect permission cards after a successful approve.
+        """
         params = request.params if isinstance(request.params, dict) else {}
         answers = params.get("answers")
         status = params.get("status")
@@ -1248,10 +1254,14 @@ class JiuWenSwarm:
         has_status = isinstance(status, str) and bool(status.strip())
         if not has_answers and not has_status:
             return
-        rid = _ask_user_answer_request_id(params, request.request_id)
+        raw_rid = str(params.get("request_id") or "").strip()
+        rid = raw_rid or _ask_user_answer_request_id(params, request.request_id)
         if not rid:
             return
         extra: dict[str, Any] = {"request_id": rid}
+        base_rid = strip_hitl_seq_suffix(rid)
+        if base_rid and base_rid != rid:
+            extra["base_request_id"] = base_rid
         source = str(params.get("source") or "").strip()
         if source:
             extra["source"] = source

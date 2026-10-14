@@ -58,6 +58,15 @@ import {
 } from '../services/runtimeScope';
 import { getWebTransport } from '../utils/env';
 import { isEnterprise } from '../edition';
+import {
+  clearStaleCronPermissionPrompt,
+  dismissCronAskUser,
+  isCronSessionLiveWatchActive,
+  markCronLiveAwaitingFinal,
+  noteCronLiveContentFinal,
+  shouldAcceptCronAskUserQuestion,
+  shouldRetainCronPermissionOnProcessingFalse,
+} from '../features/cron/cronLiveWatch';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import { createStreamDeltaStripper } from '../utils/toolProtocol';
 import {
@@ -2108,6 +2117,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           (effectiveSource === 'skill_evolution_approval' && approvalTransport === 'interrupt')
         ) {
           const resolvedResumeMode = resolveInterruptResumeMode(sessionId);
+          // 与普通 sendMessage 一样挂上 client request id，便于流式事件对齐；
+          // cron 审批续跑可能数十秒，必须保持 isProcessing，避免时间线先收成「已完成」。
+          const resumeClientRid = makeClientRequestId('chat');
+          activeRequestIdRef.current = resumeClientRid;
+          useChatStore.getState().setProcessing(sessionId, true);
+          useChatStore.getState().setThinking(sessionId, false);
           await request('chat.send', {
             session_id: sessionId,
             query: '',
@@ -2121,7 +2136,23 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ...approvalSchemaPayload,
             ...evolutionMetaPayload,
             ...agentScopePayload,
-          });
+          }, { requestId: resumeClientRid });
+          // chat.send 的 await 在 SSE 建连后就返回；cron 续跑结束后若正文没进
+          // 内存，延迟用历史补齐（processing_status=false 路径也会再试一次）。
+          if (sessionId.startsWith('cron_') && effectiveSource === 'permission_interrupt') {
+            const refreshIfMissingAssistant = () => {
+              const rt = useChatStore.getState().getRuntime(sessionId);
+              if (!rt || rt.isProcessing || rt.pendingQuestion) return;
+              const hasAssistant = (rt.messages ?? []).some(
+                (m) => m.role === 'assistant' && String(m.content || '').trim(),
+              );
+              if (!hasAssistant) {
+                useCronStore.getState().requestActiveHistoryRefresh(sessionId);
+              }
+            };
+            window.setTimeout(refreshIfMissingAssistant, 4000);
+            window.setTimeout(refreshIfMissingAssistant, 20000);
+          }
         } else if (effectiveSource === 'activate_confirm') {
           const action = answers[0]?.selected_options[0] === '拒绝' ? 'reject' : 'accept';
           const interactionId = requestId || useHarnessStore.getState().getRuntime(sessionId)?.activateInteraction?.interactionId || '';
@@ -2153,6 +2184,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ...evolutionMetaPayload,
             ...agentScopePayload,
           });
+        }
+        if (sessionId.startsWith('cron_') && requestId) {
+          dismissCronAskUser(sessionId, requestId);
         }
         useChatStore.getState().setPendingQuestion(sessionId, null);
       } catch (error) {
@@ -2275,6 +2309,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const runtime = useChatStore.getState().getRuntime(sessionId);
     if (!runtime || runtime.isProcessing || runtime.isLoadingHistory) {
       return false;
+    }
+    // cron 首轮不走本地 chat.send：没有 activeRequestId / inflight。监听流里的
+    // reasoning 必须能把 isProcessing 拉起来，否则时间线会按「已完成」折叠。
+    if (sessionId.startsWith('cron_')) {
+      return true;
     }
     if (runtime.currentStreamId) {
       return true;
@@ -2610,6 +2649,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         flushPendingStreamDelta(sessionId);
 
+        // cron B'：本帧 final 写完气泡后（含 chat.send 续跑路径），结束 live 保活窗口。
+        // 有权限卡时 noteCronLiveContentFinal 内部会直接 return。
+        if (sessionId.startsWith('cron_')) {
+          queueMicrotask(() => {
+            noteCronLiveContentFinal(sessionId);
+          });
+        }
+
         const memberAction = pickString(payload.member_action);
         const actionMemberName = pickString(payload.member_name);
         if (
@@ -2680,12 +2727,23 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // In team mode the backend suppresses chat.final while the team is
         // still running and only sends chat.processing_status(is_complete=true)
         // on team.completed, so we must NOT reset isProcessing here.
-        // 企业版错误后的 final 只是回复段收尾，保留错误并等待任务终态/错误 EOF 兜底。
-        if (
-          !useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory &&
-          !(isEnterprise() && getWebTransport() === 'http' && useChatStore.getState().getRuntime(sessionId)?.executionError)
-        ) {
-          useChatStore.getState().setExecutionError(sessionId, null);
+        // 企业版错误后的 final 只是回复段收尾：保留错误文案，但仍要能清 processing，
+        // 否则空响应等终态错误会一直卡在「处理中」（见 chat.error 收口）。
+        // cron_*：历史回放与 live 重叠时也要能靠 final 收口，否则无护栏快速跑完会一直转圈。
+        const loadingHistoryNow = Boolean(
+          useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory,
+        );
+        const allowFinalProcessingClear =
+          !loadingHistoryNow || sessionId.startsWith('cron_');
+        const keepEnterpriseHttpError = Boolean(
+          isEnterprise() &&
+            getWebTransport() === 'http' &&
+            useChatStore.getState().getRuntime(sessionId)?.executionError,
+        );
+        if (allowFinalProcessingClear) {
+          if (!keepEnterpriseHttpError) {
+            useChatStore.getState().setExecutionError(sessionId, null);
+          }
           if (currentMode !== 'team') {
             // 有 active Goal 时，普通问答轮和 Goal 后续执行走同一条流；这次 chat.final 可能只是
             // 普通问答轮的收尾，Goal 紧接着还要继续跑。此时不能把它当"整段彻底结束"处理——
@@ -2695,6 +2753,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             const goalStillActive =
               useGoalStore.getState().runtimes[sessionId]?.goal?.status === 'active';
             if (!goalStillActive) {
+              // cron live 仍开着时：final 常早于 chat.usage_summary。
+              // 若直接 setProcessing(false) 会让 lifecycle 拆掉 live，token/费用行丢失。
+              // 先进入 awaiting-final 保活，等 usage + processing=false 再拆。
+              if (
+                sessionId.startsWith('cron_') &&
+                isCronSessionLiveWatchActive(sessionId) &&
+                !useChatStore.getState().getRuntime(sessionId)?.pendingQuestion
+              ) {
+                markCronLiveAwaitingFinal(sessionId);
+              }
               useChatStore.getState().setProcessing(sessionId, false);
               // 正常情况下排空由 chat.processing_status(false) 负责；这里是它丢帧时的兜底
               // 重置，同样可能是"目标这一轮真正结束"的那个信号，一并兜底排空一次排队消息
@@ -2702,6 +2770,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               drainTaskQueueIfIdle(sessionId);
               useChatStore.getState().setThinking(sessionId, false);
               useChatStore.getState().clearSubtasks(sessionId);
+              // cron 等审批不会推 final 收口；有正文的 final 说明本轮已结束，清掉残留权限条。
+              if (sessionId.startsWith('cron_') && content) {
+                clearStaleCronPermissionPrompt(sessionId);
+              }
             }
           } else {
             useChatStore.getState().setThinking(sessionId, false);
@@ -2909,6 +2981,43 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 handleTtsPlayback(sessionId, placeholderId, content);
               }
               return;
+            }
+            // cron 终稿：仅在本轮仍在执行时覆盖最后一条助手气泡。
+            // 空闲刷新若重放旧 live final，会把最新 follow-up 盖成第一轮正文。
+            const cronRuntime = useChatStore.getState().getRuntime(sessionId);
+            const cronTurnActive = Boolean(
+              streamId || cronRuntime?.isProcessing || cronRuntime?.pendingQuestion,
+            );
+            if (cronRunId && sessionId.startsWith('cron_') && cronTurnActive) {
+              let turnStart = 0;
+              for (let i = messages.length - 1; i >= 0; i -= 1) {
+                if (messages[i].role === 'user') {
+                  turnStart = i + 1;
+                  break;
+                }
+              }
+              let rewriteId: string | null = streamId ?? null;
+              if (!rewriteId) {
+                for (let i = messages.length - 1; i >= turnStart; i -= 1) {
+                  const msg = messages[i];
+                  if (msg.role === 'assistant' && typeof msg.content === 'string') {
+                    rewriteId = msg.id;
+                    break;
+                  }
+                }
+              }
+              if (rewriteId) {
+                useChatStore.getState().updateMessage(sessionId, rewriteId, {
+                  content,
+                  isStreaming: false,
+                  completedAt: completedAtIso,
+                });
+                useChatStore.getState().stopStreaming(sessionId);
+                if (!content.includes('MEDIA:')) {
+                  handleTtsPlayback(sessionId, rewriteId, content);
+                }
+                return;
+              }
             }
           }
 
@@ -3391,9 +3500,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('chat.processing_status', payload)) return;
         // 切换模式时忽略处理状态更新
         if (useChatStore.getState().getRuntime(sessionId)?.switchingMode) return;
-        // 加载历史消息时忽略处理状态更新
-        if (useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory) return;
         const isProcessingNow = Boolean(payload.is_processing);
+        // 拉历史时忽略 processing=true，避免旧帧把时间线拉回转圈。
+        // 但必须放行 false：cron 立即执行（尤其无护栏、工具自动通过）常在几秒内结束，
+        // false 很容易撞上 isLoadingHistory；丢掉后窗口会永远「处理中」。
+        if (
+          isProcessingNow &&
+          useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory
+        ) {
+          return;
+        }
         // 后端确认 processing=true 时清除本地发送标记——新任务已由后端接管
         if (isProcessingNow) {
           localSendPendingRef.current.delete(sessionId);
@@ -3409,6 +3525,43 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         if (!isProcessingNow) {
           flushPendingStreamDelta(sessionId);
+        }
+        // cron B'：非 live 注入的 processing=false（如审批续跑 chat.send）也要先打保活，
+        // 否则 zustand 订阅会在 chat.final 到达前拆掉 live。
+        // HITL 暂停收尾若误补 false：cron 上仍挂权限卡时保持进行中，勿清卡。
+        if (
+          !isProcessingNow &&
+          !errorEof &&
+          shouldRetainCronPermissionOnProcessingFalse(
+            sessionId,
+            useChatStore.getState().getRuntime(sessionId)?.pendingQuestion,
+          )
+        ) {
+          useChatStore.getState().setProcessing(sessionId, true);
+          useChatStore.getState().setThinking(sessionId, false);
+          const retainPatch: Partial<Session> = {
+            is_processing: true,
+            updated_at: new Date().toISOString(),
+          };
+          updateSession(sessionId, retainPatch);
+          useWorkspaceStore.getState().patchSession(sessionId, retainPatch);
+          return;
+        }
+        // cron B'：确认会收口后再打 awaiting-final（retain 路径已 return）。
+        // final 常先于 false；保活后若气泡已落地则 microtask 立刻拆 live。
+        if (
+          !isProcessingNow &&
+          !errorEof &&
+          sessionId.startsWith('cron_') &&
+          !useChatStore.getState().getRuntime(sessionId)?.pendingQuestion
+        ) {
+          markCronLiveAwaitingFinal(sessionId);
+          queueMicrotask(() => {
+            const rt = useChatStore.getState().getRuntime(sessionId);
+            if (!rt?.pendingQuestion && !rt?.isProcessing && !rt?.currentStreamId) {
+              noteCronLiveContentFinal(sessionId);
+            }
+          });
         }
         useChatStore.getState().setProcessing(sessionId, isProcessingNow);
         const sessionPatch: Partial<Session> = {
@@ -3427,6 +3580,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             useChatStore.getState().settlePendingToolExecutions(sessionId);
           }
           useChatStore.getState().settleHistoricalToolExecutions(sessionId);
+
+          // cron 等审批时不会推 processing=false；false 到达后仍挂权限条 = 过期残留。
+          if (sessionId.startsWith('cron_') && !errorEof) {
+            clearStaleCronPermissionPrompt(sessionId);
+          }
+
+          // cron 审批续跑后，调度器不再推 chat.final；SSE 若丢了正文，
+          // 用历史补齐（此时 isProcessing=false，走完整 replace+reasoning 回放）。
+          if (sessionId.startsWith('cron_') && !errorEof) {
+            const hasAssistant = (useChatStore.getState().getRuntime(sessionId)?.messages ?? [])
+              .some((m) => m.role === 'assistant' && String(m.content || '').trim());
+            if (!hasAssistant) {
+              useCronStore.getState().requestActiveHistoryRefresh(sessionId);
+            }
+          }
 
           // EOF 不是后端任务完成确认，只复用展示收尾，不触发队列发送。
           if (errorEof) return;
@@ -3583,6 +3751,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
         });
+        // 终态错误必须收口：否则企业版 HTTP 在 processing_status=false 丢帧时
+        // 会一直「处理中」，且 chat.final 因 executionError 不敢清 processing。
+        // cron_* 无护栏跑完后续聊「好的」触发空响应时即此现象。
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().setProcessing(sessionId, false);
+        useChatStore.getState().clearSubtasks(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+        if (isEnterprise()) {
+          useChatStore.getState().settlePendingToolExecutions(sessionId);
+        }
+        useChatStore.getState().settleHistoricalToolExecutions(sessionId);
+        activeRequestIdRef.current = undefined;
+        drainTaskQueueIfIdle(sessionId);
       }),
       webClient.on('security.alert', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
@@ -3823,9 +4004,30 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.ask_user_question', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+        const cronMeta = payload.cron as Record<string, unknown> | undefined;
+        if (cronMeta && typeof cronMeta === 'object') {
+          const cronJobId = typeof cronMeta.job_id === 'string' ? cronMeta.job_id.trim() : '';
+          if (cronJobId) {
+            useCronStore.getState().markCronJobUnread(cronJobId);
+          }
+        }
         const normalizedPayload = normalizeAskUserQuestionPayload(payload);
         if (!normalizedPayload) return;
+        // chat.send SSE 不经 live shouldInject；已结束 cron 上的 stale permission 直接丢。
+        if (
+          !shouldAcceptCronAskUserQuestion(sessionId, {
+            request_id: normalizedPayload.request_id,
+            source: normalizedPayload.source,
+          })
+        ) {
+          return;
+        }
         useChatStore.getState().setPendingQuestion(sessionId, normalizedPayload);
+        // 等审批仍算进行中。cron 首轮没有本地 sendMessage，不设 true 会显示「已完成」。
+        if (sessionId.startsWith('cron_') || (cronMeta && typeof cronMeta === 'object')) {
+          useChatStore.getState().setProcessing(sessionId, true);
+          useChatStore.getState().setThinking(sessionId, false);
+        }
       }),
       webClient.on('chat.ask_user_question_expired', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
@@ -3833,6 +4035,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestion;
         // 子 Agent 委托审批超时/取消：仅当 expired 与当前挂起问题严格匹配时收起卡片
         if (!isMatchingSubagentApprovalExpiry(pendingQuestion, payload)) return;
+        const expiredRid =
+          (typeof payload.request_id === 'string' && payload.request_id.trim()) ||
+          pendingQuestion?.request_id ||
+          '';
+        if (sessionId.startsWith('cron_') && expiredRid) {
+          dismissCronAskUser(sessionId, expiredRid);
+        }
         useChatStore.getState().setPendingQuestion(sessionId, null);
         if (payload.reason === 'timeout') {
           // timeout 后子 Agent 仍会继续加载或获得一次模型恢复机会

@@ -1047,6 +1047,11 @@ export class WebHttpClient {
     return fetch(input, init);
   }
 
+  /** 把定时任务监听流上的帧送进现有 chat.* 处理。 */
+  injectEvent(event: WsEvent): void {
+    this.dispatchEvent(event);
+  }
+
   private dispatchEvent(event: WsEvent): void {
     if (this.streamEventFilter && !this.streamEventFilter(event)) {
       return;

@@ -1790,7 +1790,8 @@
       "updated": "任务更新成功",
       "deleted": "任务删除成功",
       "statusUpdated": "任务状态更新成功",
-      "runNow": "任务已触发立即执行"
+      "runNow": "任务已触发立即执行",
+      "runNowPendingApproval": "上一轮工具审批未完成，已打开待确认窗口"
     },
     "preview": {
       "loading": "正在加载下次触发时间...",

@@ -59,6 +59,97 @@ def _request_client_host(request: Request) -> str | None:
     host = str(getattr(client, "host", "") or "").strip()
     return host or None
 
+
+async def _authorize_cron_session_live(
+    request: Request, session_id: str,
+) -> JSONResponse | None:
+    """Gate ``/sessions/{cron_*}/live`` with the same identity scope as history.
+
+    Returns an error response when denied; ``None`` when the subscribe may proceed.
+    Non-remote (personal / local file) deployments skip the PG ownership check.
+    Remote/enterprise: fail-closed on store errors; missing/foreign session → 404.
+    """
+    from jiuwenswarm.gateway.routing.session_index import is_remote_storage
+
+    # Personal / local-file history: no shared multi-tenant store to consult.
+    if not is_remote_storage():
+        return None
+
+    uid = (request.headers.get("x-user-id") or "").strip() or "guest"
+    group_id = (request.headers.get("x-group-id") or "").strip() or None
+    bot_id = (request.headers.get("x-bot-id") or "").strip() or None
+    try:
+        from jiuwenswarm.channels.web.history_store.api import get_session_detail_sync
+
+        detail = await asyncio.to_thread(
+            get_session_detail_sync,
+            session_id,
+            None,
+            user=uid,
+            group_id=group_id,
+            bot_id=bot_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[WebHTTP] cron live auth store error session_id=%s", session_id,
+        )
+        return JSONResponse({"error": "auth_unavailable"}, status_code=503)
+
+    if detail is None:
+        # Brand-new cron_* may not be in PG yet (run_now race). Allow only when
+        # this gateway already has an in-flight hold / live buffer for the sid.
+        if _cron_live_inflight_locally(session_id):
+            return None
+        return JSONResponse({"error": "forbidden"}, status_code=404)
+    return None
+
+
+def _cron_live_inflight_locally(session_id: str) -> bool:
+    """True when this process already tracks the cron session (hold / run / live bus)."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return False
+    try:
+        from jiuwenswarm.gateway.cron.live_bus import cron_live_bus
+
+        if sid in getattr(cron_live_bus, "_replay", {}) or sid in getattr(
+            cron_live_bus, "_subscribers", {},
+        ):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from jiuwenswarm.gateway.cron.tenant_registry import CronTenantRegistry
+
+        registry = CronTenantRegistry.try_get_instance()
+        if registry is None:
+            return False
+        for controller in list(getattr(registry, "_controllers", {}).values()):
+            scheduler = getattr(controller, "_scheduler", None)
+            if scheduler is None:
+                continue
+            holds = getattr(scheduler, "_permission_hold", None)
+            if isinstance(holds, dict):
+                for item in list(holds.values()):
+                    if not item:
+                        continue
+                    held_sid = item[1] if isinstance(item, tuple) and len(item) > 1 else ""
+                    if str(held_sid or "").strip() == sid:
+                        return True
+            runs = getattr(scheduler, "_runs", None)
+            if isinstance(runs, dict):
+                for state in runs.values():
+                    if str(getattr(state, "exec_session_id", "") or "").strip() != sid:
+                        continue
+                    if str(getattr(state, "status", "") or "") in {
+                        "running",
+                        "awaiting_approval",
+                    }:
+                        return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
 _STREAM_RPC_METHODS = frozenset({"chat.send", "history.get"})
 
 # AgentServer 本地历史缺失（mnt pod 回收后按需重新拉起为空目录）时其 history.get
@@ -503,6 +594,57 @@ def create_web_http_app(channel: Any) -> FastAPI:
         if "text/event-stream" in accept:
             return await _stream(request, channel, "history.get", params)
         return await _history_json(request, channel, params)
+
+    @app.get(
+        "/api/v1/sessions/{session_id}/live",
+        tags=["sessions"],
+        summary="订阅正在执行的 cron_* 窗口（思考、正文、审批卡）",
+    )
+    async def session_live(session_id: str, request: Request) -> Response:
+        sid = str(session_id or "").strip()
+        if not sid.startswith("cron_"):
+            return JSONResponse({"error": "not_cron_session"}, status_code=404)
+
+        # Same ownership bar as history/session reads: knowing cron_* must not
+        # be enough to subscribe to thinking / tool args / permission cards.
+        auth_error = await _authorize_cron_session_live(request, sid)
+        if auth_error is not None:
+            return auth_error
+
+        from jiuwenswarm.gateway.cron.live_bus import cron_live_bus
+
+        # History-first refresh passes skip_replay=1 so buffered thinking /
+        # ask_user from a finished (or already-restored) run cannot rebuild UI.
+        skip_replay = str(request.query_params.get("skip_replay") or "").strip() in {
+            "1",
+            "true",
+            "yes",
+        }
+        queue = cron_live_bus.subscribe(sid, replay=not skip_replay)
+
+        async def _frames() -> AsyncIterator[str]:
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        frame = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    event_name = str(frame.get("event") or "message")
+                    yield _sse_pack(sid, event_name, frame)
+            finally:
+                cron_live_bus.unsubscribe(sid, queue)
+
+        return StreamingResponse(
+            _frames(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.post(
         "/api/v1/chat/completions",

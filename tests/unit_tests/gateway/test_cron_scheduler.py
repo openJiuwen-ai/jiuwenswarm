@@ -192,18 +192,25 @@ class FakeAgentClient:
 
     async def send_request_stream(self, envelope):
         self.stream_requests.append(envelope)
-        payloads = [
-            {
-                "event_type": "workflow.updated",
-                "workflow": {
-                    "id": "wf-1",
-                    "status": "completed",
-                    "summary": "team workflow done",
+        mode = str((getattr(envelope, "params", None) or {}).get("mode") or "")
+        if mode == "team" or mode.startswith("team"):
+            payloads = [
+                {
+                    "event_type": "workflow.updated",
+                    "workflow": {
+                        "id": "wf-1",
+                        "status": "completed",
+                        "summary": "team workflow done",
+                    },
                 },
-            },
-            {"event_type": "chat.final", "content": "team result"},
-            {"is_complete": True},
-        ]
+                {"event_type": "chat.final", "content": "team result"},
+                {"is_complete": True},
+            ]
+        else:
+            payloads = [
+                {"event_type": "chat.final", "content": "done"},
+                {"is_complete": True},
+            ]
         for payload in payloads:
             yield AgentResponseChunk(
                 request_id=envelope.request_id or "",
@@ -219,6 +226,11 @@ class FailingAgentClient(FakeAgentClient):
             return await super().send_request(envelope, *a, **kw)
         self.unary_requests.append(envelope)
         raise RuntimeError("agent unavailable")
+
+    async def send_request_stream(self, envelope):
+        self.stream_requests.append(envelope)
+        raise RuntimeError("agent unavailable")
+        yield  # pragma: no cover - keep this an async generator
 
 
 class FakeMessageHandler:
@@ -332,6 +344,52 @@ class TestCronLastSessionId:
         state = svc.runs[info["run_id"]]
         assert state.exec_session_id == info["session_id"]
         assert state.session_preallocated is True
+
+    @pytest.mark.asyncio
+    async def test_run_now_clears_orphan_hold_and_starts_new_session(self, tmp_path):
+        """Hold 残留但无 awaiting_approval run 时，run_now 不得卡在复用旧会话。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        svc = _make_scheduler(store)
+        stuck_sid = f"cron_orphan_{job.id}"
+        svc._permission_hold[job.id] = (time.time() + 600, stuck_sid)
+
+        info = await svc.trigger_run_now_info(job.id, preallocate=True)
+
+        assert info.get("reused_pending_session") is not True
+        assert info["session_id"] != stuck_sid
+        assert info["session_id"] == "cron_agentserver_allocated"
+        assert job.id not in svc._permission_hold
+
+    @pytest.mark.asyncio
+    async def test_run_now_keeps_real_awaiting_approval_hold(self, tmp_path):
+        """真有 awaiting_approval run 时仍复用，不误清 hold。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        svc = _make_scheduler(store)
+        held_sid = f"cron_pending_{job.id}"
+        run_id = f"{job.id}:pending"
+        svc._permission_hold[job.id] = (time.time() + 600, held_sid)
+        svc._runs[run_id] = CronRunState(
+            run_id=run_id,
+            job_id=job.id,
+            wake_at_iso="2026-01-01T00:00:00+08:00",
+            push_at_iso="2026-01-01T00:00:00+08:00",
+            job_name=job.name,
+            targets=job.targets,
+            session_id=job.session_id,
+            chat_type=job.chat_type,
+            timezone=job.timezone,
+            exec_session_id=held_sid,
+            status="awaiting_approval",
+        )
+
+        info = await svc.trigger_run_now_info(job.id, preallocate=True)
+
+        assert info.get("reused_pending_session") is True
+        assert info["session_id"] == held_sid
+        assert info["awaiting_approval"] is True
+        assert job.id in svc._permission_hold
 
 
 class TestCheckStoreChanged:
@@ -1024,12 +1082,13 @@ class TestTeamModeWake:
         assert task is not None
         await task
 
-        assert len(agent.unary_requests) == 2
-        assert len(agent.stream_requests) == 0
-        create_env, env = agent.unary_requests
+        assert len(agent.unary_requests) == 1
+        assert len(agent.stream_requests) == 1
+        create_env = agent.unary_requests[0]
+        env = agent.stream_requests[0]
         assert create_env.method == "session.create"
         assert "session_id" not in create_env.params
-        assert env.is_stream is False
+        assert env.is_stream is True
         assert env.channel == "__cron__"
         assert env.session_id == "cron_agentserver_allocated"
 
@@ -1052,9 +1111,281 @@ class TestTeamModeWake:
         assert task is not None
         await task
 
-        env = agent.unary_requests[1]
+        env = agent.stream_requests[0]
         assert env.params["model_name"] == "fast-model"
         assert "model" not in env.params
+
+    @pytest.mark.asyncio
+    async def test_agent_wake_permission_pause_forwards_card_and_skips_next_fire(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(description="提醒我吃药", targets="web")
+
+        class AskStreamClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                self.stream_requests.append(envelope)
+                payloads = [
+                    {"event_type": "chat.reasoning", "content": "先看一下要执行的命令"},
+                    {"event_type": "chat.delta", "content": "准备调用 bash"},
+                    {
+                        "event_type": "chat.ask_user_question",
+                        "request_id": "perm-1",
+                        "questions": [
+                            {
+                                "question": "允许使用 grep？",
+                                "options": [{"label": "本次允许"}],
+                            }
+                        ],
+                    },
+                    {
+                        "event_type": "chat.invocation_paused",
+                        "awaiting_user_input": True,
+                    },
+                ]
+                for payload in payloads:
+                    yield AgentResponseChunk(
+                        request_id=envelope.request_id or "",
+                        channel_id=envelope.channel or "",
+                        payload=payload,
+                        is_complete=payload.get("event_type") == "chat.invocation_paused",
+                    )
+
+        agent = AskStreamClient()
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=agent)
+        from jiuwenswarm.gateway.cron.live_bus import cron_live_bus
+
+        live_queue = cron_live_bus.subscribe("cron_agentserver_allocated")
+
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        task = svc.run_tasks.get(run_id)
+        assert task is not None
+        await task
+
+        state = svc.runs[run_id]
+        assert state.status == "awaiting_approval"
+        assert not state.result_text
+        assert len(agent.stream_requests) == 1
+        ask_msgs = [
+            msg for msg in handler.published
+            if getattr(msg.event_type, "value", msg.event_type) == "chat.ask_user_question"
+        ]
+        assert len(ask_msgs) == 1
+        assert ask_msgs[0].payload["session_id"] == state.exec_session_id
+        assert ask_msgs[0].payload["cron"]["job_id"] == job.id
+        published_events = [
+            getattr(msg.event_type, "value", msg.event_type) for msg in handler.published
+        ]
+        assert "chat.reasoning" in published_events
+        assert "chat.delta" in published_events
+        delta_msgs = [
+            msg for msg in handler.published
+            if getattr(msg.event_type, "value", msg.event_type) == "chat.delta"
+        ]
+        assert delta_msgs and isinstance(delta_msgs[0].payload.get("live_seq"), int)
+        live_events = []
+        live_seqs = []
+        while not live_queue.empty():
+            frame = live_queue.get_nowait()
+            live_events.append(frame["event"])
+            seq = (frame.get("payload") or {}).get("live_seq")
+            if isinstance(seq, int):
+                live_seqs.append(seq)
+        cron_live_bus.unsubscribe("cron_agentserver_allocated", live_queue)
+        assert live_events[:4] == [
+            "chat.processing_status",
+            "chat.reasoning",
+            "chat.delta",
+            "chat.ask_user_question",
+        ]
+        assert live_seqs == sorted(live_seqs) and live_seqs == list(range(1, len(live_seqs) + 1))
+        assert all(
+            "任务执行完成但未返回结果内容" not in str((msg.payload or {}).get("content") or "")
+            for msg in handler.published
+        )
+
+        next_run_id = f"{job.id}:5678"
+        await svc.on_wake(job, next_run_id)
+        assert len(agent.stream_requests) == 1
+        assert svc.runs[next_run_id].status == "skipped"
+        assert svc.runs[next_run_id].pushed_final is False
+
+        # 立即执行应复用待审批会话，不再新建空 cron_* / 不再调度 wake。
+        reused = await svc.trigger_run_now_info(job.id, preallocate=True)
+        assert reused["session_id"] == state.exec_session_id
+        assert reused.get("reused_pending_session") is True
+        assert reused.get("awaiting_approval") is True
+        assert reused["run_id"] == run_id
+        assert len(svc.runs) == 2  # 原 awaiting + skipped，无第三轮
+
+        svc.release_permission_hold_for_session(state.exec_session_id)
+        assert not svc._permission_hold_active(job.id)
+
+    @pytest.mark.asyncio
+    async def test_agent_wake_ask_without_pause_still_emits_processing_false(self, tmp_path):
+        """Non-HITL ask (or ask then in-band continue) must not stick awaiting_approval."""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(description="验证 read_file", targets="web")
+
+        class AskThenCompleteClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                self.stream_requests.append(envelope)
+                payloads = [
+                    {"event_type": "chat.ask_user_question", "request_id": "ask-auto"},
+                    {"event_type": "chat.tool_result", "content": "ok"},
+                    {"event_type": "chat.final", "content": "验证通过"},
+                    {"event_type": "chat.processing_status", "is_processing": False},
+                    {"is_complete": True},
+                ]
+                for payload in payloads:
+                    yield AgentResponseChunk(
+                        request_id=envelope.request_id or "",
+                        channel_id=envelope.channel or "",
+                        payload=payload,
+                        is_complete=bool(payload.get("is_complete")),
+                    )
+
+        agent = AskThenCompleteClient()
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=agent)
+        from jiuwenswarm.gateway.cron.live_bus import cron_live_bus
+
+        live_queue = cron_live_bus.subscribe("cron_agentserver_allocated")
+
+        run_id = f"{job.id}:ask-complete"
+        await svc.on_wake(job, run_id)
+        task = svc.run_tasks.get(run_id)
+        assert task is not None
+        await task
+
+        state = svc.runs[run_id]
+        assert state.status == "succeeded"
+        assert state.result_text == "验证通过"
+        live_events = []
+        processing_flags = []
+        while not live_queue.empty():
+            frame = live_queue.get_nowait()
+            live_events.append(frame["event"])
+            if frame["event"] == "chat.processing_status":
+                processing_flags.append(frame["payload"].get("is_processing"))
+        cron_live_bus.unsubscribe("cron_agentserver_allocated", live_queue)
+        assert "chat.ask_user_question" in live_events
+        assert "chat.final" in live_events
+        assert processing_flags[0] is True
+        assert False in processing_flags
+        assert processing_flags[-1] is False
+        # B': final must reach live before the terminal processing=false.
+        final_idx = live_events.index("chat.final")
+        status_i = 0
+        last_false_idx = -1
+        for i, ev in enumerate(live_events):
+            if ev != "chat.processing_status":
+                continue
+            if processing_flags[status_i] is False:
+                last_false_idx = i
+            status_i += 1
+        assert last_false_idx > final_idx
+
+    @pytest.mark.asyncio
+    async def test_agent_wake_forwards_final_before_processing_false(self, tmp_path):
+        """Delta-only streams still get a live chat.final before processing=false."""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(description="你好，不要调用任何工具，直接回复", targets="web")
+
+        class DeltaOnlyClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                self.stream_requests.append(envelope)
+                payloads = [
+                    {"event_type": "chat.delta", "content": "你好"},
+                    {"event_type": "chat.delta", "content": "！我在这儿"},
+                    {"event_type": "chat.processing_status", "is_processing": False},
+                    {"is_complete": True},
+                ]
+                for payload in payloads:
+                    yield AgentResponseChunk(
+                        request_id=envelope.request_id or "",
+                        channel_id=envelope.channel or "",
+                        payload=payload,
+                        is_complete=bool(payload.get("is_complete")),
+                    )
+
+        agent = DeltaOnlyClient()
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=agent)
+        from jiuwenswarm.gateway.cron.live_bus import cron_live_bus
+
+        live_queue = cron_live_bus.subscribe("cron_agentserver_allocated")
+        run_id = f"{job.id}:delta-final"
+        await svc.on_wake(job, run_id)
+        task = svc.run_tasks.get(run_id)
+        assert task is not None
+        await task
+
+        state = svc.runs[run_id]
+        assert state.status == "succeeded"
+        assert state.result_text == "你好！我在这儿"
+        live_events = []
+        while not live_queue.empty():
+            live_events.append(live_queue.get_nowait()["event"])
+        cron_live_bus.unsubscribe("cron_agentserver_allocated", live_queue)
+        assert live_events[0] == "chat.processing_status"
+        assert "chat.delta" in live_events
+        assert "chat.final" in live_events
+        assert live_events.index("chat.final") < len(live_events) - 1
+        assert live_events[-1] == "chat.processing_status"
+
+    @pytest.mark.asyncio
+    async def test_agent_wake_forwards_usage_summary_to_live(self, tmp_path):
+        """Token/cost row needs chat.usage_summary on the cron live bus."""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(description="你好，不要调用任何工具，直接回复", targets="web")
+        usage = {
+            "input_tokens": 24664,
+            "output_tokens": 93,
+            "total_tokens": 24757,
+            "total_cost": 0.0483,
+        }
+
+        class UsageClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                self.stream_requests.append(envelope)
+                payloads = [
+                    {"event_type": "chat.delta", "content": "你好"},
+                    {"event_type": "chat.final", "content": "你好"},
+                    {"event_type": "chat.usage_summary", "usage": usage},
+                    {"is_complete": True},
+                ]
+                for payload in payloads:
+                    yield AgentResponseChunk(
+                        request_id=envelope.request_id or "",
+                        channel_id=envelope.channel or "",
+                        payload=payload,
+                        is_complete=bool(payload.get("is_complete")),
+                    )
+
+        agent = UsageClient()
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=agent)
+        from jiuwenswarm.gateway.cron.live_bus import cron_live_bus
+
+        live_queue = cron_live_bus.subscribe("cron_agentserver_allocated")
+        run_id = f"{job.id}:usage-summary"
+        await svc.on_wake(job, run_id)
+        task = svc.run_tasks.get(run_id)
+        assert task is not None
+        await task
+
+        live_frames = []
+        while not live_queue.empty():
+            live_frames.append(live_queue.get_nowait())
+        cron_live_bus.unsubscribe("cron_agentserver_allocated", live_queue)
+        usage_frames = [f for f in live_frames if f.get("event") == "chat.usage_summary"]
+        assert len(usage_frames) == 1
+        assert usage_frames[0]["payload"]["usage"]["total_tokens"] == 24757
+        events = [f["event"] for f in live_frames]
+        # usage 须在收口 processing=false 之前到达，否则前端拆 live 后收不到。
+        assert events.index("chat.usage_summary") < len(events) - 1
+        assert events[-1] == "chat.processing_status"
 
     @pytest.mark.asyncio
     async def test_team_wake_stream_timeout(self, tmp_path):

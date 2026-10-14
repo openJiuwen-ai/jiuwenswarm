@@ -1455,6 +1455,7 @@ async def test_parent_evicts_uncertain_child_without_waiting_for_idle_ttl():
     parent._session_adapter_last_used = {"session-1": interface_module.time.time()}
     parent._session_adapter_versions = {"session-1": 0}
     parent._session_adapter_reload_failures = {}
+    parent._sessions_awaiting_tool_permission = set()
 
     await parent._evict_idle_session_adapters()
 

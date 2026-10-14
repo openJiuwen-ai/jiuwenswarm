@@ -463,12 +463,35 @@ async def _prepare_code_mode_chat_turn(
         request.metadata["project_dir"] = project_dir
     manager = agent_manager or ctx.services.agent_manager
     await manager.wait_for_session_prewarm(request.session_id)
-    agent = await manager.get_agent(
-        channel_id=channel_id,
-        mode=agent_mode,
-        project_dir=project_dir,
-        sub_mode=sub_mode,
-    )
+    # Scheme A: 普通续聊走请求 channel（web）；审批/HITL 续跑回到挂着 interrupt 的实例。
+    session_id = str(request.session_id or "").strip()
+    if is_interrupt_continuation:
+        owned = None
+        find_paused = getattr(manager, "find_agent_for_interrupt_resume_nowait", None)
+        if callable(find_paused):
+            owned = find_paused(session_id)
+        if owned is not None:
+            logger.info(
+                "[_prepare_code_mode_chat_turn] interrupt resume reuse session owner: "
+                "session_id=%s source=%s",
+                session_id,
+                source or "-",
+            )
+            return mode, sub_mode, owned
+        resume_channel = "__cron__" if session_id.startswith("cron_") else channel_id
+        agent = await manager.get_agent(
+            channel_id=resume_channel,
+            mode=agent_mode,
+            project_dir=project_dir,
+            sub_mode=sub_mode,
+        )
+    else:
+        agent = await manager.get_agent(
+            channel_id=channel_id,
+            mode=agent_mode,
+            project_dir=project_dir,
+            sub_mode=sub_mode,
+        )
     if agent is None:
         raise ValueError("Failed to get agent")
     return mode, sub_mode, agent

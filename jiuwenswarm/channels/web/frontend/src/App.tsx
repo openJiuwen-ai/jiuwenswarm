@@ -56,8 +56,15 @@ import {
 import { webRequest } from './services/webClient';
 import { OPEN_SESSION_EVENT, type OpenSessionDetail } from './features/longHorizon/sessionNav';
 import { getWebTransport } from './utils/env';
+import {
+  bindCronLiveWatchLifecycle,
+  dismissCronAskUser,
+  isCronAskUserDismissed,
+  settleCronSessionRuntime,
+  shouldAcceptCronAskUserQuestion,
+} from './features/cron/cronLiveWatch';
 import { useTeamPanelState } from './features/teamPanelState';
-import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Session, type UserAnswerStatus } from './types';
+import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Message, type Session, type UserAnswerStatus } from './types';
 import {
   ensureSessionRuntimes,
   useSessionStore,
@@ -703,6 +710,7 @@ function AppContent() {
   const messages = useChatStore((s) => s.runtimes[sessionId]?.messages ?? []);
   const isLoadingHistory = useChatStore((s) => s.runtimes[sessionId]?.isLoadingHistory ?? false);
   const replaceHistoryMessages = useChatStore((s) => s.replaceHistoryMessages);
+  const applyHistoryMessagesKeepLive = useChatStore((s) => s.applyHistoryMessagesKeepLive);
   const restoreReasoningSegments = useChatStore((s) => s.restoreReasoningSegments);
   const setPendingQuestion = useChatStore((s) => s.setPendingQuestion);
   const isRestoringHistorySession = isLoadingHistory && !historyPagerMeta && messages.length === 0;
@@ -1529,6 +1537,32 @@ function AppContent() {
   const startHistoryRestore = useCallback((sid: string): { done: Promise<boolean> } => {
     let settleDone!: (ok: boolean) => void;
     const done = new Promise<boolean>((resolve) => { settleDone = resolve; });
+    // 只认「还在飞」：结束后若仍因思考段/工具列表判 busy，会 keep-live 跳过
+    // reasoning 回放，切走再回来只剩工具、思考丢失。
+    const cronLiveBusy = () => {
+      if (!sid.startsWith('cron_')) return false;
+      const runtime = useChatStore.getState().getRuntime(sid);
+      if (!runtime) return false;
+      return Boolean(
+        runtime.isProcessing ||
+        runtime.pendingQuestion ||
+        runtime.currentStreamId,
+      );
+    };
+    /** 内存里已有助手正文而 history 本轮缺正文时，禁止整表覆盖抹掉实时气泡。 */
+    const cronShouldKeepLiveAgainstThinHistory = (historyMessages: Message[]) => {
+      if (!sid.startsWith('cron_')) return false;
+      const runtime = useChatStore.getState().getRuntime(sid);
+      if (!runtime) return false;
+      const memAssistants = runtime.messages.filter(
+        (m) => m.role === 'assistant' && String(m.content || '').trim(),
+      ).length;
+      if (memAssistants === 0) return false;
+      const histAssistants = historyMessages.filter(
+        (m) => m.role === 'assistant' && String(m.content || '').trim(),
+      ).length;
+      return memAssistants > histAssistants;
+    };
     const restoreHandle = beginHistoryRestore({
       sessionId: sid,
       onReady: (messages, totalPages) => {
@@ -1538,10 +1572,16 @@ function AppContent() {
         // hooks/useWebSocket.ts 的 applyIncomingGoal/mergePersistedGoalCompletionMessages。
         // 同时给命中"曾经设置过目标"的 user 消息回填 isGoalObjectiveMessage 徽章标记，
         // 见 stampGoalObjectiveMessages。
-        replaceHistoryMessages(
+        const stamped = stampGoalObjectiveMessages(
           sid,
-          stampGoalObjectiveMessages(sid, mergePersistedGoalCompletionMessages(sid, messages))
+          mergePersistedGoalCompletionMessages(sid, messages),
         );
+        // cron 监听流进行中，或内存正文比 history 更完整：只补消息，不清实时态。
+        if (cronLiveBusy() || cronShouldKeepLiveAgainstThinHistory(stamped)) {
+          applyHistoryMessagesKeepLive(sid, stamped);
+        } else {
+          replaceHistoryMessages(sid, stamped);
+        }
         const restoredTotalPages = totalPages ?? 1;
         setHistoryPagerMeta(sid, {
           loadedPages: 1,
@@ -1557,7 +1597,10 @@ function AppContent() {
         settleDone(true);
       },
       onEmpty: (emptyTotalPages) => {
-        replaceHistoryMessages(sid, mergePersistedGoalCompletionMessages(sid, []));
+        // 全新 cron_* 常先空历史；若已在听流，不能 replace 空列表清掉实时态。
+        if (!cronLiveBusy()) {
+          replaceHistoryMessages(sid, mergePersistedGoalCompletionMessages(sid, []));
+        }
         const restoredTotalPages = emptyTotalPages ?? 1;
         setHistoryPagerMeta(sid, {
           loadedPages: 1,
@@ -1565,12 +1608,14 @@ function AppContent() {
         });
         if (historyRestoreFromPanelHintRef.current) {
           historyRestoreFromPanelHintRef.current = false;
-          addMessage(sid, {
-            id: `history-restore-empty-${Date.now()}`,
-            role: 'system',
-            content: tRef.current('sessions.restoreEmpty'),
-            timestamp: new Date().toISOString(),
-          });
+          if (!cronLiveBusy()) {
+            addMessage(sid, {
+              id: `history-restore-empty-${Date.now()}`,
+              role: 'system',
+              content: tRef.current('sessions.restoreEmpty'),
+              timestamp: new Date().toISOString(),
+            });
+          }
         }
         setLoadingHistory(sid, false);
         startBackgroundHistoryPrefetch(sid, 1, restoredTotalPages);
@@ -1580,6 +1625,8 @@ function AppContent() {
         settleDone(true);
       },
       onToolReplay: (items) => {
+        // 监听流已有工具态时不要用历史回放盖掉。
+        if (cronLiveBusy()) return;
         clearSubtasks(sid);
         for (const item of items) {
           if (item.kind === 'tool_call') {
@@ -1619,6 +1666,7 @@ function AppContent() {
         settleHistoricalToolExecutions(sid);
       },
       onHarnessReplay: (items: HistoryHarnessReplayItem[]) => {
+        if (cronLiveBusy()) return;
         const harnessStore = useHarnessStore.getState();
         const harnessRuntime = harnessStore.getRuntime(sid);
         for (const item of items) {
@@ -1660,9 +1708,45 @@ function AppContent() {
         }
       },
       onReasoningReplay: (items) => {
+        if (cronLiveBusy()) return;
         restoreReasoningSegments(sid, items);
       },
       onAskUserReplay: (question) => {
+        // 监听流已挂审批卡时保留实时卡；否则按历史回放。
+        if (cronLiveBusy() && useChatStore.getState().getRuntime(sid)?.pendingQuestion) {
+          return;
+        }
+        if (question) {
+          if (
+            !shouldAcceptCronAskUserQuestion(sid, {
+              request_id: question.request_id,
+              source: question.source,
+            })
+          ) {
+            return;
+          }
+          const askRid = String(question.request_id || '').trim();
+          if (askRid && isCronAskUserDismissed(sid, askRid)) {
+            return;
+          }
+          const runtime = useChatStore.getState().getRuntime(sid);
+          const hasAssistant = (runtime?.messages ?? []).some(
+            (m: { role?: string; content?: string }) =>
+              m.role === 'assistant' && String(m.content || '').trim(),
+          );
+          // keep-live 时窗口里往往已有续跑正文，而 history 尚未带上 answered/final，
+          // materialize 会把 permission 卡当成仍 pending——有终态正文则不再挂卡。
+          if (
+            question.source === 'permission_interrupt' &&
+            hasAssistant &&
+            !runtime?.pendingQuestion
+          ) {
+            if (askRid) {
+              dismissCronAskUser(sid, askRid);
+            }
+            return;
+          }
+        }
         // replaceHistoryMessages 会把 pendingQuestion 清掉；回放必须在它之后。
         setPendingQuestion(sid, question);
         if (question) {
@@ -1721,6 +1805,7 @@ function AppContent() {
     setLoadingHistory,
     setHistoryPagerMeta,
     replaceHistoryMessages,
+    applyHistoryMessagesKeepLive,
     restoreReasoningSegments,
     startBackgroundHistoryPrefetch,
     setPendingQuestion,
@@ -1728,9 +1813,8 @@ function AppContent() {
     setThinking,
   ]);
 
-  // 轮询兜底刷新：企业版 HTTP 无 cron 结果 push，立即执行跳转后 skipHistoryLoad，
-  // syncJobRuns 检测到「当前正打开会话 == 新 last_session_id」时投递刷新请求，
-  // 这里消费并触发一次完整的历史恢复（与首次点击激活会话的时机一逻辑一致）。
+  // 轮询兜底刷新：企业版 HTTP 无 cron 结果 push。syncJobRuns 在当前窗口属于
+  // 刚跑完的任务时投递刷新（不要求它仍是任务上的最新会话）。
   const pendingActiveHistoryRefresh = useCronStore((s) => s.pendingActiveHistoryRefresh);
   useEffect(() => {
     if (!pendingActiveHistoryRefresh) return;
@@ -1741,6 +1825,10 @@ function AppContent() {
     if (useChatStore.getState().activeSessionId !== sid) return;
     startHistoryRestore(sid);
   }, [pendingActiveHistoryRefresh, startHistoryRestore]);
+
+  // 企业版 HTTP 不在网关 WebSocket 上。为当前 cron_* 与仍在 processing 的 cron
+  // 维持 live；切走不拆仍在跑的订阅，否则收不到 processing_status=false 会干转。
+  useEffect(() => bindCronLiveWatchLifecycle(), []);
 
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {
@@ -2150,7 +2238,12 @@ function AppContent() {
   ]);
 
   const performSessionRestore = useCallback(
-    async (targetSessionId: string, targetMode?: string, targetSession?: Session, options?: { skipHistoryLoad?: boolean }) => {
+    async (
+      targetSessionId: string,
+      targetMode?: string,
+      targetSession?: Session,
+      options?: { skipHistoryLoad?: boolean; seedUserMessage?: string },
+    ) => {
       const previousSessionId = sessionIdRef.current;
       const previousMode =
         useSessionStore.getState().getRuntime(previousSessionId)?.mode ?? mode;
@@ -2178,10 +2271,59 @@ function AppContent() {
       // 整页重拉历史，replaceHistoryMessages 换掉整条时间线（render key 重排+滚动效果
       // 重跑），这就是"切回已访问会话时的跳闪"。只有即将走预载/重载路径的会话才清旧状态。
       setHistoryLoadingMore(false);
+      // 立即执行打开的全新 cron_*：预载仍可走 history（用于补任务内容 user 消息），
+      // 但 restore 路径会 keep-live，避免清掉监听流。这里先标 processing，时间线不要「已完成」。
+      if (options?.skipHistoryLoad && targetSessionId.startsWith('cron_')) {
+        historyRestoreFromPanelHintRef.current = false;
+        setProcessing(targetSessionId, true);
+        setThinking(targetSessionId, false);
+        const seed = String(options.seedUserMessage || '').trim();
+        if (seed) {
+          const runtime = useChatStore.getState().getRuntime(targetSessionId);
+          const hasUser = Boolean(runtime?.messages.some((m) => m.role === 'user'));
+          if (!hasUser) {
+            addMessage(targetSessionId, {
+              id: `cron-seed-${targetSessionId}`,
+              role: 'user',
+              content: seed,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      }
+      // 切回已跑完但仍标 processing 的 cron_*（连点立即执行切走漏收尾）：
+      // job.last_session_id 已指向本会话则强制收口，否则 keep-live 会永远转圈。
+      if (
+        targetSessionId.startsWith('cron_') &&
+        existingRuntime &&
+        !options?.skipHistoryLoad &&
+        existingRuntime.isProcessing &&
+        !existingRuntime.pendingQuestion
+      ) {
+        const finishedOnServer = useCronStore
+          .getState()
+          .jobs.some((job) => (job.last_session_id || '').trim() === targetSessionId);
+        if (finishedOnServer) {
+          settleCronSessionRuntime(targetSessionId);
+        }
+      }
+      // 已结束的 cron_*：切回时强制重拉历史。内存里可能只有思考/工具、缺正文，
+      // 且旧 historyPagerMeta 会让 bootstrap 直接跳过恢复。
+      const cronRuntimeAfterSettle = useChatStore.getState().getRuntime(targetSessionId);
+      const cronNeedsHistoryReload =
+        Boolean(targetSessionId.startsWith('cron_')) &&
+        Boolean(cronRuntimeAfterSettle || existingRuntime) &&
+        !options?.skipHistoryLoad &&
+        !cronRuntimeAfterSettle?.isProcessing &&
+        !cronRuntimeAfterSettle?.pendingQuestion &&
+        !cronRuntimeAfterSettle?.currentStreamId;
+      if (cronNeedsHistoryReload) {
+        setHistoryPagerMeta(targetSessionId, null);
+      }
       const willLoadHistory =
         !options?.skipHistoryLoad &&
-        !existingRuntime?.historyPagerMeta &&
-        !existingRuntime?.isNewSession &&
+        (!(cronRuntimeAfterSettle ?? existingRuntime)?.historyPagerMeta || cronNeedsHistoryReload) &&
+        !(cronRuntimeAfterSettle ?? existingRuntime)?.isNewSession &&
         !promotedFromNewSessionIdsRef.current.has(targetSessionId);
       if (willLoadHistory) {
         setHistoryPagerMeta(targetSessionId, null);
@@ -2273,6 +2415,7 @@ function AppContent() {
       setProcessing,
       setSessionId,
       setThinking,
+      addMessage,
       startHistoryRestore,
       t,
       upsertSessionMetadata,
@@ -2284,7 +2427,7 @@ function AppContent() {
       targetSessionId: string,
       targetMode?: string,
       targetSession?: Session,
-      options?: { skipHistoryLoad?: boolean },
+      options?: { skipHistoryLoad?: boolean; seedUserMessage?: string },
     ): Promise<void> => {
       // WebSocket requests are processed concurrently by AgentServer. Queue
       // navigation here so rapid A -> B -> C clicks cannot race and let an
@@ -2761,14 +2904,16 @@ function AppContent() {
               <CronPanel
                 sessionId={sessionId}
                 onCreateViaChat={(initialInputValue) => requestSessionNavigation('new', { initialInputValue })}
-                onSelectSession={(session) => {
+                onSelectSession={(session, selectOptions) => {
                   if (typeof session === 'string') {
                     // 立即执行返回的 session_id 可能还未在后端创建（agent 刚开始执行），
                     // 构造最小 Session 占位对象，让 upsertSessionMetadata 直接加入会话列表，
                     // 避免 loadSessionMetadata 立即失败导致"对话不存在或已删除"。
                     // 后续 cron 广播到达时会刷新会话列表补全完整元数据。
-                    // 跳过初始历史加载：session 是全新的，空响应的 replaceHistoryMessages
-                    // 会覆盖后续到达的广播消息。
+                    // skipHistoryLoad 只跳过切换预载；bootstrap 仍会拉历史，且 cron
+                    // 进行中走 keep-live，只补任务内容、不清监听流。
+                    // 复用待审批会话：必须拉历史回放审批卡，勿当新 run 只 seed + 干转。
+                    const reusePending = Boolean(selectOptions?.reusePendingApproval);
                     void handleRestoreSession(session, undefined, {
                       session_id: session,
                       title: '',
@@ -2779,7 +2924,10 @@ function AppContent() {
                       message_count: 0,
                       created_at: new Date().toISOString(),
                       updated_at: new Date().toISOString(),
-                    }, { skipHistoryLoad: true });
+                    }, {
+                      skipHistoryLoad: !reusePending,
+                      seedUserMessage: reusePending ? undefined : selectOptions?.seedUserMessage,
+                    });
                     return;
                   }
                   requestSessionNavigation(session);

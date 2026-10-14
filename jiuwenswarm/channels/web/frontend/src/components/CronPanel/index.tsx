@@ -147,7 +147,10 @@ interface CronPanelProps {
    * 传 Session 对象（如"触发的会话"列表里已有完整数据）或直接传 session_id 字符串
    * （如立即执行返回的 session_id，还没有完整 Session 数据）。
    */
-  onSelectSession: (session: Session | string) => void;
+  onSelectSession: (
+    session: Session | string,
+    options?: { seedUserMessage?: string; reusePendingApproval?: boolean },
+  ) => void;
 }
 
 type TabKey = 'list' | 'template' | 'history';
@@ -696,14 +699,34 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         return;
       }
 
-      const result = await webRequest<{ accepted: boolean; run_id: string; session_id?: string }>('cron.job.run_now', {
+      const result = await webRequest<{
+        accepted: boolean;
+        run_id: string;
+        session_id?: string;
+        awaiting_approval?: boolean;
+        reused_pending_session?: boolean;
+      }>('cron.job.run_now', {
         id: job.id,
       });
       if (result.session_id) {
         useCronStore.getState().setLastRunSessionId(job.id, result.session_id);
-        onSelectSession(result.session_id);
+        const reused =
+          Boolean(result.reused_pending_session) || Boolean(result.awaiting_approval);
+        if (reused) {
+          // 上一轮审批未完成：打开旧 cron_*，拉历史回放审批卡，勿新建空会话干转。
+          onSelectSession(result.session_id, { reusePendingApproval: true });
+          setSuccess(t('cron.success.runNowPendingApproval'));
+        } else {
+          const seed = String(job.description || job.name || '').trim();
+          onSelectSession(
+            result.session_id,
+            seed ? { seedUserMessage: seed } : undefined,
+          );
+          setSuccess(t('cron.success.runNow'));
+        }
+      } else {
+        setSuccess(t('cron.success.runNow'));
       }
-      setSuccess(t('cron.success.runNow'));
       // 刷新左侧栏该定时任务下展开的 session 列表（project.get_cron_sessions）
       const { id: cronId, projectId } = job;
       if (cronId && projectId) {

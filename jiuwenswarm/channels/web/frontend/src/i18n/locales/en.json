@@ -1803,7 +1803,8 @@
       "updated": "Task updated successfully",
       "deleted": "Task deleted successfully",
       "statusUpdated": "Task status updated successfully",
-      "runNow": "Task triggered successfully"
+      "runNow": "Task triggered successfully",
+      "runNowPendingApproval": "Previous tool approval is still pending; opened the waiting session"
     },
     "preview": {
       "loading": "Loading next runs...",
