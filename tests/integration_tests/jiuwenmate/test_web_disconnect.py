@@ -139,11 +139,17 @@ class Server:
         return (await self.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings))["colleague"]["agent_id"]
 
     async def send(self, agent_id: str, text: str) -> str:
-        sent = await self.call(ReqMethod.JIUWENMATE_CHAT_SEND, agent_id=agent_id, text=text, message_id=f"msg-{text}")
+        sent = await self.call(
+            ReqMethod.JIUWENMATE_CHAT_SEND,
+            agent_id=agent_id,
+            conversation_id="conv-1",
+            text=text,
+            message_id=f"msg-{text}",
+        )
         return sent["request"]["request_id"]
 
     async def history(self, agent_id: str) -> dict[str, dict]:
-        payload = await self.call(ReqMethod.JIUWENMATE_CHAT_HISTORY, agent_id=agent_id)
+        payload = await self.call(ReqMethod.JIUWENMATE_CHAT_HISTORY, agent_id=agent_id, conversation_id="conv-1")
         return {item["text"]: item for item in payload["requests"]}
 
     async def until(self, request_id: str, predicate) -> dict:

@@ -27,7 +27,8 @@ import { SegmentedTabs } from '../components/SegmentedTabs';
 import { chatPhase, isPending, type JiuwenMateChatRequest } from '../jiuwenmateApi';
 import { JIUWENMATE_CHANNEL_MESSAGES, JIUWENMATE_CHANNELS, JIUWENMATE_TRACE_ROWS, JIUWENMATE_TRACE_STARTED_AT } from '../mockData';
 import type { JiuwenMateChannel, JiuwenMateColleague } from '../types';
-import { usePrivateChat, type JiuwenMateChatApi } from '../usePrivateChat';
+import { useConversations } from '../useConversations';
+import { newId, usePrivateChat, type JiuwenMateChatApi } from '../usePrivateChat';
 import {
   closeChannelTrace,
   createWorkspaceState,
@@ -60,11 +61,6 @@ interface ColleagueWorkspacePageProps extends ColleagueListHandlers {
   connectionEpoch: number;
   onSelectColleague: (id: string) => void;
   onCreateSchedule: (id: string) => void;
-}
-
-interface ConversationRecord {
-  id: string;
-  title: string;
 }
 
 const PROMPT_ICONS = [ClipboardList, CalendarDays, FileText];
@@ -102,17 +98,22 @@ export function ColleagueWorkspacePage({
   const [state, setState] = useState(() => initialState(colleague, intent));
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState('');
-  const [sessions, setSessions] = useState<Record<string, ConversationRecord[]>>({});
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  // A conversation id not used yet; it becomes a listed conversation when its first message is sent.
+  const [freshId, setFreshId] = useState(newId);
+  const [picked, setPicked] = useState<{ agentId: string; conversationId: string } | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
-  const privateChat = usePrivateChat(chat, colleague?.id ?? '', connectionEpoch);
+  const agentId = colleague?.id ?? '';
+  const conversationList = useConversations(chat, agentId, connectionEpoch);
+  const records = conversationList.conversations;
+  const activeConversationId =
+    picked?.agentId === agentId ? picked.conversationId : conversationList.loaded ? (records[0]?.id ?? freshId) : '';
+  const privateChat = usePrivateChat(chat, agentId, activeConversationId, connectionEpoch);
 
   if (!colleague) return null;
 
   const channels = colleagueChannels(colleague);
   const selectedChannel = channels.find((item) => item.id === state.selectedChannelId) ?? null;
-  const records = sessions[colleague.id] ?? [];
-  const activeSession = records.find((item) => item.id === activeSessionId) ?? null;
+  const activeSession = records.find((item) => item.id === activeConversationId) ?? null;
   const keyword = query.trim();
   const visibleRecords = keyword ? records.filter((item) => item.title.includes(keyword)) : records;
   const visibleChannels = keyword ? channels.filter((item) => item.name.includes(keyword)) : channels;
@@ -121,46 +122,51 @@ export function ColleagueWorkspacePage({
     const next = colleagues.find((item) => item.id === id);
     if (!next) return;
     onSelectColleague(id);
-    setActiveSessionId(null);
+    setPicked(null);
     setState((current) => {
       const switched = selectColleague(current, id);
       return { ...switched, selectedChannelId: colleagueChannels(next)[0]?.id ?? null };
     });
   };
 
+  const openConversation = (conversationId: string) => setPicked({ agentId: colleague.id, conversationId });
+
   const createSession = () => {
-    const record = { id: `session-${Date.now()}`, title: t('jiuwenmate.workspace.newSession') };
-    setSessions((current) => ({ ...current, [colleague.id]: [record, ...(current[colleague.id] ?? [])] }));
-    setActiveSessionId(record.id);
+    const id = newId();
+    setFreshId(id);
+    openConversation(id);
+    setDraft('');
     setState((current) => selectRecordTab(current, 'conversations'));
   };
 
   const renameSession = (id: string, title: string) => {
     const nextTitle = title.trim();
     setRenamingId(null);
-    if (!nextTitle) return;
-    setSessions((current) => ({
-      ...current,
-      [colleague.id]: (current[colleague.id] ?? []).map((item) => (item.id === id ? { ...item, title: nextTitle } : item)),
-    }));
+    const current = records.find((item) => item.id === id);
+    if (!nextTitle || nextTitle === current?.title) return;
+    void conversationList.rename(id, nextTitle);
   };
 
-  const deleteSession = (id: string) => {
-    setSessions((current) => ({ ...current, [colleague.id]: (current[colleague.id] ?? []).filter((item) => item.id !== id) }));
-    if (activeSessionId === id) setActiveSessionId(null);
+  const deleteSession = async (id: string) => {
+    if (!(await conversationList.remove(id))) return;
+    setFreshId(newId());
+    if (activeConversationId === id) setPicked(null);
   };
 
   const sendDraft = async () => {
     const text = draft.trim();
-    if (!text || privateChat.sending) return;
-    if (await privateChat.send(text)) setDraft('');
+    if (!text || privateChat.sending || !activeConversationId) return;
+    const conversation = await privateChat.send(text);
+    if (!conversation) return;
+    setDraft('');
+    conversationList.upsert(conversation);
   };
 
   const composer = (
     <>
-      {privateChat.error ? (
+      {privateChat.error || conversationList.error ? (
         <p className="jiuwenmate-chat-error" role="alert" data-testid="jiuwenmate-chat-error">
-          {t('jiuwenmate.chat.failed', { reason: privateChat.error })}
+          {t('jiuwenmate.chat.failed', { reason: privateChat.error ?? conversationList.error })}
         </p>
       ) : null}
       <ConversationComposer value={draft} onChange={setDraft} onSend={() => void sendDraft()} sending={privateChat.sending} />
@@ -218,7 +224,7 @@ export function ColleagueWorkspacePage({
               <div
                 key={record.id}
                 className="jiuwenmate-records__item"
-                aria-current={record.id === activeSessionId ? 'true' : undefined}
+                aria-current={record.id === activeConversationId ? 'true' : undefined}
                 data-testid="jiuwenmate-conversation-record"
               >
                 {renamingId === record.id ? (
@@ -233,7 +239,7 @@ export function ColleagueWorkspacePage({
                     }}
                   />
                 ) : (
-                  <button type="button" onClick={() => setActiveSessionId(record.id)}>
+                  <button type="button" onClick={() => openConversation(record.id)}>
                     {record.title}
                   </button>
                 )}
@@ -241,7 +247,7 @@ export function ColleagueWorkspacePage({
                   label={t('jiuwenmate.workspace.more')}
                   items={[
                     { key: 'rename', label: t('jiuwenmate.workspace.rename'), icon: PencilLine, onSelect: () => setRenamingId(record.id) },
-                    { key: 'delete', label: t('jiuwenmate.office.delete'), icon: Trash2, onSelect: () => deleteSession(record.id) },
+                    { key: 'delete', label: t('jiuwenmate.office.delete'), icon: Trash2, onSelect: () => void deleteSession(record.id) },
                   ]}
                 />
               </div>
@@ -448,7 +454,7 @@ export function ColleagueWorkspacePage({
         </section>
       );
     }
-    return activeSession || privateChat.requests.length > 0 ? renderSession() : renderWelcome();
+    return privateChat.requests.length > 0 ? renderSession() : renderWelcome();
   };
 
   return (
