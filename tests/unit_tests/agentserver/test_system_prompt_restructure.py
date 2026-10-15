@@ -78,6 +78,16 @@ class _FakeAgent:
         self.system_prompt_builder = builder
         self.prompt_attachment_manager = PromptAttachmentManager()
 
+async def _prompt_and_runtime_state(agent, builder, session_id: str = "sess1") -> str:
+    """The system prompt plus the runtime.setting attachment the model sees after it.
+
+    Per-conversation paths live in the attachment so the system prompt stays the
+    same for every conversation (a shared provider prefix cache).
+    """
+    items = await agent.prompt_attachment_manager.collect_for_session(session_id)
+    return builder.build() + "\n" + agent.prompt_attachment_manager.render(items)
+
+
 
 class _FakeLiveModeAgent(_FakeAgent):
     def __init__(self, builder: SystemPromptBuilder, mode: str) -> None:
@@ -1547,15 +1557,19 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monke
     )
     await runtime_rail.before_model_call(ctx)
 
-    prompt = builder.build()
+    prompt = await _prompt_and_runtime_state(agent, builder)
     assert "# Directory and File-Operation Boundaries" in prompt
     assert "# Runtime Directory Context" not in prompt
     assert "# Working Directory Runtime Values" not in prompt
     assert "The project directory is the project root and project-context boundary" in prompt
-    assert f"the current project directory is: `{project_dir}`" in prompt
+    assert "the current project directory is under Current Directories in the runtime state" in prompt
+    assert f"- Current project directory: `{project_dir}`" in prompt
     assert (
-        f"The current working directory (cwd, relative-path base, and Bash default) is: `{current_dir}`"
+        "The current working directory (cwd, relative-path base, and Bash default) is under Current Directories"
         in prompt
+    )
+    assert (
+        f"- Current working directory: `{current_dir}`" in prompt
     )
     assert "Resolve relative paths in user tasks against the current working directory" in prompt
     assert "Agent internal data directory" in prompt
@@ -1604,11 +1618,15 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
 
     await runtime_rail.before_model_call(ctx)
 
-    prompt = builder.build()
+    prompt = await _prompt_and_runtime_state(agent, builder)
     assert "项目目录是当前项目的根目录与项目上下文边界" in prompt
-    assert f"当前项目目录是：`{project_dir}`" in prompt
+    assert "当前项目目录见运行时状态中的「当前目录」" in prompt
+    assert f"- 当前项目目录：`{project_dir}`" in prompt
     assert (
-        f"当前工作目录（cwd、相对路径基准及 Bash 默认目录）是：`{current_dir}`" in prompt
+        "当前工作目录（cwd、相对路径基准及 Bash 默认目录）见运行时状态中的「当前目录」" in prompt
+    )
+    assert (
+        f"- 当前工作目录：`{current_dir}`" in prompt
     )
     assert (
         "用户任务中的相对路径必须相对于当前工作目录路径去解析" in prompt
@@ -1728,10 +1746,11 @@ async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match
 
     await runtime_rail.before_model_call(ctx)
 
-    prompt = builder.build()
+    prompt = await _prompt_and_runtime_state(agent, builder)
     assert "## Project Directory" in prompt
     assert "## Project and Working Directories" not in prompt
-    assert f"the current project directory is: `{project_dir}`" in prompt
+    assert "the current project directory is under Current Directories in the runtime state" in prompt
+    assert f"- Current project directory: `{project_dir}`" in prompt
     assert "Resolve relative paths in user tasks against the current project directory" in prompt
 
 
@@ -1765,9 +1784,10 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
 
     await runtime_rail.before_model_call(ctx)
 
-    prompt = builder.build()
+    prompt = await _prompt_and_runtime_state(agent, builder)
     assert "## Current Project Directory" in prompt
-    assert f"current runtime workspace: `{task_dir}`" in prompt
+    assert "The project directory is the current runtime workspace; its path is under Current Directories" in prompt
+    assert f"- Project directory: `{task_dir}`" in prompt
     assert "Other accessible directories" not in prompt
     assert "fallen back to the Agent internal data directory" not in prompt
 
@@ -1800,9 +1820,10 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
 
     await runtime_rail.before_model_call(ctx)
 
-    prompt = builder.build()
+    prompt = await _prompt_and_runtime_state(agent, builder)
     assert "# 目录与文件操作边界" in prompt
-    assert f"当前运行时工作空间：`{agent_data_dir}`" in prompt
+    assert "项目目录是当前运行时工作空间，具体路径见运行时状态中的「当前目录」" in prompt
+    assert f"- 项目目录：`{agent_data_dir}`" in prompt
     assert "其他可访问目录" not in prompt
 
 
@@ -1834,7 +1855,7 @@ async def test_process_cli_directory_prompt_refreshes_across_requests(
     for previous, project in ((None, first), (first, second)):
         rail.set_runtime_paths(cwd=str(current), project_dir=str(project), workspace_dir=str(internal))
         await rail.before_model_call(ctx)
-        prompt = builder.build()
+        prompt = await _prompt_and_runtime_state(agent, builder)
         assert str(project) in prompt
         assert str(current) in prompt
         assert str(internal) in prompt
