@@ -16,12 +16,13 @@ import re
 import stat
 import threading
 import time
+import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-from openjiuwen.core.foundation.llm import ToolMessage
+from openjiuwen.core.foundation.llm import ToolCall, ToolMessage
 from openjiuwen.core.session.agent import Session
 from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.rail.base import (
@@ -49,11 +50,61 @@ _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
 SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY = (
     "_jiuwenswarm_skill_turbo_outer_todo_active"
 )
+# 纯文本收尾前插入的一次调用。名字用已注册的 todo_modify，避免下一轮
+# 请求里出现未注册工具名被模型接口拒绝。id 前缀把它和真改状态分开：
+# 不执行、不改 todo.json、不向前端发工具卡片，只回一条要求模型自己改状态的说明。
+TODO_CLOSE_NUDGE_ID_PREFIX = "todo-close-nudge-"
+TODO_CLOSE_NUDGE_TOOL_NAME = "todo_modify"
+
+
+def is_todo_close_nudge(tool_call: Any) -> bool:
+    """True when this call is the internal close nudge, not a real todo_modify."""
+    tool_call_id = str(getattr(tool_call, "id", "") or "")
+    return tool_call_id.startswith(TODO_CLOSE_NUDGE_ID_PREFIX)
 
 
 def get_current_task_id() -> str | None:
     """Return current task id for stream payload correlation."""
     return _ACTIVE_TASK_ID.get()
+
+
+def _todo_close_nudge_message(
+    open_tasks: list[tuple[str, dict[str, Any]]],
+) -> str:
+    """Tell the model to close started todos before the plain-text final.
+
+    task.complete is emitted only after todo_modify sets status to completed.
+    A text-only turn while a started item is still in_progress leaves the
+    frontend task segment open, so the stop explanation stays inside it.
+    """
+    lines = [
+        (
+            "[TODO_CLOSE_REQUIRED] 纯文本收尾被拦住：已开始的待办仍是 "
+            "in_progress，task.complete 还没发出。本轮只调用 todo_modify，"
+            "不要写给用户的正文。"
+        ),
+        "规则：",
+        (
+            "- 这一条步骤的工作已经做完就标 completed，即使后面的步骤被缺文件、"
+            "用户跳过或等待输入卡住。"
+        ),
+        "- 还没开始的保持 pending。",
+        "- 这一条自己的工作还没做完，不要标 completed。",
+        (
+            "- 只有整件事确定不再继续才标 cancelled"
+            "（含技能协议第 9 条的用户打断）。跳过问答、等待补文件都不是放弃。"
+        ),
+        (
+            "上一轮已经写出的正文没有送达用户，视为作废。"
+            "todo_modify 返回后，下一轮必须完整重写最终回复，"
+            "禁止用「如上所述」概括或引用上一轮。"
+        ),
+        "当前已开始且仍 in_progress：",
+    ]
+    for raw_id, task in open_tasks:
+        content = str(task.get("content", "")).replace("\n", " ")
+        lines.append(f"- id={raw_id} content={content}")
+    return "\n".join(lines)
 
 
 # 图像产物扩展名白名单
@@ -1318,6 +1369,9 @@ class TaskExecutionRail(DeepAgentRail):
         # 暂不发 task.start/complete，等前缀完成后按列表顺序补发。
         self._todo_complete_deferred: set[str] = set()
         self._todo_start_deferred: set[str] = set()
+        # 同一次 invoke 只拦一次纯文本收尾。模型仍不改状态就放行，
+        # 不伪造 completed，也不把未完成项全部 cancelled。
+        self._todo_close_nudge_used: bool = False
 
     def set_skill_turbo_request_metadata(self, metadata: dict | None) -> None:
         """注入当前请求 metadata 副本，供 before_tool_call 解析请求级工作区。"""
@@ -1403,6 +1457,7 @@ class TaskExecutionRail(DeepAgentRail):
         self._todo_started = set()
         self._todo_complete_deferred = set()
         self._todo_start_deferred = set()
+        self._todo_close_nudge_used = False
         self._tool_start_times = {}
         _ACTIVE_TASK_ID.set(None)
         if isinstance(ctx.inputs, InvokeInputs):
@@ -1425,10 +1480,107 @@ class TaskExecutionRail(DeepAgentRail):
         """Bind task_id before LLM calls."""
         self._bind_context_to_in_progress_task()
 
+    async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        """Hold a text-only ending while a started todo is still in_progress.
+
+        The ReAct loop treats a response with no tool calls as the final
+        answer. task.complete is only emitted when todo_modify sets
+        completed, so that answer would stay inside the open task segment.
+        Attach one internal tool call so the loop continues; the tool body
+        is replaced with an instruction to call todo_modify. A second
+        text-only response in the same invoke is left alone.
+
+        Not applied when the model output was truncated (``finish_reason``
+        ``length``): the truncation retry persists this assistant message
+        without a matching tool result. Not applied on the last ReAct
+        iteration, which has no room for the follow-up reply. ``force_finish``
+        paths (deepresearch direct display and similar) never reach this
+        hook and stay on their existing end behavior.
+        """
+        if self._todo_close_nudge_used or ctx.session is None:
+            return
+        response = getattr(ctx.inputs, "response", None)
+        if response is None or getattr(response, "tool_calls", None):
+            return
+        if str(getattr(response, "finish_reason", "") or "") == "length":
+            return
+        if self._is_last_react_iteration(ctx):
+            return
+        content = str(getattr(response, "content", None) or "").strip()
+        if not content:
+            return
+        open_tasks = self._started_in_progress_tasks()
+        if not open_tasks:
+            return
+        # 流式正文已经推给前端。历史里留下这段字会让下一轮当成已经送达。
+        response.content = ""
+        response.tool_calls = [
+            ToolCall(
+                id=f"todo-close-nudge-{uuid.uuid4().hex[:12]}",
+                type="function",
+                name=TODO_CLOSE_NUDGE_TOOL_NAME,
+                arguments="{}",
+            )
+        ]
+        self._todo_close_nudge_used = True
+        logger.info(
+            "[TaskExecutionRail] todo close nudge: open=%s",
+            [raw_id for raw_id, _task in open_tasks],
+        )
+
+    def _is_last_react_iteration(self, ctx: AgentCallbackContext) -> bool:
+        """True when this model call is the final ReAct iteration."""
+        iteration = int(getattr(ctx.inputs, "react_iteration", 0) or 0)
+        agent = self._deep_agent
+        react = getattr(agent, "_react_agent", None)
+        config = getattr(react, "_config", None)
+        max_iterations = getattr(config, "max_iterations", None)
+        if iteration <= 0 or not isinstance(max_iterations, int):
+            return False
+        if max_iterations <= 0:
+            return False
+        return iteration >= max_iterations
+
+    def _started_in_progress_tasks(self) -> list[tuple[str, dict[str, Any]]]:
+        """Todos that must be closed before a plain-text ending.
+
+        Prefer items whose ``task.start`` was emitted in this invoke. HITL
+        resume clears ``_todo_started`` / ``_active_tasks`` in
+        ``before_invoke``, while ``todo.json`` and the already-open frontend
+        segment remain. Fall back to in-progress rows on disk so a text-only
+        resume still gets the nudge.
+        """
+        found: list[tuple[str, dict[str, Any]]] = []
+        seen: set[str] = set()
+        for full_id in self._active_tasks:
+            raw_id = full_id.removeprefix("todo:")
+            if raw_id not in self._todo_started:
+                continue
+            task = self._todo_map.get(raw_id)
+            if task is None:
+                continue
+            if str(task.get("status", "")).lower() != "in_progress":
+                continue
+            found.append((raw_id, task))
+            seen.add(raw_id)
+        if found:
+            return found
+        for raw_id, task in self._todo_map.items():
+            if raw_id in seen:
+                continue
+            if str(task.get("status", "")).lower() != "in_progress":
+                continue
+            found.append((raw_id, task))
+        return found
+
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         if not isinstance(ctx.inputs, ToolCallInputs):
             return
         tool_name = ctx.inputs.tool_name
+
+        if is_todo_close_nudge(ctx.inputs.tool_call):
+            self._reject_todo_close_nudge(ctx)
+            return
 
         if tool_name in self.TODO_TOOLS:
             session_id = ""
@@ -1498,10 +1650,24 @@ class TaskExecutionRail(DeepAgentRail):
                 _ACTIVE_TASK_ID.get() is not None
             )
 
+    def _reject_todo_close_nudge(self, ctx: AgentCallbackContext) -> None:
+        """Skip the internal nudge tool and return the todo_modify instruction."""
+        tc = ctx.inputs.tool_call
+        tool_call_id = str(getattr(tc, "id", "") or "")
+        msg = _todo_close_nudge_message(self._started_in_progress_tasks())
+        ctx.extra["_skip_tool"] = True
+        ctx.inputs.tool_result = msg
+        ctx.inputs.tool_msg = ToolMessage(
+            content=msg, tool_call_id=tool_call_id,
+        )
+
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         if not isinstance(ctx.inputs, ToolCallInputs):
             return
         tool_name = ctx.inputs.tool_name
+
+        if is_todo_close_nudge(ctx.inputs.tool_call):
+            return
 
         if tool_name in self.TODO_TOOLS:
             await self._sync_todo_and_emit_transitions(ctx)
