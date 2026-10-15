@@ -204,7 +204,7 @@ sequenceDiagram
 
 | 风险 / 触发条件 | 影响 | 已有应对措施 | 核实方式 |
 | --- | --- | --- | --- |
-| 进程崩溃 | 遗留 `dispatched` Request 占用 Session | `recover` 返回清单 | JM-13 |
+| 进程崩溃 | 遗留 `dispatched` Request 占用 Session | `recover` 返回清单，由 JM-13 按日志结束并放行 Session（见 [F_13](F_13_recovery.md)） | JM-13 |
 | 占位容量值与实际负载不符 | 吞吐不足或资源争用 | 构造参数可调 | S1 实测 |
 
 ### 9.2 已知遗留
