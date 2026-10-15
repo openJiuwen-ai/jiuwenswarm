@@ -171,6 +171,28 @@ def test_hard_truncate_removes_jsonl_entries(project):
     assert on_disk == {}
 
 
+def test_get_files_to_redo_sees_flash_entries(project):
+    """redo（discard 软删后的重做）：flash 条目的 new_content 是重做依据。
+
+    同文件多代快照时取"最后一条"被标记条目——合并后的时间戳稳定排序
+    保证该语义跨账本成立（demo 的 stock 与 flash 条目分属两本账本）。
+    """
+    service, proj_dir, demo, notes, _stock_ops, flash_ops = project
+
+    service.truncate_file_ops_by_timestamp(
+        SESSION_ID, TURN1_TS, project_dir=str(proj_dir), soft=True, discarded=True,
+    )
+
+    to_redo = service.get_files_to_redo(SESSION_ID, 1, project_dir=str(proj_dir))
+
+    assert to_redo[str(notes)]["content"] == "CHANGED\n"
+    # demo: stock 条目(BEFORE→AFTER, EDIT1) + flash 条目(AFTER→AFTER-FLASH,
+    # EDIT3) 都被标记；重做应取时间戳最大的 flash 条目的 new_content。
+    assert to_redo[str(demo)]["content"] == "AFTER-FLASH\n"
+    on_disk = flash_file_history.load_flash_history(flash_ops)
+    assert on_disk[str(demo)][-1].get("discarded_out") is True
+
+
 def test_is_valid_file_ops_file_jsonl_naming():
     valid = DiffService._is_valid_file_ops_file
 
