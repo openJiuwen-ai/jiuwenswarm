@@ -39,6 +39,23 @@ async def _noop_broadcast(*_args, **_kwargs) -> None:
     return None
 
 
+@pytest.fixture(autouse=True)
+def _record_unattended_team_history(monkeypatch):
+    """Keep unattended Team history writes out of the real session store.
+
+    ``_UnattendedTeamRoundHistoryWriter`` fires whenever a fake manager's
+    ``broadcast_event`` reports no waiter; without this blanket the affected
+    tests would silently append records to ~/.jiuwenswarm.  Tests that
+    assert on history records re-patch ``append_history_record`` on the
+    same monkeypatch instance, which overrides this recorder.
+    """
+    recorded: list[dict] = []
+    monkeypatch.setattr(
+        team_helpers, "append_history_record", lambda **kwargs: recorded.append(kwargs)
+    )
+    return recorded
+
+
 def test_team_event_queue_is_bounded() -> None:
     queue = team_helpers._new_team_event_queue()
 
@@ -3729,6 +3746,8 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
         query: str,
         *,
         generation=None,
+        round_request_id=None,
+        cross_session_marker=None,
         run_context=None,
         round_id: int,
         envs: dict | None = None,
@@ -3827,6 +3846,8 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
         query: str,
         *,
         generation=None,
+        round_request_id=None,
+        cross_session_marker=None,
         run_context=None,
         round_id: int,
         envs: dict | None = None,
@@ -4399,6 +4420,8 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
         query: str,
         *,
         generation=None,
+        round_request_id=None,
+        cross_session_marker=None,
         run_context=None,
         round_id: int,
         envs: dict | None = None,
@@ -4530,6 +4553,8 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
         query: str,
         *,
         generation=None,
+        round_request_id=None,
+        cross_session_marker=None,
         run_context=None,
         round_id: int,
         envs: dict | None = None,
@@ -4594,6 +4619,8 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
         query: str,
         *,
         generation=None,
+        round_request_id=None,
+        cross_session_marker=None,
         run_context=None,
         round_id: int,
         envs: dict | None = None,

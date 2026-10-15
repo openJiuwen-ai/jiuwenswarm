@@ -668,12 +668,18 @@ class TeamManager:
         event: dict[str, Any],
         *,
         channel_id: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Broadcast an event with backpressure to every active waiter.
 
         The short timed wait is only used while a queue is full.  It lets a
         producer notice that ``remove_waiter`` detached a disconnected client
         instead of remaining blocked forever on that orphaned queue.
+
+        Returns:
+            True when at least one waiter received the event.  Callers that
+            persist event history may use this to detect that nobody consumed
+            the frame; the selection and delivery happen under the same call,
+            so the answer is atomic with the broadcast itself.
         """
         event_type = str(event.get("event_type") or "")
         terminal = (
@@ -694,7 +700,7 @@ class TeamManager:
                 session_id,
                 current_round.request_id,
             )
-            return
+            return False
         if not terminal and current_round is not None:
             current_round.terminal_armed = True
         if current_round is not None and self._is_workflow_terminal_event(event):
@@ -785,6 +791,7 @@ class TeamManager:
                 current_round,
                 event,
             )
+        return bool(waiters)
 
     @staticmethod
     def _is_workflow_terminal_event(event: dict[str, Any]) -> bool:

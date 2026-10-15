@@ -26,7 +26,7 @@ from typing import Any, AsyncIterator, Callable, Tuple
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
-    SESSION_MESSAGE_ORIGIN,
+    with_cross_session_history_metadata,
 )
 
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
@@ -43,6 +43,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
     append_compact_history_records,
     append_history_record,
     collapse_file_content_blocks,
+    resolve_final_record_timestamp,
 )
 from jiuwenswarm.server.runtime.agent_adapter.team_member_stream_history import (
     MEMBER_SEGMENT_BOUNDARY_EVENTS,
@@ -404,23 +405,6 @@ async def _persist_ask_user_answer_history(
     )
 
 
-def _resolve_final_record_timestamp(
-    *,
-    event_type: str,
-    segment_started_at: float | None,
-    extra_fields: dict[str, Any] | None,
-) -> float:
-    """chat.final 落盘用「气泡出现的时刻」，收尾时刻另存 completed_at。"""
-    completed_at = time.time()
-    if event_type != "chat.final" or not segment_started_at:
-        return completed_at
-    if segment_started_at >= completed_at:
-        return completed_at
-    if isinstance(extra_fields, dict):
-        extra_fields.setdefault("completed_at", completed_at)
-    return segment_started_at
-
-
 def _history_media_string(item: dict[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = item.get(key)
@@ -505,7 +489,9 @@ def _history_user_extra(params: Any) -> dict[str, Any] | None:
     if not isinstance(params, dict):
         return None
 
-    extra = _with_cross_session_history_metadata(None, params) or {}
+    extra = with_cross_session_history_metadata(
+        None, _cross_session_marker_from_params(params)
+    ) or {}
     raw_media_items = params.get("media_items")
     if isinstance(raw_media_items, list):
         media_items: list[dict[str, Any]] = []
@@ -546,35 +532,11 @@ def _history_user_extra(params: Any) -> dict[str, Any] | None:
     return _with_heartbeat_history_metadata(extra, params)
 
 
-def _with_cross_session_history_metadata(
-    extra: dict[str, Any] | None,
-    params: Any,
-) -> dict[str, Any] | None:
-    """Persist the public origin marker on cross-Session assistant records."""
-    result = dict(extra or {})
+def _cross_session_marker_from_params(params: Any) -> Any:
+    """Extract the internal cross-Session marker from request params."""
     if not isinstance(params, dict):
-        return result or None
-    raw_cross_session = params.get(SESSION_MESSAGE_INTERNAL_KEY)
-    if not isinstance(raw_cross_session, dict):
-        return result or None
-    cross_session: dict[str, Any] = {}
-    for key in (
-        "message_id",
-        "source_session_id",
-        "source_title",
-        "chain_id",
-        "parent_message_id",
-        "hop_count",
-        "language",
-    ):
-        if key in raw_cross_session:
-            cross_session[key] = raw_cross_session[key]
-    result["message_origin"] = SESSION_MESSAGE_ORIGIN
-    result["cross_session"] = cross_session
-    message_id = str(cross_session.get("message_id") or "").strip()
-    if message_id:
-        result["session_message_id"] = message_id
-    return result
+        return None
+    return params.get(SESSION_MESSAGE_INTERNAL_KEY)
 
 
 def _web_agent_template_name(params: Any, channel_id: Any) -> str | None:
@@ -3382,7 +3344,7 @@ class JiuWenSwarm:
         # 整段回复凭空消失。
         pending_final_chunks: list[str] = []
         # 首个非空 delta 到达时刻——对齐 pms 的 durable_pending_final_started_at，
-        # 合并落盘时作 segment_started_at 传给 _resolve_final_record_timestamp，
+        # 合并落盘时作 segment_started_at 传给 resolve_final_record_timestamp，
         # 使 chat.final 记录的 timestamp=气泡起始时刻、extra.completed_at=收尾时刻
         # （与 pms 路径时间语义一致）。
         # 单元素 list 持有首个非空 delta 时刻——list 可变，让 _persist_control_chunk_to_history
@@ -3443,7 +3405,7 @@ class JiuWenSwarm:
         场景正文只在 delta 里，刷新后整段回复凭空消失（#与 pms 同源问题）。
 
         pending_final_started_at_holder 是单元素 list，持有首个非空 delta 到达时刻，
-        合并落盘时作 segment_started_at 传给 _resolve_final_record_timestamp，使
+        合并落盘时作 segment_started_at 传给 resolve_final_record_timestamp，使
         chat.final 记录 timestamp=气泡起始时刻、completed_at=收尾时刻（对齐 pms）。
         用 list 容器是为了让本方法能「读 + 重置」调用方闭包里的时刻（Python tuple
         不可变，故用 list）。
@@ -3507,7 +3469,7 @@ class JiuWenSwarm:
         extra_fields = {k: v for k, v in payload.items() if k not in ("event_type", "content")}
         if not isinstance(extra_fields, dict):
             extra_fields = {}
-        extra_fields = _with_cross_session_history_metadata(
+        extra_fields = with_cross_session_history_metadata(
             _with_heartbeat_history_metadata(
                 _with_web_agent_template_metadata(
                     extra_fields,
@@ -3518,12 +3480,12 @@ class JiuWenSwarm:
                 ),
                 request.params,
             ),
-            request.params,
+            _cross_session_marker_from_params(request.params),
         ) or {}
         # chat.final 用气泡起始时刻（对齐 pms line 4142 传 final_segment_started_at）；
-        # 其余事件传 None（_resolve_final_record_timestamp 对非 final 事件忽略此参数）。
+        # 其余事件传 None（resolve_final_record_timestamp 对非 final 事件忽略此参数）。
         record_segment_started_at = final_segment_started_at if et == "chat.final" else None
-        record_timestamp = _resolve_final_record_timestamp(
+        record_timestamp = resolve_final_record_timestamp(
             event_type=et,
             segment_started_at=record_segment_started_at,
             extra_fields=extra_fields,
@@ -3558,7 +3520,7 @@ class JiuWenSwarm:
         空 final 场景正文只在 delta 里，刷新后 delta 被过滤、空 final 被空壳规则丢弃，
         整段回复凭空消失。
 
-        segment_started_at 为首个非空 delta 到达时刻，传给 _resolve_final_record_timestamp
+        segment_started_at 为首个非空 delta 到达时刻，传给 resolve_final_record_timestamp
         使记录 timestamp=气泡起始时刻、extra.completed_at=收尾时刻（对齐 pms）。
 
         注意：不透传 request.params 里的 source/proactive_* 字段——control-input 路径
@@ -3573,7 +3535,7 @@ class JiuWenSwarm:
         if not pending_text:
             return
         extra_fields: dict[str, Any] = {}
-        extra_fields = _with_cross_session_history_metadata(
+        extra_fields = with_cross_session_history_metadata(
             _with_heartbeat_history_metadata(
                 _with_web_agent_template_metadata(
                     extra_fields,
@@ -3583,9 +3545,9 @@ class JiuWenSwarm:
                 ),
                 request.params,
             ),
-            request.params,
+            _cross_session_marker_from_params(request.params),
         ) or {}
-        record_timestamp = _resolve_final_record_timestamp(
+        record_timestamp = resolve_final_record_timestamp(
             event_type="chat.final",
             segment_started_at=segment_started_at,
             extra_fields=extra_fields,
@@ -3973,7 +3935,7 @@ class JiuWenSwarm:
             })
             if not isinstance(extra_fields, dict):
                 extra_fields = {}
-            extra_fields = _with_cross_session_history_metadata(
+            extra_fields = with_cross_session_history_metadata(
                 _with_heartbeat_history_metadata(
                     _with_web_agent_template_metadata(
                         extra_fields,
@@ -3983,9 +3945,9 @@ class JiuWenSwarm:
                     ),
                     request.params,
                 ),
-                request.params,
+                _cross_session_marker_from_params(request.params),
             ) or {}
-            record_timestamp = _resolve_final_record_timestamp(
+            record_timestamp = resolve_final_record_timestamp(
                 event_type="chat.final",
                 segment_started_at=segment_started_at,
                 extra_fields=extra_fields,
@@ -4018,7 +3980,7 @@ class JiuWenSwarm:
                 pending_items = [item] if item is not None else []
             for item in pending_items:
                 extra_fields = dict(item.extra)
-                record_timestamp = _resolve_final_record_timestamp(
+                record_timestamp = resolve_final_record_timestamp(
                     event_type="chat.final",
                     segment_started_at=item.started_at,
                     extra_fields=extra_fields,
@@ -4195,7 +4157,7 @@ class JiuWenSwarm:
                     if pk not in extra_fields and pk in request.params:
                         extra_fields[pk] = request.params[pk]
             extra_fields = _attach_reasoning_content(extra_fields) or {}
-            extra_fields = _with_cross_session_history_metadata(
+            extra_fields = with_cross_session_history_metadata(
                 _with_heartbeat_history_metadata(
                     _with_web_agent_template_metadata(
                         extra_fields,
@@ -4205,7 +4167,7 @@ class JiuWenSwarm:
                     ),
                     request.params,
                 ),
-                request.params,
+                _cross_session_marker_from_params(request.params),
             ) or {}
             await _run_history_io(
                 append_history_record,
@@ -4215,7 +4177,7 @@ class JiuWenSwarm:
                 role="assistant",
                 event_type="chat.final",
                 content=content,
-                timestamp=_resolve_final_record_timestamp(
+                timestamp=resolve_final_record_timestamp(
                     event_type="chat.final",
                     segment_started_at=None,
                     extra_fields=extra_fields,
@@ -4682,7 +4644,7 @@ class JiuWenSwarm:
                                         extra_fields[pk] = request.params[pk]
                                 if not isinstance(extra_fields, dict):
                                     extra_fields = {}
-                                extra_fields = _with_cross_session_history_metadata(
+                                extra_fields = with_cross_session_history_metadata(
                                     _with_heartbeat_history_metadata(
                                         _with_web_agent_template_metadata(
                                             extra_fields,
@@ -4693,9 +4655,9 @@ class JiuWenSwarm:
                                         ),
                                         request.params,
                                     ),
-                                    request.params,
+                                    _cross_session_marker_from_params(request.params),
                                 ) or {}
-                                record_timestamp = _resolve_final_record_timestamp(
+                                record_timestamp = resolve_final_record_timestamp(
                                     event_type=et,
                                     segment_started_at=(
                                         final_segment_started_at if et == "chat.final" else None
@@ -4922,7 +4884,7 @@ class JiuWenSwarm:
                                     extra_fields[pk] = request.params[pk]
                             if not isinstance(extra_fields, dict):
                                 extra_fields = {}
-                            extra_fields = _with_cross_session_history_metadata(
+                            extra_fields = with_cross_session_history_metadata(
                                 _with_heartbeat_history_metadata(
                                     _with_web_agent_template_metadata(
                                         extra_fields,
@@ -4933,9 +4895,9 @@ class JiuWenSwarm:
                                     ),
                                     request.params,
                                 ),
-                                request.params,
+                                _cross_session_marker_from_params(request.params),
                             ) or {}
-                            record_timestamp = _resolve_final_record_timestamp(
+                            record_timestamp = resolve_final_record_timestamp(
                                 event_type=et,
                                 segment_started_at=(
                                     final_segment_started_at if et == "chat.final" else None

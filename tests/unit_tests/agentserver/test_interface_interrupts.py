@@ -536,7 +536,7 @@ async def test_deliver_control_input_non_empty_final_clears_pending_deltas(
 ) -> None:
     # 非空 chat.final：正文由 final 承载，前面累积的 delta 不再合并落盘（避免重复）。
     # 同时验证 timestamp 语义对齐 pms：非空 final 传 segment_started_at（首个 delta 时刻），
-    # _resolve_final_record_timestamp 据此把 completed_at 存入 extra、timestamp 用起始时刻。
+    # resolve_final_record_timestamp 据此把 completed_at 存入 extra、timestamp 用起始时刻。
     # 用单调递增 time.time 序列确保 segment_started_at < completed_at（否则该函数走
     # >= 早退分支、不 setdefault completed_at，断言失效）。
     import jiuwenswarm.server.runtime.agent_adapter.interface as _iface

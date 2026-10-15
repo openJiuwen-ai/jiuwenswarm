@@ -1075,6 +1075,23 @@ def _enqueue_history_item(
             _WRITE_QUEUE.put((session_id, item, normalized_subagent_id, receipt, generation))
 
 
+def resolve_final_record_timestamp(
+    *,
+    event_type: str,
+    segment_started_at: float | None,
+    extra_fields: dict[str, Any] | None,
+) -> float:
+    """chat.final 落盘用「气泡出现的时刻」，收尾时刻另存 completed_at。"""
+    completed_at = time.time()
+    if event_type != "chat.final" or not segment_started_at:
+        return completed_at
+    if segment_started_at >= completed_at:
+        return completed_at
+    if isinstance(extra_fields, dict):
+        extra_fields.setdefault("completed_at", completed_at)
+    return segment_started_at
+
+
 def append_history_record(
     *,
     session_id: str,
