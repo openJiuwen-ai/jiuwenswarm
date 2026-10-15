@@ -21,6 +21,7 @@ from jiuwenswarm.common.e2a.wire_codec import (
     parse_agent_server_wire_unary,
 )
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.moa_config import redact_moa_credentials
 from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
@@ -82,6 +83,7 @@ def _wire_request_id_key(request_id: Any) -> str:
 
 def _to_json(data: Any) -> str:
     """将任意对象序列化为日志友好的 JSON 字符串."""
+    data = redact_moa_credentials(data)
     try:
         return json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
     except Exception:

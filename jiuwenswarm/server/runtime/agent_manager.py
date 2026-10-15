@@ -1245,6 +1245,7 @@ class AgentManager:
         is_swarm: bool,
         persist_session: bool = False,
         prewarm_eligible: bool = True,
+        moa_enabled: bool = False,
         create_token: str | None = None,
     ):
         token = str(create_token or "").strip()
@@ -1258,7 +1259,7 @@ class AgentManager:
         # persist_session 不属于 WarmKey：同一预热 Agent 可服务开启或关闭的
         # Session，避免为布尔开关复制预热槽。但它属于 session.create 的幂等
         # 身份，同一 create_token 不允许用不同值重试。
-        create_signature = (key, bool(prewarm_eligible), bool(persist_session))
+        create_signature = (key, bool(prewarm_eligible), bool(persist_session), bool(moa_enabled))
         token_key = (key.channel_id, token)
         async with self._session_create_token_lock:
             if token:

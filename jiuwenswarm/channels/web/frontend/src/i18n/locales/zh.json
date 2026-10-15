@@ -737,7 +737,8 @@
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
-      "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。"
+      "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
+      "multiModelCollaboration": "多模型协同"
     },
     "taskAsr": {
       "dialogTitle": "配置语音转写模型",
@@ -957,11 +958,48 @@
         "title": "每次检查对话轮数",
         "description": "每次检查时最多读取的近期对话轮数，用于推断推荐上下文。默认值：20。",
         "placeholder": "请输入 1–50 的整数"
+      },
+      "multi_model_collaboration_enabled": {
+        "title": "多模型协同",
+        "description": "单 Agent 对话选择模型组后，由组内默认模型聚合其他模型的建议。"
+      },
+      "moa_jev_enabled": {
+        "title": "JEV 决策",
+        "description": "使用 JEV 验证执行进度；关闭时使用模型组的组内默认模型。"
+      },
+      "moa_verifier_interval": {
+        "title": "验证间隔（轮）",
+        "description": "每隔 N 个 Agent 执行轮次验证一次。一轮包含一次主模型决策及工具执行（如有），不是用户对话轮次。"
+      },
+      "moa_jev_api_base": {
+        "title": "API 地址",
+        "description": "独立的 JEV 服务地址。",
+        "placeholder": "https://api.typesafe.ai"
+      },
+      "moa_jev_model_name": {
+        "title": "模型名称",
+        "description": "JEV 验证模型。",
+        "placeholder": "jev-latest"
+      },
+      "moa_jev_api_key": {
+        "title": "API Key",
+        "description": "JEV 服务的密钥。",
+        "placeholder": "输入 API Key"
       }
     },
     "validation": {
       "required": "此字段为必填项",
       "integerRange": "请输入 {{min}}–{{max}} 之间的整数"
+    },
+    "multiModelCollaboration": {
+      "jevConfigTitle": "JEV 配置",
+      "jevConfigDescription": "仅用于多模型协同验证，不影响浏览器决策配置。",
+      "keepKey": "留空保留已保存的密钥。",
+      "clearKeyConfirm": "清除 JEV 密钥并关闭 JEV 决策？后续验证将使用模型组的组内默认模型。",
+      "errors": {
+        "apiBaseInvalid": "请输入有效的 HTTP 或 HTTPS 地址，且不包含登录凭据。",
+        "intervalInvalid": "请输入大于 0 的整数。"
+      }
     }
   },
   "trajectory": {
@@ -1355,7 +1393,10 @@
       "addModel": "添加自定义模型/模型组",
       "selectionFailed": "模型选择未能生效，请重新选择",
       "empty": "暂无可用模型，请先在设置中添加模型",
-      "placeholder": "选择模型"
+      "placeholder": "选择模型",
+      "selectOrdinaryModel": "请选择普通模型",
+      "collaborationDisabled": "多模型协同已关闭，请选择普通模型后发送。",
+      "noModelGroups": "尚无模型组，前往设置创建模型组。"
     },
     "contextUsage": {
       "title": "上下文用量",

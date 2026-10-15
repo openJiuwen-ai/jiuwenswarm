@@ -1877,6 +1877,9 @@ class JiuWenSwarmDeepAdapter:
     # through __init__.
     _cron_tools_registered_allow_create: bool | None = None
     _cron_tools_registered_allow_update: bool | None = None
+    _moa_runtime: Any = None
+    _moa_enabled: bool = False
+    _moa_fingerprint: str | None = None
 
     """Deep SDK 适配器，实现 AgentAdapter 协议.
 
@@ -2585,6 +2588,10 @@ class JiuWenSwarmDeepAdapter:
         if self._skill_manager is not None:
             adapter.set_skill_manager(self._skill_manager)
         adapter.set_heartbeat_service(self._heartbeat_service)
+        checker = getattr(self, "_model_selection_can_access", None)
+        if callable(checker):
+            # Same-class children inherit the parent's per-request access policy.
+            adapter._model_selection_can_access = checker  # pylint: disable=protected-access
         adapter.set_permissions_changed_notifier(self._permissions_changed_notifier)
         return adapter
 
@@ -3562,6 +3569,13 @@ class JiuWenSwarmDeepAdapter:
             metadata=request.metadata,
         )
 
+    def moa_access_kwargs(self, request: AgentRequest) -> dict[str, Any]:
+        """Use the same per-request group/member policy as ordinary selection."""
+        checker = getattr(self, "_model_selection_can_access", None)
+        if callable(checker):
+            return {"moa_can_access": lambda kind, resource_id: bool(checker(request, kind, resource_id))}
+        return {}
+
     async def _get_session_adapter_for_request(
         self,
         request: AgentRequest,
@@ -3607,6 +3621,14 @@ class JiuWenSwarmDeepAdapter:
                 history_before_request_id=request.request_id,
                 reserve_activity=reserve_activity,
                 external_harness_binding=external_harness_binding,
+                **(
+                    {"model_selection": request.params["model_selection"]}
+                    if (request.params or {}).get("model_selection") is not None else {}
+                ),
+                **({"model_name": request.params["model_name"]} if (request.params or {}).get("model_name") else {}),
+                **({"moa_enabled": request.params["moa_enabled"]} if "moa_enabled" in (request.params or {}) else {}),
+                **self.moa_access_kwargs(request),
+                **({"retain_moa_snapshot": True} if self._is_interrupt_resume_dispatch(request.params) else {}),
             )
 
         selected: JiuWenSwarmDeepAdapter | None = None
@@ -3619,6 +3641,14 @@ class JiuWenSwarmDeepAdapter:
                 reserve_activity=reserve_activity,
                 host_external_input=True,
                 external_harness_binding=external_harness_binding,
+                **(
+                    {"model_selection": request.params["model_selection"]}
+                    if (request.params or {}).get("model_selection") is not None else {}
+                ),
+                **({"model_name": request.params["model_name"]} if (request.params or {}).get("model_name") else {}),
+                **({"moa_enabled": request.params["moa_enabled"]} if "moa_enabled" in (request.params or {}) else {}),
+                **self.moa_access_kwargs(request),
+                **({"retain_moa_snapshot": True} if self._is_interrupt_resume_dispatch(request.params) else {}),
             )
 
         builder = self._permissions_external_input_context_builder
@@ -3645,8 +3675,14 @@ class JiuWenSwarmDeepAdapter:
         host_external_input: bool = False,
         permission_project_dir: str | None = None,
         external_harness_binding: dict[str, Any] | None = None,
+        moa_enabled: bool | None = None,
+        model_selection: Any = None,
+        moa_can_access: Callable[[str, str], bool] | None = None,
+        retain_moa_snapshot: bool = False,
     ) -> "JiuWenSwarmDeepAdapter":
         """Return the session-owned adapter, creating and initializing it once."""
+        if moa_enabled is not None and not isinstance(moa_enabled, bool):
+            raise ValueError("moa_enabled must be a boolean")
         if self._is_session_scoped_adapter:
             self._touch_session_adapter(session_id)
             return self
@@ -3658,6 +3694,9 @@ class JiuWenSwarmDeepAdapter:
         lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
         async with lock:
             existing = self._session_adapters.get(sid)
+            if external_harness_binding is None and existing is None:
+                external_harness_binding = load_persisted_external_harness_binding(sid)
+
             if existing is not None and external_harness_binding is not None:
                 requested_kind = external_harness_binding.get("kind")
                 current_binding = getattr(
@@ -3694,6 +3733,109 @@ class JiuWenSwarmDeepAdapter:
                         "当前 session child 的运行时与请求不一致；"
                         "请新建会话后切换专家或运行时"
                     )
+            effective_moa = False
+            is_external_harness = (
+                (
+                    isinstance(external_harness_binding, dict)
+                    and external_harness_binding.get("kind") == "external_harness"
+                )
+                or getattr(existing, "_external_harness_binding", None) is not None
+            )
+            if not is_external_harness:
+                from jiuwenswarm.server.runtime.session.session_metadata import (
+                    get_session_metadata, update_session_metadata,
+                )
+
+                metadata = get_session_metadata(sid)
+                from jiuwenswarm.common.model_selection import ModelSelection
+                from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled, resolve_moa_settings
+
+                # Explicit stable selections win; legacy ordinary names are also an
+                # explicit switch away from a persisted group. The old boolean is
+                # accepted for transport compatibility but never drives execution.
+                raw_selection = model_selection
+                if raw_selection is None and model_name:
+                    if model_name.startswith(("model:", "model_group:")):
+                        kind, identifier, *route = model_name.split(":", 2)
+                        raw_selection = {"type": kind, "id": identifier, "route_id": route[0] if route else None}
+                elif raw_selection is None:
+                    raw_selection = metadata.get("model_selection")
+                selection = ModelSelection.model_validate(raw_selection) if raw_selection is not None else None
+                mode = self._session_instance_mode
+                moa_snapshot = None
+                moa_fingerprint = None
+                # Same-class children own their execution and permission lifetimes.
+                busy = existing is not None and (
+                    retain_moa_snapshot
+                    or existing._is_session_live(sid)  # pylint: disable=protected-access
+                    or existing._has_live_root_permission_owner(sid)  # pylint: disable=protected-access
+                )
+                if busy:
+                    installed_selection = getattr(existing, "_collaboration_model_selection", None)
+                    explicit_switch = model_selection is not None or bool(model_name)
+                    if not retain_moa_snapshot and explicit_switch and selection != installed_selection:
+                        raise RuntimeError("Model selection cannot change while the session is executing")
+                    # Global settings and metadata changes never replace a running
+                    # or permission-suspended invocation's installed snapshot.
+                    effective_moa = getattr(existing, "_moa_enabled", False)
+                    selection = installed_selection
+                    moa_fingerprint = getattr(existing, "_moa_fingerprint", None)
+                    if effective_moa and moa_can_access is not None:
+                        # Read the same-class child's installed snapshot, not global settings.
+                        resolve_moa_settings(
+                            existing._instance_overrides["moa_config_snapshot"],  # pylint: disable=protected-access
+                            selection,
+                            can_access=moa_can_access,
+                        )
+                else:
+                    moa_snapshot = copy.deepcopy(get_config())
+                    effective_moa = effective_moa_enabled(
+                        moa_snapshot, selection, mode=mode,
+                        is_cron=self._is_cron_execution_session(sid),
+                    )
+                    if effective_moa:
+                        _, _, moa_fingerprint = resolve_moa_settings(
+                            moa_snapshot, selection,
+                            **({"can_access": moa_can_access} if moa_can_access is not None else {}),
+                        )
+                    else:
+                        moa_snapshot = None
+                    if model_selection is not None and selection is not None:
+                        from jiuwenswarm.server.runtime.session.session_metadata import update_session_model_selection
+                        update_session_model_selection(sid, selection.model_dump())
+                    elif model_name and selection is None:
+                        previous_selection = metadata.get("model_selection")
+                        had_group_selection = (
+                            isinstance(previous_selection, dict)
+                            and previous_selection.get("type") == "model_group"
+                        )
+                        if (
+                            had_group_selection
+                            and not is_team_mode(mode)
+                            and not self._is_cron_execution_session(sid)
+                        ):
+                            # Login/free choices use a legacy name rather than a stable
+                            # resource DTO. Clear the old group so it cannot override
+                            # that explicit ordinary choice or return after a refresh.
+                            from jiuwenswarm.server.runtime.session.session_metadata import (
+                                update_session_model_selection,
+                            )
+                            update_session_model_selection(sid, None)
+                            update_session_metadata(
+                                session_id=sid, model=model_name, moa_enabled=False,
+                                touch_last_message_at=False, sync_write=True,
+                            )
+                            metadata["moa_enabled"] = False
+                if existing is not None and not busy:
+                    if (
+                        effective_moa != getattr(existing, "_moa_enabled", False)
+                        or moa_fingerprint != getattr(existing, "_moa_fingerprint", None)
+                    ):
+                        # Rebuild under the same lock used for session creation, then
+                        # restore disk history before the next turn can enter.
+                        await existing.cleanup()
+                        self._drop_session_adapter_cache_entry(sid, remove_lock=False)
+                        existing = None
             # Same-class child cleanup remains serialized by this session lock.
             if (
                 existing is not None
@@ -3734,8 +3876,9 @@ class JiuWenSwarmDeepAdapter:
                     )
                     and (
                         frozen_mcp_scan_names != requested_mcp_scan_names
-                        or not existing.skill_retrieval_model_profile_matches(
-                            model_name
+                        or (
+                            not effective_moa
+                            and not existing.skill_retrieval_model_profile_matches(model_name)
                         )
                     )
                 )
@@ -3773,9 +3916,6 @@ class JiuWenSwarmDeepAdapter:
                         sid
                     )
                 return existing
-
-            if external_harness_binding is None:
-                external_harness_binding = load_persisted_external_harness_binding(sid)
 
             adapter = self._new_session_scoped_adapter(sid)
             if (
@@ -3822,12 +3962,19 @@ class JiuWenSwarmDeepAdapter:
             create_started_at = time.monotonic()
             if permission_project_dir is not None:
                 config = {**(config or {}), "project_dir": permission_project_dir}
+            config = {**(config or {}), "moa_enabled": effective_moa,
+                      "moa_model_selection": selection.model_dump() if selection is not None else None}
+            if moa_snapshot is not None:
+                config["moa_config_snapshot"] = moa_snapshot
+                config["moa_can_access"] = moa_can_access
             await adapter.create_instance(
                 config,
                 mode=self._session_instance_mode,
                 sub_mode=self._session_instance_sub_mode,
                 **self._session_instance_extra_create_kwargs(),
             )
+            # The same-class child retains the selection used to build its runtime.
+            adapter._collaboration_model_selection = selection  # pylint: disable=protected-access
             adapter.persist_skill_retrieval_session_profile()
             instance_ready_at = time.monotonic()
 
@@ -3835,6 +3982,11 @@ class JiuWenSwarmDeepAdapter:
             interaction_ready_at = time.monotonic()
 
             self._session_adapters[sid] = adapter
+            if metadata.get("moa_enabled") is not effective_moa:
+                update_session_metadata(
+                    session_id=sid, moa_enabled=effective_moa,
+                    touch_last_message_at=False, sync_write=True,
+                )
             # A brand-new session adapter is created from ``_session_instance_config``
             # (which may predate the latest global reload). If a global reload left a
             # pending ``config_base``, apply it now so the new session reflects the
@@ -4643,6 +4795,7 @@ class JiuWenSwarmDeepAdapter:
 
             state = {
                 "model": self._resolve_model_name(),
+                "moa_enabled": self._moa_enabled,
                 "available_models": get_model_names(),
                 "mode": mode_display,
                 "language": language,
@@ -5504,6 +5657,10 @@ class JiuWenSwarmDeepAdapter:
         model_name: str | None = None,
         history_before_request_id: str | None = None,
         runtime_binding: dict[str, Any] | None = None,
+        moa_enabled: bool | None = None,
+        model_selection: Any = None,
+        moa_can_access: Callable[[str, str], bool] | None = None,
+        retain_moa_snapshot: bool = False,
     ) -> None:
         """Reconcile this session's MCP set to ``needed`` (idempotent diff).
 
@@ -5534,6 +5691,10 @@ class JiuWenSwarmDeepAdapter:
         child = await self._get_or_create_session_adapter(
             session_id,
             **session_adapter_kwargs,
+            **({"model_selection": model_selection} if model_selection is not None else {}),
+            **({"moa_enabled": moa_enabled} if moa_enabled is not None else {}),
+            **({"moa_can_access": moa_can_access} if moa_can_access is not None else {}),
+            **({"retain_moa_snapshot": True} if retain_moa_snapshot else {}),
         )
         if child._instance is None:
             pending_holder = getattr(
@@ -7087,6 +7248,9 @@ class JiuWenSwarmDeepAdapter:
         inject_attribution_to_config(config)
 
     def _create_model(self, config: dict) -> Model:
+        if self._moa_runtime is not None:
+            # Reloads of other settings retain this invocation's group models.
+            return self._moa_runtime.aggregator
         # 指纹比对：模型配置未变且缓存非空时跳过重建，避免热更新时反复销毁/重建 Model 实例
         new_fp = self._models_config_fingerprint(config)
         if (
@@ -7245,6 +7409,8 @@ class JiuWenSwarmDeepAdapter:
         ``#``-bearing request through the global map removes that collision
         while keeping the pure-name path (format 1) intact.
         """
+        if self._moa_runtime is not None:
+            return self._moa_runtime.aggregator
         requested = (requested_model_name or "").strip()
         if requested.startswith(("model:", "model_group:")):
             return self._resolve_stable_model(requested)
@@ -7349,6 +7515,11 @@ class JiuWenSwarmDeepAdapter:
             except ValidationError as exc:
                 raise ValueError(f"invalid model_selection: {exc}") from exc
         session_id = str(getattr(request, "session_id", None) or "").strip()
+        explicit_legacy = str(params.get("model_name") or "").strip()
+        single_agent = (
+            not is_team_mode(getattr(self, "_session_instance_mode", "agent"))
+            and not self._is_cron_execution_session(session_id)
+        )
         if session_id:
             try:
                 from jiuwenswarm.server.runtime.session.model_selection_store import get_session_model_selection
@@ -7367,14 +7538,19 @@ class JiuWenSwarmDeepAdapter:
         instance_config = getattr(self, "_session_instance_config", None) or {}
         raw_spec_selection = definition.get("model_selection", instance_config.get("model_selection"))
         spec_selection = ModelSelection.model_validate(raw_spec_selection) if raw_spec_selection is not None else None
-        requested = str(params.get("model_name") or "").strip()
-        requested = requested or self._session_stored_model_name(getattr(request, "session_id", None))
+        requested = explicit_legacy or self._session_stored_model_name(getattr(request, "session_id", None))
         context = ModelExecutionContext(spec_selection=spec_selection, legacy_model_name=requested)
         has_default_group = any(g.get("is_default") and g.get("enabled", True) for g in catalog.snapshot["groups"])
         matches = []
         for model in catalog.list_public_models():
             if requested and requested in {model["model_name"], model["alias"]}:
                 matches.append(model)
+        ordinary_requested = bool(requested) and single_agent
+        if ordinary_requested and spec_selection is None and len(matches) <= 1:
+            # An explicitly chosen/restored ordinary model must not be replaced
+            # by a globally default group. Login/free names remain boundary
+            # selectors; configured aliases resolve to their stable model ID.
+            return f"model:{matches[0]['model_id']}" if matches else requested
         if len(matches) > 1 and spec_selection is None and not has_default_group:
             from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
             raise ModelSelectionError(MODEL_GROUP_INVALID, "ambiguous legacy model name; select a stable model_id")
@@ -7406,6 +7582,36 @@ class JiuWenSwarmDeepAdapter:
         self._stable_selection_cache = {requested: (fingerprint, model)}
         return model
 
+    def _prepare_moa_for_build(self, config_base: dict[str, Any], model: Model | None = None) -> Model:
+        """Freeze the session's selected group and scorer before initialization."""
+        from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled
+
+        snapshot = self._instance_overrides.get("moa_config_snapshot") or config_base
+        selection = self._instance_overrides.get("moa_model_selection")
+        self._moa_enabled = effective_moa_enabled(
+            snapshot, selection, mode=self._session_instance_mode,
+            is_cron=self._is_cron_execution_session(self._parent_session_id),
+        )
+        self._moa_runtime = None
+        self._moa_fingerprint = None
+        if not self._moa_enabled:
+            return model if model is not None else self._create_model(config_base)
+        if is_team_mode(self._session_instance_mode) or self._is_cron_execution_session(self._parent_session_id):
+            raise ValueError("MoA is available only for single-agent sessions")
+        from jiuwenswarm.server.runtime.moa_runtime import build_moa_runtime
+
+        snapshot = self._instance_overrides.get("moa_config_snapshot") or config_base
+        self._moa_runtime = build_moa_runtime(
+            snapshot, selection, can_access=self._instance_overrides.get("moa_can_access"),
+        )
+        self._moa_fingerprint = self._moa_runtime.fingerprint
+        self._model = self._moa_runtime.aggregator
+        self._default_model_name = self._moa_runtime.model_name
+        self._model_client_config = self._model.model_client_config
+        self._model_request_config = self._model.model_config
+        self._selected_model_context_window_tokens = getattr(self._model_request_config, "context_window", None)
+        return self._model
+
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
         """根据请求中的 model_name 参数查找对应模型（支持别名），未匹配则回退默认模型。
 
@@ -7416,6 +7622,17 @@ class JiuWenSwarmDeepAdapter:
         请求未显式携带 model_name 时：最近一次已应用模型 → 会话 metadata.model
         → 适配器默认模型。避免 command.goal / 中断恢复在适配器重建后掉回默认。
         """
+        if self._moa_runtime is not None:
+            access = self.moa_access_kwargs(request)
+            if access:
+                from jiuwenswarm.server.runtime.moa_runtime import resolve_moa_settings
+
+                resolve_moa_settings(
+                    self._instance_overrides.get("moa_config_snapshot") or self._config_base_cache,
+                    self._instance_overrides.get("moa_model_selection"),
+                    can_access=access["moa_can_access"],
+                )
+            return self._moa_runtime.aggregator
         requested = self._requested_model_name(request)
         # 登录模型：Gateway 随请求带下凭据时优先构建，不进共享缓存（避免串号）。
         scoped = self._request_scoped_login_model(request, requested)
@@ -7537,6 +7754,11 @@ class JiuWenSwarmDeepAdapter:
         return "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
 
     def _model_config_error(self, request: AgentRequest) -> tuple[str, str] | None:
+        if self._moa_runtime is not None:
+            # Enhanced execution owns its model independently of the ordinary
+            # selection, including a saved model/group that no longer exists.
+            self._resolve_model_for_request(request)
+            return None
         requested = self._requested_model_name(request)
         scoped = self._scoped_login_auth(request)
         self._note_session_model(request, uses_login_model=scoped is not None)
@@ -10299,6 +10521,7 @@ class JiuWenSwarmDeepAdapter:
         self._kv_cache_affinity_enabled = kv_cache_affinity_config.enable_kv_cache_affinity
         return DeepAgentConfig(
             model=model,
+            moa=self._moa_runtime.config if self._moa_runtime is not None else None,
             card=agent_card,
             tool_owner_id=self._tool_owner_id(),
             system_prompt=build_agent_identity_prompt(
@@ -11496,6 +11719,8 @@ class JiuWenSwarmDeepAdapter:
         else:
             self._dreaming_mode = "agent"
         self._instance_overrides = dict(config or {}) if isinstance(config, dict) else {}
+        if "moa_enabled" in self._instance_overrides and not isinstance(self._instance_overrides["moa_enabled"], bool):
+            raise ValueError("moa_enabled must be a boolean")
         load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
         config_base = get_config()
         if self._instance_overrides.get("run_permissions_enabled"):
@@ -11541,7 +11766,7 @@ class JiuWenSwarmDeepAdapter:
                 self._start_mcp_prewarm()
             return
 
-        model = self._create_model(config_base)
+        model = self._prepare_moa_for_build(config_base)
         if (
             self._is_session_scoped_adapter
             and self._skill_retrieval_tools_enabled_for_runtime(config_base)
@@ -11653,6 +11878,7 @@ class JiuWenSwarmDeepAdapter:
         self._kv_cache_affinity_enabled = kv_cache_affinity_config.enable_kv_cache_affinity
         self._instance = create_deep_agent(
             **common_kwargs,
+            moa=self._moa_runtime.config if self._moa_runtime is not None else None,
             context_engine_config=context_engine_config,
             kv_cache_affinity_config=kv_cache_affinity_config,
             vision_model_config=self._vision_model_config,
@@ -14548,7 +14774,15 @@ class JiuWenSwarmDeepAdapter:
                         await self._evict_idle_session_adapters()
             else:
                 # pause/resume：需要 session-scoped adapter 的 StreamEventRail，按原逻辑创建。
-                session_adapter = await self._get_or_create_session_adapter(request.session_id)
+                session_adapter = await self._get_or_create_session_adapter(
+                    request.session_id, retain_moa_snapshot=True,
+                    **(
+                        {"model_selection": request.params["model_selection"]}
+                        if request.params.get("model_selection") is not None else {}
+                    ),
+                    **({"moa_enabled": request.params["moa_enabled"]} if "moa_enabled" in request.params else {}),
+                    **self.moa_access_kwargs(request),
+                )
                 try:
                     return await session_adapter.process_interrupt(request)
                 finally:

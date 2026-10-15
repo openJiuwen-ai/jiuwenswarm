@@ -148,6 +148,44 @@ async def test_create_prepares_metadata_and_commits_kvc_after_delivery(
 
 
 @pytest.mark.asyncio
+async def test_moa_create_persists_selection_and_bypasses_normal_warm_pool(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: {"experimental": {"multi_model_collaboration_enabled": True}})
+    monkeypatch.setattr("jiuwenswarm.server.runtime.moa_runtime.resolve_moa_settings", lambda *_: ({}, None, "fingerprint"))
+    provisioner = _provisioner(state)
+    original_claim = provisioner._agent_manager.claim_prewarmed_session
+    claim_kwargs = {}
+
+    async def claim(**kwargs):
+        claim_kwargs.update(kwargs)
+        result = await original_claim(**kwargs)
+        result.session_id = "moa-created-session"
+        return result
+
+    monkeypatch.setattr(provisioner._agent_manager, "claim_prewarmed_session", claim)
+    prepared = await provisioner.prepare_session_create(_input(model_selection={"type": "model_group", "id": "test-group"}, moa_enabled=False))
+    assert claim_kwargs["prewarm_eligible"] is False
+    assert claim_kwargs["moa_enabled"] is True
+    assert prepared.result.moa_enabled is True
+    assert get_session_metadata(prepared.result.session_id)["moa_enabled"] is True
+    assert get_session_metadata(prepared.result.session_id)["model_selection"]["id"] == "test-group"
+    await provisioner.abort_session_provision(prepared)
+
+
+@pytest.mark.asyncio
+async def test_disabled_group_moa_rejected_before_claim(monkeypatch, tmp_path):
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: {})
+    with pytest.raises(SessionProvisionError, match="ordinary model"):
+        await _provisioner(state).prepare_session_create(_input(model_selection={"type": "model_group", "id": "test-group"}))
+    assert "claim" not in state.events
+
+
+@pytest.mark.asyncio
 async def test_team_prepare_finishes_before_create_result(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,

@@ -9,7 +9,11 @@ import { useSettingsConfig } from './useSettingsConfig';
 export type SettingsSourceController = {
   values: Readonly<Record<string, unknown>>;
   savingKeys: ReadonlySet<string>;
-  save: (updates: Record<string, SettingValue>, operation: string) => Promise<unknown>;
+  save: (
+    updates: Record<string, SettingValue>,
+    operation: string,
+    options?: { optimistic?: boolean },
+  ) => Promise<unknown>;
   patchLocal: (updates: Record<string, unknown>) => void;
 };
 
@@ -37,25 +41,31 @@ function ConfigSourceProvider({ children }: { children: ReactNode }) {
   const [savingKeys, setSavingKeys] = useState<ReadonlySet<string>>(() => new Set());
 
   const save = useCallback(
-    async (updates: Record<string, SettingValue>, operation: string) => {
+    async (updates: Record<string, SettingValue>, operation: string, options?: { optimistic?: boolean }) => {
       const serialized = Object.fromEntries(
         Object.entries(updates).map(([key, value]) => [key, serializeConfigSettingValue(value)]),
       );
       const keys = Object.keys(serialized);
       const previous = Object.fromEntries(keys.map((key) => [key, config[key]]));
       setSavingKeys((current) => addSavingKeys(current, keys));
-      setConfig((current) => ({ ...current, ...serialized }));
+      const optimistic = options?.optimistic !== false;
+      const visible = { ...serialized };
+      delete visible.moa_jev_api_key;
+      delete visible.moa_jev_api_key_clear;
+      if (optimistic) setConfig((current) => ({ ...current, ...visible }));
       try {
         return await saveConfig(serialized, operation);
       } catch (saveError) {
-        setConfig((current) => {
-          const next = { ...current };
-          keys.forEach((key) => {
-            if (previous[key] === undefined) delete next[key];
-            else next[key] = previous[key];
+        if (optimistic) {
+          setConfig((current) => {
+            const next = { ...current };
+            Object.keys(visible).forEach((key) => {
+              if (previous[key] === undefined) delete next[key];
+              else next[key] = previous[key];
+            });
+            return next;
           });
-          return next;
-        });
+        }
         throw saveError;
       } finally {
         setSavingKeys((current) => removeSavingKeys(current, keys));

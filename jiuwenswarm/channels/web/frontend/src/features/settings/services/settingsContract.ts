@@ -1,5 +1,7 @@
 import type { ModelEntry } from '../../../types';
 
+export const SETTINGS_CONFIG_CHANGED_EVENT = 'jiuwen:settings-config-changed';
+
 export type SettingsCategory = 'general' | 'models' | 'agent' | 'browser' | 'channels' | 'security' | 'experimental';
 
 export type SettingsRequest = <T = unknown>(
@@ -129,6 +131,25 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('visual_gen_enabled', 'agent', 'boolean', 'VISUAL_GEN_ENABLED'),
 
   yamlField('permissions_enabled', 'security', 'boolean', 'permissions.enabled'),
+
+  yamlField(
+    'multi_model_collaboration_enabled',
+    'experimental',
+    'boolean',
+    'experimental.multi_model_collaboration_enabled',
+  ),
+  yamlField('moa_jev_enabled', 'experimental', 'boolean', 'experimental.multi_model_collaboration.jev_enabled'),
+  yamlField(
+    'moa_verifier_interval',
+    'experimental',
+    'integer',
+    'experimental.multi_model_collaboration.verifier_interval',
+  ),
+  yamlField('moa_jev_api_base', 'experimental', 'text', 'experimental.multi_model_collaboration.jev.api_base'),
+  yamlField('moa_jev_model_name', 'experimental', 'text', 'experimental.multi_model_collaboration.jev.model_name'),
+  yamlField('moa_jev_api_key', 'experimental', 'text', 'experimental.multi_model_collaboration.jev.api_key'),
+  // Write-only action: clearing the key also disables JEV in the same backend save.
+  yamlField('moa_jev_api_key_clear', 'experimental', 'boolean', 'experimental.multi_model_collaboration.jev.api_key'),
 
   yamlField('a2ui_enabled', 'experimental', 'boolean', 'a2ui.enabled'),
   yamlField('rsi_enabled', 'experimental', 'boolean', 'rsi.enabled'),

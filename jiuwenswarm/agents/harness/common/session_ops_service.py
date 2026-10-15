@@ -436,6 +436,9 @@ def fork_session(
         "project_id": source_meta.get("project_id", ""),
         "project_dir": source_meta.get("project_dir", ""),
     }
+    metadata["moa_enabled"] = source_meta.get("moa_enabled") is True
+    if "model_selection" in source_meta:
+        metadata["model_selection"] = copy.deepcopy(source_meta["model_selection"])
     if "model" in source_meta:
         metadata["model"] = source_meta["model"]
     source_equipment = source_meta.get("session_equipment")
@@ -462,6 +465,7 @@ def fork_session(
         "session_id": target_session_id,
         "source_session_id": source_session_id,
         "title": final_title,
+        "moa_enabled": metadata["moa_enabled"],
     }
 
 

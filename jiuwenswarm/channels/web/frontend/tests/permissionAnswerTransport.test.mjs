@@ -107,7 +107,7 @@ for (const count of [1, 2]) for (const action of ['allow-once', 'reject']) {
     const request = socket.requests.at(-1);
     assert.equal(request.method, 'chat.send');
     assert.equal(request.params.request_id, 'sdk-request');
-    assert.deepEqual(request.params.answers, Array.from({ length: count }, () => ({ selected_options: [action === 'reject' ? 'reject' : 'allow_once'] })));
+    assert.deepEqual(request.params.answers, Array.from({ length: count }, () => ({ question: 'Read protected file?', selected_options: [action === 'reject' ? 'reject' : 'allow_once'] })));
     assert.ok(prompt(), 'not consumed before acceptance');
     await respond(socket, request);
     assert.deepEqual(observed.results, [true]);
@@ -147,7 +147,7 @@ for (const language of ['zh', 'en']) {
         assert.match(details.textContent, /Check the content before allowing/);
         await act(async () => document.querySelector('[data-variant="allow-once"]').click());
         const request = socket.requests.at(-1);
-        assert.deepEqual(request.params.answers, [{ selected_options: ['allow_once'], card_id: 'exact-card' }]);
+        assert.deepEqual(request.params.answers, [{ question: 'Read protected file?', selected_options: ['allow_once'], card_id: 'exact-card' }]);
         assert.equal(header.getAttribute('aria-expanded'), 'true', 'action buttons do not collapse the prompt');
         await respond(socket, request);
         await runtimeAck(socket, 'foreign');
@@ -272,3 +272,20 @@ test('multi-item review keeps the count and each item status out of the prompt h
   pending: payload([question({ reviewer_metadata: manual }), question({ reviewer_metadata: automatic })]),
   onSubmit: async () => true,
 })));
+
+
+test('permission answers preserve a collaboration group after the experimental switch is off', async () => mounted(async ({ observed, socket }) => {
+  const selection = { type: 'model_group', id: 'mgp-permission' };
+  useSessionStore.getState().setSelectedModelSelection(sessionId, selection);
+  await act(async () => socket.receive({ type: 'event', event: 'chat.ask_user_question', payload: payload() }));
+  let result;
+  await act(async () => { result = observed.api.sendUserAnswer(sessionId, 'sdk-request', [
+    { question: 'Read protected file?', selected_options: ['allow_once'] },
+  ], 'permission_interrupt'); });
+  const request = socket.requests.at(-1);
+  assert.equal(request.method, 'chat.send');
+  assert.deepEqual(request.params.model_selection, selection);
+  assert.equal(request.params.moa_enabled, undefined);
+  await act(async () => socket.receive({ type: 'res', id: request.id, ok: true, payload: { accepted: true } }));
+  assert.equal(await result, true);
+}));

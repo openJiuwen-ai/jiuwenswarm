@@ -744,7 +744,8 @@
       "proactive": "Proactive recommendations",
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
-      "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check."
+      "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
+      "multiModelCollaboration": "Multi-model collaboration"
     },
     "taskAsr": {
       "dialogTitle": "Configure speech transcription model",
@@ -973,11 +974,48 @@
         "title": "Conversation rounds per check",
         "description": "Maximum recent conversation rounds read on each check to infer recommendation context. Default: 20.",
         "placeholder": "Enter an integer from 1 to 50"
+      },
+      "multi_model_collaboration_enabled": {
+        "title": "Multi-model collaboration",
+        "description": "In a single-agent conversation, select a model group to let its default model combine suggestions from the other members."
+      },
+      "moa_jev_enabled": {
+        "title": "JEV decision",
+        "description": "Use JEV to verify execution progress. When off, use the selected model group’s default model."
+      },
+      "moa_verifier_interval": {
+        "title": "Verification interval (rounds)",
+        "description": "Verify every N agent execution rounds. One round includes a primary model decision and any tool execution, rather than a user conversation turn."
+      },
+      "moa_jev_api_base": {
+        "title": "API URL",
+        "description": "The independent JEV service URL.",
+        "placeholder": "https://api.typesafe.ai"
+      },
+      "moa_jev_model_name": {
+        "title": "Model name",
+        "description": "The JEV verification model.",
+        "placeholder": "jev-latest"
+      },
+      "moa_jev_api_key": {
+        "title": "API Key",
+        "description": "The JEV service credential.",
+        "placeholder": "Enter API Key"
       }
     },
     "validation": {
       "required": "This field is required",
       "integerRange": "Enter an integer from {{min}} to {{max}}"
+    },
+    "multiModelCollaboration": {
+      "jevConfigTitle": "JEV configuration",
+      "jevConfigDescription": "Used only for multi-model collaboration verification. Browser decision settings are independent.",
+      "keepKey": "Leave blank to keep the saved key.",
+      "clearKeyConfirm": "Clear the JEV key and turn off JEV decision? Subsequent verification will use the model group’s default model.",
+      "errors": {
+        "apiBaseInvalid": "Enter a valid HTTP or HTTPS URL without login credentials.",
+        "intervalInvalid": "Enter an integer greater than 0."
+      }
     }
   },
   "trajectory": {
@@ -1371,7 +1409,10 @@
       "addModel": "Add Custom Model/Model Group",
       "selectionFailed": "Model selection could not be applied. Please choose again.",
       "empty": "No models available. Add a model in Settings first.",
-      "placeholder": "Select Model"
+      "placeholder": "Select Model",
+      "selectOrdinaryModel": "Select an individual model",
+      "collaborationDisabled": "Multi-model collaboration is off. Select an individual model before sending.",
+      "noModelGroups": "No model groups yet. Create one in Settings."
     },
     "contextUsage": {
       "title": "Context usage",

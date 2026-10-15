@@ -1028,6 +1028,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         await self.set_checkpoint()
 
         self._instance_overrides = dict(config or {}) if isinstance(config, dict) else {}
+        if "moa_enabled" in self._instance_overrides and not isinstance(self._instance_overrides["moa_enabled"], bool):
+            raise ValueError("moa_enabled must be a boolean")
         config_base = get_config()
         if self._instance_overrides.get("run_permissions_enabled"):
             config_base = deepcopy(config_base)
@@ -1080,8 +1082,21 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             return
 
         model: Model | None = None
-        if spec is None or spec.model is None:
-            model = self._create_model(config_base)
+        from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled
+
+        if effective_moa_enabled(
+            self._instance_overrides.get("moa_config_snapshot") or config_base,
+            self._instance_overrides.get("moa_model_selection"),
+            mode=self._session_instance_mode,
+            is_cron=self._is_cron_execution_session(self._parent_session_id),
+        ):
+            model = self._prepare_moa_for_build(config_base)
+        else:
+            self._moa_enabled = False
+            self._moa_runtime = None
+            self._moa_fingerprint = None
+            if spec is None or spec.model is None:
+                model = self._create_model(config_base)
 
         # 权限护栏由 openjiuwen PermissionInterruptRail + ToolPermissionHost 接管；
         # 无需初始化 jiuwenswarm 内置 PermissionEngine（已弃用）。
@@ -1125,8 +1140,18 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 model=model,
                 build_context=self._code_build_context,
             )
+        self._code_build_context.moa = self._moa_runtime.config if self._moa_runtime is not None else None
+        if self._moa_runtime is not None:
+            # A custom Spec remains serializable; its model must use the
+            # selected aggregator for this session's enhanced execution.
+            self._code_agent_spec = self._code_agent_spec.model_copy(update={"model": ModelSpec(
+                model_client_config=model.model_client_config,
+                model_request_config=model.model_config,
+            )})
         self._instance = self._code_agent_spec.build(self._code_build_context)
-        if spec is not None:
+        if self._moa_runtime is not None:
+            self._apply_model_to_react_agent(model, session_id=self._parent_session_id)
+        if spec is not None and self._moa_runtime is None:
             built_model = getattr(self._instance.deep_config, "model", None)
             if built_model is not None:
                 self._adopt_code_spec_model(built_model)
@@ -1661,6 +1686,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 config,
                 model,
             )
+            if self._moa_runtime is not None:
+                new_context.moa = self._moa_runtime.config
             parts = new_spec.resolve_parts(new_context)
             candidate_rails = list(parts.rails)
             parts.config.tool_owner_id = new_context.tool_owner_id

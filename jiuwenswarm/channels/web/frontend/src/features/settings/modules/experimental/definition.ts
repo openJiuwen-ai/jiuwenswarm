@@ -7,6 +7,7 @@ import {
   RSISetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
+import { MultiModelVerificationSettings } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
@@ -99,6 +100,22 @@ export const experimentalModule: SettingsModuleDefinition = {
             show: 'always',
             disabled: 'when-parent-unchecked',
             items: [{ id: 'proactive-limits', component: 'custom', render: ProactiveLimitsSetting }],
+          },
+        },
+      ],
+    },
+    {
+      id: 'multi-model-collaboration',
+      titleKey: 'settingsPanel.experimental.multiModelCollaboration',
+      items: [
+        {
+          id: 'multi-model-collaboration-enabled',
+          component: 'switch',
+          key: 'multi_model_collaboration_enabled',
+          subItems: {
+            show: 'when-parent-checked',
+            disabled: 'never',
+            items: [{ id: 'multi-model-verification', component: 'custom', render: MultiModelVerificationSettings }],
           },
         },
       ],

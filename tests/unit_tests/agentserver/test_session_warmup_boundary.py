@@ -111,6 +111,21 @@ async def test_stream_chat_passes_history_boundary_to_mcp_reconcile(monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("enhanced", [True, False])
+async def test_chat_selection_reaches_the_instance_boundary_before_processing(monkeypatch, enhanced):
+    facade, reconcile = _chat_facade(monkeypatch)
+    request = _request()
+    request.params["moa_enabled"] = enhanced
+
+    await facade.process_message(request)
+
+    reconcile.assert_awaited_once_with(
+        "session-1", [], model_name=None,
+        history_before_request_id="request-current", moa_enabled=enhanced,
+    )
+
+
+@pytest.mark.asyncio
 async def test_external_runtime_is_resolved_before_stream_mcp_reconcile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -248,3 +263,16 @@ async def test_facade_mcp_reconcile_keeps_legacy_adapter_signature_compatible():
     )
 
     assert calls == [("session-1", [])]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selection", [{"type": "model_group", "id": "group-a"}, {"type": "model", "id": "model-a"}])
+async def test_stable_selection_reaches_initial_mcp_boundary(monkeypatch, selection):
+    facade, reconcile = _chat_facade(monkeypatch)
+    request = _request()
+    request.params["model_selection"] = selection
+    await facade.process_message(request)
+    reconcile.assert_awaited_once_with(
+        "session-1", [], model_name=None,
+        history_before_request_id="request-current", model_selection=selection,
+    )

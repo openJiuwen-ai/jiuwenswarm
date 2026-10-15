@@ -27,6 +27,8 @@ interface ModelPickerProps {
   /** 过滤掉登录/免费模型，用于无法持久化免费模型凭据的场景；默认不过滤。 */
   excludeFreeModels?: boolean;
   testIdPrefix?: string;
+  /** Explain a saved selection that is unavailable without replacing it. */
+  unavailableSelectionLabel?: string;
 }
 
 const MENU_GAP = 10;
@@ -67,6 +69,7 @@ export default function ModelPicker({
   onAddModel,
   excludeFreeModels = false,
   testIdPrefix = 'model-picker',
+  unavailableSelectionLabel,
 }: ModelPickerProps): JSX.Element {
   const { t } = useTranslation();
   const allModels = useSessionStore((state) => state.chatAvailableModels);
@@ -86,7 +89,11 @@ export default function ModelPicker({
   const menuRef = useRef<HTMLDivElement>(null);
   const nestedMenuRef = useRef<HTMLDivElement>(null);
   const nestedCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const selected = models.find((model) => model.model_name === value);
+  const selected =
+    selection?.type === 'model'
+      ? (catalogModels.find((model) => model.model_id === selection.id) ??
+        models.find((model) => model.model_id === selection.id))
+      : models.find((model) => model.model_name === value);
   const freeModels = models.filter((model) => model.is_free === true);
   const enabledGroups = includeModelGroups
     ? modelGroups.filter((group) => group.enabled !== false && Boolean(group.model_group_id))
@@ -111,11 +118,12 @@ export default function ModelPicker({
   }, [configuredModels, t]);
   const activePlanGroup = planModelGroups.find((group) => group.key === activePlanKey) ?? null;
   const displayLabel =
-    selection?.type === 'model_group'
+    unavailableSelectionLabel ||
+    (selection?.type === 'model_group'
       ? selectionLabel || selection.id
       : selected
         ? selected.alias || selected.model_name
-        : value || t('chat.modelSelector.placeholder');
+        : value || t('chat.modelSelector.placeholder'));
   const groups = [
     {
       id: 'free',
@@ -284,7 +292,11 @@ export default function ModelPicker({
               <ModelProviderIcon model={selected} />
             </span>
           )}
-          <span className={clsx('chat-mode-select__label', !value && !selection && 'text-text-muted')}>
+          <span
+            className={clsx('chat-mode-select__label', !value && !selection && 'text-text-muted')}
+            data-testid={`${testIdPrefix}-label`}
+            data-variant={selection?.type ?? 'model'}
+          >
             {displayLabel}
           </span>
         </span>
@@ -312,6 +324,27 @@ export default function ModelPicker({
             role="menu"
             data-testid={`${testIdPrefix}-menu`}
             style={{ position: 'fixed', zIndex: 9999, visibility: position ? 'visible' : 'hidden', ...position }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.stopPropagation();
+                setOpen(false);
+                rootRef.current?.querySelector('button')?.focus();
+              } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+                event.preventDefault();
+                const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+                if (!options.length) return;
+                const current = options.indexOf(document.activeElement as HTMLButtonElement);
+                const next =
+                  event.key === 'Home'
+                    ? 0
+                    : event.key === 'End'
+                      ? options.length - 1
+                      : event.key === 'ArrowDown'
+                        ? (current + 1) % options.length
+                        : (current - 1 + options.length) % options.length;
+                options[next]?.focus();
+              }
+            }}
           >
             {models.length === 0 && enabledGroups.length === 0 && !showFreeModelsCta && (
               <div className="px-2 py-2 text-xs text-text-muted" role="status" data-testid={`${testIdPrefix}-empty`}>

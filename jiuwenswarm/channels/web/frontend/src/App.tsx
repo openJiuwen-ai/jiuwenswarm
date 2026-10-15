@@ -1,3 +1,9 @@
+import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
+import {
+  applyMultiModelCollaborationSnapshot,
+  getMultiModelCollaborationRevision,
+  isMultiModelCollaborationEnabled,
+} from './features/multiModelCollaboration/featureConfig';
 import { AssetPublishHost } from './components/AssetPublishDrawer';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
@@ -31,7 +37,7 @@ import { PersonalContextPanel } from './components/PersonalContext';
 import { LoadingSpinner, ToastStack, toast } from './components/ui';
 import { SettingsPage } from './features/settings/SettingsPage';
 import type { SettingsPageDefinition } from './features/settings/registry/types';
-import type { SettingsRequest } from './features/settings/services/settingsContract';
+import { SETTINGS_CONFIG_CHANGED_EVENT, type SettingsRequest } from './features/settings/services/settingsContract';
 import {
   SETTINGS_MODULE_NAVIGATION_EVENT,
   requestSettingsModule,
@@ -1859,13 +1865,21 @@ function AppContent({
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
     try {
+      const collaborationRevision = getMultiModelCollaborationRevision();
       const config = await request<Record<string, unknown>>('config.get');
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
       setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
       setTeamScheduledDispatchEnabled(config.team_scheduled_dispatch_enabled);
-      setServerConfig(config);
+      const collaborationSnapshotApplied = applyMultiModelCollaborationSnapshot(
+        config.multi_model_collaboration_enabled,
+        collaborationRevision,
+      );
+      setServerConfig(collaborationSnapshotApplied ? config : {
+        ...config,
+        multi_model_collaboration_enabled: isMultiModelCollaborationEnabled(),
+      });
       setConfigError(null);
       if (!modelSetupGuideEvaluatedRef.current) {
         modelSetupGuideEvaluatedRef.current = true;
@@ -1970,6 +1984,7 @@ function AppContent({
   }, []);
 
   const handleConfigChanged = useCallback(() => {
+    window.dispatchEvent(new Event(SETTINGS_CONFIG_CHANGED_EVENT));
     void fetchConfig();
   }, [fetchConfig]);
 
@@ -2219,15 +2234,19 @@ function AppContent({
     }, 8000);
   }, [clearProactiveToastTimer, proactiveNotificationMessage, setProactiveNotification]);
 
+  const configFetchedForConnectionRef = useRef(false);
   useEffect(() => {
-    if (!isConnected || initialDataLoaded) {
+    if (!isConnected) {
+      configFetchedForConnectionRef.current = false;
       return;
     }
+    if (configFetchedForConnectionRef.current) return;
+    configFetchedForConnectionRef.current = true;
     void (async () => {
       await fetchConfig();
       setInitialDataLoaded(true);
     })();
-  }, [fetchConfig, initialDataLoaded, isConnected]);
+  }, [fetchConfig, isConnected]);
 
   const initialProjectsLoadedRef = useRef(false);
 
@@ -2781,7 +2800,7 @@ function AppContent({
     // 模式，无论当前会话是什么模式、也无论有没有未发送的集群模式草稿，跳转会话都要回到单
     // agent 模式（bug003）。
     const nextMode = options.forceMode ?? resolvedEntrySettings.mode;
-    const { selectedModelName } = resolvedEntrySettings;
+    const { selectedModelName, selectedModelSelection } = resolvedEntrySettings;
     setChatWelcomeVariant(options.welcomeVariant ?? null);
     const selectedProject = options.project ?? useWorkspaceStore.getState().selectedProject;
     const projectDir = resolveNewConversationProjectDir(
@@ -2803,7 +2822,7 @@ function AppContent({
       && pendingNewRuntime?.agentGroupSelectionIntent.kind === 'select'
       ? pendingNewRuntime.agentGroupSelectionIntent
       : null;
-    resetNewConversationRuntime({ mode: nextMode, selectedModelName, projectDir });
+    resetNewConversationRuntime({ mode: nextMode, selectedModelName, selectedModelSelection, projectDir });
     if (pendingAgentSelection) {
       useSessionStore.getState().setAgentSelectionIntent(NEW_CONVERSATION_ID, pendingAgentSelection);
     }
@@ -2943,6 +2962,7 @@ function AppContent({
     const runtimeSettings = {
       mode: pendingRuntime?.mode ?? mode,
       selectedModelName: sessionStore.getEffectiveModelName(NEW_CONVERSATION_ID),
+      selectedModelSelection: pendingRuntime?.selectedModelSelection ?? null,
       projectDir: pendingRuntime?.projectDirectory ?? null,
       persistSession: false,
     };
@@ -2973,11 +2993,7 @@ function AppContent({
         createParams.previous_session_id = previousSession.sessionId;
         createParams.previous_mode = previousSession.mode;
       }
-      if (pendingRuntime?.selectedModelSelection) {
-        createParams.model_selection = pendingRuntime.selectedModelSelection;
-      } else if (runtimeSettings.selectedModelName) {
-        createParams.model_name = runtimeSettings.selectedModelName;
-      }
+      Object.assign(createParams, useSessionStore.getState().getModelSelectionPayload(NEW_CONVERSATION_ID));
       if (workContext.project_id) createParams.project_id = workContext.project_id;
       if (workContext.project_dir) createParams.project_dir = workContext.project_dir;
 
@@ -3073,6 +3089,26 @@ function AppContent({
       await sendMessage(content, currentSessionId, mediaItems, options);
       return;
     }
+    const currentState = useSessionStore.getState();
+    const currentRuntime = currentState.getRuntime(currentSessionId);
+    const currentMetadata = currentState.currentSession?.session_id === currentSessionId
+      ? currentState.currentSession
+      : currentState.sessions.find((session) => session.session_id === currentSessionId);
+    const isDesignLanding = currentSessionId === NEW_CONVERSATION_ID
+      && useWorkspaceStore.getState().workMode === 'design';
+    if (
+      !isDesignLanding &&
+      !useChatStore.getState().getRuntime(currentSessionId)?.isProcessing &&
+      isConversationModelGroupBlocked({
+        mode: currentRuntime?.mode,
+        cronId: currentMetadata?.cron_id,
+        selectedModelSelection: currentRuntime?.selectedModelSelection,
+        collaborationEnabled: isMultiModelCollaborationEnabled(),
+      })
+    ) {
+      toast.open({ content: t('chat.modelSelector.collaborationDisabled'), variant: 'error' });
+      return;
+    }
     if (currentSessionId === NEW_CONVERSATION_ID) {
       const persistCommand = parsePersistSessionCommand(content);
       if (persistCommand.persistSession && !persistCommand.content) {
@@ -3083,7 +3119,7 @@ function AppContent({
       if (creatingSessionRef.current) return;
       creatingSessionRef.current = true;
       useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, true);
-      if (useWorkspaceStore.getState().workMode === 'design') {
+      if (isDesignLanding) {
         try {
           const created = await submitDesignComposer({
             prompt: messageContent,
@@ -3128,6 +3164,7 @@ function AppContent({
       const runtimeSettings = {
         mode: newRuntime?.mode ?? mode,
         selectedModelName: useSessionStore.getState().getEffectiveModelName(NEW_CONVERSATION_ID),
+        selectedModelSelection: newRuntime?.selectedModelSelection ?? null,
         projectDir: newRuntime?.projectDirectory ?? null,
         persistSession: persistCommand.persistSession,
       };
@@ -3169,11 +3206,7 @@ function AppContent({
           createParams.previous_session_id = previousSession.sessionId;
           createParams.previous_mode = previousSession.mode;
         }
-        if (newRuntime?.selectedModelSelection) {
-          createParams.model_selection = newRuntime.selectedModelSelection;
-        } else if (runtimeSettings.selectedModelName) {
-          createParams.model_name = runtimeSettings.selectedModelName;
-        }
+        Object.assign(createParams, useSessionStore.getState().getModelSelectionPayload(NEW_CONVERSATION_ID));
         if (workContext.project_id) {
           createParams.project_id = workContext.project_id;
         }

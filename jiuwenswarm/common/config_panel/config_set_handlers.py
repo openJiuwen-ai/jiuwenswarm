@@ -47,6 +47,7 @@ from jiuwenswarm.common.config import (
     TEAM_TASK_VERIFICATION_CONFIG_PATH,
     get_config,
     get_config_raw,
+    resolve_env_vars,
     replace_teams_in_config,
     update_a2ui_in_config,
     update_context_engine_enabled_in_config,
@@ -81,6 +82,12 @@ from jiuwenswarm.common.config_panel.models_handlers import (
     build_models_defaults_from_frontend,
 )
 from jiuwenswarm.common.context_window import parse_positive_int
+from jiuwenswarm.common.moa_config import (
+    MOA_CONFIG_KEYS,
+    build_moa_config_from_frontend,
+    flatten_moa_for_config_panel,
+    save_moa_config_from_frontend,
+)
 from jiuwenswarm.common.kv_cache_affinity_config import (
     ASCEND_AFFINITY_PROVIDER,
     KVC_CONFIG_KEYS,
@@ -198,6 +205,10 @@ class ConfigChangeSet:
             scopes.add("search")
         for key in self.yaml_updated:
             key_text = str(key)
+            if key_text in MOA_CONFIG_KEYS:
+                # Refresh UI settings; execution adopts snapshots at the next turn.
+                scopes.add("web_ui")
+                continue
             if key_text in {"models.defaults"} or key_text.startswith("models."):
                 scopes.add("model")
             elif key_text in {"modes.team", "agents", "team", *TEAM_DISPATCH_CONFIG_KEYS}:
@@ -216,7 +227,10 @@ class ConfigChangeSet:
                 scopes.add("web_ui")
             else:
                 scopes.add("agent_runtime")
-        if self.force and not scopes:
+        if self.force and not scopes and not (
+            self.yaml_updated and not self.env_updates
+            and set(self.yaml_updated) <= MOA_CONFIG_KEYS
+        ):
             scopes.add("agent_runtime")
         return scopes
 
@@ -1253,7 +1267,15 @@ def apply_config_payload(
         raise ConfigPanelBadRequest(
             "permissions_profile and permissions_enabled are mutually exclusive"
         )
-    params = encrypt_config_params(params)
+    moa_params = {key: value for key, value in params.items() if key in MOA_CONFIG_KEYS}
+    if moa_params:
+        try:
+            # Reject invalid collaboration settings before any .env/YAML mutation.
+            build_moa_config_from_frontend(moa_params, get_config_raw(), resolve_value=resolve_env_vars)
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
+    # The MoA section writer encrypts only newly entered, nonempty credentials.
+    params = encrypt_config_params({key: value for key, value in params.items() if key not in MOA_CONFIG_KEYS})
     env_updates: dict[str, str] = {}
     yaml_updated: list[str] = []
     codex_dependency_install: dict[str, Any] | None = None
@@ -1458,6 +1480,19 @@ def apply_config_payload(
         except Exception as e:
             logger.warning("[config.set] 写回 skill_retrieval 失败: %s", e)
 
+    if moa_params:
+        try:
+            crypto = _get_crypto_provider()
+            save_moa_config_from_frontend(
+                moa_params, encrypt_secret=crypto.encrypt if crypto is not None else None,
+            )
+            yaml_updated.extend(moa_params)
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
+        except Exception:
+            # A crypto provider may include credentials in exception text.
+            raise ConfigPanelInternalError("failed to save MoA configuration") from None
+
     for env_key, value in env_updates.items():
         os.environ[env_key] = value
     if env_updates:
@@ -1584,6 +1619,7 @@ async def config_get_handler(
             for key, val in list(payload.items()):
                 if "api_key" in key.lower() or "token" in key.lower():
                     payload[key] = crypto_provider.decrypt(val)
+        payload.update(flatten_moa_for_config_panel(raw, resolve_value=resolve_env_vars))
         react_cfg = raw.get("react") or {}
         ctx_cfg = react_cfg.get("context_engine_config") or {}
         payload["context_engine_enabled"] = "true" if ctx_cfg.get("enabled", False) else "false"
@@ -1637,6 +1673,8 @@ async def config_get_handler(
         models_cfg = resolved.get("models") or {}
         payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
     except Exception:  # noqa: BLE001
+        for key, value in flatten_moa_for_config_panel({}).items():
+            payload.setdefault(key, value)
         payload.setdefault("context_engine_enabled", "false")
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")

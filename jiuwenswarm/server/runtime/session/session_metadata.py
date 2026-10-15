@@ -46,6 +46,7 @@ class _MetadataWriteOptions:
     preserve_rebound_fields: bool = False
     rebind_gen_at_enqueue: int | None = None
     merge_fields: frozenset[str] | None = None
+    owns_moa_enabled: bool = False
     lifecycle_generation: int | None = None
     # Inference owns only fields that have not changed since the read snapshot.
     expected_fields: dict[str, tuple[bool, Any]] | None = None
@@ -637,6 +638,15 @@ def _write_metadata_unfenced(
                 to_write["model_selection"] = current["model_selection"]
             else:
                 to_write.pop("model_selection", None)
+        owns_moa = options.owns_moa_enabled or (
+            options.merge_fields is not None and "moa_enabled" in options.merge_fields
+        )
+        if current is not None and not owns_moa:
+            to_write = dict(to_write)
+            if "moa_enabled" in current:
+                to_write["moa_enabled"] = current["moa_enabled"]
+            else:
+                to_write.pop("moa_enabled", None)
         # 权威 rebind 版本检查: 持锁后重比 gen, 判定调用方传入的快照是否已陈旧。
         # 比调用方持锁前的 pre-check 更可靠 —— 消除"gen 比较与文件写入"之间的
         # TOCTOU 窗口(P3)。rebind 自身传入的 gen 已 bump, 等于当前 gen, 不触发合并。
@@ -662,7 +672,7 @@ def _write_metadata_unfenced(
 
 
 def update_session_model_selection(
-    session_id: str, selection: dict[str, Any], *, expected_selection: tuple[bool, Any] | None = None,
+    session_id: str, selection: dict[str, Any] | None, *, expected_selection: tuple[bool, Any] | None = None,
 ) -> None:
     """Update only selection through the shared lifecycle/atomic-write boundary."""
     _write_metadata_sync(
@@ -834,6 +844,7 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
     sync_write: bool = False,
     preserve_pin_fields: bool = False,
     merge_fields: frozenset[str] | None = None,
+    owns_moa_enabled: bool = False,
     replace_harness_checkpoint: bool = False,
 ) -> None:
     """将写入操作放入异步队列,队列满时退化为同步写。
@@ -860,6 +871,7 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
         rebind_gen_at_enqueue=rebind_gen_at_enqueue,
         lifecycle_generation=generation,
         merge_fields=merge_fields,
+        owns_moa_enabled=owns_moa_enabled,
         replace_harness_checkpoint=replace_harness_checkpoint,
     )
     if sync_write:
@@ -919,6 +931,7 @@ def init_session_metadata(
     project_id: str = "",
     persist_session: bool = False,
     model: str = "",
+    moa_enabled: bool = False,
     cron_id: str = "",
     work_mode: str = "",
     channel_metadata: dict[str, Any] | None = None,
@@ -953,6 +966,7 @@ def init_session_metadata(
         "project_id": project_id,
         "persist_session": bool(persist_session),
         "model": model,
+        "moa_enabled": moa_enabled is True,
         "cron_id": cron_id,
         "last_user_message_at": _current_timestamp(),
         "pinned": False,
@@ -987,6 +1001,7 @@ def update_session_metadata(
     project_dir: str | None = None,
     project_id: str | None = None,
     model: str | None = None,
+    moa_enabled: bool | None = None,
     last_user_message_at: float | None = None,
     pinned: bool | None = None,
     pin_order: int | None = None,
@@ -1024,6 +1039,8 @@ def update_session_metadata(
     ``True``:返回成功前落盘,否则只读磁盘的另一进程(AgentServer)在窗口期
     内会读到陈旧数据,后续整份 metadata 回写会覆盖刚写入的 ``pinned`` 状态。
     """
+    if moa_enabled is not None and not isinstance(moa_enabled, bool):
+        raise ValueError("moa_enabled must be a boolean")
     metadata = _read_metadata(session_id, cache_bust=cache_bust)
 
     if not metadata:
@@ -1066,6 +1083,7 @@ def update_session_metadata(
             "project_id": project_id or "",
             "persist_session": False,
             "model": model or "",
+            "moa_enabled": moa_enabled is True,
             "cron_id": "",
             "last_user_message_at": last_user_message_at if last_user_message_at is not None else _current_timestamp(),
             "pinned": bool(pinned),
@@ -1119,6 +1137,10 @@ def update_session_metadata(
         # model：覆盖式——每次请求更新为本次模型
         if model is not None:
             metadata["model"] = model
+        if moa_enabled is not None:
+            if not isinstance(moa_enabled, bool):
+                raise ValueError("moa_enabled must be a boolean")
+            metadata["moa_enabled"] = moa_enabled
         # last_user_message_at：覆盖式——仅在用户消息时由调用方传入
         if last_user_message_at is not None:
             metadata["last_user_message_at"] = last_user_message_at
@@ -1184,6 +1206,7 @@ def update_session_metadata(
         metadata,
         sync_write=sync_write or sync,
         preserve_pin_fields=pinned is None and pin_order is None,
+        owns_moa_enabled=moa_enabled is not None,
         replace_harness_checkpoint=session_harness_checkpoint is not None,
     )
 

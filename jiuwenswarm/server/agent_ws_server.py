@@ -4925,6 +4925,7 @@ class AgentWebSocketServer:
                         "session_id": result.session_id,
                         "mode": result.mode,
                         "switched": result.switched,
+                        "moa_enabled": result.moa_enabled,
                     },
                     metadata=request.metadata,
                 )
@@ -12025,6 +12026,9 @@ class AgentWebSocketServer:
                     code="BAD_REQUEST",
                 )
 
+            if "moa_enabled" in params and not isinstance(params["moa_enabled"], bool):
+                raise SessionProvisionError("moa_enabled must be a boolean", code="BAD_REQUEST")
+
             explicit_work_mode_marker = params.get("_work_mode_explicit")
             requested = params.get("session_id")
             requested_session_id = (
@@ -12069,6 +12073,8 @@ class AgentWebSocketServer:
                         or ""
                     ).strip(),
                     model_name=str(params.get("model_name") or "").strip(),
+                    model_selection=params.get("model_selection"),
+                    moa_enabled=params.get("moa_enabled"),
                     cron_id=str(params.get("cron_id") or "").strip(),
                 )
             )
@@ -12088,6 +12094,7 @@ class AgentWebSocketServer:
                 "projectDir": result.project_dir,
                 "workMode": result.work_mode,
                 "persist_session": result.persist_session,
+                "moa_enabled": result.moa_enabled,
                 "prewarm_hit": result.prewarm_hit,
                 "prewarm_status": result.prewarm_status,
             }
@@ -12238,6 +12245,7 @@ class AgentWebSocketServer:
                     "session_id": result.session_id,
                     "source_session_id": result.source_session_id,
                     "title": result.title,
+                    "moa_enabled": result.moa_enabled,
                 },
             )
             wire = encode_agent_response_for_wire(

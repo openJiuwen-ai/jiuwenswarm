@@ -51,6 +51,7 @@ class ReqMethod(Enum):
     SWARMFLOW_STOP = "swarmflow.stop"
 
     CONFIG_GET = "config.get"
+    CONFIG_MOA_STATUS = "config.moa_status"
     CONFIG_SET = "config.set"
     CONFIG_SAVE_ALL = "config.save_all"
     CONFIG_VALIDATE_MODEL = "config.validate_model"

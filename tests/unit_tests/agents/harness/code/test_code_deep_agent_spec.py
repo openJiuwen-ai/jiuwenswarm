@@ -308,16 +308,28 @@ def test_code_spec_preserves_configured_tool_owner(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("moa_enabled", [False, True])
 async def test_code_adapter_builds_caller_supplied_spec_directly(
     monkeypatch,
     tmp_path,
+    moa_enabled,
 ):
     config_base = {
+        "experimental": {"multi_model_collaboration_enabled": True},
         "react": {"agent_name": "config-agent"},
         "modes": {"code": {"rails": [], "tools": []}},
         "symphony": {"enabled": True},
     }
     custom_model = _model()
+    aggregator = _model()
+    aggregator.model_config.model_name = "moa-aggregator"
+    from openjiuwen.harness.moa import MoAConfig, LlmVerifierProgressScorer
+    from jiuwenswarm.server.runtime.moa_runtime import MoARuntime
+
+    moa_runtime = MoARuntime(
+        aggregator=aggregator, model_name="moa-aggregator", fingerprint="moa-spec",
+        config=MoAConfig(reference_models=(_model(),), mode="verifier_routed", scorer=LlmVerifierProgressScorer(model=aggregator)),
+    )
     custom_spec = DeepAgentSpec(
         model=ModelSpec(
             model_client_config=custom_model.model_client_config,
@@ -377,6 +389,9 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     monkeypatch.setattr(adapter, "_skip_own_instance_build", lambda: False)
     monkeypatch.setattr(adapter, "_refresh_multimodal_configs", MagicMock())
     monkeypatch.setattr(adapter, "_create_model", create_model)
+    monkeypatch.setattr("jiuwenswarm.server.runtime.moa_runtime.build_moa_runtime", lambda *_args, **_kwargs: moa_runtime)
+    apply_model = MagicMock()
+    monkeypatch.setattr(adapter, "_apply_model_to_react_agent", apply_model)
     monkeypatch.setattr(adapter, "_create_sys_operation", create_sys_operation)
     monkeypatch.setattr(adapter, "_seed_runtime_cwd", MagicMock())
     monkeypatch.setattr(adapter, "_ensure_cron_tools_registered", MagicMock())
@@ -396,9 +411,13 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
         convert_config,
     )
 
+    supplied_context = code_spec_module.CodeBuildContext(
+        adapter=adapter, config_base=config_base, react_config={}, moa=moa_runtime.config,
+    )
     await adapter.create_instance(
-        {"channel_id": "web", "project_dir": str(tmp_path / "project")},
+        {"channel_id": "web", "project_dir": str(tmp_path / "project"), "moa_enabled": not moa_enabled, "moa_model_selection": {"type": "model_group", "id": "test-group"} if moa_enabled else None},
         spec=custom_spec,
+        build_context=supplied_context,
     )
 
     effective_spec = captured["spec"]
@@ -416,7 +435,18 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     assert adapter._custom_code_spec_active is True
     assert adapter._agent_name == "caller-spec-agent"
     assert owner_ids == [adapter._tool_owner_id()]
-    assert adapter._default_model_name == "test-model"
+    assert adapter._default_model_name == ("moa-aggregator" if moa_enabled else "test-model")
+    assert context.moa is (moa_runtime.config if moa_enabled else None)
+    assert supplied_context.moa is moa_runtime.config
+    assert custom_spec.model.model_request_config.model_name == "test-model"
+    assert effective_spec.model.model_request_config.model_name == ("moa-aggregator" if moa_enabled else "test-model")
+    assert "moa" not in effective_spec.model_dump()
+    if moa_enabled:
+        assert adapter._model is aggregator
+        assert adapter._moa_runtime is moa_runtime
+        apply_model.assert_called_once_with(aggregator, session_id=adapter._parent_session_id)
+    else:
+        apply_model.assert_not_called()
     # Reloads keep the caller Spec's tools untouched, including their configs.
     assert adapter._vision_tools == []
     assert adapter._vision_tools_registered is False

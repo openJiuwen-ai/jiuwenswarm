@@ -36,6 +36,8 @@ export interface Session {
   model?: string;
   /** Stable selection persisted via session.selection.set / metadata. */
   model_selection?: ModelSelection | null;
+  /** Legacy server metadata; collaboration is derived from feature settings and model_selection. */
+  moa_enabled?: boolean;
   mode: AgentMode;
   status: SessionStatus;
   message_count: number;

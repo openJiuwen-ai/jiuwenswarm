@@ -5123,10 +5123,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("external_cli.custom_agent.remove", _external_cli_custom_agent_remove)
 
     async def _proxy_config_request(ws, req_id, params, session_id, user_id=None, *, req_method):
-        """经 E2A 在目标 AgentServer 注入目录执行配置请求（仅 AgentOS 多用户调用）。
+        """Execute configuration RPCs in the target AgentServer's directories.
 
-        单用户共享目录由 ``_register_config_proxy`` 走本地 handler（保留
-        on_config_saved 热更新与既有写回语义）；本函数只服务 AgentOS 路径。
+        MoA readiness always uses E2A. Other configuration methods retain their
+        shared-directory handlers through ``_register_config_proxy``.
         """
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -5158,6 +5158,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         channel.register_method(method_name, _handler)
 
     from jiuwenswarm.common.schema.message import ReqMethod as _ConfigReq
+
+    async def _config_moa_status(ws, req_id, params, session_id, user_id=None):
+        await _proxy_config_request(
+            ws, req_id, params, session_id, user_id,
+            req_method=_ConfigReq.CONFIG_MOA_STATUS,
+        )
+
+    channel.register_method("config.moa_status", _config_moa_status)
     _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
     _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
     _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)

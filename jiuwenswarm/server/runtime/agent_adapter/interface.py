@@ -3197,6 +3197,13 @@ class JiuWenSwarm:
         }
         if runtime_binding is not None:
             reconcile_kwargs["runtime_binding"] = runtime_binding
+        if params.get("model_selection") is not None:
+            reconcile_kwargs["model_selection"] = params["model_selection"]
+        if "moa_enabled" in params:
+            reconcile_kwargs["moa_enabled"] = params["moa_enabled"]
+        moa_access = getattr(adapter, "moa_access_kwargs", None)
+        if callable(moa_access):
+            reconcile_kwargs.update(moa_access(request))
         await self.reconcile_session_mcp(
             request.session_id,
             compute_chat_send_mcp_needed(params),
@@ -3361,6 +3368,10 @@ class JiuWenSwarm:
             compute_chat_send_mcp_needed(params),
             model_name=params.get("model_name"),
             history_before_request_id=request.request_id,
+            retain_moa_snapshot=True,
+            **({"model_selection": params["model_selection"]} if params.get("model_selection") is not None else {}),
+            **({"moa_enabled": params["moa_enabled"]} if "moa_enabled" in params else {}),
+            **(adapter.moa_access_kwargs(request) if callable(getattr(adapter, "moa_access_kwargs", None)) else {}),
         )
         # 问题澄清答案 resume 走的是 control-input 路径（Runtime.session_work_kind 判定
         # 为 CONTROL_INPUT → _deliver_control → 本方法），**不经过** process_message_stream，
@@ -3808,6 +3819,13 @@ class JiuWenSwarm:
         }
         if runtime_binding is not None:
             reconcile_kwargs["runtime_binding"] = runtime_binding
+        if params.get("model_selection") is not None:
+            reconcile_kwargs["model_selection"] = params["model_selection"]
+        if "moa_enabled" in params:
+            reconcile_kwargs["moa_enabled"] = params["moa_enabled"]
+        moa_access = getattr(adapter, "moa_access_kwargs", None)
+        if callable(moa_access):
+            reconcile_kwargs.update(moa_access(request))
         await self.reconcile_session_mcp(
             request.session_id,
             compute_chat_send_mcp_needed(params),
@@ -5194,6 +5212,10 @@ class JiuWenSwarm:
         model_name: str | None = None,
         history_before_request_id: str | None = None,
         runtime_binding: dict[str, Any] | None = None,
+        moa_enabled: bool | None = None,
+        model_selection: Any = None,
+        moa_can_access: Any = None,
+        retain_moa_snapshot: bool = False,
     ) -> None:
         """Reconcile this session's MCP set to ``needed`` (idempotent diff).
 
@@ -5213,6 +5235,8 @@ class JiuWenSwarm:
             # Adapter doesn't support session-level MCP (e.g. a stub/mock
             # adapter) — session-level enable is a no-op for it.
             return
+        parameters = {}
+        accepts_kwargs = False
         try:
             parameters = inspect.signature(reconcile).parameters
         except (TypeError, ValueError):
@@ -5233,6 +5257,14 @@ class JiuWenSwarm:
                 )
             if "runtime_binding" in parameters or accepts_kwargs:
                 supported_kwargs["runtime_binding"] = runtime_binding
+            if model_selection is not None and ("model_selection" in parameters or accepts_kwargs):
+                supported_kwargs["model_selection"] = model_selection
+            if moa_enabled is not None and ("moa_enabled" in parameters or accepts_kwargs):
+                supported_kwargs["moa_enabled"] = moa_enabled
+            if moa_can_access is not None and ("moa_can_access" in parameters or accepts_kwargs):
+                supported_kwargs["moa_can_access"] = moa_can_access
+            if retain_moa_snapshot and ("retain_moa_snapshot" in parameters or accepts_kwargs):
+                supported_kwargs["retain_moa_snapshot"] = True
         await reconcile(session_id, needed, **supported_kwargs)
 
     @staticmethod

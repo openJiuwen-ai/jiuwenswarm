@@ -27,7 +27,10 @@ class MockWebSocket {
 
   send(rawMessage) {
     const request = JSON.parse(rawMessage);
-    if (!['agent_groups.list', 'commands.list', 'skills.list', 'command.compact'].includes(request.method)) {
+    if (![
+      'agent_groups.list', 'commands.list', 'skills.list', 'command.compact',
+      'session.assets.list', 'session.assets.register',
+    ].includes(request.method)) {
       throw new Error(`Unexpected WebSocket request: ${request.method}`);
     }
     let payload = {
@@ -61,6 +64,8 @@ class MockWebSocket {
     } else if (request.method === 'command.compact') {
       slashRequests.push(request);
       payload = { result: 'noop' };
+    } else if (request.method === 'session.assets.list' || request.method === 'session.assets.register') {
+      payload = { items: [] };
     }
     const respond = () => {
       this.onmessage?.({
@@ -120,6 +125,8 @@ const { useChatStore, useSessionStore, useWorkspaceStore, usePlanStore, useTeamS
   await import('../node_modules/.cache/input-area-permission-merge/stores/index.js');
 const { default: i18n } = await import('../node_modules/.cache/input-area-permission-merge/i18n/index.js');
 const { setTeamOrganizationUiEnabled } = await import('../node_modules/.cache/input-area-permission-merge/features/teamOrganization/featureConfig.js');
+const { isMultiModelCollaborationEnabled, setMultiModelCollaborationEnabled } =
+  await import('../node_modules/.cache/input-area-permission-merge/features/multiModelCollaboration/featureConfig.js');
 const { webClient } = await import('../node_modules/.cache/input-area-permission-merge/services/webClient.js');
 
 function byId(id, variant) {
@@ -315,6 +322,8 @@ async function mount(
   useChatStore.getState().ensureRuntime(sessionId);
   useChatStore.getState().setActiveSessionId(sessionId);
   const previousWorkspace = useWorkspaceStore.getState();
+  const previousCollaboration = isMultiModelCollaborationEnabled();
+  setMultiModelCollaborationEnabled(false);
   useWorkspaceStore.setState({ workMode: 'work', projects: [], selectedProject: null });
   await i18n.changeLanguage(language);
   const saved = [];
@@ -357,6 +366,7 @@ async function mount(
     useSessionStore.getState().removeRuntime(sessionId);
     usePlanStore.getState().removeRuntime(sessionId);
     useWorkspaceStore.setState(previousWorkspace, true);
+    setMultiModelCollaborationEnabled(previousCollaboration);
   }
 }
 
@@ -749,7 +759,40 @@ test('work landing plus menu still offers more than file attachment', async () =
   });
 });
 
-test('design landing submit hides stop and refuses a follow-up prompt', async () => {
+for (const workMode of ['design', 'work', 'code']) {
+  for (const enabled of [false, true]) {
+    test(`${workMode} composer respects its routing with a model group and collaboration=${enabled}`, async () => {
+      await mount({ sessionId: 'new' }, async ({ props, render, sessionId }) => {
+        const sent = [];
+        const selection = { type: 'model_group', id: 'saved-group' };
+        props.onSubmit = (...args) => sent.push(args);
+        await act(async () => {
+          useWorkspaceStore.setState({ workMode });
+          useSessionStore.getState().setSelectedModelSelection(sessionId, selection);
+          setMultiModelCollaborationEnabled(enabled);
+        });
+        await render();
+        await typeInput('send this draft');
+        const blocked = workMode !== 'design' && !enabled;
+        assert.equal(byId('chat-panel-input-send').disabled, blocked);
+        await click(byId('chat-panel-input-send'));
+        if (blocked) {
+          await act(async () => byId('chat-panel-input').dispatchEvent(
+            new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+          ));
+          assert.deepEqual(sent, []);
+          assert.equal(byId('chat-panel-input').textContent, 'send this draft');
+        } else {
+          assert.equal(sent.length, 1);
+          assert.equal(sent[0][0], 'send this draft');
+        }
+        assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, selection);
+      });
+    });
+  }
+}
+
+test('design landing with a saved model group hides stop and refuses a follow-up prompt', async () => {
   await mount({ sessionId: 'new' }, async ({ props, render, sessionId }) => {
     const cancelled = [];
     const sent = [];
@@ -759,6 +802,7 @@ test('design landing submit hides stop and refuses a follow-up prompt', async ()
     props.isProcessing = true;
     await act(async () => {
       useWorkspaceStore.setState({ workMode: 'design' });
+      useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model_group', id: 'saved-group' });
       useChatStore.getState().setProcessing(sessionId, true);
     });
     await render();

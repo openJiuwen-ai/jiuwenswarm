@@ -442,6 +442,48 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
 
 
 @pytest.mark.asyncio
+async def test_web_moa_status_routes_to_authenticated_user_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+
+    yuanrong = FakeYuanRongClient()
+    manager = AgentManager()
+    client = _router_client(yuanrong, agent_manager=manager)
+    client._server_ready = True
+    payload = {"configured": True, "aggregator_model_name": "model-a", "aggregator_alias": "Alias a"}
+    send_request = AsyncMock(return_value=AgentResponse(request_id="status", channel_id="web", payload=payload))
+    monkeypatch.setattr(yuanrong, "send_request", send_request)
+    channel = SimpleNamespace(
+        channel_id="web", methods={}, send_response=AsyncMock(),
+        on_connect=lambda _: None, on_disconnect=lambda _: None,
+    )
+    channel.register_method = lambda method, callback: channel.methods.update({method: callback})
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    selection = {"kind": "model_group", "id": "mgp_moa"}
+    ws = object()
+    try:
+        await channel.methods["config.moa_status"](
+            ws, "status", {"model_selection": selection, "user_id": "u1"},
+            "chat", "alice",
+        )
+        send_request.assert_awaited_once()
+        envelope = send_request.await_args.args[0]
+        assert envelope.method == ReqMethod.CONFIG_MOA_STATUS.value
+        assert envelope.user_id == "alice"
+        assert envelope.session_id == "chat"
+        assert envelope.params == {"model_selection": selection}
+        assert envelope.channel_context["sandbox_id"] == "sbx-1"
+        agents = await manager.list_user_agents("alice")
+        assert len(agents) == 1
+        assert agents[0].info.sandbox_id == "sbx-1"
+        assert await manager.list_user_agents("u1") == []
+        channel.send_response.assert_awaited_once_with(
+            ws, "status", ok=True, payload=payload, error=None, code=None,
+        )
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_builtin_create_honors_probe_settings() -> None:
     yuanrong = FakeYuanRongClient()
     client = _router_client(

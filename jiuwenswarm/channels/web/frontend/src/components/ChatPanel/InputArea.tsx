@@ -31,6 +31,8 @@ import {
   useWorkspaceStore,
   usePersonalContextStore,
 } from '../../stores';
+import { isConversationModelGroupBlocked } from '../../multi-session/state/conversationModelSelection';
+import { useMultiModelCollaborationEnabled } from '../../features/multiModelCollaboration/featureConfig';
 import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import { getSelectedAgentGroup } from '../../stores/agentGroupCatalogSeed';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
@@ -922,6 +924,18 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     setExtensionPanelOpen(false);
     setSkillPanelOpen(false);
   }, [designLandingSubmitting]);
+  const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
+  const collaborationEnabled = useMultiModelCollaborationEnabled();
+  const selectedModelSelection = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedModelSelection);
+  const selectionMetadata = useSessionStore((s) => s.currentSession?.session_id === activeSessionId
+    ? s.currentSession
+    : s.sessions.find((session) => session.session_id === activeSessionId));
+  const modelGroupSendBlocked = !isDesignLanding && !isProcessing && isConversationModelGroupBlocked({
+    mode,
+    cronId: selectionMetadata?.cron_id,
+    selectedModelSelection,
+    collaborationEnabled,
+  });
   const selectedAgentId = useSessionStore((s) => {
     const runtime = s.runtimes[activeSessionId ?? ''];
     if (runtime?.mode !== 'agent') return null;
@@ -1057,7 +1071,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isLoadingHistory = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isLoadingHistory ?? false);
   const inputValue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.inputValue ?? '');
   const evolutionStatus = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.evolutionStatus ?? null);
-  const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const selectedSkills = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedSkills ?? []);
   const teamMembers = useSessionStore(
     (s) => s.runtimes[activeSessionId ?? '']?.teamMembers ?? [],
@@ -2498,7 +2511,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
 
   const handleSubmit = useCallback(() => {
-    if (composerDisabled || isListening || isTranscribing) return;
+    if (composerDisabled || isListening || isTranscribing || modelGroupSendBlocked) return;
 
     // 用富文本（含 chip 标记）作为发送内容，气泡可交织渲染技能
     const richContent = extractRichContent();
@@ -2625,6 +2638,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     composerDisabled,
     isListening,
     isTranscribing,
+    modelGroupSendBlocked,
     isInterruptible,
     onSubmit,
     onForkSession,
@@ -2653,7 +2667,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const hasReadyMedia = readyMediaItems.length > 0;
   const canSubmit =
     showStop ||
-    (!composerDisabled && !isListening && !isTranscribing &&
+    (!composerDisabled &&
+      !isListening &&
+      !isTranscribing &&
+      !modelGroupSendBlocked &&
       (hasTextDraft || hasReadyMedia) &&
       !isLoadingHistory &&
       !isImageInterruptBlocked &&

@@ -5,6 +5,10 @@
  */
 
 import { create } from 'zustand';
+import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
+import {
+  buildConversationModelPayload,
+} from '../multi-session/state/conversationModelSelection';
 import {
   isSingleAgentContextUsageSnapshot,
   isTeamLeaderContextUsageSnapshot,
@@ -133,6 +137,8 @@ function restoreNewConversationSelection(
   models: ModelEntry[],
   groups: ModelGroup[],
 ): SessionRuntime {
+  // Catalog changes must not silently replace a group already selected in an unsent draft.
+  if (runtime.selectedModelSelection?.type === 'model_group') return runtime;
   const cached = loadLastModelSelection();
   const selection = isModelSelectionAvailable(cached, models, groups)
     ? cached
@@ -720,6 +726,7 @@ interface SessionState {
   initializeDefaultModel: (sessionId: string) => void;
   getRuntime: (sessionId: string | null) => SessionRuntime | undefined;
   getEffectiveModelName: (sessionId: string | null) => string | null;
+  getModelSelectionPayload: (sessionId: string) => Record<string, unknown>;
   removeRuntime: (sessionId: string) => void;
 
   // A 类 actions（不加 sessionId）
@@ -904,21 +911,34 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     return resolved ? resolved.model_name : runtime.selectedModelName;
   },
 
-  getOutgoingModelParams: (sessionId) => {
-    const runtime = get().runtimes[sessionId];
-    const selection = runtime?.selectedModelSelection;
-    if (selection?.type && selection.id) {
-      return { model_selection: { ...selection } };
-    }
-    const modelName = get().getEffectiveModelName(sessionId);
-    return modelName ? { model_name: modelName } : {};
-  },
+  getOutgoingModelParams: (sessionId) => get().getModelSelectionPayload(sessionId),
 
   removeRuntime: (sessionId) => {
     set((state) => {
       const next = { ...state.runtimes };
       delete next[sessionId];
       return { runtimes: next };
+    });
+  },
+
+  getModelSelectionPayload: (sessionId) => {
+    const state = get();
+    const runtime = state.runtimes[sessionId];
+    const session =
+      state.currentSession?.session_id === sessionId
+        ? state.currentSession
+        : state.sessions.find((candidate) => candidate.session_id === sessionId);
+    const effectiveModelName = state.getEffectiveModelName(sessionId);
+    const individualModel = [...state.availableModels, ...state.chatAvailableModels].find(
+      (model) => model.model_name === effectiveModelName && Boolean(model.model_id?.trim()),
+    );
+    const selectedModelSelection = runtime?.selectedModelSelection
+      ?? (individualModel?.model_id ? { type: 'model' as const, id: individualModel.model_id.trim() } : null);
+    return buildConversationModelPayload({
+      mode: runtime?.mode,
+      selectedModelSelection,
+      cronId: session?.cron_id,
+      selectedModelName: effectiveModelName,
     });
   },
 
@@ -940,6 +960,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const nextRuntime: SessionRuntime = {
         ...baseRuntime,
         mode: normalizedSession.mode || baseRuntime.mode,
+        selectedModelSelection: Object.prototype.hasOwnProperty.call(normalizedSession, 'model_selection')
+          ? parseModelSelection(normalizedSession.model_selection)
+          : baseRuntime.selectedModelSelection,
         persistSession: normalizedSession.persist_session === true,
         teamHistoryMessages: baseRuntime.teamHistoryMessages,
         agentGroupBinding: hasGroupBinding ? nextAgentGroupBinding : baseRuntime.agentGroupBinding,
