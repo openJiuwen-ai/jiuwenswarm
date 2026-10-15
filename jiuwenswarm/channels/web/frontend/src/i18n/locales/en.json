@@ -4604,7 +4604,7 @@
   "a4pSettings": {
     "title": "A4P pre-authorization",
     "enableTitle": "Enable A4P pre-authorization",
-    "description": "Batch-authorize the multiple permissions an Agent needs for tasks in a session, and pre-authorize permissions for scheduled tasks. Only applies in Default permissions mode."
+    "description": "Pre-authorize permissions needed for the current conversation and scheduled tasks in batches. When enabled, scheduled tasks also use permission approval during execution. Only applies in Default permissions mode."
   },
   "a4pAuthorization": {
     "expandParams": "Expand parameters for {{name}}",

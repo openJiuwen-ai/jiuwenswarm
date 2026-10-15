@@ -4577,9 +4577,9 @@
     "runIdTooltip": "运行 ID：{{id}}"
   },
   "a4pSettings": {
-    "title": "A4P预授权",
-    "enableTitle": "启用A4P预授权",
-    "description": "允许在会话中批量授权 Agent 执行任务所需的多项权限，并为定时任务预授权权限。仅在“默认权限”模式下生效。"
+    "title": "A4P 预授权",
+    "enableTitle": "启用 A4P 预授权",
+    "description": "允许批量预授权当前会话和定时任务所需的权限。开启后，定时任务运行时也接入权限审批。仅在“默认权限”模式下生效。"
   },
   "a4pAuthorization": {
     "expandParams": "展开 {{name}} 的参数",
