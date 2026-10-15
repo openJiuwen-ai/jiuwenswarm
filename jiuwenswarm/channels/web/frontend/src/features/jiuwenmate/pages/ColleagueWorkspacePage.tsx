@@ -185,8 +185,14 @@ export function ColleagueWorkspacePage({
   const renderRequest = (request: JiuwenMateChatRequest) => {
     const phase = chatPhase(request);
     const control = request.control;
+    const awaiting = request.recovery?.decision === 'awaiting_continuation';
+    const unverified = request.recovery?.unverifiedToolCalls.length ?? 0;
     const note =
-      control?.status === 'failed'
+      awaiting
+        ? unverified > 0
+          ? t('jiuwenmate.chat.recovery.awaitingUnverified', { count: unverified })
+          : t('jiuwenmate.chat.recovery.awaiting')
+        : control?.status === 'failed'
         ? t('jiuwenmate.chat.control.failed', { reason: control.detail ?? '' })
         : isPending(request) && control
           ? t(control.reason === 'stop' ? 'jiuwenmate.chat.control.stopping' : 'jiuwenmate.chat.control.cancelling')

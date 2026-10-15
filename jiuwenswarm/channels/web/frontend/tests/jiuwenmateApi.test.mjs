@@ -256,6 +256,25 @@ test('a stop or cancel sends the request id and reason and reads the control bac
   assert.equal(toChatRequest({ ...wireRequest, control: { reason: 'pause' } }).control, null);
 });
 
+test('a message closed after a restart carries how it was judged', () => {
+  const recovered = toChatRequest({
+    ...wireRequest,
+    outcome: 'paused',
+    recovery: {
+      request_id: 'req-1',
+      execution_id: 'exe-1',
+      decision: 'awaiting_continuation',
+      outcome: 'paused',
+      unverified_tool_calls: ['call-1'],
+      decided_at: '2026-10-15T09:00:00+00:00',
+    },
+  });
+
+  assert.deepEqual(recovered.recovery, { decision: 'awaiting_continuation', unverifiedToolCalls: ['call-1'] });
+  assert.equal(toChatRequest(wireRequest).recovery, null);
+  assert.equal(toChatRequest({ ...wireRequest, recovery: { decision: 'rerun' } }).recovery, null);
+});
+
 test('conversation calls list, rename and delete by agent and conversation id', async () => {
   const { calls, api } = recorder({
     [JIUWENMATE_METHODS.conversationList]: { conversations: [wireConversation, { ...wireConversation, conversation_id: 'conv-0' }] },
