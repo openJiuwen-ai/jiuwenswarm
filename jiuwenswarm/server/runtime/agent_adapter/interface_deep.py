@@ -1905,11 +1905,14 @@ class JiuWenSwarmDeepAdapter:
         # SDK's 300s SSE read timeout. Idempotent (module-level _PATCHED guard).
         apply_mcp_call_timeout_patch()
         # SDK TaskTool creates ephemeral subagents (browser_agent included)
-        # without emitting roster events, so Web clients never learn the
-        # browser agent exists and the desktop browser tab never appears.
-        # Applied here (not at module import) so importing this adapter has
-        # no global side effects; idempotent, and guaranteed to run before
-        # any DeepAgent/TaskTool is created below.
+        # without emitting roster events, and consumes the subagent stream
+        # internally, so Web clients see a silent turn for the whole
+        # delegation (issue #4861: no event frames for 10+ minutes). The
+        # patch adds roster frames, subagent_activity mirroring, and a
+        # running heartbeat to synchronous delegations. Applied here (not
+        # at module import) so importing this adapter has no global side
+        # effects; idempotent, and guaranteed to run before any
+        # DeepAgent/TaskTool is created below.
         apply_task_tool_event_patch()
         self._instance: DeepAgent | None = None
         self._process_cli_run_options: tuple[int | None, tuple[Any, ...]] | None = None
