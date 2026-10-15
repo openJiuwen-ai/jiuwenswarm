@@ -36,6 +36,7 @@ const wireColleague = {
   is_default: true,
   current_version: 'v1',
   has_unpublished_changes: false,
+  workspace_dir: '/data/jiuwenmate/workspaces/local/agent-1',
   created_at: '2026-10-14T08:00:00+00:00',
   updated_at: '2026-10-14T08:00:00+00:00',
 };
@@ -86,6 +87,8 @@ test('server colleagues map to page colleagues with local-only marks off', () =>
   assert.equal(colleague.joinedAt, wireColleague.created_at);
   assert.equal(colleague.isDefault, true);
   assert.equal(colleague.currentVersion, 'v1');
+  assert.equal(colleague.workspaceDir, wireColleague.workspace_dir);
+  assert.equal(toColleague({ ...wireColleague, workspace_dir: undefined }).workspaceDir, null);
   assert.equal(colleague.imConfigured, false);
   assert.equal(colleague.disabled, false);
   assert.equal(toColleague({ ...wireColleague, category: 'unknown' }).category, 'custom');

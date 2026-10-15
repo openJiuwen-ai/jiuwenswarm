@@ -27,6 +27,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef, PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import ColleagueSettings, PersistentAgentError
+from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
@@ -38,10 +39,11 @@ WEB_NAMESPACE = "local"
 # The local Web user has one private conversation with each colleague.
 # The single Web conversation of each colleague before conversations were listed.
 LEGACY_CONVERSATION_ID = "local"
+# The local user owns every colleague, so a Web Request may read the colleague's office directory.
 WEB_ACCESS = AccessSnapshot(
     principal_ref="local",
-    startup_scope=frozenset({"direct_message"}),
-    source_scope=frozenset({"direct_message"}),
+    startup_scope=frozenset({"direct_message", WORKSPACE_READ}),
+    source_scope=frozenset({"direct_message", WORKSPACE_READ}),
     policy_revision="local",
 )
 WEB_SENDER_NAME = "用户"
@@ -230,10 +232,14 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             return self._service
 
     async def _runtime(self) -> AgentManager:
-        """Start the runtime on first use and recover the Requests a previous process left unfinished."""
+        """Start the runtime on first use and recover the Requests a previous process left unfinished.
+
+        Colleagues are republished first, so new Requests use what this host opens.
+        """
         async with self._manager_lock:
             if self._manager is None:
                 service = await asyncio.to_thread(self._colleagues)
+                await asyncio.to_thread(service.refresh_published, WEB_NAMESPACE)
                 observer = self._stream.observe if self._stream is not None else _ignore
                 manager = await asyncio.to_thread(self._manager_factory, service, on_event=observer)
                 if self._stream is not None:

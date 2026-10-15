@@ -13,6 +13,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, Conve
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
+from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WorkspaceStore
 from jiuwenswarm.server.jiuwenmate.session_scheduler import SchedulerLimits
 from jiuwenswarm.server.jiuwenmate.spec_provider import publish_spec
 
@@ -29,8 +30,9 @@ ACCESS = AccessSnapshot(
 
 
 class FakeService:
-    def __init__(self, core_fake: FakeCore) -> None:
+    def __init__(self, core_fake: FakeCore, workspaces: WorkspaceStore) -> None:
         self._core = core_fake
+        self.workspaces = workspaces
         self.deleted: list[tuple[str, int]] = []
 
     def snapshot(self, namespace_id: str, agent_id: str, config_version: str):
@@ -129,7 +131,7 @@ class Host:
         self.windows = WindowBackendStore(db)
         self.budgets = BudgetRepository(db)
         self.core = FakeCore()
-        self.service = FakeService(self.core)
+        self.service = FakeService(self.core, WorkspaceStore(tmp_path / "workspaces"))
         self.manager = AgentManager(
             self.service,
             self.sessions,

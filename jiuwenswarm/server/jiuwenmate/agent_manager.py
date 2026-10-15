@@ -158,6 +158,7 @@ class AgentManager:
             budget_port=HostBudgetPort(budgets, sessions, reservation_tokens=reservation_tokens, clock=clock),
             budgets=budgets,
             windows=windows,
+            workspaces=service.workspaces,
             execute=execute,
             abort=abort,
             clock=clock,

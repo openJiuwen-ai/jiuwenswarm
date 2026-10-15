@@ -135,7 +135,7 @@ sequenceDiagram
 
 ### 5.2 关键类与函数设计
 
-`ExecutionDriver(*, snapshots, sessions, commit_port, queue, budget_port, budgets, windows, execute=..., abort=..., clock=...)`：
+`ExecutionDriver(*, snapshots, sessions, commit_port, queue, budget_port, budgets, windows, workspaces, execute=..., abort=..., clock=...)`（`workspaces` 于 2026-10-15 由 JM-14 加入，用于构造本同事的只读范围端口，见 [F_14](F_14_workspace-read.md)）：
 
 | 方法签名 | 职责 | 异常与副作用 |
 | --- | --- | --- |
