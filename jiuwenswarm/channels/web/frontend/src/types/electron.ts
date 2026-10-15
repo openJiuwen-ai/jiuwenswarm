@@ -28,6 +28,15 @@ export interface JiuwenElectronDesktopApi {
   closeWindow: () => Promise<boolean>;
   getCloseAction: () => Promise<'ask' | 'hide' | 'quit' | null>;
   setCloseAction: (action: 'ask' | 'hide' | 'quit') => Promise<boolean>;
+  /** 打开模态授权窗口截取隐式授权（implicit grant）跳转 URL 片段里的 access_token。
+   * 授权直链由主进程实时抓取 docPageUrl（厂商文档页）提取——不硬编码，跟随官方密钥
+   * 轮换。抓取失败、用户关闭窗口或校验失败时 resolve null，前端保持手动粘贴。
+   * 旧版本 Electron 壳可能没有此方法，调用前需判空。 */
+  captureOAuthToken?: (options: {
+    docPageUrl: string;
+    successUrlPrefix: string;
+    title?: string;
+  }) => Promise<{ accessToken: string } | null>;
   exportShareImage: (sessionId: string, locale: string) => Promise<boolean>;
   downloadFile: (url: string, filename: string) => Promise<boolean>;
   installUpdate: (installerPath: string) => Promise<boolean>;

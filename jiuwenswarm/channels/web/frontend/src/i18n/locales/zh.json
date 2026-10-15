@@ -4066,7 +4066,8 @@
     "tokenModal": {
       "title": "连接 {{name}}",
       "placeholder": "粘贴你的{{name}}API Key",
-      "saveAndConnect": "保存并连接"
+      "saveAndConnect": "保存并连接",
+      "oauthAuthorize": "一键授权"
     },
     "cliAuth": {
       "title": "连接 {{name}}",

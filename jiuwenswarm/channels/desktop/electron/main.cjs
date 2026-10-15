@@ -2221,6 +2221,40 @@ function canUseBackendUpdateHelper() {
   }
 }
 
+// 从厂商文档页 HTML 实时提取隐式授权直链。只接受落在 successOrigin 下、路径含
+// /oauth/ 且以 authorize 结尾的链接（即授权端点与成功页同源），HTML 实体会反转义
+// （文档页把查询参数里的 & 写成 &#x26; / &amp;）。抓取失败或页面中没有授权链接时
+// 返回 null，前端保持手动粘贴流程。
+async function fetchImplicitAuthorizeUrl(docPage, successOrigin) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  let html;
+  try {
+    const response = await net.fetch(docPage.href, { signal: controller.signal });
+    if (!response.ok) return null;
+    html = await response.text();
+  } catch (error) {
+    console.warn('[electron] fetch oauth doc page failed', error);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+  const pattern = new RegExp(
+    `${successOrigin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/[\\w./-]*authorize\\?[^"'<>\\s]+`,
+  );
+  const match = pattern.exec(html);
+  if (!match) return null;
+  const href = match[0]
+    .replace(/&#x26;/gi, '&')
+    .replace(/&#38;/g, '&')
+    .replace(/&amp;/g, '&');
+  try {
+    return new URL(href);
+  } catch {
+    return null;
+  }
+}
+
 function registerIpcHandlers() {
   ipcMain.on('desktop:is-frontend-only', event => {
     if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) {
@@ -2267,6 +2301,80 @@ function registerIpcHandlers() {
     } catch {
       return false;
     }
+  });
+  // 连接器隐式授权截取：部分远程 MCP（如百度网盘）官方只提供隐式授权——授权成功后
+  // 302 到厂商的 login_success 静态页，access_token 放在 URL # 片段里。网页受同源策略
+  // 限制读不到跨域跳转目标的 URL，Electron 作为浏览器宿主可以在导航事件层截取。
+  //
+  // 授权直链不在连接器包里硬编码（百度个人体验密钥 client_id 会不定期变更，固定直链
+  // 会失效——见连接器设计文档风险 #1）；包只声明 docPageUrl（厂商文档页）与
+  // successUrlPrefix（授权成功页前缀），这里实时抓取文档页 HTML 提取当前授权链接。
+  registerHandler('desktop:capture-oauth-token', async options => {
+    let docPage, successPrefix, successOrigin;
+    try {
+      docPage = new URL(String(options?.docPageUrl || ''));
+      successPrefix = String(options?.successUrlPrefix || '');
+      successOrigin = new URL(successPrefix).origin;
+    } catch {
+      return null;
+    }
+    // 校验：仅 https、不带内嵌凭据；成功页前缀必须是该 origin 下的路径。
+    if (docPage.protocol !== 'https:' || docPage.username || docPage.password
+        || !successPrefix.startsWith(`${successOrigin}/`)) {
+      return null;
+    }
+    if (!mainWindow || mainWindow.isDestroyed()) return null;
+    const authorizeUrl = await fetchImplicitAuthorizeUrl(docPage, successOrigin);
+    if (!authorizeUrl) return null;
+    const title = String(options?.title || '').trim().slice(0, 64);
+    return new Promise(resolve => {
+      const authWindow = new BrowserWindow({
+        parent: mainWindow,
+        modal: true,
+        width: 480,
+        height: 720,
+        autoHideMenuBar: true,
+        title: title || '授权',
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+      });
+      let settled = false;
+      const finish = result => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+        if (!authWindow.isDestroyed()) authWindow.destroy();
+      };
+      // 授权流程内禁止弹新窗口；target=_blank 的链接收回本窗内跳转。
+      authWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (url.startsWith('https://')) void authWindow.loadURL(url);
+        return { action: 'deny' };
+      });
+      // 返回 true 表示命中成功页且已截取 token，调用方应拦截这次导航。
+      const capture = rawUrl => {
+        if (typeof rawUrl !== 'string' || !rawUrl.startsWith(successPrefix)) return false;
+        let params;
+        try {
+          params = new URLSearchParams(new URL(rawUrl).hash.replace(/^#/, ''));
+        } catch {
+          return false;
+        }
+        const token = params.get('access_token');
+        if (!token) return false;
+        finish({ accessToken: token });
+        return true;
+      };
+      const { webContents } = authWindow;
+      webContents.on('will-redirect', (event, targetUrl) => {
+        if (capture(targetUrl)) event.preventDefault();
+      });
+      webContents.on('will-navigate', (event, targetUrl) => {
+        if (capture(targetUrl)) event.preventDefault();
+      });
+      webContents.on('did-navigate', (_event, targetUrl) => { capture(targetUrl); });
+      webContents.on('did-redirect-navigation', (_event, targetUrl) => { capture(targetUrl); });
+      authWindow.on('closed', () => finish(null));
+      void authWindow.loadURL(authorizeUrl.href);
+    });
   });
   registerHandler('desktop:select-project-directory', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {

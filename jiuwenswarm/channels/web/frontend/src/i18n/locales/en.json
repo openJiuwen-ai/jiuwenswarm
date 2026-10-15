@@ -4089,7 +4089,8 @@
     "tokenModal": {
       "title": "Connect {{name}}",
       "placeholder": "Paste your {{name}} API Key",
-      "saveAndConnect": "Save and connect"
+      "saveAndConnect": "Save and connect",
+      "oauthAuthorize": "Authorize"
     },
     "cliAuth": {
       "title": "Connect {{name}}",

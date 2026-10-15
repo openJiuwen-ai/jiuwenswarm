@@ -760,6 +760,88 @@ class _WindowApi:
             return False
         return bool(webbrowser.open(url))
 
+    @staticmethod
+    def capture_oauth_token(options: dict) -> dict | None:
+        """隐式授权一键授权（对齐 Electron 的 desktop:capture-oauth-token）。
+
+        部分远程 MCP（如百度网盘）官方只提供隐式授权：授权成功 302 到厂商的
+        login_success 静态页，access_token 放在 URL # 片段里。授权直链不硬编码
+        （百度个人体验密钥会不定期变更，设计文档风险 #1），而是实时抓取厂商文档页
+        HTML 提取当前链接。随后开一个 pywebview 子窗加载授权页，轮询地址栏 URL
+        截取成功页片段里的 access_token。抓取失败、用户关窗或超时返回 None，
+        前端保持手动粘贴。
+        """
+        import html as html_module
+        import re
+        import urllib.request
+        from urllib.parse import parse_qs, urlsplit
+
+        if not isinstance(options, dict):
+            return None
+        doc_url = str(options.get("docPageUrl") or "").strip()
+        success_prefix = str(options.get("successUrlPrefix") or "").strip()
+        title = str(options.get("title") or "").strip()[:64] or "授权"
+        try:
+            doc_parts = urlsplit(doc_url)
+            success_parts = urlsplit(success_prefix)
+        except ValueError:
+            return None
+        success_origin = f"{success_parts.scheme}://{success_parts.netloc}"
+        # 校验：仅 https、不带内嵌凭据；成功页前缀必须是该 origin 下的路径。
+        if doc_parts.scheme != "https" or "@" in doc_parts.netloc:
+            return None
+        if success_parts.scheme != "https" or not success_prefix.startswith(f"{success_origin}/"):
+            return None
+
+        # 从文档页 HTML 提取当前授权直链：必须落在成功页同源、路径含 authorize。
+        try:
+            with urllib.request.urlopen(doc_url, timeout=10) as resp:  # noqa: S310 已校验 https
+                page = resp.read(2 * 1024 * 1024).decode("utf-8", errors="replace")
+        except (OSError, ValueError) as exc:
+            logger.warning("[desktop] fetch oauth doc page failed: %s", exc)
+            return None
+        pattern = re.escape(success_origin) + r"/[\w./-]*authorize\?[^\"'<>\s]+"
+        match = re.search(pattern, page)
+        if not match:
+            return None
+        authorize_url = html_module.unescape(match.group(0))
+        try:
+            auth_parts = urlsplit(authorize_url)
+        except ValueError:
+            return None
+        if f"{auth_parts.scheme}://{auth_parts.netloc}" != success_origin:
+            return None
+
+        state = {"closed": False, "token": None}
+        win = webview.create_window(title, url=authorize_url, width=480, height=720)
+        if win is None:
+            return None
+
+        def _on_closed() -> None:
+            state["closed"] = True
+
+        win.events.closed += _on_closed
+        # js_api 在独立线程执行，阻塞轮询不会卡住 UI；JS 侧 promise 一直等到返回。
+        deadline = time.monotonic() + 300
+        while not state["closed"] and time.monotonic() < deadline:
+            try:
+                current = win.get_current_url() or ""
+            except Exception:  # noqa: BLE001 窗口中途销毁
+                break
+            if current.startswith(success_prefix):
+                params = parse_qs(urlsplit(current).fragment)
+                token = (params.get("access_token") or [""])[0].strip()
+                if token:
+                    state["token"] = token
+                    break
+            time.sleep(0.3)
+        if not state["closed"]:
+            try:
+                win.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+        return {"accessToken": state["token"]} if state["token"] else None
+
     def install_update(self, installer_path: str) -> bool:
         return self._runtime.install_update(installer_path)
 
