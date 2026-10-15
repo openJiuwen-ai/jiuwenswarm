@@ -55,6 +55,7 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
 )
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
+    is_todo_close_nudge,
 )
 from jiuwenswarm.common.tool_display import (
     build_tool_display_name,
@@ -1167,7 +1168,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 tool_name == "skill_acceleration_exec"
                 and extra.get(RESUME_USER_INPUT_KEY) is not None
             )
-            if not skip_resume_tool_call:
+            if not skip_resume_tool_call and not is_todo_close_nudge(tc):
                 await self._emit_tool_call(session, tc, model_display_name=model_display)
                 if not ctx.extra.get("_skip_tool"):
                     await self._emit_tool_update(session, tc, status="in_progress")
@@ -1345,6 +1346,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             str(getattr(tc, "name", "") or "").strip() == "deepresearch_execute"
             and _extract_tool_interrupt(ctx.inputs.tool_result) is not None
         ):
+            return
+        if is_todo_close_nudge(tc):
             return
 
         normalize_read_file_tool_outcome(ctx)
