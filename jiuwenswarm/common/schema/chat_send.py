@@ -48,6 +48,7 @@ class ChatSendParams(TypedDict, total=False):
     """
 
     content: str
+    group_members: list[dict]
     """用户消息正文（主字段）。保留 /skill 等标记原样，不剥离。"""
 
     message: NotRequired[str]

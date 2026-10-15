@@ -441,6 +441,13 @@ def enrich_team_spec_for_swarm(
     # across a serialization boundary (spawned teammate, distributed remote,
     # cold recovery) can reconstruct the context via the registered factory.
     spec.build_context_seed = base.to_seed()
+    group_members = (request_metadata or {}).get("group_members")
+    if group_members is not None:
+        if agent_group_name:
+            raise ValueError("a public group roster cannot also select a single AgentGroup")
+        from jiuwenswarm.agents.swarm.group_chat import assemble_group_members
+
+        assemble_group_members(spec, group_members)
     logger.info(
         "[swarm.assembly] enriched team spec '%s' "
         "(roles=%s, session=%s, mcps=%d, agent_group=%s)",

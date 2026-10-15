@@ -993,6 +993,7 @@ def update_session_metadata(
     session_equipment: dict[str, Any] | None = None,
     session_runtime_binding: dict[str, Any] | None = None,
     session_harness_checkpoint: dict[str, Any] | None = None,
+    group_members: list[dict[str, Any]] | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -1169,6 +1170,9 @@ def update_session_metadata(
         # 非消息操作复用本函数而不腐蚀 last_message_at 语义)
         if touch_last_message_at:
             metadata["last_message_at"] = _current_timestamp()
+
+    if group_members is not None:
+        metadata["group_members"] = copy.deepcopy(group_members)
 
     _enqueue_write(
         session_id,

@@ -2995,6 +2995,15 @@ async def _process_team_message_stream(
 
     try:
         request_metadata = dict(request.metadata or {})
+        if group_input is not None:
+            from jiuwenswarm.agents.swarm.group_chat import resolve_group_members
+
+            roster = resolve_group_members(
+                session_id, (getattr(request, "params", None) or {}).get("group_members"),
+                is_first_request=is_first_request,
+            )
+            if roster is not None:
+                request_metadata["group_members"] = roster
         # V2: 若请求携带 member_name（由 Gateway resolve_member_by_user 反查注入），
         # 在前拼接 $sender，让 OpenJiuwen 识别发言人身份。
         # 规则：
@@ -3144,6 +3153,10 @@ async def _process_team_message_stream(
             swarmflow_config=swarmflow_config,
             model_selection=runtime_model_selection,
         )
+        if group_input is not None and request_metadata.get("group_members") is not None:
+            update_session_metadata(session_id=session_id,
+                group_members=request_metadata["group_members"],
+                touch_last_message_at=False, sync_write=True)
         if isinstance(model_selection, dict) and model_selection.get("type") and model_selection.get("id"):
             from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
             from jiuwenswarm.server.runtime.session.model_selection_store import (
