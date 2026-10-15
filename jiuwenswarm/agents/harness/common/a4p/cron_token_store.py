@@ -11,7 +11,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.agents.harness.common.a4p_token_expiry import token_expired
+from jiuwenswarm.agents.harness.common.a4p.token_expiry import token_expired
 
 
 CRON_INTENT_TOKENS_DB_FILENAME = "cron_intent_tokens.sqlite3"

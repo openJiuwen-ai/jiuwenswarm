@@ -22,22 +22,22 @@ from a4p.types import (
     VerificationResult,
     to_payload,
 )
-from jiuwenswarm.agents.harness.common.a4p_authorizer import (
+from jiuwenswarm.agents.harness.common.a4p.authorizer import (
     WebAuthorizationRequest,
     WebAuthorizerBroker,
 )
-from jiuwenswarm.agents.harness.common.a4p_cron_token_store import (
+from jiuwenswarm.agents.harness.common.a4p.cron_token_store import (
     CRON_INTENT_TOKENS_DB_FILENAME,
     CRON_INTENT_TOKENS_VERSION,
     SQLiteCronIntentTokenStore,
 )
-from jiuwenswarm.agents.harness.common.a4p_execution_context import AuthorizerRoute
-from jiuwenswarm.agents.harness.common.a4p_file_scope import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import AuthorizerRoute
+from jiuwenswarm.agents.harness.common.a4p.file_scope import (
     READ_PATH_FIELDS,
     normalize_read_path_params,
     read_scope_matches,
 )
-from jiuwenswarm.agents.harness.common.a4p_token_expiry import token_expired
+from jiuwenswarm.agents.harness.common.a4p.token_expiry import token_expired
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.utils import get_config_dir, logger
 

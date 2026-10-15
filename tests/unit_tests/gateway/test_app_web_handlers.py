@@ -4156,7 +4156,7 @@ def _a4p_config_request(method, params, channel="web", session="session"):
 
 @pytest.mark.asyncio
 async def test_a4p_config_disabled_partial_update_and_get(monkeypatch):
-    from jiuwenswarm.agents.harness.common import a4p_rpc
+    from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
     config = {"enabled": False, "require_user_signature": True, "server_id": "private"}
     events = []
     monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: dict(config))
@@ -4178,7 +4178,7 @@ async def test_a4p_config_disabled_partial_update_and_get(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("params", [{}, {"session_id": "session"}, {"enabled": "false"}, {"enabled": 1}, {"enabled": None}, {"unknown": True}, {"enabled": True, "unknown": False}, {"require_user_signature": True}, {"require_user_signature": False}])
 async def test_a4p_config_rejects_invalid_updates_without_writing(monkeypatch, params):
-    from jiuwenswarm.agents.harness.common import a4p_rpc
+    from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
     monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", lambda _: pytest.fail("unexpected write"))
     response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.update", params))
     assert not response.ok and response.payload["code"] == "BAD_REQUEST"
@@ -4187,7 +4187,7 @@ async def test_a4p_config_rejects_invalid_updates_without_writing(monkeypatch, p
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["a4p.config.get", "a4p.config.update"])
 async def test_a4p_config_requires_web_route(monkeypatch, method):
-    from jiuwenswarm.agents.harness.common import a4p_rpc
+    from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
     monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: pytest.fail("unexpected config access"))
     response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request(method, {"enabled": True}, channel="cli"))
     assert not response.ok and response.payload["code"] == "A4P_WEB_SESSION_REQUIRED"
@@ -4196,7 +4196,7 @@ async def test_a4p_config_requires_web_route(monkeypatch, method):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stage,code", [("persist", "INTERNAL_ERROR"), ("apply", "A4P_CONFIG_APPLY_FAILED")])
 async def test_a4p_config_errors_are_reported(monkeypatch, stage, code):
-    from jiuwenswarm.agents.harness.common import a4p_rpc
+    from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
     events = []
     def persist(updates):
         events.append("persist")
@@ -4214,7 +4214,7 @@ async def test_a4p_config_errors_are_reported(monkeypatch, stage, code):
 
 @pytest.mark.asyncio
 async def test_a4p_config_serializes_updates_and_reads(monkeypatch):
-    from jiuwenswarm.agents.harness.common import a4p_rpc
+    from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
     monkeypatch.setattr(a4p_rpc, "_CONFIG_LOCK", asyncio.Lock())
     entered, release = asyncio.Event(), asyncio.Event()
     events = []
@@ -4245,7 +4245,7 @@ async def test_a4p_config_serializes_updates_and_reads(monkeypatch):
 @pytest.mark.parametrize("field", ["enabled"])
 @pytest.mark.parametrize("value", ["true", "false", 0, 1, 0.0, None, [], {}])
 async def test_a4p_config_boolean_fields_are_strict(monkeypatch, field, value):
-    from jiuwenswarm.agents.harness.common import a4p_rpc
+    from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
 
     monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", lambda _: pytest.fail("unexpected write"))
     response = await a4p_rpc.dispatch_a4p_request(
@@ -4258,7 +4258,7 @@ async def test_a4p_config_boolean_fields_are_strict(monkeypatch, field, value):
 @pytest.mark.parametrize("method", ["a4p.config.get", "a4p.config.update"])
 @pytest.mark.parametrize("params", [None, [], "invalid"])
 async def test_a4p_config_requires_object_params(monkeypatch, method, params):
-    from jiuwenswarm.agents.harness.common import a4p_rpc
+    from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
 
     monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", lambda _: pytest.fail("unexpected write"))
     response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request(method, params))
@@ -4268,7 +4268,7 @@ async def test_a4p_config_requires_object_params(monkeypatch, method, params):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("params", [{"enabled": True}, {"unknown": True}, {"a4p_enabled": True}])
 async def test_a4p_config_get_rejects_business_fields(monkeypatch, params):
-    from jiuwenswarm.agents.harness.common import a4p_rpc
+    from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
 
     monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: pytest.fail("unexpected read"))
     response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.get", params))
@@ -4281,7 +4281,7 @@ async def test_a4p_config_get_rejects_business_fields(monkeypatch, params):
     {"enabled": False},
 ])
 async def test_a4p_config_round_trip_uses_persisted_values(monkeypatch, tmp_path, updates):
-    from jiuwenswarm.agents.harness.common import a4p_rpc, a4p_runtime
+    from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc, runtime as a4p_runtime
     from jiuwenswarm.common import config as config_module
 
     path = tmp_path / "config.yaml"

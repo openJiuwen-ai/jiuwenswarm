@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.agents.harness.common import a4p_token_expiry
-from jiuwenswarm.agents.harness.common.a4p_runtime import A4PRuntime, A4PIdentity
-from jiuwenswarm.agents.harness.common.a4p_cron_token_store import (
+from jiuwenswarm.agents.harness.common.a4p import token_expiry as a4p_token_expiry
+from jiuwenswarm.agents.harness.common.a4p.runtime import A4PRuntime, A4PIdentity
+from jiuwenswarm.agents.harness.common.a4p.cron_token_store import (
     SQLiteCronIntentTokenStore,
 )
 
@@ -136,8 +136,8 @@ def test_prune_preserves_concurrently_replaced_token(tmp_path, monkeypatch):
 
 
 def test_runtime_initialization_prunes_persisted_expired_tokens(tmp_path, monkeypatch):
-    from jiuwenswarm.agents.harness.common import a4p_runtime
-    from jiuwenswarm.agents.harness.common.a4p_cron_token_store import CRON_INTENT_TOKENS_DB_FILENAME
+    from jiuwenswarm.agents.harness.common.a4p import runtime as a4p_runtime
+    from jiuwenswarm.agents.harness.common.a4p.cron_token_store import CRON_INTENT_TOKENS_DB_FILENAME
 
     monkeypatch.setattr(a4p_runtime, "get_config_dir", lambda: tmp_path)
     store = SQLiteCronIntentTokenStore(tmp_path / "a4p" / CRON_INTENT_TOKENS_DB_FILENAME)

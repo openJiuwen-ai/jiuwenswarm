@@ -9,10 +9,10 @@ from typing import Any
 
 from a4p.errors import A4PProtocolError
 
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     authorizer_route_from_request,
 )
-from jiuwenswarm.agents.harness.common.a4p_runtime import (
+from jiuwenswarm.agents.harness.common.a4p.runtime import (
     get_a4p_config,
     get_a4p_runtime,
     is_a4p_enabled,

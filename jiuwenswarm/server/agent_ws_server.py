@@ -131,7 +131,7 @@ from jiuwenswarm.common.mode_matrix import (
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
     get_permissions_config_req_methods,
 )
-from jiuwenswarm.agents.harness.common.a4p_rpc import get_a4p_req_methods
+from jiuwenswarm.agents.harness.common.a4p.rpc import get_a4p_req_methods
 from jiuwenswarm.common.config import (
     DEFAULT_SANDBOX_POLICY_FILE,
     DEFAULT_SANDBOX_STARTUP_MODE,
@@ -5992,7 +5992,7 @@ class AgentWebSocketServer:
         send_lock: asyncio.Lock,
     ) -> None:
         """Handle a4p.* requests forwarded from the Web User Authorizer."""
-        from jiuwenswarm.agents.harness.common.a4p_rpc import dispatch_a4p_request
+        from jiuwenswarm.agents.harness.common.a4p.rpc import dispatch_a4p_request
 
         resp = await dispatch_a4p_request(request)
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
@@ -11364,7 +11364,7 @@ class AgentWebSocketServer:
             if reload_scopes:
                 reload_kwargs["reload_scopes"] = reload_scopes
             if isinstance(config_payload, dict) and "a4p" in config_payload:
-                from jiuwenswarm.agents.harness.common.a4p_runtime import (
+                from jiuwenswarm.agents.harness.common.a4p.runtime import (
                     get_a4p_config,
                 )
 

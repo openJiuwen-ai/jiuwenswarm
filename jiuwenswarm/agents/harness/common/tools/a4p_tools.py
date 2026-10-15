@@ -6,14 +6,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from jiuwenswarm.agents.harness.common.a4p_file_scope import normalize_read_path_params
-from jiuwenswarm.agents.harness.common.a4p_runtime import (
+from jiuwenswarm.agents.harness.common.a4p.file_scope import normalize_read_path_params
+from jiuwenswarm.agents.harness.common.a4p.runtime import (
     get_a4p_runtime,
     is_a4p_enabled,
     normalize_a4p_action_params,
     resolve_a4p_identity,
 )
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
 )
 from jiuwenswarm.common.config import get_config

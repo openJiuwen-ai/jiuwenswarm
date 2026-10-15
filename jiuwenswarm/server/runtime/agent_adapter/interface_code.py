@@ -57,7 +57,7 @@ from openjiuwen.harness.tools import (
 )
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (

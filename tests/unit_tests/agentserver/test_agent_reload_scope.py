@@ -586,7 +586,7 @@ async def test_agent_reload_config_handler_passes_explicit_scope(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_agent_reload_config_preserves_agent_owned_a4p_config(monkeypatch):
-    from jiuwenswarm.agents.harness.common import a4p_runtime
+    from jiuwenswarm.agents.harness.common.a4p import runtime as a4p_runtime
 
     server = agent_ws_server_module.AgentWebSocketServer()
     order = []

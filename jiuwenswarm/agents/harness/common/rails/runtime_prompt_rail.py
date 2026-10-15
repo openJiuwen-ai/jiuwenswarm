@@ -735,7 +735,7 @@ class RuntimePromptRail(DeepAgentRail):
             await self._clear_prompt_attachment(ctx, section=section)
             return
         try:
-            from jiuwenswarm.agents.harness.common.a4p_runtime import is_a4p_enabled
+            from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_enabled
             from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
                 get_a4p_supported_action_names,
             )
@@ -899,7 +899,7 @@ class RuntimePromptRail(DeepAgentRail):
             await self._clear_prompt_attachment(ctx, section=section)
             return
         try:
-            from jiuwenswarm.agents.harness.common.a4p_runtime import (
+            from jiuwenswarm.agents.harness.common.a4p.runtime import (
                 get_a4p_runtime,
                 is_a4p_enabled,
             )

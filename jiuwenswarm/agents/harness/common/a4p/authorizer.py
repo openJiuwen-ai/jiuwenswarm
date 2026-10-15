@@ -12,7 +12,7 @@ from typing import Any, Awaitable, Callable
 from a4p.types import UserAuthorizationResponse
 from a4p.user_authorizer import approve_user_mandate
 
-from jiuwenswarm.agents.harness.common.a4p_execution_context import AuthorizerRoute
+from jiuwenswarm.agents.harness.common.a4p.execution_context import AuthorizerRoute
 from jiuwenswarm.common.utils import logger
 
 

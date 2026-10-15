@@ -6,13 +6,13 @@ import pytest
 from a4p.user_authorizer import approve_user_mandate
 from openjiuwen.harness.security.host import PermissionConfirmationRequest
 
-from jiuwenswarm.agents.harness.common import a4p_runtime
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p import runtime as a4p_runtime
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
     AuthorizationExecutionContext,
     AuthorizerRoute,
 )
-from jiuwenswarm.agents.harness.common.a4p_runtime import (
+from jiuwenswarm.agents.harness.common.a4p.runtime import (
     A4PIdentity,
     A4PRuntime,
     INTERNAL_A4P_USER_ID,

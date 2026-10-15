@@ -19,24 +19,24 @@ from a4p.types import (
 )
 from openjiuwen.core.foundation.tool import ToolExposure
 
-from jiuwenswarm.agents.harness.common import a4p_runtime
-from jiuwenswarm.agents.harness.common import a4p_rpc
-from jiuwenswarm.agents.harness.common.a4p_authorizer import (
+from jiuwenswarm.agents.harness.common.a4p import runtime as a4p_runtime
+from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
+from jiuwenswarm.agents.harness.common.a4p.authorizer import (
     WebAuthorizationRequest,
     WebAuthorizerBroker,
 )
-from jiuwenswarm.agents.harness.common.a4p_cron_token_store import (
+from jiuwenswarm.agents.harness.common.a4p.cron_token_store import (
     CRON_INTENT_TOKENS_DB_FILENAME,
     SQLiteCronIntentTokenStore,
 )
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
     AuthorizationExecutionContext,
     AuthorizerRoute,
     build_authorization_execution_context,
 )
 from jiuwenswarm.agents.harness.common.tools import a4p_tools as a4p_tools_module
-from jiuwenswarm.agents.harness.common.a4p_runtime import (
+from jiuwenswarm.agents.harness.common.a4p.runtime import (
     A4PIdentity,
     A4PRuntime,
     DEFAULT_CRON_INTENT_VALIDITY_SECONDS,

@@ -24,7 +24,7 @@ from openjiuwen.symphony.discovery import SkillPromptBranch, SkillPromptSnapshot
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
     AuthorizationExecutionContext,
     AuthorizerRoute,
@@ -1273,7 +1273,7 @@ async def test_cron_a4p_scope_is_injected_as_runtime_attachment(monkeypatch):
         lambda: {"a4p": {"enabled": True}},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.a4p_runtime.get_a4p_runtime",
+        "jiuwenswarm.agents.harness.common.a4p.runtime.get_a4p_runtime",
         lambda: _Runtime(),
     )
     builder = SystemPromptBuilder(language="en")

@@ -228,7 +228,7 @@ def build_permission_rail(
         is_auto_permission_enabled,
         normalize_permissions_for_runtime,
     )
-    from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+    from jiuwenswarm.agents.harness.common.a4p.execution_context import (
         AUTHORIZATION_EXECUTION_CONTEXTS,
     )
     from jiuwenswarm.common.config import get_config
@@ -447,7 +447,7 @@ def build_permission_rail(
 
             if channel == "__cron__" or is_interactive_web:
                 try:
-                    from jiuwenswarm.agents.harness.common.a4p_runtime import (
+                    from jiuwenswarm.agents.harness.common.a4p.runtime import (
                         get_a4p_runtime,
                         is_a4p_enabled,
                         resolve_a4p_identity,

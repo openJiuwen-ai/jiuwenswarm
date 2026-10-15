@@ -420,7 +420,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context
     TOOL_PERMISSION_CHANNEL_ID,
     TOOL_PERMISSION_REQUEST_ID,
 )
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
     build_authorization_execution_context,
 )
@@ -6606,7 +6606,7 @@ class JiuWenSwarmDeepAdapter:
         session_id: str | None,
     ) -> None:
         """Expose A4P only when this session has an interactive Web authorizer."""
-        from jiuwenswarm.agents.harness.common.a4p_runtime import is_a4p_enabled
+        from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_enabled
         from jiuwenswarm.agents.harness.common.tools.a4p_tools import get_tools
 
         execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
