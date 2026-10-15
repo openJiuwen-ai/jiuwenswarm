@@ -1382,12 +1382,28 @@ class WebChannel(BaseWsChannel):
                     ),
                 )
 
+        def _on_message_task_done(task: asyncio.Task) -> None:
+            # Retrieve the exception so crashes are logged instead of silently
+            # dropped ("Task exception was never retrieved"); issue #4876's
+            # "no res and no event" symptom was exactly such a silent drop.
+            inflight.discard(task)
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.error(
+                    "WebChannel message handler crashed: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                    exc_info=exc,
+                )
+
         try:
             inflight: set[Any] = set()
             async for raw in ws:
                 task = asyncio.create_task(self._handle_raw_message(ws, raw, query))
                 inflight.add(task)
-                task.add_done_callback(inflight.discard)
+                task.add_done_callback(_on_message_task_done)
             # connection closing: let in-flight handlers finish (bounded) to avoid
             # truncating responses mid-flight; cancel if they exceed a grace period.
             if inflight:
@@ -1572,6 +1588,21 @@ class WebChannel(BaseWsChannel):
             return
         if not isinstance(params, dict):
             params = {}
+
+        # Issue #4876: non-string params.mode / params.agent_id (list / dict / ...)
+        # used to flow into AgentRef -> RoutingKey and blow up on hash() inside
+        # register_ws. The crash escaped the per-message task, so the client got
+        # no res and no event. Reject them up front so a response is guaranteed.
+        for _key in ("mode", "agent_id"):
+            if _key in params and not isinstance(params[_key], str):
+                await self.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error=f"params.{_key} must be a string",
+                    code="BAD_REQUEST",
+                )
+                return
 
         # ── V2: session_id 解析 ──
         # 请求自带 session_id（如 chat.send）→ 用它更新 ws 路由注册。

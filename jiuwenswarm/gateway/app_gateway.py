@@ -1594,9 +1594,12 @@ class GatewayServer(BaseWebChannel):
             default_mode = Mode.CODE_NORMAL if route.channel_id == "tui" else Mode.AGENT
             mode = Mode.from_raw(params.get("mode"), default=default_mode)
 
-            # 确保 mode 被设置到 params 中，以便后续转发到 AgentServer
+            # 确保 mode 被设置到 params 中，以便后续转发到 AgentServer。
+            # Issue #4876: params.mode 传非字符串（数组/对象等）时不能原样透传，
+            # 用 from_raw 的解析结果（含默认值兜底）覆盖；字符串值保持原样不动。
             params = dict(params)
-            params.setdefault("mode", mode.value)
+            if not isinstance(params.get("mode"), str):
+                params["mode"] = mode.value
 
             # 连接级 agent_type 为 SSOT，注入后续转发请求
             # （3rdagent.switch 由 TUI local_handler 写回 ws._gateway_agent_type）
