@@ -44,6 +44,11 @@ from jiuwenswarm.server.runtime.session.session_history import (
     append_history_record,
     collapse_file_content_blocks,
 )
+from jiuwenswarm.server.runtime.agent_adapter.team_member_stream_history import (
+    MEMBER_SEGMENT_BOUNDARY_EVENTS,
+    TeamMemberStreamHistory,
+    team_member_stream_key,
+)
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
 from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     STATUSLINE_SETUP_SYSTEM_PROMPT,
@@ -3852,6 +3857,9 @@ class JiuWenSwarm:
         output_phase_metadata: dict[str, Any] = {}
         durable_pending_final_order: dict[str, Any] | None = None
         durable_pending_reasoning_order: dict[str, Any] | None = None
+        # Team 成员的 delta/reasoning 与 leader 交错到达，各自分桶，只被成员自己的
+        # 边界冲刷，避免成员正文被记成 leader 消息、reasoning 错配（见模块说明）。
+        team_member_history = TeamMemberStreamHistory()
         # 这条流是否带过 Goal 事件。Goal 仍 active 时流结束是不发 chat.final 的
         # （见 interface_deep._should_emit_stream_end_chat_final），气泡里的正文
         # 就没人落盘；收尾时按这个标记补一次，只影响 Goal 流。
@@ -3998,11 +4006,65 @@ class JiuWenSwarm:
             )
             durable_final_content = pending_text
 
+        async def _persist_team_member_pending_final(
+            member_key: str | None = None,
+            *,
+            completed_at: float | None = None,
+        ) -> None:
+            if member_key is None:
+                pending_items = team_member_history.take_all_pending_finals(completed_at=completed_at)
+            else:
+                item = team_member_history.take_pending_final(member_key, completed_at=completed_at)
+                pending_items = [item] if item is not None else []
+            for item in pending_items:
+                extra_fields = dict(item.extra)
+                record_timestamp = _resolve_final_record_timestamp(
+                    event_type="chat.final",
+                    segment_started_at=item.started_at,
+                    extra_fields=extra_fields,
+                )
+                await _run_history_io(
+                    append_history_record,
+                    session_id=session_id,
+                    request_id=rid,
+                    channel_id=cid,
+                    role="assistant",
+                    event_type="chat.final",
+                    content=item.content,
+                    timestamp=record_timestamp,
+                    extra=extra_fields,
+                    mode=request.params.get("mode", "unknown"),
+                )
+
+        async def _note_team_member_stream_event(
+            member_key: str,
+            event_type: str,
+            payload: dict[str, Any],
+            content: str,
+        ) -> bool:
+            """Buffer/flush a teammate frame in its own bucket; return whether to record it."""
+            if event_type == "chat.delta":
+                team_member_history.note_delta(member_key, content, payload)
+                return False
+            if event_type == "chat.reasoning":
+                team_member_history.note_reasoning(member_key, content, payload)
+                return False
+            if event_type in MEMBER_SEGMENT_BOUNDARY_EVENTS:
+                await _persist_team_member_pending_final(member_key)
+            elif event_type == "chat.final":
+                ensure_final_mode_inplace(payload)
+                if content:
+                    team_member_history.discard_text(member_key, final_content=content)
+                else:
+                    await _persist_team_member_pending_final(member_key)
+            return True
+
         async def _persist_input_boundary(payload: dict[str, Any]) -> None:
             # Flush BEFORE writing the user. This is the same ordered boundary
             # the browser receives, so reload cannot merge old/new answers.
             await _persist_pending_final_text(completed_at=payload["timestamp"] / 1000)
             await _persist_pending_reasoning()
+            await _persist_team_member_pending_final(completed_at=payload["timestamp"] / 1000)
             await _run_history_io(
                 append_history_record,
                 session_id=session_id,
@@ -4446,7 +4508,22 @@ class JiuWenSwarm:
                                     rid,
                                 )
                                 continue
-                            if et == "chat.delta":
+                            team_member_key = (
+                                team_member_stream_key(data.payload) if is_team_mode else None
+                            )
+                            if team_member_key is not None:
+                                if et == "chat.final":
+                                    final_segment_started_at, final_segment_order = (
+                                        team_member_history.text_segment_start(team_member_key)
+                                    )
+                                record_member_event = await _note_team_member_stream_event(
+                                    team_member_key,
+                                    et,
+                                    data.payload,
+                                    payload_content,
+                                )
+                                should_record = should_record and record_member_event
+                            elif et == "chat.delta":
                                 final_answer_chunks.append(payload_content)
                                 if suppress_a2ui_stream or a2ui_split is not None:
                                     first_a2ui_suppression = not suppress_a2ui_stream
@@ -4588,7 +4665,11 @@ class JiuWenSwarm:
                                             if k not in ("type", "timestamp", "content"):
                                                 extra_fields[k] = v
                                 if et in {"chat.final", "chat.tool_call"}:
-                                    extra_fields = _attach_reasoning_content(extra_fields)
+                                    extra_fields = (
+                                        team_member_history.attach_reasoning(team_member_key, extra_fields)
+                                        if team_member_key is not None
+                                        else _attach_reasoning_content(extra_fields)
+                                    )
                                 # 透传 proactive 标记——刷新页面时前端靠 source 识别卡片
                                 for pk in (
                                     "source",
@@ -4633,9 +4714,9 @@ class JiuWenSwarm:
                                     extra=extra_fields if extra_fields else None,
                                     mode=request.params.get("mode", "unknown"),
                                 )
-                                if et == "chat.final":
+                                if et == "chat.final" and team_member_key is None:
                                     durable_final_content = str(data.payload.get("content", ""))
-                            if et == "chat.final":
+                            if et == "chat.final" and team_member_key is None:
                                 next_final_content = str(data.payload.get("content", ""))
                                 if next_final_content:
                                     final_answer_content = next_final_content
@@ -4707,7 +4788,20 @@ class JiuWenSwarm:
                             continue
                         if et == "chat.final":
                             ensure_final_mode_inplace(data)
-                        if et == "chat.delta":
+                        team_member_key = team_member_stream_key(data) if is_team_mode else None
+                        if team_member_key is not None:
+                            if et == "chat.final":
+                                final_segment_started_at, _ = team_member_history.text_segment_start(
+                                    team_member_key
+                                )
+                            record_member_event = await _note_team_member_stream_event(
+                                team_member_key,
+                                et,
+                                data,
+                                payload_content,
+                            )
+                            should_record = should_record and record_member_event
+                        elif et == "chat.delta":
                             final_answer_chunks.append(payload_content)
                             if suppress_a2ui_stream or a2ui_split is not None:
                                 first_a2ui_suppression = not suppress_a2ui_stream
@@ -4811,7 +4905,11 @@ class JiuWenSwarm:
                                         if k not in ("type", "timestamp", "content"):
                                             extra_fields[k] = v
                             if et in {"chat.final", "chat.tool_call"}:
-                                extra_fields = _attach_reasoning_content(extra_fields)
+                                extra_fields = (
+                                    team_member_history.attach_reasoning(team_member_key, extra_fields)
+                                    if team_member_key is not None
+                                    else _attach_reasoning_content(extra_fields)
+                                )
                             # 透传 proactive 标记——刷新页面时前端靠 source 识别卡片
                             for pk in (
                                 "source",
@@ -4856,9 +4954,9 @@ class JiuWenSwarm:
                                 extra=extra_fields if extra_fields else None,
                                 mode=request.params.get("mode", "unknown"),
                             )
-                            if et == "chat.final":
+                            if et == "chat.final" and team_member_key is None:
                                 durable_final_content = str(data.get("content", ""))
-                        if et == "chat.final":
+                        if et == "chat.final" and team_member_key is None:
                             next_final_content = str(data.get("content", ""))
                             if next_final_content:
                                 final_answer_content = next_final_content
