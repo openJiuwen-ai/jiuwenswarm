@@ -1298,12 +1298,13 @@ export function ConversationSidebar({
                 </button>
               </div>
             ) : null}
-            {!peek && !hideCollapseButton && (
+            {onToggleCollapse && !hideCollapseButton && (
               <button
                 type="button"
                 className="conversation-sidebar__mode-collapse"
                 onClick={onToggleCollapse}
-                aria-label={t('common.collapse') || 'Collapse'}
+                aria-label={t(peek ? 'common.expandAndPin' : 'common.collapse')}
+                title={t(peek ? 'common.expandAndPin' : 'common.collapse')}
                 data-testid="multi-session-sidebar-collapse"
               >
                 <PanelCollapseIcon aria-hidden />

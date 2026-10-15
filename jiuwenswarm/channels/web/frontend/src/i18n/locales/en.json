@@ -18,6 +18,7 @@
     "modify": "Modify",
     "collapse": "Collapse",
     "expand": "Expand",
+    "expandAndPin": "Expand and pin",
     "delete": "Delete",
     "hide": "Hide",
     "show": "Show",
@@ -4730,6 +4731,7 @@
       "feature2Body": "Give your paper or program to AI for repeated polishing. It generates optimization candidates, validates and scores every version, keeps the best one, and iterates until the highest-quality deliverable is ready."
     },
     "list": {
+      "title": "RSI experiments",
       "loading": "Loading…",
       "error": "Failed to load experiments"
     },

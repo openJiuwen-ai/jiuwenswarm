@@ -46,6 +46,13 @@
   pointer-events: auto;
 }
 
+/* Hide the duplicate inline sidebar during preview so pinning restores its
+   full width immediately instead of replaying the collapsed-to-open transition. */
+.content:has(> .chat-layout--peek-host > .conversation-sidebar) > .chat-layout > .conversation-sidebar.is-collapsed,
+.content:has(> .chat-layout--peek-host > .rsi-rail) > .app-section > .rsi-page > .rsi-rail.is-collapsed {
+  display: none;
+}
+
 .chat-workspace {
   overflow: hidden;
   background: var(--color-surface-card);
