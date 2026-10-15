@@ -207,9 +207,12 @@ def test_configured_model_catalog_carries_no_secret(monkeypatch):
     assert "api_base" not in json.dumps(catalog)
 
 
-def test_web_gateway_does_not_forward_internal_feishu_inbound_method():
+def test_web_gateway_does_not_forward_internal_jiuwenmate_methods():
     methods = JiuwenMateWebAdapter.methods
-    internal_methods = {ReqMethod.JIUWENMATE_FEISHU_INBOUND.value}
+    internal_methods = {
+        ReqMethod.JIUWENMATE_FEISHU_INBOUND.value,
+        ReqMethod.JIUWENMATE_DELIVERY_ACK.value,
+    }
     web_methods = {
         method.value
         for method in ReqMethod

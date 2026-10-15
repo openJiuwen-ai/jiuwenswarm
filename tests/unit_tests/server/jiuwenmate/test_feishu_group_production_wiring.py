@@ -12,6 +12,8 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
     FeishuInboundEvent,
@@ -134,6 +136,23 @@ async def test_default_jm08_runtime_uses_one_owner_sqlite_store_and_closes_manag
 
 
 @pytest.mark.asyncio
+async def test_default_jm08_manager_owns_jm09_delivery_worker_when_configured(tmp_path):
+    async def send_delivery(_job):
+        return None
+
+    _fanout, manager = create_default_persistent_group_fanout(
+        tmp_path / "jiuwenmate", send_delivery=send_delivery
+    )
+    service = manager.result_delivery_service
+
+    assert service is not None and service._task is None
+    await manager.start()
+    assert service._task is not None and not service._task.done()
+    await manager.aclose()
+    assert service._task is None
+
+
+@pytest.mark.asyncio
 async def test_message_handler_forwards_bound_event_over_e2a_and_maps_disposition():
     client = MagicMock()
     client.send_request = AsyncMock(
@@ -221,7 +240,208 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
     assert await server._ensure_persistent_group_fanout() is fanout
     assert await server._ensure_persistent_group_fanout() is fanout
     manager.start.assert_awaited_once()
+    assert factory.call_args.kwargs["send_delivery"] == server._send_jm09_delivery
 
     await server._close_persistent_group_fanout()
     manager.aclose.assert_awaited_once()
     assert server._jm08_fanout is None
+
+
+@pytest.mark.asyncio
+async def test_agent_server_routes_jm09_delivery_ack_to_persistent_manager(monkeypatch):
+    AgentWebSocketServer = _agent_websocket_server_type()
+    server = object.__new__(AgentWebSocketServer)
+    delivery_service = MagicMock()
+    delivery_service.apply_ack = AsyncMock(return_value={"status": "delivered"})
+    server._jm08_agent_manager = SimpleNamespace(result_delivery_service=delivery_service)
+    waiter = asyncio.get_running_loop().create_future()
+    server._jm09_delivery_waiters = {"del_1": waiter}
+    request = AgentRequest(
+        request_id="ack-1",
+        channel_id="feishu",
+        req_method=ReqMethod.JIUWENMATE_DELIVERY_ACK,
+        params={
+            "delivery_id": "del_1",
+            "stage": "send",
+            "outcome": "delivered",
+            "external_message_id": "om_reply",
+        },
+    )
+    sent = []
+
+    async def capture_send(_ws, wire):
+        sent.append(wire)
+
+    monkeypatch.setattr("jiuwenswarm.server.agent_ws_server.send_wire_payload", capture_send)
+
+    await server.dispatch_parsed_request(object(), request, asyncio.Lock())
+
+    delivery_service.apply_ack.assert_awaited_once_with(request.params)
+    assert waiter.result() == request.params
+    assert len(sent) == 1
+    assert sent[0]["body"]["result"]["status"] == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_agent_server_delivery_push_waits_for_correlated_gateway_ack():
+    AgentWebSocketServer = _agent_websocket_server_type()
+    server = object.__new__(AgentWebSocketServer)
+    server._jm09_delivery_waiters = {}
+    sent = []
+
+    async def send_push(message):
+        sent.append(message)
+        waiter = server._jm09_delivery_waiters["del_1"]
+        waiter.set_result(
+            {
+                "delivery_id": "del_1",
+                "stage": "send",
+                "outcome": "delivered",
+                "external_message_id": "om_sent",
+            }
+        )
+        return True
+
+    server.send_push = send_push
+    result = await server._send_jm09_delivery(
+        {
+            "delivery_id": "del_1",
+            "app_id": "cli_bound",
+            "target_id": "oc_group",
+            "source_message_id": "om_source",
+            "source_reply_to": "om_parent",
+            "idempotency_key": "stable-key",
+            "text": "final answer",
+        }
+    )
+
+    assert result["outcome"] == "delivered"
+    assert result["external_message_id"] == "om_sent"
+    assert sent[0]["payload"]["event_type"] == "jiuwenmate.delivery.send"
+    assert sent[0]["payload"]["app_id"] == "cli_bound"
+    assert server._jm09_delivery_waiters == {}
+
+
+@pytest.mark.asyncio
+async def test_gateway_consumes_jm09_push_and_returns_correlated_e2a_ack():
+    from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+
+    client = MagicMock()
+    client.send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload={}))
+    handler = object.__new__(MessageHandler)
+    handler.agent_client = client
+    handler._jm09_delivery_handler = AsyncMock(
+        return_value={"outcome": "delivered", "external_message_id": "om_sent"}
+    )
+    payload = {
+        "event_type": "jiuwenmate.delivery.send",
+        "delivery_id": "del_1",
+        "stage": "send",
+        "app_id": "cli_bound",
+        "chat_id": "oc_group",
+        "source_message_id": "om_source",
+        "idempotency_key": "stable-key",
+        "text": "final answer",
+    }
+
+    await handler._handle_agent_server_push(
+        build_server_push_wire({"request_id": "jm09_del_1", "channel_id": "feishu", "payload": payload})
+    )
+
+    handler._jm09_delivery_handler.assert_awaited_once_with(payload)
+    client.send_request.assert_awaited_once()
+    envelope = client.send_request.await_args.args[0]
+    assert envelope.method == ReqMethod.JIUWENMATE_DELIVERY_ACK.value
+    assert envelope.params == {
+        "delivery_id": "del_1",
+        "stage": "send",
+        "outcome": "delivered",
+        "external_message_id": "om_sent",
+        "error_code": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_routes_jm09_delivery_only_to_exact_feishu_app():
+    handler = object.__new__(MessageHandler)
+    manager = ChannelManager(handler)
+    wrong_app = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_other"), MagicMock())
+    right_app = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound"), MagicMock())
+    wrong_app.send_persistent_result = AsyncMock(return_value={"outcome": "delivered"})
+    right_app.send_persistent_result = AsyncMock(
+        return_value={"outcome": "delivered", "external_message_id": "om_sent"}
+    )
+    manager.register_channel(wrong_app)
+    manager.register_channel(right_app)
+
+    result = await manager.deliver_jm09_persistent_result(
+        {
+            "app_id": "cli_bound",
+            "chat_id": "oc_group",
+            "source_message_id": "om_source",
+            "idempotency_key": "stable-key",
+            "text": "final answer",
+        }
+    )
+
+    right_app.send_persistent_result.assert_awaited_once_with(
+        chat_id="oc_group",
+        text="final answer",
+        source_message_id="om_source",
+        idempotency_key="stable-key",
+    )
+    wrong_app.send_persistent_result.assert_not_awaited()
+    assert result["outcome"] == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_keeps_delivery_pending_while_bound_app_is_disconnected():
+    handler = object.__new__(MessageHandler)
+    manager = ChannelManager(handler)
+
+    result = await manager.deliver_jm09_persistent_result(
+        {
+            "app_id": "cli_bound",
+            "chat_id": "oc_group",
+            "source_message_id": "om_source",
+            "idempotency_key": "stable-key",
+            "text": "final answer",
+        }
+    )
+
+    assert result == {"outcome": "pending", "error_code": "FEISHU_APP_NOT_CONNECTED"}
+
+
+@pytest.mark.asyncio
+async def test_gateway_reports_pending_when_no_delivery_handler_is_available():
+    from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+
+    client = MagicMock()
+    client.send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload={}))
+    handler = object.__new__(MessageHandler)
+    handler.agent_client = client
+    handler._jm09_delivery_handler = None
+
+    await handler._handle_agent_server_push(
+        build_server_push_wire(
+            {
+                "request_id": "jm09_del_1",
+                "channel_id": "feishu",
+                "payload": {
+                    "event_type": "jiuwenmate.delivery.send",
+                    "delivery_id": "del_1",
+                    "stage": "send",
+                    "app_id": "cli_bound",
+                    "chat_id": "oc_group",
+                    "idempotency_key": "stable-key",
+                    "text": "final answer",
+                },
+            }
+        )
+    )
+
+    client.send_request.assert_awaited_once()
+    envelope = client.send_request.await_args.args[0]
+    assert envelope.method == ReqMethod.JIUWENMATE_DELIVERY_ACK.value
+    assert envelope.params["outcome"] == "pending"
+    assert envelope.params["error_code"] == "CHANNEL_ROUTE_UNAVAILABLE"

@@ -1176,6 +1176,7 @@ class AgentWebSocketServer:
         self._jm08_runtime_lock = asyncio.Lock()
         self._jm08_fanout = None
         self._jm08_agent_manager = None
+        self._jm09_delivery_waiters: dict[str, asyncio.Future] = {}
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
         # Trajectory diagnosis host (lazy, see _get_diagnosis_host)
@@ -2162,7 +2163,9 @@ class AgentWebSocketServer:
 
             if not configured_feishu_bindings():
                 return None
-            fanout, manager = create_default_persistent_group_fanout()
+            fanout, manager = create_default_persistent_group_fanout(
+                send_delivery=self._send_jm09_delivery
+            )
             try:
                 await manager.start()
             except BaseException:
@@ -2174,7 +2177,7 @@ class AgentWebSocketServer:
             return fanout
 
     async def _close_persistent_group_fanout(self) -> None:
-        """Close JM-07's scheduler and commit queue during AgentServer shutdown."""
+        """Close the JM-08 scheduler and JM-09 result delivery service during shutdown."""
         lock = getattr(self, "_jm08_runtime_lock", None)
         if lock is None:
             return
@@ -2184,6 +2187,94 @@ class AgentWebSocketServer:
             self._jm08_fanout = None
             if manager is not None:
                 await manager.aclose()
+
+    async def _send_jm09_delivery(self, job: dict[str, object]) -> dict[str, object]:
+        """Push one durable Feishu result to Gateway and await its platform receipt."""
+        delivery_id = job.get("delivery_id")
+        if not isinstance(delivery_id, str) or not delivery_id.strip():
+            return {"outcome": "failed", "error_code": "DELIVERY_ID_MISSING"}
+        if delivery_id in self._jm09_delivery_waiters:
+            return {
+                "delivery_id": delivery_id,
+                "stage": "send",
+                "outcome": "unknown",
+                "error_code": "DELIVERY_ALREADY_IN_FLIGHT",
+            }
+
+        waiter = asyncio.get_running_loop().create_future()
+        self._jm09_delivery_waiters[delivery_id] = waiter
+        push = {
+            "request_id": f"jm09_{delivery_id}",
+            "channel_id": "feishu",
+            "payload": {
+                "event_type": "jiuwenmate.delivery.send",
+                "delivery_id": delivery_id,
+                "stage": "send",
+                "app_id": job.get("app_id"),
+                "chat_id": job.get("target_id"),
+                "source_message_id": job.get("source_message_id"),
+                "source_reply_to": job.get("source_reply_to"),
+                "idempotency_key": job.get("idempotency_key"),
+                "text": job.get("text"),
+            },
+        }
+        try:
+            if not await self.send_push(push):
+                return {
+                    "delivery_id": delivery_id,
+                    "stage": "send",
+                    "outcome": "pending",
+                    "error_code": "GATEWAY_UNAVAILABLE",
+                }
+            try:
+                return await asyncio.wait_for(asyncio.shield(waiter), timeout=25.0)
+            except TimeoutError:
+                return {
+                    "delivery_id": delivery_id,
+                    "stage": "send",
+                    "outcome": "unknown",
+                    "error_code": "ACK_TIMEOUT",
+                }
+        finally:
+            if self._jm09_delivery_waiters.get(delivery_id) is waiter:
+                self._jm09_delivery_waiters.pop(delivery_id, None)
+
+    async def _handle_jm09_delivery_ack(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """Persist the Gateway receipt before resolving the in-flight sender."""
+        manager = getattr(self, "_jm08_agent_manager", None)
+        delivery_service = getattr(manager, "result_delivery_service", None)
+        params = request.params if isinstance(request.params, dict) else {}
+        response_payload: dict[str, Any]
+        ok = delivery_service is not None
+        if delivery_service is None:
+            response_payload = {"error": "JM-09 delivery service is unavailable"}
+        else:
+            try:
+                row = await delivery_service.apply_ack(params)
+                response_payload = {"status": row.get("status"), "delivery_id": params.get("delivery_id")}
+                delivery_id = params.get("delivery_id")
+                waiter = self._jm09_delivery_waiters.get(delivery_id) if isinstance(delivery_id, str) else None
+                if waiter is not None and not waiter.done():
+                    waiter.set_result(dict(params))
+            except Exception as exc:
+                ok = False
+                response_payload = {"error": "invalid or unpersistable delivery ACK", "error_type": type(exc).__name__}
+
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=ok,
+            payload=response_payload,
+            metadata=request.metadata,
+        )
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
 
     async def _suspend_kv_cache(self) -> None:
         """Detach KVC locally without sending management requests during stop."""
@@ -2540,6 +2631,9 @@ class AgentWebSocketServer:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        if request.req_method == ReqMethod.JIUWENMATE_DELIVERY_ACK:
+            await self._handle_jm09_delivery_ack(ws, request, send_lock)
+            return
         if request.req_method == ReqMethod.JIUWENMATE_FEISHU_INBOUND:
             await self._handle_jm08_feishu_inbound(ws, request, send_lock)
             return
