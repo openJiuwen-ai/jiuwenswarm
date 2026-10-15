@@ -104,3 +104,8 @@
 .video-duplex-model-settings__model-copy {
   flex: 1;
 }
+
+.video-duplex-model-settings__connected {
+  flex-shrink: 0;
+  color: var(--color-feedback-success);
+}

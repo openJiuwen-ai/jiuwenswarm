@@ -118,9 +118,13 @@
   },
   "settingsPanel": {
     "voice": {
+      "connectionFailed": "连接失败，请检查接口地址、API Key 和模型后重试。",
+      "connectionSuccess": "模型连接验证成功",
+      "testConnection": "测试模型连接",
+      "requiredFields": "保存前请填写模型接口地址、模型名称和 API Key。",
       "description": "配置麦克风、全双工实时语音及屏幕共享。",
       "screenSharing": "屏幕共享",
-      "screenSharingDescription": "开启后，启动全双工时选择要共享的屏幕；关闭时仅进行语音对话。此偏好仅保存在当前浏览器。"
+      "screenSharingDescription": "启动全双工时可选择屏幕、窗口或摄像头，每次均需浏览器授权。关闭后仅进行语音对话。"
     },
     "title": "设置",
     "freeModels": {
@@ -975,7 +979,12 @@
     }
   },
   "chat": {
+    "recordingInProgress": "正在录音，点击停止后转写。",
     "duplexControls": {
+      "sharingVideo": "WorkSwarm 正在接收共享画面",
+      "screenOrWindow": "屏幕或窗口",
+      "chooseSourceDescription": "下一步由浏览器请求所选来源的权限。取消可返回，不会启动会话。",
+      "chooseSource": "选择共享的内容",
       "muteMic": "关闭麦克风",
       "unmuteMic": "开启麦克风",
       "muteSpeaker": "静音模型回应",

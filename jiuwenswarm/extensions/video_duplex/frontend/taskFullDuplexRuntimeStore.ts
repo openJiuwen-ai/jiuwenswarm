@@ -78,7 +78,7 @@ export function setTaskFullDuplexRuntimeError(error: string): void {
   publish({ error });
 }
 
-export async function startTaskFullDuplex(sessionId?: string): Promise<void> {
+export async function startTaskFullDuplex(sessionId?: string, visualSource?: 'screen' | 'camera'): Promise<void> {
   if (!controller) {
     publish({ state: "idle", error: "全双工运行时尚未就绪，请稍后重试。" });
     return;
@@ -89,6 +89,7 @@ export async function startTaskFullDuplex(sessionId?: string): Promise<void> {
     const started = await controller.startScreenDuplex(
       searchSessionId,
       isTaskDuplexScreenSharingEnabled(),
+      visualSource,
     );
     if (!started) publish({ state: "idle" });
   } catch (error) {

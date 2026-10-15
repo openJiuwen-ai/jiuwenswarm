@@ -125,9 +125,13 @@
   },
   "settingsPanel": {
     "voice": {
+      "connectionFailed": "Connection failed. Check the endpoint, API key and model, then try again.",
+      "connectionSuccess": "Model connection verified",
+      "testConnection": "Test model connection",
+      "requiredFields": "Enter the provider endpoint, model and API key before saving.",
       "description": "Configure microphone input, full-duplex voice and screen sharing.",
       "screenSharing": "Screen sharing",
-      "screenSharingDescription": "When enabled, choose a screen when starting full duplex. Otherwise, use voice only. This preference is saved in this browser."
+      "screenSharingDescription": "Choose a screen, window or camera when starting full duplex. Your browser asks for permission each time. Turn off to use voice only."
     },
     "title": "Settings",
     "freeModels": {
@@ -991,7 +995,12 @@
     }
   },
   "chat": {
+    "recordingInProgress": "Recording. Select Stop to transcribe.",
     "duplexControls": {
+      "sharingVideo": "WorkSwarm is receiving shared video",
+      "screenOrWindow": "Screen or window",
+      "chooseSourceDescription": "The next step requests browser permission for the selected source. Cancel to return without starting a session.",
+      "chooseSource": "Choose what to share",
       "muteMic": "Mute microphone",
       "unmuteMic": "Unmute microphone",
       "muteSpeaker": "Mute model audio",

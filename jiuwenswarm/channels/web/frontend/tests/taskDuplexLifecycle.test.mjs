@@ -38,20 +38,29 @@ await build({
       name: 'task-runtime-ports',
       setup(builder) {
         builder.onResolve(
-          { filter: /(?:services\/webClient|taskProgressStore|taskFullDuplex\/featureFlag|\/VideoLivePanel)$/ },
+          { filter: /(?:services\/webClient|taskProgressStore|taskFullDuplex\/featureFlag|\/VideoLivePanel|components\/form)$/ },
           ({ path }) => ({ path, namespace: 'ports' }),
         );
         builder.onLoad({ filter: /.*/, namespace: 'ports' }, ({ path }) => ({
           loader: 'tsx',
-          contents: path.endsWith('/VideoLivePanel')
+          contents: path.endsWith('components/form')
+            ? `export function FormDialog(props) {
+                return <div data-testid={props.testIdPrefix}>{props.children}
+                  <button data-testid={props.testIdPrefix + '-confirm'} onClick={props.onConfirm}>Confirm</button>
+                  <button data-testid={props.testIdPrefix + '-cancel'} onClick={props.onCancel}>Cancel</button>
+                </div>;
+              }`
+            : path.endsWith('/VideoLivePanel')
             ? `
           import { forwardRef, useImperativeHandle } from 'react';
           export const VideoLivePanel = forwardRef(function Panel(props, ref) {
             useImperativeHandle(ref, () => ({
-              async startScreenDuplex(id, shareScreen) {
+              async startScreenDuplex(id, shareScreen, visualSource) {
                 globalThis.__duplexHarness.sharingRequests.push(shareScreen);
+                globalThis.__duplexHarness.visualSources.push(visualSource);
                 globalThis.__duplexHarness.starts.push(id);
                 props.onRuntimeState('active');
+                props.onScreenSharingChange(shareScreen);
                 return true;
               },
               setMicrophoneMuted(value) { globalThis.__duplexHarness.mic.push(value); },
@@ -121,6 +130,7 @@ beforeEach(async () => {
   harness = {
     starts: [],
     sharingRequests: [],
+    visualSources: [],
     mic: [],
     speaker: [],
     mediaResults: [],
@@ -526,4 +536,43 @@ test('typing keeps the native send button alongside the active orb and accessibl
   await act(async () => document.querySelector('[data-testid="chat-panel-duplex-exit"]').click());
   assert.equal(document.querySelector('[data-testid="chat-panel-duplex-orb"]'), null);
   assert.ok(document.querySelector('[data-testid="native-send"]'));
+});
+
+async function mountAction() {
+  await act(async () => root.render(null));
+  await act(async () => root.render(createElement('div', { className: 'chat-input-frame' },
+    createElement(TaskFullDuplexRuntime, props),
+    createElement(TaskFullDuplexAction, {
+      eligible: true, sessionId: props.sessionId,
+      ensureSession: async () => props.sessionId,
+      labels: { start: 'start', stop: 'stop', starting: 'starting' },
+      fallback: createElement('button', null, 'Send'),
+    }),
+  )));
+}
+
+test('canceling the share chooser starts no media session', async () => {
+  window.localStorage.setItem('jiuwen.taskFullDuplex.screenSharing', 'true');
+  await mountAction();
+  await act(async () => document.querySelector('[data-testid="chat-panel-input-full-duplex"]').click());
+  assert.ok(document.querySelector('[data-testid="chat-panel-duplex-share-dialog"]'));
+  assert.equal(harness.starts.length, 0);
+  await act(async () => document.querySelector('[data-testid="chat-panel-duplex-share-dialog-cancel"]').click());
+  assert.equal(document.querySelector('[data-testid="chat-panel-duplex-share-dialog"]'), null);
+  assert.equal(harness.starts.length, 0);
+});
+
+test('camera selection reaches media controller and closing sharing retains voice', async () => {
+  window.localStorage.setItem('jiuwen.taskFullDuplex.screenSharing', 'true');
+  await mountAction();
+  await act(async () => document.querySelector('[data-testid="chat-panel-input-full-duplex"]').click());
+  await act(async () => document.querySelector('[data-testid="chat-panel-duplex-source"][data-variant="camera"]').click());
+  await act(async () => document.querySelector('[data-testid="chat-panel-duplex-share-dialog-confirm"]').click());
+  assert.deepEqual(harness.visualSources, ['camera']);
+  assert.ok(document.querySelector('[data-testid="chat-panel-duplex-sharing-indicator"]'));
+  await act(async () => document.querySelector('[data-testid="chat-panel-duplex-close-sharing"]').click());
+  assert.equal(document.querySelector('[data-testid="chat-panel-duplex-sharing-indicator"]'), null);
+  assert.ok(document.querySelector('[data-testid="chat-panel-duplex-orb"]'));
+  await act(async () => toggleTaskDuplexSpeaker());
+  assert.deepEqual(harness.speaker, [true]);
 });

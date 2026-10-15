@@ -580,7 +580,6 @@ export function TrajectoryUiSetting({ disabled }: SettingsCustomItemProps) {
 }
 
 export function TaskFullDuplexSetting({ disabled }: SettingsCustomItemProps) {
-  const { t } = useTranslation();
   const { isConnected } = useSettingsServices();
   const source = useSettingsSource();
   const enabled = parseConfigBoolean(source.values.task_full_duplex_enabled);
@@ -591,22 +590,12 @@ export function TaskFullDuplexSetting({ disabled }: SettingsCustomItemProps) {
   }
 
   return (
-    <>
-      <SettingRow
-        className="settings-agent-media__row"
-        title={t('settingsPanel.fields.task_full_duplex_enabled.title')}
-        description={t('settingsPanel.fields.task_full_duplex_enabled.description')}
-        subSettings={enabled ? <VideoDuplexModelSettings /> : undefined}
-      >
-        <Switch
-          aria-label={t('settingsPanel.fields.task_full_duplex_enabled.title')}
-          checked={enabled}
-          disabled={disabled || !isConnected || source.savingKeys.has('task_full_duplex_enabled')}
-          onChange={(next) => void updateTaskFullDuplex(next).catch(() => undefined)}
-          data-testid="settings-task-full-duplex-switch"
-        />
-      </SettingRow>
-    </>
+    <VideoDuplexModelSettings
+      enabled={enabled}
+      onEnabledChange={updateTaskFullDuplex}
+      disabled={disabled || !isConnected || source.savingKeys.has('task_full_duplex_enabled')}
+      onConfigured={async () => { if (!enabled) await updateTaskFullDuplex(true); }}
+    />
   );
 }
 
