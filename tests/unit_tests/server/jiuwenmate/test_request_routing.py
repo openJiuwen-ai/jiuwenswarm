@@ -19,6 +19,7 @@ from jiuwenswarm.server.jiuwenmate.models import (
     PersistentAgentError,
 )
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
+from jiuwenswarm.server.jiuwenmate.ports.workspace_access import HostWorkspaceAccess
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.spec_provider import build_invocation
@@ -380,7 +381,10 @@ def test_stored_records_rebuild_a_valid_core_invocation(tmp_path):
     request = restarted.sessions.get_request(NS, state.record.request_id).record
     snapshot = restarted.agents.snapshot(NS, agent, request.config_version)
     windows = WindowBackendStore(tmp_path / "agents.sqlite3").bind(NS, agent, session.session_id)
-    ports = core.PersistentPorts(commit=FakePorts(), budget=FakePorts(), window_backend=windows)
+    workspace = HostWorkspaceAccess(restarted.agents.workspaces, NS, agent)
+    ports = core.PersistentPorts(
+        commit=FakePorts(), budget=FakePorts(), window_backend=windows, workspace_access=workspace
+    )
     spec, context = build_invocation(snapshot, request, execution, ports=ports)
 
     assert context.execution.session_id == session.session_id

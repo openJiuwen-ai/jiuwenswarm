@@ -174,7 +174,7 @@ def test_mismatched_spec_fields_are_rejected(fields):
 @pytest.mark.parametrize(
     "fields",
     [
-        spec_fields(enabled_features=["construction", "workspace_read"], enable_sys_operation=True),
+        spec_fields(enabled_features=["construction", "workspace_read", "workspace_write"], enable_sys_operation=True),
         spec_fields(enable_task_loop=True),
         spec_fields(auto_create_workspace=True),
         spec_fields(enable_async_subagent=True),

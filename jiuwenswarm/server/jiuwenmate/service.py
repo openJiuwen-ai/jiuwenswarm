@@ -3,7 +3,8 @@
 A colleague's persona lives in its own Template; every other setting lives in the
 definition. Publishing freezes both, plus the resolved model, into a new
 configuration version. A Request keeps the version it was accepted with, so a
-later publication only affects new Requests.
+later publication only affects new Requests. Every published version may read
+the colleague's own office directory; the user puts files there.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from jiuwenswarm.server.jiuwenmate.models import (
     require_identifier,
 )
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
+from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, WorkspaceStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, publish_spec
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
@@ -48,6 +50,14 @@ DEFAULT_COLLEAGUE = ColleagueSettings(
     capabilities=CapabilitySelection(
         starter_prompts=("帮我整理本周工作进展。", "把这段会议记录总结成要点。", "帮我起草一封工作邮件。")
     ),
+)
+
+# The core read_file description still asks for absolute paths, which the guarded tools refuse.
+WORKSPACE_PROMPT = (
+    "\n\n## 办公目录\n\n"
+    "你可以用 list_files 和 read_file 查看办公目录中的文件。"
+    "路径一律写成相对于办公目录的路径，例如 `.` 或 `资料/周报.md`，不要使用绝对路径。"
+    "办公目录只能读取，不能修改。"
 )
 
 TemplateSource = Callable[[str], Mapping[str, Any] | None]
@@ -156,10 +166,12 @@ class PersistentAgentService:
         clock: Callable[[], datetime] = _utcnow,
         id_factory: Callable[[], str] = _new_agent_id,
         windows: WindowBackendStore | None = None,
+        workspaces: WorkspaceStore | None = None,
     ) -> None:
         self._repository = repository
         self._templates = templates
         self._windows = windows
+        self._workspaces = workspaces or WorkspaceStore(repository.db_path.parent / "workspaces")
         self._models = models
         self._template_source = template_source
         self._clock = clock
@@ -173,7 +185,16 @@ class PersistentAgentService:
             TemplateStore(root / "templates"),
             models=ConfiguredModelProvider(),
             windows=WindowBackendStore(root / "agents.sqlite3"),
+            workspaces=WorkspaceStore(root / "workspaces"),
         )
+
+    @property
+    def workspaces(self) -> WorkspaceStore:
+        return self._workspaces
+
+    def _view(self, definition: ColleagueDefinition) -> ColleagueView:
+        path = self._workspaces.path(definition.namespace_id, definition.agent_id)
+        return replace(ColleagueView.from_definition(definition), workspace_dir=str(path))
 
     def _require(self, namespace_id: str, agent_id: str) -> ColleagueDefinition:
         require_identifier("namespace_id", namespace_id)
@@ -235,7 +256,7 @@ class PersistentAgentService:
             else:
                 claimed = self._repository.default_agent_id(namespace_id)
         definition = self._repository.get(namespace_id, claimed) if claimed else None
-        return None if definition is None else ColleagueView.from_definition(definition)
+        return None if definition is None else self._view(definition)
 
     def create_colleague(
         self, namespace_id: str, settings: ColleagueSettings, *, template_id: str | None = None
@@ -264,12 +285,27 @@ class PersistentAgentService:
         self.publish(namespace_id, definition.agent_id)
         return self.get_colleague(namespace_id, definition.agent_id)
 
+    def refresh_published(self, namespace_id: str) -> None:
+        """Republish colleagues without pending edits, so versions from an older host gain what it now opens.
+
+        Unchanged settings keep their version, and a colleague that fails is left on the version it has.
+        """
+        for definition in self._repository.list(namespace_id):
+            if definition.current_version is None or definition.has_unpublished_changes:
+                continue
+            try:
+                self.publish(namespace_id, definition.agent_id)
+            except PersistentAgentError as exc:
+                logger.warning(
+                    "[JiuwenMate] colleague kept its version: agent=%s code=%s", definition.agent_id, exc.code
+                )
+
     def list_colleagues(self, namespace_id: str) -> list[ColleagueView]:
         require_identifier("namespace_id", namespace_id)
-        return [ColleagueView.from_definition(item) for item in self._repository.list(namespace_id)]
+        return [self._view(item) for item in self._repository.list(namespace_id)]
 
     def get_colleague(self, namespace_id: str, agent_id: str) -> ColleagueView:
-        return ColleagueView.from_definition(self._require(namespace_id, agent_id))
+        return self._view(self._require(namespace_id, agent_id))
 
     def read_settings(self, namespace_id: str, agent_id: str) -> ColleagueSettings:
         definition = self._require(namespace_id, agent_id)
@@ -289,7 +325,7 @@ class PersistentAgentService:
                 expected_revision=definition.revision,
                 updated_at=self._clock(),
             )
-        return ColleagueView.from_definition(updated)
+        return self._view(updated)
 
     def publish(self, namespace_id: str, agent_id: str) -> ConfigVersionView:
         """Freeze the current settings as the version new Requests use; unchanged settings keep the version."""
@@ -297,11 +333,16 @@ class PersistentAgentService:
         settings = definition.settings
         if settings.capabilities.model is None:
             raise PersistentAgentError("choose a model before publishing", code="MODEL_NOT_CONFIGURED")
+        self._workspaces.ensure(namespace_id, agent_id)
         fields = {
             "card": {"id": agent_id, "name": settings.name, "description": settings.description},
-            "system_prompt": self._templates.read_persona(agent_id),
+            "system_prompt": self._templates.read_persona(agent_id) + WORKSPACE_PROMPT,
             "model": self._models.resolve(settings.capabilities.model, client_id=f"jiuwenmate:{agent_id}"),
-            "enable_sys_operation": False,
+            "enabled_features": ["construction", WORKSPACE_READ],
+            # The guarded read tools need a filesystem operation; no shell or write tool is mounted.
+            "enable_sys_operation": True,
+            # Otherwise core probes the model for image input outside the budget port.
+            "enable_read_image_multimodal": False,
         }
         try:
             if definition.current_version is not None:
@@ -344,9 +385,13 @@ class PersistentAgentService:
         return stored[0]
 
     def delete_colleague(self, namespace_id: str, agent_id: str) -> None:
-        """Remove the colleague, its versions, Template and window data; a deleted 小九 is not provisioned again."""
+        """Remove the colleague, its versions, Template, office directory and window data.
+
+        A deleted 小九 is not provisioned again.
+        """
         self._require(namespace_id, agent_id)
         if self._repository.delete(namespace_id, agent_id):
             self._templates.remove(agent_id)
+            self._workspaces.remove(namespace_id, agent_id)
             if self._windows is not None:
                 self._windows.purge_agent(namespace_id, agent_id)

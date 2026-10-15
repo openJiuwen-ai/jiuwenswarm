@@ -176,7 +176,7 @@ flowchart LR
 | 遗留项 | 性质 | 影响与现有处置 | 后续入口 |
 | --- | --- | --- | --- |
 | agent-core 版本未入库固定 | 有意取舍 | 其他开发环境需自行固定同一版本 | 对端发布可引用版本后入库 |
-| `workspace_read` 未开放 | 未实现 | Spec 不能启用工作空间只读 | JM-14 |
+| `workspace_read` 未开放 | 已由 JM-14 接入（2026-10-15，工作区未提交） | `HOST_OPEN_FEATURES` 开放 `workspace_read`，调用前核对只读范围端口，见 [F_14](F_14_workspace-read.md)；`workspace_write` 仍未开放 | JM-14 |
 | 续做未开放 | 范围外 | `recovery_ref` 非空时拒绝 | JM-13，对端 PA-18 |
 
 ## 10. 设计演进与修订

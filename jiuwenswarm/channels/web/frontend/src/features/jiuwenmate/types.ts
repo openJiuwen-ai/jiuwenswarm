@@ -55,6 +55,8 @@ export interface JiuwenMateColleague extends JiuwenMateColleagueDraft {
   isDefault?: boolean;
   currentVersion?: string | null;
   hasUnpublishedChanges?: boolean;
+  /** Office directory on the server host; the colleague may read the files placed here. */
+  workspaceDir?: string | null;
 }
 
 export interface JiuwenMateCoreAbility {
