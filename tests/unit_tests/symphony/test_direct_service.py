@@ -1206,8 +1206,22 @@ async def test_legacy_score_layout_rebuild_publishes_graph_pointer(
 
 @pytest.mark.parametrize(
     "pointer_payload",
-    ['{"schema_version": "1.0", "vers', '{"schema_version": "1.0"}'],
-    ids=["truncated-json", "missing-version"],
+    [
+        '{"schema_version": "1.0", "vers',
+        '{"schema_version": "1.0"}',
+        "123",
+        "null",
+        '"abc"',
+        "[1, 2]",
+    ],
+    ids=[
+        "truncated-json",
+        "missing-version",
+        "int-json",
+        "null-json",
+        "string-json",
+        "list-json",
+    ],
 )
 @pytest.mark.asyncio
 async def test_corrupt_current_json_self_heals_via_rebuild(

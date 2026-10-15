@@ -27,6 +27,8 @@ class GraphPointer:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "GraphPointer":
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid Symphony graph pointer.")  # noqa: TRY004
         version = str(payload.get("version") or "").strip()
         path = str(payload.get("path") or payload.get("artifact") or "").strip()
         if path.endswith("/graph.json"):
@@ -78,6 +80,8 @@ def graph_exists(graph_dir: str | Path) -> bool:
     try:
         pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(pointer, dict):
         return False
     schema_version = str(pointer.get("schema_version") or "")
     return schema_version.startswith("1.") and graph_manifest_path(root).is_file()
