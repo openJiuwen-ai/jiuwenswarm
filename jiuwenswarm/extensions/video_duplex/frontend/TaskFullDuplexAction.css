@@ -1,4 +1,4 @@
-.task-full-duplex-action {
+.chat-input-btn.task-full-duplex-action {
   border: 1px solid var(--color-border-default);
   background: var(--color-text-primary);
   color: var(--color-text-inverse);

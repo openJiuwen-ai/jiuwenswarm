@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  AudioWaveform,
   Camera,
   Monitor,
   LoaderCircle,
@@ -230,7 +229,14 @@ export function TaskFullDuplexAction({
           ) : state === 'active' ? (
             <X className="chat-input-btn-icon" aria-hidden />
           ) : (
-            <AudioWaveform className="chat-input-btn-icon" aria-hidden />
+            <svg className="chat-input-btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path
+                d="M10 2.5v15M13.75 6.25v7.5M6.25 6.25v7.5M17.5 8.75v2.5M2.5 8.75v2.5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
           )}
         </button>
       ) : (

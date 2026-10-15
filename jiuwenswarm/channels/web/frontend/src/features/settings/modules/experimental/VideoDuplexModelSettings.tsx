@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
-import { AudioWaveform, CheckCircle2, Link, LoaderCircle } from 'lucide-react';
+import { CheckCircle2, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import joyAiLogo from '../../../../assets/providers/joyai.jpg';
+import qwenLogo from '../../../../assets/providers/qwen.svg';
 import { settingsActionIcons } from '../../../../assets/settings';
 import { Button, Select, Switch } from '../../../../components/ui';
 import { FormDialog } from '../../../../components/form';
@@ -285,11 +287,23 @@ export function VideoDuplexModelSettings({
           configured ? (
             <>
               <div className="settings-agent-media__model-card">
-                <AudioWaveform
-                  className="video-duplex-model-settings__model-icon"
-                  aria-hidden
-                  data-testid="settings-video-duplex-model-icon"
-                />
+                {values.video_live_provider === 'qwen_omni' ? (
+                  <img
+                    src={qwenLogo}
+                    alt=""
+                    className="video-duplex-model-settings__model-icon"
+                    aria-hidden="true"
+                    data-testid="settings-video-duplex-model-icon"
+                  />
+                ) : (
+                  <img
+                    src={joyAiLogo}
+                    alt=""
+                    className="video-duplex-model-settings__model-icon video-duplex-model-settings__model-icon--joyai"
+                    aria-hidden="true"
+                    data-testid="settings-video-duplex-model-icon"
+                  />
+                )}
                 <div className="video-duplex-model-settings__model-copy">
                   <strong className="settings-agent-media__model-name">{modelName}</strong>
                   <small>{providerName}</small>
@@ -309,7 +323,7 @@ export function VideoDuplexModelSettings({
                       connection === 'testing' ? (
                         <LoaderCircle className="chat-input-btn-icon--spin" aria-hidden />
                       ) : (
-                        <Link aria-hidden />
+                        <settingsActionIcons.test aria-hidden />
                       )
                     }
                     title={t('settingsPanel.voice.testConnection')}

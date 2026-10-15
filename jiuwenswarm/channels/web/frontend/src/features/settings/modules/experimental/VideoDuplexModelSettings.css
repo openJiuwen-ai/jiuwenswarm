@@ -101,6 +101,14 @@
   color: var(--color-text-link);
 }
 
+.video-duplex-model-settings__model-icon--joyai {
+  flex-basis: 88px;
+  width: 88px;
+  height: 48px;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+}
+
 .video-duplex-model-settings__model-copy {
   flex: 1;
 }
