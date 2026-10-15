@@ -870,6 +870,18 @@ def build_member_deep_agent_spec(
 
     subagent_specs = build_member_subagent_specs(config, mode, role)
 
+    react_for_gp = (config or {}).get("react", {})
+    react_for_gp = react_for_gp if isinstance(react_for_gp, dict) else {}
+    gp_cfg = (
+        react_for_gp.get("subagents", {}).get("general_agent")
+        if isinstance(react_for_gp.get("subagents"), dict)
+        else None
+    )
+    # Team stays on synchronous task_tool (subagent runtime is not wired here),
+    # so this flag is the task_tool gate. An explicit false must clear a base
+    # spec that already turned general-purpose on.
+    update["add_general_purpose_agent"] = _is_subagent_enabled(gp_cfg)
+
     # In team mode, base_spec includes a browser_agent with hardcoded
     # server_id="playwright_official_stdio". All members share that single
     # @playwright/mcp subprocess → single Chrome window. Replace it with

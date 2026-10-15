@@ -4395,84 +4395,31 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any] | None = None,
     ) -> str:
         """Resolve managed-browser binary from saved browser config."""
-        if config_base is None:
-            config_base = get_config()
-        if not isinstance(config_base, dict):
-            return ""
-        config = resolve_env_vars(config_base)
-        browser_cfg = config.get("browser", {}) if isinstance(config, dict) else {}
-        if not isinstance(browser_cfg, dict):
-            return ""
-        chrome_path = browser_cfg.get("chrome_path", "")
-        if isinstance(chrome_path, str):
-            return chrome_path.strip()
-        if not isinstance(chrome_path, dict):
-            return ""
-        platform_map = {
-            "win32": "windows",
-            "cygwin": "windows",
-            "darwin": "macos",
-            "linux": "linux",
-            "linux2": "linux",
-        }
-        os_key = platform_map.get(os.sys.platform, "default")
-        for key in (os_key, "default"):
-            value = chrome_path.get(key, "")
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return ""
+        from jiuwenswarm.agents.harness.common.browser_env import (
+            resolve_managed_browser_binary,
+        )
+
+        return resolve_managed_browser_binary(config_base)
 
     @staticmethod
     def _resolve_headless_from_config(
         config_base: dict[str, Any] | None = None,
     ) -> bool:
         """Read browser.headless from config (default True = headless)."""
-        try:
-            if config_base is None:
-                config_base = get_config()
-            if not isinstance(config_base, dict):
-                return True
-            browser_cfg = config_base.get("browser", {})
-            if not isinstance(browser_cfg, dict):
-                return True
-            headless = browser_cfg.get("headless", True)
-            return bool(headless) if isinstance(headless, bool) else True
-        except Exception:
-            return True
+        from jiuwenswarm.agents.harness.common.browser_env import resolve_headless
 
+        return resolve_headless(config_base)
+
+    @staticmethod
     def _sync_browser_runtime_environment(
-        self,
         config_base: dict[str, Any] | None = None,
     ) -> None:
         """Synchronize browser launch settings before browser runtimes are built."""
-        headless = self._resolve_headless_from_config(config_base)
-        mcp_args_raw = (
-            read_env("PLAYWRIGHT_MCP_ARGS") or "-y @playwright/mcp@latest"
-        ).strip()
-        mcp_args = (
-            mcp_args_raw.split()
-            if mcp_args_raw
-            else ["-y", "@playwright/mcp@latest"]
+        from jiuwenswarm.agents.harness.common.browser_env import (
+            sync_browser_runtime_environment,
         )
-        mcp_args = [arg for arg in mcp_args if arg != "--headless"]
-        if headless:
-            mcp_args.append("--headless")
-            os.environ["BROWSER_MANAGED_ARGS"] = "--headless=new"
-        else:
-            os.environ.pop("BROWSER_MANAGED_ARGS", None)
-        os.environ["PLAYWRIGHT_MCP_ARGS"] = " ".join(mcp_args)
-        chrome_path = self._resolve_managed_browser_binary_from_config(config_base)
-        if chrome_path:
-            os.environ["BROWSER_MANAGED_BINARY"] = chrome_path
-        else:
-            os.environ.pop("BROWSER_MANAGED_BINARY", None)
 
-        logger.info(
-            "[%s] browser runtime config: headless=%s, chrome_path=%s",
-            type(self).__name__,
-            headless,
-            chrome_path or "<auto>",
-        )
+        sync_browser_runtime_environment(config_base)
 
     @staticmethod
     def _is_subagent_enabled(subagent_cfg: Any) -> bool:
@@ -4573,18 +4520,13 @@ class JiuWenSwarmDeepAdapter:
             subagents_cfg.get("browser_agent") if isinstance(subagents_cfg, dict) else {}
         )
 
-        # Swarm members and the main browser subagent read these variables when
-        # their browser runtimes are built.
-        self._sync_browser_runtime_environment(config_base)
-
         browser_enabled = self._browser_runtime_enabled()
         if browser_enabled:
-            if not str(read_env("BROWSER_DRIVER") or "").strip():
-                os.environ["BROWSER_DRIVER"] = "managed"
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] browser subagent enabled without BROWSER_DRIVER; "
-                    "defaulting to managed mode"
-                )
+            # Publish tip driver / drop stale CDP only when this agent will
+            # build a browser. Doing it for every session wipes a co-resident
+            # remote CDP endpoint. Team members sync again in
+            # build_swarm_browser_agent immediately before their own build.
+            self._sync_browser_runtime_environment(config_base)
             browser_max_iterations = None
             if isinstance(browser_agent_cfg, dict):
                 browser_max_iterations = browser_agent_cfg.get("max_iterations")
