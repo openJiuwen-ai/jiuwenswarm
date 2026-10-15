@@ -111,7 +111,9 @@ def read_scope_matches(
     if action == "glob":
         pattern = params.get("pattern")
         # GlobTool expands braces before rglob; reject traversal in any branch.
-        if not isinstance(pattern, str) or not pattern or ".." in pattern or "\\" in pattern:
+        if not isinstance(pattern, str) or not pattern:
+            return False
+        if ".." in pattern or "\\" in pattern:
             return False
         if any(part.startswith("/") or ":" in part for part in pattern.replace("{", ",").split(",")):
             return False
