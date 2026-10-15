@@ -195,6 +195,7 @@ export function toColleague(value: unknown): JiuwenMateColleague {
     isDefault: wire.is_default === true,
     currentVersion: typeof wire.current_version === 'string' ? wire.current_version : null,
     hasUnpublishedChanges: wire.has_unpublished_changes === true,
+    workspaceDir: text(wire.workspace_dir) || null,
   };
 }
 

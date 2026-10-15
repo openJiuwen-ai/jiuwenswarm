@@ -205,6 +205,7 @@ class ColleagueView:
     has_unpublished_changes: bool
     created_at: datetime
     updated_at: datetime
+    workspace_dir: str | None = None
 
     @classmethod
     def from_definition(cls, definition: ColleagueDefinition) -> ColleagueView:
@@ -240,4 +241,5 @@ class ColleagueView:
             "has_unpublished_changes": self.has_unpublished_changes,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
+            "workspace_dir": self.workspace_dir,
         }

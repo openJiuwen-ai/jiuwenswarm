@@ -1,7 +1,8 @@
 """Run one Execution through agent-core and report how it ended.
 
-The driver builds this Execution's ports (the shared commit and budget ports and
-a window backend bound to its own Session), consumes core's event stream to the
+The driver builds this Execution's ports (the shared commit and budget ports, a
+window backend bound to its own Session and the read scope of its colleague's
+office directory), consumes core's event stream to the
 end, and maps the terminal event to a Request outcome. When the stream ends,
 core has already released its instance. Whatever happens, candidate copies are
 forgotten and admitted model calls that were never reported are settled as
@@ -23,6 +24,7 @@ from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionReposito
 from jiuwenswarm.server.jiuwenmate.ports.budget import HostBudgetPort
 from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
+from jiuwenswarm.server.jiuwenmate.ports.workspace_access import HostWorkspaceAccess, WorkspaceStore
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation
 from openjiuwen.harness import persistent_agent as core
 
@@ -87,6 +89,7 @@ class ExecutionDriver:
         budget_port: HostBudgetPort,
         budgets: BudgetRepository,
         windows: WindowBackendStore,
+        workspaces: WorkspaceStore,
         execute: ExecuteEntry = _default_execute,
         abort: AbortEntry = _default_abort,
         clock: Callable[[], datetime] = _utc_now,
@@ -97,6 +100,7 @@ class ExecutionDriver:
         self._budget_port = budget_port
         self._budgets = budgets
         self._windows = windows
+        self._workspaces = workspaces
         self._execute = execute
         self._abort = abort
         self._clock = clock
@@ -114,6 +118,7 @@ class ExecutionDriver:
                 commit=self._commit_port,
                 budget=self._budget_port,
                 window_backend=self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
+                workspace_access=HostWorkspaceAccess(self._workspaces, record.namespace_id, record.agent_id),
             )
             spec, context = build_invocation(snapshot, record, execution, ports=ports)
             await handle._attach(context)

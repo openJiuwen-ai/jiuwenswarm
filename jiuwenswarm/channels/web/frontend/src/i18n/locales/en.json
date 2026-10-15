@@ -271,7 +271,9 @@
         "lastResponse": "Last response",
         "actions": "Actions"
       },
-      "historyEmpty": "No execution records"
+      "historyEmpty": "No execution records",
+      "workspaceDir": "Office directory",
+      "workspaceDirHint": "The colleague can list and read the files placed in this directory, but cannot change them."
     },
     "workspace": {
       "colleagues": "Colleagues",

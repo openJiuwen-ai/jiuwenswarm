@@ -213,7 +213,7 @@ Web 会话固定为 `ConversationRef.web("local")`；访问快照的主体为 `l
 
 ### 8.2 实际执行与证据
 
-2026-10-14，在 `fork/huenrui_jiuwenswarm` 工作区执行，未提交。
+2026-10-14，在 `fork/huenrui_jiuwenswarm` 工作区执行；随后提交为 `ceae1203`，多会话补充提交为 `c978f512`。
 
 | 验证 ID | 命令 | 结果 | 覆盖内容 |
 | --- | --- | --- | --- |

@@ -19,8 +19,10 @@ from jiuwenswarm.server.jiuwenmate.models import (
     PersistentAgentError,
 )
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
+from jiuwenswarm.server.jiuwenmate.ports.workspace_access import HostWorkspaceAccess, WorkspaceStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.service import (
+    WORKSPACE_PROMPT,
     ConfiguredModelProvider,
     PersistentAgentService,
 )
@@ -133,7 +135,8 @@ def ports(tmp_path, request: RequestRecord) -> core.PersistentPorts:
     host = FakePorts()
     windows = WindowBackendStore(tmp_path / "agents.sqlite3")
     backend = windows.bind(request.namespace_id, request.agent_id, request.session_id)
-    return core.PersistentPorts(commit=host, budget=host, window_backend=backend)
+    workspace = HostWorkspaceAccess(WorkspaceStore(tmp_path / "workspaces"), request.namespace_id, request.agent_id)
+    return core.PersistentPorts(commit=host, budget=host, window_backend=backend, workspace_access=workspace)
 
 
 def test_default_colleague_is_created_once_and_published(tmp_path):
@@ -188,7 +191,8 @@ def test_custom_colleague_gets_its_own_core_template_and_first_version(tmp_path)
     assert view.current_version == "v1" and not view.has_unpublished_changes
     assert template.agent_card.id == view.agent_id
     assert spec.card.id == view.agent_id
-    assert spec.system_prompt == "你是研发同事。\n\n负责整理研发进展。"
+    assert spec.system_prompt == "你是研发同事。\n\n负责整理研发进展。" + WORKSPACE_PROMPT
+    assert set(spec.enabled_features) == {"construction", "workspace_read"}
     assert spec.enable_task_loop is False
     assert spec.model.model_client_config.client_id == f"jiuwenmate:{view.agent_id}"
 
@@ -255,7 +259,7 @@ def test_settings_change_only_affects_requests_after_publication(tmp_path):
 
     assert published.config_version == "v2"
     assert not service.get_colleague(NS, view.agent_id).has_unpublished_changes
-    assert v2.load_spec().system_prompt == "你是研发同事，只输出要点。"
+    assert v2.load_spec().system_prompt == "你是研发同事，只输出要点。" + WORKSPACE_PROMPT
     old_spec, _ = build_invocation(
         service.snapshot(NS, view.agent_id, pinned.config_version),
         pinned,

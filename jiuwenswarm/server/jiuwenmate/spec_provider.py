@@ -20,6 +20,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import (
     build_execution_context,
 )
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import SessionWindowBackend
+from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, HostWorkspaceAccess
 from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.session.checkpointer import NoopCheckpointer
 from openjiuwen.core.single_agent import create_agent_session
@@ -29,8 +30,8 @@ from openjiuwen.harness.persistent_agent import (
     PersistentPorts,
 )
 
-# workspace_read is opened together with the host workspace scope (SW-14).
-HOST_OPEN_FEATURES: frozenset[str] = frozenset({"construction"})
+# workspace_write waits for write-intent records and guarded writes (PA-15, PA-16).
+HOST_OPEN_FEATURES: frozenset[str] = frozenset({"construction", WORKSPACE_READ})
 
 # Core opens single-round execution only; these values are fixed, not configurable.
 _FIXED_FIELDS: dict[str, Any] = {"enable_task_loop": False, "auto_create_workspace": False}
@@ -161,6 +162,10 @@ def build_invocation(
         request.session_id,
     ):
         raise PersistentContractError("window_backend must be the host store bound to this Session")
+    if WORKSPACE_READ in snapshot.enabled_features:
+        access = ports.workspace_access
+        if not isinstance(access, HostWorkspaceAccess) or access.scope != (request.namespace_id, request.agent_id):
+            raise PersistentContractError("workspace_access must be the host scope of this colleague")
     spec = snapshot.load_spec()
     context = build_execution_context(request, execution, capability_snapshot=snapshot.enabled_features)
     session = create_agent_session(session_id=request.session_id, card=spec.card, checkpointer=NoopCheckpointer())

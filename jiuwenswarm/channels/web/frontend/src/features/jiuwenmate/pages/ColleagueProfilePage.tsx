@@ -427,6 +427,17 @@ function ProfileSectionDetail({
   return (
     <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
       <h2>{title}</h2>
+      {section === 'knowledge' && colleague.workspaceDir ? (
+        <div data-testid="jiuwenmate-profile-workspace-dir">
+          <dl className="jiuwenmate-profile__facts">
+            <dt>{t('jiuwenmate.profile.workspaceDir')}</dt>
+            <dd>
+              <code>{colleague.workspaceDir}</code>
+            </dd>
+          </dl>
+          <p className="jiuwenmate-capability-empty">{t('jiuwenmate.profile.workspaceDirHint')}</p>
+        </div>
+      ) : null}
       {items.length === 0 ? (
         <p className="jiuwenmate-capability-empty">{t(`jiuwenmate.create.empty.${section}`)}</p>
       ) : (

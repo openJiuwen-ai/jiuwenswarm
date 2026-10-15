@@ -271,7 +271,9 @@
         "lastResponse": "最近响应",
         "actions": "操作"
       },
-      "historyEmpty": "暂无执行记录"
+      "historyEmpty": "暂无执行记录",
+      "workspaceDir": "办公目录",
+      "workspaceDirHint": "把文件放入此目录后，同事可以查看和读取；同事不能修改目录中的文件。"
     },
     "workspace": {
       "colleagues": "同事",
