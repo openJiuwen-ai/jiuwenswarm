@@ -9970,7 +9970,7 @@ class JiuWenSwarmDeepAdapter:
           ``JIUWENSWARM_MODEL_ROUTING_ENABLED``（relay spawn 注入，见 _model_routing_enabled）。
         - 始终真切换（apply_routing=True）。
         - 只对 auto 档生效：relay 置 ``params.enable_routing=True`` 时 rail 跑分类器，
-          score > 50 换 glm-5.2，否则保留 relay 下发的模型；具体模型名走 skip 分支。
+          score >= 40 换 glm-5.3，否则保留 relay 下发的模型；具体模型名走 skip 分支。
         - 能力表来自 ``routing_state/models.json``（sidecar）或 config.yaml ``models.defaults``
           + ``models.vision``（后者作 model_type="vision" 候选）；model_builder 传
           _build_model_from_entry 使能力表带 Model 对象（真切换前置）。
