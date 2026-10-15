@@ -225,6 +225,7 @@ def active_skill_permissions(tmp_path, monkeypatch):
     baseline = {
         "enabled": True, "schema": "tiered_policy", "defaults": {"*": "ask"},
         "tools": {"get_current_user": "ask", "write_file": "ask"},
+        "skill_authorization": {"enabled": True},
     }
     rail = SkillAuthorizationPermissionRail(config=baseline)
     gate = SkillAuthorizationRail(engine=rail._engine, grant_store=store)
@@ -244,6 +245,69 @@ async def test_active_skill_overlay_survives_missing_task_context(active_skill_p
     assert undeclared.permission.value == "ask"
     assert baseline == original
     assert rail._static_config == original
+
+
+def test_permission_composition_reads_one_snapshot(active_skill_permissions):
+    rail, ctx, store, _, _ = active_skill_permissions
+    with patch.object(store, "get_active", wraps=store.get_active) as read:
+        rail._refresh_permissions_for_tool_call(ctx)
+    read.assert_called_once_with("session-1", "main")
+
+
+@pytest.mark.parametrize(
+    "enabled, disable_after, expected_syncs",
+    [(True, False, 1), (False, False, 2), (True, True, 2)],
+)
+@pytest.mark.asyncio
+async def test_gate_syncs_policy_without_repeating_enabled_transaction(
+    active_skill_permissions, monkeypatch, enabled, disable_after, expected_syncs,
+):
+    from unittest.mock import Mock
+
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
+        clear_session_file_context,
+    )
+    from jiuwenswarm.agents.harness.common.rails.skill_authorization_rail import (
+        SkillAuthorizationRail,
+    )
+
+    _, ctx, store, _, _ = active_skill_permissions
+    store.sync_feature_state = Mock()
+    gate = SkillAuthorizationRail(grant_store=store)
+    gate.set_sessions_root("/trusted/sessions")
+    monkeypatch.setattr(gate, "_feature_enabled", lambda: enabled)
+    try:
+        await gate.before_tool_call(ctx)
+        if disable_after:
+            enabled = False
+        await gate.after_tool_call(ctx)
+        assert store.sync_feature_state.call_count == expected_syncs
+        store.sync_feature_state.assert_called_with("session-1", enabled=enabled)
+    finally:
+        clear_session_file_context()
+
+
+def test_gate_storage_failure_aborts_instead_of_skipping_authorization(
+    active_skill_permissions,
+):
+    from unittest.mock import Mock
+
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
+        clear_session_file_context,
+    )
+    from jiuwenswarm.agents.harness.common.rails.skill_authorization_rail import (
+        SkillAuthorizationRail,
+    )
+
+    _, ctx, store, _, _ = active_skill_permissions
+    store.sync_feature_state = Mock(side_effect=TimeoutError("storage unavailable"))
+    gate = SkillAuthorizationRail(grant_store=store)
+    gate.set_sessions_root("/trusted/sessions")
+    try:
+        with pytest.raises(AbortError, match="storage unavailable"):
+            gate._bind_session_files(ctx)
+    finally:
+        clear_session_file_context()
 
 
 @pytest.mark.asyncio
@@ -345,3 +409,15 @@ async def test_owner_allow_cannot_skip_active_skill_overlay(
         assert permission == (overlay_permission if session_id == "session-1" else "allow")
     finally:
         TOOL_PERMISSION_CONTEXT.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_disabled_policy_does_not_apply_persisted_grant(active_skill_permissions, monkeypatch):
+    rail, ctx, _, _, baseline = active_skill_permissions
+    disabled = copy.deepcopy(baseline)
+    disabled['skill_authorization'] = {'enabled': False}
+    monkeypatch.setattr(rail, '_get_permissions_snapshot', lambda context: disabled)
+    # Parent refresh must also consume the disabled baseline snapshot.
+    monkeypatch.setattr(type(rail).__mro__[1], '_get_permissions_snapshot', lambda self, context: disabled)
+    rail._refresh_permissions_for_tool_call(ctx)
+    assert (await rail._engine.check_permission('get_current_user', {})).permission.value == 'ask'

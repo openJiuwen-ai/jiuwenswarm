@@ -450,14 +450,14 @@ async def handle_session_delete(ctx: RequestContext) -> None:
             target, sessions_root=sessions_root
         )
         if session_dir is not None:
-            # 合法的永久删除请求首先回收进程内授权。即使会话目录已被外部删除
+            # 合法的永久删除请求首先回收会话授权文件。即使会话目录已被外部删除
             # 或随后文件删除失败，也不能让 ACTIVE/PENDING Grant 继续存活。
             try:
                 from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.runtime import (
                     clear_deleted_session,
                 )
 
-                clear_deleted_session(target)
+                clear_deleted_session(target, sessions_root=sessions_root)
             except Exception:  # noqa: BLE001 — Grant 回收失败不掩盖原删除结果
                 logger.warning(
                     "[AgentWebSocketServer] session.delete skill grant cleanup failed: "

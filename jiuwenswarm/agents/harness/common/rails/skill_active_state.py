@@ -6,9 +6,13 @@ from __future__ import annotations
 
 import contextvars
 import logging
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Optional
 
+import portalocker
+from openjiuwen.core.runner.callback.errors import AbortError
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 
@@ -37,8 +41,7 @@ _current_session_var: contextvars.ContextVar[Optional[str]] = contextvars.Contex
 @dataclass
 class _SkillSessionState:
     active_skill: Optional[str] = None
-    # When the record is keyed under ``default``, the real session that produced
-    # it (if known). Blocks cross-session adoption of orphan credentials.
+    # Original session identity retained in the serialized lifecycle record.
     source_session: Optional[str] = None
     # 连续「无该技能 skill_tool 调用」的 invoke 计数（过期兜底，改动 3）：
     # 每次 before_invoke 递增，skill_tool 激活时清零；达到上限自动清空。
@@ -50,81 +53,77 @@ class _SkillSessionState:
         self.invokes_since_skill_tool = 0
 
 
-_sessions: dict[str, _SkillSessionState] = {}
-
-
-def _get_or_create_state(session_id: str) -> _SkillSessionState:
-    state = _sessions.get(session_id)
-    if state is None:
-        state = _SkillSessionState()
-        _sessions[session_id] = state
-    return state
-
-
-def _drop_session_state(session_id: str) -> None:
-    if session_id:
-        _sessions.pop(session_id, None)
-
-
-def clear_session_skill_state(session_id: str) -> None:
-    """Drop in-memory active-skill state for a session (adapter cleanup)."""
-    _drop_session_state(session_id)
-
-
-def get_session_active_skill(session_id: str) -> Optional[str]:
-    if not session_id:
+def _shared_store(session_id: str):
+    if not session_id or session_id == _DEFAULT_SESSION_ID:
         return None
-    state = _sessions.get(session_id)
-    return state.active_skill if state is not None else None
-
-
-def adopt_default_active_skill(session_id: str) -> Optional[str]:
-    """If *session_id* has no active skill, migrate one left under ``default``.
-
-    ToolCallInputs often lack ``conversation_id``; without a rail preset the
-    skill can be recorded under the ``default`` sentinel. Credential injection
-    then looks up the real ``officeclaw_…`` id and misses.
-
-    Only migrate when the orphan's ``source_session`` is unknown or equals
-    *session_id* — never hand another session's active skill (and its
-    ``skill_envs``) to a caller that merely shares the process. Intended for
-    ``before_invoke`` paths that already know the conversation id; the
-    injection rail must not call this on every bash read.
-    """
-    sid = _nonempty_str(session_id)
-    if not sid or sid == _DEFAULT_SESSION_ID:
-        return get_session_active_skill(sid) if sid else None
-    current = get_session_active_skill(sid)
-    if current:
-        return current
-    orphan_state = _sessions.get(_DEFAULT_SESSION_ID)
-    if orphan_state is None or not orphan_state.active_skill:
-        return None
-    owner = _nonempty_str(orphan_state.source_session)
-    if owner and owner != sid:
-        logger.warning(
-            "[SkillActiveStateRail] refuse adopt active '%s' from default "
-            "(source_session=%s != session=%s)",
-            orphan_state.active_skill,
-            owner,
-            sid,
-        )
-        return None
-    orphan = orphan_state.active_skill
-    target = _get_or_create_state(sid)
-    target.active_skill = orphan
-    target.source_session = None
-    # 迁移即确认激活，过期计数从零开始。
-    target.invokes_since_skill_tool = 0
-    _drop_session_state(_DEFAULT_SESSION_ID)
-    logger.info(
-        "[SkillActiveStateRail] adopted active '%s' from default -> session=%s "
-        "(source_session=%s)",
-        orphan,
-        sid,
-        owner or "-",
+    from openjiuwen.harness.security.skill_authorization.grant_store import (
+        peek_skill_grant_store,
     )
-    return orphan
+
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
+        FileSkillGrantStore,
+    )
+
+    store = peek_skill_grant_store()
+    # Standalone rail use also persists files; never keep an active-skill cache.
+    return store if isinstance(store, FileSkillGrantStore) else FileSkillGrantStore()
+
+
+def _update_state(
+    session_id: str, update: Callable[[_SkillSessionState], None]
+) -> None:
+    store = _shared_store(session_id)
+    if store is None:
+        logger.warning(
+            "[SkillActiveStateRail] refusing state without a real session id"
+        )
+        return
+
+    def mutate(raw: dict) -> dict:
+        state = _SkillSessionState(**raw)
+        update(state)
+        return asdict(state)
+
+    try:
+        # Missing sessions contain no active state. Never create their parent
+        # directory: a late callback must not resurrect a deleted session.
+        if not store.session_directory(session_id).is_dir():
+            logger.debug("[SkillActiveStateRail] session unavailable: %s", session_id)
+            return
+        store.update_active_skill_state(session_id, mutate)
+    except (
+        OSError, ValueError, TypeError, RuntimeError,
+        portalocker.exceptions.LockException,
+    ) as exc:
+        logger.warning(
+            "[SkillActiveStateRail] state update failed session=%s: %s",
+            session_id, exc,
+        )
+        # An ordinary exception is swallowed by the callback framework. Abort
+        # this turn so failed expiry/switch/completion cannot use the old state.
+        raise AbortError("Skill state storage unavailable; retry the request") from exc
+
+
+def clear_session_skill_state(session_id: str, *, local_only: bool = False) -> None:
+    """Clear session files on explicit deactivation; adapter eviction has no state."""
+    if local_only:
+        return
+    store = _shared_store(session_id)
+    if store is not None and store.session_directory(session_id).is_dir():
+        store.update_active_skill_state(session_id, lambda _state: None)
+
+
+def get_session_active_skill(session_id: str) -> str | None:
+    store = _shared_store(session_id)
+    if store is None:
+        return None
+    state = store.get_active_skill_state(session_id)
+    return state.get("active_skill") if state else None
+
+
+def adopt_default_active_skill(session_id: str) -> str | None:
+    """Compatibility lookup; credentials without a real session are never adopted."""
+    return get_session_active_skill(session_id)
 
 
 def _nonempty_str(value: Any) -> Optional[str]:
@@ -258,12 +257,12 @@ class SkillActiveStateRail(DeepAgentRail):
     invoke: it survives new user tasks and HITL interrupt continuations
     (permission / confirm / ask_user / …). It is cleared only when the skill
     completes (``skill_complete``), when another skill is activated (switch),
-    when the session ends (adapter cache eviction / teardown calls
-    ``clear_session_skill_state``), or when it expires: after
+    when the session is permanently deleted, or when it expires: after
     ``stale_invoke_limit`` consecutive invokes without any ``skill_tool``
     call for it (skill_complete compliance is unreliable, so the expiry is
     the safety net that keeps a forgotten skill from holding credentials
     for a whole session).
+    Adapter eviction and process restart leave the session files intact.
     """
 
     priority = 25
@@ -274,13 +273,27 @@ class SkillActiveStateRail(DeepAgentRail):
         self,
         session_id: Optional[str] = None,
         stale_invoke_limit: Optional[int] = None,
+        sessions_root: Path | None = None,
     ) -> None:
         super().__init__()
         self._preset_session_id = _nonempty_str(session_id)
+        from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
+            FileSkillGrantStore,
+        )
+
+        self._sessions_root = sessions_root or FileSkillGrantStore().sessions_root()
         # None → 默认值；<= 0 → 显式禁用过期兜底。
         if stale_invoke_limit is None:
             stale_invoke_limit = self.DEFAULT_STALE_INVOKE_LIMIT
         self._stale_invoke_limit = int(stale_invoke_limit)
+
+    @property
+    def sessions_root(self) -> Path:
+        return self._sessions_root
+
+    def set_sessions_root(self, sessions_root: Path) -> None:
+        """Capture the trusted request path before supervisor callbacks run."""
+        self._sessions_root = sessions_root
 
     @property
     def stale_invoke_limit(self) -> int:
@@ -291,7 +304,7 @@ class SkillActiveStateRail(DeepAgentRail):
         """原位更新过期兜底轮数（reload 路径，N2）。
 
         遵循 configure() 的原位更新约定（避免重建实例脱离 agent rail 链）：
-        None → 默认值；<= 0 → 禁用。计数存于模块级状态，更新无副作用。
+        None → 默认值；<= 0 → 禁用。计数存于会话文件，更新无副作用。
         """
         if stale_invoke_limit is None:
             stale_invoke_limit = self.DEFAULT_STALE_INVOKE_LIMIT
@@ -302,15 +315,28 @@ class SkillActiveStateRail(DeepAgentRail):
 
     def _bind_session_id(self, ctx: AgentCallbackContext, session_id: str) -> None:
         _current_session_var.set(session_id)
+        from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
+            bind_session_file_context,
+        )
+
+        bind_session_file_context(session_id, self._sessions_root)
         extra = getattr(ctx, "extra", None)
         if not isinstance(extra, dict):
             return
         # Prefer a real id already written by StreamEventRail; never overwrite
         # it with the "default" sentinel.
         existing = _nonempty_str(extra.get(_SESSION_ID_EXTRA_KEY))
-        if session_id == _DEFAULT_SESSION_ID and existing and existing != _DEFAULT_SESSION_ID:
+        if (
+            session_id == _DEFAULT_SESSION_ID
+            and existing
+            and existing != _DEFAULT_SESSION_ID
+        ):
             return
-        if not existing or existing == _DEFAULT_SESSION_ID or session_id != _DEFAULT_SESSION_ID:
+        if (
+            not existing
+            or existing == _DEFAULT_SESSION_ID
+            or session_id != _DEFAULT_SESSION_ID
+        ):
             extra[_SESSION_ID_EXTRA_KEY] = session_id
 
     def _expire_stale_active_skill(
@@ -332,20 +358,22 @@ class SkillActiveStateRail(DeepAgentRail):
             return
         if is_resume_invoke:
             return
-        state = _sessions.get(session_id)
-        if state is None or not state.active_skill:
-            return
-        if state.invokes_since_skill_tool >= self._stale_invoke_limit:
-            logger.info(
-                "[SkillActiveStateRail] expired active '%s' after %d invokes "
-                "without skill_tool, session=%s",
-                state.active_skill,
-                state.invokes_since_skill_tool,
-                session_id,
-            )
-            _drop_session_state(session_id)
-            return
-        state.invokes_since_skill_tool += 1
+
+        def expire(state: _SkillSessionState) -> None:
+            if not state.active_skill:
+                return
+            if state.invokes_since_skill_tool >= self._stale_invoke_limit:
+                logger.info(
+                    "[SkillActiveStateRail] expired active '%s' after %d invokes session=%s",
+                    state.active_skill,
+                    state.invokes_since_skill_tool,
+                    session_id,
+                )
+                state.reset()
+                return
+            state.invokes_since_skill_tool += 1
+
+        _update_state(session_id, expire)
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         session_id = self._resolve_session_id(ctx)
@@ -354,20 +382,22 @@ class SkillActiveStateRail(DeepAgentRail):
         # 覆盖替换）、会话结束（adapter 淘汰 / teardown 调
         # clear_session_skill_state）、或连续 N 轮无 skill_tool 调用的过期
         # 兜底（HITL 恢复轮不计入，CR-3a）。
-        # 这里只做过期检查 + 把 default 哨兵下的孤儿态收养到真实会话
-        # （ToolCallInputs 缺 conversation_id 时可能记录在 default 下）。
+        # 授权和活跃技能仅存于真实会话文件，不收养 default 孤儿状态。
+        self._bind_session_id(ctx, session_id)
         self._expire_stale_active_skill(
             session_id,
             is_resume_invoke=_is_interrupt_resume_invoke(ctx),
         )
-        adopt_default_active_skill(session_id)
-        self._bind_session_id(ctx, session_id)
 
     async def after_invoke(self, ctx: AgentCallbackContext) -> None:
         # Do not drop here: active skill is per-session lifecycle state, not
         # per-invoke state. Cleanup happens on skill_complete, on switching to
         # another skill, or on session teardown (clear_session_skill_state).
-        return
+        from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
+            clear_session_file_context,
+        )
+
+        clear_session_file_context()
 
     def _owner_hint_for_default(self, ctx: AgentCallbackContext) -> Optional[str]:
         """Best-effort real session id when the storage key falls back to default."""
@@ -383,7 +413,9 @@ class SkillActiveStateRail(DeepAgentRail):
             return cv
         return None
 
-    def _prefer_real_session_id(self, ctx: AgentCallbackContext, session_id: str) -> str:
+    def _prefer_real_session_id(
+        self, ctx: AgentCallbackContext, session_id: str
+    ) -> str:
         """Avoid recording active skill under the ``default`` sentinel when possible."""
         if session_id != _DEFAULT_SESSION_ID:
             return session_id
@@ -400,63 +432,72 @@ class SkillActiveStateRail(DeepAgentRail):
         tool_name = getattr(inputs, "tool_name", "") or ""
         session_id = self._prefer_real_session_id(ctx, self._resolve_session_id(ctx))
         self._bind_session_id(ctx, session_id)
-        state = _get_or_create_state(session_id)
+        if tool_name not in {"skill_tool", "skill_complete"}:
+            return
 
-        if tool_name == "skill_complete":
-            skill_name = (_get_arg(tool_call, "skill_name", "") or "").strip()
-            if skill_name and state.active_skill == skill_name:
+        def apply(state: _SkillSessionState) -> None:
+
+            if tool_name == "skill_complete":
+                skill_name = (_get_arg(tool_call, "skill_name", "") or "").strip()
+                if skill_name and state.active_skill == skill_name:
+                    logger.info(
+                        "[SkillActiveStateRail] skill_complete(%s) session=%s -> idle",
+                        skill_name,
+                        session_id,
+                    )
+                    state.reset()
+                elif (
+                    skill_name
+                    and state.active_skill
+                    and state.active_skill != skill_name
+                ):
+                    # 激活名 ≠ 完成名：不清空（保持当前激活态），但留痕，
+                    # 防"状态挂死且无从排查"。
+                    logger.warning(
+                        "[SkillActiveStateRail] skill_complete(%s) ignored: active is "
+                        "'%s' session=%s (complete only clears on name match)",
+                        skill_name,
+                        state.active_skill,
+                        session_id,
+                    )
+                return
+
+            if tool_name != "skill_tool":
+                return
+
+            meta = getattr(tool_msg, "metadata", None) or {}
+            if meta.get("is_directory_listing"):
+                return
+            skill_name = (
+                meta.get("skill_name") or _get_arg(tool_call, "skill_name", "") or ""
+            ).strip()
+            if not skill_name:
+                return
+            prior_skill = state.active_skill
+            if prior_skill and prior_skill != skill_name:
+                # 切换到另一个 skill：旧 active_skill 在此清空（被新技能替换）。
                 logger.info(
-                    "[SkillActiveStateRail] skill_complete(%s) session=%s -> idle",
+                    "[SkillActiveStateRail] switch active '%s' -> '%s' session=%s",
+                    prior_skill,
                     skill_name,
                     session_id,
                 )
-                state.reset()
-            elif skill_name and state.active_skill and state.active_skill != skill_name:
-                # 激活名 ≠ 完成名：不清空（保持当前激活态），但留痕，
-                # 防"状态挂死且无从排查"。
-                logger.warning(
-                    "[SkillActiveStateRail] skill_complete(%s) ignored: active is "
-                    "'%s' session=%s (complete only clears on name match)",
-                    skill_name,
-                    state.active_skill,
-                    session_id,
-                )
-            return
-
-        if tool_name != "skill_tool":
-            return
-
-        meta = getattr(tool_msg, "metadata", None) or {}
-        if meta.get("is_directory_listing"):
-            return
-        skill_name = (meta.get("skill_name") or _get_arg(tool_call, "skill_name", "") or "").strip()
-        if not skill_name:
-            return
-        prior_skill = state.active_skill
-        if prior_skill and prior_skill != skill_name:
-            # 切换到另一个 skill：旧 active_skill 在此清空（被新技能替换）。
+            state.active_skill = skill_name
+            # 本轮有 skill_tool 调用，过期计数清零。
+            state.invokes_since_skill_tool = 0
+            if session_id == _DEFAULT_SESSION_ID:
+                # Attribution for later adopt; never claim a foreign session.
+                state.source_session = self._owner_hint_for_default(ctx)
+            else:
+                state.source_session = None
             logger.info(
-                "[SkillActiveStateRail] switch active '%s' -> '%s' session=%s",
-                prior_skill,
+                "[SkillActiveStateRail] activated '%s' session=%s source_session=%s",
                 skill_name,
                 session_id,
+                state.source_session or "-",
             )
-        state.active_skill = skill_name
-        # 本轮有 skill_tool 调用，过期计数清零。
-        state.invokes_since_skill_tool = 0
-        if session_id == _DEFAULT_SESSION_ID:
-            # Attribution for later adopt; never claim a foreign session.
-            state.source_session = self._owner_hint_for_default(ctx)
-        else:
-            state.source_session = None
-            # Drop a stale default entry so injection never reads the wrong key.
-            _drop_session_state(_DEFAULT_SESSION_ID)
-        logger.info(
-            "[SkillActiveStateRail] activated '%s' session=%s source_session=%s",
-            skill_name,
-            session_id,
-            state.source_session or "-",
-        )
+
+        _update_state(session_id, apply)
 
 
 __all__ = [

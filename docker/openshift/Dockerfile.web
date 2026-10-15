@@ -21,7 +21,9 @@ RUN npm run build
 FROM ${NGINX_IMAGE}
 
 # [安全加固] 强制升级 Nginx 运行镜像中的底层依赖，规避高危漏洞
-RUN apk update && apk upgrade --no-cache
+# [网络修复] 官方 dl-cdn.alpinelinux.org 在 CI 环境拉取 APKINDEX 会返回 BAD archive，切换为华为云镜像源
+RUN sed -i 's|https://dl-cdn.alpinelinux.org|https://repo.huaweicloud.com|g' /etc/apk/repositories \
+    && apk update && apk upgrade --no-cache
 
 COPY docker/web.nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY docker/web-optional-upstreams.sh /docker-entrypoint.d/40-optional-upstreams.sh

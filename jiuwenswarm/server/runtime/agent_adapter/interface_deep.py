@@ -3085,7 +3085,7 @@ class JiuWenSwarmDeepAdapter:
         self._session_adapter_last_used.pop(session_id, None)
         self._session_adapter_versions.pop(session_id, None)
         self._session_adapter_reload_failures.pop(session_id, None)
-        clear_session_skill_state(session_id)
+        clear_session_skill_state(session_id, local_only=True)
         self._forget_skill_sleep_session(session_id, adapter)
         if not remove_runtime_state:
             return
@@ -8508,12 +8508,21 @@ class JiuWenSwarmDeepAdapter:
         self, config: dict[str, Any] | None = None
     ) -> SkillActiveStateRail | None:
         try:
+            from jiuwenswarm.common.utils import get_agent_sessions_dir
+            from jiuwenswarm.server.runtime.tenant_context import get_bound_agent_root
+
+            if get_bound_agent_root() is not None:
+                sessions_root = get_agent_sessions_dir()
+            else:
+                # Prewarm/standalone callers may have no bound filesystem paths.
+                sessions_root = Path(self._workspace_dir).parent / "sessions"
             # CR-3b：react.skill_stale_invoke_limit 可配置（缺失用默认 5，
             # <=0 禁用兜底），否则生产装配点恒为默认值不可调。
             stale_invoke_limit = resolve_stale_invoke_limit(config)
             rail = SkillActiveStateRail(
                 session_id=self._skill_rail_session_id(),
                 stale_invoke_limit=stale_invoke_limit,
+                sessions_root=sessions_root,
             )
             display_limit = (
                 stale_invoke_limit
@@ -10607,7 +10616,7 @@ class JiuWenSwarmDeepAdapter:
             context_engine_config=_deep_agent_context_engine_config(config),
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
-            max_iterations=config.get("max_iterations", 15),
+            max_iterations=parse_int(config.get("max_iterations"), 15),
             subagents=configured_subagents,
             add_general_purpose_agent=should_add_general_agent,
             tools=normalized_tool_cards,
@@ -11613,7 +11622,7 @@ class JiuWenSwarmDeepAdapter:
                     rails=rails_list if rails_list else [],
                     enable_task_loop=self._resolve_enable_task_loop(config, config_base),
                     add_general_purpose_agent=should_enable_general_agent,
-                    max_iterations=config.get("max_iterations", 15),
+                    max_iterations=parse_int(config.get("max_iterations"), 15),
                     workspace=self._build_agent_workspace(),
                     sys_operation=sys_operation,
                     language=self._resolve_runtime_language(),
@@ -13070,6 +13079,16 @@ class JiuWenSwarmDeepAdapter:
             runtime_config: Per-request runtime parameters for this turn.
             stage_timer: Timer marked at each stage boundary.
         """
+        # Request tenant bindings do not survive the supervisor round task.
+        # Carry only the trusted session path, never cached authorization data.
+        from jiuwenswarm.common.utils import get_agent_sessions_dir
+
+        sessions_root = get_agent_sessions_dir()
+        for rail_name in ("_skill_active_state_rail", "_skill_authorization_rail"):
+            rail = getattr(self, rail_name, None)
+            if rail is not None:
+                rail.set_sessions_root(sessions_root)
+
         task_workspace = (
             runtime_config.workspace
             or runtime_config.project_dir
@@ -15352,7 +15371,7 @@ class JiuWenSwarmDeepAdapter:
                     self._parent_session_id,
                     exc,
                 )
-            clear_session_skill_state(str(self._parent_session_id or "").strip())
+            clear_session_skill_state(str(self._parent_session_id or "").strip(), local_only=True)
             self._forget_skill_sleep_session(str(self._parent_session_id or "").strip())
         try:
             await self._sync_personal_context_rail("cleanup")
@@ -16074,8 +16093,8 @@ class JiuWenSwarmDeepAdapter:
             return
         await self._halt_deep_agent_execution(intent)
 
-    @staticmethod
     def _revoke_main_skill_authorization(
+        self,
         session_id: str | None,
         *,
         reason: str,
@@ -16086,7 +16105,9 @@ class JiuWenSwarmDeepAdapter:
                 revoke_main_scope,
             )
 
-            revoke_main_scope(session_id, reason=reason)
+            rail = getattr(self, "_skill_active_state_rail", None)
+            root = rail.sessions_root if rail is not None else None
+            revoke_main_scope(session_id, reason=reason, sessions_root=root)
         except Exception:  # noqa: BLE001 — 不影响原取消/异常流程
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] dynamic authorization cleanup failed",

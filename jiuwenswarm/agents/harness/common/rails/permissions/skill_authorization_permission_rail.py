@@ -40,14 +40,13 @@ def is_unparseable_permission_resume_text(user_input: Any) -> bool:
 
 def _compose_active_skill_permissions(
     base_config: dict[str, Any],
-    session_id: str,
-    agent_scope_id: str,
-    grant_store: Any,
+    active: Any,
 ) -> dict[str, Any]:
     """Compose the active Skill overlay into one permission snapshot."""
-    from openjiuwen.harness.security.skill_authorization import compose_skill_permissions
+    from openjiuwen.harness.security.skill_authorization import (
+        compose_skill_permissions,
+    )
 
-    active = grant_store.get_active(session_id, agent_scope_id)
     if active is None or not active.overlay_snapshot:
         return copy.deepcopy(base_config)
     return compose_skill_permissions(base_config, active.overlay_snapshot)
@@ -140,8 +139,17 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
         from openjiuwen.harness.security.skill_authorization import (
             get_skill_authorization_context,
             get_skill_grant_store,
+            is_skill_authorization_enabled,
         )
 
+        base_config = super()._get_permissions_snapshot(ctx)
+        if base_config is None:
+            base_config = self._static_config
+        if not is_skill_authorization_enabled(base_config):
+            # Never compose persisted grants into a disabled policy, including
+            # the first request in a new Pod which has no previous flag cache.
+            super()._refresh_permissions_for_tool_call(ctx)
+            return
         authorization = get_skill_authorization_context()
         scope = None
         if (
@@ -168,14 +176,9 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
             )
             super()._refresh_permissions_for_tool_call(ctx)
             return
-        base_config = super()._get_permissions_snapshot(ctx)
-        if base_config is None:
-            base_config = self._static_config
         effective_config = _compose_active_skill_permissions(
             base_config,
-            session_id,
-            agent_scope_id,
-            grant_store,
+            active,
         )
         self._engine.update_config(effective_config)
         logger.info(
