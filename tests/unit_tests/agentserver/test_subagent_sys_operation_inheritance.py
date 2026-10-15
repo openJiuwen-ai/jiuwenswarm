@@ -14,9 +14,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from openjiuwen.harness.subagents.code_agent import create_code_agent
+from openjiuwen.harness.rails import AskUserRail, ConfirmInterruptRail, SysOperationRail
 from openjiuwen.harness.schema.config import SubAgentConfig
 from openjiuwen.harness.workspace.workspace import Workspace
 
+from jiuwenswarm.agents.harness.common.rails import StructuredAskUserRail
 from jiuwenswarm.server.runtime.agent_adapter.code_agent_rail import AgentTool
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
@@ -92,6 +95,51 @@ def test_deep_research_subagent_inherits_parent_sys_operation(tmp_path):
     assert research_spec is not None
     assert research_spec.sys_operation is sys_operation
     assert research_spec.workspace == str(tmp_path)
+
+
+def test_deep_code_subagent_is_opt_in_and_inherits_parent_boundary(tmp_path):
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = str(tmp_path)
+    sys_operation = MagicMock()
+    adapter._sys_operation = sys_operation
+    model = MagicMock()
+
+    with patch.object(adapter, "_browser_runtime_enabled", return_value=False):
+        default_specs, _ = adapter._build_configured_subagents(model, {}, {})
+        enabled_specs, _ = adapter._build_configured_subagents(
+            model,
+            {"max_iterations": 20, "subagents": {"code_agent": {"enabled": True}}},
+            {},
+        )
+
+    assert _spec_by_name(default_specs or [], "code_agent") is None
+    code_spec = _spec_by_name(enabled_specs or [], "code_agent")
+    assert code_spec is not None
+    assert code_spec.sys_operation is sys_operation
+    assert code_spec.workspace == str(tmp_path)
+    assert code_spec.max_iterations == 20
+    assert code_spec.factory_kwargs["auto_create_workspace"] is False
+    assert any(isinstance(rail, SysOperationRail) for rail in code_spec.rails)
+    assert any(isinstance(rail, StructuredAskUserRail) for rail in code_spec.rails)
+
+    with patch(
+        "openjiuwen.harness.subagents.code_agent.create_deep_agent",
+        return_value=MagicMock(),
+    ) as create_deep_agent:
+        create_code_agent(
+            model,
+            workspace=code_spec.workspace,
+            sys_operation=code_spec.sys_operation,
+            rails=code_spec.rails,
+        )
+
+    rails = create_deep_agent.call_args.kwargs["rails"]
+    assert sum(isinstance(rail, AskUserRail) for rail in rails) == 1
+    assert any(isinstance(rail, ConfirmInterruptRail) for rail in rails)
+    nested = create_deep_agent.call_args.kwargs["subagents"]
+    assert {spec.agent_card.name for spec in nested} == {"explore_agent", "plan_agent"}
+    assert all(spec.workspace == str(tmp_path) for spec in nested)
+    assert all(spec.sys_operation is sys_operation for spec in nested)
 
 
 def test_custom_agent_spec_carries_sys_operation_and_workspace(tmp_path):
