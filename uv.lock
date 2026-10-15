@@ -2235,7 +2235,7 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-sdk", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
-    { name = "pgvector", specifier = ">=0.4.2,<=0.5" },
+    { name = "pgvector", specifier = ">=0.4.2,<0.5" },
     { name = "pgvector", marker = "extra == 'harmony'", specifier = ">=0.4.2" },
     { name = "pillow", specifier = ">=12.2.0,<13" },
     { name = "pillow", marker = "extra == 'harmony'", specifier = ">=12.2.0" },
