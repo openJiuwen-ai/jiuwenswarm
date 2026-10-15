@@ -207,3 +207,38 @@ def test_team_member_runtime_honors_statusline_disable_and_iteration_budget():
     assert len(configured_specs) == 1
     assert configured_specs[0].agent_card.name == STATUSLINE_SETUP_AGENT_TYPE
     assert configured_specs[0].factory_kwargs["max_iterations"] == 7
+
+
+def test_single_agent_runtime_registers_code_agent_when_enabled(monkeypatch, tmp_path):
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = str(tmp_path)
+    adapter._sys_operation = None
+    monkeypatch.setattr(adapter, "_browser_runtime_enabled", lambda: False)
+
+    subagents, _ = adapter._build_configured_subagents(
+        MagicMock(),
+        {"subagents": {"code_agent": {"enabled": True}}},
+        {},
+    )
+
+    assert subagents is not None
+    names = [spec.agent_card.name for spec in subagents]
+    assert "code_agent" in names
+
+
+def test_single_agent_runtime_does_not_register_code_agent_when_disabled(
+    monkeypatch, tmp_path
+):
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = str(tmp_path)
+    adapter._sys_operation = None
+    monkeypatch.setattr(adapter, "_browser_runtime_enabled", lambda: False)
+
+    subagents, _ = adapter._build_configured_subagents(
+        MagicMock(),
+        {"subagents": {"code_agent": {"enabled": False}}},
+        {},
+    )
+
+    names = [spec.agent_card.name for spec in (subagents or [])]
+    assert "code_agent" not in names
