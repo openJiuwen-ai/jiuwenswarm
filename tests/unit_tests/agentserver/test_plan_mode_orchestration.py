@@ -215,6 +215,48 @@ async def test_prepare_chat_defaults_missing_web_work_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_prepare_auto_harness_chat_disables_legacy_project_fallbacks() -> None:
+    agent = MagicMock()
+    manager = MagicMock()
+    manager.get_agent = AsyncMock(return_value=agent)
+    manager.wait_for_session_prewarm = AsyncMock()
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = manager
+    request = _chat_request(
+        "sess_auto_harness_projectless",
+        mode="auto_harness",
+        extra_params={"cwd": "/tmp/transient-cwd"},
+    )
+
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        return_value={},
+    ), patch.object(
+        _default,
+        "resolve_request_project_dir",
+        return_value=None,
+    ) as resolve_project_dir:
+        mode, sub_mode, resolved_agent = await _default._prepare_code_mode_chat_turn(
+            _default_ctx(server, request),
+            request,
+            "web",
+            sync_metadata=False,
+        )
+
+    assert (mode, sub_mode, resolved_agent) == ("auto_harness", None, agent)
+    resolve_project_dir.assert_called_once_with(
+        request,
+        include_legacy_fallbacks=False,
+    )
+    manager.get_agent.assert_awaited_once_with(
+        channel_id="web",
+        mode="agent",
+        project_dir=None,
+        sub_mode=None,
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_work_mode", ["invalid", 123])
 async def test_prepare_chat_rejects_invalid_work_mode(invalid_work_mode: object) -> None:
     manager = MagicMock()
