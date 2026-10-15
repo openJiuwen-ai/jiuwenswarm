@@ -83,6 +83,35 @@ def append_jsonl(path: Path, value: Any) -> None:
         os.fsync(handle.fileno())
 
 
+def _read_last_jsonl_record(path: Path) -> dict[str, Any] | None:
+    """Read one JSONL tail without scanning an arbitrarily large evidence file."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            position = handle.tell()
+            if position == 0:
+                return None
+            chunks: list[bytes] = []
+            while position > 0:
+                size = min(64 * 1024, position)
+                position -= size
+                handle.seek(position)
+                chunks.append(handle.read(size))
+                joined = b"".join(reversed(chunks)).rstrip(b"\r\n")
+                separator = joined.rfind(b"\n")
+                if separator >= 0 or position == 0:
+                    encoded = joined[separator + 1:]
+                    if not encoded:
+                        return None
+                    value = json.loads(encoded.decode("utf-8"))
+                    if not isinstance(value, dict):
+                        raise RuntimeError(f"JSONL tail is not an object: {path}")
+                    return value
+    except FileNotFoundError:
+        return None
+    return None
+
+
 def _append_auxiliary_jsonl(root: Path, relative_path: Path, value: Any) -> None:
     """Serialize non-cursor JSONL across tasks, adapters, and processes.
 
@@ -234,6 +263,58 @@ class EvidenceWriter:
         Semantic repair is deliberately forbidden here: only byte-equivalent
         records from the already durable Raw History are replayed.
         """
+        clean_tail = self._validated_clean_tail(state)
+        if clean_tail is not None:
+            return clean_tail
+        return self._recover_durable_tail_full(state)
+
+    def _validated_clean_tail(
+        self, state: dict[str, Any]
+    ) -> tuple[int, str] | None:
+        """Recognize the normal fully-published tail in bounded startup time.
+
+        Every append fsyncs Raw History, its foreground/search mirrors, and then
+        atomically publishes the cursor state.  Matching tails therefore prove
+        that no crash suffix needs replay.  Full hash-chain validation remains
+        the recovery path whenever any participant is missing or disagrees.
+        """
+        state_cursor = int(state.get("cursor") or 0)
+        state_hash = str(state.get("last_hash") or "")
+        if state_cursor <= 0 or not state_hash:
+            return None
+        mirror_path = self.root / "agent-history" / "foreground" / "conversation.jsonl"
+        search_path = self.root / "raw-history" / "search.jsonl"
+        try:
+            raw_tail = _read_last_jsonl_record(self.raw_path)
+            mirror_tail = _read_last_jsonl_record(mirror_path)
+            search_tail = _read_last_jsonl_record(search_path)
+        except (UnicodeDecodeError, json.JSONDecodeError, RuntimeError):
+            return None
+        if not all(isinstance(item, dict) for item in (raw_tail, mirror_tail, search_tail)):
+            return None
+        if str(raw_tail.get("session_id") or "") != self.session_id:
+            return None
+        if any(
+            int(item.get("cursor") or 0) != state_cursor
+            or str(item.get("hash") or "") != state_hash
+            for item in (raw_tail, mirror_tail, search_tail)
+        ):
+            return None
+        digest_value = dict(raw_tail)
+        claimed_hash = str(digest_value.pop("hash", ""))
+        digest_source = json.dumps(
+            digest_value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        actual_hash = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+        if claimed_hash != actual_hash:
+            return None
+        return state_cursor, state_hash
+
+    def _recover_durable_tail_full(self, state: dict[str, Any]) -> tuple[int, str]:
+        """Validate and repair a tail whose durable participants disagree."""
         events: list[dict[str, Any]] = []
         if self.raw_path.exists():
             with self.raw_path.open("r", encoding="utf-8") as handle:

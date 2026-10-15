@@ -199,6 +199,10 @@ jiuwenswarm = [
     "channels/web/frontend/node_modules/*",
     "resources/agent/workspace/skills/project-maintainer/**/*",
     "resources/agent/workspace/skills/project-maintainer/*",
+    "resources/agent/workspace/skills/persist-session-builder/**/*",
+    "resources/agent/workspace/skills/persist-session-builder/*",
+    "resources/agent/workspace/skills/persist-session-extractor/**/*",
+    "resources/agent/workspace/skills/persist-session-extractor/*",
 ]
 
 [tool.uv]
