@@ -193,6 +193,65 @@ def test_get_files_to_redo_sees_flash_entries(project):
     assert on_disk[str(demo)][-1].get("discarded_out") is True
 
 
+def test_dirty_timestamps_sort_last_and_merge_survives(project):
+    """缺省 / 非法 timestamp 条目：排序稳定落尾，不阻断合并（评审意见 2）。
+
+    ``_entry_sort_ts`` 对无法解析的时间戳返回 inf（排最后）；合法条目的
+    时间序不受脏数据影响。truncate 对解析失败条目"保留"是存量容忍行为，
+    本测试同时钉住。
+    """
+    service, proj_dir, demo, notes, _stock_ops, flash_ops = project
+
+    flash_file_history.append_flash_history_entry(
+        str(flash_ops), str(notes),
+        {"action": "edit", "old_content": "x", "new_content": "y"},  # 缺 timestamp
+    )
+    flash_file_history.append_flash_history_entry(
+        str(flash_ops), str(notes),
+        {
+            "action": "edit", "timestamp": "not-a-date",
+            "old_content": "x", "new_content": "y",
+        },
+    )
+
+    history = service._read_agent_history(SESSION_ID, str(proj_dir))
+
+    entries = history[str(notes)]
+    assert len(entries) == 3
+    assert entries[0]["timestamp"] == _iso(EDIT2_TS), "合法条目仍按时间序在前"
+    assert set(e.get("timestamp") for e in entries[1:]) == {None, "not-a-date"}
+    # demo 的合法跨账本条目不受 notes 的脏数据影响
+    assert [e["old_content"] for e in history[str(demo)]] == ["BEFORE\n", "AFTER\n"]
+
+
+def test_flash_module_missing_degrades_gracefully(project, monkeypatch):
+    """flash 包被裁剪（ImportError）时 load/save 优雅降级（评审意见 1）。
+
+    读：.jsonl 按空账本跳过（stock 条目照常可见），ImportError 不得穿透
+    ``_read_agent_history`` 的窄 except 打断 diff 链；写：跳过重写不抛错。
+    """
+    import sys
+
+    service, proj_dir, demo, notes, stock_ops, flash_ops = project
+
+    monkeypatch.setitem(
+        sys.modules,
+        "jiuwenswarm.agents.harness.flash.tools.flash_file_history",
+        None,
+    )
+
+    history = service._read_agent_history(SESSION_ID, str(proj_dir))
+    assert str(demo) in history, "stock 账本条目必须仍然可见"
+    assert str(notes) not in history, "flash-only 条目降级为不可见（不抛错）"
+
+    # 截断 / 恢复路径同样不抛 ImportError，stock 账本照常处理
+    service.truncate_file_ops_by_timestamp(
+        SESSION_ID, TURN1_TS, project_dir=str(proj_dir), soft=False,
+    )
+    visible_after = service._read_agent_history(SESSION_ID, str(proj_dir))
+    assert visible_after == {}, "stock 账本条目（>= cutoff）应被正常截断"
+
+
 def test_is_valid_file_ops_file_jsonl_naming():
     valid = DiffService._is_valid_file_ops_file
 
