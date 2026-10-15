@@ -5,6 +5,8 @@ from contextlib import contextmanager
 import multiprocessing
 from pathlib import Path
 import queue
+import shutil
+import subprocess
 import threading
 
 import pytest
@@ -17,6 +19,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose impo
 )
 from openjiuwen.harness.security.tiered_policy import evaluate_tiered_policy
 from openjiuwen.harness.security.models import PermissionLevel
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+PACKAGED_CONFIG_DIR = REPO_ROOT / "jiuwenswarm" / "resources"
 
 
 def _configure(root):
@@ -292,3 +297,49 @@ def test_overlay_file_lock_timeout_releases_global_lock(storage, monkeypatch):
     assert layers.user_permissions_path().read_bytes() == before
     assert config._CONFIG_WRITE_LOCK.acquire(blocking=False)
     config._CONFIG_WRITE_LOCK.release()
+
+
+def test_storage_locks_use_the_names_the_lock_helper_returns(storage) -> None:
+    """The declared lock names must be the names that reach the disk.
+
+    The fixture writes both layers, so both locks exist here. A rename in
+    ``_config_lock_path`` that the ignore rule does not follow would leave an
+    untracked file in every checkout again.
+    """
+    expected = {
+        config._config_lock_path(config.CONFIG_YAML_PATH),
+        config._config_lock_path(layers.user_permissions_path()),
+    }
+    assert set(storage.glob("*.lock")) == expected
+    assert all(path.is_file() for path in expected)
+
+
+def test_storage_locks_are_ignored_by_the_repository() -> None:
+    """A checkout must stay clean after a config write or a permission write.
+
+    Without a user data directory the config directory is the packaged
+    ``jiuwenswarm/resources``. Both writes then put their lock inside the
+    checkout, and ``git add -A`` stages it.
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    probe = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        pytest.skip("the tests do not run from a git work tree")
+
+    for name in ("config.yaml", "user_permissions.yaml"):
+        lock_path = config._config_lock_path(PACKAGED_CONFIG_DIR / name)
+        result = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "check-ignore", "-q", "--", str(lock_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, (
+            f"{lock_path.name} is not ignored (git exit {result.returncode})"
+        )
