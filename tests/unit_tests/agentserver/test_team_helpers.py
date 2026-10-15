@@ -4211,45 +4211,24 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
 
 
 @pytest.mark.anyio
-async def test_process_team_message_stream_rejects_orphaned_interactive_input(monkeypatch):
+async def test_process_team_message_stream_rejects_orphaned_permission_answer(monkeypatch):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
-    ask_answer_input = InteractiveInput()
-    ask_answer_input.update(
-        "tool-ask-1",
-        {
-            "answers": {"你希望用什么技术实现？": "浏览器（HTML/CSS/JS）"},
-            "original_request": "做一个斗地主游戏",
-        },
-    )
+    permission_answer_input = InteractiveInput()
+    permission_answer_input.update("tool-perm-1", {"action": "allow_once"})
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
-        def is_runtime_active(session_id: str) -> bool:
-            assert session_id == "sess-team-orphan-answer"
-            return False
-
-        @staticmethod
-        def is_runtime_pending(session_id: str) -> bool:
-            assert session_id == "sess-team-orphan-answer"
-            return False
-
-        @staticmethod
-        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
-            assert session_id == "sess-team-orphan-answer"
-            return False
-
-        @staticmethod
         async def get_swarm_enriched_team_spec(**_kwargs):
-            pytest.fail("orphaned interactive inputs should not recreate team runtime")
+            pytest.fail("orphaned permission answers should not recreate team runtime")
 
         @staticmethod
         async def prepare_runtime_activation(*_args, **_kwargs):
-            pytest.fail("orphaned interactive inputs should not activate team runtime")
+            pytest.fail("orphaned permission answers should not activate team runtime")
 
         @staticmethod
         async def interact(*_args, **_kwargs):
-            pytest.fail("orphaned interactive inputs cannot resume a missing runtime")
+            pytest.fail("orphaned permission answers cannot resume a missing runtime")
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
 
@@ -4258,13 +4237,13 @@ async def test_process_team_message_stream_rejects_orphaned_interactive_input(mo
         request_id="req-team-orphan-answer",
         channel_id="web",
         metadata=None,
-        params={"mode": "team.plan", "source": "ask_user_interrupt"},
+        params={"mode": "team.plan", "source": "permission_interrupt"},
     )
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
         request,
-        {"query": ask_answer_input},
+        {"query": permission_answer_input},
         object(),
     ):
         chunks.append(chunk)
@@ -4274,6 +4253,162 @@ async def test_process_team_message_stream_rejects_orphaned_interactive_input(mo
         "error": "Team runtime is not active, please restart the task",
     }
     assert chunks[-1].is_complete is True
+
+
+@pytest.mark.anyio
+async def test_rebuild_and_resume_stale_ask_user_retries_until_ready(monkeypatch):
+    """The wake-up delivery retries until interact accepts the resume."""
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    ask_answer_input = InteractiveInput()
+    ask_answer_input.update("tool-ask-1", {"answers": {"用哪个方案?": "A"}})
+
+    sentinel_queue = asyncio.Queue()
+    interactions: list[Any] = []
+
+    async def fake_start_round(**_kwargs):
+        return sentinel_queue
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.removed_waiters: list[tuple[str, str]] = []
+
+        async def interact(self, session_id, payload):
+            _ = session_id
+            interactions.append(payload)
+            results = [
+                (False, "not_active"),
+                (False, "unsupported_interactive_input"),
+                (True, None),
+            ]
+            return results[min(len(interactions), len(results)) - 1]
+
+        def remove_waiter(self, session_id, request_id, *, generation=None):
+            _ = generation
+            self.removed_waiters.append((session_id, request_id))
+
+    manager = _FakeManager()
+    monkeypatch.setattr(team_helpers, "_start_team_stream_round", fake_start_round)
+
+    outcome = await team_helpers._rebuild_and_resume_stale_ask_user(
+        team_manager=manager,
+        session_id="sess-rebuild-resume",
+        channel_id="web",
+        request_id="req-rebuild-resume",
+        query=ask_answer_input,
+        team_name="team-x",
+        team_spec=object(),
+        hide_dm=False,
+        debug=False,
+        team_leader_identity=None,
+    )
+
+    assert outcome.handled is True
+    assert outcome.request_queue is sentinel_queue
+    assert outcome.error_chunks is None
+    # The raw InteractiveInput reaches interact untouched on every attempt.
+    assert interactions == [ask_answer_input, ask_answer_input, ask_answer_input]
+    assert manager.removed_waiters == []
+
+
+@pytest.mark.anyio
+async def test_rebuild_and_resume_stale_ask_user_times_out(monkeypatch):
+    """A runtime that never accepts the resume errors out and drops the waiter."""
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    ask_answer_input = InteractiveInput()
+    ask_answer_input.update("tool-ask-1", {"answers": {"用哪个方案?": "A"}})
+
+    interactions: list[Any] = []
+
+    async def fake_start_round(**_kwargs):
+        return asyncio.Queue()
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.removed_waiters: list[tuple[str, str]] = []
+
+        async def interact(self, session_id, payload):
+            _ = session_id
+            interactions.append(payload)
+            return (False, "unsupported_interactive_input")
+
+        def remove_waiter(self, session_id, request_id, *, generation=None):
+            _ = generation
+            self.removed_waiters.append((session_id, request_id))
+
+    manager = _FakeManager()
+    monkeypatch.setattr(team_helpers, "_start_team_stream_round", fake_start_round)
+    monkeypatch.setattr(team_helpers, "_REBUILD_RESUME_TIMEOUT_SEC", 0.06)
+    monkeypatch.setattr(team_helpers, "_REBUILD_RESUME_RETRY_INTERVAL_SEC", 0.02)
+
+    outcome = await team_helpers._rebuild_and_resume_stale_ask_user(
+        team_manager=manager,
+        session_id="sess-rebuild-resume",
+        channel_id="web",
+        request_id="req-rebuild-resume",
+        query=ask_answer_input,
+        team_name="team-x",
+        team_spec=object(),
+        hide_dm=False,
+        debug=False,
+        team_leader_identity=None,
+    )
+
+    assert outcome.handled is False
+    assert outcome.request_queue is None
+    assert outcome.error_chunks is not None
+    assert outcome.error_chunks[0].payload["event_type"] == "chat.error"
+    assert len(interactions) >= 2
+    assert manager.removed_waiters == [("sess-rebuild-resume", "req-rebuild-resume")]
+
+
+@pytest.mark.anyio
+async def test_rebuild_and_resume_stale_ask_user_fails_fast_on_real_reason(monkeypatch):
+    """A non-retryable interact failure skips the retry loop entirely."""
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    ask_answer_input = InteractiveInput()
+    ask_answer_input.update("tool-ask-1", {"answers": {"用哪个方案?": "A"}})
+
+    interactions: list[Any] = []
+
+    async def fake_start_round(**_kwargs):
+        return asyncio.Queue()
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.removed_waiters: list[tuple[str, str]] = []
+
+        async def interact(self, session_id, payload):
+            _ = session_id
+            interactions.append(payload)
+            return (False, "gate_closed")
+
+        def remove_waiter(self, session_id, request_id, *, generation=None):
+            _ = generation
+            self.removed_waiters.append((session_id, request_id))
+
+    manager = _FakeManager()
+    monkeypatch.setattr(team_helpers, "_start_team_stream_round", fake_start_round)
+
+    outcome = await team_helpers._rebuild_and_resume_stale_ask_user(
+        team_manager=manager,
+        session_id="sess-rebuild-resume",
+        channel_id="web",
+        request_id="req-rebuild-resume",
+        query=ask_answer_input,
+        team_name="team-x",
+        team_spec=object(),
+        hide_dm=False,
+        debug=False,
+        team_leader_identity=None,
+    )
+
+    assert outcome.handled is False
+    assert outcome.error_chunks is not None
+    assert len(interactions) == 1
+    assert manager.removed_waiters == [("sess-rebuild-resume", "req-rebuild-resume")]
 
 
 @pytest.mark.anyio
