@@ -136,7 +136,7 @@ function restoreNewConversationSelection(
   const cached = loadLastModelSelection();
   const selection = isModelSelectionAvailable(cached, models, groups)
     ? cached
-    : isModelSelectionAvailable(runtime.selectedModelSelection, models, groups)
+    : !cached && isModelSelectionAvailable(runtime.selectedModelSelection, models, groups)
       ? runtime.selectedModelSelection
       : resolveNewConversationModelSelection(models, groups, cached);
   const selectedModel = selection?.type === 'model'
@@ -717,6 +717,7 @@ interface SessionState {
 
   // Runtime 管理方法
   ensureRuntime: (sessionId: string) => SessionRuntime;
+  initializeDefaultModel: (sessionId: string) => void;
   getRuntime: (sessionId: string | null) => SessionRuntime | undefined;
   getEffectiveModelName: (sessionId: string | null) => string | null;
   removeRuntime: (sessionId: string) => void;
@@ -858,6 +859,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       runtimes: { ...state.runtimes, [sessionId]: runtime },
     }));
     return runtime;
+  },
+
+  initializeDefaultModel: (sessionId) => {
+    const runtime = get().ensureRuntime(sessionId);
+    if (runtime.selectedModelSelection || runtime.selectedModelName) return;
+    const defaultModelName = get().defaultModelName;
+    if (defaultModelName) get().setSelectedModelName(sessionId, defaultModelName);
   },
 
   getRuntime: (sessionId) => {
@@ -2198,6 +2206,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
+      if (selection) cacheLastModelSelection(selection);
       let selectedModelName = runtime.selectedModelName;
       if (selection?.type === 'model') {
         const model = state.availableModels.find((entry) => entry.model_id === selection.id)

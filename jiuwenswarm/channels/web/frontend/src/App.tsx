@@ -528,12 +528,7 @@ function AppContent({
 
   useEffect(() => {
     if (activeNav === 'chat') {
-      const { defaultModelName, setSelectedModelName } = useSessionStore.getState();
-      const runtime = useSessionStore.getState().getRuntime(sessionId);
-      if (defaultModelName && !runtime?.selectedModelName) {
-        useSessionStore.getState().ensureRuntime(sessionId);
-        setSelectedModelName(sessionId, defaultModelName);
-      }
+      useSessionStore.getState().initializeDefaultModel(sessionId);
     }
   }, [activeNav, sessionId]);
 
