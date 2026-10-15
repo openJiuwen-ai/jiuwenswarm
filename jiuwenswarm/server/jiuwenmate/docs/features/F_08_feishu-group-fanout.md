@@ -177,6 +177,22 @@ flowchart LR
 
 群消息按 `RequestInput(kind="group_message", source=GroupMessage(...))` 构造；私聊按 `RequestInput(kind="direct_message", source=DirectMessageSource(...))` 构造。`request_input` 顶层与来源中的重复字段须按 core schema 同步填写，并由契约测试校验。定时任务不属于 JM-08。
 
+### 5.6 JM-09 依赖的入站路由快照
+
+Feishu 入站绑定校验成功后，JM-08 在调用 JM-07 受理 Request 时同时写入宿主侧 `RequestRouteSnapshot`，内容来自本次已校验事件，不从当前配置或消息正文反推：
+
+| 字段 | 写入来源 | 用途 / 约束 |
+| --- | --- | --- |
+| `channel="feishu"` | JM-08 固定值 | 标记此 Request 的结果渠道 |
+| `app_id` | `FeishuInboundEvent.receiving_app_id` | 固定本次接收 Bot；不保存 app secret |
+| `target_id` | `FeishuInboundEvent.chat_id` | 飞书目标会话；不与消息 ID 混用 |
+| `source_message_id` | `FeishuInboundEvent.message_id` | JM-09 可将文本结果回复到本次来源消息 |
+| `source_reply_to` | `FeishuInboundEvent.reply_to` | 保留入站消息原有的回复关系；不替代目标会话或来源消息 |
+
+快照随 Request 受理记录写入 JM SQLite，Request 重放使用首次受理时保存的快照。历史记录缺少快照时按不可安全路由处理，不查当前绑定“补猜”Bot。`RequestRouteSnapshot` 是 JiuwenSwarm 宿主数据，不扩展 agent-core 的 `RequestInput` 公共字段。
+
+**责任边界：** JM-08 负责在绑定已验证、事件已标准化时保存以上入站事实；不负责产生 final、不负责发送结果。JM-09 负责从 final 输出建立 outbox、使用快照触发 Gateway 的专用发送并保存平台回执。`jiuwenmate.delivery.ack` 属于 JM-09 出站回执契约；其实现和状态语义以 [F_09](F_09_web-and-feishu-result-delivery.md) 为准，不改变 JM-08 入站接管规则。
+
 ### 5.4 受理、幂等与并发
 
 推荐调用顺序：
@@ -214,9 +230,9 @@ flowchart LR
 | 实施项 | 文件或模块 | 计划改动 | 验证产物 |
 | --- | --- | --- | --- |
 | I-01 | `gateway/channel_manager/im_platforms/feishu/feishu_connect.py` | 已实现原始事件字段标准化，并在旧 Bot 过滤、内存去重和附件下载前调用可选回调；未接管消息仍走个人版原逻辑 | JM-08-V-01、V-03；单测 |
-| I-02 | `server/jiuwenmate/feishu_group_fanout.py` | 已实现注入绑定与请求上下文端口、JM-02 配置快照读取、群 / 私聊 Session 定位、稳定 `source_ref` 和 JM-07 Scheduler 受理；请求上下文端口沿用 JM-03 现有 `AccessSnapshot` 契约，不定义权限策略 | JM-08-V-01、V-02；真实 SQLite 与 AgentManager/Scheduler，core 执行入口为替身 |
+| I-02 | `server/jiuwenmate/feishu_group_fanout.py` | 已实现注入绑定与请求上下文端口、JM-02 配置快照读取、群 / 私聊 Session 定位、稳定 `source_ref` 和 JM-07 Scheduler 受理；JM-09 前置路由快照在同一受理调用传入 `RequestRecord`；请求上下文沿用 JM-03 的 `AccessSnapshot`，不定义权限策略 | JM-08-V-01、V-02；真实 SQLite 与 AgentManager/Scheduler，core 执行入口为替身 |
 | I-03 | `gateway/message_handler/message_handler.py`、`gateway/channel_manager/channel_manager.py` | 已实现按 `agent_id` 条件接入；未绑定个人版通道不发 E2A，绑定请求由 Gateway E2A 交给 AgentServer | JM-08-V-03；个人版消息 / 附件回归 |
-| I-04 | Feishu 配置、Gateway E2A 客户端、`ReqMethod`、`AgentWebSocketServer` | 已加入 `agent_id` 配置映射和 `jiuwenmate.feishu.inbound`；AgentServer 负责按配置创建、启动、关闭 JM-02/03/07 运行时并返回接管状态；`AccessSnapshot` 无 workspace scope | JM-08-V-01～V-03；生产配置解析、E2A 转换、dispatch 与生命周期测试 |
+| I-04 | Feishu 配置、Gateway E2A 客户端、`ReqMethod`、`AgentWebSocketServer` | 已加入 `agent_id` 配置映射和 `jiuwenmate.feishu.inbound`；AgentServer 负责按配置创建、启动、关闭 JM-02/03/07 运行时并返回接管状态；`AccessSnapshot` 无 workspace scope。结果发送与 ACK 是 F09/JM-09 的独立出站扩展 | JM-08-V-01～V-03；生产配置解析、E2A 转换、dispatch 与生命周期测试 |
 | I-05 | `tests/unit_tests/gateway/test_persistent_group_fanout.py`、`tests/unit_tests/server/jiuwenmate/test_feishu_group_production_wiring.py` | 覆盖绑定配置形状、唯一 `app_id` 解析、事件 E2A 往返、AgentServer dispatch、条件启停、个人版隔离及 JM-03/07 幂等；真实 SQLite、core 执行入口替身 | JM-08-V-01～V-03；专项测试已并入聚焦回归 |
 
 **运行时接入边界：** FeishuChannel 和个人版 `MessageHandler` 在 Gateway；JM-02/03/07 数据服务与 Scheduler 在 AgentServer。Gateway 只对配置了 `agent_id` 的 Feishu 实例发送 E2A；AgentServer 从所有者本地配置按接收 `app_id` 复核唯一绑定，再调用 JM-03/07。运行时按需启停，不改变未绑定个人版路径。JM-08 不新增工作空间权限；PA-07 未就绪前不开放群执行，JM-09 未完成前不承诺新版 Agent 已能在飞书群内成功回复。
@@ -276,5 +292,6 @@ flowchart LR
 | 2026-10-14 | 实现首轮可注入 JM-08 分发组件和飞书个人版入口前的可选互斥分流；使用宿主提供的绑定 / 授权端口，不新增生产存储或生命周期接线；增加同 Agent 并发重投覆盖，记录 25 项 JM-08 测试和 131 项聚焦回归通过 | 本地 `jiuwenmate` 工作区实现与测试；整体验收、生产装配及真机联调仍待完成 |
 | 2026-10-14 | 修正文档边界：JM-08 只按接收 Bot 的有效绑定和飞书实际投递决定群消息准入，不开发工作空间权限；明确当前代码没有生产绑定源、Gateway 到 AgentServer 的 JM 请求入口或 JM-07 生产装配 | 用户确认的特性范围及对当前启动链、Feishu 配置和 JM 代码的检查 |
 | 2026-10-14 | 按确认的 `app_id → agent_id` 一对一配置完成生产解析、Gateway E2A、AgentServer 事件分发及 JM-07 条件启停；个人版未绑定通道保持原路径；142 项聚焦回归通过 | JM-08 实现与自动化验证；真实 Feishu 群联调仍待完成 |
+| 2026-10-15 | 为 JM-09 在 Request 受理时持久化 Feishu `app_id`、`chat_id`、来源 `message_id` 与 `reply_to`；明确该快照属于 JM-08 的入站事实，outbox、出站 ACK 与文本发送由 F09/JM-09 负责；个人版路径不变 | JM-09 方案细化与当前 Request / E2A 代码；JM-08/JM-09 聚焦自动化验证 |
 
 生产装配已接入；待使用真实 Feishu 测试应用和测试群确认事件身份字段及 SDK 重投行为。JM-08 不新增工作空间权限或其策略，也不伪造执行上下文；PA-07 群执行、JM-09 回复投递和附件读取不属于本次闭环。
