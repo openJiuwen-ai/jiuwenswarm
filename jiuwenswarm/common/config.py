@@ -2666,7 +2666,9 @@ def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], pub
         if not params.get("external_publish_url"):
             url = str(publish_url or "").strip()
             if not url:
-                raise ValueError("external_cli_agents needs a cross-process agent but external_cli_publish_url is empty")
+                raise ValueError(
+                    "external_cli_agents needs a cross-process agent but external_cli_publish_url is empty"
+                )
             params["external_publish_url"] = url
         current[EXTERNAL_TRANSPORT_CONFIG_PATH[-1]] = {"type": "hybrid", "params": params}
     else:
