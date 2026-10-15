@@ -4,6 +4,25 @@ This package is the Electron replacement for the current pywebview desktop
 window. It keeps the existing Python backend and Web frontend server, and adds
 an isolated browser `WebContentsView` on the right side of the application.
 
+## Local files and downloads
+
+Native file drops use the preload's `webUtils.getPathForFile` bridge and the
+shared local-file consumer for chat attachments and connector package imports.
+Directories and virtual files without disk paths remain unsupported.
+Switching chat sessions discards pending file-drop results from the previous
+session, including when switching back before the file read finishes.
+Downloads through the desktop save API offer a save dialog; cancelling does not
+start a request. Data streams into a unique temporary file beside the chosen
+destination and replaces it only after success; failures remove the temporary
+file and preserve any existing destination.
+At startup, installer download fragments (`*.exe.part`, `*.dmg.part`, and
+`*.tar.gz.part`) older than 24 hours are removed from the configured data
+directory's `.updates` folder. Recent files, complete installers, directories,
+and update helper scripts are retained.
+
+Regression checks: `node --test tests/electron/file_transfer.test.cjs` from the
+repository root and `npm run test:desktop-file-drop` from the frontend directory.
+
 ## Development
 
 From this directory:

@@ -1697,6 +1697,55 @@ async function uniqueDownloadPath(filename) {
   }
 }
 
+async function saveDownloadedFile(url, filename) {
+  const targetUrl = new URL(String(url), currentFrontendUrl);
+  if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+    throw new Error(`Unsupported download protocol: ${targetUrl.protocol}`);
+  }
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: path.join(app.getPath('downloads'), sanitizeFilename(filename)),
+  });
+  if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+  const targetPath = result.filePath;
+  const temporaryPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${randomUUID()}.part`);
+  let temporaryCreated = false;
+  try {
+    const response = await net.fetch(targetUrl);
+    if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
+    if (!response.body) throw new Error('Download response has no body');
+    const handle = await fs.open(temporaryPath, 'wx');
+    temporaryCreated = true;
+    await pipeline(Readable.fromWeb(response.body), handle.createWriteStream());
+    await fs.rename(temporaryPath, targetPath);
+    temporaryCreated = false;
+  } finally {
+    if (temporaryCreated) await fs.unlink(temporaryPath).catch(error => console.warn('Failed to remove partial download:', error));
+  }
+  shell.showItemInFolder(targetPath);
+  return { ok: true, cancelled: false };
+}
+
+async function cleanupStaleUpdateDownloads() {
+  const dataRoot = process.env.JIUWENSWARM_DATA_DIR || path.join(app.getPath('home'), '.jiuwenswarm');
+  const updatesDir = path.join(dataRoot, '.updates');
+  // A different instance may still be downloading. Retain recently written files.
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  try {
+    for (const name of await fs.readdir(updatesDir)) {
+      if (!/\.(?:exe|dmg|tar\.gz)\.part$/i.test(name)) continue;
+      const candidate = path.join(updatesDir, name);
+      try {
+        const stat = await fs.lstat(candidate);
+        if (stat.isFile() && stat.mtimeMs < cutoff) await fs.unlink(candidate);
+      } catch (error) {
+        if (error.code !== 'ENOENT') console.warn('Failed to remove stale update download:', error);
+      }
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.warn('Failed to inspect update downloads:', error);
+  }
+}
+
 // ─── Blob 分块保存事务 ──────────────────────────────────────────────────────
 // 契约对齐 Python 桌面 desktop_app 的 begin/append/finish/abort_blob_save：
 // 元数据白名单、1MiB 分块、校验 PNG 签名、同目录临时文件 + 原子替换。
@@ -2578,21 +2627,7 @@ function registerIpcHandlers() {
     uniqueDownloadPath,
     showItemInFolder: file => shell.showItemInFolder(file),
   }));
-  registerHandler('desktop:download-file', async (url, filename) => {
-    const targetUrl = new URL(String(url), currentFrontendUrl);
-    // 仅允许 http/https：渲染器传入 file: 等本地协议会把任意本地文件写进下载目录。
-    if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
-      throw new Error(`Unsupported download protocol: ${targetUrl.protocol}`);
-    }
-    const response = await net.fetch(targetUrl);
-    if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
-    if (!response.body) throw new Error('Download response has no body');
-    const targetPath = await uniqueDownloadPath(filename);
-    // 流式落盘，避免大文件整体驻留内存。
-    await pipeline(Readable.fromWeb(response.body), fsSync.createWriteStream(targetPath));
-    shell.showItemInFolder(targetPath);
-    return true;
-  });
+  registerHandler('desktop:download-file', saveDownloadedFile);
   registerHandler('desktop:install-update', async installerPath => {
     const target = path.resolve(String(installerPath));
     if (process.platform === 'darwin') {
@@ -2867,6 +2902,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    await cleanupStaleUpdateDownloads();
     // 共享浏览器 partition 的 permission handler 在 ensureBrowserView 内按需注册。
     // 先读回上次运行保存的会话页面 URL（重启还原），再进入启动流程。
     Menu.setApplicationMenu(null);

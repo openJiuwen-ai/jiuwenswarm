@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
 
@@ -33,6 +33,14 @@ const desktopApi = Object.freeze({
   selectLocalFiles: (allowMultiple, initialDir) => invoke('desktop:select-local-files', allowMultiple, initialDir),
   selectLocalFilePath: (initialPath, title) => invoke('desktop:select-local-file-path', initialPath, title),
   describeLocalFiles: paths => invoke('desktop:describe-local-files', paths),
+  describeDroppedFiles: files => {
+    // File objects cannot cross IPC. Resolve their native paths in the preload.
+    const paths = Array.from(files, file => webUtils.getPathForFile(file));
+    if (!paths.length || paths.some(filePath => !filePath)) {
+      return Promise.resolve([]);
+    }
+    return invoke('desktop:describe-local-files', [...new Set(paths)]);
+  },
   getClipboardFiles: () => invoke('desktop:get-clipboard-files'),
   pasteClipboard: () => invoke('desktop:paste-clipboard'),
   clearHuaweiSignIn: () => invoke('auth:clear-huawei-sign-in'),

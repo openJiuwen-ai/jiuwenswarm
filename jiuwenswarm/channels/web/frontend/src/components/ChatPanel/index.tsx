@@ -1781,7 +1781,9 @@ export const ChatPanel = React.memo(function ChatPanel({
     [canAcceptDesktopFileDrag, markDesktopFileDropZoneActive],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // Replace the consumer during the session commit, before pending native file
+    // reads can resolve. ChatPanel stays mounted when activeSessionId changes.
     // Durable bridge lives in localFilePicker; ChatPanel only registers a consumer.
     // Never delete window.__JIUWEN_INGEST_LOCAL_FILES__ — Python run_js requires it.
     const unregister = registerDesktopLocalFilesConsumer((detail, files) => {
@@ -1807,7 +1809,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       window.removeEventListener(DESKTOP_LOCAL_FILES_EVENT, onDesktopLocalFiles as EventListener);
       window.removeEventListener(DESKTOP_FILE_DRAG_EVENT, onDesktopFileDrag as EventListener);
     };
-  }, [ingestDesktopLocalFiles, markDesktopFileDropZoneActive]);
+  }, [activeSessionId, ingestDesktopLocalFiles, markDesktopFileDropZoneActive]);
 
   return (
     <div

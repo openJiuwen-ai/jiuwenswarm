@@ -38,7 +38,7 @@ export interface JiuwenElectronDesktopApi {
     title?: string;
   }) => Promise<{ accessToken: string } | null>;
   exportShareImage: (sessionId: string, locale: string) => Promise<boolean>;
-  downloadFile: (url: string, filename: string) => Promise<boolean>;
+  downloadFile: (url: string, filename: string) => Promise<boolean | { ok: boolean; cancelled?: boolean }>;
   installUpdate: (installerPath: string) => Promise<boolean>;
   saveDataUrl: (dataUrl: string, filename: string) => Promise<{ ok: boolean; cancelled?: boolean }>;
   beginBlobSave: (
@@ -61,6 +61,8 @@ export interface JiuwenElectronDesktopApi {
   describeLocalFiles: (
     paths: string[],
   ) => Promise<Array<Record<string, unknown>>>;
+  /** Optional for compatibility with older Electron shells; accepts native dropped Files. */
+  describeDroppedFiles?: (files: File[]) => Promise<Array<Record<string, unknown>>>;
   getClipboardFiles: () => Promise<Array<Record<string, unknown>>>;
   pasteClipboard: () => Promise<void>;
   clearHuaweiSignIn?: () => Promise<number>;

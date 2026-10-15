@@ -224,6 +224,29 @@ export function installDesktopFileDragAccept(): boolean {
       if (dataTransferHasDirectory(event.dataTransfer)) {
         event.stopImmediatePropagation();
         window.dispatchEvent(new CustomEvent(DESKTOP_DIRECTORY_DROP_REJECTED_EVENT));
+        endDrag();
+        return;
+      }
+      const describeDroppedFiles = window.jiuwenDesktop?.describeDroppedFiles;
+      if (describeDroppedFiles) {
+        const files = Array.from(event.dataTransfer?.files || []);
+        const consumer = desktopLocalFilesConsumer;
+        const detail: DesktopLocalFilesEventDetail = {
+          source: 'drop', clientX: event.clientX, clientY: event.clientY,
+          dropId: crypto.randomUUID(),
+        };
+        // Resolve paths only for Electron. The pywebview bridge delivers its own event.
+        void Promise.resolve().then(() => describeDroppedFiles(files)).then((picks) => {
+          // Do not deliver a slow file read to a different conversation or modal.
+          if (consumer !== desktopLocalFilesConsumer) return;
+          if (!picks.length) {
+            window.dispatchEvent(new CustomEvent(DESKTOP_VIRTUAL_FILE_DROP_REJECTED_EVENT));
+            return;
+          }
+          window.__JIUWEN_INGEST_LOCAL_FILES__?.({ ...detail, files: picks });
+        }).catch((error) => {
+          console.error('Failed to read dropped desktop files:', error);
+        });
       }
       endDrag();
     },
