@@ -51,6 +51,12 @@ from jiuwenswarm.channels.process_cli.main import main
 main()
 """
 
+_GUARDED_INTERNAL_ENTRY = _GUARDED_MAIN.replace(
+    "from jiuwenswarm.channels.process_cli.main import main\nmain()",
+    "from jiuwenswarm.channels.process_cli.machine_entry import execute_source\n"
+    "raise SystemExit(execute_source('-'))",
+)
+
 _FAKE_MACHINE_MAIN = """
 import os
 import subprocess
@@ -83,8 +89,11 @@ async def run_with_signals(run_input, writer, *, control=None):
 module = types.ModuleType('jiuwenswarm.channels.process_cli.machine')
 module.run_with_signals = run_with_signals
 sys.modules[module.__name__] = module
-from jiuwenswarm.channels.process_cli.main import main
-main()
+from jiuwenswarm.channels.process_cli.diagnostics import capture_diagnostics
+from jiuwenswarm.channels.process_cli.machine_entry import execute_source
+with capture_diagnostics(capture_stdout=False, debug=False) as streams:
+    code = execute_source('-')
+raise SystemExit(code)
 """
 
 
@@ -149,7 +158,7 @@ def _run_main(
 
 
 @pytest.mark.parametrize("arguments", [["--run-json", "-"], ["--run-json=run.json"]])
-def test_machine_option_dispatches_directly_without_legacy_execution(
+def test_removed_machine_option_never_dispatches(
     arguments: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[tuple[str, bool]] = []
@@ -164,9 +173,8 @@ def test_machine_option_dispatches_directly_without_legacy_execution(
     with pytest.raises(SystemExit) as caught:
         cli_main.main()
 
-    assert caught.value.code == 7
-    source = "-" if len(arguments) == 2 else "run.json"
-    assert calls == [(source, False)]
+    assert caught.value.code == 2
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -186,7 +194,7 @@ def test_machine_option_dispatches_directly_without_legacy_execution(
         ["--_operation", "chat"],
     ],
 )
-def test_machine_entry_rejects_every_explicit_legacy_argument(
+def test_removed_run_json_is_rejected_with_task_options(
     legacy_arguments: list[str],
 ) -> None:
     result = _run_main(
@@ -196,27 +204,26 @@ def test_machine_entry_rejects_every_explicit_legacy_argument(
     )
 
     assert result.returncode == 2, result.stderr
-    records = decode_jsonl(result.stdout)
-    assert len(records) == 1
-    assert records[0].error.code == "INVALID_INPUT"
-    assert "legacy" in records[0].error.message
+    assert result.stdout == ""
+    assert "--run-json" in result.stderr
     assert "Traceback" not in result.stderr
 
 
-def test_machine_option_does_not_change_legacy_parser_defaults_or_help() -> None:
+def test_removed_machine_options_preserve_text_parser_defaults() -> None:
     parser = cli_main.build_parser()
     defaults = parser.parse_args([])
 
     assert defaults.prompt is None
-    assert defaults.run_json is None
+    assert not hasattr(defaults, "run_json")
     assert defaults.mode == "code.normal"
     assert defaults.work_mode == "code"
     assert defaults.output == "human"
     assert defaults.trusted_dir == []
     assert defaults.timeout is None
     help_text = parser.format_help()
-    for option in ("--run-json", "--session", "--cwd", "--output", "--show-tools"):
+    for option in ("--session", "--cwd", "--output", "--show-tools"):
         assert option in help_text
+    assert "--run-json" not in help_text
     assert "--_interactive-worker" not in help_text
     assert "--work-mode" not in help_text
 
@@ -225,7 +232,7 @@ def test_help_exits_without_machine_or_runtime_imports() -> None:
     result = _run_main(_GUARDED_MAIN, ["--run-json", "-", "--help"])
 
     assert result.returncode == 0, result.stderr
-    assert "--run-json" in result.stdout
+    assert "--run-json" not in result.stdout
     assert "--output" in result.stdout
     assert result.stderr == ""
 
@@ -319,7 +326,7 @@ def test_execute_source_reads_one_request_and_runs_once(
 def test_bad_input_cold_start_has_one_result_and_never_imports_runtime(
     document: str, request_id: str | None
 ) -> None:
-    result = _run_main(_GUARDED_MAIN, ["--run-json", "-"], document=document)
+    result = _run_main(_GUARDED_INTERNAL_ENTRY, [], document=document)
 
     assert result.returncode == 2, result.stderr
     records = decode_jsonl(result.stdout)
