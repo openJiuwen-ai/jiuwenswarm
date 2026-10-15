@@ -27,6 +27,7 @@ export function SettingsPage({
   onSelectExternalCliPath,
   onTrackExternalCliDependencyInstalls,
   externalCliInstallStatuses,
+  externalCliInstallBusy,
   onGetExternalCliInstallStatus,
   onExternalCliInstallStatusChange,
   externalCliPendingChoices,
@@ -44,11 +45,10 @@ export function SettingsPage({
   request: SettingsRequest;
   onHasChangesChange?: (hasChanges: boolean) => void;
   onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string, useBuiltin?: boolean) => Promise<ExternalCliDetectResult>;
-  onValidateExternalCliPaths?: (paths: string[]) => Promise<Record<string, boolean | null>>;
-  onPruneExternalCliPathHistories?: (agent: ExternalCliAgentKind, removePaths: string[]) => Promise<string[]>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;
+  externalCliInstallBusy?: boolean;
   onGetExternalCliInstallStatus?: (
     agent: ExternalCliAgentKind,
   ) => Promise<ExternalCliDependencyInstallStatus>;
@@ -86,6 +86,7 @@ export function SettingsPage({
       onSelectExternalCliPath={onSelectExternalCliPath}
       onTrackExternalCliDependencyInstalls={onTrackExternalCliDependencyInstalls}
       externalCliInstallStatuses={externalCliInstallStatuses}
+      externalCliInstallBusy={externalCliInstallBusy}
       onGetExternalCliInstallStatus={onGetExternalCliInstallStatus}
       onExternalCliInstallStatusChange={onExternalCliInstallStatusChange}
       externalCliPendingChoices={externalCliPendingChoices}

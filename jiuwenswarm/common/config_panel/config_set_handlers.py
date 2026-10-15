@@ -864,28 +864,6 @@ def external_cli_managed_cli_path(cli_agent: str) -> str:
     return str(candidate) if candidate.is_file() else ""
 
 
-def _resolve_windows_cli_executable_from_path(cli_agent: str) -> str:
-    """PATH lookup restricted to real executables.
-
-    npm-style global installs drop `claude`, `claude.cmd` and `claude.ps1`
-    side by side; the PATHEXT-driven `shutil.which` resolves the script shim,
-    which the detector rejects as unsupported and the path dropdown would
-    then offer as a dead entry (#5678). Only an `.exe` is launchable through
-    CreateProcess, so scan PATH for that instead. Windows-only: other
-    platforms have no `.exe` and their `shutil.which` never resolves the
-    script shims.
-    """
-    if not is_windows_platform():
-        return ""
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if not entry.strip():
-            continue
-        candidate = Path(entry) / f"{cli_agent}.exe"
-        if candidate.is_file():
-            return str(candidate)
-    return ""
-
-
 def resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, str, str]:
     from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
 
@@ -1172,14 +1150,7 @@ def external_cli_agents_from_switches(raw: dict[str, Any], params: dict[str, Any
                 untouched_entries[item.strip()] = {"cli_agent": item.strip()}
     agents: list[dict[str, Any]] = []
     for cli_agent in external_cli_agent_kinds():
-        # A save that only rewrites path histories must not rebuild the
-        # entry, so a cleanup write never re-detects a stale cli_path.
-        touched_keys = [
-            key
-            for key in params
-            if key.startswith(f"external_cli_agent_{cli_agent}_") and not key.endswith("_path_histories")
-        ]
-        if not touched_keys:
+        if not any(key.startswith(f"external_cli_agent_{cli_agent}_") for key in params):
             untouched = untouched_entries.get(cli_agent)
             if untouched is not None:
                 agents.append(dict(untouched))
@@ -1617,15 +1588,8 @@ def apply_config_payload(
                     # 每个卡片的“一键安装”独立触发：仅当本次保存显式携带了
                     # 该 agent 的配置键时才检查/安装它的依赖，避免动到本次
                     # 未触碰、但此前已启用过的另一个 agent。
-                    # Path-history-only keys must not trigger the install gate.
-                    codex_touched = any(
-                        key.startswith("external_cli_agent_codex_") and not key.endswith("_path_histories")
-                        for key in params
-                    )
-                    claude_touched = any(
-                        key.startswith("external_cli_agent_claude_") and not key.endswith("_path_histories")
-                        for key in params
-                    )
+                    codex_touched = any(key.startswith("external_cli_agent_codex_") for key in params)
+                    claude_touched = any(key.startswith("external_cli_agent_claude_") for key in params)
                     if codex_touched and any(item.get("cli_agent") == "codex" for item in external_cli_agents):
                         codex_dependency_install = (
                             ensure_codex_dependency() if ensure_codex_dependency else None

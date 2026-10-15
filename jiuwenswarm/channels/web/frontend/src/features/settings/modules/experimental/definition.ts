@@ -19,16 +19,6 @@ export const experimentalModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
-      id: 'asr',
-      titleKey: 'settingsPanel.experimental.taskAsr',
-      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
-    },
-    {
-      id: 'task-full-duplex',
-      titleKey: 'settingsPanel.experimental.taskFullDuplex',
-      items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
-    },
-    {
       id: 'external-cli-custom-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
       items: [{ id: 'external-cli-custom-agents', component: 'custom', render: ExternalCliCustomAgentsItem }],

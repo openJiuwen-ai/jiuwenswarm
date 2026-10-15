@@ -168,53 +168,7 @@ class RuntimeSupervisor:
         self._last_dump_at = 0.0
         self._last_dump_path: Path | None = None
         self._session_lock = asyncio.Lock()
-        self._forward_bytes = 0
         self._recover_lock = asyncio.Lock()
-
-    accepts_warming = True
-
-    async def get_runtime_snapshot(self, request: AgentRequest) -> dict[str, Any]:
-        conn = self._conn
-        if conn is None:
-            return self._recovery_pending("worker_disconnected")
-        query_id = uuid.uuid4().hex
-        future = asyncio.get_running_loop().create_future()
-        self._queries[query_id] = future
-        resume = (request.params or {}).get("runtime_resume")
-        resume = resume if isinstance(resume, dict) else {}
-        try:
-            after = max(0, int(resume.get("after") or 0))
-            await asyncio.wait_for(conn.send({"kind": KIND_SUBSCRIBE, "query_id": query_id,
-                                              "generation": self._peer_generation,
-                                              "payload": dump_agent_request(request),
-                                              "subscribe": bool(resume), "after": after,
-                                              "worker_instance": resume.get("worker_instance")}),
-                                   timeout=_SNAPSHOT_WAIT_SECONDS)
-            # Retry the wait on the same query. Sending another subscription
-            # would replay the journal twice and could race the first recovery.
-            for _ in range(_SNAPSHOT_WAIT_ATTEMPTS):
-                try:
-                    return await asyncio.wait_for(asyncio.shield(future), timeout=_SNAPSHOT_WAIT_SECONDS)
-                except asyncio.TimeoutError:
-                    if self._conn is not conn:
-                        return self._recovery_pending("worker_disconnected")
-            logger.warning("[Supervisor] runtime snapshot pending query_id=%s session_id=%s",
-                           query_id, request.session_id)
-            return self._recovery_pending("snapshot_timeout")
-        except asyncio.TimeoutError:
-            return self._recovery_pending("snapshot_transport_timeout")
-        except (OSError, RuntimeError, ValueError) as exc:
-            logger.info("[Supervisor] runtime snapshot unavailable: %s", exc)
-            return self._recovery_pending("snapshot_unavailable")
-        finally:
-            self._queries.pop(query_id, None)
-            if not future.done():
-                future.cancel()
-
-    def _recovery_pending(self, reason: str) -> dict[str, Any]:
-        return {"recovery_pending": True, "recovery_reason": reason,
-                "retry_after_ms": int(_SNAPSHOT_WAIT_SECONDS * 1000),
-                "worker_instance": self._worker_instance}
 
     @property
     def socket_path(self) -> str:
@@ -276,7 +230,7 @@ class RuntimeSupervisor:
         failed to load never retries on its own, so keeping it alive only
         blocks the IPC socket a fresh Worker must claim.
         """
-        if self._stopping or self._closing:
+        if self._stopping:
             return False
         state = self._readiness.state
         if state is ReadinessState.DRAINING:
@@ -293,20 +247,16 @@ class RuntimeSupervisor:
                 "[Supervisor] reload requested while runtime FAILED; restarting worker: %s",
                 self._fatal_reason or "unknown failure",
             )
+            # Clear the sticky failure so the supervise loop may bring the
+            # Worker up again, then tear the broken Worker process down.
+            self._fatal = False
+            self._fatal_reason = ""
+            self._restart_count = 0
+            self._readiness.mark_recovering("reload requested after runtime failure")
             # Hold the session lock so a background restart inside a live
             # supervise loop cannot reattach to the dying Worker socket.
             async with self._session_lock:
-                if not await self._terminate_failed_worker():
-                    return False
-                if self._stopping or self._closing or self._readiness.state is ReadinessState.DRAINING:
-                    return False
-                # Publish recovery only after retirement succeeded. Refused
-                # ownership or an unobserved exit must leave FAILED sticky.
-                self._fatal = False
-                self._fatal_reason = ""
-                self._restart_count = 0
-                self._retryable_failure = False
-                self._readiness.mark_recovering("reload requested after runtime failure")
+                await self._terminate_failed_worker()
                 task = self._loop_task
                 if task is not None and not task.done():
                     # The loop is parked in _pump/recv; closing the connection
@@ -314,7 +264,6 @@ class RuntimeSupervisor:
                     conn = self._conn
                     if conn is not None:
                         self._conn = None
-                        self._validated_conn = None
                         try:
                             await conn.close()
                         except Exception:  # noqa: BLE001
@@ -336,32 +285,33 @@ class RuntimeSupervisor:
                 )
                 return False
 
-    async def _terminate_failed_worker(self) -> bool:
-        """Retire a FAILED Worker; refuse replacement when cleanup cannot be proved."""
+    async def _terminate_failed_worker(self) -> None:
+        """Shut the FAILED Worker down, including a reattached resident one."""
         conn = self._conn
-        try:
-            # Keep the IPC pump alive for shutdown.done. Closing immediately
-            # can turn the Worker's acknowledgement into a disconnect and
-            # leave a failed resident Worker available for reattachment.
+        self._conn = None
+        process = self._process if self._owns_process else None
+        if conn is not None:
             try:
-                await self._shutdown_owned_worker(deadline=time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT)
-            except WorkerShutdownIncomplete:
-                # The failed process is gone; recovery may start a fresh one.
-                logger.warning("[Supervisor] failed Worker exited without complete persistence", exc_info=True)
+                await conn.send(
+                    {"kind": KIND_SHUTDOWN, "reason": "runtime-failed-recovery"}
+                )
             except (OSError, RuntimeError):
-                logger.warning("[Supervisor] failed Worker retirement refused or incomplete", exc_info=True)
-                return False
-        finally:
-            self._conn = None
-            self._validated_conn = None
-            if conn is not None:
-                try:
-                    await conn.close()
-                except Exception:  # noqa: BLE001
-                    logger.debug("[Supervisor] worker shutdown close failed", exc_info=True)
+                logger.info("[Supervisor] worker shutdown send skipped; ipc is down")
+            try:
+                await conn.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("[Supervisor] worker shutdown close failed", exc_info=True)
+        if process is not None:
+            if await process.wait(timeout=5.0) is None:
+                await process.stop()
+        else:
+            # A reattached Worker has no process handle; give the SHUTDOWN a
+            # moment to release the IPC socket before the supervise loop
+            # reconnects, so it spawns a fresh Worker instead of reattaching
+            # to the dying one.
+            await asyncio.sleep(0.5)
         self._process = None
         self._owns_process = False
-        return True
 
     async def dispatch_parsed_request(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock

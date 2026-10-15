@@ -1,6 +1,6 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
@@ -9,7 +9,6 @@ import {
   externalCliDependencyInstalls,
   externalCliSaveValidationMessage,
   externalCliKey,
-  parseExternalCliPathHistories,
   type ExternalCliAgentChoice,
   type ExternalCliAgentKind,
   type ExternalCliConfigSaveResult,
@@ -28,16 +27,12 @@ function externalCliDefaults(agents: ExternalCliAgentKind[]): Record<string, str
       [externalCliKey(agent, 'enabled'), 'false'],
       [externalCliKey(agent, 'use_builtin'), 'false'],
       [externalCliKey(agent, 'cli_path'), ''],
-      [externalCliKey(agent, 'path_histories'), '[]'],
     ]),
   );
 }
 
 /** Auto-dismiss both the save-failure banner and the auto-save success notice after this delay. */
 const NOTICE_AUTO_DISMISS_MS = 8000;
-
-/** Mirrors EXTERNAL_CLI_PATH_HISTORY_LIMIT on the backend (config.py). */
-const EXTERNAL_CLI_PATH_HISTORY_LIMIT = 10;
 
 /**
  * Module-scope registry of deferred-choice replays whose async save is still
@@ -63,6 +58,7 @@ function ExternalCliSettings({
   const { t } = useTranslation();
   const {
     isConnected,
+    externalCliInstallBusy,
     externalCliInstallStatuses,
     externalCliPendingChoices,
     externalCliDetectResults,
@@ -72,8 +68,6 @@ function ExternalCliSettings({
     onGetExternalCliInstallStatus,
     onExternalCliInstallStatusChange,
     onSelectExternalCliPath,
-    onValidateExternalCliPaths,
-    onPruneExternalCliPathHistories,
     onTrackExternalCliDependencyInstalls,
   } = useSettingsServices();
   const sourceValues = useMemo(
@@ -96,6 +90,7 @@ function ExternalCliSettings({
   );
   const [savedValues, setSavedValues] = useState(sourceValues);
   const [draftValues, setDraftValues] = useState(restoredDraftValues);
+  const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   // Latest CLI detect results, held at the App layer (via services) so they
   // survive unmounting the Settings page; the save flow pre-validates them to
@@ -121,13 +116,8 @@ function ExternalCliSettings({
     const timer = window.setTimeout(() => setAutoSavedAgents([]), NOTICE_AUTO_DISMISS_MS);
     return () => window.clearTimeout(timer);
   }, [autoSavedAgents]);
-  // Installs are per-agent: only the installing agent's card is disabled (the
-  // section disables it), so the other agent stays installable in parallel.
-  // Card-level saves do not lock the panel either: the saving card shows its
-  // own busy state, and concurrent saves only ever merge their own keys into
-  // savedValues functionally (persistUpdates), so they cannot clobber each
-  // other and no global lock is needed.
-  const disabled = inheritedDisabled || !isConnected;
+  const installBusy = externalCliInstallBusy === true;
+  const disabled = inheritedDisabled || saving || installBusy || !isConnected;
   useUnsavedChanges('external-cli', changed);
 
   useEffect(() => {
@@ -136,76 +126,6 @@ function ExternalCliSettings({
       setDraftValues(restoredDraftValues);
     }
   }, [changed, restoredDraftValues, sourceValues]);
-
-  // After a successful detection, drop stale addresses from the persisted
-  // Prunes stale entries from the persisted path history: the persisted
-  // cli_path and the just-detected path count as known-good, everything
-  // else is checked on disk via external_cli.validate_paths. The actual
-  // drop happens server-side (external_cli.prune_path_histories) against
-  // the on-disk history, so entries appended by a concurrent save — e.g.
-  // the just-replaced cli_path — can never be rolled back by this
-  // component's snapshot.
-  const cleanupPersistedPathHistories = useCallback(
-    async (
-      cliAgent: ExternalCliAgentKind,
-      detectedPath: string,
-      options?: { effectivePath?: string },
-    ) => {
-      if (!onValidateExternalCliPaths || !onPruneExternalCliPathHistories) return;
-      const historyKey = externalCliKey(cliAgent, 'path_histories');
-      const effectivePath = (options?.effectivePath ?? savedValues[externalCliKey(cliAgent, 'cli_path')] ?? '').trim();
-      const histories = parseExternalCliPathHistories(savedValues[historyKey]);
-      if (!histories.length) return;
-      const knownGood = [effectivePath, detectedPath].filter(Boolean);
-      let results: Record<string, boolean | null>;
-      try {
-        results = await onValidateExternalCliPaths([...new Set([...histories, ...knownGood])]);
-      } catch {
-        return; // Validation unavailable: keep the history untouched.
-      }
-      // Only a confirmed miss is handed to the backend: an unreadable path
-      // (null) or one the backend could not answer stays put. The server
-      // drops only the intersection with the on-disk history, so anything
-      // appended after this snapshot was taken survives.
-      const removePaths = histories.filter((path) => !knownGood.includes(path) && results[path] === false);
-      if (!removePaths.length) return;
-      let next: string[];
-      try {
-        // Adopt the server's survivors: the prune ran against the on-disk
-        // history, so this also picks up entries a concurrent save appended
-        // after this component's snapshot was taken.
-        next = await onPruneExternalCliPathHistories(cliAgent, removePaths);
-      } catch {
-        return; // The next explicit action retries the cleanup.
-      }
-      const updates = { [historyKey]: JSON.stringify(next) };
-      setSavedValues((current) => ({ ...current, ...updates }));
-      setDraftValues((current) => ({ ...current, ...updates }));
-      onConfigPatch(updates);
-    },
-    [onConfigPatch, onPruneExternalCliPathHistories, onValidateExternalCliPaths, savedValues],
-  );
-
-  // On first load, sweep every agent's persisted path history: entries that
-  // no longer exist on disk are pruned server-side so the path dropdown does
-  // not offer stale addresses. This must not depend on detection results —
-  // the saved path itself may be the dead one, in which case detection fails
-  // and the detection-gated cleanup never fires. Runs once per mount, after
-  // saved values first become available.
-  const initialHistorySweepDoneRef = useRef(false);
-  useEffect(() => {
-    if (initialHistorySweepDoneRef.current) return;
-    if (!onValidateExternalCliPaths || !onPruneExternalCliPathHistories) return;
-    const pendingAgents = EXTERNAL_CLI_AGENT_KINDS.filter(
-      (agent) => parseExternalCliPathHistories(savedValues[externalCliKey(agent, 'path_histories')]).length > 0,
-    );
-    if (!pendingAgents.length) return; // Saved values not loaded yet: retry on the next render.
-    initialHistorySweepDoneRef.current = true;
-    for (const agent of pendingAgents) {
-      // Empty detectedPath: only the persisted cli_path counts as known-good.
-      void cleanupPersistedPathHistories(agent, '');
-    }
-  }, [cleanupPersistedPathHistories, onPruneExternalCliPathHistories, onValidateExternalCliPaths, savedValues]);
 
   // When a dependency install finishes, replay the user's deferred choices:
   // save on success, drop on failure (user retries manually as before).
@@ -253,7 +173,7 @@ function ExternalCliSettings({
       setDraftValues((current) => {
         const next = { ...current };
         for (const agent of failed) {
-          for (const suffix of ['enabled', 'use_builtin', 'cli_path', 'path_histories'] as const) {
+          for (const suffix of ['enabled', 'use_builtin', 'cli_path'] as const) {
             const key = externalCliKey(agent, suffix);
             next[key] = savedValues[key];
           }
@@ -265,9 +185,13 @@ function ExternalCliSettings({
       (agent) => externalCliInstallStatuses?.[agent]?.status === 'succeeded',
     );
     if (!succeeded.length) return;
+    // Saving is armed once and released only after every replay settles, so a
+    // fast first save cannot unlock the form while later ones are still running.
+    setSaving(true);
     setSaveError('');
     void (async () => {
-      await Promise.allSettled(
+      try {
+        await Promise.allSettled(
           succeeded.map(async (agent) => {
             const pending = consumed[agent];
             const clearPending = (choice: ExternalCliPendingChoice) => {
@@ -293,14 +217,7 @@ function ExternalCliSettings({
               // next manual detect or a full page reload.
               try {
                 const probe = await onDetectExternalCli?.(agent, pending.cliPath, pending.useBuiltin === 'true');
-                if (probe) {
-                  setDetectResults?.((current) => ({ ...current, [agent]: probe }));
-                  if (probe.status === 'ok' || probe.status === 'warning') {
-                    void cleanupPersistedPathHistories(agent, probe.path || '', {
-                      effectivePath: pending.cliPath,
-                    }).catch(() => {});
-                  }
-                }
+                if (probe) setDetectResults?.((current) => ({ ...current, [agent]: probe }));
               } catch {
                 // Keep the stale result; the user can re-run detect manually.
               }
@@ -331,8 +248,11 @@ function ExternalCliSettings({
             }
           }),
         );
+      } finally {
+        setSaving(false);
+      }
     })();
-  }, [cleanupPersistedPathHistories, externalCliInstallStatuses, onConfigPatch, onDetectExternalCli, onSave, pendingChoices, savedValues, setDetectResults, setPendingChoices, t]);
+  }, [externalCliInstallStatuses, onConfigPatch, onDetectExternalCli, onSave, pendingChoices, savedValues, setDetectResults, setPendingChoices, t]);
 
   // Persists one batch of agent updates on behalf of a card-level commit.
   // Errors are rethrown so the calling card can surface them in its own
@@ -350,104 +270,77 @@ function ExternalCliSettings({
         const validation = externalCliSaveValidationMessage(agent, effectiveDrafts, detectResults[agent], t);
         if (validation) throw new Error(validation);
       }
-      const result = await onSave(updates);
-      const installs = externalCliDependencyInstalls(result);
-      const deferredAgents = EXTERNAL_CLI_AGENT_KINDS.filter(
-        (agent) => installs[agent]?.status === 'running',
-      );
-      // The backend skips persisting agents whose dependency is still
-      // installing. Keep the user's choices in the form (so the cards stay as
-      // chosen) and remember them for an automatic re-save once it succeeds.
-      if (deferredAgents.length) {
-        setPendingChoices?.((current) => {
-          const next: typeof current = { ...current };
-          for (const agent of deferredAgents) {
-            next[agent] = {
-              enabled: effectiveDrafts[externalCliKey(agent, 'enabled')] === 'true' ? 'true' : 'false',
-              useBuiltin: effectiveDrafts[externalCliKey(agent, 'use_builtin')] === 'true' ? 'true' : 'false',
-              cliPath: (effectiveDrafts[externalCliKey(agent, 'cli_path')] ?? '').trim(),
-            };
+      setSaving(true);
+      try {
+        const result = await onSave(updates);
+        const installs = externalCliDependencyInstalls(result);
+        const deferredAgents = EXTERNAL_CLI_AGENT_KINDS.filter(
+          (agent) => installs[agent]?.status === 'running',
+        );
+        // The backend skips persisting agents whose dependency is still
+        // installing. Keep the user's choices in the form (so the cards stay as
+        // chosen) and remember them for an automatic re-save once it succeeds.
+        if (deferredAgents.length) {
+          setPendingChoices?.((current) => {
+            const next: typeof current = { ...current };
+            for (const agent of deferredAgents) {
+              next[agent] = {
+                enabled: effectiveDrafts[externalCliKey(agent, 'enabled')] === 'true' ? 'true' : 'false',
+                useBuiltin: effectiveDrafts[externalCliKey(agent, 'use_builtin')] === 'true' ? 'true' : 'false',
+                cliPath: (effectiveDrafts[externalCliKey(agent, 'cli_path')] ?? '').trim(),
+              };
+            }
+            return next;
+          });
+        }
+        if (Object.keys(installs).length) onTrackExternalCliDependencyInstalls?.(installs);
+        // Deferred agents are not persisted yet: align savedValues and the config
+        // store with what the backend actually stored (agent disabled), while
+        // draftValues keeps the user's selection visible until the automatic
+        // re-save completes.
+        const nextSaved = { ...savedValues };
+        const configPatch: Record<string, string> = {};
+        for (const agent of deferredAgents) {
+          nextSaved[externalCliKey(agent, 'enabled')] = 'false';
+          nextSaved[externalCliKey(agent, 'use_builtin')] = 'false';
+          nextSaved[externalCliKey(agent, 'cli_path')] = '';
+          configPatch[externalCliKey(agent, 'enabled')] = 'false';
+          configPatch[externalCliKey(agent, 'use_builtin')] = 'false';
+          configPatch[externalCliKey(agent, 'cli_path')] = '';
+        }
+        // Non-deferred updates were persisted verbatim: keep savedValues,
+        // draftValues, and the config store in lockstep so `changed` clears.
+        const isDeferredKey = (key: string) =>
+          deferredAgents.some((agent) => key.startsWith(`external_cli_agent_${agent}_`));
+        for (const [key, value] of Object.entries(updates)) {
+          if (isDeferredKey(key)) continue;
+          nextSaved[key] = value;
+          configPatch[key] = value;
+        }
+        setSavedValues(nextSaved);
+        // draftValues keeps deferred agents' user selections; everything else
+        // mirrors what was persisted (including the values the atomic updater
+        // produced, e.g. the preserved mode/path on disable).
+        setDraftValues((current) => {
+          const next = { ...current };
+          for (const [key, value] of Object.entries(updates)) {
+            if (isDeferredKey(key)) continue;
+            next[key] = value;
           }
           return next;
         });
+        if (Object.keys(configPatch).length) onConfigPatch(configPatch);
+      } finally {
+        setSaving(false);
       }
-      if (Object.keys(installs).length) onTrackExternalCliDependencyInstalls?.(installs);
-      // Deferred agents are not persisted yet: align savedValues and the config
-      // store with what the backend actually stored (agent disabled), while
-      // draftValues keeps the user's selection visible until the automatic
-      // re-save completes.
-      const savedPatch: Record<string, string> = {};
-      const configPatch: Record<string, string> = {};
-      for (const agent of deferredAgents) {
-        savedPatch[externalCliKey(agent, 'enabled')] = 'false';
-        savedPatch[externalCliKey(agent, 'use_builtin')] = 'false';
-        savedPatch[externalCliKey(agent, 'cli_path')] = '';
-        configPatch[externalCliKey(agent, 'enabled')] = 'false';
-        configPatch[externalCliKey(agent, 'use_builtin')] = 'false';
-        configPatch[externalCliKey(agent, 'cli_path')] = '';
-      }
-      // Non-deferred updates were persisted verbatim: keep savedValues,
-      // draftValues, and the config store in lockstep so `changed` clears.
-      const isDeferredKey = (key: string) =>
-        deferredAgents.some((agent) => key.startsWith(`external_cli_agent_${agent}_`));
-      for (const [key, value] of Object.entries(updates)) {
-        if (isDeferredKey(key)) continue;
-        savedPatch[key] = value;
-        configPatch[key] = value;
-      }
-      // Mirror the backend's history append locally: when a save replaces one
-      // agent's cli_path, the previous effective path joins the path history
-      // so the dropdown offers it immediately instead of only after the next
-      // config reload. Deferred agents are skipped because the backend has
-      // not stored their entry yet; the replay save appends server-side.
-      const historyPatch: Record<string, string> = {};
-      for (const agent of EXTERNAL_CLI_AGENT_KINDS) {
-        if (deferredAgents.includes(agent)) continue;
-        const pathKey = externalCliKey(agent, 'cli_path');
-        if (!(pathKey in updates)) continue;
-        const oldPath = (savedValues[pathKey] ?? '').trim();
-        const newPath = (updates[pathKey] ?? '').trim();
-        // Switching to the built-in CLI writes an empty path; the replaced
-        // custom path must still join the local history.
-        if (!oldPath || oldPath === newPath) continue;
-        const historyKey = externalCliKey(agent, 'path_histories');
-        const history = parseExternalCliPathHistories(savedValues[historyKey]);
-        if (history.includes(oldPath)) continue;
-        historyPatch[historyKey] = JSON.stringify(
-          [...history, oldPath].slice(-EXTERNAL_CLI_PATH_HISTORY_LIMIT),
-        );
-      }
-      for (const [key, value] of Object.entries(historyPatch)) {
-        savedPatch[key] = value;
-        configPatch[key] = value;
-      }
-      // Merge functionally: card-level saves run per agent and can overlap, so
-      // each settled save only adds its own keys on top of the latest state —
-      // spreading a captured snapshot would clobber the other agent's merge.
-      setSavedValues((current) => ({ ...current, ...savedPatch }));
-      // draftValues keeps deferred agents' user selections; everything else
-      // mirrors what was persisted (including the values the atomic updater
-      // produced, e.g. the preserved mode/path on disable).
-      setDraftValues((current) => {
-        const next = { ...current };
-        for (const [key, value] of Object.entries(updates)) {
-          if (isDeferredKey(key)) continue;
-          next[key] = value;
-        }
-        for (const [key, value] of Object.entries(historyPatch)) {
-          next[key] = value;
-        }
-        return next;
-      });
-      if (Object.keys(configPatch).length) onConfigPatch(configPatch);
     },
     [
       detectResults,
       onConfigPatch,
       onSave,
       onTrackExternalCliDependencyInstalls,
-      setPendingChoices,
       savedValues,
+      setPendingChoices,
       t,
     ],
   );
@@ -459,9 +352,8 @@ function ExternalCliSettings({
   const commitAgentChoice = useCallback(
     async (cliAgent: ExternalCliAgentKind, choice: ExternalCliAgentChoice) => {
       // Install progress is rendered inline above the cards, so a click while
-      // this agent's install is running is simply ignored. Other agents stay
-      // usable: installs are per-agent (per-agent locks on the backend).
-      if (externalCliInstallStatuses?.[cliAgent]?.status === 'running') return;
+      // an install is running is simply ignored.
+      if (installBusy) return;
       const effectiveDrafts: Record<string, string> = {
         ...draftValues,
         [externalCliKey(cliAgent, 'enabled')]: choice.enabled ? 'true' : 'false',
@@ -484,7 +376,7 @@ function ExternalCliSettings({
       // the persisted validation loop skips it here.
       await persistUpdates(updates, effectiveDrafts, cliAgent);
     },
-    [draftValues, externalCliInstallStatuses, persistUpdates, savedValues],
+    [draftValues, installBusy, persistUpdates, savedValues],
   );
 
   if (config.external_cli_agents_supported !== undefined && !parseConfigBoolean(config.external_cli_agents_supported))
@@ -513,7 +405,6 @@ function ExternalCliSettings({
         }}
         onDetect={onDetectExternalCli}
         onCommitAgent={commitAgentChoice}
-        onCleanupPathHistories={cleanupPersistedPathHistories}
         onSelectFile={onSelectExternalCliPath}
         initialResults={detectResults}
         onResultsChange={setDetectResults}
