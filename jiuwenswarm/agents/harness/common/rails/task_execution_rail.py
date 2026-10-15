@@ -1928,12 +1928,12 @@ class TaskExecutionRail(DeepAgentRail):
                 continue
             if str(task.get("status", "")).lower() in self._TODO_DONE_STATUSES:
                 continue
-            pending.append({"id": other_id, "subject": task.get("subject", ""), "index": other_index})
+            pending.append({"id": other_id, "content": task.get("content", ""), "index": other_index})
         if not pending:
             return None
         return {
             "count": len(pending),
-            "next_summary": pending[0].get("subject", "") if pending else "",
+            "next_summary": pending[0].get("content", "") if pending else "",
         }
 
     def _overlay_serial_todo_statuses(

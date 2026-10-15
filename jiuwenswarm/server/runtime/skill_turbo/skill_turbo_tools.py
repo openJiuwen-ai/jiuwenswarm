@@ -840,7 +840,7 @@ def _wrap_skill_turbo_result(
             if pending and pending.get("count"):
                 parts.append(
                     _PPT_DELIVERY_SUMMARY_CONTINUE_HINT[lang].format(
-                        next_summary=pending.get("next_summary", "见待办列表")
+                        next_summary=pending.get("next_summary") or "见待办列表"
                     )
                 )
             else:
@@ -1031,7 +1031,7 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
         # 用户上传附件：从 metadata 提取 files 并传入 inputs["files"]，
         # 供流水线 intent_classify 检测文档路径（has_documents 门控 P3 文档解析）。
         # files 源于 request.params["files"]，由 _update_runtime_config 注入 metadata。
-        # 可能为 dict（OfficeClaw files.uploaded 格式）或 list（结构化附件）；
+        # 可能为 dict（平台 files.uploaded 格式）或 list（结构化附件）；
         # intent_classify._collect_files_paths 统一展平，此处原样透传。
         _files = request_metadata.get("files")
         if _files is not None:
@@ -1105,6 +1105,10 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
 
     hitl_interrupt = False
 
+    # 仅当本次请求实际调用了 mark_resume_in_flight 时才在 finally 清除，防重复
+    # 作答（resume_in_flight 命中提前返回）误清原始请求设置的 in-flight 标志。
+    _did_mark_in_flight = False
+
     release_checkpoint = False    # Only persist-clear the checkpoint when this invocation consumed it
     # (resume finished) or it cannot be reused (SkillTurboNotHandled).
     # Transient failures must keep the last HITL checkpoint; do not post_run
@@ -1129,6 +1133,7 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                 )
             # mark in_flight（防重起点）：resume 处理期间第二次作答会被上方判重
             await mark_resume_in_flight(turbo_session, resume_ctx)
+            _did_mark_in_flight = True
 
             raw_ia = None
             if isinstance(request_metadata, dict) and (
@@ -1293,7 +1298,7 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
     finally:
         # clear in_flight：无论 resume 成功/中断/失败都必须清除，防下次作答被误判
         # 重复（意外异常后重试作答场景）。isolated 通道强制落盘，失败 warning 可观测。
-        if turbo_session is not None and resume_ctx is not None:
+        if turbo_session is not None and resume_ctx is not None and _did_mark_in_flight:
             from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
                 clear_resume_in_flight,
             )
