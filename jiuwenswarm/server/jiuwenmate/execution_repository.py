@@ -24,6 +24,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import (
     ExecutionRecord,
     PersistentContractError,
     RequestRecord,
+    RequestRouteSnapshot,
     RequestState,
     SessionRecord,
 )
@@ -196,6 +197,7 @@ class ExecutionRepository(SQLiteStore):
         access: AccessSnapshot,
         request_input: RequestInput,
         received_at: datetime,
+        route_snapshot: RequestRouteSnapshot | None = None,
     ) -> tuple[RequestState, bool]:
         """Queue a Request pinned to ``snapshot``; a repeated ``source_ref`` returns the stored one.
 
@@ -236,6 +238,7 @@ class ExecutionRepository(SQLiteStore):
                 access=access,
                 request_input=request_input,
                 received_at=received_at,
+                route_snapshot=route_snapshot,
             )
             seq = seq_row["next_seq"]
             conn.execute(

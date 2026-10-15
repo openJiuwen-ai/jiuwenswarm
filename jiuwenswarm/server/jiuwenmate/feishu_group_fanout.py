@@ -309,7 +309,11 @@ class PersistentGroupFanout:
             # Keep ordinary personal-mode gateway startup independent of the
             # persistent runtime's heavier core imports. These contracts are
             # loaded only after a binding has claimed a valid event.
-            from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef
+            from jiuwenswarm.server.jiuwenmate.execution_models import (
+                AccessSnapshot,
+                ConversationRef,
+                RequestRouteSnapshot,
+            )
 
             snapshot = await asyncio.to_thread(
                 self._service.current_snapshot,
@@ -361,6 +365,13 @@ class PersistentGroupFanout:
                 access=access,
                 request_input=request_input,
                 received_at=received_at,
+                route_snapshot=RequestRouteSnapshot(
+                    channel="feishu",
+                    app_id=event.receiving_app_id,
+                    target_id=event.chat_id,
+                    source_message_id=event.message_id,
+                    source_reply_to=event.reply_to,
+                ),
             )
         except Exception as exc:
             logger.warning(
