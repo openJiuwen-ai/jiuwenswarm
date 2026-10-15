@@ -20918,7 +20918,7 @@ class JiuWenSwarmDeepAdapter:
 
     @_ask_user_card_seq.setter
     def _ask_user_card_seq(self, value: dict[str, int]) -> None:
-        self._outer_call_dedup._card_seq = value
+        self._outer_call_dedup.card_seq = value
 
     def _dedupe_ask_user_card(
         self,

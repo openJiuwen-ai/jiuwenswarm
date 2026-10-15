@@ -418,6 +418,28 @@ class PlanNode(ABC):
             async for chunk in self._fallback_stream_callback(self, inputs, e):
                 yield chunk
 
+    @property
+    def fallback_stream_callback(
+        self,
+    ) -> Callable[[PlanNode, dict[str, Any], Exception], AsyncIterator[Any]] | None:
+        """流式 fallback 回调的公开只读访问器。
+
+        供父节点在子节点返回值携带 ``_needs_fallback`` 时调用子节点兜底，
+        避免父节点直接访问子节点的受保护成员（G.CLS.11）。
+        """
+        return self._fallback_stream_callback
+
+    def try_begin_fallback(self) -> bool:
+        """一次性 fallback 触发 guard：首次调用返回 True 并置位，后续返回 False。
+
+        供父节点对子节点做原子判定，防 fallback 结果再带标志形成循环；
+        避免父节点直接读写子节点的受保护成员（G.CLS.11）。
+        """
+        if self._fallback_triggered:
+            return False
+        self._fallback_triggered = True
+        return True
+
     def validate_fallback_success(
         self,
         inputs: dict[str, Any],
@@ -592,9 +614,8 @@ class PlanNode(ABC):
             if (
                 isinstance(last_chunk, dict)
                 and last_chunk.get("_needs_fallback")
-                and not subplan._fallback_triggered
+                and subplan.try_begin_fallback()
             ):
-                subplan._fallback_triggered = True
                 last_chunk.pop("_needs_fallback", None)
                 reason = str(
                     last_chunk.get("message")
@@ -610,9 +631,10 @@ class PlanNode(ABC):
                     subplan.plan_name,
                     reason,
                 )
-                if subplan._fallback_stream_callback is None:
+                subplan_fallback_stream = subplan.fallback_stream_callback
+                if subplan_fallback_stream is None:
                     raise fb_error
-                async for fb_chunk in subplan._fallback_stream_callback(
+                async for fb_chunk in subplan_fallback_stream(
                     subplan, inputs, fb_error
                 ):
                     last_chunk = fb_chunk

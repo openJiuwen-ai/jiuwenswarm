@@ -46,6 +46,11 @@ class OuterCallIDDeduplicator:
         """
         return self._card_seq
 
+    @card_seq.setter
+    def card_seq(self, value: dict[str, int]) -> None:
+        """替换序号 dict（adapter ``_ask_user_card_seq`` setter 的薄委托）。"""
+        self._card_seq = value
+
     @classmethod
     def derive_outer_call_id(cls, params_request_id: str) -> str:
         """从入站 ``params.request_id`` 剥 ``{id}#{n}`` 后缀得外层 call id。
