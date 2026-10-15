@@ -1,0 +1,28 @@
+{
+  "agent_name": "experiment-implementation-agent",
+  "agentName": "experiment-implementation-agent",
+  "display_description": {
+    "en": "Safely inspects, reuses or builds implementations and submits them for isolated root-Agent review.",
+    "zh": "安全检查、复用或构建并登记实现，随后交根Agent隔离审查。"
+  },
+  "displayDescription": {
+    "en": "Safely inspects, reuses or builds implementations and submits them for isolated root-Agent review.",
+    "zh": "安全检查、复用或构建并登记实现，随后交根Agent隔离审查。"
+  },
+  "persona": { "dir": "persona" },
+  "tools": [
+    {
+      "file": "../../tools/experiment_agent_tools.py",
+      "class": "ExperimentImplementationTool"
+    }
+  ],
+  "rails": [
+    {
+      "file": "../../tools/experiment_agent_rails.py",
+      "class": "ExperimentSpecialistSkillRail"
+    }
+  ],
+  "skills": [
+    { "dir": "../../skills/experiment-orchestration", "mode": "all" }
+  ]
+}

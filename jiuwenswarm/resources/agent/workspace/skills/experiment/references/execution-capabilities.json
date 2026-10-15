@@ -1,0 +1,76 @@
+{
+  "schema_version": "1.0",
+  "producer": "experiment",
+  "purpose": "Machine-readable boundary between a research requirement and an experiment implementation that can produce audited evidence.",
+  "registered_executors": [
+    {
+      "executor_id": "standard_tabular_sklearn",
+      "revision": "builtin",
+      "task_types": ["classification", "regression"],
+      "evidence_level": "trusted_execution"
+    },
+    {
+      "executor_id": "memory_compression_qa_v1",
+      "revision": "builtin-v1",
+      "task_types": ["memory_compression"],
+      "method_ids": ["uncompressed_context", "recent_window_20pct", "query_focused_20pct", "loss_aware_hierarchical_20pct"],
+      "metric_names": ["compression_ratio", "qa_token_f1", "answer_exact_match", "original_token_count", "compressed_token_count"],
+      "required_dataset_fields": ["context", "question", "answer"],
+      "evidence_level": "trusted_execution"
+    }
+  ],
+  "registered_metric_calculators": [
+    {
+      "metric_names": [
+        "accuracy", "top-1_acc", "macro_f1", "micro_f1", "weighted_f1",
+        "mae", "mse", "rmse", "r2",
+        "recall_at_k", "precision_at_k", "hit_rate_at_k", "mrr", "ndcg_at_k",
+        "train_time_seconds", "inference_time_seconds", "total_time_seconds",
+        "compression_ratio", "qa_token_f1", "answer_exact_match",
+        "original_token_count", "compressed_token_count"
+      ],
+      "evidence_level": "verified_metric_definition"
+    }
+  ],
+  "available_requirement_profiles": [
+    {
+      "profile_id": "agent_memory_compression",
+      "all_signal_groups": [
+        ["compression_ratio", "compression ratio", "压缩率"],
+        ["agent memory", "memory compression", "long context", "长上下文", "记忆压缩", "对话历史"]
+      ],
+      "executor_id": "memory_compression_qa_v1",
+      "task_type": "memory_compression",
+      "method_ids": ["uncompressed_context", "recent_window_20pct", "query_focused_20pct", "loss_aware_hierarchical_20pct"],
+      "primary_method_id": "loss_aware_hierarchical_20pct",
+      "baseline_method_ids": ["uncompressed_context", "recent_window_20pct", "query_focused_20pct"],
+      "metric_names": ["compression_ratio", "qa_token_f1", "answer_exact_match", "original_token_count", "compressed_token_count"],
+      "preferred_datasets": [
+        {
+          "name": "LongBench",
+          "source_url": "https://huggingface.co/datasets/THUDM/LongBench/resolve/main/data.zip",
+          "license": "MIT",
+          "task_type": "memory_compression",
+          "required_field_aliases": {
+            "context": ["context"],
+            "question": ["input"],
+            "answer": ["answers"]
+          }
+        }
+      ],
+      "unsupported_method_claims": [
+        "policy gradient", "REINFORCE", "learnable compression policy",
+        "LLaMA-2", "Sentence-BERT", "cross-encoder", "online learning"
+      ],
+      "planning_constraints": [
+        "Use primary_method_id as the proposed method and only baseline_method_ids in baselines[].name; include the primary method plus relevant baselines in every primary experiment.",
+        "Use only the registered metric_names; express retention as a comparison on qa_token_f1 against uncompressed_context.",
+        "Use the preferred LongBench dataset entry exactly as published by this capability profile; do not add a second dataset during this executable validation run.",
+        "Describe loss_aware_hierarchical_20pct exactly as the registered deterministic proxy: rank text units by question-token overlap, entity/number salience, and an early-position tie-break, then retain at most 20 percent of source tokens. Do not claim trainable summarization, policy gradients, neural retrieval, or online learning.",
+        "The fixed reader returns the text unit with maximum question-token overlap. Treat qa_token_f1 and exact match as proxy evidence for retained answer information, not as generative-LLM QA accuracy or state-of-the-art evidence.",
+        "Do not claim BDCI results unless an accessible BDCI evaluation file is actually supplied; use an accessible public long-context QA benchmark and state the scope change."
+      ]
+    }
+  ],
+  "unavailable_requirement_profiles": []
+}

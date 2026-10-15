@@ -1,0 +1,28 @@
+{
+  "agent_name": "experiment-analysis-agent",
+  "agentName": "experiment-analysis-agent",
+  "display_description": {
+    "en": "Audits metrics, evaluates criteria and produces redrawable visualization candidates.",
+    "zh": "审计指标、评估判据并生成可重绘候选图表。"
+  },
+  "displayDescription": {
+    "en": "Audits metrics, evaluates criteria and produces redrawable visualization candidates.",
+    "zh": "审计指标、评估判据并生成可重绘候选图表。"
+  },
+  "persona": { "dir": "persona" },
+  "tools": [
+    {
+      "file": "../../tools/experiment_agent_tools.py",
+      "class": "ExperimentAnalysisTool"
+    }
+  ],
+  "rails": [
+    {
+      "file": "../../tools/experiment_agent_rails.py",
+      "class": "ExperimentSpecialistSkillRail"
+    }
+  ],
+  "skills": [
+    { "dir": "../../skills/experiment-orchestration", "mode": "all" }
+  ]
+}

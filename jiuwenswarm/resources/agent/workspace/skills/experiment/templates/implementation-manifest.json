@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0.0",
+  "execution_approved": false,
+  "approval_digest": null,
+  "approved_by": null,
+  "approved_at_utc": null,
+  "approval_type": null,
+  "reviewer_model": null,
+  "review_digest": null,
+  "reviewed_code_digest": null,
+  "reviewed_smoke_digest": null,
+  "datasets": {
+    "example_dataset": "data/example_dataset"
+  },
+  "dataset_preparations": {},
+  "analysis_extensions": {},
+  "implementations": {
+    "example_method": {
+      "ready": false,
+      "planning_aliases": [],
+      "experiment_ids": [],
+      "command": [
+        "python",
+        "implementations/example_method/main.py",
+        "--config",
+        "{config_path}",
+        "--metrics",
+        "{metrics_path}"
+      ],
+      "cwd": ".",
+      "env": {},
+      "required_env": [],
+      "metrics_path": "raw_results/{run_record_id}/metrics.json",
+      "uses_gpu": false,
+      "implementation_url": null,
+      "revision": null,
+      "source_kind": "EXISTING",
+      "license": null,
+      "dependency_plan": [],
+      "smoke_test_command": [],
+      "smoke_test_passed": false,
+      "notes": "示例尚未就绪；替换为真实实现并完成冒烟测试"
+    }
+  },
+  "metrics": {
+    "example_metric": {
+      "verified": false,
+      "definition_used": "替换为准确指标定义",
+      "implementation": "替换为实际评测入口",
+      "parameters": {},
+      "library": null,
+      "library_version": null,
+      "direction": "MAXIMIZE",
+      "unit": null,
+      "aggregation": "替换为样本级实际聚合方式",
+      "seed_aggregation": null
+    }
+  }
+}

@@ -1,0 +1,25 @@
+# dependencies.yaml — planning 启动依赖检查
+#
+# 规划模块（模块二）的依赖声明。Agent 在 SKILL.md Workflow Step 0 读取本文件做 pre-flight。
+# 各条目的检查结果汇报给用户，由用户决定 go / no-go。
+#
+# 设计原则：直接复用 JiuwenSwarm 框架自带能力与现有 Skill；仅当外部检索功能需要配置时
+# 才要求额外环境项，未配置的项由 tools 层自动降级为纯推理回退，不阻塞主流程。
+
+skills:
+  - name: openjiuwen-deepsearch
+    source: local                       # 复用仓库内现有 Skill 的搜索能力（如可用）
+    required: false                     # 缺失时自动降级为纯推理，不阻塞
+    purpose: novelty 查重与基线检索回退：为方法评审的 novelty 判定、实验规划的基线/数据集搜索提供外部证据
+
+tools:
+  - name: python
+    required: true                      # 运行 scripts/ 下的校验与算力估算脚本
+    purpose: 执行输出契约束校验（validate_plan.py）与算力估算（estimate_compute.py），以及后续整体编排脚本
+  - name: curl
+    required: false                     # 外部检索 API（arXiv / HuggingFace / Papers with Code）的 HTTP 调用；通过 .env 注入 key，未配置时降级为纯推理
+    purpose: 供检索脚本调用 arXiv/HuggingFace/Papers-with-Code API，为 novelty 查重、数据集与基线溯源、SOTA 对照提供真实数据来源
+
+# 说明：
+# - 需要新增依赖时在此登记，并保持与框架依赖（pydantic、httpx 等）复用优先的原则。
+# - 环境变量项见 .env.example（ARXIV_HARVEST_URL / HUGGINGFACE_TOKEN / SEMANTIC_SCHOLAR_API_KEY / PAPERSWITHCODE_BASE_URL）。

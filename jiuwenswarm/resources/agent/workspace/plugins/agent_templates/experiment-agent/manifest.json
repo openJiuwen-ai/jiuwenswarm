@@ -1,0 +1,71 @@
+{
+  "version": "1.0.0",
+  "package_type": "agent_template",
+  "name": "experiment-agent",
+  "description": "按模块二计划执行实验，通过四个专职子Agent、根Agent双阶段独立审查和确定性门禁形成可复现结果，再交接给模块四。",
+  "packageType": "agent_template",
+  "agentCard": {
+    "id": "experiment-agent",
+    "name": "实验研究员",
+    "description": "按模块二计划执行实验，通过四个专职子Agent、根Agent双阶段独立审查和确定性门禁形成可复现结果，再交接给模块四。"
+  },
+  "persona": {
+    "dir": "./persona"
+  },
+  "skills": [
+    {
+      "dir": "./skills/experiment-orchestration",
+      "mode": "all"
+    }
+  ],
+  "tools": [
+    {
+      "file": "tools/experiment_agent_tools.py",
+      "class": "ExperimentControlTool",
+      "displayName": {
+        "en": "experiment_control",
+        "zh": "实验流程控制"
+      },
+      "displayDescription": {
+        "en": "Initialize or inspect Module 3 and submit isolated two-stage root-Agent reviews.",
+        "zh": "初始化或查询模块三流程，并提交根Agent隔离的两阶段审查。"
+      }
+    }
+  ],
+  "subagents": [
+    { "dir": "subagents/data-agent" },
+    { "dir": "subagents/implementation-agent" },
+    { "dir": "subagents/execution-agent" },
+    { "dir": "subagents/analysis-agent" }
+  ],
+  "displayName": {
+    "en": "Experiment Agent",
+    "zh": "实验研究员"
+  },
+  "displayDescription": {
+    "en": "Turns a planning contract into reproducible runs, audited metrics, statistical analyses, and redrawable visualization candidates.",
+    "zh": "把规划契约转化为可复现实验、可审计指标、统计分析和可重绘候选图表。"
+  },
+  "category": "Research",
+  "avatar": "",
+  "source": "local",
+  "defaultInitInput": {
+    "zh": "请读取模块二的实验规划JSON和实现清单，按顺序完成模块三实验。",
+    "en": "Read the Module 2 plan JSON and implementation manifest, then execute Module 3 in order."
+  },
+  "tags": [
+    { "en": "Experiment", "zh": "实验执行" },
+    { "en": "Reproducibility", "zh": "可复现" },
+    { "en": "Visualization", "zh": "候选图表" }
+  ],
+  "quickInputs": [
+    {
+      "zh": "检查我的实验规划和实现清单，然后开始执行。",
+      "en": "Check my plan and manifest, then start the experiment."
+    },
+    {
+      "zh": "查询当前实验运行到哪个阶段。",
+      "en": "Show the current experiment stage."
+    }
+  ]
+}

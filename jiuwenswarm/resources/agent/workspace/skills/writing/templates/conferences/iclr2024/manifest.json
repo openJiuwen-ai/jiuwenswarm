@@ -1,0 +1,12 @@
+{
+  "id": "iclr2024",
+  "display_name": "ICLR 2024",
+  "official_source": "https://github.com/ICLR/Master-Template/raw/master/iclr2024.zip",
+  "entry_template": "paper.tex.in",
+  "engine": "pdflatex",
+  "anonymous_by_default": true,
+  "required_assets": [
+    "paper.tex.in", "iclr2024_conference.sty", "iclr2024_conference.bst",
+    "fancyhdr.sty", "natbib.sty", "math_commands.tex"
+  ]
+}

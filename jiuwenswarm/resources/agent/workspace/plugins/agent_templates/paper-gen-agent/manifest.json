@@ -1,0 +1,138 @@
+{
+  "version": "0.3.0",
+  "package_type": "agent_template",
+  "name": "paper-gen-agent",
+  "description": "CCF BDCI 2026 论文生成系统端到端编排 Agent。按 conception → planning → experiment → writing 四阶段串联，跨阶段维护 run_dir 状态机，根据下游反馈触发 REPLAN 路由。",
+  "packageType": "agent_template",
+  "agentCard": {
+    "id": "paper-gen-agent",
+    "name": "论文生成总管",
+    "description": "端到端论文生成编排 Agent。调度 4 个子 Agent（调用/构思/实验/写作），跨阶段维护 run_dir 状态机，按下游反馈触发 REPLAN 路由，最终交付 ICLR 2024 格式 PDF。"
+  },
+  "persona": {
+    "dir": "./persona"
+  },
+  "skills": [
+    {
+      "dir": "./skills/paper-gen-orchestration",
+      "mode": "all"
+    }
+  ],
+  "tools": [
+    {
+      "file": "tools/paper_gen_tools.py",
+      "class": "InvokeConceptionSubagentTool",
+      "displayName": {"en": "invoke_conception_subagent", "zh": "invoke_conception_subagent"},
+      "displayDescription": {
+        "en": "Invoke the conception sub-agent (stage 1). Returns status, artifacts, next_action.",
+        "zh": "调用构思子 Agent（阶段一）。返回 status / artifacts / next_action。"
+      }
+    },
+    {
+      "file": "tools/paper_gen_tools.py",
+      "class": "InvokePlanningSupervisorTool",
+      "displayName": {"en": "invoke_planning_supervisor", "zh": "invoke_planning_supervisor"},
+      "displayDescription": {
+        "en": "Invoke plan-supervisor (stage 2) as a subprocess. Returns planning artifacts + status.json.",
+        "zh": "调 plan-supervisor（阶段二）作为子进程。返回 5 .json + 5 .md + status.json。"
+      }
+    },
+    {
+      "file": "tools/paper_gen_tools.py",
+      "class": "InvokeExperimentSubagentTool",
+      "displayName": {"en": "invoke_experiment_subagent", "zh": "invoke_experiment_subagent"},
+      "displayDescription": {
+        "en": "Invoke the experiment sub-agent (stage 3). Returns experiment-module-output.json + artifact manifest.",
+        "zh": "调用实验子 Agent（阶段三）。返回 experiment-module-output.json + artifact manifest。"
+      }
+    },
+    {
+      "file": "tools/paper_gen_tools.py",
+      "class": "InvokeWritingSubagentTool",
+      "displayName": {"en": "invoke_writing_subagent", "zh": "invoke_writing_subagent"},
+      "displayDescription": {
+        "en": "Invoke the writing sub-agent (stage 4). Returns paper.pdf + writing_output.json.",
+        "zh": "调用写作子 Agent（阶段四）。返回 paper.pdf + writing_output.json。"
+      }
+    },
+    {
+      "file": "tools/paper_gen_tools.py",
+      "class": "ReadTokenUsageTool",
+      "displayName": {"en": "read_token_usage", "zh": "read_token_usage"},
+      "displayDescription": {
+        "en": "Read per-module, successful-path, REPLAN/failed, and overall token usage.",
+        "zh": "读取各模块、成功链路、REPLAN/失败及全流程总 Token 消耗。"
+      }
+    },
+    {
+      "file": "tools/paper_gen_tools.py",
+      "class": "ReadPipelineStateTool",
+      "displayName": {"en": "read_pipeline_state", "zh": "read_pipeline_state"},
+      "displayDescription": {
+        "en": "Read run_dir/pipeline_state.json. Returns the full state object.",
+        "zh": "读 run_dir/pipeline_state.json。返回完整 state 对象。"
+      }
+    },
+    {
+      "file": "tools/paper_gen_tools.py",
+      "class": "UpdatePipelineStateTool",
+      "displayName": {"en": "update_pipeline_state", "zh": "update_pipeline_state"},
+      "displayDescription": {
+        "en": "Atomically update pipeline_state.json (write-temp + rename). Accepts a partial patch.",
+        "zh": "原子更新 pipeline_state.json（写临时文件 + rename）。接受 partial patch。"
+      }
+    }
+  ],
+  "rails": [
+    {
+      "file": "rails/input_validation_rail.py",
+      "class": "PaperGenInputRail",
+      "displayName": {"en": "paper_gen_input_validation", "zh": "paper_gen_input_validation"},
+      "displayDescription": {
+        "en": "Input contract rail: before each model call, inject the 4-stage invoke protocol + REPLAN routes + pipeline_state schema.",
+        "zh": "输入契约 rail：每次模型调用前注入 4 阶段 invoke 协议 + REPLAN 路由表 + pipeline_state schema。"
+      }
+    }
+  ],
+  "subagents": [
+    {"dir": "subagents/call-agent"},
+    {"dir": "subagents/conception-agent"},
+    {"dir": "subagents/experiment-agent"},
+    {"dir": "subagents/writing-agent"}
+  ],
+  "displayName": {
+    "en": "Paper Generation Agent",
+    "zh": "论文生成总管"
+  },
+  "displayDescription": {
+    "en": "End-to-end research paper generation orchestrator. Coordinates four sub-agents (call/conception/experiment/writing) across a four-stage pipeline with REPLAN routing and persistent run state.",
+    "zh": "端到端论文生成编排器。串联 4 个子 Agent（调用/构思/实验/写作），支持 REPLAN 路由与持久化 run 状态。"
+  },
+  "category": "Research",
+  "avatar": "",
+  "source": "local",
+  "defaultInitInput": {
+    "zh": "端到端生成一篇研究论文：基于用户研究方向，依次跑构思→规划→实验→写作，输出 ICLR 2024 格式 PDF。",
+    "en": "End-to-end paper generation: take a research direction, run conception → planning → experiment → writing, produce an ICLR 2024 PDF."
+  },
+  "tags": [
+    {"en": "Paper Generation", "zh": "论文生成"},
+    {"en": "End-to-End", "zh": "端到端"},
+    {"en": "Orchestration", "zh": "编排"},
+    {"en": "CCF BDCI 2026", "zh": "CCF BDCI 2026"}
+  ],
+  "quickInputs": [
+    {
+      "zh": "端到端跑一遍：研究方向是「用轻量化记忆增强机制提升 Agent 的长期推理能力」。",
+      "en": "Run end-to-end on: 'lightweight memory augmentation for long-horizon agent reasoning'."
+    },
+    {
+      "zh": "查询当前跑到哪个阶段、哪个子 Agent。",
+      "en": "Show the current stage and which sub-agent is running."
+    },
+    {
+      "zh": "writing 卡 3 轮仍 < 8 分就 abort，把 partial PDF 给我。",
+      "en": "Writing stuck after 3 revise rounds below 8/10 — abort and hand me the partial PDF."
+    }
+  ]
+}
