@@ -25,6 +25,7 @@ from jiuwenswarm.common.mode_matrix import (
     compose_web_mode,
     deprecate_mode,
     normalize_work_mode,
+    resolve_new_canonical_mode,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     is_auto_permission_enabled,
@@ -100,12 +101,20 @@ def _resolve_request_owner_mode(
     if mode is not None:
         return mode, sub_mode
     mode_text = canonicalize_mode_text(params.get("mode", "agent"))
+    canonical = resolve_new_canonical_mode(mode_text)
+    if canonical is not None:
+        return canonical[0], canonical[1]
     work_mode = normalize_work_mode(params.get("work_mode"))
     if work_mode is not None:
         composed = compose_web_mode(mode_text, work_mode)
         if composed is not None:
             manager_mode, manager_sub_mode, _canonical_mode = composed
             return manager_mode, manager_sub_mode
+    if mode_text in {"agent", "code", "team"}:
+        return mode_text, sub_mode
+    canonical = resolve_new_canonical_mode(deprecate_mode(mode_text))
+    if canonical is not None:
+        return canonical[0], canonical[1]
     return mode_text.split(".", 1)[0], sub_mode
 
 
@@ -142,6 +151,16 @@ def _make_agent_cache_key(mode: str | None, sub_mode: str | None, project_dir: s
     sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
     project_key = _normalize_project_dir(project_dir)
     return f"{mode_key}:{sub_mode_key}:{project_key}"
+
+
+def _matches_single_agent_owner(cache_key: str, mode: str | None) -> bool:
+    if mode is None:
+        return True
+    parts = str(cache_key).split(":", 2)
+    if len(parts) < 2 or parts[0] != _normalize_mode(mode):
+        return False
+    allowed = {"", "normal", "plan", "fast"} if parts[0] == "agent" else {"", "normal", "plan"}
+    return parts[0] in {"agent", "code"} and parts[1] in allowed
 
 
 def _make_defined_agent_cache_key(
@@ -1383,6 +1402,8 @@ class AgentManager:
         self,
         channel_id: str,
         session_id: str,
+        *,
+        mode: str | None = None,
     ) -> "JiuWenSwarm | None":
         """Return the cached channel agent that owns ``session_id`` runtime."""
         sid = str(session_id or "").strip()
@@ -1395,6 +1416,8 @@ class AgentManager:
             return None
 
         for cache_key, agent in channel_agents.items():
+            if not _matches_single_agent_owner(cache_key, mode):
+                continue
             has_runtime = getattr(agent, "has_session_runtime", None)
             if not callable(has_runtime):
                 continue
@@ -1415,6 +1438,8 @@ class AgentManager:
         self,
         channel_id: str,
         session_id: str,
+        *,
+        mode: str | None = None,
     ) -> "JiuWenSwarm | None":
         """Return the exact cached channel agent owning this Auto session."""
 
@@ -1424,7 +1449,9 @@ class AgentManager:
         channel_agents = self.agents.get(_normalize_channel_id(channel_id), {})
         if not isinstance(channel_agents, dict):
             return None
-        for agent in channel_agents.values():
+        for cache_key, agent in channel_agents.items():
+            if not _matches_single_agent_owner(cache_key, mode):
+                continue
             checker = getattr(agent, "has_auto_permission_session", None)
             try:
                 if callable(checker) and checker(sid):
@@ -2010,7 +2037,7 @@ class AgentManager:
         auto_workspace = _auto_permission_request_workspace(request)
         session_id = getattr(request, "session_id", "")
         owner = self.get_auto_permission_agent_for_session_nowait(
-            channel_id, session_id
+            channel_id, session_id, mode=selected_mode
         )
         owner_auto = getattr(owner, "has_auto_permission_session", None)
         needs_auto_owner = supports_phase_auto_root(params) and (
@@ -2037,7 +2064,7 @@ class AgentManager:
                 )
                 permission_resume = is_interrupt_resume_payload(params)
                 owner = self.get_auto_permission_agent_for_session_nowait(
-                    channel_id, session_id
+                    channel_id, session_id, mode=selected_mode
                 )
                 owner_auto = getattr(owner, "has_auto_permission_session", None)
                 has_auto_owner = bool(
@@ -2048,7 +2075,9 @@ class AgentManager:
                 if permission_resume and not has_auto_owner:
                     # A pending manual call still belongs to its installed owner
                     # after Smart is selected. Never prepare a new owner for an answer.
-                    owner = self.get_agent_for_session_nowait(channel_id, session_id)
+                    owner = self.get_agent_for_session_nowait(
+                        channel_id, session_id, mode=selected_mode,
+                    )
                     if owner is None:
                         raise RootPermissionQueueError("permission_resume_owner_missing")
                 new_task_without_owner = not has_auto_owner and not permission_resume
