@@ -31,6 +31,7 @@ from openjiuwen.agent_teams.monitor import TeamStreamLogger
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger, team_logger
 from openjiuwen.core.session.agent_team import create_agent_team_session
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.harness import DeepAgent
 
 from jiuwenswarm.server.runtime.session.history_io import (
@@ -135,6 +136,10 @@ from jiuwenswarm.server.runtime.debug_trace.directives import (
 )
 _FOLLOWUP_INTERACT_BOUNDARY_TIMEOUT_SEC = 10.0
 _FOLLOWUP_INTERACT_POLL_INTERVAL_SEC = 0.05
+# Stale ask_user rebuild-resume: how often to retry TeamManager.interact while
+# the rebuilt runtime is still starting, and how long before giving up.
+_REBUILD_RESUME_RETRY_INTERVAL_SEC = 0.2
+_REBUILD_RESUME_TIMEOUT_SEC = 20.0
 _TEAM_HEARTBEAT_SERVICE: ContextVar[Any | None] = ContextVar(
     "team_heartbeat_service",
     default=None,
@@ -774,6 +779,15 @@ class _FirstTeamRequestPreparation:
     error_chunks: list[AgentResponseChunk] | None = None
 
 
+@dataclass(slots=True)
+class _RebuildResumeOutcome:
+    """Outcome of waking a stopped team runtime to resume a stale ask_user answer."""
+
+    handled: bool
+    request_queue: asyncio.Queue | None = None
+    error_chunks: list[AgentResponseChunk] | None = None
+
+
 async def _prepare_first_team_request(
     *,
     team_manager: Any,
@@ -783,8 +797,6 @@ async def _prepare_first_team_request(
     query: Any,
 ) -> _FirstTeamRequestPreparation:
     """Apply first-request preprocessing shared by cold starts and fallback starts."""
-    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-
     hide_dm = False
     debug = False
 
@@ -2722,6 +2734,86 @@ async def _start_team_stream_round(
     return request_queue
 
 
+async def _rebuild_and_resume_stale_ask_user(
+    *,
+    team_manager: Any,
+    session_id: str,
+    channel_id: str | None,
+    request_id: str,
+    query: Any,
+    team_name: str,
+    team_spec: Any,
+    hide_dm: bool,
+    debug: bool,
+    team_leader_identity: dict[str, Any] | None,
+    generation: int | None = None,
+    run_context: object | None = None,
+) -> _RebuildResumeOutcome:
+    """Wake the stopped team runtime and deliver a stale ask_user answer.
+
+    Phase 1 restarts the team stream with an empty query, so the COLD_RECOVER
+    dispatch rebuilds the runtime without fabricating a round. Phase 2 retries
+    TeamManager.interact until the rebuilt leader accepts the resume: the
+    interact layer's InteractiveInput branch routes through resume_interrupt's
+    validated follow-up channel, so the delivery never touches steering.
+    """
+    request_queue = await _start_team_stream_round(
+        channel_id=channel_id,
+        session_id=session_id,
+        request_id=request_id,
+        team_manager=team_manager,
+        team_name=team_name,
+        team_spec=team_spec,
+        query="",
+        source="rebuild-wake",
+        hide_dm=hide_dm,
+        debug=debug,
+        team_leader_identity=team_leader_identity,
+        generation=generation,
+        run_context=run_context,
+    )
+    deadline = time.monotonic() + _REBUILD_RESUME_TIMEOUT_SEC
+    while True:
+        success, reason = await team_manager.interact(session_id, query)
+        if success:
+            return _RebuildResumeOutcome(
+                handled=True,
+                request_queue=request_queue,
+            )
+        if reason not in ("not_active", "unsupported_interactive_input"):
+            break
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(_REBUILD_RESUME_RETRY_INTERVAL_SEC)
+    # The rebuilt runtime stays in the pool, so a user retry lands on the
+    # proven recovered-runtime path; only this request's waiter is removed.
+    _remove_team_waiter(
+        team_manager,
+        session_id,
+        request_id,
+        generation=generation,
+    )
+    error_chunks = [
+        AgentResponseChunk(
+            request_id=request_id,
+            channel_id=channel_id,
+            payload={
+                "event_type": "chat.error",
+                "error": "Team resume timed out, please try again",
+            },
+            is_complete=False,
+        ),
+        _team_processing_done_chunk(request_id, channel_id, session_id),
+        AgentResponseChunk(
+            request_id=request_id,
+            channel_id=channel_id,
+            payload=None,
+            is_complete=True,
+        ),
+    ]
+    return _RebuildResumeOutcome(handled=False, error_chunks=error_chunks)
+
+
 async def process_team_message_stream(
     request: Any,
     inputs: dict[str, Any],
@@ -3036,7 +3128,20 @@ async def _process_team_message_stream(
 
     hide_dm = False
     debug = False
-    if is_first_request:
+    # A stale ask_user answer after a service restart takes the rebuild-resume
+    # path (wake the runtime, then deliver via interact) instead of the normal
+    # first-request preprocessing; ``_prepare_first_team_request`` must not see
+    # it, or its no-runtime guard would reject the answer outright.
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _is_ask_user_answer_resume,
+    )
+
+    rebuild_resume = (
+        is_first_request
+        and isinstance(query, InteractiveInput)
+        and _is_ask_user_answer_resume(request.params)
+    )
+    if is_first_request and not rebuild_resume:
         preparation = await _prepare_first_team_request(
             team_manager=team_manager,
             session_id=session_id,
@@ -3728,48 +3833,81 @@ async def _process_team_message_stream(
             # Detaching it before prepare_runtime_activation() leaves a window
             # where another follow-up installs a second persistent consumer.
             await _begin_team_round()
-            # 冷启动恢复裁决：可恢复 run 清单以文本前缀注入 leader 上下文——非终态
-            # 都可能被恢复，故比 follow-up 更宽；同样只动路由到 leader 的纯文本。
-            runs = _advisory_runs(team_manager, session_id)
-            if _should_inject_swarmflow_advisory(swarmflow_config, query, runs):
-                turn = _inject_swarmflow_context(
-                    turn.with_text(query), runs, cold_start=True,
-                    controller=get_background_task_controller(session_id),
-                )
-                query = turn.text if isinstance(turn.text, str) else query
-            try:
-                request_queue = await _start_team_stream_round(
-                    channel_id=channel_id,
-                    session_id=session_id,
-                    request_id=rid,
-                    team_manager=team_manager,
-                    team_name=team_name,
-                    team_spec=team_spec,
-                    query=_deliverable(turn, query),
-                    hide_dm=hide_dm,
-                    debug=debug,
-                    source=first_request_source,
-                    exclusive_waiter=is_heartbeat_request,
-                    request_queue=request_queue,
-                    team_leader_identity=team_leader_identity,
-                    generation=generation,
-                    attach_waiter=(
-                        waiter_kind is not TeamWaiterKind.NONE
-                        if has_execution_context
-                        else True
-                    ),
-                    run_context=run_context,
-                )
-            except BaseException:
-                _remove_team_waiter(
-                    team_manager,
-                    session_id,
-                    rid,
-                    generation=generation,
-                )
-                team_manager.clear_pending_runtime(session_id)
-                await _finish_round_submission(accepted=False)
-                raise
+            if rebuild_resume:
+                try:
+                    outcome = await _rebuild_and_resume_stale_ask_user(
+                        team_manager=team_manager,
+                        session_id=session_id,
+                        channel_id=channel_id,
+                        request_id=rid,
+                        query=query,
+                        team_name=team_name,
+                        team_spec=team_spec,
+                        hide_dm=hide_dm,
+                        debug=debug,
+                        team_leader_identity=team_leader_identity,
+                        generation=generation,
+                        run_context=run_context,
+                    )
+                except BaseException:
+                    _remove_team_waiter(
+                        team_manager,
+                        session_id,
+                        rid,
+                        generation=generation,
+                    )
+                    team_manager.clear_pending_runtime(session_id)
+                    await _finish_round_submission(accepted=False)
+                    raise
+                if outcome.error_chunks is not None:
+                    await _finish_round_submission(accepted=False)
+                    for chunk in outcome.error_chunks:
+                        yield chunk
+                    return
+                request_queue = outcome.request_queue
+            else:
+                # 冷启动恢复裁决：可恢复 run 清单以文本前缀注入 leader 上下文——非终态
+                # 都可能被恢复，故比 follow-up 更宽；同样只动路由到 leader 的纯文本。
+                runs = _advisory_runs(team_manager, session_id)
+                if _should_inject_swarmflow_advisory(swarmflow_config, query, runs):
+                    turn = _inject_swarmflow_context(
+                        turn.with_text(query), runs, cold_start=True,
+                        controller=get_background_task_controller(session_id),
+                    )
+                    query = turn.text if isinstance(turn.text, str) else query
+                try:
+                    request_queue = await _start_team_stream_round(
+                        channel_id=channel_id,
+                        session_id=session_id,
+                        request_id=rid,
+                        team_manager=team_manager,
+                        team_name=team_name,
+                        team_spec=team_spec,
+                        query=_deliverable(turn, query),
+                        hide_dm=hide_dm,
+                        debug=debug,
+                        source=first_request_source,
+                        exclusive_waiter=is_heartbeat_request,
+                        request_queue=request_queue,
+                        team_leader_identity=team_leader_identity,
+                        generation=generation,
+                        attach_waiter=(
+                            waiter_kind is not TeamWaiterKind.NONE
+                            if has_execution_context
+                            else True
+                        ),
+                        run_context=run_context,
+                    )
+                except BaseException:
+                    _remove_team_waiter(
+                        team_manager,
+                        session_id,
+                        rid,
+                        generation=generation,
+                    )
+                    team_manager.clear_pending_runtime(session_id)
+                    await _finish_round_submission(accepted=False)
+                    raise
             await startup.aclose()
             await _finish_round_submission(accepted=True)
 

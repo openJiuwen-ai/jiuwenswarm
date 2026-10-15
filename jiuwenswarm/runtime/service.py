@@ -1810,6 +1810,32 @@ class AgentRuntime:
             if snapshot and snapshot.state in {RuntimeSessionState.CLOSED, RuntimeSessionState.QUIESCING}:
                 raise RuntimeStateError("session is closing or closed")
         work_kind = self.session_work_kind(request, background=background)
+        if (
+            work_kind is SessionWorkKind.CONTROL_INPUT
+            and not self._session_coordinator.has_control_target(
+                request.session_id or "default",
+                self._control_request_id(request),
+            )
+            and self._is_stale_ask_user_answer(request)
+        ):
+            # After a restart the execution registry is empty, so the answer
+            # has no waiting execution to resume. The checkpoint restores the
+            # interruption state on the rebuilt runtime, so reclassify the
+            # answer as an ordinary chat turn: its query rebuilds into the
+            # original InteractiveInput and the react loop resumes the pending
+            # ask_user call. Permission/evolution answers keep the delivery
+            # error below.
+            logger.info(
+                "[RuntimeService] stale ask_user answer rerouted to chat rebuild "
+                "resume: session_id=%s request_id=%s",
+                request.session_id,
+                request.request_id,
+            )
+            work_kind = self.session_work_kind(
+                request,
+                background=background,
+                resume_interrupt_as_chat=True,
+            )
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
@@ -2894,6 +2920,21 @@ class AgentRuntime:
         return CHAT_TURN_METHODS
 
     @staticmethod
+    def _is_stale_ask_user_answer(request: AgentRequest) -> bool:
+        """Whether the answer can resume against a rebuilt single-agent runtime.
+
+        ask_user answers are self-describing (question -> answer) and the react
+        loop restores the interruption state from the checkpoint on rebuild.
+        Permission/evolution answers are bound to the original execution and
+        keep the delivery error.
+        """
+        params = request.params if isinstance(request.params, dict) else {}
+        if str(params.get("source") or "") != "ask_user_interrupt":
+            return False
+        answers = params.get("answers")
+        return isinstance(answers, list) and bool(answers)
+
+    @staticmethod
     def _is_interrupt_resume_request(request: AgentRequest) -> bool:
         """Do not re-admit answers that inject into an active interaction.
 
@@ -3117,6 +3158,7 @@ class AgentRuntime:
         request: AgentRequest,
         *,
         background: bool = False,
+        resume_interrupt_as_chat: bool = False,
     ) -> SessionWorkKind | None:
         """Classify product Session work at the Runtime boundary."""
         if not request.session_id:
@@ -3146,7 +3188,10 @@ class AgentRuntime:
             work_mode=params.get("work_mode"),
         ):
             return None
-        if cls._is_interrupt_resume_request(request):
+        if (
+            cls._is_interrupt_resume_request(request)
+            and not resume_interrupt_as_chat
+        ):
             return SessionWorkKind.CONTROL_INPUT
         if request.req_method is ReqMethod.COMMAND_GOAL:
             action = str(params.get("action") or "get").strip().lower()
