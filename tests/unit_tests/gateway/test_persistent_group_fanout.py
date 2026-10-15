@@ -403,6 +403,58 @@ def _feishu_channel(app_id="app-dev", agent_id="") -> FeishuChannel:
     return channel
 
 
+@pytest.mark.asyncio
+async def test_jm09_feishu_result_replies_to_source_with_stable_uuid_and_receipt():
+    channel = _feishu_channel()
+    response = SimpleNamespace(
+        success=lambda: True,
+        data=SimpleNamespace(message=SimpleNamespace(message_id="om_sent")),
+    )
+    api_method = MagicMock(return_value=response)
+    channel._api_client = SimpleNamespace(
+        im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(reply=api_method)))
+    )
+
+    result = await channel.send_persistent_result(
+        chat_id="oc_project",
+        text="已完成",
+        source_message_id="om_source",
+        idempotency_key="delivery-key",
+    )
+
+    request = api_method.call_args.args[0]
+    assert request.message_id == "om_source"
+    assert request.request_body.uuid == "delivery-key"
+    assert request.request_body.msg_type == "text"
+    assert result == {"outcome": "delivered", "external_message_id": "om_sent"}
+
+
+@pytest.mark.asyncio
+async def test_jm09_feishu_result_uses_chat_create_when_no_source_message():
+    channel = _feishu_channel()
+    response = SimpleNamespace(
+        success=lambda: True,
+        data=SimpleNamespace(message=SimpleNamespace(message_id="om_new")),
+    )
+    api_method = MagicMock(return_value=response)
+    channel._api_client = SimpleNamespace(
+        im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(create=api_method)))
+    )
+
+    result = await channel.send_persistent_result(
+        chat_id="oc_project",
+        text="已完成",
+        source_message_id=None,
+        idempotency_key="delivery-key",
+    )
+
+    request = api_method.call_args.args[0]
+    assert request.receive_id_type == "chat_id"
+    assert request.request_body.receive_id == "oc_project"
+    assert request.request_body.uuid == "delivery-key"
+    assert result == {"outcome": "delivered", "external_message_id": "om_new"}
+
+
 def _raw_feishu_event(*, sender_type="user", message_type="text", content=None, message_id="om_001"):
     message = SimpleNamespace(
         message_id=message_id,

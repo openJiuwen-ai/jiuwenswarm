@@ -132,6 +132,7 @@ _ensure_req_method("JIUWENMATE_CONVERSATION_LIST", "jiuwenmate.conversation.list
 _ensure_req_method("JIUWENMATE_CONVERSATION_RENAME", "jiuwenmate.conversation.rename")
 _ensure_req_method("JIUWENMATE_CONVERSATION_DELETE", "jiuwenmate.conversation.delete")
 _ensure_req_method("JIUWENMATE_REQUEST_ABORT", "jiuwenmate.request.abort")
+_ensure_req_method("JIUWENMATE_DELIVERY_ACK", "jiuwenmate.delivery.ack")
 # The Gateway forwards an event only when the protocol EventType knows it; the
 # pinned protocol package does not define this one yet.
 _ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_REQUEST", "chat.client_tool_request")

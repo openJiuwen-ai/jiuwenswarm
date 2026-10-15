@@ -96,6 +96,26 @@ CREATE TABLE IF NOT EXISTS candidate_outputs (
     recorded_at TEXT NOT NULL,
     PRIMARY KEY (namespace_id, output_id)
 );
+CREATE TABLE IF NOT EXISTS result_deliveries (
+    namespace_id TEXT NOT NULL,
+    delivery_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    execution_id TEXT NOT NULL,
+    output_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    external_message_id TEXT,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (namespace_id, delivery_id),
+    UNIQUE (namespace_id, request_id, output_id, channel, target_id)
+);
+CREATE INDEX IF NOT EXISTS result_deliveries_by_status
+    ON result_deliveries (namespace_id, channel, status, created_at);
 """
 _TERMINAL_EVENTS = (EventType.EXECUTION_PAUSED.value, EventType.EXECUTION_FINAL.value)
 
@@ -367,6 +387,8 @@ class ExecutionRepository(SQLiteStore):
         if stored is not None:
             if stored["digest"] != digest:
                 raise PersistentAgentError("event_id was recorded with other content", code="CONFLICT")
+            if event.event_type == EventType.EXECUTION_FINAL:
+                self._ensure_result_deliveries(conn, event, now)
             return
         if event.event_type in _TERMINAL_EVENTS:
             terminal = conn.execute(
@@ -394,6 +416,53 @@ class ExecutionRepository(SQLiteStore):
                 now.isoformat(),
             ),
         )
+        if event.event_type == EventType.EXECUTION_FINAL:
+            self._ensure_result_deliveries(conn, event, now)
+
+    @staticmethod
+    def _ensure_result_deliveries(conn: sqlite3.Connection, event: AgentEvent, now: datetime) -> None:
+        request = conn.execute(
+            "SELECT record_json FROM requests WHERE namespace_id = ? AND request_id = ?",
+            (event.namespace_id, event.request_id),
+        ).fetchone()
+        if request is None:
+            raise PersistentAgentError("final Request is missing", code="NOT_FOUND")
+        record = RequestRecord.from_dict(json.loads(request["record_json"]))
+        route = record.route_snapshot
+        if route is None:
+            return
+
+        for output_id in event.payload.output_refs:
+            output = conn.execute(
+                "SELECT share_mode, payload_json FROM candidate_outputs "
+                "WHERE namespace_id = ? AND request_id = ? AND output_id = ?",
+                (event.namespace_id, event.request_id, output_id),
+            ).fetchone()
+            if output is None or output["share_mode"] != "message":
+                continue
+            payload = json.loads(output["payload_json"])
+            text = payload.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            status = "available" if route.channel == "web" else "pending"
+            conn.execute(
+                "INSERT OR IGNORE INTO result_deliveries (namespace_id, delivery_id, request_id, execution_id, "
+                "output_id, channel, target_id, status, idempotency_key, attempt_count, external_message_id, "
+                "error_code, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?)",
+                (
+                    event.namespace_id,
+                    f"del_{uuid.uuid4().hex}",
+                    event.request_id,
+                    event.execution_id,
+                    output_id,
+                    route.channel,
+                    route.target_id,
+                    status,
+                    str(uuid.uuid4()),
+                    now.isoformat(),
+                    now.isoformat(),
+                ),
+            )
 
     @staticmethod
     def _insert_output(conn: sqlite3.Connection, event: AgentEvent, now: datetime) -> None:
@@ -459,6 +528,155 @@ class ExecutionRepository(SQLiteStore):
                 (namespace_id, output_id),
             ).fetchone()
         return None if row is None else AgentEvent.model_validate_json(row["event_json"])
+
+    def result_deliveries(self, namespace_id: str, request_id: str) -> list[dict[str, object]]:
+        """Delivery states for one Request, oldest first; output bodies are not copied here."""
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT delivery_id, request_id, execution_id, output_id, channel, target_id, status, "
+                "idempotency_key, attempt_count, external_message_id, error_code, created_at, updated_at "
+                "FROM result_deliveries WHERE namespace_id = ? AND request_id = ? ORDER BY rowid",
+                (namespace_id, request_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def claim_pending_result_deliveries(
+        self,
+        namespace_id: str,
+        *,
+        limit: int = 100,
+        exclude_delivery_ids: Sequence[str] = (),
+        now: datetime,
+    ) -> list[dict[str, object]]:
+        """Atomically claim Feishu text deliveries and return their stored route and payload."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        exclude_clause = ""
+        query_params: list[object] = [namespace_id]
+        if exclude_delivery_ids:
+            placeholders = ", ".join("?" for _ in exclude_delivery_ids)
+            exclude_clause = f"AND d.delivery_id NOT IN ({placeholders}) "
+            query_params.extend(exclude_delivery_ids)
+        query_params.append(limit)
+        jobs: list[dict[str, object]] = []
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT d.*, r.record_json, c.payload_json FROM result_deliveries d "
+                "JOIN requests r ON r.namespace_id = d.namespace_id AND r.request_id = d.request_id "
+                "JOIN candidate_outputs c ON c.namespace_id = d.namespace_id AND c.output_id = d.output_id "
+                "WHERE d.namespace_id = ? AND d.channel = 'feishu' AND d.status = 'pending' "
+                + exclude_clause
+                + "ORDER BY d.created_at, d.rowid LIMIT ?",
+                query_params,
+            ).fetchall()
+            for row in rows:
+                record = RequestRecord.from_dict(json.loads(row["record_json"]))
+                route = record.route_snapshot
+                if route is None or route.channel != "feishu" or route.app_id is None:
+                    conn.execute(
+                        "UPDATE result_deliveries SET status = 'failed', error_code = 'ROUTE_MISSING', "
+                        "updated_at = ? WHERE namespace_id = ? AND delivery_id = ? AND status = 'pending'",
+                        (now.isoformat(), namespace_id, row["delivery_id"]),
+                    )
+                    continue
+                payload = json.loads(row["payload_json"])
+                text = payload.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    conn.execute(
+                        "UPDATE result_deliveries SET status = 'failed', error_code = 'OUTPUT_EMPTY', "
+                        "updated_at = ? WHERE namespace_id = ? AND delivery_id = ? AND status = 'pending'",
+                        (now.isoformat(), namespace_id, row["delivery_id"]),
+                    )
+                    continue
+                changed = conn.execute(
+                    "UPDATE result_deliveries SET status = 'sending', attempt_count = attempt_count + 1, "
+                    "updated_at = ? WHERE namespace_id = ? AND delivery_id = ? AND status = 'pending'",
+                    (now.isoformat(), namespace_id, row["delivery_id"]),
+                ).rowcount
+                if changed != 1:
+                    continue
+                jobs.append(
+                    {
+                        "delivery_id": row["delivery_id"],
+                        "request_id": row["request_id"],
+                        "execution_id": row["execution_id"],
+                        "output_id": row["output_id"],
+                        "channel": row["channel"],
+                        "target_id": route.target_id,
+                        "app_id": route.app_id,
+                        "source_message_id": route.source_message_id,
+                        "source_reply_to": route.source_reply_to,
+                        "text": text,
+                        "idempotency_key": row["idempotency_key"],
+                        "attempt_count": row["attempt_count"] + 1,
+                    }
+                )
+        return jobs
+
+    def update_result_delivery(
+        self,
+        namespace_id: str,
+        delivery_id: str,
+        *,
+        outcome: str,
+        external_message_id: str | None,
+        error_code: str | None,
+        now: datetime,
+    ) -> dict[str, object]:
+        """Persist a Gateway ACK; a late ACK may resolve an ``unknown`` delivery."""
+        if outcome not in {"pending", "delivered", "failed", "unknown"}:
+            raise ValueError("invalid delivery outcome")
+        if outcome == "delivered" and (not isinstance(external_message_id, str) or not external_message_id.strip()):
+            raise ValueError("delivered outcome requires external_message_id")
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM result_deliveries WHERE namespace_id = ? AND delivery_id = ?",
+                (namespace_id, delivery_id),
+            ).fetchone()
+            if row is None:
+                raise PersistentAgentError("result delivery not found", code="NOT_FOUND")
+            if row["status"] in {"delivered", "failed"}:
+                if (
+                    row["status"] == outcome
+                    and row["external_message_id"] == external_message_id
+                    and row["error_code"] == error_code
+                ):
+                    return dict(row)
+                raise PersistentAgentError("result delivery already has a terminal outcome", code="CONFLICT")
+            if (
+                row["status"] == "pending"
+                and outcome == "pending"
+                and row["external_message_id"] == external_message_id
+                and row["error_code"] == error_code
+            ):
+                return dict(row)
+            if row["status"] not in {"sending", "unknown"}:
+                raise PersistentAgentError(f"result delivery is {row['status']}", code="CONFLICT")
+            if row["status"] == "unknown" and outcome == "pending":
+                raise PersistentAgentError(
+                    "unknown result delivery cannot be retried without reconciliation",
+                    code="CONFLICT",
+                )
+            conn.execute(
+                "UPDATE result_deliveries SET status = ?, external_message_id = ?, error_code = ?, updated_at = ? "
+                "WHERE namespace_id = ? AND delivery_id = ?",
+                (outcome, external_message_id, error_code, now.isoformat(), namespace_id, delivery_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM result_deliveries WHERE namespace_id = ? AND delivery_id = ?",
+                (namespace_id, delivery_id),
+            ).fetchone()
+        return dict(updated)
+
+    def recover_sending_result_deliveries(self, namespace_id: str, *, now: datetime) -> int:
+        """Fence deliveries interrupted after dispatch; never blindly resend an unknown outcome."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE result_deliveries SET status = 'unknown', error_code = 'ACK_UNKNOWN', updated_at = ? "
+                "WHERE namespace_id = ? AND channel = 'feishu' AND status = 'sending'",
+                (now.isoformat(), namespace_id),
+            )
+            return cursor.rowcount
 
     def pending_requests(self, namespace_id: str) -> list[RequestState]:
         """Queued and dispatched Requests, grouped by Session in arrival order, for restart recovery."""
