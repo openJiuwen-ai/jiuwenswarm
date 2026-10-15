@@ -19,6 +19,10 @@ from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext
+from jiuwenswarm.server.runtime.session.session_history import (
+    read_member_history_records,
+    read_team_history_records,
+)
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.server.wire_truncate import (
     _TEAM_HISTORY_DEFAULT_LIMIT,
@@ -851,13 +855,13 @@ async def handle_team_history_get(ctx: RequestContext) -> None:
     try:
         if member_name and isinstance(member_name, str) and member_name.strip():
             records = await asyncio.to_thread(
-                _server_global("read_member_history_records"),
+                read_member_history_records,
                 session_id,
                 str(member_name).strip(),
             )
         else:
             records = await asyncio.to_thread(
-                _server_global("read_team_history_records"),
+                read_team_history_records,
                 session_id,
             )
     except Exception as exc:  # noqa: BLE001

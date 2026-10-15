@@ -92,8 +92,7 @@ async def test_team_history_get_paginates_and_bounds_large_records(monkeypatch):
     records = make_large_tool_result_records()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "read_team_history_records",
+        "jiuwenswarm.server.handlers.team.read_team_history_records",
         lambda session_id: records,
     )
 
@@ -124,8 +123,7 @@ async def test_team_history_get_cursor_continues_next_page(monkeypatch):
     records = make_large_tool_result_records()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "read_team_history_records",
+        "jiuwenswarm.server.handlers.team.read_team_history_records",
         lambda session_id: records,
     )
 
@@ -239,8 +237,7 @@ async def test_team_history_get_preserves_too_large_first_record_as_placeholder(
     ]
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "read_team_history_records",
+        "jiuwenswarm.server.handlers.team.read_team_history_records",
         lambda session_id: records,
     )
 
