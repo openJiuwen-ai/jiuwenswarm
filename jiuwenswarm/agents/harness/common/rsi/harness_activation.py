@@ -107,7 +107,7 @@ def _find_manifest(package: Path) -> Path:
     if find_plugin_manifest is not None:
         try:
             return Path(find_plugin_manifest(package)).expanduser().resolve(strict=True)
-        except (OSError, ValueError):
+        except (FileNotFoundError, OSError, ValueError):
             pass
     for name in _MANIFEST_NAMES:
         candidate = package / name
@@ -331,11 +331,6 @@ class RsiHarnessActivationStore:
             return None
         return runtime
 
-    def validate_runtime_path(self, value: Any, *, require_exists: bool) -> Path | None:
-        """Validate a persisted runtime path for callers outside the store."""
-
-        return self._validate_runtime_path(value, require_exists=require_exists)
-
     def get_active(self) -> dict[str, Any] | None:
         active = self._read_document().get("active")
         if not isinstance(active, dict):
@@ -502,11 +497,12 @@ def _read_manifest_extension_name(package: Path) -> tuple[str, Path]:
     extension_name = str(
         payload.get("extension_name") or payload.get("id") or package.name
     ).strip()
-    if not extension_name or extension_name in {".", ".."}:
-        raise RsiHarnessInvalid(f"Harness extension_name 非法: {extension_name!r}")
-    if Path(extension_name).name != extension_name:
-        raise RsiHarnessInvalid(f"Harness extension_name 非法: {extension_name!r}")
-    if any(char in extension_name for char in ("/", "\\", ":")):
+    if (
+        not extension_name
+        or extension_name in {".", ".."}
+        or Path(extension_name).name != extension_name
+        or any(char in extension_name for char in ("/", "\\", ":"))
+    ):
         raise RsiHarnessInvalid(f"Harness extension_name 非法: {extension_name!r}")
     return extension_name, manifest
 
@@ -535,9 +531,7 @@ def _write_version_refs(
             rewritten_roles.append(role_entry)
         payload["roles"] = rewritten_roles
     refs_path.parent.mkdir(parents=True, exist_ok=True)
-    # Keep the atomic-replace path short enough for Windows installations
-    # without long-path support; the installer already serializes writes.
-    temporary = refs_path.with_name(f".{refs_path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    temporary = refs_path.with_name(f".{refs_path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(
             yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
@@ -583,7 +577,11 @@ class RsiHarnessInstaller:
 
     def publication_availability(self, task_id: str) -> dict[str, Any]:
         """Read publication readiness without installing or activating anything."""
-        result = {"harness_installable": False, "harness_publication_status": "unavailable"}
+        result = {
+            "harness_installable": False,
+            "harness_publication_status": "unavailable",
+            "harness_provenance": {"published": None, "installed": None},
+        }
         task = self.store.get(task_id)
         if str(task.scenario).upper() != "HARNESS" or str(task.status).upper() != "COMPLETED":
             return result
@@ -602,10 +600,67 @@ class RsiHarnessInstaller:
             _ensure_inside(refs, root, label="published refs")
             parsed = parse_published_harness_refs(refs, task_run_root=root)
             _read_manifest_extension_name(parsed.package_path)
+            package_sha256 = hash_harness_package(parsed.package_path)
             result["harness_installable"] = True
+            result["harness_provenance"]["published"] = self._published_provenance(
+                task_id, state, package_sha256
+            )
+            installed = next(
+                (
+                    record for record in self.activation_store.list_versions()
+                    if str(record.get("task_id") or "").strip() == task_id
+                    and str(record.get("sha256") or "").lower() == package_sha256.lower()
+                ),
+                None,
+            )
+            if installed is not None:
+                result["harness_provenance"]["installed"] = self._installed_provenance(installed)
         except (RsiError, OSError, ValueError, yaml.YAMLError):
             result["harness_publication_status"] = "unavailable"
         return result
+
+    @staticmethod
+    def _published_provenance(
+        task_id: str, state: dict[str, Any], package_sha256: str
+    ) -> dict[str, Any]:
+        """Expose stable identity without returning local filesystem paths."""
+        refs_path = str(state.get("best_harness_refs_path") or "")
+        optimization_id = next(
+            (part for part in Path(refs_path).parts if part.startswith("member_optimization_")),
+            None,
+        )
+        checkpoints = state.get("epoch_checkpoints")
+        checkpoint = checkpoints[-1] if isinstance(checkpoints, list) and checkpoints else {}
+        if not isinstance(checkpoint, dict):
+            checkpoint = {}
+        best_refs = state.get("best_harness_refs_path")
+        node_id = state.get("final_node_id") or state.get("best_node_id")
+        if not node_id and isinstance(checkpoints, list):
+            for item in reversed(checkpoints):
+                if (
+                    isinstance(item, dict)
+                    and item.get("promotion_applied")
+                    and item.get("selected_harness_refs_path") == best_refs
+                ):
+                    node_id = f"epoch-{int(item.get('epoch', 0)):03d}"
+                    break
+        return {
+            "task_id": task_id,
+            "optimization_id": optimization_id,
+            "node_id": node_id,
+            "epoch": checkpoint.get("epoch"),
+            "score": state.get("best_score"),
+            "installation_id": f"rsi-harness-{package_sha256[:16]}",
+            "sha256": package_sha256,
+            "action_ids": list(checkpoint.get("retained_candidate_action_ids") or []),
+        }
+
+    @staticmethod
+    def _installed_provenance(record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: record.get(key)
+            for key in ("task_id", "node_id", "installation_id", "sha256", "installed_at", "status")
+        }
 
     async def install(self, task_id: str) -> dict[str, Any]:
         async with self._install_lock:
@@ -622,7 +677,7 @@ class RsiHarnessInstaller:
         )
         versions = []
         for record in records:
-            runtime = self.activation_store.validate_runtime_path(
+            runtime = self.activation_store._validate_runtime_path(  # noqa: SLF001 - store boundary validator
                 record.get("runtime_path"), require_exists=False
             )
             installation_id = str(record.get("installation_id") or "").strip()
@@ -720,7 +775,7 @@ class RsiHarnessInstaller:
 
     def _validate_rollback_target(self, record: dict[str, Any]) -> None:
         try:
-            runtime = self.activation_store.validate_runtime_path(
+            runtime = self.activation_store._validate_runtime_path(  # noqa: SLF001 - store boundary validator
                 record.get("runtime_path"), require_exists=True
             )
         except ValueError as exc:
@@ -855,17 +910,18 @@ class RsiHarnessInstaller:
                         "RSI Harness active 指针写入失败且 live Agent 恢复失败"
                     ) from exc
                 raise RsiHarnessInstallFailed("RSI Harness active 指针写入失败，已恢复旧版本") from exc
-            provenance: dict[str, Any] = {}
-            for key in (
-                "installation_id",
-                "task_id",
-                "node_id",
-                "role",
-                "extension_name",
-                "sha256",
-                "installed_at",
-            ):
-                provenance[key] = record.get(key)
+            provenance = {
+                key: record.get(key)
+                for key in (
+                    "installation_id",
+                    "task_id",
+                    "node_id",
+                    "role",
+                    "extension_name",
+                    "sha256",
+                    "installed_at",
+                )
+            }
             try:
                 self.store.merge_config(task_id, {"rsi_installation": provenance})
             except Exception as exc:  # noqa: BLE001 - pointer remains authoritative
@@ -942,15 +998,16 @@ class RsiHarnessInstaller:
             # providers by returning ``{}`` when raw publication state is not
             # available.  Treat that sentinel as “no reader” and continue to
             # the task run's durable state file instead of masking it.
-            if isinstance(state, dict):
+            if isinstance(state, dict) and any(
+                key in state
                 for key in (
                     "publication_status",
                     "published_harness_refs_path",
                     "current_harness_refs_path",
                     "best_harness_refs_path",
-                ):
-                    if key in state:
-                        return state
+                )
+            ):
+                return state
         path = run_root / _STATE_FILE_NAME
         if not path.is_file():
             raise RsiHarnessNotPublished(f"任务 {task_id} 缺少 single_harness_state.yaml")

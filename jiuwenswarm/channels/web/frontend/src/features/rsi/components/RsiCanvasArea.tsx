@@ -433,10 +433,7 @@ const RsiNodeCard = memo(function RsiNodeCard({
             {presentation.reasonDetail && <div className="rsi-node__summary">{presentation.reasonDetail}</div>}
           </>
         ) : kind === 'pruned' && scoreLines.length === 0 ? (
-          <>
-            <div className="rsi-node__reason">{presentation.reasonLabel ?? '搜索空间已剪枝'}</div>
-            {presentation.reasonDetail && <div className="rsi-node__summary">{presentation.reasonDetail}</div>}
-          </>
+          <div className="rsi-node__reason">{presentation.reasonLabel ?? '搜索空间已剪枝'}</div>
         ) : scoreLines.length === 0 && presentation.summary ? (
           <div className="rsi-node__summary">{presentation.summary}</div>
         ) : scoreLines.length === 0 ? (
