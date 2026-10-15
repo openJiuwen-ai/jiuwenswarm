@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
+from jiuwenswarm.common.channels import CRON_TARGET_CHANNEL_IDS, ChannelType
 from jiuwenswarm.common.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     normalize_work_mode,
@@ -18,19 +18,6 @@ from jiuwenswarm.common.mode_matrix import (
 from jiuwenswarm.runtime.cron.cron_expr import validate_cron_expression
 
 logger = logging.getLogger(__name__)
-
-
-class CronTargetChannel(str, Enum):
-    """推送频道枚举。"""
-
-    WEB = "web"
-    TUI = "tui"
-    FEISHU = "feishu"
-    WHATSAPP = "whatsapp"
-    WECOM = "wecom"
-    XIAOYI = "xiaoyi"
-    WECHAT = "wechat"
-    DINGTALK = "dingtalk"
 
 
 def _feishu_enterprise_app_id(s: str) -> str:
@@ -47,15 +34,11 @@ def is_valid_target_channel_id(raw: str) -> bool:
         return False
     if s.startswith("feishu_enterprise:"):
         return bool(_feishu_enterprise_app_id(s))
-    try:
-        CronTargetChannel(s.lower())
-        return True
-    except ValueError:
-        return False
+    return s.lower() in CRON_TARGET_CHANNEL_IDS
 
 
 def normalize_target_channel_id(
-    raw: str, *, default: str = CronTargetChannel.WEB.value
+    raw: str, *, default: str = ChannelType.WEB.value
 ) -> str:
     s = str(raw or "").strip()
     if not s:
@@ -66,15 +49,12 @@ def normalize_target_channel_id(
             return f"feishu_enterprise:{app_id}"
         return default
     low = s.lower()
-    try:
-        return CronTargetChannel(low).value
-    except ValueError:
-        return default
+    return low if low in CRON_TARGET_CHANNEL_IDS else default
 
 
 def _normalize_targets_str(raw: str) -> str:
-    """将 targets 字符串规范为 CronTargetChannel 枚举值，非法则默认 web。"""
-    return normalize_target_channel_id(raw, default=CronTargetChannel.WEB.value)
+    """将 targets 字符串规范为声明过的推送渠道 id，非法则默认 web。"""
+    return normalize_target_channel_id(raw, default=ChannelType.WEB.value)
 
 
 # Cron job execution modes (passed to AgentServer as chat.send params["mode"]).

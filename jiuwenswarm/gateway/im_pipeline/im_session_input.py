@@ -14,21 +14,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from jiuwenswarm.common.channels import SHARED_IM_CHANNEL_IDS, channel_for_id
 from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.message import Message
 from jiuwenswarm.runtime.session_input import SessionInputMode, resolve_session_input_mode
 
-_SHARED_IM_CHANNELS = frozenset({
-    "feishu",
-    "wecom",
-    "dingtalk",
-    "slack",
-    "discord",
-    "telegram",
-    "wechat",
-    "whatsapp",
-    "xiaoyi",
-})
 _INTENT_KEYS = ("input_mode", "runtime_mode", "expected_execution_id")
 _ATTACHMENT_KEYS = (
     "images",
@@ -42,12 +32,8 @@ _ATTACHMENT_KEYS = (
 
 def is_shared_im_channel(channel_id: object) -> bool:
     """Return whether this channel reuses the shared IM session-input path."""
-    channel = str(channel_id or "").strip().lower()
-    if channel in _SHARED_IM_CHANNELS:
-        return True
-    if channel.startswith("feishu:") or channel.startswith("feishu_enterprise:"):
-        return True
-    return False
+    channel = channel_for_id(channel_id)
+    return channel is not None and channel.value in SHARED_IM_CHANNEL_IDS
 
 
 def prepare_im_session_input(msg: Message) -> bool:

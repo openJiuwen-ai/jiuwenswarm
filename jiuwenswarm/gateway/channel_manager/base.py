@@ -6,10 +6,10 @@ import inspect
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import Enum
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
+from jiuwenswarm.common import channels as _channels
 from jiuwenswarm.common.schema.message import Message
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
@@ -18,26 +18,13 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     pass
 
+# ChannelType 在 common 层声明（runtime 不能反向依赖 gateway），此处转出以
+# 保持既有 import 路径。
+ChannelType = _channels.ChannelType
+
 # 连接钩子签名: (ws) -> None | Awaitable[None]
 ConnectHook = Callable[..., Any]
 _UNAUTHORIZED_BODY = b"Unauthorized\n"
-
-
-class ChannelType(str, Enum):
-    """Channel 类型枚举."""
-    ACP = "acp"
-    WEB = "web"
-    FEISHU = "feishu"
-    XIAOYI = "xiaoyi"
-    DINGTALK = "dingtalk"
-    TELEGRAM = "telegram"
-    DISCORD = "discord"
-    SLACK = "slack"
-    WHATSAPP = "whatsapp"
-    WECOM = "wecom"
-    WECHAT = "wechat"
-    SSH = "ssh"
-    CLI = "tui"
 
 
 @dataclass

@@ -1792,7 +1792,12 @@ async def _run(
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.cleanup import start_background_cleanup
     from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+    from jiuwenswarm.common.channels import ChannelType
     from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+    from jiuwenswarm.gateway.channel_manager.channel_specs import (
+        configured_channel_ids,
+        spec_for,
+    )
     from jiuwenswarm.gateway.cron import (
         CronController,
         CronSchedulerService,
@@ -2545,9 +2550,11 @@ async def _run(
                 logger.warning("[App] failed to stop previous %sChannel: %s", channel_name.capitalize(), e)
             channel_manager.unregister_channel(channel.channel_id)
 
-    def _is_channel_enabled(conf: dict | None, required_fields: list[str]) -> tuple[bool, str]:
+    def _is_channel_enabled(conf: dict | None, channel: ChannelType) -> tuple[bool, str]:
         if conf is None:
             return False, "missing or invalid config"
+        spec = spec_for(channel)
+        required_fields = (spec.config_fields if spec is not None else None) or ()
         enabled_raw = conf.get("enabled", None)
         if enabled_raw is None:
             all_fields_present = all(conf.get(f) for f in required_fields)
@@ -2578,19 +2585,7 @@ async def _run(
 
         restart_pending = channel_manager.pop_channel_restart_pending()
         changed_channels: list[str] = []
-        for channel_name in [
-            "feishu",
-            "feishu_enterprise",
-            "xiaoyi",
-            "dingtalk",
-            "telegram",
-            "whatsapp",
-            "discord",
-            "slack",
-            "wecom",
-            "wechat",
-            "ssh",
-        ]:
+        for channel_name in configured_channel_ids():
             if _should_restart_channel(channel_name, _last_channels_conf, conf) or channel_name in restart_pending:
                 if channel_name in restart_pending and not _should_restart_channel(
                         channel_name, _last_channels_conf, conf
@@ -2626,7 +2621,7 @@ async def _run(
                 for app in apps:
                     if not app.get("enabled", True):
                         continue
-                    enabled, reason = _is_channel_enabled(app, ["app_id", "app_secret"])
+                    enabled, reason = _is_channel_enabled(app, ChannelType.FEISHU)
                     if not enabled:
                         logger.info("[App] channels.feishu.apps[].%s, skipping", reason)
                         continue
@@ -2702,7 +2697,7 @@ async def _run(
                     if bot_conf is None:
                         logger.info("[App] channels.feishu_enterprise.%s invalid config, skipping", bot_key)
                         continue
-                    enabled, reason = _is_channel_enabled(bot_conf, ["app_id", "app_secret"])
+                    enabled, reason = _is_channel_enabled(bot_conf, ChannelType.FEISHU_ENTERPRISE)
                     if not enabled:
                         logger.info(
                             "[App] channels.feishu_enterprise.%s.%s, FeishuEnterpriseChannel disabled",
@@ -2776,7 +2771,7 @@ async def _run(
                 for app in apps:
                     if not app.get("enabled", True):
                         continue
-                    enabled, reason = _is_channel_enabled(app, ["ak", "sk", "agent_id"])
+                    enabled, reason = _is_channel_enabled(app, ChannelType.XIAOYI)
                     if not enabled:
                         logger.info("[App] channels.xiaoyi.apps[].%s, skipping", reason)
                         continue
@@ -2821,7 +2816,7 @@ async def _run(
             dingtalk_channel, dingtalk_task = None, None
 
             if isinstance(dingtalk_conf, dict):
-                enabled, reason = _is_channel_enabled(dingtalk_conf, ["client_id", "client_secret"])
+                enabled, reason = _is_channel_enabled(dingtalk_conf, ChannelType.DINGTALK)
                 if not enabled:
                     logger.info("[App] channels.dingtalk.%s, DingTalkChannel disabled", reason)
                 else:
@@ -2848,7 +2843,7 @@ async def _run(
             telegram_channel, telegram_task = None, None
 
             if isinstance(telegram_conf, dict):
-                enabled, reason = _is_channel_enabled(telegram_conf, ["bot_token"])
+                enabled, reason = _is_channel_enabled(telegram_conf, ChannelType.TELEGRAM)
                 if not enabled:
                     logger.info("[App] channels.telegram.%s, TelegramChannel disabled", reason)
                 else:
@@ -2874,7 +2869,7 @@ async def _run(
             discord_channel, discord_task = None, None
 
             if isinstance(discord_conf, dict):
-                enabled, reason = _is_channel_enabled(discord_conf, ["bot_token"])
+                enabled, reason = _is_channel_enabled(discord_conf, ChannelType.DISCORD)
                 if not enabled:
                     logger.info("[App] channels.discord.%s, DiscordChannel disabled", reason)
                 else:
@@ -2902,7 +2897,7 @@ async def _run(
             slack_channel, slack_task = None, None
 
             if isinstance(slack_conf, dict):
-                enabled, reason = _is_channel_enabled(slack_conf, ["bot_token", "app_token"])
+                enabled, reason = _is_channel_enabled(slack_conf, ChannelType.SLACK)
                 if not enabled:
                     logger.info("[App] channels.slack.%s, SlackChannel disabled", reason)
                 else:
@@ -2985,7 +2980,7 @@ async def _run(
             wecom_channel, wecom_task = None, None
 
             if isinstance(wecom_conf, dict):
-                enabled, reason = _is_channel_enabled(wecom_conf, ["bot_id", "secret"])
+                enabled, reason = _is_channel_enabled(wecom_conf, ChannelType.WECOM)
                 if not enabled:
                     logger.info("[App] channels.wecom.%s, WecomChannel disabled", reason)
                 else:
@@ -3028,7 +3023,7 @@ async def _run(
             wechat_channel, wechat_task = None, None
 
             if isinstance(wechat_conf, dict):
-                enabled, reason = _is_channel_enabled(wechat_conf, [])
+                enabled, reason = _is_channel_enabled(wechat_conf, ChannelType.WECHAT)
                 if not enabled:
                     logger.info("[App] channels.wechat.%s, WechatChannel disabled", reason)
                 else:
@@ -3067,7 +3062,7 @@ async def _run(
 
             if isinstance(ssh_conf, dict):
                 # 南向经 agent client（如 agentos_router -> yuanrong）动态解析。
-                enabled, reason = _is_channel_enabled(ssh_conf, ["listen_port"])
+                enabled, reason = _is_channel_enabled(ssh_conf, ChannelType.SSH)
                 full_cfg = get_config()
                 gateway_cfg = full_cfg.get("gateway") if isinstance(full_cfg, dict) else {}
                 agent_client_cfg = (

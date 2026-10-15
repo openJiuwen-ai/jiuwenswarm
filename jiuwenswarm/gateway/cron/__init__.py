@@ -7,7 +7,7 @@ This package provides:
 
 from .controller import CronController
 from .factory import create_gateway_cron_store
-from .models import CronJob, CronTarget, CronTargetChannel
+from .models import CronJob, CronTarget
 from .scheduler import CronSchedulerService
 from .store import CronJobStore, FileCronJobStore
 from .store_base import CronJobStoreBackend
@@ -15,7 +15,6 @@ from .store_base import CronJobStoreBackend
 __all__ = [
     "CronJob",
     "CronTarget",
-    "CronTargetChannel",
     "CronJobStore",
     "CronJobStoreBackend",
     "FileCronJobStore",
