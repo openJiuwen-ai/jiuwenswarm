@@ -1,4 +1,4 @@
-﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """EditFileFlashTool 单测：缓存命中零读盘 / 回退路径 / hunks 原子性 / JSONL history。
 

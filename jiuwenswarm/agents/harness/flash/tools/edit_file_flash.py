@@ -1,4 +1,4 @@
-﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """EditFileFlashTool — EditFileTool 的 flash 定制版（工具名 edit_file_flash）。
 

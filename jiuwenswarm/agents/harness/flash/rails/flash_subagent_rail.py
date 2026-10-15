@@ -1,4 +1,4 @@
-﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """FlashSubagentRail — task_tool 的 flash 调优变体（spec 自注入 + 文案替换）。
 

@@ -1,4 +1,4 @@
-﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """flash 模式工具面单元测试：rail 白名单、react 覆盖、统一 todo / memory 工具。"""
 
