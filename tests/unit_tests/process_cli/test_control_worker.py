@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -39,7 +40,7 @@ async def test_private_query_closes_runtime_before_return() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "failure", [RuntimeError("startup failed"), asyncio.CancelledError(), SystemExit(1)]
+    "failure", [RuntimeError("startup failed"), asyncio.CancelledError()]
 )
 async def test_private_query_closes_after_partial_start(failure: BaseException) -> None:
     class Client(FakeClient):
@@ -54,6 +55,36 @@ async def test_private_query_closes_after_partial_start(failure: BaseException) 
     )
     assert result["status"] == "failed"
     assert client.calls == ["start", "close"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["start", "close"])
+@pytest.mark.parametrize("exit_code", [0, 7])
+async def test_process_exit_propagates_after_runtime_cleanup(
+    stage: str,
+    exit_code: int,
+) -> None:
+    client = FakeClient()
+    start = AsyncMock(wraps=client.start)
+    close = AsyncMock(wraps=client.close)
+    failing_operation = start if stage == "start" else close
+    failing_operation.side_effect = SystemExit(exit_code)
+    runtime = SimpleNamespace(
+        start=start,
+        close=close,
+        list_model_capabilities=client.list_model_capabilities,
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        await control_worker.run(
+            SimpleNamespace(operation="model.list", timeout=1),
+            client_factory=lambda: runtime,
+        )
+
+    assert caught.value.code == exit_code
+    start.assert_awaited_once()
+    close.assert_awaited_once()
+    assert ("model.list" in client.calls) == (stage == "close")
 
 
 @pytest.mark.asyncio

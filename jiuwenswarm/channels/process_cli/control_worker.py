@@ -118,7 +118,7 @@ async def run(
             ):
                 raise TimeoutError
             result.update(status="completed", data=data, error=None)
-    except (Exception, asyncio.CancelledError, SystemExit) as exc:
+    except (Exception, asyncio.CancelledError) as exc:
         code = (
             "TIMEOUT"
             if isinstance(exc, TimeoutError)
@@ -131,7 +131,7 @@ async def run(
             try:
                 async with asyncio.timeout(SHUTDOWN_TIMEOUT_SECONDS):
                     await client.close()
-            except (Exception, asyncio.CancelledError, SystemExit) as exc:
+            except (Exception, asyncio.CancelledError) as exc:
                 result.update(
                     status="failed", data=None, error={"code": "SHUTDOWN_FAILED"}
                 )
