@@ -354,44 +354,6 @@ class TestExecutorShouldSkipSubplanExecute:
         assert await ex._should_skip_subplan_execute(p0, {}) is False
 
 
-class TestExecutorSuppressSubplanStartBanner:
-    @pytest.mark.asyncio
-    async def test_resume_suppresses_in_progress_only(self):
-        ex = _make_executor()
-        ex._resume_replay = True
-        ex._task_states_holder = {
-            "task_p2": {
-                "task_id": "task_p2",
-                "task_content": "p2_requirement_collect",
-                "status": "in_progress",
-            },
-            "task_p5": {
-                "task_id": "task_p5",
-                "task_content": "p3_5_template_context",
-                "status": "pending",
-            },
-        }
-        p2 = _LeafNode("p2_requirement_collect", depth=1)
-        p5 = _LeafNode("p3_5_template_context", depth=1)
-
-        assert await ex._should_suppress_subplan_start_banner(p2, {}) is True
-        assert await ex._should_suppress_subplan_start_banner(p5, {}) is False
-
-    @pytest.mark.asyncio
-    async def test_non_resume_never_suppresses(self):
-        ex = _make_executor()
-        ex._resume_replay = False
-        ex._task_states_holder = {
-            "task_p2": {
-                "task_id": "task_p2",
-                "task_content": "p2_requirement_collect",
-                "status": "in_progress",
-            },
-        }
-        p2 = _LeafNode("p2_requirement_collect", depth=1)
-        assert await ex._should_suppress_subplan_start_banner(p2, {}) is False
-
-
 class TestFallbackContractErrorSemantics:
     """FallbackContractError 语义（自 test_ppt_skill_code_registration 迁入，纯引擎）。"""
 

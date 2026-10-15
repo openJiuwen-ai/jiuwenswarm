@@ -40,6 +40,7 @@ def bind_skill_turbo_context(
     parent_session: Any = None,
     resume_answers: Any = None,
     outer_todo_active: Any = None,
+    outer_todo_pending: Any = None,
 ) -> None:
     """before_tool_call 调用：统一绑定 7 个 skill_turbo ContextVar。
 
@@ -102,6 +103,13 @@ def bind_skill_turbo_context(
 
         tokens["outer_todo"] = set_skill_turbo_outer_todo_active(outer_todo_active)
 
+    if isinstance(outer_todo_pending, dict):
+        from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+            set_skill_turbo_outer_todo_pending,
+        )
+
+        tokens["outer_todo_pending"] = set_skill_turbo_outer_todo_pending(outer_todo_pending)
+
 
 def _reset_adapter(token: Any) -> None:
     from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
@@ -151,6 +159,14 @@ def _reset_outer_todo(token: Any) -> None:
     reset_skill_turbo_outer_todo_active(token)
 
 
+def _reset_outer_todo_pending(token: Any) -> None:
+    from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+        reset_skill_turbo_outer_todo_pending,
+    )
+
+    reset_skill_turbo_outer_todo_pending(token)
+
+
 def _reset_subagent_parent(token: Any) -> None:
     from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (
         reset_subagent_parent_session,
@@ -166,6 +182,7 @@ _RESETTERS = {
     "interactive_ask": _reset_interactive_ask,
     "resume_answers": _reset_resume_answers,
     "outer_todo": _reset_outer_todo,
+    "outer_todo_pending": _reset_outer_todo_pending,
     "subagent_parent": _reset_subagent_parent,
 }
 
