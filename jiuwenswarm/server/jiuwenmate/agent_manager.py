@@ -21,6 +21,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
+from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
 from jiuwenswarm.server.jiuwenmate.execution_control_service import (
     ControlStore,
     ExecutionControlService,
@@ -33,7 +34,12 @@ from jiuwenswarm.server.jiuwenmate.execution_driver import (
     _default_abort,
     _default_execute,
 )
-from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef, RequestState
+from jiuwenswarm.server.jiuwenmate.execution_models import (
+    AccessSnapshot,
+    ConversationRef,
+    RequestRouteSnapshot,
+    RequestState,
+)
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.ports.budget import DEFAULT_RESERVATION_TOKENS, HostBudgetPort
@@ -98,6 +104,7 @@ class RequestView:
     draft: ReplyDraft | None = None
     conversation_key: str | None = None
     control: RequestControl | None = None
+    deliveries: tuple[dict[str, object], ...] = ()
     recovery: RequestRecovery | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -118,6 +125,13 @@ class RequestView:
             "reason": self.reason,
             "draft": None if self.draft is None else self.draft.to_dict(),
             "control": None if self.control is None else self.control.to_dict(),
+            "deliveries": [
+                {
+                    key: delivery.get(key)
+                    for key in ("output_id", "channel", "status", "external_message_id", "error_code")
+                }
+                for delivery in self.deliveries
+            ],
             "recovery": None if self.recovery is None else self.recovery.to_dict(),
             "updated_at": self.state.updated_at.isoformat(),
         }
@@ -139,6 +153,7 @@ class AgentManager:
         purge_interval: timedelta = DEFAULT_PURGE_INTERVAL,
         clock: Callable[[], datetime] = _utc_now,
         on_event: Callable[[core.AgentEvent], None] | None = None,
+        delivery_service: ResultDeliveryService | None = None,
     ) -> None:
         if purge_interval <= timedelta(0):
             raise ValueError("purge_interval must be positive")
@@ -150,10 +165,17 @@ class AgentManager:
         self._archive_retention = archive_retention
         self._purge_interval = purge_interval
         self._clock = clock
+        self._external_event_observer = on_event
+        self._delivery_service = delivery_service
         self._queue = CommitQueue(sessions, clock=clock)
         driver = ExecutionDriver(
             snapshots=service.snapshot,
-            commit_port=HostCommitPort(sessions, self._queue, clock=clock, observer=on_event),
+            commit_port=HostCommitPort(
+                sessions,
+                self._queue,
+                clock=clock,
+                observer=self._observe_event if on_event is not None or delivery_service is not None else None,
+            ),
             queue=self._queue,
             budget_port=HostBudgetPort(budgets, sessions, reservation_tokens=reservation_tokens, clock=clock),
             budgets=budgets,
@@ -190,16 +212,24 @@ class AgentManager:
     def commit_queue(self) -> CommitQueue:
         return self._queue
 
+    @property
+    def result_delivery_service(self) -> ResultDeliveryService | None:
+        return self._delivery_service
+
     async def start(self) -> None:
         if self._purge_task is not None:
             return
         await self._queue.start()
+        if self._delivery_service is not None:
+            await self._delivery_service.start()
         self._scheduler.start()
         self._purge_task = asyncio.create_task(self._purge_loop(), name="jiuwenmate-window-purge")
 
     async def aclose(self) -> None:
         """Stop every Execution, wait for their streams to end, then stop cleanup and the commit queue."""
         await self._scheduler.aclose()
+        if self._delivery_service is not None:
+            await self._delivery_service.aclose()
         if self._purge_task is not None:
             self._purge_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -248,6 +278,11 @@ class AgentManager:
             access=access,
             request_input=request_input,
             received_at=now,
+            route_snapshot=(
+                RequestRouteSnapshot(channel="web", target_id=conversation.key, source_message_id=message_id)
+                if conversation.kind == "web_direct"
+                else None
+            ),
         )
         return await self.request_view(namespace_id, state.record.request_id)
 
@@ -287,6 +322,9 @@ class AgentManager:
         running = any(run.record.request_id == state.record.request_id for run in self._scheduler.running)
         replies, reason, draft = await asyncio.to_thread(self._result, state)
         control = await asyncio.to_thread(self._control.control_of, state.record.namespace_id, state.record.request_id)
+        deliveries = await asyncio.to_thread(
+            self._sessions.result_deliveries, state.record.namespace_id, state.record.request_id
+        )
         recovery = await asyncio.to_thread(
             self._recovery.recovery_of, state.record.namespace_id, state.record.request_id
         )
@@ -298,8 +336,17 @@ class AgentManager:
             draft=draft,
             conversation_key=conversation_key,
             control=control,
+            deliveries=tuple(deliveries),
             recovery=recovery,
         )
+
+    def _observe_event(self, event: core.AgentEvent) -> None:
+        try:
+            if self._external_event_observer is not None:
+                self._external_event_observer(event)
+        finally:
+            if self._delivery_service is not None:
+                self._delivery_service.observe(event)
 
     def _result(self, state: RequestState) -> tuple[tuple[str, ...], str | None, ReplyDraft | None]:
         """Outcome of the latest Execution: adopted replies and reason once it ended, else its draft."""

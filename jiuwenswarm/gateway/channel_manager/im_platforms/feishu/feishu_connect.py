@@ -89,6 +89,8 @@ try:
         CreateFileRequestBody,
         CreateMessageRequest,
         CreateMessageRequestBody,
+        ReplyMessageRequest,
+        ReplyMessageRequestBody,
         CreateMessageReactionRequest,
         CreateMessageReactionRequestBody,
         Emoji,
@@ -1738,6 +1740,83 @@ class FeishuChannel(BaseChannel):
                 "content": formatted
             }
         }
+
+    async def send_persistent_result(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        source_message_id: str | None,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Send one JM-09 final text and return Feishu's message receipt.
+
+        The personal-agent ``send`` path below keeps its existing routing and
+        retry semantics; persistent results use this explicit receipt path.
+        """
+        if not self._api_client:
+            return {"outcome": "failed", "error_code": "FEISHU_CLIENT_UNAVAILABLE"}
+        if not chat_id.strip() or not text.strip() or not idempotency_key.strip():
+            return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
+
+        content = json.dumps({"text": text}, ensure_ascii=False)
+
+        def _send():
+            if source_message_id:
+                body = (
+                    ReplyMessageRequestBody.builder()
+                    .msg_type("text")
+                    .content(content)
+                    .reply_in_thread(False)
+                    .uuid(idempotency_key)
+                    .build()
+                )
+                request = (
+                    ReplyMessageRequest.builder()
+                    .message_id(source_message_id)
+                    .request_body(body)
+                    .build()
+                )
+                return self._api_client.im.v1.message.reply(request)
+
+            body = (
+                CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
+                .msg_type("text")
+                .content(content)
+                .uuid(idempotency_key)
+                .build()
+            )
+            request = (
+                CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(body)
+                .build()
+            )
+            return self._api_client.im.v1.message.create(request)
+
+        try:
+            response = await asyncio.get_running_loop().run_in_executor(None, _send)
+        except Exception as exc:  # the platform may accept the send before transport fails
+            logger.warning(
+                "[Feishu] JM-09 send outcome unknown: app_id=%s error_type=%s",
+                self.config.app_id,
+                type(exc).__name__,
+            )
+            return {"outcome": "unknown", "error_code": "FEISHU_ACK_UNKNOWN"}
+
+        if not response.success():
+            code = getattr(response, "code", None)
+            return {
+                "outcome": "failed",
+                "error_code": f"FEISHU_{code}" if code is not None else "FEISHU_REJECTED",
+            }
+        data = getattr(response, "data", None)
+        message = getattr(data, "message", None)
+        message_id = getattr(message, "message_id", None) or getattr(data, "message_id", None)
+        if not isinstance(message_id, str) or not message_id.strip():
+            return {"outcome": "unknown", "error_code": "FEISHU_RECEIPT_MISSING"}
+        return {"outcome": "delivered", "external_message_id": message_id}
 
     async def send(
         self,

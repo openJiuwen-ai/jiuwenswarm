@@ -249,6 +249,10 @@ async def test_sent_message_returns_its_request_before_the_reply(host):
     done = await host.settled(request["request_id"])
     assert done["outcome"] == "completed"
     assert done["replies"] == ["回复：今天进展"]
+    assert len(done["deliveries"]) == 1
+    assert done["deliveries"][0]["channel"] == "web"
+    assert done["deliveries"][0]["status"] == "available"
+    assert done["deliveries"][0]["output_id"].endswith("-reply")
 
 
 async def test_history_lists_the_conversation_in_order(host):

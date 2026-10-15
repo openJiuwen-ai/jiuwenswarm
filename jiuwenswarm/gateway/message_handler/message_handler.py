@@ -416,6 +416,8 @@ class MessageHandler(ABC):
         # Optional JM-08 route. None keeps the gateway on its personal-agent
         # path; Feishu's pre-handler adapter uses this method as a tri-state gate.
         self._persistent_group_fanout = None
+        # JM-09 uses a separate server-push path and returns platform receipts over E2A.
+        self._jm09_delivery_handler = None
 
         # 初始化 Gateway hooks handler
         try:
@@ -434,6 +436,10 @@ class MessageHandler(ABC):
     def set_persistent_group_fanout(self, fanout: Any | None) -> None:
         """Inject the optional JM-08 event router without changing personal mode."""
         self._persistent_group_fanout = fanout
+
+    def set_jm09_delivery_handler(self, handler: Any | None) -> None:
+        """Inject the Gateway's exact-app JM-09 delivery route."""
+        self._jm09_delivery_handler = handler
 
     async def handle_persistent_feishu_event(
         self, event: FeishuInboundEvent
@@ -3333,6 +3339,12 @@ class MessageHandler(ABC):
         except Exception as e:
             logger.exception("[MessageHandler] server_push 解析失败: %s", e)
             return
+        if (
+            isinstance(chunk.payload, dict)
+            and chunk.payload.get("event_type") == "jiuwenmate.delivery.send"
+        ):
+            await self._handle_jm09_delivery_push(chunk.payload)
+            return
         rid = str(chunk.request_id or "")
         if await self._handle_login_credential_refresh_push(chunk):
             return
@@ -3450,6 +3462,65 @@ class MessageHandler(ABC):
             chunk.channel_id,
             _push_app_id,
         )
+
+    async def _handle_jm09_delivery_push(self, payload: dict[str, Any]) -> None:
+        """Send a persistent result through Gateway and return its platform receipt over E2A."""
+        from uuid import uuid4
+
+        from jiuwenswarm.common.e2a.models import E2AEnvelope
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        delivery_id = payload.get("delivery_id")
+        stage = payload.get("stage")
+        if not isinstance(delivery_id, str) or not delivery_id.strip() or stage != "send":
+            return
+
+        handler = getattr(self, "_jm09_delivery_handler", None)
+        if not callable(handler):
+            result: dict[str, Any] = {"outcome": "pending", "error_code": "CHANNEL_ROUTE_UNAVAILABLE"}
+        else:
+            try:
+                candidate = await handler(dict(payload))
+                result = candidate if isinstance(candidate, dict) else {}
+            except Exception as exc:  # the platform may have accepted the send before an error surfaced
+                logger.warning(
+                    "[MessageHandler] JM-09 delivery outcome unknown: delivery_id=%s error_type=%s",
+                    delivery_id,
+                    type(exc).__name__,
+                )
+                result = {"outcome": "unknown", "error_code": "GATEWAY_DELIVERY_ERROR"}
+
+        outcome = result.get("outcome")
+        if outcome not in {"delivered", "failed", "unknown", "pending"}:
+            outcome = "unknown"
+        external_message_id = result.get("external_message_id")
+        if outcome == "delivered" and not (
+            isinstance(external_message_id, str) and external_message_id.strip()
+        ):
+            outcome = "unknown"
+        ack = {
+            "delivery_id": delivery_id,
+            "stage": stage,
+            "outcome": outcome,
+            "external_message_id": external_message_id if outcome == "delivered" else None,
+            "error_code": result.get("error_code") if outcome != "delivered" else None,
+        }
+        envelope = E2AEnvelope(
+            request_id=f"jm09_ack_{uuid4().hex}",
+            channel="feishu",
+            method=ReqMethod.JIUWENMATE_DELIVERY_ACK.value,
+            params=ack,
+        )
+        try:
+            response = await self.agent_client.send_request(envelope)
+            if not getattr(response, "ok", False):
+                logger.warning("[MessageHandler] JM-09 ACK was not persisted: delivery_id=%s", delivery_id)
+        except Exception as exc:
+            logger.warning(
+                "[MessageHandler] JM-09 ACK request failed: delivery_id=%s error_type=%s",
+                delivery_id,
+                type(exc).__name__,
+            )
 
     async def _handle_trajectory_update_push(
         self,

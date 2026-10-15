@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from jiuwenswarm.server.jiuwenmate.execution_models import (
     AccessSnapshot,
     ConversationRef,
+    RequestRecord,
+    RequestRouteSnapshot,
     build_execution_context,
 )
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
@@ -50,7 +53,13 @@ SNAPSHOT = publish_spec(
 )
 
 
-def accept_and_start(repository: ExecutionRepository, conversation_key: str, source_ref: str):
+def accept_and_start(
+    repository: ExecutionRepository,
+    conversation_key: str,
+    source_ref: str,
+    *,
+    route_snapshot: RequestRouteSnapshot | None = None,
+):
     session = repository.resolve_session(NS, AGENT, ConversationRef.web(conversation_key), now=NOW)
     state, _ = repository.accept_request(
         session,
@@ -59,6 +68,7 @@ def accept_and_start(repository: ExecutionRepository, conversation_key: str, sou
         access=ACCESS,
         request_input=core.RequestInput(kind="scheduled", text="整理进展", reply_target="reply-1"),
         received_at=NOW,
+        route_snapshot=route_snapshot,
     )
     execution = repository.start_execution(NS, state.record.request_id, now=NOW)
     return build_execution_context(state.record, execution, capability_snapshot=SNAPSHOT.enabled_features)
@@ -263,6 +273,303 @@ async def test_final_stores_a_candidate_still_in_the_queue(tmp_path):
     await queue.aclose()
 
 
+async def test_final_and_feishu_delivery_are_recorded_atomically_and_idempotently(host):
+    repository, _, port = host
+    route = RequestRouteSnapshot(
+        channel="feishu",
+        app_id="cli_bound",
+        target_id="oc_group",
+        source_message_id="om_source",
+        source_reply_to="om_parent",
+    )
+    execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route)
+    proposed, finished = candidate(execution, 1), final(execution, 2)
+
+    await port.record(execution, proposed)
+    await port.record(execution, finished)
+    first = repository.result_deliveries(NS, execution.request_id)
+    await port.record(execution, finished)
+    again = repository.result_deliveries(NS, execution.request_id)
+
+    assert len(first) == len(again) == 1
+    assert first[0]["status"] == "pending"
+    assert first[0]["channel"] == "feishu" and first[0]["target_id"] == "oc_group"
+    assert first[0]["output_id"] == "out-1" and first[0]["execution_id"] == execution.execution_id
+    assert first[0]["delivery_id"] == again[0]["delivery_id"]
+    assert first[0]["idempotency_key"] == again[0]["idempotency_key"]
+
+
+async def test_web_delivery_is_available_only_for_final_adopted_message_outputs(host):
+    repository, _, port = host
+    route = RequestRouteSnapshot(channel="web", target_id="conv-1", source_message_id="web-msg")
+    execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route)
+
+    await port.record(execution, candidate(execution, 1, output_id="unadopted"))
+    await port.record(execution, final(execution, 2, output_refs=()))
+
+    assert repository.result_deliveries(NS, execution.request_id) == []
+
+
+async def test_claimed_feishu_delivery_carries_the_accepted_route_and_can_be_acknowledged(host):
+    repository, _, port = host
+    route = RequestRouteSnapshot(
+        channel="feishu",
+        app_id="cli_bound",
+        target_id="oc_group",
+        source_message_id="om_source",
+        source_reply_to="om_parent",
+    )
+    execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route)
+    await port.record(execution, candidate(execution, 1))
+    await port.record(execution, final(execution, 2))
+
+    jobs = repository.claim_pending_result_deliveries(NS, limit=10, now=NOW)
+
+    assert len(jobs) == 1
+    assert jobs[0]["app_id"] == "cli_bound" and jobs[0]["target_id"] == "oc_group"
+    assert jobs[0]["source_message_id"] == "om_source" and jobs[0]["source_reply_to"] == "om_parent"
+    assert jobs[0]["text"] == "进展如下" and jobs[0]["attempt_count"] == 1
+    delivery_id = jobs[0]["delivery_id"]
+    repository.update_result_delivery(
+        NS,
+        delivery_id,
+        outcome="delivered",
+        external_message_id="om_reply",
+        error_code=None,
+        now=NOW,
+    )
+    repository.update_result_delivery(
+        NS,
+        delivery_id,
+        outcome="delivered",
+        external_message_id="om_reply",
+        error_code=None,
+        now=NOW,
+    )
+
+    row = repository.result_deliveries(NS, execution.request_id)[0]
+    assert row["status"] == "delivered" and row["external_message_id"] == "om_reply"
+
+
+async def test_sending_delivery_after_restart_becomes_unknown_not_retriable(host):
+    repository, _, port = host
+    route = RequestRouteSnapshot(channel="feishu", app_id="cli_bound", target_id="oc_group", source_message_id="om_1")
+    execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route)
+    await port.record(execution, candidate(execution, 1))
+    await port.record(execution, final(execution, 2))
+    repository.claim_pending_result_deliveries(NS, limit=10, now=NOW)
+
+    repository.recover_sending_result_deliveries(NS, now=NOW + timedelta(minutes=1))
+    jobs = repository.claim_pending_result_deliveries(NS, limit=10, now=NOW + timedelta(minutes=1))
+
+    row = repository.result_deliveries(NS, execution.request_id)[0]
+    assert row["status"] == "unknown" and jobs == []
+
+
+async def test_unknown_delivery_cannot_be_reset_to_pending(host):
+    repository, _, port = host
+    route = RequestRouteSnapshot(channel="feishu", app_id="cli_bound", target_id="oc_group", source_message_id="om_1")
+    execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route)
+    await port.record(execution, candidate(execution, 1))
+    await port.record(execution, final(execution, 2))
+    job = repository.claim_pending_result_deliveries(NS, limit=10, now=NOW)[0]
+    repository.update_result_delivery(
+        NS,
+        job["delivery_id"],
+        outcome="unknown",
+        external_message_id=None,
+        error_code="ACK_TIMEOUT",
+        now=NOW,
+    )
+
+    with pytest.raises(PersistentAgentError) as caught:
+        repository.update_result_delivery(
+            NS,
+            job["delivery_id"],
+            outcome="pending",
+            external_message_id=None,
+            error_code="RETRY",
+            now=NOW,
+        )
+
+    assert caught.value.code == "CONFLICT"
+    assert repository.result_deliveries(NS, execution.request_id)[0]["status"] == "unknown"
+
+
+async def test_delivery_service_persists_the_gateway_receipt(host):
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    repository, _, port = host
+    route = RequestRouteSnapshot(channel="feishu", app_id="cli_bound", target_id="oc_group", source_message_id="om_1")
+    execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route)
+    await port.record(execution, candidate(execution, 1))
+    await port.record(execution, final(execution, 2))
+    sent = []
+
+    async def send(job):
+        sent.append(job)
+        return {
+            "delivery_id": job["delivery_id"],
+            "stage": "send",
+            "outcome": "delivered",
+            "external_message_id": "om_reply",
+        }
+
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=send, clock=lambda: NOW)
+
+    assert await service.dispatch_pending() == 1
+
+    row = repository.result_deliveries(NS, execution.request_id)[0]
+    assert sent[0]["app_id"] == "cli_bound" and sent[0]["text"] == "进展如下"
+    assert row["status"] == "delivered" and row["external_message_id"] == "om_reply"
+
+
+async def test_unsent_batch_deliveries_remain_pending_when_worker_is_cancelled(host):
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    repository, _, port = host
+    route = RequestRouteSnapshot(channel="feishu", app_id="cli_bound", target_id="oc_group", source_message_id="om_1")
+    execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route)
+    await port.record(execution, candidate(execution, 1, output_id="out-1"))
+    await port.record(execution, candidate(execution, 2, output_id="out-2", text="第二条"))
+    await port.record(execution, final(execution, 3, output_refs=("out-1", "out-2")))
+    started = asyncio.Event()
+    sent_ids = []
+
+    async def send(job):
+        sent_ids.append(job["delivery_id"])
+        if len(sent_ids) == 1:
+            started.set()
+            await asyncio.Event().wait()
+        return {
+            "delivery_id": job["delivery_id"],
+            "stage": "send",
+            "outcome": "delivered",
+            "external_message_id": f"om_{job['output_id']}",
+        }
+
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=send, clock=lambda: NOW)
+    dispatch = asyncio.create_task(service.dispatch_pending())
+    await started.wait()
+    dispatch.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await dispatch
+
+    repository.recover_sending_result_deliveries(NS, now=NOW + timedelta(minutes=1))
+    rows = repository.result_deliveries(NS, execution.request_id)
+    assert [row["status"] for row in rows] == ["unknown", "pending"]
+    assert await service.dispatch_pending() == 1
+    assert len(sent_ids) == 2
+    assert [row["status"] for row in repository.result_deliveries(NS, execution.request_id)] == [
+        "unknown",
+        "delivered",
+    ]
+
+
+async def test_pending_gateway_ack_is_persisted_and_idempotent(host):
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    repository, _, port = host
+    route = RequestRouteSnapshot(channel="feishu", app_id="cli_bound", target_id="oc_group", source_message_id="om_1")
+    execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route)
+    await port.record(execution, candidate(execution, 1, output_id="out-1"))
+    await port.record(execution, candidate(execution, 2, output_id="out-2", text="第二条"))
+    await port.record(execution, final(execution, 3, output_refs=("out-1", "out-2")))
+    calls = 0
+    service = None
+
+    async def send(job):
+        nonlocal calls
+        calls += 1
+        if job["output_id"] == "out-2":
+            return {
+                "delivery_id": job["delivery_id"],
+                "stage": "send",
+                "outcome": "delivered",
+                "external_message_id": "om_reply",
+            }
+        ack = {
+            "delivery_id": job["delivery_id"],
+            "stage": "send",
+            "outcome": "pending",
+            "error_code": "FEISHU_APP_NOT_CONNECTED",
+        }
+        await service.apply_ack(ack)
+        return ack
+
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=send, clock=lambda: NOW)
+
+    assert await service.dispatch_pending() == 2
+    rows = repository.result_deliveries(NS, execution.request_id)
+    assert [row["status"] for row in rows] == ["pending", "delivered"]
+    assert rows[0]["error_code"] == "FEISHU_APP_NOT_CONNECTED"
+    assert all(row["attempt_count"] == 1 for row in rows)
+    assert calls == 2
+
+
+async def test_final_commit_wakes_delivery_worker_after_ledger_is_durable(tmp_path):
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    repository = ExecutionRepository(tmp_path / "agents.sqlite3")
+    queue = CommitQueue(repository)
+    sent = []
+    route = RequestRouteSnapshot(
+        channel="feishu", app_id="cli_bound", target_id="oc_group", source_message_id="om_source"
+    )
+    execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route)
+
+    async def send(job):
+        sent.append(job)
+        assert repository.result_deliveries(NS, execution.request_id)[0]["status"] == "sending"
+        return {
+            "delivery_id": job["delivery_id"],
+            "stage": "send",
+            "outcome": "delivered",
+            "external_message_id": "om_reply",
+        }
+
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=send)
+    port = HostCommitPort(repository, queue, observer=service.observe)
+    await queue.start()
+    await service.start()
+    try:
+        await port.record(execution, candidate(execution, 1))
+        await port.record(execution, final(execution, 2))
+        for _ in range(100):
+            rows = repository.result_deliveries(NS, execution.request_id)
+            if rows and rows[0]["status"] == "delivered":
+                break
+            await asyncio.sleep(0.01)
+        assert len(sent) == 1
+        assert repository.result_deliveries(NS, execution.request_id)[0]["external_message_id"] == "om_reply"
+    finally:
+        await service.aclose()
+        await queue.aclose()
+
+
+async def test_delivery_service_does_not_blindly_retry_unknown_platform_results(host):
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    repository, _, port = host
+    route = RequestRouteSnapshot(channel="feishu", app_id="cli_bound", target_id="oc_group", source_message_id="om_1")
+    execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route)
+    await port.record(execution, candidate(execution, 1))
+    await port.record(execution, final(execution, 2))
+    calls = 0
+
+    async def send(job):
+        nonlocal calls
+        calls += 1
+        return {"delivery_id": job["delivery_id"], "stage": "send", "outcome": "unknown"}
+
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=send, clock=lambda: NOW)
+
+    assert await service.dispatch_pending() == 1
+    assert await service.dispatch_pending() == 0
+    assert calls == 1
+    assert repository.result_deliveries(NS, execution.request_id)[0]["status"] == "unknown"
+
+
 async def test_resubmitted_candidate_and_final_keep_their_ids(host):
     repository, queue, port = host
     execution = accept_and_start(repository, "conv-1", "msg-1")
@@ -367,6 +674,17 @@ async def test_port_satisfies_the_core_contract(host):
     _, _, port = host
 
     core.PersistentPorts(commit=port, budget=FakeBudget(), window_backend=InMemoryKVStore()).validate()
+
+
+async def test_request_record_without_route_snapshot_remains_readable(host):
+    repository, _, _ = host
+    execution = accept_and_start(repository, "conv-1", "msg-1")
+    stored = repository.get_request(NS, execution.request_id).record.to_dict()
+    stored.pop("route_snapshot", None)
+
+    restored = RequestRecord.from_dict(stored)
+
+    assert restored.route_snapshot is None
 
 
 async def test_observer_sees_recorded_events_and_cannot_break_recording(tmp_path):

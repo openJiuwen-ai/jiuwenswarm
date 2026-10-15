@@ -56,6 +56,9 @@ class ChannelManager(ABC):
         on_config_updated: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._message_handler = message_handler
+        set_delivery_handler = getattr(message_handler, "set_jm09_delivery_handler", None)
+        if callable(set_delivery_handler):
+            set_delivery_handler(self.deliver_jm09_persistent_result)
         self._channels: dict[ChannelKey, "BaseChannel"] = {}
         self._dispatch_task: asyncio.Task | None = None
         self._running = False
@@ -74,6 +77,40 @@ class ChannelManager(ABC):
         self._dispatch_diag_count: int = 0
         # Channel 连接事件订阅回调列表
         self._channel_event_callbacks: list[Callable[[ChannelEvent], Awaitable[None]]] = []
+
+    async def deliver_jm09_persistent_result(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Resolve exactly one active Feishu app; never fall back to another Bot."""
+        app_id = payload.get("app_id")
+        chat_id = payload.get("chat_id")
+        text = payload.get("text")
+        idempotency_key = payload.get("idempotency_key")
+        if not all(isinstance(value, str) and value.strip() for value in (app_id, chat_id, text, idempotency_key)):
+            return {"outcome": "failed", "error_code": "INVALID_DELIVERY_ROUTE"}
+
+        matches = [
+            channel
+            for key, channel in self._channels.items()
+            if key.app_id == app_id and callable(getattr(channel, "send_persistent_result", None))
+        ]
+        if not matches:
+            return {"outcome": "pending", "error_code": "FEISHU_APP_NOT_CONNECTED"}
+        if len(matches) != 1:
+            return {"outcome": "failed", "error_code": "FEISHU_APP_AMBIGUOUS"}
+
+        try:
+            return await matches[0].send_persistent_result(
+                chat_id=chat_id,
+                text=text,
+                source_message_id=payload.get("source_message_id"),
+                idempotency_key=idempotency_key,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[ChannelManager] JM-09 Feishu send outcome unknown: app_id=%s error_type=%s",
+                app_id,
+                type(exc).__name__,
+            )
+            return {"outcome": "unknown", "error_code": "FEISHU_SEND_ERROR"}
 
     @staticmethod
     def _resolve_app_id(channel: Any) -> str:

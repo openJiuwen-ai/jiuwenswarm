@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -202,10 +202,13 @@ def resolve_feishu_access(
 
 def create_default_persistent_group_fanout(
     data_dir: Path | None = None,
+    *,
+    send_delivery: Callable[[dict[str, object]], Awaitable[Mapping[str, Any] | None]] | None = None,
 ) -> tuple[PersistentGroupFanout, AgentManager]:
     """Build JM-08 on the owner's private JiuwenMate SQLite store and JM-07 manager."""
     from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
     from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
     from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
     from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
     from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
@@ -218,7 +221,12 @@ def create_default_persistent_group_fanout(
     groups = GroupChatRepository(db_path)
     windows = WindowBackendStore(db_path)
     budgets = BudgetRepository(db_path)
-    manager = AgentManager(service, sessions, windows, budgets)
+    delivery_service = (
+        ResultDeliveryService(sessions, namespace_id="local", send_delivery=send_delivery)
+        if send_delivery is not None
+        else None
+    )
+    manager = AgentManager(service, sessions, windows, budgets, delivery_service=delivery_service)
     fanout = PersistentGroupFanout(
         service=service,
         groups=groups,
