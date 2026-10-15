@@ -12,7 +12,7 @@ JiuwenSwarm 基于 openJiuwen Agent Protocol 的 A4P SDK 提供该能力，目�
 
 ## 开启与使用
 
-在 **设置 → 实验功能 → A4P 意图授权** 中开启。默认关闭，也可在 `config.yaml` 中配置：
+在 **设置 → 实验功能 → A4P 预授权** 中开启。默认关闭，仅在“默认权限”模式下生效；**开启后，定时任务运行时也接入权限护栏。**也可在 `config.yaml` 中配置：
 
 ```yaml
 a4p:
@@ -31,17 +31,17 @@ a4p:
 1. 向 Agent 描述任务，明确执行时间、周期、持续时间及操作目标。
 2. Agent 创建未启用的定时任务，并申请覆盖未来执行所需范围的授权，卡片展示任务信息、授权原因、工具和参数范围。
 3. 用户确认授权范围，可以批准全部或部分操作，也可以拒绝；只有取得覆盖任务所需操作的授权后，Agent 才启用任务。
-4. 定时任务执行时，自动查找该任务绑定的授权并校验工具调用。
+4. 定时任务执行时，先按权限规则判断：`allow` 直接放行，`deny` 直接拒绝，`ask` 自动查找该任务绑定的授权并校验工具调用，不弹出交互审批卡片。
 
 ## 授权流程
 
-以下流程中，工具调用时序以进入 A4P 权限确认环节为前提，省略此前的权限规则决策。
+以下流程中，工具调用时序以权限规则判定为 `ask`、进入 A4P 权限确认环节为前提，省略此前 `allow` 直接放行、`deny` 直接拒绝的权限规则决策。
 
 ### 会话预授权
 
 #### 阶段一：申请并确认授权
 
-Agent 集中申请当前已明确的操作范围。用户在 Web 卡片中确认后，A4P Server 签发凭证，由 Runtime 保存到当前会话；拒绝或超时则返回失败原因。
+Agent 集中申请当前已明确的操作范围。用户在 Web 卡片中确认后，A4P Server 签发凭证，由 Runtime 保存到当前会话；拒绝或超时则返回失败原因。主动申请与执行时的权限判断是两个环节：当前提示词及申请接口不会按权限规则排除 `allow` 工具，因此这类工具仍可能被 Agent 纳入授权申请，但实际执行时无需 A4P token 即可放行。
 
 ```mermaid
 sequenceDiagram
@@ -151,7 +151,7 @@ sequenceDiagram
 
 #### 阶段二：定时执行时校验
 
-任务触发后，系统按任务 ID 查找绑定凭证。有效且匹配的调用继续执行；缺失、过期或不匹配时直接拒绝，不再等待交互审批。
+开启 A4P 且权限护栏启用时，单 Agent 和团队定时任务均接入权限规则判断：`allow` 直接放行，`deny` 直接拒绝，只有 `ask` 调用按任务 ID 查找绑定凭证。有效且匹配的调用继续执行；任务 ID 缺失、凭证缺失、过期、不匹配或校验异常时直接拒绝，不再等待交互审批，也不回退使用会话凭证。
 
 ```mermaid
 sequenceDiagram
@@ -163,7 +163,7 @@ sequenceDiagram
     participant Agent as LLM Agent
 
     Cron->>Agent: 触发 cron job(metadata.cron.job_id=job.id)
-    Agent->>Rail: 调用需要 host 确认的工具
+    Agent->>Rail: 调用权限规则判定为 ask 的工具
     Rail->>Runtime: find_valid_cron_intent_token(job.id, identity, action, params)
     Runtime->>Store: 查询 job.id 对应 token
     Store-->>Runtime: intent token / 无 token
@@ -216,5 +216,5 @@ sequenceDiagram
 
 ## 使用边界
 
-- A4P 与现有权限护栏协作：已有允许规则可能先行放行，显式拒绝规则仍然有效；只有进入相应权限确认环节的调用才使用 A4P 校验。ACP、TUI、CLI 的权限行为不变。
+- A4P 与现有权限护栏协作：`allow` 直接放行且不校验 A4P token，`deny` 直接拒绝且不能被 token 覆盖，只有 `ask` 调用进入 A4P 校验。关闭 A4P 时，定时任务保持原有跳过该权限护栏的行为；关闭权限护栏时，A4P 不会单独启用该护栏。ACP、TUI、CLI 的权限行为不变。
 - Web 会话本轮未申请 A4P 且无匹配凭证时，仍可走普通审批；已申请但没有可用授权时，不会靠普通审批自动绕过失败。
