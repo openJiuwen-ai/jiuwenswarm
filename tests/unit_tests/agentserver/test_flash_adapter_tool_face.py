@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """flash 模式工具面单元测试：rail 白名单、react 覆盖、统一 todo / memory 工具。"""
 
@@ -115,7 +115,7 @@ def test_react_override_replaces_eager_tools_and_keeps_siblings() -> None:
         "ask_user",
         "read_file",
         "write_file",
-        "edit_file",
+        "edit_file_flash",
         "glob",
         "grep",
         "bash",

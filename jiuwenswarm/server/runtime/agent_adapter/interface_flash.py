@@ -199,7 +199,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 "ask_user",
                 "read_file",
                 "write_file",
-                "edit_file",
+                "edit_file_flash",
                 "glob",
                 "grep",
                 "bash",
@@ -698,7 +698,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         eager_tools = list(configured) if isinstance(configured, list) else list(
             _DEFAULT_PROGRESSIVE_EAGER_TOOLS
         )
-        replaced_tool_names = {"web_search", "fetch_webpage"} | set(
+        # edit_file → edit_file_flash 与 web_search → web_flash 同款：flash
+        # 替换 stock 工具时工具名带 _flash 后缀，eager 清单里移除 stock 名、
+        # 追加 flash 名（部署侧旧运行时配置仍写 edit_file 时也归一到位）。
+        replaced_tool_names = {"web_search", "fetch_webpage", "edit_file"} | set(
             _CRON_TOOL_NAMES
         )
         retained_tools = []
@@ -707,7 +710,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 continue
             retained_tools.append(name)
         eager_tools = retained_tools
-        for name in ("web_flash", "cron_flash"):
+        for name in ("web_flash", "cron_flash", "edit_file_flash"):
             if name not in eager_tools:
                 eager_tools.append(name)
         lazy_config["eager_tools"] = eager_tools

@@ -1,10 +1,10 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """flash 文件元数据侧车缓存（snapshot-bound sidecar）。
 
 agent-core 的读注册表（``_FILE_READ_REGISTRY``）只保存 LF 归一化后的文本
 内容，原始字节里的 sha256 / EOL / 编码在读取时被丢弃。本模块在 flash 读
-文件时顺手把这三样元数据补记下来，供 FlashEditFileTool 在"缓存命中"路
+文件时顺手把这三样元数据补记下来，供 EditFileFlashTool 在"缓存命中"路
 径上零读盘匹配，并把 CAS 乐观锁哈希（``expected_content_sha256``）原样
 传给 fs 层——竞态防护与 stock 每次全量读的方案完全等价。
 

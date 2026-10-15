@@ -1,6 +1,6 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""FlashEditFileTool 单测：缓存命中零读盘 / 回退路径 / hunks 原子性 / JSONL history。
+"""EditFileFlashTool 单测：缓存命中零读盘 / 回退路径 / hunks 原子性 / JSONL history。
 
 覆盖验收项（见 flash-editfile-io-analysis-and-optimization.md §7）：
 - flash read → flash edit 同文件链路（缓存命中时工具层零 fs 读）；
@@ -32,7 +32,7 @@ from openjiuwen.harness.tools.filesystem import (
 )
 
 from jiuwenswarm.agents.harness.flash.tools import flash_file_history
-from jiuwenswarm.agents.harness.flash.tools.flash_edit_tool import FlashEditFileTool
+from jiuwenswarm.agents.harness.flash.tools.edit_file_flash import EditFileFlashTool
 from jiuwenswarm.agents.harness.flash.tools.flash_file_meta import clear_file_meta_cache
 from jiuwenswarm.agents.harness.flash.tools.flash_read_tool import FlashReadFileTool
 
@@ -96,7 +96,7 @@ def _isolate_registries():
 @pytest_asyncio.fixture(name="sys_op")
 async def sys_op_fixture():
     await Runner.start()
-    card_id = "test_flash_edit_tool_op"
+    card_id = "test_edit_file_flash_op"
     card = SysOperationCard(
         id=card_id,
         mode=OperationMode.LOCAL,
@@ -119,7 +119,7 @@ def temp_dir():
 def _make_tools(sys_op):
     proxy = _CountingOpProxy(sys_op)
     read_tool = FlashReadFileTool(proxy)
-    edit_tool = FlashEditFileTool(proxy)
+    edit_tool = EditFileFlashTool(proxy)
     return read_tool, edit_tool, proxy
 
 
@@ -181,7 +181,7 @@ async def test_fresh_read_fallback_without_sidecar(sys_op, temp_dir):
     """stock read_file 只填 registry 不填侧车 → edit 应回退一次全量读并成功。"""
     proxy = _CountingOpProxy(sys_op)
     stock_read = ReadFileTool(proxy)
-    edit_tool = FlashEditFileTool(proxy)
+    edit_tool = EditFileFlashTool(proxy)
     file_path = os.path.join(temp_dir, "fallback.txt")
     Path(file_path).write_text("aaa\nbbb\n", encoding="utf-8")
 
@@ -325,7 +325,7 @@ async def test_create_new_file(sys_op, temp_dir):
 async def test_history_jsonl_appended_purely(sys_op, temp_dir, monkeypatch):
     """history 纯追加：多次编辑逐行追加，不重写旧行；schema 与 stock 对齐。"""
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.flash.tools.flash_edit_tool.get_current_session",
+        "jiuwenswarm.agents.harness.flash.tools.edit_file_flash.get_current_session",
         lambda: _FakeSession(),
     )
     monkeypatch.setattr(flash_file_history, "get_workspace", lambda: str(temp_dir))
@@ -384,3 +384,10 @@ async def test_multi_file_read_registers_state_for_edit(sys_op, temp_dir):
         assert result.success is True, result.error
 
     assert proxy.fs_proxy.read_calls == reads_after_read, "多文件读注册后编辑同样零读盘"
+
+
+async def test_tool_card_name_follows_flash_suffix_convention(sys_op):
+    """工具命名对齐 web_flash / cron_flash 规范：flash 定制工具带 _flash 后缀。"""
+    _, edit_tool, _ = _make_tools(sys_op)
+
+    assert edit_tool.card.name == "edit_file_flash"

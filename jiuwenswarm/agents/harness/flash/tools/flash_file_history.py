@@ -1,10 +1,10 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """flash 文件操作的 JSONL history（热路径纯追加 + 低频原子重写）。
 
 stock 的 ``_append_op_history``（agent-core，冻结）每次操作都要
 json.load 整个历史 → append → json.dump 整文件原子替换，单次成本
-O(全部历史)，长会话内随编辑次数二次方恶化。flash edit_file 改为独立
+O(全部历史)，长会话内随编辑次数二次方恶化。flash edit_file_flash 改为独立
 JSONL 账本：
 
 - **热路径（每次编辑）**：``append_flash_history_entry`` 纯追加一行，

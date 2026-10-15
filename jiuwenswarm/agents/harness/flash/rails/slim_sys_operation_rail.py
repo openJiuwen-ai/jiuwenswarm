@@ -34,8 +34,8 @@ class SlimSysOperationRail(SysOperationRail):
             WriteFileTool,
         )
 
+        from ..tools.edit_file_flash import EditFileFlashTool
         from ..tools.flash_bash_tool import FlashBashTool
-        from ..tools.flash_edit_tool import FlashEditFileTool
         from ..tools.flash_glob_tool import FlashGlobTool
         from ..tools.flash_read_tool import FlashReadFileTool
 
@@ -52,7 +52,7 @@ class SlimSysOperationRail(SysOperationRail):
             enable_image_multimodal=enable_read_image_multimodal,
         )
         write_tool = WriteFileTool(self.sys_operation, lang, agent_id)
-        edit_tool = FlashEditFileTool(self.sys_operation, lang, agent_id)
+        edit_tool = EditFileFlashTool(self.sys_operation, lang, agent_id)
         glob_tool = FlashGlobTool(self.sys_operation, lang, agent_id)
         grep_tool = GrepTool(self.sys_operation, lang, agent_id)
         bash_tool = FlashBashTool(

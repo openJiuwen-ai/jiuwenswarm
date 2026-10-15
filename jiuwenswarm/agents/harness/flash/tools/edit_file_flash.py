@@ -1,6 +1,10 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""FlashEditFileTool — EditFileTool 的 flash 增强版。
+"""EditFileFlashTool — EditFileTool 的 flash 定制版（工具名 edit_file_flash）。
+
+工具命名对齐 web_flash / cron_flash 规范：flash 模式替换 stock 工具时
+带 ``_flash`` 后缀（interface_flash 的 eager 清单同步移除 stock 名、
+追加本名，与 web_search → web_flash 同款机制）。
 
 在不修改 agent-core 的前提下，对 stock EditFileTool 的三处 I/O 浪费做
 "语义不变、路径变短"的覆写（设计论证见仓库根
@@ -55,7 +59,7 @@ from openjiuwen.harness.tools.filesystem import (
 from .flash_file_history import append_flash_history_entry, build_flash_history_path
 from .flash_file_meta import get_file_meta, pop_file_meta, record_written_meta
 
-FLASH_EDIT_DESCRIPTION: Dict[str, str] = {
+EDIT_FILE_FLASH_DESCRIPTION: Dict[str, str] = {
     "cn": (
         "文件精确编辑工具。用 old_string 在文件中定位要修改的片段并替换为 "
         "new_string，非 replace_all 时 old_string 必须在文件中恰好出现一次"
@@ -76,7 +80,7 @@ FLASH_EDIT_DESCRIPTION: Dict[str, str] = {
 }
 
 
-def get_flash_edit_input_params(language: str = "cn") -> Dict[str, Any]:
+def get_edit_file_flash_input_params(language: str = "cn") -> Dict[str, Any]:
     if language == "en":
         return {
             "type": "object",
@@ -159,16 +163,25 @@ def get_flash_edit_input_params(language: str = "cn") -> Dict[str, Any]:
     }
 
 
-class FlashEditFileTool(EditFileTool):
+class EditFileFlashTool(EditFileTool):
     """EditFileTool with snapshot-cache matching, JSONL history and hunks."""
 
     def __init__(self, operation, language: str = "cn", agent_id: Optional[str] = None):
         super().__init__(operation, language, agent_id)
+        # 工具名对齐 web_flash / cron_flash 规范（_flash 后缀）。stock 基类经
+        # build_tool_card 以 "edit_file" 建 card，而其名称注册表只认 agent-core
+        # 内置工具名（edit_file_flash 会 KeyError），故走事后改写——与
+        # FlashReadFileTool 覆写 card.description 同款方式，不重建 card；
+        # id 前缀同步替换、后缀（agent_id/uuid）保留。interface_flash 的
+        # eager 清单同步移除 stock 名、追加 edit_file_flash。
+        self.card.name = "edit_file_flash"
+        if isinstance(self.card.id, str) and self.card.id.startswith("EditFileTool_"):
+            self.card.id = "EditFileFlashTool_" + self.card.id[len("EditFileTool_"):]
         lang = language or "cn"
-        self.card.description = FLASH_EDIT_DESCRIPTION.get(
-            lang, FLASH_EDIT_DESCRIPTION["cn"]
+        self.card.description = EDIT_FILE_FLASH_DESCRIPTION.get(
+            lang, EDIT_FILE_FLASH_DESCRIPTION["cn"]
         )
-        self.card.input_params = get_flash_edit_input_params(lang)
+        self.card.input_params = get_edit_file_flash_input_params(lang)
 
     # ------------------------------------------------------------------
     # Input normalization
@@ -288,7 +301,7 @@ class FlashEditFileTool(EditFileTool):
             if office_ext not in _OFFICE_WRITE_EXTENSIONS:
                 return ToolOutput(
                     success=False,
-                    error=_office_write_unsupported_error(file_path, "edit_file"),
+                    error=_office_write_unsupported_error(file_path, "edit_file_flash"),
                 )
 
         for idx, (hunk_old, hunk_new, _) in enumerate(hunks):
@@ -567,7 +580,7 @@ class FlashEditFileTool(EditFileTool):
                     from openjiuwen.core.common.logging import logger
 
                     logger.warning(
-                        "[FlashEditFileTool] Failed to append flash history: %s", exc
+                        "[EditFileFlashTool] Failed to append flash history: %s", exc
                     )
 
         return ToolOutput(
@@ -584,4 +597,4 @@ class FlashEditFileTool(EditFileTool):
         yield await self.invoke(inputs, **kwargs)
 
 
-__all__ = ["FlashEditFileTool"]
+__all__ = ["EditFileFlashTool"]

@@ -1,4 +1,4 @@
-# 配置架构版本（用户 override 首次写入 version 时从本模板拷贝；迁移脚本可比对）
+﻿# 配置架构版本（用户 override 首次写入 version 时从本模板拷贝；迁移脚本可比对）
 version: 1.0
 
 # Agent 配置来源：yaml 仅本地配置；enterprise 合并 Gateway DB。
@@ -1316,6 +1316,7 @@ permissions:
     cron_preview_job: allow
     web_flash: allow
     cron_flash: allow
+    edit_file_flash: allow
     acp_chat: ask
     skill_acceleration_exec: ask
 
