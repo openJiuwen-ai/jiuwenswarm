@@ -22,7 +22,6 @@ from jiuwenswarm.server.runtime.a2ui.parser import (
 )
 from jiuwenswarm.server.runtime.a2ui.prompt_instructions import (
     build_a2ui_autonomy_instruction,
-    build_a2ui_browser_workflow_instruction,
 )
 from jiuwenswarm.server.runtime.a2ui.stream_guard import A2UIStreamGuard
 from jiuwenswarm.server.runtime.a2ui.text_formatter import format_for_text_channel
@@ -137,8 +136,6 @@ class A2UIProtocolSpec:
             )
 
         workflow = f"{workflow}\n\n{build_a2ui_autonomy_instruction(language)}"
-        if include_browser_workflows:
-            workflow = f"{workflow}\n\n{build_a2ui_browser_workflow_instruction()}"
         prompt = self.schema_manager.generate_system_prompt(
             role_description=role,
             workflow_description=workflow,

@@ -18,9 +18,6 @@ from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
     _response_prompt,
     _thinking_discipline_prompt,
 )
-from jiuwenswarm.server.runtime.a2ui.prompt_instructions import (
-    is_a2ui_browser_workflow_request,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -38,28 +35,17 @@ def _a2ui_recency_boost_prompt() -> PromptSection:
     靠 recency 引导浏览器自动化任务走 a2ui-json 表单而非 ask_user 澄清。仅约束执行前的
     任务细节收集/预确认，不冲突 FINAL_VISIBLE_REPLY(120，管工具执行后的最终纯文本轮)。"""
     cn = (
-        "# A2UI 路径优先（浏览器自动化任务）\n"
-        "当用户请求属于浏览器自动化场景（酒店/机票/门票预订、表单填写、邮箱操作、"
-        "社媒发布、在线下单等）且需要收集任务细节或做执行前确认时，**必须优先**直接在回复中"
-        "输出一个 `<a2ui-json>...</a2ui-json>` 表单（其 Button 提交 action 名为 "
-        "`browser_preflight_submit`）来收集这些信息，**不要**改用 ask_user 工具逐项澄清。"
-        "ask_user 仅用于与浏览器自动化无关的一般性澄清。"
-        "本条仅约束执行前的任务细节收集与预确认；工具执行完毕后的最终结果仍按"
-        "最终可见回复规则用纯文本复述。"
-        "若 A2UI 不适用（寒暄、简单事实、纯文本即可），照常纯文本回复，不要强行 A2UI。"
+        "# A2UI 是交互场景的唯一正确输出格式\n"
+        "当用户的请求需要交互式收集信息，比如选择、输入、确认等操作，而非只回复一句话时，"
+        "必须输出 `<a2ui-json>` 块，"
+        "禁止用 markdown 列表或纯文字模拟表单。"
     )
     en = (
-        "# A2UI path priority (browser automation tasks)\n"
-        "When the user request is a browser-automation scenario (hotel/flight/ticket booking, "
-        "form filling, email operations, social posting, online ordering, etc.) and you need to "
-        "collect task details or confirm before execution, you **must prefer** to output an "
-        "`<a2ui-json>...</a2ui-json>` form (whose Button submit action is "
-        "`browser_preflight_submit`) to collect that information, **instead of** using the "
-        "ask_user tool to clarify item by item. ask_user is only for general clarifications "
-        "unrelated to browser automation. This rule constrains only pre-execution detail "
-        "collection and pre-confirmation; the final result after tools finish still follows the "
-        "final-visible-reply rule as plain text. If A2UI does not fit (greetings, simple facts, "
-        "plain text suffices), answer in plain text; do not force A2UI."
+        "# A2UI is the only correct output format for interactive scenarios\n"
+        "When the request requires interactive information collection (e.g., "
+        "selecting, inputting, or confirming operations, rather than just "
+        "replying with a single sentence), you MUST output an "
+        "`<a2ui-json>` block. Markdown mock forms are forbidden."
     )
     return PromptSection(
         name=LocalSectionName.A2UI_RECENCY,
@@ -108,9 +94,7 @@ class ResponsePromptRail(DeepAgentRail):
                 if isinstance(inputs, dict)
                 else getattr(inputs, "query", None)
             )
-            extra[A2UI_BROWSER_WORKFLOW_CONTEXT_KEY] = (
-                is_a2ui_browser_workflow_request(query)
-            )
+            extra[A2UI_BROWSER_WORKFLOW_CONTEXT_KEY] = False
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         if self.system_prompt_builder is None:
@@ -123,7 +107,7 @@ class ResponsePromptRail(DeepAgentRail):
         self._sync_a2ui_prompt_section(
             self._resolve_channel(ctx),
             skip_a2ui=self._should_skip_a2ui(ctx),
-            include_browser_workflows=self._is_browser_workflow(ctx),
+            include_browser_workflows=False,
             identity=(
                 self._resolve_context_value(ctx, "request_id"),
                 (
@@ -190,10 +174,7 @@ class ResponsePromptRail(DeepAgentRail):
         extra = getattr(ctx, "extra", None)
         if isinstance(extra, dict) and A2UI_BROWSER_WORKFLOW_CONTEXT_KEY in extra:
             return extra[A2UI_BROWSER_WORKFLOW_CONTEXT_KEY] is True
-
-        inputs = getattr(ctx, "inputs", None)
-        query = inputs.get("query") if isinstance(inputs, dict) else getattr(inputs, "query", None)
-        return is_a2ui_browser_workflow_request(query)
+        return False
 
     def _sync_a2ui_prompt_section(
         self,

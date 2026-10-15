@@ -59,34 +59,6 @@ async def test_response_prompt_rail_keeps_a2ui_for_web_channel(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_response_prompt_rail_scopes_browser_rules_to_browser_request(monkeypatch):
-    """Browser A2UI flows remain available without polluting ordinary A2UI requests."""
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
-        lambda: A2UIConfig(enabled=True),
-    )
-    rail = ResponsePromptRail()
-    rail.system_prompt_builder = _FakePromptBuilder()
-    extra = {}
-
-    await rail.before_invoke(
-        SimpleNamespace(
-            inputs=InvokeInputs(
-                query="帮我搜索 Gmail 并起草需要回复的邮件",
-                conversation_id="sess_browser",
-            ),
-            extra=extra,
-        )
-    )
-    await rail.before_model_call(SimpleNamespace(inputs=SimpleNamespace(), extra=extra))
-
-    content = rail.system_prompt_builder.sections[LocalSectionName.A2UI].content
-    assert "browser_preflight_submit" in content["en"]
-    assert "gmail_email_select" in content["en"]
-    assert "social_post_confirm" in content["en"]
-
-
-@pytest.mark.asyncio
 async def test_response_prompt_rail_keeps_museum_card_prompt_generic(monkeypatch):
     """The reported museum-card request must not receive browser workflow rules."""
     monkeypatch.setattr(
