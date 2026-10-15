@@ -1,6 +1,7 @@
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import type { Message, TeamMemberContextCompressionState } from '../../types';
 import type { TeamMemberExecutionEvent, TeamTask as SessionTeamTask } from '../../stores/sessionStore';
@@ -36,7 +37,28 @@ import {
   type TeamDetailTab,
   type TeamMember,
 } from './shared';
-import { AlertTriangle, CircleAlert, LoaderCircle, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  CircleAlert,
+  ClipboardList,
+  Hand,
+  LoaderCircle,
+  RotateCcw,
+  Send,
+  Undo2,
+  X,
+  XCircle,
+  type LucideIcon,
+} from 'lucide-react';
+import {
+  buildGroupChatItems,
+  collectTimelineTitles,
+  inferLegacyHandoff,
+  type GroupChatItem,
+  type TeamHandoff,
+  type TeamTaskTimelineEntry,
+} from './groupChatTimeline';
 import { groupByWorkflowRun, type WorkflowRunGroup } from './runGrouping';
 import { RunGroupHeader } from './RunGroupHeader';
 
@@ -56,6 +78,8 @@ type TeamMembersPanelProps = {
 };
 
 type GroupMessageItem = { message: Message; event: ParsedTeamEvent };
+
+const EMPTY_TIMELINE: TeamTaskTimelineEntry[] = [];
 
 function getGroupMemberIds(members: TeamMember[]): string[] {
   return members.map((member) => member.member_id).filter((memberId) => !isTeamLeaderMember(memberId));
@@ -131,7 +155,29 @@ export function TeamMembersPanel({
   const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
   const teamLeaderMemberIds = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
-  const groupMessages = useMemo(() => buildGroupMessageItems(historyMessages, messages), [historyMessages, messages]);
+  const teamTaskTimeline = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTaskTimeline ?? EMPTY_TIMELINE);
+  const taskTitles = useMemo(() => {
+    const titles = collectTimelineTitles(teamTaskTimeline);
+    tasks.forEach((task) => {
+      if (task.title) titles.set(task.task_id, task.title);
+    });
+    return titles;
+  }, [tasks, teamTaskTimeline]);
+  const groupItems = useMemo(
+    () =>
+      buildGroupChatItems(
+        buildGroupMessageItems(historyMessages, messages).map((item) => {
+          const timestamp = getGroupMessageTime(item);
+          const { event } = item;
+          // 老历史的模板交接没有 handoff 字段，按同成员 task.started 推断交接的是哪个任务。
+          const needsInference = !event.handoff && !event.content.trim() && event.isP2P;
+          const handoff = needsInference ? inferLegacyHandoff(event.toMember, timestamp, teamTaskTimeline) : undefined;
+          return { message: handoff ? { ...item, event: { ...event, handoff } } : item, timestamp };
+        }),
+        teamTaskTimeline,
+      ),
+    [historyMessages, messages, teamTaskTimeline],
+  );
   const groupMemberNames = [t('team.leader'), ...getGroupMemberIds(members).map(getMemberDisplayName)].join(
     t('team.memberSeparator'),
   );
@@ -272,7 +318,7 @@ export function TeamMembersPanel({
       </aside>
 
       {activeDetailTab === 'group' ? (
-        <GroupChatDetail items={groupMessages} />
+        <GroupChatDetail items={groupItems} taskTitles={taskTitles} />
       ) : visibleSelectedMember ? (
         <MemberTaskDetail
           member={visibleSelectedMember}
@@ -327,7 +373,7 @@ function DetailTabSwitch({
   );
 }
 
-function GroupChatDetail({ items }: { items: GroupMessageItem[] }) {
+function GroupChatDetail({ items, taskTitles }: { items: GroupChatItem<GroupMessageItem>[]; taskTitles: Map<string, string> }) {
   const { t } = useTranslation();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
@@ -363,9 +409,17 @@ function GroupChatDetail({ items }: { items: GroupMessageItem[] }) {
           </div>
         ) : (
           <div className="mx-auto max-w-[820px] space-y-5">
-            {items.map(({ message, event }, index) => (
-              <GroupChatMessage key={`${message.id}-${event.timestamp ?? index}`} event={event} />
-            ))}
+            {items.map((item, index) =>
+              item.kind === 'message' ? (
+                <GroupChatMessage
+                  key={`${item.message.message.id}-${item.message.event.timestamp ?? index}`}
+                  event={item.message.event}
+                  taskTitles={taskTitles}
+                />
+              ) : (
+                <GroupChatTaskEventRow key={item.entries[0].id} type={item.type} entries={item.entries} taskTitles={taskTitles} />
+              ),
+            )}
           </div>
         )}
       </div>
@@ -373,10 +427,16 @@ function GroupChatDetail({ items }: { items: GroupMessageItem[] }) {
   );
 }
 
-function GroupChatMessage({ event }: { event: ParsedTeamEvent }) {
+function GroupChatMessage({ event, taskTitles }: { event: ParsedTeamEvent; taskTitles: Map<string, string> }) {
   const { t } = useTranslation();
   const displayName = getMemberDisplayName(event.fromMember);
   const isUser = isUserMember(event.fromMember);
+
+  // 模板交接消息正文为空；老历史里的这类消息没有 handoff 字段，退化为通用调度行，
+  // 也比一个只有 @ 的空白气泡强。
+  if (!event.content.trim() && (event.handoff || event.isP2P || event.isBroadcast)) {
+    return <GroupChatHandoffRow event={event} handoff={event.handoff ?? { kind: 'other' }} taskTitles={taskTitles} />;
+  }
 
   return (
     <div className={`flex items-start gap-3 ${isUser ? 'justify-end' : ''}`}>
@@ -415,6 +475,151 @@ function GroupChatMessage({ event }: { event: ParsedTeamEvent }) {
       </div>
       {isUser && <TeamMemberAvatar member={event.fromMember} className="h-8 w-8" />}
     </div>
+  );
+}
+
+function resolveTaskTitle(taskId: string | undefined, taskTitles: Map<string, string>, fallback?: string): string {
+  if (!taskId) return fallback || '';
+  return taskTitles.get(taskId) || fallback || '';
+}
+
+function GroupChatTaskRef({ taskId, title }: { taskId?: string; title?: string }) {
+  const { t } = useTranslation();
+  if (!taskId && !title) return null;
+  return (
+    <span className="min-w-0 truncate text-text" title={taskId} data-testid="team-area-group-chat-task-ref">
+      「{title || t('team.groupChatTimeline.taskFallback', { id: taskId })}」
+    </span>
+  );
+}
+
+/** 系统行外框：与消息正文列左对齐（头像 32px + 间距 12px），弱化为辅助信息。 */
+function GroupChatSystemRow({
+  icon: Icon,
+  testId,
+  variant,
+  children,
+}: {
+  icon: LucideIcon;
+  testId: string;
+  variant: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className="flex min-w-0 items-center gap-1.5 pl-11 text-xs leading-5 text-text-muted"
+      data-testid={testId}
+      data-variant={variant}
+    >
+      <Icon size={13} className="shrink-0" aria-hidden="true" />
+      {children}
+    </div>
+  );
+}
+
+function handoffLabel(t: TFunction, handoff: TeamHandoff): string {
+  if (handoff.kind === 'rework' && handoff.max_rounds) {
+    return t('team.groupChatTimeline.handoff.rework_with_limit', { max: handoff.max_rounds });
+  }
+  return t(`team.groupChatTimeline.handoff.${handoff.kind}`, {
+    defaultValue: t('team.groupChatTimeline.handoff.other'),
+  });
+}
+
+/**
+ * 调度器以 leader 身份投递的模板交接消息（content 为空，正文在收件人投递时才渲染），
+ * 在群聊里渲染成一行调度系统消息，而不是 leader 的空白聊天气泡。
+ */
+function GroupChatHandoffRow({
+  event,
+  handoff,
+  taskTitles,
+}: {
+  event: ParsedTeamEvent;
+  handoff: TeamHandoff;
+  taskTitles: Map<string, string>;
+}) {
+  const { t } = useTranslation();
+  const target = event.isBroadcast ? t('team.allMembers') : event.toMember ? getMemberDisplayName(event.toMember) : '';
+
+  return (
+    <GroupChatSystemRow icon={Send} testId="team-area-group-chat-handoff" variant={handoff.kind}>
+      <span className="shrink-0">{t('team.groupChatTimeline.scheduler')}</span>
+      {target && (
+        <span className="team-event-group-chip team-event-group-chip--p2p shrink-0 !mr-0">@{target}</span>
+      )}
+      <span className="shrink-0 font-medium text-text">{handoffLabel(t, handoff)}</span>
+      <GroupChatTaskRef
+        taskId={handoff.task_id}
+        title={resolveTaskTitle(handoff.task_id, taskTitles, handoff.task_title)}
+      />
+    </GroupChatSystemRow>
+  );
+}
+
+const TASK_EVENT_ICONS: Record<string, LucideIcon> = {
+  'team.task.created': ClipboardList,
+  'team.task.claimed': Hand,
+  'team.task.submitted_for_review': Send,
+  'team.task.verified': CheckCircle2,
+  'team.task.revision_requested': RotateCcw,
+  'team.task.completed': CheckCircle2,
+  'team.task.cancelled': XCircle,
+  'team.task.released': Undo2,
+  'team.task.revoked': Undo2,
+};
+
+/** 有执行者的事件：有成员时写「成员 + 动作」，没有时退回被动句。 */
+const ACTOR_TASK_EVENTS = new Set(['team.task.claimed', 'team.task.submitted_for_review', 'team.task.completed']);
+
+function GroupChatTaskEventRow({
+  type,
+  entries,
+  taskTitles,
+}: {
+  type: string;
+  entries: TeamTaskTimelineEntry[];
+  taskTitles: Map<string, string>;
+}) {
+  const { t } = useTranslation();
+  const action = type.replace(/^team\.task\./, '');
+  const icon = TASK_EVENT_ICONS[type] ?? ClipboardList;
+
+  if (type === 'team.task.created') {
+    const titles = entries.map((entry) => resolveTaskTitle(entry.task_id, taskTitles, entry.title) || entry.task_id);
+    return (
+      <GroupChatSystemRow icon={icon} testId="team-area-group-chat-task-event" variant={action}>
+        <span className="shrink-0">{t('team.leader')}</span>
+        <span className="shrink-0">
+          {entries.length > 1
+            ? t('team.groupChatTimeline.taskEvents.createdMany', { count: entries.length })
+            : t('team.groupChatTimeline.taskEvents.created')}
+        </span>
+        <span className="min-w-0 truncate text-text" title={titles.join('\n')}>
+          {titles.map((title) => `「${title}」`).join('')}
+        </span>
+      </GroupChatSystemRow>
+    );
+  }
+
+  const entry = entries[0];
+  const member = entry.member_id ? getMemberDisplayName(entry.member_id) : '';
+  const hasActor = ACTOR_TASK_EVENTS.has(type) && Boolean(member);
+  let text: string;
+  if (hasActor) {
+    text = t(`team.groupChatTimeline.taskEvents.${action}`);
+  } else if (ACTOR_TASK_EVENTS.has(type)) {
+    text = t(`team.groupChatTimeline.taskEvents.${action}Passive`);
+  } else {
+    text = t(`team.groupChatTimeline.taskEvents.${action}`);
+  }
+
+  return (
+    <GroupChatSystemRow icon={icon} testId="team-area-group-chat-task-event" variant={action}>
+      {hasActor && <span className="shrink-0">{member}</span>}
+      <span className="shrink-0">{text}</span>
+      <GroupChatTaskRef taskId={entry.task_id} title={resolveTaskTitle(entry.task_id, taskTitles, entry.title)} />
+    </GroupChatSystemRow>
   );
 }
 

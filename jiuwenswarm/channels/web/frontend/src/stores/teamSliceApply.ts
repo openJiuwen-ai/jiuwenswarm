@@ -53,6 +53,7 @@ export function clearTeamSnapshotProjection(sessionId: string): void {
   store.setTeamMembers(sessionId, []);
   store.setTeamTasks(sessionId, []);
   store.setTeamTaskEvents(sessionId, []);
+  store.setTeamTaskTimeline(sessionId, []);
   store.setTeamMemberExecutionEvents(sessionId, []);
   store.setTeamLeaderMemberIds(sessionId, []);
 }
