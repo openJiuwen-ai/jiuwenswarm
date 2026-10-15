@@ -343,6 +343,165 @@ async def test_stale_disconnect_does_not_clear_newer_gateway_socket(
     assert backend.disconnected == [ws_b]
 
 
+class _RecordingPushBackend:
+    def __init__(self) -> None:
+        self.attached: list[object] = []
+        self.disconnected: list[object] = []
+
+    def attach_gateway_connection(self, ws: object, send_lock: asyncio.Lock) -> None:
+        _ = send_lock
+        self.attached.append(ws)
+
+    async def dispatch_parsed_request(self, ws, request, send_lock) -> None:
+        _ = ws, request, send_lock
+
+    async def on_gateway_disconnect(self, ws: object, remote: object) -> None:
+        _ = remote
+        self.disconnected.append(ws)
+
+
+def _push_handler(monkeypatch: pytest.MonkeyPatch, backend: _RecordingPushBackend):
+    async def _send(ws, payload) -> bool:
+        _ = ws, payload
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.front.connection.send_wire_payload",
+        _send,
+    )
+    from jiuwenswarm.server.front.connection import ConnectionHandler
+    from jiuwenswarm.server.front.event_forwarder import EventForwarder
+
+    readiness = Readiness()
+    admission = ExecutionAdmission(readiness)
+    admission.attach_backend(backend)
+    forwarder = EventForwarder()
+    handler = ConnectionHandler(
+        readiness,
+        MethodRouter(readiness, admission),
+        admission,
+        forwarder=forwarder,
+    )
+    return handler, forwarder
+
+
+async def _settle() -> None:
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_rpc_connection_never_takes_or_clears_push_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.front.protocol import CONNECTION_ROLE_HEADER, CONNECTION_ROLE_RPC
+
+    backend = _RecordingPushBackend()
+    handler, forwarder = _push_handler(monkeypatch, backend)
+    close_gw = asyncio.Event()
+    close_rpc = asyncio.Event()
+    gateway = _HoldCloseWs("gateway", close_gw)
+    rpc = _HoldCloseWs("rpc", close_rpc)
+    rpc.request_headers = {CONNECTION_ROLE_HEADER: CONNECTION_ROLE_RPC}
+
+    task_gw = asyncio.create_task(handler(gateway))
+    await _settle()
+    task_rpc = asyncio.create_task(handler(rpc))
+    await _settle()
+    assert handler.current_ws is gateway
+    assert forwarder.current_ws is gateway
+
+    close_rpc.set()
+    await task_rpc
+    assert handler.current_ws is gateway
+    assert forwarder.current_ws is gateway
+    assert backend.attached == [gateway]
+    assert backend.disconnected == []
+
+    close_gw.set()
+    await task_gw
+    assert backend.disconnected == [gateway]
+
+
+@pytest.mark.asyncio
+async def test_short_connection_close_hands_push_slot_back_to_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _RecordingPushBackend()
+    handler, forwarder = _push_handler(monkeypatch, backend)
+    close_gw = asyncio.Event()
+    close_short = asyncio.Event()
+    gateway = _HoldCloseWs("gateway", close_gw)
+    short = _HoldCloseWs("short", close_short)
+
+    task_gw = asyncio.create_task(handler(gateway))
+    await _settle()
+    task_short = asyncio.create_task(handler(short))
+    await _settle()
+    assert handler.current_ws is short
+
+    close_short.set()
+    await task_short
+    assert handler.current_ws is gateway
+    assert forwarder.current_ws is gateway
+    assert backend.attached == [gateway, short, gateway]
+    assert backend.disconnected == []
+
+    close_gw.set()
+    await task_gw
+    assert handler.current_ws is None
+    assert forwarder.current_ws is None
+    assert backend.disconnected == [gateway]
+
+
+def test_connection_role_reads_legacy_and_new_handshake_headers() -> None:
+    from types import SimpleNamespace
+
+    from jiuwenswarm.server.front.connection import connection_role
+    from jiuwenswarm.server.front.protocol import CONNECTION_ROLE_HEADER
+
+    legacy = SimpleNamespace(request_headers={CONNECTION_ROLE_HEADER: " RPC "})
+    modern = SimpleNamespace(
+        request=SimpleNamespace(headers={CONNECTION_ROLE_HEADER: "rpc"}),
+    )
+    assert connection_role(legacy) == "rpc"
+    assert connection_role(modern) == "rpc"
+    assert connection_role(SimpleNamespace()) == ""
+
+
+@pytest.mark.asyncio
+async def test_skill_rpc_client_declares_rpc_connection_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    import websockets.legacy.client as legacy_client
+
+    from jiuwenswarm.server.front.protocol import CONNECTION_ROLE_HEADER, CONNECTION_ROLE_RPC
+    from jiuwenswarm.server.runtime.skill.skills_multipart_http import _AgentServerSkillWsClient
+
+    captured: dict[str, object] = {}
+
+    class _AckWs:
+        async def recv(self) -> str:
+            return json.dumps({"type": "event", "event": "connection.ack"})
+
+        async def close(self) -> None:
+            return None
+
+    async def _connect(uri: str, **kwargs: object) -> _AckWs:
+        captured["uri"] = uri
+        captured.update(kwargs)
+        return _AckWs()
+
+    monkeypatch.setattr(legacy_client, "connect", _connect)
+    client = _AgentServerSkillWsClient()
+    await client.connect("ws://127.0.0.1:18092")
+    await client.disconnect()
+
+    assert (CONNECTION_ROLE_HEADER, CONNECTION_ROLE_RPC) in list(captured["extra_headers"])
+
+
 def _history_stream_request(**params) -> AgentRequest:
     return AgentRequest(
         request_id="req-hist",
