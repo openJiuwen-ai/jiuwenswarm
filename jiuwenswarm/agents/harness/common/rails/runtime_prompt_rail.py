@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 from contextvars import ContextVar
 from pathlib import Path
@@ -29,7 +28,10 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
     SystemPromptPriority,
 )
-from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
+from jiuwenswarm.agents.harness.common.prompt.shell_environment import (
+    build_shell_environment_prompt,
+    get_shell_capabilities,
+)
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_runtime_state_path,
@@ -358,18 +360,21 @@ class RuntimePromptRail(DeepAgentRail):
 
         # ── Platform, shell, encoding, time-query and channel rules ──
         os_type = sys.platform
+        shell_capabilities = await get_shell_capabilities(os_type)
         shell_path = os.environ.get("SHELL", "")
         if os_type.startswith("win"):
             # Windows normally has no SHELL variable. Prefer the actual
             # PowerShell executable so the prompt does not report unknown.
-            shell_path = shutil.which("pwsh") or shutil.which("powershell") or ""
+            shell_path = shell_capabilities.powershell or ""
             shell_name = "PowerShell" if shell_path else "unknown"
         else:
             shell_name = os.path.basename(shell_path) if shell_path else "unknown"
         import platform as plat
         os_version = f"{plat.system()} {plat.release()}"
         env_language = "cn" if not self._force_english and self._language == "cn" else "en"
-        shell_env_prompt = build_shell_environment_prompt(env_language, os_type)
+        shell_env_prompt = build_shell_environment_prompt(
+            env_language, os_type, capabilities=shell_capabilities
+        )
 
         if not self._force_english and self._language == "cn":
             env_content = (
