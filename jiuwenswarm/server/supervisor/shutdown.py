@@ -120,7 +120,14 @@ def main() -> None:
         detach_front_process(args.detach_front)
     if args.shutdown_worker:
         result = asyncio.run(shutdown_resident_worker(timeout=max(.001, args.timeout)))
-        sys.stdout.write(json.dumps(result) + "\n")
+        result_logger = logging.Logger(f"{__name__}.result", level=logging.INFO)
+        result_handler = logging.StreamHandler(sys.stdout)
+        result_handler.setFormatter(logging.Formatter("%(message)s"))
+        result_logger.addHandler(result_handler)
+        try:
+            result_logger.info("%s", json.dumps(result))
+        finally:
+            result_handler.close()
 
 
 if __name__ == "__main__":

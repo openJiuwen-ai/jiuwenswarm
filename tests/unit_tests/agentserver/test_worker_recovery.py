@@ -13,6 +13,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 
+import psutil
 import pytest
 
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
@@ -170,10 +171,9 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
     fixture = Path(__file__).parent / "fixtures" / "worker_recovery_process.py"
     path = str(tmp_path / "worker.sock") if os.name == "nt" else f"/tmp/jw-recovery-{uuid.uuid4().hex[:12]}.sock"
     env = {**os.environ, "PYTHONPATH": str(root)}
-    # A Windows venv executable launches a second interpreter. This fixture
-    # observes the native process PID and imports no model SDK.
-    executable = getattr(sys, "_base_executable", sys.executable)
-    process = await asyncio.create_subprocess_exec(executable, str(fixture), path, cwd=root, env=env,
+    # Keep the test environment's dependencies; a Windows venv launcher may
+    # report a different PID from the interpreter serving the IPC connection.
+    process = await asyncio.create_subprocess_exec(sys.executable, str(fixture), path, cwd=root, env=env,
                                                   stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     conn = None
     reader_task = None
@@ -182,10 +182,13 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
         first = await connect_with_retry(path, timeout=10)
         original = await asyncio.wait_for(first.recv(), 3)
         assert original["kind"] == KIND_HELLO
+        assert Path(original["python_prefix"]).resolve() == Path(sys.prefix).resolve()
+        worker = psutil.Process(original["pid"])
+        assert process.pid == worker.pid or process.pid in {parent.pid for parent in worker.parents()}
         await first.close()
         conn = await connect_with_retry(path, timeout=10)
         resumed = await asyncio.wait_for(conn.recv(), 3)
-        assert resumed["pid"] == process.pid == original["pid"]
+        assert resumed["pid"] == worker.pid == original["pid"]
         assert resumed["instance"] == original["instance"]
         assert resumed["generation"] == original["generation"] + 1
         wires = []
@@ -253,7 +256,8 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
         final = await supervisor.get_runtime_snapshot(request())
         assert final["cursor"] == 2049
         assert final["is_processing"] is True
-        evidence = {"worker_pid": process.pid, "worker_instance": resumed["instance"],
+        evidence = {"worker_pid": worker.pid, "launcher_pid": process.pid, "python_prefix": original["python_prefix"],
+                    "worker_instance": resumed["instance"],
                     "persisted_across_front_reconnect": True, "replayed_frames": 2048,
                     "session_b_snapshot_ms": round(b_elapsed * 1000, 3),
                     "replayed_frames_when_b_recovered": replay_count_at_b,

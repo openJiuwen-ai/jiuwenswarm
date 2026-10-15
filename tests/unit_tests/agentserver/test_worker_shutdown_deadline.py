@@ -2,6 +2,7 @@
 """Final Worker shutdown shares one deadline, including forced exit and IPC cleanup."""
 
 import asyncio
+import json
 import subprocess
 import sys
 import time
@@ -13,6 +14,24 @@ from jiuwenswarm.server.lifecycle import Readiness
 from jiuwenswarm.server.supervisor import runtime_supervisor as supervisor_module
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
+
+
+@pytest.mark.parametrize("result", [{"ok": True, "absent": True}, {"kind": "shutdown.done", "ok": True}])
+def test_shutdown_cli_emits_one_json_line_to_stdout(monkeypatch, capsys, caplog, result):
+    from jiuwenswarm.server.supervisor import shutdown
+
+    async def shutdown_worker(*, timeout):
+        assert timeout == 2.0
+        return result
+
+    monkeypatch.setattr(sys, "argv", ["shutdown", "--shutdown-worker", "--timeout", "2"])
+    monkeypatch.setattr(shutdown, "shutdown_resident_worker", shutdown_worker)
+    shutdown.main()
+    output = capsys.readouterr()
+    assert json.loads(output.out) == result
+    assert output.out.count("\n") == 1
+    assert output.err == ""
+    assert not caplog.records
 
 
 @pytest.mark.asyncio

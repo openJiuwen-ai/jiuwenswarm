@@ -487,8 +487,6 @@ class WorkerDispatcher:
             await self._subscribe_locked(message, conn, generation)
 
     async def _subscribe_locked(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
-        import json
-
         request = load_agent_request(message.get("payload") or {})
         after = max(0, int(message.get("after") or 0))
         self._reconcile_execution_state(request)

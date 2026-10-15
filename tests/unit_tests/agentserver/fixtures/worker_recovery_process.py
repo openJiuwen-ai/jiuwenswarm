@@ -83,7 +83,7 @@ async def serve(path: str) -> None:
 
             conn.send = paced_send
             await conn.send({"kind": KIND_HELLO, "pid": os.getpid(), "generation": generation,
-                             "instance": bridge.events.instance, "runtime_loaded": True})
+                             "instance": bridge.events.instance, "runtime_loaded": True, "python_prefix": sys.prefix})
             try:
                 while await dispatcher.handle(await conn.recv(), conn):
                     pass
