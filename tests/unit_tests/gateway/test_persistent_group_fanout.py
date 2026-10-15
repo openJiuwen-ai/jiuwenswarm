@@ -223,6 +223,9 @@ async def test_group_event_maps_core_fields_and_persists_one_request(host):
     assert request.source.mention_ids == ("ou_dev",)
     assert request.source.reply_to == "om_parent"
     assert states[0].record.source_ref == "feishu:message:om_001"
+    route = states[0].record.route_snapshot
+    assert (route.channel, route.app_id, route.target_id) == ("feishu", "app-dev", "oc_project")
+    assert (route.source_message_id, route.source_reply_to) == ("om_001", "om_parent")
 
 
 @pytest.mark.asyncio

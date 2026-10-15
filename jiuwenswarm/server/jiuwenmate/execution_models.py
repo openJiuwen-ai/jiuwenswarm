@@ -77,6 +77,7 @@ class RequestRecord:
     access: AccessSnapshot
     request_input: RequestInput
     received_at: datetime
+    route_snapshot: RequestRouteSnapshot | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -101,6 +102,8 @@ class RequestRecord:
         if not isinstance(self.received_at, datetime) or self.received_at.tzinfo is None:
             raise PersistentContractError("received_at must be timezone-aware")
         object.__setattr__(self, "received_at", self.received_at.astimezone(timezone.utc))
+        if self.route_snapshot is not None and not isinstance(self.route_snapshot, RequestRouteSnapshot):
+            raise PersistentContractError("invalid Request route snapshot")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -114,6 +117,7 @@ class RequestRecord:
             "access": self.access.to_dict(),
             "request_input": self.request_input.model_dump(mode="json"),
             "received_at": self.received_at.isoformat(),
+            "route_snapshot": None if self.route_snapshot is None else self.route_snapshot.to_dict(),
         }
 
     @classmethod
@@ -121,7 +125,48 @@ class RequestRecord:
         fields = dict(data)
         fields["access"] = AccessSnapshot.from_dict(fields["access"])
         fields["received_at"] = datetime.fromisoformat(fields["received_at"])
+        route = fields.get("route_snapshot")
+        fields["route_snapshot"] = None if route is None else RequestRouteSnapshot.from_dict(route)
         return cls(**fields)
+
+
+@dataclass(frozen=True, kw_only=True)
+class RequestRouteSnapshot:
+    """The trusted delivery destination captured when a Request was accepted."""
+
+    channel: Literal["web", "feishu"]
+    target_id: str
+    app_id: str | None = None
+    source_message_id: str | None = None
+    source_reply_to: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.channel not in ("web", "feishu"):
+            raise PersistentContractError("invalid Request route channel")
+        _require_text("route target_id", self.target_id)
+        for name in ("app_id", "source_message_id", "source_reply_to"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_text(f"route {name}", value)
+        if self.channel == "feishu" and (self.app_id is None or self.source_message_id is None):
+            raise PersistentContractError("a Feishu route requires app_id and source_message_id")
+        if self.channel == "web" and self.app_id is not None:
+            raise PersistentContractError("a Web route cannot name a Feishu app_id")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "channel": self.channel,
+            "app_id": self.app_id,
+            "target_id": self.target_id,
+            "source_message_id": self.source_message_id,
+            "source_reply_to": self.source_reply_to,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RequestRouteSnapshot:
+        if not isinstance(data, dict):
+            raise PersistentContractError("invalid Request route snapshot")
+        return cls(**data)
 
 
 @dataclass(frozen=True, kw_only=True)
