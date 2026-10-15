@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 from jiuwenswarm.common.model_catalog import ModelCatalog
+from jiuwenswarm.common.reasoning_config import normalize_reasoning_level, reasoning_config_for_level
+from jiuwenswarm.common.reasoning_injector import inject_reasoning_params
 from jiuwenswarm.common.model_errors import (
     MODEL_GROUP_INVALID,
     MODEL_SELECTION_DISABLED,
@@ -76,7 +78,11 @@ class ModelSelectionResolver:
             raise ModelSelectionError(MODEL_SELECTION_DISABLED, f"model {model_id!r} is disabled")
         excluded_client_options = {"model_name", "client_provider", "api_base", "api_key"}
         options = {key: value for key, value in mcc.items() if key not in excluded_client_options}
-        defaults = {k: v for k, v in mco.items() if k != "_source"}
+        # The same request fields the legacy path sends: ``reasoning_level`` is
+        # JiuwenSwarm's hint, turned into ``reasoning``; the SDK refuses it raw.
+        defaults = inject_reasoning_params(
+            model_client_config=mcc, model_config_obj={k: v for k, v in mco.items() if k != "_source"},
+        )
         return ResolvedModel(
             model_id=model_id,
             source=source,
@@ -126,7 +132,7 @@ class ModelSelectionResolver:
                 route_id=route["route_id"],
                 model=self._model(route["model_id"], context),
                 enabled=route.get("enabled", True),
-                request_overrides=route.get("request_overrides") or {},
+                request_overrides=_request_fields(route.get("request_overrides")),
                 tpm=route.get("tpm"),
                 rpm=route.get("rpm"),
                 timeout=route.get("timeout"),
@@ -138,6 +144,15 @@ class ModelSelectionResolver:
         return ResolvedModelGroup(
             model_group_id=selected.id,
             routes=routes,
-            request_config=group.get("request_config") or {},
+            request_config=_request_fields(group.get("request_config")),
             routing=group.get("routing") or {},
         )
+
+
+def _request_fields(values: dict | None) -> dict:
+    """Request settings as the SDK takes them: ``reasoning_level`` becomes ``reasoning``."""
+    fields = dict(values or {})
+    level = normalize_reasoning_level(fields.pop("reasoning_level", None))
+    if level is not None:
+        fields["reasoning"] = reasoning_config_for_level(level)
+    return fields
