@@ -75,16 +75,27 @@ def _todo_close_nudge_message(
     frontend task segment open, so the stop explanation stays inside it.
     """
     lines = [
-        "[TODO_CLOSE_REQUIRED] 纯文本收尾被拦住：已开始的待办仍是 "
-        "in_progress，task.complete 还没发出。本轮只调用 todo_modify，"
-        "不要写给用户的正文。",
+        (
+            "[TODO_CLOSE_REQUIRED] 纯文本收尾被拦住：已开始的待办仍是 "
+            "in_progress，task.complete 还没发出。本轮只调用 todo_modify，"
+            "不要写给用户的正文。"
+        ),
         "规则：",
-        "- 这一条步骤的工作已经做完就标 completed，即使后面的步骤被缺文件、"
-        "用户跳过或等待输入卡住。",
+        (
+            "- 这一条步骤的工作已经做完就标 completed，即使后面的步骤被缺文件、"
+            "用户跳过或等待输入卡住。"
+        ),
         "- 还没开始的保持 pending。",
         "- 这一条自己的工作还没做完，不要标 completed。",
-        "- 只有用户明确放弃整件事才标 cancelled。跳过问答、等待补文件都不是放弃。",
-        "todo_modify 返回后，下一轮再发不带工具的纯文本最终回复。",
+        (
+            "- 只有整件事确定不再继续才标 cancelled"
+            "（含技能协议第 9 条的用户打断）。跳过问答、等待补文件都不是放弃。"
+        ),
+        (
+            "上一轮已经写出的正文没有送达用户，视为作废。"
+            "todo_modify 返回后，下一轮必须完整重写最终回复，"
+            "禁止用「如上所述」概括或引用上一轮。"
+        ),
         "当前已开始且仍 in_progress：",
     ]
     for raw_id, task in open_tasks:
@@ -1498,14 +1509,31 @@ class TaskExecutionRail(DeepAgentRail):
         )
 
     def _started_in_progress_tasks(self) -> list[tuple[str, dict[str, Any]]]:
-        """Started todos whose task.start segment is still open."""
+        """Todos that must be closed before a plain-text ending.
+
+        Prefer items whose ``task.start`` was emitted in this invoke. HITL
+        resume clears ``_todo_started`` / ``_active_tasks`` in
+        ``before_invoke``, while ``todo.json`` and the already-open frontend
+        segment remain. Fall back to in-progress rows on disk so a text-only
+        resume still gets the nudge.
+        """
         found: list[tuple[str, dict[str, Any]]] = []
+        seen: set[str] = set()
         for full_id in self._active_tasks:
             raw_id = full_id.removeprefix("todo:")
             if raw_id not in self._todo_started:
                 continue
             task = self._todo_map.get(raw_id)
             if task is None:
+                continue
+            if str(task.get("status", "")).lower() != "in_progress":
+                continue
+            found.append((raw_id, task))
+            seen.add(raw_id)
+        if found:
+            return found
+        for raw_id, task in self._todo_map.items():
+            if raw_id in seen:
                 continue
             if str(task.get("status", "")).lower() != "in_progress":
                 continue

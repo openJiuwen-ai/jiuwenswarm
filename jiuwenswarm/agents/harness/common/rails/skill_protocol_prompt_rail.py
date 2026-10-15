@@ -46,7 +46,7 @@ _CN_PROTOCOL = """## 技能执行规范（强制）
    - ✅ 正确：`[write_file(...), todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]`
    - ❌ 禁止：`[todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]` ← 独占一轮，浪费 LLM 调用
    - 唯一例外：纯文本最终回复的前一轮。若仍有 `in_progress`，这一轮必须单独调 `todo_modify`，不要在这一轮写给用户的正文。
-   - 判定粒度是**这一条步骤**是否做完，不是整个任务是否交付。已做完的标 `completed`；还没开始的保持 `pending`；只有用户明确放弃整件事才标 `cancelled`。缺文件、跳过问答、等待用户补输入，都不是把已做完步骤留在 `in_progress` 的理由。
+   - 判定粒度是**这一条步骤**是否做完，不是整个任务是否交付。已做完的标 `completed`；还没开始的保持 `pending`；只有整件事确定不再继续（含第 9 条的用户打断）才标 `cancelled`。缺文件、跳过问答、等待用户补输入，都不是把已做完步骤留在 `in_progress` 的理由。
    - 可在连续推进多个任务后用一次 `todo_modify` 统一批量更新状态。
    放弃、跳过或决定不再执行某步骤时（如用户说「不生成 PPT 了」），**必须**立即 `todo_modify` 将该条标为 `cancelled`；
    禁止仅用口头回复收尾而仍保留已开始的 `in_progress` 项。还没开始的 `pending` 在等待用户补输入时保持 `pending`。
@@ -87,7 +87,7 @@ Then execute the workflow; the rules below govern execution.
    - ✅ CORRECT: `[write_file(...), todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]`
    - ❌ PROHIBITED: `[todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]` ← wastes an entire LLM round
    - The ONLY exception: the turn immediately before the plain-text final reply. If any item is still `in_progress`, that turn MUST call `todo_modify` alone and must not contain the user-facing answer.
-   - Judge each step on its own, not on whether the whole task is delivered. Mark a finished step `completed`; leave steps that have not started `pending`; mark `cancelled` only when the user explicitly abandons the whole task. Missing files, a skipped question, or waiting for input are not reasons to leave a finished step `in_progress`.
+   - Judge each step on its own, not on whether the whole task is delivered. Mark a finished step `completed`; leave steps that have not started `pending`; mark `cancelled` only when the whole task will not continue, including the user-interruption cases in rule 9. Missing files, a skipped question, or waiting for input are not reasons to leave a finished step `in_progress`.
    - You may run several tasks back-to-back and update statuses in a single batched `todo_modify`.
    When abandoning or skipping a step (e.g. the user says not to generate the PPT), you **must** call
    `todo_modify` to mark it `cancelled` immediately; never end with text only while a started item

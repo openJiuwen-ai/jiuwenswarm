@@ -128,6 +128,8 @@ async def test_nudge_tool_is_skipped_and_does_not_advance_todos() -> None:
 
     assert ctx.extra["_skip_tool"] is True
     assert "todo_modify" in ctx.inputs.tool_result
+    assert "没有送达用户" in ctx.inputs.tool_result
+    assert "完整重写" in ctx.inputs.tool_result
     assert "env" in ctx.inputs.tool_result
     assert ctx.inputs.tool_msg.tool_call_id == "todo-close-nudge-1"
     assert rail._todo_map["env"]["status"] == "in_progress"
@@ -139,6 +141,8 @@ def test_skill_protocol_allows_standalone_todo_modify_before_final() -> None:
     cn = _build_skill_protocol_section_text("cn")
     en = _build_skill_protocol_section_text("en")
     assert "纯文本最终回复的前一轮" in cn
+    assert "第 9 条的用户打断" in cn
+    assert "including the user-interruption cases in rule 9" in en
     assert "所有工作完成后" not in cn
     assert "the turn immediately before the plain-text final reply" in en
     assert "when all work is done" not in en
@@ -181,6 +185,25 @@ async def test_stream_rail_does_not_emit_todo_close_nudge(monkeypatch) -> None:
     await rail.after_tool_call(ctx)
 
     assert emitted == []
+
+
+@pytest.mark.asyncio
+async def test_text_only_resume_nudges_disk_in_progress_without_memory() -> None:
+    rail = TaskExecutionRail()
+    rail._todo_map = {
+        "env": {
+            "id": "env",
+            "content": "环境预检",
+            "status": "in_progress",
+        },
+    }
+    ctx = _text_ctx("问答之后直接说明卡点。")
+
+    await rail.after_model_call(ctx)
+
+    calls = ctx.inputs.response.tool_calls
+    assert len(calls) == 1
+    assert str(calls[0].id).startswith(TODO_CLOSE_NUDGE_ID_PREFIX)
 
 
 @pytest.mark.asyncio
