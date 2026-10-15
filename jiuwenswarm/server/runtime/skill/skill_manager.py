@@ -1428,6 +1428,7 @@ class SkillManager:
             team_skill_visibility_path,
         )
         from openjiuwen.agent_teams.skill.visibility import SCOPE_MEMBER, SCOPE_TEAM
+        from jiuwenswarm.agents.harness.team.bootstrap import prepare_team_storage
 
         scope = str(params.get("scope") or SCOPE_MEMBER).strip()
         if scope not in (SCOPE_MEMBER, SCOPE_TEAM):
@@ -1439,6 +1440,7 @@ class SkillManager:
             return {"success": False, "detail": str(exc)}
 
         if scope == SCOPE_TEAM:
+            prepare_team_storage()
             return SCOPE_TEAM, team_name, team_skill_visibility_path(team_name)
 
         try:
@@ -1446,6 +1448,7 @@ class SkillManager:
         except ValueError as exc:
             _log_rejected_name("skills.visibility", "member", params.get("member_name"), exc)
             return {"success": False, "detail": str(exc)}
+        prepare_team_storage()
         return SCOPE_MEMBER, member_name, member_skill_visibility_path(team_name, member_name)
 
     @staticmethod

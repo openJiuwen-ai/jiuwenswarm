@@ -99,11 +99,9 @@ from jiuwenswarm.extensions.hooks_context import MemoryHookContext
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
-    configure_skill_library,
     get_agent_home_dir,
     get_agent_workspace_dir,
     get_env_file,
-    migrate_team_skill_views,
 )
 from jiuwenswarm.server.runtime.a2ui.integration import (
     TeamA2UIBlockBuffer,
@@ -1226,7 +1224,6 @@ class JiuWenSwarm:
         await configure(max_turns=max_turns, host_tools=host_tools)
 
     def __init__(self) -> None:
-        self._prepare_skill_library()
         self._adapter: AgentAdapter | None = None
         # PersonalContext Rail follows the Host runtime switch.  Keep the
         # latest snapshot on the facade so a lazily-created adapter inherits
@@ -1256,7 +1253,7 @@ class JiuWenSwarm:
         # Team members are assembled declaratively outside the single-agent
         # adapter. Publish the same process-owned service to their build context;
         # this is dependency injection only, never scheduler ownership.
-        from jiuwenswarm.agents.swarm.context import set_heartbeat_job_service
+        from jiuwenswarm.common.heartbeat_service import set_heartbeat_job_service
 
         set_heartbeat_job_service(service)
         if self._adapter is not None and hasattr(self._adapter, "set_heartbeat_service"):
@@ -1264,25 +1261,15 @@ class JiuWenSwarm:
 
     @staticmethod
     def _prepare_skill_library() -> None:
-        """Pin the single Skill library and retire legacy per-workspace views.
+        """Explicit compatibility entry for Team Skill storage preparation.
 
-        Runs before any adapter, team or rail is built so legacy view directories
-        are gone by the time anything reads a team workspace. Correctness no
-        longer depends on that ordering: the migration seeds its allow lists at
-        ``AUTHORITY_MIGRATION``, which outranks the config seeds written during
-        assembly whichever one lands first. The agent-teams home still has to be
-        pinned before the scan, otherwise it would look under openJiuWen's own
-        default root instead of this instance's workspace.
-
-        Single-agent mode is untouched by all of this: it reads the same library
-        directory it always did and owns no visibility document.
+        Ordinary facade construction only uses the single-Agent library. Team
+        assembly and visibility RPCs prepare their own storage before reading it.
         """
         try:
-            from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
+            from jiuwenswarm.agents.harness.team.bootstrap import prepare_team_storage
 
-            configure_agent_teams_home()
-            configure_skill_library()
-            migrate_team_skill_views()
+            prepare_team_storage()
         except Exception as exc:
             logger.warning("[JiuWenSwarm] skill library preparation failed: %s", exc)
 

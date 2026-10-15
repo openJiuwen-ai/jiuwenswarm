@@ -30,6 +30,7 @@ from shutil import which
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple
 
 if TYPE_CHECKING:
+    from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
     from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
     from jiuwenswarm.common.auth.login_credentials import LoginAuth
@@ -303,10 +304,6 @@ from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import ( 
 )
 from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import HEARTBEAT_TOOL_NAMES
-from jiuwenswarm.agents.harness.common.auto_harness import (
-    AutoHarnessService,
-    validate_harness_config,
-)
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     SKILL_EVOLUTION_APPROVAL_SCHEMA,
     apply_permission_trusted_dirs,
@@ -518,35 +515,6 @@ from jiuwenswarm.symphony.config import load_symphony_config
 from jiuwenswarm.agents.harness.common.tools.pdf_tools import read_pdf
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_tools as get_acp_output_tools
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
-from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
-    get_user_location,
-    create_note,
-    search_notes,
-    modify_note,
-    create_calendar_event,
-    search_calendar_event,
-    search_contact,
-    search_photo_gallery,
-    upload_photo,
-    search_file,
-    upload_file,
-    call_phone,
-    send_message,
-    search_message,
-    create_alarm,
-    search_alarms,
-    modify_alarm,
-    delete_alarm,
-    query_collection,
-    add_collection,
-    delete_collection,
-    save_media_to_gallery,
-    save_file_to_file_manager,
-    convert_timestamp_to_utc8_time,
-    view_push_result,
-    xiaoyi_gui_agent,
-    image_reading,
-)
 from jiuwenswarm.common.config import (
     get_config,
     get_available_models,
@@ -596,7 +564,7 @@ from jiuwenswarm.server.runtime.agent_adapter.browser_runtime_security import (
     apply_browser_runtime_security_profile,
 )
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
-from jiuwenswarm.agents.harness.common.auto_harness.service import _HARNESS_PACKAGES_FILE
+from jiuwenswarm.agents.harness.common.auto_harness.state import get_harness_packages_file
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.runtime.cron import CronTargetChannel
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
@@ -8322,10 +8290,11 @@ class JiuWenSwarmDeepAdapter:
         """
         config_paths: list[str] = []
         try:
-            if not _HARNESS_PACKAGES_FILE.exists():
+            packages_file = get_harness_packages_file()
+            if not packages_file.exists():
                 return config_paths
 
-            data = json.loads(_HARNESS_PACKAGES_FILE.read_text(encoding="utf-8"))
+            data = json.loads(packages_file.read_text(encoding="utf-8"))
             active_ids = data.get("active_package_ids", [])
             if not active_ids:
                 return config_paths
@@ -8393,6 +8362,8 @@ class JiuWenSwarmDeepAdapter:
         config_paths = self._get_active_package_config_paths()
         if not config_paths:
             return []
+
+        from jiuwenswarm.agents.harness.common.auto_harness import validate_harness_config
 
         # Unload first (same path list) so re-bind does not trip "already bound".
         await self._unload_active_packages(config_paths)
@@ -8668,6 +8639,8 @@ class JiuWenSwarmDeepAdapter:
             # exec an out-of-package .py (escaped path). The import-time
             # guard blocks new imports; this catches packages that slipped
             # through before it existed or were placed on disk directly.
+            from jiuwenswarm.agents.harness.common.auto_harness import validate_harness_config
+
             validate_harness_config(Path(config_path))
             return await self._instance.load_harness_config(config_path)
         except Exception as exc:
@@ -11058,36 +11031,12 @@ class JiuWenSwarmDeepAdapter:
             config_base.get("channels", {}).get("xiaoyi", {}).get("phone_tools_enabled", False)
         )
         if xiaoyi_phone_tools_enabled and not self._xiaoyi_phone_tools_registered:
-            _xiaoyi_tools = [
-                get_user_location,
-                create_note,
-                search_notes,
-                modify_note,
-                create_calendar_event,
-                search_calendar_event,
-                search_contact,
-                search_photo_gallery,
-                upload_photo,
-                search_file,
-                upload_file,
-                call_phone,
-                send_message,
-                search_message,
-                create_alarm,
-                search_alarms,
-                modify_alarm,
-                delete_alarm,
-                query_collection,
-                add_collection,
-                delete_collection,
-                save_media_to_gallery,
-                save_file_to_file_manager,
-                convert_timestamp_to_utc8_time,
-                view_push_result,
-                image_reading,
-                xiaoyi_gui_agent,
-            ]
             try:
+                from jiuwenswarm.server.runtime.agent_adapter.phone_tool_factory import (
+                    get_xiaoyi_phone_tools,
+                )
+
+                _xiaoyi_tools = get_xiaoyi_phone_tools()
                 for xt in _xiaoyi_tools:
                     self._register_shared_tool(xt)
                     tool_cards.append(xt.card)
@@ -17068,6 +17017,8 @@ class JiuWenSwarmDeepAdapter:
         # Auto-Harness 模式处理
         if mode == "auto_harness":
             if self._auto_harness_service is None:
+                from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
+
                 self._auto_harness_service = AutoHarnessService(
                     self._stream_event_rail,
                     agent=self._instance,

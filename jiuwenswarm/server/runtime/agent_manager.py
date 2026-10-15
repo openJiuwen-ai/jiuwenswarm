@@ -233,7 +233,7 @@ class AgentManager:
     def set_heartbeat_service(self, service: Any | None) -> None:
         """Inject the process-owned Heartbeat service into single and Team agents."""
         self._heartbeat_service = service
-        from jiuwenswarm.agents.swarm.context import set_heartbeat_job_service
+        from jiuwenswarm.common.heartbeat_service import set_heartbeat_job_service
 
         set_heartbeat_job_service(service)
         for agents in self.agents.values():
