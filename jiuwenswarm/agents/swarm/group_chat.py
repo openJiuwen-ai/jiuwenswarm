@@ -24,9 +24,11 @@ from openjiuwen.core.foundation.tool import Tool, ToolCard, ToolOutput
 from openjiuwen.core.runner import Runner
 from openjiuwen.harness.resources import load_agent_template_package
 from openjiuwen.harness.schema.deep_agent_spec import BuiltinToolSpec
+from openjiuwen.harness.rails.base import DeepAgentRail
 
 RUN_TEAM = "swarm.group_run_team"
 SUBMIT_RESULT = "swarm.group_submit_team_result"
+GROUP_MEMBER_TEMPLATE = "swarm.group_member_template"
 _locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _results: dict[str, asyncio.Future] = {}
 
@@ -34,9 +36,15 @@ _results: dict[str, asyncio.Future] = {}
 def resolve_group_members(session_id: str, requested, *, is_first_request: bool):
     """Restore the saved roster; chat messages cannot silently replace it."""
     from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+    from jiuwenswarm.server.runtime.group_service import read_group
 
-    stored = (get_session_metadata(session_id, enable_writeback=False) or {}).get(
-        "group_members"
+    group = read_group(session_id)
+    stored = (
+        group["members"]
+        if group is not None
+        else (get_session_metadata(session_id, enable_writeback=False) or {}).get(
+            "group_members"
+        )
     )
     if requested is not None:
         if not isinstance(requested, list):
@@ -132,13 +140,12 @@ def assemble_group_members(spec, members: list[dict]) -> None:
             display_name=item.get("display_name") or template.agent_card.name or name,
             desc=template.agent_card.description or "",
             prompt=prompt,
-            role_type=TeamRole.TEAMMATE,
         )
         external = external_cli_agent_spec_from_template(template)
         member = (
             ExternalCliMemberSpec(**member_params, external_cli=external)
             if external is not None
-            else TeamMemberSpec(**member_params)
+            else TeamMemberSpec(**member_params, role_type=TeamRole.TEAMMATE)
         )
         if external is not None:
             agent = base.model_copy(deep=True)
@@ -372,3 +379,39 @@ def build_group_submit_result(params, context):
     if backend is None or not backend.is_leader:
         raise ValueError("only the private expert-team leader may submit results")
     return SubmitTeamResult(params["key"])
+
+
+class GroupMemberTemplateRail(DeepAgentRail):
+    """Load a newly registered member's capabilities before its first invocation."""
+
+    def __init__(self, context, initial_names):
+        super().__init__()
+        self.context = context
+        self.initial_names = initial_names
+        self.loaded = False
+
+    async def before_invoke(self, ctx):
+        if self.loaded or self.context.member_name in self.initial_names:
+            return
+        from jiuwenswarm.server.runtime.group_service import read_group
+        from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
+
+        group = read_group(self.context.session_id)
+        if group is None:
+            return
+        definition = group["compiled"].get(self.context.member_name)
+        if definition is not None and definition["template"] is not None:
+            await ctx.agent.load_agent_template_spec(
+                AgentTemplateSpec.model_validate(definition["template"]),
+                context=self.context,
+            )
+        self.loaded = True
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=GROUP_MEMBER_TEMPLATE,
+    description="Capabilities of experts dynamically registered in an existing group.",
+)
+def build_group_member_template(params, context):
+    return GroupMemberTemplateRail(context, frozenset(params["initial_names"]))

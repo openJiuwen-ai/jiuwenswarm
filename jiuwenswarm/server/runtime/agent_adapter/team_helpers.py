@@ -4158,6 +4158,15 @@ async def _consume_stream_with_query(
                     )
                     tm = get_team_manager(channel_id)
                     tm.commit_runtime_ready(session_id, ready_team_name)
+                    from jiuwenswarm.server.runtime.group_service import (
+                        read_group, resolve_group_backend, sync_group_roster,
+                    )
+
+                    group = read_group(session_id)
+                    if group is not None:
+                        backend = await resolve_group_backend(group)
+                        if backend is not None:
+                            await sync_group_roster(group, backend)
                     await tm.attach_distributed_hooks_for_runner_runtime(
                         team_name=ready_team_name,
                         session_id=session_id,

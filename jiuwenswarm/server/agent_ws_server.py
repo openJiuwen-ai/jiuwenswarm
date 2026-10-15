@@ -1153,6 +1153,7 @@ class AgentWebSocketServer:
         self._runtime_push_handler = None
         self._previous_runtime_push_handler = None
         self._runtime_services_started = False
+        self._group_service = None
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
         # Optional production Provider injection point.  The concrete class is
@@ -2410,6 +2411,10 @@ class AgentWebSocketServer:
 
         pending_chat_request: tuple[AgentRuntime, str, str] | None = None
         try:
+            from jiuwenswarm.server.runtime.group_requests import dispatch_group_request
+
+            if await dispatch_group_request(self, ws, request, send_lock):
+                return
             if request.req_method is not None and request.req_method.value.startswith("assets.publish."):
                 await self._handle_asset_publish(ws, request, send_lock)
                 return
@@ -11727,6 +11732,15 @@ class AgentWebSocketServer:
     def get_agent_manager(self) -> AgentManager:
         """获取 AgentManager 实例."""
         return self._agent_manager
+
+    def get_group_service(self):
+        """Return the lazily initialized group management service."""
+        from jiuwenswarm.server.runtime.group_service import GroupService
+
+        service = self._group_service
+        if service is None:
+            service = self._group_service = GroupService(self._execution_runtime())
+        return service
 
     def get_runtime(self) -> AgentRuntime:
         """Return the transport-independent Runtime owned by AgentServer."""

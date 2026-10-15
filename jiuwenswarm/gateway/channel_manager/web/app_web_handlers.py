@@ -401,6 +401,8 @@ class _DummyBus:
 
 # 仅转发到 Agent 的 Web method
 _FORWARD_REQ_METHODS = frozenset({
+    "group.create", "group.delete", "group.list", "group.get", "group.update",
+    "group.member.add", "group.history.get",
     "initialize",
     "session.switch",
     "session.fork",
@@ -592,6 +594,8 @@ _FORWARD_REQ_METHODS = frozenset({
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
+    "group.create", "group.delete", "group.list", "group.get", "group.update",
+    "group.member.add", "group.history.get",
     "initialize",
     "session.switch",
     "session.fork",
