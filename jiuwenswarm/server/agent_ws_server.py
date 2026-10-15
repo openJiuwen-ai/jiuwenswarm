@@ -413,6 +413,8 @@ def _renew_server_plan_controller() -> PlanModeController:
 # 避免 ping_timeout 导致连接关闭。默认 10 秒，小于服务端 ping_timeout=20s。
 _STREAM_KEEPALIVE_INTERVAL_SECONDS = 10.0
 _STREAM_KEEPALIVE_STOP_TIMEOUT_SECONDS = 1.0
+# send_push 无活跃 Gateway 连接告警的汇总窗口（秒）
+_PUSH_NO_GATEWAY_WARN_INTERVAL_S = 30.0
 from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
     _HISTORY_PAGE_SIZE,
     _HISTORY_WIRE_STRING_LIMIT,
@@ -1143,6 +1145,9 @@ class AgentWebSocketServer:
         # 当前 Gateway 连接，用于 send_push 主动推送
         self._current_ws: Any = None
         self._current_send_lock: asyncio.Lock | None = None
+        # send_push 无连接告警限流：首条立即告警，之后按窗口汇总
+        self._push_no_gateway_suppressed = 0
+        self._push_no_gateway_warned_at: float | None = None
         self._acp_client_capabilities_by_ws: dict[int, dict[str, Any]] = {}
         # AgentServer and the process CLI share this transport-independent Runtime.
         # Keep the manager alias for legacy transport handlers.
@@ -1406,7 +1411,14 @@ class AgentWebSocketServer:
         """Publish the Front-owned Gateway socket for send_push / ACP caps."""
         self._current_ws = ws
         self._current_send_lock = send_lock
+        self._reset_push_no_gateway_warning()
         await self._session_message_service.set_available(True)
+        try:
+            from jiuwenswarm.observability.gateway_hints import trajectory_gateway_hint_bridge
+
+            trajectory_gateway_hint_bridge.notify_available()
+        except Exception:
+            logger.debug("[AgentWebSocketServer] trajectory hint wakeup failed", exc_info=True)
 
     async def on_gateway_disconnect(self, ws: Any, remote: Any) -> None:
         """Runtime-side cleanup when Front drops the Gateway connection."""
@@ -11698,9 +11710,7 @@ class AgentWebSocketServer:
         可含 event_type 等字段供 Gateway 转为 Message 派发到 Channel。
         """
         if self._current_ws is None or self._current_send_lock is None:
-            logger.warning(
-                "[AgentWebSocketServer] send_push 失败: 无活跃 Gateway 连接"
-            )
+            self._warn_push_without_gateway()
             return False
 
         try:
@@ -11734,6 +11744,38 @@ class AgentWebSocketServer:
         except Exception as e:
             logger.warning("[AgentWebSocketServer] send_push 失败: %s", e)
             return False
+
+    def _warn_push_without_gateway(self) -> None:
+        """无活跃 Gateway 连接时限流告警，避免生产者重试刷屏。"""
+        now = time.monotonic()
+        warned_at = getattr(self, "_push_no_gateway_warned_at", None)
+        suppressed = getattr(self, "_push_no_gateway_suppressed", 0)
+        if warned_at is not None and now - warned_at < _PUSH_NO_GATEWAY_WARN_INTERVAL_S:
+            self._push_no_gateway_suppressed = suppressed + 1
+            return
+        self._push_no_gateway_warned_at = now
+        self._push_no_gateway_suppressed = 0
+        if suppressed:
+            logger.warning(
+                "[AgentWebSocketServer] send_push 失败: 无活跃 Gateway 连接"
+                "（过去 %.0fs 内另有 %d 条同类失败已省略）",
+                _PUSH_NO_GATEWAY_WARN_INTERVAL_S,
+                suppressed,
+            )
+        else:
+            logger.warning(
+                "[AgentWebSocketServer] send_push 失败: 无活跃 Gateway 连接"
+            )
+
+    def _reset_push_no_gateway_warning(self) -> None:
+        suppressed = getattr(self, "_push_no_gateway_suppressed", 0)
+        if suppressed:
+            logger.info(
+                "[AgentWebSocketServer] Gateway 连接已恢复，此前 %d 条 send_push 失败告警已省略",
+                suppressed,
+            )
+        self._push_no_gateway_suppressed = 0
+        self._push_no_gateway_warned_at = None
 
     def get_agent(self):
         """获取 default agent 实例（向后兼容）."""

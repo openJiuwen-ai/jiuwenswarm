@@ -153,3 +153,84 @@ async def test_bridge_retries_hint_rejected_during_gateway_disconnect() -> None:
     assert len(attempts) == 2
     assert attempts[1]["payload"]["revision"] == 31
     test_logger.info("temporary Gateway disconnect retained and retried the watermark")
+
+
+class _RecordingAsyncio:
+    """Proxy ``asyncio`` that records retry waits instead of sleeping."""
+
+    def __init__(self) -> None:
+        self.timeouts: list[float] = []
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(asyncio, name)
+
+    async def wait_for(self, awaitable: object, timeout: float) -> None:
+        self.timeouts.append(timeout)
+        if asyncio.iscoroutine(awaitable):
+            awaitable.close()
+        await asyncio.sleep(0)
+        raise asyncio.TimeoutError
+
+
+@pytest.mark.asyncio
+async def test_bridge_backs_off_exponentially_and_resets_after_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.observability import gateway_hints
+
+    recorder = _RecordingAsyncio()
+    monkeypatch.setattr(gateway_hints, "asyncio", recorder)
+    bridge = TrajectoryGatewayHintBridge()
+    results = [False] * 8 + [True, False, True]
+    attempts: list[int] = []
+    finished = asyncio.Event()
+
+    async def _send(message: dict[str, object]) -> bool:
+        attempts.append(int(message["payload"]["revision"]))
+        result = results[len(attempts) - 1]
+        if len(attempts) in (9, len(results)):
+            finished.set()
+        return result
+
+    bridge.bind(asyncio.get_running_loop(), _send)
+    bridge.publish((CommittedTraceUpdate("session-1", "f" * 32, 40),))
+    await asyncio.wait_for(finished.wait(), timeout=2)
+    finished.clear()
+    assert recorder.timeouts == [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 5.0, 5.0]
+
+    bridge.publish((CommittedTraceUpdate("session-1", "f" * 32, 41),))
+    await asyncio.wait_for(finished.wait(), timeout=2)
+    await bridge.unbind()
+
+    assert recorder.timeouts[8:] == [0.1]
+    assert attempts[-1] == 41
+    test_logger.info("retry delay doubled up to the cap and reset after delivery")
+
+
+@pytest.mark.asyncio
+async def test_bridge_notify_available_retries_without_waiting_backoff() -> None:
+    bridge = TrajectoryGatewayHintBridge()
+    attempts: list[dict[str, object]] = []
+    first_rejected = asyncio.Event()
+    delivered = asyncio.Event()
+
+    async def _send(message: dict[str, object]) -> bool:
+        attempts.append(message)
+        if len(attempts) == 1:
+            first_rejected.set()
+            return False
+        delivered.set()
+        return True
+
+    bridge.bind(asyncio.get_running_loop(), _send)
+    bridge._retry_delay = 60.0  # pylint: disable=protected-access
+    bridge.publish((CommittedTraceUpdate("session-1", "9" * 32, 50),))
+    await asyncio.wait_for(first_rejected.wait(), timeout=2)
+    await asyncio.sleep(0)
+    bridge.notify_available()
+    await asyncio.wait_for(delivered.wait(), timeout=2)
+    await bridge.unbind()
+
+    assert len(attempts) == 2
+    assert attempts[1]["payload"]["revision"] == 50
+    test_logger.info("Gateway reattach woke the pending retry immediately")
