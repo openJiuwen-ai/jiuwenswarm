@@ -362,6 +362,186 @@ def persist_session_overlay_from_effective(session_id: str, effective: dict[str,
         return _dump_yaml_dict(session_permissions_path(str(session_id).strip()), current)
 
 
+def list_saved_session_ids() -> list[str]:
+    """Session ids that already have a ``session_permissions.yaml`` file."""
+    from jiuwenswarm.common.utils import get_agent_sessions_dir
+
+    root = get_agent_sessions_dir()
+    if not root.is_dir():
+        return []
+    found: list[str] = []
+    for child in root.iterdir():
+        if child.is_dir() and (child / "session_permissions.yaml").is_file():
+            found.append(child.name)
+    found.sort()
+    return found
+
+
+def _tool_list(layer: dict[str, Any], key: str) -> list[Any]:
+    raw = layer.get(key)
+    return list(raw) if isinstance(raw, list) else []
+
+
+def _list_has_tool(items: list[Any], tool: str) -> bool:
+    return any(isinstance(item, str) and item.strip() == tool for item in items)
+
+
+def _without_tool(items: list[Any], tool: str) -> list[Any]:
+    return [item for item in items if not (isinstance(item, str) and item.strip() == tool)]
+
+
+def _set_user_tool_level(layer: dict[str, Any], tool: str, level: str) -> bool:
+    """Keep the tool in exactly one user list. Return whether an allow entry was removed."""
+    removed_allow = _list_has_tool(_tool_list(layer, "allow_tools"), tool) and level != "allow"
+    for key, listed in (("deny_tools", "deny"), ("ask_tools", "ask"), ("allow_tools", "allow")):
+        kept = _without_tool(_tool_list(layer, key), tool)
+        if listed == level:
+            kept.append(tool)
+        if kept:
+            layer[key] = kept
+        else:
+            layer.pop(key, None)
+    tools = layer.get("tools")
+    if isinstance(tools, dict):
+        for key in list(tools):
+            if str(key).strip() == tool:
+                tools.pop(key, None)
+        if not tools:
+            layer.pop("tools", None)
+    return removed_allow
+
+
+def _drop_session_allow(layer: dict[str, Any], tool: str) -> bool:
+    """Remove a remembered session allow. Session ask/deny fields are not a grant."""
+    changed = False
+    allowed = _tool_list(layer, "allow_tools")
+    if _list_has_tool(allowed, tool):
+        kept = _without_tool(allowed, tool)
+        if kept:
+            layer["allow_tools"] = kept
+        else:
+            layer.pop("allow_tools", None)
+        changed = True
+    tools = layer.get("tools")
+    if isinstance(tools, dict):
+        for key in list(tools):
+            if str(key).strip() == tool and _scalar_level(tools.get(key)) == "allow":
+                tools.pop(key, None)
+                changed = True
+        if isinstance(tools, dict) and not tools:
+            layer.pop("tools", None)
+    return changed
+
+
+def _strip_tool_overrides(layer: dict[str, Any], tool: str) -> int:
+    """Drop overrides that only name this tool. Shared rules lose this tool name only."""
+    overrides = layer.get("approval_overrides")
+    if not isinstance(overrides, list):
+        return 0
+    kept: list[Any] = []
+    removed = 0
+    changed = False
+    for item in overrides:
+        if not isinstance(item, dict) or not isinstance(item.get("tools"), list):
+            kept.append(item)
+            continue
+        names = [name.strip() for name in item["tools"] if isinstance(name, str) and name.strip()]
+        if tool not in names:
+            kept.append(item)
+            continue
+        changed = True
+        removed += 1
+        rest = [name for name in names if name != tool]
+        if not rest:
+            continue
+        updated = dict(item)
+        updated["tools"] = rest
+        kept.append(updated)
+    if changed:
+        if kept:
+            layer["approval_overrides"] = kept
+        else:
+            layer.pop("approval_overrides", None)
+    return removed
+
+
+@contextmanager
+def _session_file_lock(session_id: str, *, lock_timeout: float = 10.0):
+    """Lock one session file. Caller must already hold ``permission_storage_lock``."""
+    import portalocker
+
+    from jiuwenswarm.common.config import _config_lock_path
+
+    path = session_permissions_path(session_id)
+    with portalocker.Lock(str(_config_lock_path(path)), timeout=lock_timeout):
+        yield
+
+
+def update_user_tool_level(tool_name: str, level: str) -> dict[str, Any] | None:
+    """Set one user-layer tool level.
+
+    ``ask`` also revokes remembered allows for that tool: user and session
+    ``allow_tools``, plus approval overrides that name it. Path rules stay.
+    """
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+        compose_host_effective_permissions,
+    )
+
+    name = str(tool_name or "").strip()
+    lv = str(level or "").strip().lower()
+    if not name:
+        raise ValueError("tool name must be non-empty")
+    if lv not in _TOOL_LEVELS:
+        raise ValueError("level must be allow, ask, or deny")
+
+    revoked = {"user_allow": 0, "session_allow": 0, "approval_overrides": 0}
+    try:
+        with permission_storage_lock():
+            user = load_user_permissions()
+            if _set_user_tool_level(user, name, lv):
+                revoked["user_allow"] = 1
+            if lv == "ask":
+                revoked["approval_overrides"] += _strip_tool_overrides(user, name)
+                for session_id in list_saved_session_ids():
+                    with _session_file_lock(session_id):
+                        session = load_session_permissions(session_id)
+                        overrides = _strip_tool_overrides(session, name)
+                        dropped = _drop_session_allow(session, name)
+                        revoked["approval_overrides"] += overrides
+                        if dropped:
+                            revoked["session_allow"] += 1
+                        if dropped or overrides:
+                            if not _dump_yaml_dict(session_permissions_path(session_id), session):
+                                return None
+            if not save_user_permissions_locked(user):
+                return None
+            global_permissions = load_global_permissions()
+            saved_user = user
+    except ValueError:
+        raise
+    except Exception:
+        logger.warning("[permissions.layers] user tool update failed", exc_info=True)
+        return None
+
+    try:
+        effective = compose_host_effective_permissions(
+            global_permissions=global_permissions,
+            user_permissions=saved_user,
+            session_permissions={},
+        )
+    except Exception:
+        logger.warning("[permissions.layers] user tool compose failed", exc_info=True)
+        effective = {}
+    tools = effective.get("tools") if isinstance(effective.get("tools"), dict) else {}
+    effective_level = tools.get(name)
+    return {
+        "tool": name,
+        "level": lv,
+        "effective_level": effective_level if isinstance(effective_level, str) else None,
+        "revoked": revoked,
+    }
+
+
 def save_user_permissions(data: dict[str, Any]) -> bool:
     return update_user_permissions(lambda _: dict(data) if isinstance(data, dict) else {})
 
@@ -394,7 +574,9 @@ __all__ = [
     "persist_user_overlay_from_effective",
     "save_user_permissions",
     "save_user_permissions_locked",
+    "list_saved_session_ids",
     "update_user_permissions",
+    "update_user_tool_level",
     "session_permissions_path",
     "user_permissions_path",
 ]

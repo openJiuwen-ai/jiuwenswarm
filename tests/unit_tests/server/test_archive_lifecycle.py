@@ -1336,7 +1336,7 @@ async def test_team_round_finishing_after_flow_probe(monkeypatch):
     manager = team_manager.TeamManager()
     monkeypatch.setattr(team_manager, "_team_manager", manager)
     # 无 waiter 的 flow 终态事件会走 gateway 推送兜底，单测里没有 server 实例。
-    monkeypatch.setattr(manager, "_push_workflow_event_without_waiter", AsyncMock())
+    monkeypatch.setattr(manager, "_push_event_without_waiter", AsyncMock())
 
     def run_state(status):
         return SimpleNamespace(is_terminal=status in ("completed", "failed", "stopped"))
@@ -1388,6 +1388,98 @@ async def test_team_round_finishing_after_flow_probe(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_terminal_frame_without_waiters_falls_back_to_server_push(monkeypatch):
+    """A mailbox-driven round has no waiter; its terminal frame must still reach the frontend."""
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    push = AsyncMock()
+    monkeypatch.setattr(manager, "_push_event_without_waiter", push)
+    manager.begin_round("sess_a", "req_1", terminal_armed=True)
+
+    terminal = {
+        "event_type": "chat.processing_status",
+        "session_id": "sess_a",
+        "rid": 1,
+        "is_processing": False,
+        "is_complete": True,
+    }
+    await manager.broadcast_event("sess_a", terminal, channel_id="web")
+
+    push.assert_awaited_once()
+    pushed_session, pushed_event = push.await_args.args
+    assert pushed_session == "sess_a"
+    assert pushed_event["is_processing"] is False
+
+
+@pytest.mark.asyncio
+async def test_terminal_frame_with_waiters_skips_server_push(monkeypatch):
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    push = AsyncMock()
+    monkeypatch.setattr(manager, "_push_event_without_waiter", push)
+    manager.begin_round("sess_a", "req_1", terminal_armed=True)
+    queue = asyncio.Queue()
+    manager.add_waiter("sess_a", "req_1", queue)
+
+    terminal = {
+        "event_type": "chat.processing_status",
+        "session_id": "sess_a",
+        "rid": 1,
+        "is_processing": False,
+        "is_complete": True,
+    }
+    await manager.broadcast_event("sess_a", terminal, channel_id="web")
+
+    push.assert_not_awaited()
+    delivered = queue.get_nowait()
+    assert delivered["is_processing"] is False
+
+
+@pytest.mark.asyncio
+async def test_non_terminal_without_waiters_skips_server_push(monkeypatch):
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    push = AsyncMock()
+    monkeypatch.setattr(manager, "_push_event_without_waiter", push)
+    manager.begin_round("sess_a", "req_1", terminal_armed=True)
+
+    await manager.broadcast_event(
+        "sess_a", {"event_type": "chat.delta", "content": "hi"}, channel_id="web",
+    )
+
+    push.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unarmed_terminal_is_dropped_before_waiterless_fallback(monkeypatch):
+    """The stale-frame guard outranks the fallback: an unarmed terminal never ships."""
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    push = AsyncMock()
+    monkeypatch.setattr(manager, "_push_event_without_waiter", push)
+    manager.begin_round("sess_a", "req_1", terminal_armed=False)
+
+    terminal = {
+        "event_type": "chat.processing_status",
+        "session_id": "sess_a",
+        "rid": 1,
+        "is_processing": False,
+        "is_complete": True,
+    }
+    await manager.broadcast_event("sess_a", terminal, channel_id="web")
+
+    push.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("event", [
     {"event_type": "chat.tool_call", "tool_call": {"name": "shell"}},
     {"event_type": "chat.ask_user_question"},
@@ -1400,7 +1492,7 @@ async def test_flow_finishing_excludes_subsequent_work(monkeypatch, event):
 
     manager = team_manager.TeamManager()
     monkeypatch.setattr(team_manager, "_team_manager", manager)
-    monkeypatch.setattr(manager, "_push_workflow_event_without_waiter", AsyncMock())
+    monkeypatch.setattr(manager, "_push_event_without_waiter", AsyncMock())
     manager._workflow_handlers["sess_a"] = SimpleNamespace(
         get_run_states=lambda: {"wf_1": SimpleNamespace(is_terminal=True)},
     )
@@ -1431,7 +1523,7 @@ async def test_flow_finishing_waits_for_existing_team_task(monkeypatch, status):
 
     manager = team_manager.TeamManager()
     monkeypatch.setattr(team_manager, "_team_manager", manager)
-    monkeypatch.setattr(manager, "_push_workflow_event_without_waiter", AsyncMock())
+    monkeypatch.setattr(manager, "_push_event_without_waiter", AsyncMock())
     manager._workflow_handlers["sess_a"] = SimpleNamespace(
         get_run_states=lambda: {"wf_1": SimpleNamespace(is_terminal=True)},
     )

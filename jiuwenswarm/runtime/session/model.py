@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Models shared by the Session runtime coordinator and its ports."""
 
 from __future__ import annotations
@@ -7,6 +9,12 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+TEAM_EXECUTION_CONTEXT_METADATA_KEY = "_team_execution_context"
+
+# ``chat.send`` requests carrying this truthy param attach a response
+# subscription to an already-running Team Session without submitting input.
+TEAM_ATTACH_ONLY_PARAM = "attach_only"
 
 
 class SessionExecutionEndedError(RuntimeError):
@@ -51,6 +59,9 @@ class SessionWorkKind(str, Enum):
     CONTROL_INPUT = "control_input"
     SESSION_INPUT = "session_input"
     HEARTBEAT = "heartbeat"
+    TEAM_REQUEST = "team_request"
+    TEAM_CONTROL = "team_control"
+    TEAM_BACKGROUND = "team_background"
 
     @property
     def scheduled(self) -> bool:
@@ -72,6 +83,7 @@ class SessionExecutionState(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
     WAITING_FOR_CONTROL = "waiting_for_control"
+    WAITING_FOR_INPUT = "waiting_for_input"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -85,6 +97,62 @@ class SessionExecutionState(str, Enum):
         }
 
 
+class ExecutionCancelCause(str, Enum):
+    """Describe why an execution or Session lifecycle is ending."""
+
+    CONSUMER_CLOSED = "consumer_closed"
+    CLIENT_DISCONNECTED = "client_disconnected"
+    USER_PAUSE = "user_pause"
+    USER_CANCEL = "user_cancel"
+    SESSION_DELETED = "session_deleted"
+    RUNTIME_CLOSED = "runtime_closed"
+
+
+class TeamWaiterKind(str, Enum):
+    """Describe the response waiter owned by one Team execution."""
+
+    NONE = "none"
+    PERSISTENT = "persistent"
+    REQUEST = "request"
+    EXCLUSIVE = "exclusive"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SessionLifecycleContext:
+    """Identify one in-process generation of a product Session."""
+
+    session_id: str
+    generation: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExecutionLifecycleContext:
+    """Carry the transport-neutral identity of one Runtime execution."""
+
+    session: SessionLifecycleContext
+    execution_id: str
+    request_id: str
+    work_kind: SessionWorkKind
+    channel_id: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TeamExecutionDetails:
+    """Describe Team-specific ownership attached to one Runtime execution."""
+
+    control_id: str | None = None
+    background_trigger: str | None = None
+    session_message_id: str | None = None
+    waiter_kind: TeamWaiterKind = TeamWaiterKind.NONE
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TeamExecutionContext(ExecutionLifecycleContext):
+    """Carry Team-specific request ownership without coupling the coordinator."""
+
+    details: TeamExecutionDetails
+
+
 @dataclass(slots=True)
 class SessionExecutionHandle:
     execution_id: str
@@ -92,6 +160,8 @@ class SessionExecutionHandle:
     request_id: str
     generation: int
     work_kind: SessionWorkKind
+    channel_id: str = "default"
+    team: TeamExecutionDetails | None = None
     parent_execution_id: str | None = None
     root_work_kind: SessionWorkKind | None = None
     root_request_id: str | None = None
@@ -113,6 +183,8 @@ class SessionExecutionHandle:
             request_id=self.request_id,
             generation=self.generation,
             work_kind=self.work_kind,
+            channel_id=self.channel_id,
+            team=self.team,
             parent_execution_id=self.parent_execution_id,
             root_work_kind=self.root_work_kind,
             root_request_id=self.root_request_id,
@@ -133,6 +205,8 @@ class SessionExecutionSnapshot:
     request_id: str
     generation: int
     work_kind: SessionWorkKind
+    channel_id: str
+    team: TeamExecutionDetails | None
     parent_execution_id: str | None
     root_work_kind: SessionWorkKind | None
     root_request_id: str | None

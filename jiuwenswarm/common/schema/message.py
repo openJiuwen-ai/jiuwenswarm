@@ -394,6 +394,7 @@ class ReqMethod(Enum):
     PERMISSIONS_TOOLS_GET = "permissions.tools.get"
     PERMISSIONS_TOOLS_SET = "permissions.tools.set"
     PERMISSIONS_TOOLS_UPDATE = "permissions.tools.update"
+    PERMISSIONS_TOOLS_UPDATE_USER = "permissions.tools.update_user"
     PERMISSIONS_TOOLS_DELETE = "permissions.tools.delete"
     PERMISSIONS_RULES_GET = "permissions.rules.get"
     PERMISSIONS_RULES_CREATE = "permissions.rules.create"

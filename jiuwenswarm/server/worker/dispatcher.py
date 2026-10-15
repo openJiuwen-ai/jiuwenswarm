@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -69,9 +70,16 @@ class WorkerDispatcher:
         async with self._state_lock:
             self._runtime = runtime
         # This is a Worker-owned event sink even while Gateway is offline.
-        attach = getattr(runtime, "attach_gateway_connection", None)
-        if callable(attach):
-            attach(self._bridge, self._lock)
+        await self._bind_runtime_gateway(runtime)
+
+    async def _bind_runtime_gateway(self, runtime: Any) -> None:
+        bind = getattr(runtime, "bind_gateway_transport", None)
+        if not callable(bind):
+            bind = getattr(runtime, "attach_gateway_connection", None)
+        if callable(bind):
+            result = bind(self._bridge, self._lock)
+            if inspect.isawaitable(result):
+                await result
 
     async def mark_ready(self) -> None:
         # This callback runs before optional tasks released by minimum_ready.
@@ -158,7 +166,7 @@ class WorkerDispatcher:
                 self._attached = True
                 runtime = self._runtime
             if runtime is not None:
-                runtime.attach_gateway_connection(self._bridge, self._lock)
+                await self._bind_runtime_gateway(runtime)
             return True
         if kind == KIND_GATEWAY_DETACH:
             await self.detach_gateway(message.get("remote"))

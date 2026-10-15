@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
     WorkflowRunState,
 )
 
+from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 
@@ -87,7 +89,7 @@ def test_group_input_validates_without_core_payload_type(fields, error):
 async def test_group_request_routes_without_prompt_and_finishes_public_ack(monkeypatch, active, mentions):
     started = active
     class Manager(_InactiveTeamRuntimeManagerMixin):
-        def has_stream_task(self, session_id):
+        def has_stream_task(self, session_id, *, generation: int | None = None):
             return started
 
         def is_runtime_active(self, session_id):
@@ -111,9 +113,9 @@ async def test_group_request_routes_without_prompt_and_finishes_public_ack(monke
     monkeypatch.setattr(team_helpers, "update_session_metadata", Mock())
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", Mock())
     monkeypatch.setattr(team_helpers, "_handle_team_slash_command", AsyncMock(return_value=None))
-    request = SimpleNamespace(
-        session_id="session-group", request_id="req-group", channel_id="web", metadata=None,
-        params={"mode": "team", "type": "group_chat", "mentions": mentions},
+    request = _runtime_followup_request(
+        "session-group", "req-group",
+        params={"type": "group_chat", "mentions": mentions},
     )
     chunks = [chunk async for chunk in team_helpers.process_team_message_stream(
         request, {"query": "讨论"}, object(),
@@ -488,6 +490,30 @@ class _InactiveTeamRuntimeManagerMixin:
         return False
 
     @staticmethod
+    def clear_pending_runtime(session_id: str) -> None:
+        _ = session_id
+
+    def has_input_waiters(self, session_id: str) -> bool:
+        # Fakes carry no attach-only bookkeeping, so every waiter is an
+        # input waiter and the distinction collapses to has_waiters.
+        return self.has_waiters(session_id)
+
+    def has_interactive_waiter(self, session_id: str) -> bool:
+        # Fakes model no exclusive (Heartbeat) waiters, so any registered
+        # waiter counts as interactive.
+        return self.has_waiters(session_id)
+
+    def report_round_state(
+        self,
+        session_id: str,
+        generation: int | None,
+        *,
+        running: bool,
+    ) -> None:
+        # Fakes own no round-state reporter; there is nothing to align.
+        _ = session_id, generation, running
+
+    @staticmethod
     def has_waiters(session_id: str) -> bool:
         return False
 
@@ -502,11 +528,18 @@ class _InactiveTeamRuntimeManagerMixin:
         queue: asyncio.Queue,
         *,
         exclusive: bool = False,
+        attach_only: bool = False,
+        generation: int | None = None,
     ) -> None:
         pass
 
     @staticmethod
-    def remove_waiter(session_id: str, request_id: str) -> None:
+    def remove_waiter(
+        session_id: str,
+        request_id: str,
+        *,
+        generation: int | None = None,
+    ) -> None:
         pass
 
     @staticmethod
@@ -523,7 +556,14 @@ class _InactiveTeamRuntimeManagerMixin:
     ) -> None:
         self._test_rounds[session_id] = request_id
 
-    async def release_round(self, session_id: str, request_id: str) -> bool:
+    async def release_round(
+        self,
+        session_id: str,
+        request_id: str,
+        *,
+        generation: int | None = None,
+    ) -> bool:
+        _ = generation
         if self._test_rounds.get(session_id) != request_id:
             return False
         self._test_rounds.pop(session_id, None)
@@ -531,6 +571,9 @@ class _InactiveTeamRuntimeManagerMixin:
 
     def is_round_owner(self, session_id: str, request_id: str) -> bool:
         return self._test_rounds.get(session_id) == request_id
+
+    def is_round_active(self, session_id: str) -> bool:
+        return session_id in self._test_rounds
 
     async def abort_round(self, session_id: str, request_id: str) -> bool:
         return await self.release_round(session_id, request_id)
@@ -588,7 +631,10 @@ class _InactiveTeamRuntimeManagerMixin:
         pass
 
     @staticmethod
-    def has_stream_task(session_id: str) -> bool:
+    def has_stream_task(
+        session_id: str, *, generation: int | None = None
+    ) -> bool:
+        _ = generation
         return False
 
     @staticmethod
@@ -608,7 +654,10 @@ class _InactiveTeamRuntimeManagerMixin:
         return None
 
     @staticmethod
-    def pop_stream_task(session_id: str) -> asyncio.Task | None:
+    def pop_stream_task(
+        session_id: str, *, generation: int | None = None
+    ) -> asyncio.Task | None:
+        _ = generation
         return None
 
 
@@ -788,7 +837,7 @@ class _CronFakeManager(_InactiveTeamRuntimeManagerMixin):
         return cls._completion.get(session_id)
 
     @classmethod
-    def pop_stream_task(cls, session_id: str) -> asyncio.Task | None:
+    def pop_stream_task(cls, session_id: str, *, generation: int | None = None) -> asyncio.Task | None:
         return cls._stream_tasks.pop(session_id, None)
 
 
@@ -902,6 +951,47 @@ def _delivered_content(payload: Any) -> Any:
 def _delivered(calls: list) -> list:
     """Map recorded delivery calls to ``(session_id, user content)``."""
     return [(session_id, _delivered_content(payload)) for session_id, payload in calls]
+
+
+def _runtime_followup_request(
+    session_id: str,
+    request_id: str,
+    params: dict[str, Any] | None = None,
+) -> AgentRequest:
+    """Build a follow-up request shaped like a real Runtime-submitted one.
+
+    Production follow-ups always carry a ``TeamExecutionContext`` and route
+    waiter attachment through ``waiter_kind`` (``NONE`` for submit-only
+    lanes). Tests that call ``process_team_message_stream`` without the
+    context fall into the legacy no-context branch, where the
+    ``has_interactive_waiter`` callable-probe attaches a waiter that plain
+    interact-style fakes can never drain (no event source, stream task flag
+    pinned True) — the stream then loops forever on ``request_queue.get``.
+    """
+    from jiuwenswarm.runtime.session.model import (
+        TEAM_EXECUTION_CONTEXT_METADATA_KEY,
+        SessionLifecycleContext,
+        SessionWorkKind,
+        TeamExecutionContext,
+        TeamExecutionDetails,
+        TeamWaiterKind,
+    )
+
+    context = TeamExecutionContext(
+        session=SessionLifecycleContext(session_id=session_id, generation=1),
+        execution_id=f"exec-{request_id}",
+        request_id=request_id,
+        work_kind=SessionWorkKind.TEAM_REQUEST,
+        channel_id="web",
+        details=TeamExecutionDetails(waiter_kind=TeamWaiterKind.NONE),
+    )
+    return AgentRequest(
+        request_id=request_id,
+        channel_id="web",
+        session_id=session_id,
+        metadata={TEAM_EXECUTION_CONTEXT_METADATA_KEY: context},
+        params={"mode": "team", **(params or {})},
+    )
 
 
 
@@ -1720,7 +1810,7 @@ async def test_consume_stream_with_query_launches_watcher_after_runtime_ready(mo
             calls.append(f"clear_active:{session_id}")
 
         @staticmethod
-        def pop_stream_task(session_id: str):
+        def pop_stream_task(session_id: str, *, generation: int | None = None):
             calls.append(f"pop:{session_id}")
             return None
 
@@ -1925,7 +2015,7 @@ async def test_process_team_message_stream_forwards_project_dir_and_handles_team
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             return False
 
         @staticmethod
@@ -1942,7 +2032,7 @@ async def test_process_team_message_stream_forwards_project_dir_and_handles_team
         team_helpers, "get_team_manager", lambda channel_id: _FakeManager()
     )
 
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-team-stream",
         request_id="req-team-stream",
         channel_id="web",
@@ -1984,7 +2074,7 @@ async def test_process_team_message_stream_emits_deferred_marker_for_followup(mo
         interact_calls: list[tuple[str, str]] = []
 
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-followup"
             return True
 
@@ -1993,19 +2083,13 @@ async def test_process_team_message_stream_emits_deferred_marker_for_followup(mo
             return SimpleNamespace(team_name="unit-team")
 
         @classmethod
-        async def interact(cls, session_id: str, query: str):
+        async def interact(cls, session_id: str, query: str, *, run_context=None):
             cls.interact_calls.append((session_id, query))
             return True, None
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
 
-    request = SimpleNamespace(
-        session_id="sess-team-followup",
-        request_id="req-team-followup",
-        channel_id="web",
-        metadata=None,
-        params={"mode": "team"},
-    )
+    request = _runtime_followup_request("sess-team-followup", "req-team-followup")
     inputs = {"query": "$human-reporter claim task"}
 
     chunks = []
@@ -2033,19 +2117,522 @@ async def test_process_team_message_stream_emits_deferred_marker_for_followup(mo
     assert chunks[1].is_complete is True
 
 
+class _RecordingAdmission:
+    """Admission double that only records which entry point was taken."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def begin_team_session_message(self, session_id: str) -> None:
+        self.calls.append(("begin_team_session_message", session_id))
+
+    async def begin_team_user(self, session_id: str) -> None:
+        self.calls.append(("begin_team_user", session_id))
+
+    async def begin_user(self, session_id: str) -> None:
+        self.calls.append(("begin_user", session_id))
+
+    async def complete_team_user_submission(
+        self, session_id: str, *, accepted: bool
+    ) -> None:
+        self.calls.append(("complete_team_user_submission", session_id))
+
+    async def end_team_user(self, session_id: str) -> None:
+        self.calls.append(("end_team_user", session_id))
+
+
+async def _run_team_followup_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    params: dict[str, Any],
+) -> list[tuple[str, str]]:
+    """Drive one follow-up team stream and return the admission calls made."""
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        interact_calls: list[tuple[str, str]] = []
+
+        @staticmethod
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
+            assert session_id == "sess-team-mailbox"
+            return True
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**kwargs):
+            return SimpleNamespace(team_name="unit-team")
+
+        @classmethod
+        async def interact(cls, session_id: str, query: str, *, run_context=None):
+            cls.interact_calls.append((session_id, query))
+            return True, None
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    # mailbox/steer/plain turns arrive through the Runtime, so they carry the
+    # execution context (waiter_kind=NONE) that routes follow-ups through the
+    # real submit-only lane instead of the legacy no-context waiter attach.
+    request = _runtime_followup_request("sess-team-mailbox", "session-message-sm-unit", params=params)
+
+    admission = _RecordingAdmission()
+    token = team_helpers.bind_team_heartbeat_service(
+        SimpleNamespace(admission=admission)
+    )
+    try:
+        async for _chunk in team_helpers.process_team_message_stream(
+            request,
+            {"query": "ping"},
+            object(),
+        ):
+            pass
+    finally:
+        team_helpers.reset_team_heartbeat_service(token)
+    # The delivered text is the rendered cross-turn envelope; only assert the
+    # original query content survived it (the exact envelope shape is covered
+    # by user_prompt_builder's own tests).
+    assert len(_FakeManager.interact_calls) == 1
+    delivered_session, delivered_query = _FakeManager.interact_calls[0]
+    assert delivered_session == "sess-team-mailbox"
+    assert '"content": "ping"' in delivered_query
+    return admission.calls
+
+
+@pytest.mark.anyio
+async def test_team_followup_session_message_uses_mailbox_admission(monkeypatch):
+    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+
+    calls = await _run_team_followup_stream(
+        monkeypatch,
+        {"mode": "team", SESSION_MESSAGE_INTERNAL_KEY: {"message_id": "sm-unit"}},
+    )
+
+    # The mailbox turn must take its own admission lane instead of the
+    # interactive team slot, which would wait for the mailbox marker that
+    # this very turn holds (self-deadlock).
+    assert ("begin_team_session_message", "sess-team-mailbox") in calls
+    assert all(call[0] != "begin_team_user" for call in calls)
+    assert all(call[0] != "begin_user" for call in calls)
+
+
+@pytest.mark.anyio
+async def test_team_followup_session_message_steer_uses_interactive_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+
+    calls = await _run_team_followup_stream(
+        monkeypatch,
+        {
+            "mode": "team",
+            "input_mode": "steer",
+            SESSION_MESSAGE_INTERNAL_KEY: {"message_id": "sm-steer"},
+        },
+    )
+
+    assert ("begin_team_user", "sess-team-mailbox") in calls
+    assert all(call[0] != "begin_team_session_message" for call in calls)
+    assert all(call[0] != "begin_user" for call in calls)
+
+
+@pytest.mark.anyio
+async def test_team_followup_plain_user_takes_interactive_admission(monkeypatch):
+    calls = await _run_team_followup_stream(monkeypatch, {"mode": "team"})
+
+    assert ("begin_team_user", "sess-team-mailbox") in calls
+    assert all(call[0] != "begin_team_session_message" for call in calls)
+
+
+@pytest.mark.anyio
+async def test_attach_only_stream_relays_events_across_rounds_and_detaches_on_close(monkeypatch):
+    """Entering a running Team Session observes live output without input.
+
+    The subscription must survive a round's terminal frame (mailbox-triggered
+    follow-ups start later rounds) and remove its waiter when the response
+    stream closes.
+    """
+    from jiuwenswarm.agents.harness.team import TeamManager
+    from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
+
+    manager = TeamManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+
+    spec_calls: list[str] = []
+
+    async def _no_spec(**kwargs):
+        spec_calls.append("spec")
+        return SimpleNamespace(team_name="unit-team")
+
+    monkeypatch.setattr(manager, "get_swarm_enriched_team_spec", _no_spec)
+
+    request = AgentRequest(
+        request_id="attach-1",
+        channel_id="web",
+        session_id="sess-attach",
+        metadata=None,
+        params={"mode": "team", TEAM_ATTACH_ONLY_PARAM: True},
+    )
+
+    payloads: list[Any] = []
+    second_round_seen = asyncio.Event()
+
+    async def _consume() -> None:
+        async for chunk in team_helpers.process_team_message_stream(
+            request, {"query": ""}, object(),
+        ):
+            payloads.append(chunk.payload)
+            if (
+                isinstance(chunk.payload, dict)
+                and chunk.payload.get("content") == "round two"
+            ):
+                second_round_seen.set()
+
+    consumer = asyncio.create_task(_consume())
+    try:
+        async def _wait_attached() -> None:
+            while not manager.get_waiters("sess-attach"):
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_wait_attached(), timeout=2.0)
+
+        await manager.broadcast_event(
+            "sess-attach", {"event_type": "chat.delta", "content": "round one"},
+        )
+        await manager.broadcast_event(
+            "sess-attach",
+            {
+                "event_type": "chat.processing_status",
+                "session_id": "sess-attach",
+                "is_processing": False,
+                "is_complete": True,
+            },
+        )
+        # The terminal frame must not end the subscription: a later
+        # mailbox-triggered round is still observed.
+        await manager.broadcast_event(
+            "sess-attach", {"event_type": "chat.delta", "content": "round two"},
+        )
+        await asyncio.wait_for(second_round_seen.wait(), timeout=2.0)
+    finally:
+        consumer.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await consumer
+
+    relayed = [
+        payload
+        for payload in payloads
+        if isinstance(payload, dict) and payload.get("event_type") == "chat.delta"
+    ]
+    assert [payload["content"] for payload in relayed] == ["round one", "round two"]
+    terminals = [
+        payload
+        for payload in payloads
+        if isinstance(payload, dict)
+        and payload.get("event_type") == "chat.processing_status"
+    ]
+    assert any(payload.get("is_processing") is False for payload in terminals)
+    # Closing the response stream detaches the waiter; the attach path never
+    # assembled a team spec (no input is submitted, no runtime is created).
+    assert manager.get_waiters("sess-attach") == []
+    assert spec_calls == []
+
+
+@pytest.mark.anyio
+async def test_attach_waiter_counts_as_interactive_subscription():
+    """An attach waiter is an interactive subscription.
+
+    While it is attached, a user message from the same Session must not
+    register a second waiter (``waiter_kind=NONE`` submit-only stream) —
+    otherwise every event would reach the frontend twice.
+    """
+    from jiuwenswarm.agents.harness.team import TeamManager
+
+    manager = TeamManager()
+    assert manager.has_interactive_waiter("sess-multi") is False
+
+    # Two windows attached to the same Session (attach waiters).
+    for request_id in ("attach-window-1", "attach-window-2"):
+        manager.add_waiter("sess-multi", request_id, asyncio.Queue())
+
+    assert manager.has_interactive_waiter("sess-multi") is True
+
+    # An exclusive (Heartbeat) waiter must not count as interactive, but the
+    # attach waiters keep the Session interactive for user turns.
+    manager.add_waiter("sess-multi", "hb-run", asyncio.Queue(), exclusive=True)
+    assert manager.has_interactive_waiter("sess-multi") is True
+
+
+@pytest.mark.anyio
+async def test_broadcast_selects_one_attach_only_waiter():
+    """Multiple attach observers must not duplicate one Team event."""
+    from jiuwenswarm.agents.harness.team import TeamManager
+
+    manager = TeamManager()
+    first_queue = asyncio.Queue()
+    second_queue = asyncio.Queue()
+    manager.add_waiter(
+        "sess-attach-fanout",
+        "attach-1",
+        first_queue,
+        attach_only=True,
+    )
+    manager.add_waiter(
+        "sess-attach-fanout",
+        "attach-2",
+        second_queue,
+        attach_only=True,
+    )
+
+    first_event = {"event_type": "chat.final", "content": "first"}
+    await manager.broadcast_event("sess-attach-fanout", first_event)
+
+    assert await first_queue.get() == first_event
+    assert second_queue.empty()
+
+    manager.remove_waiter("sess-attach-fanout", "attach-1")
+    fallback_event = {"event_type": "chat.final", "content": "fallback"}
+    await manager.broadcast_event("sess-attach-fanout", fallback_event)
+
+    assert await second_queue.get() == fallback_event
+
+
+@pytest.mark.anyio
+async def test_broadcast_prefers_input_waiter_over_attach_only_waiter():
+    """An input response stream is the upstream owner while it is attached."""
+    from jiuwenswarm.agents.harness.team import TeamManager
+
+    manager = TeamManager()
+    attach_queue = asyncio.Queue()
+    input_queue = asyncio.Queue()
+    manager.add_waiter(
+        "sess-input-owner",
+        "attach-1",
+        attach_queue,
+        attach_only=True,
+    )
+    manager.add_waiter("sess-input-owner", "turn-1", input_queue)
+
+    event = {"event_type": "chat.reasoning", "content": "working"}
+    await manager.broadcast_event("sess-input-owner", event)
+
+    assert attach_queue.empty()
+    assert await input_queue.get() == event
+
+
+@pytest.mark.anyio
+async def test_attach_only_waiter_does_not_flip_first_request():
+    """An attach-only waiter must not make a fresh input look like a follow-up.
+
+    With the Team stream stopped, a user turn would otherwise take the
+    follow-up path and stall on ``gate_closed`` against a dead runtime.
+    """
+    from jiuwenswarm.agents.harness.team import TeamManager
+
+    manager = TeamManager()
+    manager.add_waiter("sess-attach", "attach-1", asyncio.Queue(), attach_only=True)
+    manager.add_waiter("sess-attach", "attach-2", asyncio.Queue(), attach_only=True)
+
+    # Attach waiters receive broadcasts, but no input-owning stream exists.
+    assert manager.has_waiters("sess-attach") is True
+    assert manager.has_input_waiters("sess-attach") is False
+
+    # A real input-owning waiter joins, then detaches: the flag follows it.
+    manager.add_waiter("sess-attach", "turn-1", asyncio.Queue())
+    assert manager.has_input_waiters("sess-attach") is True
+    manager.remove_waiter("sess-attach", "turn-1")
+    assert manager.has_input_waiters("sess-attach") is False
+
+    # Detaching the last attach waiter clears all waiter bookkeeping.
+    manager.remove_waiter("sess-attach", "attach-1")
+    manager.remove_waiter("sess-attach", "attach-2")
+    assert manager.has_waiters("sess-attach") is False
+    assert manager.has_input_waiters("sess-attach") is False
+
+
+@pytest.mark.anyio
+async def test_attach_only_stream_aligns_execution_to_idle_round(monkeypatch):
+    """Attaching while the Team stream is idle must park the execution.
+
+    Without the alignment the attach execution stays RUNNING forever (no
+    round transition will park it), keeping the Session busy — delete and
+    archive would then report SESSION_BUSY until the connection drops.
+    """
+    from jiuwenswarm.agents.harness.team import TeamManager
+    from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
+
+    manager = TeamManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+
+    reported: list[tuple[str, int | None, bool]] = []
+    monkeypatch.setattr(
+        manager,
+        "report_round_state",
+        lambda session_id, generation, *, running: reported.append(
+            (session_id, generation, running)
+        ),
+    )
+
+    request = AgentRequest(
+        request_id="attach-idle-1",
+        channel_id="web",
+        session_id="sess-attach-idle",
+        metadata=None,
+        params={"mode": "team", TEAM_ATTACH_ONLY_PARAM: True},
+    )
+
+    async def _consume() -> None:
+        async for _chunk in team_helpers.process_team_message_stream(
+            request, {"query": ""}, object(),
+        ):
+            break
+
+    consumer = asyncio.create_task(_consume())
+    try:
+        async def _wait_reported() -> None:
+            while not reported:
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_wait_reported(), timeout=2.0)
+    finally:
+        consumer.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await consumer
+
+    # No stream task exists, so the attach path must align the round state
+    # to idle right after registering its waiter.
+    assert reported == [("sess-attach-idle", None, False)]
+
+
+def test_report_round_state_requires_generation_and_match():
+    from jiuwenswarm.agents.harness.team import TeamManager
+
+    manager = TeamManager()
+    reports: list[tuple[str, int, bool]] = []
+    manager.set_round_state_reporter(
+        lambda session_id, generation, running: reports.append(
+            (session_id, generation, running)
+        )
+    )
+
+    # Without a generation there is no Runtime execution to align.
+    manager.report_round_state("sess-a", None, running=False)
+    assert reports == []
+
+    # A bound generation is reported through.
+    manager.bind_generation("sess-a", 3)
+    manager.report_round_state("sess-a", 3, running=False)
+    assert reports == [("sess-a", 3, False)]
+
+    # A mismatched generation must not leak into the current generation.
+    manager.report_round_state("sess-a", 2, running=True)
+    assert reports == [("sess-a", 3, False)]
+
+
+class _RejectedResult:
+    """Falsy Runner deliver result carrying a rejection reason."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def __bool__(self) -> bool:
+        return False
+
+
+@pytest.mark.anyio
+async def test_interact_rolls_back_restored_runtime_on_gate_closed(monkeypatch):
+    """A restored-but-unusable runtime must not stay in the active map.
+
+    The pool entry can still read RUNNING/PAUSED while the input gate is
+    closed (stream teardown window). Keeping the restored marker makes
+    follow-up boundary retries loop on gate_closed until timeout and leaves
+    a half-restored Session that reports busy (undeletable).
+    """
+    from jiuwenswarm.agents.harness.team import TeamManager
+
+    manager = TeamManager()
+
+    async def _fake_resolve(session_id):
+        return "team-unit", SimpleNamespace(state="RUNNING")
+
+    monkeypatch.setattr(manager, "_resolve_resumable_runner_entry", _fake_resolve)
+
+    class _Runner:
+        @staticmethod
+        async def interact_agent_team(payload, **kwargs):
+            return _RejectedResult("gate_closed")
+
+    import jiuwenswarm.agents.harness.team.team_manager as team_manager_module
+
+    monkeypatch.setattr(team_manager_module, "Runner", _Runner)
+
+    success, reason = await manager.interact("sess-race", "hello")
+
+    assert success is False
+    assert reason == "gate_closed"
+    assert manager.is_runtime_active("sess-race") is False
+
+
+@pytest.mark.anyio
+async def test_interact_keeps_restored_runtime_when_delivery_succeeds(monkeypatch):
+    from jiuwenswarm.agents.harness.team import TeamManager
+
+    manager = TeamManager()
+
+    async def _fake_resolve(session_id):
+        return "team-unit", SimpleNamespace(state="PAUSED")
+
+    monkeypatch.setattr(manager, "_resolve_resumable_runner_entry", _fake_resolve)
+
+    class _Runner:
+        @staticmethod
+        async def interact_agent_team(payload, **kwargs):
+            return True
+
+    import jiuwenswarm.agents.harness.team.team_manager as team_manager_module
+
+    monkeypatch.setattr(team_manager_module, "Runner", _Runner)
+
+    success, reason = await manager.interact("sess-resume", "hello")
+
+    assert success is True
+    assert reason is None
+    assert manager.is_runtime_active("sess-resume") is True
+
+
+@pytest.mark.anyio
+async def test_interact_does_not_rollback_preexisting_active_runtime(monkeypatch):
+    """Only a marker restored within the rejected call is rolled back."""
+    from jiuwenswarm.agents.harness.team import TeamManager
+
+    manager = TeamManager()
+    manager._active_team_names["sess-live"] = "team-live"
+
+    class _Runner:
+        @staticmethod
+        async def interact_agent_team(payload, **kwargs):
+            return _RejectedResult("gate_closed")
+
+    import jiuwenswarm.agents.harness.team.team_manager as team_manager_module
+
+    monkeypatch.setattr(team_manager_module, "Runner", _Runner)
+
+    success, reason = await manager.interact("sess-live", "hello")
+
+    assert success is False
+    # The marker existed before this call; a rejected interact must not drop
+    # another owner's registration.
+    assert manager.is_runtime_active("sess-live") is True
+
+
 @pytest.mark.anyio
 async def test_heartbeat_team_followup_waits_for_real_round_and_routes_once(monkeypatch):
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
 
     class _FakeManager(TeamManager):
-        def has_stream_task(self, session_id: str) -> bool:
+        def has_stream_task(self, session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-heartbeat"
             return True
 
         async def get_swarm_enriched_team_spec(self, **kwargs):
             return SimpleNamespace(team_name="unit-team")
 
-        async def interact(self, session_id: str, query: str):
+        async def interact(self, session_id: str, query: str, *, run_context=None):
             async def _complete_round() -> None:
                 await asyncio.sleep(0)
                 await self.broadcast_event(
@@ -2076,7 +2663,7 @@ async def test_heartbeat_team_followup_waits_for_real_round_and_routes_once(monk
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
 
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-team-heartbeat",
         request_id="hb-run-2",
         channel_id="web",
@@ -2125,23 +2712,25 @@ async def test_interactive_followup_attaches_after_headless_heartbeat(monkeypatc
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
 
     class _FakeManager(TeamManager):
-        def has_stream_task(self, session_id: str) -> bool:
+        def has_stream_task(self, session_id, *, generation: int | None = None) -> bool:
             return session_id == "sess-headless-first"
 
         async def get_swarm_enriched_team_spec(self, **kwargs):
             return SimpleNamespace(team_name="unit-team")
 
-        async def interact(self, session_id: str, query: str):
+        async def interact(self, session_id: str, query: str, *, run_context=None):
             return True, None
 
     manager = _FakeManager()
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel_id: manager)
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
     admission = SessionRunAdmission()
-    request = SimpleNamespace(
-        session_id="sess-headless-first",
+    # AgentRequest (not SimpleNamespace): the team stream path runs
+    # dataclasses.replace() on the request, which only accepts dataclasses.
+    request = AgentRequest(
         request_id="req-user-after-heartbeat",
         channel_id="web",
+        session_id="sess-headless-first",
         metadata={},
         params={"mode": "team"},
         user_id="owner",
@@ -2196,13 +2785,13 @@ async def test_cancelled_heartbeat_followup_aborts_submitted_team_round(monkeypa
     class _FakeManager(TeamManager):
         aborted: tuple[str, str] | None = None
 
-        def has_stream_task(self, session_id: str) -> bool:
+        def has_stream_task(self, session_id, *, generation: int | None = None) -> bool:
             return True
 
         async def get_swarm_enriched_team_spec(self, **kwargs):
             return SimpleNamespace(team_name="unit-team")
 
-        async def interact(self, session_id: str, query: str):
+        async def interact(self, session_id: str, query: str, *, run_context=None):
             interacted.set()
             return True, None
 
@@ -2214,7 +2803,7 @@ async def test_cancelled_heartbeat_followup_aborts_submitted_team_round(monkeypa
     manager.add_waiter("sess-team-cancel", "req-browser", asyncio.Queue())
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-team-cancel",
         request_id="hb-run-cancel",
         channel_id="web",
@@ -2259,13 +2848,13 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
 
     class _FakeManager(TeamManager):
-        def has_stream_task(self, session_id: str) -> bool:
+        def has_stream_task(self, session_id, *, generation: int | None = None) -> bool:
             return True
 
         async def get_swarm_enriched_team_spec(self, **kwargs):
             return SimpleNamespace(team_name="unit-team")
 
-        async def interact(self, session_id: str, query: str):
+        async def interact(self, session_id: str, query: str, *, run_context=None):
             # Plan skip can finish without a model call, before interact returns.
             if completion_timing != "after_ack":
                 await self.broadcast_event(
@@ -2288,7 +2877,7 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
     admission = SessionRunAdmission()
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-team-user",
         request_id="req-user-followup",
         channel_id="web",
@@ -2375,7 +2964,7 @@ async def test_concurrent_team_cold_start_delivers_output_once(monkeypatch, firs
                 await allow_prepare.wait()
             return SimpleNamespace(team_name="unit-team", enable_swarmflow=False, agents={})
 
-        async def interact(self, session_id, query):
+        async def interact(self, session_id, query, *, run_context=None):
             interactions.append(_delivered_content(query))
             interacted.set()
             return True, None
@@ -2412,7 +3001,7 @@ async def test_concurrent_team_cold_start_delivers_output_once(monkeypatch, firs
     monkeypatch.setattr(team_helpers, "_handle_team_slash_command", AsyncMock(return_value=None))
 
     async def _submit(request_id, query):
-        request = SimpleNamespace(
+        request = AgentRequest(
             session_id=session_id, request_id=request_id, channel_id="web",
             metadata={}, params={"mode": "team"}, user_id="owner",
         )
@@ -2491,7 +3080,7 @@ async def test_concurrent_team_fallback_starts_one_replacement_stream(monkeypatc
         activation_calls = 0
         delivery_attempts = 0
 
-        def has_stream_task(self, session_id):
+        def has_stream_task(self, session_id, *, generation: int | None = None):
             return self.old_stream_active or super().has_stream_task(session_id)
 
         async def get_swarm_enriched_team_spec(self, **kwargs):
@@ -2506,7 +3095,7 @@ async def test_concurrent_team_fallback_starts_one_replacement_stream(monkeypatc
             await allow_activation.wait()
             await super().prepare_runtime_activation(session_id, team_name)
 
-        async def interact(self, session_id, query):
+        async def interact(self, session_id, query, *, run_context=None):
             self.delivery_attempts += 1
             if self.delivery_attempts == 2:
                 both_attempted.set()
@@ -2537,7 +3126,7 @@ async def test_concurrent_team_fallback_starts_one_replacement_stream(monkeypatc
     monkeypatch.setattr(team_helpers, "_handle_team_slash_command", AsyncMock(return_value=None))
 
     async def _submit(request_id, query):
-        request = SimpleNamespace(
+        request = AgentRequest(
             session_id=session_id, request_id=request_id, channel_id="web",
             metadata={}, params={"mode": "team"}, user_id="owner",
         )
@@ -2589,13 +3178,13 @@ async def test_concurrent_team_steers_reach_interact_without_round_wait(monkeypa
             super().__init__()
             self.interact_calls: list[str] = []
 
-        def has_stream_task(self, session_id: str) -> bool:
+        def has_stream_task(self, session_id, *, generation: int | None = None) -> bool:
             return True
 
         async def get_swarm_enriched_team_spec(self, **kwargs):
             return SimpleNamespace(team_name="unit-team")
 
-        async def interact(self, session_id: str, query: str):
+        async def interact(self, session_id: str, query: str, *, run_context=None):
             self.interact_calls.append(query)
             return True, None
 
@@ -2606,7 +3195,7 @@ async def test_concurrent_team_steers_reach_interact_without_round_wait(monkeypa
     admission = SessionRunAdmission()
 
     async def _submit(request_id: str, query: str) -> list[Any]:
-        request = SimpleNamespace(
+        request = AgentRequest(
             session_id="sess-concurrent-steer",
             request_id=request_id,
             channel_id="web",
@@ -2666,13 +3255,13 @@ async def test_cron_team_followup_retains_bounded_round_ownership(monkeypatch):
     interacted = asyncio.Event()
 
     class _FakeManager(TeamManager):
-        def has_stream_task(self, session_id: str) -> bool:
+        def has_stream_task(self, session_id, *, generation: int | None = None) -> bool:
             return True
 
         async def get_swarm_enriched_team_spec(self, **kwargs):
             return SimpleNamespace(team_name="unit-team")
 
-        async def interact(self, session_id: str, query: str):
+        async def interact(self, session_id: str, query: str, *, run_context=None):
             interacted.set()
             return True, None
 
@@ -2681,7 +3270,7 @@ async def test_cron_team_followup_retains_bounded_round_ownership(monkeypatch):
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel_id: manager)
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
     admission = SessionRunAdmission()
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-cron-bounded",
         request_id="cron-job:run-1",
         channel_id="web",
@@ -2741,7 +3330,7 @@ async def test_process_team_message_stream_rejects_agent_group_with_skills(
 ) -> None:
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             return active
 
     manager = _FakeManager()
@@ -2765,7 +3354,7 @@ async def test_process_team_message_stream_rejects_agent_group_with_skills(
     params = {"mode": mode, "skills": ["technical-review"]}
     if requested_group is not None:
         params["agent_group_name"] = requested_group
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-group-skill-conflict",
         request_id="req-group-skill-conflict",
         channel_id="web",
@@ -2818,7 +3407,7 @@ async def test_process_team_message_stream_stops_when_team_assembly_fails(
     manager = _FakeManager()
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel_id: manager)
 
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-deleted-group",
         request_id="req-deleted-group",
         channel_id="web",
@@ -2885,7 +3474,7 @@ async def test_process_team_message_stream_keeps_agent_group_skills(
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             return active
 
     manager = _FakeManager()
@@ -2914,13 +3503,7 @@ async def test_process_team_message_stream_keeps_agent_group_skills(
     params = {"mode": "team", **skills_params}
     if first_request:
         params["agent_group_name"] = "review-group"
-    request = SimpleNamespace(
-        session_id="sess-group-skills-preserved",
-        request_id="req-group-skills-preserved",
-        channel_id="web",
-        metadata=None,
-        params=params,
-    )
+    request = _runtime_followup_request("sess-group-skills-preserved", "req-group-skills-preserved", params=params)
     chunks = [
         chunk
         async for chunk in team_helpers.process_team_message_stream(
@@ -2968,7 +3551,7 @@ async def test_process_team_message_stream_applies_selected_skills_before_follow
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             return True
 
         @staticmethod
@@ -2976,7 +3559,7 @@ async def test_process_team_message_stream_applies_selected_skills_before_follow
             return SimpleNamespace(team_name="unit-team")
 
         @staticmethod
-        async def interact(session_id: str, query: str):
+        async def interact(session_id: str, query: str, *, run_context=None):
             calls.append({"interact": session_id, "query": _delivered_content(query)})
             return True, None
 
@@ -2995,13 +3578,7 @@ async def test_process_team_message_stream_applies_selected_skills_before_follow
     monkeypatch.setattr(team_helpers, "_apply_team_skill_selection", _record_selection)
     monkeypatch.setattr(team_helpers, "get_session_metadata", lambda *args, **kwargs: {})
 
-    request = SimpleNamespace(
-        session_id="sess-team-skills",
-        request_id="req-team-skills",
-        channel_id="web",
-        metadata=None,
-        params={"mode": "team", "skills": skills},
-    )
+    request = _runtime_followup_request("sess-team-skills", "req-team-skills", params={"skills": skills})
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
         request,
@@ -3028,7 +3605,7 @@ async def test_process_team_message_stream_retries_followup_while_native_starts(
         interact_calls: list[tuple[str, str]] = []
 
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-followup-starting"
             return True
 
@@ -3037,7 +3614,7 @@ async def test_process_team_message_stream_retries_followup_while_native_starts(
             return SimpleNamespace(team_name="unit-team")
 
         @classmethod
-        async def interact(cls, session_id: str, query: str):
+        async def interact(cls, session_id: str, query: str, *, run_context=None):
             cls.interact_calls.append((session_id, query))
             return (
                 False,
@@ -3051,6 +3628,7 @@ async def test_process_team_message_stream_retries_followup_while_native_starts(
         query: str,
         *,
         initial_reason: str | None = None,
+        run_context: object = None,
     ):
         assert team_manager is not None
         assert initial_reason == (
@@ -3067,13 +3645,7 @@ async def test_process_team_message_stream_retries_followup_while_native_starts(
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
     monkeypatch.setattr(team_helpers, "_deliver_followup_interact_across_boundary", _fake_retry)
 
-    request = SimpleNamespace(
-        session_id="sess-team-followup-starting",
-        request_id="req-team-followup-starting",
-        channel_id="web",
-        metadata=None,
-        params={"mode": "team"},
-    )
+    request = _runtime_followup_request("sess-team-followup-starting", "req-team-followup-starting")
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
@@ -3103,7 +3675,7 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
         stream_active = True
 
         @classmethod
-        def has_stream_task(cls, session_id: str) -> bool:
+        def has_stream_task(cls, session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-followup-stopped"
             return cls.stream_active
 
@@ -3112,7 +3684,7 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
             return SimpleNamespace(team_name="unit-team", enable_swarmflow=False)
 
         @classmethod
-        async def interact(cls, session_id: str, query: str):
+        async def interact(cls, session_id: str, query: str, *, run_context=None):
             cls.interact_calls.append((session_id, query))
             return (
                 False,
@@ -3125,7 +3697,7 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
             captured["prepared"] = (session_id, team_name)
 
         @staticmethod
-        def register_stream_task(session_id: str, task: object) -> None:
+        def register_stream_task(session_id: str, task: object, *, generation: int | None = None) -> None:
             captured["registered"] = session_id
 
     async def _fake_retry(
@@ -3134,6 +3706,7 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
         query: str,
         *,
         initial_reason: str | None = None,
+        run_context: object = None,
     ):
         assert team_manager is not None
         assert session_id == "sess-team-followup-stopped"
@@ -3155,6 +3728,8 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
         spec: object,
         query: str,
         *,
+        generation=None,
+        run_context=None,
         round_id: int,
         envs: dict | None = None,
     ) -> None:
@@ -3166,13 +3741,7 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
     monkeypatch.setattr(team_helpers, "increment_session_round_count", lambda session_id: 7)
     monkeypatch.setattr(team_helpers, "_consume_stream_with_query", _fake_consume_stream_with_query)
 
-    request = SimpleNamespace(
-        session_id="sess-team-followup-stopped",
-        request_id="req-team-followup-stopped",
-        channel_id="web",
-        metadata=None,
-        params={"mode": "team"},
-    )
+    request = _runtime_followup_request("sess-team-followup-stopped", "req-team-followup-stopped")
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
@@ -3211,7 +3780,7 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
         stream_active = True
 
         @classmethod
-        def has_stream_task(cls, session_id: str) -> bool:
+        def has_stream_task(cls, session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-followup-directives"
             return cls.stream_active
 
@@ -3220,7 +3789,7 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
             return SimpleNamespace(team_name="unit-team", enable_swarmflow=False)
 
         @classmethod
-        async def interact(cls, session_id: str, query: str):
+        async def interact(cls, session_id: str, query: str, *, run_context=None):
             cls.interact_calls.append((session_id, query))
             return False, "gate_closed"
 
@@ -3229,7 +3798,7 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
             captured["prepared"] = (session_id, team_name)
 
         @staticmethod
-        def register_stream_task(session_id: str, task: object) -> None:
+        def register_stream_task(session_id: str, task: object, *, generation: int | None = None) -> None:
             captured["registered"] = session_id
 
     async def _fake_retry(
@@ -3238,6 +3807,7 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
         query: str,
         *,
         initial_reason: str | None = None,
+        run_context: object = None,
     ):
         assert team_manager is not None
         assert session_id == "sess-team-followup-directives"
@@ -3256,6 +3826,8 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
         spec: object,
         query: str,
         *,
+        generation=None,
+        run_context=None,
         round_id: int,
         envs: dict | None = None,
     ) -> None:
@@ -3267,13 +3839,7 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
     monkeypatch.setattr(team_helpers, "increment_session_round_count", lambda session_id: 9)
     monkeypatch.setattr(team_helpers, "_consume_stream_with_query", _fake_consume_stream_with_query)
 
-    request = SimpleNamespace(
-        session_id="sess-team-followup-directives",
-        request_id="req-team-followup-directives",
-        channel_id="web",
-        metadata=None,
-        params={"mode": "team"},
-    )
+    request = _runtime_followup_request("sess-team-followup-directives", "req-team-followup-directives")
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
@@ -3305,7 +3871,7 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
 async def test_process_team_message_stream_silences_gate_closed_when_shutdown_race_times_out(monkeypatch):
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-followup-timeout"
             return True
 
@@ -3314,7 +3880,7 @@ async def test_process_team_message_stream_silences_gate_closed_when_shutdown_ra
             return SimpleNamespace(team_name="unit-team")
 
         @staticmethod
-        async def interact(session_id: str, query: str):
+        async def interact(session_id: str, query: str, *, run_context=None):
             assert session_id == "sess-team-followup-timeout"
             assert _delivered_content(query) == "还在收尾"
             return False, "gate_closed"
@@ -3329,6 +3895,7 @@ async def test_process_team_message_stream_silences_gate_closed_when_shutdown_ra
         query: str,
         *,
         initial_reason: str | None = None,
+        run_context: object = None,
     ):
         assert team_manager is not None
         assert session_id == "sess-team-followup-timeout"
@@ -3343,7 +3910,7 @@ async def test_process_team_message_stream_silences_gate_closed_when_shutdown_ra
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
     monkeypatch.setattr(team_helpers, "_deliver_followup_interact_across_boundary", _fake_retry)
 
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-team-followup-timeout",
         request_id="req-team-followup-timeout",
         channel_id="web",
@@ -3381,7 +3948,7 @@ async def test_process_team_message_stream_passes_interactive_input_to_followup(
         interact_calls: list[tuple[str, Any]] = []
 
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-plan-followup"
             return True
 
@@ -3390,19 +3957,13 @@ async def test_process_team_message_stream_passes_interactive_input_to_followup(
             return SimpleNamespace(team_name="unit-team")
 
         @classmethod
-        async def interact(cls, session_id: str, query: Any):
+        async def interact(cls, session_id: str, query: Any, *, run_context=None):
             cls.interact_calls.append((session_id, query))
             return True, None
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
 
-    request = SimpleNamespace(
-        session_id="sess-team-plan-followup",
-        request_id="req-team-plan-followup",
-        channel_id="web",
-        metadata=None,
-        params={"mode": "team.plan"},
-    )
+    request = _runtime_followup_request("sess-team-plan-followup", "req-team-plan-followup", params={"mode": "team.plan"})
     inputs = {"query": approval_input}
 
     chunks = []
@@ -3446,7 +4007,7 @@ async def test_process_team_message_stream_resumes_active_session_without_stream
             return False
 
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-ask-followup"
             return False
 
@@ -3455,7 +4016,7 @@ async def test_process_team_message_stream_resumes_active_session_without_stream
             return SimpleNamespace(team_name="unit-team")
 
         @classmethod
-        async def interact(cls, session_id: str, query: Any):
+        async def interact(cls, session_id: str, query: Any, *, run_context=None):
             cls.interact_calls.append((session_id, query))
             return True, None
 
@@ -3465,7 +4026,7 @@ async def test_process_team_message_stream_resumes_active_session_without_stream
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
 
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-team-ask-followup",
         request_id="req-team-ask-followup",
         channel_id="web",
@@ -3512,7 +4073,7 @@ async def test_process_team_message_stream_routes_evolution_interrupt_to_active_
             return False
 
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-evolution-resume"
             return True
 
@@ -3525,23 +4086,17 @@ async def test_process_team_message_stream_routes_evolution_interrupt_to_active_
             pytest.fail("active evolution interrupt resume should not recreate runtime")
 
         @staticmethod
-        def register_stream_task(session_id: str, task: asyncio.Task) -> None:
+        def register_stream_task(session_id: str, task: asyncio.Task, *, generation: int | None = None) -> None:
             pytest.fail("active evolution interrupt resume should not start a stream task")
 
         @classmethod
-        async def interact(cls, session_id: str, query: Any):
+        async def interact(cls, session_id: str, query: Any, *, run_context=None):
             cls.interact_calls.append((session_id, query))
             return True, None
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
 
-    request = SimpleNamespace(
-        session_id="sess-team-evolution-resume",
-        request_id="req-team-evolution-resume",
-        channel_id="web",
-        metadata=None,
-        params={"mode": "team", "source": "evolution_interrupt"},
-    )
+    request = _runtime_followup_request("sess-team-evolution-resume", "req-team-evolution-resume", params={"source": "evolution_interrupt"})
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
@@ -3600,7 +4155,7 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
             return True
 
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-plan-resume"
             return False
 
@@ -3609,7 +4164,7 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
             return SimpleNamespace(team_name="unit-team", enable_swarmflow=False)
 
         @classmethod
-        async def interact(cls, session_id: str, query: Any):
+        async def interact(cls, session_id: str, query: Any, *, run_context=None):
             cls.interact_calls.append((session_id, query))
             return True, None
 
@@ -3618,13 +4173,13 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
             raise AssertionError("prepare_runtime_activation should not run for resumed approval")
 
         @staticmethod
-        def register_stream_task(session_id: str, task: asyncio.Task) -> None:
+        def register_stream_task(session_id: str, task: asyncio.Task, *, generation: int | None = None) -> None:
             raise AssertionError("register_stream_task should not run for resumed approval")
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
     monkeypatch.setattr(team_helpers, "ensure_team_evolution_watcher", lambda *args, **kwargs: None)
 
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-team-plan-resume",
         request_id="req-team-plan-resume",
         channel_id="web",
@@ -3680,7 +4235,7 @@ async def test_process_team_message_stream_rejects_orphaned_interactive_input(mo
             return False
 
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-orphan-answer"
             return False
 
@@ -3698,7 +4253,7 @@ async def test_process_team_message_stream_rejects_orphaned_interactive_input(mo
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
 
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-team-orphan-answer",
         request_id="req-team-orphan-answer",
         channel_id="web",
@@ -3757,7 +4312,7 @@ async def test_process_team_message_stream_recovers_paused_runtime_for_interacti
             return True
 
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-plan-recover"
             return False
 
@@ -3766,19 +4321,13 @@ async def test_process_team_message_stream_recovers_paused_runtime_for_interacti
             return SimpleNamespace(team_name="unit-team")
 
         @classmethod
-        async def interact(cls, session_id: str, query: Any):
+        async def interact(cls, session_id: str, query: Any, *, run_context=None):
             cls.interact_calls.append((session_id, query))
             return True, None
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
 
-    request = SimpleNamespace(
-        session_id="sess-team-plan-recover",
-        request_id="req-team-plan-recover",
-        channel_id="web",
-        metadata=None,
-        params={"mode": "team.plan", "source": "confirm_interrupt"},
-    )
+    request = _runtime_followup_request("sess-team-plan-recover", "req-team-plan-recover", params={"mode": "team.plan", "source": "confirm_interrupt"})
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
@@ -3823,7 +4372,7 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
             return True
 
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-new-round"
             return False
 
@@ -3836,7 +4385,7 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
             captured["prepared"] = (session_id, team_name)
 
         @staticmethod
-        def register_stream_task(session_id: str, task: object) -> None:
+        def register_stream_task(session_id: str, task: object, *, generation: int | None = None) -> None:
             captured["registered"] = session_id
 
         @staticmethod
@@ -3849,6 +4398,8 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
         spec: object,
         query: str,
         *,
+        generation=None,
+        run_context=None,
         round_id: int,
         envs: dict | None = None,
     ) -> None:
@@ -3859,13 +4410,7 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
     monkeypatch.setattr(team_helpers, "increment_session_round_count", lambda session_id: 1)
     monkeypatch.setattr(team_helpers, "_consume_stream_with_query", _fake_consume_stream_with_query)
 
-    request = SimpleNamespace(
-        session_id="sess-team-new-round",
-        request_id="req-team-new-round",
-        channel_id="web",
-        metadata=None,
-        params={"mode": "team"},
-    )
+    request = _runtime_followup_request("sess-team-new-round", "req-team-new-round")
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
@@ -3895,7 +4440,7 @@ async def test_process_team_message_stream_converts_a2ui_followup_event(monkeypa
         interact_calls: list[tuple[str, str]] = []
 
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             assert session_id == "sess-team-a2ui"
             return True
 
@@ -3904,19 +4449,13 @@ async def test_process_team_message_stream_converts_a2ui_followup_event(monkeypa
             return SimpleNamespace(team_name="unit-team")
 
         @classmethod
-        async def interact(cls, session_id: str, query: str):
+        async def interact(cls, session_id: str, query: str, *, run_context=None):
             cls.interact_calls.append((session_id, query))
             return True, None
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
 
-    request = SimpleNamespace(
-        session_id="sess-team-a2ui",
-        request_id="req-team-a2ui",
-        channel_id="web",
-        metadata={"language": "zh"},
-        params={"mode": "team"},
-    )
+    request = _runtime_followup_request("sess-team-a2ui", "req-team-a2ui")
     inputs = {
         "query": {
             "type": "a2ui.client_event",
@@ -3966,7 +4505,7 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @classmethod
-        def has_stream_task(cls, session_id: str) -> bool:
+        def has_stream_task(cls, session_id, *, generation: int | None = None) -> bool:
             return False
 
         @classmethod
@@ -3981,7 +4520,7 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
             return None
 
         @staticmethod
-        def register_stream_task(session_id: str, task: object) -> None:
+        def register_stream_task(session_id: str, task: object, *, generation: int | None = None) -> None:
             return None
 
     async def _fake_consume_stream_with_query(
@@ -3990,6 +4529,8 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
         spec: object,
         query: str,
         *,
+        generation=None,
+        run_context=None,
         round_id: int,
         envs: dict | None = None,
     ) -> None:
@@ -3999,13 +4540,7 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
     monkeypatch.setattr(team_helpers, "increment_session_round_count", lambda session_id: 1)
     monkeypatch.setattr(team_helpers, "_consume_stream_with_query", _fake_consume_stream_with_query)
 
-    request = SimpleNamespace(
-        session_id="sess-first-evolve",
-        request_id="req-first-evolve",
-        channel_id="web",
-        metadata=None,
-        params={"mode": "team"},
-    )
+    request = _runtime_followup_request("sess-first-evolve", "req-first-evolve")
     inputs = {"query": f"/evolve xlsx {user_intent}"}
 
     chunks = []
@@ -4031,7 +4566,7 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             return False
 
         @staticmethod
@@ -4046,7 +4581,7 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
             return None
 
         @staticmethod
-        def register_stream_task(session_id: str, task: object) -> None:
+        def register_stream_task(session_id: str, task: object, *, generation: int | None = None) -> None:
             return None
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
@@ -4058,6 +4593,8 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
         spec: object,
         query: str,
         *,
+        generation=None,
+        run_context=None,
         round_id: int,
         envs: dict | None = None,
     ) -> None:
@@ -4065,12 +4602,7 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
 
     monkeypatch.setattr(team_helpers, "_consume_stream_with_query", _fake_consume_stream_with_query)
 
-    request = SimpleNamespace(
-        session_id="sess-team-evolve",
-        request_id="req-team-evolve",
-        channel_id="web",
-        metadata=None,
-    )
+    request = _runtime_followup_request("sess-team-evolve", "req-team-evolve")
     inputs = {"query": "/evolve demo-skill improve review flow"}
 
     chunks = []
@@ -4093,7 +4625,7 @@ async def test_process_team_message_stream_does_not_emit_evolution_status_for_no
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
-        def has_stream_task(session_id: str) -> bool:
+        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
             return False
 
         @staticmethod
@@ -4108,7 +4640,7 @@ async def test_process_team_message_stream_does_not_emit_evolution_status_for_no
             return None
 
         @staticmethod
-        def register_stream_task(session_id: str, task: object) -> None:
+        def register_stream_task(session_id: str, task: object, *, generation: int | None = None) -> None:
             return None
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
@@ -4119,7 +4651,7 @@ async def test_process_team_message_stream_does_not_emit_evolution_status_for_no
 
     monkeypatch.setattr(team_helpers, "_consume_stream_with_query", _fake_consume_stream_with_query)
 
-    request = SimpleNamespace(
+    request = AgentRequest(
         session_id="sess-team-evolve-noop",
         request_id="req-team-evolve-noop",
         channel_id="web",
@@ -4200,7 +4732,7 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
             pass
 
         @staticmethod
-        def pop_stream_task(session_id: str) -> None:
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
             pass
 
         @staticmethod
@@ -4387,7 +4919,7 @@ async def test_consume_stream_with_query_reports_team_idle_as_round_end(monkeypa
             pass
 
         @staticmethod
-        def pop_stream_task(session_id: str) -> None:
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
             pass
 
         @staticmethod
@@ -4981,7 +5513,7 @@ async def test_consume_stream_with_query_broadcasts_leader_task_failed_detail_an
             pass
 
         @staticmethod
-        def pop_stream_task(session_id: str) -> None:
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
             pass
 
     monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
@@ -5053,7 +5585,7 @@ async def test_consume_stream_with_query_does_not_final_teammate_task_failed(mon
             pass
 
         @staticmethod
-        def pop_stream_task(session_id: str) -> None:
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
             pass
 
     monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
@@ -5122,7 +5654,7 @@ async def test_consume_stream_with_query_deduplicates_ask_user_questions(monkeyp
             pass
 
         @staticmethod
-        def pop_stream_task(session_id: str) -> None:
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
             pass
 
     monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
@@ -5201,7 +5733,7 @@ async def test_consume_stream_with_query_propagates_hide_dm_to_monitor(monkeypat
             pass
 
         @staticmethod
-        def pop_stream_task(session_id: str) -> None:
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
             pass
 
         @staticmethod
@@ -5850,7 +6382,7 @@ async def test_consume_stream_with_query_calls_ensure_workflow_handler_after_run
             pass
 
         @staticmethod
-        def pop_stream_task(session_id: str) -> None:
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
             pass
 
         @staticmethod
@@ -5874,7 +6406,7 @@ async def test_consume_stream_with_query_calls_ensure_workflow_handler_after_run
             calls.append("register_workflow_handler")
 
         @staticmethod
-        def register_stream_task(session_id: str, task: asyncio.Task) -> None:
+        def register_stream_task(session_id: str, task: asyncio.Task, *, generation: int | None = None) -> None:
             calls.append("register_stream_task")
 
     async def _fake_monitor(*args, **kwargs):
@@ -6475,7 +7007,7 @@ async def test_consume_stream_with_query_announces_roster_after_member_tool(monk
             pass
 
         @staticmethod
-        def pop_stream_task(session_id: str) -> None:
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
             pass
 
         @staticmethod

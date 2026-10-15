@@ -193,6 +193,21 @@ async def test_warming_queue_survives_reconnection():
 
 
 @pytest.mark.asyncio
+async def test_resident_gateway_binding_keeps_mailbox_gated_until_runtime_ready():
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    server = object.__new__(AgentWebSocketServer)
+    server._session_message_service = SimpleNamespace(set_available=AsyncMock())
+    bridge = WorkerGatewayBridge(ConnHolder())
+    dispatcher = WorkerDispatcher(bridge)
+    await dispatcher.bind_runtime(server)
+    assert server._current_ws is bridge
+    server._session_message_service.set_available.assert_not_awaited()
+    await dispatcher.mark_ready()
+    server._session_message_service.set_available.assert_awaited_once_with(True)
+
+
+@pytest.mark.asyncio
 async def test_empty_execution_snapshot_does_not_hide_accepted_warming_work():
     holder = ConnHolder()
     conn = Connection()

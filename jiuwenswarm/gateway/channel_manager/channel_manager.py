@@ -547,7 +547,7 @@ class ChannelManager(ABC):
                     channel = self._get_channel_by_id(msg.channel_id)
                 # 出站派发节点：定位"队列堆积/前端无输出"时，开启 DEBUG 可确认 chunk 是否
                 # 被消费、命中哪个 channel 实例（tui 走 GatewayServer、web 走 WebChannel）。
-                logger.debug(
+                logger.info(
                     "[ChannelManager] dispatch robot_messages: channel_id=%s id=%s"
                     " event_type=%s session_id=%s app_id=%s channel=%s channel_type=%s",
                     msg.channel_id, msg.id, _et, getattr(msg, "session_id", None),

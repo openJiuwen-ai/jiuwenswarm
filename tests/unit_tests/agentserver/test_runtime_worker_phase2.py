@@ -83,7 +83,11 @@ class _FakeRuntime:
         self.detached: object = None
         self.disconnects: list[object] = []
 
-    def attach_gateway_connection(self, ws: object, send_lock: asyncio.Lock) -> None:
+    async def attach_gateway_connection(
+        self,
+        ws: object,
+        send_lock: asyncio.Lock,
+    ) -> None:
         _ = ws, send_lock
         self.attached = True
 
@@ -385,7 +389,11 @@ class _BlockingRuntime:
         self.release = asyncio.Event()
         self.cancelled = False
 
-    def attach_gateway_connection(self, ws: object, send_lock: asyncio.Lock) -> None:
+    async def attach_gateway_connection(
+        self,
+        ws: object,
+        send_lock: asyncio.Lock,
+    ) -> None:
         _ = ws, send_lock
 
     async def dispatch_parsed_request(

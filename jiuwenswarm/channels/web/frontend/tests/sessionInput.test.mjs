@@ -367,6 +367,7 @@ test('queued cross-session message appears in the target queue until it starts',
       content: 'Check the weather',
       status: 'queued',
     };
+    act(() => c.store.setCanContinueQueuedSessionMessages(c.sid, true));
     c.receive('session.message.updated', { message });
     const row = document.querySelector('[data-testid="chat-panel-cross-session-queue-item"]');
     assert.ok(row);
@@ -385,6 +386,26 @@ test('queued cross-session message appears in the target queue until it starts',
 
     c.receive('session.message.updated', { message: { ...message, status: 'running' } });
     assert.equal(document.querySelector('[data-testid="chat-panel-cross-session-queue-item"]'), null);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('team mode shows queued cross-session messages without a manual resume action', async (context) => {
+  const c = await mount(context);
+  try {
+    act(() => useSessionStore.getState().setMode(c.sid, 'team'));
+    c.receive('session.message.updated', { message: {
+      message_id: 'sm-team',
+      source_session_id: 'source-1',
+      source_title: 'Source',
+      target_session_id: c.sid,
+      content: 'Team status request',
+      status: 'queued',
+    } });
+
+    assert.ok(document.querySelector('[data-testid="chat-panel-cross-session-queue-item"]'));
+    assert.equal(document.querySelector('[data-testid="chat-panel-cross-session-queue-resume"]'), null);
   } finally {
     await c.dispose();
   }
