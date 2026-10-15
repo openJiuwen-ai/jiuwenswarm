@@ -104,6 +104,10 @@
         "cancelled": "已取消",
         "failed": "处理失败"
       },
+      "recovery": {
+        "awaiting": "服务重启时中断，待续做",
+        "awaitingUnverified": "服务重启时中断，待续做；{{count}} 个工具调用结果未确认"
+      },
       "control": {
         "stopping": "正在停止…",
         "cancelling": "正在取消…",

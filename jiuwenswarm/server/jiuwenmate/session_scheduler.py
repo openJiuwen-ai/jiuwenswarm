@@ -111,6 +111,12 @@ class SessionScheduler:
         await self._pump()
         return left
 
+    async def wake(self, namespace_id: str, session_id: str) -> None:
+        """Schedule the Session again, for example once a Request it was blocked on has been closed."""
+        async with self._lock:
+            self._waiting[(namespace_id, session_id)] = None
+        await self._pump()
+
     def _run_of(self, namespace_id: str, request_id: str) -> _Running | None:
         return next(
             (

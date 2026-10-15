@@ -9,7 +9,7 @@
 | 方案成熟度 | 按现有飞书应用配置中的 `agent_id` 建立一对一绑定；通过 Gateway→AgentServer E2A 请求交接并由 AgentServer 持有 JM-07 生命周期 |
 | 计划条目 | [JM-08 飞书接入与群内分发](../designs/jiuwenmate-development-plan.md) |
 | 负责人 | 闫祉君（与开发计划一致） |
-| 状态 | 进行中（生产绑定解析、Gateway→AgentServer E2A 交接及 JM-07 条件启停已实现；待真实飞书环境联合验收） |
+| 状态 | 待验收（提交 `496b04d9`；宿主组件通过，联合验收待完成。真实飞书应用 / 群联调与 PA-07 群执行仍待） |
 | 设计依据 | [JiuwenMate 服务端架构设计](../designs/jiuwenmate-architecture.md) 第 5.3、9.1 节及附录 A；[JM-02 同事定义与配置发布](F_02_colleague-management.md)、[JM-03 会话定位与请求受理](F_03_session-request.md)、[JM-07 同事管理器、Session 排队器与执行驱动](F_07_execution-driver.md)；模板：[特性设计方案模板](../templates/feature-design-template.md) |
 | 验证摘要 | 2026-10-14：JM-08、消息、附件、JM-03/JM-07 聚焦回归共 142 项通过。真实 SQLite、JM-02/03/07 组件、E2A/AgentServer dispatch 与条件生命周期装配均有覆盖；本地 agent-core 导入链的 `SyntaxWarning` 需在联合测试命令中忽略。未做真实飞书应用 / 群联调；PA-07 群执行及 JM-09 回复不在本次验收内 |
 | Refs | 无独立 issue；需求来源为开发计划 JM-08 |

@@ -104,6 +104,10 @@
         "cancelled": "Cancelled",
         "failed": "Failed"
       },
+      "recovery": {
+        "awaiting": "Interrupted by a server restart; waiting to continue",
+        "awaitingUnverified": "Interrupted by a server restart; waiting to continue. {{count}} tool call results are unconfirmed"
+      },
       "control": {
         "stopping": "Stopping…",
         "cancelling": "Cancelling…",

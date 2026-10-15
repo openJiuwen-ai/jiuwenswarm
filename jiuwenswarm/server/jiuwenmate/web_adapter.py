@@ -230,7 +230,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             return self._service
 
     async def _runtime(self) -> AgentManager:
-        """Start the runtime on first use and queue again the Requests a previous process left waiting."""
+        """Start the runtime on first use and recover the Requests a previous process left unfinished."""
         async with self._manager_lock:
             if self._manager is None:
                 service = await asyncio.to_thread(self._colleagues)
@@ -239,7 +239,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 if self._stream is not None:
                     self._stream.start()
                 await manager.start()
-                await manager.scheduler.recover(WEB_NAMESPACE)
+                await manager.recover(WEB_NAMESPACE)
                 self._conversations = await asyncio.to_thread(WebConversationStore, manager.db_path)
                 self._manager = manager
             return self._manager

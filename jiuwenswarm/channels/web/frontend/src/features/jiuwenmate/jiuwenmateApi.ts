@@ -98,6 +98,13 @@ export interface JiuwenMateChatRequest {
   reason: string | null;
   draft: JiuwenMateChatDraft | null;
   control: JiuwenMateRequestControl | null;
+  recovery: JiuwenMateRequestRecovery | null;
+}
+
+/** How a message left unfinished by a server restart was closed; ``unverifiedToolCalls`` may have run. */
+export interface JiuwenMateRequestRecovery {
+  decision: 'closed_from_log' | 'closed_by_control' | 'awaiting_continuation';
+  unverifiedToolCalls: string[];
 }
 
 export type JiuwenMateControlReason = 'stop' | 'cancel';
@@ -281,7 +288,20 @@ export function toChatRequest(value: unknown): JiuwenMateChatRequest {
     reason: typeof wire.reason === 'string' && wire.reason ? wire.reason : null,
     draft: status === 'ended' ? null : toDraft(wire.draft),
     control: toControl(wire.control),
+    recovery: toRecovery(wire.recovery),
   };
+}
+
+const DECISIONS: readonly JiuwenMateRequestRecovery['decision'][] = [
+  'closed_from_log',
+  'closed_by_control',
+  'awaiting_continuation',
+];
+
+function toRecovery(value: unknown): JiuwenMateRequestRecovery | null {
+  const wire = record(value);
+  const decision = DECISIONS.find((item) => item === wire.decision);
+  return decision ? { decision, unverifiedToolCalls: texts(wire.unverified_tool_calls) } : null;
 }
 
 function toControl(value: unknown): JiuwenMateRequestControl | null {

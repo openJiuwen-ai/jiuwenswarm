@@ -39,6 +39,7 @@ from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.ports.budget import DEFAULT_RESERVATION_TOKENS, HostBudgetPort
 from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
+from jiuwenswarm.server.jiuwenmate.recovery_service import RecoveryService, RecoveryStore, RequestRecovery
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService, default_data_dir
 from jiuwenswarm.server.jiuwenmate.session_scheduler import SchedulerLimits, SessionScheduler
 from openjiuwen.harness import persistent_agent as core
@@ -97,6 +98,7 @@ class RequestView:
     draft: ReplyDraft | None = None
     conversation_key: str | None = None
     control: RequestControl | None = None
+    recovery: RequestRecovery | None = None
 
     def to_dict(self) -> dict[str, Any]:
         record = self.state.record
@@ -116,6 +118,7 @@ class RequestView:
             "reason": self.reason,
             "draft": None if self.draft is None else self.draft.to_dict(),
             "control": None if self.control is None else self.control.to_dict(),
+            "recovery": None if self.recovery is None else self.recovery.to_dict(),
             "updated_at": self.state.updated_at.isoformat(),
         }
 
@@ -161,6 +164,9 @@ class AgentManager:
         )
         self._scheduler = SessionScheduler(sessions, driver, limits=limits, clock=clock)
         self._control = ExecutionControlService(sessions, self._scheduler, ControlStore(sessions.db_path), clock=clock)
+        self._recovery = RecoveryService(
+            sessions, self._scheduler, RecoveryStore(sessions.db_path), control_of=self._control.control_of, clock=clock
+        )
         self._purge_task: asyncio.Task[None] | None = None
 
     @classmethod
@@ -259,6 +265,10 @@ class AgentManager:
         session = await asyncio.to_thread(self._sessions.get_session, namespace_id, state.record.session_id)
         return await self._view(state, session.conversation.key)
 
+    async def recover(self, namespace_id: str) -> list[RequestRecovery]:
+        """Resume scheduling after a restart: queued Requests run again, ones left dispatched are closed."""
+        return await self._recovery.recover(namespace_id)
+
     async def control_request(
         self, namespace_id: str, request_id: str, *, reason: str, access: AccessSnapshot
     ) -> RequestView:
@@ -276,6 +286,9 @@ class AgentManager:
         running = any(run.record.request_id == state.record.request_id for run in self._scheduler.running)
         replies, reason, draft = await asyncio.to_thread(self._result, state)
         control = await asyncio.to_thread(self._control.control_of, state.record.namespace_id, state.record.request_id)
+        recovery = await asyncio.to_thread(
+            self._recovery.recovery_of, state.record.namespace_id, state.record.request_id
+        )
         return RequestView(
             state=state,
             running=running,
@@ -284,6 +297,7 @@ class AgentManager:
             draft=draft,
             conversation_key=conversation_key,
             control=control,
+            recovery=recovery,
         )
 
     def _result(self, state: RequestState) -> tuple[tuple[str, ...], str | None, ReplyDraft | None]:
