@@ -66,6 +66,11 @@ _WORKER_STALL_RESTART = 180.0
 _GatewayRoute = tuple[Any, asyncio.Lock]
 _ForwardQueue = asyncio.Queue[tuple[dict[str, Any], _GatewayRoute | None]]
 
+# Worker restart + fresh Runtime import budget for the reload-driven recovery.
+# Gateway unary requests default to a 600s timeout, so blocking one reload
+# request for this long stays well inside the caller's patience.
+_RECOVERY_TIMEOUT = 90.0
+
 
 class RuntimeSupervisor:
     """Spawn, health-check, and route execution to the resident Worker.
@@ -131,6 +136,7 @@ class RuntimeSupervisor:
         self._last_dump_at = 0.0
         self._last_dump_path: Path | None = None
         self._session_lock = asyncio.Lock()
+        self._recover_lock = asyncio.Lock()
 
     @property
     def socket_path(self) -> str:
@@ -180,6 +186,100 @@ class RuntimeSupervisor:
             self._gateway_ws = None
             self._gateway_lock = None
         await self._notify_gateway(attached=False, remote=remote)
+
+    async def recover_from_failed(self, timeout: float = _RECOVERY_TIMEOUT) -> bool:
+        """Restart a FAILED Worker and wait for ``AGENT_READY``.
+
+        Called by ``ExecutionAdmission`` when a config reload reaches a FAILED
+        runtime: reloading config is the operator's "dependencies are fixed,
+        try again" signal, so refusing it would leave the AgentServer dead
+        until a full process restart. The failed resident Worker is shut down
+        even when this supervisor reattached to it — a Worker whose Runtime
+        failed to load never retries on its own, so keeping it alive only
+        blocks the IPC socket a fresh Worker must claim.
+        """
+        if self._stopping:
+            return False
+        state = self._readiness.state
+        if state is ReadinessState.DRAINING:
+            return False
+        if state is not ReadinessState.FAILED:
+            return bool(self._readiness.snapshot()["agent_ready"])
+        async with self._recover_lock:
+            state = self._readiness.state
+            if state is ReadinessState.DRAINING:
+                return False
+            if state is not ReadinessState.FAILED:
+                return bool(self._readiness.snapshot()["agent_ready"])
+            logger.warning(
+                "[Supervisor] reload requested while runtime FAILED; restarting worker: %s",
+                self._fatal_reason or "unknown failure",
+            )
+            # Clear the sticky failure so the supervise loop may bring the
+            # Worker up again, then tear the broken Worker process down.
+            self._fatal = False
+            self._fatal_reason = ""
+            self._restart_count = 0
+            self._readiness.mark_recovering("reload requested after runtime failure")
+            # Hold the session lock so a background restart inside a live
+            # supervise loop cannot reattach to the dying Worker socket.
+            async with self._session_lock:
+                await self._terminate_failed_worker()
+                task = self._loop_task
+                if task is not None and not task.done():
+                    # The loop is parked in _pump/recv; closing the connection
+                    # wakes it into its own restart path.
+                    conn = self._conn
+                    if conn is not None:
+                        self._conn = None
+                        try:
+                            await conn.close()
+                        except Exception:  # noqa: BLE001
+                            logger.debug(
+                                "[Supervisor] recovery ipc close failed", exc_info=True
+                            )
+                else:
+                    self._loop_task = asyncio.create_task(
+                        self._supervise(), name="runtime-supervisor"
+                    )
+            try:
+                return await asyncio.wait_for(
+                    self._readiness.wait_agent_ready(), timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Supervisor] runtime recovery did not reach AGENT_READY in %.0fs",
+                    timeout,
+                )
+                return False
+
+    async def _terminate_failed_worker(self) -> None:
+        """Shut the FAILED Worker down, including a reattached resident one."""
+        conn = self._conn
+        self._conn = None
+        process = self._process if self._owns_process else None
+        if conn is not None:
+            try:
+                await conn.send(
+                    {"kind": KIND_SHUTDOWN, "reason": "runtime-failed-recovery"}
+                )
+            except (OSError, RuntimeError):
+                logger.info("[Supervisor] worker shutdown send skipped; ipc is down")
+            try:
+                await conn.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("[Supervisor] worker shutdown close failed", exc_info=True)
+        if process is not None:
+            if await process.wait(timeout=5.0) is None:
+                await process.stop()
+        else:
+            # A reattached Worker has no process handle; give the SHUTDOWN a
+            # moment to release the IPC socket before the supervise loop
+            # reconnects, so it spawns a fresh Worker instead of reattaching
+            # to the dying one.
+            await asyncio.sleep(0.5)
+        self._process = None
+        self._owns_process = False
 
     async def dispatch_parsed_request(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock

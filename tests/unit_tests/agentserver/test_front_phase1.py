@@ -967,3 +967,78 @@ async def test_queued_stream_emits_runtime_warming(
     await admission.dispatch(object(), cancel, asyncio.Lock())
     await asyncio.wait_for(waiter, 1.0)
     assert any("runtime.warming" in str(item) for item in sent)
+
+
+class _RecoveryBackend:
+    """Backend stub whose ``recover_from_failed`` mimics RuntimeSupervisor."""
+
+    def __init__(self, readiness: Readiness, recovered: bool) -> None:
+        self._readiness = readiness
+        self._recovered = recovered
+        self.recover_calls = 0
+        self.dispatched: list[ReqMethod] = []
+
+    async def recover_from_failed(self) -> bool:
+        self.recover_calls += 1
+        if not self._recovered:
+            return False
+        self._readiness.mark_recovering("reload requested after runtime failure")
+        self._readiness.mark_agent_ready()
+        return True
+
+    async def dispatch_parsed_request(self, ws, request, send_lock) -> None:
+        _ = ws, send_lock
+        self.dispatched.append(request.req_method)
+
+
+@pytest.mark.asyncio
+async def test_admission_reload_recovers_failed_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    readiness = Readiness()
+    admission = ExecutionAdmission(readiness, wait_seconds=0.05)
+    backend = _RecoveryBackend(readiness, recovered=True)
+    admission.attach_backend(backend)
+
+    async def _send(ws, payload) -> bool:
+        _ = ws
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.front.admission.send_wire_payload", _send
+    )
+    readiness.mark_failed("boot failed")
+    await admission.dispatch(
+        object(), _request(ReqMethod.AGENT_RELOAD_CONFIG), asyncio.Lock()
+    )
+    assert backend.recover_calls == 1
+    assert backend.dispatched == [ReqMethod.AGENT_RELOAD_CONFIG]
+    assert readiness.state is ReadinessState.AGENT_READY
+
+
+@pytest.mark.asyncio
+async def test_admission_reload_failed_recovery_still_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    readiness = Readiness()
+    admission = ExecutionAdmission(readiness, wait_seconds=0.05)
+    backend = _RecoveryBackend(readiness, recovered=False)
+    admission.attach_backend(backend)
+    sent: list[object] = []
+
+    async def _send(ws, payload) -> bool:
+        _ = ws
+        sent.append(payload)
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.front.admission.send_wire_payload", _send
+    )
+    readiness.mark_failed("boot failed")
+    await admission.dispatch(
+        object(), _request(ReqMethod.AGENT_RELOAD_CONFIG), asyncio.Lock()
+    )
+    assert backend.recover_calls == 1
+    assert sent
+    assert "RUNTIME_FAILED" in str(sent[0])
+    assert readiness.state is ReadinessState.FAILED

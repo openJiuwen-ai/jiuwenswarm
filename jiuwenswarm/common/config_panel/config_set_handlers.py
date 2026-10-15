@@ -20,6 +20,7 @@ gateway 拆分：ConfigAdapter（AgentServer 进程）复用这些成熟实现�
 from __future__ import annotations
 
 import importlib.metadata
+import importlib.util
 import inspect
 import json
 import logging
@@ -819,6 +820,39 @@ def external_cli_reference_version(cli_agent: str) -> str:
     return ""
 
 
+def external_cli_managed_cli_path(cli_agent: str) -> str:
+    """返回内置（托管安装）CLI 可执行文件路径；不可用时返回空串。
+
+    与 external_cli_runtime._validate_staged_runtime 的布局保持一致：
+    claude -> claude_agent_sdk/_bundled/claude(.exe)
+    codex  -> codex_cli_bin/bin/codex(.exe)
+    通过 importlib 定位 site-packages（冻结与非冻结环境均适用）。
+    """
+    relative = {
+        "claude": (
+            "claude_agent_sdk",
+            "_bundled",
+            "claude.exe" if os.name == "nt" else "claude",
+        ),
+        "codex": (
+            "codex_cli_bin",
+            "bin",
+            "codex.exe" if os.name == "nt" else "codex",
+        ),
+    }.get(cli_agent)
+    if relative is None:
+        return ""
+    try:
+        spec = importlib.util.find_spec(relative[0])
+    except Exception:  # noqa: BLE001
+        return ""
+    if spec is None or not spec.origin:
+        return ""
+    package_dir = Path(spec.origin).resolve().parent
+    candidate = package_dir.joinpath(*relative[1:])
+    return str(candidate) if candidate.is_file() else ""
+
+
 def resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, str, str]:
     requested = cli_path.strip()
     if requested:
@@ -869,7 +903,9 @@ def run_external_cli_version_command(cli_agent: str, resolved_path: str) -> tupl
     return "", "; ".join(unique_errors)
 
 
-def detect_external_cli_agent(cli_agent: str, cli_path: str = "") -> dict[str, Any]:
+def detect_external_cli_agent(
+    cli_agent: str, cli_path: str = "", use_builtin: bool = False
+) -> dict[str, Any]:
     normalized_agent = cli_agent.strip().lower()
     if normalized_agent not in EXTERNAL_CLI_AGENT_KINDS and normalized_agent in external_cli_agent_kinds():
         return _detect_custom_agent_cli(normalized_agent, cli_path)
@@ -883,7 +919,7 @@ def detect_external_cli_agent(cli_agent: str, cli_path: str = "") -> dict[str, A
             "message": f"unsupported cli_agent: {cli_agent}",
         }
 
-    return _detect_cli_at(normalized_agent, cli_path)
+    return _detect_cli_at(normalized_agent, cli_path, use_builtin)
 
 
 def _detect_custom_agent_cli(cli_agent: str, cli_path: str) -> dict[str, Any]:
@@ -895,7 +931,7 @@ def _detect_custom_agent_cli(cli_agent: str, cli_path: str) -> dict[str, Any]:
     """
     requested = cli_path.strip() or _uploaded_cli_path(cli_agent)
     if requested:
-        return _detect_cli_at(cli_agent, requested)
+        return _detect_cli_at(cli_agent, requested, False)
     return {
         "cli_agent": cli_agent,
         "status": "ok",
@@ -907,8 +943,14 @@ def _detect_custom_agent_cli(cli_agent: str, cli_path: str) -> dict[str, Any]:
     }
 
 
-def _detect_cli_at(normalized_agent: str, cli_path: str) -> dict[str, Any]:
-    resolved_path, path_error, path_reason = resolve_external_cli_path(normalized_agent, cli_path)
+def _detect_cli_at(normalized_agent: str, cli_path: str, use_builtin: bool = False) -> dict[str, Any]:
+    # use_builtin 且未显式给路径时，优先解析内置托管 CLI；解析失败再回退 PATH 搜索。
+    effective_cli_path = cli_path.strip()
+    if not effective_cli_path and use_builtin:
+        effective_cli_path = external_cli_managed_cli_path(normalized_agent)
+    resolved_path, path_error, path_reason = resolve_external_cli_path(
+        normalized_agent, effective_cli_path
+    )
     reference_version = external_cli_reference_version(normalized_agent)
     if not resolved_path:
         return {
@@ -1067,14 +1109,36 @@ def external_cli_agent_effective_state(
     return enabled, False, str(params.get(cli_path_key, current[cli_path_key]) or "").strip()
 
 
-def external_cli_agents_from_switches(raw: dict[str, Any], params: dict[str, Any]) -> list[dict[str, str]]:
+def external_cli_agents_from_switches(raw: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Rebuild the persisted external CLI agent list from switch params.
+
+    Only agents whose config keys are present in this save's params are
+    re-validated (path detection) and rebuilt; untouched agents keep their
+    persisted entries verbatim, so saving one card never re-detects, rewrites,
+    or blocks on the other agent.
+    """
     current = flatten_external_cli_agents_for_config_panel(raw)
-    agents: list[dict[str, str]] = []
+    persisted = get_nested_config_value(raw, EXTERNAL_CLI_AGENTS_CONFIG_PATH, [])
+    untouched_entries: dict[str, dict[str, Any]] = {}
+    if isinstance(persisted, list):
+        for item in persisted:
+            if isinstance(item, dict):
+                cli_agent = str(item.get("cli_agent") or "").strip()
+                if cli_agent:
+                    untouched_entries[cli_agent] = item
+            elif isinstance(item, str) and item.strip():
+                untouched_entries[item.strip()] = {"cli_agent": item.strip()}
+    agents: list[dict[str, Any]] = []
     for cli_agent in external_cli_agent_kinds():
+        if not any(key.startswith(f"external_cli_agent_{cli_agent}_") for key in params):
+            untouched = untouched_entries.get(cli_agent)
+            if untouched is not None:
+                agents.append(dict(untouched))
+            continue
         enabled, use_builtin, requested_path = external_cli_agent_effective_state(cli_agent, current, params)
         if not enabled:
             continue
-        entry = {"cli_agent": cli_agent}
+        entry: dict[str, Any] = {"cli_agent": cli_agent}
         uploaded_cli_path = _uploaded_cli_path(cli_agent)
         if use_builtin and uploaded_cli_path:
             entry["cli_path"] = uploaded_cli_path
@@ -1392,7 +1456,12 @@ def apply_config_payload(
                         external_cli_agents = external_cli_agents_from_switches(raw, params)
                     except ValueError as exc:
                         raise ConfigPanelBadRequest(str(exc)) from exc
-                    if any(item.get("cli_agent") == "codex" for item in external_cli_agents):
+                    # 每个卡片的“一键安装”独立触发：仅当本次保存显式携带了
+                    # 该 agent 的配置键时才检查/安装它的依赖，避免动到本次
+                    # 未触碰、但此前已启用过的另一个 agent。
+                    codex_touched = any(key.startswith("external_cli_agent_codex_") for key in params)
+                    claude_touched = any(key.startswith("external_cli_agent_claude_") for key in params)
+                    if codex_touched and any(item.get("cli_agent") == "codex" for item in external_cli_agents):
                         codex_dependency_install = (
                             ensure_codex_dependency() if ensure_codex_dependency else None
                         )
@@ -1401,7 +1470,7 @@ def apply_config_payload(
                             external_cli_agents = [
                                 item for item in external_cli_agents if item.get("cli_agent") != "codex"
                             ]
-                    if any(item.get("cli_agent") == "claude" for item in external_cli_agents):
+                    if claude_touched and any(item.get("cli_agent") == "claude" for item in external_cli_agents):
                         claude_install = (
                             ensure_claude_dependency() if ensure_claude_dependency else None
                         )

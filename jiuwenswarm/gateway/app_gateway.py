@@ -573,6 +573,27 @@ def _exec_gateway_restart() -> None:
         # and the gateway lock.
         logger.info("[App] requesting Gateway restart from supervisor")
         os._exit(GATEWAY_RESTART_EXIT_CODE)  # pylint: disable=protected-access  # public API; underscore is historical
+    if os.environ.get(SUPERVISOR_PID_ENV):
+        # Env says we were spawned by a supervisor, yet the parent check in
+        # _running_under_supervisor failed. execv exits 0, which that live
+        # supervisor reads as "Gateway stopped" and tears the WHOLE stack
+        # down (AgentServer included) — log the deciding values so a later
+        # post-mortem does not have to guess.
+        import psutil
+
+        try:
+            parent = psutil.Process(os.getppid())
+            parent_desc = f"alive, created {parent.create_time():.0f}"
+        except psutil.Error:
+            parent_desc = "not running"
+        logger.warning(
+            "[App] %s=%s but parent pid %s is %s; execv restart will be read "
+            "as a stop by the supervisor",
+            SUPERVISOR_PID_ENV,
+            os.environ.get(SUPERVISOR_PID_ENV),
+            os.getppid(),
+            parent_desc,
+        )
     logger.info("[App] .env updated, restarting Gateway...")
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
@@ -2117,6 +2138,7 @@ async def _run(
 
         reload_ok = False
         last_error: Exception | None = None
+        runtime_failed_reject = False
         for attempt in range(_reload_max_retries + 1):
             try:
                 reload_resp = await client.send_request(reload_env)
@@ -2135,8 +2157,14 @@ async def _run(
                     logger.warning("[App] agent.reload_config validation error (non-fatal): %s", err_str)
                     return False
                 last_error = RuntimeError(f"agent.reload_config rejected: {err_msg}")
+                # AgentServer runtime 处于 FAILED：server 侧已因本次 reload 请求
+                # 触发 worker 重启自愈；Gateway 自重启修复不了它，只会断开前端。
+                runtime_failed_reject = (
+                    "RUNTIME_FAILED" in err_str or "runtime failed" in err_str.lower()
+                )
             except Exception as e:  # noqa: BLE001
                 last_error = e
+                runtime_failed_reject = False
 
             if attempt < _reload_max_retries:
                 delay = _reload_retry_backoff_base ** (attempt + 1)
@@ -2146,12 +2174,37 @@ async def _run(
                 )
                 await asyncio.sleep(delay)
 
-        if not reload_ok:
+        if not reload_ok and runtime_failed_reject:
+            # 恢复尝试未达成时再多等两轮：worker 可能仍在 warming（import 慢）。
+            for _attempt in range(2):
+                await asyncio.sleep(8.0)
+                try:
+                    reload_resp = await client.send_request(reload_env)
+                    if getattr(reload_resp, "ok", False):
+                        reload_ok = True
+                        break
+                except Exception as e:  # noqa: BLE001
+                    last_error = e
+            if reload_ok:
+                logger.info("[App] agent.reload_config succeeded after runtime recovery")
+
+        if not reload_ok and not runtime_failed_reject:
             logger.critical(
                 "[App] agent.reload_config failed after %d attempts, scheduling restart: %s",
                 _reload_max_retries + 1, last_error,
             )
             _schedule_gateway_restart(restart_request)
+            return False
+
+        if not reload_ok:
+            # RUNTIME_FAILED：重启 Gateway 修复不了 AgentServer 的 runtime
+            # （反而把前端断线）。保持 Gateway 在线；配置已写盘，下次保存
+            # 会再次触发 reload 并重新尝试恢复。
+            logger.critical(
+                "[App] agent.reload_config rejected with RUNTIME_FAILED; "
+                "AgentServer runtime recovery failed, keeping Gateway up: %s",
+                last_error,
+            )
             return False
 
         # AgentServer 已确认热重载成功后，再刷新 Gateway 内存中的值。
