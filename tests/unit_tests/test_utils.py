@@ -782,10 +782,13 @@ class TestAdditionalHardcodedPaths:
     """
 
     @staticmethod
-    def test_rail_manager_path_structure():
+    def test_rail_manager_path_structure(monkeypatch):
         """Test rail_manager.py uses get_agent_workspace_dir() for extensions path."""
         from jiuwenswarm.agents.harness.common.plugins.rail_manager import RailManager
         from jiuwenswarm.common.utils import get_user_workspace_dir
+
+        # RailManager is a singleton; drop any instance built under another test's workspace.
+        monkeypatch.setattr(RailManager, "_instance", None)
 
         workspace = get_user_workspace_dir()
         expected_path = workspace / "agent" / "workspace" / "extensions"
