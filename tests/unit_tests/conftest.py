@@ -51,6 +51,8 @@ def _isolate_user_workspace(tmp_path):
     flush_pending_writes = session_metadata.flush_pending_writes
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(_utils, "_workspace_base_dir", tmp_path / ".jiuwenswarm")
+        # Subprocesses spawned by tests resolve the workspace from the environment.
+        mp.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / ".jiuwenswarm"))
         yield
         # Metadata is written by a background thread; drain it before the patch is undone.
         flush_pending_writes()
