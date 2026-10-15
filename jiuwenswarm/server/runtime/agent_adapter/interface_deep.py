@@ -4992,12 +4992,13 @@ class JiuWenSwarmDeepAdapter:
         config: dict[str, Any],
         config_base: dict[str, Any] | None = None,
     ) -> tuple[list[Any] | None, bool]:
-        """Build configured research + browser subagents (agent 模式).
+        """Build configured research, browser and desktop subagents (agent 模式).
 
-        每个 spec 都带上主 Agent 的 ``sys_operation``，让子 Agent 与父 Agent 共享同一
+        研究/浏览器 spec 带上主 Agent 的 ``sys_operation``，让子 Agent 与父 Agent 共享同一
         个文件系统边界；留空时 ``DeepAgent.create_subagent`` 会另建一个受
         ``restrict_to_sandbox`` 约束的 LOCAL SysOperation，本地模式下把子 Agent 锁死在
         workspace 内、sandbox 模式下又让它逃出沙箱落到宿主机。
+        桌面子 Agent 只提供 Computer Use 工具，单独管理其 MCP 运行时。
         """
         react_cfg = config if isinstance(config, dict) else {}
         subagents_cfg = react_cfg.get("subagents")
@@ -5047,6 +5048,24 @@ class JiuWenSwarmDeepAdapter:
                             research_agent_cfg.get("max_iterations"),
                             parse_int(react_cfg.get("max_iterations"), 100),
                         ),
+                    )
+                )
+
+            computer_use_cfg = subagents_cfg.get("computer_use_agent")
+            if self._is_subagent_enabled(computer_use_cfg):
+                from jiuwenswarm.agents.harness.computer_use.agent import (
+                    build_computer_use_agent_config,
+                )
+                maximum = computer_use_cfg.get(
+                    "max_iterations", react_cfg.get("max_iterations")
+                )
+                subagents.append(
+                    build_computer_use_agent_config(
+                        model,
+                        config=config_base,
+                        workspace=workspace,
+                        language=resolved_language,
+                        max_iterations=int(maximum) if maximum is not None else None,
                     )
                 )
 

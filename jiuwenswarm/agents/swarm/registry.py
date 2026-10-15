@@ -50,6 +50,7 @@ from jiuwenswarm.agents.swarm.providers import (
     builtin_rails as _builtin_rails,
     code_rails as _code_rails,
     code_subagents as _code_subagents,
+    computer_use_subagent as _computer_use_subagent,
     evolution_rails as _evolution_rails,
     member_rails as _member_rails,
     runtime_tools as _runtime_tools,
@@ -124,6 +125,7 @@ DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS = (
 )
 STATUSLINE_SETUP_AGENT = _code_subagents.STATUSLINE_SETUP_AGENT
 SWARM_BROWSER_AGENT = _code_subagents.SWARM_BROWSER_AGENT
+SWARM_COMPUTER_USE_AGENT = _computer_use_subagent.SWARM_COMPUTER_USE_AGENT
 SWARM_CUA_AGENT = _code_subagents.SWARM_CUA_AGENT
 
 # Swarm-owned no-parameter class rails declared in ``builtin_rails``.
@@ -254,6 +256,7 @@ __all__ = [
     "DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS",
     "STATUSLINE_SETUP_AGENT",
     "SWARM_BROWSER_AGENT",
+    "SWARM_COMPUTER_USE_AGENT",
     "SWARM_CUA_AGENT",
     "BROWSER_AGENT",
 ]

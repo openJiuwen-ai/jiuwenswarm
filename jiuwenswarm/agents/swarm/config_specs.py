@@ -854,12 +854,12 @@ def build_member_subagent_specs(
 ) -> list[SubAgentSpec]:
     """Build declarative member subagent specs.
 
-    The status-line setup agent is available in every mode when enabled.
+    Status-line setup and Computer Use are available in every mode when enabled.
     Code modes additionally include explore / plan. Every sub-agent is gated by
     ``react.subagents.<name>.enabled``; status-line setup, explore and plan
     default to on (only an explicit ``false`` drops them), while code / browser
-    require an explicit ``true``. The cua (desktop) sub-agent is mode-agnostic
-    and likewise requires an explicit ``true``.
+    require an explicit ``true``. Both desktop sub-agents are mode-agnostic
+    and likewise require an explicit ``true``.
 
     Args:
         config: The resolved ``config.yaml`` mapping.
@@ -867,8 +867,8 @@ def build_member_subagent_specs(
         role: The member role (reserved, both roles get the same sub-agents).
 
     Returns:
-        The ``SubAgentSpec`` list. Non-code modes contain only the default-enabled
-        status-line setup agent; code modes also contain their code sub-agents.
+        The ``SubAgentSpec`` list. All modes may contain status-line setup and
+        Computer Use; code modes additionally contain their code sub-agents.
     """
     react = (config or {}).get("react", {})
     react = react if isinstance(react, dict) else {}
@@ -890,6 +890,25 @@ def build_member_subagent_specs(
             )
         )
 
+    computer_cfg = (
+        subagents_cfg.get("computer_use_agent")
+        if isinstance(subagents_cfg, dict)
+        else None
+    )
+    if _is_subagent_enabled(computer_cfg):
+        maximum = computer_cfg.get("max_iterations", react.get("max_iterations"))
+        specs.append(
+            SubAgentSpec(
+                agent_card=AgentCard(name="computer_use_agent"),
+                system_prompt="",
+                factory_name=registry.SWARM_COMPUTER_USE_AGENT,
+                factory_kwargs={
+                    "max_iterations": int(maximum) if maximum is not None else None,
+                    "language": language,
+                },
+            )
+        )
+
     # cua_agent drives the host desktop, which is not a code-profile concern,
     # so it is offered in every mode when the operator opts in explicitly.
     if isinstance(subagents_cfg, dict) and _is_subagent_enabled(
@@ -902,7 +921,7 @@ def build_member_subagent_specs(
     if not _is_code_mode(mode):
         return specs
 
-# Explore / plan are the code profile's core sub-agents and stay mounted
+    # Explore / plan are the code profile's core sub-agents and stay mounted
     # unless a config entry turns them off explicitly, so an absent entry keeps
     # the long-standing behaviour.
     for name, factory_name in (
@@ -1010,6 +1029,11 @@ def build_member_deep_agent_spec(
 
     if subagent_specs or team_browser_spec:
         merged_subagents = list(base_spec.subagents or [])
+        if any(s.agent_card.name == "computer_use_agent" for s in subagent_specs):
+            merged_subagents = [
+                s for s in merged_subagents
+                if getattr(getattr(s, "agent_card", None), "name", None) != "computer_use_agent"
+            ]
         # Drop a base_spec explore_agent when we contribute our own: code modes
         # always declare one in build_member_subagent_specs, and two specs under
         # the same name would just shadow each other in create_subagent.
