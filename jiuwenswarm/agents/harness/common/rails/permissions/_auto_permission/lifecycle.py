@@ -58,6 +58,7 @@ class AutoPermissionLifecycleMixin:
         browser_runtime_security_profile: Any | None = None,
     ) -> None:
         self.base_rail = base_rail
+        self._owner_agent = None
         self.priority = int(getattr(base_rail, "priority", 90))
         self.permission_config = normalize_permissions_for_runtime(permission_config)
         self.workspace_root = (
@@ -94,9 +95,11 @@ class AutoPermissionLifecycleMixin:
 
     def init(self, agent: Any) -> None:
         """Delegate OpenJiuwen rail initialization to the wrapped permission rail."""
+        self._owner_agent = None
         init = getattr(self.base_rail, "init", None)
         if callable(init):
             init(agent)
+        self._owner_agent = agent
 
     def uninit(self, agent: Any) -> None:
         """Delegate OpenJiuwen rail teardown to the wrapped permission rail."""
@@ -105,6 +108,7 @@ class AutoPermissionLifecycleMixin:
             if callable(uninit):
                 uninit(agent)
         finally:
+            self._owner_agent = None
             self.send_file_session_approval_store.clear_all()
 
     def get_tools(self) -> set[str]:

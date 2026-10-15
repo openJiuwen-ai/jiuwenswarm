@@ -383,6 +383,7 @@ async def test_config_reload_does_not_replace_caller_supplied_spec(
         config_base,
         {"API_KEY": "updated"},
         None,
+        permission_notification=False,
     )
     build_snapshot.assert_not_called()
     assert adapter._instance is instance

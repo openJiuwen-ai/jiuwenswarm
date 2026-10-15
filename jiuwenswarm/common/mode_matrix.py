@@ -268,6 +268,33 @@ def is_single_agent_mode(canonical_mode: Any) -> bool:
     return canonicalize_mode_text(canonical_mode) in SINGLE_AGENT_CANONICAL_MODES
 
 
+def supports_single_agent_permission_profile(
+    mode: Any, sub_mode: Any = None, *, work_mode: Any = None,
+) -> bool:
+    """Allow only known independent normal/plan profiles for Smart permissions."""
+    if not str(getattr(mode, "value", mode) or "").strip():
+        return False
+    text = canonicalize_mode_text(mode)
+    sub = str(sub_mode or "").strip().lower()
+    work = str(work_mode or "").strip().lower()
+    if work not in {"", "work", "code"}:
+        return False
+    if text in {"agent", "code"}:
+        allowed = {"", "normal", "plan", "fast"} if text == "agent" else {"", "normal", "plan"}
+        if sub not in allowed:
+            return False
+        if sub in {"plan", "fast"}:
+            text = f"{text}.{sub}"
+    elif sub and sub not in {"normal", "plan"}:
+        return False
+    if text in {"agent", "agent.plan"} and work:
+        text = compose_web_mode(text, work)[2]
+    canonical = deprecate_mode(text)
+    if canonical not in SINGLE_AGENT_CANONICAL_MODES:
+        return False
+    return not work or (".code." in canonical) == (work == "code")
+
+
 def is_team_plan_mode(mode: Any) -> bool:
     """Return whether *mode* is either normal or code Team Plan."""
     return canonicalize_mode_text(mode) in {

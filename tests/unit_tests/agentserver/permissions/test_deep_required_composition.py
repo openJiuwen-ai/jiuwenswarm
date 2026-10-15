@@ -394,12 +394,13 @@ def test_required_factory_failure_blocks_only_smart_build(
         adapter._build_agent_rails({}, config)
 
 
-def test_code_profile_cannot_activate_smart_permission() -> None:
+def test_code_profile_can_activate_session_owned_smart_permission() -> None:
     adapter = JiuwenSwarmCodeAdapter()
     adapter.mark_as_session_scoped("permission-code-session")
+    adapter._session_instance_mode = "code"
     assert adapter._auto_permission_enabled_for_config(
         {"enabled": True, "mode": "auto"}, composition_scope="single_agent",
-    ) is False
+    ) is True
 
 
 @pytest.mark.parametrize("adapter_type", [JiuWenSwarmDeepAdapter, JiuwenSwarmCodeAdapter])

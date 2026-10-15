@@ -17,8 +17,15 @@ from typing import TYPE_CHECKING, Any
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.agent_mode_rail import AgentModeRail
+from openjiuwen.core.single_agent.rail.base import AgentRail
+from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
+from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
+    mark_plan_hard_reject,
+)
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import PLAN_EXECUTE_CTX_KEY
+
+_PLAN_GUARD_CHECKED = object()
 
 if TYPE_CHECKING:
     from openjiuwen.harness.deep_agent import DeepAgent
@@ -117,6 +124,12 @@ class CodeAgentModeRail(AgentModeRail):
         super().init(agent)
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
+        """Enforce once, including when the guard runs before permissions."""
+        if getattr(ctx, "_code_plan_guard_checked", None) is _PLAN_GUARD_CHECKED:
+            return
+        await self._enforce_plan_guard(ctx)
+
+    async def _enforce_plan_guard(self, ctx: AgentCallbackContext) -> None:
         """Enforce plan-mode write blocks beyond the parent git-only guard."""
         agent = self._agent
         session = ctx.session
@@ -290,3 +303,23 @@ class CodeAgentModeRail(AgentModeRail):
             except (TypeError, ValueError):
                 pass
         return str(args.get("mode") or args.get("target_mode") or "").strip()
+
+
+class CodePlanPrePermissionGuardRail(AgentRail):
+    """Run the existing Code plan guard before any permission approval."""
+
+    priority = PermissionInterruptRail.priority + 1
+
+    def __init__(self, mode_rail: CodeAgentModeRail) -> None:
+        super().__init__()
+        if not isinstance(mode_rail, CodeAgentModeRail):
+            raise RuntimeError("code_plan_guard_unavailable")
+        self._mode_rail = mode_rail
+
+    async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
+        if ctx.extra.get("_skip_tool"):
+            return
+        await self._mode_rail._enforce_plan_guard(ctx)  # pylint: disable=protected-access
+        setattr(ctx, "_code_plan_guard_checked", _PLAN_GUARD_CHECKED)
+        if ctx.extra.get("_skip_tool"):
+            mark_plan_hard_reject(ctx)
