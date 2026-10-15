@@ -1,7 +1,7 @@
 """model_routing.classifier — auto 档任务分类器（自包含）。
 
 混合策略：规则引擎为主（chat / summarization 强项），TF-IDF 质心兜底
-（reasoning / coding / format 强项）。
+（reasoning / coding / format 强项）。判定顺序：
 
   1. 续写/确认指令（is_continuation_utterance）→ 短路返回哨兵，rail 跳过重路由
   2. summarization 专项关键词命中 → 直接 summarization
@@ -9,11 +9,9 @@
   4. 规则无命中 → TF-IDF 质心余弦：reasoning/coding/format 需 >= _TFIDF_HIGH_CONF，
      chat 需 >= _TFIDF_CHAT_CONF，更低置信度一律兜底 chat
 
-打分：score = SCORE_TABLE[(category, difficulty)]；缺项按难度兜底
-（DEFAULT_SCORE_BY_DIFFICULTY），再缺兜底 DEFAULT_SCORE_FALLBACK。
-
-规则 / 阈值 / score 表全部硬编码在本模块，TF-IDF 语料在同目录 classifier_corpus.py。
-两个引擎在首次 classify 时惰性构建并缓存。
+score = SCORE_TABLE[(category, difficulty)]；缺项按难度兜底（DEFAULT_SCORE_BY_DIFFICULTY），
+再缺兜底 DEFAULT_SCORE_FALLBACK。规则 / 阈值 / score 表硬编码在本模块，TF-IDF 语料在同目录
+classifier_corpus.py；两个引擎在首次 classify 时惰性构建并缓存。
 """
 from __future__ import annotations
 
@@ -26,36 +24,30 @@ from jiuwenswarm.common.utils import logger as _log
 
 from .classifier_corpus import CATEGORY_UTTERANCES
 
-# 默认分数：category 无法识别时按难度兜底；难度也无法识别时的最终兜底。
+# 兜底分：category 无法识别时按难度给分；难度也无法识别时用最终兜底。
 DEFAULT_SCORE_BY_DIFFICULTY: dict[str, int] = {"easy": 25, "medium": 40, "hard": 60}
 DEFAULT_SCORE_FALLBACK: int = 60
 
-# 续写/确认指令哨兵：classify 前先短路，返回哨兵让 rail 跳过重路由（保留当前模型）。
-# 多轮对话里「继续/同意/好的」这类消息不能触发换模型。
+# 续写/确认哨兵：多轮对话里「继续 / 好的」不该触发换模型，classify 前先短路。
 CONTINUATION_CATEGORY = "continuation"
 CONTINUATION_SCORE = -1
 
-# 纯续写/确认短语（骨架形式：已去标点/空白/小写、去掉「请/please」）。
+# 纯续写/确认短语（骨架形式：已去标点/空白/小写，并去掉「请 / please」）。
 _CONTINUATION_PHRASES: frozenset[str] = frozenset(
     {
-        # 中文续写动词（裸 + 常见短补语）
         "继续", "继续吧", "继续做", "继续写", "继续改", "继续优化", "继续加油", "继续往下",
         "接着", "接着来", "接着做", "接着写", "往下", "往下走",
-        # 中文确认/同意
         "同意", "好的", "好", "行", "可以", "嗯", "对", "是", "是的", "没错", "就这样", "可以了",
-        # 英文续写动词（skeleton：空格已去除）
         "continue", "goahead", "goon", "proceed", "keepgoing", "keepitup", "carryon", "pleasecontinue",
-        # 英文确认/同意
         "ok", "okay", "yes", "yep", "yeah", "sure", "agreed", "agree", "right", "correct", "gotit",
     }
 )
 
-# 中文续写动词前缀：仅短形式（「继续 + ≤2 字补语」）算续写，
-# 避免「继续优化这个函数」「往下看第三行的变量」这类带实义内容的长句被误判。
+# 中文续写前缀只认短形式（继续 + ≤2 字补语）；「继续优化这个函数」这类带实义的长句不算续写。
 _CONTINUATION_PREFIXES_ZH: tuple[str, ...] = ("继续", "接着", "往下")
 _CONTINUATION_PREFIX_MAX_LEN = 4
 
-# 组合「确认词 + 续写动词」：好继续 / 对继续 / 好的请继续 …
+# 「确认词 + 续写动词」组合：好继续 / 对继续 / 好的请继续 …
 _CONFIRMATION_LEADERS: frozenset[str] = frozenset(
     {"对", "好", "好的", "行", "可以", "嗯", "是", "是的", "没错", "同意",
      "ok", "okay", "yes", "yeah", "sure", "right", "correct", "gotit", "agreed"}
@@ -68,7 +60,7 @@ _STRIP_CHARS = " \t\r\n　。．！？!?.,，、;；:：…~～-—_'\"`()（）
 
 
 def _skeleton(text: str) -> str:
-    """去掉空白与标点，返回小写纯字符骨架（用于精确匹配）。"""
+    """去空白与标点、转小写，返回精确匹配用的骨架。"""
     s = (text or "").strip().lower()
     return "".join(ch for ch in s if ch not in _STRIP_CHARS and not ch.isspace())
 
@@ -83,12 +75,10 @@ def _strip_polite_prefix(s: str) -> str:
 
 
 def is_continuation_utterance(text: str) -> bool:
-    """判断当前消息是否为纯续写/确认指令（去标点/空白后精确匹配）。
+    """是否为纯续写/确认指令（骨架去掉「请 / please」后精确匹配）。
 
-    匹配规则（骨架去掉「请/please」后）：
-    1. 精确短语：继续 / 好的 / 同意 / ok / continue …
-    2. 短中文续写前缀：继续X（X ≤ 2 字），如 继续做 / 继续优化 …
-    3. 组合「确认词 + 续写动词」：好继续 / 对继续 / 好的请继续 …
+    命中任一即算：① 精确短语（继续 / 好的 / ok / continue …）；② 短中文续写前缀
+    （继续X，X ≤ 2 字）；③ 「确认词 + 续写动词」组合（好继续 / 好的请继续 …）。
     """
     s = _skeleton(text)
     if not s:
@@ -107,7 +97,7 @@ def is_continuation_utterance(text: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# 分类数据：categories / difficulties / score 表 / 规则 / 长度信号 / 默认值
+# 分类数据
 # --------------------------------------------------------------------------- #
 
 CATEGORIES: tuple[str, ...] = ("chat", "reasoning", "coding", "summarization", "format")
@@ -115,521 +105,85 @@ CATEGORIES: tuple[str, ...] = ("chat", "reasoning", "coding", "summarization", "
 DIFFICULTIES: tuple[str, ...] = ("easy", "medium", "hard")
 
 SCORE_TABLE: dict[tuple[str, str], int] = {
-    ("chat", "easy"): 5,
-    ("chat", "medium"): 20,
-    ("chat", "hard"): 40,
-    ("reasoning", "easy"): 20,
-    ("reasoning", "medium"): 40,
-    ("reasoning", "hard"): 60,
-    ("coding", "easy"): 25,
-    ("coding", "medium"): 45,
-    ("coding", "hard"): 65,
-    ("summarization", "easy"): 15,
-    ("summarization", "medium"): 25,
-    ("summarization", "hard"): 45,
-    ("format", "easy"): 5,
-    ("format", "medium"): 10,
-    ("format", "hard"): 30,
+    ("chat", "easy"): 5, ("chat", "medium"): 20, ("chat", "hard"): 40,
+    ("reasoning", "easy"): 20, ("reasoning", "medium"): 40, ("reasoning", "hard"): 60,
+    ("coding", "easy"): 25, ("coding", "medium"): 45, ("coding", "hard"): 65,
+    ("summarization", "easy"): 15, ("summarization", "medium"): 25, ("summarization", "hard"): 45,
+    ("format", "easy"): 5, ("format", "medium"): 10, ("format", "hard"): 30,
 }
 
-RULES: list[dict[str, Any]] = [
-    {
-        "id": "coding.write_program",
-        "pattern": (
-            "(?i)\\b(write|implement|build|create|develop|design)\\s+(a|an|the|this)?\\s{0,3}(function|class|module|pro"
-            "gram|script|algorithm|app|service|api|method|sort|sorting|search|searching)\\b"
-        ),
-        "targets": [
-            {
-                "type": "category",
-                "name": "coding",
-                "score": 3
-            },
-            {
-                "type": "difficulty",
-                "name": "medium",
-                "score": 1
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "coding.debug_fix",
-        "pattern": (
-            "(?i)\\b(debug|fix|refactor|optimize|troubleshoot)\\s+(this|the|a)?\\s{0,3}(bug|error|issue|code|function|p"
-            "roblem|crash|exception)\\b"
-        ),
-        "targets": [
-            {
-                "type": "category",
-                "name": "coding",
-                "score": 3
-            },
-            {
-                "type": "difficulty",
-                "name": "hard",
-                "score": 2
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "coding.chinese",
-        "pattern": "(?i)(代码|编程|写代码|调试|重构|实现|修复|报错|算法|排序|函数|变量)",
-        "targets": [
-            {
-                "type": "category",
-                "name": "coding",
-                "score": 2
-            }
-        ],
-        "strength": "medium"
-    },
-    {
-        "id": "coding.bare_error",
-        "pattern": "(?i)\\b(bug|error|exception|crash|syntax)\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "coding",
-                "score": 1
-            }
-        ],
-        "strength": "weak"
-    },
-    {
-        "id": "coding.bare_generic",
-        "pattern": "(?i)\\b(code|program|script|compile|runtime)\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "coding",
-                "score": 1
-            }
-        ],
-        "strength": "weak"
-    },
-    {
-        "id": "reasoning.prove",
-        "pattern": "(?i)\\b(prove|demonstrate|verify)\\s+that\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "reasoning",
-                "score": 3
-            },
-            {
-                "type": "difficulty",
-                "name": "hard",
-                "score": 3
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "reasoning.analyze",
-        "pattern": (
-            "(?i)\\b(analyze|examine|investigate|evaluate)\\s+(the|this|a)?\\s{0,3}(problem|issue|data|pattern|trend|re"
-            "lationship|situation)\\b"
-        ),
-        "targets": [
-            {
-                "type": "category",
-                "name": "reasoning",
-                "score": 3
-            },
-            {
-                "type": "difficulty",
-                "name": "hard",
-                "score": 2
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "reasoning.compare",
-        "pattern": "(?i)\\b(compare|contrast)\\s+(and|with|between)\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "reasoning",
-                "score": 2
-            },
-            {
-                "type": "difficulty",
-                "name": "hard",
-                "score": 1
-            }
-        ],
-        "strength": "medium"
-    },
-    {
-        "id": "reasoning.chinese",
-        "pattern": "(?i)(证明|推理|论证|分析|演绎|推导|比较|评估|逻辑)",
-        "targets": [
-            {
-                "type": "category",
-                "name": "reasoning",
-                "score": 2
-            }
-        ],
-        "strength": "medium"
-    },
-    {
-        "id": "reasoning.bare",
-        "pattern": "(?i)\\b(math|logic|reason|deduce)\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "reasoning",
-                "score": 1
-            }
-        ],
-        "strength": "weak"
-    },
-    {
-        "id": "reasoning.arithmetic",
-        "pattern": "\\d+[\\+\\-\\*/\\^]\\d+",
-        "targets": [
-            {
-                "type": "category",
-                "name": "reasoning",
-                "score": 1
-            }
-        ],
-        "strength": "weak"
-    },
-    {
-        "id": "summarize.action",
-        "pattern": (
-            "(?i)\\b(summarize|condense|compress|abridge)\\s+(this|the|a)?\\s{0,3}(article|text|document|report|paper|b"
-            "ook|content|meeting)\\b"
-        ),
-        "targets": [
-            {
-                "type": "category",
-                "name": "summarization",
-                "score": 3
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "summarize.keyword",
-        "pattern": "(?i)\\b(tldr|总结|摘要|概括|提炼)\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "summarization",
-                "score": 3
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "summarize.partial",
-        "pattern": "(?i)\\b(key\\s+points|main\\s+ideas|要点|概述|overview)\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "summarization",
-                "score": 2
-            }
-        ],
-        "strength": "medium"
-    },
-    {
-        "id": "summarize.bare",
-        "pattern": "(?i)\\b(brief|abstract)\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "summarization",
-                "score": 1
-            }
-        ],
-        "strength": "weak"
-    },
-    {
-        "id": "format.convert",
-        "pattern": "(?i)\\b(convert|transform|translate)\\s+\\w+(\\s+\\w+){0,3}\\s+(to|into|as)\\s+\\w+",
-        "targets": [
-            {
-                "type": "category",
-                "name": "format",
-                "score": 3
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "format.reformat",
-        "pattern": "(?i)\\b(format|rewrite|rephrase)\\s+(this|the|data)?\\s{0,3}(as|to|into)\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "format",
-                "score": 3
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "format.chinese",
-        "pattern": "(?i)(格式化|转换|翻译|改写|排版)",
-        "targets": [
-            {
-                "type": "category",
-                "name": "format",
-                "score": 2
-            }
-        ],
-        "strength": "medium"
-    },
-    {
-        "id": "format.bare_format_name",
-        "pattern": "(?i)\\b(json|csv|xml|yaml|markdown)\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "format",
-                "score": 1
-            }
-        ],
-        "strength": "weak"
-    },
-    {
-        "id": "chat.greeting",
-        "pattern": "(?i)^(hello|hi|hey|你好|嗨|good\\s+(morning|afternoon|evening)|greetings|yo|sup)\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "chat",
-                "score": 3
-            },
-            {
-                "type": "difficulty",
-                "name": "easy",
-                "score": 2
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "chat.factual",
-        "pattern": "(?i)^(what|who|where|when|how)\\s+(is|are|was|were|does|do|can)\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "chat",
-                "score": 2
-            },
-            {
-                "type": "difficulty",
-                "name": "easy",
-                "score": 2
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "chat.casual",
-        "pattern": (
-            "(?i)\\b(how\\s+are\\s+you|what'?s\\s+up|nice\\s+to\\s+meet|let'?s\\s+(chat|talk|hang)|just\\s+(chatting|ta"
-            "lking|wondering)|casual\\s+(chat|conversation))\\b"
-        ),
-        "targets": [
-            {
-                "type": "category",
-                "name": "chat",
-                "score": 3
-            },
-            {
-                "type": "difficulty",
-                "name": "easy",
-                "score": 1
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "chat.roleplay",
-        "pattern": (
-            "(?i)\\b(pretend|act\\s+as|roleplay|imagine\\s+(you|yourself)|embrace\\s+the\\s+role|assume\\s+the\\s+role)"
-            "\\b"
-        ),
-        "targets": [
-            {
-                "type": "category",
-                "name": "chat",
-                "score": 3
-            },
-            {
-                "type": "difficulty",
-                "name": "medium",
-                "score": 1
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "chat.opinion",
-        "pattern": (
-            "(?i)\\b(what\\s+(do|is)\\s+your\\s+(opinion|favorite|thought)|do\\s+you\\s+(prefer|like|think|believe)|rec"
-            "ommend\\s+(a|me|some))\\b"
-        ),
-        "targets": [
-            {
-                "type": "category",
-                "name": "chat",
-                "score": 3
-            },
-            {
-                "type": "difficulty",
-                "name": "easy",
-                "score": 1
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "chat.compose_letter",
-        "pattern": (
-            "(?i)\\b(draft|compose|write)\\s+(a|an)?\\s*(professional\\s+)?(email|letter|blog\\s+post|message)\\b"
-        ),
-        "targets": [
-            {
-                "type": "category",
-                "name": "chat",
-                "score": 2
-            },
-            {
-                "type": "difficulty",
-                "name": "medium",
-                "score": 1
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "chat.chinese",
-        "pattern": "(?i)(聊天|闲聊|什么是|介绍一下|随便聊聊|怎么样|聊聊|推荐|你觉|想聊|聊聊|心情|爱好|认识)",
-        "targets": [
-            {
-                "type": "category",
-                "name": "chat",
-                "score": 2
-            }
-        ],
-        "strength": "medium"
-    },
-    {
-        "id": "chat.feeling",
-        "pattern": (
-            "(?i)\\b(I'?m\\s+(feeling|bored|happy|sad|tired|excited|looking\\s+for)|what\\s+should\\s+I\\s+do|tell\\s+m"
-            "e\\s+a\\s+joke)\\b"
-        ),
-        "targets": [
-            {
-                "type": "category",
-                "name": "chat",
-                "score": 2
-            },
-            {
-                "type": "difficulty",
-                "name": "easy",
-                "score": 1
-            }
-        ],
-        "strength": "medium"
-    },
-    {
-        "id": "chat.tell_me",
-        "pattern": (
-            "(?i)\\b(tell\\s+me\\s+about|help\\s+me\\s+(understand|find|choose)|can\\s+you\\s+(recommend|suggest|give\\"
-            "s+me))\\b"
-        ),
-        "targets": [
-            {
-                "type": "category",
-                "name": "chat",
-                "score": 1
-            }
-        ],
-        "strength": "weak"
-    },
-    {
-        "id": "chat.bare",
-        "pattern": "(?i)\\b(what\\s+about|how\\s+about|any\\s+(idea|suggestion|recommendation))\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "chat",
-                "score": 1
-            }
-        ],
-        "strength": "weak"
-    },
-    {
-        "id": "negate.write_creative",
-        "pattern": "(?i)\\b(write|create|compose)\\s+a\\s+(poem|story|essay|letter|song|novel|小说|故事|诗歌|文章)\\b",
-        "targets": [
-            {
-                "type": "category",
-                "name": "coding",
-                "score": -3
-            }
-        ],
-        "strength": "strong"
-    },
-    {
-        "id": "negate.realize_dream",
-        "pattern": "(?i)(实现)(梦想|愿望|目标|理想)",
-        "targets": [
-            {
-                "type": "category",
-                "name": "coding",
-                "score": -2
-            }
-        ],
-        "strength": "medium"
-    },
-    {
-        "id": "diff.easy",
-        "pattern": "(?i)\\b(quick|simple|briefly|简单|定义)\\b",
-        "targets": [
-            {
-                "type": "difficulty",
-                "name": "easy",
-                "score": 2
-            }
-        ],
-        "strength": "medium"
-    },
-    {
-        "id": "diff.medium",
-        "pattern": "(?i)\\b(explain|describe|说明|详细|阐述)\\b",
-        "targets": [
-            {
-                "type": "difficulty",
-                "name": "medium",
-                "score": 2
-            }
-        ],
-        "strength": "medium"
-    },
-    {
-        "id": "diff.hard",
-        "pattern": "(?i)\\b(complex|complicated|advanced|复杂|架构)\\b",
-        "targets": [
-            {
-                "type": "difficulty",
-                "name": "hard",
-                "score": 2
-            }
-        ],
-        "strength": "medium"
-    }
+# 规则表：(id, 正则, category | None, category 分, difficulty | None, difficulty 分)。
+# category 分可为负（negate.* 抵消误判）；difficulty 为 None 表示该规则只判类别。
+RULES: list[tuple[str, str, str | None, int, str | None, int]] = [
+    ("coding.write_program",
+     r"(?i)\b(write|implement|build|create|develop|design)\s+(a|an|the|this)?\s{0,3}(function|class|module|program|scri"
+     r"pt|algorithm|app|service|api|method|sort|sorting|search|searching)\b",
+     "coding", 3, "medium", 1),
+    ("coding.debug_fix",
+     r"(?i)\b(debug|fix|refactor|optimize|troubleshoot)\s+(this|the|a)?\s{0,3}(bug|error|issue|code|function|problem|cr"
+     r"ash|exception)\b",
+     "coding", 3, "hard", 2),
+    ("coding.chinese", r"(?i)(代码|编程|写代码|调试|重构|实现|修复|报错|算法|排序|函数|变量)", "coding", 2, None, 0),
+    ("coding.bare_error", r"(?i)\b(bug|error|exception|crash|syntax)\b", "coding", 1, None, 0),
+    ("coding.bare_generic", r"(?i)\b(code|program|script|compile|runtime)\b", "coding", 1, None, 0),
+    ("reasoning.prove", r"(?i)\b(prove|demonstrate|verify)\s+that\b", "reasoning", 3, "hard", 3),
+    ("reasoning.analyze",
+     r"(?i)\b(analyze|examine|investigate|evaluate)\s+(the|this|a)?\s{0,3}(problem|issue|data|pattern|trend|relationshi"
+     r"p|situation)\b",
+     "reasoning", 3, "hard", 2),
+    ("reasoning.compare", r"(?i)\b(compare|contrast)\s+(and|with|between)\b", "reasoning", 2, "hard", 1),
+    ("reasoning.chinese", r"(?i)(证明|推理|论证|分析|演绎|推导|比较|评估|逻辑)", "reasoning", 2, None, 0),
+    ("reasoning.bare", r"(?i)\b(math|logic|reason|deduce)\b", "reasoning", 1, None, 0),
+    ("reasoning.arithmetic", r"\d+[\+\-\*/\^]\d+", "reasoning", 1, None, 0),
+    ("summarize.action",
+     r"(?i)\b(summarize|condense|compress|abridge)\s+(this|the|a)?\s{0,3}(article|text|document|report|paper|book|conte"
+     r"nt|meeting)\b",
+     "summarization", 3, None, 0),
+    ("summarize.keyword", r"(?i)\b(tldr|总结|摘要|概括|提炼)\b", "summarization", 3, None, 0),
+    ("summarize.partial", r"(?i)\b(key\s+points|main\s+ideas|要点|概述|overview)\b", "summarization", 2, None, 0),
+    ("summarize.bare", r"(?i)\b(brief|abstract)\b", "summarization", 1, None, 0),
+    ("format.convert",
+     r"(?i)\b(convert|transform|translate)\s+\w+(\s+\w+){0,3}\s+(to|into|as)\s+\w+",
+     "format", 3, None, 0),
+    ("format.reformat",
+     r"(?i)\b(format|rewrite|rephrase)\s+(this|the|data)?\s{0,3}(as|to|into)\b",
+     "format", 3, None, 0),
+    ("format.chinese", r"(?i)(格式化|转换|翻译|改写|排版)", "format", 2, None, 0),
+    ("format.bare_format_name", r"(?i)\b(json|csv|xml|yaml|markdown)\b", "format", 1, None, 0),
+    ("chat.greeting",
+     r"(?i)^(hello|hi|hey|你好|嗨|good\s+(morning|afternoon|evening)|greetings|yo|sup)\b",
+     "chat", 3, "easy", 2),
+    ("chat.factual", r"(?i)^(what|who|where|when|how)\s+(is|are|was|were|does|do|can)\b", "chat", 2, "easy", 2),
+    ("chat.casual",
+     r"(?i)\b(how\s+are\s+you|what'?s\s+up|nice\s+to\s+meet|let'?s\s+(chat|talk|hang)|just\s+(chatting|talking|wonderin"
+     r"g)|casual\s+(chat|conversation))\b",
+     "chat", 3, "easy", 1),
+    ("chat.roleplay",
+     r"(?i)\b(pretend|act\s+as|roleplay|imagine\s+(you|yourself)|embrace\s+the\s+role|assume\s+the\s+role)\b",
+     "chat", 3, "medium", 1),
+    ("chat.opinion",
+     r"(?i)\b(what\s+(do|is)\s+your\s+(opinion|favorite|thought)|do\s+you\s+(prefer|like|think|believe)|recommend\s+(a|"
+     r"me|some))\b",
+     "chat", 3, "easy", 1),
+    ("chat.compose_letter",
+     r"(?i)\b(draft|compose|write)\s+(a|an)?\s*(professional\s+)?(email|letter|blog\s+post|message)\b",
+     "chat", 2, "medium", 1),
+    ("chat.chinese", r"(?i)(聊天|闲聊|什么是|介绍一下|随便聊聊|怎么样|聊聊|推荐|你觉|想聊|聊聊|心情|爱好|认识)", "chat", 2, None, 0),
+    ("chat.feeling",
+     r"(?i)\b(I'?m\s+(feeling|bored|happy|sad|tired|excited|looking\s+for)|what\s+should\s+I\s+do|tell\s+me\s+a\s+joke)"
+     r"\b",
+     "chat", 2, "easy", 1),
+    ("chat.tell_me",
+     r"(?i)\b(tell\s+me\s+about|help\s+me\s+(understand|find|choose)|can\s+you\s+(recommend|suggest|give\s+me))\b",
+     "chat", 1, None, 0),
+    ("chat.bare", r"(?i)\b(what\s+about|how\s+about|any\s+(idea|suggestion|recommendation))\b", "chat", 1, None, 0),
+    ("negate.write_creative",
+     r"(?i)\b(write|create|compose)\s+a\s+(poem|story|essay|letter|song|novel|小说|故事|诗歌|文章)\b",
+     "coding", -3, None, 0),
+    ("negate.realize_dream", r"(?i)(实现)(梦想|愿望|目标|理想)", "coding", -2, None, 0),
+    ("diff.easy", r"(?i)\b(quick|simple|briefly|简单|定义)\b", None, 0, "easy", 2),
+    ("diff.medium", r"(?i)\b(explain|describe|说明|详细|阐述)\b", None, 0, "medium", 2),
+    ("diff.hard", r"(?i)\b(complex|complicated|advanced|复杂|架构)\b", None, 0, "hard", 2),
 ]
 
 LENGTH_SIGNAL: dict[str, int] = {
@@ -662,7 +216,10 @@ _WORD_PAT = re.compile(r"[a-zA-Z]{2,}")
 _NUM_PAT = re.compile(r"\d+")
 _CJK_PAT = re.compile(r"[一-鿿㐀-䶿]+")
 
-_compiled_rules: list[tuple[re.Pattern, list[dict]]] | None = None
+# 编译后的规则：(正则, category | None, category 分, difficulty | None, difficulty 分)
+_CompiledRule = tuple[re.Pattern, str | None, int, str | None, int]
+
+_compiled_rules: list[_CompiledRule] | None = None
 _tfidf_engine: tuple[dict[str, float], dict[str, dict[str, float]]] | None = None
 
 _ASCII_WORD_START = r"(?<![A-Za-z0-9_])"
@@ -670,18 +227,13 @@ _ASCII_WORD_END = r"(?![A-Za-z0-9_])"
 
 
 def _ascii_word_boundaries(pattern: str) -> str:
-    r"""把规则里的 ``\b`` 换成 ASCII-only 词边界环视（修 CJK 关键词永不命中）。
+    r"""把规则里的 ``\b`` 换成 ASCII-only 词边界环视。
 
-    Python 的 ``\b`` 以 ``\w`` 定义，而 Unicode 模式下 ``\w`` **把 CJK 也算作词字符**，
-    于是 ``\b复杂\b`` 在「很复杂的系统」里永不匹配（很/复 都是词字符，其间无边界）；
-    「分析架构问题」「架构分析」同样不匹配 —— 中文提示词因此几乎拿不到 hard 档。
-
-    换成「非 ``[A-Za-z0-9_]``」的环视后：CJK 关键词能正常命中，英文语义与 ``\b`` 等价
-    （``\b`` 在英文里本就等价于「两侧不全为 ASCII 词字符」）。
-
-    ``\b`` 出现在**组首**（其后是字面量或 ``(``）判为起始边界，出现在**组尾**
-    （其后是 ``)`` 或串尾）判为结束边界；本模块规则全部形如 ``\b(...)\b`` / ``\b...\b``，
-    该判据成立。``\b`` 出现在字符类 ``[...]`` 内（转义退格）的情形本模块不存在。
+    Python 的 ``\b`` 以 ``\w`` 定义，而 Unicode 模式下 ``\w`` 把 CJK 也算词字符 ——
+    ``\b复杂\b`` 在「很复杂的系统」里永不命中（很/复 都是词字符，其间无边界），中文提示词
+    因此几乎拿不到 hard 档。换成「非 ``[A-Za-z0-9_]``」环视后 CJK 关键词正常命中，英文语义
+    与 ``\b`` 等价。本模块规则均为 ``\b(...)\b`` / ``\b...\b`` 形，故组首的 ``\b``（其后是
+    字面量或 ``(``）判为起始边界，其余判为结束边界。
     """
     out: list[str] = []
     i, n = 0, len(pattern)
@@ -696,18 +248,16 @@ def _ascii_word_boundaries(pattern: str) -> str:
     return "".join(out)
 
 
-def _rules() -> list[tuple[re.Pattern, list[dict]]]:
+def _rules() -> list[_CompiledRule]:
     """编译并缓存规则引擎（首次调用时编译；单条规则编译失败只告警、不中断）。"""
     global _compiled_rules
     if _compiled_rules is None:
-        compiled: list[tuple[re.Pattern, list[dict]]] = []
-        for rule in RULES:
+        compiled: list[_CompiledRule] = []
+        for rule_id, pattern, cat, cat_score, diff, diff_score in RULES:
             try:
-                compiled.append(
-                    (re.compile(_ascii_word_boundaries(rule["pattern"])), rule.get("targets", []))
-                )
+                compiled.append((re.compile(_ascii_word_boundaries(pattern)), cat, cat_score, diff, diff_score))
             except re.error as exc:
-                _log.warning("[ModelRouting] rule %s compile failed: %s", rule.get("id", "?"), exc)
+                _log.warning("[ModelRouting] rule %s compile failed: %s", rule_id, exc)
         _compiled_rules = compiled
         _log.info("[ModelRouting] hybrid: rule engine compiled: %d rules", len(compiled))
     return _compiled_rules
@@ -769,7 +319,7 @@ def _cosine(v1: dict[str, float], v2: dict[str, float]) -> float:
 
 
 def _tfidf_classify(prompt_text: str) -> tuple[str, float]:
-    """质心余弦打分 → (最高分类别, 该类别得分)。同分取质心插入序最前者。"""
+    """质心余弦打分 → (最高分类别, 得分)。同分取质心插入序最前者。"""
     idf, centroids = _tfidf()
     query_tf = Counter(_tokenize(prompt_text))
     query_vec = {t: query_tf[t] * idf[t] for t in query_tf if t in idf}
@@ -798,7 +348,7 @@ def _lookup_score(category: str, difficulty: str, score_table: dict, default_sco
 
 
 def validate_score(raw: Any) -> int:
-    """验证 classify 返回的 score：必须是 0-100 的数值；否则兜底 60。"""
+    """校验 classify 返回的 score：必须是 0-100 的数值；否则兜底 60。"""
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -811,7 +361,7 @@ def validate_score(raw: Any) -> int:
 async def classify(prompt_text: str) -> tuple[int, str, str]:
     """给任务打分 → (score, category, difficulty)。
 
-    续写/确认指令短路，返回 (CONTINUATION_SCORE, CONTINUATION_CATEGORY, "skip")，
+    续写/确认指令短路返回 (CONTINUATION_SCORE, CONTINUATION_CATEGORY, "skip")，
     由 rail 判定为「保留当前模型」。
     """
     if is_continuation_utterance(prompt_text):
@@ -820,17 +370,13 @@ async def classify(prompt_text: str) -> tuple[int, str, str]:
 
     category_scores: dict[str, int] = {c: 0 for c in CATEGORIES}
     difficulty_scores: dict[str, int] = {d: 0 for d in DIFFICULTIES}
-    for pattern, targets in _rules():
+    for pattern, cat, cat_score, diff, diff_score in _rules():
         if not pattern.search(prompt_text):
             continue
-        for target in targets:
-            target_type = target.get("type", "")
-            target_name = target.get("name", "")
-            target_score = target.get("score", 0)
-            if target_type == "category":
-                category_scores[target_name] = category_scores.get(target_name, 0) + target_score
-            elif target_type == "difficulty":
-                difficulty_scores[target_name] = difficulty_scores.get(target_name, 0) + target_score
+        if cat is not None:
+            category_scores[cat] = category_scores.get(cat, 0) + cat_score
+        if diff is not None:
+            difficulty_scores[diff] = difficulty_scores.get(diff, 0) + diff_score
 
     token_count = _count_tokens(prompt_text)
     easy_threshold = LENGTH_SIGNAL.get("easy_threshold", 20)
@@ -872,10 +418,6 @@ async def classify(prompt_text: str) -> tuple[int, str, str]:
     score = _lookup_score(category, difficulty, SCORE_TABLE, DEFAULT_SCORE_BY_DIFFICULTY)
     _log.debug(
         "[ModelRouting] hybrid classifier: %s/%s score=%d (rule_hit=%s rule_cat=%s)",
-        category,
-        difficulty,
-        score,
-        rule_has_hit,
-        rule_category,
+        category, difficulty, score, rule_has_hit, rule_category,
     )
     return score, category, difficulty

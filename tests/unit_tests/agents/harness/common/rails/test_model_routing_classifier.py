@@ -132,7 +132,7 @@ def test_ascii_word_boundaries_make_cjk_keywords_match(prompt):
     """
     from jiuwenswarm.agents.harness.common.rails.model_routing.classifier import _rules
 
-    for pattern, _targets in _rules():
+    for pattern, *_ in _rules():
         if pattern.search(prompt):
             return
     pytest.fail(f"no rule matched {prompt!r} — CJK 词边界回归")
