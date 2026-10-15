@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "qq-mail": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@codefuturist/email-mcp@0.6.0",
+        "stdio"
+      ],
+      "env": {
+        "MCP_EMAIL_ADDRESS": "${QQ_MAIL_ADDRESS}",
+        "MCP_EMAIL_PASSWORD": "${QQ_MAIL_AUTH_CODE}",
+        "MCP_EMAIL_IMAP_HOST": "imap.qq.com",
+        "MCP_EMAIL_SMTP_HOST": "smtp.qq.com",
+        "MCP_EMAIL_ACCOUNT_NAME": "qq-mail"
+      },
+      "timeout": 600
+    }
+  }
+}

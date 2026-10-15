@@ -1,0 +1,49 @@
+{
+  "version": "1.0.0",
+  "package_type": "mcp",
+  "id": "qq-mail",
+  "name": "QQ邮箱",
+  "description": "通过 IMAP/SMTP 标准协议管理你的 QQ 邮箱：邮件浏览与全文读取、搜索、附件下载、撰写/回复/转发、草稿，以及移动、标记、文件夹整理与删除。",
+  "display_name": {
+    "zh": "QQ邮箱",
+    "en": "QQ Mail"
+  },
+  "display_description": {
+    "zh": "管理你的个人 QQ 邮箱（@qq.com / @foxmail.com）：邮件浏览与全文读取、搜索、附件下载、撰写/回复/转发、草稿，以及移动、标记、文件夹等整理操作。使用邮箱地址 + IMAP/SMTP 授权码连接（非登录密码），授权码可随时在 QQ 邮箱设置中重新生成。",
+    "en": "Manage your personal QQ mailbox (@qq.com / @foxmail.com): browse and read emails, search, download attachments, compose/reply/forward, drafts, and organize with move/flag/folder operations. Connects with your email address + IMAP/SMTP authorization code (not your login password); regenerate the code anytime in QQ Mail settings."
+  },
+  "integration": {
+    "type": "stdio-mcp",
+    "file": "mcp.json"
+  },
+  "credentials": {
+    "type": "token",
+    "file": "token-schema.json"
+  },
+  "icon": "icon.png",
+  "skills": [
+    {
+      "dir": "skills/qq-mail-guide",
+      "mode": "all"
+    }
+  ],
+  "category": "办公与生产力",
+  "examples": {
+    "zh": [
+      "看看收件箱最近有什么重要邮件",
+      "找一下上周张总发的关于预算的邮件",
+      "回复这封邮件，确认参加会议",
+      "把这封邮件转发给项目组",
+      "把这几封垃圾邮件删掉",
+      "把上个月的账单邮件移到归档文件夹"
+    ],
+    "en": [
+      "Check my inbox for recent important emails",
+      "Find the budget email Mr. Zhang sent last week",
+      "Reply to this email to confirm the meeting",
+      "Forward this email to the project team",
+      "Delete these spam emails",
+      "Move last month's billing emails to the archive folder"
+    ]
+  }
+}
