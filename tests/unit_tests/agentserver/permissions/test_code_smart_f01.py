@@ -312,6 +312,15 @@ async def test_lsp_fast_route_requires_valid_bound_in_root_read(code_cold, monke
         symlink = h.root / "escape.py"
         symlink.symlink_to(h.root.parent / "outside.py")
         assert route({**raw, "file_path": str(symlink)}) is None
+    class DerivedLspRail(LspRail):
+        pass
+
+    derived = DerivedLspRail(options=InitializeOptions(cwd=str(h.root)))
+    derived._lsp_tool = lsp._lsp_tool
+    with monkeypatch.context() as patch:
+        patch.setattr(agent, "find_rails_by_type", lambda _rail_type: [derived])
+        assert route() is None
+
     lsp._initialize_options.cwd = str(h.root.parent)
     assert route() is None
 

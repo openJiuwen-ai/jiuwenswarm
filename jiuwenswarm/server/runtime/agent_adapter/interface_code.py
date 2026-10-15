@@ -2009,8 +2009,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _resolve_code_graph_cache_dir(self, raw_cache: object) -> str:
         """Port agent_os: relative paths follow the existing agent workspace."""
-        from pathlib import Path
-
         workspace = self._agent_workspace_dir or self._project_dir
         base = Path(workspace) if workspace else Path.cwd()
         path = Path(str(raw_cache)).expanduser() if raw_cache else Path(".code_graph_cache")
@@ -2348,7 +2346,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """
         try:
             import jiuwenswarm.agents.harness.code.rails.sdd.design_rail as _dr_pkg
-            from pathlib import Path
 
             from jiuwenswarm.agents.harness.code.rails.sdd.design_rail import (
                 DesignRail as _DesignRail,

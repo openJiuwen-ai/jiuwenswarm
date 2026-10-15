@@ -13,7 +13,9 @@ from openjiuwen.harness.security.permission_engine.fileguard.file_tool_specs imp
     FileToolSpec, lookup_file_tool_specs, register_file_tool,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_binding import resolve_tool_binding, matches_bound_method
-from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.readonly_tool_bindings import _invoke_matches, _closure
+from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.readonly_tool_bindings import (
+    _invoke_matches, _closure,
+)
 
 _CONTROL_TYPES = {
     "enter_plan_mode": EnterPlanModeTool, "exit_plan_mode": ExitPlanModeTool,
@@ -31,10 +33,10 @@ def register_lsp_read_semantics() -> None:
 
 def _control_invoke_matches(tool, expected) -> bool:
     invoke = tool.invoke
-    # The SDK appends product plan text after registering these two tools.
+    # The SDK exposes no public identity API for its patched control wrappers.
     factory = {
-        EnterPlanModeTool: AgentModeRail._patch_enter_plan_mode_tool,
-        ExitPlanModeTool: AgentModeRail._patch_exit_plan_mode_tool,
+        EnterPlanModeTool: AgentModeRail._patch_enter_plan_mode_tool,  # pylint: disable=protected-access
+        ExitPlanModeTool: AgentModeRail._patch_exit_plan_mode_tool,  # pylint: disable=protected-access
     }.get(expected)
     if factory is not None and getattr(invoke, "__name__", "") == "patched_invoke":
         _closure(invoke, factory, "patched_invoke")
@@ -63,7 +65,9 @@ def trusted_code_route(invocation, facts, *, path_requires_approval: bool, owner
             if not facts.arguments_valid_object:
                 return None
             tool = resolve_tool_binding(callback_agent, invocation.tool_name, expected)
-            if tool is not None and tool._agent_ref is agent and _control_invoke_matches(tool, expected):
+            # This private binding is the actual SDK receiver, not tool metadata.
+            owns_agent = tool is not None and tool._agent_ref is agent  # pylint: disable=protected-access
+            if owns_agent and _control_invoke_matches(tool, expected):
                 return "code_plan_control"
             return None
         if invocation.tool_name != "lsp" or path_requires_approval:
@@ -75,17 +79,26 @@ def trusted_code_route(invocation, facts, *, path_requires_approval: bool, owner
         tool = resolve_tool_binding(callback_agent, "lsp", LspTool)
         if tool is None or not _invoke_matches(tool, LspTool.invoke):
             return None
-        if not matches_bound_method(tool._get_workspace, expected_owner=tool, expected_func=LspTool._get_workspace):
+        # Pin the SDK's real workspace callback; it has no public identity API.
+        workspace_getter = tool._get_workspace  # pylint: disable=protected-access
+        expected_getter = LspTool._get_workspace  # pylint: disable=protected-access
+        if not matches_bound_method(workspace_getter, expected_owner=tool, expected_func=expected_getter):
             return None
         root = Path(facts.workspace_root).resolve()
-        if tool._get_workspace() != root or tool.operation is not agent.deep_config.sys_operation:
+        if workspace_getter() != root or tool.operation is not agent.deep_config.sys_operation:
             return None
         rails = agent.find_rails_by_type(LspRail)
-        if len(rails) != 1 or type(rails[0]) is not LspRail:
+        if len(rails) != 1:
+            return None
+        # Subclasses can alter execution; assignability does not prove identity.
+        exact_rail = type(rails[0]) is LspRail  # pylint: disable=huawei-unidiomatic-typecheck
+        if not exact_rail:
             return None
         rail = rails[0]
         cwd = getattr(getattr(rail, "_initialize_options", None), "cwd", None)
-        if rail._lsp_tool is not tool or not cwd or Path(cwd).resolve() != root:
+        # Verify the tool installed by this concrete SDK rail.
+        registered_tool = rail._lsp_tool  # pylint: disable=protected-access
+        if registered_tool is not tool or not cwd or Path(cwd).resolve() != root:
             return None
         # workspaceSymbol reads the bound root; all other operations read one source file.
         if parsed.operation != "workspaceSymbol" and not facts.read_paths:
@@ -93,5 +106,5 @@ def trusted_code_route(invocation, facts, *, path_requires_approval: bool, owner
         if not facts.accesses_known or any(not Path(path).resolve().is_relative_to(root) for path in facts.read_paths):
             return None
         return "code_lsp_read"
-    except (AttributeError, KeyError, LookupError, OSError, RuntimeError, StopIteration, TypeError, ValueError):
+    except (AttributeError, LookupError, OSError, RuntimeError, StopIteration, TypeError, ValueError):
         return None

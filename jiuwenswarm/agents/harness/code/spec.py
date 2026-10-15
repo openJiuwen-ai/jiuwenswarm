@@ -85,7 +85,10 @@ def _build_code_rail_bundle(
     ctx = _require_code_context(context)
     from jiuwenswarm.common.permission_mode import is_auto_permission_enabled
 
-    if is_auto_permission_enabled(ctx.config_base.get("permissions", {})) and ctx.adapter._auto_permission_capability_enabled():  # pylint: disable=protected-access
+    if (
+        is_auto_permission_enabled(ctx.config_base.get("permissions", {}))
+        and ctx.adapter._auto_permission_capability_enabled()  # pylint: disable=protected-access
+    ):
         from openjiuwen.harness.schema.build_context import parent_sys_operation
 
         model = ctx.extras.get("_parent_model")
