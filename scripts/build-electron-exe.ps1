@@ -570,16 +570,23 @@ Remove-Item (Join-Path $ElectronAppDir "resources\default_app.asar") -Force -Err
 # Rename electron.exe to the product shell exe (WorkSwarm.exe, from build_config)
 Rename-Item (Join-Path $ElectronAppDir "electron.exe") $ShellExeName -Force
 
-# Set the executable icon with the repository-pinned rcedit binary before signing.
+# Set the executable icon and Windows version resources before signing.
 $LogoIco = Join-Path $FrontendDir "public\logo.ico"
 if (-not (Test-Path -LiteralPath $LogoIco -PathType Leaf)) {
     throw "Required Windows icon is missing: $LogoIco"
 }
 $ShellExePath = Join-Path $ElectronAppDir $ShellExeName
-Write-Host "  Setting exe icon via pinned rcedit..." -ForegroundColor Gray
-& $Rcedit $ShellExePath --set-icon $LogoIco
+Write-Host "  Setting exe icon and version resources via pinned rcedit..." -ForegroundColor Gray
+& $Rcedit $ShellExePath `
+    --set-icon $LogoIco `
+    --set-version-string FileDescription $BuildDisplayName `
+    --set-version-string ProductName $BuildDisplayName `
+    --set-version-string InternalName $ShellExeName `
+    --set-version-string OriginalFilename $ShellExeName `
+    --set-file-version $BuildVersion `
+    --set-product-version $BuildVersion
 if ($LASTEXITCODE -ne 0) {
-    throw "rcedit failed to set the application icon (exit code $LASTEXITCODE)."
+    throw "rcedit failed to set the application icon or version resources (exit code $LASTEXITCODE)."
 }
 if (-not (Test-PortableExecutable -Path $ShellExePath)) {
     throw "rcedit produced an invalid PE executable: $ShellExePath"
