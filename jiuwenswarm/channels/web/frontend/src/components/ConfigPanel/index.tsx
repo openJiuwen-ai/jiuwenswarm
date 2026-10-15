@@ -1126,8 +1126,6 @@ const MODEL_PROVIDER_OPTIONS = [
   "DeepSeek",
 ] as const;
 
-const REASONING_LEVEL_OPTIONS = ["off", "low", "medium", "high"] as const;
-
 function isOpenAIAccountProvider(provider?: string): boolean {
   return (provider || "").trim().toLowerCase() === OPENAI_ACCOUNT_PROVIDER.toLowerCase();
 }
@@ -2278,7 +2276,7 @@ function MultiModelSection({
               </div>
               {isExpanded && (
                 <div className="border-t border-border px-3 py-2 space-y-2" data-testid="config-panel-model-item-detail">
-                  {(["model_name", "alias", "api_base", "api_key", "model_provider", "reasoning_level"] as const).map((field) => (
+                  {(["model_name", "alias", "api_base", "api_key", "model_provider"] as const).map((field) => (
                     <div key={field} className="flex items-center gap-2 text-xs" data-testid="config-panel-model-item-field" data-variant={field}>
                       <label className="w-28 text-text-muted shrink-0">
                         <ConfigFieldHintLabel
@@ -2303,15 +2301,6 @@ function MultiModelSection({
                           {/* OAuth 托管模型不在可选 provider 列表中：兜底渲染当前值，
                               避免受控 select 空白；同时禁用切换，防止误改后无法改回。 */}
                           {modelIsOpenAIAccount && <option value={OPENAI_ACCOUNT_PROVIDER}>{OPENAI_ACCOUNT_PROVIDER}</option>}
-                        </select>
-                      ) : field === "reasoning_level" ? (
-                        <select
-                          value={models[idx]?.reasoning_level ?? ""}
-                          onChange={(e) => updateModel(idx, field, e.target.value)}
-                          className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
-                        >
-                          <option value="">{t("config.modelList.reasoningDefault")}</option>
-                          {REASONING_LEVEL_OPTIONS.map((level) => <option key={level} value={level}>{level}</option>)}
                         </select>
                       ) : (
                         <input
@@ -2368,7 +2357,7 @@ function MultiModelSection({
 
         {addingNew ? (
           <div className="rounded-lg border border-accent/40 bg-accent/5 px-3 py-2 space-y-2" data-testid="config-panel-model-add">
-            {(["model_name", "alias", "api_base", "api_key", "model_provider", "reasoning_level"] as const).map((field) => (
+            {(["model_name", "alias", "api_base", "api_key", "model_provider"] as const).map((field) => (
               <div key={field} className="flex items-center gap-2 text-xs" data-testid="config-panel-model-add-field" data-variant={field}>
                 <label className="w-28 text-text-muted shrink-0">
                   <ConfigFieldHintLabel
@@ -2394,15 +2383,6 @@ function MultiModelSection({
                         兜底渲染当前值并禁用切换，与 api_key/api_base/model_name 的
                         禁用策略一致。 */}
                     {newModelIsOpenAIAccount && <option value={OPENAI_ACCOUNT_PROVIDER}>{OPENAI_ACCOUNT_PROVIDER}</option>}
-                  </select>
-                ) : field === "reasoning_level" ? (
-                  <select
-                    value={newModel.reasoning_level ?? ""}
-                    onChange={(e) => handleNewModelChange(field, e.target.value)}
-                    className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
-                  >
-                    <option value="">{t("config.modelList.reasoningDefault")}</option>
-                    {REASONING_LEVEL_OPTIONS.map((level) => <option key={level} value={level}>{level}</option>)}
                   </select>
                 ) : (
                   <input
