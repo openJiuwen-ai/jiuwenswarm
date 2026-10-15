@@ -1,6 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """F01 exercises the product Code Spec and actual SDK permission graph."""
 
+import asyncio
+import threading
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -403,3 +405,205 @@ async def test_registered_plan_guard_blocks_write_before_reviewer_with_real_sdk_
     assert plan_hard_rejected(ctx) and ctx.extra["_skip_tool"] is True
     review.assert_not_awaited()
     assert not (h.root / "forbidden").exists()
+
+
+def _owned_probe_bundle(h, monkeypatch):
+    h.raw["modes"]["code"]["tools"] = ["probe"]
+    monkeypatch.setattr(h.adapter, "_get_tool_build_func", lambda *_args: [h.tool, h.shared_tool])
+    def owned_operation():
+        h.adapter._retain_sys_operation(h.sysop.id)
+        return h.sysop
+    monkeypatch.setattr(h.adapter, "_create_sys_operation", owned_operation)
+
+
+async def _assert_cold_isolated(h):
+    a = h.adapter
+    assert a._permission_state.permission_isolated
+    assert a._permission_state.permission_cleanup_complete
+    assert a._permission_state.permission_epoch is None
+    assert a.get_live_session_instance(a._parent_session_id) is None
+    with pytest.raises(RuntimeError, match="permission_session_isolated"):
+        await a.ensure_instance()
+    with pytest.raises(RuntimeError, match="permission_session_isolated"):
+        await _create(h)
+    assert Runner.resource_mgr.get_tool(h.tool.card.id) is None
+    assert Runner.resource_mgr.get_tool(h.shared_tool.card.id) is h.shared_tool
+    if a._instance is not None:
+        assert a._instance.configured_rails() == []
+        assert h.callbacks(a._instance) == []
+
+
+@pytest.mark.parametrize("failure", ["provider", "registration", "extension", "verify"])
+@pytest.mark.parametrize("borrowed", [False, True])
+async def test_smart_cold_failure_reclaims_actual_graph_and_provider_tools(code_cold, monkeypatch, failure, borrowed):
+    from openjiuwen.harness.schema.deep_agent_spec import DeepAgentSpec
+    h = code_cold
+    a = h.adapter
+    _owned_probe_bundle(h, monkeypatch)
+    kwargs = {}
+    if borrowed:
+        a._project_dir = str(h.root)
+        a._agent_workspace_dir = str(h.root)
+        a._permission_workspace_root = h.root
+        a._sys_operation = h.sysop
+        a._agent_name = "borrowed-cold"
+        spec, context = a._build_code_spec_snapshot(h.raw, h.raw["react"], h.model)
+        kwargs = {"spec": spec, "build_context": context}
+    if failure == "provider":
+        def fail_build(spec, context):
+            spec.resolve_parts(context)
+            assert Runner.resource_mgr.get_tool(h.tool.card.id) is h.tool
+            assert a._instance is None
+            raise RuntimeError("cold failure")
+        monkeypatch.setattr(DeepAgentSpec, "build", fail_build)
+    elif failure == "registration":
+        register = DeepAgent._register_rail_selective
+        async def fail_registration(instance, rail):
+            await register(instance, rail)
+            if isinstance(rail, AutoPermissionInterruptRail):
+                raise RuntimeError("cold failure")
+        monkeypatch.setattr(DeepAgent, "_register_rail_selective", fail_registration)
+    elif failure == "extension":
+        monkeypatch.setattr(a, "_load_active_packages", AsyncMock(side_effect=RuntimeError("cold failure")))
+    else:
+        monkeypatch.setattr(PermissionRailGroup, "verify", Mock(side_effect=RuntimeError("cold failure")))
+    with pytest.raises(RuntimeError, match="cold failure"):
+        await a.create_instance({"channel_id": "web", "project_dir": str(h.root)}, **kwargs)
+    await _assert_cold_isolated(h)
+    assert a._retained_sys_operation_ids == []
+    if borrowed:
+        assert Runner.resource_mgr.get_sys_operation(h.sysop.id) is h.sysop
+    else:
+        assert Runner.resource_mgr.get_sys_operation(h.sysop.id) is None
+
+
+async def test_smart_cold_cancellation_settles_thread_before_cleanup(code_cold, monkeypatch):
+    h = code_cold
+    a = h.adapter
+    _owned_probe_bundle(h, monkeypatch)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    late = AgentRail()
+    initialize = DeepAgent.ensure_initialized
+    observed = []
+    async def delayed_initialize(instance):
+        await initialize(instance)
+        observed.append(instance)
+        entered.set()
+        assert release.wait(10), "initializer barrier was not released"
+        await instance.register_rail(late)
+        finished.set()
+    monkeypatch.setattr(DeepAgent, "ensure_initialized", delayed_initialize)
+    isolate = AsyncMock(wraps=a._isolate_permission_instance)
+    monkeypatch.setattr(a, "_isolate_permission_instance", isolate)
+    task = asyncio.create_task(_create(h))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        task.cancel()
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if a._permission_state.permission_isolated:
+                break
+        assert a._permission_state.permission_isolated
+        assert not task.done() and not finished.is_set()
+        isolate.assert_not_awaited()
+        assert a.get_live_session_instance(a._parent_session_id) is None
+        with pytest.raises(RuntimeError, match="permission_session_isolated"):
+            await a.ensure_instance()
+        task.cancel()  # A second cancel must not abandon the still-running initializer.
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert finished.is_set()
+    assert not observed[0].is_registered_rail(late)
+    await _assert_cold_isolated(h)
+
+
+async def test_manual_cold_failure_keeps_existing_non_smart_contract(code_cold, monkeypatch):
+    h = code_cold
+    h.raw["permissions"]["mode"] = "manual"
+    monkeypatch.setattr(h.adapter, "_load_active_packages", AsyncMock(side_effect=RuntimeError("manual failure")))
+    with pytest.raises(RuntimeError, match="manual failure"):
+        await _create(h)
+    assert not h.adapter._permission_state.permission_isolated
+
+
+@pytest.mark.parametrize("adapter_type", [interface_deep.JiuWenSwarmDeepAdapter, interface_code.JiuwenSwarmCodeAdapter])
+async def test_waiting_instance_borrower_rechecks_isolation_after_lock(adapter_type):
+    a = adapter_type()
+    a._root_instance_lock = asyncio.Lock()
+    await a._root_instance_lock.acquire()
+    borrower = asyncio.create_task(a.ensure_instance())
+    await asyncio.sleep(0)
+    assert not borrower.done()
+    a._instance = object()
+    a._permission_state.begin_permission_isolation()
+    a._root_instance_lock.release()
+    with pytest.raises(RuntimeError, match="permission_session_isolated"):
+        await borrower
+    assert a.get_live_session_instance("waiting") is None
+
+
+async def test_code_owner_tracks_permission_group_lifecycle(code_cold):
+    h = code_cold
+    await _create(h)
+    old = h.adapter._permission_rail
+    assert old._owner_agent is h.adapter._instance
+    h.change()
+    await h.adapter.reload_agent_config(h.raw, reload_scopes={"permissions"})
+    assert old._owner_agent is None
+    assert h.adapter._permission_rail._owner_agent is h.adapter._instance
+
+
+async def test_control_fast_route_through_actual_inner_callback_dispatch(code_cold, monkeypatch):
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent, ToolCallInputs
+    from tests.unit_tests.agentserver.permissions.test_auto_permission_pipeline import _Session
+    h = code_cold
+    await _create(h)
+    agent, permission = h.adapter._instance, h.adapter._permission_rail
+    reviewer = AsyncMock(side_effect=AssertionError("trusted Code control reached reviewer"))
+    audit = Mock()
+    monkeypatch.setattr(permission, "_maybe_run_reviewer", reviewer)
+    monkeypatch.setattr(permission, "_emit_audit", audit)
+    session = _Session()
+    state = agent.load_state(session)
+    state.plan_mode.mode = "plan"
+    agent.save_state(session, state)
+    args = {}
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
+        bind_root_permission_request, reset_root_permission_request,
+    )
+    token = bind_root_permission_request(
+        root_session_id=session.session_id, request_id="bridge-request", enabled=True,
+        queue=h.adapter._root_permission_queue,
+    )
+    from openjiuwen.core.single_agent.rail.base import RunContext
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+        ROOT_CONTEXT_KEY, RootDecisionContext, RootIntentTurn, RootIntentTurnKind,
+    )
+    context = RootDecisionContext(session.session_id, "bridge-request", "web", (
+        RootIntentTurn("bridge-request", RootIntentTurnKind.FRESH, "Plan a change"),
+    ))
+    inputs = ToolCallInputs(tool_name="enter_plan_mode", tool_args=args,
+                           tool_call=SimpleNamespace(id="real-bridge", name="enter_plan_mode", arguments=args))
+    inputs.run_context = RunContext(extra={ROOT_CONTEXT_KEY: context.to_mapping()})
+    try:
+        await agent.react_agent._execute_callbacks(
+            AgentCallbackEvent.BEFORE_TOOL_CALL, inputs, session=session,
+        )
+    finally:
+        reset_root_permission_request(token)
+    reviewer.assert_not_awaited()
+    assert any(call.kwargs.get("reason") == "code_plan_control" for call in audit.call_args_list), (audit.call_args_list, inputs.tool_result)
+
+
+async def test_code_owner_clears_when_reinitialization_fails(code_cold, monkeypatch):
+    h = code_cold
+    await _create(h)
+    permission = h.adapter._permission_rail
+    monkeypatch.setattr(permission.base_rail, "init", Mock(side_effect=RuntimeError("init failed")), raising=False)
+    with pytest.raises(RuntimeError, match="init failed"):
+        permission.init(h.adapter._instance)
+    assert permission._owner_agent is None
