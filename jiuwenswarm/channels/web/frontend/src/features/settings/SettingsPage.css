@@ -207,25 +207,11 @@
   padding: 24px;
 }
 
-.settings-models__actions,
-.settings-experimental-cli__actions {
+.settings-models__actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
-}
-
-.settings-experimental-cli__scope {
-  display: inline-flex;
-  align-items: center;
-  justify-self: start;
-  min-height: 24px;
-  padding: 2px 8px;
-  color: var(--color-settings-text-secondary);
-  font-size: 12px;
-  line-height: 20px;
-  border-radius: var(--radius-full);
-  background: var(--color-surface-muted);
 }
 
 .settings-inline-input {
@@ -269,10 +255,6 @@
   border: 1px solid var(--color-border-warning);
   border-radius: 8px;
   background: var(--color-feedback-warning-subtle);
-}
-
-.settings-experimental-cli__install-running .ui-button {
-  flex: 0 0 auto;
 }
 
 .settings-experimental-cli__install-running--success {

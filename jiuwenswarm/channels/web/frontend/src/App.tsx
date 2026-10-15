@@ -32,7 +32,7 @@ import CronPanel from './components/CronPanel';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
-import { ExternalCliInstallDialog, type ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
+import type { ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
 import { PersonalContextPanel } from './components/PersonalContext';
 import { LoadingSpinner, ToastStack, toast } from './components/ui';
 import { SettingsPage } from './features/settings/SettingsPage';
@@ -104,7 +104,7 @@ import {
 import {
   loadExternalCliPendingChoices,
   persistExternalCliPendingChoices,
-} from './features/settings/modules/experimental/externalCliInstallState';
+} from './features/settings/modules/agent/externalCliInstallState';
 import {
   ensureSessionRuntimes,
   useSessionStore,
@@ -478,7 +478,6 @@ function AppContent({
   const [proactiveToastMessage, setProactiveToastMessage] = useState('');
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
-  const [externalCliInstallDialogOpen, setExternalCliInstallDialogOpen] = useState(false);
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
   const [hasVisitedAgents, setHasVisitedAgents] = useState(false);
   const [agentManagementNavigationRequest, setAgentManagementNavigationRequest] = useState<{
@@ -2022,7 +2021,11 @@ function AppContent({
     };
   }, [handleModelsRefresh]);
 
-  const detectExternalCli = useCallback(async (cliAgent: ExternalCliAgentKind, cliPath?: string) => {
+  const detectExternalCli = useCallback(async (
+    cliAgent: ExternalCliAgentKind,
+    cliPath?: string,
+    useBuiltin?: boolean,
+  ) => {
     return request<{
       cli_agent: ExternalCliAgentKind;
       status: "ok" | "warning" | "missing" | "unsupported" | "unavailable";
@@ -2033,6 +2036,7 @@ function AppContent({
     }>("external_cli.detect", {
       cli_agent: cliAgent,
       cli_path: cliPath || "",
+      use_builtin: useBuiltin ? "true" : "false",
     });
   }, [request]);
 
@@ -2097,13 +2101,9 @@ function AppContent({
     };
   }, [getExternalCliDependencyInstallStatus, isConnected]);
 
-  const trackExternalCliDependencyInstalls = useCallback(
-    (statuses: ExternalCliInstallStatuses) => {
-      setExternalCliInstallStatuses(statuses);
-      setExternalCliInstallDialogOpen(true);
-    },
-    [],
-  );
+  const trackExternalCliDependencyInstalls = useCallback((statuses: ExternalCliInstallStatuses) => {
+    setExternalCliInstallStatuses(statuses);
+  }, []);
 
   const updateExternalCliInstallStatus = useCallback(
     (cliAgent: ExternalCliAgentKind, status: ExternalCliDependencyInstallStatus) => {
@@ -4381,7 +4381,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
                 (status) => status?.status === 'running',
               )}
-              onOpenExternalCliInstallDialog={() => setExternalCliInstallDialogOpen(true)}
+              onGetExternalCliInstallStatus={getExternalCliDependencyInstallStatus}
+              onExternalCliInstallStatusChange={updateExternalCliInstallStatus}
               externalCliPendingChoices={externalCliPendingChoices}
               onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
               externalCliDetectResults={externalCliDetectResults}
@@ -4561,14 +4562,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         </div>
       )}
-
-      <ExternalCliInstallDialog
-        open={externalCliInstallDialogOpen}
-        statuses={externalCliInstallStatuses}
-        onClose={() => setExternalCliInstallDialogOpen(false)}
-        onGetStatus={getExternalCliDependencyInstallStatus}
-        onStatusChange={updateExternalCliInstallStatus}
-      />
 
       {/* 登录弹窗：默认不显示，由 requestLogin() 等事件唤起 */}
       <LoginDialog />

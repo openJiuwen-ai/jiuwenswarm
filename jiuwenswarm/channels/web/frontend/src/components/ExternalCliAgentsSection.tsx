@@ -1,8 +1,10 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
+import { ExternalCliInstallProgress } from './ExternalCliInstallProgress';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertCircle, Check, CheckCircle2, Copy, FileSearch, Loader2, Plus, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { AlertCircle, Check, CheckCircle2, Copy, Download, FileSearch, FolderOpen, Loader2, Pencil, Plus, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { Button } from './ui/Button/Button';
+import { Switch } from './ui/Switch/Switch';
 
 /** `claude`, `codex`, or the name of an uploaded custom agent (a harness provider). */
 export type ExternalCliAgentKind = string;
@@ -60,6 +62,24 @@ export type ExternalCliPendingChoice = {
   enabled: string;
   useBuiltin: string;
   cliPath: string;
+};
+
+/**
+ * A card-level commit: persists one agent's choice immediately (install,
+ * path selection, or manual path save) instead of waiting for a form save.
+ */
+export type ExternalCliAgentChoice = {
+  enabled: boolean;
+  useBuiltin: boolean;
+  cliPath: string;
+  /**
+   * Bypasses the settings commit's no-change short circuit. An install click
+   * must always produce a save payload: the backend only checks/repairs the
+   * dependency when the save carries this agent's keys, and the choice can
+   * legitimately match the persisted state (e.g. the built-in CLI executable
+   * was deleted and the card shows 未安装).
+   */
+  force?: boolean;
 };
 
 /** Built-in agents whose SDK the app installs on demand. */
@@ -140,9 +160,13 @@ export function applyExternalCliAgentAtomicUpdates(
     draftValues[cliPathKey] !== persistedValues[cliPathKey];
   if (!changed) return;
 
+  // Keep the agent's mode/path choice even when disabling: the backend drops
+  // disabled agents from the list and ignores these keys while disabled, and
+  // preserving them lets re-enabling restore the same choice without wiping
+  // the user's configuration.
   updates[enabledKey] = enabled ? 'true' : 'false';
-  updates[useBuiltinKey] = enabled && useBuiltin ? 'true' : 'false';
-  updates[cliPathKey] = enabled && !useBuiltin ? cliPath : '';
+  updates[useBuiltinKey] = useBuiltin ? 'true' : 'false';
+  updates[cliPathKey] = !useBuiltin ? cliPath : '';
 }
 
 export function externalCliDependencyInstalls(
@@ -177,11 +201,64 @@ export function externalCliSaveValidationMessage(
       : t('config.externalCli.missingInPath', { agent: agentName });
   }
   if (result.reason === 'directory') return t('config.externalCli.directoryPath', { path: requestedPath });
-  if (result.status === 'unsupported') return t('config.externalCli.windowsScriptPath');
   return t('config.externalCli.unavailableCli', {
     agent: agentName,
     reason: result.message || '',
   });
+}
+
+const isInstalledStatus = (result?: ExternalCliDetectResult): boolean =>
+  result?.status === 'ok' || result?.status === 'warning';
+
+/**
+ * Two-tone status disc: the status color lives on the OUTER ring while the
+ * inner circle stays neutral — the single-color Disc2 icon rendered as a
+ * colored inner circle at 14px, which read backwards ("dot" vs. "ring").
+ * `filled` paints the whole disc (no inner circle) for settled states.
+ */
+function CliStatusDisc({
+  ringClassName = '',
+  filled = false,
+}: {
+  ringClassName?: string;
+  filled?: boolean;
+}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="10" className={ringClassName} fill={filled ? 'currentColor' : 'none'} />
+      {filled ? (
+        <circle cx="12" cy="12" r="4" className="text-white" fill="currentColor" />
+      ) : (
+        <circle cx="12" cy="12" r="4" className="text-text-muted" fill="none" />
+      )}
+    </svg>
+  );
+}
+
+/** Localized message for a detect result that did not pass validation. */
+function detectFailureMessage(
+  result: ExternalCliDetectResult,
+  requestedPath: string,
+  cliAgent: ExternalCliAgentKind,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  const agentName = cliAgent === 'claude' ? 'Claude' : 'Codex';
+  if (result.reason === 'directory') return t('config.externalCli.directoryPath', { path: requestedPath });
+  if (result.status === 'missing') {
+    return requestedPath
+      ? t('config.externalCli.missingPath', { path: requestedPath })
+      : t('config.externalCli.missingInPath', { agent: agentName });
+  }
+  return t('config.externalCli.unavailableCli', { agent: agentName, reason: result.message || '' });
 }
 
 type ExternalCliAgentsSectionProps = {
@@ -193,14 +270,26 @@ type ExternalCliAgentsSectionProps = {
   /** Uninstalls a custom agent. */
   onRemoveCustomAgent?: (cliAgent: ExternalCliAgentKind) => Promise<void>;
   onChange: (key: string, value: string) => void;
-  onDetect?: (cliAgent: ExternalCliAgentKind, cliPath?: string) => Promise<ExternalCliDetectResult>;
+  onDetect?: (
+    cliAgent: ExternalCliAgentKind,
+    cliPath?: string,
+    useBuiltin?: boolean,
+  ) => Promise<ExternalCliDetectResult>;
+  /** Persists one agent's choice immediately (install / path selection / manual path save). */
+  onCommitAgent?: (cliAgent: ExternalCliAgentKind, choice: ExternalCliAgentChoice) => Promise<void>;
   onSelectFile?: (cliAgent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   /** Latest detect results, owned by the App layer so they survive unmount. */
   initialResults?: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>;
-  /** Reports detect results upward so the save flow can pre-validate them. */
+  /** Reports detect results upward so other flows can pre-validate them. */
   onResultsChange?: (results: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>) => void;
+  /** Per-agent dependency install statuses owned by the App layer. */
+  installStatuses?: Partial<Record<ExternalCliAgentKind, ExternalCliDependencyInstallStatus>>;
+  onInstallStatusGet?: (agent: ExternalCliAgentKind) => Promise<ExternalCliDependencyInstallStatus>;
+  onInstallStatusChange?: (agent: ExternalCliAgentKind, status: ExternalCliDependencyInstallStatus) => void;
   t: (key: string, options?: Record<string, unknown>) => string;
   disabled?: boolean;
+  /** Which agent cards to render: all (default), builtin only, or custom (uploaded) only. */
+  renderScope?: 'all' | 'builtin' | 'custom';
 };
 
 export function ExternalCliAgentsSection({
@@ -210,14 +299,25 @@ export function ExternalCliAgentsSection({
   onRemoveCustomAgent,
   onChange,
   onDetect,
+  onCommitAgent,
   onSelectFile,
   initialResults,
   onResultsChange,
+  installStatuses,
+  onInstallStatusGet,
+  onInstallStatusChange,
   t,
   disabled = false,
+  renderScope = 'all',
 }: ExternalCliAgentsSectionProps) {
   const agentKinds = externalCliAgentKinds(customAgents);
   const customAgentsByName = new Map(customAgents.map((agent) => [agent.name, agent] as const));
+  const visibleAgentKinds =
+    renderScope === 'builtin'
+      ? agentKinds.filter((kind) => !customAgentsByName.has(kind))
+      : renderScope === 'custom'
+        ? agentKinds.filter((kind) => customAgentsByName.has(kind))
+        : agentKinds;
   const [detecting, setDetecting] = useState<Record<ExternalCliAgentKind, boolean>>({});
   const [selecting, setSelecting] = useState<Record<ExternalCliAgentKind, boolean>>({});
   const [results, setResults] = useState<Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>>(
@@ -225,13 +325,91 @@ export function ExternalCliAgentsSection({
   );
   const [copied, setCopied] = useState<Record<ExternalCliAgentKind, boolean>>({});
   const copiedTimersRef = useRef<Partial<Record<ExternalCliAgentKind, number>>>({});
+  const [editing, setEditing] = useState<Record<ExternalCliAgentKind, boolean>>({});
+  const [editDrafts, setEditDrafts] = useState<Record<ExternalCliAgentKind, string>>({});
+  const [editValidating, setEditValidating] = useState<Record<ExternalCliAgentKind, boolean>>({});
+  const [committing, setCommitting] = useState<Record<ExternalCliAgentKind, boolean>>({});
+  const [agentErrors, setAgentErrors] = useState<Record<ExternalCliAgentKind, string>>({});
   const detectRequestIdsRef = useRef<Record<ExternalCliAgentKind, number>>({});
   const observedCliPathsRef = useRef<Record<ExternalCliAgentKind, string>>(
-    Object.fromEntries(agentKinds.map((agent) => [agent, draftValues[externalCliKey(agent, 'cli_path')] || ''])),
+    Object.fromEntries(visibleAgentKinds.map((agent) => [agent, draftValues[externalCliKey(agent, 'cli_path')] || ''])),
   );
   // Path each agent's pending auto-detect was scheduled for; cleared when the
   // timer is cancelled before firing, so the next pass schedules it again.
   const scheduledDetectPathsRef = useRef<Partial<Record<ExternalCliAgentKind, string>>>({});
+
+  const setAgentError = useCallback((cliAgent: ExternalCliAgentKind, message: string) => {
+    setAgentErrors((prev) => ({ ...prev, [cliAgent]: message }));
+  }, []);
+
+  // Mirror of `results` so the App-layer report can be issued from event
+  // handlers. Reporting inside a setState updater would trigger an ancestor
+  // state update during render, forcing React to discard and re-render the
+  // whole tree — the "page rebuilds on detect" bug.
+  const resultsRef = useRef<Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>>({ ...initialResults });
+  // Detect-result reference captured when an install first reports success:
+  // the inline progress bar stays visible (pinned at 100%) until the card's
+  // result object is replaced by a fresh one, so the "not installed" hint
+  // never flashes between install completion and the follow-up detection.
+  const postInstallBaselineRef = useRef<Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult | null>>>({});
+  const updateResults = useCallback(
+    (cliAgent: ExternalCliAgentKind, result: ExternalCliDetectResult) => {
+      const next = { ...resultsRef.current, [cliAgent]: result };
+      resultsRef.current = next;
+      setResults(next);
+      onResultsChange?.(next);
+    },
+    [onResultsChange],
+  );
+
+  // App-layer results can refresh out-of-band (e.g. the post-install re-probe
+  // in ExternalCliAgentsSettings): merge them in so the card reflects them
+  // instead of waiting for a manual detect or a full page reload. `resultsRef`
+  // stays in lockstep so a concurrent local detect merges on top of the
+  // freshest snapshot.
+  useEffect(() => {
+    resultsRef.current = { ...initialResults };
+    setResults({ ...initialResults });
+  }, [initialResults]);
+
+  const detect = useCallback(
+    async (cliAgent: ExternalCliAgentKind, cliPath?: string, useBuiltin?: boolean) => {
+      if (!onDetect) return;
+      const requestId = (detectRequestIdsRef.current[cliAgent] ?? 0) + 1;
+      detectRequestIdsRef.current[cliAgent] = requestId;
+      setDetecting((prev) => ({ ...prev, [cliAgent]: true }));
+      try {
+        const result = await onDetect(cliAgent, cliPath, useBuiltin);
+        if (detectRequestIdsRef.current[cliAgent] !== requestId) return;
+        updateResults(cliAgent, result);
+        setAgentError(cliAgent, '');
+      } catch (error) {
+        if (detectRequestIdsRef.current[cliAgent] !== requestId) return;
+        const message = error instanceof Error ? error.message : String(error);
+        updateResults(cliAgent, { cli_agent: cliAgent, status: 'unavailable', message });
+      } finally {
+        if (detectRequestIdsRef.current[cliAgent] === requestId) {
+          setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
+        }
+      }
+    },
+    [onDetect, setAgentError, updateResults],
+  );
+
+  const clearDetectResult = useCallback(
+    (cliAgent: ExternalCliAgentKind) => {
+      detectRequestIdsRef.current[cliAgent] = (detectRequestIdsRef.current[cliAgent] ?? 0) + 1;
+      setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
+      setResults((prev) => {
+        if (!prev[cliAgent]) return prev;
+        const next = { ...prev };
+        delete next[cliAgent];
+        onResultsChange?.(next);
+        return next;
+      });
+    },
+    [onResultsChange],
+  );
 
   useEffect(
     () => () => {
@@ -262,55 +440,6 @@ export function ExternalCliAgentsSection({
     [],
   );
 
-  const detect = useCallback(
-    async (cliAgent: ExternalCliAgentKind, cliPath?: string) => {
-      if (!onDetect) return;
-      const requestId = (detectRequestIdsRef.current[cliAgent] ?? 0) + 1;
-      detectRequestIdsRef.current[cliAgent] = requestId;
-      setDetecting((prev) => ({ ...prev, [cliAgent]: true }));
-      try {
-        const result = await onDetect(cliAgent, cliPath);
-        if (detectRequestIdsRef.current[cliAgent] !== requestId) return;
-        setResults((prev) => {
-          const next = { ...prev, [cliAgent]: result };
-          onResultsChange?.(next);
-          return next;
-        });
-      } catch (error) {
-        if (detectRequestIdsRef.current[cliAgent] !== requestId) return;
-        const message = error instanceof Error ? error.message : String(error);
-        setResults((prev) => {
-          const next: Partial<Record<string, ExternalCliDetectResult>> = {
-            ...prev,
-            [cliAgent]: { cli_agent: cliAgent, status: 'unavailable', message },
-          };
-          onResultsChange?.(next);
-          return next;
-        });
-      } finally {
-        if (detectRequestIdsRef.current[cliAgent] === requestId) {
-          setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
-        }
-      }
-    },
-    [onDetect, onResultsChange],
-  );
-
-  const clearDetectResult = useCallback(
-    (cliAgent: ExternalCliAgentKind) => {
-      detectRequestIdsRef.current[cliAgent] = (detectRequestIdsRef.current[cliAgent] ?? 0) + 1;
-      setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
-      setResults((prev) => {
-        if (!prev[cliAgent]) return prev;
-        const next = { ...prev };
-        delete next[cliAgent];
-        onResultsChange?.(next);
-        return next;
-      });
-    },
-    [onResultsChange],
-  );
-
   const changeCliPath = useCallback(
     (cliAgent: ExternalCliAgentKind, cliPathKey: string, value: string) => {
       observedCliPathsRef.current[cliAgent] = value;
@@ -334,29 +463,179 @@ export function ExternalCliAgentsSection({
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        setResults((prev) => ({
-          ...prev,
-          [cliAgent]: {
-            cli_agent: cliAgent,
-            status: 'unavailable',
-            message: message || t('config.externalCli.selectFileFailed'),
-          },
-        }));
+        updateResults(cliAgent, {
+          cli_agent: cliAgent,
+          status: 'unavailable',
+          message: message || t('config.externalCli.selectFileFailed'),
+        });
       } finally {
         setSelecting((prev) => ({ ...prev, [cliAgent]: false }));
       }
     },
-    [changeCliPath, detect, draftValues, onSelectFile, t],
+    [changeCliPath, detect, draftValues, onSelectFile, t, updateResults],
   );
 
-  // One string covering every agent's path, so the effects below rerun only
-  // when an agent appears, disappears, or has its path edited.
+  // Persists one agent's choice; errors propagate to the caller so it can
+  // decide where to surface them (edit form vs. card message line).
+  const commit = useCallback(
+    async (cliAgent: ExternalCliAgentKind, choice: ExternalCliAgentChoice) => {
+      if (!onCommitAgent) return;
+      setCommitting((prev) => ({ ...prev, [cliAgent]: true }));
+      setAgentError(cliAgent, '');
+      try {
+        await onCommitAgent(cliAgent, choice);
+      } finally {
+        setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
+      }
+    },
+    [onCommitAgent, setAgentError],
+  );
+
+  const installNow = useCallback(
+    async (cliAgent: ExternalCliAgentKind) => {
+      try {
+        await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '', force: true });
+      } catch (error) {
+        setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
+      }
+    },
+    [commit, setAgentError],
+  );
+
+  /**
+   * Validates a requested CLI path with a throwaway detect call (the result is
+   * NOT written into the card state, so the card never flips while editing),
+   * then commits the path. Returns true when the commit succeeded.
+   */
+  const validateAndCommitPath = useCallback(
+    async (cliAgent: ExternalCliAgentKind, requestedPath: string): Promise<boolean> => {
+      if (onDetect) {
+        try {
+          const probe = await onDetect(cliAgent, requestedPath, false);
+          if (probe.status !== 'ok' && probe.status !== 'warning') {
+            setAgentError(cliAgent, detectFailureMessage(probe, requestedPath, cliAgent, t));
+            return false;
+          }
+        } catch (error) {
+          setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
+          return false;
+        }
+      }
+      try {
+        await commit(cliAgent, { enabled: true, useBuiltin: false, cliPath: requestedPath });
+      } catch (error) {
+        setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
+        return false;
+      }
+      return true;
+    },
+    [commit, onDetect, setAgentError, t],
+  );
+
+  /**
+   * Enable/disable one agent from the card switch. Disabling only stops using
+   * the agent: no validation, no wipe, no uninstall. Enabling restores the
+   * agent's previous choice: built-in CLI delegates to the install flow; a
+   * custom path is re-probed first (validateAndCommitPath) so a broken path
+   * never gets persisted. With no path configured (e.g. right after a reload
+   * of a disabled agent) the built-in CLI is used as fallback so the switch
+   * can always re-enable the agent.
+   */
+  const toggleAgentEnabled = useCallback(
+    async (
+      cliAgent: ExternalCliAgentKind,
+      nextEnabled: boolean,
+      useBuiltin: boolean,
+      requestedPath: string,
+    ) => {
+      setCommitting((prev) => ({ ...prev, [cliAgent]: true }));
+      setAgentError(cliAgent, '');
+      try {
+        if (!nextEnabled) {
+          await commit(cliAgent, { enabled: false, useBuiltin, cliPath: requestedPath });
+          return;
+        }
+        if (useBuiltin || !requestedPath.trim()) {
+          await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '' });
+          return;
+        }
+        await validateAndCommitPath(cliAgent, requestedPath);
+      } catch (error) {
+        setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
+      } finally {
+        setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
+      }
+    },
+    [commit, setAgentError, validateAndCommitPath],
+  );
+
+  const startEdit = useCallback(
+    (cliAgent: ExternalCliAgentKind, cliPath: string, detectedPath: string) => {
+      setEditing((prev) => ({ ...prev, [cliAgent]: true }));
+      setEditDrafts((prev) => ({ ...prev, [cliAgent]: cliPath || detectedPath || '' }));
+      setAgentError(cliAgent, '');
+    },
+    [setAgentError],
+  );
+
+  const cancelEdit = useCallback((cliAgent: ExternalCliAgentKind) => {
+    setEditing((prev) => ({ ...prev, [cliAgent]: false }));
+    setEditDrafts((prev) => ({ ...prev, [cliAgent]: '' }));
+    setAgentErrors((prev) => ({ ...prev, [cliAgent]: '' }));
+  }, []);
+
+  const saveEdit = useCallback(
+    async (cliAgent: ExternalCliAgentKind) => {
+      const requestedPath = (editDrafts[cliAgent] ?? '').trim();
+      setEditValidating((prev) => ({ ...prev, [cliAgent]: true }));
+      setAgentError(cliAgent, '');
+      try {
+        const committed = await validateAndCommitPath(cliAgent, requestedPath);
+        if (committed) {
+          setEditing((prev) => ({ ...prev, [cliAgent]: false }));
+          setEditDrafts((prev) => ({ ...prev, [cliAgent]: '' }));
+        }
+      } finally {
+        setEditValidating((prev) => ({ ...prev, [cliAgent]: false }));
+      }
+    },
+    [editDrafts, setAgentError, validateAndCommitPath],
+  );
+
+  // "打开文件" opens the native file picker; the picked path lands in the edit
+  // form so the user reviews it before the validated save.
+  const openFilePicker = useCallback(
+    async (cliAgent: ExternalCliAgentKind, initialPath: string) => {
+      if (!onSelectFile) return;
+      setSelecting((prev) => ({ ...prev, [cliAgent]: true }));
+      try {
+        const selectedPath = await onSelectFile(cliAgent, initialPath || '');
+        if (!selectedPath) return;
+        setEditing((prev) => ({ ...prev, [cliAgent]: true }));
+        setEditDrafts((prev) => ({ ...prev, [cliAgent]: selectedPath }));
+        setAgentError(cliAgent, '');
+      } catch (error) {
+        setAgentError(cliAgent, error instanceof Error ? error.message : t('config.externalCli.selectFileFailed'));
+      } finally {
+        setSelecting((prev) => ({ ...prev, [cliAgent]: false }));
+      }
+    },
+    [onSelectFile, setAgentError, t],
+  );
+
+  // One string covering every agent's path and built-in-vs-external choice,
+  // so the effects below rerun only when an agent appears, disappears, or has
+  // its path or CLI mode edited.
   const cliPathsSignature = JSON.stringify(
-    agentKinds.map((agent) => [agent, draftValues[externalCliKey(agent, 'cli_path')] || '']),
+    visibleAgentKinds.map((agent) => [
+      agent,
+      draftValues[externalCliKey(agent, 'cli_path')] || '',
+      draftValues[externalCliKey(agent, 'use_builtin')] === 'true',
+    ]),
   );
 
   useEffect(() => {
-    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string][];
+    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean][];
     for (const [cliAgent, cliPath] of currentPaths) {
       if (observedCliPathsRef.current[cliAgent] === cliPath) continue;
       observedCliPathsRef.current[cliAgent] = cliPath;
@@ -366,14 +645,16 @@ export function ExternalCliAgentsSection({
 
   useEffect(() => {
     if (!onDetect) return undefined;
-    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string][];
+    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean][];
     const timers = new Map<ExternalCliAgentKind, number>();
-    for (const [cliAgent, cliPath] of currentPaths) {
+    for (const [cliAgent, cliPath, useBuiltin] of currentPaths) {
       if (scheduledDetectPathsRef.current[cliAgent] === cliPath) continue;
       scheduledDetectPathsRef.current[cliAgent] = cliPath;
       const timer = window.setTimeout(() => {
         timers.delete(cliAgent);
-        void detect(cliAgent, cliPath);
+        // Detect in the mode the agent is configured for: probing PATH for a
+        // built-in CLI would report a false "not installed".
+        void detect(cliAgent, cliPath, useBuiltin);
       }, EXTERNAL_CLI_AUTO_DETECT_DELAY_MS);
       timers.set(cliAgent, timer);
     }
@@ -384,6 +665,25 @@ export function ExternalCliAgentsSection({
       }
     };
   }, [cliPathsSignature, detect, onDetect]);
+
+  // After an install finishes successfully, guarantee the card's result object
+  // gets refreshed: the replay path probes the CLI at the App layer, but if
+  // that probe fails (or the page was reloaded mid-flow) the card's stale
+  // result would otherwise never change and the progress bar would stay
+  // mounted forever. One local detection per agent closes that gap.
+  const postInstallDetectRanRef = useRef<Partial<Record<ExternalCliAgentKind, boolean>>>({});
+  useEffect(() => {
+    for (const agent of EXTERNAL_CLI_AGENT_KINDS) {
+      if (installStatuses?.[agent]?.status !== 'succeeded') continue;
+      if (postInstallDetectRanRef.current[agent]) continue;
+      postInstallDetectRanRef.current[agent] = true;
+      void detect(
+        agent,
+        (draftValues[externalCliKey(agent, 'cli_path')] ?? '').trim(),
+        draftValues[externalCliKey(agent, 'use_builtin')] === 'true',
+      );
+    }
+  }, [installStatuses, detect, draftValues]);
 
   const statusClass = (status?: ExternalCliDetectResult['status']) => {
     if (status === 'ok') return 'text-ok';
@@ -447,185 +747,464 @@ export function ExternalCliAgentsSection({
   };
 
   return (
-    <div className="space-y-3" data-testid="settings-panel-external-cli-agents">
-      {agentKinds.map((cliAgent) => {
+    <div className="space-y-5" data-testid="settings-panel-external-cli-agents">
+      {visibleAgentKinds.map((cliAgent) => {
         const enabledKey = externalCliKey(cliAgent, 'enabled');
         const useBuiltinKey = externalCliKey(cliAgent, 'use_builtin');
         const cliPathKey = externalCliKey(cliAgent, 'cli_path');
-        const enabled = draftValues[enabledKey] === 'true';
         const useBuiltin = draftValues[useBuiltinKey] === 'true';
+        const cliPath = (draftValues[cliPathKey] ?? '').trim();
+        const enabled = draftValues[externalCliKey(cliAgent, 'enabled')] === 'true';
         const result = results[cliAgent];
-        const displayResult = useBuiltin ? undefined : result;
-        const message = resultMessage(displayResult, useBuiltin, cliAgent, draftValues[cliPathKey] ?? '');
         const custom = customAgentsByName.get(cliAgent);
         const label = custom ? custom.name : t(`config.externalCli.${cliAgent}`);
-        // Detected PATH is only copyable when the input still shows it as a
-        // placeholder (user hasn't typed an explicit path over it).
-        const detectedPath =
-          displayResult?.path && (draftValues[cliPathKey] ?? '').trim() === '' ? displayResult.path : '';
+        const displayResult = useBuiltin ? undefined : result;
+        const message = resultMessage(displayResult, useBuiltin, cliAgent, draftValues[cliPathKey] ?? '');
+        // Detected PATH feeds the path select and the edit prefill; it is only
+        // copyable when the input still shows it as a placeholder (user hasn't
+        // typed an explicit path over it).
+        const detectedPath = result?.path || '';
+        const copyablePath = displayResult?.path && !cliPath ? displayResult.path : '';
+        const detectingNow = detecting[cliAgent];
+        // Keep the last detection result mounted while re-detecting: hiding
+        // the path block / install button during the probe would collapse and
+        // regrow the card, shaking the whole page. Stale controls are disabled
+        // below instead.
+        const installed = isInstalledStatus(result);
+        const installStatus = installStatuses?.[cliAgent];
+        // Pin the progress bar after a successful install until a *fresh*
+        // detect result arrives (probe or local detection): comparing against
+        // the result reference captured at the first succeeded render.
+        const installSucceeded = installStatus?.status === 'succeeded';
+        if (installSucceeded && !(cliAgent in postInstallBaselineRef.current)) {
+          postInstallBaselineRef.current[cliAgent] = result ?? null;
+        }
+        const installResultUpdated =
+          installSucceeded && (result ?? null) !== postInstallBaselineRef.current[cliAgent];
+
+        // Detect + one-click install pair, shown on the installed built-in
+        // card's path row.
+        const actionButtons = (
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              variant="quiet"
+              size="sm"
+              loading={detectingNow}
+              disabled={disabled || !onDetect}
+              onClick={() => void detect(cliAgent, cliPath, useBuiltin)}
+              title={t('config.externalCli.detectHint')}
+              aria-label={t('config.externalCli.detectHint')}
+              icon={<RefreshCw className="h-3.5 w-3.5" />}
+              className="!px-1"
+              data-testid="settings-panel-external-cli-agent-detect-btn"
+              data-variant={cliAgent}
+            >
+              {t('config.externalCli.detect')}
+            </Button>
+            <Button
+              variant="quiet"
+              size="sm"
+              loading={committing[cliAgent]}
+              disabled={disabled || !onCommitAgent || detectingNow}
+              onClick={() => void installNow(cliAgent)}
+              title={t('config.externalCli.installNow')}
+              aria-label={t('config.externalCli.installNow')}
+              icon={<Download className="h-3.5 w-3.5" />}
+              className="!px-1"
+              data-testid="settings-panel-external-cli-agent-install-btn"
+              data-variant={cliAgent}
+            >
+              {t('config.externalCli.installNow')}
+            </Button>
+          </div>
+        );
+
+        const statusLine = detectingNow ? (
+          <span
+            className="inline-flex items-center gap-1 text-xs text-text-muted"
+            data-testid="settings-panel-external-cli-agent-status"
+            data-variant={cliAgent}
+          >
+            <Loader2 className="settings-spinner h-3.5 w-3.5" />
+            {t('config.externalCli.detecting')}
+          </span>
+        ) : !enabled ? (
+          <span
+            className="inline-flex items-center gap-1 text-xs text-danger"
+            data-testid="settings-panel-external-cli-agent-status"
+            data-variant={cliAgent}
+          >
+            <CliStatusDisc ringClassName="text-danger" filled />
+            {t('config.externalCli.disabled')}
+          </span>
+        ) : installed ? (
+          <span
+            className="inline-flex items-center gap-1 text-xs text-text-muted"
+            data-testid="settings-panel-external-cli-agent-status"
+            data-variant={cliAgent}
+          >
+            <CliStatusDisc ringClassName="text-ok" filled />
+            {t('config.externalCli.installed')}
+            {result?.version ? (
+              <span className="ml-2 text-text-muted">{t('config.externalCli.version', { version: result.version })}</span>
+            ) : null}
+          </span>
+        ) : (
+          <span
+            className="inline-flex items-center gap-1 text-xs text-text-muted"
+            data-testid="settings-panel-external-cli-agent-status"
+            data-variant={cliAgent}
+          >
+            <CliStatusDisc />
+            {t('config.externalCli.notInstalled')}
+          </span>
+        );
+
+        const warningMessage =
+          installed && result?.status === 'warning'
+            ? result.reference_version
+              ? t('config.externalCli.compatibilityWarningWithVersion', { version: result.reference_version })
+              : t('config.externalCli.compatibilityWarning')
+            : '';
+
+        // For the not-installed card the "未安装" status already covers a plain
+        // miss; only surface explanations that need action (bad path kind, or
+        // the CLI exists but failed to run). The message stays mounted while
+        // re-detecting to keep the card height stable.
+        const notInstalledMessage = !installed && result
+          ? result.reason === 'directory'
+            ? t('config.externalCli.directoryPath', { path: cliPath })
+            : result.status === 'unavailable'
+              ? t('config.externalCli.unavailableCli', { agent: label, reason: result.message || '' })
+              : ''
+          : '';
 
         return (
           <div
             key={cliAgent}
-            className="rounded-lg border border-border bg-secondary/10 p-3 space-y-2"
+            className="space-y-2 rounded-lg border border-border bg-secondary/10 p-3"
             data-testid="settings-panel-external-cli-agent"
             data-variant={cliAgent}
+            data-state={detectingNow ? 'detecting' : !enabled ? 'disabled' : installed ? 'installed' : 'not-installed'}
           >
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 text-sm font-medium text-text-strong">
-                  {label}
-                  {custom?.version ? (
-                    <span className="text-[11px] font-normal text-text-muted">
-                      {t('config.externalCli.version', { version: custom.version })}
+            {custom ? (
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-sm font-medium text-text-strong">
+                      {label}
+                      {custom?.version ? (
+                        <span className="text-[11px] font-normal text-text-muted">
+                          {t('config.externalCli.version', { version: custom.version })}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="text-[11px] text-text-muted">{agentHint(cliAgent)}</div>
+                  </div>
+                  <div className="flex flex-shrink-0 items-center gap-2">
+                    {onRemoveCustomAgent ? (
+                      <RemoveCustomAgentButton
+                        cliAgent={cliAgent}
+                        disabled={disabled}
+                        onRemove={onRemoveCustomAgent}
+                        t={t}
+                      />
+                    ) : null}
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={enabled}
+                      aria-label={toggleLabel(cliAgent)}
+                      onClick={() => onChange(enabledKey, enabled ? 'false' : 'true')}
+                      disabled={disabled}
+                      data-testid="settings-panel-external-cli-agent-toggle"
+                      data-variant={cliAgent}
+                      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent focus:outline-none ${enabled ? 'bg-[var(--color-toggle-enabled)]' : 'bg-[var(--color-toggle-disabled)]'} disabled:cursor-not-allowed disabled:opacity-60`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-[var(--color-control-thumb)] shadow ${enabled ? 'translate-x-4' : 'translate-x-0'}`}
+                      />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="inline-flex items-center gap-2 text-xs text-text">
+                    <input
+                      type="checkbox"
+                      checked={useBuiltin}
+                      disabled={disabled || !enabled}
+                      onChange={(event) => onChange(useBuiltinKey, event.target.checked ? 'true' : 'false')}
+                      className="h-3.5 w-3.5 rounded border-border"
+                      data-testid="settings-panel-external-cli-agent-use-builtin-input"
+                      data-variant={cliAgent}
+                    />
+                    {t('config.externalCli.useBuiltin')}
+                  </label>
+                  {!useBuiltin ? (
+                    <button
+                      type="button"
+                      className="settings-button settings-button--secondary inline-flex shrink-0 flex-nowrap items-center gap-1.5 whitespace-nowrap !px-2.5 !py-1 text-xs"
+                      disabled={disabled || !enabled || !onDetect || detectingNow}
+                      onClick={() => void detect(cliAgent, draftValues[cliPathKey] || '')}
+                      title={disabled || !enabled || !onDetect ? undefined : t('config.externalCli.detectHint')}
+                      aria-label={disabled || !enabled || !onDetect ? undefined : t('config.externalCli.detectHint')}
+                      data-testid="settings-panel-external-cli-agent-detect-btn"
+                      data-variant={cliAgent}
+                    >
+                      {detectingNow ? (
+                        <Loader2 className="w-3.5 h-3.5 settings-spinner" />
+                      ) : (
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      )}
+                      {t('config.externalCli.detect')}
+                    </button>
+                  ) : null}
+                  {!useBuiltin ? (
+                    <span
+                      className={`text-xs ${statusClass(displayResult?.status)}`}
+                      data-testid="settings-panel-external-cli-agent-status"
+                      data-variant={cliAgent}
+                    >
+                      {displayResult?.status === 'ok' ? (
+                        <CheckCircle2 className="inline w-3.5 h-3.5 mr-1" />
+                      ) : (
+                        <AlertCircle className="inline w-3.5 h-3.5 mr-1" />
+                      )}
+                      {statusText(displayResult)}
+                    </span>
+                  ) : null}
+                  {displayResult?.version ? (
+                    <span className="text-xs text-text-muted">
+                      {t('config.externalCli.version', { version: displayResult.version })}
                     </span>
                   ) : null}
                 </div>
-                <div className="text-[11px] text-text-muted">{agentHint(cliAgent)}</div>
-              </div>
-              <div className="flex flex-shrink-0 items-center gap-2">
-              {custom && onRemoveCustomAgent ? (
-                <RemoveCustomAgentButton
-                  cliAgent={cliAgent}
-                  disabled={disabled}
-                  onRemove={onRemoveCustomAgent}
-                  t={t}
-                />
-              ) : null}
-              <button
-                type="button"
-                role="switch"
-                aria-checked={enabled}
-                aria-label={toggleLabel(cliAgent)}
-                onClick={() => onChange(enabledKey, enabled ? 'false' : 'true')}
-                disabled={disabled}
-                data-testid="settings-panel-external-cli-agent-toggle"
-                data-variant={cliAgent}
-                className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent focus:outline-none ${enabled ? 'bg-[var(--color-toggle-enabled)]' : 'bg-[var(--color-toggle-disabled)]'} disabled:cursor-not-allowed disabled:opacity-60`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-[var(--color-control-thumb)] shadow ${enabled ? 'translate-x-4' : 'translate-x-0'}`}
-                />
-              </button>
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="inline-flex items-center gap-2 text-xs text-text">
-                <input
-                  type="checkbox"
-                  checked={useBuiltin}
-                  disabled={disabled || !enabled}
-                  onChange={(event) => onChange(useBuiltinKey, event.target.checked ? 'true' : 'false')}
-                  className="h-3.5 w-3.5 rounded border-border"
-                  data-testid="settings-panel-external-cli-agent-use-builtin-input"
-                  data-variant={cliAgent}
-                />
-                {t('config.externalCli.useBuiltin')}
-              </label>
-              {!useBuiltin ? (
-                <button
-                  type="button"
-                  className="settings-button settings-button--secondary inline-flex shrink-0 flex-nowrap items-center gap-1.5 whitespace-nowrap !px-2.5 !py-1 text-xs"
-                  disabled={disabled || !enabled || !onDetect || detecting[cliAgent] === true}
-                  onClick={() => void detect(cliAgent, draftValues[cliPathKey] || '')}
-                  title={
-                    disabled || !enabled || !onDetect ? undefined : t('config.externalCli.detectHint')
-                  }
-                  aria-label={
-                    disabled || !enabled || !onDetect ? undefined : t('config.externalCli.detectHint')
-                  }
-                  data-testid="settings-panel-external-cli-agent-detect-btn"
-                  data-variant={cliAgent}
-                >
-                  {detecting[cliAgent] ? (
-                    <Loader2 className="w-3.5 h-3.5 settings-spinner" />
+                {!useBuiltin ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={draftValues[cliPathKey] ?? ''}
+                      disabled={disabled || !enabled}
+                      onChange={(event) => changeCliPath(cliAgent, cliPathKey, event.target.value)}
+                      placeholder={displayResult?.path || t('config.externalCli.cliPathPlaceholder', { agent: cliAgent })}
+                      data-testid="settings-panel-external-cli-agent-cli-path-input"
+                      data-variant={cliAgent}
+                      className="flex-1 rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-accent disabled:opacity-60"
+                    />
+                    {copyablePath ? (
+                      <button
+                        type="button"
+                        className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border border-border bg-bg text-text-muted hover:bg-secondary/30 disabled:opacity-50"
+                        disabled={disabled}
+                        onClick={() => void copyDetectedPath(cliAgent, copyablePath)}
+                        title={
+                          disabled
+                            ? undefined
+                            : copied[cliAgent]
+                              ? t('config.externalCli.copied')
+                              : t('config.externalCli.copyPath')
+                        }
+                        aria-label={
+                          disabled
+                            ? undefined
+                            : copied[cliAgent]
+                              ? t('config.externalCli.copied')
+                              : t('config.externalCli.copyPath')
+                        }
+                        data-testid="settings-panel-external-cli-agent-copy-path-btn"
+                        data-variant={cliAgent}
+                      >
+                        {copied[cliAgent] ? <Check className="w-4 h-4 text-ok" /> : <Copy className="w-4 h-4" />}
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border border-border bg-bg text-text-muted hover:bg-secondary/30 disabled:opacity-50"
+                      disabled={disabled || !enabled || !onSelectFile || selecting[cliAgent] === true}
+                      title={disabled || !enabled || !onSelectFile ? undefined : t('config.externalCli.selectFile')}
+                      aria-label={disabled || !enabled || !onSelectFile ? undefined : t('config.externalCli.selectFile')}
+                      onClick={() => void selectFile(cliAgent, cliPathKey)}
+                      data-testid="settings-panel-external-cli-agent-select-file-btn"
+                      data-variant={cliAgent}
+                    >
+                      {selecting[cliAgent] ? (
+                        <Loader2 className="w-4 h-4 settings-spinner" />
+                      ) : (
+                        <FileSearch className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+                ) : null}
+                {message ? <div className="text-[11px] leading-4 text-text-muted">{message}</div> : null}
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 space-y-1">
+                    <div className="text-sm font-medium text-text-strong">{label}</div>
+                    {statusLine}
+                  </div>
+                  <div className="flex flex-shrink-0 items-center gap-2">
+                    <Switch
+                      checked={enabled}
+                      disabled={disabled || committing[cliAgent]}
+                      onChange={(next) => void toggleAgentEnabled(cliAgent, next, useBuiltin, cliPath)}
+                      aria-label={t('config.externalCli.toggleEnable', { agent: label })}
+                      data-testid="settings-panel-external-cli-agent-enable-switch"
+                      data-variant={cliAgent}
+                    />
+                  </div>
+                </div>
+                {installed && enabled ? (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <div className="text-xs text-text-muted">{t('config.externalCli.executablePath')}</div>
+                      {actionButtons}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {editing[cliAgent] ? (
+                        <input
+                          type="text"
+                          value={editDrafts[cliAgent] ?? ''}
+                          disabled={disabled || editValidating[cliAgent] || committing[cliAgent] || detectingNow}
+                          onChange={(event) =>
+                            setEditDrafts((prev) => ({ ...prev, [cliAgent]: event.target.value }))
+                          }
+                          placeholder={t('config.externalCli.cliPathPlaceholder', { agent: cliAgent })}
+                          data-testid="settings-panel-external-cli-agent-cli-path-input"
+                          data-variant={cliAgent}
+                          className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2 py-2 text-[13px] outline-none focus:border-accent disabled:opacity-60"
+                        />
                   ) : (
-                    <RefreshCw className="w-3.5 h-3.5" />
+                    <select
+                      value={cliPath}
+                      disabled={disabled || committing[cliAgent] || detectingNow}
+                      onChange={(event) => void validateAndCommitPath(cliAgent, event.target.value)}
+                      data-testid="settings-panel-external-cli-agent-cli-path-select"
+                      data-variant={cliAgent}
+                      className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2 py-2 text-[13px] outline-none focus:border-accent disabled:opacity-60"
+                    >
+                      {cliPath ? <option value={cliPath}>{cliPath}</option> : null}
+                      {detectedPath && detectedPath !== cliPath ? (
+                        <option value={detectedPath}>{detectedPath}</option>
+                      ) : null}
+                    </select>
                   )}
-                  {t('config.externalCli.detect')}
-                </button>
-              ) : null}
-              {!useBuiltin ? (
-                <span
-                  className={`text-xs ${statusClass(displayResult?.status)}`}
-                  data-testid="settings-panel-external-cli-agent-status"
-                  data-variant={cliAgent}
-                >
-                  {displayResult?.status === 'ok' ? (
-                    <CheckCircle2 className="inline w-3.5 h-3.5 mr-1" />
-                  ) : (
-                    <AlertCircle className="inline w-3.5 h-3.5 mr-1" />
-                  )}
-                  {statusText(displayResult)}
-                </span>
-              ) : null}
-              {displayResult?.version ? (
-                <span className="text-xs text-text-muted">
-                  {t('config.externalCli.version', { version: displayResult.version })}
-                </span>
-              ) : null}
-            </div>
-            {!useBuiltin ? (
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={draftValues[cliPathKey] ?? ''}
-                  disabled={disabled || !enabled}
-                  onChange={(event) => changeCliPath(cliAgent, cliPathKey, event.target.value)}
-                  placeholder={displayResult?.path || t('config.externalCli.cliPathPlaceholder', { agent: cliAgent })}
-                  data-testid="settings-panel-external-cli-agent-cli-path-input"
-                  data-variant={cliAgent}
-                  className="flex-1 rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-accent disabled:opacity-60"
-                />
-                {detectedPath ? (
                   <button
                     type="button"
                     className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border border-border bg-bg text-text-muted hover:bg-secondary/30 disabled:opacity-50"
-                    disabled={disabled}
-                    onClick={() => void copyDetectedPath(cliAgent, detectedPath)}
-                    title={
-                      disabled
-                        ? undefined
-                        : copied[cliAgent]
-                          ? t('config.externalCli.copied')
-                          : t('config.externalCli.copyPath')
-                    }
-                    aria-label={
-                      disabled
-                        ? undefined
-                        : copied[cliAgent]
-                          ? t('config.externalCli.copied')
-                          : t('config.externalCli.copyPath')
-                    }
-                    data-testid="settings-panel-external-cli-agent-copy-path-btn"
+                    disabled={disabled || committing[cliAgent] || editing[cliAgent]}
+                    onClick={() => startEdit(cliAgent, cliPath, detectedPath)}
+                    title={t('config.externalCli.editPath')}
+                    aria-label={t('config.externalCli.editPath')}
+                    data-testid="settings-panel-external-cli-agent-edit-btn"
                     data-variant={cliAgent}
                   >
-                    {copied[cliAgent] ? <Check className="w-4 h-4 text-ok" /> : <Copy className="w-4 h-4" />}
+                    <Pencil className="h-4 w-4" />
                   </button>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border border-border bg-bg text-text-muted hover:bg-secondary/30 disabled:opacity-50"
+                    disabled={disabled || committing[cliAgent] || !onSelectFile || editing[cliAgent]}
+                    onClick={() => void openFilePicker(cliAgent, editDrafts[cliAgent] || cliPath)}
+                    title={t('config.externalCli.openFile')}
+                    aria-label={t('config.externalCli.openFile')}
+                    data-testid="settings-panel-external-cli-agent-open-file-btn"
+                    data-variant={cliAgent}
+                  >
+                    {selecting[cliAgent] ? (
+                      <Loader2 className="settings-spinner h-4 w-4" />
+                    ) : (
+                      <FolderOpen className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+                {editing[cliAgent] ? (
+                  <div className="flex items-center justify-end gap-2">
+                    <Button
+                      disabled={disabled || editValidating[cliAgent] || committing[cliAgent]}
+                      onClick={() => cancelEdit(cliAgent)}
+                      data-testid="settings-panel-external-cli-agent-edit-cancel-btn"
+                      data-variant={cliAgent}
+                    >
+                      {t('common.cancel')}
+                    </Button>
+                    <Button
+                      variant="primary"
+                      loading={editValidating[cliAgent] || committing[cliAgent]}
+                      disabled={disabled}
+                      onClick={() => void saveEdit(cliAgent)}
+                      data-testid="settings-panel-external-cli-agent-edit-save-btn"
+                      data-variant={cliAgent}
+                    >
+                      {t('common.save')}
+                    </Button>
+                  </div>
                 ) : null}
-                <button
-                  type="button"
-                  className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border border-border bg-bg text-text-muted hover:bg-secondary/30 disabled:opacity-50"
-                  disabled={disabled || !enabled || !onSelectFile || selecting[cliAgent] === true}
-                  title={disabled || !enabled || !onSelectFile ? undefined : t('config.externalCli.selectFile')}
-                  aria-label={disabled || !enabled || !onSelectFile ? undefined : t('config.externalCli.selectFile')}
-                  onClick={() => void selectFile(cliAgent, cliPathKey)}
-                  data-testid="settings-panel-external-cli-agent-select-file-btn"
-                  data-variant={cliAgent}
-                >
-                  {selecting[cliAgent] ? (
-                    <Loader2 className="w-4 h-4 settings-spinner" />
-                  ) : (
-                    <FileSearch className="w-4 h-4" />
-                  )}
-                </button>
-              </div>
-            ) : null}
-            {message ? <div className="text-[11px] leading-4 text-text-muted">{message}</div> : null}
+                  </>
+                ) : enabled &&
+                  installStatus &&
+                  (!installSucceeded || !installResultUpdated) &&
+                  onInstallStatusGet &&
+                  onInstallStatusChange ? (
+                  // An install is in flight for this agent: show live progress in
+                  // place of the hint block. After success the bar stays pinned at
+                  // 100% until a fresh detect result lands, then the card swaps
+                  // straight to the installed layout (no "not installed" flash).
+                  <ExternalCliInstallProgress
+                    agent={cliAgent}
+                    status={installStatus}
+                    onGetStatus={onInstallStatusGet}
+                    onStatusChange={onInstallStatusChange}
+                    inline
+                  />
+                ) : enabled ? (
+                  <div
+                    className="flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5"
+                    data-testid="settings-panel-external-cli-agent-install-hint"
+                    data-variant={cliAgent}
+                  >
+                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 flex-shrink-0 text-accent" aria-hidden="true">
+                      <circle cx="8" cy="8" r="8" fill="currentColor" />
+                      <circle cx="8" cy="4.6" r="1" fill="#fff" />
+                      <rect x="7.1" y="6.9" width="1.8" height="5.1" rx="0.9" fill="#fff" />
+                    </svg>
+                    <span className="text-xs leading-5 text-text-muted">
+                      {t('config.externalCli.notInstalledHint')}{' '}
+                      <button
+                        type="button"
+                        className="rounded font-medium text-accent outline-none hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={disabled || !onCommitAgent || detectingNow || committing[cliAgent]}
+                        onClick={() => void installNow(cliAgent)}
+                        title={t('config.externalCli.installNow')}
+                        aria-label={t('config.externalCli.installNow')}
+                        data-testid="settings-panel-external-cli-agent-install-btn"
+                        data-variant={cliAgent}
+                      >
+                        {t('config.externalCli.installNow')}
+                      </button>
+                    </span>
+                  </div>
+                ) : null}
+                {agentErrors[cliAgent] ? (
+                  <div
+                    className="text-[11px] leading-4 text-danger"
+                    data-testid="settings-panel-external-cli-agent-error"
+                    data-variant={cliAgent}
+                  >
+                    {agentErrors[cliAgent]}
+                  </div>
+                ) : warningMessage ? (
+                  <div className="text-[11px] leading-4 text-text-muted">{warningMessage}</div>
+                ) : notInstalledMessage ? (
+                  <div className="text-[11px] leading-4 text-text-muted">{notInstalledMessage}</div>
+                ) : null}
+              </>
+            )}
           </div>
         );
       })}
-      {onUploadCustomAgent ? (
+      {renderScope !== 'builtin' && onUploadCustomAgent ? (
         <AddCustomAgentPanel disabled={disabled} onUpload={onUploadCustomAgent} t={t} />
       ) : null}
     </div>
@@ -686,14 +1265,21 @@ function RemoveCustomAgentButton({
   );
 }
 
-function AddCustomAgentPanel({
+export function AddCustomAgentPanel({
   disabled,
   onUpload,
   t,
+  appearance = 'default',
 }: {
   disabled: boolean;
   onUpload: (wheel: File, cli: File | null) => Promise<void>;
   t: (key: string, options?: Record<string, unknown>) => string;
+  /**
+   * 'hero' renders the full-width upload card used as a standalone entry on
+   * the experimental page; 'default' keeps the compact inline button used on
+   * the agents page.
+   */
+  appearance?: 'default' | 'hero';
 }) {
   const [open, setOpen] = useState(false);
   const [wheel, setWheel] = useState<File | null>(null);
@@ -725,6 +1311,23 @@ function AddCustomAgentPanel({
   };
 
   if (!open) {
+    if (appearance === 'hero') {
+      return (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => setOpen(true)}
+          data-testid="settings-panel-external-cli-custom-agent-add-btn"
+          className="group flex w-full flex-col items-center gap-2 rounded-xl px-6 py-8 text-center transition-colors hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-control-ring disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <span className="flex h-11 w-11 items-center justify-center rounded-full bg-accent-subtle text-accent transition-colors group-hover:bg-accent group-hover:text-accent-foreground">
+            <Plus className="h-5 w-5" />
+          </span>
+          <span className="text-sm font-medium text-text-strong">{t('config.externalCli.addCustomAgent')}</span>
+          <span className="max-w-sm text-xs leading-5 text-text-muted">{t('config.externalCli.addCustomAgentHint')}</span>
+        </button>
+      );
+    }
     return (
       <Button
         size="sm"
@@ -756,7 +1359,7 @@ function AddCustomAgentPanel({
 
   return (
     <div
-      className="rounded-lg border border-dashed border-border p-3 space-y-2"
+      className="rounded-lg border-dashed border-border p-3 space-y-2"
       data-testid="settings-panel-external-cli-custom-agent-upload"
     >
       <div className="text-sm font-medium text-text-strong">{t('config.externalCli.addCustomAgent')}</div>

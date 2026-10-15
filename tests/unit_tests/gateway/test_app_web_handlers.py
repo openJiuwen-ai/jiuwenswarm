@@ -2385,6 +2385,66 @@ async def test_config_set_saves_external_cli_path_after_detection(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_config_set_claude_switch_keeps_codex_entry_verbatim(monkeypatch):
+    """Toggling one card must not re-detect or rewrite the other agent's entry."""
+    channel = FakeWebChannel()
+    updates: list[tuple[list[dict], str | None]] = []
+
+    monkeypatch.setenv("WEB_PORT", "19000")
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
+        lambda: {
+            "preferred_language": "zh",
+            "modes": {
+                "team": {
+                    "jiuwen_team": {
+                        "external_cli_agents": [
+                            {"cli_agent": "codex", "cli_path": "/custom/codex"},
+                        ],
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config",
+        lambda: {"modes": {"team": {}}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.detect_external_cli_agent",
+        lambda cli_agent, cli_path="": pytest.fail("untouched agents must not be re-detected"),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_claude_dependency_available_or_start_install",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_agents_in_config",
+        lambda agents, publish_url=None: updates.append((agents, publish_url)),
+    )
+
+    await channel.methods["config.set"](
+        object(),
+        "req-claude-switch-keeps-codex",
+        {
+            "external_cli_agent_claude_enabled": "true",
+            "external_cli_agent_claude_use_builtin": "true",
+        },
+        "sess-claude-switch-keeps-codex",
+    )
+
+    assert updates == [
+        (
+            [{"cli_agent": "claude"}, {"cli_agent": "codex", "cli_path": "/custom/codex"}],
+            "ws://127.0.0.1:19000/ws",
+        )
+    ]
+    assert channel.responses[-1]["ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_config_set_uses_builtin_codex_without_validating_stale_windows_script(monkeypatch):
     channel = FakeWebChannel()
     updates: list[tuple[list[dict[str, str]], str | None]] = []
@@ -2652,7 +2712,7 @@ def test_codex_dependency_install_is_not_started_twice(monkeypatch):
         lambda name: None if name == "openai_codex" else original_find_spec(name),
     )
 
-    def install_once() -> None:
+    def install_once(force_reinstall: bool = False) -> None:
         install_calls.append(None)
         install_started.set()
         release_install.wait(timeout=5)
@@ -2780,6 +2840,112 @@ def test_external_cli_dependency_install_starts_managed_runtime_in_frozen_deskto
     assert created_threads[0].started is True
 
 
+@pytest.mark.parametrize(
+    ("cli_agent", "required_module", "install_target", "thread_name"),
+    [
+        ("claude", "claude_agent_sdk", "_install_claude_dependency_background", "claude-dependency-install"),
+        ("codex", "openai_codex", "_run_codex_dependency_install_background", "codex-dependency-install"),
+    ],
+)
+def test_dependency_ensure_force_reinstalls_when_bundled_cli_file_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    cli_agent: str,
+    required_module: str,
+    install_target: str,
+    thread_name: str,
+) -> None:
+    """A deleted bundled CLI executable must trigger a repair reinstall.
+
+    The SDK package stays importable, so a plain install would end as a pip
+    "already satisfied" no-op and 一键安装 could never restore the file.
+    """
+    original_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.importlib.util.find_spec",
+        lambda name: SimpleNamespace() if name == required_module else original_find_spec(name),
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_external_cli_managed_cli_path",
+        lambda _cli_agent: "",
+    )
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: False)
+    monkeypatch.setattr(app_web_handlers, "_activate_managed_external_cli_paths_if_needed", lambda: None)
+
+    created_threads: list[SimpleNamespace] = []
+
+    class _Thread:
+        def __init__(
+            self,
+            *,
+            target: object,
+            args: tuple[bool],
+            name: str,
+            daemon: bool,
+        ) -> None:
+            created_threads.append(
+                SimpleNamespace(target=target, args=args, name=name, daemon=daemon, started=False)
+            )
+
+        def start(self) -> None:
+            created_threads[-1].started = True
+
+    monkeypatch.setattr(app_web_handlers.threading, "Thread", _Thread)
+
+    lock = app_web_handlers._EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS[cli_agent]
+    status = app_web_handlers._EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES[cli_agent]
+    with lock:
+        status.update({
+            "status": "idle",
+            "phase": "idle",
+            "error": "",
+            "last_log": "",
+            "log_tail": [],
+            "started_at": 0.0,
+            "finished_at": 0.0,
+        })
+
+    ensure_dependency = (
+        app_web_handlers._ensure_claude_dependency_available_or_start_install
+        if cli_agent == "claude"
+        else app_web_handlers._ensure_codex_dependency_available_or_start_install
+    )
+    snapshot = ensure_dependency()
+
+    assert snapshot is not None
+    assert snapshot["status"] == "running"
+    assert len(created_threads) == 1
+    assert created_threads[0].target is getattr(app_web_handlers, install_target)
+    assert created_threads[0].args == (True,)
+    assert created_threads[0].name == thread_name
+    assert created_threads[0].started is True
+
+
+def test_build_optional_dependency_install_args_repair_mode_uses_force_reinstall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repair mode must add --force-reinstall --no-deps and reinstall only the
+    pinned SDK wheel: a plain install of an already-installed package is a pip
+    no-op and cannot restore a deleted bundled CLI."""
+    from jiuwenswarm.common import external_cli_runtime
+
+    monkeypatch.setattr(external_cli_runtime, "pinned_sdk_requirements", lambda _cli_agent: ["claude-agent-sdk==0.2.115"])
+    monkeypatch.setattr(app_web_handlers.shutil, "which", lambda _name: None)
+
+    repair_args = app_web_handlers._build_optional_dependency_install_args(
+        "openjiuwen[claude]", "claude", force_reinstall=True
+    )
+    assert "--force-reinstall" in repair_args
+    assert "--no-deps" in repair_args
+    assert repair_args[-1] == "claude-agent-sdk==0.2.115"
+    assert not any(arg.startswith("openjiuwen") for arg in repair_args)
+
+    normal_args = app_web_handlers._build_optional_dependency_install_args("openjiuwen[claude]", "claude")
+    assert "--force-reinstall" not in normal_args
+    assert "--no-deps" not in normal_args
+    assert normal_args[-1] == "claude-agent-sdk==0.2.115"
+
+
 def test_optional_dependency_install_restates_openjiuwen_url_requirements(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2861,7 +3027,7 @@ def test_optional_dependency_install_times_out_after_one_hour(
     monkeypatch.setattr(
         app_web_handlers,
         "_build_optional_dependency_install_args",
-        lambda _package, _cli_agent: ["installer"],
+        lambda _package, _cli_agent, **_kwargs: ["installer"],
     )
     monkeypatch.setattr(
         app_web_handlers.subprocess,

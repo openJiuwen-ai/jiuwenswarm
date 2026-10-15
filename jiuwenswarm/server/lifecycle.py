@@ -141,6 +141,22 @@ class Readiness:
         self._retrying = False
         self._agent_ready.set()
 
+    def mark_recovering(self, reason: str) -> None:
+        """Leave ``FAILED`` for a supervised Worker restart (reload path).
+
+        ``FAILED`` is sticky against ordinary warmup progress so broken starts
+        do not loop. A config reload is the explicit "I fixed it, try again"
+        signal, so this is the only sanctioned exit from ``FAILED``: the
+        Supervisor restarts the Worker and readiness returns to
+        ``RUNTIME_WARMING`` until the next ``AGENT_READY``.
+        """
+        if self._state is not ReadinessState.FAILED:
+            return
+        self._state = ReadinessState.RUNTIME_WARMING
+        self._failed_reason = reason
+        self._retrying = True
+        self._agent_ready.clear()
+
     def note_warmup_retry(self, reason: str) -> None:
         """Record a retryable Runtime warmup error. Stay in ``RUNTIME_WARMING``.
 

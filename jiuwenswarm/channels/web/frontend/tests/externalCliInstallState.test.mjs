@@ -148,22 +148,24 @@ test('restoring install status after refresh does not open the global progress d
 });
 
 test('the install dialog shows indeterminate activity for web installs without fake percentages', () => {
-  const dialogSource = readFileSync(new URL('../src/components/ExternalCliInstallDialog.tsx', import.meta.url), 'utf8');
+  // Task rendering lives in ExternalCliInstallProgress.tsx, shared by the
+  // legacy dialog and the per-card inline progress block.
+  const taskSource = readFileSync(new URL('../src/components/ExternalCliInstallProgress.tsx', import.meta.url), 'utf8');
   const dialogStyles = readFileSync(new URL('../src/components/ExternalCliInstallDialog.css', import.meta.url), 'utf8');
 
-  assert.match(dialogSource, /const installerActivity = status\.progress_kind === 'installer_activity'/);
-  assert.match(dialogSource, /installerActivity \|\| status\.phase === 'downloading'/);
-  assert.match(dialogSource, /const determinateProgress = status\.phase === 'downloading' && total > 0/);
-  assert.match(dialogSource, /status\.last_log \|\| status\.log_tail\?\.at\(-1\)/);
-  assert.match(dialogSource, /external-cli-install-dialog__progress--indeterminate/);
-  assert.match(dialogSource, /status\.status === 'running' && installerActivity && latestLog/);
-  assert.match(dialogSource, /config\.externalCli\.installActivity/);
+  assert.match(taskSource, /const installerActivity = status\.progress_kind === 'installer_activity'/);
+  assert.match(taskSource, /installerActivity \|\| status\.phase === 'downloading'/);
+  assert.match(taskSource, /const determinateProgress = status\.phase === 'downloading' && total > 0/);
+  assert.match(taskSource, /status\.last_log \|\| status\.log_tail\?\.at\(-1\)/);
+  assert.match(taskSource, /external-cli-install-dialog__progress--indeterminate/);
+  assert.match(taskSource, /status\.status === 'running' && installerActivity && latestLog/);
+  assert.match(taskSource, /config\.externalCli\.installActivity/);
   assert.match(dialogStyles, /\.external-cli-install-dialog \{[\s\S]*?width: 100%/);
   assert.match(dialogStyles, /\.external-cli-install-dialog__body \{[\s\S]*?overflow-x: hidden/);
   assert.match(dialogStyles, /\.external-cli-install-dialog__activity code \{[\s\S]*?overflow-wrap: anywhere/);
 });
 
-test('typing or pasting an external CLI path triggers a debounced detection', () => {
+test('the persisted choice triggers a debounced auto-detection for both agents', () => {
   const sectionSource = readFileSync(
     new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
     'utf8',
@@ -171,37 +173,97 @@ test('typing or pasting an external CLI path triggers a debounced detection', ()
 
   assert.match(sectionSource, /const EXTERNAL_CLI_AUTO_DETECT_DELAY_MS = 400/);
   assert.match(sectionSource, /changeCliPath\(cliAgent, cliPathKey, event\.target\.value\)/);
-  // Every listed agent (built-in or uploaded) is detected after its own path changes.
+  // Every listed agent (built-in or uploaded) is detected after its own path
+  // changes, in the CLI mode (built-in vs external) it is configured for.
   assert.match(sectionSource, /for \(const \[cliAgent, cliPath\] of currentPaths\)/);
-  assert.match(sectionSource, /void detect\(cliAgent, cliPath\)/);
+  assert.match(sectionSource, /for \(const \[cliAgent, cliPath, useBuiltin\] of currentPaths\)/);
+  assert.match(sectionSource, /void detect\(cliAgent, cliPath, useBuiltin\)/);
   assert.match(sectionSource, /detectRequestIdsRef\.current\[cliAgent\] !== requestId/);
-  assert.match(sectionSource, /delete next\[cliAgent\]/);
 });
 
-test('reselecting the current external CLI path triggers one immediate detection', () => {
+test('saving an edited path validates it with a throwaway detect before committing', () => {
   const sectionSource = readFileSync(
     new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
     'utf8',
   );
 
-  assert.match(sectionSource, /const currentPath = draftValues\[cliPathKey\] \|\| ''/);
+  assert.match(sectionSource, /const probe = await onDetect\(cliAgent, requestedPath, false\)/);
+  assert.match(sectionSource, /if \(probe\.status !== 'ok' && probe\.status !== 'warning'\)/);
   assert.match(
     sectionSource,
-    /changeCliPath\(cliAgent, cliPathKey, selectedPath\);\s*if \(selectedPath === currentPath\) \{\s*await detect\(cliAgent, selectedPath\);/,
+    /await commit\(cliAgent, \{ enabled: true, useBuiltin: false, cliPath: requestedPath \}\)/,
   );
 });
 
-test('saving a disabled external CLI clears its stale detected path without a refresh', () => {
+test('a failed path validation keeps the edit form open instead of saving', () => {
   const sectionSource = readFileSync(
     new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
     'utf8',
   );
 
-  assert.match(sectionSource, /updates\[useBuiltinKey\] = enabled && useBuiltin \? 'true' : 'false'/);
-  assert.match(sectionSource, /updates\[cliPathKey\] = enabled && !useBuiltin \? cliPath : ''/);
+  assert.match(sectionSource, /updates\[useBuiltinKey\] = useBuiltin \? 'true' : 'false'/);
+  assert.match(sectionSource, /updates\[cliPathKey\] = !useBuiltin \? cliPath : ''/);
+  assert.match(sectionSource, /const committed = await validateAndCommitPath\(cliAgent, requestedPath\)/);
+  assert.match(
+    sectionSource,
+    /if \(committed\) \{\s*setEditing\(\(prev\) => \(\{ \.\.\.prev, \[cliAgent\]: false \}\)\)/,
+  );
   assert.match(sectionSource, /const observedCliPathsRef = useRef/);
   assert.match(sectionSource, /observedCliPathsRef\.current\[cliAgent\] = cliPath/);
   assert.match(sectionSource, /clearDetectResult\(cliAgent\)/);
+});
+
+test('toggling off keeps the agent choice and toggling on falls back to the built-in CLI without a path', () => {
+  const sectionSource = readFileSync(
+    new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // Disabling must not wipe the mode/path: re-enabling restores the choice.
+  assert.match(sectionSource, /await commit\(cliAgent, \{ enabled: false, useBuiltin, cliPath: requestedPath \}\)/);
+  // With no custom path configured the switch still re-enables via the built-in CLI.
+  assert.match(sectionSource, /if \(useBuiltin \|\| !requestedPath\.trim\(\)\) \{/);
+});
+
+test('re-detecting keeps the card layout stable instead of unmounting the path block', () => {
+  const sectionSource = readFileSync(
+    new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // `installed` must not depend on detectingNow: gating it unmounted the path
+  // block and install button during probes, collapsing and regrowing the card
+  // (the whole settings page shook on every 检测 click).
+  assert.match(sectionSource, /const installed = isInstalledStatus\(result\);/);
+  // The install button stays mounted and is merely disabled while detecting.
+  assert.doesNotMatch(sectionSource, /\{!detectingNow \? \(/);
+  assert.match(sectionSource, /disabled=\{disabled \|\| !onCommitAgent \|\| detectingNow\}/);
+});
+
+test('install-now bypasses the no-change short circuit so a deleted built-in CLI can be repaired', () => {
+  const sectionSource = readFileSync(
+    new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
+    'utf8',
+  );
+  const settingsSource = readFileSync(
+    new URL('../src/features/settings/modules/agent/ExternalCliAgentsSettings.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // The install click must carry force so the commit always sends a payload.
+  assert.match(
+    sectionSource,
+    /await commit\(cliAgent, \{ enabled: true, useBuiltin: true, cliPath: '', force: true \}\)/,
+  );
+  // The settings commit short-circuits identical choices EXCEPT for forced
+  // ones: without this the backend never sees the agent's keys and its
+  // dependency repair never runs, so 一键安装 is a silent no-op when the
+  // built-in CLI file was deleted manually.
+  assert.match(settingsSource, /if \(!choice\.force\) return;/);
+  assert.match(
+    settingsSource,
+    /updates\[externalCliKey\(cliAgent, 'enabled'\)\] = choice\.enabled \? 'true' : 'false';/,
+  );
 });
 
 test('an existing directory is reported as an invalid CLI executable path', () => {

@@ -913,3 +913,61 @@ def test_worker_lifecycle_owns_runtime_construct() -> None:
     text = (root / "jiuwenswarm/server/worker/lifecycle.py").read_text(encoding="utf-8")
     assert "bind_transport=False" in text
     assert "AgentWebSocketServer.get_instance" in text
+
+
+@pytest.mark.asyncio
+async def test_recover_from_failed_restarts_resident_worker() -> None:
+    path = _socket_path()
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "jiuwenswarm.server.worker.main",
+        "--socket",
+        path,
+        "--stub",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    readiness = Readiness()
+    readiness.mark_runtime_warming()
+    supervisor = RuntimeSupervisor(
+        readiness,
+        socket_path=path,
+        stub=True,
+        max_restarts=3,
+    )
+    try:
+        for _ in range(50):
+            if endpoint_is_listening(path):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise AssertionError("stub worker did not bind a socket")
+        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 5)
+        assert await readiness.wait_agent_ready(2) is True
+        assert supervisor.owns_process is False
+        first_instance = supervisor.worker_instance
+        assert first_instance
+        # Simulate a broken resident Worker: the Runtime failed to load and
+        # the supervisor marked the failure sticky, while the Worker process
+        # stays alive on its socket (load failures never self-retry).
+        readiness.mark_failed("no module named 'a4p'")
+        supervisor._fatal = True
+        supervisor._fatal_reason = "no module named 'a4p'"
+        assert await supervisor.recover_from_failed(timeout=15) is True
+        assert readiness.state is ReadinessState.AGENT_READY
+        for _ in range(150):
+            if supervisor.worker_instance != first_instance:
+                break
+            await asyncio.sleep(0.1)
+        assert supervisor.worker_instance != first_instance
+        assert supervisor.owns_process is True
+    finally:
+        await supervisor.stop(terminate_worker=True)
+        if proc.returncode is None and endpoint_is_listening(path):
+            try:
+                await _shutdown_resident_worker(path)
+                await asyncio.wait_for(proc.wait(), 2)
+            except (OSError, asyncio.TimeoutError):
+                proc.terminate()
+                await proc.wait()

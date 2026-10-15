@@ -85,8 +85,11 @@ class ExecutionAdmission:
             await self._reject(ws, request, send_lock, "RUNTIME_DRAINING", "AgentServer is shutting down")
             return
         if state is ReadinessState.FAILED:
-            await self._reject(ws, request, send_lock, "RUNTIME_FAILED", "AgentServer runtime failed")
-            return
+            if not await self._try_recover_after_failed(request):
+                await self._reject(ws, request, send_lock, "RUNTIME_FAILED", "AgentServer runtime failed")
+                return
+            # Recovery path left FAILED behind; fall through so a warming
+            # runtime queues the request and a ready one dispatches it.
         backend = self._backend
         if backend is not None and self._readiness.snapshot()["agent_ready"]:
             tracked = await self._registry.register(request, queued=False)
@@ -182,6 +185,30 @@ class ExecutionAdmission:
             "RUNTIME_WARMING",
             "AgentServer runtime is still warming",
         )
+
+    async def _try_recover_after_failed(self, request: AgentRequest) -> bool:
+        """Reload requests may recover a FAILED runtime via Worker restart.
+
+        Config save → reload is the documented path for "dependencies were
+        just installed, pick them up". Refusing it left the AgentServer
+        permanently dead after a failed boot (sticky FAILED) and made every
+        optional-dependency install tear the Gateway down. Only the reload
+        method opts in; every other request keeps failing fast with
+        RUNTIME_FAILED.
+        """
+        if request.req_method != ReqMethod.AGENT_RELOAD_CONFIG:
+            return False
+        recover = getattr(self._backend, "recover_from_failed", None)
+        if not callable(recover):
+            return False
+        try:
+            return bool(await recover())
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[Front] runtime recovery attempt failed: request_id=%s",
+                request.request_id,
+            )
+            return False
 
     async def _wait_ready_or_cancel(self, tracked: TrackedRequest) -> bool:
         ready_wait = asyncio.create_task(self._readiness.wait_agent_ready(self._wait_seconds))

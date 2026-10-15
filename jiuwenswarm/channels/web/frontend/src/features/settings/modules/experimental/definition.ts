@@ -2,7 +2,7 @@ import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
 import {
   A2UISetting,
-  ExternalCliSettingsItem,
+  ExternalCliCustomAgentsItem,
   ProactiveLimitsSetting,
   RSISetting,
   TrajectoryUiSetting,
@@ -17,9 +17,9 @@ export const experimentalModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
-      id: 'external-cli-agents',
+      id: 'external-cli-custom-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
-      items: [{ id: 'external-cli-agents', component: 'custom', render: ExternalCliSettingsItem }],
+      items: [{ id: 'external-cli-custom-agents', component: 'custom', render: ExternalCliCustomAgentsItem }],
     },
     {
       id: 'rsi',
