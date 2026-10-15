@@ -95,7 +95,7 @@ class TrafficRuntime:
                 rail._refresh_dynamic_attachments = runtime_state
                 self.shell_rails.append(rail)
 
-    def attach_gateway_connection(self, ws, send_lock) -> None:
+    async def attach_gateway_connection(self, ws, send_lock) -> None:
         pass
 
     async def on_gateway_disconnect(self, ws, remote) -> None:
