@@ -681,6 +681,10 @@ class WebChannel(BaseWsChannel):
         import uvicorn
 
         from jiuwenswarm.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
+        from jiuwenswarm.gateway.channel_manager.web.transport_stall_guard import (
+            guarded_http_protocol,
+            guarded_websockets_protocol,
+        )
         from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
 
         app = build_web_channel_app(self)
@@ -693,6 +697,11 @@ class WebChannel(BaseWsChannel):
             ws_max_size=WEB_WS_MAX_MESSAGE_BYTES,
             ws_ping_interval=20.0,
             ws_ping_timeout=60.0,
+            # 停止读取的客户端会让 transport 写缓冲滞留，close() 永远等不到排空，
+            # socket 永久卡在 CLOSE-WAIT（issue #4946）；带看门狗的协议类在写停滞
+            # 超时后直接 abort，释放 fd 与缓冲。
+            http=guarded_http_protocol(),
+            ws=guarded_websockets_protocol(),
         )
         self._uvicorn_server = uvicorn.Server(uv_cfg)
         self._running = True
