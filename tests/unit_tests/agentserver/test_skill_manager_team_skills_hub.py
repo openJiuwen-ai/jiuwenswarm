@@ -14,8 +14,11 @@ _TEAM_SKILLS_HUB_ZIP_URL = "https://openjiuwen-market.obs.ap-southeast-1.myhuawe
 class TeamSkillsHubHarnessSkillManager(SkillManager):
     """公开受保护方法供单测（勿命名为 Test*，否则 pytest 会当成测试类收集）。"""
 
-    def get_team_skills_hub_base_url(self) -> str:
-        return self._get_team_skills_hub_base_url()
+    def get_team_skills_hub_base_url(self, override_url: str | None = None) -> str:
+        return self._get_team_skills_hub_base_url(override_url)
+
+    def call_assert_team_skills_hub_market_url_allowed(self, url: str) -> None:
+        self._assert_team_skills_hub_market_url_allowed(url)
 
     def set_mock_get_data(self, mock_func) -> None:
         self._team_skills_hub_http_get_data = mock_func
@@ -296,6 +299,117 @@ def test_team_skills_hub_allowed_download_hosts_support_wildcard_region(monkeypa
     manager.call_assert_team_skills_hub_download_url_allowed(
         "https://openjiuwen-market.obs.ap-east-1.myhuaweicloud.com/plugins/demo.zip"
     )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1/plugins/demo.zip",
+        "http://127.0.0.1:8321/plugins/demo.zip",
+        "http://localhost/plugins/demo.zip",
+        "https://localhost:8443/plugins/demo.zip",
+    ],
+)
+def test_team_skills_hub_default_download_hosts_reject_loopback(monkeypatch, url):
+    monkeypatch.delenv("TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS", raising=False)
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
+    with pytest.raises(RuntimeError, match="不在白名单"):
+        manager.call_assert_team_skills_hub_download_url_allowed(url)
+
+
+@pytest.mark.parametrize(
+    "market_url",
+    [
+        "http://127.0.0.1/",
+        "http://127.0.0.1:8321/",
+        "http://localhost:8080/",
+        "http://169.254.169.254/",
+        "https://metadata.google.internal/",
+        "http://10.0.0.1/hub",
+        "https://evil.example/",
+        "http://user:pass@teamskills.openjiuwen.com/",
+        "ftp://teamskills.openjiuwen.com/",
+    ],
+)
+def test_team_skills_hub_market_url_rejects_untrusted_hosts(monkeypatch, market_url):
+    monkeypatch.delenv("TEAM_SKILLS_HUB_BASE_URL", raising=False)
+    monkeypatch.delenv("TEAM_SKILLS_HUB_ALLOWED_MARKET_HOSTS", raising=False)
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
+    with pytest.raises(RuntimeError, match="market_url"):
+        manager.get_team_skills_hub_base_url(market_url)
+
+
+def test_team_skills_hub_market_url_allows_default_hub(monkeypatch):
+    monkeypatch.delenv("TEAM_SKILLS_HUB_BASE_URL", raising=False)
+    monkeypatch.delenv("TEAM_SKILLS_HUB_ALLOWED_MARKET_HOSTS", raising=False)
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
+    assert (
+        manager.get_team_skills_hub_base_url("https://teamskills.openjiuwen.com/")
+        == "https://teamskills.openjiuwen.com"
+    )
+
+
+def test_team_skills_hub_market_url_allows_env_base_host_including_loopback(monkeypatch):
+    monkeypatch.setenv("TEAM_SKILLS_HUB_BASE_URL", "http://127.0.0.1:8080/hub")
+    monkeypatch.delenv("TEAM_SKILLS_HUB_ALLOWED_MARKET_HOSTS", raising=False)
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
+    assert manager.get_team_skills_hub_base_url("http://127.0.0.1:8080/hub") == "http://127.0.0.1:8080/hub"
+
+
+def test_team_skills_hub_market_url_extra_allowlist(monkeypatch):
+    monkeypatch.delenv("TEAM_SKILLS_HUB_BASE_URL", raising=False)
+    monkeypatch.setenv("TEAM_SKILLS_HUB_ALLOWED_MARKET_HOSTS", "hub.example.com")
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
+    assert manager.get_team_skills_hub_base_url("https://hub.example.com/v1") == "https://hub.example.com/v1"
+
+
+@pytest.mark.asyncio
+async def test_handle_skills_team_skills_hub_search_rejects_ssrf_market_url(tmp_path, monkeypatch):
+    monkeypatch.delenv("TEAM_SKILLS_HUB_BASE_URL", raising=False)
+    monkeypatch.delenv("TEAM_SKILLS_HUB_ALLOWED_MARKET_HOSTS", raising=False)
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+
+    async def _fake_get_data(*_args, **_kwargs):  # noqa: ANN001
+        raise AssertionError("should not fetch when market_url is untrusted")
+
+    manager.set_mock_get_data(_fake_get_data)
+    payload = await manager.handle_skills_team_skills_hub_search(
+        {"q": "demo", "market_url": "http://169.254.169.254/"}
+    )
+    assert payload["success"] is False
+    assert "market_url" in payload["detail"]
+    assert payload["detail_key"] == "skills.teamskillshub.errors.searchFailed"
+
+
+def test_team_skills_hub_env_can_allow_loopback_for_local_hub(monkeypatch):
+    monkeypatch.setenv("TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS", "127.0.0.1,localhost")
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
+    manager.call_assert_team_skills_hub_download_url_allowed("http://127.0.0.1:9000/demo.zip")
+    manager.call_assert_team_skills_hub_download_url_allowed("http://localhost:9000/demo.zip")
+
+
+@pytest.mark.asyncio
+async def test_handle_skills_team_skills_hub_install_rejects_loopback_download_url(tmp_path, monkeypatch):
+    monkeypatch.delenv("TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS", raising=False)
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+
+    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
+        return {
+            "download_url": "http://127.0.0.1:8321/latest/skill.zip",
+            "checksum_sha256": "",
+            "version": "1.0.0",
+        }
+
+    async def _fake_download(url, **kwargs):  # noqa: ANN001
+        raise AssertionError("should not download loopback download_url")
+
+    manager.set_mock_get_data(_fake_get_data)
+    manager.set_mock_download(_fake_download)
+
+    payload = await manager.handle_skills_team_skills_hub_install({"asset_id": "demo-skill"})
+    assert payload["success"] is False
+    assert "白名单" in payload["detail"]
+    assert payload["detail_key"] == "skills.teamskillshub.errors.installFailed"
 
 
 def test_safe_extract_zip_to_dir_rejects_zip_slip(tmp_path):

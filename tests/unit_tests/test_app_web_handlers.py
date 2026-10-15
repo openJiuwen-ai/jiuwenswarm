@@ -338,6 +338,58 @@ async def test_updater_reset_source_registered_and_restores_defaults(monkeypatch
     assert captured == app_web_handlers.DEFAULT_SOURCE_CONFIG
 
 
+@pytest.mark.parametrize(
+    "field,url",
+    [
+        ("release_api_url", "http://127.0.0.1/releases/latest"),
+        ("release_api_url", "http://169.254.169.254/latest/meta-data/"),
+        ("release_api_url", "https://metadata.google.internal/"),
+        ("pypi_mirror", "http://localhost:8080/simple"),
+        ("pypi_mirror", "http://10.0.0.1/pypi"),
+        ("pypi_mirror", "http://user:pass@pypi.org/simple"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_updater_set_conf_rejects_unsafe_urls(monkeypatch, field, url):
+    def _boom(_updates):
+        raise AssertionError("must not persist unsafe updater URLs")
+
+    monkeypatch.setattr(app_web_handlers, "update_updater_in_config", _boom)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, updater_service=FakeUpdaterService()))
+
+    await channel.methods["updater.set_conf"](object(), "req-ssrf", {field: url}, "sess-1")
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_updater_set_conf_accepts_public_urls(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_update_updater_in_config(updates):
+        captured.update(updates)
+
+    monkeypatch.setattr(app_web_handlers, "update_updater_in_config", fake_update_updater_in_config)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, updater_service=FakeUpdaterService()))
+
+    await channel.methods["updater.set_conf"](
+        object(),
+        "req-ok",
+        {
+            "release_api_url": "https://api.github.com/repos/openJiuwen/jiuwenswarm/releases/latest",
+            "pypi_mirror": "https://mirrors.aliyun.com/pypi",
+        },
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert captured["release_api_url"].startswith("https://api.github.com/")
+    assert captured["pypi_mirror"] == "https://mirrors.aliyun.com/pypi"
+
+
 @pytest.mark.asyncio
 async def test_openai_account_logout_clears_pending_login_jobs(
         monkeypatch,

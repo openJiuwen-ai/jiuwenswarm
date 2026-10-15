@@ -165,3 +165,65 @@ async def test_skillnet_install_then_status_via_distinct_stateless_fallbacks(
         {"install_id": install_id}
     )
     assert status == {"success": True, "status": "pending"}
+
+
+@pytest.mark.parametrize(
+    "mirror_url",
+    [
+        "http://127.0.0.1/",
+        "http://127.0.0.1:8321/https://raw.githubusercontent.com/",
+        "http://localhost:8080/",
+        "https://localhost/",
+        "http://169.254.169.254/",
+        "https://169.254.169.254/latest/meta-data/",
+        "https://metadata.google.internal/",
+        "http://10.0.0.1/proxy",
+        "http://192.168.1.1/",
+        "http://[::1]/",
+        "http://user:pass@ghfast.top/",
+        "ftp://ghfast.top/",
+    ],
+)
+@pytest.mark.asyncio
+async def test_skillnet_install_rejects_unsafe_mirror_url(tmp_path, mirror_url):
+    """Client-supplied mirror_url must not target loopback / metadata / private IPs."""
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    result = await manager.handle_skills_skillnet_install(
+        {
+            "url": "https://github.com/example/skill-demo",
+            "mirror_url": mirror_url,
+        }
+    )
+    assert result["success"] is False
+    assert result["detail_key"] == "skills.skillNet.errors.invalidMirrorUrl"
+    assert not skill_manager_module._SKILLNET_INSTALL_JOBS
+
+
+@pytest.mark.parametrize(
+    "mirror_url",
+    [
+        "https://ghfast.top/",
+        "https://ghproxy.com/",
+        "https://mirror.ghproxy.com/",
+    ],
+)
+@pytest.mark.asyncio
+async def test_skillnet_install_accepts_public_github_mirror(
+    tmp_path, monkeypatch, mirror_url
+):
+    manager = SkillManager(workspace_dir=str(tmp_path))
+
+    async def _never_finish(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(manager, "_skillnet_install_background", _never_finish)
+
+    result = await manager.handle_skills_skillnet_install(
+        {
+            "url": "https://github.com/example/skill-demo",
+            "mirror_url": mirror_url,
+        }
+    )
+    assert result["success"] is True
+    assert result["pending"] is True
+    assert result["install_id"] in skill_manager_module._SKILLNET_INSTALL_JOBS

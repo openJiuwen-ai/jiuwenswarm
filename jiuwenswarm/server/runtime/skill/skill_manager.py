@@ -8,6 +8,7 @@ import logging
 import asyncio
 import hashlib
 import io
+import ipaddress
 import json
 import os
 import re
@@ -71,10 +72,16 @@ _FREE_SEARCH_DEFAULT_NO_PROXY = "127.0.0.1,.huawei.com,localhost,local,.local,10
 # Team Skills Hub（仅 TEAM_SKILLS_HUB_* 环境变量）
 _TEAM_SKILLS_HUB_MARKET_TIMEOUT: float = float(os.environ.get("TEAM_SKILLS_HUB_TIMEOUT", "60"))
 _TEAM_SKILLS_HUB_BASE_URL_DEFAULT = "https://teamskills.openjiuwen.com"
+# 默认只放行 OBS 下载域名。不要把 127.0.0.1 / localhost 写进默认白名单：
+# download_url 来自市场接口，环回地址会把安装请求打到本机服务（SSRF）。
+# 本地 Hub 调试请设 TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS。
 _TEAM_SKILLS_HUB_DEFAULT_ALLOWED_DOWNLOAD_HOSTS: tuple[str, ...] = (
     "openjiuwen-market.obs.*.myhuaweicloud.com",
-    "127.0.0.1",
-    "localhost",
+)
+# 客户端 RPC 的 market_url 只能打到默认 Hub 或 TEAM_SKILLS_HUB_BASE_URL 的主机。
+# 不要把 127.0.0.1 写进默认白名单；本地 Hub 请设 TEAM_SKILLS_HUB_BASE_URL。
+_TEAM_SKILLS_HUB_DEFAULT_ALLOWED_MARKET_HOSTS: tuple[str, ...] = (
+    "teamskills.openjiuwen.com",
 )
 _IMPORT_LOCAL_REMOTE_TIMEOUT: float = float(os.environ.get("IMPORT_LOCAL_REMOTE_TIMEOUT", "60"))
 _IMPORT_LOCAL_DEFAULT_ALLOWED_DOWNLOAD_HOSTS: tuple[str, ...] = ("*.obs.*.myhuaweicloud.com",)
@@ -186,15 +193,60 @@ def _map_github_api_error(exc: Exception) -> SkillNetInstallError:
     )
 
 
+_SKILLNET_MIRROR_BLOCKED_HOSTNAMES: frozenset[str] = frozenset(
+    {
+        "localhost",
+        "metadata.google.internal",
+        "metadata",
+    }
+)
+
+
+def _is_blocked_skillnet_mirror_host(hostname: str) -> bool:
+    """Reject loopback / link-local / private / metadata hosts used as GitHub mirrors.
+
+    SkillDownloader prepends ``mirror_url`` to GitHub raw URLs and GETs the result
+    with its own ``requests`` session (no outbound). Client-supplied mirrors
+    must not be able to target cloud metadata or local services.
+    """
+    host = (hostname or "").strip().lower().rstrip(".")
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if not host:
+        return True
+    if host in _SKILLNET_MIRROR_BLOCKED_HOSTNAMES or host.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return bool(
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
 def _is_valid_http_mirror_url(url: str) -> bool:
-    """Return True if url is a plausible http(s) mirror base (for SkillDownloader)."""
+    """Return True if url is a public http(s) mirror base (for SkillDownloader)."""
     s = url.strip()
     if not s or len(s) > 2048:
         return False
     parsed = urlparse(s)
     if parsed.scheme not in ("http", "https"):
         return False
-    if not parsed.netloc:
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    try:
+        hostname = parsed.hostname
+    except ValueError:
+        return False
+    if not hostname:
+        return False
+    if _is_blocked_skillnet_mirror_host(hostname):
         return False
     return True
 
@@ -1789,8 +1841,8 @@ class SkillManager:
         version = str(params.get("version", "")).strip()
         if not version:
             return {"success": False, "detail": "缺少参数: version"}
-        base_url = self._get_team_skills_hub_base_url(str(params.get("market_url") or "").strip() or None)
         try:
+            base_url = self._get_team_skills_hub_base_url(str(params.get("market_url") or "").strip() or None)
             detail = await self._team_skills_hub_http_get_data(
                 f"/api/v1/artifacts/{asset_id}",
                 params={"version": version},
@@ -1828,9 +1880,9 @@ class SkillManager:
         order_by = str(params.get("order_by", "install_count")).strip() or "install_count"
         desc_raw = params.get("desc", True)
         desc = str(desc_raw).strip().lower() in {"1", "true", "yes", "on"}
-        base_url = self._get_team_skills_hub_base_url(str(params.get("market_url") or "").strip() or None)
 
         try:
+            base_url = self._get_team_skills_hub_base_url(str(params.get("market_url") or "").strip() or None)
             query_params: dict[str, Any] = {
                 "page": page,
                 "page_size": page_size,
@@ -2013,7 +2065,6 @@ class SkillManager:
         plugin_id = str(params.get("skill_id") or "").strip() or None
         version_desc = str(params.get("version_desc") or "").strip()
         force = bool(params.get("force", False))
-        base_url = self._get_team_skills_hub_base_url(str(params.get("market_url") or "").strip() or None)
 
         path_raw = str(params.get("path") or "").strip()
         file_raw = str(params.get("file") or "").strip()
@@ -2021,6 +2072,7 @@ class SkillManager:
             return {"success": False, "detail": "缺少参数: path 或 file"}
 
         try:
+            base_url = self._get_team_skills_hub_base_url(str(params.get("market_url") or "").strip() or None)
             with tempfile.TemporaryDirectory(prefix="jiuwenswarm_teamskills_publish_") as tmpdir:
                 zip_path = self._prepare_teamskills_publish_zip(
                     path_raw=path_raw,
@@ -2068,8 +2120,8 @@ class SkillManager:
             return {"success": False, "detail": str(auth["error"])}
 
         version = str(params.get("version") or "all").strip() or "all"
-        base_url = self._get_team_skills_hub_base_url(str(params.get("market_url") or "").strip() or None)
         try:
+            base_url = self._get_team_skills_hub_base_url(str(params.get("market_url") or "").strip() or None)
             await self._teamskills_hub_delete_request(
                 base_url=base_url,
                 skill_id=skill_id,
@@ -3154,8 +3206,65 @@ class SkillManager:
 
     @staticmethod
     def _get_team_skills_hub_base_url(override_url: str | None = None) -> str:
-        raw = (override_url or os.getenv("TEAM_SKILLS_HUB_BASE_URL") or _TEAM_SKILLS_HUB_BASE_URL_DEFAULT).strip()
+        override = (override_url or "").strip()
+        if override:
+            SkillManager._assert_team_skills_hub_market_url_allowed(override)
+            return override.rstrip("/")
+        raw = (os.getenv("TEAM_SKILLS_HUB_BASE_URL") or _TEAM_SKILLS_HUB_BASE_URL_DEFAULT).strip()
         return raw.rstrip("/")
+
+    @staticmethod
+    def _get_team_skills_hub_allowed_market_hosts() -> list[str]:
+        hosts: list[str] = []
+        extra = (os.getenv("TEAM_SKILLS_HUB_ALLOWED_MARKET_HOSTS") or "").strip()
+        for token in extra.split(","):
+            host = token.strip().lower()
+            if host:
+                hosts.append(host)
+        env_base = (os.getenv("TEAM_SKILLS_HUB_BASE_URL") or "").strip()
+        if env_base:
+            try:
+                env_host = (urlparse(env_base).hostname or "").strip().lower()
+            except ValueError:
+                env_host = ""
+            if env_host:
+                hosts.append(env_host)
+        else:
+            hosts.extend(_TEAM_SKILLS_HUB_DEFAULT_ALLOWED_MARKET_HOSTS)
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for host in hosts:
+            if host in seen:
+                continue
+            seen.add(host)
+            ordered.append(host)
+        return ordered or list(_TEAM_SKILLS_HUB_DEFAULT_ALLOWED_MARKET_HOSTS)
+
+    @staticmethod
+    def _assert_team_skills_hub_market_url_allowed(market_url: str) -> None:
+        """RPC market_url is client-controlled; only allow configured Hub hosts.
+
+        Operator env TEAM_SKILLS_HUB_BASE_URL is trusted and not checked here.
+        """
+        parsed = urlparse(market_url.strip())
+        if parsed.scheme not in {"http", "https"}:
+            raise RuntimeError("Team Skills Hub market_url 必须使用 HTTP 或 HTTPS")
+        if parsed.username is not None or parsed.password is not None:
+            raise RuntimeError("Team Skills Hub market_url 不能包含用户名或密码")
+        try:
+            host = (parsed.hostname or "").strip().lower()
+        except ValueError as exc:
+            raise RuntimeError("Team Skills Hub market_url 无效") from exc
+        if not host:
+            raise RuntimeError("Team Skills Hub market_url 缺少主机名")
+        for rule in SkillManager._get_team_skills_hub_allowed_market_hosts():
+            if rule.startswith("."):
+                if host.endswith(rule):
+                    return
+                continue
+            if host == rule or SkillManager._team_skills_hub_host_matches_rule(host, rule):
+                return
+        raise RuntimeError(f"Team Skills Hub market_url host 不在白名单: {host}")
 
     @staticmethod
     def _resolve_teamskills_hub_auth(params: dict[str, Any]) -> dict[str, str]:

@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.common.version_source import assert_public_http_url
 
 
 DOWNLOAD_CHUNK_SIZE = 1024 * 512
@@ -50,6 +51,7 @@ class UpgradeExecutor(ABC):
 
     @staticmethod
     def _fetch_text(url: str, headers: dict[str, str], timeout: int) -> str:
+        url = assert_public_http_url(url, field="download_url")
         request = Request(url, headers=headers)
         try:
             with urlopen(request, timeout=timeout) as response:
@@ -127,6 +129,7 @@ class DesktopExecutor(UpgradeExecutor):
         headers: dict[str, str],
         timeout: int,
     ) -> None:
+        url = assert_public_http_url(url, field="download_url")
         request = Request(url, headers=headers)
         destination.parent.mkdir(parents=True, exist_ok=True)
         with (
@@ -310,6 +313,8 @@ class PipExecutor(UpgradeExecutor):
 
     def _build_install_args(self, package: str, timeout: int) -> list[str]:
         pypi_mirror = self._config.get("pypi_mirror", "").strip()
+        if pypi_mirror:
+            pypi_mirror = assert_public_http_url(pypi_mirror, field="pypi_mirror")
 
         uv_cmd = self._resolve_uv_command()
         if uv_cmd:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import re
@@ -9,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from jiuwenswarm.common.version import __version__
@@ -20,6 +21,54 @@ DEFAULT_TIMEOUT_SECONDS = 20
 GITHUB_API = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
 GITCODE_API = "https://api.gitcode.com/api/v5/repos/{owner}/{repo}/releases/latest"
 PYPI_SIMPLE_API = "https://pypi.org/simple/{package}/"
+_UPDATER_BLOCKED_HOSTNAMES: frozenset[str] = frozenset(
+    {
+        "localhost",
+        "metadata.google.internal",
+        "metadata",
+    }
+)
+
+
+def assert_public_http_url(url: str, *, field: str = "url") -> str:
+    """Reject loopback / private / metadata URLs used as updater endpoints.
+
+    Gateway ``updater.set_conf`` and ``urlopen`` fetches do not go through
+    host-exit. Client-supplied ``release_api_url`` / ``pypi_mirror`` (and
+    asset ``download_url`` from those APIs) must not target local services.
+    """
+    s = (url or "").strip()
+    if not s or len(s) > 2048:
+        raise ValueError(f"{field} is not a valid http(s) URL")
+    parsed = urlparse(s)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(f"{field} must use http or https")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"{field} must not contain userinfo")
+    try:
+        host = (parsed.hostname or "").strip().lower().rstrip(".")
+    except ValueError as exc:
+        raise ValueError(f"{field} is not a valid http(s) URL") from exc
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if not host:
+        raise ValueError(f"{field} is missing a hostname")
+    if host in _UPDATER_BLOCKED_HOSTNAMES or host.endswith(".localhost"):
+        raise ValueError(f"{field} host is not allowed: {host}")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return s
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    ):
+        raise ValueError(f"{field} host is not allowed: {host}")
+    return s
 
 # Matches pre-release markers: 0.2.0-beta1, 0.2.0.beta.1, 0.2.0alpha, 0.2.0rc2, 0.2.0.dev0, etc.
 _PRERELEASE_PATTERN = re.compile(
@@ -262,6 +311,7 @@ class VersionSource(ABC):
         return json.loads(self._fetch_text(url, headers))
 
     def _fetch_text(self, url: str, headers: dict[str, str] | None = None) -> str:
+        url = assert_public_http_url(url, field="release_api_url")
         request = Request(url, headers=headers or {})
         try:
             with urlopen(request, timeout=self._timeout) as response:
@@ -483,7 +533,8 @@ class PyPIVersionSource(VersionSource):
         )
 
     def _fetch_simple_json(self) -> Any:
-        req = Request(self._api_url)
+        api_url = assert_public_http_url(self._api_url, field="pypi_mirror")
+        req = Request(api_url)
         req.add_header("Accept", "application/vnd.pypi.simple.v1+json")
         try:
             with urlopen(req, timeout=self._timeout) as resp:

@@ -1,6 +1,9 @@
 import sys
 
+import pytest
+
 from jiuwenswarm.common import updater
+from jiuwenswarm.common.version_source import assert_public_http_url
 
 
 def test_desktop_env_forces_desktop_install_mode(monkeypatch):
@@ -191,3 +194,27 @@ def test_desktop_check_matches_beta_windows_installer(monkeypatch):
 
     assert status["latest_version"] == "0.2.3.beta1"
     assert status["matched_asset"] == "JiuwenSwarm-setup-0.2.3.beta1.exe"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1/releases",
+        "http://169.254.169.254/latest/meta-data/",
+        "https://metadata.google.internal/",
+        "http://10.0.0.1/pypi",
+        "http://[::1]/",
+        "ftp://pypi.org/simple",
+    ],
+)
+def test_assert_public_http_url_rejects_unsafe_hosts(url):
+    with pytest.raises(ValueError):
+        assert_public_http_url(url, field="release_api_url")
+
+
+def test_assert_public_http_url_accepts_public_update_hosts():
+    assert assert_public_http_url(
+        "https://api.gitcode.com/api/v5/repos/openJiuwen/jiuwenswarm/releases/latest",
+        field="release_api_url",
+    )
+    assert assert_public_http_url("https://mirrors.aliyun.com/pypi", field="pypi_mirror")

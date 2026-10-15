@@ -13,7 +13,6 @@ import hmac
 import inspect
 import json
 import logging
-import os
 import secrets
 import sys
 import time
@@ -23,10 +22,8 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
-import aiohttp
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
-from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.gateway.channel_manager.base import ChannelMetadata, RobotMessageRouter
 from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
 from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
@@ -530,52 +527,6 @@ class WebChannel(BaseWsChannel):
         if exclude_ws is not None:
             clients = {c for c in clients if c is not exclude_ws}
         await self._broadcast_to(frame, clients)
-
-    async def _download_file(self, url: str) -> bytes | None:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        return await response.read()
-                    else:
-                        logger.warning("WebChannel 文件下载失败: %s, 状态码: %s", url, response.status)
-                        return None
-        except Exception as e:
-            logger.warning("WebChannel 文件下载异常: %s, 错误: %s", url, e)
-            return None
-
-    async def _process_files(self, params: dict[str, Any]) -> dict[str, Any]:
-        files = params.get("files")
-        if not files or not isinstance(files, list):
-            return params
-
-        downloaded_files = []
-        workspace_dir = str(get_agent_workspace_dir())
-
-        for file_info in files:
-            if not isinstance(file_info, dict):
-                downloaded_files.append(file_info)
-                continue
-
-            file_url = file_info.get("url") or file_info.get("uri") or ""
-            file_name = file_info.get("name") or file_info.get("filename") or "unknown_file"
-
-            if file_url:
-                file_content = await self._download_file(file_url)
-                if file_content:
-                    try:
-                        os.makedirs(workspace_dir, exist_ok=True)
-                        file_path = os.path.join(workspace_dir, file_name)
-                        with open(file_path, "wb") as f:
-                            f.write(file_content)
-                        file_info["path"] = file_path
-                    except Exception as e:
-                        logger.warning("WebChannel 文件保存失败: %s", e)
-
-            downloaded_files.append(file_info)
-
-        params["files"] = downloaded_files
-        return params
 
     # ── Channel 生命周期 ──────────────────────────────────
 
@@ -1430,8 +1381,6 @@ class WebChannel(BaseWsChannel):
                 sessions = set()
                 self._ws_sessions[ws_id] = sessions
             sessions.add(session_id)
-
-        params = await self._process_files(params)
 
         # ── V2: 用实际的 session_id / mode / agent_id 更新 ws 注册 ──
         _flat_query = {k: (v[0] if v else "") for k, v in query.items()}

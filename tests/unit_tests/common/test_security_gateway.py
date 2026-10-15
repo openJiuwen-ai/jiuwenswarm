@@ -346,6 +346,9 @@ _RAW_HTTP = re.compile(
     r"|\burlopen\("
 )
 # Pre-existing modules outside net_guard's tool scope (media / device upload helpers).
+# image_reading_tool.py stays here because Xiaoyi control-plane still uses
+# aiohttp/httpx for np:// and loopback proxy; remote image download must go
+# through outbound.async_client (see test_image_reading_remote_download_uses_host_exit).
 _RAW_HTTP_ALLOWLIST = frozenset({
     "audio_tools.py",
     "image_tools.py",
@@ -372,3 +375,125 @@ def test_host_tools_do_not_use_raw_http_clients():
         "use openjiuwen.harness.security.outbound (sync_client / async_client) "
         f"instead of raw HTTP clients: {offenders}"
     )
+
+
+def test_image_reading_remote_download_uses_host_exit():
+    source = (_TOOLS_DIR / "xiaoyi_phone_tools" / "image_reading_tool.py").read_text(
+        encoding="utf-8"
+    )
+    download = source.split("async def _download_remote_to_temp", 1)[1].split(
+        "async def ", 1
+    )[0]
+    assert "outbound_http.request(" in download
+    assert "session.get(" not in download
+
+
+class _DeniedBeforeConnectSession:
+    """Connects must not happen for a URL the host exit already denied."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    def get(self, *args, **kwargs):
+        raise AssertionError("remote download must not use session.get")
+
+    async def request(self, *args, **kwargs):
+        raise AssertionError("host exit must deny before connecting")
+
+
+class _RedirectResp:
+    def __init__(self, status, location):
+        self.status = status
+        self.headers = {"Location": location}
+        self.ok = False
+        self.reason = "Found"
+        self.released = False
+
+    def release(self):
+        self.released = True
+
+
+class _RedirectThenDeniedSession:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    def get(self, *args, **kwargs):
+        raise AssertionError("remote download must not use session.get")
+
+    async def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        return self._responses.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_image_reading_download_blocks_metadata_url(monkeypatch):
+    from openjiuwen.harness.security.outbound import policy as host_exit
+    from openjiuwen.harness.security.outbound.policy import OutboundBlockedError
+
+    from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
+        image_reading_tool as mod,
+    )
+
+    monkeypatch.setattr(mod.aiohttp, "ClientSession", _DeniedBeforeConnectSession)
+    host_exit.reset_host_exit_policy()
+    host_exit.publish_host_exit_policy(
+        {
+            "net_guard": {
+                "enabled": True,
+                "defaults": "allow",
+                "enforce_host_exit": True,
+                "urls": {"169.254.169.254": "deny"},
+            }
+        }
+    )
+    try:
+        with pytest.raises(OutboundBlockedError, match="169.254.169.254"):
+            await mod._download_remote_to_temp("http://169.254.169.254/latest/meta-data/")
+    finally:
+        host_exit.reset_host_exit_policy()
+
+
+@pytest.mark.asyncio
+async def test_image_reading_download_blocks_redirect_to_metadata(monkeypatch):
+    from openjiuwen.harness.security.outbound import policy as host_exit
+    from openjiuwen.harness.security.outbound.policy import OutboundBlockedError
+
+    from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
+        image_reading_tool as mod,
+    )
+
+    first = _RedirectResp(302, "https://169.254.169.254/latest/meta-data/")
+    session = _RedirectThenDeniedSession([first])
+    monkeypatch.setattr(mod.aiohttp, "ClientSession", lambda *a, **k: session)
+    host_exit.reset_host_exit_policy()
+    host_exit.publish_host_exit_policy(
+        {
+            "net_guard": {
+                "enabled": True,
+                "defaults": "allow",
+                "enforce_host_exit": True,
+                "urls": {"169.254.169.254": "deny"},
+            }
+        }
+    )
+    try:
+        with pytest.raises(OutboundBlockedError, match="169.254.169.254") as exc:
+            await mod._download_remote_to_temp("https://cdn.example/ok.jpg")
+        assert exc.value.matched_rule == "net_guard:url:169.254.169.254"
+        assert len(session.calls) == 1
+        assert first.released is True
+    finally:
+        host_exit.reset_host_exit_policy()

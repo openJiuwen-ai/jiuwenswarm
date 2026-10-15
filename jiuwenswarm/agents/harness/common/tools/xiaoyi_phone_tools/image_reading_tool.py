@@ -18,6 +18,7 @@ import aiohttp
 import httpx
 
 from openjiuwen.core.foundation.tool import tool
+from openjiuwen.harness.security.outbound import async_client as outbound_http
 
 from jiuwenswarm.common.local_proxy_auth import with_local_proxy_bearer
 from jiuwenswarm.common.np_transport import is_named_pipe_url, named_pipe_transport_for
@@ -49,10 +50,20 @@ def _suffix_from_url(url: str) -> str:
 
 
 async def _download_remote_to_temp(url: str) -> str:
-    """下载远程图片到临时文件；调用方负责删除。"""
+    """下载远程图片到临时文件；调用方负责删除。
+
+    ``remote_url`` 可能来自用户/模型入参，必须走宿主出口，以便 net_guard
+    在每一跳（含 3xx）拒绝云元数据等底线地址。
+    """
     suffix = _suffix_from_url(url)
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+        resp = await outbound_http.request(
+            session,
+            "GET",
+            url,
+            timeout=aiohttp.ClientTimeout(total=120),
+        )
+        async with resp:
             if not resp.ok:
                 raise RuntimeError(f"HTTP {resp.status}: {resp.reason}")
             data = await resp.read()

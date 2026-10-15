@@ -84,6 +84,7 @@ from jiuwenswarm.server.runtime.a2ui.integration import (
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
+from jiuwenswarm.common.version_source import assert_public_http_url
 from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
     get_env_file,
@@ -2659,7 +2660,16 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         for key in ("repo_owner", "repo_name", "release_api_url", "asset_name_pattern",
                 "release_api_type", "pypi_mirror"):
             if key in params:
-                updates[key] = str(params.get(key) or "").strip()
+                value = str(params.get(key) or "").strip()
+                if key in ("release_api_url", "pypi_mirror") and value:
+                    try:
+                        value = assert_public_http_url(value, field=key)
+                    except ValueError as exc:
+                        await channel.send_response(
+                            ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST",
+                        )
+                        return
+                updates[key] = value
         for plat in ("windows", "macos", "linux"):
             key = f"asset_name_pattern_{plat}"
             if key in params:
