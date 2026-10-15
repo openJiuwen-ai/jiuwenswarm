@@ -1144,3 +1144,40 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
     assert out["title"].startswith("T" * _TASK_TEXT_LIMIT)
     assert out["content"] == "body"
     assert "content_truncated" not in out
+
+
+class _EndingMonitor:
+    """Monitor whose event stream ends without the handler calling stop()."""
+
+    def __init__(self) -> None:
+        self.team_agent = object()
+        self.stopped = False
+        self.end_stream = asyncio.Event()
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    async def events(self):
+        await self.end_stream.wait()
+        if False:
+            yield None
+
+
+@pytest.mark.anyio
+async def test_handler_marks_stopped_when_monitor_stream_ends():
+    monitor = _EndingMonitor()
+    handler = TeamMonitorHandler(monitor, "sess-stream-ended")
+    await handler.start()
+    assert handler.is_running is True
+    assert handler.bound_team_agent is monitor.team_agent
+
+    monitor.end_stream.set()
+    await asyncio.wait_for(handler._collect_task, timeout=1.0)
+
+    assert handler.is_running is False
+    # stop() still releases the listener after the stream ended on its own.
+    await handler.stop()
+    assert monitor.stopped is True

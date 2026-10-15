@@ -27,7 +27,7 @@ from openjiuwen.agent_teams.runtime import RunActionKind
 from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
 from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
-from openjiuwen.agent_teams.monitor import TeamStreamLogger
+from openjiuwen.agent_teams.monitor import TeamMonitor, TeamStreamLogger
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger, team_logger
 from openjiuwen.core.session.agent_team import create_agent_team_session
@@ -53,6 +53,10 @@ from jiuwenswarm.common.cron_team_completion import (
     apply_cron_team_round_event,
     cron_team_round_should_end,
     new_cron_team_round_state,
+)
+from jiuwenswarm.agents.harness.team.handlers.base_monitor_handler import (
+    BaseMonitorHandler,
+    monitor_team_agent,
 )
 from jiuwenswarm.agents.harness.team.handlers.workflow_monitor_handler import WorkflowMonitorHandler
 from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
@@ -1532,6 +1536,46 @@ async def query_team_human_members_for_join(
     return members or []
 
 
+async def _get_active_team_monitor(
+    team_name: str,
+    session_id: str,
+    *,
+    hide_dm: bool = False,
+) -> TeamMonitor | None:
+    """Resolve a fresh (unstarted) TeamMonitor for the pool's current leader."""
+    # create_monitor inside Runner.get_agent_team_monitor freezes the
+    # current contextvar session_id into the TeamMonitor (self._session_id).
+    # runtime_ready fires before the leader's bind_session, so the
+    # contextvar is empty here; bind the explicit session_id so the
+    # monitor does not hash an empty session id and target non-existent
+    # per-session tables (team_task_<hash> / team_message_<hash>).
+    token = set_session_id(session_id)
+    try:
+        return await Runner.get_agent_team_monitor(
+            team_name=team_name,
+            session_id=session_id,
+            hide_dm=hide_dm,
+        )
+    finally:
+        reset_session_id(token)
+
+
+def _monitor_handler_is_stale(handler: Any, current_monitor: TeamMonitor | None) -> bool:
+    """Return True when ``handler`` listens on a leader the pool no longer holds.
+
+    Core may rebuild a paused runtime inside ``activate`` (``stop_team`` +
+    cold recovery, e.g. after the model selection changes) without going
+    through swarm teardown.  The old monitor then stays attached to the
+    discarded leader: it never receives another event nor an end sentinel, so
+    ``is_running`` alone cannot detect it.
+    """
+    if current_monitor is None or not isinstance(handler, BaseMonitorHandler):
+        return False
+    bound_agent = handler.bound_team_agent
+    current_agent = monitor_team_agent(current_monitor)
+    return bound_agent is not None and current_agent is not None and bound_agent is not current_agent
+
+
 async def ensure_monitor_handlers_for_active_runtime(
     channel_id: str | None,
     session_id: str,
@@ -1543,27 +1587,31 @@ async def ensure_monitor_handlers_for_active_runtime(
 
     Both handlers obtain their own TeamMonitor from Runner (independent listeners on
     team_agent). WorkflowMonitorHandler is only created when enable_swarmflow is True.
+    A running handler bound to a leader the runtime pool has since replaced is
+    stopped and rebuilt on the current leader.
     """
     tm = get_team_manager(channel_id)
 
     # --- TeamMonitorHandler ---
     existing_monitor = tm.get_monitor(session_id)
-    if existing_monitor is None or not existing_monitor.is_running:
-        # create_monitor inside Runner.get_agent_team_monitor freezes the
-        # current contextvar session_id into the TeamMonitor (self._session_id).
-        # runtime_ready fires before the leader's bind_session, so the
-        # contextvar is empty here; bind the explicit session_id so the
-        # monitor does not hash an empty session id and target non-existent
-        # per-session tables (team_task_<hash> / team_message_<hash>).
-        token = set_session_id(session_id)
-        try:
-            monitor = await Runner.get_agent_team_monitor(
-                team_name=team_name,
-                session_id=session_id,
-                hide_dm=hide_dm,
+    monitor = await _get_active_team_monitor(team_name, session_id, hide_dm=hide_dm)
+    keep_existing = (
+        existing_monitor is not None
+        and existing_monitor.is_running
+        and not _monitor_handler_is_stale(existing_monitor, monitor)
+    )
+    if existing_monitor is not None and not keep_existing:
+        if existing_monitor.is_running:
+            logger.info(
+                "[TeamHelpers] team leader replaced; rebinding monitor: "
+                "channel_id=%s session_id=%s team_name=%s",
+                _resolve_channel_id(channel_id),
+                session_id,
+                team_name,
             )
-        finally:
-            reset_session_id(token)
+        # Release the old listener (and its consumer task) before replacing it.
+        await existing_monitor.stop()
+    if not keep_existing:
         if monitor is None:
             logger.warning(
                 "[TeamHelpers] active team monitor unavailable: channel_id=%s session_id=%s team_name=%s",
@@ -1595,8 +1643,20 @@ async def ensure_monitor_handlers_for_active_runtime(
         return
 
     existing_wf = tm.get_workflow_handler(session_id)
+    wf_monitor = await _get_active_team_monitor(team_name, session_id)
     if existing_wf is not None and existing_wf.is_running:
-        return
+        if not _monitor_handler_is_stale(existing_wf, wf_monitor):
+            return
+        logger.info(
+            "[TeamHelpers] team leader replaced; rebinding workflow monitor: "
+            "channel_id=%s session_id=%s team_name=%s",
+            _resolve_channel_id(channel_id),
+            session_id,
+            team_name,
+        )
+    if existing_wf is not None:
+        # Release the old listener; its in-memory runs are merged below.
+        await existing_wf.stop()
 
     # Build initial_runs: merge in-memory runs from a stopped handler with
     # disk-restored runs. In-memory data is more up-to-date (may contain
@@ -1621,17 +1681,6 @@ async def ensure_monitor_handlers_for_active_runtime(
             restore_workflow_runs(session_id), session_id,
         )
 
-    # Bind the explicit session_id so create_monitor freezes the real id
-    # instead of an empty contextvar (same rationale as the TeamMonitor
-    # path above).
-    wf_token = set_session_id(session_id)
-    try:
-        wf_monitor = await Runner.get_agent_team_monitor(
-            team_name=team_name,
-            session_id=session_id,
-        )
-    finally:
-        reset_session_id(wf_token)
     if wf_monitor is None:
         logger.warning(
             "[TeamHelpers] workflow monitor unavailable: channel_id=%s session_id=%s team_name=%s",

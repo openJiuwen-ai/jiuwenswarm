@@ -5444,6 +5444,136 @@ async def test_cancelled_team_round_cold_recovery_binds_a_fresh_monitor(monkeypa
     await rebound_handler.stop()
 
 
+class _LeaderBoundMonitor:
+    """TeamMonitor stand-in whose streams stay open until ``stop()``."""
+
+    def __init__(self, team_agent: object) -> None:
+        self.team_agent = team_agent
+        self.started = False
+        self.stopped = False
+        self._closed = asyncio.Event()
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.stopped = True
+        self._closed.set()
+
+    async def events(self):
+        await self._closed.wait()
+        if False:
+            yield None
+
+    async def workflow_events(self):
+        await self._closed.wait()
+        if False:
+            yield None
+
+
+def _patch_leader_pool(monkeypatch, manager, pool: dict[str, object]) -> list[_LeaderBoundMonitor]:
+    """Serve a fresh monitor bound to ``pool["leader"]`` on every lookup."""
+    created: list[_LeaderBoundMonitor] = []
+
+    async def _get_monitor(**_kwargs):
+        monitor = _LeaderBoundMonitor(pool["leader"])
+        created.append(monitor)
+        return monitor
+
+    async def _consume_noop(*_args) -> None:
+        return None
+
+    monkeypatch.setattr(team_helpers.Runner, "get_agent_team_monitor", _get_monitor)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel_id: manager)
+    monkeypatch.setattr(team_helpers, "_consume_monitor_events", _consume_noop)
+    monkeypatch.setattr(team_helpers, "_consume_workflow_events", _consume_noop)
+    return created
+
+
+@pytest.mark.anyio
+async def test_ensure_monitor_rebinds_when_pool_leader_is_replaced(monkeypatch):
+    """A leader rebuilt inside core activate (model change) must get a fresh monitor."""
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    session_id = "sess-leader-rebuilt"
+    pool: dict[str, object] = {"leader": object()}
+    created = _patch_leader_pool(monkeypatch, manager, pool)
+
+    await team_helpers.ensure_monitor_handlers_for_active_runtime("web", session_id, "unit-team")
+    old_handler = manager.get_monitor(session_id)
+    assert old_handler is not None and old_handler.is_running is True
+    old_leader = pool["leader"]
+    assert old_handler.bound_team_agent is old_leader
+
+    # The paused runtime is rebuilt with a new leader instance behind swarm's back.
+    pool["leader"] = object()
+    await team_helpers.ensure_monitor_handlers_for_active_runtime("web", session_id, "unit-team")
+
+    new_handler = manager.get_monitor(session_id)
+    assert new_handler is not old_handler
+    assert new_handler.is_running is True
+    assert new_handler.bound_team_agent is pool["leader"]
+    assert old_handler.is_running is False
+    assert created[0].stopped is True
+    assert created[-1].started is True and created[-1].stopped is False
+    await new_handler.stop()
+
+
+@pytest.mark.anyio
+async def test_ensure_monitor_keeps_handler_bound_to_current_leader(monkeypatch):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    session_id = "sess-leader-unchanged"
+    pool: dict[str, object] = {"leader": object()}
+    created = _patch_leader_pool(monkeypatch, manager, pool)
+
+    await team_helpers.ensure_monitor_handlers_for_active_runtime("web", session_id, "unit-team")
+    handler = manager.get_monitor(session_id)
+    await team_helpers.ensure_monitor_handlers_for_active_runtime("web", session_id, "unit-team")
+
+    assert manager.get_monitor(session_id) is handler
+    assert handler.is_running is True
+    assert created[0].stopped is False
+    # The probe monitor for the second lookup is never started.
+    assert created[1].started is False
+    await handler.stop()
+
+
+@pytest.mark.anyio
+async def test_ensure_monitor_rebinds_workflow_handler_and_keeps_runs(monkeypatch):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    session_id = "sess-leader-rebuilt-wf"
+    pool: dict[str, object] = {"leader": object()}
+    _patch_leader_pool(monkeypatch, manager, pool)
+    monkeypatch.setattr(team_helpers, "restore_workflow_runs", lambda _sid: {})
+
+    await team_helpers.ensure_monitor_handlers_for_active_runtime(
+        "web", session_id, "unit-team", enable_swarmflow=True,
+    )
+    old_wf = manager.get_workflow_handler(session_id)
+    assert old_wf is not None and old_wf.is_running is True
+    in_memory_runs = {"run-1": SimpleNamespace(run_id="run-1")}
+    monkeypatch.setattr(old_wf, "get_run_states", lambda: dict(in_memory_runs))
+
+    pool["leader"] = object()
+    await team_helpers.ensure_monitor_handlers_for_active_runtime(
+        "web", session_id, "unit-team", enable_swarmflow=True,
+    )
+
+    new_wf = manager.get_workflow_handler(session_id)
+    assert new_wf is not old_wf
+    assert old_wf.is_running is False
+    assert new_wf.is_running is True
+    assert new_wf.bound_team_agent is pool["leader"]
+    assert set(new_wf.get_run_states()) == {"run-1"}
+    await new_wf.stop()
+    await manager.get_monitor(session_id).stop()
+
+
 @pytest.mark.anyio
 async def test_failed_stream_cancel_does_not_reenter_full_waiter_queue(monkeypatch):
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
