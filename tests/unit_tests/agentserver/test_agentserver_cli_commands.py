@@ -1728,6 +1728,7 @@ async def test_handle_permissions_config_does_not_block_on_slow_reload(server, f
     class _Resp:
         ok = True
         payload = {"ok": True}
+        request_id = "req-perm-update"
 
     monkeypatch.setattr(_rpc_mod, "dispatch_permissions_config_request", lambda _req: _Resp())
     # dispatch 在 _handle_permissions_config 内部是延迟 import 取的符号, 需同时 patch 该符号
