@@ -1107,6 +1107,19 @@ def resolve_status_code_graph(config: dict | None, workspace: str) -> dict[str, 
         return {"present": False, "state": "unavailable", "message": str(exc)}
 
 
+# asyncio keeps only weak references to tasks; hold these until they finish.
+_SESSION_MESSAGING_AVAILABILITY_TASKS: set[asyncio.Task] = set()
+
+
+def _on_session_messaging_availability_done(task: asyncio.Task) -> None:
+    _SESSION_MESSAGING_AVAILABILITY_TASKS.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning(
+            "[AgentWebSocketServer] session messaging availability update failed: %s",
+            task.exception(),
+        )
+
+
 class AgentWebSocketServer:
     """Gateway 与 AgentServer 之间的 WebSocket 服务端（单例）.
 
@@ -1392,15 +1405,45 @@ class AgentWebSocketServer:
             )
 
     def attach_gateway_connection(self, ws: Any, send_lock: asyncio.Lock) -> None:
-        """Publish the Front-owned Gateway socket for send_push / ACP caps."""
+        """Publish the Front-owned Gateway socket for send_push / ACP caps.
+
+        The mailbox delivers queued cross-Session messages only while a
+        Gateway is connected, as ``_connection_handler`` does for a socket the
+        Runtime owns itself.
+        """
         self._current_ws = ws
         self._current_send_lock = send_lock
+        self._schedule_session_messaging_availability()
+
+    async def _sync_session_messaging_availability(self) -> None:
+        """Make the mailbox available exactly while a Gateway is attached."""
+        service = getattr(self, "_session_message_service", None)
+        if service is not None:
+            await service.set_available(self._current_ws is not None)
+
+    def _schedule_session_messaging_availability(self) -> None:
+        """Sync the mailbox from the synchronous attach hook.
+
+        The task reads the connection when it runs, so a detach that lands
+        before it cannot leave the mailbox available without a Gateway.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._sync_session_messaging_availability())
+        _SESSION_MESSAGING_AVAILABILITY_TASKS.add(task)
+        task.add_done_callback(_on_session_messaging_availability_done)
 
     async def on_gateway_disconnect(self, ws: Any, remote: Any) -> None:
         """Runtime-side cleanup when Front drops the Gateway connection."""
         if self._current_ws is ws:
             self._current_ws = None
             self._current_send_lock = None
+            try:
+                await self._sync_session_messaging_availability()
+            except Exception:
+                logger.exception("[AgentWebSocketServer] session messaging availability update failed")
         self._clear_ws_acp_client_capabilities(ws)
         try:
             await self._execution_runtime().cancel_all_inflight_work(
