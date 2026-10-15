@@ -849,6 +849,7 @@ function AppContent() {
   const trajectoryTaskPanelAvailable = toolPanelHasContent || isRestoringTeamHistory;
   const effectiveTeamAreaExpanded = isTeamAreaExpanded;
   const hideTrajectorySessions = false;
+  const hideTrajectoryTasks = false;
 
   // WebSocket 连接 - provider 由后端配置决定 - provider 由后端配置决定，前端默认不在 URL query 传递
   const {
@@ -2939,7 +2940,7 @@ function AppContent() {
                 )}
 
                 {/* Tool Panel / Expanded Team Panel */}
-                {trajectoryTaskPanelAvailable && !showConversationNotFound && !heartbeatPanelOpen && (
+                {trajectoryTaskPanelAvailable && !hideTrajectoryTasks && !showConversationNotFound && !heartbeatPanelOpen && (
                   <ToolPanel
                     sessionId={sessionId}
                     project={sessionProject}
