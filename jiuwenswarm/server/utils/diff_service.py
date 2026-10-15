@@ -63,12 +63,21 @@ def _load_file_ops_data(path: Path) -> dict[str, Any]:
     逻辑对两种来源无差别。
     """
     if path.name.endswith(".jsonl"):
-        # 懒加载：flash 工具链不该被 server.utils 的顶层 import 拖起（且存在
-        # flash rails → common → server 的反向依赖链，顶层 import 会成环）。
-        from jiuwenswarm.agents.harness.flash.tools.flash_file_history import (
-            load_flash_history,
-        )
-
+        try:
+            from jiuwenswarm.agents.harness.flash.tools.flash_file_history import (
+                load_flash_history,
+            )
+        except ImportError:
+            # flash 包被裁剪的发行版里残留的 .jsonl 账本：按空账本降级
+            # （与损坏 JSON 的容忍度对齐——warning + 跳过），不让 ImportError
+            # 穿透上层 ``except (json.JSONDecodeError, OSError)`` 打断整条
+            # diff / rewind 链；stock 账本照常可见（评审意见：懒 import 失败面）。
+            logger.warning(
+                "_load_file_ops_data: flash module unavailable, "
+                "skip jsonl ledger %s",
+                path,
+            )
+            return {}
         return load_flash_history(path)
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -80,10 +89,20 @@ def _save_file_ops_data(path: Path, data: dict[str, Any]) -> None:
     不交错）；JSON 维持 stock 的整文件写法。
     """
     if path.name.endswith(".jsonl"):
-        from jiuwenswarm.agents.harness.flash.tools.flash_file_history import (
-            rewrite_flash_history,
-        )
-
+        try:
+            from jiuwenswarm.agents.harness.flash.tools.flash_file_history import (
+                rewrite_flash_history,
+            )
+        except ImportError:
+            # 与 _load_file_ops_data 对称：flash 模块缺失时跳过重写并留痕，
+            # 残留账本保持原样（不写半截），调用方（truncate/restore）继续
+            # 处理其余账本。
+            logger.warning(
+                "_save_file_ops_data: flash module unavailable, "
+                "skip rewrite of %s",
+                path,
+            )
+            return
         rewrite_flash_history(path, data)
         return
     path.write_text(
