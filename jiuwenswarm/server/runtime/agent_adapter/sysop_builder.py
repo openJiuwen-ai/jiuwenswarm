@@ -1488,18 +1488,21 @@ def rebind_team_sandbox_specs(spec: Any) -> int:
     teardown（mode==SANDBOX 分支仍会摘它）。故 assembly 不得传空 team_id；
     前缀本身（空后缀）在此直接跳过。
 
-    **只扫 ``spec.agents`` 顶层，不下潜 ``subagents``**：嵌套 ``SubAgentSpec.sys_operation``
-    同样会被压平，但实测它是**自愈**的——父成员 ``resolve()`` 先注册别名，压平的
-    子代理 spec 走库基类 ``resolve()`` 的 get-or-create 恰好命中别名（共享 owner 容器、
-    dispose 时 keyless 不伤 owner 行），行为正确（见
-    ``test_flattened_subagent_spec_self_heals_via_registered_alias``）。
-    若未来自持/无 owner 顺序发生变化，需重新审计这里。
+    **递归换回 ``member_spec.subagents``**：``resolve_parts`` 里 subagents 先构建
+    （``deep_agent_spec.py:577-585``，每个 ``SubAgentSpec.build():406`` 就地
+    ``resolve()``），成员自身 ``:587`` 才轮到——**顺序与直觉相反**。若只换回成员层，
+    第一个构建的成员其压平的子代理 spec 会先走库基类 get-or-create：别名还没登记，
+    add 又撞同 key 冲突被吞成 None → factory 兜 LOCAL → 子代理跑宿主机；第二个成员
+    起才"自愈"（此时别名已被前一个成员登记）。递归换回让子代理也走
+    :meth:`TeamSharedSandboxSpec.resolve` 的 owner-lookup 路径，与遍历顺序无关。
+    ``SubAgentSpec`` 没有 ``subagents`` 字段，一层即到底。
 
     Args:
         spec: ``TeamAgentSpec``（或任何带 ``.agents`` 映射的对象）。就地修改。
 
     Returns:
-        被换回子类的成员 spec 数量；0 表示无需修复或已全部是子类。
+        被换回子类的 spec 总数（成员与其 subagents 分别计数）；0 表示无需修复或
+        已全部是子类。
     """
     agents = getattr(spec, "agents", None)
     if not isinstance(agents, dict):
@@ -1535,6 +1538,45 @@ def rebind_team_sandbox_specs(spec: Any) -> int:
             "member=%s ref_id=%s",
             type(current).__name__,
             key,
+            raw_id,
+        )
+        rebound += _rebind_subagent_specs(agents[key], label=key)
+    return rebound
+
+
+def _rebind_subagent_specs(member_spec: Any, *, label: str) -> int:
+    """换回 ``member_spec.subagents`` 里被压平的 team 沙箱 spec（一层，就地修改）。
+
+    ``SubAgentSpec.sys_operation`` 的声明类型同样是基类（``deep_agent_spec.py:366``），
+    嵌套往返同样压平。换回后子代理构建期走 :meth:`TeamSharedSandboxSpec.resolve`
+    的 owner-lookup，而不是库基类的 get-or-create——后者在"subagents 先于成员自身
+    resolve"的真实顺序下，第一个成员必然撞 key 冲突拿 None。
+    """
+    subagents = getattr(member_spec, "subagents", None)
+    if not isinstance(subagents, list):
+        return 0
+    rebound = 0
+    for index, sub_spec in enumerate(subagents):
+        current = getattr(sub_spec, "sys_operation", None)
+        if current is None or isinstance(current, TeamSharedSandboxSpec):
+            continue
+        raw_id = str(getattr(current, "id", "") or "")
+        if not raw_id.startswith(_TEAM_SANDBOX_REF_ID_PREFIX) or raw_id == _TEAM_SANDBOX_REF_ID_PREFIX:
+            continue
+        restored = TeamSharedSandboxSpec(
+            id=raw_id,
+            mode=current.mode,
+            work_config=current.work_config,
+            gateway_config=current.gateway_config,
+            team_id=raw_id[len(_TEAM_SANDBOX_REF_ID_PREFIX):],
+        )
+        subagents[index] = sub_spec.model_copy(update={"sys_operation": restored})
+        rebound += 1
+        logger.info(
+            "[sysop_builder] subagent 的 team sandbox spec 已换回 TeamSharedSandboxSpec："
+            "member=%s subagent=%s ref_id=%s",
+            label,
+            index,
             raw_id,
         )
     return rebound

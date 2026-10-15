@@ -16,7 +16,11 @@ from types import SimpleNamespace
 import pytest
 
 from openjiuwen.agent_teams.schema.blueprint import LeaderSpec, TeamAgentSpec
-from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec, SysOperationSpec
+from openjiuwen.agent_teams.schema.deep_agent_spec import (
+    DeepAgentSpec,
+    SysOperationSpec,
+    WorkspaceSpec,
+)
 from openjiuwen.core.sys_operation import (
     LocalWorkConfig,
     OperationMode,
@@ -747,42 +751,101 @@ def test_owner_teardown_cascades_to_its_aliases(monkeypatch):
     assert builder.release_borrowed_sandbox_aliases_of(sysops_a[_OWNER_ID]) == 0
 
 
-def test_flattened_subagent_spec_self_heals_via_registered_alias(monkeypatch):
-    """压平的 subagent spec（rebind 不下潜 subagents）经库基类 resolve() 自愈（P3b）。
+def test_rebind_recurses_into_subagents_so_first_member_builds_clean(monkeypatch):
+    """**真实顺序回归**：subagents 先于成员自身 resolve（deep_agent_spec.py:577-585 →
+    :587，SubAgentSpec.build():406 就地 resolve）。
 
-    ``SubAgentSpec.build():406`` 对嵌套的 ``sys_operation`` 调库基类 ``resolve()``——
-    get-or-create 恰好命中父成员先注册的别名：拿到共享 owner 容器的句柄，dispose 时
-    keyless 不伤 owner 行。故 rebind 只扫 ``spec.agents`` 顶层是**够**的——前提是
-    父成员先构建（实际顺序由 ``resolve_parts`` 先成员后 subagents 保证）。
+    修复前 rebind 只换回成员层：第一个成员的压平子代理先走库基类 get-or-create——
+    别名未登记、add 撞同 key 冲突被吞成 None → factory.py:337 兜 LOCAL → 子代理跑
+    宿主机；第二个成员起才"自愈"（此时别名已被前一个成员的 resolve 登记）。递归
+    换回后子代理也走 owner-lookup，与遍历顺序无关。本用例走真实 ``resolve_parts``。
     """
+    from openjiuwen.agent_teams.schema.deep_agent_spec import SubAgentSpec
+    from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+
     card = _make_sandbox_card()
     owner_map, sysops = _owner_map_with(card)
-    rm = _patch_resource_mgr(monkeypatch, owner_map, sysops)
+    _patch_resource_mgr(monkeypatch, owner_map, sysops)
     _patch_card_build(monkeypatch, card)
-    spec = builder.create_sandbox_sysop_spec(
+    injected = builder.create_sandbox_sysop_spec(
         "http://sandbox.invalid", "jiuwenbox", team_id="unit_team", startup_mode="external",
     )
-    assert spec.resolve() is not None, "前置条件：父成员先注册别名"
+    spec = _make_team_spec()
+    spec.agents["teammate"] = DeepAgentSpec(
+        sys_operation=injected,
+        workspace=WorkspaceSpec(),
+        subagents=[SubAgentSpec(
+            agent_card=AgentCard(id="sub", name="sub"),
+            system_prompt="",
+            workspace=WorkspaceSpec(),
+            sys_operation=injected,
+        )],
+    )
 
-    # 压平的 subagent spec（无 team_id、无 rebind）
+    restored = _nested_roundtrip(spec)
+    # 成员与 subagent 都被压平，递归换回后各自 +1
+    assert builder.rebind_team_sandbox_specs(restored) == 2
+    teammate = restored.agents["teammate"]
+    assert isinstance(teammate.sys_operation, builder.TeamSharedSandboxSpec)
+    assert isinstance(teammate.subagents[0].sys_operation, builder.TeamSharedSandboxSpec)
+
+    parts = teammate.resolve_parts(None)
+    sub_cfg = parts.config.subagents[0]
+    assert type(parts.config.sys_operation).__name__ == "_BorrowedSandboxHandle"
+    sub_sysop = sub_cfg.sys_operation
+    assert type(sub_sysop).__name__ == "_BorrowedSandboxHandle", (
+        f"第 1 个成员的子代理未借到沙箱：{type(sub_sysop).__name__}（会兜 LOCAL 跑宿主机）"
+    )
+    assert sub_sysop._run_config is sysops[_OWNER_ID]._run_config
+
+
+def test_flat_subagent_spec_self_heals_from_second_member_onward(monkeypatch):
+    """未被 rebind 覆盖的压平子代理 spec：分界点在第二个成员（真实顺序）。
+
+    rebind 递归兜住本模块注入的 subagents；其他生产方若绕过本模块直接注入压平的
+    子代理 spec，则第 1 个成员构建期拿 None（别名未登记 + key 冲突被吞），第 2 个
+    成员起靠别名登记自愈。此用例锁定真实分界点，防止误当成无条件自愈。
+    """
+    from openjiuwen.agent_teams.schema.deep_agent_spec import SubAgentSpec
+    from openjiuwen.core.single_agent.schema.agent_card import AgentCard
     from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec as _Base
 
-    flat = _Base(
-        id="team_sandbox_ref_unit_team",
-        mode=OperationMode.SANDBOX,
-        work_config=LocalWorkConfig(shell_allowlist=None),
-        gateway_config=card.gateway_config,
+    card = _make_sandbox_card()
+    owner_map, sysops = _owner_map_with(card)
+    _patch_resource_mgr(monkeypatch, owner_map, sysops)
+    _patch_card_build(monkeypatch, card)
+    injected = builder.create_sandbox_sysop_spec(
+        "http://sandbox.invalid", "jiuwenbox", team_id="unit_team", startup_mode="external",
     )
-    resolved = flat.resolve()
+    flat_sub = _Base(
+        id=injected.id,
+        mode=injected.mode,
+        work_config=injected.work_config,
+        gateway_config=injected.gateway_config,
+    )
 
-    assert type(resolved).__name__ == "_BorrowedSandboxHandle", (
-        f"自愈失败：{type(resolved).__name__}"
+    def build_member():
+        return DeepAgentSpec(
+            sys_operation=injected.model_copy(),
+            workspace=WorkspaceSpec(),
+            subagents=[SubAgentSpec(
+                agent_card=AgentCard(id="sub", name="sub"),
+                system_prompt="",
+                workspace=WorkspaceSpec(),
+                sys_operation=flat_sub.model_copy(),
+            )],
+        )
+
+    parts_m1 = build_member().resolve_parts(None)
+    sub_m1 = parts_m1.config.subagents[0].sys_operation
+    assert sub_m1 is None, f"第 1 个成员的压平子代理应拿 None（key 冲突被吞），实际 {sub_m1}"
+
+    parts_m2 = build_member().resolve_parts(None)
+    sub_m2 = parts_m2.config.subagents[0].sys_operation
+    assert type(sub_m2).__name__ == "_BorrowedSandboxHandle", (
+        f"第 2 个成员的子代理应自愈：{type(sub_m2).__name__}"
     )
-    assert resolved._run_config is sysops[_OWNER_ID]._run_config, "未借到 owner 容器"
-    assert resolved.isolation_key_template is None
-    _simulate_native_harness_dispose(rm, resolved.id)
-    assert rm.get_sys_operation(_OWNER_ID) is sysops[_OWNER_ID], "subagent dispose 误伤 owner"
-    assert rm._resource_registry._owner_map[next(iter(owner_map))] == _OWNER_ID
+    assert sub_m2._run_config is sysops[_OWNER_ID]._run_config
 
 
 def test_register_refreshes_stale_alias_when_owner_changed(monkeypatch):
@@ -791,8 +854,6 @@ def test_register_refreshes_stale_alias_when_owner_changed(monkeypatch):
     摘旧登新整段同步、无 await 边界，不存在可观察的半登记窗口；旧别名指向已废弃
     容器，刷新只会更好。
     """
-    from openjiuwen.core.sys_operation.sys_operation import SysOperation
-
     card_v1 = _make_sandbox_card(custom_id="refresh_v1")
     owner_map, sysops = _owner_map_with(card_v1)
     rm = _patch_resource_mgr(monkeypatch, owner_map, sysops)
