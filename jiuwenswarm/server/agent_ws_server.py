@@ -9,7 +9,6 @@ import datetime as _dt
 import inspect
 import json
 import logging
-import math
 import os
 import sys
 from dataclasses import dataclass
@@ -21,8 +20,6 @@ from weakref import WeakValueDictionary
 from gateway_protocol.hooks import AgentServerChatHookContext, AgentServerHookEvents
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
-
-from jiuwenswarm.server.runtime.session.history_io import run_history_io
 
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
@@ -39,7 +36,6 @@ from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
 )
-from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
@@ -75,32 +71,23 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionProvisionCommitTiming,
     SessionProvisionError,
     SessionProvisionState,
-    SessionSwitchInput,
 )
 from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
 from jiuwenswarm.server.runtime.session.session_metadata import (
     build_server_push_message,
-    get_all_sessions_metadata,
     get_session_metadata,
 )
 from jiuwenswarm.server.runtime.session.session_message_service import (
     SessionMessageExecutionResult,
     SessionMessageService,
-    SessionMessagingError,
 )
 from jiuwenswarm.server.runtime.session.session_message_store import (
     SessionMessageRecord,
     SessionMessageStore,
 )
 from jiuwenswarm.server.runtime.session.session_history import (
-    HistorySnapshotChanged,
-    InvalidHistoryCursor,
     append_history_record,
     enqueue_history_request_completion,
-    history_exists,
-    is_valid_session_id,
-    load_history_records,
-    read_history_cursor_page,
     read_member_history_records,
     read_team_history_records,
     wait_for_history_receipt,
@@ -108,7 +95,6 @@ from jiuwenswarm.server.runtime.session.session_history import (
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.mode_matrix import (
     deprecate_mode,
-    is_plan_mode,
     is_single_agent_mode,
     is_team_mode,
 )
