@@ -786,6 +786,7 @@
       "shutdown": "Shutdown",
       "error": "Error",
       "unstarted": "Unstarted",
+      "dormant": "Dormant",
       "unknown": "Unknown"
     },
     "taskStatus": {

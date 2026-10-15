@@ -770,6 +770,7 @@
       "shutdown": "已关闭",
       "error": "异常",
       "unstarted": "未启动",
+      "dormant": "休眠",
       "unknown": "未知"
     },
     "taskStatus": {

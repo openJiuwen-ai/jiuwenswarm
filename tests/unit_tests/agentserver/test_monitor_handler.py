@@ -601,6 +601,39 @@ async def test_member_spawned_event_omits_blank_display_name() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("target_status", ["shut_down", "dormant"])
+async def test_member_shutdown_event_carries_target_status(target_status: str) -> None:
+    """member_shutdown 事件透传退场终态，前端据此区分离队与休眠。"""
+    event = MonitorEvent(
+        event_type=MonitorEventType.MEMBER_SHUTDOWN,
+        team_name="team-1",
+        timestamp=123,
+        member_name="writer-1",
+        force=False,
+        target_status=target_status,
+    )
+    handler = TeamMonitorHandler(
+        _FakeMonitor(
+            members=[],
+            leader_member_name=None,
+            events=[event],
+        ),
+        "sess-monitor",
+    )
+
+    await handler.start()
+    try:
+        converted = await anext(handler.events())
+
+        assert converted["event"]["type"] == "team.member.shutdown"
+        assert converted["event"]["member_id"] == "writer-1"
+        assert converted["event"]["force"] is False
+        assert converted["event"]["target_status"] == target_status
+    finally:
+        await handler.stop()
+
+
+@pytest.mark.anyio
 async def test_member_spawned_event_includes_mode_for_ai_member() -> None:
     """验证 member_spawned 事件对 AI 成员返回 mode=role（teammate/leader 等）。"""
     event = MonitorEvent(

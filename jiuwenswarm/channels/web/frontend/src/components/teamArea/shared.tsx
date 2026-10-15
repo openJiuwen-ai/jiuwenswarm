@@ -325,6 +325,8 @@ export const getMemberStatusKey = (member: TeamMember): string => {
   if (status.includes('execut') || status.includes('running') || status.includes('busy') || status.includes('working')) return 'running';
   if (status.includes('ready') || status.includes('idle')) return 'idle';
   if (status.includes('restart')) return 'restarting';
+  // 休眠成员已退场但仍在名册上，被点名即可唤醒，不能归到 shutdown。
+  if (status.includes('dormant')) return 'dormant';
   if (status.includes('shutdown') || status.includes('down')) return 'shutdown';
   if (status.includes('error') || status.includes('fail')) return 'error';
   if (status.includes('unstarted')) return 'unstarted';
@@ -338,6 +340,7 @@ export const getMemberStatusDotClass = (member: TeamMember): string => {
   if (key === 'error') return 'bg-red-500';
   if (key === 'restarting') return 'bg-amber-500';
   if (key === 'shutdown') return 'bg-gray-400';
+  if (key === 'dormant') return 'bg-indigo-300';
   return 'bg-slate-300';
 };
 

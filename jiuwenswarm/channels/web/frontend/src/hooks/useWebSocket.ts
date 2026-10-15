@@ -5350,6 +5350,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             workflow_run_id?: string;
             agent_template?: string | null;
             display_name?: string | null;
+            target_status?: string;
           };
           if (e.member_id) markTeamConnectionStateChanged(sessionId, e.member_id);
           if (e.member_id && (e.status || e.new_status || e.execution_status)) {
@@ -5359,7 +5360,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           const activeSessionId = getPayloadSessionId(payload) || undefined;
           upsertHumanShareCommandFromEvent(payload, e);
           if (e.type === 'team.member.shutdown' && e.member_id) {
-            applyTeamMemberShutdown(e.member_id, activeSessionId);
+            // 休眠退场同样发 shutdown 事件，但成员仍在名册上、被点名即可唤醒；
+            // 只有终态为 shut_down（或旧后端不带 target_status）时才移出名册，
+            // 休眠成员随后由 status_changed → dormant 更新状态。
+            if (e.target_status !== 'dormant') {
+              applyTeamMemberShutdown(e.member_id, activeSessionId);
+            }
           } else if (e.type === 'team.member.status_changed' && e.member_id && e.new_status) {
             useSessionStore.getState().updateTeamMemberStatus(
               sessionId,
