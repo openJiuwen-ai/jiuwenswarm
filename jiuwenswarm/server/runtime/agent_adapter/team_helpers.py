@@ -797,8 +797,6 @@ async def _prepare_first_team_request(
     query: Any,
 ) -> _FirstTeamRequestPreparation:
     """Apply first-request preprocessing shared by cold starts and fallback starts."""
-    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-
     hide_dm = False
     debug = False
 
