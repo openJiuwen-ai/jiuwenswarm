@@ -1,5 +1,10 @@
 # One-shot Process CLI machine execution
 
+> CLI entrypoints retired: `jiuwenswarm-process` no longer accepts
+> `--query-json`, `--run-json`, or `--run-jsonl`. The machine protocol and SDK
+> implementations are retained for later work. The invocation examples below
+> describe the previous transport and do not run with the current CLI.
+
 For ordinary terminal commands with a prompt, see
 [model connection flags](Process_CLI_Model.md).
 

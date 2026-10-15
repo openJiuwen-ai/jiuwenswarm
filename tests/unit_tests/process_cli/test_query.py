@@ -232,8 +232,8 @@ class Guard(importlib.abc.MetaPathFinder):
         if fullname.startswith(('jiuwenswarm.runtime', 'jiuwenswarm.channels.process_cli.client', 'jiuwenswarm.channels.process_cli.repl')):
             raise AssertionError('Runtime imported for invalid input')
 sys.meta_path.insert(0, Guard())
-from jiuwenswarm.channels.process_cli.main import main
-main()
+from jiuwenswarm.channels.process_cli.query_entry import execute_query_source
+raise SystemExit(execute_query_source('-'))
 """
     process = subprocess.run(
         [sys.executable, "-c", code, "--query-json", "-"],

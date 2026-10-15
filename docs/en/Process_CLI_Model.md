@@ -17,16 +17,17 @@ AgentServer, Web, or TUI service is required.
 | `--model-provider` | `OpenAI` or `Anthropic`, case sensitive | Requires `--api-base`. Defaults to the selected provider for an existing model and `OpenAI` for a new model. |
 
 The global index is zero based, as in the Runtime model catalog. These flags
-require a task prompt and cannot be combined with machine protocol entrypoints.
-REPL model selection continues to use `/model`.
+require a task prompt. REPL model selection continues to use `/model`.
+The `--query-json`, `--run-json`, and `--run-jsonl` entrypoints have been removed;
+the command no longer accepts machine JSON/JSONL request documents.
+`--output json` and `--output jsonl` only select the task output format.
 
 Noninteractive commands with a task prompt support only normal single-Agent
 modes, such as `--mode agent.code.normal` and `--mode agent.work.normal`.
 Selecting Plan or Team with `--mode`, including historical aliases, exits with
 code `2` before Runtime starts. This also applies to `--session` continuation
 and every `--output` format. Interactive mode switching and `/plan` remain
-available. Machine JSON/JSONL entrypoints have their own mode and interaction
-protocol, reject `--mode`, and are unaffected by this restriction.
+available.
 
 Select the environment with a complete `--mode`: `agent.code.normal` for code
 and `agent.work.normal` for general work. The separate `--work-mode` CLI option

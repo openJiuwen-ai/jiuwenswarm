@@ -46,6 +46,12 @@ from jiuwenswarm.channels.process_cli.main import main
 main()
 """
 
+_GUARDED_INTERNAL_ENTRY = _GUARDED_MAIN.replace(
+    "from jiuwenswarm.channels.process_cli.main import main\nmain()",
+    "from jiuwenswarm.channels.process_cli.machine_entry import execute_source\n"
+    "raise SystemExit(execute_source('-', json_lines=True))",
+)
+
 _FAKE_CLIENT_MAIN = """
 import asyncio
 import os
@@ -145,8 +151,11 @@ machine.bind_agent = lambda *_args, **_kwargs: None
 async def fake_flush_session_writes():
     note('session-writes')
 machine._flush_session_writes = fake_flush_session_writes
-from jiuwenswarm.channels.process_cli.main import main
-main()
+from jiuwenswarm.channels.process_cli.diagnostics import capture_diagnostics
+from jiuwenswarm.channels.process_cli.machine_entry import execute_source
+with capture_diagnostics(capture_stdout=False, debug=False) as streams:
+    code = execute_source('-', json_lines=True)
+raise SystemExit(code)
 """
 
 
@@ -168,10 +177,15 @@ def _environment() -> dict[str, str]:
 
 
 def _run_guarded(
-    arguments: list[str], *, document: bytes = b""
+    arguments: list[str], *, document: bytes = b"", internal: bool = False
 ) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
-        [sys.executable, "-c", _GUARDED_MAIN, *arguments],
+        [
+            sys.executable,
+            "-c",
+            _GUARDED_INTERNAL_ENTRY if internal else _GUARDED_MAIN,
+            *arguments,
+        ],
         input=document,
         capture_output=True,
         cwd=PROJECT_ROOT,
@@ -197,20 +211,18 @@ def _finish_child(process: subprocess.Popen[bytes]) -> None:
     process.communicate(timeout=5)
 
 
-def test_run_jsonl_is_an_explicit_stdin_only_flag() -> None:
+def test_run_jsonl_is_not_a_public_flag() -> None:
     parser = cli_main.build_parser()
     defaults = parser.parse_args([])
-    parsed = parser.parse_args(["--run-jsonl"])
-
-    assert defaults.run_jsonl is False
-    assert defaults.run_json is None
-    assert parsed.run_jsonl is True
-    assert parsed.run_json is None
-    assert parsed.prompt is None
-    assert "--run-jsonl" in parser.format_help()
+    assert not hasattr(defaults, "run_jsonl")
+    assert not hasattr(defaults, "run_json")
+    with pytest.raises(SystemExit) as caught:
+        parser.parse_args(["--run-jsonl"])
+    assert caught.value.code == 2
+    assert "--run-jsonl" not in parser.format_help()
 
 
-def test_run_jsonl_dispatches_to_duplex_entry_without_legacy_arguments(
+def test_removed_run_jsonl_never_dispatches_to_duplex_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, bool, bool]] = []
@@ -227,8 +239,8 @@ def test_run_jsonl_dispatches_to_duplex_entry_without_legacy_arguments(
     with pytest.raises(SystemExit) as caught:
         cli_main.main()
 
-    assert caught.value.code == 8
-    assert calls == [("-", False, True)]
+    assert caught.value.code == 2
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -245,14 +257,12 @@ def test_run_jsonl_dispatches_to_duplex_entry_without_legacy_arguments(
         ["--run-jsonl"],
     ],
 )
-def test_run_jsonl_rejects_conflicts_before_runtime_import(extra: list[str]) -> None:
+def test_removed_run_jsonl_is_rejected_before_runtime_import(extra: list[str]) -> None:
     result = _run_guarded(["--run-jsonl", *extra])
 
     assert result.returncode == 2, result.stderr
-    records = decode_jsonl(result.stdout.decode("utf-8"))
-    assert len(records) == 1
-    assert records[0].error.code == "INVALID_INPUT"
-    assert "--run-jsonl" in records[0].error.message
+    assert result.stdout == b""
+    assert b"--run-jsonl" in result.stderr
     assert b"UNEXPECTED_EXECUTION_IMPORT" not in result.stderr
 
 
@@ -260,7 +270,7 @@ def test_run_jsonl_help_exits_without_reading_input_or_loading_runtime() -> None
     result = _run_guarded(["--run-jsonl", "--help"])
 
     assert result.returncode == 0, result.stderr
-    assert b"--run-jsonl" in result.stdout
+    assert b"--run-jsonl" not in result.stdout
     assert result.stderr == b""
 
 
@@ -283,7 +293,7 @@ def test_run_jsonl_help_exits_without_reading_input_or_loading_runtime() -> None
 def test_invalid_first_line_has_one_result_without_runtime_initialization(
     document: bytes, request_id: str | None
 ) -> None:
-    result = _run_guarded(["--run-jsonl"], document=document)
+    result = _run_guarded([], document=document, internal=True)
 
     assert result.returncode == 2, result.stderr
     records = decode_jsonl(result.stdout.decode("utf-8"))
@@ -305,9 +315,7 @@ def test_invalid_first_line_has_one_result_without_runtime_initialization(
 @pytest.mark.asyncio
 async def test_first_line_starts_before_eof_and_result_follows_cleanup_with_stdin_open(
     tmp_path: Path,
-) -> (
-    None
-):
+) -> None:
     process = subprocess.Popen(
         [sys.executable, "-c", _FAKE_CLIENT_MAIN, "--run-jsonl"],
         stdin=subprocess.PIPE,
@@ -387,8 +395,7 @@ async def test_flag_conflict_exits_even_if_stdin_is_open_and_empty() -> None:
         stdout, stderr = process.communicate(timeout=5)
 
         assert process.returncode == 2, stderr
-        records = decode_jsonl(stdout.decode("utf-8"))
-        assert len(records) == 1
-        assert records[0].error.code == "INVALID_INPUT"
+        assert stdout == b""
+        assert b"--run-jsonl" in stderr
     finally:
         _finish_child(process)

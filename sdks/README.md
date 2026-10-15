@@ -1,5 +1,10 @@
 # One-shot Process SDKs (schema 0.1)
 
+> Current CLI compatibility: `jiuwenswarm-process` has removed its JSON/JSONL
+> input entrypoints. These SDK implementations are retained but still depend on
+> those retired flags, so their default transport cannot run against the current
+> CLI. SDK transport changes will be handled separately.
+
 Protocol revision 1 adds stable public event fields, configuration-independent
 `protocol.capabilities` / `protocol.schema` queries, empty tool allowlists and
 field diagnostics. See [the full protocol contract](PROTOCOL.md) and

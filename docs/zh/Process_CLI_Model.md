@@ -18,13 +18,13 @@
 
 `#索引` 使用 Runtime 模型清单中的全局位置，从 0 开始，不是同名模型的出现次数。
 终端模型参数仅用于带任务文本的非交互入口；REPL 继续使用 `/model`。
-这些参数不能与 `--query-json`、`--run-json`、`--run-jsonl` 混用。
+`--query-json`、`--run-json`、`--run-jsonl` 已从此命令移除；不再接受机器 JSON/JSONL 请求文档。
+`--output json` 和 `--output jsonl` 仅控制任务结果的输出格式。
 
 带任务文本的非交互命令仅支持单 Agent 普通模式，例如 `--mode agent.code.normal`
 和 `--mode agent.work.normal`。通过 `--mode` 指定 Plan 或 Team 模式（包括历史别名）
 会在启动 Runtime 前以退出码 `2` 拒绝；此限制也适用于 `--session` 续接命令及所有
 `--output` 格式。交互式 CLI 的模式切换和 `/plan` 保持可用。
-机器 JSON/JSONL 入口已有独立的模式与交互协议，不接受 `--mode`，不受本次限制影响。
 
 工作环境统一通过完整的 `--mode` 选择：`agent.code.normal` 表示编程环境，
 `agent.work.normal` 表示通用工作环境。终端不再接受独立的 `--work-mode` 参数。

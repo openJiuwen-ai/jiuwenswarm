@@ -210,21 +210,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--model-provider", choices=("OpenAI", "Anthropic"),
         help="API 协议提供方；需同时指定 --api-base；新模型默认 OpenAI，已配置模型沿用其提供方。",
     )
-    parser.add_argument(
-        "--query-json",
-        metavar="FILE|-",
-        help="执行一次只读 Runtime 查询，输出 query_result 后关闭 Runtime 并退出。",
-    )
-    parser.add_argument(
-        "--run-json",
-        metavar="FILE|-",
-        help="执行一份机器 JSON 请求并输出版本化 JSONL；- 从标准输入读取至 EOF。",
-    )
-    parser.add_argument(
-        "--run-jsonl",
-        action="store_true",
-        help="一次进程内按行接收 run、answer、cancel；任务结束即退出。",
-    )
     parser.add_argument("--cwd", help="工作目录；默认为当前目录。")
     parser.add_argument("--project-dir", help="稳定的项目目录；默认与工作目录相同。")
     parser.add_argument(
@@ -313,17 +298,6 @@ def _activate_requested_cwd(
     args.cwd = str(target)
 
 
-def _report_machine_failure(code: int, stderr: TextIO, log_path: Path | None) -> None:
-    if code == 0:
-        return
-    detail = f"；诊断日志：{log_path}" if log_path else ""
-    _write_stderr(
-        stderr,
-        f"jiuwenswarm-process: 请求失败（退出码 {code}）；"
-        f"详见标准输出的错误记录{detail}",
-    )
-
-
 def _write_stderr(stream: TextIO, message: str) -> None:
     """Write a user-visible CLI message independently of diagnostic logging."""
     stream.write(f"{message}\n")
@@ -342,43 +316,6 @@ def main() -> None:
 
         sys.exit(execute_session_query(args, parser, sys.argv[1:]))
     _configure_forwarded_stdio(args)
-    if args.query_json is not None:
-        standalone = sys.argv[1:] in (
-            ["--query-json", args.query_json],
-            [f"--query-json={args.query_json}"],
-        )
-        with capture_diagnostics(capture_stdout=False, debug=args.debug) as streams:
-            from jiuwenswarm.channels.process_cli.query_entry import (
-                execute_query_source,
-            )
-
-            code = execute_query_source(
-                args.query_json, conflicting_arguments=not standalone
-            )
-            _report_machine_failure(code, streams.stderr, streams.log_path)
-        sys.exit(code)
-    if args.run_jsonl:
-        with capture_diagnostics(capture_stdout=False, debug=args.debug) as streams:
-            from jiuwenswarm.channels.process_cli.machine_entry import execute_source
-
-            code = execute_source(
-                "-",
-                json_lines=True,
-                conflicting_arguments=sys.argv[1:] != ["--run-jsonl"],
-            )
-            _report_machine_failure(code, streams.stderr, streams.log_path)
-        sys.exit(code)
-    if args.run_json is not None:
-        command_args = sys.argv[1:]
-        standalone = command_args == ["--run-json", args.run_json]
-        standalone = standalone or command_args == [f"--run-json={args.run_json}"]
-        conflicting = not standalone
-        with capture_diagnostics(capture_stdout=False, debug=args.debug) as streams:
-            from jiuwenswarm.channels.process_cli.machine_entry import execute_source
-
-            code = execute_source(args.run_json, conflicting_arguments=conflicting)
-            _report_machine_failure(code, streams.stderr, streams.log_path)
-        sys.exit(code)
     args.work_mode = resolve_cli_work_mode(args.mode, args.work_mode)
     worker_interrupt = _WindowsWorkerInterruptController(
         enabled=bool(getattr(args, "_interactive_worker", False)),

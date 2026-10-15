@@ -173,9 +173,8 @@ class BlockRuntime(importlib.abc.MetaPathFinder):
         if fullname.startswith(("jiuwenswarm.runtime", "openjiuwen")):
             raise AssertionError("Runtime imported for protocol discovery")
 sys.meta_path.insert(0, BlockRuntime())
-from jiuwenswarm.channels.process_cli.main import main
-sys.argv = ["cli", "--query-json", "-"]
-raise SystemExit(main())
+from jiuwenswarm.channels.process_cli.query_entry import execute_query_source
+raise SystemExit(execute_query_source('-'))
 """
     document = {
         "schema_version": "0.1",
