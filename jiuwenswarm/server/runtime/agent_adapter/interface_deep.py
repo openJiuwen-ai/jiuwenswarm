@@ -78,8 +78,14 @@ from openjiuwen.harness.rails import (
     unconfigure_skill_evolution,
 )
 from openjiuwen.harness.rails.personal_context import PersonalContextRail
-from openjiuwen.harness.personal_context.im.search_tool import ImSearchTool
-from openjiuwen.harness.personal_context.im.sqlite_search import SqliteImSearchStore
+# personal_context.im 子模块仅较新 openjiuwen 提供；缺失时降级（不挂载 im_search 工具），
+# 与下方 PersonalContextRail 的可选语义、以及本文件 TTSEConfig 的降级写法保持一致。
+try:
+    from openjiuwen.harness.personal_context.im.search_tool import ImSearchTool
+    from openjiuwen.harness.personal_context.im.sqlite_search import SqliteImSearchStore
+except ImportError:
+    ImSearchTool = None  # type: ignore[misc, assignment]
+    SqliteImSearchStore = None  # type: ignore[misc, assignment]
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 try:
     from openjiuwen.harness.rails.evolution import (
@@ -1718,12 +1724,15 @@ def _model_routing_enabled(config: dict[str, Any] | None) -> bool:
 
     relay 侧可经 spawn env 注入 ``JIUWENSWARM_MODEL_ROUTING_ENABLED``（进程级开关，
     仿 JIUWENSWARM_CODE_COAUTHOR_HEADER_ENABLED）；env 显式设置时优先于 config.yaml。
+
+    判定委托给 rail 侧 ``model_routing_enabled``：swarm 成员 provider（``swarm.model_routing``）
+    读的是同一个函数，两处不能各读一遍开关。
     """
-    enabled = _parse_bool((config or {}).get("model_routing", {}).get("enabled"))
-    env_val = os.getenv("JIUWENSWARM_MODEL_ROUTING_ENABLED")
-    if env_val is not None and env_val.strip():
-        enabled = _parse_bool(env_val)
-    return enabled
+    from jiuwenswarm.agents.harness.common.rails.model_routing.model_routing_rail import (
+        model_routing_enabled,
+    )
+
+    return model_routing_enabled(config)
 
 
 def _resolve_instance_config_base(config_base: dict[str, Any] | None) -> dict[str, Any]:
@@ -5883,6 +5892,29 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] enable_routing injected: value=True"
             )
 
+    @staticmethod
+    def _inject_request_id_into_inputs(
+        request: AgentRequest, inputs: dict[str, Any]
+    ) -> None:
+        """把 ``request.request_id`` 注入 ``inputs["run"]["context"]["extra"]["request_id"]``。
+
+        供 ``ModelRoutingRail.before_invoke`` 在 invoke 起点重绑日志的 ``[req=]``
+        ContextVar。agent 执行跑在与 handler **不同的 task**（warm-pool / 长生命周期
+        复用），其 ContextVar 可能是**上一个请求**捕获的陈旧值，导致 rail 决策日志
+        带错 req 标签。这里把本请求 id 作为**数据**随 inputs 传入（与 model_selection /
+        enable_routing 同一条通道，逐请求正确），rail 侧据此重绑即可修正标签。
+        """
+        rid = str(getattr(request, "request_id", "") or "").strip()
+        if not rid:
+            return
+        run_extra = (
+            inputs.setdefault("run", {})
+            .setdefault("context", {})
+            .setdefault("extra", {})
+        )
+        if isinstance(run_extra, dict):
+            run_extra["request_id"] = rid
+
     def _refresh_multimodal_configs(
         self,
         config_base: dict[str, Any],
@@ -6478,14 +6510,8 @@ class JiuWenSwarmDeepAdapter:
     @staticmethod
     def _build_model_from_entry(mcc: dict, mco: dict) -> Model:
         """根据单个模型条目的 model_client_config / model_config_obj 构建 Model 实例。"""
-        # 档位关键字（fast/balanced/extreme/auto）是宿主前端的选择器，不是模型 id。
-        # 无 rail 的消费方（子代理继承 _deep_config.model、code 模式、DeepResearch 子进程）
-        # 会把它直送上游 → Invalid model。在构建 Model 的唯一入口翻成具体模型；只改
-        # Model 的请求模型名，不动 mcc（cache key / identity 仍按档位登记）。
-        from jiuwenswarm.agents.harness.common.model_gears import resolve_model_gear
-
-        name = resolve_model_gear(mcc.get("model_name", ""))
-        # models.json 在宿主 spawn 前落盘；未登录时官方通道条目 api_base/api_key 为空，
+        name = mcc.get("model_name", "")
+        # models.json 在 relay spawn 前落盘；未登录时 maas 条目 api_base/api_key 为空，
         # Model 构建会失败（整批跳过，四档路由只能 keep current）。登录后 invoke 同步
         # 把官方通道凭证 env（API_BASE/API_KEY/default_headers）注入 tip，这里在 api_base
         # 缺失时原位回填：仅当候选 base 命中官方通道端点标记才填，避免把自定义 OpenAI
@@ -7149,7 +7175,7 @@ class JiuWenSwarmDeepAdapter:
             config.model_config_obj = model.model_config
         # 与 ModelRoutingRail 同口径：主模型切换后同步压缩器，避免压缩仍用无效模型名。
         try:
-            from jiuwenswarm.agents.harness.common.model_gears import (
+            from jiuwenswarm.agents.harness.common.rails.model_routing.compressor_sync import (
                 sync_agent_compressor_models,
             )
 
@@ -9943,9 +9969,8 @@ class JiuWenSwarmDeepAdapter:
         - 使能：config.yaml ``model_routing.enabled`` = true，或进程级 env
           ``JIUWENSWARM_MODEL_ROUTING_ENABLED``（relay spawn 注入，见 _model_routing_enabled）。
         - 始终真切换（apply_routing=True）。
-        - 模型选择由前端下拉框与具体模型同级：四档（fast / balanced / extreme / auto）
-          与具体模型统一经 frame ``params.model_name`` 注入（四档写死模式，或具体
-          模型名），见 ModelRoutingRail。
+        - 只对 auto 档生效：relay 置 ``params.enable_routing=True`` 时 rail 跑分类器，
+          score > 50 换 glm-5.2，否则保留 relay 下发的模型；具体模型名走 skip 分支。
         - 能力表来自 ``routing_state/models.json``（sidecar）或 config.yaml ``models.defaults``
           + ``models.vision``（后者作 model_type="vision" 候选）；model_builder 传
           _build_model_from_entry 使能力表带 Model 对象（真切换前置）。
@@ -12494,19 +12519,25 @@ class JiuWenSwarmDeepAdapter:
 
             # Mount the read-only im_search tool under the same switch so the
             # agent can retrieve learned IM history without being told to.
+            # im_search 依赖 openjiuwen 的 personal_context.im；缺失时静默降级（不挂载）。
+            _im_search_available = ImSearchTool is not None and SqliteImSearchStore is not None
             self._im_search_tools, self._im_search_tools_registered = (
                 self._sync_tool_group(
                     current_tools=self._im_search_tools,
                     registered=self._im_search_tools_registered,
-                    enabled=True,
-                    create_fn=lambda: [
-                        ImSearchTool(
-                            SqliteImSearchStore(
-                                get_user_workspace_dir() / ".personal_context"
-                            ),
-                            language=self._resolve_runtime_language(),
-                        )
-                    ],
+                    enabled=_im_search_available,
+                    create_fn=lambda: (
+                        [
+                            ImSearchTool(
+                                SqliteImSearchStore(
+                                    get_user_workspace_dir() / ".personal_context"
+                                ),
+                                language=self._resolve_runtime_language(),
+                            )
+                        ]
+                        if _im_search_available
+                        else []
+                    ),
                     warn_label="im search tool",
                 )
             )
@@ -19455,6 +19486,7 @@ class JiuWenSwarmDeepAdapter:
         self._inject_extension_config_into_inputs(inputs)
         self._inject_model_selection_into_inputs(request, inputs)
         self._inject_model_routing_into_inputs(request, inputs)
+        self._inject_request_id_into_inputs(request, inputs)
 
         _req_model = (request.params.get("model_name") or "") if isinstance(request.params, dict) else ""
         if not self._has_valid_model_config(_req_model):
@@ -20250,6 +20282,7 @@ class JiuWenSwarmDeepAdapter:
         self._inject_extension_config_into_inputs(inputs)
         self._inject_model_selection_into_inputs(request, inputs)
         self._inject_model_routing_into_inputs(request, inputs)
+        self._inject_request_id_into_inputs(request, inputs)
 
         is_skill_turbo_resume_request = bool(_params.get("answers")) and (
             str(_params.get("source") or "").strip() == "ask_user_interrupt"

@@ -541,8 +541,14 @@ async def test_agent_non_stream_slash_followup_continues_into_runner(monkeypatch
         {"query": "/evolve code-runner"},
     )
 
+    # run.context.extra.request_id 由 adapter 逐请求注入，供 ModelRouting rail
+    # 重绑日志的 [req=] 标签（agent 跑在跨请求复用的 task 上，ContextVar 可能是陈旧值）。
     assert seen_inputs == [
-        {"query": "review and evolve code-runner", "_invoke_turn_id": "req-followup"}
+        {
+            "query": "review and evolve code-runner",
+            "run": {"context": {"extra": {"request_id": "req-followup"}}},
+            "_invoke_turn_id": "req-followup",
+        }
     ]
     assert response.ok is True
     assert response.payload == {"content": "agent completed"}
@@ -582,7 +588,11 @@ async def test_agent_stream_slash_followup_continues_into_runner(monkeypatch):
         chunks.append(chunk)
 
     assert seen_inputs == [
-        {"query": "review and simplify code-runner", "_invoke_turn_id": "req-followup-stream"}
+        {
+            "query": "review and simplify code-runner",
+            "run": {"context": {"extra": {"request_id": "req-followup-stream"}}},
+            "_invoke_turn_id": "req-followup-stream",
+        }
     ]
     assert chunks[0].payload == {"event_type": "chat.delta", "content": "agent delta"}
     assert chunks[-1].is_complete is True

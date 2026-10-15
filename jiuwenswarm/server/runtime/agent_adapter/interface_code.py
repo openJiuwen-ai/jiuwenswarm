@@ -762,11 +762,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     self._build_a2a_outbound_toolkit_rail,
                 ),
             )
-            # 四档档位路由（ModelRoutingRail）同样只在单 agent code 模式挂载。
-            # 档位翻译已收敛到 relay 侧：relay 下发的 params.model_name 恒为**具体模型名**，
-            # rail 的 _MODE_MODEL_MAP 只认四个档位关键字，拿到具体名直接走 skip 分支
-            # （不切模型、不注入 thinking）。auto 档另置 params.enable_routing=True，
-            # rail 据此打日志后 return（本阶段只观察，不做路由）。
+            # 模型路由（ModelRoutingRail）只在单 agent code 模式挂载：auto 档
+            # （params.enable_routing=True）跑分类器、超阈值才切模型，具体模型名走 skip。
             # code.team / team.plan 由 relay 侧翻成具体 id，故与 team profile 一并排除。
             rail_infos.append(
                 _RailBuildInfo(

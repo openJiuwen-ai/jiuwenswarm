@@ -89,6 +89,10 @@ def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
 # provider name re-exported from the registry (no hard-coded strings).
 _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.RUNTIME_PROMPT,
+    # auto 档（relay 下发 enable_routing）成员级路由：每个成员各自跑分类器。
+    # 自身按 config.yaml::model_routing.enabled + JIUWENSWARM_MODEL_ROUTING_ENABLED
+    # 门控，关闭时 provider 返回 None（不挂载）。
+    registry.MODEL_ROUTING,
     registry.REQUEST_SCOPED_MCP_TOOLS,
     registry.TEAM_SKILL_STORAGE_POLICY,
     registry.TEAM_SHARED_SKILL_LINK_REFRESH,
@@ -140,6 +144,8 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
 # carry params and are appended separately.
 _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_RUNTIME_PROMPT,
+    # 同 _COMMON_RAIL_NAMES：code.team / team.plan 成员也要能 auto 档路由。
+    registry.MODEL_ROUTING,
     registry.REQUEST_SCOPED_MCP_TOOLS,
     registry.RESPONSE_PROMPT,
     registry.STREAM_EVENT,

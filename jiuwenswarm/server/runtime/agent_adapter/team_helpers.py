@@ -2152,6 +2152,11 @@ async def process_team_message_stream(
                 "supports_user_interaction",
                 request.params.get("supports_user_interaction") is not False,
             )
+            # auto 档开关：成员 rail 拿不到 run_context，改从自身
+            # BuildContext.request_metadata 读；这里让它随 build_context_seed 带到成员侧。
+            request_metadata.setdefault(
+                "enable_routing", request.params.get("enable_routing") is True
+            )
         resolved_mode = str(request_metadata.get("mode") or "").strip()
         # Relay-provided model_ref is authoritative for a uniform selection or
         # a member-level auto assignment. A name-only request remains a
