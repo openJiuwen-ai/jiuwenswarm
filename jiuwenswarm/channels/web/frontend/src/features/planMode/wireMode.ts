@@ -66,5 +66,8 @@ export function isPlanWireMode(wireMode: string | undefined): boolean {
 export function stripPlanSuffix(wireMode: string | undefined): string {
   if (wireMode === 'agent.plan') return 'agent';
   if (wireMode === 'team.plan.normal' || wireMode === 'team.plan.code') return 'team';
+  // 后端 legacy 归一会把 team.plan.normal / team.plan.code 折叠为 canonical
+  // `team.plan` 落盘（server/handlers/_shared.py），刷新 / 重进会话恢复的就是该值。
+  if (wireMode === 'team.plan') return 'team';
   return typeof wireMode === 'string' && wireMode ? wireMode : 'agent';
 }

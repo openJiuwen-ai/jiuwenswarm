@@ -626,9 +626,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // 就该跟着消失，不能靠"目标是否存在"续命——目标存在与否、当前状态、编辑/暂停/删除，已经由
   // 输入框上方常驻的 GoalBar 完整覆盖，工具栏这里再挂一份重复的常驻入口只会显得"选择没解除"。
   const goalTagVisible = canUseGoalMenu && goalArmed;
-  // Plan 是持续开关（不是 Goal 那种"下一条消息生效"的过渡态）：打开后一直用
-  // agent.plan 发送，直到用户点叉或后端推 plan.mode_exited。
-  // 和 Goal 一样只对单 agent 开放，集群模式不提供 Plan 入口。
+  // Plan 是持续开关（不是 Goal 那种"下一条消息生效"的过渡态）：打开后一直按
+  // 基础模式拼 agent.plan / team.plan.* 发送，直到用户点叉或后端推 plan.mode_exited。
+  // 单 agent 与集群均开放 Plan 入口（集群 profile 由 work_mode 决定）。
   const planActive = usePlanStore((s) => s.runtimes[activeSessionId ?? '']?.active ?? false);
   const planPendingExplicitEntry = usePlanStore(
     (s) => s.runtimes[activeSessionId ?? '']?.pendingExplicitEntry ?? false,
