@@ -1482,11 +1482,22 @@ class TaskExecutionRail(DeepAgentRail):
         Attach one internal tool call so the loop continues; the tool body
         is replaced with an instruction to call todo_modify. A second
         text-only response in the same invoke is left alone.
+
+        Not applied when the model output was truncated (``finish_reason``
+        ``length``): the truncation retry persists this assistant message
+        without a matching tool result. Not applied on the last ReAct
+        iteration, which has no room for the follow-up reply. ``force_finish``
+        paths (deepresearch direct display and similar) never reach this
+        hook and stay on their existing end behavior.
         """
         if self._todo_close_nudge_used or ctx.session is None:
             return
         response = getattr(ctx.inputs, "response", None)
         if response is None or getattr(response, "tool_calls", None):
+            return
+        if str(getattr(response, "finish_reason", "") or "") == "length":
+            return
+        if self._is_last_react_iteration(ctx):
             return
         content = str(getattr(response, "content", None) or "").strip()
         if not content:
@@ -1494,6 +1505,8 @@ class TaskExecutionRail(DeepAgentRail):
         open_tasks = self._started_in_progress_tasks()
         if not open_tasks:
             return
+        # 流式正文已经推给前端。历史里留下这段字会让下一轮当成已经送达。
+        response.content = ""
         response.tool_calls = [
             ToolCall(
                 id=f"todo-close-nudge-{uuid.uuid4().hex[:12]}",
@@ -1507,6 +1520,19 @@ class TaskExecutionRail(DeepAgentRail):
             "[TaskExecutionRail] todo close nudge: open=%s",
             [raw_id for raw_id, _task in open_tasks],
         )
+
+    def _is_last_react_iteration(self, ctx: AgentCallbackContext) -> bool:
+        """True when this model call is the final ReAct iteration."""
+        iteration = int(getattr(ctx.inputs, "react_iteration", 0) or 0)
+        agent = self._deep_agent
+        react = getattr(agent, "_react_agent", None)
+        config = getattr(react, "_config", None)
+        max_iterations = getattr(config, "max_iterations", None)
+        if iteration <= 0 or not isinstance(max_iterations, int):
+            return False
+        if max_iterations <= 0:
+            return False
+        return iteration >= max_iterations
 
     def _started_in_progress_tasks(self) -> list[tuple[str, dict[str, Any]]]:
         """Todos that must be closed before a plain-text ending.

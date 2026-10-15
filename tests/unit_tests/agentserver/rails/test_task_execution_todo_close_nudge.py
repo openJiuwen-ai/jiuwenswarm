@@ -67,10 +67,41 @@ async def test_text_only_ending_attaches_one_todo_close_nudge() -> None:
     assert len(calls) == 1
     assert calls[0].name == TODO_CLOSE_NUDGE_TOOL_NAME
     assert str(calls[0].id).startswith(TODO_CLOSE_NUDGE_ID_PREFIX)
+    assert ctx.inputs.response.content == ""
     assert rail._todo_close_nudge_used is True
 
     await rail.after_model_call(ctx)
     assert len(ctx.inputs.response.tool_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_truncated_text_does_not_attach_nudge() -> None:
+    rail = _rail_with_open_task()
+    ctx = _text_ctx("正文被截断")
+    ctx.inputs.response.finish_reason = "length"
+
+    await rail.after_model_call(ctx)
+
+    assert ctx.inputs.response.tool_calls == []
+    assert ctx.inputs.response.content == "正文被截断"
+    assert rail._todo_close_nudge_used is False
+
+
+@pytest.mark.asyncio
+async def test_last_react_iteration_does_not_attach_nudge() -> None:
+    rail = _rail_with_open_task()
+    rail._deep_agent = SimpleNamespace(
+        _react_agent=SimpleNamespace(
+            _config=SimpleNamespace(max_iterations=15),
+        ),
+    )
+    ctx = _text_ctx("最后一轮正文")
+    ctx.inputs.react_iteration = 15
+
+    await rail.after_model_call(ctx)
+
+    assert ctx.inputs.response.tool_calls == []
+    assert rail._todo_close_nudge_used is False
 
 
 @pytest.mark.asyncio
@@ -135,6 +166,25 @@ async def test_nudge_tool_is_skipped_and_does_not_advance_todos() -> None:
     assert rail._todo_map["env"]["status"] == "in_progress"
     assert rail._todo_map["source"]["status"] == "pending"
     assert advanced == []
+
+
+def test_skill_turbo_success_hint_closes_todo_before_summary() -> None:
+    from jiuwenswarm.server.runtime.skill_turbo.rails.skill_prompt_rail import (
+        _build_skill_turbo_guide_text,
+    )
+    from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+        _PPT_DELIVERY_SUMMARY_POST_TOOL_HINT,
+    )
+
+    cn = _build_skill_turbo_guide_text("cn", ["pptx-craft"])
+    en = _build_skill_turbo_guide_text("en", ["pptx-craft"])
+    assert "先单独调 `todo_modify`" in cn
+    assert "直接向用户总结结果即可" not in cn
+    assert "first call `todo_modify` alone" in en
+    assert "just summarize the result to the user" not in en
+    assert "todo_modify" in _PPT_DELIVERY_SUMMARY_POST_TOOL_HINT["cn"]
+    assert "禁止 tool_call" not in _PPT_DELIVERY_SUMMARY_POST_TOOL_HINT["cn"]
+    assert "No further tool calls" not in _PPT_DELIVERY_SUMMARY_POST_TOOL_HINT["en"]
 
 
 def test_skill_protocol_allows_standalone_todo_modify_before_final() -> None:

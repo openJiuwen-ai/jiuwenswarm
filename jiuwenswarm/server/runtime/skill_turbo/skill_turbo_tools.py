@@ -250,14 +250,18 @@ _SKILL_TURBO_STOP_HINT_NEUTRAL = {
 _PPT_DELIVERY_SUMMARY_POST_TOOL_HINT = {
     "cn": (
         "\n\n[SYSTEM] PPT 交付总结骨架将由系统在本工具结果之后通过流式通道发送给用户，"
-        "无需在本回合重复输出交付总结。禁止 tool_call，禁止再调 "
+        "无需在本回合重复输出交付总结。禁止再调 "
         "send_file_to_user / skill_tool / skill_acceleration_exec。"
+        "若待办仍是 in_progress，下一轮先调 todo_modify 把对应步骤标为 completed，"
+        "再给最终回复。"
     ),
     "en": (
         "\n\n[SYSTEM] The PPT delivery summary skeleton will be streamed to the user "
         "by the system after this tool result; do NOT repeat the delivery summary "
-        "in this turn. No further tool calls. Do NOT call send_file_to_user / "
-        "skill_tool / skill_acceleration_exec again."
+        "in this turn. Do NOT call send_file_to_user / skill_tool / "
+        "skill_acceleration_exec again. If a todo is still in_progress, call "
+        "todo_modify on the next turn to mark that step completed, then send "
+        "the final reply."
     ),
 }
 
