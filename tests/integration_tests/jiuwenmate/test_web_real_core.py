@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from itertools import count
 from pathlib import Path
@@ -16,6 +17,8 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
+from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
+from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
@@ -25,7 +28,15 @@ from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.foundation.llm.schema.message import ToolMessage, UsageMetadata, UserMessage
 from openjiuwen.core.foundation.llm.schema.message_chunk import AssistantMessageChunk
 from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
-from openjiuwen.harness.schema.deep_agent_spec import ModelSpec, TeamModelConfig
+from openjiuwen.core.foundation.tool import Tool, ToolCard
+from openjiuwen.harness.persistent_agent import EventType
+from openjiuwen.harness.schema.deep_agent_spec import (
+    ModelSpec,
+    TeamModelConfig,
+    _TOOL_PROVIDER_REGISTRY,
+)
+
+from jiuwenswarm.server.jiuwenmate import service as service_module
 
 NOW = datetime(2026, 10, 14, 9, 0, tzinfo=timezone.utc)
 
@@ -73,14 +84,19 @@ class LocalModel:
 
 
 class Server:
-    def __init__(self, tmp_path) -> None:
+    def __init__(self, tmp_path, *, manager_factory=None) -> None:
         self.tmp_path = tmp_path
         self.db = tmp_path / "agents.sqlite3"
         self.pushed: list[dict] = []
+        if manager_factory is None:
+
+            def manager_factory(service, on_event):
+                return AgentManager.create_default(service, tmp_path, on_event=on_event)
+
         self.adapter = JiuwenMateWebAdapter(
             self._service,
             model_catalog=dict,
-            manager_factory=lambda service, on_event: AgentManager.create_default(service, tmp_path, on_event=on_event),
+            manager_factory=manager_factory,
             push=self._push,
         )
 
@@ -252,3 +268,179 @@ async def test_a_colleague_reads_only_its_office_directory(tmp_path, monkeypatch
     assert answered["outcome"] == "completed"
     assert ("本周完成飞书接入。" in reply) is found
     assert "别人的文件" not in reply and str(tmp_path) not in reply
+
+
+_CONTROLLED_WRITE_PROVIDER = "test.jiuwenmate.controlled_write"
+_CONTROLLED_WRITE_NAME = "controlled_write"
+
+
+class ControlledWriteTool(Tool):
+    """Test-only side effect that records whether its intent was already in SQLite."""
+
+    def __init__(self, *, db_path: str, output_path: str) -> None:
+        super().__init__(
+            card=ToolCard(
+                id="controlled-write-test",
+                name=_CONTROLLED_WRITE_NAME,
+                description="Writes a test marker after checking the durable intent log.",
+                input_params={
+                    "type": "object",
+                    "properties": {"content": {"type": "string"}},
+                    "required": ["content"],
+                },
+            )
+        )
+        self.db_path = Path(db_path)
+        self.output_path = Path(output_path)
+
+    async def invoke(self, inputs, **kwargs):
+        with sqlite3.connect(self.db_path) as connection:
+            rows = connection.execute(
+                "SELECT event_json FROM execution_events WHERE event_type = ?",
+                (EventType.TOOL_INTENT.value,),
+            ).fetchall()
+        intent_was_persisted = any(
+            json.loads(row[0])["payload"]["tool_name"] == _CONTROLLED_WRITE_NAME
+            for row in rows
+        )
+        result = {
+            "intent_was_persisted": intent_was_persisted,
+            "content": inputs["content"],
+        }
+        self.output_path.write_text(json.dumps(result), encoding="utf-8")
+        return result
+
+    async def stream(self, inputs, **kwargs):
+        yield await self.invoke(inputs, **kwargs)
+
+
+class FailingToolIntentRepository(ExecutionRepository):
+    """Real SQLite repository that injects a failure only for the critical intent write."""
+
+    def record_events(self, events, *, now):
+        if any(event.event_type == EventType.TOOL_INTENT for event in events):
+            raise OSError("injected tool.intent persistence failure")
+        super().record_events(events, now=now)
+
+
+class ControlledWriteModel(LocalModel):
+    """Requests one controlled write, then returns a deterministic answer."""
+
+    async def stream(self, messages, **kwargs):
+        self.calls.append(list(messages))
+        usage = UsageMetadata(input_tokens=3, output_tokens=4)
+        if not any(isinstance(message, ToolMessage) for message in messages):
+            arguments = json.dumps({"content": "controlled side effect"})
+            call = ToolCall(
+                id="controlled-write-call",
+                type="function",
+                name=_CONTROLLED_WRITE_NAME,
+                arguments=arguments,
+            )
+            yield AssistantMessageChunk(
+                content="",
+                tool_calls=[call],
+                finish_reason="tool_calls",
+                usage_metadata=usage,
+            )
+            return
+        yield AssistantMessageChunk(
+            content="write complete", finish_reason="stop", usage_metadata=usage
+        )
+
+
+def install_controlled_write_tool(
+    monkeypatch, db_path: Path, output_path: Path
+) -> None:
+    """Inject a test-only tool into the published Spec without opening production write capabilities."""
+
+    monkeypatch.setitem(
+        _TOOL_PROVIDER_REGISTRY,
+        _CONTROLLED_WRITE_PROVIDER,
+        lambda params, _context: ControlledWriteTool(**params),
+    )
+    publish_spec = service_module.publish_spec
+
+    def publish_spec_with_test_tool(agent_id, config_version, spec_fields):
+        fields = dict(spec_fields)
+        fields["tools"] = [
+            {
+                "type": _CONTROLLED_WRITE_PROVIDER,
+                "params": {"db_path": str(db_path), "output_path": str(output_path)},
+            }
+        ]
+        return publish_spec(agent_id, config_version, fields)
+
+    monkeypatch.setattr(service_module, "publish_spec", publish_spec_with_test_tool)
+
+
+def read_execution_events_after_restart(db_path: Path, request_id: str):
+    """Reopen the database and read the Execution log through the host repository API."""
+
+    repository = ExecutionRepository(db_path)
+    request = repository.get_request("local", request_id)
+    executions = repository.executions("local", request_id)
+    assert len(executions) == 1
+    return repository.read_execution_log(
+        "local", request.record.session_id, request_id, executions[0].execution_id
+    )
+
+
+async def test_write_intent_is_persisted_before_tool_side_effect_and_survives_restart(
+    tmp_path, monkeypatch
+):
+    output_path = tmp_path / "controlled-write.json"
+    install_controlled_write_tool(monkeypatch, tmp_path / "agents.sqlite3", output_path)
+    model = ControlledWriteModel()
+    monkeypatch.setattr(ModelSpec, "build", lambda self: model)
+    server = Server(tmp_path)
+    colleague = (await server.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT))[
+        "colleague"
+    ]
+
+    request_id = await server.send(colleague["agent_id"], "write-marker")
+    answered = await server.ended(request_id)
+    await server.adapter.aclose()
+
+    assert answered["outcome"] == "completed"
+    assert json.loads(output_path.read_text(encoding="utf-8")) == {
+        "intent_was_persisted": True,
+        "content": "controlled side effect",
+    }
+    events = read_execution_events_after_restart(server.db, request_id)
+    intents = [event for event in events if event.event_type == EventType.TOOL_INTENT]
+    assert len(intents) == 1
+    assert intents[0].payload.tool_name == _CONTROLLED_WRITE_NAME
+
+
+async def test_failed_tool_intent_persistence_prevents_tool_side_effect(
+    tmp_path, monkeypatch
+):
+    output_path = tmp_path / "controlled-write.json"
+    install_controlled_write_tool(monkeypatch, tmp_path / "agents.sqlite3", output_path)
+    model = ControlledWriteModel()
+    monkeypatch.setattr(ModelSpec, "build", lambda self: model)
+    db_path = tmp_path / "agents.sqlite3"
+
+    def manager_factory(service, on_event):
+        return AgentManager(
+            service,
+            FailingToolIntentRepository(db_path),
+            WindowBackendStore(db_path),
+            BudgetRepository(db_path),
+            on_event=on_event,
+        )
+
+    server = Server(tmp_path, manager_factory=manager_factory)
+    colleague = (await server.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT))[
+        "colleague"
+    ]
+
+    request_id = await server.send(colleague["agent_id"], "write-marker")
+    answered = await server.ended(request_id)
+    await server.adapter.aclose()
+
+    assert answered["outcome"] == "failed"
+    assert not output_path.exists()
+    events = read_execution_events_after_restart(server.db, request_id)
+    assert not any(event.event_type == EventType.TOOL_INTENT for event in events)
