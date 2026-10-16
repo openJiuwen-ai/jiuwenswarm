@@ -34,7 +34,7 @@ import { ColleagueProfilePage, type JiuwenMateProfileSection } from './pages/Col
 import { ColleagueWorkspacePage, type JiuwenMateWorkspaceIntent } from './pages/ColleagueWorkspacePage';
 import { OfficeDashboardPage } from './pages/OfficeDashboardPage';
 import { OfficeIntroPage } from './pages/OfficeIntroPage';
-import type { JiuwenMateColleague, JiuwenMateExistingPage } from './types';
+import type { JiuwenMateActivity, JiuwenMateColleague, JiuwenMateExistingPage } from './types';
 import './jiuwenmate.css';
 
 export interface JiuwenMateAppProps {
@@ -77,6 +77,9 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     section: 'overview',
   });
   const [connectionEpoch, setConnectionEpoch] = useState(0);
+  const [activity, setActivity] = useState<JiuwenMateActivity | null>(null);
+  const [activityStatus, setActivityStatus] = useState<LoadStatus>('loading');
+  const [activityError, setActivityError] = useState('');
 
   const loadColleagues = useCallback(async () => {
     setLoadStatus('loading');
@@ -91,9 +94,27 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     }
   }, [api]);
 
+  const loadActivity = useCallback(async () => {
+    setActivityStatus('loading');
+    setActivityError('');
+    try {
+      setActivity(await api.loadActivity());
+      setActivityStatus('ready');
+    } catch (error) {
+      setActivity(null);
+      setActivityError(errorMessage(error));
+      setActivityStatus('failed');
+    }
+  }, [api]);
+
   useEffect(() => {
     void loadColleagues();
   }, [loadColleagues]);
+
+  useEffect(() => {
+    if (loadStatus !== 'ready') return;
+    void loadActivity();
+  }, [loadActivity, loadStatus, connectionEpoch]);
 
   useEffect(() => {
     let last = webClient.getState();
@@ -291,6 +312,9 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
         return (
           <OfficeDashboardPage
             colleagues={state.colleagues}
+            activity={activity}
+            activityStatus={activityStatus}
+            activityError={activityError}
             onCreate={startCreation}
             onChat={(id) => openWorkspace(id)}
             onManage={(id) => openProfile(id)}

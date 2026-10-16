@@ -109,6 +109,59 @@ export interface JiuwenMateDailyActivity {
   hours: number;
 }
 
+export interface JiuwenMateActivityDay {
+  date: string;
+  tasks: number;
+  minutes: number;
+  calls: number;
+  tokens: number;
+}
+
+export interface JiuwenMateActivityHour {
+  date: string;
+  hour: number;
+  minutes: number;
+}
+
+export interface JiuwenMateActivityChannel {
+  channel: string;
+  calls: number;
+  tokens: number;
+  tasks: number;
+  replies: number;
+  failures: number;
+}
+
+export interface JiuwenMateActivityGroup {
+  id: string;
+  name: string;
+  platform: string;
+  artifacts: number;
+  tokens: number;
+  tasks: number;
+  lastResponseAt: string | null;
+}
+
+export interface JiuwenMateActivityMember {
+  agentId: string;
+  calls: number;
+  tokens: number;
+  tasks: number;
+  replies: number;
+  failures: number;
+  companionDays: number;
+  lastResponseAt: string | null;
+  days: JiuwenMateActivityDay[];
+  hours: JiuwenMateActivityHour[];
+  channels: JiuwenMateActivityChannel[];
+  groups: JiuwenMateActivityGroup[];
+}
+
+export interface JiuwenMateActivity {
+  generatedAt: string;
+  members: JiuwenMateActivityMember[];
+}
+
 export type JiuwenMateTaskStatus = 'waiting' | 'running' | 'done' | 'failed';
 
 export interface JiuwenMateTask {

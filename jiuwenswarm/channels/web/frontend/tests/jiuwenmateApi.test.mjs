@@ -11,6 +11,7 @@ import {
   isPending,
   mergeChatRequest,
   formatSharedFileSize,
+  toActivity,
   toChatRequest,
   toColleague,
   toModelCatalog,
@@ -406,4 +407,31 @@ test('stream subscription delivers only well-formed steps', () => {
   unsubscribe();
   assert.equal(handlers.size, 0);
   assert.doesNotThrow(() => createJiuwenMateApi(async () => ({})).onStream(() => undefined)());
+});
+
+test('activity payload keeps counts and drops a member without an id', () => {
+  const activity = toActivity({
+    generated_at: '2026-10-16T00:00:00+00:00',
+    members: [
+      {
+        agent_id: 'mate_a',
+        calls: 2,
+        tokens: 65,
+        tasks: 2,
+        replies: 1,
+        failures: 1,
+        companion_days: 16,
+        last_response_at: '2026-10-16T10:00:00+00:00',
+        days: [{ date: '2026-10-16', tasks: 2, minutes: 90, calls: 2, tokens: 65 }],
+        hours: [],
+        channels: [{ channel: 'web', calls: 2, tokens: 65, tasks: 2, replies: 1, failures: 1 }],
+        groups: [],
+      },
+      { calls: 9 },
+    ],
+  });
+  assert.equal(activity.members.length, 1);
+  assert.equal(activity.members[0].tokens, 65);
+  assert.equal(activity.members[0].replies, 1);
+  assert.equal(activity.members[0].failures, 1);
 });

@@ -358,6 +358,9 @@
     },
     "office": {
       "title": "Office",
+      "activityLoading": "Loading activity…",
+      "activityFailed": "Could not load activity: {{reason}}",
+      "noResponse": "No response yet",
       "tabs": {
         "members": "Office members",
         "activity": "Activity",

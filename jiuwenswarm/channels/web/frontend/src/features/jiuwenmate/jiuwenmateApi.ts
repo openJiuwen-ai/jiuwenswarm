@@ -1,4 +1,10 @@
 import type {
+  JiuwenMateActivity,
+  JiuwenMateActivityChannel,
+  JiuwenMateActivityDay,
+  JiuwenMateActivityGroup,
+  JiuwenMateActivityHour,
+  JiuwenMateActivityMember,
   JiuwenMateCategory,
   JiuwenMateColleague,
   JiuwenMateColleagueDraft,
@@ -23,6 +29,7 @@ export const JIUWENMATE_METHODS = {
   conversationList: 'jiuwenmate.conversation.list',
   conversationRename: 'jiuwenmate.conversation.rename',
   conversationDelete: 'jiuwenmate.conversation.delete',
+  activityGet: 'jiuwenmate.activity.get',
 } as const;
 
 /** Server push carrying reply fragments of a running private message. */
@@ -169,6 +176,10 @@ function record(value: unknown): Wire {
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+function count(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 function texts(value: unknown): string[] {
@@ -412,6 +423,92 @@ export function findModel(catalog: JiuwenMateModelCatalog, id: string): JiuwenMa
   return catalog.models.find((item) => item.id === (id || catalog.defaultModelId)) ?? null;
 }
 
+function toActivityDay(value: unknown): JiuwenMateActivityDay | null {
+  const row = record(value);
+  const date = text(row.date);
+  if (!date) return null;
+  return { date, tasks: count(row.tasks), minutes: count(row.minutes), calls: count(row.calls), tokens: count(row.tokens) };
+}
+
+function toActivityHour(value: unknown): JiuwenMateActivityHour | null {
+  const row = record(value);
+  const date = text(row.date);
+  if (!date) return null;
+  return { date, hour: count(row.hour), minutes: count(row.minutes) };
+}
+
+function toActivityChannel(value: unknown): JiuwenMateActivityChannel | null {
+  const row = record(value);
+  const channel = text(row.channel);
+  if (!channel) return null;
+  return {
+    channel,
+    calls: count(row.calls),
+    tokens: count(row.tokens),
+    tasks: count(row.tasks),
+    replies: count(row.replies),
+    failures: count(row.failures),
+  };
+}
+
+function toActivityGroup(value: unknown): JiuwenMateActivityGroup | null {
+  const row = record(value);
+  const id = text(row.group_chat_id);
+  if (!id) return null;
+  return {
+    id,
+    name: text(row.name) || id,
+    platform: text(row.platform),
+    artifacts: count(row.artifacts),
+    tokens: count(row.tokens),
+    tasks: count(row.tasks),
+    lastResponseAt: text(row.last_response_at) || null,
+  };
+}
+
+function toActivityMember(value: unknown): JiuwenMateActivityMember | null {
+  const row = record(value);
+  const agentId = text(row.agent_id);
+  if (!agentId) return null;
+  return {
+    agentId,
+    calls: count(row.calls),
+    tokens: count(row.tokens),
+    tasks: count(row.tasks),
+    replies: count(row.replies),
+    failures: count(row.failures),
+    companionDays: count(row.companion_days),
+    lastResponseAt: text(row.last_response_at) || null,
+    days: (Array.isArray(row.days) ? row.days : []).flatMap((item) => {
+      const day = toActivityDay(item);
+      return day ? [day] : [];
+    }),
+    hours: (Array.isArray(row.hours) ? row.hours : []).flatMap((item) => {
+      const hour = toActivityHour(item);
+      return hour ? [hour] : [];
+    }),
+    channels: (Array.isArray(row.channels) ? row.channels : []).flatMap((item) => {
+      const channel = toActivityChannel(item);
+      return channel ? [channel] : [];
+    }),
+    groups: (Array.isArray(row.groups) ? row.groups : []).flatMap((item) => {
+      const group = toActivityGroup(item);
+      return group ? [group] : [];
+    }),
+  };
+}
+
+export function toActivity(value: unknown): JiuwenMateActivity {
+  const row = record(value);
+  return {
+    generatedAt: text(row.generated_at),
+    members: (Array.isArray(row.members) ? row.members : []).flatMap((item) => {
+      const member = toActivityMember(item);
+      return member ? [member] : [];
+    }),
+  };
+}
+
 export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: JiuwenMateSubscribe) {
   const colleague = async (method: string, params?: Record<string, unknown>) =>
     toColleague(record(await request(method, params)).colleague);
@@ -444,6 +541,9 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     },
     async listModels(): Promise<JiuwenMateModelCatalog> {
       return toModelCatalog(await request(JIUWENMATE_METHODS.modelsList));
+    },
+    async loadActivity(): Promise<JiuwenMateActivity> {
+      return toActivity(record(await request(JIUWENMATE_METHODS.activityGet)).activity);
     },
     /** Sends a private message; resending the same message id returns the request it already created. */
     async sendMessage(

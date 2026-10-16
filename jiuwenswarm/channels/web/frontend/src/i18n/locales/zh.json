@@ -358,6 +358,9 @@
     },
     "office": {
       "title": "办公室",
+      "activityLoading": "正在加载活跃数据…",
+      "activityFailed": "活跃数据加载失败：{{reason}}",
+      "noResponse": "尚未响应",
       "tabs": {
         "members": "办公室成员",
         "activity": "活跃数据",
