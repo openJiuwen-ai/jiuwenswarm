@@ -53,6 +53,7 @@ from jiuwenswarm.agents.swarm.providers import (
     design_rails as _design_rails,
     designer_tools as _designer_tools,
     evolution_rails as _evolution_rails,
+    governance_rails as _governance_rails,
     member_rails as _member_rails,
     runtime_tools as _runtime_tools,
     skills as _skills,
@@ -137,6 +138,11 @@ RESPONSE_PROMPT = _builtin_rails.RESPONSE_PROMPT
 STREAM_EVENT = _builtin_rails.STREAM_EVENT
 AVATAR_PROMPT = _builtin_rails.AVATAR_PROMPT
 MULTIMODAL_IMAGE = _builtin_rails.MULTIMODAL_IMAGE
+
+# Opt-in governance rails (declared in ``governance_rails``). Mounted by
+# ``config_specs`` only when the team config enables them, so default assembly
+# is unchanged.
+USAGE_REPORT = _governance_rails.USAGE_REPORT
 
 # Generic rails provided + registered by openjiuwen (referenced by bare name).
 SYS_OPERATION = _OJ_SYS_OPERATION
@@ -231,6 +237,7 @@ __all__ = [
     "TEAM_SKILL_CREATE",
     "MEMBER_SKILL_EVOLUTION",
     "RESPONSE_PROMPT",
+    "USAGE_REPORT",
     "SYS_OPERATION",
     "STREAM_EVENT",
     "MULTIMODAL_IMAGE",
