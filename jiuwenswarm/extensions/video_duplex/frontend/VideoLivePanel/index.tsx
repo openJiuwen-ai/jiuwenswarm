@@ -1,4 +1,4 @@
-import { TASK_ACCEPTED_INSTRUCTIONS } from './taskPrompts';
+import { APPROVAL_SOURCES, TASK_ACCEPTED_INSTRUCTIONS, type ApprovalInteraction } from './taskPrompts';
 import { informationInteraction } from './taskInteraction';
 import { toast } from '../../../../channels/web/frontend/src/components/ui/Toast/toastStore';
 import {
@@ -34,7 +34,7 @@ import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame
 import { JoyAIProvider } from './joyaiProvider';
 import { captureVideoFrame, FrameEncoder } from './frameEncoding';
 import { setDuplexVoicePhase } from '../duplexAudioMeter';
-import { describeDuplexError } from '../duplexErrorMessage';
+import { describeDuplexError, duplexErrorDetail, screenCaptureFailure } from '../duplexErrorMessage';
 import { reportedRuntimeState } from './runtimeState';
 import {
   mergeSearchProgressJob,
@@ -88,6 +88,8 @@ export interface VideoLivePanelHandle {
   stopScreenSharing: () => void;
   deliverToolResult: (payload: SearchJobPayload) => void;
   deliverQuestion: (payload: SearchJobPayload) => void;
+  /** A typed-chat approval card in this conversation; it has no job, so job_id is "". */
+  deliverChatApproval: (interaction: { request_id: string; state: string; source?: string; questions?: unknown[] }) => void;
   deliverTaskInteraction: (payload: SearchJobPayload) => void;
 }
 
@@ -125,6 +127,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const framesRef = useRef<CapturedFrame[]>([]);
   const duplexRef = useRef<RealtimeDuplexSession | null>(null);
   const joyaiProviderRef = useRef<JoyAIProvider | null>(null);
+  // Approval cards forwarded by the task runtime. The runtime binds the conversation and sends its
+  // open cards before the JoyAI provider exists, so they are kept here and handed over once it does.
+  const approvalCardsRef = useRef(new Map<string, { jobId: string; interaction: ApprovalInteraction }>());
   const startingRealtimeRef = useRef<Promise<void> | null>(null);
   const chatSequenceRef = useRef(0);
   const pendingTranscriptionsRef = useRef(0);
@@ -195,6 +200,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     duplexRef.current = null;
     joyaiProviderRef.current?.stop();
     joyaiProviderRef.current = null;
+    if (!renewing) approvalCardsRef.current.clear();
     if (!renewing) {
       microphoneMutedRef.current = false;
       speakerMutedRef.current = false;
@@ -310,6 +316,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     };
     if (!joyaiProviderRef.current) {
       joyaiProviderRef.current = new JoyAIProvider(callbacks, replyLanguage);
+      for (const card of approvalCardsRef.current.values())
+        joyaiProviderRef.current.enqueueQuestion(card.jobId, card.interaction);
     } else {
       joyaiProviderRef.current.updateCallbacks(callbacks);
       if (replyLanguage) joyaiProviderRef.current.setPreferredLanguage(replyLanguage);
@@ -436,6 +444,17 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       toolCallId: callId,
     });
     setSearchStatus(`${payload.engine || '九问搜索 Agent'}失败：${error}`);
+  };
+
+  // JoyAI answers approval cards by voice only (information forms stay on screen), like Qwen's enqueueQuestion.
+  const deliverJoyAIApproval = (jobId: string, interaction: ApprovalInteraction) => {
+    const cards = approvalCardsRef.current;
+    if (interaction.state !== 'pending') {
+      for (const [key, card] of cards) if (card.jobId === jobId) cards.delete(key);
+    } else if (interaction.source && APPROVAL_SOURCES.has(interaction.source)) {
+      cards.set(`${jobId}:${interaction.id || interaction.request_id}`, { jobId, interaction });
+    }
+    joyaiProviderRef.current?.enqueueQuestion(jobId, interaction);
   };
 
   const deliverTaskInteraction = (payload: SearchJobPayload) => {
@@ -786,6 +805,18 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     }
 
     setError('');
+    const captureStartedAt = performance.now();
+    const captureId = `screen-${Date.now()}`;
+    let captureStage = 'getDisplayMedia';
+    const captureContext = JSON.stringify({
+      capture_id: captureId,
+      user_agent: navigator.userAgent,
+      secure_context: window.isSecureContext,
+      document_focused: document.hasFocus(),
+      user_activation: navigator.userActivation?.isActive,
+      existing_screens: screens.length,
+    });
+    reportRealtimeEvent('realtime_screen_capture_requested', { raw_event: captureContext });
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
@@ -797,12 +828,14 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         },
         audio: false,
       });
+      captureStage = 'videoTrack';
       const track = stream.getVideoTracks()[0];
       if (!track) {
         stream.getTracks().forEach((item) => item.stop());
         throw new Error('没有获得屏幕画面。');
       }
 
+      captureStage = 'attachStream';
       if (source !== 'screen') {
         resetSource();
       }
@@ -824,14 +857,20 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       });
       return true;
     } catch (screenError) {
-      // Browsers reject a cancelled picker with NotAllowedError; Electron's
-      // display-media handler denies with AbortError.
-      if (screenError instanceof DOMException && (screenError.name === 'NotAllowedError' || screenError.name === 'AbortError')) {
-        setError('已取消选择屏幕。');
-      } else if (allowUnsupported && isScreenCaptureUnsupported(screenError)) {
+      const { errorType, nativeMessage, reasonKey } = screenCaptureFailure(screenError);
+      const elapsedMs = Math.round(performance.now() - captureStartedAt);
+      const message = t('videoLive.screenCapture.failed', {
+        reason: t(`videoLive.screenCapture.${reasonKey}`),
+        errorType, nativeMessage, stage: captureStage, elapsedMs, captureId,
+      });
+      reportRealtimeEvent('realtime_screen_capture_failed', {
+        error_type: errorType, message, latency_ms: elapsedMs, raw_event: captureContext,
+      });
+      if (errorType !== 'NotAllowedError' && errorType !== 'AbortError'
+        && allowUnsupported && isScreenCaptureUnsupported(screenError)) {
         return 'unsupported';
       } else {
-        setError(screenError instanceof Error ? screenError.message : '无法读取屏幕。');
+        setError(message);
       }
       return false;
     }
@@ -877,6 +916,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       setError('');
       setRealtimeStatus('正在读取视频模型配置…');
       reportRealtimeEvent('realtime_config_requested');
+      let startupStage = 'video.realtime.config';
       try {
         searchSessionRef.current = conversationSearchSessionRef.current || searchSessionRef.current || crypto.randomUUID();
         const config = await webRequest<VideoSessionConfig>('video.realtime.config', {
@@ -893,11 +933,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           provider: config.provider || 'realtime',
         });
         setModel(config.model);
-        if (config.provider === 'joyai') {
-          await getJoyAIProvider(config.reply_language).start(config.context_restore?.token);
-          return;
+        if (config.provider !== 'qwen_omni') {
+          throw new Error(t('videoLive.qwenOnly'));
         }
         const videoFrames = new RealtimeVideoFrameScheduler(1_000);
+        startupStage = 'realtime_session_create';
         const session = createRealtimeDuplexSession(
           {
             url: config.url || '',
@@ -1077,7 +1117,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   reportRealtimeEvent('qwen_tool_call_receipt', {
                     name: call.name, call_id: call.callId, decision: 'rejected', message,
                   });
-                  setError(describeDuplexError(message, 'task'));
+                  setError(describeDuplexError(duplexErrorDetail(`工具调用失败：${message}`, { stage: 'tool_receipt', name: call.name, call_id: call.callId }), 'task'));
                   session.enqueueOperationResult(call.callId, { state: 'rejected', error: message });
                 });
             },
@@ -1091,6 +1131,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           },
           () => reportRealtimeEvent('realtime_start_unsupported_browser'),
         );
+        startupStage = 'realtime_session_start';
         duplexRef.current = session;
         session.setMicrophoneMuted(microphoneMutedRef.current);
         session.setSpeakerMuted(speakerMutedRef.current);
@@ -1107,7 +1148,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         setIsRealtimeStarting(false);
         searchSessionRef.current = '';
         searchJobsRef.current.clear();
-        setError(realtimeError instanceof Error ? realtimeError.message : t('videoLive.errors.startFailed'));
+        const message = duplexErrorDetail(realtimeError, { stage: startupStage });
+        reportRealtimeEvent('realtime_start_failed', { message, error_type: realtimeError instanceof Error ? realtimeError.name : 'UnknownError' });
+        setError(`全双工启动失败：${message}`);
       }
     })();
     startingRealtimeRef.current = start;
@@ -1245,6 +1288,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       // pending questions and approval cards for the model to raise.
       if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current) return;
       if (payload.job_id && payload.interaction) duplexRef.current?.enqueueQuestion(payload.job_id, payload.interaction);
+      if (payload.job_id && payload.interaction) deliverJoyAIApproval(payload.job_id, payload.interaction);
+    },
+    deliverChatApproval: (interaction) => {
+      duplexRef.current?.enqueueQuestion('', { ...interaction, id: interaction.request_id } as never);
+      deliverJoyAIApproval('', { ...interaction, id: interaction.request_id } as ApprovalInteraction);
     },
   }));
 
@@ -1272,7 +1320,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       const accepted = await duplexRef.current?.sendTextTurn(text);
       if (!accepted) throw new Error(t('videoLive.errors.qwenTextNotAccepted'));
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : t('videoLive.errors.textSendFailed'));
+      setError(`全双工文字输入发送失败：${duplexErrorDetail(sendError, { stage: 'text_turn_submit' })}`);
     }
   };
 

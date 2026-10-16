@@ -1,7 +1,5 @@
 import { useSyncExternalStore } from "react";
 import { toast } from "../../../channels/web/frontend/src/components/ui/Toast/toastStore";
-import { useChatStore } from "../../../channels/web/frontend/src/stores/chatStore";
-import type { AskUserQuestionPayload } from "../../../channels/web/frontend/src/types/websocket";
 
 import type { VideoLivePanelHandle } from "./VideoLivePanel";
 import { isTaskDuplexScreenSharingEnabled } from "../../../channels/web/frontend/src/features/taskFullDuplex/mediaPreferences";
@@ -14,9 +12,6 @@ interface TaskFullDuplexRuntimeSnapshot {
   sessionId: string | null;
   error: string;
   microphoneMuted: boolean;
-  // An approval card is open in this conversation: the mic stays off until it
-  // is clicked, whatever microphoneMuted (the user's own choice) says.
-  cardHold: boolean;
   speakerMuted: boolean;
   screenSharing: boolean;
 }
@@ -25,12 +20,17 @@ let controller: VideoLivePanelHandle | null = null;
 let bindSession: ((sessionId: string) => string | Promise<string>) | null = null;
 let cancelSessionTasks: ((sessionId: string) => Promise<void>) | null = null;
 let startGeneration = 0;
+// What the media panel last reported, and which start it belonged to. The panel
+// re-sends its state on every parent render, so only a change moves the run;
+// an idle that ends a run the store already stopped must not clear a newer
+// start and its sessionId (#5825).
+let panelState: TaskFullDuplexRuntimeState = "idle";
+let panelGeneration = 0;
 let snapshot: TaskFullDuplexRuntimeSnapshot = {
   state: "idle",
   sessionId: null,
   error: "",
   microphoneMuted: false,
-  cardHold: false,
   speakerMuted: false,
   screenSharing: false,
 };
@@ -80,23 +80,25 @@ export function registerTaskFullDuplexController(
   cancelSessionTasks = next ? (nextCancelSessionTasks ?? null) : null;
 }
 
+const IDLE_RUN = {
+  state: "idle",
+  sessionId: null,
+  microphoneMuted: false,
+  speakerMuted: false,
+  screenSharing: false,
+} as const;
+
 export function setTaskFullDuplexRuntimeState(
   state: TaskFullDuplexRuntimeState,
 ): void {
-  publish(
-    state === "idle"
-      ? {
-          state,
-          sessionId: null,
-          microphoneMuted: false,
-          cardHold: false,
-          speakerMuted: false,
-          screenSharing: false,
-        }
-      : { state },
-  );
-  // A new or renewed media session starts unmuted; re-apply an open card's hold.
-  if (state === "active") syncCardHold(true);
+  if (state === panelState) return;
+  panelState = state;
+  if (state !== "idle") {
+    panelGeneration = startGeneration;
+    publish({ state });
+  } else if (panelGeneration === startGeneration) {
+    publish(IDLE_RUN);
+  }
 }
 
 export function setTaskFullDuplexRuntimeError(error: string): void {
@@ -127,7 +129,7 @@ export async function startTaskFullDuplex(sessionId?: string): Promise<void> {
       isTaskDuplexScreenSharingEnabled(),
     );
     if (generation !== startGeneration) return;
-    if (!started) setTaskFullDuplexRuntimeState("idle");
+    if (!started) publish(IDLE_RUN);
   } catch (error) {
     if (generation !== startGeneration) return;
     publish({
@@ -141,15 +143,7 @@ export async function startTaskFullDuplex(sessionId?: string): Promise<void> {
 export function stopTaskFullDuplex(): void {
   startGeneration += 1;
   controller?.stop();
-  publish({
-    state: "idle",
-    sessionId: null,
-    error: "",
-    microphoneMuted: false,
-    cardHold: false,
-    speakerMuted: false,
-    screenSharing: false,
-  });
+  publish({ ...IDLE_RUN, error: "" });
 }
 
 // User exit also cancels this conversation's tasks; internal restarts use stopTaskFullDuplex (#5527).
@@ -164,38 +158,11 @@ export function exitTaskFullDuplex(): void {
 }
 
 export function toggleTaskDuplexMicrophone(): void {
-  if (!controller || snapshot.state !== "active" || snapshot.cardHold) return;
+  if (!controller || snapshot.state !== "active") return;
   const muted = !snapshot.microphoneMuted;
   controller?.setMicrophoneMuted(muted);
   publish({ microphoneMuted: muted });
 }
-
-const INFORMATION_SOURCES = new Set(["", "ask_user", "ask_user_interrupt"]);
-
-// Default-deny: voice may answer plain information forms; every other card
-// (permission, confirm, cua delegation, plan, evolution or any new source)
-// is approved only by a click, so voice must not hear consent at all.
-function requiresClick(question: AskUserQuestionPayload): boolean {
-  return (
-    !INFORMATION_SOURCES.has(question.source || "") ||
-    Boolean(question.approvalSchema || question.evolutionMeta || question.planApprovalKind || question.swarmflowMeta)
-  );
-}
-
-// Reads the cards shown on screen, the same state that locks the text composer,
-// so the hold survives model session renewals, replays and either voice provider.
-function syncCardHold(reapply = false): void {
-  const sessionId = snapshot.sessionId;
-  const hold =
-    snapshot.state !== "idle" &&
-    Boolean(sessionId) &&
-    (useChatStore.getState().runtimes[sessionId as string]?.pendingQuestions ?? []).some(requiresClick);
-  if (hold === snapshot.cardHold && !(reapply && hold)) return;
-  if (hold !== snapshot.cardHold) publish({ cardHold: hold });
-  controller?.setMicrophoneMuted(snapshot.microphoneMuted || hold);
-}
-
-useChatStore.subscribe(() => syncCardHold());
 
 export function toggleTaskDuplexSpeaker(): void {
   if (!controller || snapshot.state !== "active") return;

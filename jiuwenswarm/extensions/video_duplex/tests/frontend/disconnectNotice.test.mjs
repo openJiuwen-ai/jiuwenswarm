@@ -43,4 +43,8 @@ test('duplex errors explain the actual cause, impact and next step', () => {
   assert.match(task, /结果：本次任务未完成，无法使用任务结果/);
   assert.match(task, /解决方式：请重试；若再次失败，查看 Jiuwen Core Agent 的任务日志/);
   assert.equal(describeDuplexError(task, 'task'), task);
+
+  const unsupported = describeDuplexError('Not supported');
+  assert.match(unsupported, /结果：当前运行环境不支持该功能/);
+  assert.doesNotMatch(unsupported, /服务日志/);
 });

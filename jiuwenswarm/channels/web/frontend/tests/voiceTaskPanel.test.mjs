@@ -329,6 +329,35 @@ test('user cancellation wins over a queued idle-timeout renewal', async () => {
   assert.equal(previous.socket, null);
 });
 
+for (const terminal of ['completed', 'failed', 'cancelled', 'stop']) {
+  test(`terminal result during config reload survives renewal: ${terminal}`, async () => {
+    const args = await call('jiuwen_delegate', { task: 'Calculate the sum' }, 'old-create');
+    await receipt('old-create', { search_job: { id: 'old-task', status: 'running', question: 'Calculate the sum' } });
+    await finishResponse();
+    const request = globalThis.__panel.request;
+    let resolveConfig;
+    globalThis.__panel.request = (method, params) => method === 'video.realtime.config'
+      ? new Promise(resolve => { resolveConfig = resolve; }) : request(method, params);
+    await act(async () => session.handleEvent({ type: 'error', error: { code: 'response_idle_timeout', message: 'idle' } }));
+    assert.equal(typeof resolveConfig, 'function');
+    const result = {
+      job_id: 'old-task', search_session_id: args.search_session_id, tool_call_id: 'old-create',
+      question: 'Calculate the sum', status: terminal === 'stop' ? 'completed' : terminal,
+      result: '55', error: 'Service failed', realtime_brief: { status: 'completed', summary: '55' },
+    };
+    await act(async () => {
+      panel.current.deliverToolResult(result);
+      panel.current.deliverToolResult(result);
+      if (terminal === 'cancelled') panel.current.deliverToolResult({ ...result, status: 'completed' });
+      if (terminal === 'stop') panel.current.stop();
+    });
+    await act(async () => { resolveConfig({ provider: 'qwen_omni', url: 'ws://127.0.0.1/realtime' }); });
+    const notices = sent.filter(event => event.item?.content?.[0]?.text?.includes('Jiuwen result delivery notice'));
+    assert.equal(notices.length, ['completed', 'failed'].includes(terminal) ? 1 : 0);
+    assert.equal(outputs().length, 1, 'old call ID and acceptance are never replayed');
+  });
+}
+
 test('quota and ordinary provider errors do not trigger automatic renewal', async () => {
   const count = requests.filter(r => r.method === 'video.realtime.config').length;
   const previous = session;
