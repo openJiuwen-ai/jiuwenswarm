@@ -196,7 +196,9 @@ specs 的执行路径全景与修改检查单就是为根治此问题而设。
 
 1. **特性更新归档 feature 且三连续提交**：`docs/features/` 新增 `F_NN_<slug>.md`；特性代码
    （`feat(skill_turbo)`）、测试（`test(skill_turbo)`）、文档（`docs(skill_turbo)`）拆成三个
-   紧邻提交、同一 PR 落地。bugfix 触及 spec 描述的路径/不变量时同样三连（`fix`/`test`/`docs`）。
+   紧邻提交、同一 PR 落地。bugfix 触及 spec 描述的路径/不变量时归档
+   `docs/bugfix/B_NN_<slug>.md`（复现场景 + 根因 + 修复口径），代码、测试、文档合并为**一个**
+   `fix(skill_turbo)` 提交——三连续提交的唯一例外（与 skill / server 模块层约定一致）。
 2. **规约变动必更新 specs**：契约 / 执行路径 / 不变量 / 事件协议 / 持久化结构变化时，同步修订
    对应 `S_NN`（元信息"最近一次修订日期"填当天）；新规约主题 = 新 spec 文件。
 3. **读到不一致当场修文档**：本文件 / specs 里与代码不符的接口名、枚举值、路数、路径，先 grep
