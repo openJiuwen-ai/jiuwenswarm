@@ -1919,6 +1919,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 "_session_messaging_route_rail",
                 self._build_session_messaging_route_rail,
             ),
+            _RailBuildInfo(
+                "_utility_budget_context_rail",
+                self._build_utility_budget_context_rail,
+            ),
             _RailBuildInfo("_lsp_rail", self._build_lsp_rail_via_config),
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
             *([_RailBuildInfo("_permission_rail", lambda: group["_permission_rail"])]
