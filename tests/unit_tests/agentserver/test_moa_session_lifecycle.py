@@ -213,7 +213,11 @@ async def test_first_mcp_reconcile_forwards_group_before_instance_build(router):
 @pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
 def test_metadata_updates_keep_moa_and_ordinary_selection_independent(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
-    store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    if runtime == "server.runtime":
+        # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
+        store = import_module("jiuwenswarm.common.model_selection_store")
+    else:
+        store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
     projection = import_module(f"jiuwenswarm.{runtime}.session.session_info").to_session_info
     from jiuwenswarm.common.model_selection import ModelSelection
 
