@@ -205,8 +205,11 @@ test('代码里静态引用的本功能文案都存在', () => {
   );
 });
 
-test('九问同事空状态使用设计稿文案', () => {
+test('九问员工空状态使用设计稿文案', () => {
   const zh = JSON.parse(locales.zh);
-  assert.equal(zh.jiuwenmate.colleagueEmpty.emptyTitle, '您还没有AI同事，让我们开始创建吧！');
+  const en = JSON.parse(locales.en);
+  assert.equal(zh.jiuwenmate.colleagueEmpty.emptyTitle, '您还没有AI员工，让我们开始创建吧！');
   assert.equal(zh.jiuwenmate.colleagueEmpty.goCreate, '前往创建');
+  assert.equal(en.jiuwenmate.colleagueEmpty.emptyTitle, "You have no AI employees yet. Let's create one!");
+  assert.equal(en.jiuwenmate.colleagueEmpty.goCreate, 'Start creating');
 });

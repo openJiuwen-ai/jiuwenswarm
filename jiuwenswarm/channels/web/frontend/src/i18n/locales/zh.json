@@ -59,13 +59,13 @@
     "personalContext": "知识"
   },
   "jiuwenmate": {
-    "title": "九问同事",
+    "title": "九问员工",
     "mode": {
-      "enter": "九问同事",
+      "enter": "九问员工",
       "exit": "切换为个人版"
     },
     "nav": {
-      "messages": "同事",
+      "messages": "员工",
       "office": "办公室",
       "plaza": "广场",
       "assets": "资产",
@@ -83,16 +83,16 @@
       "searchPlaceholder": "请输入搜索内容"
     },
     "load": {
-      "loading": "正在加载同事…",
-      "failed": "同事列表加载失败：{{reason}}",
+      "loading": "正在加载员工…",
+      "failed": "员工列表加载失败：{{reason}}",
       "retry": "重新加载",
-      "createFailed": "创建同事失败：{{reason}}",
-      "deleteFailed": "删除同事失败：{{reason}}"
+      "createFailed": "创建员工失败：{{reason}}",
+      "deleteFailed": "删除员工失败：{{reason}}"
     },
     "chat": {
       "title": "私聊",
       "failed": "消息处理失败：{{reason}}",
-      "noReply": "同事没有回复消息",
+      "noReply": "员工没有回复消息",
       "status": {
         "queued": "排队中",
         "running": "处理中",
@@ -117,36 +117,36 @@
     },
     "intro": {
       "title": "办公室",
-      "subtitle": "创建和管理 AI 同事，派送至 IM 群内自主履职",
-      "create": "创建同事",
+      "subtitle": "创建和管理 AI 员工，派送至 IM 群内自主履职",
+      "create": "创建员工",
       "goCreate": "前往创建",
-      "heroTitle": "您还没有AI同事，让我们开始创建吧！",
+      "heroTitle": "您还没有AI员工，让我们开始创建吧！",
       "steps": {
         "create": {
-          "title": "第一步：创建 AI 同事",
-          "description": "从模版快速构建智能体同事，自定义员工能力与多项配置。"
+          "title": "第一步：创建 AI 员工",
+          "description": "从模版快速构建智能体员工，自定义员工能力与多项配置。"
         },
         "connect": {
-          "title": "第二步：完善同事配置",
-          "description": "为智能体同事配置技能和知识等能力，帮助它高质量完成任务。"
+          "title": "第二步：完善员工配置",
+          "description": "为智能体员工配置技能和知识等能力，帮助它高质量完成任务。"
         },
         "collaborate": {
           "title": "第三步：授权 IM 渠道",
-          "description": "将同事发往工作渠道，让它们加入群聊，执行任务。"
+          "description": "将员工发往工作渠道，让它们加入群聊，执行任务。"
         }
       }
     },
     "colleagueEmpty": {
-      "title": "AI 同事",
-      "subtitle": "对话调试 AI 同事能力，监控多渠道运行状态，配置自动化定时任务。",
-      "create": "创建同事",
-      "emptyTitle": "您还没有AI同事，让我们开始创建吧！",
+      "title": "AI 员工",
+      "subtitle": "对话调试 AI 员工能力，监控多渠道运行状态，配置自动化定时任务。",
+      "create": "创建员工",
+      "emptyTitle": "您还没有AI员工，让我们开始创建吧！",
       "goCreate": "前往创建"
     },
     "create": {
       "crumb": "创建",
       "crumbLabel": "页面路径",
-      "title": "选择同事",
+      "title": "选择员工",
       "customEntry": "自定义创建",
       "customTitle": "自定义创建",
       "refineCrumb": "完善信息",
@@ -157,14 +157,14 @@
       "resetAvatar": "使用默认头像",
       "avatarHint": "支持上传png、jpeg、gif、jpg格式图片，限200Kb内",
       "avatarInvalid": "仅支持png、jpeg、gif、jpg格式，且不超过200Kb",
-      "name": "AI 同事名称",
+      "name": "AI 员工名称",
       "namePlaceholder": "例如：售后服务助手",
       "description": "能力介绍",
-      "descriptionPlaceholder": "描述这位同事擅长什么、负责什么，以及期望的工作方式",
+      "descriptionPlaceholder": "描述这位员工擅长什么、负责什么，以及期望的工作方式",
       "role": "工作领域",
-      "preview": "同事名片预览",
-      "previewName": "新同事",
-      "previewDescription": "填写能力介绍后，将在这里展示同事介绍。",
+      "preview": "员工名片预览",
+      "previewName": "新员工",
+      "previewDescription": "填写能力介绍后，将在这里展示员工介绍。",
       "capabilities": "能力配置",
       "capabilitiesHint": "根据名称和能力介绍自动生成能力配置",
       "generate": "智能生成",
@@ -205,9 +205,9 @@
       "goPlaza": "没有灵感，去广场看看"
     },
     "im": {
-      "success": "AI 同事创建成功，派它去 IM 渠道工作吧！",
+      "success": "AI 员工创建成功，派它去 IM 渠道工作吧！",
       "title": "配置 IM 渠道",
-      "hint": "将同事接入渠道，通过 @ 分派任务",
+      "hint": "将员工接入渠道，通过 @ 分派任务",
       "feishu": "飞书",
       "appId": "API ID",
       "appIdPlaceholder": "请输入API ID",
@@ -217,7 +217,7 @@
       "hideSecret": "隐藏 API Secret"
     },
     "profile": {
-      "sectionsLabel": "同事配置",
+      "sectionsLabel": "员工配置",
       "sections": {
         "overview": "概览",
         "persona": "人设",
@@ -273,13 +273,13 @@
       },
       "historyEmpty": "暂无执行记录",
       "workspaceDir": "办公目录",
-      "workspaceDirHint": "把文件放入此目录后，同事可以查看和读取；同事不能修改目录中的文件。"
+      "workspaceDirHint": "把文件放入此目录后，员工可以查看和读取；员工不能修改目录中的文件。"
     },
     "workspace": {
-      "colleagues": "同事",
-      "colleagueList": "同事列表",
-      "noColleagues": "暂无同事",
-      "newColleague": "新建同事",
+      "colleagues": "员工",
+      "colleagueList": "员工列表",
+      "noColleagues": "暂无员工",
+      "newColleague": "新建员工",
       "newFromPlaza": "从广场添加",
       "newCustom": "自定义创建",
       "newFromLocal": "从本地接入",
@@ -297,7 +297,7 @@
       "channelsCount": "频道（{{count}}）",
       "noSessions": "暂无会话",
       "noChannels": "暂无频道",
-      "noChannelsHint": "配置 IM 渠道后，可在这里查看同事在群聊中的工作记录",
+      "noChannelsHint": "配置 IM 渠道后，可在这里查看员工在群聊中的工作记录",
       "noSchedules": "暂无定时任务记录",
       "newSchedule": "新建定时任务",
       "newSession": "新会话",
@@ -319,15 +319,15 @@
       "features": {
         "chat": {
           "title": "在线会话",
-          "description": "实时与 AI 同事对话调试效果，随时检查智能体业务。"
+          "description": "实时与 AI 员工对话调试效果，随时检查智能体业务。"
         },
         "channel": {
           "title": "渠道监控",
-          "description": "查看 AI 同事在渠道的群聊详情，工作路径可追溯。"
+          "description": "查看 AI 员工在渠道的群聊详情，工作路径可追溯。"
         },
         "schedule": {
           "title": "自动化任务",
-          "description": "配置定时任务，让 AI 同事自动执行日常工作，持续提效。"
+          "description": "配置定时任务，让 AI 员工自动执行日常工作，持续提效。"
         }
       }
     },
@@ -359,7 +359,7 @@
         "activity": "活跃数据",
         "tasks": "任务中心"
       },
-      "createTile": "新建 AI 同事",
+      "createTile": "新建 AI 员工",
       "imMissing": "未配置IM",
       "disabledBadge": "已停用",
       "chat": "去对话",
@@ -367,14 +367,14 @@
       "disable": "停用",
       "enable": "启用",
       "delete": "删除",
-      "deleteWarning": "删除 AI 同事后，其相关记忆和任务也将被删除。",
-      "deleteConfirm": "确定删除 AI 同事：",
-      "disableWarning": "停用后仍然支持会话，但 AI 同事将无法在 IM 渠道中做出响应。",
-      "disableConfirm": "确定停用 AI 同事：",
+      "deleteWarning": "删除 AI 员工后，其相关记忆和任务也将被删除。",
+      "deleteConfirm": "确定删除 AI 员工：",
+      "disableWarning": "停用后仍然支持会话，但 AI 员工将无法在 IM 渠道中做出响应。",
+      "disableConfirm": "确定停用 AI 员工：",
       "scope": "统计范围",
       "scopeAll": "全员",
       "scopeIndividual": "个体",
-      "currentColleague": "当前同事",
+      "currentColleague": "当前员工",
       "dataOverview": "数据概览",
       "range": "时间范围",
       "rangeYear": "年度",
@@ -428,7 +428,7 @@
       "taskOverview": "任务概览",
       "taskFilters": {
         "group": "群组选择",
-        "colleague": "当前同事",
+        "colleague": "当前员工",
         "period": "数据周期",
         "all": "全部"
       },

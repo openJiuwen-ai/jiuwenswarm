@@ -65,7 +65,7 @@
       "exit": "Switch to personal edition"
     },
     "nav": {
-      "messages": "Colleagues",
+      "messages": "Employees",
       "office": "Office",
       "plaza": "Plaza",
       "assets": "Assets",
@@ -83,16 +83,16 @@
       "searchPlaceholder": "Search"
     },
     "load": {
-      "loading": "Loading colleagues…",
-      "failed": "Failed to load colleagues: {{reason}}",
+      "loading": "Loading employees…",
+      "failed": "Failed to load employees: {{reason}}",
       "retry": "Reload",
-      "createFailed": "Failed to create the colleague: {{reason}}",
-      "deleteFailed": "Failed to delete the colleague: {{reason}}"
+      "createFailed": "Failed to create the employee: {{reason}}",
+      "deleteFailed": "Failed to delete the employee: {{reason}}"
     },
     "chat": {
       "title": "Private chat",
       "failed": "Message failed: {{reason}}",
-      "noReply": "The colleague sent no reply",
+      "noReply": "The employee sent no reply",
       "status": {
         "queued": "Queued",
         "running": "Working",
@@ -117,14 +117,14 @@
     },
     "intro": {
       "title": "Office",
-      "subtitle": "Create and manage AI colleagues, then send them to IM groups to work on their own",
-      "create": "Create colleague",
+      "subtitle": "Create and manage AI employees, then send them to IM groups to work on their own",
+      "create": "Create employee",
       "goCreate": "Start creating",
-      "heroTitle": "You have no AI colleagues yet. Let's create one!",
+      "heroTitle": "You have no AI employees yet. Let's create one!",
       "steps": {
         "create": {
-          "title": "Step 1: Create an AI colleague",
-          "description": "Build an agent colleague from a template and customize its abilities and settings."
+          "title": "Step 1: Create an AI employee",
+          "description": "Build an agent employee from a template and customize its abilities and settings."
         },
         "connect": {
           "title": "Step 2: Complete the configuration",
@@ -132,21 +132,21 @@
         },
         "collaborate": {
           "title": "Step 3: Authorize IM channels",
-          "description": "Send the colleague to work channels so it can join group chats and run tasks."
+          "description": "Send the employee to work channels so it can join group chats and run tasks."
         }
       }
     },
     "colleagueEmpty": {
-      "title": "AI colleagues",
-      "subtitle": "Debug colleague abilities in conversations, monitor channel activity and configure scheduled tasks.",
-      "create": "Create colleague",
-      "emptyTitle": "You have no AI colleagues yet. Let's create one!",
+      "title": "AI employees",
+      "subtitle": "Debug employee abilities in conversations, monitor channel activity and configure scheduled tasks.",
+      "create": "Create employee",
+      "emptyTitle": "You have no AI employees yet. Let's create one!",
       "goCreate": "Start creating"
     },
     "create": {
       "crumb": "Create",
       "crumbLabel": "Page path",
-      "title": "Choose a colleague",
+      "title": "Choose an employee",
       "customEntry": "Custom create",
       "customTitle": "Custom create",
       "refineCrumb": "Complete details",
@@ -157,14 +157,14 @@
       "resetAvatar": "Use default avatar",
       "avatarHint": "PNG, JPEG, GIF or JPG, up to 200 KB",
       "avatarInvalid": "Only PNG, JPEG, GIF or JPG files up to 200 KB are supported",
-      "name": "Colleague name",
+      "name": "Employee name",
       "namePlaceholder": "For example: After-sales assistant",
       "description": "Abilities",
-      "descriptionPlaceholder": "Describe what this colleague is good at, what it owns and how it should work",
+      "descriptionPlaceholder": "Describe what this employee is good at, what it owns and how it should work",
       "role": "Work domains",
       "preview": "Card preview",
-      "previewName": "New colleague",
-      "previewDescription": "The colleague introduction appears here after you fill in its abilities.",
+      "previewName": "New employee",
+      "previewDescription": "The employee introduction appears here after you fill in its abilities.",
       "capabilities": "Capability configuration",
       "capabilitiesHint": "Generate the capability configuration from the name and abilities",
       "generate": "Smart generate",
@@ -205,9 +205,9 @@
       "goPlaza": "Need ideas? Visit the plaza"
     },
     "im": {
-      "success": "Your AI colleague is ready. Send it to work in an IM channel!",
+      "success": "Your AI employee is ready. Send it to work in an IM channel!",
       "title": "Configure IM channel",
-      "hint": "Connect the colleague to a channel and assign tasks with @",
+      "hint": "Connect the employee to a channel and assign tasks with @",
       "feishu": "Feishu",
       "appId": "API ID",
       "appIdPlaceholder": "Enter API ID",
@@ -217,7 +217,7 @@
       "hideSecret": "Hide API Secret"
     },
     "profile": {
-      "sectionsLabel": "Colleague configuration",
+      "sectionsLabel": "Employee configuration",
       "sections": {
         "overview": "Overview",
         "persona": "Persona",
@@ -273,13 +273,13 @@
       },
       "historyEmpty": "No execution records",
       "workspaceDir": "Office directory",
-      "workspaceDirHint": "The colleague can list and read the files placed in this directory, but cannot change them."
+      "workspaceDirHint": "The employee can list and read the files placed in this directory, but cannot change them."
     },
     "workspace": {
-      "colleagues": "Colleagues",
-      "colleagueList": "Colleague list",
-      "noColleagues": "No colleagues",
-      "newColleague": "New colleague",
+      "colleagues": "Employees",
+      "colleagueList": "Employee list",
+      "noColleagues": "No employees",
+      "newColleague": "New employee",
       "newFromPlaza": "Add from plaza",
       "newCustom": "Custom create",
       "newFromLocal": "Connect from local",
@@ -297,7 +297,7 @@
       "channelsCount": "Channels ({{count}})",
       "noSessions": "No conversations",
       "noChannels": "No channels",
-      "noChannelsHint": "After an IM channel is configured, the colleague's group chat records appear here",
+      "noChannelsHint": "After an IM channel is configured, the employee's group chat records appear here",
       "noSchedules": "No scheduled tasks",
       "newSchedule": "New scheduled task",
       "newSession": "New conversation",
@@ -319,15 +319,15 @@
       "features": {
         "chat": {
           "title": "Online conversation",
-          "description": "Talk to the colleague in real time to debug its behavior and check its work."
+          "description": "Talk to the employee in real time to debug its behavior and check its work."
         },
         "channel": {
           "title": "Channel monitoring",
-          "description": "Review the colleague's group chats in each channel with a traceable work path."
+          "description": "Review the employee's group chats in each channel with a traceable work path."
         },
         "schedule": {
           "title": "Automated tasks",
-          "description": "Configure scheduled tasks so the colleague runs daily work automatically."
+          "description": "Configure scheduled tasks so the employee runs daily work automatically."
         }
       }
     },
@@ -359,7 +359,7 @@
         "activity": "Activity",
         "tasks": "Task center"
       },
-      "createTile": "New AI colleague",
+      "createTile": "New AI employee",
       "imMissing": "IM not configured",
       "disabledBadge": "Disabled",
       "chat": "Chat",
@@ -367,14 +367,14 @@
       "disable": "Disable",
       "enable": "Enable",
       "delete": "Delete",
-      "deleteWarning": "Deleting an AI colleague also deletes its memories and tasks.",
-      "deleteConfirm": "Delete AI colleague: ",
-      "disableWarning": "A disabled colleague still supports conversations but no longer responds in IM channels.",
-      "disableConfirm": "Disable AI colleague: ",
+      "deleteWarning": "Deleting an AI employee also deletes its memories and tasks.",
+      "deleteConfirm": "Delete AI employee: ",
+      "disableWarning": "A disabled employee still supports conversations but no longer responds in IM channels.",
+      "disableConfirm": "Disable AI employee: ",
       "scope": "Scope",
       "scopeAll": "All",
       "scopeIndividual": "Individual",
-      "currentColleague": "Colleague",
+      "currentColleague": "Employee",
       "dataOverview": "Overview",
       "range": "Range",
       "rangeYear": "Year",
@@ -428,7 +428,7 @@
       "taskOverview": "Task overview",
       "taskFilters": {
         "group": "Group",
-        "colleague": "Colleague",
+        "colleague": "Employee",
         "period": "Period",
         "all": "All"
       },
