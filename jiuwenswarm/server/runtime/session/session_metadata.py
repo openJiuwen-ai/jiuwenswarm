@@ -98,7 +98,6 @@ def _changed_fields(before: dict[str, Any], after: dict[str, Any]) -> frozenset[
 
 
 def _refresh_written_cache(session_id: str, written: dict[str, Any], options: _MetadataWriteOptions) -> None:
-    stamp = _disk_stamp(session_id)
     with _CACHE_LOCK:
         pending = _PENDING_FIELDS.get(session_id, {})
         if options.write_revision:
@@ -107,7 +106,10 @@ def _refresh_written_cache(session_id: str, written: dict[str, Any], options: _M
         cached.update({key: value[1] for key, value in pending.items()})
         _PENDING_FIELDS[session_id] = pending
         _METADATA_CACHE[session_id] = cached
-        _CACHE_DISK_STAMPS[session_id] = stamp
+        # The writer has released its cross-process lock. A stamp read here
+        # could belong to a later writer, while ``written`` is our old snapshot.
+        # Refresh from disk on the next read, retaining newer pending fields.
+        _CACHE_DISK_STAMPS[session_id] = None
 
 
 def _discard_failed_write(session_id: str, options: _MetadataWriteOptions) -> None:
@@ -517,6 +519,7 @@ def _read_metadata(
     # replacement window and observe empty content.
     try:
         with _FILE_LOCK:
+            read_stamp = _disk_stamp(session_id)
             raw = fpath.read_text(encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -552,7 +555,9 @@ def _read_metadata(
             data.update({key: value[1] for key, value in _PENDING_FIELDS.get(session_id, {}).items()})
             _METADATA_CACHE[session_id] = data.copy()
             _METADATA_CACHE_GENERATIONS[session_id] = generation
-            _CACHE_DISK_STAMPS[session_id] = _disk_stamp(session_id)
+            # A concurrent replacement after this read must invalidate the
+            # snapshot, rather than lending its newer stamp to older content.
+            _CACHE_DISK_STAMPS[session_id] = read_stamp
     return data
 
 
