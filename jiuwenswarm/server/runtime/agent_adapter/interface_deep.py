@@ -5455,6 +5455,35 @@ class JiuWenSwarmDeepAdapter:
         api_key = str(read_env("VISION_API_KEY", "")).strip()
         base_url = str(read_env("VISION_BASE_URL") or read_env("VISION_API_BASE") or "").strip()
         model_name = str(read_env("VISION_MODEL") or read_env("VISION_MODEL_NAME") or "").strip()
+        # Session-mode accounts authenticate via VISION_DEFAULT_HEADERS (e.g. Basic
+        # auth injected by the relay). The value lives in the namespaced env tip;
+        # parse it here and carry it inside VisionModelConfig — do NOT bridge it
+        # into os.environ (pop_track_b_bare_from_environ hygiene actively removes
+        # business keys from os.environ, so an os.environ bridge is unreliable).
+        vision_default_headers = str(read_env("VISION_DEFAULT_HEADERS") or "").strip()
+        vision_headers_dict: dict[str, str] | None = None
+        if vision_default_headers:
+            try:
+                parsed_headers = json.loads(vision_default_headers)
+                if isinstance(parsed_headers, dict) and parsed_headers:
+                    vision_headers_dict = {
+                        str(k): str(v) for k, v in parsed_headers.items()
+                    }
+            except (ValueError, TypeError):
+                vision_headers_dict = None
+        # TEMP-DEBUG: vision bridge trace — remove after diagnosis
+        try:
+            import datetime as _dt
+            with open('D:/Projects/mutimodal/relay-claw/.multimodal-debug.log', 'a', encoding='utf-8') as _dbg:
+                _dbg.write(
+                    f"{_dt.datetime.now().isoformat()} bridge: "
+                    f"key={'Y' if str(read_env('VISION_API_KEY') or '').strip() else 'N'} "
+                    f"base={str(read_env('VISION_API_BASE') or '').strip()[:45]} "
+                    f"model={str(read_env('VISION_MODEL_NAME') or '').strip()[:30]} "
+                    f"hdr_len={len(vision_default_headers)} parsed={len(vision_headers_dict or {})}\n"
+                )
+        except Exception:
+            pass
         if not api_key or not base_url or not model_name:
             logger.info("[JiuWenSwarmDeepAdapter] vision tools skipped: incomplete config")
             return None
@@ -5463,6 +5492,7 @@ class JiuWenSwarmDeepAdapter:
             base_url=base_url,
             model=model_name,
             max_retries=parse_int(read_env("VISION_MAX_RETRIES"), 3),
+            default_headers=vision_headers_dict,
         )
 
     @staticmethod

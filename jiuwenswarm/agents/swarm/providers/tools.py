@@ -303,11 +303,24 @@ def vision_model_config_params(config: dict[str, Any]) -> dict[str, Any]:
     ).strip()
     if not api_key or not base_url or not model_name:
         return {}
+    # Session-mode accounts authenticate via VISION_DEFAULT_HEADERS (e.g. Basic
+    # auth injected by the relay); parse it so team/member agents keep vision
+    # authentication (mirrors the single-agent build in interface_deep).
+    headers_raw = _tip_getenv("VISION_DEFAULT_HEADERS")
+    default_headers: dict[str, str] | None = None
+    if headers_raw:
+        try:
+            parsed_headers = json.loads(headers_raw)
+            if isinstance(parsed_headers, dict) and parsed_headers:
+                default_headers = {str(k): str(v) for k, v in parsed_headers.items()}
+        except (ValueError, TypeError):
+            default_headers = None
     return {
         "api_key": api_key,
         "base_url": base_url,
         "model": model_name,
         "max_retries": _parse_int(_tip_getenv("VISION_MAX_RETRIES"), 3),
+        "default_headers": default_headers,
     }
 
 
