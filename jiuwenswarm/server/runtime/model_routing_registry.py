@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from jiuwenswarm.common.model_catalog import ModelCatalog
+from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.common.model_errors import (
     MODEL_GROUP_INVALID,
     MODEL_SELECTION_DISABLED,
@@ -76,7 +77,12 @@ class ModelSelectionResolver:
             raise ModelSelectionError(MODEL_SELECTION_DISABLED, f"model {model_id!r} is disabled")
         excluded_client_options = {"model_name", "client_provider", "api_base", "api_key"}
         options = {key: value for key, value in mcc.items() if key not in excluded_client_options}
-        defaults = {k: v for k, v in mco.items() if k != "_source"}
+        defaults = build_reasoning_model_request_kwargs(
+            model_client_config=mcc,
+            model_config_obj=mco,
+            model_name=mcc["model_name"],
+        )
+        defaults.pop("model", None)
         return ResolvedModel(
             model_id=model_id,
             source=source,

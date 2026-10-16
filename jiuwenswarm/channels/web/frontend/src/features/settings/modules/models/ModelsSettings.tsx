@@ -101,7 +101,7 @@ export function buildModelResourcePayload(model: ModelEntry): Record<string, unk
   if (model.endpoint_profile) client.endpoint_profile = model.endpoint_profile;
   const config: Record<string, unknown> = {};
   if (model.temperature !== undefined) config.temperature = model.temperature;
-  if (model.reasoning_level) config.reasoning_level = model.reasoning_level;
+  config.reasoning_level = model.reasoning_level ?? '';
   if (model.context_window_tokens !== undefined) config.context_window = model.context_window_tokens;
   return {
     ...(model.model_id ? { model_id: model.model_id } : {}),
