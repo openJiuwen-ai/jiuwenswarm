@@ -22,8 +22,6 @@ import { JevSettings } from './JevSettings';
 import { parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
 import { formatModelMetadata, getModelDisplayName } from './modelPresentation';
 import {
-  extractModelSelectionReferences,
-  formatModelSelectionReferenceScopes,
   getGroupDefaultRouteId,
   getModelGroupDisplayName,
   parseModelGroup,
