@@ -52,7 +52,7 @@ async def _resource_payload(operation, params, *, user_id=""):
     if operation == "groups.list":
         return {"groups": catalog.list_public_groups()}
     if operation == "models.get":
-        return {"model": catalog.get_public_model_detail(str(params.get("model_id") or ""))}
+        return {"model": catalog.get_public_model_detail(str(params.get("model_id") or ""), include_api_key=True)}
     if operation == "models.references":
         references = await find_resource_references(catalog, ModelSelection.model_validate(params), user_id=user_id)
         return {"references": [ref.__dict__ for ref in references]}
