@@ -25,6 +25,7 @@ def product_config(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cloud_enabled", [False, True])
 @pytest.mark.parametrize("enabled", [True, False])
 @pytest.mark.parametrize("tool", ["bash", "powershell", "core.powershell", "mcp_exec_command", "create_terminal"])
 @pytest.mark.parametrize("command", [
@@ -36,12 +37,20 @@ def product_config(monkeypatch):
     "del/q a.txt", "erase/s/q C:/temp/*.txt", "rd/s/q C:/temp",
     "rmdir/s/q C:/temp", "cmd /c del/q a.txt",
 ])
-async def test_ordinary_deletion_profile_matrix(product_config, enabled, tool, command):
+async def test_ordinary_deletion_profile_matrix(product_config, cloud_enabled, enabled, tool, command):
+    product_config["xiaoyi_work_security"]["cloud_authorization"]["enabled"] = cloud_enabled
     product_config["permissions"]["enabled"] = enabled
     result = await PermissionEngine(runtime_permission_config(product_config)).check_permission(
         tool, {"command": command},
     )
-    assert result.permission.value == ("ask" if enabled else "allow"), result.matched_rule
+    expected = "ask" if enabled else "allow"
+    if cloud_enabled and not enabled:
+        # Full-access command ALLOW still needs an applicable tool ALLOW.
+        expected = {
+            "bash": "allow", "mcp_exec_command": "allow", "create_terminal": "ask",
+            "powershell": "undetermined", "core.powershell": "undetermined",
+        }[tool]
+    assert result.permission.value == expected, result.matched_rule
     assert "shell_delete_files" in result.matched_rule
 
 
@@ -69,12 +78,14 @@ async def test_root_deletion_still_asks(product_config, enabled, tool, command):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cloud_enabled,expected", [(False, "allow"), (True, "undetermined")])
 @pytest.mark.parametrize("command", ["delta a.txt", "rmdir_backup a.txt", "unlinker a.txt"])
-async def test_delete_rule_does_not_match_longer_command_names(product_config, command):
+async def test_delete_rule_does_not_match_longer_command_names(product_config, command, cloud_enabled, expected):
+    product_config["xiaoyi_work_security"]["cloud_authorization"]["enabled"] = cloud_enabled
     result = await PermissionEngine(runtime_permission_config(product_config)).check_permission(
         "bash", {"command": command},
     )
-    assert result.permission.value == "allow", result.matched_rule
+    assert result.permission.value == expected, result.matched_rule
     assert "shell_delete_files" not in result.matched_rule
 
 
@@ -122,9 +133,11 @@ def test_resolving_rules_preserves_input_and_other_rules():
 
 
 @pytest.mark.asyncio
-async def test_existing_rail_snapshot_and_reload_follow_profile(product_config, monkeypatch):
+@pytest.mark.parametrize("cloud_enabled", [False, True])
+async def test_existing_rail_snapshot_and_reload_follow_profile(product_config, monkeypatch, cloud_enabled):
     from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    product_config["xiaoyi_work_security"]["cloud_authorization"]["enabled"] = cloud_enabled
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist.get_permissions_with_session_overlay",
         lambda **_: deepcopy(product_config["permissions"]),
@@ -136,6 +149,8 @@ async def test_existing_rail_snapshot_and_reload_follow_profile(product_config, 
         original = deepcopy(product_config)
         JiuWenSwarmDeepAdapter._update_permission_rail(adapter, product_config)
         expected = "ask" if enabled else "allow"
+        if cloud_enabled and not enabled:
+            expected = "undetermined"  # The shipped template has no powershell tool ALLOW.
         for cfg in (rail._engine.config, rail._host.get_permissions_snapshot()):
             engine = PermissionEngine(cfg)
             result = await engine.check_permission("powershell", {"command": "Remove-Item ./a.txt"})

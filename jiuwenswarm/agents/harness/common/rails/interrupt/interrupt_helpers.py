@@ -306,7 +306,6 @@ def build_permission_rail(
     from jiuwenswarm.common.permission_profile import resolve_permission_profile_rules
 
     behavior_enabled = desktop_security_active()
-    defer_unmatched = cloud_authorization_enabled(config)
     permission_config = runtime_permission_config(config)
     tools_config = permission_config.setdefault("tools", {})
     composition = permission_config.get("composition")
@@ -588,17 +587,21 @@ def build_permission_rail(
             snapshot = resolve_permission_profile_rules(
                 get_permissions_with_session_overlay(session_id=session_id)
             )
+            snapshot.pop("strict_tool_command_merge", None)
             if behavior_enabled:
-                current_defer = (
+                # Composed policies read the live cloud switch. Other hosts use
+                # the rail's current config so hot reload cannot restore stale state.
+                runtime_config = permission_rail._engine.config
+                cloud_enabled = (
                     cloud_authorization_enabled(get_config())
                     if isinstance(snapshot.get("composition"), dict)
-                    else defer_unmatched
+                    else runtime_config.get("defer_unmatched") is True
                 )
-                snapshot = {
-                    **snapshot,
+                snapshot.update({
                     "enabled": True,
-                    "defer_unmatched": current_defer,
-                }
+                    "defer_unmatched": cloud_enabled,
+                    "strict_tool_command_merge": cloud_enabled,
+                })
             return build_trusted_dirs_permission_config(
                 snapshot,
                 runtime_trusted_dirs_state,

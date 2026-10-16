@@ -44,9 +44,13 @@ def runtime_permission_config(config: dict) -> dict:
     hosts retain their existing semantics.
     """
     permissions = resolve_permission_profile_rules(config.get("permissions", {}))
+    # Host-owned policy: persisted settings and session overlays cannot opt in.
+    permissions.pop("strict_tool_command_merge", None)
     if desktop_security_active():
         permissions["enabled"] = True
-        permissions["defer_unmatched"] = cloud_authorization_enabled(config)
+        cloud_enabled = cloud_authorization_enabled(config)
+        permissions["defer_unmatched"] = cloud_enabled
+        permissions["strict_tool_command_merge"] = cloud_enabled
     return permissions
 
 
@@ -119,10 +123,17 @@ class BehaviorSecurityBridge:
                         json=event)
                     response.raise_for_status()
                     body = response.json()
-                    return body if isinstance(body, dict) else {"decision": "unavailable"}
+                    if not isinstance(body, dict):
+                        return {"decision": "unavailable", "reason": "invalid_response"}
+                    return body
+        except asyncio.CancelledError:
+            raise
+        except (TimeoutError, httpx.TimeoutException):
+            logger.warning("[behavior-security] %s %s timeout", event["stage"], event["mode"])
+            return {"decision": "unavailable", "reason": "timeout"}
         except Exception:
             logger.warning("[behavior-security] %s %s unavailable", event["stage"], event["mode"])
-            return {"decision": "unavailable"}
+            return {"decision": "unavailable", "reason": "request_failed"}
 
     def report(self, event: dict) -> None:
         if len(self.tasks) >= 64:
@@ -162,36 +173,24 @@ class BehaviorSecurityBridge:
     async def inspect(self, event: dict) -> PermissionResult:
         """Synchronously decide whether a tool result may be exposed to the model.
 
-        Output inspection is fail-closed: unlike pre-tool authorization there is
-        no safe user-approval fallback for exposing an untrusted payload.
+        Only an explicit cloud REJECT blocks the whole output. Timeout, transport
+        errors, unconfirmed results and oversized payloads fail-open so the
+        original payload continues.
         """
         events = self._output_inspection_events(event)
         if events is None:
-            return PermissionResult(
-                PermissionLevel.DENY,
-                reason="工具输出超过安全检测上限",
-            )
+            logger.warning("[behavior-security] tool.after inspect skipped: output exceeds limit")
+            return PermissionResult(PermissionLevel.ALLOW, reason="cloud:allow")
         replies = await asyncio.gather(*(
             self._send({**item, "mode": "inspect"}) for item in events
         ))
         for reply in replies:
-            decision = reply.get("decision")
-            if decision == "deny":
+            if reply.get("decision") == "deny":
                 return PermissionResult(
                     PermissionLevel.DENY,
                     reason=str(reply.get("reason") or "工具输出安全检测未通过"),
                 )
-            if decision != "allow":
-                return PermissionResult(
-                    PermissionLevel.DENY,
-                    reason="工具输出安全检测不可用",
-                )
-        if replies:
-            return PermissionResult(PermissionLevel.ALLOW, reason="cloud:allow")
-        return PermissionResult(
-            PermissionLevel.DENY,
-            reason="工具输出安全检测不可用",
-        )
+        return PermissionResult(PermissionLevel.ALLOW, reason="cloud:allow")
 
     async def decide(self, event: dict, local: PermissionResult) -> PermissionResult:
         revision = self.policy_revision()
@@ -229,10 +228,13 @@ class BehaviorSecurityBridge:
                 result = PermissionResult(PermissionLevel.DENY, reason=str(reply.get("reason") or "云端拒绝本次操作"))
             else:
                 fail_closed = self.config.get("security", {}).get("fail_closed", {}).get("enabled") is True
-                result = PermissionResult(
-                    PermissionLevel.DENY if fail_closed else PermissionLevel.ASK,
-                    reason="云端不可用，拒绝本次操作" if fail_closed else "云端不可用，请授权本次操作",
-                )
+                if fail_closed:
+                    result = PermissionResult(PermissionLevel.DENY, reason="云端不可用，拒绝本次操作")
+                elif event.get("stage") == "skill.before_install":
+                    # Installation still asks; tool authorize fail-opens like inspect.
+                    result = PermissionResult(PermissionLevel.ASK, reason="云端不可用，请授权本次操作")
+                else:
+                    result = PermissionResult(PermissionLevel.ALLOW, reason="cloud:unavailable")
         if revision != self.policy_revision():
             return PermissionResult(PermissionLevel.DENY, reason="安全策略已变更，请重新发起操作")
         self.decisions[key] = result

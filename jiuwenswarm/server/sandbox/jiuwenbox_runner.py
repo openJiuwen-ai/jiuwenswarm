@@ -120,26 +120,27 @@ def _cleanup_stale_win_proxy_ports(
         return
     import subprocess
     stale_pids: dict[int, list[int]] = {}  # pid -> ports
-    for port in range(port_start, port_end + 1):
-        try:
-            # Get-NetTCPConnection 查 Listen 状态的端口占用.
-            result = subprocess.run(
-                [_get_powershell(), "-NoProfile", "-Command",
-                 f"Get-NetTCPConnection -LocalPort {port} -State Listen "
-                 f"-ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess"],
-                capture_output=True, timeout=5,
-                **_win_hidden_kwargs(),
-            )
-            out = result.stdout.decode("utf-8", errors="replace").strip()
-            if not out:
+    try:
+        # Query once: ten separate PowerShell/Get-NetTCPConnection calls added
+        # about 17 seconds even when none of these ports had a listener.
+        result = subprocess.run(
+            [_get_powershell(), "-NoProfile", "-Command",
+             "Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | "
+             f"Where-Object {{ $_.LocalPort -ge {int(port_start)} -and $_.LocalPort -le {int(port_end)} }} | "
+             'ForEach-Object { "$($_.LocalPort) $($_.OwningProcess)" }'],
+            capture_output=True, stdin=subprocess.DEVNULL, timeout=5,
+            **_win_hidden_kwargs(),
+        )
+        for line in result.stdout.decode("utf-8", errors="replace").splitlines():
+            fields = line.split()
+            if len(fields) != 2 or not all(field.isdigit() for field in fields):
                 continue
-            for pid_str in out.splitlines():
-                pid_str = pid_str.strip()
-                if pid_str.isdigit():
-                    pid = int(pid_str)
-                    stale_pids.setdefault(pid, []).append(port)
-        except Exception:  # noqa: BLE001
-            continue
+            port, pid = map(int, fields)
+            if port_start <= port <= port_end and pid > 0:
+                stale_pids.setdefault(pid, []).append(port)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[JiuwenBoxRunner] 查询 win_proxy 残留端口失败: %s", exc)
+        return
     if not stale_pids:
         return
     for pid, ports in stale_pids.items():
@@ -540,7 +541,12 @@ class JiuwenBoxRunner:
             # 上面 _stop_no_lock 清不到孤儿进程. 旧 box-server 仍占端口 → 新 win_proxy bind WinError 10048. 按默认范围兜底清理.
             # (用户改了 proxy 端口范围则默认范围清不到, 但 bind 失败日志会显示具体端口).
             if sys.platform == "win32":
-                _cleanup_stale_win_proxy_ports()
+                cleanup_started = time.monotonic()
+                await asyncio.to_thread(_cleanup_stale_win_proxy_ports)
+                logger.info(
+                    "[JiuwenBoxRunner] win_proxy port cleanup finished, elapsed_ms=%.1f",
+                    (time.monotonic() - cleanup_started) * 1000,
+                )
 
             self.host = host
             self.port = port
@@ -617,7 +623,13 @@ class JiuwenBoxRunner:
 
             logger.info("[JiuwenBoxRunner] spawning: %s", " ".join(cmd))
             if sys.platform == "win32":
+                setup_started = time.monotonic()
                 await self._prepare_windows_setup(env, policy_path)
+                logger.info(
+                    "[JiuwenBoxRunner] Windows setup finished, elapsed_ms=%.1f",
+                    (time.monotonic() - setup_started) * 1000,
+                )
+            spawn_started = time.monotonic()
             try:
                 spawn_kwargs: dict = {
                     "stdout": asyncio.subprocess.PIPE,
@@ -666,6 +678,10 @@ class JiuwenBoxRunner:
                 return False
 
             ok = await self._wait_until_ready(host, port, timeout=timeout)
+            logger.info(
+                "[JiuwenBoxRunner] box-server readiness=%s, elapsed_ms=%.1f",
+                ok, (time.monotonic() - spawn_started) * 1000,
+            )
             if not ok:
                 tail = "\n".join(self._stderr_tail[-40:])
                 exe_err = _frozen_exe_error_log_tail()

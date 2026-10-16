@@ -297,8 +297,13 @@ async def apply_sandbox_policy_for_restart(
     return changed
 
 
-def dispatch_sandbox_config_request(request: AgentRequest) -> AgentResponse:
+def dispatch_sandbox_config_request(
+    request: AgentRequest, *, apply_enabled: bool = True,
+) -> AgentResponse:
     """执行一条 sandbox 配置 RPC (与 dispatch_permissions_config_request 同形态).
+
+    Set apply_enabled=False when the async caller awaits the enabled change
+    before responding, instead of scheduling it in the background.
 
     Returns: AgentResponse (ok + payload / error + code).
     """
@@ -342,7 +347,8 @@ def dispatch_sandbox_config_request(request: AgentRequest) -> AgentResponse:
             if not isinstance(value, bool):
                 return _err(request, "enabled must be boolean")
             update_sandbox_runtime({"enabled": value})
-            _trigger_apply("enabled")
+            if apply_enabled:
+                _trigger_apply("enabled")
             return _ok(request, {"enabled": value})
 
         # ---- 接口1c/1d: 沙箱启动方式 (存 config.yaml, 基础配置) ----

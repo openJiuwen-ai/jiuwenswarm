@@ -1437,6 +1437,10 @@ class AgentWebSocketServer:
             logger.warning("[AgentWebSocketServer] 服务端已在运行")
             return
 
+        from jiuwenswarm.server.sandbox_config_rpc import set_internal_jiuwenbox_bootstrap
+
+        set_internal_jiuwenbox_bootstrap(self._bootstrap_internal_jiuwenbox)
+
         # Reset harness package state to native on service startup.
         # 延后到这里再导入，避免加载本模块时拉起 auto_harness。
         from jiuwenswarm.agents.harness.common.auto_harness import reset_harness_packages_state
@@ -1846,6 +1850,9 @@ class AgentWebSocketServer:
 
     async def stop(self) -> None:
         """停止 WebSocket 服务端."""
+        from jiuwenswarm.server.sandbox_config_rpc import set_internal_jiuwenbox_bootstrap
+
+        set_internal_jiuwenbox_bootstrap(None)
         # 先取消 checkpointer 预热任务, 避免在 server 关闭后仍在后台跑.
         warmup = self._checkpointer_warmup_task
         self._checkpointer_warmup_task = None
@@ -5599,7 +5606,23 @@ class AgentWebSocketServer:
                                      ok=False, payload={"error": str(exc), "code": "SANDBOX_RESTART_FAILED"},
                                      metadata=request.metadata)
         else:
-            resp = dispatch_sandbox_config_request(request)
+            if request.req_method == ReqMethod.SANDBOX_ENABLED_SET:
+                from jiuwenswarm.server.sandbox_config_rpc import _apply_sandbox_change
+
+                # The legacy switch must await readiness too; do not also enqueue
+                # its usual background apply, which could race a following update.
+                resp = dispatch_sandbox_config_request(request, apply_enabled=False)
+                if resp.ok:
+                    try:
+                        await _apply_sandbox_change("enabled", strict=True)
+                    except Exception as exc:
+                        resp = AgentResponse(
+                            request_id=request.request_id, channel_id=request.channel_id,
+                            ok=False, payload={"error": str(exc), "code": "SANDBOX_CONFIG_FAILED"},
+                            metadata=request.metadata,
+                        )
+            else:
+                resp = dispatch_sandbox_config_request(request)
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
