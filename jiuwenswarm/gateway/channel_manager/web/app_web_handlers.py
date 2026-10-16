@@ -141,6 +141,10 @@ _CODEX_DEPENDENCY_INSTALL_LOCK = threading.Lock()
 _CODEX_DEPENDENCY_INSTALL_STATUS: dict[str, Any] = dict(_EXTERNAL_CLI_DEPENDENCY_INSTALL_IDLE_STATUS)
 _CODEX_DEPENDENCY_INSTALL_LOG_TAIL_LIMIT = 8
 _OPTIONAL_DEPENDENCY_INSTALL_TIMEOUT_SECONDS = 60 * 60
+# Serializes the non-frozen pip installs: parallel pip subprocesses writing the
+# same virtualenv are not safe. Frozen managed-runtime installs are per-agent
+# (independent target directories and file locks) and stay concurrent.
+_OPTIONAL_DEPENDENCY_PIP_INSTALL_LOCK = threading.Lock()
 _CLAUDE_DEPENDENCY_INSTALL_LOCK = threading.Lock()
 _CLAUDE_DEPENDENCY_INSTALL_STATUS: dict[str, Any] = dict(_EXTERNAL_CLI_DEPENDENCY_INSTALL_IDLE_STATUS)
 # Claude and Codex are always present; other managed runtimes (third-party
@@ -1218,6 +1222,19 @@ def _install_optional_dependency(
 ) -> None:
     if _is_frozen_runtime():
         raise RuntimeError(f"frozen applications must use the managed {cli_agent} runtime installer")
+    # Parallel pip subprocesses must not write the same virtualenv at once:
+    # queue this install behind any other in-flight pip-based install. The
+    # frozen managed-runtime path is per-agent and stays concurrent.
+    with _OPTIONAL_DEPENDENCY_PIP_INSTALL_LOCK:
+        _run_optional_dependency_pip_install(cli_agent, package, required_module, force_reinstall)
+
+
+def _run_optional_dependency_pip_install(
+    cli_agent: str,
+    package: str,
+    required_module: str,
+    force_reinstall: bool,
+) -> None:
     args = _build_optional_dependency_install_args(package, cli_agent, force_reinstall=force_reinstall)
     output_lines: list[str] = []
     logger.info(

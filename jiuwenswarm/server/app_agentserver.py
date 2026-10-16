@@ -78,7 +78,21 @@ async def _start_supervisor(front: object, host: str, port: int) -> object:
     return supervisor
 
 
+def _install_common_providers() -> None:
+    """装配 common 注入点的 server 侧实现（幂等）。
+
+    Front（主进程）的控制面直接处理 config.*（front/router →
+    control/config_service → config_panel handlers），其中 a2ui/team/
+    mcp_credential 域不经任何功能路径自然加载——不装配则 config.get
+    静默回退默认值、config.set 团队模板保存失败、MCP 凭证占位符不解析。
+    """
+    from jiuwenswarm.server.runtime.provider_setup import install_front
+
+    install_front()
+
+
 async def _run(host: str, port: int) -> None:
+    _install_common_providers()
     from jiuwenswarm.server.front.server import AgentServerFront
 
     startup_t0 = time.monotonic()

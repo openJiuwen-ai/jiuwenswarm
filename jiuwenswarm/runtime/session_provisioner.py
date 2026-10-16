@@ -740,6 +740,10 @@ class RuntimeSessionProvisioner:
             raw_selection = provision_input.model_selection or existing_metadata.get("model_selection")
             selection = ModelSelection.model_validate(raw_selection) if raw_selection is not None else None
             try:
+                if provision_input.cron_id and selection is not None:
+                    from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+
+                    selection = ModelSelectionResolver().restore(selection)
                 config_snapshot = get_config()
                 moa_enabled = effective_moa_enabled(
                     config_snapshot, selection, mode=canonical_mode,
