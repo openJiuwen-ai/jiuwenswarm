@@ -690,6 +690,105 @@ class TestGetAllSessionsMetadata:
             "normal"
         ]
 
+    @staticmethod
+    def test_user_id_filter_keeps_only_owned(sessions_dir):
+        """认证调用者只见自己名下的会话"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _write_metadata_sync,
+            get_all_sessions_metadata,
+        )
+
+        now = time.time()
+        _write_metadata_sync("alice", {
+            "session_id": "alice", "last_message_at": now,
+            "channel_id": "web", "user_id": "alice", "created_at": now,
+            "title": "", "message_count": 0, "round_id": 0,
+        })
+        _write_metadata_sync("bob", {
+            "session_id": "bob", "last_message_at": now - 1,
+            "channel_id": "web", "user_id": "bob", "created_at": now - 1,
+            "title": "", "message_count": 0, "round_id": 0,
+        })
+
+        sessions, total = get_all_sessions_metadata(user_id="alice")
+        assert total == 1
+        assert [s["session_id"] for s in sessions] == ["alice"]
+
+    @staticmethod
+    def test_user_id_filter_anonymous_only_unowned(sessions_dir):
+        """匿名调用者只见无主（legacy）会话，不能看到带明确 owner 的会话"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _write_metadata_sync,
+            get_all_sessions_metadata,
+        )
+
+        now = time.time()
+        _write_metadata_sync("owned", {
+            "session_id": "owned", "last_message_at": now,
+            "channel_id": "web", "user_id": "alice", "created_at": now,
+            "title": "", "message_count": 0, "round_id": 0,
+        })
+        _write_metadata_sync("legacy", {
+            "session_id": "legacy", "last_message_at": now - 1,
+            "channel_id": "", "user_id": "", "created_at": now - 1,
+            "title": "", "message_count": 0, "round_id": 0,
+        })
+
+        sessions, total = get_all_sessions_metadata(user_id="")
+        assert total == 1
+        assert [s["session_id"] for s in sessions] == ["legacy"]
+
+    @staticmethod
+    def test_user_id_none_keeps_all(sessions_dir):
+        """未传 user_id（None）时不过滤，保持内部扫描路径行为"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _write_metadata_sync,
+            get_all_sessions_metadata,
+        )
+
+        now = time.time()
+        _write_metadata_sync("alice", {
+            "session_id": "alice", "last_message_at": now,
+            "channel_id": "web", "user_id": "alice", "created_at": now,
+            "title": "", "message_count": 0, "round_id": 0,
+        })
+        _write_metadata_sync("legacy", {
+            "session_id": "legacy", "last_message_at": now - 1,
+            "channel_id": "", "user_id": "", "created_at": now - 1,
+            "title": "", "message_count": 0, "round_id": 0,
+        })
+
+        sessions, total = get_all_sessions_metadata()
+        assert total == 2
+
+    @staticmethod
+    def test_user_id_filter_total_matches_page(sessions_dir):
+        """过滤后 total 与分页一致，不受被过滤会话影响"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _write_metadata_sync,
+            get_all_sessions_metadata,
+        )
+
+        now = time.time()
+        for i in range(3):
+            _write_metadata_sync(f"alice_{i}", {
+                "session_id": f"alice_{i}", "last_message_at": now - i,
+                "channel_id": "web", "user_id": "alice", "created_at": now - i,
+                "title": "", "message_count": 0, "round_id": 0,
+            })
+        _write_metadata_sync("bob", {
+            "session_id": "bob", "last_message_at": now - 10,
+            "channel_id": "web", "user_id": "bob", "created_at": now - 10,
+            "title": "", "message_count": 0, "round_id": 0,
+        })
+
+        sessions, total = get_all_sessions_metadata(limit=2, offset=0, user_id="alice")
+        assert total == 3
+        assert len(sessions) == 2
+        sessions, total = get_all_sessions_metadata(limit=2, offset=2, user_id="alice")
+        assert total == 3
+        assert [s["session_id"] for s in sessions] == ["alice_2"]
+
 # ===========================================================================
 # _read_metadata 容错
 # ===========================================================================

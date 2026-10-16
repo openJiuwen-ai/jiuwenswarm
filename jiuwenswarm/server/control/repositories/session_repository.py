@@ -43,6 +43,20 @@ _PREVIEW_COUNT_DEFAULT: Final[int] = 30
 _PREVIEW_COUNT_MAX: Final[int] = 100
 
 
+def _owner_matches(stored_user_id: object, requested_user_id: str) -> bool:
+    """与 SessionMessage owner-scope 的匹配语义保持一致。
+
+    认证调用者（requested 非空）只匹配自己名下的会话；匿名调用者只匹配
+    无主（legacy）会话——request.user_id 在传输边界是可选的，匿名调用者
+    永远不能匹配带明确 owner 的会话。
+    """
+    stored = str(stored_user_id or "").strip()
+    requested = str(requested_user_id or "").strip()
+    if requested:
+        return stored == requested
+    return not stored
+
+
 def _is_previewable(item: object) -> bool:
     if not isinstance(item, dict):
         return False
@@ -93,7 +107,9 @@ async def handle_list(request: AgentRequest) -> AgentResponse:
             maximum=_SESSION_LIST_LIMIT_MAX,
         )
         offset = parse_int_param(params, "offset", 0, minimum=0, maximum=10**9)
-        sessions, total = get_all_sessions_metadata(limit=limit, offset=offset)
+        sessions, total = get_all_sessions_metadata(
+            limit=limit, offset=offset, user_id=request.user_id
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[session_repository] session.list failed: %s", exc)
         channel_id = str(request.channel_id or "").strip().lower()
@@ -122,7 +138,8 @@ async def handle_get_metadata(request: AgentRequest) -> AgentResponse:
     except Exception as exc:  # noqa: BLE001
         logger.warning("[session_repository] session.get_metadata failed: %s", exc)
         return build_error_response(request, str(exc), code="INTERNAL_ERROR")
-    if not meta:
+    if not meta or not _owner_matches(meta.get("user_id"), request.user_id):
+        # 不匹配与不存在同响应，避免泄露其他用户的会话存在性。
         return build_error_response(request, "session not found", code="NOT_FOUND")
     return _ok(request, meta)
 
@@ -136,6 +153,13 @@ async def handle_pin(request: AgentRequest) -> AgentResponse:
     raw_pinned = params.get("pinned")
     if not isinstance(raw_pinned, bool):
         return build_error_response(request, "pinned must be boolean", code="BAD_REQUEST")
+    try:
+        meta = get_session_metadata(sid, cache_bust=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[session_repository] session.pin ownership check failed: %s", exc)
+        return build_error_response(request, str(exc), code="INTERNAL_ERROR")
+    if not meta or not _owner_matches(meta.get("user_id"), request.user_id):
+        return build_error_response(request, "session not found", code="NOT_FOUND")
     try:
         result = await asyncio.to_thread(set_session_pinned, sid, raw_pinned)
     except Exception as exc:  # noqa: BLE001
@@ -159,12 +183,17 @@ async def handle_color_set(request: AgentRequest) -> AgentResponse:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[session_repository] session.color_set query failed: %s", exc)
             return build_error_response(request, str(exc), code="INTERNAL_ERROR")
+        if metadata and not _owner_matches(metadata.get("user_id"), request.user_id):
+            # 不匹配视同不存在，避免泄露其他用户的会话存在性。
+            metadata = None
         accent_color = metadata.get("accent_color", "default") if metadata else "default"
         return _ok(request, {"session_id": target, "accent_color": accent_color})
     if str(color) not in _VALID_ACCENT_COLORS:
         return build_error_response(request, f"invalid color: {color}", code="BAD_REQUEST")
     try:
         metadata = _read_metadata(target)
+        if not metadata or not _owner_matches(metadata.get("user_id"), request.user_id):
+            return build_error_response(request, "session not found", code="NOT_FOUND")
         metadata["accent_color"] = str(color)
         _write_metadata_sync(target, metadata)
     except Exception as exc:  # noqa: BLE001
@@ -185,6 +214,14 @@ async def handle_preview(request: AgentRequest) -> AgentResponse:
         minimum=1,
         maximum=_PREVIEW_COUNT_MAX,
     )
+    try:
+        meta = get_session_metadata(target, cache_bust=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[session_repository] session.preview ownership check failed: %s", exc)
+        meta = None
+    if not meta or not _owner_matches(meta.get("user_id"), request.user_id):
+        # 不匹配与不存在同响应（空 preview），避免泄露其他用户的会话内容。
+        return _ok(request, {"session_id": target, "preview_messages": []})
     try:
         raw = load_history_records(target)
         preview_messages = _build_preview_messages(raw, preview_count)
