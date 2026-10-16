@@ -1791,6 +1791,11 @@ async def _run(
     from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.cleanup import start_background_cleanup
+    from jiuwenswarm.gateway.agent_client_mode import (
+        AgentClientModeError,
+        read_agent_client_mode,
+        resolve_agent_server_client,
+    )
     from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
     from jiuwenswarm.gateway.cron import (
@@ -1859,13 +1864,25 @@ async def _run(
     max_retries = int(os.getenv("AGENT_CONNECT_RETRY", "20"))
     retry_interval = float(os.getenv("AGENT_CONNECT_RETRY_INTERVAL", "3"))
 
-    # 从扩展注册表获取 AgentServerClient（WebSocket 或 Yuanrong 等扩展实现）
+    # 环境变量决定用 WebSocket 还是 runtime。扩展仍可以提供 yuanrong 等别的客户端。
     agent_server_ext = extension_registry.get_agent_server_client_extension()
-    if agent_server_ext is not None:
+    mode = read_agent_client_mode()
+    if agent_server_ext is not None and mode not in {"runtime", "http"}:
         logger.info("[App] using extension AgentServerClient: %s", agent_server_ext.metadata.name)
-        client = agent_server_ext.get_client()
-    else:
-        client = WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
+    try:
+        client = resolve_agent_server_client(
+            agent_server_ext,
+            mode=mode,
+            websocket_factory=lambda: WebSocketAgentServerClient(
+                ping_interval=20.0,
+                ping_timeout=600.0,
+            ),
+        )
+    except AgentClientModeError as exc:
+        logger.error("[App] %s", exc)
+        raise
+    if mode == "runtime":
+        logger.info("[App] using runtime AgentServerClient")
 
     from jiuwenswarm.gateway.routing.third_agent import get_unsupported_third_agent
 
@@ -1876,7 +1893,7 @@ async def _run(
     else:
         third_agent = get_unsupported_third_agent()
 
-    # 如果是 WebSocket 客户端，需要连接；如果是 YuanrongFrontendAgentClient，无需连接
+    # WebSocket 客户端按现有重试去连 ws 地址。runtime 和 yuanrong 调用 connect("")。
     if isinstance(client, WebSocketAgentServerClient):
         await _connect_with_retry(
             client,
@@ -1885,7 +1902,6 @@ async def _run(
             interval=retry_interval,
         )
     else:
-        # YuanrongFrontendAgentClient 是 HTTP 客户端，无需连接
         await client.connect("")
     log_startup_stage("agent_server_connected")
 

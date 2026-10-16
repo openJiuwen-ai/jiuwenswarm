@@ -24,8 +24,8 @@ RUN sed -i '/openjiuwen_runtime_foundation/d' pyproject.toml
 # 改由 AGENT_CORE_REPOS/AGENT_CORE_BRANCH 构建参数安装
 RUN sed -i '0,/"openjiuwen @ git+/{/"openjiuwen @ git+/d;}' pyproject.toml
 
-RUN if [ -f packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extension/pyproject.toml ]; then \
-        sed -i '/openjiuwen_runtime_management/d' packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extension/pyproject.toml; \
+RUN if [ -f jiuwenswarm/extensions/runtime_management_extension/pyproject.toml ]; then \
+        sed -i '/openjiuwen_runtime_management/d' jiuwenswarm/extensions/runtime_management_extension/pyproject.toml; \
     fi
 
 RUN uv pip install --system \
