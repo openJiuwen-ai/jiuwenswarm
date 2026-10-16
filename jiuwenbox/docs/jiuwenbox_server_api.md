@@ -1249,3 +1249,7 @@ print(resp.text)
 - `sandbox.exec` 和 `sandbox.exec_background` 中的 `workdir`、`env`、`timeout_seconds` 仍然有效。
 - CLI 后台任务命令：`sandbox bg-exec`、`sandbox bg-get`、`sandbox bg-list`、`sandbox bg-kill`（除 `sandbox exec` 外，CLI 默认输出 JSON）
 - 文档示例中的时间、PID、ID 仅为示意。
+
+### Linux 文件隔离状态
+
+沙箱创建、查询及列表响应包含 `landlock_status` 和 `security_warnings`。默认强制 Landlock，失败时 `phase` 为 `error` 并提供 `error_message`；显式降级会在 API 和服务日志中提示。Windows 的 Landlock 状态为 null。详见 [Landlock 安全与兼容模式](landlock-security.md)。

@@ -14,6 +14,7 @@ from jiuwenbox.models.sandbox import (
     BackgroundJobSummary,
     ExecResult,
     KillBackgroundJobResult,
+    LandlockStatus,
 )
 
 
@@ -57,6 +58,10 @@ class RuntimeFileOpResult:
 
 class RuntimeAdapter(abc.ABC):
     """Interface for sandbox runtime backends (process, docker, etc.)."""
+
+    def get_landlock_status(self, sandbox_id: str) -> LandlockStatus | None:
+        """Last verified startup status; None for backends without Landlock."""
+        return None
 
     @abc.abstractmethod
     async def create(

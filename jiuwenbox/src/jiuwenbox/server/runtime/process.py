@@ -54,6 +54,7 @@ from jiuwenbox.models.sandbox import (
     BackgroundJobSummary,
     ExecResult,
     KillBackgroundJobResult,
+    LandlockStatus,
 )
 from jiuwenbox.server.runtime.base import (
     RuntimeAdapter,
@@ -82,6 +83,7 @@ from jiuwenbox.supervisor.daemon_ipc import (
     REQUEST_TYPE_LIST_DIR,
     REQUEST_TYPE_READ_FILE,
     REQUEST_TYPE_SHUTDOWN,
+    REQUEST_TYPE_SECURITY_STATUS,
     REQUEST_TYPE_SUBSCRIBE_LOG,
     REQUEST_TYPE_WRITE_FILE,
     SANDBOX_CONTROL_SOCKET_NAME,
@@ -636,6 +638,7 @@ class ProcessRuntime(RuntimeAdapter):
         self._daemon_socket_ready: dict[str, bool] = {}
         self._seccomp_bpf: dict[str, bytes] = {}
         self._landlock_payloads: dict[str, str] = {}
+        self._landlock_statuses: dict[str, LandlockStatus] = {}
         self._background_processes: dict[str, dict[str, BackgroundJob]] = {}
         self._host_firewall_refcounts: dict[tuple[int, int], int] = {}
         self._sandbox_host_firewall_rules: dict[str, list[tuple[int, int]]] = {}
@@ -1971,6 +1974,7 @@ class ProcessRuntime(RuntimeAdapter):
                 raise RuntimeError(f"Sandbox {sandbox_id} already has a running process")
             self._processes.pop(sandbox_id, None)
 
+        self._landlock_statuses.pop(sandbox_id, None)
         policy = self._load_policy(policy_path)
         self._runtime_policies[sandbox_id] = policy
         self._network_modes[sandbox_id] = policy.network.mode
@@ -2198,7 +2202,55 @@ class ProcessRuntime(RuntimeAdapter):
         """
         await asyncio.sleep(DAEMON_STARTUP_GRACE_SECONDS)
         self._verify_daemon_alive(sandbox_id, proc, netns_name, startup_log_file)
+        mode = self._runtime_policies[sandbox_id].landlock.compatibility
+        try:
+            if mode == "disabled":
+                status = LandlockStatus(mode=mode, state="disabled", abi=0,
+                                       reason="Explicitly disabled by deployment policy")
+            else:
+                status = await asyncio.to_thread(self._read_landlock_status, sandbox_id)
+                if status.mode != mode:
+                    raise RuntimeError("Landlock startup mode does not match policy")
+                if status.state == "enforced" and status.abi < 3:
+                    raise RuntimeError("Landlock reported incomplete ABI as fully enforced")
+                if status.state == "degraded" and not status.reason:
+                    raise RuntimeError("Landlock degradation reason is missing")
+                if mode == "hard_requirement" and (status.state != "enforced" or status.abi < 3):
+                    raise RuntimeError("Mandatory Landlock filesystem protection is not enforced")
+                if status.state == "disabled":
+                    raise RuntimeError("Landlock was unexpectedly disabled")
+            self._landlock_statuses[sandbox_id] = status
+            if status.state != "enforced":
+                logger.warning("Sandbox %s Landlock %s: %s", sandbox_id, status.state, status.reason)
+        except (Exception, asyncio.CancelledError) as exc:
+            try:
+                await self.stop(sandbox_id, timeout=2.0)
+            finally:
+                self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            details = self._read_daemon_startup_log(startup_log_file)
+            suffix = f"\nDaemon startup diagnostics:\n{details}" if details else ""
+            raise RuntimeError(f"Landlock startup verification failed: {exc}{suffix}") from exc
         self._daemon_socket_ready[sandbox_id] = True
+
+    def _read_landlock_status(self, sandbox_id: str) -> LandlockStatus:
+        path = self._control_socket_host_path(sandbox_id)
+        if path is None:
+            raise RuntimeError("Landlock status control socket is missing")
+        with self._connect_daemon_socket(path) as sock:
+            sock.settimeout(30.0)
+            send_frame(sock, encode_request(request_type=REQUEST_TYPE_SECURITY_STATUS))
+            reply = json.loads(recv_frame(sock, 65536).decode("utf-8"))
+        if not isinstance(reply, dict) or reply.get("ok") is not True:
+            raise RuntimeError("Daemon did not provide Landlock startup status")
+        return LandlockStatus.model_validate(reply.get("landlock"))
+
+    def get_landlock_status(self, sandbox_id: str) -> LandlockStatus | None:
+        if sys.platform == "win32":
+            return None
+        status = self._landlock_statuses.get(sandbox_id)
+        return status.model_copy(deep=True) if status is not None else None
 
     def _verify_daemon_alive(
         self,
@@ -2286,6 +2338,7 @@ class ProcessRuntime(RuntimeAdapter):
         self._policy_binds.pop(sandbox_id, None)
         self._seccomp_bpf.pop(sandbox_id, None)
         self._landlock_payloads.pop(sandbox_id, None)
+        self._landlock_statuses.pop(sandbox_id, None)
         self._policy_paths.pop(sandbox_id, None)
         self._remove_sandbox_host_firewall_rules(sandbox_id)
         # Drop any cgroup handle that survived a partially-completed create
@@ -4369,6 +4422,7 @@ class ProcessRuntime(RuntimeAdapter):
         self._policy_binds.pop(sandbox_id, None)
         self._seccomp_bpf.pop(sandbox_id, None)
         self._landlock_payloads.pop(sandbox_id, None)
+        self._landlock_statuses.pop(sandbox_id, None)
         if network_mode is None and policy_path is not None and policy_path.exists():
             try:
                 network_mode = self._load_policy(policy_path).network.mode

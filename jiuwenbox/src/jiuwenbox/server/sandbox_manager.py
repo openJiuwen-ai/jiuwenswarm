@@ -127,6 +127,7 @@ from jiuwenbox.logging_config import configure_logging
 from jiuwenbox.models.common import AuditEventType
 from jiuwenbox.models.policy import SecurityPolicy, TimeoutPolicy
 from jiuwenbox.models.sandbox import (
+    LandlockStatus,
     BackgroundExecResult,
     BackgroundJobStatus,
     BackgroundJobSummary,
@@ -143,7 +144,7 @@ from jiuwenbox.models.sandbox import (
 )
 from jiuwenbox.server.audit_logger import AuditLogger
 from jiuwenbox.server.limits import SandboxLimitError, SandboxLimits
-from jiuwenbox.server.policy_engine import PolicyEngine
+from jiuwenbox.server.policy_engine import PolicyEngine, PolicyValidationError
 from jiuwenbox.server.policy_reader import PolicyReader
 from jiuwenbox.server.runtime.base import (
     RuntimeAdapter,
@@ -371,12 +372,42 @@ class SandboxManager:
             policy_payload = dict(policy_data)
 
         if policy_mode == PolicyMode.APPEND:
-            return self.policy_engine.merge_policy(base_policy, policy_payload)
+            resolved = self.policy_engine.merge_policy(base_policy, policy_payload)
+        elif isinstance(policy_payload, SecurityPolicy):
+            resolved = policy_payload.model_copy(deep=True)
+        else:
+            resolved = SecurityPolicy.model_validate(policy_payload)
 
-        if isinstance(policy_payload, SecurityPolicy):
-            return policy_payload.model_copy(deep=True)
+        if sys.platform == "linux":
+            # Missing request fields inherit the deployment decision, including
+            # an operator's explicit compatibility opt-in on an older kernel.
+            explicit = (
+                "compatibility" in policy_payload.landlock.model_fields_set
+                if isinstance(policy_payload, SecurityPolicy)
+                else "compatibility" in (policy_payload.get("landlock") or {})
+            )
+            if not explicit:
+                resolved.landlock.compatibility = base_policy.landlock.compatibility
+            self._enforce_landlock_floor(resolved)
+        return resolved
 
-        return SecurityPolicy.model_validate(policy_payload)
+    def _enforce_landlock_floor(self, policy: SecurityPolicy) -> None:
+        if sys.platform != "linux":
+            return
+        rank = {"disabled": 0, "best_effort": 1, "hard_requirement": 2}
+        if rank[policy.landlock.compatibility] < rank[self.policy.landlock.compatibility]:
+            raise PolicyValidationError(
+                "Sandbox Landlock mode cannot weaken the deployment policy; "
+                "configure compatibility explicitly in the server policy instead"
+            )
+
+    def _refresh_landlock_status(self, ref: SandboxRef) -> None:
+        getter = getattr(self.runtime, "get_landlock_status", None)
+        status = getter(ref.id) if callable(getter) else None
+        ref.landlock_status = status if isinstance(status, LandlockStatus) else None
+        ref.security_warnings = []
+        if ref.landlock_status is not None and ref.landlock_status.state != "enforced":
+            ref.security_warnings.append("Landlock: " + (ref.landlock_status.reason or ref.landlock_status.state))
 
     def _load_state(self) -> None:
         """Load persisted sandbox state from ``state_dir``.
@@ -750,6 +781,7 @@ class SandboxManager:
                 else:
                     ref.phase = SandboxPhase.READY
                     ref.pid = pid
+                    self._refresh_landlock_status(ref)
                     now = datetime.now(timezone.utc)
                     ref.started_at = now
                     # 沙箱刚创建即视为最近一次活跃, 避免在第一次 exec 到来之前就被
@@ -812,11 +844,15 @@ class SandboxManager:
             policy_path = self.policy_engine.write_sandbox_policy(sandbox_id, policy)
 
         try:
+            ref.landlock_status = None
+            ref.security_warnings = []
+            self._enforce_landlock_floor(policy)
             pid = await self.runtime.create(
                 sandbox_id=sandbox_id,
                 policy_path=policy_path,
                 env=ref.env,
             )
+            self._refresh_landlock_status(ref)
             ref.phase = SandboxPhase.READY
             ref.pid = pid
             now = datetime.now(timezone.utc)
@@ -826,6 +862,9 @@ class SandboxManager:
         except Exception as e:
             logger.error("Failed to start sandbox %s: %s", sandbox_id, e, exc_info=True)
             ref.phase = SandboxPhase.ERROR
+            ref.pid = None
+            ref.landlock_status = None
+            ref.security_warnings = []
             ref.error_message = str(e)
 
         self._save_state(ref)

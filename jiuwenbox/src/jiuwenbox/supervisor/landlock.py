@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import json
+import posixpath
 
 from jiuwenbox.models.policy import SecurityPolicy
 
@@ -33,7 +34,11 @@ def detect_landlock_abi() -> int:
 
 def encode_landlock_payload(policy: SecurityPolicy) -> str:
     """Build a compact payload consumed by the in-sandbox Landlock launcher."""
-    read_only = list(policy.filesystem_policy.read_only)
+    # In the policy '/' also tells bwrap to remount its root read-only. It
+    # must not implicitly grant recursive reads of the private runtime tree.
+    read_only = [
+        path for path in policy.filesystem_policy.read_only if posixpath.normpath(path).strip("/")
+    ]
     read_write = list(policy.filesystem_policy.read_write)
     for directory in policy.filesystem_policy.directories:
         if isinstance(directory, str):
@@ -50,6 +55,15 @@ def encode_landlock_payload(policy: SecurityPolicy) -> str:
             read_only.append(mount.sandbox_path)
         else:
             read_write.append(mount.sandbox_path)
+    if policy.filesystem_policy.bind_root_entries:
+        # Use the exact same filtering/expansion as bubblewrap (hidden names,
+        # exclude globs, non-files). Do not widen a file to its parent tree.
+        from jiuwenbox.supervisor.bwrap import BwrapConfig
+
+        mounts = BwrapConfig()
+        BwrapConfig._apply_filesystem(mounts, policy.filesystem_policy)
+        read_only.extend(target for _, target in mounts.ro_binds)
+        read_write.extend(target for _, target in mounts.rw_binds)
     for device in policy.filesystem_policy.device:
         read_write.append(device.sandbox_path)
     # These pseudo-filesystems are created by bwrap and are needed by common runtimes.
@@ -81,6 +95,7 @@ def encode_landlock_payload(policy: SecurityPolicy) -> str:
         "compatibility": policy.landlock.compatibility,
         "read_only": _dedupe(read_only),
         "read_write": _dedupe(read_write),
+        "directory_only": ["/"],
     }
     raw = json.dumps(payload, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).decode()

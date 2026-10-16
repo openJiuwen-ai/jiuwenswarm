@@ -15,7 +15,7 @@ agent 工具和代码片段。
 - 服务端管理的沙箱后端存储（`~/.jiuwenbox/workspace`）
 - 可选的 Linux 网络命名空间和防火墙网络隔离
 - 命名空间和 Linux capability 控制
-- 在内核支持时启用 Landlock 文件系统约束
+- Linux 默认强制 Landlock 文件系统约束，显式兼容模式报告降级状态
 - Seccomp 系统调用过滤
 - 在运行时存在时支持 Python 和 JavaScript 代码执行
 - 审计日志和持久化的沙箱生命周期状态
@@ -431,7 +431,9 @@ ls /tmp/jiuwenbox-logs
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `compatibility` | `best_effort` | `disabled`：不启用 Landlock；`best_effort`：支持则启用，否则继续；`hard_requirement`：不支持则沙箱启动失败。 |
+| `compatibility` | `hard_requirement` | 默认要求 ABI >= 3，失败时拒绝启动。部署端可显式选择 `best_effort` 或 `disabled`，API 和日志显示实际保护状态；规则安装错误仍拒绝启动。沙箱请求不能降低部署要求。 |
+
+单文件按实际文件 FD 授权，根目录只读配置不再隐式允许读取所有文件。迁移、状态字段与验收见 [Landlock 安全说明](docs/landlock-security.md)。
 
 #### `syscall`
 
@@ -585,7 +587,7 @@ capabilities:
   drop: []
 
 landlock:
-  compatibility: best_effort
+  compatibility: hard_requirement
 
 syscall:
   x86_64:

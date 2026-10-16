@@ -8079,7 +8079,7 @@ class AgentWebSocketServer:
     @staticmethod
     def _read_landlock_compatibility(policy_path: Path | None) -> str:
         if policy_path is None or not policy_path.is_file():
-            return "best_effort"
+            return "hard_requirement"
         try:
             import yaml
 
@@ -8092,7 +8092,7 @@ class AgentWebSocketServer:
                         return compat.strip()
         except Exception as exc:
             logger.debug("[command.sandbox] read landlock compatibility failed: %s", exc)
-        return "best_effort"
+        return "hard_requirement"
 
     async def _attach_landlock_status(self, payload: dict[str, Any]) -> None:
         """Attach jiuwenbox Landlock capability summary to sandbox responses."""

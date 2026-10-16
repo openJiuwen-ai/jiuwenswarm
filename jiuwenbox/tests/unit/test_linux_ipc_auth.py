@@ -19,7 +19,7 @@ from jiuwenbox.supervisor.daemon_ipc import CONTROL_TOKEN_BYTES, recv_frame, sen
 
 TOKEN = b"a" * CONTROL_TOKEN_BYTES
 REQUESTS = ["exec", "shutdown", "write_file", "read_file", "list_dir",
-            "exec_background", "bg_status", "bg_kill"]
+            "exec_background", "bg_status", "bg_kill", "security_status"]
 
 
 def roundtrip(header, token, monkeypatch):

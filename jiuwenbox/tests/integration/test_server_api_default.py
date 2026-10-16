@@ -868,6 +868,17 @@ class TestSandboxLifecycle:
 
 class TestPolicyAPI:
     @staticmethod
+    @pytest.mark.parametrize("mode", ["append", "override"])
+    @pytest.mark.parametrize("compatibility", ["best_effort", "disabled"])
+    def test_landlock_request_cannot_weaken_server_default(client, mode, compatibility):
+        response = client.post("/api/v1/sandboxes", json={
+            "policy_mode": mode,
+            "policy": {"landlock": {"compatibility": compatibility}},
+        })
+        assert response.status_code == 400, response.text
+        assert "deployment policy" in response.text
+
+    @staticmethod
     def test_get_sandbox_policy(client):
         create_resp = client.post("/api/v1/sandboxes", json={})
         sandbox_id = create_resp.json()["id"]
@@ -906,7 +917,7 @@ class TestPolicyAPI:
             "uts": True,
         }
         assert data["capabilities"] == {"add": [], "drop": []}
-        assert data["landlock"]["compatibility"] == "best_effort"
+        assert data["landlock"]["compatibility"] == "hard_requirement"
         assert data["network"]["mode"] == "isolated"
         assert data["network"]["egress"]["allowed_domains"] == ["baidu.com"]
         assert data["network"]["egress"]["allowed_ips"] == ["127.0.0.1/32", "::1/128"]
@@ -970,7 +981,7 @@ class TestPolicyAPI:
                     "drop": [],
                 },
                 "landlock": {
-                    "compatibility": "disabled",
+                    "compatibility": "hard_requirement",
                 },
                 "syscall": {
                     "x86_64": {"blocked": ["getpid"]},
@@ -1037,7 +1048,7 @@ class TestPolicyAPI:
         }
         assert data["capabilities"]["add"] == ["CAP_NET_RAW"]
         assert data["capabilities"]["drop"] == []
-        assert data["landlock"]["compatibility"] == "disabled"
+        assert data["landlock"]["compatibility"] == "hard_requirement"
         assert "getpid" in data["syscall"]["x86_64"]["blocked"]
         assert "mount" in data["syscall"]["x86_64"]["blocked"]
         assert "getpid" in data["syscall"]["arm64"]["blocked"]
@@ -1095,7 +1106,7 @@ class TestPolicyAPI:
                     "drop": [],
                 },
                 "landlock": {
-                    "compatibility": "disabled",
+                    "compatibility": "hard_requirement",
                 },
                 "syscall": {
                     "x86_64": {"blocked": ["getppid"]},
@@ -1140,7 +1151,7 @@ class TestPolicyAPI:
             "uts": False,
         }
         assert data["capabilities"] == {"add": ["CAP_NET_RAW"], "drop": []}
-        assert data["landlock"]["compatibility"] == "disabled"
+        assert data["landlock"]["compatibility"] == "hard_requirement"
         assert data["syscall"]["x86_64"]["blocked"] == ["getppid"]
         assert data["syscall"]["arm64"]["blocked"] == ["getppid"]
 
@@ -1514,7 +1525,7 @@ class TestPolicyEnforcement:
                     "read_write": ["/tmp"],
                 },
                 "landlock": {
-                    "compatibility": "disabled",
+                    "compatibility": "hard_requirement",
                 },
                 "network": {
                     "mode": "host",
@@ -1558,7 +1569,7 @@ class TestPolicyEnforcement:
                     "read_write": ["/tmp"],
                 },
                 "landlock": {
-                    "compatibility": "disabled",
+                    "compatibility": "hard_requirement",
                 },
                 "network": {
                     "mode": "host",
@@ -1605,7 +1616,7 @@ class TestPolicyEnforcement:
                     "read_write": ["/tmp"],
                 },
                 "landlock": {
-                    "compatibility": "disabled",
+                    "compatibility": "hard_requirement",
                 },
                 "network": {
                     "mode": "host",
@@ -1655,7 +1666,7 @@ class TestPolicyEnforcement:
                     "read_write": ["/tmp"],
                 },
                 "landlock": {
-                    "compatibility": "disabled",
+                    "compatibility": "hard_requirement",
                 },
                 "network": {
                     "mode": "host",
@@ -2094,7 +2105,7 @@ class TestPolicyEnforcement:
                     "pid": True,
                 },
                 "landlock": {
-                    "compatibility": "disabled",
+                    "compatibility": "hard_requirement",
                 },
                 "network": {
                     "mode": "host",
@@ -2132,7 +2143,7 @@ class TestPolicyEnforcement:
                     "drop": ["CAP_NET_RAW"],
                 },
                 "landlock": {
-                    "compatibility": "disabled",
+                    "compatibility": "hard_requirement",
                 },
                 "network": {
                     "mode": "host",
@@ -2170,7 +2181,7 @@ class TestPolicyEnforcement:
                     "drop": [],
                 },
                 "landlock": {
-                    "compatibility": "disabled",
+                    "compatibility": "hard_requirement",
                 },
                 "network": {
                     "mode": "host",
@@ -3858,7 +3869,7 @@ def _seed_bind_root_entries_host_tree(
                         "mode": "rw",
                     }],
                 },
-                "landlock": {"compatibility": "disabled"},
+                "landlock": {"compatibility": "hard_requirement"},
                 "network": {"mode": "host"},
             }),
         },
@@ -3927,7 +3938,7 @@ def _cleanup_bind_root_entries_host_tree(
                         "mode": "rw",
                     }],
                 },
-                "landlock": {"compatibility": "disabled"},
+                "landlock": {"compatibility": "hard_requirement"},
                 "network": {"mode": "host"},
             }),
         },
@@ -4009,7 +4020,7 @@ class TestBindRootEntries:
                         "mode": "ro",
                     }],
                 },
-                "landlock": {"compatibility": "disabled"},
+                "landlock": {"compatibility": "hard_requirement"},
                 "network": {"mode": "host"},
             },
         )
@@ -4067,7 +4078,7 @@ class TestBindRootEntries:
                         "mode": "rw",
                     }],
                 },
-                "landlock": {"compatibility": "disabled"},
+                "landlock": {"compatibility": "hard_requirement"},
                 "network": {"mode": "host"},
             },
         )
@@ -4112,7 +4123,7 @@ class TestBindRootEntries:
                         "mode": "ro",
                     }],
                 },
-                "landlock": {"compatibility": "disabled"},
+                "landlock": {"compatibility": "hard_requirement"},
                 "network": {"mode": "host"},
             },
         )
@@ -4155,7 +4166,7 @@ class TestBindRootEntries:
                         "exclude": ["skip_me", "*.txt"],
                     }],
                 },
-                "landlock": {"compatibility": "disabled"},
+                "landlock": {"compatibility": "hard_requirement"},
                 "network": {"mode": "host"},
             },
         )
@@ -4193,7 +4204,7 @@ class TestBindRootEntries:
                         "mode": "ro",
                     }],
                 },
-                "landlock": {"compatibility": "disabled"},
+                "landlock": {"compatibility": "hard_requirement"},
                 "network": {"mode": "host"},
             },
         )
@@ -4246,7 +4257,7 @@ class TestBindRootEntries:
                         },
                     ],
                 },
-                "landlock": {"compatibility": "disabled"},
+                "landlock": {"compatibility": "hard_requirement"},
                 "network": {"mode": "host"},
             },
         )
@@ -4348,7 +4359,7 @@ class TestBindRootEntries:
                         "run_as_user": "root",
                         "run_as_group": "root",
                     },
-                    "landlock": {"compatibility": "disabled"},
+                    "landlock": {"compatibility": "hard_requirement"},
                     "network": {"mode": "host"},
                 }),
             },
@@ -4409,7 +4420,7 @@ class TestBindRootEntries:
                             "mode": "rw",
                         }],
                     },
-                    "landlock": {"compatibility": "disabled"},
+                    "landlock": {"compatibility": "hard_requirement"},
                     "network": {"mode": "host"},
                 },
             )
@@ -4477,7 +4488,7 @@ class TestBindRootEntries:
                             "mode": "ro",
                         }],
                     },
-                    "landlock": {"compatibility": "disabled"},
+                    "landlock": {"compatibility": "hard_requirement"},
                     "network": {"mode": "host"},
                 },
             )
@@ -4509,7 +4520,7 @@ class TestBindRootEntries:
                             "run_as_user": "root",
                             "run_as_group": "root",
                         },
-                        "landlock": {"compatibility": "disabled"},
+                        "landlock": {"compatibility": "hard_requirement"},
                         "network": {"mode": "host"},
                     }),
                 },
@@ -4539,7 +4550,7 @@ _CGROUP_PROBE_POLICY: dict[str, object] = {
         "read_only": ["/usr", "/lib", "/lib64", "/etc", "/opt"],
         "read_write": ["/tmp"],
     },
-    "landlock": {"compatibility": "disabled"},
+    "landlock": {"compatibility": "hard_requirement"},
     "network": {"mode": "host"},
     "cgroup": {"pids_max": 1024},
 }
@@ -4605,7 +4616,7 @@ class TestCgroupPolicy:
                 "read_only": ["/usr", "/lib", "/lib64", "/etc", "/opt"],
                 "read_write": ["/tmp"],
             },
-            "landlock": {"compatibility": "disabled"},
+            "landlock": {"compatibility": "hard_requirement"},
             "network": {"mode": "host"},
         }
         if extra_cgroup is not None:
@@ -4668,7 +4679,7 @@ class TestCgroupPolicy:
                         "read_only": ["/usr", "/lib", "/lib64", "/etc", "/opt"],
                         "read_write": ["/tmp"],
                     },
-                    "landlock": {"compatibility": "disabled"},
+                    "landlock": {"compatibility": "hard_requirement"},
                     "network": {"mode": "host"},
                     "cgroup": {"memory_max": "not-a-size"},
                 }),
@@ -4691,7 +4702,7 @@ class TestCgroupPolicy:
                         "read_only": ["/usr", "/lib", "/lib64", "/etc", "/opt"],
                         "read_write": ["/tmp"],
                     },
-                    "landlock": {"compatibility": "disabled"},
+                    "landlock": {"compatibility": "hard_requirement"},
                     "network": {"mode": "host"},
                     "cgroup": {"cpu_max": "weird"},
                 }),
@@ -4714,7 +4725,7 @@ class TestCgroupPolicy:
                         "read_only": ["/usr", "/lib", "/lib64", "/etc", "/opt"],
                         "read_write": ["/tmp"],
                     },
-                    "landlock": {"compatibility": "disabled"},
+                    "landlock": {"compatibility": "hard_requirement"},
                     "network": {"mode": "host"},
                     "cgroup": {"pids_max": -1},
                 }),
@@ -4783,7 +4794,7 @@ class TestCgroupPolicy:
                     "read_only": ["/usr", "/lib", "/lib64", "/etc", "/opt"],
                     "read_write": ["/tmp"],
                 },
-                "landlock": {"compatibility": "disabled"},
+                "landlock": {"compatibility": "hard_requirement"},
                 "network": {"mode": "host"},
                 "cgroup": {
                     "memory_max": "256M",
@@ -4816,7 +4827,7 @@ class TestCgroupPolicy:
                     "read_only": ["/usr", "/lib", "/lib64", "/etc", "/opt"],
                     "read_write": ["/tmp"],
                 },
-                "landlock": {"compatibility": "disabled"},
+                "landlock": {"compatibility": "hard_requirement"},
                 "network": {"mode": "host"},
                 "cgroup": {"memory_max": "32M"},
             },
@@ -4863,7 +4874,7 @@ class TestCgroupPolicy:
                     "read_only": ["/usr", "/lib", "/lib64", "/etc", "/opt"],
                     "read_write": ["/tmp"],
                 },
-                "landlock": {"compatibility": "disabled"},
+                "landlock": {"compatibility": "hard_requirement"},
                 "network": {"mode": "host"},
                 "cgroup": {"pids_max": 5},
             },
@@ -4926,7 +4937,7 @@ class TestCgroupPolicy:
                     "read_only": ["/usr", "/lib", "/lib64", "/etc", "/opt"],
                     "read_write": ["/tmp"],
                 },
-                "landlock": {"compatibility": "disabled"},
+                "landlock": {"compatibility": "hard_requirement"},
                 "network": {"mode": "host"},
                 "cgroup": {"cpu_max": "0.1"},
             },

@@ -7,6 +7,7 @@ import enum
 import re
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -87,6 +88,15 @@ class SandboxSpec(BaseModel):
     sandbox_id: str | None = None
 
 
+class LandlockStatus(BaseModel):
+    """Actual per-process protection, reported by the trusted Linux launcher."""
+
+    mode: Literal["disabled", "best_effort", "hard_requirement"]
+    state: Literal["enforced", "degraded", "disabled"]
+    abi: int = Field(ge=0)
+    reason: str | None = None
+
+
 class SandboxRef(BaseModel):
     """Reference to an existing sandbox."""
 
@@ -99,6 +109,8 @@ class SandboxRef(BaseModel):
     last_active_at: datetime | None = None
     error_message: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
+    landlock_status: LandlockStatus | None = None
+    security_warnings: list[str] = Field(default_factory=list)
 
 
 class ExecResult(BaseModel):

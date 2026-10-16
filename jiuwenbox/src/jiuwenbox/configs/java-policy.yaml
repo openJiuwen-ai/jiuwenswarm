@@ -100,7 +100,7 @@ capabilities:
   drop: []
 
 landlock:
-  compatibility: best_effort
+  compatibility: hard_requirement
 
 # Seccomp hardening: the same blocked list as default-policy.yaml (verified
 # 2026-07-03 on 205 — JDK 17 e2e A-E all PASS under this list; seccomp filter

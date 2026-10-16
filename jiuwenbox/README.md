@@ -15,7 +15,7 @@ isolation policy in-process by spawning `bubblewrap` directly for each sandbox
 - Server-managed sandbox backing storage (`~/.jiuwenbox/workspace`)
 - Optional network isolation with Linux network namespaces and firewall rules
 - Namespace and Linux capability controls
-- Landlock filesystem enforcement when supported by the kernel
+- Mandatory Linux Landlock filesystem enforcement with visible, explicit compatibility opt-ins
 - Seccomp syscall filtering
 - Python and JavaScript execution support when the corresponding runtimes exist
 - Audit logging and persisted sandbox lifecycle state
@@ -457,7 +457,9 @@ Controls Linux namespaces created by `bubblewrap`. Each field is `true` (create 
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `compatibility` | `best_effort` | `disabled`: do not apply Landlock; `best_effort`: apply when supported, otherwise continue; `hard_requirement`: fail sandbox startup if Landlock is unavailable. |
+| `compatibility` | `hard_requirement` | Requires ABI >= 3 and fails sandbox startup on errors. Deployment-owned `best_effort` / `disabled` opt-ins report actual protection in logs and sandbox responses. Rule installation errors remain fatal. Requests cannot weaken deployment requirements. |
+
+File rules use exact file FDs; a read-only root declaration no longer grants recursive file reads. See [Landlock security, migration and validation](docs/landlock-security.md).
 
 #### `syscall`
 
@@ -626,7 +628,7 @@ capabilities:
   drop: []
 
 landlock:
-  compatibility: best_effort
+  compatibility: hard_requirement
 
 syscall:
   x86_64:

@@ -428,7 +428,7 @@ class CapabilityPolicy(BaseModel):
 
 
 class LandlockPolicy(BaseModel):
-    compatibility: Literal["disabled", "best_effort", "hard_requirement"] = "best_effort"
+    compatibility: Literal["disabled", "best_effort", "hard_requirement"] = "hard_requirement"
 
 
 class ArchitectureSyscallPolicy(BaseModel):

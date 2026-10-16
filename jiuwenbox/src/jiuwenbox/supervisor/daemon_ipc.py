@@ -57,6 +57,7 @@ SANDBOX_DAEMON_COMMAND = ["python3", "-S", SANDBOX_DAEMON_SANDBOX_PATH]
 # Outgoing request types accepted by the daemon.
 REQUEST_TYPE_EXEC = "exec"
 REQUEST_TYPE_SHUTDOWN = "shutdown"
+REQUEST_TYPE_SECURITY_STATUS = "security_status"
 # File-ops fast paths. Box-server uses these instead of spawning bash/
 # python helpers via ``REQUEST_TYPE_EXEC`` so upload/download/list pay no
 # python cold-start or fork+exec cost. The daemon performs the operation

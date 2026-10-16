@@ -99,6 +99,8 @@ CONTROL_TOKEN_BYTES = 32
 
 REQUEST_TYPE_EXEC = "exec"
 REQUEST_TYPE_SHUTDOWN = "shutdown"
+REQUEST_TYPE_SECURITY_STATUS = "security_status"
+LANDLOCK_STATUS: dict[str, Any] | None = None  # Set only by the trusted launcher.
 REQUEST_TYPE_WRITE_FILE = "write_file"
 REQUEST_TYPE_READ_FILE = "read_file"
 REQUEST_TYPE_LIST_DIR = "list_dir"
@@ -1046,6 +1048,11 @@ def _handle_bg_kill(conn: socket.socket, header: dict[str, Any]) -> None:
     )
 
 
+def _handle_security_status(conn: socket.socket, header: dict[str, Any]) -> None:
+    # Ignore request data: this result was set in memory by the launcher.
+    _send_response(conn, {"v": PROTOCOL_VERSION, "ok": True, "landlock": LANDLOCK_STATUS})
+
+
 def _handle_connection(conn: socket.socket, state: DaemonState) -> None:
     state.begin_request()
     try:
@@ -1088,7 +1095,9 @@ def _handle_connection(conn: socket.socket, state: DaemonState) -> None:
             return
         conn.settimeout(None)
         request_type = header.get("type")
-        if request_type == REQUEST_TYPE_EXEC:
+        if request_type == REQUEST_TYPE_SECURITY_STATUS:
+            _handle_security_status(conn, header)
+        elif request_type == REQUEST_TYPE_EXEC:
             _handle_exec(conn, header, state)
         elif request_type == REQUEST_TYPE_SHUTDOWN:
             _send_response(

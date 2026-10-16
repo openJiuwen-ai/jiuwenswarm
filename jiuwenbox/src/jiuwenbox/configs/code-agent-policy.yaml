@@ -89,9 +89,9 @@ filesystem_policy:
 landlock:
   # compatibility:
   #   disabled: do not apply Landlock
-  #   best_effort: apply Landlock when supported, otherwise continue
-  #   hard_requirement: fail sandbox startup if Landlock is unavailable
-  compatibility: best_effort
+  #   best_effort: explicit deployment opt-in; report partial/unavailable protection
+  #   hard_requirement: require ABI >= 3; any initialization error aborts startup
+  compatibility: hard_requirement
 
 namespace:
   user: false
