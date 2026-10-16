@@ -1894,6 +1894,67 @@
   min-width: 0;
 }
 
+.jiuwenmate-chat-file {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 8px;
+}
+
+.jiuwenmate-chat-file__caption {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.jiuwenmate-chat-file__card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 360px;
+  padding: 10px 12px;
+  border: 1px solid var(--jm-border);
+  border-radius: 10px;
+  background: var(--jm-muted);
+}
+
+.jiuwenmate-chat-file__icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  color: var(--jm-text-2);
+}
+
+.jiuwenmate-chat-file__meta {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+.jiuwenmate-chat-file__meta strong {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jiuwenmate-chat-file__meta small {
+  color: var(--jm-text-3);
+  font-size: 12px;
+}
+
+.jiuwenmate-chat-file__download {
+  flex-shrink: 0;
+  color: var(--jm-blue);
+  font-size: 12px;
+}
+
+.jiuwenmate-chat-file__unavailable {
+  flex-shrink: 0;
+  color: var(--jm-text-3);
+  font-size: 12px;
+}
+
 .jiuwenmate-chat-status {
   color: var(--jm-text-3);
   font-size: 12px;

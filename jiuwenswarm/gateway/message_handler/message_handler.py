@@ -3343,7 +3343,16 @@ class MessageHandler(ABC):
             isinstance(chunk.payload, dict)
             and chunk.payload.get("event_type") == "jiuwenmate.delivery.send"
         ):
-            await self._handle_jm09_delivery_push(chunk.payload)
+            if isinstance(chunk.payload.get("file"), dict):
+                # An upload may take minutes; it must not hold the ordered push lock.
+                tasks = getattr(self, "_jm09_delivery_tasks", None)
+                if tasks is None:
+                    tasks = self._jm09_delivery_tasks = set()
+                task = asyncio.create_task(self._handle_jm09_delivery_push(chunk.payload))
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+            else:
+                await self._handle_jm09_delivery_push(chunk.payload)
             return
         rid = str(chunk.request_id or "")
         if await self._handle_login_credential_refresh_push(chunk):
@@ -3505,6 +3514,9 @@ class MessageHandler(ABC):
             "external_message_id": external_message_id if outcome == "delivered" else None,
             "error_code": result.get("error_code") if outcome != "delivered" else None,
         }
+        file_key = result.get("file_key")
+        if isinstance(file_key, str) and file_key.strip():
+            ack["file_key"] = file_key
         envelope = E2AEnvelope(
             request_id=f"jm09_ack_{uuid4().hex}",
             channel="feishu",

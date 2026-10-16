@@ -10,6 +10,7 @@ import re
 import threading
 import time
 import types
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1745,27 +1746,61 @@ class FeishuChannel(BaseChannel):
         self,
         *,
         chat_id: str,
-        text: str,
+        text: str | None,
         source_message_id: str | None,
         idempotency_key: str,
+        file_path: str | None = None,
+        file_key: str | None = None,
     ) -> dict[str, Any]:
-        """Send one JM-09 final text and return Feishu's message receipt.
+        """Send one JM-09 result and return Feishu's message receipt.
 
-        The personal-agent ``send`` path below keeps its existing routing and
-        retry semantics; persistent results use this explicit receipt path.
+        A text result is one text message. A file result sends its caption, when it
+        has one, then uploads the file unless ``file_key`` names an earlier upload,
+        then sends the file message; its receipt carries the ``file_key`` so a retry
+        does not upload again. The personal-agent ``send`` path below keeps its
+        existing routing and retry semantics; persistent results use this path.
         """
         if not self._api_client:
             return {"outcome": "failed", "error_code": "FEISHU_CLIENT_UNAVAILABLE"}
-        if not chat_id.strip() or not text.strip() or not idempotency_key.strip():
+        has_text = isinstance(text, str) and bool(text.strip())
+        if not chat_id.strip() or not idempotency_key.strip() or not (has_text or file_path):
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
+        if file_path is None:
+            return await self._send_persistent_message(
+                chat_id, "text", json.dumps({"text": text}, ensure_ascii=False), source_message_id, idempotency_key
+            )
 
-        content = json.dumps({"text": text}, ensure_ascii=False)
+        if has_text:
+            caption_key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{idempotency_key}:caption"))
+            caption = await self._send_persistent_message(
+                chat_id, "text", json.dumps({"text": text}, ensure_ascii=False), source_message_id, caption_key
+            )
+            if caption.get("outcome") != "delivered":
+                return caption
+        if not file_key:
+            file_key = await asyncio.get_running_loop().run_in_executor(None, self._upload_file, file_path)
+            if not file_key:
+                return {"outcome": "failed", "error_code": "FEISHU_UPLOAD_FAILED"}
+        result = await self._send_persistent_message(
+            chat_id, "file", json.dumps({"file_key": file_key}, ensure_ascii=False), source_message_id, idempotency_key
+        )
+        return {**result, "file_key": file_key}
+
+    async def _send_persistent_message(
+        self,
+        chat_id: str,
+        msg_type: str,
+        content: str,
+        source_message_id: str | None,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Send or reply with one message under a stable request UUID and return its receipt."""
 
         def _send():
             if source_message_id:
                 body = (
                     ReplyMessageRequestBody.builder()
-                    .msg_type("text")
+                    .msg_type(msg_type)
                     .content(content)
                     .reply_in_thread(False)
                     .uuid(idempotency_key)
@@ -1782,7 +1817,7 @@ class FeishuChannel(BaseChannel):
             body = (
                 CreateMessageRequestBody.builder()
                 .receive_id(chat_id)
-                .msg_type("text")
+                .msg_type(msg_type)
                 .content(content)
                 .uuid(idempotency_key)
                 .build()

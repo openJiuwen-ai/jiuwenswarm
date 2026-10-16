@@ -1,4 +1,4 @@
-"""Durable final-result delivery for the JiuwenMate runtime."""
+"""Durable result delivery for the JiuwenMate runtime: messages and handed-off files."""
 
 from __future__ import annotations
 
@@ -15,6 +15,11 @@ from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionReposito
 logger = logging.getLogger(__name__)
 
 GatewaySend = Callable[[dict[str, object]], Awaitable[Mapping[str, Any] | None]]
+# A file send uploads up to the published share_file limit before the message is sent.
+FILE_SEND_TIMEOUT = 180.0
+# How long AgentServer waits for Gateway's ACK; shorter than the service timeouts above.
+GATEWAY_ACK_TIMEOUT = 25.0
+GATEWAY_FILE_ACK_TIMEOUT = 170.0
 
 
 def _utc_now() -> datetime:
@@ -22,7 +27,7 @@ def _utc_now() -> datetime:
 
 
 class ResultDeliveryService:
-    """Claim final Feishu text outputs, request a Gateway send, and persist its ACK."""
+    """Claim Feishu outputs handed off by a final or paused event, request a Gateway send, and persist its ACK."""
 
     def __init__(
         self,
@@ -33,9 +38,11 @@ class ResultDeliveryService:
         clock: Callable[[], datetime] = _utc_now,
         poll_interval: float = 1.0,
         send_timeout: float = 30.0,
+        file_send_timeout: float = FILE_SEND_TIMEOUT,
     ) -> None:
-        if poll_interval <= 0 or send_timeout <= 0:
+        if poll_interval <= 0 or send_timeout <= 0 or file_send_timeout <= 0:
             raise ValueError("delivery intervals must be positive")
+        self._file_send_timeout = file_send_timeout
         self._repository = repository
         self._namespace_id = namespace_id
         self._send_delivery = send_delivery
@@ -68,10 +75,10 @@ class ResultDeliveryService:
             pass
 
     def observe(self, event: AgentEvent) -> None:
-        """Wake the worker only after the critical final event has been persisted."""
-        if (
-            event.namespace_id == self._namespace_id
-            and event.event_type == EventType.EXECUTION_FINAL
+        """Wake the worker only after a critical final or paused event has been persisted."""
+        if event.namespace_id == self._namespace_id and event.event_type in (
+            EventType.EXECUTION_FINAL,
+            EventType.EXECUTION_PAUSED,
         ):
             self._wake.set()
 
@@ -94,10 +101,9 @@ class ResultDeliveryService:
             job = jobs[0]
             delivery_id = str(job["delivery_id"])
             attempted_delivery_ids.append(delivery_id)
+            timeout = self._file_send_timeout if "file" in job else self._send_timeout
             try:
-                ack = await asyncio.wait_for(
-                    self._send_delivery(dict(job)), timeout=self._send_timeout
-                )
+                ack = await asyncio.wait_for(self._send_delivery(dict(job)), timeout=timeout)
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
@@ -119,6 +125,7 @@ class ResultDeliveryService:
                 external_message_id=external_message_id,
                 error_code=error_code,
                 now=self._clock(),
+                file_key=self._file_key(job, ack),
             )
             dispatched += 1
         return dispatched
@@ -145,7 +152,16 @@ class ResultDeliveryService:
             external_message_id=external_message_id,
             error_code=error_code,
             now=self._clock(),
+            file_key=ack.get("file_key") if isinstance(ack.get("file_key"), str) else None,
         )
+
+    @staticmethod
+    def _file_key(job: Mapping[str, object], ack: Mapping[str, Any] | None) -> str | None:
+        """The upload's ``file_key`` from an ACK that answers this delivery."""
+        if ack is None or ack.get("delivery_id") != job.get("delivery_id"):
+            return None
+        file_key = ack.get("file_key")
+        return file_key if isinstance(file_key, str) and file_key.strip() else None
 
     @staticmethod
     def _classify_ack(

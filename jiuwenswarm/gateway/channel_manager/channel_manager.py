@@ -17,6 +17,8 @@ from jiuwenswarm.gateway.routing.keys import ChannelKey
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from jiuwenswarm.gateway.channel_manager.base import BaseChannel
     from jiuwenswarm.gateway.message_handler import MessageHandler
     from jiuwenswarm.common.schema.message import Message
@@ -79,13 +81,28 @@ class ChannelManager(ABC):
         self._channel_event_callbacks: list[Callable[[ChannelEvent], Awaitable[None]]] = []
 
     async def deliver_jm09_persistent_result(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Resolve exactly one active Feishu app; never fall back to another Bot."""
+        """Resolve exactly one active Feishu app; never fall back to another Bot.
+
+        A file delivery names the retained copy by its key under the JiuwenMate data
+        root, which Gateway shares with the AgentServer; text is then its optional caption.
+        """
         app_id = payload.get("app_id")
         chat_id = payload.get("chat_id")
         text = payload.get("text")
         idempotency_key = payload.get("idempotency_key")
-        if not all(isinstance(value, str) and value.strip() for value in (app_id, chat_id, text, idempotency_key)):
+        file = payload.get("file")
+        required = (app_id, chat_id, idempotency_key)
+        if not isinstance(file, dict):
+            required = (*required, text)
+        if not all(isinstance(value, str) and value.strip() for value in required):
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_ROUTE"}
+        file_args: dict[str, Any] = {}
+        if isinstance(file, dict):
+            path = self._jm09_output_file(file)
+            if path is None:
+                return {"outcome": "failed", "error_code": "OUTPUT_FILE_MISSING"}
+            file_args = {"file_path": str(path), "file_key": file.get("file_key") or None}
+            text = text if isinstance(text, str) and text.strip() else None
 
         matches = [
             channel
@@ -103,6 +120,7 @@ class ChannelManager(ABC):
                 text=text,
                 source_message_id=payload.get("source_message_id"),
                 idempotency_key=idempotency_key,
+                **file_args,
             )
         except Exception as exc:
             logger.warning(
@@ -111,6 +129,20 @@ class ChannelManager(ABC):
                 type(exc).__name__,
             )
             return {"outcome": "unknown", "error_code": "FEISHU_SEND_ERROR"}
+
+    @staticmethod
+    def _jm09_output_file(file: dict[str, Any]) -> Path | None:
+        """The retained copy a delivery names, only when its size is the one handed off."""
+        from jiuwenswarm.server.jiuwenmate.output_files import OUTPUTS_DIR, resolve_output_file
+        from jiuwenswarm.server.jiuwenmate.service import default_data_dir
+
+        path = resolve_output_file(default_data_dir() / OUTPUTS_DIR, file.get("key"))
+        if path is None:
+            return None
+        try:
+            return path if path.stat().st_size == file.get("size") else None
+        except OSError:
+            return None
 
     @staticmethod
     def _resolve_app_id(channel: Any) -> str:
