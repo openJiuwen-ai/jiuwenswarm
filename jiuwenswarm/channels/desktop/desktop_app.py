@@ -80,6 +80,7 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024
 MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991
 _MACOS_RUNTIME_REF: weakref.ReferenceType[Any] | None = None
+
 DESKTOP_WINDOW_PREFERENCES_FILENAME = "desktop-window.json"
 CLOSE_ACTION_ASK = "ask"
 CLOSE_ACTION_HIDE = "hide"
@@ -87,6 +88,60 @@ CLOSE_ACTION_QUIT = "quit"
 VALID_CLOSE_ACTIONS = frozenset(
     {CLOSE_ACTION_ASK, CLOSE_ACTION_HIDE, CLOSE_ACTION_QUIT}
 )
+
+
+# 只给本地前端放行麦克风；摄像头不申请，一律拒绝。
+_MACOS_MEDIA_ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost"})
+_WK_MEDIA_CAPTURE_MICROPHONE = 1  # WKMediaCaptureTypeMicrophone
+_WK_PERMISSION_GRANT = 1  # WKPermissionDecisionGrant
+_WK_PERMISSION_DENY = 2  # WKPermissionDecisionDeny
+
+
+def _install_macos_media_capture_permission() -> None:
+    """给 pywebview 的 WKUIDelegate 补上媒体授权回调。
+
+    pywebview 的 BrowserDelegate 没实现
+    webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:，
+    WKWebView 因此直接拒绝 getUserMedia（NotAllowedError，不弹框）。
+    回调只在网页调用 getUserMedia 时触发，所以启动阶段不会要权限；
+    放行后首次使用由 macOS 弹系统麦克风授权。getDisplayMedia 不走这个回调。
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import objc  # type: ignore[import-not-found]
+        from webview.platforms.cocoa import BrowserView
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[desktop] media permission hook unavailable: %s", exc)
+        return
+    delegate_cls = BrowserView.BrowserDelegate
+    if getattr(delegate_cls, "_jiuwenswarm_media_permission_installed", False):
+        return
+
+    def media_permission(_self, _webview, origin, _frame, media_type, decision_handler):
+        host = str(origin.host() or "") if origin is not None else ""
+        allowed = (
+            host in _MACOS_MEDIA_ALLOWED_HOSTS
+            and int(media_type) == _WK_MEDIA_CAPTURE_MICROPHONE
+        )
+        logger.info(
+            "[desktop] media capture request host=%s type=%s allowed=%s",
+            host, media_type, allowed,
+        )
+        decision_handler(_WK_PERMISSION_GRANT if allowed else _WK_PERMISSION_DENY)
+
+    objc.classAddMethods(
+        delegate_cls,
+        [
+            objc.selector(
+                media_permission,
+                selector=b"webView:requestMediaCapturePermissionForOrigin:"
+                b"initiatedByFrame:type:decisionHandler:",
+                signature=b"v@:@@@q@?",
+            )
+        ],
+    )
+    delegate_cls._jiuwenswarm_media_permission_installed = True  # pylint: disable=protected-access
 
 
 def _desktop_window_preferences_path() -> Path:
@@ -3206,6 +3261,7 @@ nohup {q_executable} >/dev/null 2>&1 &
         storage_path = get_user_workspace_dir() / "tmp" / "webview"
         storage_path.mkdir(parents=True, exist_ok=True)
         self._clear_webview_http_cache(storage_path)
+        _install_macos_media_capture_permission()
 
         self.window = webview.create_window(
             window_title,

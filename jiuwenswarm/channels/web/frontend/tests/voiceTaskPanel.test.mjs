@@ -12,7 +12,8 @@ const outfile = resolve('node_modules/.cache/voice-task-panel/panel.mjs');
 await build({
   stdin: {
     contents: `export { VideoLivePanel } from ${JSON.stringify(`${panelRoot}/index.tsx`)};
-      export { RealtimeDuplexSession } from ${JSON.stringify(`${panelRoot}/qwenOmniSession.ts`)};`,
+      export { RealtimeDuplexSession } from ${JSON.stringify(`${panelRoot}/qwenOmniSession.ts`)};
+      export { toastStore } from ${JSON.stringify(resolve('src/components/ui/Toast/toastStore.ts'))};`,
     resolveDir: process.cwd(),
     loader: 'tsx',
   },
@@ -40,7 +41,7 @@ await build({
     },
   ],
 });
-const { VideoLivePanel, RealtimeDuplexSession } = await import(pathToFileURL(outfile));
+const { VideoLivePanel, RealtimeDuplexSession, toastStore } = await import(pathToFileURL(outfile));
 let dom, root, panel, session, requests, sent, pending, listeners;
 const globals = new Map();
 const originalStart = RealtimeDuplexSession.prototype.start;
@@ -239,4 +240,40 @@ test('late RPC receipt after media restart cannot speak into the new session', a
   assert.notEqual(session, previous);
   await receipt('old', { search_job: { id: 'old-task', status: 'queued', question: 'old task' } });
   assert.equal(outputs().length, 0);
+});
+
+async function shareScreenWith(error) {
+  await act(async () => panel.current.stop());
+  session = undefined;
+  toastStore.closeAll();
+  navigator.mediaDevices.getDisplayMedia = async () => { throw error; };
+  let started;
+  await act(async () => { started = await panel.current.startScreenDuplex('sid', true, 'screen'); });
+  return started;
+}
+
+test('screen sharing unsupported by the runtime falls back to voice-only duplex with a notice (#5283)', async () => {
+  const started = await shareScreenWith(new DOMException('Not supported', 'NotSupportedError'));
+  assert.equal(started, true);
+  assert.ok(session, 'voice session started');
+  assert.ok(toastStore.getSnapshot().some((notice) => notice.content === '当前环境不支持屏幕共享，已仅开启语音' && !notice.closing));
+});
+
+test('a plain "Not supported" error and a missing getDisplayMedia also fall back to voice', async () => {
+  assert.equal(await shareScreenWith(new Error('Not supported')), true);
+  assert.ok(session);
+  await act(async () => panel.current.stop());
+  session = undefined;
+  delete navigator.mediaDevices.getDisplayMedia;
+  let started;
+  await act(async () => { started = await panel.current.startScreenDuplex('sid', true, 'screen'); });
+  assert.equal(started, true);
+  assert.ok(session);
+});
+
+test('cancelling the screen picker still starts no voice session', async () => {
+  const started = await shareScreenWith(new DOMException('cancelled', 'NotAllowedError'));
+  assert.equal(started, false);
+  assert.equal(session, undefined);
+  assert.ok(!toastStore.getSnapshot().some((notice) => notice.content === '当前环境不支持屏幕共享，已仅开启语音' && !notice.closing));
 });

@@ -1158,13 +1158,7 @@ class WebChannel(BaseWsChannel):
         ws_set: set[Any] = set()
         metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
         request_ws_id = str(metadata.get("ws_id") or "").strip()
-        # Designer canvas frames are session-scoped idempotent snapshots:
-        # pinning them to the originating request's ws loses the whole run
-        # when that socket is a half-open proxy connection (page reloaded
-        # behind the vite dev proxy) — the canvas never restarts its poll
-        # and misses every intermediate event. Route them to every live ws
-        # subscribed to the session instead.
-        if request_ws_id and not _et.startswith("designer."):
+        if request_ws_id:
             ws = self._ws_by_id.get(request_ws_id)
             if ws is not None and not getattr(ws, "closed", False):
                 ws_set.add(ws)

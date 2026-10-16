@@ -3331,6 +3331,11 @@ async def _process_team_message_stream(
         if model_selection is not None:
             from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
             model_selection = SwarmModelSelection.model_validate(model_selection).model_dump()
+            if get_session_metadata(session_id, cache_bust=True).get("cron_id"):
+                from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+
+                selected = SwarmModelSelection.model_validate(model_selection)
+                model_selection = ModelSelectionResolver().restore(selected).model_dump()
         if model_selection is None:
             current_metadata = get_session_metadata(session_id, cache_bust=True)
             stored_selection = None
@@ -3357,7 +3362,10 @@ async def _process_team_message_stream(
                 )
             if isinstance(stored_selection, dict):
                 from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
-                model_selection = SwarmModelSelection.model_validate(stored_selection).model_dump()
+                from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+
+                selected = SwarmModelSelection.model_validate(stored_selection)
+                model_selection = ModelSelectionResolver().restore(selected).model_dump()
         runtime_model_selection = model_selection
         # Provider-based assembly: build members from the shared config source,
         # no pre-built parent DeepAgent required.

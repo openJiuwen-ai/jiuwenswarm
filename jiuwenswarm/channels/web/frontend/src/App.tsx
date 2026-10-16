@@ -2074,7 +2074,10 @@ function AppContent({
   }, [getExternalCliDependencyInstallStatus, isConnected]);
 
   const trackExternalCliDependencyInstalls = useCallback((statuses: ExternalCliInstallStatuses) => {
-    setExternalCliInstallStatuses(statuses);
+    // Merge, not replace: a save response may only carry a subset of agents
+    // (e.g. the one just committed), and replacing would drop another agent's
+    // in-flight install state and stop its progress updates.
+    setExternalCliInstallStatuses((current) => ({ ...current, ...statuses }));
   }, []);
 
   const updateExternalCliInstallStatus = useCallback(
@@ -4497,9 +4500,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onSelectExternalCliPath={selectExternalCliPath}
               onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
               externalCliInstallStatuses={externalCliInstallStatuses}
-              externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
-                (status) => status?.status === 'running',
-              )}
               onGetExternalCliInstallStatus={getExternalCliDependencyInstallStatus}
               onExternalCliInstallStatusChange={updateExternalCliInstallStatus}
               externalCliPendingChoices={externalCliPendingChoices}

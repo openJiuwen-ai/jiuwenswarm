@@ -1,4 +1,5 @@
 import { TASK_ACCEPTED_INSTRUCTIONS } from './taskPrompts';
+import { toast } from '../../../../channels/web/frontend/src/components/ui/Toast/toastStore';
 import {
   ChangeEvent,
   FormEvent,
@@ -30,6 +31,7 @@ import { webClient, webRequest } from '../../../../channels/web/frontend/src/ser
 import { createRealtimeDuplexSession, RealtimeDuplexSession } from './qwenOmniSession';
 import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame } from './videoSource';
 import { JoyAIProvider } from './joyaiProvider';
+import { setDuplexVoicePhase } from '../duplexAudioMeter';
 import { describeDuplexError } from '../duplexErrorMessage';
 import {
   mergeSearchProgressJob,
@@ -95,6 +97,15 @@ interface VideoLivePanelProps {
   onError?: (message: string) => void;
   onScreenSharingChange?: (sharing: boolean) => void;
   onCoreAgentProgress?: (event: 'started' | 'progress' | 'completed' | 'failed', payload: SearchJobPayload) => void;
+}
+
+export const SCREEN_SHARE_UNSUPPORTED_NOTICE = '当前环境不支持屏幕共享，已仅开启语音';
+
+function isScreenCaptureUnsupported(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'NotSupportedError') return true;
+  const name = (error as { name?: unknown } | null)?.name;
+  const message = (error as { message?: unknown } | null)?.message;
+  return name === 'NotSupportedError' || (typeof message === 'string' && /not supported/i.test(message));
 }
 
 export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelProps>(function VideoLivePanel(
@@ -729,12 +740,18 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     });
   }, []);
 
-  const startScreen = async (): Promise<boolean> => {
+  /**
+   * `unsupported` means this runtime cannot capture the screen at all (e.g. the
+   * Windows desktop WebView rejects getDisplayMedia with "Not supported", #5283).
+   * With `allowUnsupported` the caller handles that case instead of an error.
+   */
+  const startScreen = async (allowUnsupported = false): Promise<boolean | 'unsupported'> => {
     if (screens.length >= MAX_SCREENS) {
       setError(`最多同时读取 ${MAX_SCREENS} 个屏幕。`);
       return false;
     }
     if (!navigator.mediaDevices?.getDisplayMedia) {
+      if (allowUnsupported) return 'unsupported';
       setError('当前运行环境不支持屏幕共享。');
       return false;
     }
@@ -778,8 +795,12 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       });
       return true;
     } catch (screenError) {
-      if (screenError instanceof DOMException && screenError.name === 'NotAllowedError') {
+      // Browsers reject a cancelled picker with NotAllowedError; Electron's
+      // display-media handler denies with AbortError.
+      if (screenError instanceof DOMException && (screenError.name === 'NotAllowedError' || screenError.name === 'AbortError')) {
         setError('已取消选择屏幕。');
+      } else if (allowUnsupported && isScreenCaptureUnsupported(screenError)) {
+        return 'unsupported';
       } else {
         setError(screenError instanceof Error ? screenError.message : '无法读取屏幕。');
       }
@@ -904,6 +925,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             },
             onState: (state) => {
               if (duplexRef.current !== session) return;
+              setDuplexVoicePhase(state);
               if (state === 'closed') {
                 duplexRef.current = null;
                 mediaGenerationRef.current += 1;
@@ -1074,9 +1096,17 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         await startRealtime();
         return Boolean(duplexRef.current || joyaiProviderRef.current?.active);
       }
-      const started = visualSource === 'camera' ? await startCamera() : await startScreen();
-      pendingScreenAutostartRef.current = started;
-      return started;
+      const result = visualSource === 'camera' ? await startCamera() : await startScreen(true);
+      if (result === 'unsupported') {
+        // Fallback, not a root-cause fix: keep voice duplex usable when the
+        // runtime cannot share the screen (#5283).
+        pendingScreenAutostartRef.current = false;
+        toast.open({ content: SCREEN_SHARE_UNSUPPORTED_NOTICE, variant: 'warning' });
+        await startRealtime();
+        return Boolean(duplexRef.current || joyaiProviderRef.current?.active);
+      }
+      pendingScreenAutostartRef.current = result;
+      return result;
     },
     stop: () => {
       pendingScreenAutostartRef.current = false;

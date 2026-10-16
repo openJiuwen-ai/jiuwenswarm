@@ -1064,7 +1064,10 @@
   line-height: 22px;
 }
 
-.settings-models__toast {
+/* Toast styles shared by the models settings validation toast and the
+   external CLI agents section success toast. */
+.settings-models__toast,
+.settings-external-cli__toast {
   position: fixed;
   z-index: 1000;
   top: 24px;
@@ -1083,19 +1086,22 @@
   transform: translateX(-50%);
 }
 
-.settings-models__toast svg {
+.settings-models__toast svg,
+.settings-external-cli__toast svg {
   flex: 0 0 18px;
   width: 18px;
   height: 18px;
 }
 
-.settings-models__toast--success {
+.settings-models__toast--success,
+.settings-external-cli__toast--success {
   color: var(--color-feedback-success);
   border-color: var(--color-feedback-success);
   background: var(--color-feedback-success-toast);
 }
 
-.settings-models__toast--error {
+.settings-models__toast--error,
+.settings-external-cli__toast--error {
   color: var(--color-feedback-danger);
   border-color: var(--color-feedback-danger);
   background: var(--color-feedback-danger-toast);

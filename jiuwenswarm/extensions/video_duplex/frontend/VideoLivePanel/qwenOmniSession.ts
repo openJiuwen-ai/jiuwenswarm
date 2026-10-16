@@ -10,6 +10,7 @@ import {
   QwenOmniMediaSequencer,
 } from './qwenOmniProtocol.js';
 import { getWsBase } from '../../../../channels/web/frontend/src/utils/env.js';
+import { attachDuplexAudioMeter } from '../duplexAudioMeter';
 import type { RealtimeBrief } from './types.js';
 import { createQwenOmniOperationResponseEvent, createQwenOmniToolOutputEvent } from './qwenOmniTools.js';
 import type { SileroVad, SpeechDetection } from '../../../../channels/web/frontend/src/utils/speechDetection/sileroVad';
@@ -120,6 +121,7 @@ export class RealtimeDuplexSession {
   private captureNode: AudioWorkletNode | null = null;
   private playbackNode: AudioWorkletNode | null = null;
   private playbackGain: GainNode | null = null;
+  private detachMeters: Array<() => void> = [];
   private microphoneMuted = false;
   private speakerMuted = false;
   private pending: Int16Array[] = [];
@@ -230,6 +232,7 @@ export class RealtimeDuplexSession {
     this.playbackGain = this.playbackContext.createGain();
     this.playbackGain.gain.value = this.speakerMuted ? 0 : 1;
     this.playbackNode.connect(this.playbackGain).connect(this.playbackContext.destination);
+    this.detachMeters.push(attachDuplexAudioMeter('output', this.playbackContext, this.playbackNode));
     await this.playbackContext.resume();
     if (lifecycle !== this.lifecycle) return;
 
@@ -252,6 +255,7 @@ export class RealtimeDuplexSession {
     await this.captureContext.audioWorklet.addModule(new URL('./duplex-capture.js', import.meta.url));
     if (lifecycle !== this.lifecycle) return;
     const source = this.captureContext.createMediaStreamSource(this.microphone);
+    this.detachMeters.push(attachDuplexAudioMeter('input', this.captureContext, source));
     this.captureNode = new AudioWorkletNode(this.captureContext, 'jiuwen-duplex-capture');
     this.captureNode.port.onmessage = ({ data }) => {
       const input = new Int16Array(data);
@@ -301,6 +305,8 @@ export class RealtimeDuplexSession {
     this.send(createQwenOmniFinishSessionEvent());
     this.socket?.close(1000, 'client stop');
     this.socket = null;
+    this.detachMeters.forEach((detach) => detach());
+    this.detachMeters = [];
     this.microphone?.getTracks().forEach((track) => track.stop());
     this.microphone = null;
     void this.captureContext?.close();

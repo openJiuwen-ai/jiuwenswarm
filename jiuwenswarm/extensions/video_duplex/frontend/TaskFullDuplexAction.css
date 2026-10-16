@@ -14,24 +14,84 @@
   color: var(--color-text-inverse);
 }
 
+/* The orb takes its own row above the composer (#5284): the chat area gives up
+   that height instead of the orb floating over messages. */
+.chat-input-frame:has(> .task-full-duplex-orb) {
+  display: flex;
+  flex-direction: column;
+}
+
 .task-full-duplex-orb {
-  position: absolute;
-  bottom: calc(100% + 12px);
-  left: 50%;
-  z-index: 2;
+  order: -1;
   display: flex;
   align-items: center;
+  align-self: center;
   flex-direction: column;
-  transform: translateX(-50%);
+  padding: 12px 0 8px;
+}
+
+/* 视觉参数（尺寸、时长、缩放幅度）来源：实测截图调定。 */
+.task-full-duplex-orb {
+  animation: task-full-duplex-orb-enter 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.task-full-duplex-orb.is-leaving {
+  pointer-events: none;
+  animation: task-full-duplex-orb-leave 180ms ease-in forwards;
 }
 
 .task-full-duplex-orb__sphere {
+  --duplex-orb-level: 0;
+  position: relative;
   width: 80px;
   height: 80px;
   border-radius: 50%;
-  background: linear-gradient(145deg, var(--color-duplex-orb-start), var(--color-duplex-orb-end));
-  box-shadow: 0 4px 16px var(--color-duplex-orb-shadow);
-  animation: task-full-duplex-breathe 2.4s ease-in-out infinite;
+  transform: scale(calc(1 + var(--duplex-orb-level) * 0.3));
+  box-shadow:
+    0 6px 18px var(--color-duplex-orb-shadow),
+    0 0 calc(8px + var(--duplex-orb-level) * 40px) calc(var(--duplex-orb-level) * 10px) var(--color-duplex-orb-shadow);
+  will-change: transform;
+}
+
+.task-full-duplex-orb__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+
+/* No WebGL: layered gradients that still breathe with the voice level. */
+.task-full-duplex-orb__sphere[data-renderer='css'] {
+  background:
+    radial-gradient(circle at 32% 28%, #ffffffd9 0 12%, transparent 42%),
+    radial-gradient(circle at 70% 75%, var(--color-duplex-orb-end) 0 20%, transparent 60%),
+    linear-gradient(145deg, var(--color-duplex-orb-start), var(--color-duplex-orb-end));
+}
+
+.task-full-duplex-orb__sphere[data-renderer='css'][data-variant='starting'] {
+  animation: task-full-duplex-breathe 1.6s ease-in-out infinite;
+}
+
+.task-full-duplex-orb__sphere[data-muted='true'] {
+  box-shadow: 0 6px 18px #0000001f;
+}
+
+.task-full-duplex-orb__sphere[data-renderer='css'][data-muted='true'] {
+  filter: grayscale(0.85);
+}
+
+@keyframes task-full-duplex-orb-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.4);
+  }
+}
+
+@keyframes task-full-duplex-orb-leave {
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.6);
+  }
 }
 
 .task-full-duplex-orb__controls {
@@ -75,7 +135,7 @@
 
 @keyframes task-full-duplex-breathe {
   50% {
-    transform: scale(0.95);
+    opacity: 0.8;
   }
 }
 
@@ -87,6 +147,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .task-full-duplex-orb,
+  .task-full-duplex-orb.is-leaving,
   .task-full-duplex-orb__sphere,
   .task-full-duplex-action__spinner {
     animation: none;

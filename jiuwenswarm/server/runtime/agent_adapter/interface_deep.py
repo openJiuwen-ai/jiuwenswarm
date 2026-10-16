@@ -3789,6 +3789,14 @@ class JiuWenSwarmDeepAdapter:
                         )
                 else:
                     moa_snapshot = copy.deepcopy(get_config())
+                    restoring_saved_selection = model_selection is None and not model_name
+                    if selection is not None and (
+                        restoring_saved_selection or self._is_cron_execution_session(sid)
+                    ):
+                        from jiuwenswarm.common.model_catalog import ModelCatalog
+                        from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+
+                        selection = ModelSelectionResolver(ModelCatalog(moa_snapshot)).restore(selection)
                     effective_moa = effective_moa_enabled(
                         moa_snapshot, selection, mode=mode,
                         is_cron=self._is_cron_execution_session(sid),
@@ -7510,6 +7518,10 @@ class JiuWenSwarmDeepAdapter:
             try:
                 from jiuwenswarm.common.model_selection import ModelSelection
                 selection = ModelSelection.model_validate(raw_selection)
+                if self._is_cron_execution_session(getattr(request, "session_id", None)):
+                    from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+
+                    selection = ModelSelectionResolver().restore(selection)
                 suffix = f":{selection.route_id}" if selection.route_id else ""
                 return f"{selection.type}:{selection.id}{suffix}"
             except ValidationError as exc:
@@ -7525,8 +7537,22 @@ class JiuWenSwarmDeepAdapter:
                 from jiuwenswarm.server.runtime.session.model_selection_store import get_session_model_selection
                 selection = get_session_model_selection(session_id)
                 if selection is not None:
-                    suffix = f":{selection.route_id}" if selection.route_id else ""
-                    return f"{selection.type}:{selection.id}{suffix}"
+                    from jiuwenswarm.common.model_catalog import ModelCatalog
+
+                    catalog = ModelCatalog()
+                    if catalog.has_selection(selection):
+                        suffix = f":{selection.route_id}" if selection.route_id else ""
+                        return f"{selection.type}:{selection.id}{suffix}"
+                    logger.info(
+                        "session %s selects deleted %s %s; using current default",
+                        session_id, selection.type, selection.id,
+                    )
+                    from jiuwenswarm.server.runtime.model_routing_registry import (
+                        ModelExecutionContext, ModelSelectionResolver,
+                    )
+
+                    default = ModelSelectionResolver(catalog).choose(None, ModelExecutionContext())
+                    return f"{default.type}:{default.id}"
             except ValueError:
                 logger.warning("invalid session id while resolving model selection: %r", session_id)
         from jiuwenswarm.common.model_catalog import ModelCatalog

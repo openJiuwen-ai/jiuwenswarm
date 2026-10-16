@@ -29,8 +29,13 @@ import {
   toggleTaskDuplexMicrophone,
   toggleTaskDuplexSpeaker,
   stopTaskDuplexScreenSharing,
+  clearTaskFullDuplexError,
 } from './taskFullDuplexRuntimeStore';
+import { DuplexOrb } from './DuplexOrb';
 import './TaskFullDuplexAction.css';
+
+// 来源：TaskFullDuplexAction.css 的 task-full-duplex-orb-leave 动画为 180ms，留 20ms 余量让它放完再卸载。
+const ORB_LEAVE_MS = 200;
 
 function parseEnabled(value: unknown): boolean {
   return value === true || String(value).trim().toLowerCase() === 'true';
@@ -76,6 +81,11 @@ export function TaskFullDuplexAction({
     };
   }, []);
 
+  // A failure belongs to the conversation it happened in (#5288).
+  useEffect(() => {
+    clearTaskFullDuplexError();
+  }, [sessionId]);
+
   const beginSession = useCallback(
     async (visualSource?: 'screen' | 'camera') => {
       setShareDialog(false);
@@ -99,6 +109,20 @@ export function TaskFullDuplexAction({
 
   const showAction = enabled && eligible;
   const running = enabled && state !== 'idle';
+  // Keep the orb mounted briefly after stop/failure so it fades out instead
+  // of vanishing mid-frame.
+  const [orbMounted, setOrbMounted] = useState(running);
+  // Last non-idle state, so the fading orb keeps its look.
+  const [orbVariant, setOrbVariant] = useState<'starting' | 'active'>('starting');
+  if (state !== 'idle' && state !== orbVariant) setOrbVariant(state);
+  useEffect(() => {
+    if (running) {
+      setOrbMounted(true);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setOrbMounted(false), ORB_LEAVE_MS);
+    return () => window.clearTimeout(timer);
+  }, [running]);
   const title = error || (state === 'starting' ? labels.starting : state === 'active' ? labels.stop : labels.start);
 
   return (
@@ -154,17 +178,22 @@ export function TaskFullDuplexAction({
         aria-hidden="true"
         data-testid="chat-panel-duplex-anchor"
       />
-      {running && orbHost
+      {(running || orbMounted) && orbHost
         ? createPortal(
-            <div className="task-full-duplex-orb" data-testid="chat-panel-duplex-controls" data-variant={state}>
+            <div
+              className={`task-full-duplex-orb${running ? '' : ' is-leaving'}`}
+              data-testid="chat-panel-duplex-controls"
+              data-variant={orbVariant}
+            >
               <div
-                className="task-full-duplex-orb__sphere"
                 role="status"
                 aria-label={t(
-                  state === 'starting' ? 'chat.duplexControls.connecting' : 'chat.duplexControls.listening',
+                  orbVariant === 'starting' ? 'chat.duplexControls.connecting' : 'chat.duplexControls.listening',
                 )}
                 data-testid="chat-panel-duplex-orb"
-              />
+              >
+                <DuplexOrb variant={orbVariant} microphoneMuted={running && microphoneMuted} />
+              </div>
               <div className="task-full-duplex-orb__controls">
                 <button
                   type="button"

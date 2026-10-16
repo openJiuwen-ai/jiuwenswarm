@@ -3514,9 +3514,30 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const handleModeSwitch = useCallback(
     async (targetMode: AgentMode) => {
       if (isProcessing || hasHistory || mode === targetMode) return;
+      // Draft-session in-place mode switch: skills picked for the previous
+      // mode no longer apply, so drop them from the store and remove their
+      // inline chips from the editor. (Switching from a real session enters a
+      // fresh conversation instead, whose rebuilt runtime starts without
+      // skills, so the old session keeps its picks.)
+      const sid = activeSessionId;
+      if (sid && sid === NEW_CONVERSATION_ID) {
+        clearSelectedSkills(sid);
+        const el = inputRef.current;
+        if (el) {
+          el.querySelectorAll('[data-skill]').forEach((chip) => {
+            // Also drop the zero-width-space spacer after the chip.
+            const next = chip.nextSibling;
+            if (next && next.nodeType === Node.TEXT_NODE && next.textContent === '\u200B') {
+              next.remove();
+            }
+            chip.remove();
+          });
+          useChatStore.getState().setInputValue(sid, extractPlainText());
+        }
+      }
       onSwitchMode(targetMode);
     },
-    [isProcessing, hasHistory, mode, onSwitchMode],
+    [activeSessionId, clearSelectedSkills, extractPlainText, hasHistory, isProcessing, mode, onSwitchMode],
   );
 
   const handleModeSelect = useCallback(

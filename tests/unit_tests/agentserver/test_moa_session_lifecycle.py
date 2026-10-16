@@ -26,6 +26,13 @@ def router(monkeypatch):
     from jiuwenswarm.server.runtime.session import session_metadata
 
     config = {"version": 1, "experimental": {"multi_model_collaboration_enabled": True}}
+    config["models"] = {
+        "defaults": [{"model_id": "model-a", "is_default": True,
+                      "model_client_config": {"model_name": "current"}}],
+        "groups": [{"model_group_id": identifier,
+                    "routes": [{"route_id": "primary", "model_id": "model-a"}]}
+                   for identifier in ("group-a", "group-b")],
+    }
     metadata, built = {}, []
     warmup = AsyncMock()
     monkeypatch.setattr(interface_deep, "get_config", lambda: deepcopy(config))
@@ -178,6 +185,31 @@ async def test_restored_selection_drives_moa_independently_of_archival_bool(rout
     assert (await parent._get_or_create_session_adapter("restored"))._moa_enabled is True
     metadata["old-session"] = {"moa_enabled": True}
     assert (await parent._get_or_create_session_adapter("old-session", moa_enabled=True))._moa_enabled is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_deleted_group_cold_restore_falls_back_before_moa_initialization(router, enabled):
+    parent, config, metadata, _, _ = router
+    config["experimental"]["multi_model_collaboration_enabled"] = enabled
+    metadata["restored"] = {"model_selection": {"type": "model_group", "id": "deleted"}}
+    child = await parent._get_or_create_session_adapter("restored")
+    assert child._moa_enabled is False
+    assert child.build_overrides["moa_model_selection"]["id"] == "model-a"
+
+
+@pytest.mark.asyncio
+async def test_deleted_group_keeps_running_snapshot_until_idle(router):
+    parent, config, _, _, _ = router
+    installed = await parent._get_or_create_session_adapter("chat-a", model_selection=GROUP)
+    installed.busy = True
+    config["models"]["groups"] = []
+    assert await parent._get_or_create_session_adapter("chat-a") is installed
+    assert installed._moa_enabled is True
+    installed.busy = False
+    restored = await parent._get_or_create_session_adapter("chat-a")
+    assert restored is not installed
+    assert restored.build_overrides["moa_model_selection"]["id"] == "model-a"
 
 
 @pytest.mark.asyncio

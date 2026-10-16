@@ -273,6 +273,7 @@ echo "  Copying Electron desktop shell..."
 cp "$DESKTOP_DIR/main.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_panels.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/share_image_export.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/display_media_picker.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/preload.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/target_mcp_wrapper.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/macos_update.cjs" "$APP_DIR/"
@@ -352,7 +353,7 @@ if [ ! -d "$APP_DIR/node_modules/@playwright/mcp" ]; then
     exit 1
 fi
 
-REQUIRED_FILES=(main.cjs preload.cjs browser_panels.cjs share_image_export.cjs target_mcp_wrapper.cjs
+REQUIRED_FILES=(main.cjs preload.cjs browser_panels.cjs share_image_export.cjs display_media_picker.cjs target_mcp_wrapper.cjs
     macos_update.cjs install_macos_update.sh package.json dist/index.html
     node_modules/@playwright/mcp/package.json node_modules/@playwright/mcp/cli.js)
 for required in "${REQUIRED_FILES[@]}"; do

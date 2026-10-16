@@ -223,6 +223,20 @@ def _setup_v2(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
                 str(policy.memory_max),
                 what="memory.max",
             )
+            # Keep the OOM killer on a single victim. ``memory.oom.group=1``
+            # would SIGKILL every process in the cgroup, including the
+            # sandbox daemon, and the exec client would only see the IPC
+            # socket close.
+            oom_group = group_dir / "memory.oom.group"
+            if oom_group.exists():
+                try:
+                    _write_file(oom_group, "0")
+                except OSError as exc:
+                    logger.warning(
+                        "cgroup v2: failed to set memory.oom.group=0 for %s: %s",
+                        sandbox_id,
+                        exc,
+                    )
             # Also clamp swap to zero so ``memory.max`` behaves as a true
             # hard cap. Without this, a memory-hungry process can simply
             # page out to swap once it hits ``memory.max`` and keep running
@@ -407,6 +421,42 @@ def setup(sandbox_id: str, policy: CgroupPolicy) -> CgroupHandle:
 # ---------------------------------------------------------------------------
 # Attach
 # ---------------------------------------------------------------------------
+
+
+def oom_kill_count(handle: CgroupHandle) -> int:
+    """Return how many OOM kills this sandbox cgroup has recorded.
+
+    v2 exposes the counter in ``memory.events`` (``oom_kill`` and
+    ``oom_group_kill``). v1 exposes ``oom_kill`` in ``memory.oom_control``.
+    Missing files count as zero so a cpu-only or pids-only group is safe
+    to pass in.
+    """
+    total = 0
+    for group_dir in handle.paths:
+        events = group_dir / "memory.events"
+        if events.exists():
+            total += _counter_in_file(events, "oom_kill")
+            total += _counter_in_file(events, "oom_group_kill")
+            continue
+        control = group_dir / "memory.oom_control"
+        if control.exists():
+            total += _counter_in_file(control, "oom_kill")
+    return total
+
+
+def _counter_in_file(path: Path, key: str) -> int:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == key:
+            try:
+                return int(parts[1])
+            except ValueError:
+                return 0
+    return 0
 
 
 def attach(handle: CgroupHandle, pid: int) -> None:
