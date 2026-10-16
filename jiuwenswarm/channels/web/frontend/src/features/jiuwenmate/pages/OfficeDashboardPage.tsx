@@ -24,21 +24,19 @@ import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ColleagueCard } from '../components/ColleagueCard';
 import { SegmentedTabs } from '../components/SegmentedTabs';
 import { colleaguePortrait } from '../colleaguePortraits';
+import { JIUWENMATE_TASKS } from '../mockData';
 import {
-  JIUWENMATE_CHANNELS,
-  JIUWENMATE_DAILY_ACTIVITY,
-  JIUWENMATE_HOURLY_ACTIVITY,
-  JIUWENMATE_MEMBER_STATS,
-  JIUWENMATE_TASKS,
-} from '../mockData';
-import {
+  activeChannelCount,
   activitySummary,
   createOfficeState,
   formatMonthDay,
   formatSummaryTokens,
   formatTableTokens,
+  groupsInPeriod,
+  hourlyActivity,
   hoverHeatmapCell,
-  memberStats,
+  mergeDailyActivity,
+  minutesSince,
   periodHeatmap,
   selectOfficeMember,
   selectOfficeTab,
@@ -48,13 +46,15 @@ import {
   setActivityScope,
   setActivityYear,
   taskColumns,
+  usageChange,
   yearHeatmap,
   type JiuwenMateActivityRange,
   type JiuwenMateActivityScope,
   type JiuwenMateOfficeState,
   type JiuwenMateOfficeTab,
+  type JiuwenMateWorkPeriod,
 } from '../officeState';
-import type { JiuwenMateColleague, JiuwenMateTask } from '../types';
+import type { JiuwenMateActivity, JiuwenMateActivityMember, JiuwenMateColleague, JiuwenMateTask } from '../types';
 
 export interface OfficeDashboardHandlers {
   onCreate: () => void;
@@ -67,6 +67,9 @@ export interface OfficeDashboardHandlers {
 
 interface OfficeDashboardPageProps extends OfficeDashboardHandlers {
   colleagues: readonly JiuwenMateColleague[];
+  activity: JiuwenMateActivity | null;
+  activityStatus: 'loading' | 'ready' | 'failed';
+  activityError?: string;
   today?: Date;
 }
 
@@ -75,7 +78,14 @@ type Setter = (update: (current: JiuwenMateOfficeState) => JiuwenMateOfficeState
 const WORK_LOG_PERIODS = ['7d', '1m', '3m', 'all'] as const;
 const PERIOD_AXIS_HOURS = [0, 3, 6, 9, 12, 15, 18, 21];
 
-export function OfficeDashboardPage({ colleagues, today = new Date(), ...handlers }: OfficeDashboardPageProps) {
+export function OfficeDashboardPage({
+  colleagues,
+  activity,
+  activityStatus,
+  activityError = '',
+  today = new Date(),
+  ...handlers
+}: OfficeDashboardPageProps) {
   const { t } = useTranslation();
   const [state, setState] = useState(() => createOfficeState(colleagues[0]?.id ?? null, today));
   const selected = colleagues.find((item) => item.id === state.selectedColleagueId) ?? colleagues[0];
@@ -126,13 +136,27 @@ export function OfficeDashboardPage({ colleagues, today = new Date(), ...handler
         </div>
       </div>
       {state.tab === 'members' ? <MembersTab colleagues={colleagues} handlers={handlers} /> : null}
-      {state.tab === 'activity' && state.activityScope === 'all' ? (
-        <ActivityAllTab state={state} setState={setState} today={today} colleagues={colleagues} onManage={handlers.onManage} />
+      {state.tab === 'activity' && activityStatus !== 'ready' ? (
+        <p className="jiuwenmate-office__notice" data-testid="jiuwenmate-activity-status">
+          {activityStatus === 'loading' ? t('jiuwenmate.office.activityLoading') : t('jiuwenmate.office.activityFailed', { reason: activityError })}
+        </p>
       ) : null}
-      {state.tab === 'activity' && state.activityScope === 'individual' && selected ? (
+      {state.tab === 'activity' && activityStatus === 'ready' && activity && state.activityScope === 'all' ? (
+        <ActivityAllTab
+          state={state}
+          setState={setState}
+          today={today}
+          colleagues={colleagues}
+          members={activity.members}
+          onManage={handlers.onManage}
+        />
+      ) : null}
+      {state.tab === 'activity' && activityStatus === 'ready' && activity && state.activityScope === 'individual' && selected ? (
         <ActivityIndividualTab
           colleagues={colleagues}
           selected={selected}
+          member={activity.members.find((item) => item.agentId === selected.id) ?? null}
+          today={today}
           onSelect={(id) => setState((current) => selectOfficeMember(current, id))}
           handlers={handlers}
         />
@@ -272,25 +296,43 @@ function ActivityAllTab({
   setState,
   today,
   colleagues,
+  members,
   onManage,
 }: {
   state: JiuwenMateOfficeState;
   setState: Setter;
   today: Date;
   colleagues: readonly JiuwenMateColleague[];
+  members: readonly JiuwenMateActivityMember[];
   onManage: (id: string) => void;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
-  const heatmap = useMemo(() => yearHeatmap(state.year, today, JIUWENMATE_DAILY_ACTIVITY), [state.year, today]);
+  const daily = useMemo(() => mergeDailyActivity(members), [members]);
+  const heatmap = useMemo(() => yearHeatmap(state.year, today, daily), [state.year, today, daily]);
   const periodRows = useMemo(
-    () => periodHeatmap(state.periodStart, state.periodEnd, today, JIUWENMATE_HOURLY_ACTIVITY),
-    [state.periodStart, state.periodEnd, today],
+    () => periodHeatmap(state.periodStart, state.periodEnd, today, hourlyActivity(members.flatMap((item) => item.hours), state.periodStart, today)),
+    [state.periodStart, state.periodEnd, today, members],
   );
-  const summary = activitySummary(heatmap, colleagues.length, JIUWENMATE_MEMBER_STATS);
+  const summary = activitySummary(
+    heatmap,
+    colleagues.length,
+    members.map((member) => ({ tokens: member.tokens, companionDays: member.companionDays, chats: member.replies, lastResponseMinutes: 0 })),
+  );
   const keyword = query.trim();
   const ranked = colleagues
-    .map((colleague, index) => ({ colleague, stats: memberStats(index, JIUWENMATE_MEMBER_STATS) }))
+    .map((colleague) => {
+      const member = members.find((item) => item.agentId === colleague.id);
+      return {
+        colleague,
+        stats: {
+          tokens: member?.tokens ?? 0,
+          companionDays: member?.companionDays ?? 0,
+          chats: member?.replies ?? 0,
+          lastResponseMinutes: minutesSince(member?.lastResponseAt ?? null, today),
+        },
+      };
+    })
     .filter((item) => !keyword || item.colleague.name.includes(keyword));
   const years = [today.getFullYear(), today.getFullYear() - 1];
 
@@ -435,7 +477,11 @@ function ActivityAllTab({
                 <td>{formatTableTokens(stats.tokens)}</td>
                 <td>{stats.companionDays}</td>
                 <td>{stats.chats}</td>
-                <td>{t('jiuwenmate.office.minutesAgo', { count: stats.lastResponseMinutes })}</td>
+                <td>
+                  {stats.lastResponseMinutes === null
+                    ? t('jiuwenmate.office.noResponse')
+                    : t('jiuwenmate.office.minutesAgo', { count: stats.lastResponseMinutes })}
+                </td>
                 <td>
                   <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={() => onManage(colleague.id)}>
                     {t('jiuwenmate.office.manage')}
@@ -453,21 +499,26 @@ function ActivityAllTab({
 function ActivityIndividualTab({
   colleagues,
   selected,
+  member,
+  today,
   onSelect,
   handlers,
 }: {
   colleagues: readonly JiuwenMateColleague[];
   selected: JiuwenMateColleague;
+  member: JiuwenMateActivityMember | null;
+  today: Date;
   onSelect: (id: string) => void;
   handlers: OfficeDashboardHandlers;
 }) {
   const { t } = useTranslation();
-  const [period, setPeriod] = useState<(typeof WORK_LOG_PERIODS)[number]>('7d');
+  const [period, setPeriod] = useState<JiuwenMateWorkPeriod>('7d');
   const [query, setQuery] = useState('');
   const carouselRef = useRef<HTMLDivElement>(null);
   const keyword = query.trim();
-  const colleagueChannels = selected.imConfigured ? JIUWENMATE_CHANNELS : [];
-  const channels = colleagueChannels.filter((channel) => !keyword || channel.name.includes(keyword));
+  const usage = usageChange(member?.days ?? [], period, today);
+  const groups = (member?.groups ?? []).filter((group) => !keyword || group.name.includes(keyword));
+  const percent = usage.percent === null ? t('jiuwenmate.office.noResponse') : `${usage.percent}%`;
 
   return (
     <div className="jiuwenmate-office__individual" data-testid="jiuwenmate-office-individual">
@@ -515,8 +566,8 @@ function ActivityIndividualTab({
             key: 'weeklyUsage',
             value: (
               <>
-                20.6%
-                <ArrowUp aria-hidden className="jiuwenmate-trend-up" />
+                {percent}
+                {usage.percent !== null && usage.percent > 0 ? <ArrowUp aria-hidden className="jiuwenmate-trend-up" /> : null}
               </>
             ),
             icon: ChartLine,
@@ -525,14 +576,15 @@ function ActivityIndividualTab({
             key: 'resources',
             value: (
               <>
-                336k<small>tokens</small>
+                {formatSummaryTokens(usage.tokens)}
+                <small>tokens</small>
               </>
             ),
             icon: HardDrive,
           },
-          { key: 'joinedDays', value: 5, icon: CalendarDays },
-          { key: 'channels', value: selected.imConfigured ? 1 : 0, icon: Monitor },
-          { key: 'groupChats', value: colleagueChannels.length, icon: UsersRound },
+          { key: 'joinedDays', value: member?.companionDays ?? 0, icon: CalendarDays },
+          { key: 'channels', value: member ? activeChannelCount(member) : 0, icon: Monitor },
+          { key: 'groupChats', value: groupsInPeriod(member?.groups ?? [], period, today), icon: UsersRound },
         ].map(({ key, value, icon: Icon }) => (
           <div key={key}>
             <strong>{value}</strong>
@@ -544,7 +596,7 @@ function ActivityIndividualTab({
         ))}
       </div>
       <div className="jiuwenmate-office__section-head">
-        <h2>{t('jiuwenmate.office.groupChats', { count: channels.length })}</h2>
+        <h2>{t('jiuwenmate.office.groupChats', { count: groups.length })}</h2>
         <SearchField value={query} onChange={setQuery} placeholder={t('jiuwenmate.common.searchPlaceholder')} />
       </div>
       <table className="jiuwenmate-table" data-testid="jiuwenmate-channel-table">
@@ -556,35 +608,42 @@ function ActivityIndividualTab({
           </tr>
         </thead>
         <tbody>
-          {channels.map((channel) => (
-            <tr key={channel.id}>
+          {groups.map((group) => {
+            const responded = minutesSince(group.lastResponseAt, today);
+            return (
+            <tr key={group.id}>
               <td>
                 <span className="jiuwenmate-table__member">
-                  <span className="jiuwenmate-letter-avatar" data-variant={channel.id}>
-                    {channel.name.slice(0, 1)}
+                  <span className="jiuwenmate-letter-avatar" data-variant={group.id}>
+                    {group.name.slice(0, 1)}
                   </span>
-                  {channel.name}
+                  {group.name}
                 </span>
               </td>
               <td>
-                <em className="jiuwenmate-platform-badge">{t('jiuwenmate.im.feishu')}</em>
+                <em className="jiuwenmate-platform-badge">
+                  {group.platform === 'feishu' ? t('jiuwenmate.im.feishu') : group.platform || t('jiuwenmate.office.noResponse')}
+                </em>
               </td>
-              <td>{channel.artifacts}</td>
-              <td>{formatTableTokens(channel.tokenUsage)}</td>
-              <td>{t('jiuwenmate.office.minutesAgo', { count: channel.lastResponseMinutes })}</td>
+              <td>{group.artifacts}</td>
+              <td>{formatTableTokens(group.tokens)}</td>
+              <td>
+                {responded === null ? t('jiuwenmate.office.noResponse') : t('jiuwenmate.office.minutesAgo', { count: responded })}
+              </td>
               <td>
                 <button
                   type="button"
                   className="jiuwenmate-link-button jiuwenmate-link-button--blue"
-                  onClick={() => handlers.onOpenTrace(selected.id, channel.id)}
+                  onClick={() => handlers.onOpenTrace(selected.id, group.id)}
                   data-testid="jiuwenmate-open-trace"
                 >
                   {t('jiuwenmate.workspace.viewTrace')}
                 </button>
               </td>
             </tr>
-          ))}
-          {channels.length === 0 && (
+            );
+          })}
+          {groups.length === 0 && (
             <tr>
               <td colSpan={6} className="jiuwenmate-table__empty">
                 {t('jiuwenmate.common.noData')}
