@@ -1207,11 +1207,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             except OSError:
                 self._write_json(404, {"error": "job_file_not_found"})
                 return
-            is_download = resource == "download" and self.command != "HEAD"
-            manager = _get_share_image_export_manager()
-            attempt_id = self._parse_query(parsed.query).get("download_attempt_id")
-            accepted_download = False
-            with stream:
+            try:
+                is_download = resource == "download" and self.command != "HEAD"
+                manager = _get_share_image_export_manager()
+                attempt_id = self._parse_query(parsed.query).get("download_attempt_id")
+                accepted_download = False
                 try:
                     file_size = os.fstat(stream.fileno()).st_size
                     if is_download:
@@ -1239,11 +1239,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                         self.wfile.flush()
                         if is_download:
                             manager.mark_browser_download_finished(job_id, succeeded=True, attempt_id=attempt_id)
-                except OSError:
+                except OSError as exc:
                     if accepted_download:
                         manager.mark_browser_download_finished(job_id, succeeded=False, attempt_id=attempt_id)
                     elif not is_download:
-                        raise
+                        raise exc
+            finally:
+                stream.close()
             return
 
         if parsed.path != "/share-api/snapshot":
