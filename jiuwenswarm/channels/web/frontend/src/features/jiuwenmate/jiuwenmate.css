@@ -3611,6 +3611,11 @@
   font-weight: 400;
 }
 
+.jiuwenmate-office__notice {
+  margin: 24px 0;
+  color: var(--jm-text-2);
+}
+
 .jiuwenmate-office__activity,
 .jiuwenmate-office__individual,
 .jiuwenmate-office__tasks {

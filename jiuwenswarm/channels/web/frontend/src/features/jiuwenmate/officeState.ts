@@ -1,4 +1,12 @@
-import type { JiuwenMateDailyActivity, JiuwenMateTask, JiuwenMateTaskStatus } from './types';
+import type {
+  JiuwenMateActivityDay,
+  JiuwenMateActivityGroup,
+  JiuwenMateActivityHour,
+  JiuwenMateActivityMember,
+  JiuwenMateDailyActivity,
+  JiuwenMateTask,
+  JiuwenMateTaskStatus,
+} from './types';
 
 export type JiuwenMateOfficeTab = 'members' | 'activity' | 'tasks';
 export type JiuwenMateActivityScope = 'all' | 'individual';
@@ -234,6 +242,101 @@ export function activitySummary(
 
 export function memberStats(index: number, stats: readonly JiuwenMateMemberStats[]): JiuwenMateMemberStats {
   return stats[index % stats.length];
+}
+
+export type JiuwenMateWorkPeriod = '7d' | '1m' | '3m' | 'all';
+
+const PERIOD_DAYS: Record<Exclude<JiuwenMateWorkPeriod, 'all'>, number> = { '7d': 7, '1m': 30, '3m': 90 };
+
+function periodBounds(period: Exclude<JiuwenMateWorkPeriod, 'all'>, today: Date): { start: Date; end: Date } {
+  const end = parseIsoDate(toIsoDate(today));
+  return { start: addDays(end, -(PERIOD_DAYS[period] - 1)), end };
+}
+
+function inDateRange(isoDate: string, start: Date, end: Date): boolean {
+  const date = parseIsoDate(isoDate);
+  return date >= start && date <= end;
+}
+
+function sumTokens(days: readonly JiuwenMateActivityDay[], start: Date, end: Date): number {
+  return days.reduce((sum, day) => (inDateRange(day.date, start, end) ? sum + day.tokens : sum), 0);
+}
+
+/** Token total for the selected window, and the change against the previous window of the same length. */
+export function usageChange(
+  days: readonly JiuwenMateActivityDay[],
+  period: JiuwenMateWorkPeriod,
+  today: Date,
+): { tokens: number; percent: number | null } {
+  if (period === 'all') {
+    return { tokens: days.reduce((sum, day) => sum + day.tokens, 0), percent: null };
+  }
+  const current = periodBounds(period, today);
+  const length = PERIOD_DAYS[period];
+  const previous = { start: addDays(current.start, -length), end: addDays(current.start, -1) };
+  const tokens = sumTokens(days, current.start, current.end);
+  const before = sumTokens(days, previous.start, previous.end);
+  if (before === 0) return { tokens, percent: null };
+  return { tokens, percent: Math.round(((tokens - before) / before) * 1000) / 10 };
+}
+
+export function mergeDailyActivity(members: readonly JiuwenMateActivityMember[]): JiuwenMateDailyActivity[] {
+  const byDate = new Map<string, { tasks: number; minutes: number }>();
+  for (const member of members) {
+    for (const day of member.days) {
+      const current = byDate.get(day.date) ?? { tasks: 0, minutes: 0 };
+      current.tasks += day.tasks;
+      current.minutes += day.minutes;
+      byDate.set(day.date, current);
+    }
+  }
+  return [...byDate].map(([date, value]) => ({
+    date,
+    tasks: value.tasks,
+    hours: Math.round((value.minutes / 60) * 10) / 10,
+  }));
+}
+
+/** Hourly minutes indexed as days before ``today``, matching ``periodHeatmap``. */
+export function hourlyActivity(
+  hours: readonly JiuwenMateActivityHour[],
+  periodStart: string,
+  today: Date,
+): number[][] {
+  const todayDate = parseIsoDate(toIsoDate(today));
+  const span = Math.max(0, daysBetween(parseIsoDate(periodStart), todayDate));
+  const rows = Array.from({ length: span + 1 }, () => Array<number>(24).fill(0));
+  for (const item of hours) {
+    const offset = daysBetween(parseIsoDate(item.date), todayDate);
+    if (offset >= 0 && offset < rows.length && item.hour >= 0 && item.hour < 24) {
+      rows[offset][item.hour] += item.minutes;
+    }
+  }
+  return rows;
+}
+
+export function minutesSince(iso: string | null, now: Date): number | null {
+  if (!iso) return null;
+  const then = new Date(iso);
+  if (Number.isNaN(then.getTime())) return null;
+  return Math.max(0, Math.floor((now.getTime() - then.getTime()) / 60000));
+}
+
+export function activeChannelCount(member: JiuwenMateActivityMember): number {
+  return member.channels.filter((item) => item.tasks > 0 || item.calls > 0).length;
+}
+
+export function groupsInPeriod(
+  groups: readonly JiuwenMateActivityGroup[],
+  period: JiuwenMateWorkPeriod,
+  today: Date,
+): number {
+  if (period === 'all') return groups.filter((group) => group.tasks > 0).length;
+  const bounds = periodBounds(period, today);
+  return groups.filter((group) => {
+    if (!group.lastResponseAt) return false;
+    return inDateRange(group.lastResponseAt.slice(0, 10), bounds.start, bounds.end);
+  }).length;
 }
 
 export function formatTableTokens(tokens: number): string {

@@ -24,6 +24,7 @@ from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server.jiuwenmate.activity_query import ActivityQuery
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef, PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import ColleagueSettings, PersistentAgentError
@@ -83,6 +84,7 @@ _RUNTIME_METHODS = frozenset(
         ReqMethod.JIUWENMATE_CONVERSATION_LIST.value,
         ReqMethod.JIUWENMATE_CONVERSATION_RENAME.value,
         ReqMethod.JIUWENMATE_CONVERSATION_DELETE.value,
+        ReqMethod.JIUWENMATE_ACTIVITY_GET.value,
     }
 )
 
@@ -302,6 +304,9 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 WEB_NAMESPACE, _text_param(params, "request_id"), reason=params.get("reason"), access=WEB_ACCESS
             )
             return {"request": view.to_dict()}
+        if method == ReqMethod.JIUWENMATE_ACTIVITY_GET.value:
+            report = await asyncio.to_thread(ActivityQuery(manager.db_path).report, WEB_NAMESPACE, now=_utc_now())
+            return {"activity": report}
         agent_id = _text_param(params, "agent_id")
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value:
             await manager.delete_colleague(WEB_NAMESPACE, agent_id)

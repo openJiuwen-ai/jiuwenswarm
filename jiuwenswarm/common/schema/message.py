@@ -430,6 +430,7 @@ def _ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None
     JIUWENMATE_CONVERSATION_LIST = "jiuwenmate.conversation.list"
     JIUWENMATE_CONVERSATION_RENAME = "jiuwenmate.conversation.rename"
     JIUWENMATE_CONVERSATION_DELETE = "jiuwenmate.conversation.delete"
+    JIUWENMATE_ACTIVITY_GET = "jiuwenmate.activity.get"
     PLUGIN_PACKAGES_LIST = "plugin_packages.list"
     PLUGIN_PACKAGES_SHOW = "plugin_packages.show"
     PLUGIN_PACKAGES_CREATE = "plugin_packages.create"

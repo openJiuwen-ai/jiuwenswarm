@@ -617,6 +617,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "jiuwenmate.conversation.list",
     "jiuwenmate.conversation.rename",
     "jiuwenmate.conversation.delete",
+    "jiuwenmate.activity.get",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
@@ -639,6 +640,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "jiuwenmate.conversation.list",
     "jiuwenmate.conversation.rename",
     "jiuwenmate.conversation.delete",
+    "jiuwenmate.activity.get",
     "initialize",
     "session.switch",
     "session.fork",

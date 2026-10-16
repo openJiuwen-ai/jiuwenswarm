@@ -15,6 +15,7 @@ import {
   setActivityRange,
   setActivityScope,
   taskColumns,
+  usageChange,
   yearHeatmap,
 } from '../node_modules/.cache/jiuwenmate-office/officeState.js';
 
@@ -81,6 +82,16 @@ test('summary and token formatting follow the design', () => {
   assert.deepEqual(summary, { members: 2, activeDays: 2, tasks: 132, tokens: 220000 });
   assert.equal(formatSummaryTokens(336000), '336k');
   assert.equal(formatTableTokens(108000), '108.0K');
+});
+
+test('usage change compares the selected window with the previous one', () => {
+  const days = [
+    { date: '2026-10-05', tasks: 1, minutes: 0, calls: 1, tokens: 100 },
+    { date: '2026-10-12', tasks: 1, minutes: 0, calls: 1, tokens: 50 },
+  ];
+  assert.deepEqual(usageChange(days, '7d', today), { tokens: 50, percent: -50 });
+  assert.deepEqual(usageChange(days, 'all', today), { tokens: 150, percent: null });
+  assert.equal(usageChange([], '7d', today).percent, null);
 });
 
 test('task columns follow the four statuses and filter by keyword', () => {
