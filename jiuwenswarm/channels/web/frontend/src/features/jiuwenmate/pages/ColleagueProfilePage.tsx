@@ -7,10 +7,12 @@ import {
   HardDrive,
   Monitor,
   PencilLine,
+  Plus,
   Search,
   SquareArrowOutUpRight,
   Trash2,
   UsersRound,
+  X,
   type LucideIcon,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -21,7 +23,8 @@ import { ActionMenu } from '../components/ActionMenu';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ModelLabel } from '../components/ModelLabel';
-import type { JiuwenMateModelCatalog } from '../jiuwenmateApi';
+import type { ColleagueResourceOption, JiuwenMateModelCatalog } from '../jiuwenmateApi';
+import { JIUWENMATE_WORK_DOMAINS } from '../mockData';
 import { halfYearHeatmap } from '../officeState';
 import type { JiuwenMateColleague } from '../types';
 
@@ -53,11 +56,36 @@ const WORK_LOG_PERIODS: readonly WorkLogPeriod[] = ['7d', '1m', '3m', 'all'];
 const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+export interface ColleagueResourceCatalog {
+  skills: readonly ColleagueResourceOption[] | null;
+  connectors: readonly ColleagueResourceOption[] | null;
+  plugins: readonly ColleagueResourceOption[] | null;
+  ready: boolean;
+}
+
+const RESOURCE_SECTIONS = ['skills', 'connectors', 'plugins'] as const;
+type ResourceSection = (typeof RESOURCE_SECTIONS)[number];
+const PENCIL_SECTIONS = ['overview', 'persona', 'model'] as const;
+
+export interface ColleagueSettingsEdit {
+  name?: string;
+  description?: string;
+  tags?: string[];
+  model?: string;
+  skills?: string[];
+  connectors?: string[];
+  plugins?: string[];
+}
+
 interface ColleagueProfilePageProps {
   colleague: JiuwenMateColleague;
   modelCatalog?: JiuwenMateModelCatalog;
   initialSection?: JiuwenMateProfileSection;
   today?: Date;
+  resourceCatalog?: ColleagueResourceCatalog;
+  savingResources?: boolean;
+  initialEditing?: boolean;
+  onSaveSettings?: (edit: ColleagueSettingsEdit) => void | Promise<void>;
   onOpenOffice: () => void;
   onChat: () => void;
   onConfigureIm: () => void;
@@ -85,6 +113,10 @@ export function ColleagueProfilePage({
   modelCatalog = EMPTY_MODEL_CATALOG,
   initialSection = 'overview',
   today = new Date(),
+  resourceCatalog,
+  savingResources = false,
+  initialEditing = false,
+  onSaveSettings,
   onOpenOffice,
   onChat,
   onConfigureIm,
@@ -93,6 +125,24 @@ export function ColleagueProfilePage({
 }: ColleagueProfilePageProps) {
   const { t } = useTranslation();
   const [section, setSection] = useState<JiuwenMateProfileSection>(initialSection);
+  const [editing, setEditing] = useState(initialEditing);
+  const [name, setName] = useState(colleague.name);
+  const [description, setDescription] = useState(colleague.description);
+  const [tags, setTags] = useState(colleague.tags);
+  const [model, setModel] = useState(colleague.capabilities.model);
+  const [skills, setSkills] = useState(colleague.capabilities.skills);
+  const [connectors, setConnectors] = useState(colleague.capabilities.connectors);
+  const [plugins, setPlugins] = useState(colleague.capabilities.plugins);
+  const showPencil = PENCIL_SECTIONS.some((item) => item === section);
+  const saveSettings = (edit: ColleagueSettingsEdit) => {
+    void Promise.resolve(onSaveSettings?.(edit))
+      .then(() => setEditing(false))
+      .catch(() => undefined);
+  };
+  const openSection = (next: JiuwenMateProfileSection) => {
+    setSection(next);
+    setEditing(false);
+  };
 
   return (
     <section className="jiuwenmate-page jiuwenmate-profile" data-testid="jiuwenmate-colleague-profile">
@@ -110,7 +160,7 @@ export function ColleagueProfilePage({
               key={item}
               type="button"
               aria-current={section === item ? 'true' : undefined}
-              onClick={() => setSection(item)}
+              onClick={() => openSection(item)}
               data-testid="jiuwenmate-profile-section"
               data-variant={item}
             >
@@ -122,14 +172,18 @@ export function ColleagueProfilePage({
           <header className="jiuwenmate-profile__header">
             <ColleagueAvatar colleague={colleague} size="large" />
             <h1>{colleague.name}</h1>
-            <button
-              type="button"
-              className="jiuwenmate-icon-button"
-              aria-label={t('jiuwenmate.profile.edit')}
-              onClick={() => setSection('persona')}
-            >
-              <PencilLine aria-hidden />
-            </button>
+            {showPencil ? (
+              <button
+                type="button"
+                className="jiuwenmate-icon-button"
+                aria-label={t(section === 'model' ? 'jiuwenmate.profile.editModel' : 'jiuwenmate.profile.edit')}
+                aria-pressed={editing}
+                onClick={() => setEditing((current) => !current)}
+                data-testid="jiuwenmate-profile-edit"
+              >
+                <PencilLine aria-hidden />
+              </button>
+            ) : null}
             {colleague.disabled ? <em className="jiuwenmate-badge" data-tone="muted">{t('jiuwenmate.office.disabledBadge')}</em> : null}
             <span className="jiuwenmate-profile__header-actions">
               <ActionMenu
@@ -150,12 +204,44 @@ export function ColleagueProfilePage({
             </span>
           </header>
           {section === 'overview' ? (
-            <ProfileOverview colleague={colleague} today={today} onConfigureIm={onConfigureIm} />
+            <>
+              {editing ? (
+                <IdentityEditor
+                  name={name}
+                  description={description}
+                  tags={tags}
+                  saving={savingResources}
+                  onNameChange={setName}
+                  onDescriptionChange={setDescription}
+                  onTagsChange={setTags}
+                  onSave={() => saveSettings({ name: name.trim(), description: description.trim(), tags: [...tags] })}
+                />
+              ) : null}
+              <ProfileOverview colleague={colleague} today={today} onConfigureIm={onConfigureIm} />
+            </>
           ) : (
             <ProfileSectionDetail
               colleague={colleague}
               modelCatalog={modelCatalog}
               section={section}
+              editing={editing}
+              name={name}
+              description={description}
+              tags={tags}
+              model={model}
+              skills={skills}
+              connectors={connectors}
+              plugins={plugins}
+              resourceCatalog={resourceCatalog}
+              savingResources={savingResources}
+              onNameChange={setName}
+              onDescriptionChange={setDescription}
+              onTagsChange={setTags}
+              onModelChange={setModel}
+              onSkillsChange={setSkills}
+              onConnectorsChange={setConnectors}
+              onPluginsChange={setPlugins}
+              onSaveSettings={saveSettings}
               onConfigureIm={onConfigureIm}
             />
           )}
@@ -348,22 +434,129 @@ function ExecutionHistory() {
   );
 }
 
+function sameNames(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function IdentityEditor({
+  name,
+  description,
+  tags,
+  saving,
+  onNameChange,
+  onDescriptionChange,
+  onTagsChange,
+  onSave,
+}: {
+  name: string;
+  description: string;
+  tags: readonly string[];
+  saving: boolean;
+  onNameChange: (value: string) => void;
+  onDescriptionChange: (value: string) => void;
+  onTagsChange: (value: string[]) => void;
+  onSave: () => void;
+}) {
+  const { t } = useTranslation();
+  const domains = [...new Set([...JIUWENMATE_WORK_DOMAINS, ...tags])];
+  return (
+    <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-identity-editor">
+      <label className="jiuwenmate-field">
+        <span>{t('jiuwenmate.create.name')}</span>
+        <input value={name} onChange={(event) => onNameChange(event.target.value)} data-testid="jiuwenmate-profile-name-input" />
+      </label>
+      <label className="jiuwenmate-field">
+        <span>{t('jiuwenmate.create.description')}</span>
+        <textarea value={description} rows={3} onChange={(event) => onDescriptionChange(event.target.value)} />
+      </label>
+      <div className="jiuwenmate-field">
+        <span>{t('jiuwenmate.create.role')}</span>
+        <div className="jiuwenmate-capability-grid">
+          {domains.map((domain) => (
+            <button
+              key={domain}
+              type="button"
+              className="jiuwenmate-capability-chip"
+              aria-pressed={tags.includes(domain)}
+              onClick={() => onTagsChange(tags.includes(domain) ? tags.filter((item) => item !== domain) : [...tags, domain])}
+            >
+              {domain}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="jiuwenmate-profile__resource-actions">
+        <button type="button" className="jiuwenmate-dark-button" disabled={saving || name.trim().length === 0} onClick={onSave}>
+          {saving ? t('jiuwenmate.profile.savingResources') : t('jiuwenmate.profile.saveResources')}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function ProfileSectionDetail({
   colleague,
   modelCatalog,
   section,
+  editing,
+  name,
+  description,
+  tags,
+  model,
+  skills,
+  connectors,
+  plugins,
+  resourceCatalog,
+  savingResources,
+  onNameChange,
+  onDescriptionChange,
+  onTagsChange,
+  onModelChange,
+  onSkillsChange,
+  onConnectorsChange,
+  onPluginsChange,
+  onSaveSettings,
   onConfigureIm,
 }: {
   colleague: JiuwenMateColleague;
   modelCatalog: JiuwenMateModelCatalog;
   section: Exclude<JiuwenMateProfileSection, 'overview'>;
+  editing: boolean;
+  name: string;
+  description: string;
+  tags: readonly string[];
+  model: string;
+  skills: readonly string[];
+  connectors: readonly string[];
+  plugins: readonly string[];
+  resourceCatalog?: ColleagueResourceCatalog;
+  savingResources: boolean;
+  onNameChange: (value: string) => void;
+  onDescriptionChange: (value: string) => void;
+  onTagsChange: (value: string[]) => void;
+  onModelChange: (value: string) => void;
+  onSkillsChange: (items: string[]) => void;
+  onConnectorsChange: (items: string[]) => void;
+  onPluginsChange: (items: string[]) => void;
+  onSaveSettings?: (edit: ColleagueSettingsEdit) => void | Promise<void>;
   onConfigureIm: () => void;
 }) {
   const { t } = useTranslation();
   const title = t(`jiuwenmate.profile.sections.${section}`);
 
   if (section === 'persona') {
-    return (
+    return editing ? (
+      <IdentityEditor
+        name={name}
+        description={description}
+        tags={tags}
+        saving={savingResources}
+        onNameChange={onNameChange}
+        onDescriptionChange={onDescriptionChange}
+        onTagsChange={onTagsChange}
+        onSave={() => onSaveSettings?.({ name: name.trim(), description: description.trim(), tags: [...tags] })}
+      />
+    ) : (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <h2>{title}</h2>
         <dl className="jiuwenmate-profile__facts">
@@ -379,12 +572,41 @@ function ProfileSectionDetail({
   }
 
   if (section === 'model') {
+    const choices = modelCatalog.models.some((item) => item.id === model) || model.length === 0
+      ? modelCatalog.models
+      : [{ id: model, label: model, provider: '' }, ...modelCatalog.models];
+    const dirty = model !== colleague.capabilities.model;
     return (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <h2>{title}</h2>
-        <div className="jiuwenmate-model-card">
-          <ModelLabel catalog={modelCatalog} modelId={colleague.capabilities.model} />
-        </div>
+        {editing ? (
+          <>
+            <label className="jiuwenmate-field">
+              <span>{t('jiuwenmate.create.sections.model')}</span>
+              <select value={model} onChange={(event) => onModelChange(event.target.value)} data-testid="jiuwenmate-profile-model-select">
+                {choices.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="jiuwenmate-profile__resource-actions">
+              <button
+                type="button"
+                className="jiuwenmate-dark-button"
+                disabled={!dirty || savingResources || model.length === 0}
+                onClick={() => onSaveSettings?.({ model })}
+              >
+                {savingResources ? t('jiuwenmate.profile.savingResources') : t('jiuwenmate.profile.saveResources')}
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="jiuwenmate-model-card">
+            <ModelLabel catalog={modelCatalog} modelId={colleague.capabilities.model} />
+          </div>
+        )}
       </section>
     );
   }
@@ -418,6 +640,88 @@ function ProfileSectionDetail({
         <div className="jiuwenmate-empty-state">
           <img src={scheduleEmpty} alt="" aria-hidden />
           <p>{t('jiuwenmate.workspace.noSchedules')}</p>
+        </div>
+      </section>
+    );
+  }
+
+  if (RESOURCE_SECTIONS.some((item) => item === section) && onSaveSettings) {
+    const resourceSection = section as ResourceSection;
+    const selected = resourceSection === 'skills' ? skills : resourceSection === 'connectors' ? connectors : plugins;
+    const catalog = resourceCatalog?.[resourceSection] ?? null;
+    const changeSelected = resourceSection === 'skills' ? onSkillsChange : resourceSection === 'connectors' ? onConnectorsChange : onPluginsChange;
+    const dirty =
+      !sameNames(skills, colleague.capabilities.skills) ||
+      !sameNames(connectors, colleague.capabilities.connectors) ||
+      !sameNames(plugins, colleague.capabilities.plugins);
+    const emptyKey =
+      resourceSection === 'skills'
+        ? 'jiuwenmate.profile.catalogEmptySkills'
+        : resourceSection === 'connectors'
+          ? 'jiuwenmate.profile.catalogEmptyConnectors'
+          : 'jiuwenmate.profile.catalogEmptyPlugins';
+    return (
+      <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
+        <header>
+          <h2>{title}</h2>
+          <ActionMenu
+            label={t(`jiuwenmate.create.add.${resourceSection}`)}
+            className="jiuwenmate-collapsible__add"
+            testId="jiuwenmate-profile-resource-add"
+            trigger={
+              <>
+                <Plus aria-hidden />
+                <span>{t(`jiuwenmate.create.add.${resourceSection}`)}</span>
+              </>
+            }
+            items={(catalog ?? [])
+              .filter((option) => !selected.includes(option.name))
+              .map((option) => ({
+                key: option.name,
+                label: option.label,
+                onSelect: () => changeSelected([...selected, option.name]),
+              }))}
+          />
+        </header>
+        <p className="jiuwenmate-capability-empty">{t('jiuwenmate.profile.resourcesHint')}</p>
+        {resourceCatalog && !resourceCatalog.ready ? (
+          <p className="jiuwenmate-capability-empty">{t('jiuwenmate.profile.catalogLoading')}</p>
+        ) : null}
+        {resourceCatalog?.ready && catalog === null ? (
+          <p className="jiuwenmate-capability-empty">{t('jiuwenmate.profile.catalogFailed')}</p>
+        ) : null}
+        {resourceCatalog?.ready && catalog !== null && catalog.length === 0 && selected.length === 0 ? (
+          <p className="jiuwenmate-capability-empty">{t(emptyKey)}</p>
+        ) : null}
+        {selected.length === 0 && catalog && catalog.length > 0 ? (
+          <p className="jiuwenmate-capability-empty">{t(`jiuwenmate.create.empty.${resourceSection}`)}</p>
+        ) : null}
+        {selected.length > 0 ? (
+          <div className="jiuwenmate-capability-grid">
+            {selected.map((item) => (
+              <span key={item} className="jiuwenmate-capability-chip" data-kind={resourceSection}>
+                <span>{catalog?.find((option) => option.name === item)?.label ?? item}</span>
+                <button
+                  type="button"
+                  aria-label={`${t('jiuwenmate.create.remove')} ${item}`}
+                  onClick={() => changeSelected(selected.filter((value) => value !== item))}
+                >
+                  <X aria-hidden />
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div className="jiuwenmate-profile__resource-actions">
+          <button
+            type="button"
+            className="jiuwenmate-dark-button"
+            disabled={!dirty || savingResources}
+            onClick={() => onSaveSettings({ skills: [...skills], connectors: [...connectors], plugins: [...plugins] })}
+            data-testid="jiuwenmate-profile-resource-save"
+          >
+            {savingResources ? t('jiuwenmate.profile.savingResources') : t('jiuwenmate.profile.saveResources')}
+          </button>
         </div>
       </section>
     );

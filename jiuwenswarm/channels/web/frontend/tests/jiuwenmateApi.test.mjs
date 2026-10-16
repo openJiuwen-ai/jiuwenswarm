@@ -16,7 +16,9 @@ import {
   toColleague,
   toModelCatalog,
   upsertConversation,
+  selectableColleagueResources,
   toWireSettings,
+  withResourceSelection,
 } from '../node_modules/.cache/jiuwenmate-api/jiuwenmateApi.js';
 
 const wireColleague = {
@@ -434,4 +436,39 @@ test('activity payload keeps counts and drops a member without an id', () => {
   assert.equal(activity.members[0].tokens, 65);
   assert.equal(activity.members[0].replies, 1);
   assert.equal(activity.members[0].failures, 1);
+});
+
+test('installed skill and connected MCP names are the only selectable colleague resources', () => {
+  const selected = selectableColleagueResources(
+    {
+      skills: [
+        { name: 'report-writer', display_name: '报告', installed: true, enabled: true, skill_type: 'skill' },
+        { name: 'disabled-skill', installed: true, enabled: false, skill_type: 'skill' },
+        { name: 'mcp-skill', source: 'mcp', installed: true, skill_type: 'skill' },
+        { name: 'workflow-pack', installed: true, skill_type: 'skillpack' },
+        { name: 'not-installed', installed: false, skill_type: 'skill' },
+      ],
+    },
+    {
+      items: [
+        { name: 'feishu', display_name: '飞书', connection_state: 'connected' },
+        { name: 'idle', display_name: '未连接', connection_state: 'disconnected' },
+        { name: 'feishu', display_name: '飞书重复', connection_state: 'connected' },
+      ],
+    },
+  );
+  assert.deepEqual(selected.skills, [{ name: 'report-writer', label: '报告' }]);
+  assert.deepEqual(selected.connectors, [{ name: 'feishu', label: '飞书' }]);
+  assert.deepEqual(selected.plugins, []);
+});
+
+test('resource selection keeps the colleague settings other than skills and connectors', () => {
+  const colleague = toColleague(wireColleague);
+  const settings = withResourceSelection(colleague, toModelCatalog(wireCatalog).models, ['report-writer'], ['feishu']);
+  assert.deepEqual(settings.capabilities.skills, ['report-writer']);
+  assert.deepEqual(settings.capabilities.connectors, ['feishu']);
+  assert.deepEqual(settings.capabilities.plugins, []);
+  assert.deepEqual(settings.capabilities.knowledge, []);
+  assert.equal(settings.name, '小九');
+  assert.deepEqual(settings.capabilities.starter_prompts, ['帮我整理本周工作进展。']);
 });

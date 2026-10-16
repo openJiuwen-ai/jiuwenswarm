@@ -3075,6 +3075,11 @@
   gap: 12px;
 }
 
+.jiuwenmate-profile__resource-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .jiuwenmate-profile__block > header,
 .jiuwenmate-office__section-head {
   display: flex;

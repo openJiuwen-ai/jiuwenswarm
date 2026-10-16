@@ -186,8 +186,113 @@ function texts(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }
 
+function rows(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function filled(values: readonly string[]): string[] {
   return values.map((item) => item.trim()).filter(Boolean);
+}
+
+/** A skill directory or MCP record the colleague publish step can resolve. */
+export interface ColleagueResourceOption {
+  name: string;
+  label: string;
+}
+
+const SELECTABLE_SKILL_TYPES = new Set(['skill', 'swarm_skill', 'multimodal_skill']);
+
+function resourceOption(name: string, label: string): ColleagueResourceOption | null {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  return { name: trimmed, label: label.trim() || trimmed };
+}
+
+function uniqueOptions(options: readonly ColleagueResourceOption[]): ColleagueResourceOption[] {
+  const seen = new Set<string>();
+  return options.filter((option) => {
+    if (seen.has(option.name)) return false;
+    seen.add(option.name);
+    return true;
+  });
+}
+
+/**
+ * Names publish can copy from the local skill library and the connected MCP state.
+ * Marketplace-only skills, disabled skills, skill packs and disconnected connectors are omitted.
+ */
+export function selectableColleagueResources(
+  skillsPayload: unknown,
+  connectorsPayload: unknown,
+): { skills: ColleagueResourceOption[]; connectors: ColleagueResourceOption[]; plugins: ColleagueResourceOption[] } {
+  const skills = uniqueOptions(
+    rows(record(skillsPayload).skills).flatMap((item: unknown) => {
+      const row = record(item);
+      const skillType = text(row.skill_type);
+      if (row.source === 'mcp' || row.installed === false || row.enabled === false) return [];
+      if (skillType && !SELECTABLE_SKILL_TYPES.has(skillType)) return [];
+      const option = resourceOption(text(row.name), text(row.display_name));
+      return option ? [option] : [];
+    }),
+  );
+  const connectors = uniqueOptions(
+    rows(record(connectorsPayload).items).flatMap((item: unknown) => {
+      const row = record(item);
+      if (text(row.connection_state) !== 'connected') return [];
+      const option = resourceOption(text(row.name), text(row.display_name));
+      return option ? [option] : [];
+    }),
+  );
+  const plugins = uniqueOptions(
+    rows(record(skillsPayload).plugins).flatMap((item: unknown) => {
+      const row = record(item);
+      const option = resourceOption(text(row.plugin_name) || text(row.name), text(row.display_name));
+      return option ? [option] : [];
+    }),
+  );
+  return { skills, connectors, plugins };
+}
+
+/** Settings update that changes only the selected skills and connectors. */
+export function withResourceSelection(
+  colleague: JiuwenMateColleague,
+  models: readonly JiuwenMateModelOption[],
+  skills: readonly string[],
+  connectors: readonly string[],
+): JiuwenMateWireSettings {
+  return withColleagueEdit(colleague, models, { skills, connectors });
+}
+
+/** One settings update. Omitted fields keep the colleague's current values. */
+export function withColleagueEdit(
+  colleague: JiuwenMateColleague,
+  models: readonly JiuwenMateModelOption[],
+  edit: {
+    name?: string;
+    description?: string;
+    tags?: readonly string[];
+    model?: string;
+    skills?: readonly string[];
+    connectors?: readonly string[];
+    plugins?: readonly string[];
+  },
+): JiuwenMateWireSettings {
+  return toWireSettings(
+    {
+      ...colleague,
+      name: edit.name ?? colleague.name,
+      description: edit.description ?? colleague.description,
+      tags: [...(edit.tags ?? colleague.tags)],
+      capabilities: {
+        ...colleague.capabilities,
+        model: edit.model ?? colleague.capabilities.model,
+        skills: [...(edit.skills ?? colleague.capabilities.skills)],
+        connectors: [...(edit.connectors ?? colleague.capabilities.connectors)],
+        plugins: [...(edit.plugins ?? colleague.capabilities.plugins)],
+      },
+    },
+    models,
+  );
 }
 
 export function toColleague(value: unknown): JiuwenMateColleague {
