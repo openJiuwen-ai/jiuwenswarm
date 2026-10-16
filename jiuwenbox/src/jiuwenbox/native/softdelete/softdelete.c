@@ -3,6 +3,9 @@
  *
  * Windows user-mode soft delete. Loaded once into an agent or sandbox
  * process; the CreateProcessInternalW hook then loads it into children.
+ * A child is created suspended and the DLL is queued on its main thread.
+ * If that queue fails, the child is resumed anyway: the command must run,
+ * and soft-delete simply does not apply to that one process.
  * MSYS/Cygwin shells such as Git Bash are not injected: any extra DLL
  * makes their fork wait forever. They are started under a debug loop
  * that loads this DLL into Windows descendants before main runs, and
@@ -2229,96 +2232,10 @@ static NTSTATUS NTAPI hook_NtOpenFile(
     return status;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Child inject. The shellcode stores the full 64-bit module handle.         */
-/* -------------------------------------------------------------------------- */
-
-#define LOADER_PATH_OFF 0x100
-#define LOADER_RESULT_OFF 0x80
-#define LOADER_ERROR_OFF 0x88
-
-static void patch_lea(uint8_t *code, int at, int target) {
-    int32_t disp = (int32_t)(target - (at + 7));
-    memcpy(code + at + 3, &disp, sizeof disp);
-}
-
-static int build_loader(uint8_t *code, uint64_t load_library, uint64_t get_last_error) {
-    int lea_path;
-    int lea_res;
-    int jnz_at;
-    int lea_err;
-    int done;
-    int n = 0;
-    code[n++] = 0x48;
-    code[n++] = 0x83;
-    code[n++] = 0xEC;
-    code[n++] = 0x28;
-    lea_path = n;
-    code[n++] = 0x48;
-    code[n++] = 0x8D;
-    code[n++] = 0x0D;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0x48;
-    code[n++] = 0xB8;
-    memcpy(code + n, &load_library, sizeof load_library);
-    n += 8;
-    code[n++] = 0xFF;
-    code[n++] = 0xD0;
-    lea_res = n;
-    code[n++] = 0x48;
-    code[n++] = 0x8D;
-    code[n++] = 0x0D;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0x48;
-    code[n++] = 0x89;
-    code[n++] = 0x01;
-    code[n++] = 0x48;
-    code[n++] = 0x85;
-    code[n++] = 0xC0;
-    jnz_at = n;
-    code[n++] = 0x75;
-    code[n++] = 0x00;
-    code[n++] = 0x48;
-    code[n++] = 0xB8;
-    memcpy(code + n, &get_last_error, sizeof get_last_error);
-    n += 8;
-    code[n++] = 0xFF;
-    code[n++] = 0xD0;
-    lea_err = n;
-    code[n++] = 0x48;
-    code[n++] = 0x8D;
-    code[n++] = 0x0D;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0x89;
-    code[n++] = 0x01;
-    done = n;
-    code[jnz_at + 1] = (uint8_t)(done - (jnz_at + 2));
-    code[n++] = 0x31;
-    code[n++] = 0xC0;
-    code[n++] = 0x48;
-    code[n++] = 0x83;
-    code[n++] = 0xC4;
-    code[n++] = 0x28;
-    code[n++] = 0xC3;
-    patch_lea(code, lea_path, LOADER_PATH_OFF);
-    patch_lea(code, lea_res, LOADER_RESULT_OFF);
-    patch_lea(code, lea_err, LOADER_ERROR_OFF);
-    return n;
-}
-
 /* The thread stopped at the initial breakpoint still owns the loader lock.
  * LoadLibrary on a second thread never returns. This stub runs on the
  * stopped thread: load, record the result, then jump back to the saved
- * instruction. A failed load spins, so the program does not start. */
+ * instruction. A failed load jumps back too, so the program still starts. */
 #define STOP_DONE_OFF 0x80
 #define STOP_RESULT_OFF 0x88
 #define STOP_RSP_OFF 0x90
@@ -2327,7 +2244,6 @@ static int build_loader(uint8_t *code, uint64_t load_library, uint64_t get_last_
 static int build_stopped_loader(uint8_t *code, uint64_t load_library, uint64_t resume) {
     int n = 0;
     int at;
-    int jz_at;
     int32_t disp;
     code[n++] = 0x48;
     code[n++] = 0x89;
@@ -2375,12 +2291,6 @@ static int build_stopped_loader(uint8_t *code, uint64_t load_library, uint64_t r
     code[n++] = 0;
     code[n++] = 0;
     code[n++] = 0x48;
-    code[n++] = 0x85;
-    code[n++] = 0xC0;
-    jz_at = n;
-    code[n++] = 0x74;
-    code[n++] = 0;
-    code[n++] = 0x48;
     code[n++] = 0x8B;
     code[n++] = 0x25;
     at = n;
@@ -2393,74 +2303,45 @@ static int build_stopped_loader(uint8_t *code, uint64_t load_library, uint64_t r
     n += (int)sizeof resume;
     code[n++] = 0xFF;
     code[n++] = 0xE0;
-    code[jz_at + 1] = (uint8_t)(n - (jz_at + 2));
-    code[n++] = 0xEB;
-    code[n++] = 0xFE;
     return n;
 }
 
-static int inject_dll(HANDLE process) {
+/* Queue LoadLibraryW on the suspended main thread. A new thread cannot run
+ * until that main thread finishes loader init, so CreateRemoteThread deadlocks
+ * here and used to be reported as WinError 5. The path allocation stays in
+ * the child until it exits. Returns 0 when this child will not be hooked. */
+static int inject_dll(HANDLE process, HANDLE thread) {
     wchar_t self_path[PATH_CAP];
-    uint8_t code[128];
-    uint8_t *remote;
+    wchar_t *remote;
     SIZE_T written = 0;
     SIZE_T path_bytes;
-    HANDLE thread = NULL;
-    DWORD wait_rc;
-    uint64_t loaded = 0;
-    uint32_t remote_error = 0;
     BOOL wow = FALSE;
-    HMODULE kernel;
     FARPROC load_library;
-    FARPROC get_last_error;
-    int code_len;
-    DWORD exit_code = 0;
+    if (process == NULL || thread == NULL) {
+        return 0;
+    }
     if (GetModuleFileNameW(g_module, self_path, PATH_CAP) == 0) {
         return 0;
     }
     if (IsWow64Process(process, &wow) && wow) {
         return 0;
     }
-    kernel = GetModuleHandleW(L"kernel32.dll");
-    load_library = GetProcAddress(kernel, "LoadLibraryW");
-    get_last_error = GetProcAddress(kernel, "GetLastError");
-    if (load_library == NULL || get_last_error == NULL) {
-        return 0;
-    }
-    code_len = build_loader(code, (uint64_t)(uintptr_t)load_library, (uint64_t)(uintptr_t)get_last_error);
-    remote = (uint8_t *)VirtualAllocEx(
-        process, NULL, 8192, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-    if (remote == NULL) {
+    load_library = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW");
+    if (load_library == NULL) {
         return 0;
     }
     path_bytes = (wcslen(self_path) + 1) * sizeof(wchar_t);
-    if (LOADER_PATH_OFF + path_bytes > 8192) {
+    remote = (wchar_t *)VirtualAllocEx(
+        process, NULL, path_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (remote == NULL) {
+        return 0;
+    }
+    if (!WriteProcessMemory(process, remote, self_path, path_bytes, &written)
+        || !QueueUserAPC((PAPCFUNC)load_library, thread, (ULONG_PTR)remote)) {
         VirtualFreeEx(process, remote, 0, MEM_RELEASE);
         return 0;
     }
-    if (!WriteProcessMemory(process, remote, code, (SIZE_T)code_len, &written)
-        || !WriteProcessMemory(process, remote + LOADER_PATH_OFF, self_path, path_bytes, &written)) {
-        VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-        return 0;
-    }
-    thread = CreateRemoteThread(process, NULL, 0, (LPTHREAD_START_ROUTINE)remote, NULL, 0, NULL);
-    if (thread == NULL) {
-        VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-        return 0;
-    }
-    wait_rc = WaitForSingleObject(thread, 15000);
-    GetExitCodeThread(thread, &exit_code);
-    CloseHandle(thread);
-    if (wait_rc != WAIT_OBJECT_0) {
-        VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-        return 0;
-    }
-    ReadProcessMemory(process, remote + LOADER_RESULT_OFF, &loaded, sizeof loaded, &written);
-    ReadProcessMemory(process, remote + LOADER_ERROR_OFF, &remote_error, sizeof remote_error, &written);
-    VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-    (void)exit_code;
-    (void)remote_error;
-    return loaded != 0;
+    return 1;
 }
 
 /* Any DLL mapped into Git Bash breaks its fork, so this process must not
@@ -2772,7 +2653,7 @@ static void on_debug_create(DebugTree *tree, DEBUG_EVENT *ev) {
     int skip = created_image_skip_inject(info->hProcess, info->hFile);
     tree->live += 1;
     if (!skip && !remember_debug_child(tree, ev->dwProcessId, info->hProcess, info->hThread)) {
-        TerminateProcess(info->hProcess, 1);
+        log_line(L"softdelete: debug child was not hooked, it continues without the DLL");
     }
     close_create_handles(info);
 }
@@ -2791,6 +2672,8 @@ static int inject_at_breakpoint(DebugChild *slot, DEBUG_EVENT *held) {
     SIZE_T path_bytes;
     int code_len;
     int continued = 0;
+    int suspended = 0;
+    int resumed = 0;
     BOOL wow = FALSE;
     FARPROC load_library;
     memset(&ctx, 0, sizeof ctx);
@@ -2807,9 +2690,14 @@ static int inject_at_breakpoint(DebugChild *slot, DEBUG_EVENT *held) {
      * 调试事件马上放行，后面的装载事件才能送到，bash 也不会停住。 */
     if (slot->process == NULL || thread == NULL || load_library == NULL
         || g_self_path[0] == L'\0'
-        || (IsWow64Process(slot->process, &wow) && wow)
-        || SuspendThread(thread) == (DWORD)-1
-        || !GetThreadContext(thread, &ctx)) {
+        || (IsWow64Process(slot->process, &wow) && wow)) {
+        goto stop_child;
+    }
+    if (SuspendThread(thread) == (DWORD)-1) {
+        goto stop_child;
+    }
+    suspended = 1;
+    if (!GetThreadContext(thread, &ctx)) {
         goto stop_child;
     }
     code_len = build_stopped_loader(
@@ -2832,6 +2720,7 @@ static int inject_at_breakpoint(DebugChild *slot, DEBUG_EVENT *held) {
     if (!SetThreadContext(thread, &ctx) || ResumeThread(thread) == (DWORD)-1) {
         goto stop_child;
     }
+    resumed = 1;
     ContinueDebugEvent(held->dwProcessId, held->dwThreadId, DBG_CONTINUE);
     continued = 1;
     if (opened != NULL) {
@@ -2844,11 +2733,11 @@ static int inject_at_breakpoint(DebugChild *slot, DEBUG_EVENT *held) {
     slot->injecting = 1;
     return 1;
 stop_child:
+    if (suspended && !resumed && thread != NULL) {
+        ResumeThread(thread);
+    }
     if (watch != NULL) {
-        TerminateProcess(watch, 1);
         CloseHandle(watch);
-    } else if (slot->process != NULL) {
-        TerminateProcess(slot->process, 1);
     }
     if (!continued) {
         ContinueDebugEvent(held->dwProcessId, held->dwThreadId, DBG_CONTINUE);
@@ -2857,18 +2746,13 @@ stop_child:
         CloseHandle(opened);
     }
     close_debug_child_handles(slot);
-    log_line(L"softdelete: breakpoint inject failed, child was stopped");
+    log_line(L"softdelete: breakpoint inject failed, child continues without the DLL");
     return 1;
 }
 
 static void finish_debug_inject(DebugChild *slot, int ok) {
     if (!ok) {
-        if (slot->watch != NULL) {
-            TerminateProcess(slot->watch, 1);
-        } else if (slot->process != NULL) {
-            TerminateProcess(slot->process, 1);
-        }
-        log_line(L"softdelete: breakpoint inject failed, child was stopped");
+        log_line(L"softdelete: breakpoint inject failed, child continues without the DLL");
     }
     close_debug_child_handles(slot);
 }
@@ -3291,9 +3175,8 @@ static BOOL WINAPI hook_CreateProcessInternalW(
     if (!ok || pi == NULL || pi->hProcess == NULL) {
         return ok;
     }
-    if (!inject_dll(pi->hProcess)) {
-        fail_created_process(pi);
-        return FALSE;
+    if (!inject_dll(pi->hProcess, pi->hThread)) {
+        log_line(L"softdelete: inject failed, child continues without the DLL");
     }
     if (added_suspend) {
         if (ResumeThread(pi->hThread) == (DWORD)-1) {
