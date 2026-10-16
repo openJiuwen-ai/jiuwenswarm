@@ -1139,6 +1139,9 @@ def test_deep_adapter_persisted_selection_overrides_last_resolved_model():
     with patch(
         "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection",
         return_value=ModelSelection(type="model_group", id="mgp_new"),
+    ), patch(
+        "jiuwenswarm.common.model_catalog.get_config",
+        return_value={"models": {"groups": [{"model_group_id": "mgp_new", "routes": []}]}},
     ):
         requested = adapter._requested_model_name(request)
 

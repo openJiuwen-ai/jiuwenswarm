@@ -3789,9 +3789,9 @@ class JiuWenSwarmDeepAdapter:
                         )
                 else:
                     moa_snapshot = copy.deepcopy(get_config())
+                    restoring_saved_selection = model_selection is None and not model_name
                     if selection is not None and (
-                        (model_selection is None and not model_name)
-                        or self._is_cron_execution_session(sid)
+                        restoring_saved_selection or self._is_cron_execution_session(sid)
                     ):
                         from jiuwenswarm.common.model_catalog import ModelCatalog
                         from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
