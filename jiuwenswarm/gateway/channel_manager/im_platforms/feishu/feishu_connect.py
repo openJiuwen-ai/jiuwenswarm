@@ -176,7 +176,9 @@ def parse_post_content(content: str) -> str:
                 if text:
                     segments.append(text)
         return "\n".join(segments) if segments else placeholder
-    except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+    except (TypeError, ValueError, AttributeError):
+        # json.JSONDecodeError 是 ValueError 子类，由 ValueError 覆盖，
+        # 不与其并列捕获（G.ERR.09 禁止父子异常同捕）
         return placeholder
 
 
