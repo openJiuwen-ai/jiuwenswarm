@@ -714,6 +714,18 @@ channels:
       # 过期清理间隔（秒）
       cleanup_interval_sec: 60
 
+  web_proxy:
+    # 3rd-agent Web UI。端口由注册中心决定（写入 etcd），Gateway 只读并监听。
+    # Gateway watch {A2X_REGISTRY_ETCD_NAMESPACE}/images/（默认 a2x-registry，无前导斜杠），
+    # 取每条 data.access_mode 里 name=web_svc_port 的 port 监听；浏览器访问
+    # http://<advertise_host>:<port>/?user_id=<uid>&token=<iam>（南向仍用 name=web 的口）。
+    enabled: true
+    auth_enabled: true
+    listen_host: <<INGRESS_VIP>>
+    advertise_host: <<INGRESS_VIP>>
+    # 会话 Cookie 的 Max-Age（秒）；端口空闲回收已取消。
+    idle_timeout_sec: 900
+
 # ========== 细粒度权限管控（tiered_policy）==========
 #
 # schema: tiered_policy（或兼容 v_cc / v4.2）时由 tiered_policy.evaluate_tiered_policy 求值；

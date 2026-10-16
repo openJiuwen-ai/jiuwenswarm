@@ -1681,6 +1681,10 @@ function sanitizeFilename(filename, fallback = 'download') {
   return base || fallback;
 }
 
+function getPreferredDownloadPath(filename) {
+  return path.join(app.getPath('downloads'), sanitizeFilename(filename));
+}
+
 async function uniqueDownloadPath(filename) {
   const downloads = app.getPath('downloads');
   const safeName = sanitizeFilename(filename);
@@ -2624,8 +2628,13 @@ function registerIpcHandlers() {
     BrowserWindow,
     getFrontendUrl: () => currentFrontendUrl,
     getCookies: url => mainWindow.webContents.session.cookies.get({ url }),
-    uniqueDownloadPath,
+    getPreferredDownloadPath,
     showItemInFolder: file => shell.showItemInFolder(file),
+    onProgress: progress => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('desktop:share-image-export-progress', progress);
+      }
+    },
   }));
   registerHandler('desktop:download-file', saveDownloadedFile);
   registerHandler('desktop:install-update', async installerPath => {

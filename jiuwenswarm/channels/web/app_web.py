@@ -1061,7 +1061,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         except (OSError, ValueError) as exc:
             raise _BadRequestError("invalid_path") from exc
 
-    def _write_json(self, status: int, payload: dict) -> None:
+    def _write_json(self, status: int, payload: dict | None) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1167,9 +1167,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self._write_json(400, {"error": "missing_session_id"})
                 return
             status = _get_share_image_export_manager().get_active_status(session_id)
-            if status is None:
-                self._write_json(404, {"error": "active_job_not_found"})
-                return
             self._write_json(200, status)
             return
         job_match = re.fullmatch(
@@ -1205,18 +1202,50 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if file_path is None or not file_path.is_file():
                 self._write_json(404, {"error": "job_file_not_found"})
                 return
-            file_size = file_path.stat().st_size
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(file_size))
-            self.send_header("Cache-Control", "no-store")
-            if resource == "download":
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-            self.end_headers()
-            if self.command != "HEAD":
-                with file_path.open("rb") as stream:
-                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                        self.wfile.write(chunk)
+            try:
+                stream = file_path.open("rb")
+            except OSError:
+                self._write_json(404, {"error": "job_file_not_found"})
+                return
+            try:
+                is_download = resource == "download" and self.command != "HEAD"
+                manager = _get_share_image_export_manager()
+                attempt_id = self._parse_query(parsed.query).get("download_attempt_id")
+                accepted_download = False
+                try:
+                    file_size = os.fstat(stream.fileno()).st_size
+                    if is_download:
+                        accepted_download = manager.mark_browser_download_started(job_id, attempt_id)
+                        if not accepted_download:
+                            self._write_json(409, {"error": "share_export_download_attempt_invalid"})
+                            return
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(file_size))
+                    self.send_header("Cache-Control", "no-store")
+                    if resource == "download":
+                        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                    self.end_headers()
+                    if self.command != "HEAD":
+                        remaining = file_size
+                        while remaining:
+                            chunk = stream.read(min(remaining, 1024 * 1024))
+                            if not chunk:
+                                raise OSError("share_export_download_incomplete")
+                            written = self.wfile.write(chunk)
+                            if written is not None and written != len(chunk):
+                                raise OSError("share_export_download_incomplete")
+                            remaining -= len(chunk)
+                        self.wfile.flush()
+                        if is_download:
+                            manager.mark_browser_download_finished(job_id, succeeded=True, attempt_id=attempt_id)
+                except OSError as exc:
+                    if accepted_download:
+                        manager.mark_browser_download_finished(job_id, succeeded=False, attempt_id=attempt_id)
+                    elif not is_download:
+                        raise exc
+            finally:
+                stream.close()
             return
 
         if parsed.path != "/share-api/snapshot":
@@ -1243,7 +1272,25 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if _uses_agentos_routing():
             self._write_json(503, {"error": "agentserver_file_rpc_required"})
             return
-        if parsed.path != "/share-api/jobs":
+        result_match = re.fullmatch(r"/share-api/jobs/([a-f0-9]{32})/browser-result", parsed.path)
+        if result_match:
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                filename = self._parse_query(parsed.query).get("filename", "")
+                status = _get_share_image_export_manager().store_browser_result(
+                    result_match[1], self.headers.get("X-Share-Export-Token", ""), filename, self.rfile, size,
+                )
+            except (FileNotFoundError, PermissionError, ValueError, RuntimeError) as exc:
+                code = 404 if isinstance(exc, FileNotFoundError) else 403 if isinstance(exc, PermissionError) else 400
+                self._write_json(code, {"error": str(exc)})
+                return
+            except OSError:
+                self._write_json(500, {"error": "share_export_upload_failed"})
+                return
+            self._write_json(200, status)
+            return
+        client_match = re.fullmatch(r"/share-api/jobs/([a-f0-9]{32})/browser", parsed.path)
+        if parsed.path != "/share-api/jobs" and client_match is None:
             self._write_json(404, {"error": "not_found"})
             return
         try:
@@ -1262,12 +1309,35 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._write_json(400, {"error": "invalid_json"})
             return
+        if client_match is not None:
+            if not isinstance(body, dict):
+                self._write_json(400, {"error": "invalid_json"})
+                return
+            try:
+                status = _get_share_image_export_manager().update_browser_job(client_match[1], body)
+            except (FileNotFoundError, PermissionError, ValueError) as exc:
+                code = 404 if isinstance(exc, FileNotFoundError) else 403 if isinstance(exc, PermissionError) else 400
+                self._write_json(code, {"error": str(exc)})
+                return
+            self._write_json(200, status)
+            return
         session_id = body.get("session_id", "") if isinstance(body, dict) else ""
         if not isinstance(session_id, str) or not session_id.strip():
             self._write_json(400, {"error": "missing_session_id"})
             return
         session_id = session_id.strip()
-        active_status = _get_share_image_export_manager().get_active_status(session_id)
+        if isinstance(body, dict) and "job_id" in body:
+            job_id = body["job_id"]
+            if not isinstance(job_id, str) or not re.fullmatch(r"[a-f0-9]{32}", job_id):
+                self._write_json(400, {"error": "share_export_job_id_invalid"})
+                return
+            status = _get_share_image_export_manager().get_status(job_id, include_client_token=True)
+            if status is None or status["session_id"] != session_id:
+                self._write_json(404, {"error": "job_not_found"})
+                return
+            self._write_json(200, {**status, "reused": True})
+            return
+        active_status = _get_share_image_export_manager().get_active_status(session_id, include_client_token=True)
         if active_status is not None:
             self._write_json(200, {**active_status, "reused": True})
             return
@@ -1295,6 +1365,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 cookie_name=self.desktop_cookie_name,
                 cookie_value=self.desktop_token,
             )
+        browser_options = None
+        renderer = "server"
+        if body.get("allow_browser_render") is True:
+            from jiuwenswarm.channels.web.share_image_export import available_share_browser
+            browser_options = available_share_browser()
+            if browser_options is None:
+                renderer = "browser"
         status = _get_share_image_export_manager().create_job(
             session_id=session_id,
             snapshot=snapshot,
@@ -1302,6 +1379,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             locale=normalized_locale,
             base_url=f"http://127.0.0.1:{port}",
             render_auth=render_auth,
+            renderer=renderer,
+            browser_options=browser_options,
         )
         self._write_json(200 if status.get("reused") else 202, status)
 

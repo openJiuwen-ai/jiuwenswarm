@@ -523,7 +523,7 @@ class RunCoordinator:
         *,
         node_ids: list[str] | None,
         cascade: bool,
-    ) -> set[str]:
+    ) -> list[str]:
         """Nodes this trigger will EXECUTE live (version-bump targets).
 
         Mirrors the compiler's scope: a full run executes every node the
@@ -531,15 +531,19 @@ class RunCoordinator:
         first-time nodes actually run — but their version bumps are harmless:
         they had none); a single-node trigger executes its target; a cascade
         executes the target plus its downstream closure.
+
+        Graph order, not a set: the caller pre-seeds run.node_states from
+        this sequence, and that dict's key order lands in the persisted run
+        JSON — a set here leaks a per-process hash order into durable data.
         """
         nodes = [str(n.get("id") or "") for n in (graph.get("nodes") or [])]
         if node_ids is None:
-            return {nid for nid in nodes if nid}
+            return [nid for nid in nodes if nid]
         targets = {nid for nid in node_ids if nid}
         if cascade:
             for target in list(targets):
                 targets.update(_descendants(graph, target))
-        return targets
+        return [nid for nid in nodes if nid in targets]
 
     def _write_outputs_to_graph(
         self, graph: DesignerExecutionGraph, run: dict[str, Any]

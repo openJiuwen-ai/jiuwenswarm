@@ -2195,3 +2195,18 @@ def _collect_all_sessions_metadata(
                                 (dir_to_projects, id_to_work_mode))
         result.append(meta)
     return result
+
+
+# --------------------------------------------------------------------------- #
+# common 注入点自注册：import 即注册，供 common 经
+# ``common.external_providers.provider("session_metadata")`` 反向取用（分层规则 R1）。
+# --------------------------------------------------------------------------- #
+def _register_common_provider() -> None:
+    import sys
+
+    from jiuwenswarm.common.external_providers import register
+
+    register("session_metadata", sys.modules[__name__])
+
+
+_register_common_provider()

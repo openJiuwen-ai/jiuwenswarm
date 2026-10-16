@@ -103,7 +103,27 @@
 .rsi-rail__header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 16px 20px;
+}
+
+.rsi-rail__collapse {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.rsi-rail__collapse:hover {
+  background: var(--color-sidebar-action-hover);
 }
 
 .rsi-rail__title {

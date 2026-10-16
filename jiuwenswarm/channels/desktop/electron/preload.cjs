@@ -22,6 +22,11 @@ const desktopApi = Object.freeze({
   openExternalUrl: url => invoke('desktop:open-external-url', url),
   captureOAuthToken: options => invoke('desktop:capture-oauth-token', options),
   exportShareImage: (sessionId, locale) => invoke('desktop:export-share-image', sessionId, locale),
+  onShareImageExportProgress: callback => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('desktop:share-image-export-progress', listener);
+    return () => ipcRenderer.removeListener('desktop:share-image-export-progress', listener);
+  },
   downloadFile: (url, filename) => invoke('desktop:download-file', url, filename),
   installUpdate: installerPath => invoke('desktop:install-update', installerPath),
   saveDataUrl: (dataUrl, filename) => invoke('desktop:save-data-url', dataUrl, filename),

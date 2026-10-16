@@ -468,3 +468,18 @@ __all__ = [
     "KIND_TOKEN",
     "KIND_CLI_OAUTH",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# common 注入点自注册：import 即注册，供 common 经
+# ``common.external_providers.provider("mcp_credential")`` 反向取用（分层规则 R1）。
+# --------------------------------------------------------------------------- #
+def _register_common_provider() -> None:
+    import sys
+
+    from jiuwenswarm.common.external_providers import register
+
+    register("mcp_credential", sys.modules[__name__])
+
+
+_register_common_provider()

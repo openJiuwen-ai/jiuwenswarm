@@ -227,6 +227,7 @@ class ReqMethod(Enum):
     AGENTS_TOOLS_LIST = "agents.tools_list"
     AGENT_SWITCH = "3rdagent.switch"
     AGENT_LIST = "3rdagent.list"
+    AGENT_WEB = "3rdagent.web"
 
     # Unified asset publishing; dispatched by AgentServer independently of chats.
     ASSETS_PUBLISH_DESCRIBE = "assets.publish.describe"

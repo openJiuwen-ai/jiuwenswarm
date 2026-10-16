@@ -19,7 +19,11 @@ def _name_map(catalog: ModelCatalog | None = None) -> dict[str, str]:
 
 
 def migrate_legacy_model_selections() -> dict[str, int]:
-    from jiuwenswarm.server.runtime.session.session_metadata import update_session_model_selection
+    from jiuwenswarm.common.external_providers import provider
+
+    update_session_model_selection = (
+        provider("session_metadata").update_session_model_selection
+    )
 
     mapping = _name_map()
     report = {"sessions": 0, "cron": 0, "ambiguous": 0}

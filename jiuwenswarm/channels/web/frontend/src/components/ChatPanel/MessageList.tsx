@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import clsx from 'clsx';
+import { yieldBrowserTask } from '../../utils/yieldBrowserTask';
 import { LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Message, ToolExecution } from '../../types';
@@ -667,10 +668,12 @@ export function ChatTimelineList({
 
   useEffect(() => {
     if (!incrementallyRenderItems || staticRenderComplete) return;
-    const timer = window.setTimeout(() => {
+    let cancelled = false;
+    void yieldBrowserTask().then(() => {
+      if (cancelled) return;
       setStaticRenderItemCount((count) => Math.min(count + 1, displayItems.length));
-    }, 0);
-    return () => window.clearTimeout(timer);
+    });
+    return () => { cancelled = true; };
   }, [incrementallyRenderItems, displayItems.length, staticRenderComplete, visibleRenderItemCount]);
 
   useEffect(() => {

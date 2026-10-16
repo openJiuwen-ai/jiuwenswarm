@@ -2,6 +2,7 @@
  * RSI 左侧实验管理栏：标题 + 创建按钮 + 实验列表。
  */
 import { useTranslation } from 'react-i18next';
+import PanelCollapseIcon from '../../../assets/panel-collapse.svg?react';
 import type { RsiTaskListItem } from '../types';
 import { statusBadgeInfo, typeDisplayLabel } from '../rsiPresentation';
 
@@ -17,7 +18,7 @@ interface RsiRailProps {
   collapsed?: boolean;
   /** 窄屏（≤1250px）悬浮模式：展开时覆盖详情区并带蒙层 */
   floating?: boolean;
-  /** 收起实验栏：蒙层点击或悬浮态选中任务后调用 */
+  /** Collapse a fixed rail, or pin a temporary flyout. */
   onCollapse?: () => void;
   /** 收起态 hover 图标触发的临时展开（peek）：以悬浮层显示但不带蒙层，指针移开即收起 */
   peek?: boolean;
@@ -59,6 +60,18 @@ export function RsiRail({
       >
         <div className="rsi-rail__header">
           <span className="rsi-rail__title">{t('rsi.title')}</span>
+          {onCollapse && (
+            <button
+              type="button"
+              className="rsi-rail__collapse"
+              onClick={onCollapse}
+              aria-label={t(peek ? 'common.expandAndPin' : 'common.collapse')}
+              title={t(peek ? 'common.expandAndPin' : 'common.collapse')}
+              data-testid="rsi-rail-collapse"
+            >
+              <PanelCollapseIcon aria-hidden />
+            </button>
+          )}
         </div>
         <div className="rsi-rail__create">
           <button type="button" className="rsi-rail__create-btn" onClick={onCreate} data-testid="rsi-create-button">
@@ -78,7 +91,7 @@ export function RsiRail({
         </div>
 
         <div className="rsi-rail__body">
-          <div className="rsi-rail__body-header">RSI自进化实验</div>
+          <div className="rsi-rail__body-header">{t('rsi.list.title')}</div>
           {loading && <div className="rsi-loading">{t('rsi.list.loading')}</div>}
           {!loading && error && (
             <div className="rsi-error" style={{ flexDirection: 'column', gap: 8 }}>
@@ -96,10 +109,12 @@ export function RsiRail({
                 <div
                   key={task.task_id}
                   className={`rsi-rail__item${active ? ' rsi-rail__item--active' : ''}`}
-                  onClick={() => {
-                    onSelect(task.task_id);
-                    // 悬浮态选中任务后收起实验栏（蒙层模式），详情拿回全宽
-                    if (floating) onCollapse?.();
+                  onClick={() => onSelect(task.task_id)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      onSelect(task.task_id);
+                    }
                   }}
                   role="button"
                   tabIndex={0}
