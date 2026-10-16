@@ -406,26 +406,25 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
         value = _header(request, header_name, "")
         if value:
             metadata[field] = value
-    try:
-        from jiuwenswarm.extensions.runtime_management_extension import request_ext as ext_mod
-    except Exception:
-        logger.debug(
-            "[AgentHTTPServer] request ext module unavailable",
-            exc_info=True,
-        )
-    else:
-        encoded_ext = request.headers.get(ext_mod.INTERNAL_HEADER_NAME)
-        if encoded_ext:
-            try:
-                ext = ext_mod.decode_internal_header(encoded_ext)
-            except ext_mod.RequestExtCodecError as exc:
-                logger.warning(
-                    "[AgentHTTPServer] request ext header is invalid; ignored: %s",
-                    exc,
-                )
-            else:
-                if ext:
-                    metadata[ext_mod.METADATA_KEY] = ext
+    from jiuwenswarm.common.request_ext import (
+        INTERNAL_HEADER_NAME,
+        METADATA_KEY,
+        RequestExtCodecError,
+        decode_internal_header,
+    )
+
+    encoded_ext = request.headers.get(INTERNAL_HEADER_NAME)
+    if encoded_ext:
+        try:
+            ext = decode_internal_header(encoded_ext)
+        except RequestExtCodecError as exc:
+            logger.warning(
+                "[AgentHTTPServer] request ext header is invalid; ignored: %s",
+                exc,
+            )
+        else:
+            if ext:
+                metadata[METADATA_KEY] = ext
     user_id = str(identity.get("user_id") or "").strip()
     return user_id, metadata or None
 

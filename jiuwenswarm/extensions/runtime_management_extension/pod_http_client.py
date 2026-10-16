@@ -8,7 +8,6 @@ import asyncio
 import json
 import logging
 import os
-import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -23,12 +22,7 @@ from jiuwenswarm.common.e2a.constants import (
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.extensions.runtime_management_extension.audit_emit import (
-    AuditTimer,
-    emit_audit_evt,
-    emit_audit_ua,
-)
-from jiuwenswarm.extensions.runtime_management_extension.link_mtls import LinkMTLSConfig
+from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     HttpMethodNotHandled,
     assemble_rest_request,
@@ -40,31 +34,6 @@ from jiuwenswarm.gateway.routing.agent_client import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_peer_ip(host_or_url: str | None) -> str:
-    """从 URL 取出对端地址，只给审计日志的 DSTIP 用。解析失败时记成 "-"。"""
-    text = str(host_or_url or "").strip()
-    if not text:
-        return "-"
-    host = urlsplit(text if "://" in text else f"//{text}").hostname or text
-    host = host.strip().strip("[]")
-    if not host:
-        return "-"
-    try:
-        socket.inet_pton(socket.AF_INET, host)
-        return host
-    except OSError:
-        pass
-    try:
-        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except OSError:
-        return "-"
-    for info in infos:
-        addr = info[4][0] if info and info[4] else ""
-        if addr:
-            return str(addr)
-    return "-"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -306,9 +275,8 @@ class HttpSseAgentServerClient(AgentServerClient):
 
     def _resolve_api_root(self, base_url: str | None) -> str:
         if base_url:
-            # Enterprise routing may supply a per-Pod endpoint without calling
-            # connect() first.  Apply the same downgrade protection here so an
-            # enforce-mode request can never bypass HTTPS through base_url.
+            # 企业路由可能直接给某个 Pod 的地址，不先走 connect。
+            # 强制模式时这里同样改地址，避免用明文 HTTP 绕过。
             base_url = self._link_config().resolve_endpoint(base_url, role="agentserver")
             return normalize_agent_http_base(base_url)
         if not self._running or not self._api_root:
@@ -382,74 +350,40 @@ class HttpSseAgentServerClient(AgentServerClient):
     async def send_request(
         self, envelope: E2AEnvelope, *, base_url: str | None = None
     ) -> AgentResponse:
-        with AuditTimer() as timer:
-            api_root = self._resolve_api_root(base_url)
-            envelope.is_stream = False
-            try:
-                assembled = assemble_rest_request(envelope, base_url=api_root)
-            except HttpMethodNotHandled as exc:
-                logger.info(
-                    "[E2A][out][http][unary] request_id=%s method=%s 没有 HTTP 处理",
-                    envelope.request_id,
-                    envelope.method,
-                )
-                return _http_method_not_handled(envelope, str(exc))
-            http = self._ensure_http()
-            channel_id = str(envelope.channel or "web")
-            rid = str(envelope.request_id or "")
-            peer_ip = _resolve_peer_ip(assembled.url or api_root)
+        api_root = self._resolve_api_root(base_url)
+        envelope.is_stream = False
+        try:
+            assembled = assemble_rest_request(envelope, base_url=api_root)
+        except HttpMethodNotHandled as exc:
             logger.info(
-                "[E2A][out][http][unary] request_id=%s method=%s %s %s rpc=%s",
-                rid,
+                "[E2A][out][http][unary] request_id=%s method=%s 没有 HTTP 处理",
+                envelope.request_id,
                 envelope.method,
-                assembled.verb,
-                assembled.url,
-                assembled.used_rpc_fallback,
             )
-            # 信封身份：直调路径（如 session.delete）不走 open_gateway_request，
-            # ContextVar 常为空；有值时显式写入，无值时仍回退审计上下文。
-            # session_id → trace_id；缺省时直调路径会落成 placeholder「-」。
-            uid = str(getattr(envelope, "user_id", None) or "").strip()
-            sid = str(getattr(envelope, "session_id", None) or "").strip()
-            audit_identity = {
-                **({"UID": uid} if uid else {}),
-                **({"session_id": sid} if sid else {}),
-            }
-            try:
-                response = await http.request(
-                    assembled.verb,
-                    assembled.url,
-                    headers=self._request_headers(assembled.headers),
-                    json=assembled.json_body,
-                    params=assembled.query,
-                )
-                _raise_for_pod_http_error(response, base_url=base_url)
-                payload = _response_json(response, request_id=rid)
-                result = http_unary_to_agent_response(
-                    payload, channel_id=channel_id, request_id=rid
-                )
-            except Exception as exc:
-                emit_audit_evt(
-                    SUBMDL="api_client",
-                    PROC="http_agent_send",
-                    MSG=str(exc),
-                    EVT="http_agent_send_failed",
-                    request_id=rid,
-                    method=str(envelope.method or ""),
-                    DSTIP=peer_ip,
-                    **audit_identity,
-                )
-                raise
-            emit_audit_ua(
-                SUBMDL="api_client",
-                PROC="http_agent_send",
-                COST=timer.cost_ms,
-                request_id=rid,
-                method=str(envelope.method or ""),
-                DSTIP=peer_ip,
-                **audit_identity,
-            )
-            return result
+            return _http_method_not_handled(envelope, str(exc))
+        http = self._ensure_http()
+        channel_id = str(envelope.channel or "web")
+        rid = str(envelope.request_id or "")
+        logger.info(
+            "[E2A][out][http][unary] request_id=%s method=%s %s %s rpc=%s",
+            rid,
+            envelope.method,
+            assembled.verb,
+            assembled.url,
+            assembled.used_rpc_fallback,
+        )
+        response = await http.request(
+            assembled.verb,
+            assembled.url,
+            headers=self._request_headers(assembled.headers),
+            json=assembled.json_body,
+            params=assembled.query,
+        )
+        _raise_for_pod_http_error(response, base_url=base_url)
+        payload = _response_json(response, request_id=rid)
+        return http_unary_to_agent_response(
+            payload, channel_id=channel_id, request_id=rid
+        )
 
     def _is_stream_cancelled(self, rid: str) -> bool:
         return bool(rid) and rid in self._cancelled_request_ids

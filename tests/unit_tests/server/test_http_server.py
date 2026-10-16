@@ -524,9 +524,7 @@ async def test_chat_completions_reads_headers_and_wraps_data(monkeypatch) -> Non
 @pytest.mark.asyncio
 async def test_runtime_headers_rebuild_identity(monkeypatch) -> None:
     """Gateway 经 X-* 头传来的身份，要写回请求里的 user_id 和 metadata。"""
-    from jiuwenswarm.extensions.runtime_management_extension.request_ext import (
-        encode_internal_header,
-    )
+    from jiuwenswarm.common.request_ext import encode_internal_header
 
     seen: dict[str, object] = {}
 

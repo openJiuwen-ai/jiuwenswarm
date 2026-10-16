@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from jiuwenswarm.extensions.runtime_management_extension.link_mtls import LinkMTLSConfig
+from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 
 logger = logging.getLogger(__name__)
 
