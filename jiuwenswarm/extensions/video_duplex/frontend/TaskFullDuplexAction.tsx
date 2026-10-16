@@ -29,6 +29,7 @@ import {
   toggleTaskDuplexMicrophone,
   toggleTaskDuplexSpeaker,
   stopTaskDuplexScreenSharing,
+  clearTaskFullDuplexError,
 } from './taskFullDuplexRuntimeStore';
 import { DuplexOrb } from './DuplexOrb';
 import './TaskFullDuplexAction.css';
@@ -79,6 +80,11 @@ export function TaskFullDuplexAction({
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
   }, []);
+
+  // A failure belongs to the conversation it happened in (#5288).
+  useEffect(() => {
+    clearTaskFullDuplexError();
+  }, [sessionId]);
 
   const beginSession = useCallback(
     async (visualSource?: 'screen' | 'camera') => {

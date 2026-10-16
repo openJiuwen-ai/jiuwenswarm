@@ -40,12 +40,21 @@ function publish(update: Partial<TaskFullDuplexRuntimeSnapshot>): void {
     return;
   if (next.error && next.error !== snapshot.error) {
     if (errorToast !== null) toast.close(errorToast);
-    errorToast = toast.open({
-      content: next.error,
+    const shownError = next.error;
+    const key = toast.open({
+      content: shownError,
       variant: "error",
       duration: 0,
       wide: true,
+      // Dismissing the toast also retires the error, so it no longer lingers
+      // as the duplex button tooltip (#5288).
+      onClose: () => {
+        if (errorToast !== key) return;
+        errorToast = null;
+        if (snapshot.error === shownError) publish({ error: "" });
+      },
     });
+    errorToast = key;
   }
   snapshot = next;
   listeners.forEach((listener) => listener());
@@ -76,6 +85,13 @@ export function setTaskFullDuplexRuntimeState(
 
 export function setTaskFullDuplexRuntimeError(error: string): void {
   publish({ error });
+}
+
+/** Drops an idle session's error and its toast, e.g. when another conversation opens. */
+export function clearTaskFullDuplexError(): void {
+  if (snapshot.state !== "idle" || !snapshot.error) return;
+  if (errorToast !== null) toast.close(errorToast);
+  publish({ error: "" });
 }
 
 export async function startTaskFullDuplex(sessionId?: string, visualSource?: 'screen' | 'camera'): Promise<void> {

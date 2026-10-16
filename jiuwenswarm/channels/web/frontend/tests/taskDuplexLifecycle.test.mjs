@@ -56,6 +56,7 @@ await build({
           export const VideoLivePanel = forwardRef(function Panel(props, ref) {
             useImperativeHandle(ref, () => ({
               async startScreenDuplex(id, shareScreen, visualSource) {
+                if (globalThis.__duplexHarness.startError) throw new Error(globalThis.__duplexHarness.startError);
                 globalThis.__duplexHarness.sharingRequests.push(shareScreen);
                 globalThis.__duplexHarness.visualSources.push(visualSource);
                 globalThis.__duplexHarness.starts.push(id);
@@ -553,6 +554,25 @@ async function mountAction() {
     }),
   )));
 }
+
+test('a failed start does not leave its error on the button in another conversation', async () => {
+  harness.startError = 'Not supported';
+  await mountAction();
+  await act(async () => document.querySelector('[data-testid="chat-panel-input-full-duplex"]').click());
+  const button = () => document.querySelector('[data-testid="chat-panel-input-full-duplex"]');
+  assert.match(button().getAttribute('title'), /Not supported/);
+  await act(async () => root.render(createElement('div', { className: 'chat-input-frame' },
+    createElement(TaskFullDuplexRuntime, props),
+    createElement(TaskFullDuplexAction, {
+      eligible: true, sessionId: 'another-session',
+      ensureSession: async () => 'another-session',
+      labels: { start: 'start', stop: 'stop', starting: 'starting' },
+      fallback: createElement('button', null, 'Send'),
+    }),
+  )));
+  assert.equal(button().getAttribute('title'), 'start');
+  harness.startError = '';
+});
 
 test('canceling the share chooser starts no media session', async () => {
   window.localStorage.setItem('jiuwen.taskFullDuplex.screenSharing', 'true');
