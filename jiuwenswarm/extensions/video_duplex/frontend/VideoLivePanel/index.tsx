@@ -30,6 +30,7 @@ import { webClient, webRequest } from '../../../../channels/web/frontend/src/ser
 import { createRealtimeDuplexSession, RealtimeDuplexSession } from './qwenOmniSession';
 import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame } from './videoSource';
 import { JoyAIProvider } from './joyaiProvider';
+import { setDuplexVoicePhase } from '../duplexAudioMeter';
 import { describeDuplexError } from '../duplexErrorMessage';
 import {
   mergeSearchProgressJob,
@@ -778,7 +779,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       });
       return true;
     } catch (screenError) {
-      if (screenError instanceof DOMException && screenError.name === 'NotAllowedError') {
+      // Browsers reject a cancelled picker with NotAllowedError; Electron's
+      // display-media handler denies with AbortError.
+      if (screenError instanceof DOMException && (screenError.name === 'NotAllowedError' || screenError.name === 'AbortError')) {
         setError('已取消选择屏幕。');
       } else {
         setError(screenError instanceof Error ? screenError.message : '无法读取屏幕。');
@@ -904,6 +907,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             },
             onState: (state) => {
               if (duplexRef.current !== session) return;
+              setDuplexVoicePhase(state);
               if (state === 'closed') {
                 duplexRef.current = null;
                 mediaGenerationRef.current += 1;

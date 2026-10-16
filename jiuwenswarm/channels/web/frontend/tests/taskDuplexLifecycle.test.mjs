@@ -534,6 +534,9 @@ test('typing keeps the native send button alongside the active orb and accessibl
   await act(async () => microphone.click());
   assert.equal(microphone.getAttribute('aria-pressed'), 'true');
   await act(async () => document.querySelector('[data-testid="chat-panel-duplex-exit"]').click());
+  // The orb fades out before it unmounts.
+  assert.ok(document.querySelector('.task-full-duplex-orb.is-leaving'));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 250)));
   assert.equal(document.querySelector('[data-testid="chat-panel-duplex-orb"]'), null);
   assert.ok(document.querySelector('[data-testid="native-send"]'));
 });
