@@ -1,10 +1,14 @@
-"""``PersistentPorts.workspace_access``: the office directory a colleague may read (PA-14).
+"""``PersistentPorts.workspace_access`` / ``workspace_write_access``: a colleague's office directory (PA-14, PA-16).
 
 Each colleague owns one directory under the JiuwenMate data root, apart from the
-database, Templates and windows. The read scope is that directory alone, and only
-for a Request whose startup and source scopes both include ``workspace_read``;
-every other Request is refused. core asks again before every file read, so the
-port never caches a decision, and it never creates, moves or reads files.
+database, Templates and windows. The read scope is that directory, and the write
+scope is the same directory, each only for a Request whose startup and source
+scopes both include the capability; every other Request is refused.
+
+``sessions/`` holds one private draft directory per Session. A Session reads and
+writes its own ``sessions/<session_id>/`` and cannot reach another Session's.
+core asks again before every file access, so the port never caches a decision,
+and it never creates, moves or reads files.
 """
 
 from __future__ import annotations
@@ -15,11 +19,18 @@ from pathlib import Path
 
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
-from openjiuwen.harness.persistent_agent import ExecutionContext, WorkspaceReadScope
+from openjiuwen.harness.persistent_agent import ExecutionContext, WorkspaceReadScope, WorkspaceWriteScope
 
 WORKSPACE_READ = "workspace_read"
+WORKSPACE_WRITE = "workspace_write"
+SESSIONS_DIR = "sessions"
 
 _DIR_NAME = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _require_dir_name(name: str, value: str) -> None:
+    if not isinstance(value, str) or not _DIR_NAME.fullmatch(value):
+        raise PersistentAgentError(f"invalid {name} for an office directory")
 
 
 class WorkspaceStore:
@@ -30,9 +41,8 @@ class WorkspaceStore:
         private_dir(self._root)
 
     def path(self, namespace_id: str, agent_id: str) -> Path:
-        for name, value in (("namespace_id", namespace_id), ("agent_id", agent_id)):
-            if not isinstance(value, str) or not _DIR_NAME.fullmatch(value):
-                raise PersistentAgentError(f"invalid {name} for an office directory")
+        _require_dir_name("namespace_id", namespace_id)
+        _require_dir_name("agent_id", agent_id)
         return self._root / namespace_id / agent_id
 
     def ensure(self, namespace_id: str, agent_id: str) -> Path:
@@ -46,7 +56,7 @@ class WorkspaceStore:
 
 
 class HostWorkspaceAccess:
-    """The read scope of one Execution's colleague; core checks every path against it."""
+    """The read and write scopes of one Execution's colleague; core checks every path against them."""
 
     def __init__(self, store: WorkspaceStore, namespace_id: str, agent_id: str) -> None:
         self._root = store.path(namespace_id, agent_id)
@@ -57,19 +67,48 @@ class HostWorkspaceAccess:
     def scope(self) -> tuple[str, str]:
         return self._namespace_id, self._agent_id
 
-    async def resolve_read_scope(self, execution: ExecutionContext) -> WorkspaceReadScope:
+    def _session_roots(self, execution: ExecutionContext) -> tuple[Path, Path]:
         if execution.namespace_id != self._namespace_id or execution.agent_id != self._agent_id:
             raise PersistentAgentError("Execution belongs to another colleague")
-        granted = WORKSPACE_READ in execution.startup_scope and WORKSPACE_READ in execution.source_scope
+        _require_dir_name("session_id", execution.session_id)
+        sessions = self._root / SESSIONS_DIR
+        return sessions, sessions / execution.session_id
+
+    @staticmethod
+    def _granted(execution: ExecutionContext, feature: str) -> bool:
+        return feature in execution.startup_scope and feature in execution.source_scope
+
+    def _source_ref(self) -> str:
+        return f"workspace://{self._namespace_id}/{self._agent_id}"
+
+    async def resolve_read_scope(self, execution: ExecutionContext) -> WorkspaceReadScope:
+        sessions, current = self._session_roots(execution)
+        granted = self._granted(execution, WORKSPACE_READ)
         return WorkspaceReadScope(
             status="allowed" if granted else "forbidden",
             agent_id=execution.agent_id,
             session_id=execution.session_id,
             workspace_root=self._root,
             allowed_roots=(self._root,) if granted else (),
-            private_sessions_root=None,
-            current_session_root=None,
-            source_ref=f"workspace://{self._namespace_id}/{self._agent_id}",
+            private_sessions_root=sessions,
+            current_session_root=current if granted else None,
+            source_ref=self._source_ref(),
+            policy_revision=execution.policy_revision,
+            principal_ref=execution.principal_ref,
+        )
+
+    async def resolve_write_scope(self, execution: ExecutionContext) -> WorkspaceWriteScope:
+        sessions, current = self._session_roots(execution)
+        granted = self._granted(execution, WORKSPACE_WRITE)
+        return WorkspaceWriteScope(
+            status="allowed" if granted else "forbidden",
+            agent_id=execution.agent_id,
+            session_id=execution.session_id,
+            workspace_root=self._root,
+            allowed_write_roots=(self._root,) if granted else (),
+            private_sessions_root=sessions,
+            current_session_root=current if granted else None,
+            source_ref=self._source_ref(),
             policy_revision=execution.policy_revision,
             principal_ref=execution.principal_ref,
         )

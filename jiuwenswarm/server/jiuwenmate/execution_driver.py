@@ -114,11 +114,13 @@ class ExecutionDriver:
             snapshot = await asyncio.to_thread(
                 self._snapshots, record.namespace_id, record.agent_id, record.config_version
             )
+            workspace = HostWorkspaceAccess(self._workspaces, record.namespace_id, record.agent_id)
             ports = core.PersistentPorts(
                 commit=self._commit_port,
                 budget=self._budget_port,
                 window_backend=self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
-                workspace_access=HostWorkspaceAccess(self._workspaces, record.namespace_id, record.agent_id),
+                workspace_access=workspace,
+                workspace_write_access=workspace,
             )
             spec, context = build_invocation(snapshot, record, execution, ports=ports)
             await handle._attach(context)

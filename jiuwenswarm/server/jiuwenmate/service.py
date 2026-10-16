@@ -28,7 +28,7 @@ from jiuwenswarm.server.jiuwenmate.models import (
     require_identifier,
 )
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
-from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, WorkspaceStore
+from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, WORKSPACE_WRITE, WorkspaceStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, publish_spec
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
@@ -55,9 +55,10 @@ DEFAULT_COLLEAGUE = ColleagueSettings(
 # The core read_file description still asks for absolute paths, which the guarded tools refuse.
 WORKSPACE_PROMPT = (
     "\n\n## 办公目录\n\n"
-    "你可以用 list_files 和 read_file 查看办公目录中的文件。"
+    "你可以用 list_files 和 read_file 查看办公目录中的文件，用 write_file 和 edit_file 创建或修改文件。"
     "路径一律写成相对于办公目录的路径，例如 `.` 或 `资料/周报.md`，不要使用绝对路径。"
-    "办公目录只能读取，不能修改。"
+    "修改已有文件前先读取它；如果提示版本冲突，说明文件已被改动，重新读取后再修改。"
+    "`sessions/` 存放各对话的私有草稿，不要读写其中的内容；其余位置的文件由所有对话共享。"
 )
 
 TemplateSource = Callable[[str], Mapping[str, Any] | None]
@@ -338,8 +339,8 @@ class PersistentAgentService:
             "card": {"id": agent_id, "name": settings.name, "description": settings.description},
             "system_prompt": self._templates.read_persona(agent_id) + WORKSPACE_PROMPT,
             "model": self._models.resolve(settings.capabilities.model, client_id=f"jiuwenmate:{agent_id}"),
-            "enabled_features": ["construction", WORKSPACE_READ],
-            # The guarded read tools need a filesystem operation; no shell or write tool is mounted.
+            "enabled_features": ["construction", WORKSPACE_READ, WORKSPACE_WRITE],
+            # The guarded file tools need a filesystem operation; no shell tool is mounted.
             "enable_sys_operation": True,
             # Otherwise core probes the model for image input outside the budget port.
             "enable_read_image_multimodal": False,
