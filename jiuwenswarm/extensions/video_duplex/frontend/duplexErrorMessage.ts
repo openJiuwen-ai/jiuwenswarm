@@ -18,6 +18,10 @@ export function describeDuplexError(raw: string, scope: FailureScope = 'session'
     action = '请检查对应服务的 API Key、访问权限及模型授权，然后重试';
   } else if (/\b429\b|quota|rate.?limit|限流|额度|配额/i.test(detail)) {
     action = '请检查服务额度和限流状态，额度恢复后重试';
+  } else if (/not.?supported|不支持/i.test(detail)) {
+    // A runtime capability gap (#5283): the service logs hold nothing useful.
+    result = '当前运行环境不支持该功能';
+    action = '请关闭屏幕共享后仅使用语音，或换用支持该功能的浏览器';
   } else if (/麦克风|摄像头|屏幕共享|录音|microphone|camera|permission denied|notallowederror/i.test(detail)) {
     result = '本次音视频输入不可用';
     action = '请检查浏览器及系统的设备权限，并确认设备未被其他程序占用';
