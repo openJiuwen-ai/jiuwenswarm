@@ -512,7 +512,7 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   const operations = source('src/features/settings/modules/models/modelListOperations.ts');
   assert.match(page, /request<ModelResourceResult>\(\s*'models\.upsert'/);
   assert.match(page, /request\('models\.get', \{ model_id: nextDialog\.model\.model_id \}\)/);
-  assert.match(page, /request\('models\.references', \{ type: 'model', id: model\.model_id \}\)/);
+  assert.doesNotMatch(page, /models\.references|MODEL_SELECTION_REFERENCED/);
   assert.match(page, /request\('models\.delete', \{ model_id: confirmation\.model\.model_id \}/);
   assert.doesNotMatch(page, /models\.replace_all/);
   assert.match(page, /const refreshedPayload = await request\('models\.list'\)/);
@@ -553,7 +553,6 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   );
   assert.match(page, /'model_groups\.upsert'/);
   assert.match(page, /'model_groups\.delete'/);
-  assert.match(page, /'models\.references'/);
   assert.match(page, /setAvailableModelGroups\(parsed\.modelGroups\)/);
   assert.doesNotMatch(page, /accountMode|connectOpenAIAccount/);
   assert.doesNotMatch(dialog, /accountMode/);
