@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from jiuwenswarm.common.config import get_config, get_default_models
+from jiuwenswarm.common.config import get_agentos_models, get_config, get_default_models
 from jiuwenswarm.common.kv_cache_affinity_config import (
     has_kv_cache_affinity_capability,
     is_affinity_enabled,
@@ -19,45 +20,68 @@ def is_kv_cache_affinity_enabled(config: dict[str, Any] | None = None) -> bool:
     return is_affinity_enabled(cfg)
 
 
-def create_default_kv_cache_model():
-    """Build a fallback only when the default is the sole affinity model."""
-    config = get_config()
-    defaults = get_default_models(config)
-    entry = next(
-        (
-            item
-            for item in defaults
-            if isinstance(item, dict) and item.get("is_default") is True
-        ),
-        defaults[0] if defaults and isinstance(defaults[0], dict) else None,
+def _stable_config_value(value: Any) -> str:
+    """Return a comparable representation for nested routing configuration."""
+
+    try:
+        return json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _kv_cache_target_identity(client: dict[str, Any]) -> tuple[str, ...]:
+    """Identify one physical KVC control target, independent of config source."""
+
+    extensions = client.get("extensions")
+    extensions = extensions if isinstance(extensions, dict) else {}
+    return (
+        str(
+            client.get("legacy_client_provider") or client.get("client_provider") or ""
+        ).strip(),
+        str(client.get("api_base") or "").strip().rstrip("/"),
+        str(client.get("model_name") or "").strip(),
+        str(client.get("endpoint_profile") or "").strip(),
+        str(client.get("api_key") or ""),
+        _stable_config_value(client.get("custom_headers") or {}),
+        _stable_config_value(extensions.get("kv_cache") or {}),
     )
-    if entry is not None:
-        client = dict(entry.get("model_client_config") or {})
-        request = dict(entry.get("model_config_obj") or {})
-        # No persisted binding identifies a cold Session's original model.
-        # A default flag alone is not evidence that this Session used it.
-        affinity_model_count = sum(
-            has_kv_cache_affinity_capability(item.get("model_client_config") or {})
-            for item in defaults
-            if isinstance(item, dict)
-        )
-        if not has_kv_cache_affinity_capability(client) or affinity_model_count != 1:
-            return None
-    else:
-        model_config = (config.get("models") or {}).get("default") or {}
-        react_config = config.get("react") or {}
-        client = dict(
-            model_config.get("model_client_config")
-            or react_config.get("model_client_config")
-            or {}
-        )
-        request = dict(
-            model_config.get("model_config_obj")
-            or react_config.get("model_config_obj")
-            or {}
-        )
-    if not client:
+
+
+def _select_unique_affinity_entry(
+    entries: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Select one physical affinity target without guessing between targets."""
+
+    targets: dict[tuple[str, ...], dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        client = entry.get("model_client_config") or {}
+        if not isinstance(client, dict) or not has_kv_cache_affinity_capability(client):
+            continue
+        targets.setdefault(_kv_cache_target_identity(client), entry)
+    if len(targets) != 1:
         return None
+    return next(iter(targets.values()))
+
+
+def create_default_kv_cache_model():
+    """Build a fallback from the one unambiguous KVC control target.
+
+    AgentOS model configuration is authoritative for KVC control. Generic
+    defaults are considered only when no valid ``models.agentos`` entry exists.
+    This does not change which model normal inference selects.
+    """
+    config = get_config()
+    agentos_entries = get_agentos_models(config)
+    candidates = agentos_entries or get_default_models(config)
+    entry = _select_unique_affinity_entry(candidates)
+    if entry is None:
+        return None
+    client = dict(entry.get("model_client_config") or {})
+    request = dict(entry.get("model_config_obj") or {})
 
     from openjiuwen.core.foundation.llm import (
         Model,
