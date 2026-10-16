@@ -118,6 +118,28 @@ _NODE_STAGE: dict[str, int] = {
 }
 
 
+def stage_for_resume_node(node: str) -> int:
+    """resume node='stopped' 续跑时按被停止节点推导前端进度条起始阶段。
+
+    实机现象(2026-10-14):停止后续跑,_consume_stream 的阶段阶梯从 0
+    重攀,前端进度列表重置回第一步"研究主题澄清"转圈,误导用户以为从头
+    重跑。停止快照的 pending_node 即被停止节点,据此推导续跑起始阶段:
+    该阶段进行中,之前的阶段全部已完成。
+
+    映射口径与直播流一致:最终报告节点(reporter/source_tracer 等)在
+    章节全部完成后流出 chunk 时即开启 stage 4(route_chunk 的
+    start_final_report_processing 分支),故停止在这些节点 → 续跑从
+    stage 4 恢复;注意不能直接用 _NODE_STAGE(该表出于延迟落帧逻辑将
+    最终报告节点映射为 3)。brief_sub_reporter 同理:直播流在全部章节
+    完成前停留在 stage 3,故中途停止于该节点 → 续跑从 stage 3 恢复。
+    未映射节点(start/end/agent_team 等非业务节点)回退 3——停止几乎
+    总发生在长耗时研究阶段。
+    """
+    if node in FINAL_REPORT_NODES:
+        return 4
+    return _NODE_STAGE.get(node) or 3
+
+
 @dataclass
 class RouterState:
     """路由器跨 chunk 状态:追踪每个节点的 start/done + 累积 report + 捕获中断信息。"""
@@ -1099,7 +1121,21 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
         else:
             frames.extend(node_frames)
         if agent == "brief_sub_reporter" and completes_node:
-            frames.extend(start_final_report_processing(state))
+            # 对齐专业版口径:全部章节完成后才开启 stage 4。首个章节完成时
+            # 其余章节仍在并行写作,提前跳"报告交付"会误导用户(暂停前
+            # stage4 转圈、续跑却回到 stage3 的口径不一致即源于此)。章节
+            # 总数由 deepsearch 在 stream_meta.section_total 透传;总数未知
+            # (旧生产端未透传)时退回旧口径——首个完成即开启,保证不因
+            # 版本偏差把进度卡死在 stage 3。
+            _remember_expected_sections(state, chunk)
+            if section_idx != "0":
+                state.completed_section_indices.add(section_idx)
+            total_known = (
+                state.expected_section_total > 0
+                or bool(state.authoritative_section_indices)
+            )
+            if not total_known or _all_sections_completed(state):
+                frames.extend(start_final_report_processing(state))
         return frames
 
     reasoning = _chunk_reasoning_content(chunk, content)
