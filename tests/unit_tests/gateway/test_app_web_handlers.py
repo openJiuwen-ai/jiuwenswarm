@@ -137,14 +137,15 @@ class FakeAgentClient:
 
 
 @pytest.mark.asyncio
-async def test_models_get_returns_desensitized_editable_detail(monkeypatch) -> None:
+async def test_models_get_returns_editable_detail_with_api_key(monkeypatch) -> None:
     class FakeCatalog:
-        def get_public_model_detail(self, model_id):
+        def get_public_model_detail(self, model_id, *, include_api_key=False):
             assert model_id == "mdl_a"
+            assert include_api_key is True
             return {
                 "model_id": model_id,
-                "model_client_config": {"model_name": "a"},
-                "write_only_fields": ["model_client_config.api_key"],
+                "model_client_config": {"model_name": "a", "api_key": "test-saved-key"},
+                "write_only_fields": [],
             }
 
     monkeypatch.setattr("jiuwenswarm.common.config_panel.model_resource_handlers.ModelCatalog", FakeCatalog)
@@ -155,7 +156,7 @@ async def test_models_get_returns_desensitized_editable_detail(monkeypatch) -> N
 
     response = channel.responses[-1]
     assert response["ok"] is True
-    assert "api_key" not in response["payload"]["model"]["model_client_config"]
+    assert response["payload"]["model"]["model_client_config"]["api_key"] == "test-saved-key"
 
 
 class _FakeModelsResponse:
