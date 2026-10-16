@@ -1326,6 +1326,73 @@ def test_share_job_lookup_empty_result_preserves_request_errors(monkeypatch, com
     assert handler.responses == [expected]
 
 
+@pytest.mark.parametrize('failure_stage', ['manager', 'query'])
+def test_share_file_stream_closes_when_preparation_fails(monkeypatch, tmp_path: Path, failure_stage) -> None:
+    snapshot_path = tmp_path / 'snapshot.json'
+    snapshot_path.write_text('{}', encoding='utf-8')
+    stream = snapshot_path.open('rb')
+    file_path = SimpleNamespace(is_file=lambda: True, open=lambda mode: stream)
+    manager = SimpleNamespace(get_snapshot_path=lambda job_id: file_path)
+    _patch_share_dependencies(monkeypatch, manager)
+    handler = _ShareGetHandlerStub(command='GET', output=io.BytesIO())
+    error = RuntimeError('request preparation failed')
+    manager_calls = 0
+
+    def get_manager():
+        nonlocal manager_calls
+        manager_calls += 1
+        if failure_stage == 'manager' and manager_calls == 2:
+            raise error
+        return manager
+
+    def parse_query(query: str):
+        raise error
+
+    monkeypatch.setattr(app_web, '_get_share_image_export_manager', get_manager)
+    if failure_stage == 'query':
+        monkeypatch.setattr(handler, '_parse_query', parse_query)
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            handler._handle_share_api_get(urlparse('/share-api/jobs/' + 'a' * 32 + '/snapshot'))
+        assert caught.value is error
+        assert stream.closed
+        assert handler.response_status is None
+    finally:
+        stream.close()
+
+
+@pytest.mark.parametrize('failure_stage', ['write', 'flush'])
+def test_share_snapshot_stream_error_closes_file_and_propagates(monkeypatch, tmp_path: Path, failure_stage) -> None:
+    snapshot_path = tmp_path / 'snapshot.json'
+    snapshot_path.write_text('{}', encoding='utf-8')
+    stream = snapshot_path.open('rb')
+    file_path = SimpleNamespace(is_file=lambda: True, open=lambda mode: stream)
+    manager = SimpleNamespace(get_snapshot_path=lambda job_id: file_path)
+    _patch_share_dependencies(monkeypatch, manager)
+    error = OSError('snapshot stream interrupted')
+
+    class Output(io.BytesIO):
+        def write(self, chunk: bytes) -> int:
+            if failure_stage == 'write':
+                raise error
+            return super().write(chunk)
+
+        def flush(self) -> None:
+            if failure_stage == 'flush':
+                raise error
+            super().flush()
+
+    handler = _ShareGetHandlerStub(command='GET', output=Output())
+    try:
+        with pytest.raises(OSError) as caught:
+            handler._handle_share_api_get(urlparse('/share-api/jobs/' + 'a' * 32 + '/snapshot'))
+        assert caught.value is error
+        assert stream.closed
+        assert handler.responses == []
+    finally:
+        stream.close()
+
+
 def test_share_download_marks_sent_only_after_complete_write_and_flush(monkeypatch) -> None:
     manager, created = _browser_job()
     job_id = created['job_id']

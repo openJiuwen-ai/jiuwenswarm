@@ -118,14 +118,29 @@ def available_share_browser() -> dict[str, Any] | None:
             name = "Google Chrome" if selected == "chrome" else "Microsoft Edge"
             candidates.append(f"/Applications/{name}.app/Contents/MacOS/{name}")
         elif sys.platform in {"win32", "cygwin"}:
-            relative = "Google/Chrome/Application/chrome.exe" if selected == "chrome" else "Microsoft/Edge/Application/msedge.exe"
-            candidates.extend(str(Path(root) / relative) for key in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)") if (root := os.environ.get(key)))
+            relative = (
+                "Google/Chrome/Application/chrome.exe"
+                if selected == "chrome" else "Microsoft/Edge/Application/msedge.exe"
+            )
+            for key in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+                root = os.environ.get(key)
+                if root:
+                    candidates.append(str(Path(root) / relative))
         else:
-            names = ("google-chrome", "google-chrome-stable") if selected == "chrome" else ("microsoft-edge", "microsoft-edge-stable", "msedge")
-            candidates.extend(found for name in names if (found := shutil.which(name)))
+            names = (
+                ("google-chrome", "google-chrome-stable")
+                if selected == "chrome" else ("microsoft-edge", "microsoft-edge-stable", "msedge")
+            )
+            for name in names:
+                found = shutil.which(name)
+                if found:
+                    candidates.append(found)
             candidates.append("/opt/google/chrome/chrome" if selected == "chrome" else "/opt/microsoft/msedge/msedge")
     if automatic:
-        candidates.extend(found for name in ("chromium", "chromium-browser") if (found := shutil.which(name)))
+        for name in ("chromium", "chromium-browser"):
+            found = shutil.which(name)
+            if found:
+                candidates.append(found)
         from playwright.sync_api import sync_playwright
         with sync_playwright() as playwright:
             candidates.append(playwright.chromium.executable_path)
@@ -476,18 +491,26 @@ class ShareImageExportManager:
         ).start()
         return {**(self.get_status(job_id) or {}), "reused": False}
 
-    def _run_job(self, job_id: str, base_url: str, render_auth: ShareImageRenderAuth | None = None, browser_options: dict[str, Any] | None = None) -> None:
+    def _run_job(
+        self,
+        job_id: str,
+        base_url: str,
+        render_auth: ShareImageRenderAuth | None = None,
+        browser_options: dict[str, Any] | None = None,
+    ) -> None:
         self._update_job(job_id, state="running", phase="launching", error=None)
         try:
             job = self._get_job(job_id)
             if job is None:
                 return
             options = {"browser_options": browser_options} if browser_options is not None else {}
+
             def report(phase: str) -> None:
                 if phase.startswith("rendering:"):
                     self._update_job(job_id, phase="rendering", progress=int(phase.split(":", 1)[1]))
                 else:
                     self._update_job(job_id, phase=phase)
+
             result_path = Path(self._renderer(
                 base_url=base_url,
                 job_id=job_id,
@@ -542,15 +565,21 @@ class ShareImageExportManager:
             if job is None:
                 raise FileNotFoundError("job_not_found")
             token = payload.get("client_token")
-            if job.renderer != "browser" or not isinstance(token, str) or not secrets.compare_digest(job.client_token.encode(), token.encode()):
+            if (
+                job.renderer != "browser" or not isinstance(token, str)
+                or not secrets.compare_digest(job.client_token.encode(), token.encode())
+            ):
                 raise PermissionError("share_export_client_not_authorized")
             if payload.get("claim_download") is True:
                 if job.state != "completed":
                     raise ValueError("share_export_download_not_ready")
                 now = time.time()
-                if job.phase in {"download_started", "download_sent"} or (
+                if job.phase in {"download_started", "download_sent"}:
+                    return {**self._status(job), "download_claimed": False}
+                if (
                     job.phase != "download_failed"
-                    and job.download_claimed_at is not None and now - job.download_claimed_at < 60
+                    and job.download_claimed_at is not None
+                    and now - job.download_claimed_at < 60
                 ):
                     return {**self._status(job), "download_claimed": False}
                 job.download_claimed_at = now
@@ -561,7 +590,9 @@ class ShareImageExportManager:
             state = payload.get("state")
             phase = payload.get("phase")
             progress = payload.get("progress")
-            if not isinstance(state, str) or not isinstance(phase, str) or state not in {"running", "failed"} or phase not in {"loading_snapshot", "rendering", "saving", "failed"}:
+            if not isinstance(state, str) or not isinstance(phase, str):
+                raise ValueError("share_export_client_state_invalid")
+            if state not in {"running", "failed"} or phase not in {"loading_snapshot", "rendering", "saving", "failed"}:
                 raise ValueError("share_export_client_state_invalid")
             if (state == "failed") != (phase == "failed"):
                 raise ValueError("share_export_client_state_invalid")
@@ -594,11 +625,21 @@ class ShareImageExportManager:
             if job.state in {"completed", "failed"}:
                 return self._status(job)
             job.state, job.phase, job.progress = state, phase, progress
-            job.error = _sanitize_page_error(str(payload.get("error", "share_export_browser_failed"))) if state == "failed" else None
+            job.error = (
+                _sanitize_page_error(str(payload.get("error", "share_export_browser_failed")))
+                if state == "failed" else None
+            )
             job.updated_at = time.time()
             return self._status(job)
 
-    def store_browser_result(self, job_id: str, token: str, filename: str, stream: BinaryIO, size: int) -> dict[str, Any]:
+    def store_browser_result(
+        self,
+        job_id: str,
+        token: str,
+        filename: str,
+        stream: BinaryIO,
+        size: int,
+    ) -> dict[str, Any]:
         job = self._get_job(job_id)
         if job is None:
             raise FileNotFoundError("job_not_found")
@@ -642,8 +683,9 @@ class ShareImageExportManager:
             if (
                 not isinstance(attempt_id, str) or job.download_attempt_id is None
                 or not secrets.compare_digest(job.download_attempt_id.encode(), attempt_id.encode())
-                or job.phase in {"download_started", "download_sent"}
             ):
+                return False
+            if job.phase in {"download_started", "download_sent"}:
                 return False
             job.phase = "download_started"
             job.updated_at = time.time()
@@ -652,16 +694,16 @@ class ShareImageExportManager:
     def mark_browser_download_finished(self, job_id: str, succeeded: bool, attempt_id: str | None) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
-            if (
-                job is not None and job.renderer == "browser" and job.state == "completed"
-                and job.phase == "download_started" and isinstance(attempt_id, str)
-                and job.download_attempt_id is not None
-                and secrets.compare_digest(job.download_attempt_id.encode(), attempt_id.encode())
-            ):
-                job.phase = "download_sent" if succeeded else "download_failed"
-                if not succeeded:
-                    job.download_attempt_id = None
-                job.updated_at = time.time()
+            if job is None or job.renderer != "browser" or job.state != "completed":
+                return
+            if job.phase != "download_started" or not isinstance(attempt_id, str) or job.download_attempt_id is None:
+                return
+            if not secrets.compare_digest(job.download_attempt_id.encode(), attempt_id.encode()):
+                return
+            job.phase = "download_sent" if succeeded else "download_failed"
+            if not succeeded:
+                job.download_attempt_id = None
+            job.updated_at = time.time()
 
     def _update_job(self, job_id: str, **updates: Any) -> None:
         with self._lock:
@@ -710,7 +752,10 @@ class ShareImageExportManager:
         expired: list[_ShareImageJob] = []
         with self._lock:
             for job_id, job in list(self._jobs.items()):
-                if job.updated_at < cutoff and job.state in {"queued", "completed", "failed"} and job.phase != "download_started":
+                if (
+                    job.updated_at < cutoff and job.state in {"queued", "completed", "failed"}
+                    and job.phase != "download_started"
+                ):
                     expired_job = self._jobs.pop(job_id)
                     if self._active_job_ids_by_session.get(expired_job.session_id) == job_id:
                         self._active_job_ids_by_session.pop(expired_job.session_id, None)
