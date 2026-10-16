@@ -45,7 +45,7 @@ from jiuwenswarm.common.utils import get_config_dir, logger
 INTERNAL_A4P_USER_ID = "jiuwenswarm-local-user"
 DEFAULT_INTENT_VALIDITY_SECONDS = 3600
 DEFAULT_CRON_INTENT_VALIDITY_SECONDS = 30 * 24 * 60 * 60
-DEFAULT_AUTHORIZATION_TIMEOUT_SECONDS = 300
+DEFAULT_AUTHORIZATION_TIMEOUT_SECONDS = 180
 
 _QUOTED_SHELL_VALUE_RE = re.compile(r"(?P<quote>['\"])(?P<value>[^'\"]+)(?P=quote)")
 _SHELL_COMMAND_PARAM_KEYS = {

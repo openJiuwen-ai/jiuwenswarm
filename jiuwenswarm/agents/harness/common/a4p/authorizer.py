@@ -42,7 +42,7 @@ class WebAuthorizerBroker:
     def __init__(
         self,
         *,
-        timeout_seconds: float = 300,
+        timeout_seconds: float = 180,
     ) -> None:
         self.timeout_seconds = float(timeout_seconds)
         self._pending: dict[str, _PendingAuthorization] = {}
