@@ -27,7 +27,15 @@ ENV_UDS_MODE = "JIUWENBOX_UDS_MODE"
 # anything imports ``jiuwenbox.server.app`` lazily inside ``uvicorn.run``).
 ENV_SAVE_LOGS_DIR = "JIUWENBOX_SAVE_LOGS_DIR"
 _ENV_API_TOKEN_NAME = "JIUWENBOX_API_TOKEN"
+ENV_ALLOW_INSECURE_NETWORK_BIND = "JIUWENBOX_ALLOW_INSECURE_NETWORK_BIND"
 DEFAULT_LISTEN = "http://0.0.0.0:8321"
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return whether ``host`` only ever resolves to this machine itself."""
+    return host.lower() in _LOOPBACK_HOSTS
 
 HttpSpec = Tuple[str, str, int]   # ("http", host, port)
 UnixSpec = Tuple[str, str]        # ("unix", abs_socket_path)
@@ -186,6 +194,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "env; unset means authentication is disabled."
         ),
     )
+    parser.add_argument(
+        "--allow-insecure-network-bind",
+        action="store_true",
+        default=os.environ.get(ENV_ALLOW_INSECURE_NETWORK_BIND, "") == "1",
+        help=(
+            "Permit starting on a non-loopback HTTP listen address with no "
+            "--api-token configured. Without this flag (or "
+            f"${ENV_ALLOW_INSECURE_NETWORK_BIND}=1), the server refuses to "
+            "start that way: an unauthenticated listener reachable from "
+            "outside this machine can create sandboxes and execute "
+            "arbitrary commands inside them. UDS listeners are unaffected."
+        ),
+    )
     return parser
 
 
@@ -276,6 +297,17 @@ def main(argv: list[str] | None = None) -> int:
     uvicorn_kwargs: dict = {"log_level": args.log_level}
     if spec[0] == "http":
         _, host, port = spec
+        if not api_token and not _is_loopback_host(host) and not args.allow_insecure_network_bind:
+            logger.error(
+                "jiuwenbox-server: refusing to bind %s:%d with no --api-token "
+                "configured; an unauthenticated listener reachable from "
+                "outside this machine can create sandboxes and execute "
+                "arbitrary commands inside them. Set --api-token/%s, bind a "
+                "loopback host instead, or pass --allow-insecure-network-bind "
+                "(env %s=1) if this is an intentionally open deployment.",
+                host, port, _ENV_API_TOKEN_NAME, ENV_ALLOW_INSECURE_NETWORK_BIND,
+            )
+            return 2
         # 清掉残留的 UDS_PATH, 避免多次启动时 lifespan 读到陈旧值
         os.environ.pop(ENV_UDS_PATH, None)
         uvicorn_kwargs["host"] = host
