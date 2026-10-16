@@ -564,5 +564,12 @@ if sys.platform == "darwin":
             "CFBundleShortVersionString": build_config.version,
             "CFBundleVersion": build_config.version,
             "NSHighResolutionCapable": "True",
+            # WKWebView 只有在宿主 Info.plist 带麦克风用途说明时才暴露
+            # navigator.mediaDevices；缺了它，全双工的麦克风和屏幕共享都拿不到 API。
+            # 系统授权框只在页面真正调用 getUserMedia（用户打开全双工）时出现。
+            # 屏幕录制没有对应的 Info.plist 用途 key，不需要加；不申请摄像头。
+            "NSMicrophoneUsageDescription": (
+                f"{build_config.display_name} 需要使用麦克风进行实时语音对话（全双工）。"
+            ),
         },
     )
