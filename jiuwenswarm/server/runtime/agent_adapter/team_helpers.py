@@ -3362,8 +3362,10 @@ async def _process_team_message_stream(
                 )
             if isinstance(stored_selection, dict):
                 from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+                from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+
                 selected = SwarmModelSelection.model_validate(stored_selection)
-                model_selection = TeamManager._default_if_deleted(selected).model_dump()
+                model_selection = ModelSelectionResolver().restore(selected).model_dump()
         runtime_model_selection = model_selection
         # Provider-based assembly: build members from the shared config source,
         # no pre-built parent DeepAgent required.
