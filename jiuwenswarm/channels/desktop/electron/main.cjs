@@ -3083,7 +3083,6 @@ async function createMainWindow() {
     desktopCapturer,
     BrowserWindow,
     getParentWindow: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null),
-    getFrontendUrl: () => currentFrontendUrl,
   });
   mainWindow.on('close', event => {
     if (process.platform === 'darwin') {

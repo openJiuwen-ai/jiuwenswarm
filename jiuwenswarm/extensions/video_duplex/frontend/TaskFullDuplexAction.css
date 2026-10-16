@@ -14,15 +14,30 @@
   color: var(--color-text-inverse);
 }
 
+/* The orb takes its own row above the composer (#5284): the chat area gives up
+   that height instead of the orb floating over messages. */
+.chat-input-frame:has(> .task-full-duplex-orb) {
+  display: flex;
+  flex-direction: column;
+}
+
 .task-full-duplex-orb {
-  position: fixed;
-  bottom: 140px;
-  left: 50%;
-  z-index: 100;
+  order: -1;
   display: flex;
   align-items: center;
+  align-self: center;
   flex-direction: column;
-  transform: translateX(-50%);
+  padding: 12px 0 8px;
+}
+
+/* 视觉参数（尺寸、时长、缩放幅度）来源：实测截图调定。 */
+.task-full-duplex-orb {
+  animation: task-full-duplex-orb-enter 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.task-full-duplex-orb.is-leaving {
+  pointer-events: none;
+  animation: task-full-duplex-orb-leave 180ms ease-in forwards;
 }
 
 /* 视觉参数（尺寸、时长、缩放幅度）来源：实测截图调定。 */
@@ -78,14 +93,14 @@
 @keyframes task-full-duplex-orb-enter {
   from {
     opacity: 0;
-    scale: 0.4;
+    transform: translateY(12px) scale(0.4);
   }
 }
 
 @keyframes task-full-duplex-orb-leave {
   to {
     opacity: 0;
-    scale: 0.6;
+    transform: translateY(8px) scale(0.6);
   }
 }
 

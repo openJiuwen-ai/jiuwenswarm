@@ -1,5 +1,4 @@
-import { APPROVAL_SOURCES, TASK_ACCEPTED_INSTRUCTIONS, type ApprovalInteraction } from './taskPrompts';
-import { informationInteraction } from './taskInteraction';
+import { TASK_ACCEPTED_INSTRUCTIONS } from './taskPrompts';
 import { toast } from '../../../../channels/web/frontend/src/components/ui/Toast/toastStore';
 import {
   ChangeEvent,
@@ -32,10 +31,8 @@ import { webClient, webRequest } from '../../../../channels/web/frontend/src/ser
 import { createRealtimeDuplexSession, RealtimeDuplexSession } from './qwenOmniSession';
 import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame } from './videoSource';
 import { JoyAIProvider } from './joyaiProvider';
-import { captureVideoFrame, FrameEncoder } from './frameEncoding';
 import { setDuplexVoicePhase } from '../duplexAudioMeter';
-import { describeDuplexError, duplexErrorDetail, screenCaptureFailure } from '../duplexErrorMessage';
-import { reportedRuntimeState } from './runtimeState';
+import { describeDuplexError } from '../duplexErrorMessage';
 import {
   mergeSearchProgressJob,
   searchAwareToolStatus,
@@ -857,17 +854,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       });
       return true;
     } catch (screenError) {
-      const { errorType, nativeMessage, reasonKey } = screenCaptureFailure(screenError);
-      const elapsedMs = Math.round(performance.now() - captureStartedAt);
-      const message = t('videoLive.screenCapture.failed', {
-        reason: t(`videoLive.screenCapture.${reasonKey}`),
-        errorType, nativeMessage, stage: captureStage, elapsedMs, captureId,
-      });
-      reportRealtimeEvent('realtime_screen_capture_failed', {
-        error_type: errorType, message, latency_ms: elapsedMs, raw_event: captureContext,
-      });
-      if (errorType !== 'NotAllowedError' && errorType !== 'AbortError'
-        && allowUnsupported && isScreenCaptureUnsupported(screenError)) {
+      // Browsers reject a cancelled picker with NotAllowedError; Electron's
+      // display-media handler denies with AbortError.
+      if (screenError instanceof DOMException && (screenError.name === 'NotAllowedError' || screenError.name === 'AbortError')) {
+        setError('已取消选择屏幕。');
+      } else if (allowUnsupported && isScreenCaptureUnsupported(screenError)) {
         return 'unsupported';
       } else {
         setError(message);
@@ -1216,7 +1207,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         await startRealtime();
         return Boolean(duplexRef.current || joyaiProviderRef.current?.active);
       }
-      const result = await startScreen(true);
+      const result = visualSource === 'camera' ? await startCamera() : await startScreen(true);
       if (result === 'unsupported') {
         // Fallback, not a root-cause fix: keep voice duplex usable when the
         // runtime cannot share the screen (#5283).
