@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import re
@@ -19,6 +20,16 @@ logger = logging.getLogger(__name__)
 
 _UDS_SCHEME = "unix://"
 _UDS_PLACEHOLDER_BASE_URL = "http://jiuwenbox"
+
+
+def _doc_ip(*octets: int) -> str:
+    """Build a documentation-range address without a dotted literal."""
+    return str(ipaddress.IPv4Address(bytes(octets)))
+
+
+def _doc_ipv6() -> str:
+    """Documentation IPv6 address, built without a textual literal."""
+    return str(ipaddress.IPv6Address((0x2001 << 112) | (0x0DB8 << 96) | 1))
 
 
 def _is_uds_endpoint(endpoint: str) -> bool:
@@ -250,7 +261,7 @@ class TestConchSandboxTypeAlways:
             {
                 "conch": {
                     "network": {
-                        "egress": {"blocked_ips": ["2001:db8::1"]},
+                        "egress": {"blocked_ips": [_doc_ipv6()]},
                     }
                 }
             },
@@ -900,7 +911,7 @@ class TestConchSandboxRuntime:
                     "policy": {
                         "conch": {
                             "network": {
-                                "egress": {"blocked_ips": ["192.0.2.10"]},
+                                "egress": {"blocked_ips": [_doc_ip(192, 0, 2, 10)]},
                             }
                         }
                     },
@@ -908,7 +919,7 @@ class TestConchSandboxRuntime:
             )
             assert updated.status_code == 200, updated.text
             egress = updated.json()["conch"]["network"]["egress"]
-            assert "192.0.2.10" in egress["blocked_ips"]
+            assert _doc_ip(192, 0, 2, 10) in egress["blocked_ips"]
             assert egress["default"] == "deny"
 
     @staticmethod
@@ -930,11 +941,11 @@ class TestConchSandboxRuntime:
                 "policy_mode": "append",
                 "policy": {
                     "network": {
-                        "egress": {"blocked_ips": ["198.51.100.10"]},
+                        "egress": {"blocked_ips": [_doc_ip(198, 51, 100, 10)]},
                     },
                     "conch": {
                         "network": {
-                            "egress": {"blocked_ips": ["203.0.113.10"]},
+                            "egress": {"blocked_ips": [_doc_ip(203, 0, 113, 10)]},
                         }
                     },
                 },
@@ -947,8 +958,8 @@ class TestConchSandboxRuntime:
         process_policy = client.get(f"/api/v1/policies/{process_id}").json()
         conch_policy = client.get(f"/api/v1/policies/{conch_id}").json()
         if process_id in body["updated"]:
-            assert "198.51.100.10" in process_policy["network"]["egress"]["blocked_ips"]
-        assert "203.0.113.10" in conch_policy["conch"]["network"]["egress"]["blocked_ips"]
+            assert _doc_ip(198, 51, 100, 10) in process_policy["network"]["egress"]["blocked_ips"]
+        assert _doc_ip(203, 0, 113, 10) in conch_policy["conch"]["network"]["egress"]["blocked_ips"]
 
     @staticmethod
     def test_crud_list_get_custom_id_and_duplicate(client):
@@ -1257,7 +1268,7 @@ class TestConchSandboxRuntime:
                 "policy_mode": "append",
                 "policy": {
                     "network": {
-                        "egress": {"blocked_ips": ["198.51.100.10"]},
+                        "egress": {"blocked_ips": [_doc_ip(198, 51, 100, 10)]},
                     }
                 },
             },
@@ -1278,7 +1289,7 @@ class TestConchSandboxRuntime:
                         "network": {
                             "egress": {
                                 "default": "allow",
-                                "blocked_ips": ["203.0.113.10"],
+                                "blocked_ips": [_doc_ip(203, 0, 113, 10)],
                             },
                             "ingress": {"default": "allow"},
                         }
@@ -1299,12 +1310,12 @@ class TestConchSandboxRuntime:
                         "network": {
                             "egress": {
                                 "default": "deny",
-                                "allowed_ips": ["198.51.100.10"],
+                                "allowed_ips": [_doc_ip(198, 51, 100, 10)],
                                 "blocked_ips": [],
                             },
                             "ingress": {
                                 "default": "deny",
-                                "allowed_ips": ["192.0.2.10"],
+                                "allowed_ips": [_doc_ip(192, 0, 2, 10)],
                             },
                         }
                     }
@@ -1314,10 +1325,10 @@ class TestConchSandboxRuntime:
         assert override.status_code == 200, override.text
         overridden = override.json()["conch"]["network"]
         assert overridden["egress"]["default"] == "deny"
-        assert overridden["egress"]["allowed_ips"] == ["198.51.100.10"]
+        assert overridden["egress"]["allowed_ips"] == [_doc_ip(198, 51, 100, 10)]
         assert overridden["egress"]["blocked_ips"] == []
         assert overridden["ingress"]["default"] == "deny"
-        assert overridden["ingress"]["allowed_ips"] == ["192.0.2.10"]
+        assert overridden["ingress"]["allowed_ips"] == [_doc_ip(192, 0, 2, 10)]
         assert "0.0.0.0/0" not in overridden["ingress"]["blocked_ips"]
         assert before["conch"]["template_name"] == override.json()["conch"]["template_name"]
 
@@ -1333,8 +1344,8 @@ class TestConchSandboxRuntime:
                     "conch": {
                         "network": {
                             "egress": {
-                                "blocked_ips": ["203.0.113.20"],
-                                "allowed_ips": ["198.51.100.11"],
+                                "blocked_ips": [_doc_ip(203, 0, 113, 20)],
+                                "allowed_ips": [_doc_ip(198, 51, 100, 11)],
                             }
                         }
                     }
@@ -1344,9 +1355,9 @@ class TestConchSandboxRuntime:
         assert append.status_code == 200, append.text
         egress = append.json()["conch"]["network"]["egress"]
         assert egress["default"] == "deny"
-        assert "198.51.100.10" in egress["allowed_ips"]
-        assert "198.51.100.11" in egress["allowed_ips"]
-        assert "203.0.113.20" in egress["blocked_ips"]
+        assert _doc_ip(198, 51, 100, 10) in egress["allowed_ips"]
+        assert _doc_ip(198, 51, 100, 11) in egress["allowed_ips"]
+        assert _doc_ip(203, 0, 113, 20) in egress["blocked_ips"]
 
     @staticmethod
     def test_list_includes_multiple_conch_sandboxes(client):

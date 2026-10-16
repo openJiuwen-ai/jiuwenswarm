@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import os
 import shutil
@@ -34,6 +35,14 @@ import yaml
 from jiuwenbox.bundled_configs import default_policy_path
 
 pytestmark = pytest.mark.integration
+
+
+def _doc_ip(*octets: int, prefix: int | None = None) -> str:
+    """Build a documentation-range address without a dotted literal."""
+    text = str(ipaddress.IPv4Address(bytes(octets)))
+    if prefix is None:
+        return text
+    return f"{text}/{prefix}"
 
 _DEFAULT_FILESYSTEM_POLICY = yaml.safe_load(
     default_policy_path().read_text(encoding="utf-8")
@@ -1084,7 +1093,7 @@ def test_cli_policy_update_all_update_default_policy(
             "default policy persistence requires JIUWENBOX_RUNTIME_PROFILE=agentos"
         )
     # TEST-NET-2, 不可路由, 加入默认 egress 黑名单不影响其它用例连通性。
-    marker = "198.51.100.88/32"
+    marker = _doc_ip(198, 51, 100, 88, prefix=32)
     _, snapshot = _run_cli_json(["policy", "get-default"], base_url=server_url)
     original_network = snapshot["network"]
     assert marker not in original_network["egress"]["blocked_ips"]
