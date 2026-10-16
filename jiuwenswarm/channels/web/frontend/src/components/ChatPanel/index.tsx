@@ -1397,7 +1397,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   }, [composerCollapsed, composerDockVisible, onComposerHeightChange]);
   const shareExportTitle = isWaitingShareExportTab ? t('share.openExportTab') : isExportingShare && shareExportProgress
     ? shareExportProgress : getShareExportTitle(t, isExportingShare, canExportShare);
-  const shouldShowShareExport = !isEnterprise() && Boolean(onExportShare);
+  const shouldShowShareExport = Boolean(onExportShare);
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const isAuthorized = useAuthStore((state) => state.islogin);

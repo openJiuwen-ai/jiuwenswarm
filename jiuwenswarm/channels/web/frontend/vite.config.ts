@@ -548,7 +548,6 @@ function devFileContentApi(): Plugin {
     locale: string
     downloadClaimedAt: number | null
     downloadAttemptId: string | null
-    uploadInProgress?: boolean
   }
   const shareImageJobs = new Map<string, DevShareImageJob>()
   const shareImageJobTtlMs = 60 * 60 * 1000
@@ -621,10 +620,7 @@ function devFileContentApi(): Plugin {
   const cleanupShareImageJobs = () => {
     const cutoff = Date.now() - shareImageJobTtlMs
     for (const [jobId, job] of shareImageJobs) {
-      // Browser jobs stay fresh through 30s heartbeat reports; an expired
-      // running browser job lost its renderer without a closing beacon.
-      if (job.updatedAt >= cutoff || job.uploadInProgress || job.phase === 'download_started'
-        || (job.renderer !== 'browser' && job.state !== 'completed' && job.state !== 'failed')) continue
+      if (job.updatedAt >= cutoff || job.state === 'running' || job.phase === 'download_started' || (job.renderer !== 'browser' && job.state !== 'completed' && job.state !== 'failed')) continue
       shareImageJobs.delete(jobId)
       fs.rmSync(job.directory, { recursive: true, force: true })
     }
@@ -907,7 +903,6 @@ function devFileContentApi(): Plugin {
 
         const browserResult = requestUrl.pathname.match(/^\/share-api\/jobs\/([a-f0-9]{32})\/browser-result$/)
         if (browserResult && req.method === 'POST') {
-          res.setHeader('Connection', 'close')
           const job = shareImageJobs.get(browserResult[1])
           if (!job) { writeJson(res, 404, { error: 'job_not_found' }); return }
           const token = String(req.headers['x-share-export-token'] || '')
@@ -918,88 +913,70 @@ function devFileContentApi(): Plugin {
           if (job.state === 'completed' || job.state === 'failed') {
             writeJson(res, 409, { error: 'share_export_job_already_finished' }); return
           }
-          if (job.uploadInProgress) {
-            writeJson(res, 409, { error: 'share_export_upload_in_progress' }); return
-          }
           const size = Number(req.headers['content-length'])
           const filename = requestUrl.searchParams.get('filename') || ''
           if (!Number.isSafeInteger(size) || size <= 0 || size > 1024 ** 3
             || !/^[A-Za-z0-9._-]+\.(?:png|zip)$/i.test(filename)) {
             writeJson(res, 400, { error: 'share_export_result_invalid' }); return
           }
-          clearTimeout(requestTimers.get(req))
-          requestTimers.delete(req)
           const result = path.join(job.directory, filename)
           const uploadId = randomUUID().replace(/-/g, '')
           const temporary = path.join(job.directory, `${uploadId}.partial`)
           const validatePath = path.join(job.directory, `${uploadId}${path.extname(filename)}`)
-          job.uploadInProgress = true
-          job.updatedAt = Date.now()
-          void (async () => {
-            const output = fs.createWriteStream(temporary)
-            let received = 0
-            const expire = () => req.destroy(new Error('share_export_upload_failed'))
-            let idleTimer = setTimeout(expire, shareImageJobTtlMs)
-            const onData = (chunk: Buffer) => {
-              received += chunk.length
-              job.updatedAt = Date.now()
-              clearTimeout(idleTimer)
-              idleTimer = setTimeout(expire, shareImageJobTtlMs)
-              if (received > size || job.state === 'failed' || job.state === 'completed') {
-                output.destroy(new Error('share_export_upload_incomplete'))
-              }
+          const output = fs.createWriteStream(temporary)
+          let received = 0
+          let settled = false
+          const cleanup = () => {
+            fs.rmSync(temporary, { force: true })
+            fs.rmSync(validatePath, { force: true })
+          }
+          const fail = (message: string) => {
+            if (settled) return
+            settled = true
+            output.destroy()
+            cleanup()
+            if (job.state !== 'completed' && job.state !== 'failed') {
+              job.state = 'failed'; job.phase = 'failed'; job.error = message; job.updatedAt = Date.now()
             }
-            const onEnd = () => clearTimeout(idleTimer)
-            req.on('data', onData)
-            req.once('end', onEnd)
-            try {
-              // pipeline closes the file before resolving or rejecting.
-              // Keep ownership through validation so cleanup cannot delete it.
-              await pipeline(req, output)
-              if (received !== size) throw new Error('share_export_upload_incomplete')
-              fs.renameSync(temporary, validatePath)
-              await new Promise<void>((resolve, reject) => {
-                const child = spawn('uv', ['run', 'python', '-m', 'jiuwenswarm.channels.web.share_image_export', '--validate-result', validatePath], {
-                  cwd: sourceRepoRootDir, env: { ...process.env, PYTHONUNBUFFERED: '1' }, stdio: ['ignore', 'ignore', 'pipe'],
-                })
-                let error = ''
-                child.stderr?.on('data', chunk => { error = `${error}${chunk}`.slice(-1000) })
-                child.on('error', () => { error = 'share_export_upload_failed' })
-                // Wait for close, including failed spawns, before releasing files.
-                child.on('close', code => {
-                  if (code === 0) resolve()
-                  else reject(new Error(error || 'share_export_result_invalid'))
-                })
-              })
+            if (!res.writableEnded && !res.destroyed) writeJson(res, 400, { error: message })
+          }
+          req.on('data', chunk => {
+            received += chunk.length
+            if (received > size) fail('share_export_upload_incomplete')
+          })
+          req.on('aborted', () => fail('share_export_upload_incomplete'))
+          req.on('error', () => fail('share_export_upload_failed'))
+          output.on('error', () => fail('share_export_upload_failed'))
+          output.on('close', () => { if (settled) cleanup() })
+          output.on('finish', () => {
+            if (settled) return
+            if (received !== size) { fail('share_export_upload_incomplete'); return }
+            try { fs.renameSync(temporary, validatePath) }
+            catch { fail('share_export_upload_failed'); return }
+            const child = spawn('uv', ['run', 'python', '-m', 'jiuwenswarm.channels.web.share_image_export', '--validate-result', validatePath], {
+              cwd: sourceRepoRootDir, env: { ...process.env, PYTHONUNBUFFERED: '1' }, stdio: ['ignore', 'ignore', 'pipe'],
+            })
+            let error = ''
+            child.stderr?.on('data', chunk => { error = `${error}${chunk}`.slice(-1000) })
+            const finish = (code: number | null) => {
+              if (settled) return
+              if (code !== 0) { fail(error || 'share_export_result_invalid'); return }
               if (job.state === 'failed' || job.state === 'completed') {
-                throw new Error('share_export_job_already_finished')
+                settled = true; cleanup()
+                if (!res.writableEnded && !res.destroyed) writeJson(res, 409, { error: 'share_export_job_already_finished' })
+                return
               }
-              fs.renameSync(validatePath, result)
+              try { fs.renameSync(validatePath, result) }
+              catch { fail('share_export_upload_failed'); return }
+              settled = true
               job.resultPath = result; job.filename = filename
-              job.state = 'completed'; job.phase = 'completed'; job.progress = 100
-              if (!res.destroyed) writeJson(res, 200, shareImageJobStatus(job))
-            } catch (error) {
-              if (!req.complete) req.destroy()
-              if (job.state !== 'completed' && job.state !== 'failed') {
-                job.state = 'failed'; job.phase = 'failed'; job.error = 'share_export_upload_failed'
-              }
-              if (!res.writableEnded && !res.destroyed) {
-                writeJson(res, 400, { error: error instanceof Error ? error.message : 'share_export_upload_failed' })
-              }
-            } finally {
-              clearTimeout(idleTimer)
-              req.off('data', onData)
-              req.off('end', onEnd)
-              try {
-                fs.rmSync(temporary, { force: true })
-                fs.rmSync(validatePath, { force: true })
-              } finally {
-                job.uploadInProgress = false
-                job.updatedAt = Date.now()
-                if (shareImageServerClosed) fs.rmSync(job.directory, { recursive: true, force: true })
-              }
+              job.state = 'completed'; job.phase = 'completed'; job.progress = 100; job.updatedAt = Date.now()
+              writeJson(res, 200, shareImageJobStatus(job))
             }
-          })().catch(error => server.config.logger.error(String(error)))
+            child.on('error', () => finish(1))
+            child.on('close', finish)
+          })
+          req.pipe(output)
           return
         }
         const browserUpdate = requestUrl.pathname.match(/^\/share-api\/jobs\/([a-f0-9]{32})\/browser$/)

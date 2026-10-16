@@ -5429,7 +5429,7 @@
       "feature2Body": "Give your paper or program to AI for repeated polishing. It generates optimization candidates, validates and scores every version, keeps the best one, and iterates until the highest-quality deliverable is ready."
     },
     "list": {
-      "title": "RSI Tasks",
+      "title": "RSI experiments",
       "loading": "Loading…",
       "error": "Failed to load RSI tasks"
     },

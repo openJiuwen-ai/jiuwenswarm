@@ -485,17 +485,14 @@ async function waitForShareImageJob(
   onQueryInterrupted: () => void,
 ): Promise<ShareImageExportJobStatus | null> {
   let status = await onStatus(initialStatus);
-  let queryFailures = 0;
   while (status.state === 'queued' || status.state === 'running') {
     if (!isCurrentMonitor()) return null;
     await new Promise(resolve => window.setTimeout(resolve, SHARE_IMAGE_EXPORT_POLL_MS));
     try {
       status = await fetchShareImageJobStatus(status.job_id);
       status = await onStatus(status);
-      queryFailures = 0;
     } catch (error) {
       if (!(error instanceof TypeError) && !(error instanceof Error && error.message === 'share_export_status_timeout')) throw error;
-      if (++queryFailures >= SHARE_IMAGE_EXPORT_MAX_QUERY_FAILURES) throw new Error('share_export_status_timeout');
       onQueryInterrupted();
       continue;
     }
@@ -528,6 +525,8 @@ function AppContent({
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
+  // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
+  const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -576,7 +575,6 @@ function AppContent({
   } = useResponsiveLayout();
 
   const [secondarySidebarCollapsed, setSecondarySidebarCollapsed] = useSecondarySidebarPreference();
-  const [designSidebarCollapsed, setDesignSidebarCollapsed] = useState(true);
   const {
     target: sidebarPeek,
     open: openSidebarPeek,
@@ -584,7 +582,6 @@ function AppContent({
     close: closeSidebarPeek,
     surfaceProps: peekSurfaceProps,
   } = useSecondarySidebarPeek();
-  const isSettingsNarrowViewport = useMediaQuery('(max-width: 640px)');
   const isRsiNarrowViewport = useMediaQuery('(max-width: 1250px)');
   const rsiHasExperiments = useRsiStore((s) => s.list.length > 0);
   const rsiListKnownEmpty = useRsiStore((s) => s.listLoadedOnce && s.list.length === 0);
@@ -813,7 +810,7 @@ function AppContent({
         );
         useWorkspaceStore.getState().setSelectedProject(project ?? null);
       });
-      setDesignSidebarCollapsed(true);
+      setSecondarySidebarCollapsed(true);
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
       setToolPanelHidden(true);
@@ -834,7 +831,7 @@ function AppContent({
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
     }
-  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden]);
+  }, [navigate, route, setSecondarySidebarCollapsed, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden]);
 
   useEffect(() => {
     ensureSessionRuntimes(sessionId);
@@ -1248,25 +1245,20 @@ function AppContent({
 
   const { shouldFullscreen, sidebarAutoCollapsed } = useResponsivePanelResize({
     isTeamAreaExpanded,
-    conversationSidebarCollapsed: designCanvasOpen ? designSidebarCollapsed : secondarySidebarCollapsed,
+    conversationSidebarCollapsed: secondarySidebarCollapsed,
     setSingleAgentPanelExpanded,
     setTeamAreaExpanded,
     mode,
   });
-  const conversationSidebarCollapsed = (designCanvasOpen ? designSidebarCollapsed : secondarySidebarCollapsed) || isMobile || sidebarAutoCollapsed;
-  const toggleConversationSidebar = useCallback(() => {
-    closeSidebarPeek();
-    if (designCanvasOpen) setDesignSidebarCollapsed(value => !value);
-    else setSecondarySidebarCollapsed(value => !value);
-  }, [closeSidebarPeek, designCanvasOpen, setSecondarySidebarCollapsed]);
+  const conversationSidebarCollapsed = secondarySidebarCollapsed || isMobile || sidebarAutoCollapsed;
   const rsiSidebarCollapsed = secondarySidebarCollapsed || isRsiNarrowViewport;
   const hasFixedSecondarySidebar =
     ((activeNav === 'chat' || activeNav === 'cron') && !conversationSidebarCollapsed) ||
     (activeNav === 'experiments' && rsiHasExperiments && !rsiSidebarCollapsed);
 
   useEffect(() => {
-    if (hasFixedSecondarySidebar || (sidebarPeek === 'settings' && !isSettingsNarrowViewport)) closeSidebarPeek();
-  }, [hasFixedSecondarySidebar, sidebarPeek, isSettingsNarrowViewport, closeSidebarPeek]);
+    if (hasFixedSecondarySidebar) closeSidebarPeek();
+  }, [hasFixedSecondarySidebar, closeSidebarPeek]);
 
   const trajectoryTaskPanelAvailable = toolPanelHasContent || isRestoringTeamHistory;
   const effectiveTeamAreaExpanded = isTeamAreaExpanded;
@@ -4196,16 +4188,14 @@ function AppContent({
   const handleNavItemClick = (nav: MainNavKey) => {
     const peekTarget = (
       (nav === 'chat' && conversationSidebarCollapsed) ||
-      (nav === 'experiments' && !rsiListKnownEmpty && rsiSidebarCollapsed) ||
-      (nav === 'settings' && isSettingsNarrowViewport)
+      (nav === 'experiments' && !rsiListKnownEmpty && rsiSidebarCollapsed)
     ) ? nav : null;
     handleNavigate(nav, peekTarget);
   };
 
   const pinSecondarySidebar = (target: SecondarySidebar) => {
     if (!handleNavigate(target === 'chat' && activeNav === 'cron' ? 'cron' : target)) return;
-    if (target === 'chat' && designCanvasOpen) setDesignSidebarCollapsed(false);
-    else setSecondarySidebarCollapsed(false);
+    setSecondarySidebarCollapsed(false);
     if (target === 'chat' && sidebarAutoCollapsed) {
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
@@ -4304,14 +4294,14 @@ function AppContent({
     token: symbol,
     startBrowser = false,
   ) => {
-    const resumedStatus = await resumeBrowserShareImageJob(initialStatus, targetSessionId, window.sessionStorage);
+    initialStatus = await resumeBrowserShareImageJob(initialStatus, targetSessionId, window.sessionStorage);
     let startedBrowser = false;
     let status = await waitForShareImageJob(
-      resumedStatus,
+      initialStatus,
       () => shareExportMonitorTokensRef.current.get(targetSessionId) === token,
-      async snapshot => {
-        const current = await cancelShareImageJobForClosedTab(
-          { ...snapshot, client_token: resumedStatus.client_token },
+      async current => {
+        current = await cancelShareImageJobForClosedTab(
+          { ...current, client_token: initialStatus.client_token },
           browserExportTabsRef.current.get(targetSessionId),
         );
         const text = shareExportPhaseText(current.phase, current.progress);
@@ -4325,7 +4315,7 @@ function AppContent({
         }
         if (current.renderer === 'browser' && current.state === 'queued' && !startedBrowser) {
           startedBrowser = true;
-          const browserJob = { status: { ...current, client_token: resumedStatus.client_token }, locale: resumedStatus.locale ?? i18n.resolvedLanguage ?? i18n.language };
+          const browserJob = { status: { ...current, client_token: initialStatus.client_token }, locale: initialStatus.locale ?? i18n.resolvedLanguage ?? i18n.language };
           rememberPendingShareImageJob(window.sessionStorage, targetSessionId, browserJob.status, browserJob.locale);
           const tab = startBrowser ? openShareImageExportTab(browserJob.status, browserJob.locale) : null;
           if (tab) browserExportTabsRef.current.set(targetSessionId, tab);
@@ -4361,9 +4351,9 @@ function AppContent({
       throw new Error(status.error || 'share_export_job_failed');
     }
 
-    if (status.renderer === 'browser' && resumedStatus.state === 'completed' && status.phase !== 'download_started' && status.phase !== 'download_sent') {
+    if (status.renderer === 'browser' && initialStatus.state === 'completed' && status.phase !== 'download_started' && status.phase !== 'download_sent') {
       // A reloaded chat can resume a published artifact after its renderer has gone.
-      status = await startShareImageJobDownload({ ...status, client_token: resumedStatus.client_token });
+      status = await startShareImageJobDownload({ ...status, client_token: initialStatus.client_token });
     }
     let saved: boolean;
     try {
@@ -4382,7 +4372,7 @@ function AppContent({
 
   useEffect(() => {
     const targetSessionId = sessionId;
-    if (isEnterprise() || window.jiuwenDesktop?.isElectron) return;
+    if (window.jiuwenDesktop?.isElectron) return;
     if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return;
     if (shareExportMonitorTokensRef.current.has(targetSessionId)) return;
 
@@ -4413,7 +4403,10 @@ function AppContent({
         );
       } catch (error) {
         console.error('Failed to monitor share image export:', error);
-        window.alert(tRef.current(shareImageExportErrorKey(error)));
+        const message = error instanceof Error ? error.message : '';
+        window.alert(tRef.current(message === 'share_export_download_start_timeout' ? 'share.downloadStartFailed'
+          : message === 'share_export_download_interrupted' ? 'share.downloadInterrupted'
+          : message === 'share_export_status_timeout' ? 'share.statusTimeout' : 'share.exportFailed'));
       } finally {
         if (shareExportMonitorTokensRef.current.get(targetSessionId) === token) {
           shareExportMonitorTokensRef.current.delete(targetSessionId);
@@ -4490,7 +4483,12 @@ function AppContent({
       );
     } catch (error) {
       console.error('Failed to export share image:', error);
-      window.alert(t(shareImageExportErrorKey(error)));
+      const message = error instanceof Error ? error.message : '';
+      window.alert(t(message === 'share_export_popup_blocked' ? 'share.popupBlocked'
+        : message === 'share_export_tab_closed' ? 'share.browserTabClosed'
+          : message === 'share_export_download_start_timeout' ? 'share.downloadStartFailed'
+            : message === 'share_export_download_interrupted' ? 'share.downloadInterrupted'
+            : message === 'share_export_status_timeout' ? 'share.statusTimeout' : 'share.exportFailed'));
     } finally {
       if (shareExportMonitorTokensRef.current.get(currentSessionId) === token) {
         shareExportMonitorTokensRef.current.delete(currentSessionId);
@@ -4555,11 +4553,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         hiddenNavItems={hiddenNavItems}
         applicationPlugins={isEnterprise() ? [] : visibleApplicationPlugins}
         onNavItemHover={(key) => {
-          const target = (
-            key === 'chat' ||
-            (key === 'settings' && isSettingsNarrowViewport) ||
-            (key === 'experiments' && !rsiListKnownEmpty)
-          ) ? key : null;
+          const target = key === 'chat' || (key === 'experiments' && !rsiListKnownEmpty) ? key : null;
           hoverSidebarPeek(!hasFixedSecondarySidebar ? target : null);
         }}
         onNavItemPointerDownCapture={(key) => {
@@ -4589,7 +4583,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         )}
 
-        {sidebarPeek && sidebarPeek !== 'settings' && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (
+        {sidebarPeek && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (
           <div className="chat-layout--peek-host" {...peekSurfaceProps}>
             {sidebarPeek === 'chat' ? (
               <ConversationSidebar
@@ -4598,7 +4592,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 onSelect={requestSessionNavigation}
                 onSelectDesignSession={handleSelectDesignSession}
                 activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
-                designCanvasOpen={activeNav !== 'cron' && designCanvasOpen}
                 onProjectRemoved={handleProjectRemoved}
                 onOpenCron={() => handleNavigate('cron')}
                 isCronActive={activeNav === 'cron'}
@@ -4633,8 +4626,10 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 onOpenCron={() => handleNavigate('cron')}
                 isCronActive={false}
                 collapsed={conversationSidebarCollapsed}
-                onToggleCollapse={toggleConversationSidebar}
-                hideCollapseButton={designCanvasOpen}
+                onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
+                hideCollapseButton={
+                  workspaceWorkMode === 'design' && route.kind === 'design-project'
+                }
               />
               {!isEnterprise() && workspaceWorkMode === 'design' && route.kind === 'design-project' ? (
                   <DesignerPage
@@ -4647,7 +4642,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         else openSidebarPeek('chat');
                         return;
                       }
-                      toggleConversationSidebar();
+                      closeSidebarPeek();
+                      setSecondarySidebarCollapsed((v) => !v);
                     }}
                     onOpenSession={(nextProjectId, nextSessionId, options) => {
                       navigate(
@@ -4842,7 +4838,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="app-section">
             <RsiPage
               collapsed={rsiSidebarCollapsed}
-              onCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed((v) => !v); }}
+              onCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
               openCreateNonce={rsiOpenCreateNonce}
             />
           </div>
@@ -4891,7 +4887,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onOpenCron={() => handleNavigate('cron')}
               isCronActive
               collapsed={conversationSidebarCollapsed}
-              onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed((v) => !v); }}
+              onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
             />
             <div className="chat-workspace flex-1 flex min-h-0 overflow-hidden">
               <CronPanel
