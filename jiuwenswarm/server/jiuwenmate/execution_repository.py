@@ -5,7 +5,8 @@ key)`` tuple, each part in its own column, so two conversations never share a
 Session because of joined or truncated strings. Requests are written before
 dispatch and survive restarts; a supplementary message is always a new Request.
 Events are stored once per ``event_id``; a candidate output keeps the ``output_id``
-of the event that first proposed it.
+of the event that first proposed it, and a file candidate's file is retained by
+``OutputFileStore`` before the candidate is stored.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import (
     SessionRecord,
 )
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
+from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, output_file_key
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType, RequestInput
@@ -111,6 +113,7 @@ CREATE TABLE IF NOT EXISTS result_deliveries (
     error_code TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    file_key TEXT,
     PRIMARY KEY (namespace_id, delivery_id),
     UNIQUE (namespace_id, request_id, output_id, channel, target_id)
 );
@@ -118,6 +121,19 @@ CREATE INDEX IF NOT EXISTS result_deliveries_by_status
     ON result_deliveries (namespace_id, channel, status, created_at);
 """
 _TERMINAL_EVENTS = (EventType.EXECUTION_PAUSED.value, EventType.EXECUTION_FINAL.value)
+
+
+def _deliverable(share_mode: str, payload: dict[str, object]) -> bool:
+    """A nonblank message, or a file candidate with its reference; other modes get no delivery."""
+    if share_mode == "message":
+        text = payload.get("text")
+        return isinstance(text, str) and bool(text.strip())
+    return (
+        share_mode in FILE_SHARE_MODES
+        and isinstance(payload.get("file_ref"), str)
+        and isinstance(payload.get("file_path"), str)
+        and bool(payload["file_path"])
+    )
 
 
 def _uuid_ids(prefix: str) -> Callable[[], str]:
@@ -138,6 +154,10 @@ class ExecutionRepository(SQLiteStore):
         execution_ids: Callable[[], str] | None = None,
     ) -> None:
         super().__init__(db_path)
+        with self._transaction() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(result_deliveries)")}
+            if "file_key" not in columns:
+                conn.execute("ALTER TABLE result_deliveries ADD COLUMN file_key TEXT")
         self._session_id = session_ids or _uuid_ids("sess_")
         self._request_id = request_ids or _uuid_ids("req_")
         self._execution_id = execution_ids or _uuid_ids("exe_")
@@ -356,9 +376,11 @@ class ExecutionRepository(SQLiteStore):
     def record_events(self, events: Sequence[AgentEvent], *, now: datetime) -> None:
         """Store events of one Execution in one transaction; nothing is kept if any of them is rejected.
 
-        A resubmitted event with the same content is skipped. A final is rejected
-        unless every output it references is stored for the same Request, either
-        earlier or in this batch.
+        A resubmitted event with the same content is skipped. A final or paused event
+        is rejected unless every output it references is stored for the same Request,
+        either earlier or in this batch; its message and file outputs get their
+        deliveries in the same transaction. A later Execution of the Request may
+        propose an output again under the same ID only with the same content.
         """
         if not events:
             return
@@ -387,10 +409,10 @@ class ExecutionRepository(SQLiteStore):
         if stored is not None:
             if stored["digest"] != digest:
                 raise PersistentAgentError("event_id was recorded with other content", code="CONFLICT")
-            if event.event_type == EventType.EXECUTION_FINAL:
+            if event.event_type.value in _TERMINAL_EVENTS:
                 self._ensure_result_deliveries(conn, event, now)
             return
-        if event.event_type in _TERMINAL_EVENTS:
+        if event.event_type.value in _TERMINAL_EVENTS:
             terminal = conn.execute(
                 "SELECT event_id FROM execution_events WHERE namespace_id = ? AND execution_id = ? "
                 "AND event_type IN (?, ?)",
@@ -398,10 +420,9 @@ class ExecutionRepository(SQLiteStore):
             ).fetchone()
             if terminal is not None:
                 raise PersistentAgentError("execution already has a final or paused event", code="CONFLICT")
+            self._require_outputs(conn, event)
         if event.event_type == EventType.OUTPUT_PROPOSED:
             self._insert_output(conn, event, now)
-        if event.event_type == EventType.EXECUTION_FINAL:
-            self._require_outputs(conn, event)
         conn.execute(
             "INSERT INTO execution_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -416,7 +437,7 @@ class ExecutionRepository(SQLiteStore):
                 now.isoformat(),
             ),
         )
-        if event.event_type == EventType.EXECUTION_FINAL:
+        if event.event_type.value in _TERMINAL_EVENTS:
             self._ensure_result_deliveries(conn, event, now)
 
     @staticmethod
@@ -426,7 +447,7 @@ class ExecutionRepository(SQLiteStore):
             (event.namespace_id, event.request_id),
         ).fetchone()
         if request is None:
-            raise PersistentAgentError("final Request is missing", code="NOT_FOUND")
+            raise PersistentAgentError("ending Request is missing", code="NOT_FOUND")
         record = RequestRecord.from_dict(json.loads(request["record_json"]))
         route = record.route_snapshot
         if route is None:
@@ -438,11 +459,7 @@ class ExecutionRepository(SQLiteStore):
                 "WHERE namespace_id = ? AND request_id = ? AND output_id = ?",
                 (event.namespace_id, event.request_id, output_id),
             ).fetchone()
-            if output is None or output["share_mode"] != "message":
-                continue
-            payload = json.loads(output["payload_json"])
-            text = payload.get("text")
-            if not isinstance(text, str) or not text.strip():
+            if output is None or not _deliverable(output["share_mode"], json.loads(output["payload_json"])):
                 continue
             status = "available" if route.channel == "web" else "pending"
             conn.execute(
@@ -468,11 +485,14 @@ class ExecutionRepository(SQLiteStore):
     def _insert_output(conn: sqlite3.Connection, event: AgentEvent, now: datetime) -> None:
         output = event.payload
         existing = conn.execute(
-            "SELECT event_id FROM candidate_outputs WHERE namespace_id = ? AND output_id = ?",
+            "SELECT request_id, payload_json FROM candidate_outputs WHERE namespace_id = ? AND output_id = ?",
             (event.namespace_id, output.output_id),
         ).fetchone()
         if existing is not None:
-            raise PersistentAgentError("output_id was proposed by another event", code="CONFLICT")
+            # A later Execution of the same Request proposes the same outcome under the same ID.
+            if existing["request_id"] == event.request_id and existing["payload_json"] == output.model_dump_json():
+                return
+            raise PersistentAgentError("output_id was proposed with other content", code="CONFLICT")
         conn.execute(
             "INSERT INTO candidate_outputs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -496,7 +516,7 @@ class ExecutionRepository(SQLiteStore):
                 (event.namespace_id, output_id, event.request_id),
             ).fetchone()
             if row is None:
-                raise PersistentAgentError(f"final references unsaved output {output_id}", code="OUTPUT_MISSING")
+                raise PersistentAgentError(f"ending references unsaved output {output_id}", code="OUTPUT_MISSING")
 
     def read_execution_log(
         self, namespace_id: str, session_id: str, request_id: str, execution_id: str
@@ -548,7 +568,11 @@ class ExecutionRepository(SQLiteStore):
         exclude_delivery_ids: Sequence[str] = (),
         now: datetime,
     ) -> list[dict[str, object]]:
-        """Atomically claim Feishu text deliveries and return their stored route and payload."""
+        """Atomically claim Feishu deliveries and return their stored route and payload.
+
+        A file delivery also carries the key of its retained copy and the ``file_key`` of
+        an earlier upload, so a retry sends the uploaded file again instead of uploading anew.
+        """
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError("limit must be a positive integer")
         exclude_clause = ""
@@ -580,8 +604,9 @@ class ExecutionRepository(SQLiteStore):
                     )
                     continue
                 payload = json.loads(row["payload_json"])
+                share_mode = payload.get("share_mode")
                 text = payload.get("text")
-                if not isinstance(text, str) or not text.strip():
+                if not _deliverable(share_mode, payload):
                     conn.execute(
                         "UPDATE result_deliveries SET status = 'failed', error_code = 'OUTPUT_EMPTY', "
                         "updated_at = ? WHERE namespace_id = ? AND delivery_id = ? AND status = 'pending'",
@@ -595,22 +620,37 @@ class ExecutionRepository(SQLiteStore):
                 ).rowcount
                 if changed != 1:
                     continue
-                jobs.append(
-                    {
-                        "delivery_id": row["delivery_id"],
-                        "request_id": row["request_id"],
-                        "execution_id": row["execution_id"],
-                        "output_id": row["output_id"],
-                        "channel": row["channel"],
-                        "target_id": route.target_id,
-                        "app_id": route.app_id,
-                        "source_message_id": route.source_message_id,
-                        "source_reply_to": route.source_reply_to,
-                        "text": text,
-                        "idempotency_key": row["idempotency_key"],
-                        "attempt_count": row["attempt_count"] + 1,
-                    }
-                )
+                job: dict[str, object] = {
+                    "delivery_id": row["delivery_id"],
+                    "request_id": row["request_id"],
+                    "execution_id": row["execution_id"],
+                    "output_id": row["output_id"],
+                    "channel": row["channel"],
+                    "target_id": route.target_id,
+                    "app_id": route.app_id,
+                    "source_message_id": route.source_message_id,
+                    "source_reply_to": route.source_reply_to,
+                    "text": text,
+                    "idempotency_key": row["idempotency_key"],
+                    "attempt_count": row["attempt_count"] + 1,
+                }
+                if share_mode in FILE_SHARE_MODES:
+                    try:
+                        job["file"] = {
+                            "key": output_file_key(namespace_id, payload["file_ref"], payload["file_path"]),
+                            "name": payload["file_path"].rsplit("/", 1)[-1],
+                            "size": payload.get("file_size"),
+                            "file_ref": payload["file_ref"],
+                            "file_key": row["file_key"],
+                        }
+                    except PersistentAgentError:
+                        conn.execute(
+                            "UPDATE result_deliveries SET status = 'failed', error_code = 'OUTPUT_FILE_INVALID', "
+                            "updated_at = ? WHERE namespace_id = ? AND delivery_id = ?",
+                            (now.isoformat(), namespace_id, row["delivery_id"]),
+                        )
+                        continue
+                jobs.append(job)
         return jobs
 
     def update_result_delivery(
@@ -622,8 +662,13 @@ class ExecutionRepository(SQLiteStore):
         external_message_id: str | None,
         error_code: str | None,
         now: datetime,
+        file_key: str | None = None,
     ) -> dict[str, object]:
-        """Persist a Gateway ACK; a late ACK may resolve an ``unknown`` delivery."""
+        """Persist a Gateway ACK; a late ACK may resolve an ``unknown`` delivery.
+
+        A ``file_key`` reported by the upload stage is kept whatever the send outcome,
+        and is never replaced by an empty one.
+        """
         if outcome not in {"pending", "delivered", "failed", "unknown"}:
             raise ValueError("invalid delivery outcome")
         if outcome == "delivered" and (not isinstance(external_message_id, str) or not external_message_id.strip()):
@@ -657,10 +702,12 @@ class ExecutionRepository(SQLiteStore):
                     "unknown result delivery cannot be retried without reconciliation",
                     code="CONFLICT",
                 )
+            if not isinstance(file_key, str) or not file_key.strip():
+                file_key = None
             conn.execute(
-                "UPDATE result_deliveries SET status = ?, external_message_id = ?, error_code = ?, updated_at = ? "
-                "WHERE namespace_id = ? AND delivery_id = ?",
-                (outcome, external_message_id, error_code, now.isoformat(), namespace_id, delivery_id),
+                "UPDATE result_deliveries SET status = ?, external_message_id = ?, error_code = ?, updated_at = ?, "
+                "file_key = COALESCE(?, file_key) WHERE namespace_id = ? AND delivery_id = ?",
+                (outcome, external_message_id, error_code, now.isoformat(), file_key, namespace_id, delivery_id),
             )
             updated = conn.execute(
                 "SELECT * FROM result_deliveries WHERE namespace_id = ? AND delivery_id = ?",

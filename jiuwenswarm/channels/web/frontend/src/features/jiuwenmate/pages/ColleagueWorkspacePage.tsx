@@ -24,7 +24,13 @@ import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ColleagueList, type ColleagueListHandlers } from '../components/ColleagueList';
 import { ConversationComposer } from '../components/ConversationComposer';
 import { SegmentedTabs } from '../components/SegmentedTabs';
-import { chatPhase, isPending, type JiuwenMateChatRequest } from '../jiuwenmateApi';
+import {
+  chatPhase,
+  formatSharedFileSize,
+  isPending,
+  type JiuwenMateChatRequest,
+  type JiuwenMateSharedFile,
+} from '../jiuwenmateApi';
 import { JIUWENMATE_CHANNEL_MESSAGES, JIUWENMATE_CHANNELS, JIUWENMATE_TRACE_ROWS, JIUWENMATE_TRACE_STARTED_AT } from '../mockData';
 import type { JiuwenMateChannel, JiuwenMateColleague } from '../types';
 import { useConversations } from '../useConversations';
@@ -197,7 +203,7 @@ export function ColleagueWorkspacePage({
         : isPending(request) && control
           ? t(control.reason === 'stop' ? 'jiuwenmate.chat.control.stopping' : 'jiuwenmate.chat.control.cancelling')
           : phase === 'completed'
-            ? request.replies.length === 0
+            ? request.replies.length === 0 && request.files.length === 0
               ? t('jiuwenmate.chat.noReply')
               : null
             : t(`jiuwenmate.chat.status.${phase}`);
@@ -209,6 +215,16 @@ export function ColleagueWorkspacePage({
           <article key={index} className="jiuwenmate-chat-message jiuwenmate-chat-message--colleague" data-testid="jiuwenmate-chat-reply">
             <ColleagueAvatar colleague={colleague} size="small" />
             <MarkdownRenderer content={reply} className="chat-text chat-markdown jiuwenmate-chat-markdown" />
+          </article>
+        ))}
+        {request.files.map((file) => (
+          <article
+            key={file.outputId}
+            className="jiuwenmate-chat-message jiuwenmate-chat-message--colleague"
+            data-testid="jiuwenmate-chat-file"
+          >
+            <ColleagueAvatar colleague={colleague} size="small" />
+            {renderSharedFile(file)}
           </article>
         ))}
         {draft ? (
@@ -235,6 +251,31 @@ export function ColleagueWorkspacePage({
       </li>
     );
   };
+
+  const renderSharedFile = (file: JiuwenMateSharedFile) => (
+    <div className="jiuwenmate-chat-file">
+      {file.caption ? <p className="jiuwenmate-chat-file__caption">{file.caption}</p> : null}
+      <div className="jiuwenmate-chat-file__card">
+        <FileText aria-hidden className="jiuwenmate-chat-file__icon" />
+        <div className="jiuwenmate-chat-file__meta">
+          <strong>{file.name}</strong>
+          <small>{formatSharedFileSize(file.size)}</small>
+        </div>
+        {file.downloadUrl ? (
+          <a
+            className="jiuwenmate-chat-file__download"
+            href={file.downloadUrl}
+            download={file.name}
+            data-testid="jiuwenmate-chat-file-download"
+          >
+            {t('jiuwenmate.chat.file.download')}
+          </a>
+        ) : (
+          <span className="jiuwenmate-chat-file__unavailable">{t('jiuwenmate.chat.file.unavailable')}</span>
+        )}
+      </div>
+    </div>
+  );
 
   const tabs = [
     { value: 'conversations' as const, label: t('jiuwenmate.workspace.tabs.conversations') },

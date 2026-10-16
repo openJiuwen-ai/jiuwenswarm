@@ -4,8 +4,11 @@ Critical events (``tool.intent``, ``execution.paused``, ``execution.final``) ret
 only after they are stored, and a storage failure is raised so core stops the
 Execution. Ordinary events are handed to ``CommitQueue`` and written in the
 background; a failed ordinary write leaves a gap in the log and never delays a
-later critical event. A final also stores, in the same transaction, every
-candidate output it references that the queue has not written yet. An optional
+later critical event. A final or paused event also stores, in the same
+transaction, every candidate output it references that the queue has not written
+yet. A file candidate is stored only after ``OutputFileStore`` kept a verified copy
+of its file; one that cannot be copied yet is held for the ending, which copies it
+again and is not recorded when that fails. An optional
 observer sees each accepted event as it is recorded, before an ordinary event is
 written; it serves live display only and cannot affect the Execution.
 """
@@ -21,6 +24,7 @@ from datetime import datetime, timezone
 from jiuwenswarm.server.jiuwenmate.execution_models import PersistentContractError
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
+from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, OutputFileStore
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType, ExecutionContext
 
 logger = logging.getLogger(__name__)
@@ -85,15 +89,19 @@ class CommitQueue:
     def submit(self, event: AgentEvent) -> None:
         if self._queue is None:
             raise PersistentAgentError("commit queue is not running", code="QUEUE_CLOSED")
+        self.hold(event)
+        self._queue.put_nowait(event)
+
+    def hold(self, event: AgentEvent) -> None:
+        """Keep a candidate for its Execution's ending without writing it now."""
         if event.event_type == EventType.OUTPUT_PROPOSED:
             key = (event.namespace_id, event.execution_id)
             self._outputs.setdefault(key, {})[event.payload.output_id] = event
-        self._queue.put_nowait(event)
 
-    def pending_outputs(self, final: AgentEvent) -> list[AgentEvent]:
-        """Candidates of this Execution that the final references, in reference order."""
-        held = self._outputs.get((final.namespace_id, final.execution_id), {})
-        return [held[output_id] for output_id in final.payload.output_refs if output_id in held]
+    def pending_outputs(self, ending: AgentEvent) -> list[AgentEvent]:
+        """Candidates of this Execution that a final or paused event references, in reference order."""
+        held = self._outputs.get((ending.namespace_id, ending.execution_id), {})
+        return [held[output_id] for output_id in ending.payload.output_refs if output_id in held]
 
     def forget(self, namespace_id: str, execution_id: str) -> None:
         self._outputs.pop((namespace_id, execution_id), None)
@@ -125,27 +133,56 @@ class HostCommitPort:
         *,
         clock: Callable[[], datetime] = _utc_now,
         observer: Callable[[AgentEvent], None] | None = None,
+        files: OutputFileStore | None = None,
     ) -> None:
         self._repository = repository
         self._queue = queue
         self._clock = clock
         self._observer = observer
+        self._files = files
 
     async def record(self, execution: ExecutionContext, event: AgentEvent) -> None:
         if not isinstance(event, AgentEvent):
             raise PersistentContractError("record() requires an AgentEvent")
         event.assert_matches(execution)
         if event.event_type not in CRITICAL_EVENTS:
-            self._queue.submit(event)
+            if await self._retained_or_held(execution, event):
+                self._queue.submit(event)
             self._observe(event)
             return
         batch = [event]
-        if event.event_type == EventType.EXECUTION_FINAL:
+        if event.event_type in _TERMINAL_EVENTS:
             batch = [*self._queue.pending_outputs(event), event]
+            for output in batch[:-1]:
+                await asyncio.to_thread(self._retain, execution, output)
         await asyncio.to_thread(self._repository.record_events, batch, now=self._clock())
         if event.event_type in _TERMINAL_EVENTS:
             self._queue.forget(event.namespace_id, event.execution_id)
         self._observe(event)
+
+    async def _retained_or_held(self, execution: ExecutionContext, event: AgentEvent) -> bool:
+        """Whether an ordinary event may be queued; a file not yet retained waits for the ending."""
+        if event.event_type != EventType.OUTPUT_PROPOSED or event.payload.share_mode not in FILE_SHARE_MODES:
+            return True
+        try:
+            await asyncio.to_thread(self._retain, execution, event)
+        except Exception as exc:
+            logger.warning(
+                "[JiuwenMate] shared file not retained yet: execution=%s output=%s error=%s",
+                event.execution_id,
+                event.payload.output_id,
+                exc,
+            )
+            self._queue.hold(event)
+            return False
+        return True
+
+    def _retain(self, execution: ExecutionContext, event: AgentEvent) -> None:
+        if event.payload.share_mode not in FILE_SHARE_MODES:
+            return
+        if self._files is None:
+            raise PersistentAgentError("shared files cannot be retained by this host", code="OUTPUT_FILE_UNAVAILABLE")
+        self._files.retain(execution, event.payload)
 
     def _observe(self, event: AgentEvent) -> None:
         if self._observer is None:
