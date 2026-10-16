@@ -711,7 +711,7 @@ interface SessionState {
   availableTools: string[];
   memoryUsage: MemoryUsage;
   availableModels: ModelEntry[];
-  /** 过滤 is_default=true 的模型，供聊天窗口 ModelSelector 使用 */
+  /** All configured models available to the chat picker, including non-default connections. */
   chatAvailableModels: ModelEntry[];
   /** models.list 返回的模型组目录，供选择器与设置页共用 */
   availableModelGroups: ModelGroup[];
@@ -2145,14 +2145,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setAvailableModels: (models, activeModel) => {
     set((state) => {
       const defaultModels = models.filter((m) => m.is_default !== false);
-      // 没有组内默认配置时，使用其余已配置模型。
-      const chatModels = defaultModels.length > 0 ? defaultModels : models;
+      // Default status controls initialization, not whether a connection can be selected.
+      const chatModels = models;
       // 优先使用后端返回的 activeModel（默认模型），其次取第一个；状态统一保存真实
       // model_name，alias 只用于界面展示。各会话 runtime 的 selectedModelName 不在这里
       // 重置——单 Agent 和集群会话都是用户自选状态，模型列表刷新（models.updated）不应
       // 冲掉；陈旧失配的名字由 getEffectiveModelName 走 resolveEffectiveModel 兜底解析。
       const matchedModel = activeModel ? chatModels.find((m) => m.model_name === activeModel) : null;
-      const selected = (matchedModel ?? chatModels[0])?.model_name ?? null;
+      const selected = (matchedModel ?? defaultModels[0] ?? chatModels[0])?.model_name ?? null;
       if (selected) {
         try { localStorage.setItem(MODEL_STORAGE_KEY, selected); } catch { /* noop */ }
       }
