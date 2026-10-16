@@ -37,9 +37,6 @@ import yaml
 
 from jiuwenbox import perf_trace
 from jiuwenbox.logging_config import configure_logging
-from jiuwenbox.supervisor.landlock import encode_landlock_payload
-from jiuwenbox.supervisor.id_map import install_identity_id_map
-from jiuwenbox.supervisor.posix_id import resolve_posix_id
 from jiuwenbox.models.policy import CgroupPolicy, NetworkMode, NetworkPolicy, SecurityPolicy
 from jiuwenbox.models.sandbox import (
     BackgroundExecResult,
@@ -2886,14 +2883,29 @@ class ProcessRuntime(RuntimeAdapter):
             ]
         protect_oom = policy.cgroup.memory_max is not None
 
-        # preexec runs after fork and before exec. It joins the prepared
-        # netns (instead of ``ip netns exec``) and migrates into the
-        # per-sandbox cgroup before bwrap clones. Any OSError here becomes
-        # a nonzero child exit, which the readiness probe surfaces.
-        # Descendants inherit the OOM score. User commands raise theirs
-        # to +1000 before exec so the OOM killer prefers them even when
-        # this write is rejected (no CAP_SYS_RESOURCE).
-        preexec = _child_preexec(netns_name, cgroup_procs_paths, protect_oom)
+        def _preexec_attach_to_cgroup() -> None:
+            # Runs in the child after fork, before execve. Writing our own
+            # PID into each cgroup.procs migrates this process (and so
+            # bwrap, and every descendant bwrap spawns) into the per-sandbox
+            # cgroup before any user-controlled code starts. Any OSError
+            # here propagates as a nonzero child exit, which the daemon
+            # readiness probe surfaces to the caller -- silently leaving
+            # the sandbox unconstrained would defeat the policy.
+            child_pid = os.getpid()
+            for procs_path in cgroup_procs_paths:
+                with open(procs_path, "w", encoding="utf-8") as fh:
+                    fh.write(str(child_pid))
+            # Descendants inherit this score. User commands raise theirs
+            # to +1000 before exec so the OOM killer prefers them even
+            # when this write is rejected (no CAP_SYS_RESOURCE).
+            if protect_oom:
+                try:
+                    with open("/proc/self/oom_score_adj", "w", encoding="ascii") as fh:
+                        fh.write("-1000")
+                except OSError:
+                    pass
+
+        preexec = _preexec_attach_to_cgroup if cgroup_procs_paths else None
 
         # Capture daemon stdout/stderr into an anonymous tempfile so that
         # if the supervisor dies before becoming ready we can include the

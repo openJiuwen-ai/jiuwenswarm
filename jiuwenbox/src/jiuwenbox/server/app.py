@@ -375,11 +375,6 @@ async def lifespan(_application: FastAPI):
         # leak. Tear the uplinks down before that wait.
         try:
             if _sandbox_manager is not None:
-                stop_warm_pool = getattr(
-                    _sandbox_manager.runtime, "stop_warm_pool", None,
-                )
-                if stop_warm_pool is not None:
-                    await asyncio.to_thread(stop_warm_pool)
                 await asyncio.to_thread(_sandbox_manager.drop_all_host_uplinks)
         except Exception:  # noqa: BLE001
             logger.exception("drop_all_host_uplinks failed during lifespan shutdown")
