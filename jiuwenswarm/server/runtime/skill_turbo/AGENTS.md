@@ -47,7 +47,7 @@ description: SkillTurbo 技能加速引擎模块说明书——给修改/检视�
 
 ## 公开入口（public API）
 
-公开符号仅限 `__init__.py` 的 lazy export（13 个）：
+公开符号仅限 `__init__.py` 的 lazy export：
 
 | 入口 | 用途 |
 |---|---|
@@ -69,10 +69,10 @@ interface_deep 在 `config.react.skill_turbo.enabled=true` 时注册进外层 ab
 
 ```
 skill_turbo/
-├── __init__.py             # 公开 API lazy export（13 符号）
+├── __init__.py             # 公开 API lazy export（名单以 `__all__` 为准）
 ├── agent.py                # SkillTurbo 门面：planner→executor 组装、run/run_stream/resume_stream、异常→NotHandled 分流
 ├── planner.py              # LLM 流式路由（置信度 0.6、解析失败重试 1 次）→ plan_code 组装（入口 5 级链）
-├── executor.py             # 执行引擎核心（~3800 行）：执行循环 / 事件发射 / task_states / HITL 断点 / use_tool / LLM 调用 / 降级入口
+├── executor.py             # 执行引擎核心：执行循环 / 事件发射 / task_states / HITL 断点 / use_tool / LLM 调用 / 降级入口
 ├── plan_node.py            # PlanNode 基类（11 条契约）+ AbortError/FallbackContractError re-export（全链唯一符号源）
 ├── environment.py          # 技能发现/注册（三路径，外部覆盖内置）/ 工具装载 / Skill 模型 / skill_root·路径解析
 ├── skill_turbo_tools.py    # skill_acceleration_exec 封装：入口拦截 / resume / 事件转发映射 / 收尾诚实性 / 模块级 ContextVar 协议
@@ -158,7 +158,7 @@ skill_turbo/
 pytest.ini 的 addopts 含全仓 coverage，日常跑请清掉（`-o addopts=""`）：
 
 ```powershell
-# 模块单测（322 个：validator/包加载/tool_utils/planner/fallback/HITL 对齐/交付门禁/退出路径帧级/AbortError 守卫/契约解析/ask_user 门控/ContextVar 通道/入口拦截/task_states 快照…）
+# 模块单测（validator/包加载/tool_utils/planner/fallback/HITL 对齐/交付门禁/退出路径帧级/AbortError 守卫/契约解析/ask_user 门控/ContextVar 通道/入口拦截/task_states 快照…）
 .venv\Scripts\python.exe -m pytest tests/unit_tests/server/runtime/skill_turbo/ -o addopts=""
 
 # HITL / 工具面 / 中断恢复（历史路径在 agentserver/ 下——skill_turbo 曾位于该处，迁移遗留，勿再新增）
@@ -196,7 +196,9 @@ specs 的执行路径全景与修改检查单就是为根治此问题而设。
 
 1. **特性更新归档 feature 且三连续提交**：`docs/features/` 新增 `F_NN_<slug>.md`；特性代码
    （`feat(skill_turbo)`）、测试（`test(skill_turbo)`）、文档（`docs(skill_turbo)`）拆成三个
-   紧邻提交、同一 PR 落地。bugfix 触及 spec 描述的路径/不变量时同样三连（`fix`/`test`/`docs`）。
+   紧邻提交、同一 PR 落地。bugfix 触及 spec 描述的路径/不变量时归档
+   `docs/bugfix/B_NN_<slug>.md`（复现场景 + 根因 + 修复口径），代码、测试、文档合并为**一个**
+   `fix(skill_turbo)` 提交——三连续提交的唯一例外（与 skill 模块约定一致）。
 2. **规约变动必更新 specs**：契约 / 执行路径 / 不变量 / 事件协议 / 持久化结构变化时，同步修订
    对应 `S_NN`（元信息"最近一次修订日期"填当天）；新规约主题 = 新 spec 文件。
 3. **读到不一致当场修文档**：本文件 / specs 里与代码不符的接口名、枚举值、路数、路径，先 grep
