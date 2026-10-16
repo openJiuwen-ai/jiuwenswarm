@@ -29,7 +29,7 @@ import {
   removeGroupRoute,
 } from './modelGroupAdapters';
 import { useSessionStore } from '../../../../stores/sessionStore';
-import { getEditableModels } from './modelListOperations';
+import { getEditableModels, isRuntimeGrantedModel } from './modelListOperations';
 
 const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
   reasoning: null,
@@ -494,6 +494,7 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
   };
 
   const renderModelCard = (model: ModelEntry, index: number) => {
+    if (isRuntimeGrantedModel(model)) return null;
     const key = modelIdentity(model, index);
     const validationState = validationStates[key];
     const presentation = getCardPresentation(model);
