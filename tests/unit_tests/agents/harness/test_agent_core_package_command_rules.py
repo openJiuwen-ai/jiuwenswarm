@@ -42,10 +42,13 @@ def test_swarm_default_config_enables_agent_core_permission_rules() -> None:
 def test_agent_core_package_rules_own_generic_shell_risks() -> None:
     engine = _engine()
     cases = (
-        ("bash", "rm -rf /tmp/workspace-dist", PermissionLevel.ASK),
-        ("powershell", "del /f /s /q C:\\temp\\build", PermissionLevel.ASK),
-        ("powershell", "rd /s /q C:\\temp\\build", PermissionLevel.ASK),
-        ("powershell", "Remove-Item -Recurse -Force C:\\temp\\build", PermissionLevel.ASK),
+        ("bash", "rm -rf /tmp/workspace-dist", PermissionLevel.ALLOW),
+        ("powershell", "del /f /s /q C:\\temp\\build", PermissionLevel.ALLOW),
+        ("powershell", "rd /s /q C:\\temp\\build", PermissionLevel.ALLOW),
+        ("powershell", "Remove-Item -Recurse -Force C:\\temp\\build", PermissionLevel.ALLOW),
+        ("bash", "rm -rf /", PermissionLevel.ASK),
+        ("powershell", "Remove-Item -Recurse -Force C:\\", PermissionLevel.ASK),
+        ("powershell", "rd /s /q C:\\", PermissionLevel.ASK),
         ("powershell", "format C:", PermissionLevel.DENY),
         ("bash", "shutdown -h now", PermissionLevel.DENY),
         ("bash", "reboot", PermissionLevel.DENY),

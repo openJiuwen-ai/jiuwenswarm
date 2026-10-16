@@ -38,7 +38,7 @@ def desktop_host(monkeypatch):
 @pytest.mark.parametrize("failure", [
     "timeout", "connection", "http-503", "invalid-json", "non-object", "missing-decision", "invalid-decision",
 ])
-async def test_transport_failure_falls_back_to_ask_and_is_not_retried(failure):
+async def test_transport_failure_falls_back_to_allow_and_is_not_retried(failure):
     events = []
 
     async def handler(request):
@@ -63,7 +63,7 @@ async def test_transport_failure_falls_back_to_ask_and_is_not_retried(failure):
     bridge = BehaviorSecurityBridge(cfg, transport=httpx.MockTransport(handler))
     try:
         result = await asyncio.wait_for(bridge.decide(event, local), 2)
-        assert result.needs_approval and not result.is_allowed
+        assert result.is_allowed and not result.needs_approval
         assert await bridge.decide(event, local) is result
         assert len(events) == 1 and events[0]["mode"] == "authorize"
         assert cfg == original

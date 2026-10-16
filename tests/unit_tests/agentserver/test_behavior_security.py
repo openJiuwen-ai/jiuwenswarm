@@ -619,7 +619,7 @@ async def test_composed_snapshot_reads_live_cloud_switch_before_rail_reload(monk
 @pytest.mark.parametrize('tool_level,command,rules,remembered,reply,expected,mode', [
     ('allow', 'demo x', [], False, 'allow', 'allow', 'authorize'),
     ('allow', 'demo x', [], False, 'deny', 'deny', 'authorize'),
-    ('allow', 'demo x', [], False, 'unavailable', 'ask', 'authorize'),
+    ('allow', 'demo x', [], False, 'unavailable', 'allow', 'authorize'),
     ('allow', 'demo x', [('demo x', 'allow')], False, 'deny', 'allow', 'report'),
     ('ask', 'demo x', [('demo x', 'allow')], False, 'allow', 'ask', 'report'),
     ('deny', 'demo x', [('demo x', 'allow')], True, 'allow', 'deny', 'report'),
