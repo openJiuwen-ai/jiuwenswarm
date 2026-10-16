@@ -378,10 +378,11 @@ function AssetPublishDrawer({
     tags: 'tagsHelp',
   };
   const outcome = state.record ? publishOutcome(state.record) : null;
+  const recordState = state.record ? localRecordState(state.record) : null;
   const ResultIcon =
-    outcome === 'failed'
+    recordState === 'failed'
       ? CircleAlert
-      : ['queued', 'uploading', 'unknown'].includes(outcome || '')
+      : ['queued', 'uploading', 'unconfirmed'].includes(recordState || '')
         ? Clock3
         : CircleCheck;
   const zh = i18n.language.startsWith('zh');
@@ -775,13 +776,13 @@ function AssetPublishDrawer({
           aria-live="polite"
           className="asset-publish-result-card"
           data-testid="asset-publish-result"
-          data-variant={outcome}
+          data-variant={recordState}
         >
           <header className="asset-publish-result-header" data-testid="asset-publish-result-header">
-            <span className="asset-publish-result-icon" aria-hidden="true">
+            <span className="asset-publish-result-icon" aria-hidden="true" data-testid="asset-publish-result-icon">
               <ResultIcon size={20} />
             </span>
-            <h3>{text(localRecordState(state.record) as MessageKey)}</h3>
+            <h3 data-testid="asset-publish-result-status">{text(recordState as MessageKey)}</h3>
           </header>
           <dl className="asset-publish-result-metadata" data-testid="asset-publish-result-metadata">
             {state.record.result?.asset_id && (
@@ -860,7 +861,11 @@ function AssetPublishDrawer({
                   <strong>{record.result?.version || record.version || text('empty')}</strong>
                   {record.updated_at && <small>{dateText(record.updated_at)}</small>}
                 </span>
-                <span className="asset-publish-record-status" data-variant={publishOutcome(record)}>
+                <span
+                  className="asset-publish-record-status"
+                  data-testid="asset-publish-record-status"
+                  data-variant={localRecordState(record)}
+                >
                   {text(localRecordState(record) as MessageKey)}
                 </span>
               </button>
