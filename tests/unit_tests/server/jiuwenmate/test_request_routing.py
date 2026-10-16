@@ -383,7 +383,11 @@ def test_stored_records_rebuild_a_valid_core_invocation(tmp_path):
     windows = WindowBackendStore(tmp_path / "agents.sqlite3").bind(NS, agent, session.session_id)
     workspace = HostWorkspaceAccess(restarted.agents.workspaces, NS, agent)
     ports = core.PersistentPorts(
-        commit=FakePorts(), budget=FakePorts(), window_backend=windows, workspace_access=workspace
+        commit=FakePorts(),
+        budget=FakePorts(),
+        window_backend=windows,
+        workspace_access=workspace,
+        workspace_write_access=workspace,
     )
     spec, context = build_invocation(snapshot, request, execution, ports=ports)
 

@@ -1,4 +1,4 @@
-"""JM-14: a colleague reads its own office directory and nothing else."""
+"""JM-14: a colleague reads and writes its own office directory and nothing else."""
 
 from __future__ import annotations
 
@@ -20,8 +20,12 @@ from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, 
 from jiuwenswarm.server.jiuwenmate.service import WORKSPACE_PROMPT, PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.spec_provider import build_invocation
 from jiuwenswarm.server.jiuwenmate.web_adapter import WEB_ACCESS
-from openjiuwen.harness.persistent_agent.workspace.access import validate_read_scope
-from openjiuwen.harness.persistent_agent.workspace.path_policy import WorkspacePathError, resolve_read_path
+from openjiuwen.harness.persistent_agent.workspace.access import validate_read_scope, validate_write_scope
+from openjiuwen.harness.persistent_agent.workspace.path_policy import (
+    WorkspacePathError,
+    resolve_read_path,
+    resolve_write_path,
+)
 
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.harness import persistent_agent as core
@@ -96,7 +100,7 @@ def execution(agent_id: str = AGENT, scope: frozenset[str] = WEB_ACCESS.startup_
         "startup_scope": scope,
         "source_scope": scope,
         "policy_revision": "local",
-        "capability_snapshot": frozenset({"construction", "workspace_read"}),
+        "capability_snapshot": frozenset({"construction", "workspace_read", "workspace_write"}),
     }
     fields.update(changes)
     return core.ExecutionContext(**fields)
@@ -105,6 +109,11 @@ def execution(agent_id: str = AGENT, scope: frozenset[str] = WEB_ACCESS.startup_
 async def resolve(access: HostWorkspaceAccess, context, path: str):
     scope = validate_read_scope(await access.resolve_read_scope(context), context)
     return resolve_read_path(scope, path)
+
+
+async def resolve_write(access: HostWorkspaceAccess, context, path: str):
+    scope = validate_write_scope(await access.resolve_write_scope(context), context)
+    return resolve_write_path(scope, path)
 
 
 @pytest.fixture
@@ -203,7 +212,7 @@ def test_publishing_creates_the_office_and_deleting_removes_it(tmp_path):
 
     assert view.workspace_dir == str(office_dir) and office_dir.is_dir()
     assert spec.system_prompt.endswith(WORKSPACE_PROMPT)
-    assert set(spec.enabled_features) == {"construction", "workspace_read"}
+    assert set(spec.enabled_features) == {"construction", "workspace_read", "workspace_write"}
     assert spec.enable_sys_operation is True and spec.enable_read_image_multimodal is False
 
     (office_dir / "笔记.md").write_text("x", encoding="utf-8")
@@ -246,17 +255,106 @@ def request_for(snapshot) -> RequestRecord:
     )
 
 
+@pytest.mark.parametrize("port", ["workspace_access", "workspace_write_access"])
 @pytest.mark.parametrize("owner", [None, "mate_other"])
-def test_an_invocation_without_this_colleagues_scope_is_rejected(tmp_path, owner):
+def test_an_invocation_without_this_colleagues_scope_is_rejected(tmp_path, owner, port):
     service = make_service(tmp_path)
     view = service.create_colleague(NS, settings())
     snapshot = service.current_snapshot(NS, view.agent_id)
     request = request_for(snapshot)
     windows = WindowBackendStore(tmp_path / "agents.sqlite3").bind(NS, view.agent_id, request.session_id)
-    access = None if owner is None else HostWorkspaceAccess(service.workspaces, NS, owner)
-    ports = core.PersistentPorts(
-        commit=FakePorts(), budget=FakePorts(), window_backend=windows, workspace_access=access
-    )
+    own = HostWorkspaceAccess(service.workspaces, NS, view.agent_id)
+    scopes = {"workspace_access": own, "workspace_write_access": own}
+    scopes[port] = None if owner is None else HostWorkspaceAccess(service.workspaces, NS, owner)
+    ports = core.PersistentPorts(commit=FakePorts(), budget=FakePorts(), window_backend=windows, **scopes)
 
-    with pytest.raises(PersistentContractError):
+    with pytest.raises(PersistentContractError, match=port):
         build_invocation(snapshot, request, ExecutionRecord(request_id="request-1", execution_id="e-1"), ports=ports)
+
+
+async def test_a_web_request_writes_relative_paths_inside_the_office(office):
+    store, root = office
+    access = HostWorkspaceAccess(store, NS, AGENT)
+
+    resolved = await resolve_write(access, execution(), "报告/总结.md")
+
+    assert resolved.path == (root / "报告" / "总结.md").resolve()
+    assert resolved.source_ref == f"workspace://{NS}/{AGENT}/报告/总结.md"
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [frozenset({"direct_message", "workspace_read"}), frozenset({"group_message"})],
+)
+async def test_a_request_without_the_write_scope_cannot_write(office, scope):
+    store, _ = office
+    access = HostWorkspaceAccess(store, NS, AGENT)
+
+    granted = await access.resolve_write_scope(execution(scope=scope))
+    with pytest.raises(WorkspacePathError) as denied:
+        await resolve_write(access, execution(scope=scope), "报告/总结.md")
+
+    assert (granted.status, granted.allowed_write_roots, granted.current_session_root) == ("forbidden", (), None)
+    assert denied.value.status == "forbidden"
+
+
+async def test_the_write_scope_needs_both_startup_and_source_scope(office):
+    store, _ = office
+    access = HostWorkspaceAccess(store, NS, AGENT)
+
+    granted = await access.resolve_write_scope(execution(source_scope=frozenset({"direct_message", "workspace_read"})))
+
+    assert granted.status == "forbidden"
+
+
+@pytest.mark.parametrize("path", ["../mate_other/secret.md", "资料/../../mate_other/x.md", "/tmp/x.md", "C:\\x.md"])
+async def test_writes_leaving_the_office_are_forbidden(office, path):
+    store, _ = office
+    store.ensure(NS, "mate_other")
+    access = HostWorkspaceAccess(store, NS, AGENT)
+
+    with pytest.raises(WorkspacePathError) as denied:
+        await resolve_write(access, execution(), path)
+
+    assert denied.value.status == "forbidden"
+
+
+async def test_a_session_reaches_its_own_drafts_only(office):
+    store, root = office
+    drafts = root / "sessions"
+    (drafts / "session-1").mkdir(parents=True)
+    (drafts / "session-2").mkdir()
+    (drafts / "session-2" / "草稿.md").write_text("另一个对话的草稿", encoding="utf-8")
+    access = HostWorkspaceAccess(store, NS, AGENT)
+    mine = execution(session_id="session-1")
+
+    own_read = await resolve(access, mine, "sessions/session-1")
+    own_write = await resolve_write(access, mine, "sessions/session-1/草稿.md")
+
+    assert own_read.path == (drafts / "session-1").resolve()
+    assert own_write.path == (drafts / "session-1" / "草稿.md").resolve()
+    for path in ("sessions", "sessions/session-2", "sessions/session-2/草稿.md"):
+        with pytest.raises(WorkspacePathError):
+            await resolve(access, mine, path)
+    for path in ("sessions/session-2/草稿.md", "sessions/新文件.md"):
+        with pytest.raises(WorkspacePathError):
+            await resolve_write(access, mine, path)
+
+
+@pytest.mark.parametrize("session_id", ["../x", "a/b", "."])
+async def test_a_session_id_that_is_not_a_plain_name_is_refused(office, session_id):
+    store, _ = office
+    access = HostWorkspaceAccess(store, NS, AGENT)
+
+    with pytest.raises(PersistentAgentError):
+        await access.resolve_write_scope(execution(session_id=session_id))
+    with pytest.raises(PersistentAgentError):
+        await access.resolve_read_scope(execution(session_id=session_id))
+
+
+async def test_an_execution_of_another_colleague_cannot_write(office):
+    store, _ = office
+    access = HostWorkspaceAccess(store, NS, AGENT)
+
+    with pytest.raises(PersistentAgentError):
+        await access.resolve_write_scope(execution(agent_id="mate_other"))

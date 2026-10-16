@@ -444,3 +444,51 @@ async def test_failed_tool_intent_persistence_prevents_tool_side_effect(
     assert not output_path.exists()
     events = read_execution_events_after_restart(server.db, request_id)
     assert not any(event.event_type == EventType.TOOL_INTENT for event in events)
+
+
+class ScriptedToolModel(LocalModel):
+    """Makes the given tool calls one per model call, then answers with every tool result in order."""
+
+    def __init__(self, steps: list[tuple[str, dict]]) -> None:
+        super().__init__()
+        self.steps = steps
+
+    async def stream(self, messages, **kwargs):
+        self.calls.append(list(messages))
+        results = [message.content for message in messages if isinstance(message, ToolMessage)]
+        usage = UsageMetadata(input_tokens=3, output_tokens=4)
+        if len(results) < len(self.steps):
+            name, arguments = self.steps[len(results)]
+            call = ToolCall(id=f"call-{len(results)}", type="function", name=name, arguments=json.dumps(arguments))
+            yield AssistantMessageChunk(content="", tool_calls=[call], finish_reason="tool_calls", usage_metadata=usage)
+            return
+        yield AssistantMessageChunk(content="\n".join(results), finish_reason="stop", usage_metadata=usage)
+
+
+async def test_a_colleague_writes_and_edits_shared_files_but_not_other_sessions_drafts(tmp_path, monkeypatch):
+    writer = ScriptedToolModel(
+        [
+            ("write_file", {"file_path": "报告/总结.md", "content": "初稿"}),
+            ("read_file", {"file_path": "报告/总结.md"}),
+            ("edit_file", {"file_path": "报告/总结.md", "old_string": "初稿", "new_string": "定稿"}),
+            ("write_file", {"file_path": "sessions/sess_other/草稿.md", "content": "越界"}),
+        ]
+    )
+    monkeypatch.setattr(ModelSpec, "build", lambda self: writer)
+    server = Server(tmp_path)
+    colleague = (await server.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT))["colleague"]
+    office = Path(colleague["workspace_dir"])
+
+    request_id = await server.send(colleague["agent_id"], "写一份总结")
+    answered = await server.ended(request_id)
+    await server.adapter.aclose()
+
+    assert answered["outcome"] == "completed"
+    assert (office / "报告" / "总结.md").read_text(encoding="utf-8") == "定稿"
+    assert not (office / "sessions" / "sess_other").exists()
+    assert answered["replies"][-1].splitlines()[-1] == "workspace path is not writable"
+    assert str(tmp_path) not in answered["replies"][-1]
+    events = read_execution_events_after_restart(server.db, request_id)
+    intents = [event.payload for event in events if event.event_type == EventType.TOOL_INTENT]
+    assert [intent.tool_name for intent in intents] == ["write_file", "edit_file"]
+    assert all(intent.target_ref.endswith("/报告/总结.md") for intent in intents)

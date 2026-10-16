@@ -174,7 +174,6 @@ def test_mismatched_spec_fields_are_rejected(fields):
 @pytest.mark.parametrize(
     "fields",
     [
-        spec_fields(enabled_features=["construction", "workspace_read", "workspace_write"], enable_sys_operation=True),
         spec_fields(enable_task_loop=True),
         spec_fields(auto_create_workspace=True),
         spec_fields(enable_async_subagent=True),
@@ -188,8 +187,17 @@ def test_capabilities_not_opened_by_the_host_are_rejected(fields):
 
 
 def test_host_opens_only_features_core_advertises():
-    assert "workspace_read" in core_features()
+    assert {"workspace_read", "workspace_write"} <= core_features()
     assert HOST_OPEN_FEATURES <= core_features()
+
+
+def test_office_directory_read_and_write_can_be_published():
+    features = ["construction", "workspace_read", "workspace_write"]
+    fields = spec_fields(enabled_features=features, enable_sys_operation=True)
+
+    snapshot = publish_spec(AGENT_ID, "v1", fields)
+
+    assert snapshot.enabled_features == {"construction", "workspace_read", "workspace_write"}
 
 
 def test_tampered_snapshot_is_refused(snapshot):
