@@ -95,10 +95,20 @@ export interface JiuwenMateChatRequest {
   outcome: string | null;
   running: boolean;
   replies: string[];
+  files: JiuwenMateSharedFile[];
   reason: string | null;
   draft: JiuwenMateChatDraft | null;
   control: JiuwenMateRequestControl | null;
   recovery: JiuwenMateRequestRecovery | null;
+}
+
+/** A file the colleague handed off with its answer; ``downloadUrl`` is null while its copy is unavailable. */
+export interface JiuwenMateSharedFile {
+  outputId: string;
+  name: string;
+  size: number;
+  caption: string | null;
+  downloadUrl: string | null;
 }
 
 /** How a message left unfinished by a server restart was closed; ``unverifiedToolCalls`` may have run. */
@@ -286,11 +296,40 @@ export function toChatRequest(value: unknown): JiuwenMateChatRequest {
     outcome: typeof wire.outcome === 'string' ? wire.outcome : null,
     running: wire.running === true,
     replies: texts(wire.replies),
+    files: toSharedFiles(wire.files),
     reason: typeof wire.reason === 'string' && wire.reason ? wire.reason : null,
     draft: status === 'ended' ? null : toDraft(wire.draft),
     control: toControl(wire.control),
     recovery: toRecovery(wire.recovery),
   };
+}
+
+export function formatSharedFileSize(size: number): string {
+  if (!Number.isFinite(size) || size < 0) return '0 B';
+  if (size < 1024) return `${size} B`;
+  const scaled = size < 1024 * 1024 ? size / 1024 : size / (1024 * 1024);
+  const unit = size < 1024 * 1024 ? 'KB' : 'MB';
+  const digits = scaled < 10 ? 1 : 0;
+  return `${Number(scaled.toFixed(digits))} ${unit}`;
+}
+
+function toSharedFiles(value: unknown): JiuwenMateSharedFile[] {
+  return (Array.isArray(value) ? value : []).flatMap((item) => {
+    const wire = record(item);
+    const outputId = text(wire.output_id);
+    const name = text(wire.name);
+    if (!outputId || !name) return [];
+    const downloadUrl = text(wire.download_url);
+    return [
+      {
+        outputId,
+        name,
+        size: typeof wire.size === 'number' ? wire.size : 0,
+        caption: text(wire.caption) || null,
+        downloadUrl: downloadUrl.startsWith('/file-api/download?') ? downloadUrl : null,
+      },
+    ];
+  });
 }
 
 const DECISIONS: readonly JiuwenMateRequestRecovery['decision'][] = [

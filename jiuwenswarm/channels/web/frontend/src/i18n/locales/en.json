@@ -93,6 +93,10 @@
       "title": "Private chat",
       "failed": "Message failed: {{reason}}",
       "noReply": "The employee sent no reply",
+      "file": {
+        "download": "Download",
+        "unavailable": "File is not available to download"
+      },
       "status": {
         "queued": "Queued",
         "running": "Working",

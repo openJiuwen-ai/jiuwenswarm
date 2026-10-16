@@ -2194,6 +2194,11 @@ class AgentWebSocketServer:
                 "text": job.get("text"),
             },
         }
+        if isinstance(job.get("file"), dict):
+            push["payload"]["file"] = dict(job["file"])
+        from jiuwenswarm.server.jiuwenmate.delivery_service import GATEWAY_ACK_TIMEOUT, GATEWAY_FILE_ACK_TIMEOUT
+
+        ack_timeout = GATEWAY_FILE_ACK_TIMEOUT if "file" in push["payload"] else GATEWAY_ACK_TIMEOUT
         try:
             if not await self.send_push(push):
                 return {
@@ -2203,7 +2208,7 @@ class AgentWebSocketServer:
                     "error_code": "GATEWAY_UNAVAILABLE",
                 }
             try:
-                return await asyncio.wait_for(asyncio.shield(waiter), timeout=25.0)
+                return await asyncio.wait_for(asyncio.shield(waiter), timeout=ack_timeout)
             except TimeoutError:
                 return {
                     "delivery_id": delivery_id,

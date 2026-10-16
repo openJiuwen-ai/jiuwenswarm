@@ -82,6 +82,10 @@ class HostWorkspaceAccess:
         return f"workspace://{self._namespace_id}/{self._agent_id}"
 
     async def resolve_read_scope(self, execution: ExecutionContext) -> WorkspaceReadScope:
+        return self.read_scope(execution)
+
+    def read_scope(self, execution: ExecutionContext) -> WorkspaceReadScope:
+        """The read scope of ``resolve_read_scope``, for host code that runs outside the event loop."""
         sessions, current = self._session_roots(execution)
         granted = self._granted(execution, WORKSPACE_READ)
         return WorkspaceReadScope(

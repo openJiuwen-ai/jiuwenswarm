@@ -10,6 +10,7 @@ import {
   findModel,
   isPending,
   mergeChatRequest,
+  formatSharedFileSize,
   toChatRequest,
   toColleague,
   toModelCatalog,
@@ -275,6 +276,49 @@ test('a message closed after a restart carries how it was judged', () => {
 
   assert.deepEqual(recovered.recovery, { decision: 'awaiting_continuation', unverifiedToolCalls: ['call-1'] });
   assert.equal(toChatRequest(wireRequest).recovery, null);
+});
+
+test('a handed-off file becomes a download card and ignores foreign links', () => {
+  const request = toChatRequest({
+    ...wireRequest,
+    files: [
+      {
+        output_id: 'out-file',
+        name: '周报.md',
+        size: 1280,
+        caption: '本周周报',
+        download_url: '/file-api/download?token=abc',
+      },
+      {
+        output_id: 'out-bad',
+        name: 'secret.md',
+        size: 8,
+        download_url: 'https://example.invalid/secret.md',
+      },
+      { name: 'missing-id.md', size: 1 },
+    ],
+  });
+
+  assert.deepEqual(request.files, [
+    {
+      outputId: 'out-file',
+      name: '周报.md',
+      size: 1280,
+      caption: '本周周报',
+      downloadUrl: '/file-api/download?token=abc',
+    },
+    {
+      outputId: 'out-bad',
+      name: 'secret.md',
+      size: 8,
+      caption: null,
+      downloadUrl: null,
+    },
+  ]);
+  assert.deepEqual(toChatRequest(wireRequest).files, []);
+  assert.equal(formatSharedFileSize(512), '512 B');
+  assert.equal(formatSharedFileSize(1280), '1.3 KB');
+  assert.equal(formatSharedFileSize(2 * 1024 * 1024), '2 MB');
   assert.equal(toChatRequest({ ...wireRequest, recovery: { decision: 'rerun' } }).recovery, null);
 });
 

@@ -59,7 +59,11 @@ WORKSPACE_PROMPT = (
     "路径一律写成相对于办公目录的路径，例如 `.` 或 `资料/周报.md`，不要使用绝对路径。"
     "修改已有文件前先读取它；如果提示版本冲突，说明文件已被改动，重新读取后再修改。"
     "`sessions/` 存放各对话的私有草稿，不要读写其中的内容；其余位置的文件由所有对话共享。"
+    "需要把已完成的文件交给对方时，用 share_file 登记；回答结束后由系统发送。"
 )
+
+# Feishu IM accepts uploaded files up to 30 MB, so no shared file may exceed it.
+SHARE_FILE_MAX_BYTES = 30_000_000
 
 TemplateSource = Callable[[str], Mapping[str, Any] | None]
 
@@ -340,6 +344,7 @@ class PersistentAgentService:
             "system_prompt": self._templates.read_persona(agent_id) + WORKSPACE_PROMPT,
             "model": self._models.resolve(settings.capabilities.model, client_id=f"jiuwenmate:{agent_id}"),
             "enabled_features": ["construction", WORKSPACE_READ, WORKSPACE_WRITE],
+            "share_file_max_bytes": SHARE_FILE_MAX_BYTES,
             # The guarded file tools need a filesystem operation; no shell tool is mounted.
             "enable_sys_operation": True,
             # Otherwise core probes the model for image input outside the budget port.

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from itertools import count
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -120,6 +123,26 @@ class ReplyCore:
             raise RuntimeError("model crashed")
         if mode == "ignored":
             payload = {"status": "ignored", "reason": "无需回复", "output_refs": ()}
+        elif mode == "file":
+            scope = await context.ports.workspace_access.resolve_read_scope(execution)
+            content = "周报正文".encode()
+            Path(scope.workspace_root, "周报.md").write_bytes(content)
+            file_event = await emit(
+                core.EventType.OUTPUT_PROPOSED,
+                {
+                    "output_id": f"{execution.execution_id}-file",
+                    "target_ref": inputs.reply_target,
+                    "share_mode": "attachment",
+                    "text": "本周周报",
+                    "file_ref": "sha256:" + hashlib.sha256(content).hexdigest(),
+                    "file_path": "周报.md",
+                    "file_size": len(content),
+                },
+                visibility="candidate",
+            )
+            yield file_event
+            refs = (f"{execution.execution_id}-reply", file_event.payload.output_id)
+            payload = {"status": "completed", "output_refs": refs}
         else:
             payload = {"status": "completed", "output_refs": (f"{execution.execution_id}-reply",)}
         yield await emit(core.EventType.EXECUTION_FINAL, payload)
@@ -321,6 +344,33 @@ async def test_unsuccessful_requests_show_no_reply(host, mode, outcome):
     done = await host.settled(request["request_id"])
 
     assert done["outcome"] == outcome and done["replies"] == []
+
+
+async def test_a_shared_file_is_listed_with_a_download_link_to_its_retained_copy(host, monkeypatch):
+    from jiuwenswarm.common.file_download_token import WebFileDownloadManager, validate_file_download_token
+
+    monkeypatch.setenv("JIUWENSWARM_FILE_DOWNLOAD_SECRET", "s" * 64)
+    WebFileDownloadManager.reset_instance()
+    agent_id = await host.colleague()
+    host.core.modes["今天进展"] = "file"
+    host.core.release("今天进展")
+
+    request = (await host.send(agent_id, "今天进展")).payload["request"]
+    done = await host.settled(request["request_id"])
+
+    assert done["replies"] == ["回复：今天进展"]
+    [file] = done["files"]
+    assert (file["name"], file["size"], file["caption"], file["delivery_status"]) == (
+        "周报.md",
+        len("周报正文".encode()),
+        "本周周报",
+        "available",
+    )
+    token = parse_qs(urlparse(file["download_url"]).query)["token"][0]
+    path = Path(validate_file_download_token(token, check_expiry=False)["path"])
+    WebFileDownloadManager.reset_instance()
+    assert path.is_relative_to(host.tmp_path / "outputs")
+    assert path.read_bytes() == "周报正文".encode()
 
 
 # refusals keep their error codes

@@ -93,6 +93,10 @@
       "title": "私聊",
       "failed": "消息处理失败：{{reason}}",
       "noReply": "员工没有回复消息",
+      "file": {
+        "download": "下载",
+        "unavailable": "文件暂不可下载"
+      },
       "status": {
         "queued": "排队中",
         "running": "处理中",

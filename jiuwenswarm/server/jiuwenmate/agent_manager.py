@@ -4,7 +4,8 @@
 ``SessionScheduler`` and runs window cleanup in the background. It is started
 and closed together with its host; deleting a colleague goes through it so the
 colleague's work has ended before its data is removed. Private messages enter
-through it, and its request views show only replies a final event adopted.
+through it, and its request views show only the replies and files a final or
+paused event handed off.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import (
 )
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, OUTPUTS_DIR, OutputFileStore
 from jiuwenswarm.server.jiuwenmate.ports.budget import DEFAULT_RESERVATION_TOKENS, HostBudgetPort
 from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
@@ -95,7 +97,11 @@ def reply_draft(execution_id: str, events) -> ReplyDraft | None:
 
 @dataclass(frozen=True, kw_only=True)
 class RequestView:
-    """What a page may show about one Request; replies are the outputs its final event adopted."""
+    """What a page may show about one Request; replies and files are the outputs its ending handed off.
+
+    A file is described by its name, size and caption and downloaded through a signed
+    link to the retained copy; no office path is shown.
+    """
 
     state: RequestState
     running: bool
@@ -106,6 +112,7 @@ class RequestView:
     control: RequestControl | None = None
     deliveries: tuple[dict[str, object], ...] = ()
     recovery: RequestRecovery | None = None
+    files: tuple[dict[str, object], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         record = self.state.record
@@ -122,6 +129,7 @@ class RequestView:
             "outcome": self.state.outcome,
             "running": self.running,
             "replies": list(self.replies),
+            "files": [dict(item) for item in self.files],
             "reason": self.reason,
             "draft": None if self.draft is None else self.draft.to_dict(),
             "control": None if self.control is None else self.control.to_dict(),
@@ -154,6 +162,7 @@ class AgentManager:
         clock: Callable[[], datetime] = _utc_now,
         on_event: Callable[[core.AgentEvent], None] | None = None,
         delivery_service: ResultDeliveryService | None = None,
+        files: OutputFileStore | None = None,
     ) -> None:
         if purge_interval <= timedelta(0):
             raise ValueError("purge_interval must be positive")
@@ -167,6 +176,7 @@ class AgentManager:
         self._clock = clock
         self._external_event_observer = on_event
         self._delivery_service = delivery_service
+        self._files = files or OutputFileStore(sessions.db_path.parent / OUTPUTS_DIR, service.workspaces)
         self._queue = CommitQueue(sessions, clock=clock)
         driver = ExecutionDriver(
             snapshots=service.snapshot,
@@ -175,6 +185,7 @@ class AgentManager:
                 self._queue,
                 clock=clock,
                 observer=self._observe_event if on_event is not None or delivery_service is not None else None,
+                files=self._files,
             ),
             queue=self._queue,
             budget_port=HostBudgetPort(budgets, sessions, reservation_tokens=reservation_tokens, clock=clock),
@@ -320,11 +331,13 @@ class AgentManager:
     async def _view(self, state: RequestState, conversation_key: str) -> RequestView:
         # The scheduler's running set changes on the event loop, so it is read here and not in the thread.
         running = any(run.record.request_id == state.record.request_id for run in self._scheduler.running)
-        replies, reason, draft = await asyncio.to_thread(self._result, state)
+        replies, files, reason, draft = await asyncio.to_thread(self._result, state)
         control = await asyncio.to_thread(self._control.control_of, state.record.namespace_id, state.record.request_id)
         deliveries = await asyncio.to_thread(
             self._sessions.result_deliveries, state.record.namespace_id, state.record.request_id
         )
+        status_of = {delivery["output_id"]: delivery["status"] for delivery in deliveries}
+        files = tuple({**item, "delivery_status": status_of.get(item["output_id"])} for item in files)
         recovery = await asyncio.to_thread(
             self._recovery.recovery_of, state.record.namespace_id, state.record.request_id
         )
@@ -338,6 +351,7 @@ class AgentManager:
             control=control,
             deliveries=tuple(deliveries),
             recovery=recovery,
+            files=files,
         )
 
     def _observe_event(self, event: core.AgentEvent) -> None:
@@ -348,28 +362,52 @@ class AgentManager:
             if self._delivery_service is not None:
                 self._delivery_service.observe(event)
 
-    def _result(self, state: RequestState) -> tuple[tuple[str, ...], str | None, ReplyDraft | None]:
-        """Outcome of the latest Execution: adopted replies and reason once it ended, else its draft."""
+    def _result(
+        self, state: RequestState
+    ) -> tuple[tuple[str, ...], tuple[dict[str, object], ...], str | None, ReplyDraft | None]:
+        """Outcome of the latest Execution: handed-off replies, files and reason once it ended, else its draft."""
         record = state.record
         executions = self._sessions.executions(record.namespace_id, record.request_id)
         if not executions:
-            return (), None, None
+            return (), (), None, None
         latest = executions[-1]
         log = self._sessions.read_execution_log(
             record.namespace_id, record.session_id, record.request_id, latest.execution_id
         )
         terminal = next((event for event in log if event.event_type in _TERMINAL_EVENTS), None)
         if terminal is None:
-            return (), None, None if state.status == "ended" else reply_draft(latest.execution_id, log)
+            return (), (), None, None if state.status == "ended" else reply_draft(latest.execution_id, log)
         payload = terminal.payload
-        if terminal.event_type == core.EventType.EXECUTION_PAUSED:
-            return (), payload.detail, None
-        replies = []
+        replies: list[str] = []
+        files: list[dict[str, object]] = []
         for output_id in payload.output_refs:
             output = self._sessions.candidate_output(record.namespace_id, output_id)
-            if output is not None and output.payload.share_mode == "message" and output.payload.text:
+            if output is None:
+                continue
+            if output.payload.share_mode == "message" and output.payload.text:
                 replies.append(output.payload.text)
-        return tuple(replies), payload.reason, None
+            elif output.payload.share_mode in FILE_SHARE_MODES:
+                files.append(self._file_view(record, output.payload))
+        reason = payload.detail if terminal.event_type == core.EventType.EXECUTION_PAUSED else payload.reason
+        return tuple(replies), tuple(files), reason, None
+
+    def _file_view(self, record, output: core.OutputPayload) -> dict[str, object]:
+        """A handed-off file as a page may show it: name, size, caption and a signed download link."""
+        from jiuwenswarm.common.file_download_token import build_file_download_info
+
+        name = (output.file_path or "").rsplit("/", 1)[-1] or "file"
+        path = self._files.path(record.namespace_id, output) if output.file_ref and output.file_path else None
+        download_url = None
+        if path is not None and path.is_file():
+            download_url = build_file_download_info(str(path), name, record.session_id)["download_url"]
+        return {
+            "output_id": output.output_id,
+            "name": name,
+            "size": output.file_size,
+            "caption": output.text,
+            "share_mode": output.share_mode,
+            "download_url": download_url,
+        }
 
     async def _purge_loop(self) -> None:
         while True:
