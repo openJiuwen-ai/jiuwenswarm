@@ -48,7 +48,7 @@ agent 工具和代码片段。
 - `bubblewrap`
 - 使用 `network.mode: isolated` 时需要 `iproute2`、`iptables` 和 `nftables`
 - `isolated` 模式启用 uplink 出网时，宿主机需开启 IPv4 转发（`net.ipv4.ip_forward=1`），进程需具备 `NET_ADMIN` capability
-- 启用 Landlock 和 seccomp 时需要内核支持对应能力
+- Linux 沙箱强制要求内核支持 Seccomp filter；Landlock 按 compatibility 配置启用
 - 如果需要执行 JavaScript，则需要 `nodejs`
 
 Ubuntu 安装示例：
@@ -441,6 +441,8 @@ ls /tmp/jiuwenbox-logs
 | --- | --- |
 | `x86_64.blocked` | x86_64 上拦截的 syscall 名，如 `ptrace`、`mount`、`bpf` 等。留空表示不额外拦截。 |
 | `arm64.blocked` | arm64/aarch64 上拦截的 syscall 名。 |
+
+Linux 实际封禁集为内置最低安全基线与上述配置的并集，空列表不能关闭基线。过滤器构建或加载失败时拒绝启动沙箱；未知 syscall 名会报错。支持小端 64 位 x86_64/ARM64，Windows 桌面路径不受影响。基线、兼容性及验收步骤见 [Seccomp 安全说明](docs/seccomp-security.md)。
 
 #### `network`
 

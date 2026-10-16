@@ -157,7 +157,7 @@ landlock:
 
 # Seccomp syscall filtering.
 syscall:
-  # Syscall names to block on x86_64. Leave empty to disable explicit syscall blocking.
+  # Syscall names to block on x86_64. Empty adds no blocks; the built-in minimum baseline always applies.
   x86_64:
     blocked:
       - "kexec_load"

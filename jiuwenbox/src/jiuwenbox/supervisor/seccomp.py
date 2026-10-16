@@ -10,11 +10,13 @@ from __future__ import annotations
 import logging
 import platform
 import struct
-from functools import lru_cache
-from pathlib import Path
+import sys
+from collections.abc import Mapping
+from types import MappingProxyType
 
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox.models.policy import SyscallPolicy
+from jiuwenbox.supervisor.syscall_numbers import AARCH64_SYSCALLS, X86_64_SYSCALLS
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -26,6 +28,8 @@ BPF_W = 0x00
 BPF_ABS = 0x20
 BPF_JMP = 0x05
 BPF_JEQ = 0x10
+BPF_JGE = 0x30
+BPF_JSET = 0x40
 BPF_K = 0x00
 BPF_RET = 0x06
 
@@ -91,116 +95,52 @@ def _arch_aliases() -> tuple[str, ...]:
     return ARCH_ALIASES.get(_machine(), (_machine(),))
 
 
-def _fallback_syscall_numbers() -> dict[str, int]:
-    """Return a small syscall table for the current architecture."""
-    if _audit_arch() == AUDIT_ARCH_AARCH64:
-        return {
-            "lookup_dcookie": 18,
-            "umount2": 39,
-            "mount": 40,
-            "pivot_root": 41,
-            "nfsservctl": 42,
-            "acct": 89,
-            "exit": 93,
-            "unshare": 97,
-            "kexec_load": 104,
-            "init_module": 105,
-            "delete_module": 106,
-            "ptrace": 117,
-            "reboot": 142,
-            "kill": 129,
-            "tkill": 130,
-            "tgkill": 131,
-            "getpid": 172,
-            "getppid": 173,
-            "add_key": 217,
-            "request_key": 218,
-            "keyctl": 219,
-            "swapon": 224,
-            "swapoff": 225,
-            "perf_event_open": 241,
-            "name_to_handle_at": 264,
-            "open_by_handle_at": 265,
-            "setns": 268,
-            "finit_module": 273,
-            "bpf": 280,
-            "userfaultfd": 282,
-            "kexec_file_load": 294,
-            "io_uring_setup": 425,
-            "io_uring_enter": 426,
-            "io_uring_register": 427,
-            "clone3": 435,
-        }
-
-    return {
-        "read": 0, "write": 1, "open": 2, "close": 3, "stat": 4,
-        "fstat": 5, "lstat": 6, "poll": 7, "lseek": 8, "mmap": 9,
-        "mprotect": 10, "munmap": 11, "brk": 12, "ioctl": 16,
-        "access": 21, "pipe": 22, "select": 23, "sched_yield": 24,
-        "dup": 32, "dup2": 33, "pause": 34, "nanosleep": 35,
-        "getpid": 39, "socket": 41, "connect": 42, "accept": 43,
-        "sendto": 44, "recvfrom": 45, "bind": 49, "listen": 50,
-        "clone": 56, "fork": 57, "vfork": 58, "execve": 59, "exit": 60,
-        "wait4": 61, "kill": 62, "uname": 63, "fcntl": 72,
-        "flock": 73, "fsync": 74, "getcwd": 79, "chdir": 80,
-        "mkdir": 83, "rmdir": 84, "link": 86, "unlink": 87,
-        "chmod": 90, "chown": 92, "getuid": 102, "getgid": 104,
-        "geteuid": 107, "getegid": 108,
-        "ptrace": 101, "mount": 165, "umount2": 166, "reboot": 169,
-        "swapon": 167, "swapoff": 168, "pivot_root": 155,
-        "kexec_load": 246, "kexec_file_load": 320,
-        "unshare": 272, "setns": 308, "clone3": 435,
-        "userfaultfd": 323, "perf_event_open": 298, "bpf": 321,
-        "add_key": 248, "request_key": 249, "keyctl": 250,
-        "io_uring_setup": 425, "io_uring_enter": 426, "io_uring_register": 427,
-        "open_by_handle_at": 304, "name_to_handle_at": 303,
-        "init_module": 175, "finit_module": 313, "delete_module": 176,
-        "acct": 163, "nfsservctl": 180, "lookup_dcookie": 212,
+# The same baseline as the bundled Linux default policy. Configured blocks
+# are additive; even an empty model or an unreadable YAML cannot remove it.
+MINIMUM_BLOCKED_SYSCALLS = frozenset(
+    {
+        "kexec_load",
+        "kexec_file_load",
+        "reboot",
+        "pivot_root",
+        "swapon",
+        "swapoff",
+        "nfsservctl",
+        "lookup_dcookie",
+        "ptrace",
+        "mount",
+        "umount2",
+        "unshare",
+        "setns",
+        "userfaultfd",
+        "perf_event_open",
+        "bpf",
+        "add_key",
+        "request_key",
+        "keyctl",
+        "io_uring_setup",
+        "io_uring_enter",
+        "io_uring_register",
+        "open_by_handle_at",
+        "name_to_handle_at",
+        "init_module",
+        "finit_module",
+        "delete_module",
+        "acct",
     }
+)
+
+_NATIVE_SYSCALL_TABLES = {
+    AUDIT_ARCH_X86_64: MappingProxyType(X86_64_SYSCALLS),
+    AUDIT_ARCH_AARCH64: MappingProxyType(AARCH64_SYSCALLS),
+}
 
 
-@lru_cache(maxsize=1)
-def _get_syscall_numbers() -> dict[str, int]:
-    """Load the syscall number table for the current architecture.
-
-    Falls back to a small architecture-specific subset if /usr/include headers
-    are absent.
-    """
-    table: dict[str, int] = {}
-
-    machine = _machine()
-    if machine in {"aarch64", "arm64"}:
-        headers = [
-            Path("/usr/include/asm/unistd.h"),
-            Path("/usr/include/aarch64-linux-gnu/asm/unistd.h"),
-            Path("/usr/include/asm-generic/unistd.h"),
-        ]
-    else:
-        headers = [
-            Path("/usr/include/asm/unistd_64.h"),
-            Path("/usr/include/x86_64-linux-gnu/asm/unistd_64.h"),
-            Path("/usr/include/asm-generic/unistd.h"),
-        ]
-
-    for header in headers:
-        if header.exists():
-            try:
-                for line in header.read_text().splitlines():
-                    line = line.strip()
-                    if line.startswith("#define __NR_"):
-                        parts = line.split()
-                        if len(parts) >= 3:
-                            name = parts[1].removeprefix("__NR_")
-                            try:
-                                table[name] = int(parts[2])
-                            except ValueError:
-                                continue
-                if table:
-                    return table
-            except OSError:
-                continue
-
-    return _fallback_syscall_numbers()
+def _get_syscall_numbers() -> Mapping[str, int]:
+    """Return a pinned native ABI table, independent of installed headers."""
+    if sys.byteorder != "little" or struct.calcsize("P") != 8:
+        raise RuntimeError("Seccomp requires a supported little-endian 64-bit runtime")
+    return _NATIVE_SYSCALL_TABLES[_audit_arch()]
 
 
 def _blocked_syscalls_for_current_arch(policy: SyscallPolicy) -> list[str]:
@@ -222,7 +162,7 @@ def _bpf_jump(code: int, k: int, jt: int, jf: int) -> bytes:
     return struct.pack("<HBBI", code, jt, jf, k)
 
 
-def _append_daemon_signal_guard(prog: bytearray, syscall_table: dict[str, int]) -> None:
+def _append_daemon_signal_guard(prog: bytearray, syscall_table: Mapping[str, int]) -> None:
     """Deny kill-family syscalls that target sandbox infrastructure PIDs.
 
     Appended after policy-driven syscall blocks and before the default
@@ -241,13 +181,7 @@ def _append_daemon_signal_guard(prog: bytearray, syscall_table: dict[str, int]) 
 
         body = bytearray()
         body += _bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_ARG0_OFFSET)
-        eperm_index = (
-            1
-            + len(arg0_targets)
-            + (1 if arg1_targets else 0)
-            + len(arg1_targets)
-            + 1
-        )
+        eperm_index = 1 + len(arg0_targets) + (1 if arg1_targets else 0) + len(arg1_targets) + 1
         for index, value in enumerate(arg0_targets):
             remaining = eperm_index - (1 + index + 1)
             body += _bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, value, remaining, 0)
@@ -277,17 +211,13 @@ def build_seccomp_filter(policy: SyscallPolicy) -> bytes:
     Returns raw bytes suitable for writing to a memfd and passing to
     bwrap via --seccomp <fd>.
     """
-    blocked_names = set(_blocked_syscalls_for_current_arch(policy))
+    blocked_names = MINIMUM_BLOCKED_SYSCALLS | set(_blocked_syscalls_for_current_arch(policy))
 
     syscall_table = _get_syscall_numbers()
-    blocked_nrs: list[int] = []
-    for name in blocked_names:
-        if name in syscall_table:
-            blocked_nrs.append(syscall_table[name])
-        else:
-            logger.warning("Unknown syscall '%s', skipping", name)
-
-    blocked_nrs.sort()
+    unknown = blocked_names - syscall_table.keys()
+    if unknown:
+        raise ValueError(f"Unknown syscall(s) for {_machine()}: {', '.join(sorted(unknown))}")
+    blocked_nrs = sorted({syscall_table[name] for name in blocked_names})
     return _assemble_bpf(blocked_nrs)
 
 
@@ -317,6 +247,16 @@ def _assemble_bpf(blocked_nrs: list[int]) -> bytes:
     # Load syscall number
     prog += _bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR_OFFSET)
 
+    if _audit_arch() == AUDIT_ARCH_X86_64:
+        # x32 shares AUDIT_ARCH_X86_64 but tags nr with bit 30. Checking arch
+        # alone would allow the tagged variants of every denied syscall.
+        prog += _bpf_jump(BPF_JMP | BPF_JSET | BPF_K, 0x40000000, 0, 1)
+        prog += _bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ERRNO_ENOSYS)
+        # Linux < 5.4 also accepted untagged legacy x32 numbers 512..547.
+        prog += _bpf_jump(BPF_JMP | BPF_JGE | BPF_K, 512, 0, 2)
+        prog += _bpf_jump(BPF_JMP | BPF_JGE | BPF_K, 548, 1, 0)
+        prog += _bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ERRNO_ENOSYS)
+
     # For each blocked syscall: inline deny on match.
     # On miss, skip only the inline RET (``jf=1``). A larger skip would
     # jump over the next syscall's JEQ as well and leave the filter in an
@@ -332,5 +272,3 @@ def _assemble_bpf(blocked_nrs: list[int]) -> bytes:
     prog += _bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
 
     return bytes(prog)
-
-

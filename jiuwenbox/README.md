@@ -53,7 +53,7 @@ isolation policy in-process by spawning `bubblewrap` directly for each sandbox
 - `iproute2`, `iptables`, and `nftables` when `network.mode: isolated` is used
 - `NET_ADMIN` capability and `net.ipv4.ip_forward=1` on the host when isolated
   mode uses uplink egress
-- Kernel support for Landlock and seccomp when those features are enabled
+- Linux sandboxing requires kernel Seccomp filter support; Landlock follows its compatibility setting
 - `nodejs` if JavaScript execution is needed
 
 On Ubuntu:
@@ -467,6 +467,8 @@ Per-architecture seccomp syscall block lists:
 | --- | --- |
 | `x86_64.blocked` | Syscall names blocked on x86_64, e.g. `ptrace`, `mount`, `bpf`. Empty means no extra blocking. |
 | `arm64.blocked` | Syscall names blocked on arm64/aarch64. |
+
+The effective Linux block list is the union of a built-in minimum baseline and these configured blocks. Empty lists cannot disable the baseline. Filter build/load failures prevent sandbox startup; unknown syscall names fail explicitly. Supported ABIs are little-endian native 64-bit x86_64/ARM64. Windows desktop execution is unchanged. See [Seccomp security and validation](docs/seccomp-security.md).
 
 #### `network`
 

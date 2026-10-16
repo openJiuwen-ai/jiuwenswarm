@@ -966,13 +966,18 @@ class ProcessRuntime(RuntimeAdapter):
         Works from cached BPF bytes so the BPF program does not have to be
         re-assembled for every exec.
         """
+        if not bpf or len(bpf) % 8 or len(bpf) // 8 > 4096:
+            raise ValueError("Invalid seccomp BPF program size")
         if not hasattr(os, "memfd_create"):
             raise RuntimeError("os.memfd_create is required for seccomp filters")
         fd = os.memfd_create("jiuwenbox-seccomp", getattr(os, "MFD_CLOEXEC", 0x0001))
         try:
             offset = 0
             while offset < len(bpf):
-                offset += os.write(fd, bpf[offset:])
+                written = os.write(fd, bpf[offset:])
+                if written <= 0:
+                    raise OSError("Failed to write seccomp BPF program")
+                offset += written
             os.lseek(fd, 0, os.SEEK_SET)
         except Exception:
             os.close(fd)
@@ -2000,12 +2005,16 @@ class ProcessRuntime(RuntimeAdapter):
             seccomp_fd = self._open_seccomp_fd_from_bytes(
                 self._ensure_seccomp_bpf(sandbox_id, policy),
             )
-        except Exception:
-            logger.warning(
-                "Failed to build seccomp filter for sandbox %s; continuing without seccomp",
-                sandbox_id,
-                exc_info=True,
-            )
+        except Exception as exc:
+            # Never run user code without the mandatory syscall boundary.
+            # Close the listener before removing its socket and cached token.
+            with contextlib.suppress(OSError):
+                listener.close()
+            self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
+            raise RuntimeError(
+                f"Seccomp is required for Linux sandbox {sandbox_id}; "
+                f"refusing to start: {exc}"
+            ) from exc
 
         bwrap_args = self._build_sandbox_bwrap_args(
             sandbox_id,
@@ -2271,6 +2280,7 @@ class ProcessRuntime(RuntimeAdapter):
             network_module.teardown_network_uplink(uplink_handle)
         if netns_name and network_module.namespace_exists(netns_name):
             network_module.delete_named_namespace(netns_name)
+        self._netns_names.pop(sandbox_id, None)
         self._network_modes.pop(sandbox_id, None)
         self._runtime_policies.pop(sandbox_id, None)
         self._policy_binds.pop(sandbox_id, None)
