@@ -177,7 +177,16 @@ test('the persisted choice triggers a debounced auto-detection for both agents',
   // changes, in the CLI mode (built-in vs external) it is configured for.
   assert.match(sectionSource, /for \(const \[cliAgent, cliPath\] of currentPaths\)/);
   assert.match(sectionSource, /for \(const \[cliAgent, cliPath, useBuiltin\] of currentPaths\)/);
-  assert.match(sectionSource, /void detect\(cliAgent, cliPath, useBuiltin\)/);
+  // Automatic detection stays silent; the manual detect button wraps it in
+  // detectAndNotify, which toasts the outcome like the models settings'
+  // connection test.
+  assert.match(sectionSource, /detect\(cliAgent, cliPath, useBuiltin\)/);
+  assert.match(sectionSource, /void detectAndNotify\(cliAgent, cliPath, useBuiltin\)/);
+  assert.match(sectionSource, /void detectAndNotify\(cliAgent, draftValues\[cliPathKey\] \|\| ''\)/);
+  assert.match(sectionSource, /result\?\.status === 'ok' \|\| result\?\.status === 'warning'/);
+  assert.match(sectionSource, /showHint\(t\('config\.externalCli\.savedHint'\)\)/);
+  assert.match(sectionSource, /showHint\(t\('config\.externalCli\.detectSucceeded'\)\)/);
+  assert.match(sectionSource, /data-testid="settings-external-cli-toast"/);
   assert.match(sectionSource, /detectRequestIdsRef\.current\[cliAgent\] !== requestId/);
 });
 
@@ -235,9 +244,25 @@ test('re-detecting keeps the card layout stable instead of unmounting the path b
   // block and install button during probes, collapsing and regrowing the card
   // (the whole settings page shook on every 检测 click).
   assert.match(sectionSource, /const installed = isInstalledStatus\(result\);/);
-  // The install button stays mounted and is merely disabled while detecting.
+  // Controls stay mounted and are merely disabled while detecting (or while
+  // this agent's own install is running).
   assert.doesNotMatch(sectionSource, /\{!detectingNow \? \(/);
-  assert.match(sectionSource, /disabled=\{disabled \|\| !onCommitAgent \|\| detectingNow\}/);
+  assert.match(sectionSource, /disabled=\{disabled \|\| !onDetect \|\| agentInstalling\}/);
+});
+
+test('installed cards drop the one-click install button and show the built-in path', () => {
+  const sectionSource = readFileSync(
+    new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // The installed card only carries the detect button: the one-click install
+  // entry lives solely in the not-installed hint block.
+  const installBtnMatches = sectionSource.match(/settings-panel-external-cli-agent-install-btn/g) ?? [];
+  assert.equal(installBtnMatches.length, 1);
+  // Built-in mode shows the actual built-in CLI path from detection instead of
+  // the generic placeholder text.
+  assert.match(sectionSource, /useBuiltin && detectedPath \? \(/);
 });
 
 test('install-now bypasses the no-change short circuit so a deleted built-in CLI can be repaired', () => {
