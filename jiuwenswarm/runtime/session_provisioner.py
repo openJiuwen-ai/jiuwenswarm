@@ -783,8 +783,6 @@ class RuntimeSessionProvisioner:
             selection = ModelSelection.model_validate(raw_selection) if raw_selection is not None else None
             try:
                 if provision_input.cron_id and selection is not None:
-                    if selection.type != "model":
-                        raise ValueError("Scheduled task sessions only support a single model")
                     from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
                     selection = ModelSelectionResolver().restore(selection)

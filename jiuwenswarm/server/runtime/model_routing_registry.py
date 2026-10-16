@@ -35,6 +35,12 @@ class ModelSelectionResolver:
     def __init__(self, catalog: ModelCatalog | None = None) -> None:
         self.catalog = catalog or ModelCatalog()
 
+    def restore(self, selection: ModelSelection) -> ModelSelection:
+        """Restore a saved reference, falling back only if it was deleted."""
+        if self.catalog.has_selection(selection):
+            return selection
+        return self.choose(None, ModelExecutionContext())
+
     def choose(self, explicit: ModelSelection | None, context: ModelExecutionContext) -> ModelSelection:
         if explicit is not None:
             return explicit

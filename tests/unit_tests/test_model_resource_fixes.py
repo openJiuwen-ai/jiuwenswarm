@@ -438,33 +438,18 @@ def test_resource_delete_ignores_session_references(catalog_state, monkeypatch):
     assert [entry["model_id"] for entry in catalog_state["models"]["defaults"]] == ["mdl_b"]
 
 
-def test_delete_model_prunes_group_routes_instead_of_failing(catalog_state):
+def test_delete_keeps_model_group_routes_valid(catalog_state):
     catalog_state["models"]["groups"] = [{
-        "model_group_id": "mgp_a",
-        "display_name": "Coding Pool",
-        "routes": [
-            {"route_id": "rte_a", "model_id": "mdl_a"},
-            {"route_id": "rte_b", "model_id": "mdl_b"},
-        ],
-    }, {
-        "model_group_id": "mgp_only_a",
-        "display_name": "Solo",
-        "routes": [{"route_id": "rte_c", "model_id": "mdl_a"}],
+        "model_group_id": "mgp_a", "routes": [{"route_id": "rte_a", "model_id": "mdl_a"}],
     }]
-    assert config_module.delete_model_resource("model", "mdl_a")
-    assert [entry["model_id"] for entry in catalog_state["models"]["defaults"]] == ["mdl_b"]
-    assert catalog_state["models"]["groups"] == [{
-        "model_group_id": "mgp_a",
-        "display_name": "Coding Pool",
-        "routes": [{"route_id": "rte_b", "model_id": "mdl_b"}],
-    }]
+    with pytest.raises(ModelSelectionError, match="references missing model_id"):
+        config_module.delete_model_resource("model", "mdl_a")
+    assert len(catalog_state["models"]["defaults"]) == 2
 
 
 def test_deleted_session_selection_uses_current_default(catalog_state, monkeypatch):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        JiuWenSwarmDeepAdapter,
-    )
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     catalog_state["models"]["defaults"] = [catalog_state["models"]["defaults"][1]]
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
@@ -481,9 +466,7 @@ def test_deleted_session_selection_uses_current_default(catalog_state, monkeypat
 @pytest.mark.parametrize("cron", [True, False])
 def test_deleted_explicit_selection_only_falls_back_for_cron(catalog_state, cron):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        JiuWenSwarmDeepAdapter,
-    )
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._is_cron_execution = cron
@@ -495,9 +478,7 @@ def test_deleted_explicit_selection_only_falls_back_for_cron(catalog_state, cron
 
 def test_deleted_session_route_uses_current_default(catalog_state, monkeypatch):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        JiuWenSwarmDeepAdapter,
-    )
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     catalog_state["models"]["groups"] = [{
         "model_group_id": "mgp_a", "routes": [{"route_id": "current", "model_id": "mdl_a"}],

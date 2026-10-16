@@ -2075,25 +2075,6 @@ def delete_model_resource(resource_type: str, resource_id: str, *, cron_referenc
         filtered = [entry for entry in entries if entry.get(id_key) != resource_id]
         if len(filtered) == len(entries):
             return None
-        if resource_type == "model":
-            # Drop routes that still point at this model so delete does not fail
-            # validation with raw mgp_/mdl_ ids in the UI (#5477). Groups left
-            # with no routes are removed.
-            next_groups = []
-            for group in candidate.get("groups") or []:
-                if not isinstance(group, dict):
-                    continue
-                routes = [
-                    route
-                    for route in (group.get("routes") or [])
-                    if not (isinstance(route, dict) and str(route.get("model_id") or "") == resource_id)
-                ]
-                if not routes:
-                    continue
-                next_group = dict(group)
-                next_group["routes"] = routes
-                next_groups.append(next_group)
-            candidate["groups"] = next_groups
         candidate[key] = filtered
         _validate_model_candidate(candidate)
         deleted = True
@@ -2204,7 +2185,8 @@ def update_default_models_in_config(
     models_list: list[dict[str, Any]], *, cron_references_checked: bool = False,
 ) -> None:
     def _mutate(data):
-        models = _models_for_write(data)
+        if "models" not in data:
+            data["models"] = {}
         for entry in models_list:
             if isinstance(entry, dict) and isinstance(entry.get("alias"), str):
                 entry["alias"] = DoubleQuotedScalarString(entry["alias"])

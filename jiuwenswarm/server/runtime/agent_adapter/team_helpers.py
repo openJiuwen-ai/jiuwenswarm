@@ -3549,7 +3549,7 @@ async def _process_team_message_stream(
                     stored.model_dump(exclude_none=True) if stored is not None else None
                 )
             if isinstance(stored_selection, dict):
-                from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
+                from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
                 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
                 selected = SwarmModelSelection.model_validate(stored_selection)
