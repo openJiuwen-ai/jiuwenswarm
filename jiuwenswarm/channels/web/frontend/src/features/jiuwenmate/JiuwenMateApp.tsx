@@ -26,11 +26,22 @@ import {
   updateColleagueDraft,
   type JiuwenMateState,
 } from './createFlowState';
-import { createJiuwenMateApi, errorMessage, type JiuwenMateModelCatalog } from './jiuwenmateApi';
+import {
+  createJiuwenMateApi,
+  errorMessage,
+  selectableColleagueResources,
+  withColleagueEdit,
+  type ColleagueResourceOption,
+  type JiuwenMateModelCatalog,
+} from './jiuwenmateApi';
 import { emptyCapabilities } from './mockData';
 import { ColleagueCreatePage } from './pages/ColleagueCreatePage';
 import { ColleagueEmptyPage } from './pages/ColleagueEmptyPage';
-import { ColleagueProfilePage, type JiuwenMateProfileSection } from './pages/ColleagueProfilePage';
+import {
+  ColleagueProfilePage,
+  type ColleagueResourceCatalog,
+  type JiuwenMateProfileSection,
+} from './pages/ColleagueProfilePage';
 import { ColleagueWorkspacePage, type JiuwenMateWorkspaceIntent } from './pages/ColleagueWorkspacePage';
 import { OfficeDashboardPage } from './pages/OfficeDashboardPage';
 import { OfficeIntroPage } from './pages/OfficeIntroPage';
@@ -77,6 +88,13 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     section: 'overview',
   });
   const [connectionEpoch, setConnectionEpoch] = useState(0);
+  const [resourceCatalog, setResourceCatalog] = useState<ColleagueResourceCatalog>({
+    skills: [],
+    connectors: [],
+    plugins: [],
+    ready: false,
+  });
+  const [savingResources, setSavingResources] = useState(false);
   const [activity, setActivity] = useState<JiuwenMateActivity | null>(null);
   const [activityStatus, setActivityStatus] = useState<LoadStatus>('loading');
   const [activityError, setActivityError] = useState('');
@@ -123,6 +141,34 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
       last = next;
     });
   }, []);
+
+  useEffect(() => {
+    if (state.view !== 'colleague-profile') return undefined;
+    let active = true;
+    setResourceCatalog({ skills: [], connectors: [], plugins: [], ready: false });
+    void (async () => {
+      const [skillsResult, connectorsResult] = await Promise.allSettled([
+        webRequest('skills.list', { with_installed: true }),
+        webRequest('mcp.list', { filter: 'local' }),
+      ]);
+      if (!active) return;
+      const selected = selectableColleagueResources(
+        skillsResult.status === 'fulfilled' ? skillsResult.value : null,
+        connectorsResult.status === 'fulfilled' ? connectorsResult.value : null,
+      );
+      const side = (result: PromiseSettledResult<unknown>, options: ColleagueResourceOption[]) =>
+        result.status === 'fulfilled' ? options : null;
+      setResourceCatalog({
+        skills: side(skillsResult, selected.skills),
+        connectors: side(connectorsResult, selected.connectors),
+        plugins: side(skillsResult, selected.plugins),
+        ready: true,
+      });
+    })();
+    return () => {
+      active = false;
+    };
+  }, [connectionEpoch, state.view]);
 
   useEffect(() => {
     let active = true;
@@ -330,6 +376,32 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             colleague={selectedColleague}
             modelCatalog={modelCatalog}
             initialSection={profileIntent.section}
+            resourceCatalog={resourceCatalog}
+            savingResources={savingResources}
+            onSaveSettings={(edit) => {
+              setSavingResources(true);
+              setActionError('');
+              const settings = withColleagueEdit(selectedColleague, modelCatalog.models, edit);
+              return api
+                .updateSettings(selectedColleague.id, settings)
+                .then(() => api.publish(selectedColleague.id))
+                .then(() => api.getColleague(selectedColleague.id))
+                .then((fresh) => {
+                  setState((current) => ({
+                    ...current,
+                    colleagues: current.colleagues.map((item) =>
+                      item.id === fresh.id
+                        ? { ...fresh, imConfigured: item.imConfigured, disabled: item.disabled }
+                        : item,
+                    ),
+                  }));
+                })
+                .catch((error: unknown) => {
+                  setActionError(errorMessage(error));
+                  throw error;
+                })
+                .finally(() => setSavingResources(false));
+            }}
             onOpenOffice={() => showFeature('office', openOffice)}
             onChat={() => openWorkspace(selectedColleague.id)}
             onConfigureIm={() => setState((current) => openColleagueAuthorization(current, selectedColleague.id))}

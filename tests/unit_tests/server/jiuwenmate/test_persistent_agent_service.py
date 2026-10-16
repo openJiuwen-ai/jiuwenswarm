@@ -21,6 +21,7 @@ from jiuwenswarm.server.jiuwenmate.models import (
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import HostWorkspaceAccess, WorkspaceStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
+from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog
 from jiuwenswarm.server.jiuwenmate.service import (
     WORKSPACE_PROMPT,
     ConfiguredModelProvider,
@@ -75,6 +76,10 @@ TEMPLATES = {
 def make_service(tmp_path, models=None):
     ticks = count()
     base = datetime(2026, 10, 12, 8, 0, tzinfo=timezone.utc)
+    library = tmp_path / "skill-library"
+    skill = library / "report-writer"
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text("---\nname: report-writer\n---\n写报告。\n", encoding="utf-8")
     return PersistentAgentService(
         PersistentAgentRepository(tmp_path / "agents.sqlite3"),
         TemplateStore(tmp_path / "templates"),
@@ -82,6 +87,11 @@ def make_service(tmp_path, models=None):
         template_source=TEMPLATES.get,
         clock=lambda: base + timedelta(seconds=next(ticks)),
         windows=WindowBackendStore(tmp_path / "agents.sqlite3"),
+        resources=InstalledResourceCatalog(
+            skills_dir=library,
+            builtin_dir=tmp_path / "no-builtin",
+            state_file=tmp_path / "no-state.json",
+        ),
     )
 
 
@@ -193,7 +203,8 @@ def test_custom_colleague_gets_its_own_core_template_and_first_version(tmp_path)
     assert view.current_version == "v1" and not view.has_unpublished_changes
     assert template.agent_card.id == view.agent_id
     assert spec.card.id == view.agent_id
-    assert spec.system_prompt == "你是研发同事。\n\n负责整理研发进展。" + WORKSPACE_PROMPT
+    assert spec.system_prompt.startswith("你是研发同事。\n\n负责整理研发进展。" + WORKSPACE_PROMPT)
+    assert spec.skills == ["report-writer"] and "已装配技能" in spec.system_prompt
     assert set(spec.enabled_features) == {"construction", "workspace_read", "workspace_write"}
     assert spec.enable_task_loop is False
     assert spec.model.model_client_config.client_id == f"jiuwenmate:{view.agent_id}"
@@ -261,7 +272,7 @@ def test_settings_change_only_affects_requests_after_publication(tmp_path):
 
     assert published.config_version == "v2"
     assert not service.get_colleague(NS, view.agent_id).has_unpublished_changes
-    assert v2.load_spec().system_prompt == "你是研发同事，只输出要点。" + WORKSPACE_PROMPT
+    assert v2.load_spec().system_prompt.startswith("你是研发同事，只输出要点。" + WORKSPACE_PROMPT)
     old_spec, _ = build_invocation(
         service.snapshot(NS, view.agent_id, pinned.config_version),
         pinned,

@@ -17,6 +17,7 @@ from jiuwenswarm.server.jiuwenmate import web_adapter
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
+from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.web_adapter import WEB_NAMESPACE, JiuwenMateWebAdapter
 from jiuwenswarm.server.runtime.gateway_adapter import AdapterRegistry
@@ -62,6 +63,10 @@ class Host:
         self.created += 1
         ticks = count()
         base = datetime(2026, 10, 14, 8, 0, tzinfo=timezone.utc)
+        library = self.tmp_path / "skill-library"
+        skill = library / "report-writer"
+        skill.mkdir(parents=True, exist_ok=True)
+        (skill / "SKILL.md").write_text("---\nname: report-writer\n---\n写报告。\n", encoding="utf-8")
         return PersistentAgentService(
             PersistentAgentRepository(self.tmp_path / "agents.sqlite3"),
             TemplateStore(self.tmp_path / "templates"),
@@ -69,6 +74,11 @@ class Host:
             template_source=lambda _: None,
             clock=lambda: base + timedelta(seconds=next(ticks)),
             windows=WindowBackendStore(self.tmp_path / "agents.sqlite3"),
+            resources=InstalledResourceCatalog(
+                skills_dir=library,
+                builtin_dir=self.tmp_path / "no-builtin",
+                state_file=self.tmp_path / "no-state.json",
+            ),
         )
 
     async def call(self, method: ReqMethod, **params):

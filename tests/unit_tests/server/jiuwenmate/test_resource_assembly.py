@@ -1,0 +1,248 @@
+"""JM-14: each colleague publishes its own Skill, connector and plugin selection."""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from itertools import count
+
+from jiuwenswarm.server.jiuwenmate.models import CapabilitySelection, ColleagueSettings, PersistentAgentError
+from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
+from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog, SkillSource, ConnectorSource
+from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
+from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
+from openjiuwen.harness.rails.skills.skill_use_rail import SkillUseRail
+from openjiuwen.harness.schema.deep_agent_spec import RailSpec, TeamModelConfig
+
+import pytest
+
+NS = "workspace-1"
+
+
+class FakeModels:
+    def default_selection(self):
+        return "deepseek#0"
+
+    def resolve(self, selection, *, client_id):
+        return TeamModelConfig(
+            model_client_config=ModelClientConfig(
+                client_id=client_id,
+                client_provider="OpenAI",
+                api_key="sk-test",
+                api_base="https://example.invalid/v1",
+                model_name="deepseek",
+            ),
+            model_request_config=ModelRequestConfig(model="deepseek"),
+        )
+
+
+class MapCatalog:
+    def __init__(self, skills=None, plugins=None, connectors=None):
+        self._skills = skills or {}
+        self._plugins = plugins or {}
+        self._connectors = connectors or {}
+
+    def skill(self, name):
+        return self._skills.get(name)
+
+    def plugin_skills(self, name):
+        return self._plugins.get(name)
+
+    def connector(self, name):
+        return self._connectors.get(name)
+
+
+def write_skill(directory, name, body="按步骤整理纪要。"):
+    directory.mkdir(parents=True)
+    (directory / "SKILL.md").write_text(f"---\nname: {name}\n---\n{body}\n", encoding="utf-8")
+    return directory
+
+
+def service(tmp_path, catalog, ids):
+    ticks = count()
+    base = datetime(2026, 10, 16, 8, 0, tzinfo=timezone.utc)
+    return PersistentAgentService(
+        PersistentAgentRepository(tmp_path / "agents.sqlite3"),
+        TemplateStore(tmp_path / "templates"),
+        models=FakeModels(),
+        template_source=lambda _: None,
+        clock=lambda: base + timedelta(seconds=next(ticks)),
+        id_factory=lambda: next(ids),
+        resources=catalog,
+    )
+
+
+def settings(**changes):
+    fields = {
+        "name": "研发同事",
+        "description": "负责整理研发进展。",
+        "capabilities": CapabilitySelection(model="deepseek#0"),
+    }
+    fields.update(changes)
+    return ColleagueSettings(**fields)
+
+
+def test_each_colleague_gets_its_own_skill_copy_and_deletion_keeps_the_others(tmp_path):
+    library = tmp_path / "library"
+    notes = write_skill(library / "meeting-notes", "meeting-notes", "原始技能")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret", encoding="utf-8")
+    os.symlink(outside / "secret.txt", notes / "leaked.txt")
+    catalog = MapCatalog(skills={"meeting-notes": SkillSource(name="meeting-notes", directory=notes)})
+    ids = iter(["mate_one", "mate_two"])
+    host = service(tmp_path, catalog, ids)
+    capabilities = CapabilitySelection(model="deepseek#0", skills=("meeting-notes",))
+
+    first = host.create_colleague(NS, settings(name="甲", capabilities=capabilities))
+    second = host.create_colleague(NS, settings(name="乙", capabilities=capabilities))
+    first_spec = host.current_snapshot(NS, first.agent_id).load_spec()
+    second_spec = host.current_snapshot(NS, second.agent_id).load_spec()
+    first_copy = Path(first_spec.rails[0].params["skills_dir"]) / "meeting-notes" / "SKILL.md"
+    second_copy = Path(second_spec.rails[0].params["skills_dir"]) / "meeting-notes" / "SKILL.md"
+
+    assert first_spec.skills == ["meeting-notes"]
+    assert isinstance(first_spec.rails[0], RailSpec)
+    built = first_spec.rails[0].build(language="cn")
+    assert isinstance(built, SkillUseRail) and built.include_tools is False
+    assert first_copy.read_text(encoding="utf-8") == second_copy.read_text(encoding="utf-8")
+    assert not (first_copy.parent / "leaked.txt").exists()
+    assert first_copy.parent != second_copy.parent
+    assert "已装配技能" in first_spec.system_prompt
+
+    first_copy.write_text("只改甲的副本", encoding="utf-8")
+    assert "只改甲的副本" not in notes.joinpath("SKILL.md").read_text(encoding="utf-8")
+    assert "只改甲的副本" not in second_copy.read_text(encoding="utf-8")
+
+    host.delete_colleague(NS, first.agent_id)
+
+    assert not first_copy.exists()
+    assert second_copy.is_file()
+    assert notes.joinpath("SKILL.md").is_file()
+
+
+def test_a_plugin_copies_only_its_own_skill(tmp_path):
+    library = tmp_path / "library"
+    chosen = write_skill(library / "report-writer", "report-writer")
+    write_skill(library / "other-skill", "other-skill", "不应复制")
+    catalog = MapCatalog(
+        plugins={"report-pack": (SkillSource(name="report-writer", directory=chosen),)},
+    )
+    host = service(tmp_path, catalog, iter(["mate_plugin"]))
+
+    view = host.create_colleague(
+        NS,
+        settings(capabilities=CapabilitySelection(model="deepseek#0", plugins=("report-pack",))),
+    )
+    root = Path(host.current_snapshot(NS, view.agent_id).load_spec().rails[0].params["skills_dir"])
+
+    assert (root / "report-writer" / "SKILL.md").is_file()
+    assert not (root / "other-skill").exists()
+
+
+def test_connectors_keep_separate_credentials_and_do_not_touch_the_process_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOKEN", "from-process")
+    before = dict(os.environ)
+    entry = {
+        "name": "docs",
+        "transport": "streamable-http",
+        "url": "https://example.invalid/mcp",
+        "headers": {"Authorization": "Bearer ${TOKEN}"},
+    }
+    catalog = MapCatalog(
+        connectors={
+            "docs": ConnectorSource(name="docs", entry=entry, secrets={"TOKEN": "stored-secret"}),
+        }
+    )
+    ids = iter(["mate_a", "mate_b"])
+    host = service(tmp_path, catalog, ids)
+    capabilities = CapabilitySelection(model="deepseek#0", connectors=("docs",))
+
+    first = host.create_colleague(NS, settings(name="甲", capabilities=capabilities))
+    second = host.create_colleague(NS, settings(name="乙", capabilities=capabilities))
+    first_mcp = host.current_snapshot(NS, first.agent_id).load_spec().mcps[0]
+    second_mcp = host.current_snapshot(NS, second.agent_id).load_spec().mcps[0]
+
+    assert first_mcp.server_id != second_mcp.server_id
+    assert first_mcp.auth_headers["Authorization"] == "Bearer stored-secret"
+    assert os.environ["TOKEN"] == "from-process"
+    assert os.environ.keys() == before.keys()
+
+
+def test_a_missing_connector_secret_is_not_taken_from_the_process_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOKEN", "from-process")
+    entry = {
+        "name": "docs",
+        "transport": "streamable-http",
+        "url": "https://example.invalid/mcp",
+        "headers": {"Authorization": "Bearer ${TOKEN}"},
+    }
+    host = service(
+        tmp_path,
+        MapCatalog(connectors={"docs": ConnectorSource(name="docs", entry=entry, secrets={})}),
+        iter(["mate_missing"]),
+    )
+
+    with pytest.raises(PersistentAgentError) as denied:
+        host.create_colleague(
+            NS,
+            settings(capabilities=CapabilitySelection(model="deepseek#0", connectors=("docs",))),
+        )
+
+    assert denied.value.code == "CREDENTIAL_MISSING"
+    assert os.environ["TOKEN"] == "from-process"
+
+
+def test_republishing_changed_skill_content_keeps_the_previous_copy(tmp_path):
+    library = tmp_path / "library"
+    notes = write_skill(library / "meeting-notes", "meeting-notes", "第一版")
+    catalog = MapCatalog(skills={"meeting-notes": SkillSource(name="meeting-notes", directory=notes)})
+    host = service(tmp_path, catalog, iter(["mate_notes"]))
+    view = host.create_colleague(
+        NS,
+        settings(capabilities=CapabilitySelection(model="deepseek#0", skills=("meeting-notes",))),
+    )
+    first = host.current_snapshot(NS, view.agent_id)
+    first_root = Path(first.load_spec().rails[0].params["skills_dir"])
+
+    assert host.publish(NS, view.agent_id).config_version == first.config_version
+
+    notes.joinpath("SKILL.md").write_text("---\nname: meeting-notes\n---\n第二版\n", encoding="utf-8")
+    second = host.publish(NS, view.agent_id)
+    second_root = Path(host.current_snapshot(NS, view.agent_id).load_spec().rails[0].params["skills_dir"])
+
+    assert second.config_version == "v2"
+    assert first_root != second_root
+    assert "第一版" in (first_root / "meeting-notes" / "SKILL.md").read_text(encoding="utf-8")
+    assert "第二版" in (second_root / "meeting-notes" / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_an_uninstalled_skill_refuses_publication(tmp_path):
+    host = service(tmp_path, MapCatalog(), iter(["mate_none"]))
+
+    with pytest.raises(PersistentAgentError) as denied:
+        host.create_colleague(
+            NS,
+            settings(capabilities=CapabilitySelection(model="deepseek#0", skills=("missing",))),
+        )
+
+    assert denied.value.code == "RESOURCE_NOT_INSTALLED"
+    assert list((tmp_path / "workspaces").rglob(".staging-*")) == []
+
+
+def test_installed_catalog_reads_a_plugin_from_the_skill_library(tmp_path):
+    skills = tmp_path / "skills"
+    write_skill(skills / "report-writer", "report-writer")
+    state = skills / "skills_state.json"
+    state.write_text(
+        json.dumps({"installed_plugins": [{"name": "report-pack", "skills": ["report-writer"]}]}),
+        encoding="utf-8",
+    )
+    catalog = InstalledResourceCatalog(skills_dir=skills, builtin_dir=tmp_path / "missing-builtin", state_file=state)
+
+    assert catalog.skill("report-writer").directory == (skills / "report-writer").resolve()
+    assert catalog.plugin_skills("report-pack")[0].name == "report-writer"
+    assert catalog.skill("absent") is None
+    assert catalog.plugin_skills("absent") is None
