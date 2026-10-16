@@ -6,13 +6,16 @@ common 经 ``common.external_providers`` 反向取用 server 侧存储实现
 （分层规则 R1），注册由实现模块在文件末尾自注册（import 即注册）。
 server 家族的进程形态中：
 
-- **AgentServer 主进程**：功能路径自然加载各实现模块，无需显式装配；
+- **AgentServer 主进程（Front）**：控制面直接处理 config.*（front/router →
+  control/config_service → config_panel handlers），a2ui / team 两个 store /
+  mcp_credential 域**不经功能路径自然加载**（实测 Front 链零装配）——
+  ``app_agentserver._run`` 入口调用 ``install()``；
 - **runtime worker 子进程**：启动链（worker.main → service → ipc/... →
   lifecycle）不加载任何 server runtime 模块，而 ``_preload_runtime_backend``
   会在功能模块加载**之前**调用 ``migrate_legacy_model_selections``（经
   ``provider("session_metadata")``）——必须在进入任何注入点调用前显式
   装配（P0 回归：worker 启动即 ExternalProviderUnregistered，AGENT_READY
-  永不到达）。
+  永不到达），``worker.lifecycle`` 入口已调用。
 
 与 gateway 进程的过渡装配（``gateway/server_store_bridge``，拆仓时删除）
 不同，本模块是 server 侧的常驻服务装配。

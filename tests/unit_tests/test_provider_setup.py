@@ -72,3 +72,32 @@ def test_worker_cold_start_preload_registers_providers() -> None:
     )
     assert result.returncode == 0, result.stderr[-800:]
     assert str(sorted(SERVER_PROVIDER_DOMAINS)) in result.stdout, result.stdout
+
+
+@pytest.mark.slow
+def test_front_process_config_path_registers_providers() -> None:
+    """P1 回归：Front（主进程）控制面的 config 路径完成装配。
+
+    Front 链（front/router → control/config_service → config_panel handlers）
+    零自然装配——app_agentserver._install_common_providers 是唯一装配点。
+    子进程按 Front 真实加载顺序复现：装配前 config 面板 handler 触发的
+    provider 域不可用，装配后 7 域齐备。
+    """
+    code = (
+        "import jiuwenswarm.server.front.router as router\n"
+        "router._load_config_service()\n"
+        "from jiuwenswarm.common.external_providers import registered_domains\n"
+        "assert registered_domains() == [], 'cold front process must have no providers'\n"
+        "import jiuwenswarm.server.app_agentserver as entry\n"
+        "entry._install_common_providers()\n"
+        "print(sorted(registered_domains()))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stderr[-800:]
+    assert str(sorted(SERVER_PROVIDER_DOMAINS)) in result.stdout, result.stdout
