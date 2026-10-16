@@ -202,7 +202,7 @@ def test_group_without_routes_returns_validation_error(catalog_state, fields):
 
 @pytest.mark.parametrize("content", ['{"model_selection":', "null", "[]"])
 @pytest.mark.asyncio
-async def test_corrupt_session_blocks_delete_with_explicit_error(tmp_path, monkeypatch, content):
+async def test_corrupt_session_does_not_block_delete(tmp_path, monkeypatch, content):
     from jiuwenswarm.common.config_panel import model_resource_handlers as handlers
 
     directory = tmp_path / "broken-session"
@@ -213,7 +213,7 @@ async def test_corrupt_session_blocks_delete_with_explicit_error(tmp_path, monke
         "defaults": [{"model_id": "mdl_a", "model_client_config": {"model_name": "a"}}],
     }})
     deleted = []
-    monkeypatch.setattr(handlers, "delete_model_resource", lambda *args, **kwargs: deleted.append(args))
+    monkeypatch.setattr(handlers, "delete_model_resource", lambda *args, **kwargs: deleted.append(args) or True)
     channel = SimpleNamespace(send_response=AsyncMock())
 
     await handlers.model_resource_handler(
@@ -221,10 +221,8 @@ async def test_corrupt_session_blocks_delete_with_explicit_error(tmp_path, monke
     )
 
     response = channel.send_response.call_args.kwargs
-    assert response["ok"] is False
-    assert response["code"] == "MODEL_RUNTIME_UNAVAILABLE"
-    assert "session metadata" in response["error"]
-    assert deleted == []
+    assert response["ok"] is True
+    assert deleted == [("model", "mdl_a")]
 
 
 def test_corrupt_cron_reference_file_returns_explicit_error(tmp_path, monkeypatch):
@@ -342,15 +340,74 @@ async def test_reference_check_fails_closed_on_store_error(catalog_state, monkey
     store.aclose.assert_awaited_once()
 
 
-def test_legacy_replace_cannot_remove_referenced_model(catalog_state, monkeypatch):
+def test_legacy_replace_removes_referenced_model(catalog_state, monkeypatch):
     from jiuwenswarm.common.model_catalog import SelectionReference
 
     monkeypatch.setattr(ModelCatalog, "find_references", lambda *args, **kwargs: [SelectionReference("session", "s")])
-    before = deepcopy(catalog_state)
-    with pytest.raises(ModelSelectionError) as caught:
-        config_module.update_default_models_in_config([catalog_state["models"]["defaults"][1]])
-    assert caught.value.code == "MODEL_SELECTION_REFERENCED"
-    assert catalog_state == before
+    config_module.update_default_models_in_config([catalog_state["models"]["defaults"][1]])
+    assert [entry["model_id"] for entry in catalog_state["models"]["defaults"]] == ["mdl_b"]
+
+
+def test_resource_delete_ignores_session_references(catalog_state, monkeypatch):
+    monkeypatch.setattr(ModelCatalog, "find_references", lambda *args, **kwargs: pytest.fail("reference scan ran"))
+    assert config_module.delete_model_resource("model", "mdl_a")
+    assert [entry["model_id"] for entry in catalog_state["models"]["defaults"]] == ["mdl_b"]
+
+
+def test_delete_keeps_model_group_routes_valid(catalog_state):
+    catalog_state["models"]["groups"] = [{
+        "model_group_id": "mgp_a", "routes": [{"route_id": "rte_a", "model_id": "mdl_a"}],
+    }]
+    with pytest.raises(ModelSelectionError, match="references missing model_id"):
+        config_module.delete_model_resource("model", "mdl_a")
+    assert len(catalog_state["models"]["defaults"]) == 2
+
+
+def test_deleted_session_selection_uses_current_default(catalog_state, monkeypatch):
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    catalog_state["models"]["defaults"] = [catalog_state["models"]["defaults"][1]]
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._session_instance_agent_definition = None
+    monkeypatch.setattr(adapter, "_session_stored_model_name", lambda _sid: "")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection",
+        lambda _sid: ModelSelection(type="model", id="mdl_a"),
+    )
+    request = AgentRequest(request_id="r", session_id="s", params={})
+    assert adapter._requested_model_name(request) == "model:mdl_b"
+
+
+@pytest.mark.parametrize("cron", [True, False])
+def test_deleted_explicit_selection_only_falls_back_for_cron(catalog_state, cron):
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._is_cron_execution = cron
+    request = AgentRequest(request_id="r", session_id="", params={
+        "model_selection": {"type": "model", "id": "deleted"},
+    })
+    assert adapter._requested_model_name(request) == ("model:mdl_a" if cron else "model:deleted")
+
+
+def test_deleted_session_route_uses_current_default(catalog_state, monkeypatch):
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    catalog_state["models"]["groups"] = [{
+        "model_group_id": "mgp_a", "routes": [{"route_id": "current", "model_id": "mdl_a"}],
+        "is_default": True,
+    }]
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    monkeypatch.setattr(adapter, "_session_stored_model_name", lambda _sid: "")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection",
+        lambda _sid: ModelSelection(type="model_group", id="mgp_a", route_id="deleted"),
+    )
+    request = AgentRequest(request_id="r", session_id="s", params={})
+    assert adapter._requested_model_name(request) == "model_group:mgp_a"
 
 
 def test_session_then_spec_then_default_group_priority(catalog_state, monkeypatch):

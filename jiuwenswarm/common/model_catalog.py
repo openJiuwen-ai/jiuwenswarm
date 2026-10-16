@@ -95,6 +95,19 @@ class ModelCatalog:
                 return group
         raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, f"unknown model_group_id {group_id!r}")
 
+    def has_selection(self, selection: ModelSelection) -> bool:
+        """Whether a saved selection still names a model, group, and route."""
+        if selection.type == "model":
+            return selection.id in self.snapshot["by_id"]
+        for group in self.snapshot["groups"]:
+            if not isinstance(group, dict) or group.get("model_group_id") != selection.id:
+                continue
+            return selection.route_id is None or any(
+                isinstance(route, dict) and route.get("route_id") == selection.route_id
+                for route in group.get("routes") or []
+            )
+        return False
+
     @staticmethod
     def _safe_model(entry: dict[str, Any], source: str) -> dict[str, Any]:
         mcc = entry.get("model_client_config") or {}

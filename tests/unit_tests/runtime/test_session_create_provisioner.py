@@ -176,6 +176,34 @@ async def test_moa_create_persists_selection_and_bypasses_normal_warm_pool(monke
 
 
 @pytest.mark.asyncio
+async def test_cron_create_replaces_deleted_model_selection(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    config = {"models": {"defaults": [{
+        "model_id": "current", "is_default": True,
+        "model_client_config": {"model_name": "current"},
+    }]}}
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: config)
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.get_config", lambda: config)
+    provisioner = _provisioner(state)
+    original_claim = provisioner._agent_manager.claim_prewarmed_session
+
+    async def claim(**kwargs):
+        result = await original_claim(**kwargs)
+        result.session_id = "cron-created-session"
+        return result
+
+    monkeypatch.setattr(provisioner._agent_manager, "claim_prewarmed_session", claim)
+    prepared = await provisioner.prepare_session_create(_input(
+        cron_id="cron-job", model_selection={"type": "model", "id": "deleted"},
+    ))
+    assert get_session_metadata(prepared.result.session_id)["model_selection"]["id"] == "current"
+    await provisioner.abort_session_provision(prepared)
+
+
+@pytest.mark.asyncio
 async def test_disabled_group_moa_rejected_before_claim(monkeypatch, tmp_path):
     state = _State()
     _install_product_hooks(monkeypatch, tmp_path, state)
