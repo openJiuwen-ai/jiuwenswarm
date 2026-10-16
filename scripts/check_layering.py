@@ -46,6 +46,8 @@ PKG = "jiuwenswarm"
 
 logger = logging.getLogger(__name__)
 
+_ALL_LOCAL_PKGS = None  # 延迟初始化（collect_py_files 依赖 git）
+
 # ---------------------------------------------------------------------------
 # 已知存量（燃尽清单）——随 B1'/A4 消化，消除后此表同步缩减
 # 基线：upstream/develop fbd8d6f41 + browser_config 下沉（2026-10-13 实测）
@@ -112,6 +114,18 @@ BASELINE = {
 # ---------------------------------------------------------------------------
 # import 图构建
 # ---------------------------------------------------------------------------
+
+def _all_local_top_modules() -> tuple[str, ...]:
+    """本仓全部顶级模块名（含根包单文件），供 R1 白名单式检查。"""
+    tops: set[str] = set()
+    for rel in collect_py_files():
+        parts = rel.split("/")
+        if len(parts) >= 2 and parts[0] == PKG:
+            tops.add(parts[1][:-3] if parts[1].endswith(".py") else parts[1])
+    tops.discard("")
+    tops.discard("common")  # R1 语义：common 只能 import common
+    return tuple(sorted(tops))
+
 
 def _git(*args: str) -> str:
     git_path = shutil.which("git") or "git"
@@ -291,10 +305,13 @@ def _check_rule(
 
 
 def run_rules(graph: ImportGraph) -> int:
+    global _ALL_LOCAL_PKGS
+    if _ALL_LOCAL_PKGS is None:
+        _ALL_LOCAL_PKGS = _all_local_top_modules()
     exit_code = 0
     exit_code |= _check_rule(
-        graph, "R1 common 禁止 import server/agents/channels/gateway/extensions/symphony",
-        (f"{PKG}.common.",), ("server", "agents", "channels", "gateway", "extensions", "symphony"),
+        graph, "R1 common 禁止 import 任何非 common 的本仓模块（零本仓引用不变量）",
+        (f"{PKG}.common.",), _ALL_LOCAL_PKGS,
         KNOWN_R1_COMMON_BACKREFS,
     )
     exit_code |= _check_rule(
@@ -432,6 +449,8 @@ def main() -> int:
     # 结果走 stdout、无日志前缀：保持 CLI 输出与 UT 断言（读 stdout）不变
     logging.basicConfig(stream=sys.stdout, format="%(message)s", level=logging.INFO)
 
+    global _ALL_LOCAL_PKGS
+    _ALL_LOCAL_PKGS = _all_local_top_modules()
     graph = ImportGraph()
     if args.baseline:
         run_baseline(graph)

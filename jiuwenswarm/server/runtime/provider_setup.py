@@ -59,6 +59,9 @@ def install_front() -> None:
     for domain, module_name in modules.items():
         if domain not in installed:
             register(domain, _LazyProvider(f"jiuwenswarm.server.runtime.{module_name}"))
+    if "cron_store_factory" not in installed:
+        # 不在 server.runtime 前缀下，单独注册（懒加载同款）
+        register("cron_store_factory", _LazyProvider("jiuwenswarm.runtime.cron.factory"))
 
 
 def install() -> None:
@@ -73,6 +76,11 @@ def install() -> None:
     import jiuwenswarm.server.runtime.team_binding_store  # noqa: F401
     import jiuwenswarm.server.runtime.team_entity_store  # noqa: F401
     import jiuwenswarm.server.runtime.session.session_metadata  # noqa: F401
+
+    from jiuwenswarm.common.external_providers import register
+    from jiuwenswarm.runtime.cron import factory as cron_factory
+
+    register("cron_store_factory", cron_factory)
 
     _INSTALLED = True
     logger.debug("[server-provider-setup] common external providers installed")
