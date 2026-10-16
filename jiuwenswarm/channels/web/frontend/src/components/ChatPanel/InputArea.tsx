@@ -3923,7 +3923,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const handleModeSwitch = useCallback(
     async (targetMode: AgentMode) => {
-      if (modeLocked || mode === targetMode) return;
+      if (isProcessing || hasHistory || mode === targetMode) return;
       // Draft-session in-place mode switch: skills picked for the previous
       // mode no longer apply, so drop them from the store and remove their
       // inline chips from the editor. (Switching from a real session enters a

@@ -24,7 +24,6 @@ export type SettingsServices = {
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;
-  externalCliInstallBusy?: boolean;
   onGetExternalCliInstallStatus?: (
     agent: ExternalCliAgentKind,
   ) => Promise<ExternalCliDependencyInstallStatus>;

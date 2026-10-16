@@ -27,7 +27,6 @@ export function SettingsPage({
   onSelectExternalCliPath,
   onTrackExternalCliDependencyInstalls,
   externalCliInstallStatuses,
-  externalCliInstallBusy,
   onGetExternalCliInstallStatus,
   onExternalCliInstallStatusChange,
   externalCliPendingChoices,
@@ -48,7 +47,6 @@ export function SettingsPage({
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;
-  externalCliInstallBusy?: boolean;
   onGetExternalCliInstallStatus?: (
     agent: ExternalCliAgentKind,
   ) => Promise<ExternalCliDependencyInstallStatus>;
@@ -86,7 +84,6 @@ export function SettingsPage({
       onSelectExternalCliPath={onSelectExternalCliPath}
       onTrackExternalCliDependencyInstalls={onTrackExternalCliDependencyInstalls}
       externalCliInstallStatuses={externalCliInstallStatuses}
-      externalCliInstallBusy={externalCliInstallBusy}
       onGetExternalCliInstallStatus={onGetExternalCliInstallStatus}
       onExternalCliInstallStatusChange={onExternalCliInstallStatusChange}
       externalCliPendingChoices={externalCliPendingChoices}

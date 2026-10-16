@@ -58,7 +58,6 @@ function ExternalCliSettings({
   const { t } = useTranslation();
   const {
     isConnected,
-    externalCliInstallBusy,
     externalCliInstallStatuses,
     externalCliPendingChoices,
     externalCliDetectResults,
@@ -116,8 +115,9 @@ function ExternalCliSettings({
     const timer = window.setTimeout(() => setAutoSavedAgents([]), NOTICE_AUTO_DISMISS_MS);
     return () => window.clearTimeout(timer);
   }, [autoSavedAgents]);
-  const installBusy = externalCliInstallBusy === true;
-  const disabled = inheritedDisabled || saving || installBusy || !isConnected;
+  // Installs are per-agent: only the installing agent's card is disabled (the
+  // section disables it), so the other agent stays installable in parallel.
+  const disabled = inheritedDisabled || saving || !isConnected;
   useUnsavedChanges('external-cli', changed);
 
   useEffect(() => {
@@ -352,8 +352,9 @@ function ExternalCliSettings({
   const commitAgentChoice = useCallback(
     async (cliAgent: ExternalCliAgentKind, choice: ExternalCliAgentChoice) => {
       // Install progress is rendered inline above the cards, so a click while
-      // an install is running is simply ignored.
-      if (installBusy) return;
+      // this agent's install is running is simply ignored. Other agents stay
+      // usable: installs are per-agent (per-agent locks on the backend).
+      if (externalCliInstallStatuses?.[cliAgent]?.status === 'running') return;
       const effectiveDrafts: Record<string, string> = {
         ...draftValues,
         [externalCliKey(cliAgent, 'enabled')]: choice.enabled ? 'true' : 'false',
@@ -376,7 +377,7 @@ function ExternalCliSettings({
       // the persisted validation loop skips it here.
       await persistUpdates(updates, effectiveDrafts, cliAgent);
     },
-    [draftValues, installBusy, persistUpdates, savedValues],
+    [draftValues, externalCliInstallStatuses, persistUpdates, savedValues],
   );
 
   if (config.external_cli_agents_supported !== undefined && !parseConfigBoolean(config.external_cli_agents_supported))
