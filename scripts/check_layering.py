@@ -305,8 +305,8 @@ def run_rules(graph: ImportGraph) -> int:
         KNOWN_R2_SERVER_TO_GATEWAY,
     )
     exit_code |= _check_rule(
-        graph, "R3 gateway 禁止 import server/agents/channels",
-        (f"{PKG}.gateway.",), ("server", "agents", "channels"),
+        graph, "R3 gateway 禁止 import server/agents/channels/runtime/symphony",
+        (f"{PKG}.gateway.",), ("server", "agents", "channels", "runtime", "symphony"),
         KNOWN_R3_GATEWAY_FOREIGN,
     )
     exit_code |= _check_rule(
