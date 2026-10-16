@@ -350,6 +350,7 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_dir,
     )
+    from openjiuwen.agent_teams.schema.deep_agent_spec import ProgressiveToolSpec
 
     templates = load_agent_group_package(resolve_agent_group_dir(agent_group_name))
     leader_base = spec.agents.get("leader")
@@ -383,6 +384,12 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
     # 'fs'/'shell'. Skills remain a planned leader capability, so the
     # filesystem engine must be there even though the design profile does
     # not advertise fs tools itself.
+    #
+    # progressive_tool is pinned disabled with the base surface: the design
+    # profile is a small curated toolset with no long tail, and the
+    # platform-wide switch (#8145) would defer every design tool behind
+    # tool_search. Pinned rather than None so a harness-side default flip
+    # cannot re-enable it.
     leader_spec = leader_spec.model_copy(
         update={
             "tools": [],
@@ -390,6 +397,7 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
             "mcps": [],
             "subagents": [],
             "enable_skill_discovery": False,
+            "progressive_tool": ProgressiveToolSpec(enabled=False),
         }
     )
     # Hard canvas rules ride the spec-level system prompt (TEAM_POLICY's
@@ -423,7 +431,14 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
     # expert table (agents[m] ⋈ synthesized roster). The members still never
     # enter the spawn roster (predefined_members stays [] below), so nothing
     # is spawned — the entries are data for derive_design_expert_specs only.
-    teammate_base = spec.agents["teammate"]
+    # Pin the platform-wide progressive_tool flag (#8145) off on the derivation
+    # base: worker node tools are the member's whole surface, and deferring
+    # them behind tool_search breaks the single-shot worker protocol. The
+    # write-back also covers the plain-worker fallback base (no agent_template).
+    teammate_base = spec.agents["teammate"].model_copy(
+        update={"progressive_tool": ProgressiveToolSpec(enabled=False)}
+    )
+    spec.agents["teammate"] = teammate_base
     for agent_name, template in templates.items():
         if agent_name in ("leader", "teammate"):
             continue
@@ -433,6 +448,10 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
         )
     spec.enable_swarmflow = False
     spec.predefined_members = []
+    # Team-level swarmflow progressive switch (swarmflow_progressive_tool):
+    # derive_swarmflow_expert_specs re-adds ProgressiveToolSpec to the expert
+    # table when this is on, bypassing the strips above — force it off too.
+    spec.progressive_tool = False
 
 
 def enrich_team_spec_for_swarm(
