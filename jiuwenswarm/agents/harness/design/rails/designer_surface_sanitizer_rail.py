@@ -23,11 +23,13 @@ Tools kept (card names as registered by ability_manager.add_ability):
 * base sys_operation support (list_files / glob / bash / grep / read_file —
   kept per user decision 2026-10-10; the skill rail reads SKILL.md front
   matter through the sys_operation engine).
-* ``tool_search`` (progressive-disclosure discovery).
 
 Everything else — team collaboration (build_team / send_message / spawn_* /
-task tools / swarmflow …), org_* control tools, ``workspace_meta``, or any
-tool a future agent-core build mounts unconditionally — is dropped.
+task tools / swarmflow …), org_* control tools, ``workspace_meta``, the
+progressive-disclosure meta tools (``tool_search`` / ``tool_call`` — the
+design assembly strips ``progressive_tool`` so they never register, and the
+keep-list drops them should that ever change), or any tool a future
+agent-core build mounts unconditionally — is dropped.
 
 Prompt sections are subtracted by name instead: the leader's section set is
 stable (core harness sections + the team/design policy sections), and only
@@ -87,8 +89,6 @@ _KEEP_TOOL_NAMES: frozenset[str] = frozenset({
     "bash",
     "grep",
     "read_file",
-    # Progressive-disclosure discovery.
-    "tool_search",
 })
 
 # Prompt sections removed on every model call. ``team_bootstrap`` is the

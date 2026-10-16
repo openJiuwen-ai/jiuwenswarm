@@ -1466,6 +1466,16 @@ class DesignerAdapter(GatewayAdapter):
                     # designer.node.updated pushes and designer.run.get.
                     _launch_run_trigger(coordinator, payload, _run_update_callback(request))
                     run_out = _initial_running_run(payload)
+                    # Accept-and-trigger contract: answer with a RUNNING
+                    # snapshot. The stored record can still carry the previous
+                    # trigger's terminal status (the background task may not
+                    # have taken the coordinator lock yet), and the frontend's
+                    # applyRun only starts its 400ms poll on an active status —
+                    # a stale 'completed' leaves a rerun with no feedback
+                    # channel at all (pushes are its only other leg).
+                    if run_out is not None:
+                        run_out["status"] = "running"
+                        run_out["current_node_ids"] = []
                     warning = str(payload.get("warning") or "").strip()
                     warnings = [
                         str(x)
