@@ -15472,11 +15472,22 @@ class JiuWenSwarmDeepAdapter:
         从 self._instance 出发做有界 BFS(只走前向引用,不触全局表),收集
         _agent_callback_manager 后逐个 clear()——按实例命名空间整组反注册。
         会话级 agent 均为每会话新建(census 各组件计数按会话线性增长即证),
-        不存在进程共享 agent 被误清的风险。
+        不存在进程共享 agent 被误清的风险。agent-core 提供 BaseAgent.aclose
+        时优先调用(实例+内裹 react agent+子代理控制一并释放),BFS 保留作
+        残余清扫(clear 幂等,旧版 core 无 aclose 时 BFS 独立兜底)。
         """
         if not self._is_session_scoped_adapter or self._instance is None:
             return
         try:
+            instance_close = getattr(self._instance, "aclose", None)
+            if instance_close is not None:
+                try:
+                    await instance_close()
+                except Exception as exc:  # noqa: BLE001 - 失败降级 BFS
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session instance aclose "
+                        "failed: %s", exc,
+                    )
             from types import BuiltinFunctionType, FunctionType, MethodType, ModuleType
 
             managers: list = []
