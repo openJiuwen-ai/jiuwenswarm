@@ -104,7 +104,82 @@ MSG_TYPE_MAP = {
     "audio": "[audio]",
     "file": "[file]",
     "sticker": "[sticker]",
+    "post": "[post]",
 }
+
+
+def _parse_post_nodes(nodes: list) -> str:
+    """将 post 富文本单段落内的节点列表拼接为纯文本。"""
+    parts: list[str] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        tag = node.get("tag")
+        text = str(node.get("text") or "")
+        if tag == "text":
+            parts.append(text)
+        elif tag == "a":
+            href = str(node.get("href") or "")
+            if text and href:
+                parts.append(f"{text}({href})")
+            else:
+                parts.append(text or href)
+        elif tag == "at":
+            user_name = str(node.get("user_name") or "").strip()
+            user_id = str(node.get("user_id") or "").strip()
+            parts.append(f"@{user_name or user_id}")
+        elif tag == "img":
+            parts.append(MSG_TYPE_MAP["image"])
+        elif text:
+            # emotion 等携带 text 的节点直接取文本
+            parts.append(text)
+    return "".join(parts)
+
+
+def parse_post_content(content: str) -> str:
+    """
+    解析飞书富文本（post）消息内容为纯文本。
+
+    post 消息的 content 为 JSON 字符串，兼容两种形态：
+    - 直挂形态：{"title": ..., "content": [[node, ...], ...]}
+    - 多语言包裹形态：{"data": {"post": {"zh_cn": {"title": ..., "content": [...]}}}}
+
+    解析失败或结构不符合预期时返回 "[post]" 占位符，
+    与既有未知消息类型的占位行为保持一致。
+    """
+    placeholder = MSG_TYPE_MAP["post"]
+    try:
+        data = json.loads(content)
+        if not isinstance(data, dict):
+            return placeholder
+        post = data.get("data")
+        if isinstance(post, dict):
+            # 多语言包裹形态：{"data": {"post": {"<lang>": {...}}}}
+            post = post.get("post")
+            if isinstance(post, dict) and post:
+                lang_post = post.get("zh_cn")
+                if not isinstance(lang_post, dict):
+                    lang_post = next(iter(post.values()), None)
+                post = lang_post
+        else:
+            # 直挂形态：{"title": ..., "content": [...]}
+            post = data
+        if not isinstance(post, dict):
+            return placeholder
+        segments: list[str] = []
+        title = post.get("title")
+        if isinstance(title, str) and title.strip():
+            segments.append(title.strip())
+        for paragraph in post.get("content") or []:
+            if isinstance(paragraph, list):
+                text = _parse_post_nodes(paragraph)
+                if text:
+                    segments.append(text)
+        return "\n".join(segments) if segments else placeholder
+    except (TypeError, ValueError, AttributeError):
+        # json.JSONDecodeError 是 ValueError 子类，由 ValueError 覆盖，
+        # 不与其并列捕获（G.ERR.09 禁止父子异常同捕）
+        return placeholder
 
 
 class _ThreadLocalLoopProxy:
@@ -3025,6 +3100,9 @@ class FeishuChannel(BaseChannel):
         """
         msg_type = message.message_type
 
+        if msg_type == "post":
+            return parse_post_content(message.content)
+
         if msg_type == "text":
             try:
                 text = json.loads(message.content).get("text", "")
@@ -3053,6 +3131,10 @@ class FeishuChannel(BaseChannel):
             return self._parse_message_content(message), None
 
         msg_type = message.message_type
+
+        # 富文本（post）消息：解析标题与段落为纯文本
+        if msg_type == "post":
+            return parse_post_content(message.content), None
 
         # 文本消息
         if msg_type == "text":
