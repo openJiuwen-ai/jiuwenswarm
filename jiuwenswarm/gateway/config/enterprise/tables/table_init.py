@@ -8,6 +8,12 @@ from __future__ import annotations
 from openjiuwen_runtime.foundation.db.handler import DBHandler
 from openjiuwen_runtime.foundation.db.table_def import TableDefinition
 
+from .a2a_migration import ensure_dispatch_user_column, ensure_user_state_identity
+from .a2a_models import (
+    A2A_OUTBOUND_DISPATCH_TABLE_DEF,
+    A2A_OUTBOUND_RUNTIME_STATE_TABLE_DEF,
+    A2A_OUTBOUND_USER_STATE_TABLE_DEF,
+)
 from .application_config_models import (
     AUDIT_LOG_CONFIG_TABLE_DEF,
     CHANNEL_CONFIG_TABLE_DEF,
@@ -27,6 +33,8 @@ from .key_models import (
 from .quota_models import QUOTA_TABLE_DEFINITIONS
 from .session_map_models import SESSION_MAP_TABLE_DEF
 from .template_models import (
+    A2A_ACCESS_POLICY_TEMPLATE_TABLE_DEF,
+    A2A_OUTBOUND_TEMPLATE_TABLE_DEF,
     AGENT_TEMPLATE_TABLE_DEF,
     EMBEDDING_TEMPLATE_TABLE_DEF,
     EXTENSION_CONFIG_TEMPLATE_TABLE_DEF,
@@ -47,6 +55,11 @@ ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
     MCP_TEMPLATE_TABLE_DEF,
     PERMISSIONS_TEMPLATE_TABLE_DEF,
     AGENT_TEMPLATE_TABLE_DEF,
+    A2A_OUTBOUND_TEMPLATE_TABLE_DEF,
+    A2A_ACCESS_POLICY_TEMPLATE_TABLE_DEF,
+    A2A_OUTBOUND_USER_STATE_TABLE_DEF,
+    A2A_OUTBOUND_RUNTIME_STATE_TABLE_DEF,
+    A2A_OUTBOUND_DISPATCH_TABLE_DEF,
     INSTANCE_AGENT_RESOURCE_TABLE_DEF,
     CHANNEL_CONFIG_TABLE_DEF,
     LOG_MASKING_RULE_TABLE_DEF,
@@ -64,4 +77,8 @@ ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
 async def init_all_tables(handler: DBHandler) -> None:
     """对已连接的 ``handler`` 依次 ``init_table``，幂等（表已存在则跳过创建逻辑）。"""
     for table_def in ALL_TABLE_DEFINITIONS:
+        if table_def is A2A_OUTBOUND_USER_STATE_TABLE_DEF:
+            await ensure_user_state_identity(handler.get_engine())
+        if table_def is A2A_OUTBOUND_DISPATCH_TABLE_DEF:
+            await ensure_dispatch_user_column(handler.get_engine())
         await handler.init_table(table_def)
