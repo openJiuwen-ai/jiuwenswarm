@@ -92,6 +92,61 @@ def test_upsert_preserves_omitted_secret_and_encrypts_rotation(catalog_state, mo
     assert saved["model_client_config"]["api_key"] == "enc:new"
 
 
+@pytest.mark.parametrize("level", ["on", "off", "high", ""])
+def test_reasoning_resource_round_trip_and_reset(catalog_state, level):
+    import io
+
+    import yaml
+    from ruamel.yaml import YAML
+
+    catalog_state["models"]["defaults"][0]["model_config_obj"] = {"reasoning_level": "high"}
+    saved = config_module.upsert_model_resource({
+        "model_id": "mdl_a", "model_config_obj": {"reasoning_level": level},
+    })
+    stream = io.StringIO()
+    YAML().dump(saved, stream)
+    loaded = yaml.safe_load(stream.getvalue())
+    assert loaded["model_config_obj"]["reasoning_level"] == level
+    catalog_state["models"]["defaults"][0] = loaded
+    detail = ModelCatalog(catalog_state).get_public_model_detail("mdl_a")
+    assert detail["model_config_obj"]["reasoning_level"] == level
+
+
+@pytest.mark.parametrize("level, expected", [(True, "on"), (False, "off")])
+def test_reasoning_resource_detail_recovers_legacy_yaml_booleans(catalog_state, level, expected):
+    catalog_state["models"]["defaults"][0]["model_config_obj"] = {"reasoning_level": level}
+    detail = ModelCatalog(catalog_state).get_public_model_detail("mdl_a")
+    assert detail["model_config_obj"]["reasoning_level"] == expected
+    assert catalog_state["models"]["defaults"][0]["model_config_obj"]["reasoning_level"] is level
+
+
+@pytest.mark.parametrize("runtime", ["server", "gateway.embedded"])
+@pytest.mark.parametrize("level, mode", [("on", "enabled"), ("off", "disabled"), (True, "enabled"), (False, "disabled")])
+def test_stable_selection_translates_reasoning_before_core_compilation(catalog_state, runtime, level, mode):
+    from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
+
+    entry = catalog_state["models"]["defaults"][0]
+    entry["model_client_config"].update({"model_name": "Qwen3.8-Flash", "api_base": "https://example.com/v1"})
+    entry["model_config_obj"] = {"reasoning_level": level, "temperature": 0.3}
+    catalog_state["models"]["groups"] = [{
+        "model_group_id": "mgp_reasoning", "enabled": True,
+        "routes": [{"route_id": "rte_reasoning", "model_id": "mdl_a", "enabled": True}],
+    }]
+    resolver_type = import_module(f"jiuwenswarm.{runtime}.runtime.model_routing_registry").ModelSelectionResolver
+    resolver = resolver_type(ModelCatalog(catalog_state))
+    for selection in (
+        ModelSelection(type="model", id="mdl_a"),
+        ModelSelection(type="model_group", id="mgp_reasoning"),
+    ):
+        resolved = resolver.resolve(selection)
+        model = resolved if selection.type == "model" else resolved.routes[0].model
+        assert "reasoning_level" not in model.request_defaults
+        assert model.request_defaults["reasoning"] == {"mode": mode}
+        assert model.request_defaults["temperature"] == 0.3
+        assert "reasoning_level" not in str(compile_model_selection(resolved).model_request_config.model_dump())
+    assert entry["model_config_obj"]["reasoning_level"] == level
+
+
 @pytest.mark.parametrize("operation", ["upsert", "delete"])
 def test_agentos_resource_is_read_only(catalog_state, operation):
     with pytest.raises(ModelSelectionError) as caught:
