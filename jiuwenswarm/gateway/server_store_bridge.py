@@ -37,7 +37,7 @@ def install() -> None:
     import jiuwenswarm.server.runtime.team_entity_store  # noqa: F401
     import jiuwenswarm.server.runtime.session.session_metadata  # noqa: F401
 
-    from jiuwenswarm.runtime.cron import factory as cron_factory
+    from jiuwenswarm.gateway.runtime.cron import factory as cron_factory
 
     from jiuwenswarm.common.external_providers import register
 
