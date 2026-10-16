@@ -30,6 +30,7 @@ from jiuwenswarm.server.jiuwenmate.models import (
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, WORKSPACE_WRITE, WorkspaceStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
+from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog, ResourceCatalog, assemble_resources
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, publish_spec
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.harness.schema.deep_agent_spec import TeamModelConfig
@@ -172,11 +173,13 @@ class PersistentAgentService:
         id_factory: Callable[[], str] = _new_agent_id,
         windows: WindowBackendStore | None = None,
         workspaces: WorkspaceStore | None = None,
+        resources: ResourceCatalog | None = None,
     ) -> None:
         self._repository = repository
         self._templates = templates
         self._windows = windows
         self._workspaces = workspaces or WorkspaceStore(repository.db_path.parent / "workspaces")
+        self._resources = resources
         self._models = models
         self._template_source = template_source
         self._clock = clock
@@ -208,6 +211,11 @@ class PersistentAgentService:
         if definition is None:
             raise PersistentAgentError("colleague not found", code="NOT_FOUND")
         return definition
+
+    def _resource_catalog(self) -> ResourceCatalog:
+        if self._resources is None:
+            self._resources = InstalledResourceCatalog()
+        return self._resources
 
     def _check_model(self, settings: ColleagueSettings, agent_id: str) -> None:
         if settings.capabilities.model is not None:
@@ -338,10 +346,11 @@ class PersistentAgentService:
         settings = definition.settings
         if settings.capabilities.model is None:
             raise PersistentAgentError("choose a model before publishing", code="MODEL_NOT_CONFIGURED")
-        self._workspaces.ensure(namespace_id, agent_id)
+        office = self._workspaces.ensure(namespace_id, agent_id)
+        assembled = assemble_resources(agent_id, settings.capabilities, office, self._resource_catalog())
         fields = {
             "card": {"id": agent_id, "name": settings.name, "description": settings.description},
-            "system_prompt": self._templates.read_persona(agent_id) + WORKSPACE_PROMPT,
+            "system_prompt": self._templates.read_persona(agent_id) + WORKSPACE_PROMPT + assembled.prompt,
             "model": self._models.resolve(settings.capabilities.model, client_id=f"jiuwenmate:{agent_id}"),
             "enabled_features": ["construction", WORKSPACE_READ, WORKSPACE_WRITE],
             "share_file_max_bytes": SHARE_FILE_MAX_BYTES,
@@ -349,6 +358,7 @@ class PersistentAgentService:
             "enable_sys_operation": True,
             # Otherwise core probes the model for image input outside the budget port.
             "enable_read_image_multimodal": False,
+            **assembled.spec_fields,
         }
         try:
             if definition.current_version is not None:
