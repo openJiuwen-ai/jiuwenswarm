@@ -2014,6 +2014,24 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(chunk)
 
     def _handle_file_api_post(self, parsed) -> None:
+        # Browsers always send Sec-Fetch-Site on navigations/fetches. Reject
+        # cross-site POSTs before any mutating /file-api route runs so a
+        # foreign HTML form cannot drive localhost skills/upload/import/etc.
+        # Missing header (curl, native clients) is left alone.
+        fetch_site = str(
+            self.headers.get("Sec-Fetch-Site")
+            or self.headers.get("sec-fetch-site")
+            or ""
+        ).strip().lower()
+        if fetch_site == "cross-site":
+            logger = getattr(self, "logger", None)
+            if logger is not None:
+                logger.warning(
+                    "file-api cross-site request rejected: path=%s",
+                    parsed.path,
+                )
+            self._write_json(403, {"error": "forbidden_origin"})
+            return
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
             return
