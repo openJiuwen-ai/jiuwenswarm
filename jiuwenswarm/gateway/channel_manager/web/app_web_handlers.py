@@ -620,10 +620,8 @@ _FORWARD_REQ_METHODS = frozenset({
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
-<<<<<<< HEAD
     "group.create", "group.delete", "group.list", "group.get", "group.update",
     "group.member.add", "group.history.get",
-=======
     # JiuwenMate 同事管理：由 AgentServer 的 JiuwenMateWebAdapter 处理，Gateway 无本地实现。
     "jiuwenmate.colleague.ensure_default",
     "jiuwenmate.colleague.list",
@@ -634,27 +632,13 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "jiuwenmate.colleague.publish",
     "jiuwenmate.colleague.delete",
     "jiuwenmate.models.list",
-<<<<<<< HEAD
->>>>>>> d934f611f (feat(JM10): connect the colleague pages to server-side colleague management)
-=======
     "jiuwenmate.chat.send",
     "jiuwenmate.chat.history",
     "jiuwenmate.request.get",
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
->>>>>>> ceae12037 (feat(JM10): add private chat, history and request status)
-=======
-=======
     "jiuwenmate.request.abort",
->>>>>>> a19e2db98 (feat(JM12): let the sender stop a running reply or cancel a queued message)
-=======
-    "jiuwenmate.request.abort",
->>>>>>> 7ae2ea868 (feat(JM12): let the sender stop a running reply or cancel a queued message)
     "jiuwenmate.conversation.list",
     "jiuwenmate.conversation.rename",
     "jiuwenmate.conversation.delete",
->>>>>>> c978f5126 (feat(JM10): keep several private conversations for each colleague)
     "initialize",
     "session.switch",
     "session.fork",
