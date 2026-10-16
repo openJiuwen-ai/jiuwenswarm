@@ -136,7 +136,9 @@ def ports(tmp_path, request: RequestRecord) -> core.PersistentPorts:
     windows = WindowBackendStore(tmp_path / "agents.sqlite3")
     backend = windows.bind(request.namespace_id, request.agent_id, request.session_id)
     workspace = HostWorkspaceAccess(WorkspaceStore(tmp_path / "workspaces"), request.namespace_id, request.agent_id)
-    return core.PersistentPorts(commit=host, budget=host, window_backend=backend, workspace_access=workspace)
+    return core.PersistentPorts(
+        commit=host, budget=host, window_backend=backend, workspace_access=workspace, workspace_write_access=workspace
+    )
 
 
 def test_default_colleague_is_created_once_and_published(tmp_path):
@@ -192,7 +194,7 @@ def test_custom_colleague_gets_its_own_core_template_and_first_version(tmp_path)
     assert template.agent_card.id == view.agent_id
     assert spec.card.id == view.agent_id
     assert spec.system_prompt == "你是研发同事。\n\n负责整理研发进展。" + WORKSPACE_PROMPT
-    assert set(spec.enabled_features) == {"construction", "workspace_read"}
+    assert set(spec.enabled_features) == {"construction", "workspace_read", "workspace_write"}
     assert spec.enable_task_loop is False
     assert spec.model.model_client_config.client_id == f"jiuwenmate:{view.agent_id}"
 
