@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 from weakref import WeakKeyDictionary
 
+import aiohttp
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from jiuwenswarm.common.protocol_ids import (
@@ -45,6 +46,9 @@ from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
+)
+from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+    new_web_proxy_client_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -230,6 +234,17 @@ class WebChannel(BaseWsChannel):
         self.diagnosis_agent_client: Any = None
         self._trajectory_pending_updates: dict[tuple[str, str], Any] = {}
         self._trajectory_send_task: asyncio.Task[None] | None = None
+        # 3rd-agent Web UI proxy: one northbound port per agent_type.
+        self.web_proxy_enabled: bool = False
+        self.web_proxy_auth_enabled: bool = True
+        self.web_proxy_config: Any = None
+        self.web_port_manager: Any = None
+        self.web_registry_watcher: Any = None
+        self.web_resolver: Any = None
+        self.web_runtime_release: Any = None
+        self.web_proxy_session: Any = None
+        self.web_proxy_http_session: Any = None
+        self._web_proxy_session_lock = asyncio.Lock()
 
     @staticmethod
     def _coalescible_stream_frame(
@@ -762,6 +777,42 @@ class WebChannel(BaseWsChannel):
         )
         await self._uvicorn_server.serve()
 
+    async def ensure_web_proxy_session(self) -> aiohttp.ClientSession:
+        """Return the shared aiohttp session, creating it once per channel.
+
+        Double-checked under ``_web_proxy_session_lock`` so a burst of HTTP/WS
+        proxy requests after start (or after the previous session closed) cannot
+        each construct a ClientSession and leak the overwritten ones.
+        """
+        session = self.web_proxy_session
+        if session is not None and not session.closed:
+            return session
+        async with self._web_proxy_session_lock:
+            session = self.web_proxy_session
+            if session is not None and not session.closed:
+                return session
+            session = new_web_proxy_client_session()
+            self.web_proxy_session = session
+            return session
+
+    async def ensure_web_proxy_http_session(self) -> aiohttp.ClientSession:
+        """HTTP-only session. Each request closes its socket.
+
+        YuanRong's frontend answers the second request on a keep-alive
+        connection with an empty 404, which shows up as a blank SPA and
+        failed module loads. WebSocket stays on ``ensure_web_proxy_session``.
+        """
+        session = self.web_proxy_http_session
+        if session is not None and not session.closed:
+            return session
+        async with self._web_proxy_session_lock:
+            session = self.web_proxy_http_session
+            if session is not None and not session.closed:
+                return session
+            session = new_web_proxy_client_session(force_close=True)
+            self.web_proxy_http_session = session
+            return session
+
     async def stop(self) -> None:
         """停止 WebSocket 服务并清理连接."""
         self._running = False
@@ -774,6 +825,29 @@ class WebChannel(BaseWsChannel):
         self._clients_by_key.clear()
         self._expert_processing_requests.clear()
 
+        watcher = getattr(self, "web_registry_watcher", None)
+        if watcher is not None:
+            try:
+                await watcher.stop()
+            except Exception:  # noqa: BLE001
+                logger.debug("[WebChannel] registry watcher shutdown ignored", exc_info=True)
+            self.web_registry_watcher = None
+        manager = getattr(self, "web_port_manager", None)
+        if manager is not None:
+            try:
+                await manager.close_all()
+            except Exception:  # noqa: BLE001
+                logger.debug("[WebChannel] web proxy port shutdown ignored", exc_info=True)
+        for attr in ("web_proxy_session", "web_proxy_http_session"):
+            session = getattr(self, attr, None)
+            if session is None:
+                continue
+            try:
+                if not session.closed:
+                    await session.close()
+            except Exception:  # noqa: BLE001
+                pass
+            setattr(self, attr, None)
         if self._uvicorn_server is not None:
             self._uvicorn_server.should_exit = True
             self._uvicorn_server = None
