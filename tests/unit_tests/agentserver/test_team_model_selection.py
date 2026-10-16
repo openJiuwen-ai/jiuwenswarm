@@ -316,6 +316,7 @@ def test_cold_restore_reads_stable_selection_and_forwards_it_to_team_loader(
 ) -> None:
     manager = TeamManager()
     captured: dict = {}
+    monkeypatch.setattr(TeamManager, "_default_if_deleted", staticmethod(lambda selection: selection))
 
     monkeypatch.setattr(
         manager,
@@ -353,6 +354,7 @@ def test_cold_restore_prefers_team_binding_selection_over_session_metadata(
 ) -> None:
     manager = TeamManager()
     captured: dict = {}
+    monkeypatch.setattr(TeamManager, "_default_if_deleted", staticmethod(lambda selection: selection))
     monkeypatch.setattr(
         manager,
         "_lookup_bound_team_identity",
@@ -382,6 +384,40 @@ def test_cold_restore_prefers_team_binding_selection_over_session_metadata(
         "type": "model_group",
         "id": "team-group",
     }
+
+
+@pytest.mark.parametrize("source", ["binding", "session"])
+def test_cold_restore_deleted_selection_uses_default(monkeypatch: pytest.MonkeyPatch, source: str) -> None:
+    manager = TeamManager()
+    captured: dict = {}
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.get_config", lambda: {"models": {
+        "defaults": [{"model_id": "current", "is_default": True,
+                      "model_client_config": {"model_name": "current"}}],
+    }})
+    monkeypatch.setattr(
+        manager, "_lookup_bound_team_identity",
+        lambda _session_id: ("shared-team" if source == "binding" else None, None, None),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False: {"team_name": "shared-team"} if source == "binding" else {},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: SimpleNamespace(get_team_selection=lambda _name: {"type": "model", "id": "deleted"}),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection",
+        lambda _session_id: ModelSelection(type="model", id="deleted"),
+    )
+
+    def fake_load(_session_id: str, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(team_name="team")
+
+    monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(fake_load))
+    manager._load_session_team_spec("session-restore")
+    assert captured["model_selection"] == ModelSelection(type="model", id="current")
 
 
 def test_cold_restore_preserves_resolver_business_error_without_default_fallback(

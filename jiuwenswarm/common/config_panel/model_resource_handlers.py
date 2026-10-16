@@ -11,7 +11,6 @@ from jiuwenswarm.common.model_catalog import ModelCatalog, SelectionReference
 from jiuwenswarm.common.model_errors import (
     MODEL_SELECTION_FORBIDDEN,
     MODEL_SELECTION_NOT_FOUND,
-    MODEL_SELECTION_REFERENCED,
     ModelSelectionError,
 )
 from jiuwenswarm.common.model_selection import ModelSelection
@@ -63,14 +62,6 @@ async def _resource_payload(operation, params, *, user_id=""):
         resource_id = str(params.get(key) or "")
         if resource_type == "model" and catalog.get_model(resource_id)["source"] == "agentos":
             raise ModelSelectionError(MODEL_SELECTION_FORBIDDEN, "AgentOS models are read-only")
-        references = await find_resource_references(
-            catalog, ModelSelection(type=resource_type, id=resource_id), user_id=user_id,
-        )
-        if references:
-            raise ModelSelectionError(
-                MODEL_SELECTION_REFERENCED, "resource is still referenced",
-                references=[ref.__dict__ for ref in references],
-            )
         if not delete_model_resource(resource_type, resource_id, cron_references_checked=True):
             raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, "resource does not exist")
         return {key: resource_id, "deleted": True}
