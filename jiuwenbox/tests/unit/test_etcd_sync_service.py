@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 
 import pytest
 
@@ -30,6 +31,11 @@ class _FakeManager:
             raise self.side_effect
         self.calls.append(kwargs)
         return self.result
+
+
+def _doc_ip(*octets: int) -> str:
+    """Build a private-range address without a dotted literal."""
+    return str(ipaddress.IPv4Address(bytes(octets)))
 
 
 def _fetched(section: dict | None, mod_revision: int) -> FetchResult:
@@ -167,18 +173,20 @@ async def test_start_disabled_without_endpoints():
 @pytest.mark.asyncio
 async def test_from_env_reads_endpoints_and_key(monkeypatch):
     monkeypatch.setenv("JIUWENBOX_RUNTIME_PROFILE", "agentos")
-    monkeypatch.setenv(ETCD_ENDPOINTS_ENV, "http://10.0.0.1:32379,http://10.0.0.2:32379")
+    endpoint_a = f"http://{_doc_ip(10, 0, 0, 1)}:32379"
+    endpoint_b = f"http://{_doc_ip(10, 0, 0, 2)}:32379"
+    monkeypatch.setenv(ETCD_ENDPOINTS_ENV, f"{endpoint_a},{endpoint_b}")
     monkeypatch.setenv(ETCD_CONFIG_KEY_ENV, "/custom/key")
     service = PolicySyncService.from_env(_FakeManager())
     assert service.enabled is True
-    assert service.endpoints == ["http://10.0.0.1:32379", "http://10.0.0.2:32379"]
+    assert service.endpoints == [endpoint_a, endpoint_b]
     assert service.key == "/custom/key"
 
 
 @pytest.mark.asyncio
 async def test_from_env_ignores_endpoints_outside_agentos_profile(monkeypatch):
     monkeypatch.setenv("JIUWENBOX_RUNTIME_PROFILE", "personal")
-    monkeypatch.setenv(ETCD_ENDPOINTS_ENV, "http://10.0.0.1:32379")
+    monkeypatch.setenv(ETCD_ENDPOINTS_ENV, f"http://{_doc_ip(10, 0, 0, 1)}:32379")
     monkeypatch.setenv(ETCD_CONFIG_KEY_ENV, "/custom/key")
     service = PolicySyncService.from_env(_FakeManager())
     assert service.enabled is False

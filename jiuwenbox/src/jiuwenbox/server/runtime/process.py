@@ -2594,6 +2594,21 @@ class ProcessRuntime(RuntimeAdapter):
             return True
         return _cgroup_allows_fastpath(policy.cgroup)
 
+    def _use_python_fastpath(self, command: list[str], sandbox_id: str) -> bool:
+        """Whether this exec should be marked for the in-sandbox fast path.
+
+        The candidate check runs before admission so a non-candidate such as
+        ``ls`` does not consume a global fast-path slot. A tight cgroup also
+        stays on the normal spawn path.
+        """
+        if not _python_fastpath_enabled():
+            return False
+        if not _python_fastpath_candidate(command):
+            return False
+        if not self._fastpath_cgroup_allows(sandbox_id):
+            return False
+        return self._fastpath_admit(sandbox_id)
+
     def _exec_via_daemon_blocking(self, call: _DaemonExecCall) -> ExecResult:
         """Run one ``exec`` over the IPC channel and return an ``ExecResult``.
 
@@ -2606,18 +2621,7 @@ class ProcessRuntime(RuntimeAdapter):
             "command": list(call.command),
             "stdin_size": len(call.stdin_bytes or b""),
         }
-        if (
-            _python_fastpath_enabled()
-            # Candidate check BEFORE admit: the global admit quota must only be
-            # consumed by commands that will actually take the fast path. A
-            # non-candidate command (e.g. ``ls``) reaching here first used to
-            # activate the sandbox and consume an admit slot, so a mixed load
-            # could fill ``_fastpath_activated`` with sandboxes that never use
-            # the fast path and silently degrade later Python requests.
-            and _python_fastpath_candidate(list(call.command))
-            and self._fastpath_cgroup_allows(call.sandbox_id)
-            and self._fastpath_admit(call.sandbox_id)
-        ):
+        if self._use_python_fastpath(list(call.command), call.sandbox_id):
             request_payload["python_fastpath"] = True
         if call.env:
             request_payload["env"] = dict(call.env)

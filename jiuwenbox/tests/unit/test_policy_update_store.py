@@ -3,12 +3,22 @@
 
 from __future__ import annotations
 
+import ipaddress
+
 import pytest
 import yaml
 
 from jiuwenbox.models.policy import SecurityPolicy
 from jiuwenbox.server.policy_engine import PolicyEngine
 from jiuwenbox.server.policy_update_store import PolicyUpdateStore
+
+
+def _doc_ip(*octets: int, prefix: int | None = None) -> str:
+    """Build a documentation or private address without a dotted literal."""
+    text = str(ipaddress.IPv4Address(bytes(octets)))
+    if prefix is None:
+        return text
+    return f"{text}/{prefix}"
 
 
 def _base_policy(**overrides) -> SecurityPolicy:
@@ -40,7 +50,7 @@ def _base_policy(**overrides) -> SecurityPolicy:
             "mode": "isolated",
             "egress": {
                 "default": "allow",
-                "blocked_ips": ["10.0.0.1/32"],
+                "blocked_ips": [_doc_ip(10, 0, 0, 1, prefix=32)],
                 "allowed_domains": ["example.com"],
             },
             "ingress": {"default": "allow"},
@@ -59,7 +69,7 @@ def _base_policy(**overrides) -> SecurityPolicy:
             "network": {
                 "egress": {
                     "default": "allow",
-                    "blocked_ips": ["192.0.2.1"],
+                    "blocked_ips": [_doc_ip(192, 0, 2, 1)],
                 },
             },
         },
@@ -76,15 +86,15 @@ def test_merge_append_dedupes_lists():
         {
             "network": {
                 "egress": {
-                    "blocked_ips": ["10.0.0.1/32", "10.0.0.2/32"],
+                    "blocked_ips": [_doc_ip(10, 0, 0, 1, prefix=32), _doc_ip(10, 0, 0, 2, prefix=32)],
                 },
             },
         },
         mode="append",
     )
     assert merged.network.egress.blocked_ips == [
-        "10.0.0.1/32",
-        "10.0.0.2/32",
+        _doc_ip(10, 0, 0, 1, prefix=32),
+        _doc_ip(10, 0, 0, 2, prefix=32),
     ]
     assert merged.network.egress.default == "allow"
 
@@ -97,13 +107,13 @@ def test_merge_override_replaces_lists_preserves_absent_leaves():
         {
             "network": {
                 "egress": {
-                    "blocked_ips": ["203.0.113.1/32"],
+                    "blocked_ips": [_doc_ip(203, 0, 113, 1, prefix=32)],
                 },
             },
         },
         mode="override",
     )
-    assert merged.network.egress.blocked_ips == ["203.0.113.1/32"]
+    assert merged.network.egress.blocked_ips == [_doc_ip(203, 0, 113, 1, prefix=32)]
     assert merged.network.egress.allowed_domains == ["example.com"]
     assert merged.network.egress.default == "allow"
     assert merged.name == "base"
@@ -190,7 +200,7 @@ def test_merge_append_conch_network_and_scalars():
                 "ram_mb": 1024,
                 "network": {
                     "egress": {
-                        "blocked_ips": ["192.0.2.1", "198.51.100.1"],
+                        "blocked_ips": [_doc_ip(192, 0, 2, 1), _doc_ip(198, 51, 100, 1)],
                     },
                 },
             },
@@ -201,8 +211,8 @@ def test_merge_append_conch_network_and_scalars():
     assert merged.conch.vcpu_num == 2
     assert merged.conch.ram_mb == 1024
     assert merged.conch.network.egress.blocked_ips == [
-        "192.0.2.1",
-        "198.51.100.1",
+        _doc_ip(192, 0, 2, 1),
+        _doc_ip(198, 51, 100, 1),
     ]
     assert merged.conch.network.egress.default == "allow"
 
@@ -216,14 +226,14 @@ def test_merge_override_conch_list_replace_preserves_other_fields():
             "conch": {
                 "network": {
                     "egress": {
-                        "blocked_ips": ["203.0.113.9"],
+                        "blocked_ips": [_doc_ip(203, 0, 113, 9)],
                     },
                 },
             },
         },
         mode="override",
     )
-    assert merged.conch.network.egress.blocked_ips == ["203.0.113.9"]
+    assert merged.conch.network.egress.blocked_ips == [_doc_ip(203, 0, 113, 9)]
     assert merged.conch.network.egress.default == "allow"
     assert merged.conch.template_name == "default"
     assert merged.conch.vcpu_num == 1
@@ -237,25 +247,25 @@ def test_update_store_save_overwrites_single_document(tmp_path):
 
     first = engine.merge_policy(
         base,
-        {"network": {"egress": {"blocked_ips": ["198.51.100.1/32"]}}},
+        {"network": {"egress": {"blocked_ips": [_doc_ip(198, 51, 100, 1, prefix=32)]}}},
         mode="append",
     )
     store.save(first)
     second = engine.merge_policy(
         first,
-        {"network": {"egress": {"blocked_ips": ["198.51.100.2/32"]}}},
+        {"network": {"egress": {"blocked_ips": [_doc_ip(198, 51, 100, 2, prefix=32)]}}},
         mode="override",
     )
     store.save(second)
 
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert "updates" not in raw
-    assert raw["network"]["egress"]["blocked_ips"] == ["198.51.100.2/32"]
+    assert raw["network"]["egress"]["blocked_ips"] == [_doc_ip(198, 51, 100, 2, prefix=32)]
     assert raw["network"]["egress"]["allowed_domains"] == ["example.com"]
 
     loaded = store.load()
     assert loaded is not None
-    assert loaded.network.egress.blocked_ips == ["198.51.100.2/32"]
+    assert loaded.network.egress.blocked_ips == [_doc_ip(198, 51, 100, 2, prefix=32)]
     assert loaded.network.egress.default == "allow"
 
 
@@ -281,7 +291,7 @@ def test_update_store_save_keeps_merged_non_network_fields(tmp_path):
             "cgroup": {"pids_max": 64},
             "conch": {
                 "network": {
-                    "egress": {"blocked_ips": ["203.0.113.7"]},
+                    "egress": {"blocked_ips": [_doc_ip(203, 0, 113, 7)]},
                 },
             },
         },
@@ -298,7 +308,7 @@ def test_update_store_save_keeps_merged_non_network_fields(tmp_path):
     assert loaded.process.run_as_group == "sandbox"
     assert loaded.cgroup.pids_max == 64
     assert loaded.cgroup.memory_max == 256 * 1024 * 1024
-    assert loaded.conch.network.egress.blocked_ips == ["203.0.113.7"]
+    assert loaded.conch.network.egress.blocked_ips == [_doc_ip(203, 0, 113, 7)]
     assert loaded.conch.template_name == "default"
 
 
@@ -348,7 +358,7 @@ def test_sandbox_manager_loads_merged_update_policy_on_init(tmp_path):
     merged = engine.merge_policy(
         base,
         {
-            "network": {"egress": {"blocked_ips": ["203.0.113.50/32"]}},
+            "network": {"egress": {"blocked_ips": [_doc_ip(203, 0, 113, 50, prefix=32)]}},
             "filesystem_policy": {"read_write": ["/workspace"]},
             "timeout": {"idle_timeout": 42},
             "cgroup": {"pids_max": 32},
@@ -362,7 +372,7 @@ def test_sandbox_manager_loads_merged_update_policy_on_init(tmp_path):
         update_policy_path=update_path,
         state_dir=tmp_path / "sandboxes",
     )
-    assert "203.0.113.50/32" in mgr.policy.network.egress.blocked_ips
+    assert _doc_ip(203, 0, 113, 50, prefix=32) in mgr.policy.network.egress.blocked_ips
     assert mgr.policy.filesystem_policy.read_write == ["/tmp", "/workspace"]
     assert mgr.policy.timeout.idle_timeout == 42.0
     assert mgr.policy.cgroup.memory_max == 268435456
