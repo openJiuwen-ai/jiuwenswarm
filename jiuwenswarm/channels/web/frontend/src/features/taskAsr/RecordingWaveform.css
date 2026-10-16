@@ -1,0 +1,17 @@
+.task-asr-waveform {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  height: 32px;
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  background: var(--color-icon-btn-hover-surface);
+  color: var(--color-text-secondary);
+}
+
+.task-asr-waveform span {
+  width: 2px;
+  border-radius: 2px;
+  background: currentColor;
+}

@@ -299,6 +299,29 @@ async def preflight_mcp_server_reachable(
 
     try:
         async with httpx.AsyncClient(timeout=http_timeout, follow_redirects=False) as http:
+            if transport == "sse":
+                # Legacy SSE MCP servers handshake with GET-only (e.g.
+                # mcp-pan.baidu.com/sse answers 405 to a POSTed initialize).
+                # Probe with a streamed GET and judge by status code only: a
+                # healthy SSE endpoint answers 2xx plus an endless event
+                # stream, so the body must never be fully read.
+                headers["Accept"] = "text/event-stream"
+                request = http.build_request("GET", url, headers=headers, params=query_params)
+                resp = await http.send(request, stream=True)
+                try:
+                    if resp.status_code in (401, 403):
+                        return False, f"auth rejected (HTTP {resp.status_code})"
+                    if resp.status_code >= 400:
+                        snippet = ""
+                        try:
+                            await resp.aread()
+                            snippet = (resp.text or "")[:120].replace("\n", " ")
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return False, f"http {resp.status_code} from server{(': ' + snippet) if snippet else ''}"
+                    return True, f"ok (http {resp.status_code})"
+                finally:
+                    await resp.aclose()
             resp = await http.post(url, headers=headers, params=query_params, content=body)
     except httpx.TimeoutException as exc:
         return False, f"http probe timed out after {read_t}s (server not responding): {type(exc).__name__}"

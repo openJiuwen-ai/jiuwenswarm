@@ -3576,6 +3576,15 @@ class AgentRuntime:
 
     async def _ensure_extensions(self) -> None:
         self._shared_extensions_acquired = await _acquire_process_runtime_extensions()
+        # Shipped AgentGroups must be usable on first start; a bad package only warns.
+        try:
+            from jiuwenswarm.server.runtime.extension_package_manager import (
+                ensure_builtin_agent_groups_installed,
+            )
+
+            ensure_builtin_agent_groups_installed()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("builtin agent_group install skipped: %s", exc)
 
     async def _rollback_start(self) -> None:
         """Undo partially initialized owned dependencies after start failure."""

@@ -46,11 +46,13 @@ class _MetadataWriteOptions:
     preserve_rebound_fields: bool = False
     rebind_gen_at_enqueue: int | None = None
     merge_fields: frozenset[str] | None = None
+    owns_moa_enabled: bool = False
     lifecycle_generation: int | None = None
     # Inference owns only fields that have not changed since the read snapshot.
     expected_fields: dict[str, tuple[bool, Any]] | None = None
     migration_key: tuple[str, str] | None = None
     write_revision: int = 0
+    replace_harness_checkpoint: bool = False
 
 
 # ---------- 异步写入队列(与 session_history 保持一致的模式) ----------
@@ -665,6 +667,27 @@ def _write_metadata_unfenced(
                 session_id, len(recovered), sorted(recovered),
             )
 
+        # External Harness runtime selection is a first-binding field. Preserve
+        # the authoritative on-disk value against stale queued snapshots and
+        # later attempts to switch the session to another runtime.
+        if current is not None and isinstance(
+            current.get("session_runtime_binding"),
+            dict,
+        ):
+            to_write = to_write.copy()
+            to_write["session_runtime_binding"] = copy.deepcopy(
+                current["session_runtime_binding"]
+            )
+        if (
+            current is not None
+            and isinstance(current.get("session_harness_checkpoint"), dict)
+            and not options.replace_harness_checkpoint
+        ):
+            to_write = to_write.copy()
+            to_write["session_harness_checkpoint"] = copy.deepcopy(
+                current["session_harness_checkpoint"]
+            )
+
         if options.preserve_pin_fields and current is not None:
             to_write = _merge_pin_fields(current, to_write)
         # Selection has its own authoritative field update. Queued history/title
@@ -676,6 +699,15 @@ def _write_metadata_unfenced(
                 to_write["model_selection"] = current["model_selection"]
             else:
                 to_write.pop("model_selection", None)
+        owns_moa = options.owns_moa_enabled or (
+            options.merge_fields is not None and "moa_enabled" in options.merge_fields
+        )
+        if current is not None and not owns_moa:
+            to_write = dict(to_write)
+            if "moa_enabled" in current:
+                to_write["moa_enabled"] = current["moa_enabled"]
+            else:
+                to_write.pop("moa_enabled", None)
         # 权威 rebind 版本检查: 持锁后重比 gen, 判定调用方传入的快照是否已陈旧。
         # 比调用方持锁前的 pre-check 更可靠 —— 消除"gen 比较与文件写入"之间的
         # TOCTOU 窗口(P3)。rebind 自身传入的 gen 已 bump, 等于当前 gen, 不触发合并。
@@ -701,7 +733,7 @@ def _write_metadata_unfenced(
 
 
 def update_session_model_selection(
-    session_id: str, selection: dict[str, Any], *, expected_selection: tuple[bool, Any] | None = None,
+    session_id: str, selection: dict[str, Any] | None, *, expected_selection: tuple[bool, Any] | None = None,
 ) -> None:
     """Update only selection through the shared lifecycle/atomic-write boundary."""
     _write_metadata_sync(
@@ -868,12 +900,14 @@ def _enqueue_inference_write(
             logger.warning("failed to enqueue metadata migration: session=%s error=%s", session_id, exc)
 
 
-def _enqueue_write(
+def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     session_id: str,
     metadata: dict[str, Any],
     sync_write: bool = False,
     preserve_pin_fields: bool = False,
     merge_fields: frozenset[str] | None = None,
+    owns_moa_enabled: bool = False,
+    replace_harness_checkpoint: bool = False,
 ) -> None:
     """将写入操作放入异步队列,队列满时退化为同步写。
 
@@ -910,6 +944,8 @@ def _enqueue_write(
         lifecycle_generation=generation,
         merge_fields=merge_fields,
         write_revision=revision,
+        owns_moa_enabled=owns_moa_enabled,
+        replace_harness_checkpoint=replace_harness_checkpoint,
     )
     if sync_write:
         # P2: sync_write 路径同样需要 rebind 版本检查 —— set_session_pinned 等
@@ -974,14 +1010,18 @@ def init_session_metadata(
     project_id: str = "",
     persist_session: bool = False,
     model: str = "",
+    moa_enabled: bool = False,
     cron_id: str = "",
     work_mode: str = "",
     channel_metadata: dict[str, Any] | None = None,
+    agent_group_name: str = "",
 ) -> None:
     """初始化会话元数据(同步写,确保创建后立即可读)
 
     ``channel_metadata`` 可选：TUI ``session.create`` 需在首条聊天前写入
     ``cwd``/``project_dir``，供 ``/resume`` current-dir 过滤（见 Issue #2503）。
+    ``agent_group_name``：AgentGroup 会话在创建时绑定组名（team.design 的
+    designer 会话即用此通道），首条 chat.send 的组解析直接读它。
     """
     # work_mode：未传时按 channel_id 推断默认值（tui→code，其他→work）
     resolved_work_mode = (
@@ -1005,6 +1045,7 @@ def init_session_metadata(
         "project_id": project_id,
         "persist_session": bool(persist_session),
         "model": model,
+        "moa_enabled": moa_enabled is True,
         "cron_id": cron_id,
         "last_user_message_at": _current_timestamp(),
         "pinned": False,
@@ -1012,6 +1053,8 @@ def init_session_metadata(
         "status": "idle",
         "work_mode": resolved_work_mode,
     }
+    if agent_group_name:
+        metadata["agent_group_name"] = agent_group_name
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
     _write_metadata_sync(session_id, metadata)
@@ -1037,6 +1080,7 @@ def update_session_metadata(
     project_dir: str | None = None,
     project_id: str | None = None,
     model: str | None = None,
+    moa_enabled: bool | None = None,
     last_user_message_at: float | None = None,
     pinned: bool | None = None,
     pin_order: int | None = None,
@@ -1046,6 +1090,9 @@ def update_session_metadata(
     sync_write: bool = False,
     work_mode: str | None = None,
     session_equipment: dict[str, Any] | None = None,
+    session_runtime_binding: dict[str, Any] | None = None,
+    session_harness_checkpoint: dict[str, Any] | None = None,
+    group_members: list[dict[str, Any]] | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -1071,6 +1118,8 @@ def update_session_metadata(
     ``True``:返回成功前落盘,否则只读磁盘的另一进程(AgentServer)在窗口期
     内会读到陈旧数据,后续整份 metadata 回写会覆盖刚写入的 ``pinned`` 状态。
     """
+    if moa_enabled is not None and not isinstance(moa_enabled, bool):
+        raise ValueError("moa_enabled must be a boolean")
     metadata = _read_metadata(session_id, cache_bust=cache_bust)
     before = copy.deepcopy(metadata)
 
@@ -1114,6 +1163,7 @@ def update_session_metadata(
             "project_id": project_id or "",
             "persist_session": False,
             "model": model or "",
+            "moa_enabled": moa_enabled is True,
             "cron_id": "",
             "last_user_message_at": last_user_message_at if last_user_message_at is not None else _current_timestamp(),
             "pinned": bool(pinned),
@@ -1126,6 +1176,14 @@ def update_session_metadata(
             metadata["channel_metadata"] = channel_metadata
         if session_equipment is not None:
             metadata["session_equipment"] = copy.deepcopy(session_equipment)
+        if session_runtime_binding is not None:
+            metadata["session_runtime_binding"] = copy.deepcopy(
+                session_runtime_binding
+            )
+        if session_harness_checkpoint is not None:
+            metadata["session_harness_checkpoint"] = copy.deepcopy(
+                session_harness_checkpoint
+            )
         if isinstance(team_leader_identity, dict):
             metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
     else:
@@ -1159,6 +1217,10 @@ def update_session_metadata(
         # model：覆盖式——每次请求更新为本次模型
         if model is not None:
             metadata["model"] = model
+        if moa_enabled is not None:
+            if not isinstance(moa_enabled, bool):
+                raise ValueError("moa_enabled must be a boolean")
+            metadata["moa_enabled"] = moa_enabled
         # last_user_message_at：覆盖式——仅在用户消息时由调用方传入
         if last_user_message_at is not None:
             metadata["last_user_message_at"] = last_user_message_at
@@ -1199,13 +1261,31 @@ def update_session_metadata(
             metadata["channel_metadata"] = channel_metadata
         if session_equipment is not None:
             metadata["session_equipment"] = copy.deepcopy(session_equipment)
+        if (
+            session_runtime_binding is not None
+            and "session_runtime_binding" not in metadata
+        ):
+            metadata["session_runtime_binding"] = copy.deepcopy(
+                session_runtime_binding
+            )
+        if session_harness_checkpoint is not None:
+            metadata["session_harness_checkpoint"] = copy.deepcopy(
+                session_harness_checkpoint
+            )
 
         # 更新最后消息时间(可由 touch_last_message_at=False 关闭,供置顶重编号等
         # 非消息操作复用本函数而不腐蚀 last_message_at 语义)
         if touch_last_message_at:
             metadata["last_message_at"] = _current_timestamp()
 
-    explicit_fields = (("accent_color", accent_color), ("pinned", pinned), ("pin_order", pin_order))
+    if group_members is not None:
+        metadata["group_members"] = copy.deepcopy(group_members)
+
+    explicit_fields = (
+        ("accent_color", accent_color), ("pinned", pinned), ("pin_order", pin_order),
+        ("moa_enabled", moa_enabled), ("session_harness_checkpoint", session_harness_checkpoint),
+        ("group_members", group_members),
+    )
     changed = _changed_fields(before, metadata) | frozenset(
         name for name, value in explicit_fields if value is not None
     )
@@ -1215,6 +1295,8 @@ def update_session_metadata(
         sync_write=sync_write or sync,
         preserve_pin_fields=pinned is None and pin_order is None,
         merge_fields=changed,
+        owns_moa_enabled=moa_enabled is not None,
+        replace_harness_checkpoint=session_harness_checkpoint is not None,
     )
 
 

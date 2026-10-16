@@ -30,7 +30,8 @@ import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
 import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TeamMember } from './shared';
-import { workflowAgentIdentity, workflowPhaseWorkers, type WorkflowAgent, type WorkflowRun } from './workflowTypes';
+import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers, type WorkflowAgent, type WorkflowRun } from './workflowTypes';
+import { useEnsurePhaseAgents } from './useEnsurePhaseAgents';
 
 export interface CompactTaskListProps {
   tasks: SessionTeamTask[];
@@ -63,6 +64,9 @@ export function CompactTaskList({
   onTaskClick,
 }: CompactTaskListProps) {
   const { t } = useTranslation();
+  const visibleTasks = maxCollapsedCount !== undefined && !expanded ? tasks.slice(0, maxCollapsedCount) : tasks;
+  // 必须在早退之前：空列表 ↔ 非空切换时 hook 数量变化会炸整棵树（React #310）
+  useEnsurePhaseAgents(visibleTasks, workflowRuns);
 
   if (tasks.length === 0) {
     return (
@@ -76,8 +80,6 @@ export function CompactTaskList({
       </div>
     );
   }
-
-  const visibleTasks = maxCollapsedCount !== undefined && !expanded ? tasks.slice(0, maxCollapsedCount) : tasks;
 
   return (
     <div className="flex flex-col gap-1">
@@ -171,7 +173,7 @@ export function CompactTaskList({
 function CompactWorkerStack({ workers }: { workers: WorkflowAgent[] }) {
   const visible = workers.slice(0, 3);
   const extra = workers.length - visible.length;
-  const names = workers.map((worker) => worker.name).join(', ');
+  const names = workers.map((worker) => workflowAgentDisplayName(worker)).join(', ');
   return (
     <div
       className="flex items-center shrink-0"
@@ -184,9 +186,9 @@ function CompactWorkerStack({ workers }: { workers: WorkflowAgent[] }) {
           className={index > 0 ? '-ml-1.5 rounded-full ring-2 ring-[var(--color-surface-card)]' : 'rounded-full'}
         >
           <TeamMemberAvatar
-            member={worker.name}
+            member={workflowAgentAvatarName(worker)}
             identity={workflowAgentIdentity(worker)}
-            alt={worker.name}
+            alt={workflowAgentAvatarName(worker)}
             className="h-4 w-4 rounded-full"
             imageClassName="rounded-full"
           />

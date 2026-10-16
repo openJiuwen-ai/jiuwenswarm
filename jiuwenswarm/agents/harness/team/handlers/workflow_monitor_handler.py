@@ -401,6 +401,8 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
                 node_type=getattr(payload, "node_type", None),
                 agent_id=getattr(payload, "agent_id", None),
                 agent_type=getattr(payload, "agent_type", None),
+                agent_template=getattr(payload, "agent_template", None),
+                display_name=getattr(payload, "display_name", None),
                 answer=getattr(payload, "answer", None),
                 activity_type=getattr(payload, "activity_type", None),
                 tool_call_id=getattr(payload, "tool_call_id", None),

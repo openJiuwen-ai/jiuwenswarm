@@ -19,24 +19,24 @@ from a4p.types import (
 )
 from openjiuwen.core.foundation.tool import ToolExposure
 
-from jiuwenswarm.agents.harness.common import a4p_runtime
-from jiuwenswarm.agents.harness.common import a4p_rpc
-from jiuwenswarm.agents.harness.common.a4p_authorizer import (
+from jiuwenswarm.agents.harness.common.a4p import runtime as a4p_runtime
+from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
+from jiuwenswarm.agents.harness.common.a4p.authorizer import (
     WebAuthorizationRequest,
     WebAuthorizerBroker,
 )
-from jiuwenswarm.agents.harness.common.a4p_cron_token_store import (
+from jiuwenswarm.agents.harness.common.a4p.cron_token_store import (
     CRON_INTENT_TOKENS_DB_FILENAME,
     SQLiteCronIntentTokenStore,
 )
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
     AuthorizationExecutionContext,
     AuthorizerRoute,
     build_authorization_execution_context,
 )
 from jiuwenswarm.agents.harness.common.tools import a4p_tools as a4p_tools_module
-from jiuwenswarm.agents.harness.common.a4p_runtime import (
+from jiuwenswarm.agents.harness.common.a4p.runtime import (
     A4PIdentity,
     A4PRuntime,
     DEFAULT_CRON_INTENT_VALIDITY_SECONDS,
@@ -1124,7 +1124,7 @@ async def test_a4p_cron_authorization_success_requires_explicit_enable(
 
 
 @pytest.mark.asyncio
-async def test_a4p_intent_token_matches_session_action_and_identity() -> None:
+async def test_a4p_intent_token_matches_session_action_and_identity(tmp_path) -> None:
     runtime = A4PRuntime({"a4p": {"enabled": True}})
     identity = A4PIdentity(agent_id="agent-1")
 
@@ -1132,7 +1132,9 @@ async def test_a4p_intent_token_matches_session_action_and_identity() -> None:
         {
             "agentId": identity.agent_id,
             "userId": INTERNAL_A4P_USER_ID,
-            "intent": {"actions": [{"name": "read_file", "params": {"path": "/tmp/a.txt"}}]},
+            "intent": {"actions": _normalize_actions([
+                {"name": "read_file", "params": {"file_path": str(tmp_path / "a.txt")}},
+            ])},
             "validitySeconds": 60,
         }
     )
@@ -1147,7 +1149,7 @@ async def test_a4p_intent_token_matches_session_action_and_identity() -> None:
         session_id="session-1",
         identity=identity,
         action="read_file",
-        params={"path": "/tmp/a.txt"},
+        params={"file_path": str(tmp_path / "a.txt")},
     )
     assert matched is not None
 
@@ -1155,7 +1157,7 @@ async def test_a4p_intent_token_matches_session_action_and_identity() -> None:
         session_id="session-1",
         identity=identity,
         action="read_file",
-        params={"path": "/tmp/b.txt"},
+        params={"file_path": str(tmp_path / "b.txt")},
     )
     assert mismatch is None
 
@@ -1163,7 +1165,7 @@ async def test_a4p_intent_token_matches_session_action_and_identity() -> None:
         session_id="session-1",
         identity=A4PIdentity(agent_id="agent-2"),
         action="read_file",
-        params={"path": "/tmp/a.txt"},
+        params={"file_path": str(tmp_path / "a.txt")},
     )
     assert wrong_agent is None
 

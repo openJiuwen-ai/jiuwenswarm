@@ -47,7 +47,7 @@ def _imports(source: str, module: str):
 def _a4p_implementation(name: str) -> bool:
     return name == "a4p" or name.startswith("a4p.") or (
         name.startswith("jiuwenswarm.")
-        and any(part.startswith("a4p_") for part in name.split("."))
+        and any(part == "a4p" or part.startswith("a4p_") for part in name.split("."))
     )
 
 
@@ -69,13 +69,13 @@ def test_gateway_does_not_import_a4p_implementation():
 
 def test_a4p_implementation_does_not_import_gateway():
     _assert_boundary(
-        PACKAGE.rglob("a4p*.py"),
+        set(PACKAGE.rglob("a4p*.py")) | set((PACKAGE / "agents/harness/common/a4p").rglob("*.py")),
         lambda name: name == "jiuwenswarm.gateway" or name.startswith("jiuwenswarm.gateway."),
     )
 
 
 def test_authorizer_broker_does_not_discover_server_singleton():
-    path = PACKAGE / "agents/harness/common/a4p_authorizer.py"
+    path = PACKAGE / "agents/harness/common/a4p/authorizer.py"
     _assert_boundary(
         [path],
         lambda name: name == "jiuwenswarm.server" or name.startswith("jiuwenswarm.server."),
@@ -91,10 +91,10 @@ def test_authorizer_broker_does_not_discover_server_singleton():
 
 
 @pytest.mark.parametrize("source", [
-    "import jiuwenswarm.agents.harness.common.a4p_runtime as runtime",
-    "from jiuwenswarm.agents.harness.common import a4p_runtime",
-    "def lazy():\n from ..agents.harness.common.a4p_runtime import get_a4p_runtime",
-    "import importlib as il\nil.import_module('jiuwenswarm.agents.harness.common.a4p_runtime')",
+    "import jiuwenswarm.agents.harness.common.a4p.runtime as runtime",
+    "from jiuwenswarm.agents.harness.common.a4p import runtime as a4p_runtime",
+    "def lazy():\n from ..agents.harness.common.a4p.runtime import get_a4p_runtime",
+    "import importlib as il\nil.import_module('jiuwenswarm.agents.harness.common.a4p.runtime')",
     "from importlib import import_module as load\nload('a4p')",
     "__import__('a4p.types')",
 ])

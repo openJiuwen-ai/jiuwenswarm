@@ -5,6 +5,10 @@
  */
 
 import { create } from 'zustand';
+import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
+import {
+  buildConversationModelPayload,
+} from '../multi-session/state/conversationModelSelection';
 import {
   isSingleAgentContextUsageSnapshot,
   isTeamLeaderContextUsageSnapshot,
@@ -44,6 +48,7 @@ import {
   type WorkflowRun,
 } from '../components/teamArea/workflowTypes';
 import { requestAgentDetail, requestPhaseAgents } from '../services/webClient';
+import type { TeamBootstrapMode, TeamDispatchMode } from '../features/teamDispatch/featureConfig';
 import {
   normalizeTeamLeaderIdentity,
   type TeamLeaderIdentity,
@@ -132,10 +137,12 @@ function restoreNewConversationSelection(
   models: ModelEntry[],
   groups: ModelGroup[],
 ): SessionRuntime {
+  // Catalog changes must not silently replace a group already selected in an unsent draft.
+  if (runtime.selectedModelSelection?.type === 'model_group') return runtime;
   const cached = loadLastModelSelection();
   const selection = isModelSelectionAvailable(cached, models, groups)
     ? cached
-    : isModelSelectionAvailable(runtime.selectedModelSelection, models, groups)
+    : !cached && isModelSelectionAvailable(runtime.selectedModelSelection, models, groups)
       ? runtime.selectedModelSelection
       : resolveNewConversationModelSelection(models, groups, cached);
   const selectedModel = selection?.type === 'model'
@@ -531,6 +538,10 @@ interface TeamMember {
   cli_agent?: string | null;
   /** 产生该成员的 swarmflow run（镜像 worker 才有，真实队友无此字段） */
   workflow_run_id?: string;
+  /** 专家节点引用的专家团成员名（镜像的专家 worker 才有） */
+  agent_template?: string | null;
+  /** 专家的展示名（镜像的专家 worker 才有） */
+  display_name?: string | null;
 }
 
 /** 增量成员事件里的空字段不得覆盖已知值：返回 next，空则回退 prev。 */
@@ -639,6 +650,16 @@ export interface SessionRuntime {
    * 退出 team 模式不清理（重开 swarmflow 时保留用户偏好）。
    */
   swarmflowWorktree?: boolean;
+  /**
+   * 本会话团队的任务调度模式（会话级，随 chat.send 下发并持久化到会话 metadata）。
+   * undefined = 用户未拨过：开关默认关闭（自主模式）。团队建好后不可再改。
+   */
+  teamDispatchMode?: TeamDispatchMode;
+  /**
+   * 本会话团队的建队方式（调度模式的子开关，会话级，随 chat.send 下发并持久化到会话 metadata）。
+   * undefined = 用户未拨过：子开关默认关闭（Leader 自己 build_team）。团队建好后不可再改。
+   */
+  teamBootstrapMode?: TeamBootstrapMode;
   /** SwarmFlow 工作流运行列表（树视图渲染） */
   workflowRuns: WorkflowRun[];
 }
@@ -707,8 +728,10 @@ interface SessionState {
 
   // Runtime 管理方法
   ensureRuntime: (sessionId: string) => SessionRuntime;
+  initializeDefaultModel: (sessionId: string) => void;
   getRuntime: (sessionId: string | null) => SessionRuntime | undefined;
   getEffectiveModelName: (sessionId: string | null) => string | null;
+  getModelSelectionPayload: (sessionId: string) => Record<string, unknown>;
   removeRuntime: (sessionId: string) => void;
 
   // A 类 actions（不加 sessionId）
@@ -806,6 +829,10 @@ interface SessionState {
   setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;
   /** 设置本会话的 worktree 隔离开关（显式值，随 chat.send 下发并持久化到会话 metadata） */
   setSwarmflowWorktree: (sessionId: string, enabled: boolean) => void;
+  /** 设置本会话团队的任务调度模式（显式值，随 chat.send 下发并持久化到会话 metadata） */
+  setTeamDispatchMode: (sessionId: string, mode: TeamDispatchMode) => void;
+  /** 设置本会话团队的建队方式（调度模式子开关；显式值，随 chat.send 下发并持久化到会话 metadata） */
+  setTeamBootstrapMode: (sessionId: string, mode: TeamBootstrapMode) => void;
   /** 懒加载 phase 完整 agents（command.workflows get_phase） */
   loadPhaseAgents: (
     sessionId: string,
@@ -848,6 +875,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     return runtime;
   },
 
+  initializeDefaultModel: (sessionId) => {
+    const runtime = get().ensureRuntime(sessionId);
+    if (runtime.selectedModelSelection || runtime.selectedModelName) return;
+    const defaultModelName = get().defaultModelName;
+    if (defaultModelName) get().setSelectedModelName(sessionId, defaultModelName);
+  },
+
   getRuntime: (sessionId) => {
     if (!sessionId) return undefined;
     return get().runtimes[sessionId];
@@ -884,21 +918,34 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     return resolved ? resolved.model_name : runtime.selectedModelName;
   },
 
-  getOutgoingModelParams: (sessionId) => {
-    const runtime = get().runtimes[sessionId];
-    const selection = runtime?.selectedModelSelection;
-    if (selection?.type && selection.id) {
-      return { model_selection: { ...selection } };
-    }
-    const modelName = get().getEffectiveModelName(sessionId);
-    return modelName ? { model_name: modelName } : {};
-  },
+  getOutgoingModelParams: (sessionId) => get().getModelSelectionPayload(sessionId),
 
   removeRuntime: (sessionId) => {
     set((state) => {
       const next = { ...state.runtimes };
       delete next[sessionId];
       return { runtimes: next };
+    });
+  },
+
+  getModelSelectionPayload: (sessionId) => {
+    const state = get();
+    const runtime = state.runtimes[sessionId];
+    const session =
+      state.currentSession?.session_id === sessionId
+        ? state.currentSession
+        : state.sessions.find((candidate) => candidate.session_id === sessionId);
+    const effectiveModelName = state.getEffectiveModelName(sessionId);
+    const individualModel = [...state.availableModels, ...state.chatAvailableModels].find(
+      (model) => model.model_name === effectiveModelName && Boolean(model.model_id?.trim()),
+    );
+    const selectedModelSelection = runtime?.selectedModelSelection
+      ?? (individualModel?.model_id ? { type: 'model' as const, id: individualModel.model_id.trim() } : null);
+    return buildConversationModelPayload({
+      mode: runtime?.mode,
+      selectedModelSelection,
+      cronId: session?.cron_id,
+      selectedModelName: effectiveModelName,
     });
   },
 
@@ -920,6 +967,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const nextRuntime: SessionRuntime = {
         ...baseRuntime,
         mode: normalizedSession.mode || baseRuntime.mode,
+        selectedModelSelection: Object.prototype.hasOwnProperty.call(normalizedSession, 'model_selection')
+          ? parseModelSelection(normalizedSession.model_selection)
+          : baseRuntime.selectedModelSelection,
         persistSession: normalizedSession.persist_session === true,
         teamHistoryMessages: baseRuntime.teamHistoryMessages,
         agentGroupBinding: hasGroupBinding ? nextAgentGroupBinding : baseRuntime.agentGroupBinding,
@@ -1736,6 +1786,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             member.workflow_run_id,
             existingMember.workflow_run_id,
           ),
+          agent_template: keepKnownMemberField(member.agent_template, existingMember.agent_template),
+          display_name: keepKnownMemberField(member.display_name, existingMember.display_name),
         };
         return {
           runtimes: {
@@ -2084,6 +2136,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  setTeamDispatchMode: (sessionId, mode) => {
+    set((state) => {
+      const rt = state.runtimes[sessionId];
+      if (!rt) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...rt, teamDispatchMode: mode },
+        },
+      };
+    });
+  },
+
+  setTeamBootstrapMode: (sessionId, mode) => {
+    set((state) => {
+      const rt = state.runtimes[sessionId];
+      if (!rt) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...rt, teamBootstrapMode: mode },
+        },
+      };
+    });
+  },
+
   setAvailableModels: (models, activeModel) => {
     set((state) => {
       const defaultModels = models.filter((m) => m.is_default !== false);
@@ -2171,6 +2249,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
+      if (selection) cacheLastModelSelection(selection);
       let selectedModelName = runtime.selectedModelName;
       if (selection?.type === 'model') {
         const model = state.availableModels.find((entry) => entry.model_id === selection.id)

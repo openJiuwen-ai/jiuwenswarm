@@ -38,10 +38,10 @@ from openjiuwen.agent_teams.harness.manifest import (
     harness_element,
     param_field,
 )
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
 )
-from jiuwenswarm.agents.harness.common.a4p_runtime import is_a4p_enabled
+from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_enabled
 from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
     get_tools as get_a4p_tools,
 )

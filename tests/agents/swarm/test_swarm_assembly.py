@@ -43,6 +43,7 @@ from openjiuwen.agent_teams.schema.blueprint import (
 from openjiuwen.agent_teams.schema.deep_agent_spec import (
     BuiltinToolSpec,
     DeepAgentSpec,
+    ProgressiveToolSpec,
     RailSpec,
     TeamModelConfig,
     WorkspaceSpec,
@@ -69,7 +70,7 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
     AuthorizationExecutionContext,
     AuthorizerRoute,
@@ -957,6 +958,45 @@ def test_team_member_deep_agent_spec_keeps_core_skill_discovery_when_retrieval_d
     assert spec.enable_skill_discovery is True
 
 
+@pytest.mark.parametrize(
+    ("mode", "role"),
+    [
+        ("team", "leader"),
+        ("team", "teammate"),
+        ("team.plan", "leader"),
+        ("team.plan", "teammate"),
+    ],
+)
+def test_team_member_deep_agent_spec_follows_progressive_tool_switch(mode: str, role: str) -> None:
+    """The top-level single-agent switch mounts tool_search on every team member."""
+    spec = build_member_deep_agent_spec(
+        {"progressive_tool_enabled": True}, mode, role, DeepAgentSpec()
+    )
+
+    assert spec.progressive_tool is not None
+    assert spec.progressive_tool.enabled is True
+    logger.info("%s/%s progressive_tool: %s", mode, role, spec.progressive_tool)
+
+
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_team_member_deep_agent_spec_keeps_base_progressive_tool_when_switch_off(role: str) -> None:
+    """A disabled switch leaves the base spec's progressive_tool byte-identical."""
+    config = {"progressive_tool_enabled": False}
+
+    plain = build_member_deep_agent_spec(config, "team", role, DeepAgentSpec())
+    declared = build_member_deep_agent_spec(
+        config,
+        "team",
+        role,
+        DeepAgentSpec(progressive_tool=ProgressiveToolSpec(enabled=True, search_limit=7)),
+    )
+
+    assert plain.progressive_tool is None
+    assert declared.progressive_tool is not None
+    assert declared.progressive_tool.enabled is True
+    assert declared.progressive_tool.search_limit == 7
+
+
 @pytest.mark.parametrize("mode", ["code.team", "team.plan.code"])
 def test_code_member_deep_agent_spec_keeps_skill_use_rail_when_retrieval_enabled(mode: str) -> None:
     """Code profiles keep skill_tool access without all-mode skill injection."""
@@ -1090,6 +1130,57 @@ def test_enrich_team_spec_for_swarm_rewrites_spec_in_place() -> None:
     # The parent-free contract: openjiuwen removed the imperative customizer
     # hook entirely, so the field no longer exists on the spec.
     assert not hasattr(spec, "agent_customizer")
+
+
+@pytest.mark.parametrize(
+    ("mode", "kept_rail", "dropped_rails"),
+    [
+        ("team", registry.RUNTIME_PROMPT, (registry.TASK_PLANNING, registry.CODE_LSP)),
+        ("code.team", registry.CODE_LSP, (registry.CODE_TASK_PLANNING, registry.CODE_AGENT_MODE)),
+    ],
+)
+def test_enrich_team_spec_for_swarm_builds_a_narrow_reviewer_spec(
+    mode: str,
+    kept_rail: str,
+    dropped_rails: tuple[str, ...],
+) -> None:
+    """Temp reviewers get a read-only, inspection-only slice of the teammate spec."""
+    spec = _make_team_spec()
+    spec.enable_permissions = True
+
+    enrich_team_spec_for_swarm(spec, session_id="s", mode=mode, channel_id="web")
+
+    teammate = spec.agents["teammate"]
+    reviewer = spec.reviewer_agent
+    assert reviewer is not None
+    rail_types = [rail.type for rail in reviewer.rails or []]
+    assert kept_rail in rail_types
+    assert TEAM_SKILL_USE in rail_types
+    sys_rails = [rail for rail in reviewer.rails if rail.type == registry.SYS_OPERATION]
+    assert len(sys_rails) == 1 and sys_rails[0].params["read_only"] is True
+    for dropped in (
+        *dropped_rails,
+        registry.HEARTBEAT,
+        registry.MEMBER_SKILL_TOOLKIT,
+        registry.MEMBER_SKILL_EVOLUTION,
+        registry.TEAM_PERMISSION,
+        registry.PLUGIN_RAILS,
+    ):
+        assert dropped not in rail_types
+    # The teammate keeps what the reviewer drops.
+    teammate_rail_types = {rail.type for rail in teammate.rails or []}
+    assert registry.TEAM_PERMISSION in teammate_rail_types
+    assert registry.HEARTBEAT in teammate_rail_types
+
+    tool_types = {tool.type for tool in reviewer.tools or [] if isinstance(tool, BuiltinToolSpec)}
+    assert registry.WEB_FETCH in tool_types
+    assert registry.VISION in tool_types
+    assert not tool_types & {registry.CRON_TOOLS, registry.SEND_FILE, registry.USER_TODOS, registry.IMAGE_GEN}
+
+    assert reviewer.subagents is None
+    assert reviewer.enable_task_planning is False
+    assert reviewer.mcps == teammate.mcps
+    assert reviewer.cwd == teammate.cwd
 
 
 @pytest.mark.parametrize(

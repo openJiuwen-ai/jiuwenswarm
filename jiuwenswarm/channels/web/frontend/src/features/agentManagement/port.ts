@@ -187,6 +187,12 @@ export function buildAgentGroupSelectionPayloadForMode(
   return { agent_group_name: intent.id.trim() };
 }
 
+export function isExternalHarnessCatalogItem(
+  item: Pick<AgentCatalogItem, 'runtime'>,
+): boolean {
+  return Boolean(item.runtime?.provider_name?.trim());
+}
+
 export function buildDefinitionSelectionPayload(intent: AgentSelectionIntent): Record<string, string> {
   if (intent.kind === 'select') {
     return { agent_template_name: intent.id };

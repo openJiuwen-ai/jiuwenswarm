@@ -17,6 +17,8 @@
     "and": "和",
     "modify": "修改",
     "collapse": "收起",
+    "expand": "展开",
+    "expandAndPin": "展开并固定",
     "delete": "删除",
     "hide": "隐藏",
     "show": "显示",
@@ -44,6 +46,7 @@
     "chat": "对话",
     "work": "任务",
     "agent": "专家",
+    "design": "设计",
     "experiments": "实验",
     "sessions": "会话",
     "cron": "定时任务",
@@ -64,6 +67,264 @@
     "disabled": "已禁用",
     "empty": "尚未发现应用插件",
     "noSettings": "此插件未提供设置页面。"
+  },
+  "designer": {
+    "loading": "正在加载设计工作流…",
+    "emptyTitle": "还没有设计工作流",
+    "emptyDescription": "描述你的项目，创建独立的设计工作区与工作流。",
+    "loadErrorTitle": "加载失败",
+    "loadErrorFallback": "无法读取设计工作流，请稍后重试。",
+    "attachmentsBlocked": "设计模式暂不支持附件，请先移除附件后再发送。",
+    "activity": {
+      "thinking": "思考中",
+      "toolCall": "正在调用 {{tool}}",
+      "stage": "执行中",
+      "progress": "节点 Agent 进度"
+    },
+    "chat": {
+      "title": "设计助手",
+      "emptyHint": "需要帮你设计些什么？",
+      "inputPlaceholder": "描述你想创作的内容…",
+      "collapse": "收起聊天",
+      "expand": "展开聊天",
+      "thinking": "正在思考如何搭建设计工作流…",
+      "updating": "正在根据你的要求改图…",
+      "updateError": "改图失败，请稍后重试。",
+      "bootstrapDone": "已为你搭建初始设计工作流。",
+      "bootstrapError": "搭建工作流失败，请稍后重试。",
+      "notImplemented": "未实现",
+      "send": "发送",
+      "attach": "添加参考素材",
+      "removeAttachment": "移除参考素材",
+      "attachHint": "支持图片、视频、音频。最多 5 张图、1 个视频、1 段音频。",
+      "limitImages": "最多只能附 5 张参考图。",
+      "limitVideo": "最多只能附 1 个参考视频。",
+      "limitAudio": "最多只能附 1 段参考音频。",
+      "tooLarge": "文件超过 6MB，请改用更小的文件，或从本机路径添加。",
+      "unsupported": "仅支持图片、视频或音频作为参考素材。"
+    },
+    "run": {
+      "controlLabel": "执行控制",
+      "execute": "执行",
+      "continue": "继续",
+      "retryFailed": "重试失败节点",
+      "running": "执行中…",
+      "moreActions": "更多执行动作",
+      "restart": "重跑工作流",
+      "cancel": "取消"
+    },
+    "subtitle": "从想法到设计的多模态创作",
+    "toolbar": {
+      "modeLabel": "节点模式",
+      "minimap": "小地图",
+      "openChat": "打开AI对话",
+      "showEdges": "显示节点连线",
+      "hideEdges": "隐藏节点连线",
+      "layoutNodes": "整理节点",
+      "zoomMenu": "视图比例",
+      "zoomIn": "放大",
+      "zoomOut": "缩小",
+      "zoomFit": "适配画布",
+      "zoomTo": "缩放至{{percent}}%",
+      "yesterday": "昨天",
+      "upload": "上传",
+      "edit": "编辑",
+      "generate": "生成",
+      "material": "素材",
+      "removeMaterial": "移除素材",
+      "promptPlaceholder": "本片段画面描述，将与上方参考图一起发给模型",
+      "promptHint": "发给该节点子代理的提示词。生成前可选编辑；子代理仍可能根据项目情况微调细节。",
+      "editPlaceholder": "编辑文本内容…",
+      "aspectRatio": "长宽比",
+      "resolution": "分辨率",
+      "duration": "时长",
+      "count": "生成数量",
+      "browseFiles": "浏览文件",
+      "dropHint": "或者拖拽到区域内",
+      "generateAction": "生成",
+      "uploadAction": "确认上传",
+      "uploadMissing": "选中的文件没有成功上传，请重新选择一次。",
+      "editAction": "保存",
+      "actionNotImplemented": "该功能尚未实现",
+      "inspect": "查看物料",
+      "regenerate": "重新生成",
+      "rerun": "重新生成",
+      "rerunHint": "用当前上游产物只重跑这一节点"
+    },
+    "mediaSettings": {
+      "videoTitle": "视频参数",
+      "imageTitle": "图片参数",
+      "durationValue": "{{seconds}} 秒",
+      "loading": "正在读取生成参数…",
+      "loadError": "无法读取生成参数：{{message}}",
+      "saveError": "参数未保存：{{message}}"
+    },
+    "sidebar": {
+      "tabsLabel": "侧栏",
+      "assistant": "助手",
+      "conversation": "对话",
+      "assets": "素材",
+      "canvas": "当前画布",
+      "project": "项目素材",
+      "create": "新建"
+    },
+    "sessions": {
+      "label": "画布",
+      "new": "新画布",
+      "create": "新建会话",
+      "project": "所属项目",
+      "pickProject": "请选择项目",
+      "needProject": "请先新建一个项目，再在其中新建会话。",
+      "createFailed": "新建会话失败，请稍后重试。"
+    },
+    "assets": {
+      "empty": "这个画布还没有素材。上传或生成后会显示在这里。",
+      "emptyProject": "这个项目还没有共用素材。任意画布上传或生成后，都会出现在这里。",
+      "onCanvas": "画布中",
+      "libraryOnly": "仅素材库",
+      "delete": "删除素材",
+      "sourceUploaded": "上传",
+      "sourceGenerated": "生成"
+    },
+    "dock": {
+      "label": "画布工具",
+      "add": "添加节点",
+      "addTitle": "添加到画布",
+      "select": "选择 / 移动",
+      "selectHint": "选择并移动节点。快捷键 V；按住空格可临时平移。",
+      "hand": "平移画布",
+      "handHint": "拖动画布。快捷键 H。",
+      "layout": "整理",
+      "assets": "素材库",
+      "assetsTitle": "当前画布",
+      "assetsHint": "打开当前画布素材列表。",
+      "upload": "上传",
+      "uploadHint": "上传图片、视频或音频文件，作为新节点添加到画布。",
+      "comfyuiHint": "导入 ComfyUI 工作流（.json）。仅添加 vLLM-Omni 的 Generate Image / Generate Video 节点。",
+      "group": {
+        "image": "图片",
+        "video": "视频",
+        "audio": "音频",
+        "text": "文本"
+      },
+      "node": {
+        "image": "图片",
+        "video": "视频",
+        "audio": "音频",
+        "comfyui": "ComfyUI"
+      }
+    },
+    "nodeActions": {
+      "add": "添加后续节点",
+      "addPredecessor": "添加前序节点",
+      "successorMenuTitle": "引用该节点生成",
+      "predecessorMenuTitle": "添加上下文",
+      "actionBarLabel": "节点操作",
+      "preview": "预览",
+      "previewOrEdit": "预览或编辑",
+      "download": "下载",
+      "delete": "删除",
+      "replace": "上传替换",
+      "replaceHint": "上传新文件替换此节点的内容。",
+      "deleteHint": "删除此节点及其连线。也可选中后按 Delete / Backspace。",
+      "deleteConfirmTitle": "删除节点",
+      "deleteConfirmMessage": "该节点包含已生成的内容，删除后不可恢复。是否确定删除？",
+      "deleteConfirmCancel": "取消",
+      "deleteConfirmOk": "确定",
+      "resize": "调整大小",
+      "resizeHint": "拖动右下角调整节点大小"
+    },
+    "edge": {
+      "delete": "删除连线"
+    },
+    "revision": {
+      "title": "选择要保留的版本",
+      "hint": "{{label}} 已重新生成。原版还在，请选择保留哪一份。",
+      "original": "原版",
+      "incoming": "新内容",
+      "keepOriginal": "保留原版",
+      "keepIncoming": "采用新内容",
+      "pending": "待选择",
+      "compare": "比较版本"
+    },
+    "materials": {
+      "title": "产出物料",
+      "hint": "Brief 和分镜表可手动编辑。保存后重跑下游节点会读到新内容。",
+      "ready": "可预览",
+      "editable": "可编辑",
+      "edit": "编辑",
+      "save": "保存",
+      "saving": "保存中…",
+      "externalChange": "文件已更新。你的草稿已保留，保存将覆盖最新内容。",
+      "overwriteWithDraft": "用草稿覆盖",
+      "cancelEdit": "取消",
+      "saveFailed": "保存失败",
+      "placeholder": "占位",
+      "empty": "还没有可查看的产物",
+      "placeholderHint": "这个节点还是占位产物，没有真实文件。",
+      "openFile": "打开文件",
+      "textError": "无法读取文本",
+      "addTableRow": "添加行",
+      "deleteTableRow": "删除第 {{row}} 行",
+      "frameCount": "{{count}} 张关键帧",
+      "collapse": "收起物料",
+      "expand": "展开物料",
+      "viewLarge": "看大图",
+      "closeViewer": "关闭",
+      "previous": "上一张",
+      "next": "下一张",
+      "viewerIndex": "{{current}} / {{total}}"
+    },
+    "storyboard": {
+      "columns": {
+        "clip_no": "镜号",
+        "timeline": "时间",
+        "camera": "景别/机位",
+        "move": "运镜",
+        "on_screen": "出镜角色",
+        "character_action": "角色动作",
+        "speech": "台词"
+      }
+    },
+    "errors": {
+      "runFailed": "启动运行失败",
+      "rerunFailed": "重新生成失败",
+      "chooseFailed": "选择版本失败"
+    },
+    "comfyui": {
+      "badgeHint": "从 ComfyUI 导入。始终使用这些参数通过 vLLM-Omni 生成。",
+      "promptHint": "连同下方 ComfyUI 参数原样发送给 vLLM-Omni，不经 Agent 改写。",
+      "samplingTitle": "采样参数",
+      "field": {
+        "url": "服务地址",
+        "model": "模型",
+        "negative_prompt": "负向提示词",
+        "width": "宽度",
+        "height": "高度",
+        "fps": "帧率",
+        "duration": "时长（秒）",
+        "num_inference_steps": "步数",
+        "guidance_scale": "引导系数",
+        "true_cfg_scale": "True CFG 系数",
+        "vae_use_slicing": "VAE 切片",
+        "vae_use_tiling": "VAE 分块",
+        "seed": "种子（-1 为随机）"
+      },
+      "warning": "已导入 {{file}}，但有内容被省略：{{items}}",
+      "warningItem": {
+        "skipped_input": "节点 {{node}} 的输入 \"{{detail}}\" 不受支持，已跳过",
+        "multi_stage_sampling": "节点 {{node}} 使用多阶段采样列表，已跳过采样参数",
+        "unsupported_sampling": "节点 {{node}} 的采样来源 {{detail}} 不是 Diffusion Sampling，已跳过",
+        "unsupported_model_params": "节点 {{node}} 的模型参数 {{detail}} 不受支持，已跳过",
+        "unsupported_reference": "节点 {{node}} 的参考 {{detail}} 与输入类型不符，已跳过"
+      },
+      "error": {
+        "invalid_json": "{{file}} 不是有效的 JSON：{{detail}}",
+        "unrecognized_format": "{{file}} 不是 ComfyUI 工作流导出文件。",
+        "no_supported_nodes": "{{file}} 中没有 vLLM-Omni Generate Image / Generate Video 节点。",
+        "read_failed": "无法导入 {{file}}：{{detail}}"
+      }
+    }
   },
   "videoLive": {
     "modelFallback": "视频模型",
@@ -117,6 +378,15 @@
     }
   },
   "settingsPanel": {
+    "voice": {
+      "connectionFailed": "连接失败，请检查接口地址、API Key 和模型后重试。",
+      "connectionSuccess": "模型连接验证成功",
+      "testConnection": "测试模型连接",
+      "requiredFields": "保存前请填写模型接口地址、模型名称和 API Key。",
+      "description": "配置麦克风、全双工实时语音及屏幕共享。",
+      "screenSharing": "屏幕共享",
+      "screenSharingDescription": "启动全双工时可选择屏幕、窗口或摄像头，每次均需浏览器授权。关闭后仅进行语音对话。"
+    },
     "title": "设置",
     "freeModels": {
       "title": "免费模型",
@@ -137,6 +407,7 @@
       "configDescription": "为限时免费模型单独设置上下文窗口等参数"
     },
     "categories": {
+      "voice": "语音",
       "general": "常规",
       "models": "模型",
       "agent": "智能体",
@@ -345,6 +616,7 @@
         "minimax": "MiniMax",
         "mimo": "小米 MiMo",
         "openrouter": "OpenRouter",
+        "vllm-omni": "vLLM-Omni",
         "volcengine": "火山引擎",
         "zhipu": "智谱 GLM",
         "unrecognized": "未识别提供商（{{vendor}}）"
@@ -410,6 +682,7 @@
       "skills": "技能",
       "webSearch": "网页搜索",
       "mediaTools": "工具",
+      "externalCliAgents": "三方 Agent",
       "vision": "图片处理",
       "visionDescription": "启用后可处理图片内容；关闭后保留已有模型配置。",
       "visionConfigTitle": "配置图片处理模型",
@@ -426,6 +699,9 @@
       "savedRestartRequired": "配置已保存，重启后生效。",
       "regionalBaseHint": "密钥分区域：国际版密钥用 https://api.minimax.io/v1，国内版密钥用 https://api.minimaxi.com/v1。地址与密钥的区域不一致时，会自动尝试另一个区域。",
       "regionalBaseHintModelark": "密钥和模型开通都分区域：国际版（BytePlus ModelArk）用 https://ark.ap-southeast.bytepluses.com/api/v3，国内版（火山引擎）用 https://ark.cn-beijing.volces.com/api/v3。模型需要先在 Ark 控制台开通，否则会提示 ModelNotOpen。",
+      "regionalBaseHintDashscope": "生成走百炼原生接口 /api/v1（不是对话用的 compatible-mode）。密钥分区域：国内版用 https://dashscope.aliyuncs.com/api/v1，国际版用 https://dashscope-intl.aliyuncs.com/api/v1。地址与密钥的区域不一致时，会自动尝试另一个区域。",
+      "selfHostedBaseHintVllmOmni": "填写自部署 vLLM-Omni 服务的地址（如 http://127.0.0.1:8091/v1）。服务未开启鉴权时 API key 可留空；模型名留空时使用服务实际加载的模型。",
+      "servedModel": "服务当前加载的模型",
       "deleteModelTitle": "删除模型配置",
       "deleteModelConfirm": "将删除{{name}}已保存的模型配置；如果该能力当前已启用，将同步关闭。",
       "team": "智能体团队"
@@ -463,7 +739,8 @@
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
-      "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。"
+      "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
+      "multiModelCollaboration": "多模型协同"
     },
     "taskAsr": {
       "dialogTitle": "配置语音转写模型",
@@ -642,7 +919,7 @@
       },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
-        "description": "输入框为空时显示全双工按钮；点击后共享整个屏幕并持续使用麦克风。"
+        "description": "全双工仅在单 Agent 模式下生效，集群/团队模式下不显示入口。输入框为空时显示全双工按钮；启动后持续进行语音对话，屏幕共享由下方开关控制。"
       },
       "kv_cache_affinity_enabled": {
         "title": "启用算力亲和",
@@ -683,11 +960,48 @@
         "title": "每次检查对话轮数",
         "description": "每次检查时最多读取的近期对话轮数，用于推断推荐上下文。默认值：20。",
         "placeholder": "请输入 1–50 的整数"
+      },
+      "multi_model_collaboration_enabled": {
+        "title": "多模型协同",
+        "description": "单 Agent 对话选择模型组后，由组内默认模型聚合其他模型的建议。"
+      },
+      "moa_jev_enabled": {
+        "title": "JEV 决策",
+        "description": "使用 JEV 验证执行进度；关闭时使用模型组的组内默认模型。"
+      },
+      "moa_verifier_interval": {
+        "title": "验证间隔（轮）",
+        "description": "每隔 N 个 Agent 执行轮次验证一次。一轮包含一次主模型决策及工具执行（如有），不是用户对话轮次。"
+      },
+      "moa_jev_api_base": {
+        "title": "API 地址",
+        "description": "独立的 JEV 服务地址。",
+        "placeholder": "https://api.typesafe.ai"
+      },
+      "moa_jev_model_name": {
+        "title": "模型名称",
+        "description": "JEV 验证模型。",
+        "placeholder": "jev-latest"
+      },
+      "moa_jev_api_key": {
+        "title": "API Key",
+        "description": "JEV 服务的密钥。",
+        "placeholder": "输入 API Key"
       }
     },
     "validation": {
       "required": "此字段为必填项",
       "integerRange": "请输入 {{min}}–{{max}} 之间的整数"
+    },
+    "multiModelCollaboration": {
+      "jevConfigTitle": "JEV 配置",
+      "jevConfigDescription": "仅用于多模型协同验证，不影响浏览器决策配置。",
+      "keepKey": "留空保留已保存的密钥。",
+      "clearKeyConfirm": "清除 JEV 密钥并关闭 JEV 决策？后续验证将使用模型组的组内默认模型。",
+      "errors": {
+        "apiBaseInvalid": "请输入有效的 HTTP 或 HTTPS 地址，且不包含登录凭据。",
+        "intervalInvalid": "请输入大于 0 的整数。"
+      }
     }
   },
   "trajectory": {
@@ -760,6 +1074,7 @@
       "shutdown": "已关闭",
       "error": "异常",
       "unstarted": "未启动",
+      "dormant": "休眠",
       "unknown": "未知"
     },
     "taskStatus": {
@@ -969,6 +1284,21 @@
     }
   },
   "chat": {
+    "recordingInProgress": "正在录音，点击停止后转写。",
+    "duplexControls": {
+      "sharingVideo": "WorkSwarm 正在接收共享画面",
+      "screenOrWindow": "屏幕或窗口",
+      "chooseSourceDescription": "下一步由浏览器请求所选来源的权限。取消可返回，不会启动会话。",
+      "chooseSource": "选择共享的内容",
+      "muteMic": "关闭麦克风",
+      "unmuteMic": "开启麦克风",
+      "muteSpeaker": "静音模型回应",
+      "unmuteSpeaker": "开启模型声音",
+      "stopSharing": "停止屏幕共享",
+      "listening": "正在聆听",
+      "connecting": "正在连接",
+      "exit": "退出全双工语音"
+    },
     "slashPicker": {
       "commands": "指令",
       "skills": "技能",
@@ -1017,6 +1347,7 @@
     "modePlan": "规划模式",
     "modeAgent": "性能模式",
     "modeAgentTeam": "集群模式",
+    "videoGeneration": "视频生成",
     "modeAutoHarness": "自优化模式",
     "modeAutoHarnessDesc": "自动分析并优化目标仓库",
     "recording": "正在录音...（再次点击麦克风结束）",
@@ -1051,7 +1382,7 @@
     "agentGroupDeletedDescription": "该会话绑定的专家团已被删除，无法继续对话。历史消息仍可查看。",
     "placeholderAgentGroupDeleted": "专家团已删除，无法继续对话",
     "stop": "停止",
-    "taskFullDuplexStart": "共享整个屏幕并开始全双工对话",
+    "taskFullDuplexStart": "开始全双工语音对话",
     "taskFullDuplexStarting": "正在启动全双工对话",
     "taskFullDuplexStop": "停止全双工对话和屏幕共享",
     "modelSelector": {
@@ -1064,7 +1395,10 @@
       "addModel": "添加自定义模型/模型组",
       "selectionFailed": "模型选择未能生效，请重新选择",
       "empty": "暂无可用模型，请先在设置中添加模型",
-      "placeholder": "选择模型"
+      "placeholder": "选择模型",
+      "selectOrdinaryModel": "请选择普通模型",
+      "collaborationDisabled": "多模型协同已关闭，请选择普通模型后发送。",
+      "noModelGroups": "尚无模型组，前往设置创建模型组。"
     },
     "contextUsage": {
       "title": "上下文用量",
@@ -1117,6 +1451,7 @@
     "agentGroupBinding": "当前对话已绑定专家团，暂不可更换",
     "agentGroupFirstBuildOnly": "专家团只能在首次创建 Team 时选择",
     "agentOnlyInSingleAgentMode": "专家仅支持在单 Agent 模式下选择",
+    "externalAgentRequiresNewSession": "三方专家需在新会话中使用，请新建会话后再选择",
     "agentGroupOnlyInTeamMode": "专家团仅支持在集群模式下选择",
     "extension": "扩展",
     "extensionSearchPlaceholder": "请输入关键字搜索",
@@ -1398,7 +1733,7 @@
     "status": {
       "label": "状态",
       "enabled": "已启用",
-      "disabled": "已禁用",
+      "disabled": "已关闭",
       "expired": "已过期"
     },
     "skillnet": {
@@ -1596,12 +1931,26 @@
       "externalCliCodex": "启用 Codex"
     },
     "externalCli": {
+      "customHint": "由上传的 provider 包接入；勾选“使用内置 CLI”时由 provider 自行选择 CLI。",
+      "customHintWithCli": "由上传的 provider 包接入；勾选“使用内置 CLI”时使用随包上传的 CLI。",
+      "toggleCustom": "启用 {{agent}}",
+      "addCustomAgent": "添加三方 Agent",
+      "addCustomAgentHint": "上传 openjiuwen harness provider 安装包（.whl），可选附带它驱动的 CLI 可执行文件。同名 Agent 会被替换。",
+      "customAgentWheel": "Provider 包（.whl）",
+      "customAgentCli": "CLI 可执行文件（可选）",
+      "noFileSelected": "未选择文件",
+      "upload": "上传并安装",
+      "uploading": "正在安装",
+      "uploadFailed": "安装失败",
+      "removeCustomAgent": "删除此 Agent",
+      "removeCustomAgentConfirm": "确认删除",
       "claude": "Claude",
       "codex": "Codex",
       "claudeHint": "SDK 未安装时将自动安装；CLI 可使用内置版本、系统 PATH 或指定路径。",
       "codexHint": "SDK 未安装时将自动安装；CLI 可使用内置版本、系统 PATH 或指定路径。",
       "useBuiltin": "使用内置 CLI",
       "detect": "检测",
+      "toggleEnable": "启用/禁用 {{agent}}",
       "detectHint": "未填写路径时从系统 PATH 查找；填写路径后检测指定的 CLI 可执行文件并校验版本",
       "selectFile": "选择文件",
       "selectFileTitle": "选择 {{agent}} 命令",
@@ -1616,13 +1965,22 @@
       "statusUnsupported": "路径不可用",
       "statusUnavailable": "不可用",
       "version": "版本 {{version}}",
-      "compatibilityWarning": "检测到的版本可能不兼容。可以更换可执行文件路径、升级版本，或勾选“使用内置 CLI”，改用默认启动方式。",
-      "compatibilityWarningWithVersion": "检测到的版本可能不兼容。可以更换可执行文件路径、升级到 {{version}} 或更高版本，或勾选“使用内置 CLI”，改用默认启动方式。",
-      "windowsScriptPath": "当前选择的是 Windows 脚本文件。请改选真实的可执行文件，或勾选“使用内置 CLI”。",
-      "missingInPath": "未在系统 PATH 中找到 {{agent}} CLI。可手动填写可执行文件路径，或勾选“使用内置 CLI”。",
-      "missingPath": "路径不存在：{{path}}。请检查路径，或勾选“使用内置 CLI”。",
-      "directoryPath": "所填路径是一个目录：{{path}}。请填写 CLI 可执行文件的完整路径，或勾选“使用内置 CLI”。",
-      "unavailableCli": "无法运行 {{agent}} CLI（{{reason}}）。请检查可执行文件，或勾选“使用内置 CLI”。",
+      "installed": "已安装",
+      "notInstalled": "未安装",
+      "disabled": "已关闭",
+      "detecting": "检测中…",
+      "executablePath": "可执行文件路径",
+      "installNow": "一键安装",
+      "notInstalledHint": "暂未检测到SDK，请点击",
+      "editPath": "编辑",
+      "openFile": "打开文件",
+      "compatibilityWarning": "检测到的版本可能不兼容。可以更换可执行文件路径、升级版本，或点击“一键安装”改用内置 CLI。",
+      "compatibilityWarningWithVersion": "检测到的版本可能不兼容。可以更换可执行文件路径、升级到 {{version}} 或更高版本，或点击“一键安装”改用内置 CLI。",
+      "missingInPath": "未在系统 PATH 中找到 {{agent}} CLI。可手动填写可执行文件路径，或点击“一键安装”使用内置 CLI。",
+      "missingPath": "路径不存在：{{path}}。请检查路径，或点击“一键安装”使用内置 CLI。",
+      "directoryPath": "所填路径是一个目录：{{path}}。请填写 CLI 可执行文件的完整路径，或点击“一键安装”使用内置 CLI。",
+      "unavailableCli": "无法运行 {{agent}} CLI（{{reason}}）。请检查可执行文件，或点击“一键安装”使用内置 CLI。",
+      "windowsScriptPath": "当前选择的是 Windows 脚本文件。请改选真实的可执行文件，或点击“一键安装”使用内置 CLI。",
       "autoSaved": "{{agents}} 依赖安装完成，已自动保存您的配置。",
       "installDialogTitle": "安装可选组件",
       "installDialogDescription": "关闭此弹窗不会中断安装。安装完成后，您的配置将自动保存。",
@@ -1633,8 +1991,6 @@
       "installRetry": "下载异常，正在重试（{{current}}/{{total}}）",
       "installSwitchingSource": "正在使用备用下载源",
       "installRunInBackground": "后台运行",
-      "installInProgress": "{{agents}} 正在安装，可随时查看进度。",
-      "installViewProgress": "查看进度",
       "claudeCodex": "Claude / Codex",
       "installPhase": {
         "idle": "等待安装",
@@ -3090,6 +3446,9 @@
       "charCount": "{{count}}/{{max}}",
       "tagLabel": "领域标签（可选）",
       "tagPlaceholder": "请选择领域标签",
+      "useExternalHarness": "使用三方 Harness",
+      "useExternalHarnessHint": "支持创建以 Claude、Codex 为内核的第三方专家",
+      "externalHarnessProvider": "Harness 类型",
       "toggleTags": "展开或收起领域标签",
       "tagScrollPrev": "向左查看领域标签",
       "tagScrollNext": "向右查看领域标签",
@@ -3504,6 +3863,23 @@
     "export": "导出长图",
     "exporting": "正在导出长图...",
     "generating": "正在生成",
+    "preparing": "准备导出",
+    "preparingDocument": "正在排版",
+    "loadingHistory": "正在读取对话",
+    "openExportTab": "打开导出页",
+    "renderingProgress": "生成图片 {{percent}}%",
+    "saving": "准备下载",
+    "savingDesktop": "准备保存",
+    "downloadStartFailed": "浏览器未开始下载。图片已保留，请再次点击导出重试下载。",
+    "statusTimeout": "查询导出状态超时，请检查网络后重试。",
+    "statusReconnecting": "正在重新连接导出进度",
+    "downloading": "正在下载",
+    "downloadInterrupted": "下载中断。图片已保留，请再次点击导出重试下载。",
+    "desktopRestartRequired": "桌面导出功能已更新，请完整退出并重新启动应用后再导出。",
+    "browserExportNotice": "正在生成长图，请保持此页签打开。",
+    "popupBlocked": "无法打开导出页签，请允许弹出窗口后重试。",
+    "browserTabClosed": "导出页签已关闭，长图生成已取消。",
+    "exportStopped": "导出页已关闭，会话「{{sessionTitle}}」的导出已停止，可重新导出。",
     "exportUnavailable": "会话结束后可导出长图",
     "exportFailed": "导出长图失败",
     "mainConversation": "正文对话",
@@ -4070,7 +4446,8 @@
     "tokenModal": {
       "title": "连接 {{name}}",
       "placeholder": "粘贴你的{{name}}API Key",
-      "saveAndConnect": "保存并连接"
+      "saveAndConnect": "保存并连接",
+      "oauthAuthorize": "一键授权"
     },
     "cliAuth": {
       "title": "连接 {{name}}",
@@ -4330,6 +4707,7 @@
       "feature2Body": "把你的成品（论文 / 程序）交给 AI 反复打磨：生成多个优化候选，逐版检验评分，保留最好的一版继续迭代，直到产出最满意的那一版再交付给你。经过多轮打磨自动完成，质量稳步上升"
     },
     "list": {
+      "title": "RSI自进化实验",
       "loading": "加载中…",
       "error": "加载实验列表失败"
     },
@@ -4506,6 +4884,16 @@
       "candidateError": "候选 {{index}}/{{total}} 生成失败",
       "scoreSuffix": " · 得分 {{score}}"
     }
+    },
+  "teamDispatch": {
+    "toggleLabel": "调度模式",
+    "toggleHint": "开启后 Leader 将每个任务指派给具名成员；关闭则由成员自主认领任务",
+    "readonlyHint": "团队已启动，调度模式不可修改"
+  },
+  "teamBootstrap": {
+    "toggleLabel": "启动即建队",
+    "toggleHint": "开启后会话一开始由系统建好一个通用团队，Leader 直接按任务创建成员，无需先调用 build_team",
+    "readonlyHint": "团队已启动，建队方式不可修改"
   },
   "swarmflow": {
     "statusPlanned": "已规划",
@@ -4559,6 +4947,7 @@
     "verifyReviewing": "评审中…",
     "verifyReviewingShort": "评审中",
     "verifyPass": "✓ 通过",
+    "expertIdentity": "专家：{{name}}（{{template}}）",
     "verifyFail": "✗ 不通过",
     "verifyUndecided": "? 未裁决",
     "verifyThreshold": "阈值 {{count}}",
@@ -4581,9 +4970,9 @@
     "runIdTooltip": "运行 ID：{{id}}"
   },
   "a4pSettings": {
-    "title": "A4P预授权",
-    "enableTitle": "启用A4P预授权",
-    "description": "允许在会话中批量授权 Agent 执行任务所需的多项权限，并为定时任务预授权权限。仅在“默认权限”模式下生效。"
+    "title": "A4P 预授权",
+    "enableTitle": "启用 A4P 预授权",
+    "description": "允许批量预授权当前会话和定时任务所需的权限。开启后，定时任务运行时也接入权限审批。仅在“默认权限”模式下生效。"
   },
   "a4pAuthorization": {
     "expandParams": "展开 {{name}} 的参数",

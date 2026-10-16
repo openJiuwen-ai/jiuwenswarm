@@ -19,7 +19,7 @@ import { ModelDialog } from './ModelDialog';
 import { ModelGroupDialog } from './ModelGroupDialog';
 import { ModelGroupsSettings } from './ModelGroupsSettings';
 import { getVendorLabel } from './ModelProviderSelect';
-import { displayModelProtocol, parseVendorCatalog } from './modelAdapters';
+import { displayModelProtocol, parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
 import {
   extractModelSelectionReferences,
   getGroupDefaultRouteId,
@@ -234,7 +234,7 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
     try {
       const payload = await request<{ vendors?: unknown }>('vendors.list');
       if (currentRequestId !== catalogRequestId.current) return;
-      setCatalog(parseVendorCatalog(payload.vendors));
+      setCatalog(withoutGenerationOnlyPresets(parseVendorCatalog(payload.vendors)));
     } catch (error) {
       if (currentRequestId === catalogRequestId.current) {
         setCatalogError(

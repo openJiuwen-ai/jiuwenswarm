@@ -10,6 +10,11 @@ import os
 import subprocess
 import sys
 import time
+import uuid
+from pathlib import Path
+
+from jiuwenswarm.server.ipc.client import try_connect
+from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +68,43 @@ def build_worker_command(
     return command
 
 
+async def request_resident_worker_shutdown(socket_path: str, *, hello_timeout: float = 5.0) -> int | None:
+    """Ask the Worker listening on ``socket_path`` to shut down.
+
+    A Worker outlives the Front that spawned it, so stopping the service
+    process tree leaves it running. This connects as a fresh supervisor,
+    reads the hello to learn the Worker pid, then sends ``shutdown``. The
+    caller must stop every Front first; otherwise a Front supervisor would
+    spawn a replacement Worker.
+
+    Args:
+        socket_path: Worker IPC endpoint, see ``default_socket_path``.
+        hello_timeout: Seconds to wait for the Worker hello frame.
+
+    Returns:
+        The pid of the Worker asked to shut down, or ``None`` when no Worker
+        is listening on the endpoint.
+
+    Raises:
+        RuntimeError: The endpoint answered with something other than a
+            Worker hello.
+    """
+    conn = await try_connect(socket_path)
+    if conn is None:
+        return None
+    try:
+        hello = await asyncio.wait_for(conn.recv(), timeout=hello_timeout)
+        if not isinstance(hello, dict) or hello.get("kind") != KIND_HELLO:
+            raise RuntimeError(f"expected worker hello on {socket_path}")
+        pid = hello.get("pid")
+        if not isinstance(pid, int):
+            raise RuntimeError(f"worker hello on {socket_path} carries no pid")
+        await conn.send({"kind": KIND_SHUTDOWN})
+        return pid
+    finally:
+        await conn.close()
+
+
 class WorkerProcess:
     """A Worker subprocess owned by this supervisor."""
 
@@ -84,6 +126,15 @@ class WorkerProcess:
         self._stub_exit_on_request = stub_exit_on_request
         self._proc: subprocess.Popen[bytes] | None = None
         self.launch_identity: str | None = None
+        self._stderr_path = (
+            Path(socket_path).parent
+            / "worker-logs"
+            / f"runtime-worker-{uuid.uuid4().hex}.stderr.log"
+        )
+
+    @property
+    def stderr_path(self) -> Path:
+        return self._stderr_path
 
     @property
     def pid(self) -> int | None:
@@ -117,12 +168,15 @@ class WorkerProcess:
         # Popen, not asyncio's subprocess transport: that transport kills the
         # child when the Front event loop closes. A new session keeps the
         # Worker alive across Front restarts.
-        self._proc = subprocess.Popen(
-            command,
-            env=os.environ.copy(),
-            start_new_session=True,
-            stdin=subprocess.PIPE,
-        )
+        self._stderr_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._stderr_path.open("ab") as stderr:
+            self._proc = subprocess.Popen(
+                command,
+                env=os.environ.copy(),
+                start_new_session=True,
+                stdin=subprocess.PIPE,
+                stderr=stderr,
+            )
         try:
             self._proc.stdin.write(payload)
             self._proc.stdin.close()
@@ -130,16 +184,25 @@ class WorkerProcess:
             self._proc.kill()
             await self.wait(timeout=5)
             raise
+        logger.info("[Supervisor] worker pid=%s stderr=%s", self.pid, self._stderr_path)
 
     async def wait(self, *, timeout: float | None = None) -> int | None:
         """Return the exit code, or ``None`` when ``timeout`` elapses first."""
         proc = self._proc
         if proc is None:
             return 0
-        try:
-            return await asyncio.to_thread(proc.wait, timeout)
-        except subprocess.TimeoutExpired:
-            return None
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        while True:
+            code = proc.poll()
+            if code is not None:
+                return code
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                await asyncio.sleep(min(0.05, remaining))
+            else:
+                await asyncio.sleep(0.05)
 
     async def stop(self, *, timeout: float = 5.0) -> None:
         proc = self._proc

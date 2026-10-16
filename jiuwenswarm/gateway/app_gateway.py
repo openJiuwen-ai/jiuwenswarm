@@ -542,7 +542,7 @@ async def _wait_for_web_channel_listening(
             )
             return
         await asyncio.sleep(0.01)
-    raise TimeoutError("WebChannel did not bind its listening socket within 5s")
+    raise TimeoutError(f"WebChannel did not bind its listening socket within {timeout:.0f}s")
 
 
 def _running_under_supervisor() -> bool:
@@ -573,6 +573,27 @@ def _exec_gateway_restart() -> None:
         # and the gateway lock.
         logger.info("[App] requesting Gateway restart from supervisor")
         os._exit(GATEWAY_RESTART_EXIT_CODE)  # pylint: disable=protected-access  # public API; underscore is historical
+    if os.environ.get(SUPERVISOR_PID_ENV):
+        # Env says we were spawned by a supervisor, yet the parent check in
+        # _running_under_supervisor failed. execv exits 0, which that live
+        # supervisor reads as "Gateway stopped" and tears the WHOLE stack
+        # down (AgentServer included) — log the deciding values so a later
+        # post-mortem does not have to guess.
+        import psutil
+
+        try:
+            parent = psutil.Process(os.getppid())
+            parent_desc = f"alive, created {parent.create_time():.0f}"
+        except psutil.Error:
+            parent_desc = "not running"
+        logger.warning(
+            "[App] %s=%s but parent pid %s is %s; execv restart will be read "
+            "as a stop by the supervisor",
+            SUPERVISOR_PID_ENV,
+            os.environ.get(SUPERVISOR_PID_ENV),
+            os.getppid(),
+            parent_desc,
+        )
     logger.info("[App] .env updated, restarting Gateway...")
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
@@ -1594,9 +1615,12 @@ class GatewayServer(BaseWebChannel):
             default_mode = Mode.CODE_NORMAL if route.channel_id == "tui" else Mode.AGENT
             mode = Mode.from_raw(params.get("mode"), default=default_mode)
 
-            # 确保 mode 被设置到 params 中，以便后续转发到 AgentServer
+            # 确保 mode 被设置到 params 中，以便后续转发到 AgentServer。
+            # Issue #4876: params.mode 传非字符串（数组/对象等）时不能原样透传，
+            # 用 from_raw 的解析结果（含默认值兜底）覆盖；字符串值保持原样不动。
             params = dict(params)
-            params.setdefault("mode", mode.value)
+            if not isinstance(params.get("mode"), str):
+                params["mode"] = mode.value
 
             # 连接级 agent_type 为 SSOT，注入后续转发请求
             # （3rdagent.switch 由 TUI local_handler 写回 ws._gateway_agent_type）
@@ -1789,6 +1813,13 @@ async def _run(
     # 惰性 import: 仅在对应 channel enabled 分支内导入, 避免冷启动时为禁用平台
     # 读取其重依赖 (slack_bolt/telegram/redis/aiohttp 等), 缩短 Gateway 就绪时间。
     from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+        WebProxyChannelConfig,
+    )
+    from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
+        WebPortManager,
+        register_3rdagent_web_method,
+    )
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.cleanup import start_background_cleanup
     from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
@@ -2114,6 +2145,7 @@ async def _run(
 
         reload_ok = False
         last_error: Exception | None = None
+        runtime_failed_reject = False
         for attempt in range(_reload_max_retries + 1):
             try:
                 reload_resp = await client.send_request(reload_env)
@@ -2132,8 +2164,14 @@ async def _run(
                     logger.warning("[App] agent.reload_config validation error (non-fatal): %s", err_str)
                     return False
                 last_error = RuntimeError(f"agent.reload_config rejected: {err_msg}")
+                # AgentServer runtime 处于 FAILED：server 侧已因本次 reload 请求
+                # 触发 worker 重启自愈；Gateway 自重启修复不了它，只会断开前端。
+                runtime_failed_reject = (
+                    "RUNTIME_FAILED" in err_str or "runtime failed" in err_str.lower()
+                )
             except Exception as e:  # noqa: BLE001
                 last_error = e
+                runtime_failed_reject = False
 
             if attempt < _reload_max_retries:
                 delay = _reload_retry_backoff_base ** (attempt + 1)
@@ -2143,12 +2181,37 @@ async def _run(
                 )
                 await asyncio.sleep(delay)
 
-        if not reload_ok:
+        if not reload_ok and runtime_failed_reject:
+            # 恢复尝试未达成时再多等两轮：worker 可能仍在 warming（import 慢）。
+            for _attempt in range(2):
+                await asyncio.sleep(8.0)
+                try:
+                    reload_resp = await client.send_request(reload_env)
+                    if getattr(reload_resp, "ok", False):
+                        reload_ok = True
+                        break
+                except Exception as e:  # noqa: BLE001
+                    last_error = e
+            if reload_ok:
+                logger.info("[App] agent.reload_config succeeded after runtime recovery")
+
+        if not reload_ok and not runtime_failed_reject:
             logger.critical(
                 "[App] agent.reload_config failed after %d attempts, scheduling restart: %s",
                 _reload_max_retries + 1, last_error,
             )
             _schedule_gateway_restart(restart_request)
+            return False
+
+        if not reload_ok:
+            # RUNTIME_FAILED：重启 Gateway 修复不了 AgentServer 的 runtime
+            # （反而把前端断线）。保持 Gateway 在线；配置已写盘，下次保存
+            # 会再次触发 reload 并重新尝试恢复。
+            logger.critical(
+                "[App] agent.reload_config rejected with RUNTIME_FAILED; "
+                "AgentServer runtime recovery failed, keeping Gateway up: %s",
+                last_error,
+            )
             return False
 
         # AgentServer 已确认热重载成功后，再刷新 Gateway 内存中的值。
@@ -2195,6 +2258,7 @@ async def _run(
         path=web_path,
     )
     web_channel = WebChannel(web_config, _DummyBus(), agent_client=client)
+    register_3rdagent_web_method(web_channel)
 
     # 注入 Git diff 监控注册表(设计文档阶段10):
     # 1. 让 ``_mark_git_watcher_dirty`` 能通过 ``channel.git_watcher_registry`` 唤醒轮询
@@ -2590,6 +2654,7 @@ async def _run(
             "wecom",
             "wechat",
             "ssh",
+            "web_proxy",
         ]:
             if _should_restart_channel(channel_name, _last_channels_conf, conf) or channel_name in restart_pending:
                 if channel_name in restart_pending and not _should_restart_channel(
@@ -3132,6 +3197,96 @@ async def _run(
                     )
             else:
                 logger.info("[App] channels.ssh missing or invalid, SshChannel disabled")
+
+        if "web_proxy" in changed_channels:
+            web_proxy_conf = conf.get("web_proxy") if isinstance(conf, dict) else None
+            web_channel.web_proxy_enabled = False
+            web_channel.web_proxy_auth_enabled = True
+            web_channel.web_resolver = None
+            web_channel.web_runtime_release = None
+            previous_watcher = getattr(web_channel, "web_registry_watcher", None)
+            if previous_watcher is not None:
+                await previous_watcher.stop()
+                web_channel.web_registry_watcher = None
+            previous_manager = getattr(web_channel, "web_port_manager", None)
+            if previous_manager is not None:
+                await previous_manager.close_all()
+            if isinstance(web_proxy_conf, dict):
+                enabled, reason = _is_channel_enabled(web_proxy_conf, [])
+                full_cfg = get_config()
+                gateway_cfg = full_cfg.get("gateway") if isinstance(full_cfg, dict) else {}
+                agent_client_cfg = (
+                    gateway_cfg.get("agent_client") if isinstance(gateway_cfg, dict) else {}
+                )
+                client_type = (
+                    str(agent_client_cfg.get("type") or "websocket").strip().lower()
+                    if isinstance(agent_client_cfg, dict)
+                    else "websocket"
+                )
+                wp_config = WebProxyChannelConfig.from_dict(web_proxy_conf)
+                if not enabled:
+                    logger.info("[App] channels.web_proxy.%s, web proxy disabled", reason or "enabled=false")
+                elif client_type != "agentos_router":
+                    logger.warning(
+                        "[App] channels.web_proxy.enabled=true but gateway.agent_client.type=%s "
+                        "(require agentos_router); web proxy will not start",
+                        client_type,
+                    )
+                else:
+                    web_resolver = getattr(agent_server_ext, "resolve_web_endpoint", None)
+                    if not callable(web_resolver):
+                        logger.warning(
+                            "[App] channels.web_proxy.enabled=true but agent_server_ext has no "
+                            "resolve_web_endpoint; web proxy will not start"
+                        )
+                    else:
+                        web_release = getattr(
+                            agent_server_ext, "release_web_endpoint", None
+                        )
+
+                        async def _held_web_resolver(
+                            user_id: str,
+                            agent_type: str,
+                            protocol: str,
+                            _resolve=web_resolver,
+                        ) -> str | None:
+                            return await _resolve(
+                                user_id, agent_type, protocol, acquire=True
+                            )
+
+                        web_channel.web_proxy_enabled = wp_config.enabled
+                        web_channel.web_proxy_auth_enabled = wp_config.auth_enabled
+                        web_channel.web_proxy_config = wp_config
+                        web_channel.web_resolver = _held_web_resolver
+                        web_channel.web_runtime_release = (
+                            web_release if callable(web_release) else None
+                        )
+                        manager = WebPortManager(web_channel, wp_config)
+                        web_channel.web_port_manager = manager
+                        manager.start()
+                        from jiuwenswarm.extensions.agentos.registry_watcher.service import (
+                            RegistryWatcherService,
+                        )
+                        from jiuwenswarm.gateway.cron.factory import (
+                            load_cron_store_settings,
+                        )
+
+                        endpoints = list(load_cron_store_settings(full_cfg).endpoints)
+                        watcher = RegistryWatcherService(
+                            etcd_endpoints=endpoints,
+                            on_desired=manager.reconcile,
+                        )
+                        web_channel.web_registry_watcher = watcher
+                        await watcher.start()
+                        logger.info(
+                            "[App] 3rd-agent web proxy: listeners driven by registry_watcher "
+                            "(listen %s, auth=%s, etcd=%s)",
+                            wp_config.listen_host,
+                            "on" if wp_config.auth_enabled else "off",
+                            "on" if watcher.enabled else "off",
+                        )
+            else:
+                logger.info("[App] channels.web_proxy missing or invalid, web proxy disabled")
 
         _schedule_agent_prewarm_sync(
             "agent-prewarm-sync-after-channel-change",

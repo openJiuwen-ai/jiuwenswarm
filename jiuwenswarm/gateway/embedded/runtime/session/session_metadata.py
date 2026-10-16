@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import logging
 import os
@@ -46,6 +46,7 @@ class _MetadataWriteOptions:
     preserve_rebound_fields: bool = False
     rebind_gen_at_enqueue: int | None = None
     merge_fields: frozenset[str] | None = None
+    owns_moa_enabled: bool = False
     lifecycle_generation: int | None = None
     # Inference owns only fields that have not changed since the read snapshot.
     expected_fields: dict[str, tuple[bool, Any]] | None = None
@@ -406,8 +407,10 @@ def _apply_metadata_defaults_with_inference(
             _enqueue_write(
                 session_id,
                 metadata,
-                preserve_pin_fields=True,
-                merge_fields=frozenset(changed_fields),
+                options=_MetadataWriteOptions(
+                    preserve_pin_fields=True,
+                    merge_fields=frozenset(changed_fields),
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("惰性迁移写回会话 %s 失败: %s", session_id, exc)
@@ -663,6 +666,15 @@ def _write_metadata_unfenced(
                 to_write["model_selection"] = current["model_selection"]
             else:
                 to_write.pop("model_selection", None)
+        owns_moa = options.owns_moa_enabled or (
+            options.merge_fields is not None and "moa_enabled" in options.merge_fields
+        )
+        if current is not None and not owns_moa:
+            to_write = dict(to_write)
+            if "moa_enabled" in current:
+                to_write["moa_enabled"] = current["moa_enabled"]
+            else:
+                to_write.pop("moa_enabled", None)
         # 权威 rebind 版本检查: 持锁后重比 gen, 判定调用方传入的快照是否已陈旧。
         # 比调用方持锁前的 pre-check 更可靠 —— 消除"gen 比较与文件写入"之间的
         # TOCTOU 窗口(P3)。rebind 自身传入的 gen 已 bump, 等于当前 gen, 不触发合并。
@@ -688,7 +700,7 @@ def _write_metadata_unfenced(
 
 
 def update_session_model_selection(
-    session_id: str, selection: dict[str, Any], *, expected_selection: tuple[bool, Any] | None = None,
+    session_id: str, selection: dict[str, Any] | None, *, expected_selection: tuple[bool, Any] | None = None,
 ) -> None:
     """Update only selection through the Gateway lifecycle/atomic-write boundary."""
     _write_metadata_sync(
@@ -859,8 +871,8 @@ def _enqueue_write(
     session_id: str,
     metadata: dict[str, Any],
     sync_write: bool = False,
-    preserve_pin_fields: bool = False,
-    merge_fields: frozenset[str] | None = None,
+    *,
+    options: _MetadataWriteOptions | None = None,
 ) -> None:
     """将写入操作放入异步队列,队列满时退化为同步写。
 
@@ -877,13 +889,18 @@ def _enqueue_write(
     from jiuwenswarm.gateway.embedded.runtime.session import lifecycle as lc
     generation = lc.state("session", session_id).get("generation", 0)
     rebind_gen_at_enqueue = _get_rebind_gen(session_id)
-    if preserve_pin_fields:
+    options = replace(
+        options or _MetadataWriteOptions(),
+        rebind_gen_at_enqueue=rebind_gen_at_enqueue,
+        lifecycle_generation=generation,
+    )
+    if options.preserve_pin_fields:
         metadata = _merge_pin_fields_from_disk(session_id, metadata)
     with _CACHE_LOCK:
         _WRITE_REVISION += 1
         revision = _WRITE_REVISION
         pending = _PENDING_FIELDS.setdefault(session_id, {})
-        for key in merge_fields if merge_fields is not None else metadata:
+        for key in options.merge_fields if options.merge_fields is not None else metadata:
             if key in metadata:
                 pending[key] = (revision, copy.deepcopy(metadata[key]))
         cached = metadata.copy()
@@ -891,13 +908,7 @@ def _enqueue_write(
         _METADATA_CACHE[session_id] = cached
         _CACHE_DISK_STAMPS.setdefault(session_id, _disk_stamp(session_id))
         _METADATA_CACHE_GENERATIONS[session_id] = generation
-    options = _MetadataWriteOptions(
-        preserve_pin_fields=preserve_pin_fields,
-        rebind_gen_at_enqueue=rebind_gen_at_enqueue,
-        lifecycle_generation=generation,
-        merge_fields=merge_fields,
-        write_revision=revision,
-    )
+    options = replace(options, write_revision=revision)
     if sync_write:
         # P2: sync_write 路径同样需要 rebind 版本检查 —— set_session_pinned 等
         # sync_write=True 调用方读取磁盘早于一次 rebind 时, 其快照含旧 project
@@ -908,7 +919,7 @@ def _enqueue_write(
         except Exception:
             _discard_failed_write(session_id, options)
             raise
-        if preserve_pin_fields or rebind_gen_at_enqueue is not None:
+        if options.preserve_pin_fields or rebind_gen_at_enqueue is not None:
             _refresh_written_cache(session_id, written, options)
         return
     _ensure_worker_started()
@@ -921,7 +932,7 @@ def _enqueue_write(
             )
         )
     except queue.Full:
-        if preserve_pin_fields:
+        if options.preserve_pin_fields:
             metadata = _merge_pin_fields_from_disk(session_id, metadata)
             with _CACHE_LOCK:
                 _METADATA_CACHE[session_id] = metadata.copy()
@@ -931,7 +942,7 @@ def _enqueue_write(
         except Exception:
             _discard_failed_write(session_id, options)
             raise
-        if preserve_pin_fields or rebind_gen_at_enqueue is not None:
+        if options.preserve_pin_fields or rebind_gen_at_enqueue is not None:
             _refresh_written_cache(session_id, written, options)
 
 
@@ -961,6 +972,7 @@ def init_session_metadata(
     project_id: str = "",
     persist_session: bool = False,
     model: str = "",
+    moa_enabled: bool = False,
     cron_id: str = "",
     work_mode: str = "",
     channel_metadata: dict[str, Any] | None = None,
@@ -992,6 +1004,7 @@ def init_session_metadata(
         "project_id": project_id,
         "persist_session": bool(persist_session),
         "model": model,
+        "moa_enabled": moa_enabled is True,
         "cron_id": cron_id,
         "last_user_message_at": _current_timestamp(),
         "pinned": False,
@@ -1024,6 +1037,7 @@ def update_session_metadata(
     project_dir: str | None = None,
     project_id: str | None = None,
     model: str | None = None,
+    moa_enabled: bool | None = None,
     last_user_message_at: float | None = None,
     pinned: bool | None = None,
     pin_order: int | None = None,
@@ -1058,6 +1072,8 @@ def update_session_metadata(
     ``True``:返回成功前落盘,否则只读磁盘的另一进程(AgentServer)在窗口期
     内会读到陈旧数据,后续整份 metadata 回写会覆盖刚写入的 ``pinned`` 状态。
     """
+    if moa_enabled is not None and not isinstance(moa_enabled, bool):
+        raise ValueError("moa_enabled must be a boolean")
     metadata = _read_metadata(session_id, cache_bust=cache_bust)
     before = copy.deepcopy(metadata)
 
@@ -1101,6 +1117,7 @@ def update_session_metadata(
             "project_id": project_id or "",
             "persist_session": False,
             "model": model or "",
+            "moa_enabled": moa_enabled is True,
             "cron_id": "",
             "last_user_message_at": last_user_message_at if last_user_message_at is not None else _current_timestamp(),
             "pinned": bool(pinned),
@@ -1146,6 +1163,10 @@ def update_session_metadata(
         # model：覆盖式——每次请求更新为本次模型
         if model is not None:
             metadata["model"] = model
+        if moa_enabled is not None:
+            if not isinstance(moa_enabled, bool):
+                raise ValueError("moa_enabled must be a boolean")
+            metadata["moa_enabled"] = moa_enabled
         # last_user_message_at：覆盖式——仅在用户消息时由调用方传入
         if last_user_message_at is not None:
             metadata["last_user_message_at"] = last_user_message_at
@@ -1192,7 +1213,10 @@ def update_session_metadata(
         if touch_last_message_at:
             metadata["last_message_at"] = _current_timestamp()
 
-    explicit_fields = (("accent_color", accent_color), ("pinned", pinned), ("pin_order", pin_order))
+    explicit_fields = (
+        ("accent_color", accent_color), ("pinned", pinned), ("pin_order", pin_order),
+        ("moa_enabled", moa_enabled),
+    )
     changed = _changed_fields(before, metadata) | frozenset(
         name for name, value in explicit_fields if value is not None
     )
@@ -1200,8 +1224,11 @@ def update_session_metadata(
         session_id,
         metadata,
         sync_write=sync_write or sync,
-        preserve_pin_fields=pinned is None and pin_order is None,
-        merge_fields=changed,
+        options=_MetadataWriteOptions(
+            preserve_pin_fields=pinned is None and pin_order is None,
+            merge_fields=changed,
+            owns_moa_enabled=moa_enabled is not None,
+        ),
     )
 
 
@@ -1410,8 +1437,9 @@ def sync_session_request_metadata(
         if is_chat_turn:
             metadata["last_message_at"] = _current_timestamp()
 
-    _enqueue_write(session_id, metadata, preserve_pin_fields=True,
-                   merge_fields=_changed_fields(before, metadata))
+    _enqueue_write(session_id, metadata, options=_MetadataWriteOptions(
+        preserve_pin_fields=True, merge_fields=_changed_fields(before, metadata),
+    ))
     return effective_project_dir
 
 
@@ -1640,8 +1668,9 @@ def increment_session_round_count(session_id: str) -> int:
     new_round = current_round + 1
     metadata["round_id"] = new_round
     metadata["last_message_at"] = _current_timestamp()
-    _enqueue_write(session_id, metadata, preserve_pin_fields=True,
-                   merge_fields=frozenset({"round_id", "last_message_at"}))
+    _enqueue_write(session_id, metadata, options=_MetadataWriteOptions(
+        preserve_pin_fields=True, merge_fields=frozenset({"round_id", "last_message_at"}),
+    ))
     return new_round
 
 
@@ -1712,8 +1741,10 @@ def rebind_session_project(
         session_id,
         metadata,
         sync_write=True,
-        preserve_pin_fields=True,
-        merge_fields=frozenset({"project_id", "project_dir", "work_mode", "channel_metadata"}),
+        options=_MetadataWriteOptions(
+            preserve_pin_fields=True,
+            merge_fields=frozenset({"project_id", "project_dir", "work_mode", "channel_metadata"}),
+        ),
     )
     return metadata
 
@@ -1810,8 +1841,9 @@ def set_session_delivery_context(
         delivery_context["route_metadata"] = normalized_route_metadata
 
     metadata["delivery_context"] = delivery_context
-    _enqueue_write(session_id, metadata, preserve_pin_fields=True,
-                   merge_fields=_changed_fields(before, metadata))
+    _enqueue_write(session_id, metadata, options=_MetadataWriteOptions(
+        preserve_pin_fields=True, merge_fields=_changed_fields(before, metadata),
+    ))
     return copy.deepcopy(delivery_context)
 
 

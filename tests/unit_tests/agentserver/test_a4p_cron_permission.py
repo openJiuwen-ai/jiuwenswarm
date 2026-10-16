@@ -6,8 +6,8 @@ import pytest
 
 from openjiuwen.harness.security.host import PermissionConfirmationRequest
 
-from jiuwenswarm.agents.harness.common import a4p_runtime
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p import runtime as a4p_runtime
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
     AuthorizationExecutionContext,
     AuthorizerRoute,

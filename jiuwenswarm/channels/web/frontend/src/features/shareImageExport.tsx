@@ -5,6 +5,14 @@ import { embedImages } from 'html-to-image/es/embed-images';
 import { embedWebFonts, getWebFontCSS } from 'html-to-image/es/embed-webfonts';
 import type { Options as HtmlToImageOptions } from 'html-to-image/es/types';
 import { useTranslation } from 'react-i18next';
+import {
+  startShareImageJobDownload,
+  readShareImageJobResponse,
+  updateBrowserShareImageJob,
+  waitForShareImageJobTransfer,
+  type ShareImageExportJobStatus,
+} from './shareImageJob';
+import { yieldBrowserTask } from '../utils/yieldBrowserTask';
 import { ChatTimelineList } from '../components/ChatPanel/MessageList';
 import { MarkdownMessageBody } from '../components/ChatPanel/MessageItem';
 import { FileDownloadMediaPreviewContext } from '../components/ChatPanel/FileDownloadMediaPreviewContext';
@@ -60,21 +68,8 @@ const OPENJIUWEN_WEBSITE_URL = 'https://openjiuwen.com';
 const JIUWENSWARM_REPO_URL = 'https://gitcode.com/openJiuwen/jiuwenswarm';
 const TRANSPARENT_IMAGE_DATA_URL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
-function touchShareImageExportHeartbeat(): void {
-  const runnerWindow = window as Window & {
-    __SHARE_IMAGE_EXPORT_STATE?: { status?: string; heartbeat?: number };
-  };
-  const state = runnerWindow.__SHARE_IMAGE_EXPORT_STATE;
-  if (state?.status !== 'rendering') return;
-  runnerWindow.__SHARE_IMAGE_EXPORT_STATE = {
-    ...state,
-    heartbeat: (state.heartbeat ?? 0) + 1,
-  };
-}
-
 function yieldToBrowser(): Promise<void> {
-  touchShareImageExportHeartbeat();
-  return new Promise(resolve => setTimeout(resolve, 0));
+  return yieldBrowserTask();
 }
 
 const shareImageStyleProperties: string[] = [];
@@ -236,7 +231,6 @@ async function waitForShareImageDocumentRendering(node: HTMLElement): Promise<vo
         // the next one, bounding a single layout task without approximating
         // any element height or changing the final document topology.
         void node.scrollHeight;
-        touchShareImageExportHeartbeat();
         if (!hasPendingTimeline()) {
           observer.disconnect();
           resolve();
@@ -696,7 +690,13 @@ async function rasterizeShareImage(
               : null;
           }
         }
-        await nextFrame();
+        const state = (window as ShareImageExportRunnerWindow).__SHARE_IMAGE_EXPORT_STATE;
+        if (state?.status === 'rendering') {
+          state.progress = Math.floor(Math.min(height, sourceY + sourceHeight) / height * 100);
+        }
+        // The tile was decoded and drawn explicitly; exporting it does not
+        // depend on the tab receiving an on-screen animation frame.
+        await yieldToBrowser();
       }
       await waitForShareImagePngAppend(pendingPngAppend);
       pendingPngAppend = null;
@@ -907,9 +907,17 @@ export const ShareImageDocument = forwardRef<HTMLDivElement, ShareImageDocumentP
 });
 
 function nextFrame(): Promise<void> {
-  touchShareImageExportHeartbeat();
+  if (document.hidden) return yieldToBrowser();
   return new Promise(resolve => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    let frame = 0;
+    const complete = () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener('visibilitychange', onVisibility);
+      resolve();
+    };
+    const onVisibility = () => { if (document.hidden) complete(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    frame = requestAnimationFrame(() => { frame = requestAnimationFrame(complete); });
   });
 }
 
@@ -1432,7 +1440,7 @@ export async function exportShareImageNode(
       backgroundColor,
       katexOverlays,
     );
-    return buildShareImageArtifact(pngParts, filename, touchShareImageExportHeartbeat);
+    return buildShareImageArtifact(pngParts, filename);
   } finally {
     restoreMermaidDiagrams();
     restoreImages();
@@ -1442,14 +1450,15 @@ export async function exportShareImageNode(
 
 type ShareImageExportRunnerState = {
   status: 'loading_snapshot' | 'rendering' | 'ready' | 'error';
-  heartbeat?: number;
   filename?: string;
   error?: string;
+  progress?: number;
 };
 
 type ShareImageExportRunnerWindow = Window & {
   __SHARE_IMAGE_EXPORT_STATE?: ShareImageExportRunnerState;
   __DOWNLOAD_SHARE_IMAGE__?: () => void;
+  __UPLOAD_SHARE_IMAGE__?: () => Promise<ShareImageExportJobStatus>;
 };
 
 interface ShareImageExportJobSnapshot {
@@ -1467,22 +1476,40 @@ export function ShareImageExportRunner({
   jobId,
   sessionId,
   locale,
+  client = false,
 }: {
   jobId: string | null;
   sessionId?: string | null;
   locale?: string | null;
+  client?: boolean;
 }): JSX.Element {
+  const { t } = useTranslation();
   const [snapshot, setSnapshot] = useState<ShareImageSnapshot | null>(null);
   const filenameRef = useRef('jiuwenswarm-share.png');
   const documentRef = useRef<HTMLDivElement>(null);
+  const clientClaimedRef = useRef(false);
+  const [clientClaimId] = useState(() => Array.from(
+    crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0'),
+  ).join(''));
 
   useEffect(() => {
+    if (client && !jobId) {
+      if (locale) void i18n.changeLanguage(locale);
+      return;
+    }
     const runnerWindow = window as ShareImageExportRunnerWindow;
     const abortController = new AbortController();
     runnerWindow.__SHARE_IMAGE_EXPORT_STATE = { status: 'loading_snapshot' };
     void (async () => {
       try {
         if (locale) await i18n.changeLanguage(locale);
+        if (client && jobId) {
+          const clientToken = new URLSearchParams(window.location.hash.slice(1)).get('client_token') || '';
+          await updateBrowserShareImageJob(jobId, clientToken, {
+            state: 'running', phase: 'loading_snapshot', claim: true, claim_id: clientClaimId,
+          });
+          clientClaimedRef.current = true;
+        }
         const snapshotUrl = jobId
           ? `/share-api/jobs/${encodeURIComponent(jobId)}/snapshot`
           : `/share-api/snapshot?session_id=${encodeURIComponent(sessionId || '')}`;
@@ -1508,33 +1535,133 @@ export function ShareImageExportRunner({
           status: 'error',
           error: shareImageExportError(error),
         };
+        if (client && jobId && !clientClaimedRef.current) {
+          try {
+            if (shareImageExportError(error) !== 'share_export_browser_already_started') {
+              const clientToken = new URLSearchParams(window.location.hash.slice(1)).get('client_token') || '';
+              await updateBrowserShareImageJob(jobId, clientToken, {
+                state: 'failed', phase: 'failed', error: shareImageExportError(error), expected_claim_id: clientClaimId,
+              });
+            }
+          } finally { window.close(); }
+        }
       }
     })();
     return () => abortController.abort();
-  }, [jobId, sessionId, locale]);
+  }, [jobId, sessionId, locale, client, clientClaimId]);
+
+  useEffect(() => {
+    if (!client || !jobId) return;
+    const clientToken = new URLSearchParams(window.location.hash.slice(1)).get('client_token') || '';
+    let terminal = false;
+    let disposed = false;
+    let lastProgress = '';
+    let reporting = false;
+    const report = () => {
+      if (!clientClaimedRef.current || reporting || terminal || disposed) return;
+      const state = (window as ShareImageExportRunnerWindow).__SHARE_IMAGE_EXPORT_STATE;
+      if (!state) return;
+      const key = `${state.status}:${state.progress ?? ''}`;
+      if (key === lastProgress) return;
+      reporting = true;
+      void (async () => {
+        if (state.status === 'ready') {
+          try {
+            await updateBrowserShareImageJob(jobId, clientToken, { state: 'running', phase: 'saving', progress: 100 });
+          } catch (error) {
+            if (!(error instanceof TypeError) && !(error instanceof Error && error.message === 'share_export_status_timeout')) throw error;
+            // Retry this progress report without discarding the generated artifact.
+            console.error('Failed to report share image progress:', error);
+            return;
+          }
+          const upload = (window as ShareImageExportRunnerWindow).__UPLOAD_SHARE_IMAGE__;
+          if (!upload) throw new Error('share_export_download_not_ready');
+          const published = await upload();
+          terminal = true;
+          clearInterval(timer);
+          const downloading = await startShareImageJobDownload({ ...published, client_token: clientToken });
+          // Keep the download's originating tab alive through the HTTP stream.
+          if (await waitForShareImageJobTransfer(downloading, () => !disposed)) window.close();
+        } else if (state.status === 'error') {
+          await updateBrowserShareImageJob(jobId, clientToken, {
+            state: 'failed', phase: 'failed', error: state.error,
+          });
+          terminal = true;
+          window.close();
+        } else {
+          await updateBrowserShareImageJob(jobId, clientToken, {
+            state: 'running', phase: state.status, progress: state.progress,
+          });
+        }
+        lastProgress = key;
+      })().catch(async error => {
+        if ((state.status === 'loading_snapshot' || state.status === 'rendering')
+          && (error instanceof TypeError || (error instanceof Error && error.message === 'share_export_status_timeout'))) {
+          // Retry transient progress failures without rerendering.
+          console.error('Failed to report share image progress:', error);
+          return;
+        }
+        clearInterval(timer);
+        try {
+          if (!terminal) await updateBrowserShareImageJob(jobId, clientToken, {
+            state: 'failed', phase: 'failed', error: shareImageExportError(error),
+          });
+          terminal = true;
+        } finally {
+          window.close();
+        }
+      }).finally(() => { reporting = false; });
+    };
+    const timer = window.setInterval(report, 400);
+    report();
+    const onClose = () => {
+      if (terminal) return;
+      navigator.sendBeacon(`/share-api/jobs/${encodeURIComponent(jobId)}/browser`, new Blob([JSON.stringify({
+        client_token: clientToken, state: 'failed', phase: 'failed', error: 'share_export_tab_closed',
+        expected_claim_id: clientClaimId,
+      })], { type: 'application/json' }));
+    };
+    window.addEventListener('pagehide', onClose);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+      window.removeEventListener('pagehide', onClose);
+    };
+  }, [client, jobId, clientClaimId]);
 
   useEffect(() => {
     if (!snapshot) return;
     const runnerWindow = window as ShareImageExportRunnerWindow;
     let blobUrl = '';
     let disposed = false;
-    runnerWindow.__SHARE_IMAGE_EXPORT_STATE = { status: 'rendering', heartbeat: 0 };
+    runnerWindow.__SHARE_IMAGE_EXPORT_STATE = { status: 'rendering' };
     void (async () => {
       try {
         const node = documentRef.current;
         if (!node) throw new Error('share_image_node_missing');
         const artifact = await exportShareImageNode(node, filenameRef.current);
         if (disposed) return;
-        blobUrl = URL.createObjectURL(artifact.blob);
-        runnerWindow.__DOWNLOAD_SHARE_IMAGE__ = () => {
-          const anchor = document.createElement('a');
-          anchor.href = blobUrl;
-          anchor.download = artifact.filename;
-          anchor.style.display = 'none';
-          document.body.appendChild(anchor);
-          anchor.click();
-          anchor.remove();
-        };
+        if (!client) {
+          blobUrl = URL.createObjectURL(artifact.blob);
+          runnerWindow.__DOWNLOAD_SHARE_IMAGE__ = () => {
+            const anchor = document.createElement('a');
+            anchor.href = blobUrl;
+            anchor.download = artifact.filename;
+            anchor.style.display = 'none';
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+          };
+        }
+        if (client && jobId) {
+          const clientToken = new URLSearchParams(window.location.hash.slice(1)).get('client_token') || '';
+          runnerWindow.__UPLOAD_SHARE_IMAGE__ = async () => {
+            const query = new URLSearchParams({ filename: artifact.filename });
+            return readShareImageJobResponse(await fetch(`/share-api/jobs/${jobId}/browser-result?${query}`, {
+              method: 'POST', headers: { 'X-Share-Export-Token': clientToken }, body: artifact.blob,
+            }));
+          };
+        }
         runnerWindow.__SHARE_IMAGE_EXPORT_STATE = { status: 'ready', filename: artifact.filename };
       } catch (error) {
         if (disposed) return;
@@ -1547,11 +1674,22 @@ export function ShareImageExportRunner({
     return () => {
       disposed = true;
       runnerWindow.__DOWNLOAD_SHARE_IMAGE__ = undefined;
+      runnerWindow.__UPLOAD_SHARE_IMAGE__ = undefined;
       if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
-  }, [snapshot]);
+  }, [snapshot, client, jobId]);
 
-  return <ShareImageDocument ref={documentRef} snapshot={snapshot} />;
+  if (!client) return <ShareImageDocument ref={documentRef} snapshot={snapshot} />;
+  return (
+    <>
+      <p className="share-image-export-notice" data-testid="share-image-export-notice">
+        {t('share.browserExportNotice')}
+      </p>
+      <div className="share-image-export-renderer" aria-hidden="true" {...{ inert: '' }} data-testid="share-image-export-renderer">
+        <ShareImageDocument ref={documentRef} snapshot={snapshot} />
+      </div>
+    </>
+  );
 }
 
 const AIGC_TEXT_ENCODER = new TextEncoder();

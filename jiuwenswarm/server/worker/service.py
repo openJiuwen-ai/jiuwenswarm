@@ -18,6 +18,12 @@ from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN_DONE, PROT
 from jiuwenswarm.server.ipc.server import IpcServer
 from jiuwenswarm.server.ipc.stream import IpcConnection
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
+from jiuwenswarm.server.worker.diagnostics import (
+    LoopBeat,
+    arm_stall_dump,
+    cancel_stall_dump,
+    heartbeat_reply,
+)
 from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBridge
 from jiuwenswarm.server.worker.signals import RuntimeSignalSink
 
@@ -37,7 +43,8 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
                        code_identity_value: str | None = None) -> None:
     holder = ConnHolder()
     bridge = WorkerGatewayBridge(holder)
-    dispatcher = WorkerDispatcher(bridge)
+    beat = LoopBeat()
+    dispatcher = WorkerDispatcher(bridge, beat=beat)
     signals = RuntimeSignalSink(holder, on_ready=dispatcher.mark_ready)
     server = IpcServer(socket_path)
     await server.start()
@@ -45,8 +52,13 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
     logger.info("[Worker] ipc listening: %s", socket_path)
     loaded: dict[str, Any] = {"runtime": None}
     runtime_task: asyncio.Task | None = None
+    beat_task = asyncio.create_task(_beat_loop(beat), name="worker-loop-beat")
     instance = bridge.events.instance
     shutdown_conn: IpcConnection | None = None
+    # WorkerForceExit means the process must die hard (main logs + os._exit).
+    # Capture it so finally does not run graceful `_close_worker` and replace it
+    # with CancelledError from ipc server teardown.
+    fatal: WorkerForceExit | None = None
     try:
         # This is the identity of this process's loaded code, not the source
         # currently on disk at the next Front reconnect. A new Front must
@@ -58,6 +70,7 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
         )
         while True:
             conn = await server.accept()
+            _install_heartbeat_fast_path(conn, beat)
             generation = holder.open_session(conn)
             try:
                 await _send_hello(
@@ -80,6 +93,9 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
                 await conn.send(holder.last_readiness)
             try:
                 keep_running = await _read_session(conn, dispatcher)
+            except WorkerForceExit as exc:
+                fatal = exc
+                break
             except (OSError, asyncio.IncompleteReadError):
                 logger.info("[Worker] supervisor disconnected; runtime stays resident")
                 await _retire_session(holder, dispatcher)
@@ -93,9 +109,12 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
     except asyncio.CancelledError:
         logger.info("[Worker] stop requested")
     finally:
+        beat_task.cancel()
+        await asyncio.gather(beat_task, return_exceptions=True)
         try:
             try:
-                await _close_worker(dispatcher, runtime_task, loaded, server)
+                if fatal is None:
+                    await _close_worker(dispatcher, runtime_task, loaded, server)
             except Exception as exc:
                 if shutdown_conn is not None:
                     try:
@@ -103,12 +122,40 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
                                                   "error": str(exc)})
                     except (OSError, RuntimeError):
                         pass
-                raise
-            if shutdown_conn is not None:
+                if isinstance(exc, WorkerForceExit):
+                    fatal = exc
+                else:
+                    raise
+            if shutdown_conn is not None and fatal is None:
                 await shutdown_conn.send({"kind": KIND_SHUTDOWN_DONE, "ok": True})
         finally:
             if shutdown_conn is not None:
                 await shutdown_conn.close()
+    if fatal is not None:
+        raise fatal
+
+
+async def _beat_loop(beat: LoopBeat) -> None:
+    while True:
+        beat.beat()
+        await asyncio.sleep(1.0)
+
+
+def _install_heartbeat_fast_path(conn: IpcConnection, beat: LoopBeat) -> None:
+    """Answer pings on the reader thread where the transport supports it.
+
+    The pong reports the business loop's stall age, so heartbeats keep
+    flowing during a blocked loop without masking the stall itself.
+    """
+    set_responder = getattr(conn, "set_heartbeat_responder", None)
+    if not callable(set_responder) or not hasattr(conn, "send_direct"):
+        return
+
+    def respond(message: dict[str, Any]) -> None:
+        arm_stall_dump()
+        conn.send_direct(heartbeat_reply(beat.age))
+
+    set_responder(respond)
 
 
 def _log_late_runtime_load(task: asyncio.Task) -> None:
@@ -293,7 +340,12 @@ async def _send_hello(
 
 
 async def _read_session(conn: IpcConnection, dispatcher: WorkerDispatcher) -> bool:
-    while True:
-        message = await conn.recv()
-        if not await dispatcher.handle(message, conn):
-            return False
+    arm_stall_dump()
+    try:
+        while True:
+            message = await conn.recv()
+            arm_stall_dump()
+            if not await dispatcher.handle(message, conn):
+                return False
+    finally:
+        cancel_stall_dump()

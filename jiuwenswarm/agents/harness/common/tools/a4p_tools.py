@@ -6,13 +6,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from jiuwenswarm.agents.harness.common.a4p_runtime import (
+from jiuwenswarm.agents.harness.common.a4p.file_scope import normalize_read_path_params
+from jiuwenswarm.agents.harness.common.a4p.runtime import (
     get_a4p_runtime,
     is_a4p_enabled,
     normalize_a4p_action_params,
     resolve_a4p_identity,
 )
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
 )
 from jiuwenswarm.common.config import get_config
@@ -25,6 +26,10 @@ _ACTION_SCOPE_POLICY: dict[str, tuple[str, ...]] = {
     "write_file": ("file_path",),
     "edit_file": ("file_path",),
     "acp_chat": ("agent",),
+    "read_file": ("file_path",),
+    "list_files": ("path",),
+    "glob": ("path",),
+    "grep": ("path",),
 }
 _FILE_SCOPE_TOOLS = frozenset({"write_file", "edit_file"})
 _GLOB_CHARS = frozenset("*?[")
@@ -44,12 +49,19 @@ def _action_scope_schema_description() -> str:
         f"Supported tool fields: {supported}. Other ordinary call parameters are allowed automatically. "
         "For Shell tools, authorize each complete exact command by default. Use a narrowly scoped wildcard "
         "only when one dynamic argument cannot be known in advance and the wildcard cannot absorb whitespace, "
-        "Shell operators, redirections, or extra arguments. For file tools, file_path must be a concrete filename "
+        "Shell operators, redirections, or extra arguments. For read_file/write_file/edit_file, file_path must be a "
+        "concrete filename "
         "or a filename glob under a fixed directory; a directory path alone is invalid. "
         "For batch file writes in one task under the same fixed directory with the same extension, "
         "prefer one write_file action with a filename glob (e.g. /output/stories/*.md) over listing each file. "
         "Never use a bare * as the entire parameter or submit unresolved placeholders as scope constraints. "
         "Runtime values need not be known yet if their allowed scope can already be expressed."
+        " For read_file, list_files, glob and grep, both authorization and execution must use explicit absolute paths "
+        "without '..' segments (never omit path or use '.'). read_file permits a filename glob under one fixed "
+        "directory; list_files/glob require an exact directory path; grep requires an exact file or directory path. "
+        "glob authorizes recursive filename discovery; grep authorizes recursive content search including snippets. "
+        "Search keywords and result limits may change inside the authorized root. Browsing or filename search "
+        "does not grant read_file permission, and reading never grants writing."
     )
 
 
@@ -145,6 +157,16 @@ def _normalize_actions(actions: Any) -> list[dict[str, Any]]:
         # Ignore obsolete Agent input while keeping the SDK protocol internal.
         params.pop("allowExtraParams", None)
         params = normalize_a4p_action_params(name, params)
+        try:
+            params = normalize_read_path_params(name, params, scope=True)
+        except (ValueError, OSError, RuntimeError) as exc:
+            raise _ActionScopeError(
+                code="A4P_ACTION_SCOPE_INVALID",
+                message=str(exc),
+                action_index=index,
+                action_name=name,
+                required_scope_fields=required_fields,
+            ) from exc
         if not params:
             raise _ActionScopeError(
                 code="A4P_ACTION_SCOPE_INVALID",

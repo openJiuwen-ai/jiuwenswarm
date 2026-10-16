@@ -29,6 +29,7 @@ import {
   getMemberAvatarIdentity,
   getMemberAvatarKey,
   getMemberDisplayName,
+  getMemberExpertHint,
   getMemberStatusKey,
   latestUserPrompt,
   mergeUniqueMessages,
@@ -517,6 +518,7 @@ const TeamMemberOverviewCard = memo(function TeamMemberOverviewCard({
       avatarKey={getMemberAvatarKey(member)}
       avatarIdentity={getMemberAvatarIdentity(member)}
       displayName={displayName}
+      expertHint={getMemberExpertHint(member)}
       sequence={sequence}
       statusIcon={statusIcon}
       onClick={onClick}

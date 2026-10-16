@@ -63,8 +63,7 @@ def test_removed_work_mode_flag_is_rejected(arguments, capsys):
 
 
 @pytest.mark.parametrize("mode", RESTRICTED_MODES)
-@pytest.mark.parametrize("output", ("human", "json", "jsonl"))
-def test_noninteractive_modes_rejected_before_setup(monkeypatch, capsys, mode, output):
+def test_noninteractive_modes_rejected_before_setup(monkeypatch, capsys, mode):
     monkeypatch.setattr(
         sys,
         "argv",
@@ -73,8 +72,6 @@ def test_noninteractive_modes_rejected_before_setup(monkeypatch, capsys, mode, o
             "hello",
             "--mode",
             mode,
-            "--output",
-            output,
             "--session",
             "existing-session",
         ],

@@ -1,6 +1,5 @@
 /**
- * 实验栏全局 peek 实例：非实验页 hover experiments 图标时由 App 挂载。
- * 实验栏仅在创建实验后才存在——列表为空时本组件不渲染任何内容（与实验页 intro 态一致）。
+ * Shared experiment flyout, shown only when experiments exist.
  */
 import { useEffect } from 'react';
 import { useRsiStore } from '../rsiStore';
@@ -11,11 +10,10 @@ interface RsiRailPeekProps {
   onOpenExperiments: () => boolean;
   /** 新建实验：跳转实验页并自动打开创建对话框 */
   onCreate: () => void;
-  /** peek 保活/收起：实验栏根的鼠标进出（App 统一排程） */
-  onPeekHover: (hovered: boolean) => void;
+  onPin?: () => void;
 }
 
-export function RsiRailPeek({ onOpenExperiments, onCreate, onPeekHover }: RsiRailPeekProps) {
+export function RsiRailPeek({ onOpenExperiments, onCreate, onPin }: RsiRailPeekProps) {
   const list = useRsiStore((s) => s.list);
   const listLoading = useRsiStore((s) => s.listLoading);
   const listError = useRsiStore((s) => s.listError);
@@ -32,10 +30,7 @@ export function RsiRailPeek({ onOpenExperiments, onCreate, onPeekHover }: RsiRai
     }
   }, [listLoadedOnce, listLoading, listError, loadList]);
 
-  // 未创建任何实验（列表为空）→ 没有实验栏可预览
-  if (list.length === 0) {
-    return null;
-  }
+  if (list.length === 0) return null;
 
   return (
     <RsiRail
@@ -54,8 +49,7 @@ export function RsiRailPeek({ onOpenExperiments, onCreate, onPeekHover }: RsiRai
       collapsed={false}
       floating
       peek
-      onMouseEnter={() => onPeekHover(true)}
-      onMouseLeave={() => onPeekHover(false)}
+      onCollapse={onPin}
     />
   );
 }

@@ -12,6 +12,9 @@
   --opacity-agent-muted: 0.55;
   --opacity-agent-hidden: 0;
   --opacity-agent-visible: 1;
+  --color-duplex-orb-start: #1476ff;
+  --color-duplex-orb-end: #bdb1ff;
+  --color-duplex-orb-shadow: #bdb1ff80;
   /* Surfaces */
   --color-surface-page: #f5f7f9;
   --color-surface-page-rgb: 245, 247, 249;

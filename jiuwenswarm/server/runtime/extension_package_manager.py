@@ -18,7 +18,7 @@ import zipfile
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlsplit
 
 import yaml
@@ -50,6 +50,9 @@ from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
 from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
     HubPackageDownloader,
 )
+
+if TYPE_CHECKING:
+    from openjiuwen.harness.resources import AgentTemplateSpec, RuntimeSpec
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,10 @@ _AGENT_TEMPLATE_KIND = "agent_templates"
 _AGENT_GROUP_KIND = "agent_groups"
 _PLUGIN_PACKAGE_KIND = "plugin_packages"
 _HUB_PREVIEW_ARCHIVE_LIMIT = 8
+_EXTERNAL_HARNESS_PROVIDERS = frozenset({"claudecode", "codex", "dsh"})
+_EXTERNAL_HARNESS_UNSUPPORTED_FIELDS = ("tools", "rails", "subagents")
+_FORM_HARNESS_PROVIDERS = frozenset({"claudecode", "codex"})
+_EXTERNAL_HARNESS_TAG = {"zh": "三方Harness", "en": "External Harness"}
 
 
 class _HubPreviewArchive(NamedTuple):
@@ -230,6 +237,60 @@ def _read_package_manifest(pkg_dir: Path) -> dict | None:
     except (ValueError, OSError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def agent_template_runtime(
+    manifest: AgentTemplateSpec | dict[str, Any],
+) -> RuntimeSpec | None:
+    """Return one normalized, installable External Harness runtime declaration."""
+    from openjiuwen.harness.resources import AgentTemplateSpec, RuntimeSpec
+
+    if isinstance(manifest, AgentTemplateSpec):
+        runtime = manifest.runtime
+    elif isinstance(manifest, dict):
+        raw_runtime = manifest.get("runtime")
+        if (
+            isinstance(raw_runtime, dict)
+            and raw_runtime.get("provider_name") not in _EXTERNAL_HARNESS_PROVIDERS
+        ):
+            allowed = ", ".join(sorted(_EXTERNAL_HARNESS_PROVIDERS))
+            raise ValueError(
+                f"runtime.provider_name must be one of: {allowed}; got {raw_runtime.get('provider_name')!r}"
+            )
+        runtime = None if raw_runtime is None else RuntimeSpec.model_validate(raw_runtime)
+    else:
+        raise TypeError("agent template manifest must be AgentTemplateSpec or dict")
+
+    if runtime is None:
+        return None
+    if runtime.provider_name not in _EXTERNAL_HARNESS_PROVIDERS:
+        allowed = ", ".join(sorted(_EXTERNAL_HARNESS_PROVIDERS))
+        raise ValueError(
+            f"runtime.provider_name must be one of: {allowed}; got {runtime.provider_name!r}"
+        )
+    return runtime
+
+
+def _validate_agent_template_runtime_package(package_dir: Path) -> None:
+    """Validate runtime-only constraints before an expert package is installed."""
+    manifest = _read_package_manifest(package_dir)
+    if manifest is None:
+        raise ValueError(
+            f"agent_template package missing/corrupt manifest.json: {package_dir.name}"
+        )
+    runtime = agent_template_runtime(manifest)
+    if runtime is None:
+        return
+    for field_name in _EXTERNAL_HARNESS_UNSUPPORTED_FIELDS:
+        if manifest.get(field_name):
+            raise ValueError(
+                f"External Harness agent_template does not support manifest field {field_name!r}"
+            )
+
+    from openjiuwen.harness.resources import load_agent_template_package
+
+    spec = load_agent_template_package(package_dir / "manifest.json")
+    agent_template_runtime(spec)
 
 
 def _source_from_pkg_dir(pkg_dir: Path) -> str:
@@ -660,8 +721,14 @@ def _build_list_card(
     card["connection_state"] = _package_connection_state(
         manifest, installed=bool(card["installed"])
     )
-    if package_type == "agent_template" and include_team_compatibility:
-        card["teamCompatible"] = _agent_template_team_compatibility(pkg_dir)
+    if package_type == "agent_template":
+        if include_team_compatibility:
+            card["teamCompatible"] = _agent_template_team_compatibility(pkg_dir)
+        raw_runtime = manifest.get("runtime")
+        if isinstance(raw_runtime, dict):
+            provider_name = raw_runtime.get("provider_name")
+            if isinstance(provider_name, str) and provider_name.strip():
+                card["runtime"] = {"provider_name": provider_name.strip()}
     return card
 
 
@@ -729,6 +796,10 @@ def _build_show_card(
     )
     quick = manifest.get("quick_inputs")
     card["quickInputs"] = quick if isinstance(quick, list) else []
+    if package_type == "agent_template":
+        runtime = manifest.get("runtime")
+        if isinstance(runtime, dict):
+            card["runtime"] = runtime
     return card
 
 
@@ -1548,6 +1619,42 @@ def _require_tags(params: dict) -> list[dict[str, str]]:
         seen.add(key)
         entries.append(entry)
     return entries
+
+
+def _require_form_runtime(params: dict) -> dict[str, Any] | None:
+    """Parse the create/edit form runtime, or None when the switch is off."""
+    runtime = params.get("runtime")
+    if runtime is None:
+        return None
+    if not isinstance(runtime, dict):
+        raise ValueError("missing or invalid runtime")
+    provider_name = runtime.get("provider_name")
+    if provider_name not in _FORM_HARNESS_PROVIDERS:
+        allowed = ", ".join(sorted(_FORM_HARNESS_PROVIDERS))
+        raise ValueError(
+            f"runtime.provider_name must be one of: {allowed}; got {provider_name!r}"
+        )
+    config = runtime.get("config", {})
+    if config is None:
+        config = {}
+    if not isinstance(config, dict):
+        raise ValueError("invalid runtime.config")
+    return {"provider_name": provider_name, "config": config}
+
+
+def _apply_form_runtime(
+    tags: list[dict[str, str]],
+    mcp_names: list[str],
+    runtime: dict[str, Any] | None,
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Attach the fixed harness tag and reject connectors when runtime is set."""
+    if runtime is None:
+        return tags, mcp_names
+    if mcp_names:
+        raise ValueError("external harness agent_template does not support connectors")
+    if _EXTERNAL_HARNESS_TAG not in tags:
+        tags = [*tags, dict(_EXTERNAL_HARNESS_TAG)]
+    return tags, mcp_names
 
 
 def _require_agent_group_tags(params: dict) -> list[dict[str, str]]:
@@ -3256,6 +3363,7 @@ def _write_agent_template_package(
     mcp_names: list[str],
     quick_inputs: list[dict[str, str]],
     tags: list[dict[str, str]],
+    runtime: dict[str, Any] | None = None,
 ) -> None:
     """(Re)write an agent_template package directory under an existing pkg_dir.
 
@@ -3281,6 +3389,8 @@ def _write_agent_template_package(
         manifest["quick_inputs"] = quick_inputs
     if tags:
         manifest["tags"] = tags
+    if runtime is not None:
+        manifest["runtime"] = runtime
     _write_json(pkg_dir / "manifest.json", manifest)
 
 
@@ -3296,6 +3406,8 @@ def create_agent_template(params: dict) -> None:
     mcp_names = _require_mcp_names(params)
     quick_inputs = _require_quick_inputs(params)
     tags = _require_tags(params)
+    runtime = _require_form_runtime(params)
+    tags, mcp_names = _apply_form_runtime(tags, mcp_names, runtime)
 
     local_root = _local_root(_AGENT_TEMPLATE_KIND)
     built_in_root = _built_in_root(_AGENT_TEMPLATE_KIND)
@@ -3321,6 +3433,7 @@ def create_agent_template(params: dict) -> None:
             mcp_names=mcp_names,
             quick_inputs=quick_inputs,
             tags=tags,
+            runtime=runtime,
         )
     except Exception:
         if pkg_dir.exists():
@@ -3350,6 +3463,8 @@ def update_agent_template(params: dict) -> None:
     mcp_names = _require_mcp_names(params)
     quick_inputs = _require_quick_inputs(params)
     tags = _require_tags(params)
+    runtime = _require_form_runtime(params)
+    tags, mcp_names = _apply_form_runtime(tags, mcp_names, runtime)
 
     local_root = _local_root(_AGENT_TEMPLATE_KIND)
     pkg_dir = local_root / package_id
@@ -3381,6 +3496,7 @@ def update_agent_template(params: dict) -> None:
         mcp_names=mcp_names,
         quick_inputs=quick_inputs,
         tags=tags,
+        runtime=runtime,
     )
     # Preserve existing marketplace installed/source state; default local/uninstalled
     # when the entry is missing (e.g. edited before first install).
@@ -3974,6 +4090,9 @@ def _install_package(
 def install_agent_template(params: dict) -> None:
     """Install an expert package."""
     package_id = _lifecycle_package_id(params, "agent_template")
+    resolved = _resolve_agent_template_definition_dir(package_id)
+    if resolved is not None:
+        _validate_agent_template_runtime_package(resolved[0])
     _install_package(
         package_id,
         kind=_AGENT_TEMPLATE_KIND,
@@ -4001,6 +4120,42 @@ def install_agent_group(params: dict) -> None:
         package_type="agent_group",
         is_plugin=False,
     )
+
+
+def ensure_builtin_agent_groups_installed() -> list[str]:
+    """Install every AgentGroup shipped on the packaged shelf that was never seeded.
+
+    Runs at service start so a shipped group is selectable without a manual
+    install. A shelf package is seeded once per home (recorded in
+    ``.builtin_seeded``); an explicit uninstall is respected on later starts
+    instead of being undone by the next startup. A broken shelf entry is
+    logged, never raised, so one bad package cannot block startup; a local
+    package of the same name wins.
+    """
+    marker_path = _kind_root(_AGENT_GROUP_KIND) / ".builtin_seeded"
+    try:
+        seeded = set(marker_path.read_text(encoding="utf-8").split())
+    except OSError:
+        seeded = set()
+    installed: list[str] = []
+    for resource_dir in _iter_resource_package_dirs(_AGENT_GROUP_KIND):
+        package_id = resource_dir.name
+        if package_id in seeded:
+            continue
+        try:
+            if _package_dir_if_present(_local_root(_AGENT_GROUP_KIND), package_id):
+                continue
+            if not is_agent_group_installed(package_id):
+                install_agent_group({"id": package_id})
+                installed.append(package_id)
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            with marker_path.open("a", encoding="utf-8") as stream:
+                stream.write(f"{package_id}\n")
+        except Exception as exc:  # noqa: BLE001 - one bad shelf package must not block startup
+            logger.warning("builtin agent_group %r not installed: %s", package_id, exc)
+            continue
+        seeded.add(package_id)
+    return installed
 
 
 async def install_agent_group_with_hub(

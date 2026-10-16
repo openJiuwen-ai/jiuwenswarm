@@ -473,6 +473,8 @@ def terminal_low_risk_route(facts: ToolDecisionFacts) -> DecisionRoute | None:
         or not facts.accesses_known
     ):
         return None
+    if facts.tool_name == "lsp":
+        return None
     if facts.capability.category == "path":
         if facts.capability.risk_tier == "low" and not facts.capability.static_side_effects:
             return DecisionRoute(ALLOW_LEVEL, "terminal_low_risk_allow", "hard_guard")

@@ -215,8 +215,9 @@ def test_machine_option_does_not_change_legacy_parser_defaults_or_help() -> None
     assert defaults.trusted_dir == []
     assert defaults.timeout is None
     help_text = parser.format_help()
-    for option in ("--run-json", "--session", "--cwd", "--output", "--show-tools"):
+    for option in ("--run-json", "--session", "--cwd", "--show-tools"):
         assert option in help_text
+    assert "--output" not in help_text
     assert "--_interactive-worker" not in help_text
     assert "--work-mode" not in help_text
 
@@ -226,7 +227,7 @@ def test_help_exits_without_machine_or_runtime_imports() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "--run-json" in result.stdout
-    assert "--output" in result.stdout
+    assert "--output" not in result.stdout
     assert result.stderr == ""
 
 
@@ -265,14 +266,32 @@ def test_legacy_prompt_still_calls_the_existing_app(
     module.run = run
     monkeypatch.setitem(sys.modules, module.__name__, module)
     output = _isolated_stdio(monkeypatch, "")
-    monkeypatch.setattr(sys, "argv", ["jiuwenswarm-process", "hello", "--output=json"])
+    monkeypatch.setattr(sys, "argv", ["jiuwenswarm-process", "hello"])
 
     with pytest.raises(SystemExit) as caught:
         cli_main.main()
 
     assert caught.value.code == 4
-    assert calls == [("hello", "json")]
+    assert calls == [("hello", "human")]
     assert output.getvalue() == "legacy-output"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [["hello"]],
+)
+@pytest.mark.parametrize("output", ("human", "json", "jsonl"))
+@pytest.mark.parametrize("equals_form", (False, True))
+def test_output_option_is_rejected_before_runtime_import(
+    arguments: list[str], output: str, equals_form: bool
+) -> None:
+    option = [f"--output={output}"] if equals_form else ["--output", output]
+    result = _run_main(_GUARDED_MAIN, [*arguments, *option])
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "--output" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 @pytest.mark.parametrize("source_kind", ["stdin", "file"])

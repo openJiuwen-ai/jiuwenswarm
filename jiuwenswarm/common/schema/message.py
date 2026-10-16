@@ -23,6 +23,13 @@ class ReqMethod(Enum):
     CHAT_SWARMFLOW_REPLY = "chat.swarmflow_reply"
     SSH_RELAY = "ssh.relay"
     HISTORY_GET = "history.get"
+    GROUP_CREATE = "group.create"
+    GROUP_DELETE = "group.delete"
+    GROUP_LIST = "group.list"
+    GROUP_GET = "group.get"
+    GROUP_UPDATE = "group.update"
+    GROUP_MEMBER_ADD = "group.member.add"
+    GROUP_HISTORY_GET = "group.history.get"
     COMMAND_BTW = "command.btw"
     COMMAND_ADD_DIR = "command.add_dir"
     COMMAND_CHROME = "command.chrome"
@@ -44,6 +51,7 @@ class ReqMethod(Enum):
     SWARMFLOW_STOP = "swarmflow.stop"
 
     CONFIG_GET = "config.get"
+    CONFIG_MOA_STATUS = "config.moa_status"
     CONFIG_SET = "config.set"
     CONFIG_SAVE_ALL = "config.save_all"
     CONFIG_VALIDATE_MODEL = "config.validate_model"
@@ -149,6 +157,24 @@ class ReqMethod(Enum):
     PROJECT_GIT_DISCARD_TURN_CHANGES = "project.git.discard_turn_changes"
     PROJECT_GIT_REDO_TURN_CHANGES = "project.git.redo_turn_changes"
 
+    # Designer execution graph (canvas + subagent orchestration shell)
+    DESIGNER_WORKSPACE_CREATE = "designer.workspace.create"
+    DESIGNER_WORKSPACE_GET = "designer.workspace.get"
+    DESIGNER_WORKSPACE_SESSION_CREATE = "designer.workspace.session.create"
+    DESIGNER_WORKSPACE_SESSION_COMPOSE = "designer.workspace.session.compose"
+    DESIGNER_GRAPH_GET = "designer.graph.get"
+    DESIGNER_GRAPH_LIST = "designer.graph.list"
+    DESIGNER_GRAPH_SAVE = "designer.graph.save"
+    DESIGNER_GRAPH_BOOTSTRAP = "designer.graph.bootstrap"
+    DESIGNER_GRAPH_PATCH = "designer.graph.patch"
+    DESIGNER_GRAPH_CHAT = "designer.graph.chat"
+    DESIGNER_MEDIA_CAPABILITIES = "designer.media.capabilities"
+    DESIGNER_RUN_START = "designer.run.start"
+    DESIGNER_RUN_GET = "designer.run.get"
+    DESIGNER_RUN_PAUSE = "designer.run.pause"
+    DESIGNER_RUN_CANCEL = "designer.run.cancel"
+    DESIGNER_RUN_CHOOSE_OUTPUT = "designer.run.choose_output"
+
     PROACTIVE_TICK = "proactive.tick"  # Trigger proactive recommendation tick (from Cron)
     PROACTIVE_FEEDBACK = "proactive.feedback"  # User feedback on proactive recommendation (like/dislike)
     COMMAND_GOAL = "command.goal"
@@ -201,6 +227,7 @@ class ReqMethod(Enum):
     AGENTS_TOOLS_LIST = "agents.tools_list"
     AGENT_SWITCH = "3rdagent.switch"
     AGENT_LIST = "3rdagent.list"
+    AGENT_WEB = "3rdagent.web"
 
     # Unified asset publishing; dispatched by AgentServer independently of chats.
     ASSETS_PUBLISH_DESCRIBE = "assets.publish.describe"
@@ -538,6 +565,10 @@ class EventType(Enum):
     TEAM_TASK = "team.task"
     TEAM_MESSAGE = "team.message"
     WORKFLOW_UPDATED = "workflow.updated"
+    DESIGNER_RUN_UPDATED = "designer.run.updated"
+    DESIGNER_NODE_UPDATED = "designer.node.updated"
+    DESIGNER_GRAPH_UPDATED = "designer.graph.updated"
+    DESIGNER_LEADER_ACTIVITY = "designer.leader.activity"
     # 旧探活结果通过 health_check.relay 发送。
     # 新心跳任务(heartbeat.job.*)不使用 relay 事件,结果通过普通 chat.send 进入原会话。
     HEALTH_CHECK_RELAY = "health_check.relay"

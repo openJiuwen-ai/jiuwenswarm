@@ -5,7 +5,7 @@
 #   前端测试: .\scripts\build-electron-exe.ps1 -Test -FrontendOnly
 #
 # 打包流程:
-# 1. 安装 Python 依赖 (uv sync --extra dev) [跳过: FrontendOnly]
+# 1. 安装 Python 依赖 (uv sync --extra dev --extra cua) [跳过: FrontendOnly]
 # 2. 构建前端 (vite build with ELECTRON=true)
 # 3. 安装 Electron 桌面端依赖 (npm install in channels/desktop/electron)
 # 4. PyInstaller 打包后端 (jiuwenswarm.spec)           [跳过: FrontendOnly]
@@ -412,7 +412,7 @@ Write-Host "Test: $Test  FrontendOnly: $FrontendOnly`n" -ForegroundColor Gray
 # ── 1. Install Python dependencies ────────────────────────────────────────────
 if (-not $FrontendOnly) {
     Write-Host "`n[1/6] Installing Python dependencies for Windows x64..." -ForegroundColor Yellow
-    uv sync --locked --extra dev --python-platform x86_64-pc-windows-msvc
+    uv sync --locked --extra dev --extra cua --python-platform x86_64-pc-windows-msvc
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {
     Write-Host "`n[1/6] Skipping Python dependencies (FrontendOnly)" -ForegroundColor Gray
@@ -570,16 +570,23 @@ Remove-Item (Join-Path $ElectronAppDir "resources\default_app.asar") -Force -Err
 # Rename electron.exe to the product shell exe (WorkSwarm.exe, from build_config)
 Rename-Item (Join-Path $ElectronAppDir "electron.exe") $ShellExeName -Force
 
-# Set the executable icon with the repository-pinned rcedit binary before signing.
+# Set the executable icon and Windows version resources before signing.
 $LogoIco = Join-Path $FrontendDir "public\logo.ico"
 if (-not (Test-Path -LiteralPath $LogoIco -PathType Leaf)) {
     throw "Required Windows icon is missing: $LogoIco"
 }
 $ShellExePath = Join-Path $ElectronAppDir $ShellExeName
-Write-Host "  Setting exe icon via pinned rcedit..." -ForegroundColor Gray
-& $Rcedit $ShellExePath --set-icon $LogoIco
+Write-Host "  Setting exe icon and version resources via pinned rcedit..." -ForegroundColor Gray
+& $Rcedit $ShellExePath `
+    --set-icon $LogoIco `
+    --set-version-string FileDescription $BuildDisplayName `
+    --set-version-string ProductName $BuildDisplayName `
+    --set-version-string InternalName $ShellExeName `
+    --set-version-string OriginalFilename $ShellExeName `
+    --set-file-version $BuildVersion `
+    --set-product-version $BuildVersion
 if ($LASTEXITCODE -ne 0) {
-    throw "rcedit failed to set the application icon (exit code $LASTEXITCODE)."
+    throw "rcedit failed to set the application icon or version resources (exit code $LASTEXITCODE)."
 }
 if (-not (Test-PortableExecutable -Path $ShellExePath)) {
     throw "rcedit produced an invalid PE executable: $ShellExePath"

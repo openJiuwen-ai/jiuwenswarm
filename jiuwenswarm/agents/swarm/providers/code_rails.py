@@ -311,13 +311,16 @@ def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -
             apply_permission_trusted_dirs,
             build_permission_rail,
         )
-        # Skip cron executions: the scheduler tags every cron request with
+        from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_enabled
+
+        # Without A4P, skip cron: the scheduler tags every cron request with
         # ``request_metadata["cron"]`` (see ``CronScheduler._stream_team_round``
         # at jiuwenswarm/gateway/cron/scheduler.py). The ``channel_id == "__cron__"``
         # fallback covers single-agent sessions where the SDK may not propagate
         # ``request_metadata`` into ``SwarmBuildContext``.
         request_meta = getattr(ctx, "request_metadata", None) or {}
-        if request_meta.get("cron") or getattr(ctx, "channel_id", None) == "__cron__":
+        is_cron = bool(request_meta.get("cron") or getattr(ctx, "channel_id", None) == "__cron__")
+        if is_cron and not is_a4p_enabled(ctx.config or {}):
             return None
 
         inp = PermissionInterruptInput.resolve(params, ctx)

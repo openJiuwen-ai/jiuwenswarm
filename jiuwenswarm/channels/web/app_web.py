@@ -46,6 +46,8 @@ from jiuwenswarm.common.client.agent_http_bridge import (
 _resolve_agent_http_base = resolve_agent_http_base
 _resolve_agent_upload_base = resolve_agent_upload_base
 
+from jiuwenswarm.common.projectless_workspace import get_projectless_tasks_dir
+
 if TYPE_CHECKING:
     from jiuwenswarm.channels.web.share_image_export import (
         ShareImageExportManager,
@@ -303,6 +305,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     api_target = ""
     ws_target = ""
     ws_disable_compress = False
+    # (projects.json mtime, resolved project_dir list)
+    _registered_project_dir_cache: tuple[float, list[Path]] | None = None
 
     # --- 桌面对话页面限制: 启动 token + HttpOnly Cookie ---
     # 仅保护 SPA 文档入口; 静态资源/API/WS 保持原有访问规则。
@@ -318,6 +322,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     agent_teams_root = _get_agent_teams_root(project_root)
     logs_root = _get_logs_dir()
     auto_harness_root = project_root / "auto-harness"
+    # Projectless tasks (no bound project_dir) write their generated media under
+    # <Documents>/JiuwenSwarm/<date>/chat-<n>/outputs/, outside workspace_root —
+    # without this, any @-referenced or inline-rendered media from a projectless
+    # task 403s here even though the file exists.
+    projectless_tasks_root = get_projectless_tasks_dir()
     logger = logging.getLogger(__name__)
 
     _HOP_BY_HOP_HEADERS = {
@@ -983,22 +992,56 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         return ext in {".md", ".mdx"}
 
     @classmethod
-    def _is_path_under_allowed_root(cls, target: Path) -> bool:
-        target_resolved = target.resolve()
+    def _registered_project_dirs(cls) -> list[Path]:
+        """Directories the user chose as projects, so canvas previews can read them."""
+        projects_file = Path(cls.workspace_root) / "projects.json"
         try:
-            in_workspace = (
-                os.path.commonpath([str(cls.workspace_root), str(target_resolved)])
-                == str(cls.workspace_root)
-            )
-            in_agent_teams = (
-                os.path.commonpath([str(cls.agent_teams_root), str(target_resolved)]) == str(cls.agent_teams_root)
-            )
-            in_logs = os.path.commonpath([str(cls.logs_root), str(target_resolved)]) == str(cls.logs_root)
-            in_auto_harness = \
-                os.path.commonpath([str(cls.auto_harness_root), str(target_resolved)]) == str(cls.auto_harness_root)
-            return in_workspace or in_agent_teams or in_logs or in_auto_harness
+            mtime = projects_file.stat().st_mtime
+        except OSError:
+            return []
+        cache = cls._registered_project_dir_cache
+        if cache is not None and cache[0] == mtime:
+            return cache[1]
+        try:
+            payload = json.loads(projects_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return []
+        projects = payload.get("projects") if isinstance(payload, dict) else None
+        dirs: list[Path] = []
+        if isinstance(projects, list):
+            for item in projects:
+                if not isinstance(item, dict):
+                    continue
+                raw = str(item.get("project_dir") or "").strip()
+                if not raw:
+                    continue
+                try:
+                    resolved = Path(raw).expanduser().resolve()
+                except (OSError, RuntimeError):
+                    continue
+                if resolved.is_absolute():
+                    dirs.append(resolved)
+        cls._registered_project_dir_cache = (mtime, dirs)
+        return dirs
+
+    @staticmethod
+    def _is_path_under(root: Path, target: Path) -> bool:
+        try:
+            return os.path.commonpath([str(root), str(target)]) == str(root)
         except ValueError:
             return False
+
+    @classmethod
+    def _is_path_under_allowed_root(cls, target: Path) -> bool:
+        target_resolved = target.resolve()
+        return (
+            cls._is_path_under(Path(cls.workspace_root), target_resolved)
+            or cls._is_path_under(Path(cls.agent_teams_root), target_resolved)
+            or cls._is_path_under(Path(cls.logs_root), target_resolved)
+            or cls._is_path_under(Path(cls.auto_harness_root), target_resolved)
+            or cls._is_path_under(Path(cls.projectless_tasks_root), target_resolved)
+            or any(cls._is_path_under(root, target_resolved) for root in cls._registered_project_dirs())
+        )
 
     def _resolve_project_path(self, rel_path: str) -> Path:
         """Resolve ``rel_path`` under ``project_root``.
@@ -1018,7 +1061,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         except (OSError, ValueError) as exc:
             raise _BadRequestError("invalid_path") from exc
 
-    def _write_json(self, status: int, payload: dict) -> None:
+    def _write_json(self, status: int, payload: dict | None) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1124,9 +1167,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self._write_json(400, {"error": "missing_session_id"})
                 return
             status = _get_share_image_export_manager().get_active_status(session_id)
-            if status is None:
-                self._write_json(404, {"error": "active_job_not_found"})
-                return
             self._write_json(200, status)
             return
         job_match = re.fullmatch(
@@ -1162,18 +1202,50 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if file_path is None or not file_path.is_file():
                 self._write_json(404, {"error": "job_file_not_found"})
                 return
-            file_size = file_path.stat().st_size
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(file_size))
-            self.send_header("Cache-Control", "no-store")
-            if resource == "download":
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-            self.end_headers()
-            if self.command != "HEAD":
-                with file_path.open("rb") as stream:
-                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                        self.wfile.write(chunk)
+            try:
+                stream = file_path.open("rb")
+            except OSError:
+                self._write_json(404, {"error": "job_file_not_found"})
+                return
+            try:
+                is_download = resource == "download" and self.command != "HEAD"
+                manager = _get_share_image_export_manager()
+                attempt_id = self._parse_query(parsed.query).get("download_attempt_id")
+                accepted_download = False
+                try:
+                    file_size = os.fstat(stream.fileno()).st_size
+                    if is_download:
+                        accepted_download = manager.mark_browser_download_started(job_id, attempt_id)
+                        if not accepted_download:
+                            self._write_json(409, {"error": "share_export_download_attempt_invalid"})
+                            return
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(file_size))
+                    self.send_header("Cache-Control", "no-store")
+                    if resource == "download":
+                        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                    self.end_headers()
+                    if self.command != "HEAD":
+                        remaining = file_size
+                        while remaining:
+                            chunk = stream.read(min(remaining, 1024 * 1024))
+                            if not chunk:
+                                raise OSError("share_export_download_incomplete")
+                            written = self.wfile.write(chunk)
+                            if written is not None and written != len(chunk):
+                                raise OSError("share_export_download_incomplete")
+                            remaining -= len(chunk)
+                        self.wfile.flush()
+                        if is_download:
+                            manager.mark_browser_download_finished(job_id, succeeded=True, attempt_id=attempt_id)
+                except OSError as exc:
+                    if accepted_download:
+                        manager.mark_browser_download_finished(job_id, succeeded=False, attempt_id=attempt_id)
+                    elif not is_download:
+                        raise exc
+            finally:
+                stream.close()
             return
 
         if parsed.path != "/share-api/snapshot":
@@ -1200,7 +1272,25 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if _uses_agentos_routing():
             self._write_json(503, {"error": "agentserver_file_rpc_required"})
             return
-        if parsed.path != "/share-api/jobs":
+        result_match = re.fullmatch(r"/share-api/jobs/([a-f0-9]{32})/browser-result", parsed.path)
+        if result_match:
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                filename = self._parse_query(parsed.query).get("filename", "")
+                status = _get_share_image_export_manager().store_browser_result(
+                    result_match[1], self.headers.get("X-Share-Export-Token", ""), filename, self.rfile, size,
+                )
+            except (FileNotFoundError, PermissionError, ValueError, RuntimeError) as exc:
+                code = 404 if isinstance(exc, FileNotFoundError) else 403 if isinstance(exc, PermissionError) else 400
+                self._write_json(code, {"error": str(exc)})
+                return
+            except OSError:
+                self._write_json(500, {"error": "share_export_upload_failed"})
+                return
+            self._write_json(200, status)
+            return
+        client_match = re.fullmatch(r"/share-api/jobs/([a-f0-9]{32})/browser", parsed.path)
+        if parsed.path != "/share-api/jobs" and client_match is None:
             self._write_json(404, {"error": "not_found"})
             return
         try:
@@ -1219,12 +1309,35 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._write_json(400, {"error": "invalid_json"})
             return
+        if client_match is not None:
+            if not isinstance(body, dict):
+                self._write_json(400, {"error": "invalid_json"})
+                return
+            try:
+                status = _get_share_image_export_manager().update_browser_job(client_match[1], body)
+            except (FileNotFoundError, PermissionError, ValueError) as exc:
+                code = 404 if isinstance(exc, FileNotFoundError) else 403 if isinstance(exc, PermissionError) else 400
+                self._write_json(code, {"error": str(exc)})
+                return
+            self._write_json(200, status)
+            return
         session_id = body.get("session_id", "") if isinstance(body, dict) else ""
         if not isinstance(session_id, str) or not session_id.strip():
             self._write_json(400, {"error": "missing_session_id"})
             return
         session_id = session_id.strip()
-        active_status = _get_share_image_export_manager().get_active_status(session_id)
+        if isinstance(body, dict) and "job_id" in body:
+            job_id = body["job_id"]
+            if not isinstance(job_id, str) or not re.fullmatch(r"[a-f0-9]{32}", job_id):
+                self._write_json(400, {"error": "share_export_job_id_invalid"})
+                return
+            status = _get_share_image_export_manager().get_status(job_id, include_client_token=True)
+            if status is None or status["session_id"] != session_id:
+                self._write_json(404, {"error": "job_not_found"})
+                return
+            self._write_json(200, {**status, "reused": True})
+            return
+        active_status = _get_share_image_export_manager().get_active_status(session_id, include_client_token=True)
         if active_status is not None:
             self._write_json(200, {**active_status, "reused": True})
             return
@@ -1252,6 +1365,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 cookie_name=self.desktop_cookie_name,
                 cookie_value=self.desktop_token,
             )
+        browser_options = None
+        renderer = "server"
+        if body.get("allow_browser_render") is True:
+            from jiuwenswarm.channels.web.share_image_export import available_share_browser
+            browser_options = available_share_browser()
+            if browser_options is None:
+                renderer = "browser"
         status = _get_share_image_export_manager().create_job(
             session_id=session_id,
             snapshot=snapshot,
@@ -1259,6 +1379,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             locale=normalized_locale,
             base_url=f"http://127.0.0.1:{port}",
             render_auth=render_auth,
+            renderer=renderer,
+            browser_options=browser_options,
         )
         self._write_json(200 if status.get("reused") else 202, status)
 
@@ -1895,6 +2017,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
             return
+        if parsed.path == "/file-api/external-cli/custom-agents":
+            self._handle_custom_agent_upload()
+            return
         if parsed.path == "/file-api/skills/import":
             self._handle_skills_import_upload()
             return
@@ -2000,6 +2125,26 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         )
 
         status, payload = handle_skills_upload_temp_http(
+            content_type=self.headers.get("Content-Type", ""),
+            body=self._read_request_body(),
+        )
+        self._write_json(status, payload)
+
+    def _handle_custom_agent_upload(self) -> None:
+        from jiuwenswarm.channels.web.custom_agent_upload_http import (
+            MAX_CUSTOM_AGENT_UPLOAD_BYTES,
+            handle_custom_agent_upload_http,
+        )
+
+        # Custom agents install into this machine's user workspace, which a
+        # routed multi-user AgentServer does not share.
+        if _uses_agentos_routing():
+            self._write_json(503, {"error": "custom agents are not supported in AgentOS mode"})
+            return
+        if self._parse_content_length() > MAX_CUSTOM_AGENT_UPLOAD_BYTES:
+            self._write_json(413, {"error": "upload too large"})
+            return
+        status, payload = handle_custom_agent_upload_http(
             content_type=self.headers.get("Content-Type", ""),
             body=self._read_request_body(),
         )

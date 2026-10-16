@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 from contextvars import ContextVar
 from pathlib import Path
@@ -29,7 +28,10 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
     SystemPromptPriority,
 )
-from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
+from jiuwenswarm.agents.harness.common.prompt.shell_environment import (
+    build_shell_environment_prompt,
+    get_shell_capabilities,
+)
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_runtime_state_path,
@@ -358,18 +360,21 @@ class RuntimePromptRail(DeepAgentRail):
 
         # ── Platform, shell, encoding, time-query and channel rules ──
         os_type = sys.platform
+        shell_capabilities = await get_shell_capabilities(os_type)
         shell_path = os.environ.get("SHELL", "")
         if os_type.startswith("win"):
             # Windows normally has no SHELL variable. Prefer the actual
             # PowerShell executable so the prompt does not report unknown.
-            shell_path = shutil.which("pwsh") or shutil.which("powershell") or ""
+            shell_path = shell_capabilities.powershell or ""
             shell_name = "PowerShell" if shell_path else "unknown"
         else:
             shell_name = os.path.basename(shell_path) if shell_path else "unknown"
         import platform as plat
         os_version = f"{plat.system()} {plat.release()}"
         env_language = "cn" if not self._force_english and self._language == "cn" else "en"
-        shell_env_prompt = build_shell_environment_prompt(env_language, os_type)
+        shell_env_prompt = build_shell_environment_prompt(
+            env_language, os_type, capabilities=shell_capabilities
+        )
 
         if not self._force_english and self._language == "cn":
             env_content = (
@@ -735,7 +740,7 @@ class RuntimePromptRail(DeepAgentRail):
             await self._clear_prompt_attachment(ctx, section=section)
             return
         try:
-            from jiuwenswarm.agents.harness.common.a4p_runtime import is_a4p_enabled
+            from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_enabled
             from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
                 get_a4p_supported_action_names,
             )
@@ -767,8 +772,23 @@ class RuntimePromptRail(DeepAgentRail):
                 "- For Shell tools, authorize each complete exact command by default. Use a narrowly scoped wildcard "
                 "only when one dynamic argument cannot be known in advance and the wildcard cannot absorb whitespace, "
                 "Shell operators, redirections, or extra arguments.\n"
-                "- For file tools, use a concrete file path or a filename glob under a fixed directory. Never use a "
+                "- For read_file/write_file/edit_file, use a concrete file path or a filename glob under a fixed "
+                "directory. Never use a "
                 "bare `*` or substitute a directory path for a file scope. Use dedicated file tools for file writes.\n"
+                "- read_file, list_files, glob and grep require explicit absolute paths in both authorization and "
+                "execution; "
+                "do not omit path, use relative paths or include parent traversal. list_files/glob authorize an exact "
+                "directory; "
+                "grep authorizes an exact file or directory. glob searches filenames recursively; grep may read "
+                "recursive "
+                "content snippets. Keywords and result limits may vary within that root. These are separate "
+                "permissions: "
+                "listing/searching filenames does not authorize read_file, and reading does not authorize writing.\n"
+                "- When paths are known, request reads, creates and edits together before reading the inputs. If "
+                "discovery "
+                "is necessary, authorize listing/search first, then request newly discovered read/edit scopes. Cron "
+                "still "
+                "requires the complete future scope before enabling the job.\n"
                 "\n"
                 "## Planning and convergence\n"
                 "- Choose a feasible plan that satisfies the user request and has explicit authorization scopes. "
@@ -831,7 +851,10 @@ class RuntimePromptRail(DeepAgentRail):
                 "获取授权。每个受保护调用必须匹配有效的已批准范围，只读操作也不例外。授权只允许执行，不代表操作已经完成。\n"
                 "- 可先使用受保护列表外的工具读取必要信息、发现工具能力和确定参数。一次授权可通过多个 `actions` 覆盖当前已确定的范围。使用真实工具名及其安全关键参数；无需提前确定不参与授权匹配的普通参数。\n"
                 "- 对 Shell 工具，默认分别授权完整精确命令。只有单个动态参数无法提前确定，且通配不会覆盖空白、Shell 运算符、重定向或额外参数时，才使用窄范围通配。\n"
-                "- 对文件工具，使用具体文件路径，或固定目录下的文件名 glob。不得使用裸 * 或以目录路径代替文件范围。使用专用文件工具完成文件写入。\n"
+                "- 对 read_file/write_file/edit_file，使用具体文件路径，或固定目录下的文件名 glob。不得使用裸 * 或以目录路径代替文件范围。使用专用文件工具完成文件写入。\n"
+                "- read_file、list_files、glob、grep 在申请和执行时均须显式使用绝对路径，不得省略路径、使用相对路径或包含上级目录跳转。list_files/glob 授权具体目录，grep "
+                "授权具体文件或目录。glob 可递归搜索文件名；grep 可递归搜索正文并返回片段。范围内关键词和结果条数可以变化。目录浏览、文件名搜索不包含 read_file 权限，读取不包含写入权限。\n"
+                "- 输入和输出路径已知时，将读取、新建、修改合并申请后再读取资料；必须先发现文件时，先申请浏览或搜索，再对新增读取和修改范围补充授权。定时任务仍须在启用前明确完整未来范围。\n"
                 "\n"
                 "## 规划与收敛\n"
                 "- 选择满足用户需求、权限范围明确且能够执行的方案。无需寻找最优方案，也无需证明其他等价方案更差。\n"
@@ -881,7 +904,7 @@ class RuntimePromptRail(DeepAgentRail):
             await self._clear_prompt_attachment(ctx, section=section)
             return
         try:
-            from jiuwenswarm.agents.harness.common.a4p_runtime import (
+            from jiuwenswarm.agents.harness.common.a4p.runtime import (
                 get_a4p_runtime,
                 is_a4p_enabled,
             )

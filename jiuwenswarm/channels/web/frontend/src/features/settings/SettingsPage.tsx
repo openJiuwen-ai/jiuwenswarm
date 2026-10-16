@@ -4,6 +4,7 @@ import type { WebConnectionState } from '../../types';
 import type { SettingsRequest } from './services/settingsContract';
 import type {
   ExternalCliAgentKind,
+  ExternalCliDependencyInstallStatus,
   ExternalCliDetectResult,
   ExternalCliPendingChoice,
 } from '../../components/ExternalCliAgentsSection';
@@ -24,7 +25,8 @@ export function SettingsPage({
   onTrackExternalCliDependencyInstalls,
   externalCliInstallStatuses,
   externalCliInstallBusy,
-  onOpenExternalCliInstallDialog,
+  onGetExternalCliInstallStatus,
+  onExternalCliInstallStatusChange,
   externalCliPendingChoices,
   onExternalCliPendingChoicesChange,
   externalCliDetectResults,
@@ -36,12 +38,15 @@ export function SettingsPage({
   connectionState: WebConnectionState;
   request: SettingsRequest;
   onHasChangesChange?: (hasChanges: boolean) => void;
-  onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string) => Promise<ExternalCliDetectResult>;
+  onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string, useBuiltin?: boolean) => Promise<ExternalCliDetectResult>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;
   externalCliInstallBusy?: boolean;
-  onOpenExternalCliInstallDialog?: () => void;
+  onGetExternalCliInstallStatus?: (
+    agent: ExternalCliAgentKind,
+  ) => Promise<ExternalCliDependencyInstallStatus>;
+  onExternalCliInstallStatusChange?: (agent: ExternalCliAgentKind, status: ExternalCliDependencyInstallStatus) => void;
   externalCliPendingChoices?: Partial<Record<ExternalCliAgentKind, ExternalCliPendingChoice>>;
   onExternalCliPendingChoicesChange?: (
     next:
@@ -52,7 +57,11 @@ export function SettingsPage({
   ) => void;
   externalCliDetectResults?: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>;
   onExternalCliDetectResultsChange?: (
-    next: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>,
+    next:
+      | Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>
+      | ((current: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>) => Partial<
+          Record<ExternalCliAgentKind, ExternalCliDetectResult>
+        >),
   ) => void;
   initialModuleId?: SettingsModuleTarget;
 }) {
@@ -67,7 +76,8 @@ export function SettingsPage({
       onTrackExternalCliDependencyInstalls={onTrackExternalCliDependencyInstalls}
       externalCliInstallStatuses={externalCliInstallStatuses}
       externalCliInstallBusy={externalCliInstallBusy}
-      onOpenExternalCliInstallDialog={onOpenExternalCliInstallDialog}
+      onGetExternalCliInstallStatus={onGetExternalCliInstallStatus}
+      onExternalCliInstallStatusChange={onExternalCliInstallStatusChange}
       externalCliPendingChoices={externalCliPendingChoices}
       onExternalCliPendingChoicesChange={onExternalCliPendingChoicesChange}
       externalCliDetectResults={externalCliDetectResults}

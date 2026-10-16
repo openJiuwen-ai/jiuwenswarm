@@ -228,7 +228,7 @@ def build_permission_rail(
         is_auto_permission_enabled,
         normalize_permissions_for_runtime,
     )
-    from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+    from jiuwenswarm.agents.harness.common.a4p.execution_context import (
         AUTHORIZATION_EXECUTION_CONTEXTS,
     )
     from jiuwenswarm.common.config import get_config
@@ -428,6 +428,8 @@ def build_permission_rail(
                 )
 
             cron_job_id = ""
+            metadata = execution_context.metadata if execution_context is not None else {}
+            is_cron = channel == "__cron__" or bool(metadata.get("cron"))
             is_interactive_web = bool(
                 execution_context is not None
                 and execution_context.is_interactive_web
@@ -445,9 +447,9 @@ def build_permission_rail(
                     ),
                 )
 
-            if channel == "__cron__" or is_interactive_web:
+            if is_cron or is_interactive_web:
                 try:
-                    from jiuwenswarm.agents.harness.common.a4p_runtime import (
+                    from jiuwenswarm.agents.harness.common.a4p.runtime import (
                         get_a4p_runtime,
                         is_a4p_enabled,
                         resolve_a4p_identity,
@@ -455,11 +457,6 @@ def build_permission_rail(
 
                     config = get_config()
                     if is_a4p_enabled(config):
-                        metadata = (
-                            execution_context.metadata
-                            if execution_context is not None
-                            else {}
-                        )
                         agent_name = (
                             execution_context.agent_id
                             if execution_context is not None
@@ -489,13 +486,13 @@ def build_permission_rail(
                                     auto_confirm=False,
                                     feedback="",
                                 )
-                            if channel == "__cron__":
+                            if is_cron:
                                 return _deny_cron_scope(
                                     "没有匹配当前 action 和实际参数的有效 A4P cron intent token，"
                                     "或 token 已过期、agent 绑定不匹配"
                                 )
 
-                        if channel == "__cron__":
+                        if is_cron:
                             return _deny_cron_scope(
                                 "请求 metadata.cron.job_id 缺失，无法定位 job 授权"
                             )
@@ -531,7 +528,7 @@ def build_permission_rail(
                         "[InterruptHelpers] A4P intent authorization check failed: %s",
                         exc,
                     )
-                    if channel == "__cron__":
+                    if is_cron:
                         return _deny_cron_scope(f"A4P token 校验异常：{exc}")
                     attempt = _matching_a4p_attempt()
                     if attempt is not None:

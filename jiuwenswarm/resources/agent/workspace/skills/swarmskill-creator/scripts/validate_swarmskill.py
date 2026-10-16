@@ -500,6 +500,11 @@ SUPPORTED_SWARMFLOW_OPERATORS = {
 }
 
 SUPPORTED_SWARMFLOW_TYPES = {"AgentSession", "HumanSession"}
+# Keys the engine accepts in agent()/agent_session() options (engine set ∪ team backend set).
+SUPPORTED_AGENT_OPTIONS: frozenset[str] = frozenset(
+    {"label", "phase", "schema", "model", "timeout", "isolation", "agent_type", "builtin_model", "effort",
+     "agent_template"}
+)
 PROTECTED_SWARMFLOW_NAMES = SUPPORTED_SWARMFLOW_OPERATORS
 DEFERRED_THUNK_OPERATORS = {"map_parallel", "parallel", "pipeline", "pmap"}
 NON_DETERMINISTIC_IMPORTS = {"random", "time", "datetime"}
@@ -885,6 +890,38 @@ def _keyword(node: ast.Call, name: str) -> ast.keyword | None:
     return next((keyword for keyword in node.keywords if keyword.arg == name), None)
 
 
+def _agent_options_issues(node: ast.Call, call_name: str, line: int) -> list[str]:
+    """Static checks on an ``options={...}`` literal: known keys only; bare agent_template name."""
+    keyword = _keyword(node, "options")
+    if keyword is None or not isinstance(keyword.value, ast.Dict):
+        return []
+    errors: list[str] = []
+    for key_node, value_node in zip(keyword.value.keys, keyword.value.values):
+        key = _string_literal(key_node) if key_node is not None else None
+        if key is None:
+            continue
+        if key not in SUPPORTED_AGENT_OPTIONS:
+            errors.append(
+                f"line {line}: unknown agent option {key!r} in {call_name}(); "
+                f"allowed: {sorted(SUPPORTED_AGENT_OPTIONS)}"
+            )
+            continue
+        if key == "agent_template":
+            value = _string_literal(value_node)
+            if value is not None and (not value or "/" in value):
+                errors.append(
+                    f"line {line}: agent_template must be the bare member name of the bound "
+                    f"AgentGroup (no 'group/' prefix), got {value!r}"
+                )
+            elif value == "leader":
+                errors.append(
+                    f"line {line}: agent_template 'leader' is the Team Leader, not a worker; "
+                    "it already drives the conversation and cannot be a swarmflow node — "
+                    "pick a worker member of the bound AgentGroup"
+                )
+    return errors
+
+
 def _is_literal_true(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and node.value is True
 
@@ -1241,6 +1278,7 @@ def _runtime_call_issues(tree: ast.Module) -> tuple[list[str], list[str]]:
             elif call_name == "agent":
                 if node.args and _string_literal(node.args[0]) == "":
                     errors.append(f"line {line}: agent prompt must not be an empty string")
+                errors.extend(_agent_options_issues(node, "agent", line))
                 if not _is_directly_awaited(node) and not _is_inside_deferred_lambda(node):
                     errors.append(
                         f"line {line}: agent() must be awaited or returned from a "
@@ -1259,6 +1297,8 @@ def _runtime_call_issues(tree: ast.Module) -> tuple[list[str], list[str]]:
             elif call_name in {"agent_session", "human_session"}:
                 if _is_directly_awaited(node):
                     errors.append(f"line {line}: {call_name}() is synchronous and must not be awaited")
+                if call_name == "agent_session":
+                    errors.extend(_agent_options_issues(node, call_name, line))
             elif call_name in imported_swarmflow_types:
                 errors.append(
                     f"line {line}: do not construct {call_name} directly; "

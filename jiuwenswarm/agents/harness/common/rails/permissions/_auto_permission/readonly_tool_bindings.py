@@ -41,9 +41,9 @@ def _method_matches(owner, expected, name):
     )
 
 
-def _invoke_matches(resource):
+def _invoke_matches(resource, invoke_func=LocalFunction.invoke, *, invoke=None):
     # Tool's metaclass installs these SDK wrappers on every instance.
-    invoke = resource.invoke
+    invoke = resource.invoke if invoke is None else invoke
     for factory, name in (
         (callbacks.create_emit_after_decorator, "decorator.async_wrapper"),
         # No public equivalent identifies this SDK-installed executable wrapper.
@@ -54,7 +54,7 @@ def _invoke_matches(resource):
     lifecycle = _closure(invoke, _ToolMeta.__call__, "_lifecycle_invoke")
     original = lifecycle["_original_invoke"]
     return lifecycle["instance"] is resource and matches_bound_method(
-        original, expected_owner=resource, expected_func=LocalFunction.invoke
+        original, expected_owner=resource, expected_func=invoke_func
     )
 
 

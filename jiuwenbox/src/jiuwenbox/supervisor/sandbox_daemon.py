@@ -203,6 +203,23 @@ def build_child_env(env_override: dict[str, str] | None) -> dict[str, str]:
     return merged_env
 
 
+def _prefer_oom_kill_self() -> None:
+    """Make this process the preferred OOM victim before exec.
+
+    The sandbox daemon lives in the same memory cgroup as the user
+    command. With equal scores the daemon's larger resident set is what
+    the kernel kills, and the client then sees a closed IPC socket
+    instead of the command's exit status. ``+1000`` is the maximum
+    adjustment and does not require ``CAP_SYS_RESOURCE``; lowering the
+    daemon's own score does, and often fails inside a user namespace.
+    """
+    try:
+        with open("/proc/self/oom_score_adj", "w", encoding="ascii") as fh:
+            fh.write("1000")
+    except OSError:
+        pass
+
+
 class DaemonState:
     """Shared mutable state guarded by ``lock``."""
 
@@ -286,6 +303,7 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
         }
         if workdir:
             proc_kwargs["cwd"] = workdir
+        proc_kwargs["preexec_fn"] = _prefer_oom_kill_self
 
         try:
             proc = subprocess.Popen(command, **proc_kwargs)
@@ -2366,6 +2384,7 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
             }
             if workdir:
                 proc_kwargs["cwd"] = workdir
+            proc_kwargs["preexec_fn"] = _prefer_oom_kill_self
 
             try:
                 proc = subprocess.Popen(command, **proc_kwargs)

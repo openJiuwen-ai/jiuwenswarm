@@ -668,12 +668,18 @@ class TeamManager:
         event: dict[str, Any],
         *,
         channel_id: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Broadcast an event with backpressure to every active waiter.
 
         The short timed wait is only used while a queue is full.  It lets a
         producer notice that ``remove_waiter`` detached a disconnected client
         instead of remaining blocked forever on that orphaned queue.
+
+        Returns:
+            True when at least one waiter received the event.  Callers that
+            persist event history may use this to detect that nobody consumed
+            the frame; the selection and delivery happen under the same call,
+            so the answer is atomic with the broadcast itself.
         """
         event_type = str(event.get("event_type") or "")
         terminal = (
@@ -694,7 +700,7 @@ class TeamManager:
                 session_id,
                 current_round.request_id,
             )
-            return
+            return False
         if not terminal and current_round is not None:
             current_round.terminal_armed = True
         if current_round is not None and self._is_workflow_terminal_event(event):
@@ -785,6 +791,7 @@ class TeamManager:
                 current_round,
                 event,
             )
+        return bool(waiters)
 
     @staticmethod
     def _is_workflow_terminal_event(event: dict[str, Any]) -> bool:
@@ -1296,6 +1303,7 @@ class TeamManager:
             TEAM_MODEL_SELECTION_STALE,
             ModelSelectionError,
         )
+        from jiuwenswarm.common.model_selection import ResolvedModelGroup
         from jiuwenswarm.server.runtime.model_compiler_adapter import (
             compile_model_selection,
         )
@@ -1311,6 +1319,18 @@ class TeamManager:
                     route_id=selection.route_id,
                 )
             )
+            # Team routes across the whole group. Groups saved from the UI
+            # carry no routing strategy, which would compile to the first
+            # route only; default them to ordered failover. A manually
+            # selected route keeps compiling to that single model.
+            if (
+                isinstance(resolved, ResolvedModelGroup)
+                and selection.route_id is None
+                and not (resolved.routing or {}).get("strategy")
+            ):
+                resolved = resolved.model_copy(
+                    update={"routing": {**(resolved.routing or {}), "strategy": "ordered-failover"}}
+                )
             compiled = compile_model_selection(resolved)
         except ModelSelectionError:
             # Stable catalog / permission failures are meaningful to callers.
@@ -1326,6 +1346,42 @@ class TeamManager:
             ) from exc
 
         return compiled
+
+    @staticmethod
+    def _selected_model_name(
+        selection: SwarmModelSelection,
+        compiled: CompiledModelSelection,
+    ) -> str:
+        """Return the model name a compiled single-model selection points at."""
+        from jiuwenswarm.common.model_errors import (
+            MODEL_REQUEST_CONFIG_INVALID,
+            TEAM_MODEL_SELECTION_STALE,
+            ModelSelectionError,
+        )
+
+        if (
+            compiled.selected_type != selection.type
+            or compiled.selected_id != selection.id
+        ):
+            raise ModelSelectionError(
+                TEAM_MODEL_SELECTION_STALE,
+                "model selection does not match compiled selection",
+            )
+        request = (
+            compiled.model_request_config.model_dump(
+                exclude_none=True,
+                by_alias=True,
+            )
+            if compiled.model_request_config
+            else {}
+        )
+        name = request.get("model") or request.get("model_name") or ""
+        if not name:
+            raise ModelSelectionError(
+                MODEL_REQUEST_CONFIG_INVALID,
+                "compiled model selection has an empty model name",
+            )
+        return name
 
     @staticmethod
     def _apply_compiled_team_selection(
@@ -1473,18 +1529,7 @@ class TeamManager:
                 )
                 config_base = fallback_distributed_to_local(config_base)
 
-        spec_dict = load_team_spec_dict(
-            config_base=config_base,
-            requested_model_name=requested_model_name,
-            login_model_entry=login_model_entry,
-            template_id=template_id,
-            template_snapshot=template_snapshot,
-            strict_template=strict_template,
-        )
-        spec_dict = TeamManager._normalize_team_identity_fields(spec_dict)
-        if TeamManager._is_distributed_mode(config_base):
-            spec_dict = TeamManager._normalize_distributed_transport_fields(config_base, spec_dict)
-
+        selection: SwarmModelSelection | None = None
         if model_selection is not None:
             # Normalize through the swarm DTO so ``route_id`` (a valid
             # group-scope pin) survives; the foundation ``ModelSelection``
@@ -1501,6 +1546,28 @@ class TeamManager:
                     if key in raw_selection
                 }
             )
+        if selection is not None and selection.type == "model":
+            # A single-model selection only names the page-selected model; the
+            # pool keeps every configured model below so members can still be
+            # assigned any of them. Resolving it also rejects a stale selection.
+            requested_model_name = TeamManager._selected_model_name(
+                selection,
+                TeamManager._resolve_and_compile_team_selection(selection),
+            )
+
+        spec_dict = load_team_spec_dict(
+            config_base=config_base,
+            requested_model_name=requested_model_name,
+            login_model_entry=login_model_entry,
+            template_id=template_id,
+            template_snapshot=template_snapshot,
+            strict_template=strict_template,
+        )
+        spec_dict = TeamManager._normalize_team_identity_fields(spec_dict)
+        if TeamManager._is_distributed_mode(config_base):
+            spec_dict = TeamManager._normalize_distributed_transport_fields(config_base, spec_dict)
+
+        if selection is not None and selection.type == "model_group":
             compiled = TeamManager._resolve_and_compile_team_selection(selection)
             TeamManager._apply_compiled_team_selection(
                 spec_dict,
@@ -1664,6 +1731,8 @@ class TeamManager:
         login_model_entry: dict[str, Any] | None = None,
         agent_group_name: str | None = None,
         swarmflow_config: dict | None = None,
+        dispatch_mode: str | None = None,
+        bootstrap_mode: str | None = None,
         model_selection: SwarmModelSelection | dict[str, Any] | None = None,
     ) -> TeamAgentSpec:
         """Build a team spec via provider-based assembly (no parent DeepAgent).
@@ -1684,6 +1753,16 @@ class TeamManager:
             login_model_entry: Model entry for a page-selected login model,
                 built from the request's forwarded credentials (placeholder
                 api_key; the real token is swapped in per HTTP request).
+            dispatch_mode: Session-level task dispatch mode (``"autonomous"`` /
+                ``"scheduled"``); None keeps the team config's ``dispatch_mode``.
+                Task verification only applies to scheduled dispatch, so it is
+                switched off when the session picks autonomous dispatch.
+            bootstrap_mode: Session-level team bootstrap mode (``"leader"`` /
+                ``"framework"``); None keeps the team config's ``bootstrap_mode``.
+                ``"framework"`` requires the effective dispatch mode to be
+                ``"scheduled"`` and raises ``ValueError`` otherwise — the
+                combination is rejected here, at the request boundary, rather
+                than surfacing as a spec build failure later.
 
         Returns:
             The enriched ``TeamAgentSpec`` ready to build (``build_context`` set;
@@ -1734,6 +1813,18 @@ class TeamManager:
                     spec.worktree = spec.worktree.model_copy(update={"enabled": True})
             elif worktree_flag is False:
                 spec.worktree = None
+        if dispatch_mode is not None:
+            spec.dispatch_mode = dispatch_mode
+            if dispatch_mode != "scheduled":
+                spec.enable_task_verification = False
+        if bootstrap_mode is not None:
+            spec.bootstrap_mode = bootstrap_mode
+        if spec.bootstrap_mode == "framework" and spec.dispatch_mode != "scheduled":
+            raise ValueError(
+                "team_bootstrap_mode='framework' requires scheduled dispatch "
+                f"(effective dispatch_mode={spec.dispatch_mode!r}); "
+                "turn on scheduled dispatch for this session or drop the bootstrap mode"
+            )
         return spec
 
     @staticmethod

@@ -132,7 +132,7 @@ from jiuwenswarm.common.mode_matrix import (
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
     get_permissions_config_req_methods,
 )
-from jiuwenswarm.agents.harness.common.a4p_rpc import get_a4p_req_methods
+from jiuwenswarm.agents.harness.common.a4p.rpc import get_a4p_req_methods
 from jiuwenswarm.common.config import (
     DEFAULT_SANDBOX_POLICY_FILE,
     DEFAULT_SANDBOX_STARTUP_MODE,
@@ -196,6 +196,7 @@ from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import Voi
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
+    DesignerAdapter,
     HarmonyOSAdapter,
     MemoryAdapter,
     ProjectAdapter,
@@ -464,7 +465,8 @@ def _renew_server_plan_controller() -> PlanModeController:
 # 避免 ping_timeout 导致连接关闭。默认 10 秒，小于服务端 ping_timeout=20s。
 _STREAM_KEEPALIVE_INTERVAL_SECONDS = 10.0
 _STREAM_KEEPALIVE_STOP_TIMEOUT_SECONDS = 1.0
-
+# send_push 无活跃 Gateway 连接告警的汇总窗口（秒）
+_PUSH_NO_GATEWAY_WARN_INTERVAL_S = 30.0
 
 
 def _consume_keepalive_task_result(
@@ -1152,6 +1154,9 @@ class AgentWebSocketServer:
         # 当前 Gateway 连接，用于 send_push 主动推送
         self._current_ws: Any = None
         self._current_send_lock: asyncio.Lock | None = None
+        # send_push 无连接告警限流：首条立即告警，之后按窗口汇总
+        self._push_no_gateway_suppressed = 0
+        self._push_no_gateway_warned_at: float | None = None
         self._acp_client_capabilities_by_ws: dict[int, dict[str, Any]] = {}
         # AgentServer and the process CLI share this transport-independent Runtime.
         # Keep the manager alias for legacy transport handlers.
@@ -1162,6 +1167,7 @@ class AgentWebSocketServer:
         self._runtime_push_handler = None
         self._previous_runtime_push_handler = None
         self._runtime_services_started = False
+        self._group_service = None
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
         # Optional production Provider injection point.  The concrete class is
@@ -1182,6 +1188,7 @@ class AgentWebSocketServer:
             WorkspaceFileAdapter(),
             MemoryAdapter(),
             ProjectAdapter(runtime_probe=self._execution_runtime),
+            DesignerAdapter(),
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
         ):
@@ -1463,7 +1470,14 @@ class AgentWebSocketServer:
     ) -> None:
         """Publish the Front-owned Gateway socket for send_push / ACP caps."""
         self.bind_gateway_transport(ws, send_lock)
+        self._reset_push_no_gateway_warning()
         await self._session_message_service.set_available(True)
+        try:
+            from jiuwenswarm.observability.gateway_hints import trajectory_gateway_hint_bridge
+
+            trajectory_gateway_hint_bridge.notify_available()
+        except Exception:
+            logger.debug("[AgentWebSocketServer] trajectory hint wakeup failed", exc_info=True)
 
     async def on_gateway_disconnect(self, ws: Any, remote: Any) -> None:
         """Runtime-side cleanup when Front drops the Gateway connection."""
@@ -2148,6 +2162,7 @@ class AgentWebSocketServer:
                     WorkspaceFileAdapter(),
                     MemoryAdapter(),
                     ProjectAdapter(runtime_probe=self._execution_runtime),
+                    DesignerAdapter(),
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
                 ):
@@ -2569,6 +2584,10 @@ class AgentWebSocketServer:
                         await registry.ensure("proactive")
                     else:
                         await asyncio.shield(preparation)
+            from jiuwenswarm.server.runtime.group_requests import dispatch_group_request
+
+            if await dispatch_group_request(self, ws, request, send_lock):
+                return
             if request.req_method is not None and request.req_method.value.startswith("assets.publish."):
                 await self._handle_asset_publish(ws, request, send_lock)
                 return
@@ -5084,6 +5103,7 @@ class AgentWebSocketServer:
                         "session_id": result.session_id,
                         "mode": result.mode,
                         "switched": result.switched,
+                        "moa_enabled": result.moa_enabled,
                     },
                     metadata=request.metadata,
                 )
@@ -6204,7 +6224,7 @@ class AgentWebSocketServer:
         send_lock: asyncio.Lock,
     ) -> None:
         """Handle a4p.* requests forwarded from the Web User Authorizer."""
-        from jiuwenswarm.agents.harness.common.a4p_rpc import dispatch_a4p_request
+        from jiuwenswarm.agents.harness.common.a4p.rpc import dispatch_a4p_request
 
         resp = await dispatch_a4p_request(request)
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
@@ -6866,11 +6886,13 @@ class AgentWebSocketServer:
 
         team_manager = get_team_manager(channel_id)
         metadata_team_name = ""
+        live_team_name = ""
         if session_id:
             session_info = team_manager.get_runtime_team_snapshot().get(session_id)
             if session_info:
+                live_team_name = str(session_info.get("team_name") or "").strip()
                 _upsert(
-                    str(session_info.get("team_name") or ""),
+                    live_team_name,
                     state="running" if session_info.get("state") == "active" else "pending",
                     source="manager",
                 )
@@ -6892,9 +6914,17 @@ class AgentWebSocketServer:
                     source="metadata",
                 )
 
+        # ``team_name`` reaches session metadata only when the team runtime
+        # becomes ready (sync_team_identity_metadata). During the first-turn
+        # assembly window the session's own team is already listed via the
+        # TeamManager markers above; without the live-binding fallback every
+        # team would answer is_owner=false and the Web conversation view would
+        # flip to the empty team panel until the next poll. Metadata stays
+        # authoritative once it has been persisted.
+        owner_team_name = metadata_team_name or live_team_name
         for entry in entries.values():
             entry["is_owner"] = bool(
-                metadata_team_name and entry["team_id"] == metadata_team_name
+                owner_team_name and entry["team_id"] == owner_team_name
             )
             if not entry.get("organization_id"):
                 org_id = self._lookup_session_org_binding(session_id, entry["team_id"])
@@ -11581,7 +11611,7 @@ class AgentWebSocketServer:
             if reload_scopes:
                 reload_kwargs["reload_scopes"] = reload_scopes
             if isinstance(config_payload, dict) and "a4p" in config_payload:
-                from jiuwenswarm.agents.harness.common.a4p_runtime import (
+                from jiuwenswarm.agents.harness.common.a4p.runtime import (
                     get_a4p_config,
                 )
 
@@ -11867,9 +11897,7 @@ class AgentWebSocketServer:
         可含 event_type 等字段供 Gateway 转为 Message 派发到 Channel。
         """
         if self._current_ws is None or self._current_send_lock is None:
-            logger.warning(
-                "[AgentWebSocketServer] send_push 失败: 无活跃 Gateway 连接"
-            )
+            self._warn_push_without_gateway()
             return False
 
         try:
@@ -11904,6 +11932,38 @@ class AgentWebSocketServer:
             logger.warning("[AgentWebSocketServer] send_push 失败: %s", e)
             return False
 
+    def _warn_push_without_gateway(self) -> None:
+        """无活跃 Gateway 连接时限流告警，避免生产者重试刷屏。"""
+        now = time.monotonic()
+        warned_at = getattr(self, "_push_no_gateway_warned_at", None)
+        suppressed = getattr(self, "_push_no_gateway_suppressed", 0)
+        if warned_at is not None and now - warned_at < _PUSH_NO_GATEWAY_WARN_INTERVAL_S:
+            self._push_no_gateway_suppressed = suppressed + 1
+            return
+        self._push_no_gateway_warned_at = now
+        self._push_no_gateway_suppressed = 0
+        if suppressed:
+            logger.warning(
+                "[AgentWebSocketServer] send_push 失败: 无活跃 Gateway 连接"
+                "（过去 %.0fs 内另有 %d 条同类失败已省略）",
+                _PUSH_NO_GATEWAY_WARN_INTERVAL_S,
+                suppressed,
+            )
+        else:
+            logger.warning(
+                "[AgentWebSocketServer] send_push 失败: 无活跃 Gateway 连接"
+            )
+
+    def _reset_push_no_gateway_warning(self) -> None:
+        suppressed = getattr(self, "_push_no_gateway_suppressed", 0)
+        if suppressed:
+            logger.info(
+                "[AgentWebSocketServer] Gateway 连接已恢复，此前 %d 条 send_push 失败告警已省略",
+                suppressed,
+            )
+        self._push_no_gateway_suppressed = 0
+        self._push_no_gateway_warned_at = None
+
     def get_agent(self):
         """获取 default agent 实例（向后兼容）."""
         return self._agent_manager.get_agent_nowait()
@@ -11911,6 +11971,15 @@ class AgentWebSocketServer:
     def get_agent_manager(self) -> AgentManager:
         """获取 AgentManager 实例."""
         return self._agent_manager
+
+    def get_group_service(self):
+        """Return the lazily initialized group management service."""
+        from jiuwenswarm.server.runtime.group_service import GroupService
+
+        service = self._group_service
+        if service is None:
+            service = self._group_service = GroupService(self._execution_runtime())
+        return service
 
     def get_runtime(self) -> AgentRuntime:
         """Return the transport-independent Runtime owned by AgentServer."""
@@ -12140,6 +12209,9 @@ class AgentWebSocketServer:
                     code="BAD_REQUEST",
                 )
 
+            if "moa_enabled" in params and not isinstance(params["moa_enabled"], bool):
+                raise SessionProvisionError("moa_enabled must be a boolean", code="BAD_REQUEST")
+
             explicit_work_mode_marker = params.get("_work_mode_explicit")
             requested = params.get("session_id")
             requested_session_id = (
@@ -12184,6 +12256,8 @@ class AgentWebSocketServer:
                         or ""
                     ).strip(),
                     model_name=str(params.get("model_name") or "").strip(),
+                    model_selection=params.get("model_selection"),
+                    moa_enabled=params.get("moa_enabled"),
                     cron_id=str(params.get("cron_id") or "").strip(),
                 )
             )
@@ -12203,6 +12277,7 @@ class AgentWebSocketServer:
                 "projectDir": result.project_dir,
                 "workMode": result.work_mode,
                 "persist_session": result.persist_session,
+                "moa_enabled": result.moa_enabled,
                 "prewarm_hit": result.prewarm_hit,
                 "prewarm_status": result.prewarm_status,
             }
@@ -12354,6 +12429,7 @@ class AgentWebSocketServer:
                     "session_id": result.session_id,
                     "source_session_id": result.source_session_id,
                     "title": result.title,
+                    "moa_enabled": result.moa_enabled,
                 },
             )
             wire = encode_agent_response_for_wire(

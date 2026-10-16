@@ -64,6 +64,59 @@ test('invalid cached selections fall back custom -> free -> empty', () => {
   assert.equal(resolveNewConversationModelSelection([], [], missing), null);
 });
 
+test('sending a group selection and recreating a conversation preserves the cached group', () => {
+  const previousStorage = globalThis.localStorage;
+  const values = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: (key) => values.delete(key),
+  };
+  const store = useSessionStore.getState();
+  const selection = { type: 'model_group', id: 'grp-cached', route_id: 'route-main' };
+  const groups = [{
+    model_group_id: selection.id,
+    enabled: true,
+    routes: [{ route_id: 'route-main', model_id: 'mdl-main', enabled: true }],
+  }];
+  try {
+    store.removeRuntime('new');
+    store.setAvailableModels(models, 'main-model');
+    store.setAvailableModelGroups(groups);
+    store.ensureRuntime('new');
+    store.setSelectedModelSelection('new', selection);
+    store.ensureRuntime('sent-group');
+    store.setSelectedModelSelection('sent-group', store.getRuntime('new').selectedModelSelection);
+    // App initializes defaults when switching from the draft to the sent session.
+    store.initializeDefaultModel('sent-group');
+    assert.deepEqual(store.getRuntime('sent-group').selectedModelSelection, selection);
+    assert.equal(store.getRuntime('sent-group').selectedModelName, null);
+    store.removeRuntime('new');
+    assert.deepEqual(store.ensureRuntime('new').selectedModelSelection, selection);
+    // Entering chat must not mistake a group's intentionally empty model name
+    // for an uninitialized selection.
+    store.initializeDefaultModel('new');
+    assert.deepEqual(store.getRuntime('new').selectedModelSelection, selection);
+    assert.equal(store.getRuntime('new').selectedModelName, null);
+
+    // A deleted cached group must not retain an unrelated draft selection.
+    store.setSelectedModelName('new', 'single-agent-model');
+    store.setAvailableModelGroups([]);
+    assert.deepEqual(store.getRuntime('new').selectedModelSelection, { type: 'model', id: 'mdl-main' });
+    store.setAvailableModels([{ ...models[1], is_free: true }], 'single-agent-model');
+    assert.deepEqual(store.getRuntime('new').selectedModelSelection, { type: 'model', id: 'mdl-agent' });
+    store.setAvailableModels([], null);
+    assert.equal(store.getRuntime('new').selectedModelSelection, null);
+  } finally {
+    store.removeRuntime('new');
+    store.removeRuntime('sent-group');
+    store.setAvailableModelGroups([]);
+    store.setAvailableModels(models, 'main-model');
+    if (previousStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = previousStorage;
+  }
+});
+
 test('team mode keeps the explicitly selected model (not locked to default anymore)', () => {
   const selected = resolveChatModelSelection(
     models,

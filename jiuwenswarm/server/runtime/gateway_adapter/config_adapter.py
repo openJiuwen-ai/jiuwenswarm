@@ -141,6 +141,7 @@ class ConfigAdapter(GatewayAdapter):
 
     methods = frozenset({
         ReqMethod.CONFIG_GET.value,
+        ReqMethod.CONFIG_MOA_STATUS.value,
         ReqMethod.CONFIG_SET.value,
         ReqMethod.CONFIG_SAVE_ALL.value,
         ReqMethod.CONFIG_VALIDATE_MODEL.value,
@@ -169,6 +170,17 @@ class ConfigAdapter(GatewayAdapter):
     })
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
+        if request.req_method == ReqMethod.CONFIG_MOA_STATUS:
+            from jiuwenswarm.common.config import get_config
+            from jiuwenswarm.server.runtime.moa_runtime import moa_status
+
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=True,
+                payload=moa_status(get_config(), (request.params or {}).get("model_selection")),
+                metadata=request.metadata,
+            )
+
         if request.req_method == ReqMethod.MODELS_ZEN_ENTRIES:
             from jiuwenswarm.server.runtime.opencode_zen import public_zen_free_model_rows
 

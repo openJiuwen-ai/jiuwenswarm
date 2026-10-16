@@ -13,11 +13,18 @@ import signal
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    from jiuwenswarm.server.worker.diagnostics import enable_worker_diagnostics
+
+    enable_worker_diagnostics()
     parser = argparse.ArgumentParser(prog="jiuwenswarm-runtime-worker")
-    parser.add_argument("--socket", required=True, help="Unix socket or named-pipe path.")
+    parser.add_argument(
+        "--socket", required=True, help="Unix socket or named-pipe path."
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18092)
-    parser.add_argument("--stub", action="store_true", help="Speak IPC without loading Runtime.")
+    parser.add_argument(
+        "--stub", action="store_true", help="Speak IPC without loading Runtime."
+    )
     parser.add_argument("--stub-ready-delay", type=float, default=0.0)
     parser.add_argument("--stub-exit-on-request", action="store_true")
     parser.add_argument("--identity-from-parent", action="store_true", help=argparse.SUPPRESS)
@@ -61,7 +68,7 @@ def main() -> None:
     try:
         loop.run_until_complete(task)
     except WorkerForceExit as exc:
-        logging.getLogger(__name__).error("[Worker] forced exit with unfinished shutdown steps: %s", exc)
+        logging.getLogger(__name__).exception("[Worker] fatal exit with unfinished shutdown steps: %s", exc)
         logging.shutdown()
         # A cancelled to_thread load may still own non-daemon executor threads.
         # SystemExit waits for those threads and can exceed the shared deadline.

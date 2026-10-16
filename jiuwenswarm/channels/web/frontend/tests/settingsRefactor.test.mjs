@@ -245,11 +245,11 @@ function translationAt(locale, key) {
   return key.split('.').reduce((value, part) => value?.[part], locale);
 }
 
-test('registry definition preserves the eight-module order and fails invalid registrations', () => {
+test('registry definition preserves the nine-module order and fails invalid registrations', () => {
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
   assert.match(
     definition,
-    /generalModule,\s*modelsModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule/,
+    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule/,
   );
   assert.doesNotMatch(definition, /securityModule/);
   for (const removedPath of [
@@ -1105,12 +1105,18 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     [...modelVisible],
     [...contractByCategory('models')].filter((key) => !key.startsWith('embed_')),
   );
-  assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/experimental/definition.ts')), [
-    'symphony_evolution_enabled',
-    'kv_cache_affinity_enabled',
-    'team_organization_ui_enabled',
-    'proactive_recommendation_enabled',
-  ]);
+  assert.deepEqual(
+    findSettingDefinitionKeys(parseTsx('src/features/settings/modules/experimental/definition.ts')).sort(),
+    [
+      'multi_model_collaboration_enabled',
+      'symphony_evolution_enabled',
+      'kv_cache_affinity_enabled',
+      'team_organization_ui_enabled',
+      'team_scheduled_dispatch_enabled',
+      'team_task_verification_enabled',
+      'proactive_recommendation_enabled',
+    ].sort(),
+  );
   assert.deepEqual([...contractByCategory('experimental')].sort(), [
     'a2ui_enabled',
     'asr_api_base',
@@ -1123,6 +1129,13 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'external_cli_agent_codex_enabled',
     'external_cli_agent_codex_use_builtin',
     'kv_cache_affinity_enabled',
+    'moa_jev_api_base',
+    'moa_jev_api_key',
+    'moa_jev_api_key_clear',
+    'moa_jev_enabled',
+    'moa_jev_model_name',
+    'moa_verifier_interval',
+    'multi_model_collaboration_enabled',
     'proactive_recommendation_enabled',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
@@ -1131,6 +1144,8 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'task_asr_enabled',
     'task_full_duplex_enabled',
     'team_organization_ui_enabled',
+    'team_scheduled_dispatch_enabled',
+    'team_task_verification_enabled',
     'trajectory_ui_enabled',
   ]);
 
@@ -1205,7 +1220,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   const channelFormHook = source('src/features/settings/modules/channels/useChannelForm.ts');
   assert.match(channelFormHook, /request<\{ config\?: unknown \}>\(getMethod\)/);
   assert.match(channelFormHook, /request<\{ config\?: unknown \}>\(setMethod, payload\)/);
-  for (const channelId of ['xiaoyi', 'feishu', 'dingtalk', 'telegram', 'discord', 'slack', 'whatsapp']) {
+  for (const channelId of ['xiaoyi', 'feishu', 'dingtalk', 'telegram', 'discord', 'slack']) {
     assert.match(channelController, new RegExp(`getMethod: 'channel\\.${channelId}\\.get_conf'`));
     assert.match(channelController, new RegExp(`setMethod: 'channel\\.${channelId}\\.set_conf'`));
   }
@@ -1881,7 +1896,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
     /<a[\s\S]*href=\{getSettingsChannelGuideUrl\(channel\.channel_id, guideLanguage\)\}[\s\S]*target="_blank"[\s\S]*rel="noopener noreferrer"/,
   );
   const catalog = source('src/features/settings/modules/channels/channelCatalog.ts');
-  for (const channelId of ['xiaoyi', 'feishu', 'dingtalk', 'telegram', 'discord', 'slack', 'whatsapp'])
+  for (const channelId of ['xiaoyi', 'feishu', 'dingtalk', 'telegram', 'discord', 'slack'])
     assert.match(catalog, new RegExp(`'${channelId}'`));
 });
 

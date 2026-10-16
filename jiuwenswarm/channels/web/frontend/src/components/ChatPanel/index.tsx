@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
+import { useChatStore, useHarnessStore, useSessionStore, useTodoStore, useWorkspaceStore } from '../../stores';
 import {
   AgentMode,
   MediaItem,
@@ -42,6 +42,7 @@ import {
 } from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
+import { useAgentGroupVisualIdentity } from '../../features/agentManagement/useAgentGroupAvatars';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { InputArea, type InputAreaHandle } from './InputArea';
@@ -86,7 +87,7 @@ import {
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady, useWelcomeBubblePosition } from '../../hooks';
-import { ApplicationPluginTaskRuntimes } from '../../applicationPlugins/ApplicationPluginOutlet';
+import { ApplicationPluginTaskRuntimes, flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { generateUuidV4 } from '../../utils/uuid';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { requestLogin, useAuthStore } from '../../stores/authStore';
@@ -141,6 +142,8 @@ interface ChatPanelProps {
   ) => Promise<boolean>;
   onExportShare?: () => void | Promise<void>;
   isExportingShare?: boolean;
+  shareExportProgress?: string;
+  isWaitingShareExportTab?: boolean;
   canExportShare?: boolean;
   sessionTitle?: string;
   sessionProjectName?: string;
@@ -674,21 +677,16 @@ function getTeamMessageIdentity(message: Message): string {
 
 function WelcomeHeading() {
   const { i18n } = useTranslation();
+  const workMode = useWorkspaceStore((state) => state.workMode);
   const isZh = i18n.language.startsWith('zh');
-
-  if (isZh) {
-    return (
-      <>
-        <span className="chat-welcome__heading-highlight">WorkSwarm</span>
-        <span>轻松解决工作每个问题！</span>
-      </>
-    );
-  }
+  const suffix = workMode === 'design'
+    ? (isZh ? '轻松解决每个设计问题！' : 'solves every design problem!')
+    : (isZh ? '轻松解决工作每个问题！' : 'makes work easier!');
 
   return (
     <>
       <span className="chat-welcome__heading-highlight">WorkSwarm</span>
-      <span>makes work easier!</span>
+      <span>{suffix}</span>
     </>
   );
 }
@@ -1057,6 +1055,8 @@ export const ChatPanel = React.memo(function ChatPanel({
   onUserAnswer,
   onExportShare,
   isExportingShare = false,
+  shareExportProgress,
+  isWaitingShareExportTab = false,
   canExportShare = false,
   sessionTitle,
   sessionProjectName,
@@ -1100,7 +1100,12 @@ export const ChatPanel = React.memo(function ChatPanel({
   const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
-  const [teamGroupIdentity, setTeamGroupIdentity] = useState<AgentGroupIdentity | null>(null);
+  const [pickedGroupIdentity, setTeamGroupIdentity] = useState<AgentGroupIdentity | null>(null);
+  // 输入框的专家团列表是异步的，切会话后到达前 Leader 头像会退成首字母；已绑定的会话
+  // 直接用缓存的专家团身份兜底，列表到了再以它为准。
+  const boundGroupId = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.agentGroupBinding ?? null);
+  const boundGroupIdentity = useAgentGroupVisualIdentity(boundGroupId)?.identity ?? null;
+  const teamGroupIdentity = pickedGroupIdentity ?? boundGroupIdentity;
   const [agentGroupDeletedNoticeOpen, setAgentGroupDeletedNoticeOpen] = useState(false);
   useEffect(() => {
     setTeamGroupIdentity(null);
@@ -1185,7 +1190,8 @@ export const ChatPanel = React.memo(function ChatPanel({
       onComposerHeightChange(0);
     };
   }, [composerCollapsed, composerDockVisible, onComposerHeightChange]);
-  const shareExportTitle = getShareExportTitle(t, isExportingShare, canExportShare);
+  const shareExportTitle = isWaitingShareExportTab ? t('share.openExportTab') : isExportingShare && shareExportProgress
+    ? shareExportProgress : getShareExportTitle(t, isExportingShare, canExportShare);
   const shouldShowShareExport = Boolean(onExportShare);
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
@@ -1664,11 +1670,12 @@ export const ChatPanel = React.memo(function ChatPanel({
 
   // 包装发送消息函数，添加滚动逻辑
   const handleSendMessage = useCallback(
-    (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
+    async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
+      if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
       setIsSending(true);
       onSendMessage(content, mediaItems, options);
     },
-    [onSendMessage],
+    [activeSessionId, onSendMessage],
   );
 
   // 当发送消息时强制滚动到底部
@@ -1774,7 +1781,9 @@ export const ChatPanel = React.memo(function ChatPanel({
     [canAcceptDesktopFileDrag, markDesktopFileDropZoneActive],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // Replace the consumer during the session commit, before pending native file
+    // reads can resolve. ChatPanel stays mounted when activeSessionId changes.
     // Durable bridge lives in localFilePicker; ChatPanel only registers a consumer.
     // Never delete window.__JIUWEN_INGEST_LOCAL_FILES__ — Python run_js requires it.
     const unregister = registerDesktopLocalFilesConsumer((detail, files) => {
@@ -1800,7 +1809,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       window.removeEventListener(DESKTOP_LOCAL_FILES_EVENT, onDesktopLocalFiles as EventListener);
       window.removeEventListener(DESKTOP_FILE_DRAG_EVENT, onDesktopFileDrag as EventListener);
     };
-  }, [ingestDesktopLocalFiles, markDesktopFileDropZoneActive]);
+  }, [activeSessionId, ingestDesktopLocalFiles, markDesktopFileDropZoneActive]);
 
   return (
     <div
@@ -1871,20 +1880,20 @@ export const ChatPanel = React.memo(function ChatPanel({
                 type="button"
                 className={`chat-header-icon-btn icon-btn share-export-btn ${isExportingShare ? 'share-export-btn--loading' : ''}`}
                 data-testid="chat-panel-share-export"
-                data-variant={isExportingShare ? 'exporting' : 'ready'}
+                data-variant={isWaitingShareExportTab ? 'waiting' : isExportingShare ? 'exporting' : 'ready'}
                 title={shareExportTitle}
                 aria-label={shareExportTitle}
-                aria-busy={isExportingShare}
-                disabled={!canExportShare || isExportingShare}
+                aria-busy={isExportingShare && !isWaitingShareExportTab}
+                disabled={!isWaitingShareExportTab && (!canExportShare || isExportingShare)}
                 onClick={() => {
                   void onExportShare?.();
                 }}
               >
                 {isExportingShare ? (
                   <>
-                    <LoaderCircle className="share-export-btn__spinner" size={14} strokeWidth={2} />
-                    <span className="share-export-btn__label" data-testid="chat-panel-share-export-loading-label">
-                      {t('share.generating')}
+                    {!isWaitingShareExportTab && <LoaderCircle className="share-export-btn__spinner" size={14} strokeWidth={2} />}
+                    <span className="share-export-btn__label" aria-live="polite" data-testid="chat-panel-share-export-loading-label">
+                      {isWaitingShareExportTab ? t('share.openExportTab') : shareExportProgress || t('share.generating')}
                     </span>
                   </>
                 ) : (

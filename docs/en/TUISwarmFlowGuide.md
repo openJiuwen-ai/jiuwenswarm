@@ -71,6 +71,7 @@ Supported on `agent()`, `human()`, and `agent_session()` / `human_session()` via
 | `agent_type` | `agent` / `agent_session` | Hand the node to a third-party CLI agent (`'claude'` / `'codex'`, must be on the team's third-party agent allowlist); composable with `schema`, see "Third-party agents" below |
 | `builtin_model` | `agent` / `agent_session` | Third-party nodes only: run a model from the CLI's declared built-in catalog on its own login; mutually exclusive with `model`, see "Third-party agents → Model" below |
 | `effort` | `agent` / `agent_session` | Third-party nodes only, and only alongside `builtin_model`: reasoning effort tier, must be one the model declares; omit for the default tier |
+| `agent_template` | `agent` / `agent_session` | Hand the node to a member of the **AgentGroup bound to the current session** (bare member name, e.g. `'clip'`); the worker runs with that member's persona and capability snapshot, see "Expert workers" below |
 
 Example:
 
@@ -182,7 +183,7 @@ modes:
 |-------|-------------|---------|
 | `enable_swarmflow` | When `true`, the Leader may call `swarmflow()` to start runs; when `false`, SwarmFlow **does not** run even in `/mode team` | `false` |
 | `swarmflow_budget` | Leader-level token cap shared by **all** runs in this team; readable in scripts via `budget.total` / `spent()` / `remaining()`. A **positive integer** sets a cap; **unset or `null`** means unbounded | unset (commented in template) |
-| `swarmflow_progressive_tool` | Progressive tool exposure for workers (`tool_search` fetches tools on demand); only effective when `enable_swarmflow: true`; independent of the single-agent `progressive_tool_enabled`; **config.yaml only** — no Web toggle, no `/swarmflow` flag | `false` |
+| `swarmflow_progressive_tool` | Progressive tool exposure for workers (`tool_search` fetches tools on demand); only effective when `enable_swarmflow: true`; `true` forces it on regardless of the top-level `progressive_tool_enabled`, `false` lets workers follow the teammate base spec (i.e. the top-level switch); **config.yaml only** — no Web toggle, no `/swarmflow` flag | `false` |
 | `external_cli_agents` | Third-party CLI member declarations (`claude` / `codex`); doubles as the allowlist for the script's `agent_type` — an undeclared backend cannot be dispatched by a workflow; the Web "Third-Party Agents" setting edits this field | `[]` |
 
 The shipped template defaults SwarmFlow to **off** (`enable_swarmflow: false`). Enable it via one of the paths below on first use.
@@ -384,6 +385,28 @@ These two extra Web-side display behaviors apply to all workflow nodes, third-pa
 
 - **Tool activity (live-only)**: A running tree node shows the latest tool name as an inline hint, the node detail panel lists the tool-activity pairs (`tool_call` / `tool_result`), and once a turn completes the member call list shows that workflow member's call records (existing chain); activity is **live-only** (cache hits and resume replays do not resend it), and after a full page refresh tree activity is restored from the checkpoint.
 - **Run grouping**: The member list, session thumbnails, and task panel are grouped by workflow run; a group header shows the workflow name + short run id + status badge. Real teammates and normal tasks are unaffected. After a full page refresh, mirror members (including finished runs) are restored with the team snapshot and keep their grouping.
+
+---
+
+## Expert workers (`agent_template`)
+
+> **Engine version gate**: an `openjiuwen` older than this feature rejects the `agent_template` key outright (`unknown option`); this section only takes effect after the pin is upgraded.
+
+A script can hand a single node to a member of the AgentGroup bound to the current session:
+
+```python
+result = await agent("crop this image", label="clip",
+                     options={"agent_template": "clip"})
+sess = agent_session(label="design", options={"agent_template": "designer"})
+```
+
+| Topic | Notes |
+|-------|-------|
+| Bare member name | `agent_template` takes the AgentGroup member's **bare name** (e.g. `"clip"`), without a `designer/` prefix |
+| Capability source | The worker runs with that member's persona and capability snapshot (skills / tools / rails / MCP) and **does not inherit** the generic teammate tools |
+| Both primitives, locked on first turn | Available on `agent()` and `agent_session()`; a session locks the member on its **first real turn**, so switching members mid-session requires `fork()` |
+| Pre-launch failures | Four cases error out before launch and list the currently available member names: the name is not in the AgentGroup, the name contains `/`, it is combined with `agent_type`, or the member declares an external runtime |
+| Unchanged by default | Omitting `agent_template` behaves exactly as before; setting it keeps the label as the node's main text, the tooltip reads "Expert: display name (member name)", the face is an illustration hashed from the display name with a ★ expert badge (package member avatars appear only in the AgentGroup management page). The member roster and task cards resolve the same face; roster entries show the label and `@member_id` like any worker, with an extra `★ display name (member name)` hint line for experts. `agent_template` must not be `leader` (the Team Leader is not a worker); both the validator and the engine reject it |
 
 ---
 

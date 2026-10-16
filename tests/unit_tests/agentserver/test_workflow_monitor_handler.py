@@ -455,7 +455,7 @@ class TestWorkflowMonitorHandlerPersist:
         original_read = sm._read_metadata
         original_enqueue = sm._enqueue_write
         sm._read_metadata = lambda session_id, cache_bust=True: dict(store)
-        sm._enqueue_write = lambda session_id, metadata: written.append((session_id, dict(metadata)))
+        sm._enqueue_write = lambda session_id, metadata, **kwargs: written.append((session_id, dict(metadata)))
         try:
             handler._persist()
         finally:
@@ -482,7 +482,7 @@ class TestWorkflowMonitorHandlerPersist:
         original_read = sm._read_metadata
         original_enqueue = sm._enqueue_write
         sm._read_metadata = lambda session_id, cache_bust=True: {"session_id": "sess-persist2"}
-        sm._enqueue_write = lambda session_id, metadata: written.append((session_id, dict(metadata)))
+        sm._enqueue_write = lambda session_id, metadata, **kwargs: written.append((session_id, dict(metadata)))
         try:
             handler._persist()
         finally:
@@ -589,6 +589,26 @@ class TestExtractProgressPassthrough:
         assert p is not None
         assert p.agent_type == "codex"
         assert p.model == "gpt-5-codex"
+
+    @staticmethod
+    def test_object_fallback_copies_agent_template_and_display_name() -> None:
+        h = WorkflowMonitorHandler.__new__(WorkflowMonitorHandler)
+        h._session_id = "s"
+
+        class _Payload:
+            kind = "agent_started"
+            run_id = "wf_1"; workflow_name = "w"; description = None; phase = "镜头"
+            label = "clip_3"; prompt = None; model = None; outcome = None; text = None
+            phases = None; correlation_id = None; node_type = "agent"; agent_id = "k1"; answer = None
+            agent_type = None; agent_template = "clip"; display_name = "视频镜头师"
+
+        class _Ev:
+            def get_payload(self):  # noqa: ANN202
+                return _Payload()
+
+        p = h._extract_progress(_Ev())
+        assert p is not None
+        assert p.agent_template == "clip" and p.display_name == "视频镜头师"
 
 
 # ---------------------------------------------------------------------------

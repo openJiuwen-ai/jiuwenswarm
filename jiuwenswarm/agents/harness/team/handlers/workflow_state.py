@@ -66,6 +66,9 @@ class WorkflowProgress(BaseModel):
       agent_id       -> agent_id  (AGENT_*: deterministic resume-stable node id)
       agent_type     -> agent_type  (AGENT_STARTED: external provider kind
                            claude/codex; None for native workers)
+      agent_template -> agent_template  (AGENT_STARTED: AgentGroup member picked
+                           via options.agent_template; None for the generic worker)
+      display_name   -> display_name  (AGENT_STARTED: that expert's display name)
       answer         -> answer  (HUMAN_REPLIED: the person's raw reply text)
       activity_type  -> activity_type  (AGENT_ACTIVITY: "tool_call" / "tool_result")
       tool_call_id   -> tool_call_id  (AGENT_ACTIVITY: pairs a call with its result)
@@ -94,6 +97,10 @@ class WorkflowProgress(BaseModel):
     agent_id: Optional[str] = None
     # AGENT_STARTED: external provider kind (claude / codex); None for native workers.
     agent_type: Optional[str] = None
+    # AGENT_STARTED: AgentGroup member picked via options.agent_template (None = generic worker)
+    agent_template: Optional[str] = None
+    # AGENT_STARTED: display name of that expert (None when no expert)
+    display_name: Optional[str] = None
     answer: Optional[str] = None
     # AGENT_ACTIVITY: "tool_call" | "tool_result" (structured worker activity)
     activity_type: Optional[str] = None
@@ -213,6 +220,8 @@ class WorkflowAgentState(BaseModel):
     kind: str = "agent"  # "agent" | "human" — derived: node_type in {"human","human_session"} -> "human"
     node_type: Optional[str] = None
     agent_type: Optional[str] = None  # "claude" | "codex" | None (native)
+    agent_template: Optional[str] = None  # AgentGroup member name; None for the generic worker
+    display_name: Optional[str] = None  # expert display name shown instead of the label
     correlation_id: Optional[str] = None
     # Fork child (node_type=agent_session_fork): the parent session's avatar
     # member name (unique per session), carried on every AGENT_STARTED turn so
@@ -1452,6 +1461,8 @@ class WorkflowRunState(BaseModel):
                 parent_session_id=progress.parent_session_id,
                 member_name=progress.member_name,
                 agent_type=progress.agent_type,
+                agent_template=progress.agent_template,
+                display_name=progress.display_name,
             )
 
         def _reuse_existing(existing: WorkflowAgentState) -> None:
@@ -1468,6 +1479,8 @@ class WorkflowRunState(BaseModel):
             existing.prompt = progress.prompt
             existing.model = progress.model
             existing.agent_type = progress.agent_type
+            existing.agent_template = progress.agent_template
+            existing.display_name = progress.display_name
             existing.parent_session_id = progress.parent_session_id
             existing.member_name = progress.member_name
             existing.completed_at = None

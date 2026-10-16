@@ -254,6 +254,7 @@ class PortableRuntime:
                 session_id=target_session_id,
                 source_session_id=provision_input.source_session_id,
                 title=provision_input.title,
+                moa_enabled=False,
             )
         )
 
@@ -549,6 +550,7 @@ async def test_session_fork_preserves_business_order_and_complete_result() -> No
         "session_id": "fork-target",
         "source_session_id": "fork-source",
         "title": "Forked session",
+        "moa_enabled": False,
     }
     # session.fork historically does not echo request metadata.
     assert response.metadata is None

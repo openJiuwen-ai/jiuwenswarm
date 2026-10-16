@@ -157,6 +157,23 @@ def test_roundtrip_chunk_chat_error() -> None:
     assert back.payload.get("error") == "boom"
 
 
+@pytest.mark.parametrize("details", [None, {}, {"code": "BACKEND_FAILED"}])
+def test_protocol_error_without_error_field_remains_chat_error(details) -> None:
+    wire = encode_agent_response_for_wire(
+        AgentResponse(request_id="failed", channel_id="__cron__", ok=False),
+        response_id="failed",
+    )
+    wire["body"] = {"code": "BACKEND_FAILED", "message": "backend failed"}
+    if details is not None:
+        wire["body"]["details"] = details
+
+    back = parse_agent_server_wire_chunk(wire)
+
+    assert back.is_complete is True
+    assert back.payload["event_type"] == "chat.error"
+    assert back.payload["error"] == "backend failed"
+
+
 def test_deprecated_legacy_unary_dict() -> None:
     d = {
         "request_id": "old",

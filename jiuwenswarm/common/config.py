@@ -50,7 +50,7 @@ DEFAULT_TEAM_TASK_VERIFICATION_ENABLED = False
 EXTERNAL_CLI_PUBLISH_URL_FRONT_KEY = "external_cli_publish_url"
 EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
 EXTERNAL_TRANSPORT_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_transport")
-_ALLOWED_EXTERNAL_CLI_AGENTS = {"claude", "codex"}
+_BUILTIN_EXTERNAL_CLI_AGENTS = ("claude", "codex")
 # Keep progressive tool search enabled by default for existing user workspaces
 # whose config.yaml predates this switch.
 DEFAULT_PROGRESSIVE_TOOL_ENABLED = False
@@ -2357,8 +2357,7 @@ def _normalize_external_cli_team_config(
     else:
         transformed_team.pop("external_cli_agents", None)
 
-    has_codex = any(item["cli_agent"] == "codex" for item in normalized_cli_agents)
-    if not has_codex:
+    if not _requires_external_transport(normalized_cli_agents):
         transformed_team.pop("external_transport", None)
         return
 
@@ -2371,12 +2370,12 @@ def _normalize_external_cli_team_config(
     params = external_transport.get("params")
     params = dict(params) if isinstance(params, dict) else {}
     if transport_type and transport_type != "hybrid":
-        raise ValueError(f"{field_name} includes codex but external_transport.type must be hybrid")
+        raise ValueError(f"{field_name} needs a cross-process agent but external_transport.type must be hybrid")
 
     if not params.get("external_publish_url"):
         url = str(publish_url or "").strip()
         if not url:
-            raise ValueError(f"{field_name} includes codex but external_cli_publish_url is empty")
+            raise ValueError(f"{field_name} needs a cross-process agent but external_cli_publish_url is empty")
         params["external_publish_url"] = url
 
     transformed_team["external_transport"] = {"type": "hybrid", "params": params}
@@ -2434,12 +2433,30 @@ def _normalize_builtin_models(value: Any, field_name: str) -> list[dict[str, Any
     return normalized
 
 
+def _allowed_external_cli_agents() -> tuple[str, ...]:
+    """Return Claude, Codex and every installed custom agent."""
+    from jiuwenswarm.common.custom_agent_runtime import custom_agent_names
+
+    return (*_BUILTIN_EXTERNAL_CLI_AGENTS, *custom_agent_names())
+
+
+def _requires_external_transport(agents: list[dict[str, Any]]) -> bool:
+    """Return whether an enabled agent reaches the team from another process.
+
+    Claude mounts its team tools in process. Codex and custom agents run a
+    team MCP server or messenger outside this process, which needs the hybrid
+    transport and its publish URL.
+    """
+    return any(item["cli_agent"] != "claude" for item in agents)
+
+
 def _normalize_external_cli_agents(value: Any, field_name: str) -> list[dict[str, Any]]:
     if value is None or value == "":
         return []
     if not isinstance(value, list):
         raise ValueError(f"{field_name} must be an array")
 
+    allowed_agents = _allowed_external_cli_agents()
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, item in enumerate(value):
@@ -2451,8 +2468,8 @@ def _normalize_external_cli_agents(value: Any, field_name: str) -> list[dict[str
             raise ValueError(f"{field_name}[{index}] must be an object or string")
         if not cli_agent:
             continue
-        if cli_agent not in _ALLOWED_EXTERNAL_CLI_AGENTS:
-            allowed = ", ".join(sorted(_ALLOWED_EXTERNAL_CLI_AGENTS))
+        if cli_agent not in allowed_agents:
+            allowed = ", ".join(allowed_agents)
             raise ValueError(f"{field_name}[{index}].cli_agent must be one of: {allowed}")
         if cli_agent in seen:
             continue
@@ -2633,7 +2650,7 @@ def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], pub
     else:
         current.pop(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1], None)
 
-    if any(item["cli_agent"] == "codex" for item in normalized_agents):
+    if _requires_external_transport(normalized_agents):
         external_transport = current.get(EXTERNAL_TRANSPORT_CONFIG_PATH[-1])
         if isinstance(external_transport, dict):
             transport_type = str(external_transport.get("type") or "").strip()
@@ -2643,11 +2660,15 @@ def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], pub
             transport_type = ""
             params = {}
         if transport_type and transport_type != "hybrid":
-            raise ValueError("external_cli_agents includes codex but external_transport.type must be hybrid")
+            raise ValueError(
+                "external_cli_agents needs a cross-process agent but external_transport.type must be hybrid"
+            )
         if not params.get("external_publish_url"):
             url = str(publish_url or "").strip()
             if not url:
-                raise ValueError("external_cli_agents includes codex but external_cli_publish_url is empty")
+                raise ValueError(
+                    "external_cli_agents needs a cross-process agent but external_cli_publish_url is empty"
+                )
             params["external_publish_url"] = url
         current[EXTERNAL_TRANSPORT_CONFIG_PATH[-1]] = {"type": "hybrid", "params": params}
     else:

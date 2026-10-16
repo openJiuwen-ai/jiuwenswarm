@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -381,6 +382,61 @@ class _RecordingConn:
 
     async def close(self) -> None:
         return None
+
+
+@pytest.mark.asyncio
+async def test_forward_queue_routes_duplicate_request_ids_and_acknowledges_delivery() -> None:
+    targets: list[object] = []
+
+    class Capture(_Capture):
+        async def send(self, payload: dict, *, ws: object = None, send_lock: object = None) -> bool:
+            targets.append(ws)
+            return await super().send(payload, ws=ws, send_lock=send_lock)
+
+    class Connection(_QueueConn):
+        def __init__(self, messages: list[dict]) -> None:
+            super().__init__(messages)
+            self.sent: list[dict] = []
+
+        async def send(self, message: dict) -> None:
+            self.sent.append(message)
+
+    capture = Capture()
+    supervisor = RuntimeSupervisor(Readiness(), forwarder=capture)
+    supervisor._peer_generation = 1
+    first, second = object(), object()
+    supervisor._routes = {"dispatch-a": (first, asyncio.Lock()), "dispatch-b": (second, asyncio.Lock())}
+    supervisor._pending = {
+        key: asyncio.get_running_loop().create_future() for key in supervisor._routes
+    }
+    messages = []
+    for dispatch_id in supervisor._routes:
+        messages.append({"kind": KIND_WIRE, "generation": 1, "request_id": "same-request-id",
+                         "dispatch_id": dispatch_id, "wire_id": dispatch_id, "requires_ack": True,
+                         "payload": {"request_id": "same-request-id", "dispatch": dispatch_id}})
+        messages.append({"kind": KIND_REQUEST_DONE, "generation": 1, "request_id": "same-request-id",
+                         "dispatch_id": dispatch_id, "ok": True, "delivered": True})
+    conn = Connection(messages)
+    supervisor._conn = conn
+    with pytest.raises(ConnectionError, match="ipc closed"):
+        await supervisor._pump()
+    assert targets == [first, second]
+    assert [frame["dispatch"] for frame in capture.frames] == ["dispatch-a", "dispatch-b"]
+    assert all(future.result()["ok"] for future in supervisor._pending.values())
+    assert [frame["wire_id"] for frame in conn.sent] == ["dispatch-a", "dispatch-b"]
+    assert all(frame["delivered"] is True for frame in conn.sent)
+    assert supervisor._forward_bytes == 0
+
+
+def test_push_forward_failure_preserves_an_unrelated_pending_dispatch() -> None:
+    async def check() -> None:
+        supervisor = RuntimeSupervisor(Readiness())
+        future = asyncio.get_running_loop().create_future()
+        supervisor._pending["unrelated-dispatch"] = future
+        supervisor._fail_forwarding("server-push", "Gateway forwarding failed")
+        assert not future.done()
+
+    asyncio.run(check())
 
 
 class _BlockingRuntime:
@@ -941,3 +997,141 @@ if hits:
         [sys.executable, "-c", script], check=False, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_worker_lifecycle_owns_runtime_construct() -> None:
+    root = Path(__file__).resolve().parents[3]
+    text = (root / "jiuwenswarm/server/worker/lifecycle.py").read_text(encoding="utf-8")
+    assert "bind_transport=False" in text
+    bootstrap = (root / "jiuwenswarm/server/worker/runtime_bootstrap.py").read_text(encoding="utf-8")
+    assert "AgentWebSocketServer.get_instance" in bootstrap
+
+
+@pytest.mark.asyncio
+async def test_recover_from_failed_restarts_resident_worker() -> None:
+    path = _socket_path()
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "jiuwenswarm.server.worker.main",
+        "--socket",
+        path,
+        "--stub",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    readiness = Readiness()
+    readiness.mark_runtime_warming()
+    supervisor = RuntimeSupervisor(
+        readiness,
+        socket_path=path,
+        stub=True,
+        max_restarts=3,
+    )
+    try:
+        for _ in range(50):
+            if endpoint_is_listening(path):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise AssertionError("stub worker did not bind a socket")
+        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 5)
+        assert await readiness.wait_agent_ready(2) is True
+        assert supervisor.owns_process is False
+        first_instance = supervisor.worker_instance
+        assert first_instance
+        # Simulate a broken resident Worker: the Runtime failed to load and
+        # the supervisor marked the failure sticky, while the Worker process
+        # stays alive on its socket (load failures never self-retry).
+        readiness.mark_failed("no module named 'a4p'")
+        supervisor._fatal = True
+        supervisor._fatal_reason = "no module named 'a4p'"
+        assert await supervisor.recover_from_failed(timeout=15) is True
+        assert readiness.state is ReadinessState.AGENT_READY
+        for _ in range(150):
+            if supervisor.worker_instance != first_instance:
+                break
+            await asyncio.sleep(0.1)
+        assert supervisor.worker_instance != first_instance
+        assert supervisor.owns_process is True
+    finally:
+        await supervisor.stop(terminate_worker=True)
+        if proc.returncode is None and endpoint_is_listening(path):
+            try:
+                await _shutdown_resident_worker(path)
+                await asyncio.wait_for(proc.wait(), 2)
+            except (OSError, asyncio.TimeoutError):
+                proc.terminate()
+                await proc.wait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [RuntimeError("PID identity changed"), PermissionError("access denied")])
+async def test_health_retirement_failure_marks_failed_and_wakes_waiters(monkeypatch, error) -> None:
+    readiness = Readiness()
+    supervisor = RuntimeSupervisor(readiness)
+
+    async def bring_up() -> None:
+        supervisor._conn = _RecordingConn()
+
+    async def pump() -> None:
+        supervisor._unhealthy_reason = "worker business loop stalled"
+        raise ConnectionError("ipc closed")
+
+    async def retire() -> None:
+        raise error
+
+    monkeypatch.setattr(supervisor, "_bring_up", bring_up)
+    monkeypatch.setattr(supervisor, "_pump", pump)
+    monkeypatch.setattr(supervisor, "_retire_unhealthy_worker", retire)
+    supervisor._loop_task = asyncio.create_task(supervisor._supervise())
+    await asyncio.wait_for(supervisor._loop_task, 1)
+    assert readiness.state is ReadinessState.FAILED
+    assert supervisor._conn is None and supervisor._ipc_ready.is_set()
+    with pytest.raises(RuntimeError, match="unhealthy Worker could not be retired"):
+        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [RuntimeError("PID identity changed"), PermissionError("access denied")])
+async def test_final_shutdown_failure_still_cleans_ipc_and_tasks(monkeypatch, error) -> None:
+    closed = asyncio.Event()
+
+    class Connection(_RecordingConn):
+        async def close(self) -> None:
+            closed.set()
+
+    async def shutdown(*, deadline) -> None:
+        raise error
+
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._conn = Connection()
+    side_task = asyncio.create_task(asyncio.Event().wait())
+    supervisor._side_tasks = [side_task]
+    monkeypatch.setattr(supervisor, "_shutdown_owned_worker", shutdown)
+    with pytest.raises(type(error), match=str(error)):
+        await asyncio.wait_for(supervisor.stop(terminate_worker=True), 1)
+    assert closed.is_set() and side_task.cancelled()
+    assert supervisor._stopping and supervisor._conn is None
+    assert supervisor._ipc_ready.is_set()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_eof_resolves_ack_waiter_during_failed_recovery(monkeypatch) -> None:
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._shutdown_done = asyncio.get_running_loop().create_future()
+    supervisor._fatal = True
+
+    async def bring_up() -> None:
+        supervisor._conn = _RecordingConn()
+
+    async def pump() -> None:
+        raise ConnectionError("worker exited before shutdown.done")
+
+    monkeypatch.setattr(supervisor, "_bring_up", bring_up)
+    monkeypatch.setattr(supervisor, "_pump", pump)
+    await supervisor._supervise()
+    assert not supervisor._terminating and not supervisor._stopping
+    outcome = supervisor._shutdown_done.result()
+    assert outcome["ok"] is False
+    assert "closed before shutdown acknowledgement" in outcome["error"]

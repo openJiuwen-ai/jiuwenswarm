@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, CircleAlert, Code2, Workflow } from 'lucide-react';
+import { Check, ChevronDown, CircleAlert, Code2, Palette, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, type ChatRuntime } from '../../stores/chatStore';
@@ -12,7 +12,7 @@ import {
   filterJobsForProject,
   type SidebarCronJob,
 } from '../../stores';
-import type { AgentMode, ProjectInfo, Session } from '../../types';
+import type { AgentMode, ProjectInfo, Session, WorkMode } from '../../types';
 import {
   getProjectNewLabel,
   getSessionActivityAt,
@@ -89,6 +89,10 @@ interface ConversationSidebarProps {
   activeSessionId: string | null;
   onNew: (options?: NewConversationOptions) => void;
   onSelect: (session: Session) => void;
+  onSelectDesignSession?: (project: ProjectInfo, sessionId: string) => void;
+  activeDesignSessionId?: string;
+  /** 项目软删除成功后回调；上层可按 workMode 决定是否需要路由回退等 */
+  onProjectRemoved?: (projectId: string, workMode: WorkMode) => void;
   /** 跳转到"定时任务"主面板；该入口原来在最左侧图标栏，现移到工作小窗口的"新建任务"下方 */
   onOpenCron: () => void;
   /** 当前是否正停留在定时任务面板，用于给下面这个入口按钮加选中态 */
@@ -99,6 +103,8 @@ interface ConversationSidebarProps {
   floating?: boolean;
   /** 切换侧边栏收起/展开 */
   onToggleCollapse?: () => void;
+  /** 隐藏模式行内的收起按钮（例如设计画布页把按钮挪到顶栏） */
+  hideCollapseButton?: boolean;
   /** 收起态 hover 图标触发的临时展开（peek）：以悬浮层显示但不带蒙层，指针移开即收起 */
   peek?: boolean;
   /** peek 保活/收起用：面板根的鼠标进出（进入取消排程收起，移出排程收起） */
@@ -334,6 +340,7 @@ function ProjectEntityRow({
   onToggle,
   onNew,
   newLabel,
+  onRemoved,
 }: {
   project: ProjectInfo;
   title: string;
@@ -344,6 +351,7 @@ function ProjectEntityRow({
   onToggle: () => void;
   onNew: () => void;
   newLabel?: string;
+  onRemoved?: (projectId: string) => void;
 }) {
   const { t } = useTranslation();
   const mainRef = useRef<HTMLButtonElement>(null);
@@ -439,6 +447,7 @@ function ProjectEntityRow({
         type="project"
         project={project}
         archiveSessionsDisabled={archiveSessionsDisabled}
+        onRemoved={onRemoved}
         onOpenChange={setMenuOpen}
         triggerTooltipHandlers={rowTooltipHandlers}
       />
@@ -720,10 +729,14 @@ export function ConversationSidebar({
   onNew,
   onSelect,
   onOpenCron,
+  onSelectDesignSession,
+  activeDesignSessionId,
+  onProjectRemoved,
   isCronActive,
   collapsed = false,
   floating = false,
   onToggleCollapse,
+  hideCollapseButton = false,
   peek = false,
   onMouseEnter,
   onMouseLeave,
@@ -785,7 +798,7 @@ export function ConversationSidebar({
     };
   }, [workModeMenuOpen]);
 
-  const switchWorkMode = async (nextMode: 'work' | 'code') => {
+  const switchWorkMode = async (nextMode: WorkMode) => {
     setWorkModeMenuOpen(false);
     if (nextMode === workMode) return;
     await setWorkMode(nextMode);
@@ -982,21 +995,36 @@ export function ConversationSidebar({
     }
   }
 
+  function openListedSession(session: Session) {
+    if (workMode !== 'design') {
+      onSelect(session);
+      return;
+    }
+    const project = projects.find((item) => item.project_id === session.project_id) || defaultProject;
+    if (!project || !onSelectDesignSession) {
+      onSelect(session);
+      return;
+    }
+    setSelectedProject(project.is_default ? null : project);
+    onSelectDesignSession(project, session.session_id);
+  }
+
   function renderSession(session: Session, options: { nested?: boolean; projectMenu?: boolean } = {}) {
     const nested = options.nested === true;
     const projectMenu = options.projectMenu === true;
+    const designActive = workMode === 'design' && activeDesignSessionId === session.session_id;
     return (
       <ConversationListItem
         key={session.session_id}
         session={session}
         runtime={runtimes[session.session_id]}
-        active={activeSessionId === session.session_id}
+        active={workMode === 'design' ? designActive : activeSessionId === session.session_id}
         nested={nested}
         unread={unreadSessions.has(session.session_id)}
         now={relativeTimeNow}
-        onSelect={() => onSelect(session)}
+        onSelect={() => openListedSession(session)}
         menuScope={projectMenu ? 'project' : 'conversation'}
-        activeSessionId={activeSessionId}
+        activeSessionId={workMode === 'design' ? (activeDesignSessionId ?? null) : activeSessionId}
         onLeaveActiveSession={leaveActiveSession}
       />
     );
@@ -1115,6 +1143,7 @@ export function ConversationSidebar({
   }
 
   function renderProject(project: ProjectInfo) {
+    const sessionsLoaded = Object.prototype.hasOwnProperty.call(projectSessions, project.project_id);
     const sessionsForProject = sortedProjectSessions[project.project_id] || [];
     const expanded = Boolean(expandedProjectIds[project.project_id]);
     const hasUnreadCronResult = (jobsByProject.get(project.project_id) || []).some((job) =>
@@ -1158,13 +1187,17 @@ export function ConversationSidebar({
             setSelectedProject(project);
             onNew({ preserveProject: true, project });
           }}
+          onRemoved={(projectId) => onProjectRemoved?.(projectId, workMode)}
         />
         {expanded ? (
           <div className="conversation-sidebar__group-list" data-testid="multi-session-project-group-list">
-            {(jobsByProject.get(project.project_id) || []).map((job) => renderCronJob(job, project.project_id, true))}
+            {workMode !== 'design'
+              ? (jobsByProject.get(project.project_id) || []).map((job) => renderCronJob(job, project.project_id, true))
+              : null}
             {sessionsForProject.length > 0 ? (
               sessionsForProject.map((session) => renderSession(session, { nested: true, projectMenu: true }))
-            ) : (jobsByProject.get(project.project_id) || []).length === 0 ? (
+            ) : sessionsLoaded &&
+              (workMode === 'design' || (jobsByProject.get(project.project_id) || []).length === 0) ? (
               <div className="conversation-sidebar__empty" data-testid="multi-session-project-group-empty">
                 {t('multiSession.project.noConversations')}
               </div>
@@ -1208,7 +1241,11 @@ export function ConversationSidebar({
               data-testid="multi-session-work-mode-trigger"
             >
               <span data-testid="multi-session-work-mode-label" data-variant={workMode}>
-                {workMode === 'code' ? t('codeMode.code') : t('codeMode.work')}
+                {workMode === 'code'
+                  ? t('codeMode.code')
+                  : workMode === 'design'
+                    ? t('nav.design')
+                    : t('codeMode.work')}
               </span>
               <ChevronDown size={15} className={workModeMenuOpen ? 'is-open' : ''} />
             </button>
@@ -1244,14 +1281,30 @@ export function ConversationSidebar({
                   </span>
                   {workMode === 'code' ? <Check size={16} /> : null}
                 </button>
+                <button
+                  type="button"
+                  className={workMode === 'design' ? 'is-active' : ''}
+                  onClick={() => void switchWorkMode('design')}
+                  role="menuitemradio"
+                  aria-checked={workMode === 'design'}
+                  data-testid="multi-session-work-mode-menu-design"
+                >
+                  <Palette size={17} />
+                  <span>
+                    <strong>{t('nav.design')}</strong>
+                    <small>{t('designer.subtitle')}</small>
+                  </span>
+                  {workMode === 'design' ? <Check size={16} /> : null}
+                </button>
               </div>
             ) : null}
-            {!peek && (
+            {onToggleCollapse && !hideCollapseButton && (
               <button
                 type="button"
                 className="conversation-sidebar__mode-collapse"
                 onClick={onToggleCollapse}
-                aria-label={t('common.collapse') || 'Collapse'}
+                aria-label={t(peek ? 'common.expandAndPin' : 'common.collapse')}
+                title={t(peek ? 'common.expandAndPin' : 'common.collapse')}
                 data-testid="multi-session-sidebar-collapse"
               >
                 <PanelCollapseIcon aria-hidden />
@@ -1271,15 +1324,17 @@ export function ConversationSidebar({
               <NewTaskIcon aria-hidden />
               <span data-testid="multi-session-new-conversation-label">{t('multiSession.newConversation')}</span>
             </button>
-            <button
-              type="button"
-              className={`conversation-sidebar__new${isCronActive ? ' is-active' : ''}`}
-              onClick={onOpenCron}
-              data-testid="multi-session-open-cron-button"
-            >
-              <CronIcon aria-hidden />
-              <span data-testid="multi-session-open-cron-label">{t('nav.cron')}</span>
-            </button>
+            {workMode !== 'design' ? (
+              <button
+                type="button"
+                className={`conversation-sidebar__new${isCronActive ? ' is-active' : ''}`}
+                onClick={onOpenCron}
+                data-testid="multi-session-open-cron-button"
+              >
+                <CronIcon aria-hidden />
+                <span data-testid="multi-session-open-cron-label">{t('nav.cron')}</span>
+              </button>
+            ) : null}
           </div>
           <div className="conversation-sidebar__body" data-testid="multi-session-sidebar-body">
             {hasPinnedSection ? (
@@ -1393,14 +1448,16 @@ export function ConversationSidebar({
                 </button>
               </div>
               <div className="conversation-sidebar__group-list" data-testid="multi-session-conversations-list">
-                {defaultProject
+                {workMode !== 'design' && defaultProject
                   ? (jobsByProject.get(defaultProject.project_id) || []).map((job) =>
                       renderCronJob(job, defaultProject.project_id),
                     )
                   : null}
                 {conversationSessions.length > 0 ? (
                   conversationSessions.map((session) => renderSession(session))
-                ) : !defaultProject || (jobsByProject.get(defaultProject.project_id) || []).length === 0 ? (
+                ) : workMode === 'design' ||
+                  !defaultProject ||
+                  (jobsByProject.get(defaultProject.project_id) || []).length === 0 ? (
                   <div className="conversation-sidebar__empty" data-testid="multi-session-conversations-empty">
                     {t('multiSession.project.noConversations')}
                   </div>

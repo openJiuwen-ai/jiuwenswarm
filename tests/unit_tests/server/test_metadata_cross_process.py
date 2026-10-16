@@ -4,10 +4,15 @@
 
 from __future__ import annotations
 
+import copy
+import importlib
 import json
 import os
+from pathlib import Path
+import queue
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -176,3 +181,169 @@ print(json.dumps({'started_ns':started,'finished_ns':finished,'metadata':value})
             if process.poll() is None:
                 process.kill()
             process.communicate()
+
+
+@pytest.mark.parametrize("side,field,original,concurrent", [
+    ("server", "moa_enabled", False, True),
+    ("gateway.embedded", "moa_enabled", False, True),
+    ("server", "session_harness_checkpoint", {"cursor": "old"}, {"cursor": "new"}),
+    ("server", "group_members", [{"name": "old"}], [{"name": "new"}]),
+])
+@pytest.mark.parametrize("write_mode", ["sync", "queued", "full"])
+def test_explicit_same_snapshot_value_remains_an_owned_update(
+    monkeypatch, tmp_path, side, field, original, concurrent, write_mode,
+):
+    sm = importlib.import_module(f"jiuwenswarm.{side}.runtime.session.session_metadata")
+    lc = importlib.import_module(f"jiuwenswarm.{side}.runtime.session.lifecycle")
+    sessions = tmp_path / "sessions"
+    monkeypatch.setattr(sm, "get_agent_sessions_dir", lambda: sessions)
+    monkeypatch.setattr(lc, "get_agent_sessions_dir", lambda: sessions)
+    for name in ("_METADATA_CACHE", "_METADATA_CACHE_GENERATIONS", "_CACHE_DISK_STAMPS", "_PENDING_FIELDS"):
+        monkeypatch.setattr(sm, name, {})
+    monkeypatch.setattr(sm, "_METADATA_QUEUE", queue.Queue(maxsize=1))
+    monkeypatch.setattr(sm, "_ensure_worker_started", lambda: None)
+    stale = {
+        "session_id": "explicit-update", "title": "original", "message_count": 7,
+        "mode": "agent.work.normal", "work_mode": "work", field: original,
+    }
+    sm._write_metadata_sync("explicit-update", stale)
+    sm._write_metadata_sync(
+        "explicit-update", {field: concurrent},
+        sm._MetadataWriteOptions(
+            merge_fields=frozenset({field}), owns_moa_enabled=True,
+            **({"replace_harness_checkpoint": True} if side == "server" else {}),
+        ),
+    )
+    monkeypatch.setattr(sm, "_read_metadata", lambda *args, **kwargs: copy.deepcopy(stale))
+    if write_mode == "full":
+        sm._METADATA_QUEUE.put_nowait(("occupied", {}, None))
+    sm.update_session_metadata(
+        session_id="explicit-update", touch_last_message_at=False,
+        sync_write=write_mode == "sync", **{field: original},
+    )
+    if write_mode == "queued":
+        session_id, metadata, options = sm._METADATA_QUEUE.get_nowait()
+        sm._write_metadata_sync(session_id, metadata, options)
+        sm._METADATA_QUEUE.task_done()
+    persisted = lc.raw_metadata("explicit-update")
+    assert persisted[field] == original
+    assert persisted["title"] == "original"
+    assert persisted["message_count"] == 7
+
+
+def _process(code: str, *args: str) -> subprocess.Popen:
+    root = Path(__file__).resolve().parents[3]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return subprocess.Popen(
+        [sys.executable, "-c", code, *args], cwd=root, env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8",
+    )
+
+
+def _stop_processes(processes: list[subprocess.Popen]) -> None:
+    for process in processes:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=5)
+
+
+def test_server_and_gateway_processes_preserve_disjoint_metadata_updates():
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    from jiuwenswarm.server.runtime.session import session_metadata as sm
+
+    sm.init_session_metadata(
+        session_id="cross-process", channel_id="web", mode="agent.work.normal",
+    )
+    code = """
+import importlib, json, sys
+side = sys.argv[1]
+sm = importlib.import_module('jiuwenswarm.' + side + '.runtime.session.session_metadata')
+sm.get_session_metadata('cross-process')
+print('ready', flush=True)
+sys.stdin.readline()
+for index in range(40):
+    if side == 'server':
+        sm.update_session_metadata(
+            session_id='cross-process', moa_enabled=index % 2 == 1,
+            session_harness_checkpoint={'index': index}, group_members=[{'name': str(index)}],
+            sync_write=True, touch_last_message_at=False,
+        )
+    else:
+        sm.update_session_metadata(
+            session_id='cross-process', title='gateway-' + str(index),
+            increment_message_count=True, sync_write=True, touch_last_message_at=False,
+        )
+assert sm.flush_pending_writes(5)
+print('completed', flush=True)
+"""
+    processes = [_process(code, side) for side in ("server", "gateway.embedded")]
+    try:
+        for process in processes:
+            assert process.stdout.readline().strip() == "ready"
+        for process in processes:
+            process.stdin.write("go\n")
+            process.stdin.flush()
+        path = sm.get_agent_sessions_dir() / "cross-process" / "metadata.json"
+        deadline = time.monotonic() + 20
+        reads = 0
+        while any(process.poll() is None for process in processes):
+            assert time.monotonic() < deadline, "metadata child process did not finish"
+            with lc.resource_lock("session", "cross-process"):
+                current = json.loads(path.read_text(encoding="utf-8"))
+            assert current["session_id"] == "cross-process"
+            assert "created_at" in current
+            reads += 1
+            time.sleep(0.001)
+        for process in processes:
+            output, errors = process.communicate(timeout=5)
+            assert process.returncode == 0, errors
+            assert output.strip() == "completed"
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert reads > 0
+        assert saved["message_count"] == 40
+        assert saved["title"] == "gateway-39"
+        assert saved["moa_enabled"] is True
+        assert saved["session_harness_checkpoint"] == {"index": 39}
+        assert saved["group_members"] == [{"name": "39"}]
+    finally:
+        _stop_processes(processes)
+
+
+@pytest.mark.parametrize("side", ["server", "gateway.embedded"])
+def test_resource_file_lock_serializes_real_processes(tmp_path, side):
+    path = str(tmp_path / "contended.json")
+    holder_code = """
+import importlib, pathlib, sys
+store = importlib.import_module('jiuwenswarm.' + sys.argv[1] + '.runtime.session.project_store')
+with store.file_lock(pathlib.Path(sys.argv[2])):
+    print('held', flush=True)
+    sys.stdin.readline()
+"""
+    waiter_code = """
+import importlib, pathlib, sys
+store = importlib.import_module('jiuwenswarm.' + sys.argv[1] + '.runtime.session.project_store')
+print('attempting', flush=True)
+with store.file_lock(pathlib.Path(sys.argv[2])):
+    print('acquired', flush=True)
+"""
+    holder = _process(holder_code, side, path)
+    processes = [holder]
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        waiter = _process(waiter_code, side, path)
+        processes.append(waiter)
+        assert waiter.stdout.readline().strip() == "attempting"
+        with pytest.raises(subprocess.TimeoutExpired):
+            waiter.wait(timeout=0.15)
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        _, errors = holder.communicate(timeout=5)
+        assert holder.returncode == 0, errors
+        output, errors = waiter.communicate(timeout=5)
+        assert waiter.returncode == 0, errors
+        assert output.strip() == "acquired"
+    finally:
+        _stop_processes(processes)

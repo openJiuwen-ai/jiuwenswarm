@@ -7,9 +7,11 @@ type MemberOverviewCardProps = {
   memberId: string;
   /** 头像 hash key（镜像 worker 传 agent.name，真实队友缺省用 memberId）。 */
   avatarKey?: string;
-  /** 头像身份（CLI 品牌 / 人类）：avatarKey 非成员 id 时名册查不到，需显式传入。 */
-  avatarIdentity?: { cliAgent?: string; role?: string; mode?: string };
+  /** 头像身份（CLI 品牌 / 人类 / 专家）：avatarKey 非成员 id 时名册查不到，需显式传入。 */
+  avatarIdentity?: { cliAgent?: string; role?: string; mode?: string; agentTemplate?: string };
   displayName: string;
+  /** 专家辅助行："展示名（成员名）"，普通成员为空。 */
+  expertHint?: string | null;
   sequence: number;
   statusIcon?: ReactNode;
   onClick?: () => void;
@@ -22,6 +24,7 @@ export function MemberOverviewCard({
   avatarKey,
   avatarIdentity,
   displayName,
+  expertHint,
   sequence,
   statusIcon,
   onClick,
@@ -77,6 +80,11 @@ export function MemberOverviewCard({
           <div className="mt-0.5 truncate text-xs text-text-muted" data-testid="team-area-member-overview-card-id">
             @{memberId}
           </div>
+          {expertHint && (
+            <div className="mt-0.5 truncate text-xs text-text-muted" data-testid="team-area-member-overview-card-expert">
+              ★ {expertHint}
+            </div>
+          )}
         </div>
         {statusIcon}
       </button>

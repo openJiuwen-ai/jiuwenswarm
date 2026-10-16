@@ -204,9 +204,15 @@ export function SettingItemRenderer({
   disabled?: boolean;
   onEditingChange?: EditingChange;
 }) {
+  const reportCustomEditing = useCallback(
+    (editing: boolean) => {
+      onEditingChange?.(item.id, editing);
+    },
+    [item.id, onEditingChange],
+  );
   if (item.component === 'custom') {
     const CustomItem = item.render;
-    return <CustomItem disabled={disabled} />;
+    return <CustomItem disabled={disabled} onEditingChange={reportCustomEditing} />;
   }
   return <SimpleSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} />;
 }

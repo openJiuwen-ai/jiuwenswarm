@@ -1557,7 +1557,15 @@
   box-shadow: 0 0 0 3px rgba(var(--color-action-primary-rgb), 0.18);
 }
 
-.chat-mode-select--open .chat-mode-select__trigger {
+.chat-mode-select--open .chat-mode-select__trigger,
+.chat-mode-select__trigger--feature-on {
+  border-color: var(--color-border-strong);
+  background: rgba(var(--color-surface-panel-strong-rgb), 0.55);
+}
+
+.chat-mode-select__trigger--current,
+.chat-mode-select__trigger--current:hover {
+  cursor: default;
   border-color: var(--color-border-strong);
   background: rgba(var(--color-surface-panel-strong-rgb), 0.55);
 }
@@ -1733,6 +1741,11 @@
 
 /* 计划模式/追求目标改成 div + 内嵌 Switch 后（原生 button 不能嵌套 button），原生
    :disabled 伪类不再生效，用同名 modifier class 复刻一份禁用视觉。 */
+/* 某个开关的子开关（如调度模式下的「启动即建队」）：缩进一级，表明从属关系 */
+.chat-mode-select__option--sub {
+  padding-left: 32px;
+}
+
 .chat-mode-select__option--disabled {
   color: var(--color-text-placeholder);
   cursor: not-allowed;

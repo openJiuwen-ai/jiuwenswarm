@@ -5,10 +5,11 @@ config_version: ""
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
 preferred_language: zh
 
-# Agent 模式是否启用渐进式工具暴露（tool_search + deferred 工具）
-# true：只向模型暴露 direct 工具和 tool_search，其他工具按需搜索；
+# Agent 模式与集群模式（Leader / Teammate）是否启用渐进式工具暴露（tool_search + deferred 工具）
+# true：只向模型暴露 direct 工具和 tool_search，其他工具按需搜索；集群成员的
+#       团队协作工具（send_message / create_task / spawn_* 等）始终 direct；
 # false：不挂载 ProgressiveToolRail，未显式声明 exposure 的工具按 direct 暴露。
-# ToolCard 自己显式声明的 exposure 优先级更高。
+# ToolCard 自己显式声明的 exposure 优先级更高。集群模式改后新建团队生效。
 progressive_tool_enabled: true
 
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
@@ -470,7 +471,7 @@ agents:
   agent_leader:
     workspace:
       stable_base: true
-    max_iterations: 200
+    # Leader 不受 max_iterations 限制，配置了也会被忽略，保证长程任务持续执行
     completion_timeout: 6000.0
 
   agent_teammate:
@@ -661,6 +662,16 @@ react:
       enabled: true
       # Browser Agent 独立轮次预算；未配置时默认 100。
       # max_iterations: 100
+    # cua_agent: 桌面自动化子代理，通过截图和真实鼠标键盘输入操作本机应用窗口；
+    # 需安装 cua 可选依赖（pip install "workswarm[cua]" 或 uv sync --extra cua），并使用支持图片输入的模型。
+    # 运行时会真实移动鼠标、向前台窗口输入，执行期间请勿操作电脑。
+    cua_agent:
+      enabled: false
+      # max_iterations: 100
+      # 上下文中完整保留的窗口截图数量；单窗口任务可设为 1 以大幅缩减上下文。默认 3。
+      # snapshot_keep_last_k: 3
+      # 用户接管屏幕（检测到鼠标/键盘输入）时暂停桌面操作，空闲后自动继续（Windows 与 Linux X11 支持探测）。
+      pause_on_user_input: false
   # 常驻 subagent 运行时。开启后 task_tool 被 subagent_spawn/wait/list/
   # send_input/close/resume 六个工具替换（两者互斥）。默认开启。
   subagent_runtime:
@@ -1131,6 +1142,19 @@ channels:
       ephemeral_key_type: "ssh-ed25519"
       # 过期清理间隔（秒）
       cleanup_interval_sec: 60
+
+  web_proxy:
+    # 3rd-agent Web UI。端口由注册中心决定（写入 etcd），Gateway 只读并监听，
+    # 不再本地分配。需要 gateway.agent_client.type == agentos_router。
+    # Gateway watch {A2X_REGISTRY_ETCD_NAMESPACE:-a2x-registry}/images/（无前导斜杠），
+    # 取每条 data.access_mode 里 name=web_svc_port 的 port 监听；浏览器访问
+    # http://<advertise_host>:<port>/?user_id=<uid>&token=<iam>（南向仍用 name=web 的口）。
+    enabled: false
+    auth_enabled: true
+    listen_host: "0.0.0.0"
+    advertise_host: ""
+    # 会话 Cookie 的 Max-Age（秒）；端口空闲回收已取消。
+    idle_timeout_sec: 900
 
 # ========== 细粒度权限管控（tiered_policy）==========
 #

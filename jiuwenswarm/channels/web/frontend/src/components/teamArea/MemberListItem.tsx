@@ -1,7 +1,7 @@
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
-import { getMemberAvatarIdentity, getMemberAvatarKey, getMemberPlainName, getMemberStatusKey, type TeamMember } from './shared';
+import { getMemberAvatarIdentity, getMemberAvatarKey, getMemberExpertHint, getMemberPlainName, getMemberStatusKey, type TeamMember } from './shared';
 
 interface TaskProgress {
   completed: number;
@@ -75,6 +75,11 @@ export function MemberListItem({
         >
           @{member.member_id}
         </div>
+        {getMemberExpertHint(member) && (
+          <div className="mt-0.5 truncate text-xs text-text-muted" data-testid="team-area-member-item-expert">
+            ★ {getMemberExpertHint(member)}
+          </div>
+        )}
       </div>
       {compact ? (
         isRunning && !showIdleStatus ? (

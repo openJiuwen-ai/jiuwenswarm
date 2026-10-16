@@ -101,6 +101,14 @@ class FakeAgent:
         """Keep the ordinary reload fixture outside Smart lifecycle admission."""
         return False
 
+    def _is_session_live(self, session_id: str) -> bool:
+        """Model an idle session without an active invocation."""
+        return False
+
+    def _has_live_root_permission_owner(self, session_id: str) -> bool:
+        """Model an idle session without a suspended permission owner."""
+        return False
+
 
 class FailingReloadAgent(FakeAgent):
     async def reload_agent_config(self, *args, **kwargs):
@@ -592,7 +600,7 @@ async def test_agent_reload_config_handler_passes_explicit_scope(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_agent_reload_config_preserves_agent_owned_a4p_config(monkeypatch):
-    from jiuwenswarm.agents.harness.common import a4p_runtime
+    from jiuwenswarm.agents.harness.common.a4p import runtime as a4p_runtime
 
     server = agent_ws_server_module.AgentWebSocketServer()
     order = []

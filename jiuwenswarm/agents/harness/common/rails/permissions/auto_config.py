@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
+from jiuwenswarm.common.mode_matrix import supports_single_agent_permission_profile
 from jiuwenswarm.common.permission_mode import (
     AUTO_PERMISSION_MODE,
     MANUAL_PERMISSION_MODE,  # noqa: F401
@@ -67,16 +67,12 @@ def resolve_declared_auto_workspace(
 
 
 def supports_phase_auto_root(params: Mapping[str, Any]) -> bool:
-    """Return whether the request belongs to the supported independent Deep root."""
-
-    runtime_mode = str(params.get("mode") or "agent").strip().lower()
-    work_mode = str(params.get("work_mode") or "").strip().lower()
+    """Return whether the request belongs to a supported independent root."""
     return bool(
         not params.get("team")
-        and not is_team_mode(runtime_mode)
-        and runtime_mode != "auto_harness"
-        and runtime_mode.split(".", 1)[0] == "agent"
-        and work_mode in {"", "work"}
+        and supports_single_agent_permission_profile(
+            params.get("mode") or "agent", work_mode=params.get("work_mode"),
+        )
     )
 
 

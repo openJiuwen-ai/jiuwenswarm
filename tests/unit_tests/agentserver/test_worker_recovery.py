@@ -209,8 +209,10 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
         supervisor._worker_instance = resumed["instance"]
         supervisor._gateway_ws = object()
         supervisor._gateway_lock = asyncio.Lock()
-        gateway_task = asyncio.create_task(supervisor._write_gateway_frames(supervisor._generation))
-        supervisor._wire_task = gateway_task
+        supervisor._forward_queue = asyncio.Queue(maxsize=256)
+        gateway_task = asyncio.create_task(
+            supervisor._forward_messages(supervisor._forward_queue, supervisor._generation)
+        )
 
         async def receive():
             while True:
@@ -247,7 +249,7 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
         assert pending["recovery_reason"] == "snapshot_timeout"
         assert pending_elapsed < 1.8
         await asyncio.wait_for(complete.wait(), 20)
-        await supervisor._wire_queue.join()
+        await supervisor._forward_queue.join()
         a_wires = [wire for wire in wires if wire.get("session_id") == "a"]
         sequences = [wire["metadata"]["runtime_event"]["sequence"] for wire in a_wires]
         assert sequences == list(range(1, 2050))

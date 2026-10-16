@@ -31,6 +31,7 @@ from jiuwenbox.server.policy_reader import PolicyReader
 from jiuwenbox.server.proxy_manager import ProxyManager
 from jiuwenbox.server.policy_engine import PolicyValidationError
 from jiuwenbox.server.runtime.process import enable_child_subreaper
+from jiuwenbox.supervisor.network import cleanup_orphaned_uplinks
 
 # Operator-facing env: when set, the audit JSONL is persisted to this
 # directory using a ``{sandbox_id}-{ts}.audit.log`` filename per sandbox.
@@ -60,6 +61,20 @@ def get_configured_health_body() -> str | None:
 
 configure_logging()
 logger = logging.getLogger(__name__)
+
+
+async def _cleanup_orphaned_sandbox_network(reason: str) -> None:
+    """Sweep leftover ``jwb*`` veths / ``jbx-*`` netns from a previous crash.
+
+    Isolated uplink state lives in the kernel, not in the jiuwenbox process, so
+    SIGKILL / OOM / stop-timeout leaves host NICs behind. Best-effort: a
+    failure here must not abort startup or shutdown.
+    """
+    try:
+        await asyncio.to_thread(cleanup_orphaned_uplinks, reason=reason)
+    except Exception:  # noqa: BLE001
+        logger.exception("orphan network cleanup (%s) failed", reason)
+
 
 _sandbox_manager: SandboxManager | None = None
 _proxy_manager: ProxyManager | None = None
@@ -292,6 +307,10 @@ async def lifespan(_application: FastAPI):
         # earliest safe point. No-op on non-Linux / when prctl is denied;
         # logs internally.
         enable_child_subreaper()
+        # Registry is ephemeral across restarts; leftover host veths / netns
+        # from a previous ungraceful stop are not. Sweep them before any new
+        # sandbox can collide with a stale ``jbx-*`` name or occupy a /30.
+        await _cleanup_orphaned_sandbox_network("startup")
         _sandbox_manager = _build_sandbox_manager(policy_reader=policy_reader)
         # Wire the SIGCHLD-driven zombie reaper onto the running uvicorn
         # loop. Failure is non-fatal: the manager logs and the server keeps
@@ -340,6 +359,15 @@ async def lifespan(_application: FastAPI):
     finally:
         if policy_sync is not None:
             await policy_sync.stop()
+        # Drop host veths first (milliseconds). Waiting on daemon SIGTERM can
+        # exceed systemd TimeoutStopSec; if SIGKILL then arrives, NICs would
+        # leak. Tear the uplinks down before that wait.
+        try:
+            if _sandbox_manager is not None:
+                await asyncio.to_thread(_sandbox_manager.drop_all_host_uplinks)
+        except Exception:  # noqa: BLE001
+            logger.exception("drop_all_host_uplinks failed during lifespan shutdown")
+        await _cleanup_orphaned_sandbox_network("shutdown-fast")
         # Stop accepting MCP requests before tearing down managed resources.
         try:
             await _mcp_session_cm.__aexit__(None, None, None)

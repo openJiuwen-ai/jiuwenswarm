@@ -47,6 +47,7 @@ import {
   computeSessionStatus,
   findActiveIterationIndex,
   workflowAgentIdentity,
+  workflowAgentAvatarName,
   isForkSessionNode,
   forkParentDisplay,
   parseVerifyOutcome,
@@ -454,7 +455,7 @@ function AgentNode({
    *  否则 analyst 分属基线/综合/裁决三个 phase 时每张卡只聚到本 phase 的轮次。 */
   workflow?: WorkflowRun;
   /** 头像键：展示名可被调用方裁剪（verify 面板剥前缀），但头像哈希必须用
-   *  原名才能与成员列表同源，缺省即 agent.name。 */
+   *  原名才能与成员列表同源，缺省即 workflowAgentAvatarName(agent)。 */
   avatarName?: string;
 }) {
   const { t } = useTranslation();
@@ -642,11 +643,11 @@ function AgentNode({
               fork{agent.parent_session_id ? `(${forkParentDisplay(agent.parent_session_id)})` : ''}
             </span>
             <TeamMemberAvatar
-              member={avatarName ?? agent.name}
+              member={avatarName ?? workflowAgentAvatarName(agent)}
               identity={workflowAgentIdentity(agent)}
               className="w-5 h-5 shrink-0 rounded-full"
               imageClassName="rounded-full"
-              alt={avatarName ?? agent.name}
+              alt={avatarName ?? workflowAgentAvatarName(agent)}
             />
           </>
         ) : (
@@ -663,15 +664,29 @@ function AgentNode({
               </span>
             )}
             <TeamMemberAvatar
-              member={avatarName ?? agent.name}
+              member={avatarName ?? workflowAgentAvatarName(agent)}
               identity={workflowAgentIdentity(agent)}
               className="w-5 h-5 shrink-0 rounded-full"
               imageClassName="rounded-full"
-              alt={avatarName ?? agent.name}
+              alt={avatarName ?? workflowAgentAvatarName(agent)}
             />
           </>
         )}
-        <span className="text-sm text-text break-words flex-1" data-testid="team-area-swarmflow-agent-name" data-variant={agent.id}>{agent.name}</span>
+        {/* 主文字永远是脚本给节点的 label（同一专家被多次调用时唯一可区分）；
+            专家身份靠头像 ★ 与悬浮提示"专家：展示名（成员名）"，不占行内空间。 */}
+        <span
+          className="text-sm text-text break-words flex-1 inline-flex items-baseline gap-1.5 min-w-0"
+          data-testid="team-area-swarmflow-agent-name"
+          data-variant={agent.id}
+          title={agent.agent_template
+            ? t('swarmflow.expertIdentity', {
+                name: agent.display_name ?? agent.agent_template,
+                template: agent.agent_template,
+              })
+            : undefined}
+        >
+          {agent.name}
+        </span>
         {verdict && (
           <span className={`shrink-0 text-[11px] font-medium px-1.5 py-0.5 rounded-full ${
             verdict.type === 'pass'
@@ -1105,7 +1120,7 @@ function VerifyPanel({
                 <AgentNode
                   key={agent.id}
                   agent={shortName === agent.name ? agent : { ...agent, name: shortName }}
-                  avatarName={agent.name}
+                  avatarName={workflowAgentAvatarName(agent)}
                   phaseAgents={phaseAgents}
                   depth={0}
                   runId={runId}

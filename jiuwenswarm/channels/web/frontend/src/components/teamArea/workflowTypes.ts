@@ -138,6 +138,10 @@ export interface WorkflowAgent {
   node_type?: WorkflowNodeType;
   /** External provider kind on third-party nodes ("claude" | "codex"); absent for native workers. */
   agent_type?: string;
+  /** AgentGroup member picked via options.agent_template; absent for the generic worker. */
+  agent_template?: string;
+  /** That expert's display name; shown instead of the label and used as the avatar key. */
+  display_name?: string;
   correlation_id?: string;
   /**
    * Fork child (node_type=agent_session_fork): parent session's avatar member
@@ -354,16 +358,28 @@ export function verifyRoundText(
 }
 
 /**
- * 节点身份 → 头像身份：三方节点认 CLI 品牌脸，人类节点认人类脸，
- * native 节点给空身份，只按名字哈希取插画，不回落名册。
- * agent_type 优先于 kind：三方节点永远不是人。
+ * 节点身份 → 头像身份：三方节点认 CLI 品牌脸，人类节点认人类脸，专家节点带成员名
+ * 让头像组件去专家团包里取图；native 节点给空身份，只按名字哈希取插画，不回落名册。
+ * agent_type 优先于 kind：三方节点永远不是人；专家与 agent_type 在引擎侧互斥。
  */
 export function workflowAgentIdentity(
-  agent: Pick<WorkflowAgent, 'agent_type' | 'kind'>,
+  agent: Pick<WorkflowAgent, 'agent_type' | 'kind' | 'agent_template'>,
 ): TeamMemberIdentity {
   if (agent.agent_type) return { cliAgent: agent.agent_type };
   if (agent.kind === 'human') return { role: 'human_agent' };
+  if (agent.agent_template) return { agentTemplate: agent.agent_template };
   return {};
+}
+
+
+/** Label the tree / task cards show for a node: always the call label, same as the mirrored roster. */
+export function workflowAgentDisplayName(agent: Pick<WorkflowAgent, 'name' | 'display_name'>): string {
+  return agent.name;
+}
+
+/** String the avatar illustration is hashed from — the call label, same as the mirrored member list. */
+export function workflowAgentAvatarName(agent: Pick<WorkflowAgent, 'name' | 'display_name'>): string {
+  return agent.name;
 }
 
 export function sessionGroupKey(
@@ -612,20 +628,31 @@ export function childPhasesOf(workflow: WorkflowRun, parent: WorkflowPhase): Wor
  * 同名 worker 去重（循环迭代复用同一 worker，栈上每个 worker 只出现一次）；
  * phase agents 尚未懒加载（detail_pending）时返回 []，调用方回落旧渲染。
  */
-export function workflowPhaseWorkers(task: TeamTask, runs: WorkflowRun[]): WorkflowAgent[] {
+/** 镜像 phase 任务对应的 run phase；不是镜像任务或 run 未加载时为 null。 */
+export function workflowPhaseForTask(
+  task: Pick<TeamTask, 'task_id' | 'workflow_run_id'>,
+  runs: WorkflowRun[],
+): { runId: string; phase: WorkflowPhase } | null {
   const runId = task.workflow_run_id;
-  if (!runId || !task.task_id) return [];
+  if (!runId || !task.task_id) return null;
   const run = runs.find((candidate) => candidate.id === runId);
-  if (!run) return [];
+  if (!run) return null;
   const prefix = `${runId}:`;
-  if (!task.task_id.startsWith(prefix)) return [];
+  if (!task.task_id.startsWith(prefix)) return null;
   const phase = (run.phases ?? []).find((candidate) => candidate.id === task.task_id.slice(prefix.length));
+  return phase ? { runId, phase } : null;
+}
+
+export function workflowPhaseWorkers(task: TeamTask, runs: WorkflowRun[]): WorkflowAgent[] {
+  const phase = workflowPhaseForTask(task, runs)?.phase;
   if (!phase?.agents) return [];
   const seen = new Set<string>();
   const workers: WorkflowAgent[] = [];
   for (const agent of phase.agents) {
-    const key = agent.member_name ?? agent.name;
-    if (!key || seen.has(key)) continue;
+    // agent_session 的多轮共用一个 avatar（member_name），只算一个 worker；
+    // 一次性 agent() 调用各算一个——同名节点（3 个并行 assemble）是不同成员，不能合并。
+    const key = agent.member_name ? `session:${agent.member_name}` : `node:${agent.id}`;
+    if (seen.has(key)) continue;
     seen.add(key);
     workers.push(agent);
   }

@@ -355,6 +355,12 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
 
     if chunk_type == "answer":
         if isinstance(payload, dict):
+            if payload.get("exhausted_ledger") == "session":
+                return {
+                    "event_type": "chat.error",
+                    "code": "SWARMFLOW_SESSION_BUDGET_EXHAUSTED",
+                    "error": "Session budget exhausted",
+                }
             if payload.get("result_type") == "error":
                 return {
                     "event_type": "chat.error",
