@@ -483,13 +483,16 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
                     json.loads(await asyncio.wait_for(client.recv(), 3))["phase"]
                     == "freezing"
                 )
+                assert process.returncode is None, (
+                    "Fault injection must reach a live hung child"
+                )
                 await asyncio.wait_for(dispatch, 39)
                 assert time.monotonic() - started >= 29.5
                 assert "runtime worker heartbeat timed out" in caplog.text
-                assert process.returncode is None, (
-                    "Fault is a live hung child, not an earlier crash"
-                )
                 assert supervisor._readiness.state is ReadinessState.FAILED
+                assert await process.wait(timeout=10) is not None, (
+                    "A confirmed unhealthy Worker must be retired even without a restart budget"
+                )
                 failure = json.loads(await asyncio.wait_for(client.recv(), 3))
                 assert "WORKER_CLOSED" in json.dumps(failure)
                 stderr = process.stderr_path.read_text(encoding="utf-8")
@@ -510,6 +513,7 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
                         {
                             "case": "live_stalled_worker",
                             "pid": supervisor.worker_pid,
+                            "worker_exit_code": process.returncode,
                             "watchdog_seconds": time.monotonic() - started,
                             "native_stack_dump": "passed",
                             "async_stack_dump": "passed",
@@ -623,7 +627,7 @@ async def test_real_sustained_stall_replaces_worker(
                         while supervisor._readiness.state is not ReadinessState.FAILED:
                             await asyncio.sleep(0.01)
                     assert supervisor._restart_count == 0
-                    assert process.returncode is not None
+                    assert await process.wait(timeout=10) is not None
                 (tmp_path / "acceptance.json").write_text(
                     json.dumps({"case": "confirmed_stall_retires_unhealthy_worker",
                                 "restart_budget": max_restarts, "old_pid": pid,

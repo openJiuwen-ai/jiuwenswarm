@@ -30,7 +30,6 @@ def default_socket_path() -> str:
     path = get_user_workspace_dir() / "run" / f"runtime-{data_scope()[:16]}.{suffix}"
     if os.name != "nt" and len(os.fsencode(path)) >= 100:
         import tempfile
-        from pathlib import Path
         directory = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"
         directory.mkdir(mode=0o700, exist_ok=True)
         if directory.is_symlink() or directory.stat().st_uid != os.getuid():

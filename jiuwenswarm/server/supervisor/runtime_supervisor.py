@@ -469,27 +469,37 @@ class RuntimeSupervisor:
             if self._stopping or self._terminating:
                 await self._fail_pending("runtime worker stopped")
                 break
-            await self._fail_pending("runtime worker closed")
-            self._conn = None
-            self._ipc_ready.clear()
-            self._registry.mark_ready("primary", ready=False)
-            unhealthy_reason = self._unhealthy_reason
-            self._unhealthy_reason = ""
-            if unhealthy_reason:
-                self._readiness.mark_runtime_warming()
-                try:
-                    await self._retire_unhealthy_worker()
-                except Exception as exc:  # noqa: BLE001
+            async with self._session_lock:
+                self._conn = None
+                self._ipc_ready.clear()
+                self._registry.mark_ready("primary", ready=False)
+                unhealthy_reason = self._unhealthy_reason
+                self._unhealthy_reason = ""
+                reason = unhealthy_reason or "runtime worker closed"
+                if not self._fatal and self._restart_count >= self._max_restarts:
                     self._fatal = True
-                    self._fatal_reason = f"unhealthy Worker could not be retired: {exc}"
-                    self._readiness.mark_failed(self._fatal_reason)
+                    self._fatal_reason = reason
+                if self._fatal:
+                    self._readiness.mark_failed(self._fatal_reason or reason)
                     self._ipc_ready.set()
-                    logger.exception("[Supervisor] unhealthy Worker retirement failed")
+                else:
+                    self._readiness.mark_runtime_warming()
+                # Complete requests only after publishing the recovery decision.
+                # Retirement can take seconds when a blocked loop ignores SIGTERM.
+                await self._fail_pending("runtime worker closed")
+                if unhealthy_reason:
+                    try:
+                        await self._retire_unhealthy_worker()
+                    except Exception as exc:  # noqa: BLE001
+                        self._fatal = True
+                        self._fatal_reason = f"unhealthy Worker could not be retired: {exc}"
+                        self._readiness.mark_failed(self._fatal_reason)
+                        self._ipc_ready.set()
+                        logger.exception("[Supervisor] unhealthy Worker retirement failed")
+                        break
+                if self._fatal:
                     break
-            if self._fatal:
-                self._readiness.mark_failed(self._fatal_reason or "runtime worker failed")
-                break
-            if not await self._schedule_restart(unhealthy_reason or "runtime worker closed"):
+            if not await self._schedule_restart(reason):
                 break
 
     async def _retire_unhealthy_worker(self) -> None:

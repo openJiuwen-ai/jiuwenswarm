@@ -195,7 +195,7 @@ def _flatten_symphony(raw: dict[str, Any]) -> dict[str, str]:
 
 
 def _flatten_external_cli(raw: dict[str, Any]) -> dict[str, str]:
-    from jiuwenswarm.common.config_panel.config_set_handlers import (
+    from jiuwenswarm.common.config_panel.external_cli_read import (
         EXTERNAL_CLI_CUSTOM_AGENTS_KEY,
         custom_agents_config_value,
         flatten_external_cli_agents_for_config_panel,
