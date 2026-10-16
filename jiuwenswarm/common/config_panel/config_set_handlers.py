@@ -101,12 +101,8 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
 )
 from jiuwenswarm.common.utils import get_env_file
 from jiuwenswarm.common.version import get_runtime_version
-from jiuwenswarm.server.runtime.a2ui.integration import (
-    get_a2ui_config_payload,
-    get_default_a2ui_config_payload,
-    validate_a2ui_config_update,
-)
-from jiuwenswarm.symphony.config import (
+from jiuwenswarm.common.external_providers import provider
+from jiuwenswarm.common.symphony_config import (
     DEFAULT_EVOLUTION_ENABLED,
     DEFAULT_SYMPHONY_ENABLED,
     resolve_symphony_enabled,
@@ -1288,8 +1284,9 @@ def preserve_deleted_team_entities(params: dict[str, Any]) -> None:
         return
 
     from jiuwenswarm.common.team_template_config import list_team_template_summaries
-    from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
-    from jiuwenswarm.server.runtime.team_entity_store import ensure_team_entity_for_binding
+
+    get_team_binding_store = provider("team_binding_store").get_team_binding_store
+    ensure_team_entity_for_binding = provider("team_entity_store").ensure_team_entity_for_binding
 
     config_base = get_config()
     current_template_ids = {
@@ -1490,7 +1487,8 @@ def apply_config_payload(
             elif param_key == "ttse_enabled":
                 update_ttse_enabled_in_config(parsed)
             elif param_key.startswith("a2ui_"):
-                ok, update, error = validate_a2ui_config_update(param_key, val)
+                a2ui = provider("a2ui")
+                ok, update, error = a2ui.validate_a2ui_config_update(param_key, val)
                 if not ok:
                     raise ConfigPanelBadRequest(error or "invalid A2UI config")
                 update_a2ui_in_config(update)
@@ -1706,7 +1704,7 @@ async def config_get_handler(
         payload["memory_forbidden_enabled"] = "true" if memory_cfg.get("enabled", False) else "false"
         memory_desc = memory_cfg.get("description") or {}
         payload["memory_forbidden_description"] = memory_desc
-        payload.update(get_a2ui_config_payload(raw))
+        payload.update(provider("a2ui").get_a2ui_config_payload(raw))
         trajectory_cfg = raw.get("trajectory_ui") or {}
         payload["trajectory_ui_enabled"] = (
             "true" if trajectory_cfg.get("enabled", False) else "false"
@@ -1760,7 +1758,7 @@ async def config_get_handler(
             "team_task_verification_enabled",
             "true" if DEFAULT_TEAM_TASK_VERIFICATION_ENABLED else "false",
         )
-        for key, value in get_default_a2ui_config_payload().items():
+        for key, value in provider("a2ui").get_default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("task_full_duplex_enabled", "false")

@@ -1471,7 +1471,7 @@ def _ensure_mcp_builtins(
                 "MCP seed contains unexpected root files: "
                 + ", ".join(sorted(unexpected_root_files))
             )
-        from jiuwenswarm.server.runtime.mcp.package_manifest import iter_mcp_packages
+        from jiuwenswarm.common.mcp_package_manifest import iter_mcp_packages
 
         package_dirs = [
             path for path in tmp_dir.iterdir()

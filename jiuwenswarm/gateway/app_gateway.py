@@ -3703,6 +3703,12 @@ def main() -> None:
             # Error was already printed by parse_dotenv_early()
             raise SystemExit(1)
 
+    # 过渡装配：注册 server 侧存储实现供 common 注入点取用
+    # （gateway 独立成仓时删除，见 gateway/server_store_bridge.py）
+    from jiuwenswarm.gateway.server_store_bridge import install as _install_server_stores
+
+    _install_server_stores()
+
     default_host = os.getenv("AGENT_SERVER_HOST", "127.0.0.1")
     default_port = os.getenv("AGENT_SERVER_PORT") or os.getenv("AGENT_PORT", "18092")
     agent_server_url = (

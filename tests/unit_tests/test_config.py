@@ -38,7 +38,7 @@ from jiuwenswarm.common.config import (
     update_setup_guide_enabled_in_config,
     update_xiaoyi_runtime_in_config,
 )
-from jiuwenswarm.symphony import config as symphony_config_module
+from jiuwenswarm.common import symphony_config as symphony_config_module
 
 
 @pytest.mark.parametrize("enabled", [False, True])
