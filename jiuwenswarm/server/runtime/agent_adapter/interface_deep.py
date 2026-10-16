@@ -15435,11 +15435,14 @@ class JiuWenSwarmDeepAdapter:
             rm = Runner.resource_mgr
             id_to_card = getattr(rm, "_id_to_card", None) or {}
             suffix = f"_{owner}"
-            stale = [
-                rid for rid in id_to_card
-                if rid.endswith(suffix)
-                and rid == f"{getattr(id_to_card.get(rid), 'name', '')}_{owner}"
-            ]
+            stale: list[str] = []
+            for rid in id_to_card:
+                card = id_to_card.get(rid)
+                if not rid.endswith(suffix):
+                    continue
+                if rid != f"{getattr(card, 'name', '')}_{owner}":
+                    continue
+                stale.append(rid)
             if not stale:
                 return
             removed = 0
