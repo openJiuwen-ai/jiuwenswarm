@@ -2635,12 +2635,15 @@ class FeishuChannel(BaseChannel):
             elements.append({"tag": "hr"})
 
             # 添加按钮
+            # 回调路由依赖按钮 value 携带原会话上下文（见 _handle_card_callback_async）：
+            # card 回调本身只有 open_id，缺 chat_id 时网关 SessionMap 反查必 miss，
+            # 应答会落到新建空会话被静默丢弃。
+            receive_id, id_type = self._extract_receive_info(msg)
             options = question.get("options", [])
             if options:
                 actions = []
                 for option in options:
                     label = option.get("label", "")
-                    # value = json.dumps({"label": label}, ensure_ascii=False)
                     button_element = {
                         "tag": "button",
                         "text": {
@@ -2648,7 +2651,13 @@ class FeishuChannel(BaseChannel):
                             "content": label
                         },
                         "type": "primary",
-                        "value": {"label": label, "request_id": request_id}
+                        "value": {
+                            "label": label,
+                            "request_id": request_id,
+                            "session_id": str(msg.session_id or ""),
+                            "chat_id": str(receive_id or ""),
+                            "question": question_text,
+                        }
                     }
                     actions.append(button_element)
 
@@ -2676,7 +2685,6 @@ class FeishuChannel(BaseChannel):
 
             self._user_question_card[request_id] = card
             # 发送卡片
-            receive_id, id_type = self._extract_receive_info(msg)
             card_json = json.dumps(card, ensure_ascii=False)
 
             await self._create_and_send_message(
@@ -3027,14 +3035,76 @@ class FeishuChannel(BaseChannel):
             request_id = action_value.pop("request_id", "")
             if not request_id:
                 raise ValueError("missing request_id")
-            # 构建用户响应（符合 evolution service 期望的格式）
-            answers = [{"selected_options": list(action_value.values())}] if action_value else []
+            session_id = str(action_value.pop("session_id", "") or "").strip()
+            origin_chat_id = str(action_value.pop("chat_id", "") or "").strip()
+            question_text = str(action_value.pop("question", "") or "").strip()
+            selected_label = str(action_value.get("label", "") or "").strip()
 
             logger.info(
-                "[FeishuChannel] 发送用户答案: token=%s, answer=%s",
+                "[FeishuChannel] 发送用户答案: token=%s, answer=%s, session_id=%s, chat_id=%s",
                 token,
                 action_value,
+                session_id,
+                origin_chat_id,
             )
+
+            if origin_chat_id:
+                # 中断恢复：按 InteractionAnswerInput.to_agent_request 的规范信封，
+                # 以 chat.send + source=ask_user_interrupt 投回原会话。chat_id 必须随
+                # 卡片带回——feishu 是 SessionMap 通道，网关按 (provider, chat_id,
+                # bot_id, user_id) 反查原会话；缺 chat_id 会新建空会话静默丢答案。
+                answers = (
+                    [{"question": question_text, "selected_options": [selected_label]}]
+                    if selected_label
+                    else []
+                )
+                params: dict[str, Any] = {
+                    "query": "",
+                    "source": "ask_user_interrupt",
+                    "request_id": request_id,
+                    "answers": answers,
+                    "supports_user_interaction": True,
+                }
+                if session_id:
+                    params["session_id"] = session_id
+                resume_msg = Message(
+                    id=token,
+                    type="req",
+                    channel_id=self.channel_id,
+                    session_id=session_id,
+                    params=params,
+                    timestamp=time.time(),
+                    ok=True,
+                    provider=self.name,
+                    chat_id=origin_chat_id,
+                    user_id=operator_id,
+                    bot_id=self.config.app_id,
+                    app_id=self.config.app_id,
+                    req_method=ReqMethod.CHAT_SEND,
+                    is_stream=self.config.enable_streaming,
+                    metadata={
+                        "feishu_chat_id": origin_chat_id,
+                        "im_thread_id": origin_chat_id,
+                        "feishu_open_id": operator_id,
+                        "open_id": operator_id,
+                        "im_sender_user_id": operator_id,
+                        "chat_type": "p2p",
+                        "im_chat_type": "direct",
+                        "im_platform": "feishu",
+                        "app_id": self.config.app_id,
+                        "card_action_resume": "true",
+                    },
+                    enable_memory=self.config.enable_memory,
+                    enable_streaming=self.config.enable_streaming,
+                )
+                if self._message_callback:
+                    self._message_callback(resume_msg)
+                else:
+                    await self.bus.route_user_message(resume_msg)
+                return
+
+            # 旧卡片兜底（value 未携带 chat_id）：保持历史 chat.user_answer 行为
+            answers = [{"selected_options": list(action_value.values())}] if action_value else []
             msg = Message(
                     id=token,
                     type="event",
