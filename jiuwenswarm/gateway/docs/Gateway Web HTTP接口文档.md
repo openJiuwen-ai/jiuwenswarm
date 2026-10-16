@@ -2,7 +2,8 @@
 
 > **目标**：将企业版浏览器 / 前端 调用 Gateway 的方式，由原 WebSocket（A1，`/ws`）并行扩展为 **HTTP + 标准 SSE（A2，**`/api/v1`**）**，并保证与现有 RPC 语义完全对齐。  
 > **风格**：符合 RESTful 规范；一元响应采用 JSON（`Content-Type: application/json`）；流式响应采用 SSE（`Content-Type: text/event-stream`）。  
-> **范围**：`session.create` / `chat.send` / `chat.interrupt` / `chat.user_answer` 会话与对话接口（含追问与权限确认分支）；工作空间 `workspace.*`（§7）。同进程其它核心路由（如 `chat.resume`、`history.get`）见 `GET /api/v1/catalog`。  
+> **范围**：`session.create` / `chat.send` / `chat.interrupt` / `chat.user_answer` 会话与对话接口（含追问与权限确认分支）；历史 `history.get` 与 Cron Live `GET /sessions/{cron_*}/live`（§2.5）；定时任务 `cron.job.*`（§6）；工作空间 `workspace.*`（§7）。同进程其它核心路由（如 `chat.resume`）见 `GET /api/v1/catalog`。  
+> **非本文范围**：Manager → Gateway 的 Config Receiver（默认端口 **8775**，如 `PUT/DELETE /api/v1/cron-policy`）见 [Gateway对接管理面接口文档.md](./Gateway对接管理面接口文档.md)。  
 > **对应实现**：`jiuwenswarm/gateway/channel_manager/web/web_http_app.py`、`web_http_dispatch.py`、`web_http_routes.py`、`outbound.py`、`web_http_server.py`；Handler / MessageHandler 与 A1 共用。  
 > **证据原则**：标注「代码行为」均可回溯至上述源码；未实现项写「代码未定义」，**禁止当作已冻结承诺**。产品排期、Ingress 超时、Token claims、限流等以运行中 `/openapi.json` 与部署约定为准，本文不承诺未落地行为。
 
@@ -738,6 +739,73 @@ curl -N "http://127.0.0.1:19002/api/v1/sessions/web_a1b2c3d4e5f6/history?page_id
   -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
 ```
 
+#### `GET /api/v1/sessions/{session_id}/live` — Cron 执行中 Live SSE
+
+订阅正在执行的 **`cron_*` 会话**窗口（思考、正文、工具、审批卡等），由调度器经 `cron_live_bus` 转发。  
+**不是** A1 RPC 的 1:1 映射；实现见 `web_http_app.py` → `session_live`。与 `history.get` 互补：history 拉已落库消息，live 看**进行中**帧。
+
+| 参数 | 位置 | 约束 | 说明 |
+| --- | --- | --- | --- |
+| `session_id` | path | 必填；必须以 `cron_` 开头 | 非 `cron_*` → **404** `{"error":"not_cron_session"}`（无统一信封） |
+| `skip_replay` | query | 可选；`1` / `true` / `yes` | 不回放 buffer；冷刷且 history 已就绪时用，避免旧 thinking / ask 重建 UI |
+
+**响应**：始终 `Content-Type: text/event-stream`（无需 `Accept` 协商）。
+
+| 项 | 说明 |
+| --- | --- |
+| SSE `id:` | 使用 `session_id`（非 `X-Request-Id`） |
+| SSE `event:` | 与 chat 同源事件名，如 `chat.delta`、`chat.ask_user_question`、`chat.processing_status`、`chat.final` 等 |
+| SSE `data:` | 帧 JSON；含单调递增 `live_seq`，客户端应用其丢弃重叠订阅产生的乱序/重复帧 |
+| keepalive | 约 15s 无帧时下发 `: keepalive` 注释行 |
+| 断线 | 客户端断开后自动 `unsubscribe` |
+
+**常见转发事件**（代码行为，`_CRON_LIVE_FORWARD_EVENTS` ∪ `chat.final`）：
+
+`chat.reasoning` / `chat.delta` / `chat.tool_call` / `chat.tool_update` / `chat.tool_result` / `chat.processing_status` / `chat.ask_user_question` / `chat.usage_summary` / `chat.final`
+
+**鉴权（代码行为）**：
+
+| 部署 | 行为 |
+| --- | --- |
+| 个人版 / 本地文件历史 | 跳过 PG 归属校验 |
+| 企业 / remote | 与 history 同源：按 `X-User-Id` / `X-Group-Id` / `X-Bot-Id` 查会话归属；不存在且本机无 in-flight hold/live → **404** `{"error":"forbidden"}`；store 异常 → **503** `{"error":"auth_unavailable"}` |
+| run_now 竞态 | 会话尚未写入 PG，但本机已有 permission hold / live buffer / running|awaiting_approval → 允许订阅 |
+
+```http
+GET /api/v1/sessions/cron_abc123/live HTTP/1.1
+Host: 127.0.0.1:19002
+Accept: text/event-stream
+X-User-Id: u1
+X-Group-Id: g1
+X-Bot-Id: b1
+```
+
+```text
+id: cron_abc123
+event: chat.processing_status
+data: {"event_type":"chat.processing_status","is_processing":true,"session_id":"cron_abc123","live_seq":1,…}
+
+id: cron_abc123
+event: chat.delta
+data: {"event_type":"chat.delta","content":"…","live_seq":2,…}
+
+: keepalive
+```
+
+```bash
+# 执行中订阅（默认带 replay）
+curl -N "http://127.0.0.1:19002/api/v1/sessions/cron_abc123/live" \
+  -H "Accept: text/event-stream" \
+  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
+
+# 冷刷 / history 已恢复后：禁止 full-replay
+curl -N "http://127.0.0.1:19002/api/v1/sessions/cron_abc123/live?skip_replay=1" \
+  -H "Accept: text/event-stream" \
+  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
+```
+
+> **与审批续跑**：live 上出现 `chat.ask_user_question` 后，用户点允许走既有 `chat.send` / `user_answer` 路径（同 `cron_*`）；续跑过程可继续订 live。终稿仍会落 history，也可用 §6.4 的 `last_session_id` 轮询补偿。
+
 #### 企业旁路 `GET /api/sessions*`（无 `/api/v1` 前缀）
 
 挂在**同一 Web HTTP 端口**（默认 19002），仅 **enterprise** 注册（`web_http_sessions_compat.py`）。读 `ChatHistoryStore`，**不是** RPC `session.list` / `session.get_metadata`，**不用** `{ request_id, ok, data }` 信封。
@@ -795,6 +863,7 @@ curl -sS "http://127.0.0.1:19002/api/sessions/web_a1b2c3d4e5f6" \
 | 身份 | 租户头走 dispatch 路由身份（`X-User-Id` / `X-Group-Id` / `X-Bot-Id`） | **仅** query `user`，否则 `X-User-Id`；不传 group/bot |
 | 信封 | §1.3 `{ request_id, ok, data\|error, metadata }` | 列表 `{sessions:[…]}`；详情为 store 对象；错误 `{error:…}` |
 | 历史 | `/api/v1/sessions/{id}/history`：JSON 或 SSE | 详情里带 messages；无独立 history SSE |
+| Cron live | `/api/v1/sessions/{cron_*}/live`：执行中 SSE（§2.5） | 无 |
 | 分页 | list：`limit` 1..200；history：`page_idx`≥1 | list：`limit` 默认 20、1..100 |
 
 
@@ -1432,35 +1501,37 @@ curl -sS -X POST "http://127.0.0.1:19002/api/v1/chat/web_a1b2c3d4e5f6/actions/us
 
 对应 A1 `method: "cron.job.*"`。企业版前端通过 REST 管理定时任务。**本章只说明后端提供的能力与边界**，不涉及官方前端实现。
 
-### 6.1 与核心接口的区别：结果不走 SSE push
+### 6.1 与核心接口的区别
 
 
 | 维度   | 核心接口（chat/session）  | 定时任务（cron）                                |
 | ---- | ------------------- | ----------------------------------------- |
 | 触发方式 | 客户端显式调用             | 后端按 `cron_expr` 到点自动执行                    |
-| 结果推送 | `chat.send` 有 SSE 流 | **企业版 HTTP 无 cron 结果 push（能力边界，见 §6.4）**  |
+| 结果推送 | `chat.send` 有 SSE 流 | **无** `cron.response` 类 push；执行中可订 **`GET /sessions/{cron_*}/live`**（§2.5 / §6.6）；落库后仍可用 `last_session_id` + history 补偿（§6.4） |
 | 管理模型 | session 资源          | job 资源（CRUD + toggle + preview + run-now） |
 
 
-定时任务的执行结果（Agent 生成的内容）**不通过任何 SSE 长连接回推**给 HTTP 客户端；企业版 HTTP 客户端需要**自行轮询**（建议见 §6.4）。
+> **说明**：`cron.job.*` 管理接口本身仍是一元 REST；执行过程的思考/审批卡走 **session live SSE**，不是挂在 `/cron/*` 上的结果流。
 
 ### 6.2 Cron REST 接口清单
 
-下表由 `web_http_routes.py` 的 `_CRON_ROUTES` 与项目路由定义，为 cron 相关 REST 接口的完整清单。
+下表由 `web_http_routes.py` 的 `_CRON_ROUTES` 与项目路由定义，为 cron 相关 REST 接口的完整清单。  
+执行中 Live 挂在 sessions 资源下，一并列出便于联调。
 
 
 | HTTP 方法  | 路径                                     | RPC `method`                | 说明                               |
 | -------- | -------------------------------------- | --------------------------- | -------------------------------- |
 | `GET`    | `/cron/jobs`                           | `cron.job.list`             | 列任务；返回 `data.jobs[]`             |
 | `POST`   | `/cron/jobs`                           | `cron.job.create`           | 创建任务（入参见下方字段表）                   |
-| `GET`    | `/cron/jobs/meta`                      | `cron.job.meta`             | 元数据（modes / 默认超时）                |
+| `GET`    | `/cron/jobs/meta`                      | `cron.job.meta`             | 元数据（modes / 默认超时 / **运行中任务上限**） |
 | `GET`    | `/cron/jobs/{id}`                      | `cron.job.get`              | 获取单个任务；返回 `data.job`             |
 | `PATCH`  | `/cron/jobs/{id}`                      | `cron.job.update`           | 更新任务；body 为 `{ "patch": { … } }` |
 | `DELETE` | `/cron/jobs/{id}`                      | `cron.job.delete`           | 删除任务；返回 `data.deleted`           |
 | `POST`   | `/cron/jobs/{id}/actions/toggle`       | `cron.job.toggle`           | 启停；body `{ "enabled": bool }`    |
 | `POST`   | `/cron/jobs/{id}/actions/preview`      | `cron.job.preview`          | 预览未来若干次运行；返回 `data.next[]`       |
-| `POST`   | `/cron/jobs/{id}/actions/run-now`      | `cron.job.run_now`          | 立即执行一次                           |
+| `POST`   | `/cron/jobs/{id}/actions/run-now`      | `cron.job.run_now`          | 立即执行一次；可复用待审批会话                  |
 | `GET`    | `/projects/{project_id}/cron-sessions` | `project.get_cron_sessions` | 某项目下的 cron 执行会话列表                |
+| `GET`    | `/sessions/{session_id}/live`          | （非 RPC；见 §2.5 / §6.6）       | **新增** 订阅 `cron_*` 执行中 Live SSE |
 
 
 **租户头**：cron 接口同样走 §1.2 的 `X-User-Id` / `X-Group-Id` / `X-Bot-Id`。企业 cron 启用后，**list / create / update 等写读路径**均要求三者齐全，缺失返回 `400`（`enterprise cron list requires group_id, bot_id and user_id` 或 `enterprise cron requires group_id, bot_id and user_id`）。企业版 Gateway 默认信任并透传这三个租户头。
@@ -1594,20 +1665,50 @@ curl -sS -X POST "http://127.0.0.1:19002/api/v1/chat/web_a1b2c3d4e5f6/actions/us
 出参（`data`）：
 
 
-| key          | 必填  | 类型     | 说明                    |
-| ------------ | --- | ------ | --------------------- |
-| `accepted`   | 是   | bool   | 恒为 `true`             |
-| `run_id`     | 是   | string | 本次触发 ID               |
-| `session_id` | 是   | string | 本次执行会话 ID（真实会话，可直接跳转） |
+| key                      | 必填  | 类型     | 说明 |
+| ------------------------ | --- | ------ | --- |
+| `accepted`               | 是   | bool   | 恒为 `true` |
+| `run_id`                 | 是   | string | 本次触发 ID；复用待审批会话时为已有 run |
+| `session_id`             | 是   | string | 本次执行会话 ID（真实 `cron_*`，可直接跳转 / 订 live） |
+| `awaiting_approval`      | 否   | bool   | 仅当复用未完成工具审批的会话时为 `true` |
+| `reused_pending_session` | 否   | bool   | 与上同现：未新开跑，返回旧 `cron_*` |
 
 
-失败：任务不存在 → `404 NOT_FOUND`。
+失败：任务不存在 → `404 NOT_FOUND`；审批 hold 状态不可用（fail-closed）→ `500 INTERNAL_ERROR`。
+
+> 拿到 `session_id` 后可立刻订 `GET /api/v1/sessions/{session_id}/live`（§6.6）观看执行过程与审批卡。
 
 ##### `cron.job.meta` — `GET /cron/jobs/meta`
 
 无入参。
 
-出参（`data`）：`modes`（支持的执行模式列表）、`default_mode`、`default_timeout_seconds`、`default_team_timeout_seconds`、`max_timeout_seconds`。企业版 `modes` **不含** team 类模式。
+出参（`data`）：
+
+
+| key                           | 类型       | 说明 |
+| ----------------------------- | -------- | --- |
+| `modes`                       | string[] | 支持的执行模式列表；企业版 **不含** team 类模式 |
+| `default_mode`                | string   | 默认执行模式 |
+| `default_timeout_seconds`     | int      | 默认超时（秒） |
+| `default_team_timeout_seconds`| int      | team 模式默认超时（秒） |
+| `max_timeout_seconds`         | int      | 超时上限（秒） |
+| `max_jobs_per_user`           | int      | **新增** Web 面板允许同时「运行中」的任务上限 |
+
+
+**`max_jobs_per_user` 取值（代码行为）**：
+
+1. 企业版：本地库表 `cron_policy.max_jobs_per_user`（由 Manager Config Receiver `PUT /api/v1/cron-policy` 下发，见 [Gateway对接管理面接口文档.md](./Gateway对接管理面接口文档.md)；**不是**本 Web HTTP 端口）
+2. 否则：`config.yaml` → `cron.max_jobs_per_user`（默认 **5**）
+3. 非法 / 缺失：回退默认 **5**
+4. **`0`** 表示界面不能再启用新的运行中任务
+
+> 本字段只供 Web 面板配额校验；**不**在 `cron.job.create` 服务端硬拒绝。会话 / TUI 建任务不读此项。
+
+```bash
+curl -sS "http://127.0.0.1:19002/api/v1/cron/jobs/meta" \
+  -H "X-Request-Id: meta-1" \
+  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
+```
 
 ##### `project.get_cron_sessions` — `GET /projects/{project_id}/cron-sessions`
 
@@ -1630,33 +1731,41 @@ curl -sS -X POST "http://127.0.0.1:19002/api/v1/chat/web_a1b2c3d4e5f6/actions/us
 
 ### 6.4 能力边界与「感知新结果」的建议
 
-**能力边界（代码行为）**：企业版 Gateway 的 `/api/v1` 是半双工 HTTP，`cron.job.`* 与执行结果**均无服务端主动推送**；不存在 `cron.response` SSE 事件。执行结果最终会写入该次执行的 session（通过 `last_session_id` 关联），并可由 `GET /sessions/{session_id}/history` 读取。
+**能力边界（代码行为）**：
 
-**给自研前端的建议（可选，一个最小示例）**：周期性 `GET /cron/jobs` 轮询，比对每个 job 的 `last_session_id`，变化即代表该任务完成新的一轮，再去拉取对应 session 的历史。
+- **不存在**挂在 `/cron/*` 上的 `cron.response` SSE；`cron.job.*` 管理接口均为一元 REST。
+- **执行中**可订 `GET /api/v1/sessions/{cron_*}/live`（§6.6）看思考 / 工具 / 审批卡。
+- 执行结果最终写入该次 session（`last_session_id`），可用 `GET /sessions/{session_id}/history` 补偿或冷刷恢复。
+
+**推荐路径 A（立即执行 / 需要审批续跑）**：`run-now` → 用返回的 `session_id` 订 **live** → 审批走既有 chat 路径 → 结束后再拉 history。
+
+**推荐路径 B（仅感知「跑完了」）**：周期性 `GET /cron/jobs` 轮询，比对 `last_session_id`，变化后再 `history.get`。
 
 ```bash
-# 1. 初次拉取，建立基准
+# 路径 A：立即执行 + live
+curl -sS -X POST "http://127.0.0.1:19002/api/v1/cron/jobs/{id}/actions/run-now" \
+  -H "X-Request-Id: run-1" \
+  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
+# 取 data.session_id 后：
+curl -N "http://127.0.0.1:19002/api/v1/sessions/{session_id}/live" \
+  -H "Accept: text/event-stream" \
+  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
+
+# 路径 B：轮询 last_session_id
 curl -sS "http://127.0.0.1:19002/api/v1/cron/jobs" \
   -H "X-Request-Id: poll-1" \
   -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
-
-# 2. N 秒后再次拉取，比对同名 job 的 last_session_id
-curl -sS "http://127.0.0.1:19002/api/v1/cron/jobs" \
-  -H "X-Request-Id: poll-2" \
-  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
-
-# 3. 发现某 job 的 last_session_id 变化后，拉取该执行会话的结果
 curl -sS "http://127.0.0.1:19002/api/v1/sessions/{last_session_id}/history" \
   -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
 ```
 
-> 轮询间隔由客户端自定；相较 WS push，HTTP pull 存在**最多一个轮询周期的感知延迟**，这是半双工传输的固有取舍，非后端缺陷。
+> 路径 B 相对 live 存在**最多一个轮询周期的感知延迟**；路径 A 可边跑边看，适合 HITL。
 
 
 
 ### 6.5 完整时序（各阶段调用的接口）
 
-一个定时任务从创建到感知执行结果，涉及三个阶段；除「触发」由后端自动完成外，其余均由客户端主动调用 REST 接口。
+一个定时任务从创建到感知执行结果；除「触发」由后端自动完成外，管理与感知由客户端主动调用。
 
 ```mermaid
 sequenceDiagram
@@ -1668,7 +1777,7 @@ sequenceDiagram
 
     Note over C,GW: ① 管理阶段 —— 客户端主动调 REST
     C->>GW: GET /cron/jobs/meta   (cron.job.meta)
-    GW-->>C: 200 { modes, default_mode }
+    GW-->>C: 200 { modes, default_mode, max_jobs_per_user }
     C->>GW: POST /cron/jobs   (cron.job.create)
     GW-->>C: 200 { job:{ id, next_run_at, ... } }
     C->>GW: POST /cron/jobs/{id}/actions/preview   (cron.job.preview)
@@ -1678,13 +1787,17 @@ sequenceDiagram
     C->>GW: POST /cron/jobs/{id}/actions/run-now   (cron.job.run_now)
     GW-->>C: 200 { accepted, run_id, session_id }
 
-    Note over Sch,AG: ② 触发阶段 —— 后端到点自动执行（客户端无感）
+    Note over C,GW: ①b 执行中 —— 可选订 live（非 cron.* RPC）
+    C->>GW: GET /sessions/{session_id}/live
+    GW-->>C: SSE chat.delta / ask_user / final …
+
+    Note over Sch,AG: ② 触发阶段 —— 后端到点自动执行
     Sch->>Sch: cron_expr 到点，写 last_run_at
-    Sch->>AG: 新建会话并执行
-    AG-->>Sch: 执行完成，产出结果
+    Sch->>AG: 新建/复用 cron_* 并执行
+    AG-->>Sch: 流式产出（经 live_bus 可被 ①b 订阅）
     Sch->>Sch: 回写 last_session_id + 更新 next_run_at
 
-    Note over C,GW: ③ 感知结果 —— 客户端轮询（HTTP 无 push）
+    Note over C,GW: ③ 补偿 —— 轮询 + history（无 live 时）
     loop 每 N 秒
         C->>GW: GET /cron/jobs   (cron.job.list)
         GW-->>C: 200 { jobs[] }，比对 last_session_id
@@ -1695,9 +1808,22 @@ sequenceDiagram
 
 
 
-- **① 管理阶段**：`meta` → `create` →（可选）`preview` / `toggle` / `run-now`，均为客户端显式调用。
-- **② 触发阶段**：后端调度器按 `cron_expr` 到点自动执行，**不产生任何 HTTP 请求**；`last_run_at` 在认领时写入，`last_session_id` 在 Agent 本轮执行结束后回写。
-- **③ 感知结果**：HTTP 无服务端 push，客户端周期性 `list` 比对 `last_session_id`，变化后再 `history.get` 拉取该次会话结果。
+- **① 管理阶段**：`meta`（含 `max_jobs_per_user`）→ `create` →（可选）`preview` / `toggle` / `run-now`。
+- **①b Live（可选）**：`run-now` 或已知 `cron_*` 后订 `/sessions/{id}/live`；审批续跑同会话。
+- **② 触发阶段**：调度器按 `cron_expr` 到点执行；`last_run_at` 认领时写入，`last_session_id` 本轮结束后回写。
+- **③ 补偿**：未订 live 时，周期性 `list` 比对 `last_session_id`，再 `history.get`。
+
+### 6.6 Cron Live SSE（摘要）
+
+完整契约见 **§2.5 `GET /api/v1/sessions/{session_id}/live`**。要点：
+
+| 项 | 约定 |
+| --- | --- |
+| 路径 | `/api/v1/sessions/{session_id}/live`，`session_id` 必须以 `cron_` 开头 |
+| Query | `skip_replay=1` 禁止 buffer 回放 |
+| 帧 | 标准 SSE；`event` 为 chat 事件名；`data.live_seq` 去重 |
+| 鉴权 | 企业 remote 与 history 同源租户头；个人版跳过 PG 校验 |
+| 用途 | 执行中观看 + 审批卡；**不能**代替 `cron.job.list` 的完成信号 |
 
 ---
 
@@ -1949,6 +2075,9 @@ Content-Disposition: attachment; filename="outline_test.json"
 | `session.rename` / `session.pin` | `PATCH /sessions/{id}` | 见 §2.4 分流                             | **一次只走一条**                             |
 | `session.delete`   | `DELETE /sessions/{id}`      | 见 §2.4                                 | remote 可能仍 200 + `history_store_deleted` |
 | `history.get`      | `GET /sessions/{id}/history` | JSON `data.messages` 或 SSE             | 见 §2.5                                   |
+| （cron live）      | `GET /sessions/{cron_*}/live` | SSE 执行中帧（`live_seq`）                 | 见 §2.5 / §6.6；非 `cron_*` → 404          |
+| `cron.job.meta`    | `GET /cron/jobs/meta`        | modes / 超时 / **`max_jobs_per_user`**   | 见 §6.2                                   |
+| `cron.job.run_now` | `POST /cron/jobs/{id}/actions/run-now` | `{ accepted, run_id, session_id }`；待审批时可含 `awaiting_approval` | 见 §6.2；随后可订 live |
 | `chat.send`        | `POST /chat/completions`     | `{ accepted, session_id }`（接单）          | `web.response` + §1.7 直至 `final`/`error` |
 | `chat.interrupt`   | `POST …/actions/interrupt`   | 含 `event_type=chat.interrupt_result`    | 前端可合成 interrupt 事件；原 SSE 不保证再推           |
 | `chat.user_answer` | `POST …/actions/user_answer` | `{ accepted, session_id, request_id? }` | 续流在**原** send SSE                        |
@@ -1981,6 +2110,8 @@ Content-Disposition: attachment; filename="outline_test.json"
 13. 图片附件用 `base64Data` / `base64_data`，不要用 `data`。
 14. `PATCH /sessions/{id}`：有 `pinned`/`pin` 键只走置顶，**不会**同时重命名；推荐 `{"pinned":true}`。
 15. `GET …/history` 默认聚合 JSON；`Accept: text/event-stream` 才是 SSE。
+15b. `GET …/sessions/{cron_*}/live` 始终 SSE；非 `cron_` 前缀 404；企业 remote 须租户头；冷刷用 `skip_replay=1`。
+15c. `GET /cron/jobs/meta` 含 `max_jobs_per_user`（Web 面板配额）；Manager 下发 `cron-policy` 走 Config Receiver（8775），不是本端口。
 16. `GET /api/sessions*` 无统一信封，且仅 enterprise；不要当成 `/api/v1/sessions*`。
 17. `POST /chat/resume` 一元 `accepted` ≠ 完成；结果用 `GET …/history`，不要假定原 SSE 续接。
 18. 工作空间企业版须带齐租户头，否则可能落到错误 `workspace_key` → 树接口 404。
@@ -2000,6 +2131,9 @@ Content-Disposition: attachment; filename="outline_test.json"
 - [ ] `PATCH /sessions/{id}` `{"title":"新标题"}` 走 rename；`{"pinned":true}` 走 pin；两者同传只 pin  
 - [ ] `DELETE /sessions/{id}`：本地不存在为 404；remote 看 `history_store_deleted`  
 - [ ] `GET /sessions/{id}/history` 默认 JSON；带 `Accept: text/event-stream` 为 SSE `history.message`  
+- [ ] `GET /sessions/cron_*/live` → SSE；非 `cron_` → 404；`skip_replay=1` 不回放；帧含 `live_seq`  
+- [ ] `GET /cron/jobs/meta` → `data.max_jobs_per_user` 为非负整数  
+- [ ] `POST /cron/jobs/{id}/actions/run-now` → `session_id`；待审批复用时含 `awaiting_approval`  
 - [ ] 企业 `GET /api/sessions` 返回 `{sessions:[…]}`，无 `ok`/`data`；`user` 优先于 `X-User-Id`  
 - [ ] `GET /api/sessions/{id}` 不存在 → 404 `{"error":"not_found"}`  
 - [ ] 租户头齐全，无企业路由 `VALIDATION`  

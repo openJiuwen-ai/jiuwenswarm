@@ -2,15 +2,12 @@
 
 """回归：路由后实际生效的模型名必须跨过「外层 ctx → 内层 ctx」这道边界。
 
-`ModelRoutingRail.before_invoke` 跑在外层 DeepAgent 的回调上下文上（`BEFORE_INVOKE`
-属 openjiuwen 的 outer-only 事件），`RuntimePromptRail.before_model_call` 被桥接到内层
-ReActAgent（`BEFORE_MODEL_CALL` 属 bridge 事件），内层每次 invoke 都新建
-`AgentCallbackContext`、`extra` 是全新 dict，两边不共享。唯一的通道是按引用透传的
-`RunContext`：外层写 ``ctx.inputs.run_context.extra``，内层经
-``ctx.extra["run_context"].extra`` 读回。
+`ModelRoutingRail.before_invoke` 跑在外层 DeepAgent 的回调上下文上，
+`RuntimePromptRail.before_model_call` 跑在内层 ReActAgent 新建的 ctx 上（`extra` 是
+另一个 dict）。唯一通道是按引用透传的 `RunContext`：外层写
+``ctx.inputs.run_context.extra``，内层经 ``ctx.extra["run_context"].extra`` 读回。
 
-本文件走**真实 DeepAgent 事件链**。既有 UT 手工造单一 ctx 直接调 rail —— 那条路径恰好
-绕开这道边界，会让跨 ctx 缺陷在 CI 全绿下合入。
+本文件走**真实 DeepAgent 事件链**；手工造单一 ctx 直接调 rail 会绕开这道边界。
 """
 
 from __future__ import annotations
@@ -94,7 +91,7 @@ def _build_model(name: str) -> Model:
 
 
 def _write_runtime_state(tmp_path: Path, *, model: str, available_models: list[str]) -> Path:
-    """落一份 runtime_state.yaml，复现「档位关键字被当成模型名写进去」的现场。"""
+    """落一份 runtime_state.yaml（路由前写入的模型名）。"""
     state_dir = tmp_path / "runtime_state"
     state_dir.mkdir(parents=True, exist_ok=True)
     state_file = state_dir / "boundary-session.yaml"
@@ -126,7 +123,7 @@ def _current_model(content: str) -> str:
     raise AssertionError(f"runtime.setting 里没有「当前模型」行:\n{content}")
 
 
-async def _run_real_chain(selection: str) -> list[str]:
+async def _run_real_chain(extra: dict) -> list[str]:
     """真实 DeepAgent 事件链跑一轮，返回 runtime.setting 的内容。"""
     agent = DeepAgent(AgentCard(id="boundary_agent", name="Boundary"))
     agent.configure(
@@ -137,6 +134,9 @@ async def _run_real_chain(selection: str) -> list[str]:
         )
     )
 
+    async def _classify(_prompt_text: str):
+        return 80, "coding", "hard"
+
     routing_rail = ModelRoutingRail(
         capability_table=[
             ModelCapability(
@@ -145,11 +145,12 @@ async def _run_real_chain(selection: str) -> list[str]:
                 model=_build_model("deepseek-v4.1-flash"),
             ),
             ModelCapability(
-                model_name="glm-5.2",
-                model_id="glm-52",
-                model=_build_model("glm-5.2"),
+                model_name="glm-5.3",
+                model_id="glm-53",
+                model=_build_model("glm-5.3"),
             ),
-        ]
+        ],
+        classifier=_classify,
     )
     runtime_rail = RuntimePromptRail(language="cn", channel="web")
     runtime_rail.set_session_id("boundary-session")
@@ -172,7 +173,7 @@ async def _run_real_chain(selection: str) -> list[str]:
                     "conversation_id": "boundary-session",
                     # DeepAgent._normalize_inputs 只认嵌套的 run.context；
                     # adapter 正是把 request.params["model_name"] 写在这里。
-                    "run": {"kind": "normal", "context": {"extra": {"model_selection": selection}}},
+                    "run": {"kind": "normal", "context": {"extra": extra}},
                 },
             )
     finally:
@@ -182,31 +183,35 @@ async def _run_real_chain(selection: str) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_applied_model_crosses_outer_to_inner_ctx_boundary(tmp_path, monkeypatch):
-    """选 fast 档：内层 RuntimePromptRail 必须报真实模型名，而不是档位关键字。
+    """auto 档切到 glm-5.3：内层 RuntimePromptRail 必须报**路由后**的模型名。
 
-    修复前 `model_routing_applied_model` 写在外层 ctx.extra 上，内层读不到 →
-    `routed_model` 恒为空 → 回退到 runtime_state 里的 `fast`，本用例失败。
+    内层读不到外层写的 `model_routing_applied_model` 时，会回退到 runtime_state 里的
+    路由**前**取值（relay 下发的 deepseek-v4.1-flash），本用例失败。
     """
-    state_file = _write_runtime_state(tmp_path, model="fast", available_models=["fast"])
+    state_file = _write_runtime_state(
+        tmp_path, model="deepseek-v4.1-flash", available_models=["deepseek-v4.1-flash"]
+    )
     monkeypatch.setattr(
         _runtime_prompt_mod, "get_runtime_state_path", lambda session_id=None: state_file
     )
 
-    contents = await _run_real_chain("fast")
+    contents = await _run_real_chain(
+        {"model_selection": "deepseek-v4.1-flash", "enable_routing": True}
+    )
 
     assert contents, "runtime.setting 没有被注入，真实事件链没跑到内层 before_model_call"
-    assert _current_model(contents[-1]) == "deepseek-v4.1-flash"
+    assert _current_model(contents[-1]) == "glm-5.3"
 
 
 @pytest.mark.asyncio
 async def test_concrete_model_selection_keeps_runtime_state_model(tmp_path, monkeypatch):
-    """具体模型名走 skip 分支：不写路由结果，回退链行为与合入前一致。"""
+    """具体模型名走 skip 分支：不写路由结果，回退链取 runtime_state 的值。"""
     state_file = _write_runtime_state(tmp_path, model="glm-5.2", available_models=["glm-5.2"])
     monkeypatch.setattr(
         _runtime_prompt_mod, "get_runtime_state_path", lambda session_id=None: state_file
     )
 
-    contents = await _run_real_chain("glm-5.2")
+    contents = await _run_real_chain({"model_selection": "glm-5.2"})
 
     assert contents
     assert _current_model(contents[-1]) == "glm-5.2"

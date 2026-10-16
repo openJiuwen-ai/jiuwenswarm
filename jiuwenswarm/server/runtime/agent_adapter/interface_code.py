@@ -762,11 +762,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     self._build_a2a_outbound_toolkit_rail,
                 ),
             )
-            # 四档档位路由（ModelRoutingRail）同样只在单 agent code 模式挂载。
-            # relay 的单 agent 通道不下发具体模型 id，档位关键字（fast/balanced/
-            # extreme/auto）原样进 params.model_name，靠这条 rail 翻成具体模型 +
-            # 思考深度；code.team / team.plan 已由 relay 侧翻成具体 id，挂上只会
-            # 拿到具体名走能力表兜底，故与 team profile 一并排除。
+            # 模型路由（ModelRoutingRail）只在单 agent code 模式挂载：auto 档
+            # （params.enable_routing=True）跑分类器、超阈值才切模型，具体模型名走 skip。
+            # code.team / team.plan 由 relay 侧翻成具体 id，故与 team profile 一并排除。
             rail_infos.append(
                 _RailBuildInfo(
                     "_model_routing_rail",

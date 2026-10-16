@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import threading
 from typing import Any
 from urllib.parse import urlparse
 
@@ -189,21 +190,67 @@ def _requests_verify() -> bool | str:
     return resolve_requests_verify()
 
 
+# ---------------------------------------------------------------------------
+# 进程级复用 Session
+#
+# 旧实现每次调用 ``with requests.Session()`` 新建并销毁连接池：
+# 1. 每个请求一次完整 TCP+TLS 握手，无 keep-alive 复用；
+# 2. 异常路径（raise_for_status 抛错、响应体未读完）遗留的连接/池对象
+#    只能等 GC 回收 —— urllib3 通过 weakref 终结器在**触发 GC 的线程**
+#    上同步执行 ``_close_pool_connections → ssl._real_close``；当 GC 恰好
+#    落在 asyncio 事件循环线程上时（ISSUE 4868 实测），~10s 的同步 SSL
+#    关闭会冻结整个循环，网关 pong 无应答 → 连接被主动关闭。
+# 复用 Session 后：连接池常驻、TLS 连接按连接粒度复用，进程生命周期内
+# 不再产生"待 GC 回收的临时连接池"，从源头阻断该阻塞路径。
+# ---------------------------------------------------------------------------
+_session: requests.Session | None = None
+_session_lock = threading.Lock()
+
+
+def _get_session() -> requests.Session:
+    """返回进程级复用的 ``requests.Session``（惰性创建，线程安全）。
+
+    ``urllib3`` 连接池按连接粒度加锁，``Session.request`` 可安全地被
+    ``asyncio.to_thread`` 工作线程并发调用；本工具链不做 cookie 语义，
+    无 cookie jar 竞态顾虑。
+    """
+    global _session
+    session = _session
+    if session is not None:
+        return session
+    with _session_lock:
+        if _session is None:
+            session = requests.Session()
+            session.trust_env = False
+            _session = session
+        return _session
+
+
+def reset_shared_session() -> None:
+    """清空进程级复用 Session 的缓存（仅供测试隔离使用）。
+
+    单元测试通过 monkeypatch 替换 ``requests.Session`` 构造来捕获调用
+    参数；缓存的 Session 会跨用例存活，导致后继用例的替身失效。
+    生产代码无需调用——复用正是本模块的设计目标。仅释放引用、
+    不主动 close，避免影响可能仍在使用的连接。
+    """
+    global _session
+    with _session_lock:
+        _session = None
+
+
 def requests_request(method: str, url: str, **kwargs: Any) -> requests.Response:
     """Issue a ``requests`` call using overlay-aware proxy settings only."""
     method_up = method.upper()
     kwargs = prepare_requests_kwargs(url, kwargs)
     kwargs.setdefault("verify", _requests_verify())
+    session = _get_session()
     try:
-        with requests.Session() as session:
-            session.trust_env = False
-            return session.request(method_up, url, **kwargs)
+        return session.request(method_up, url, **kwargs)
     except requests.exceptions.ProxyError:
         fallback = dict(kwargs)
         fallback.pop("proxies", None)
-        with requests.Session() as session:
-            session.trust_env = False
-            return session.request(method_up, url, **fallback)
+        return session.request(method_up, url, **fallback)
 
 
 def requests_get(url: str, **kwargs: Any) -> requests.Response:

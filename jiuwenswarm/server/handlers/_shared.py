@@ -9,6 +9,7 @@ import datetime as _dt
 import logging
 import os
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any, Optional
 
 from pathlib import Path
@@ -27,6 +28,7 @@ from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
 )
 from jiuwenswarm.common.mode_matrix import (
+    NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
     ResolvedMode,
     WEB_PLAN_AGENT,
@@ -293,11 +295,27 @@ def resolve_request_runtime_mode(
         request, params
     ):
         params = {**params, "mode": mode_text.split(".", 1)[0]}
-    return resolve_request_mode(
+    resolved = resolve_request_mode(
         params,
         resolve_agent_request_mode,
         work_mode=work_mode,
     )
+    # Web composition and new canonical modes bypass the legacy Flash guard.
+    # Apply the default only after resolving the profile, so Code, Team and
+    # explicit Plan requests retain their own routing and approval semantics.
+    if resolved.canonical_mode in {"agent", NEW_AGENT_WORK_NORMAL}:
+        default_mode, _, _ = resolve_agent_request_mode(
+            "agent", work_mode=resolved.work_mode,
+        )
+        if default_mode == "flash":
+            resolved = replace(
+                resolved,
+                manager_mode="flash",
+                sub_mode=None,
+                canonical_mode="flash",
+                normal_mode="flash",
+            )
+    return resolved
 
 
 def _apply_resolved_mode_to_request(

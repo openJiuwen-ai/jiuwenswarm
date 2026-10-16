@@ -36,6 +36,10 @@ from openjiuwen.harness.rails.personal_context import PersonalContextRail
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
+from jiuwenswarm.agents.harness.common.rails.model_routing.model_routing_rail import (
+    ModelRoutingRail,
+    model_routing_enabled,
+)
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import (
     RuntimePromptRail,
 )
@@ -84,6 +88,48 @@ A2A_OUTBOUND_TOOLKIT = "swarm.a2a_outbound_toolkit"
 TEAM_PERMISSION_POLICY = "swarm.team_permission_policy"
 DISABLED_TOOLS = "swarm.disabled_tools"
 REQUEST_SCOPED_MCP_TOOLS = "swarm.request_scoped_mcp_tools"
+MODEL_ROUTING = "swarm.model_routing"
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=MODEL_ROUTING,
+    description="auto gear: each member scores its own task and may switch its own model.",
+)
+def _build_model_routing_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> ModelRoutingRail | None:
+    """auto 档路由 rail —— **成员级**，每个成员各自跑分类器。
+
+    开关不走 ``run_context``（成员拿不到）：relay 在 chat.send ``params.enable_routing``
+    上下发，``team_helpers`` 写进 ``request_metadata``，随 ``build_context_seed`` 还原到
+    成员自身的 ``BuildContext``；rail 侧 ``_resolve_request_routing_enabled`` 走该兜底分支。
+
+    能力表留空：切换用的 cap 由 ``_build_switch_cap`` 从**当前成员模型**的 client config
+    克隆（只换 model_name，api_base / api_key / 鉴权头逐字保留），能力表仅在该 config
+    取不到时才兜底。故成员 rail 不需要 adapter 注入任何构造器。
+    """
+    del params
+    if not model_routing_enabled(getattr(context, "config", None)):
+        return None
+    try:
+        rail = ModelRoutingRail(apply_routing=True)
+    except Exception as exc:  # noqa: BLE001 - 可选 Rail，构造失败只降级
+        logger.warning(
+            "[swarm.model_routing] Rail construction failed (%s)",
+            type(exc).__name__,
+        )
+        return None
+    # 与 interface_deep 的单 agent 构建日志同形，便于确认成员确实挂上了 rail
+    # （成功路径否则完全静默，日志里分不清「没挂」和「挂了但没触发」）。
+    logger.info(
+        "[swarm.model_routing] ModelRoutingRail mounted (team=%s member=%s role=%s)",
+        getattr(context, "team_id", "") or "?",
+        getattr(context, "member_name", None) or "?",
+        getattr(context, "role", None) or "?",
+    )
+    return rail
 
 
 @harness_element(

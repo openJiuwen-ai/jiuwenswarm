@@ -240,10 +240,15 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         self._approval_timeout = approval_timeout
         self._config_provider = config_provider or get_effective_permissions_config
         self._approval_session_id = (session_id or "").strip()
+        self._sessions_root: Path | None = None
         if workspace_root is None and engine is not None:
             workspace_root = getattr(engine, "_workspace_root", None)
         self._workspace_root = Path(workspace_root) if workspace_root else None
         self._rejected_call_fingerprints: set[str] = set()
+
+    def set_sessions_root(self, sessions_root: Path) -> None:
+        """Keep only trusted parent identity across child callback tasks."""
+        self._sessions_root = sessions_root
 
     def _resolve_scope(self, ctx: AgentCallbackContext) -> tuple[str, str] | None:
         return _resolve_subagent_scope(
@@ -365,6 +370,12 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         if scope is None:
             return
         session_id, agent_scope_id = scope
+        if self._sessions_root is not None:
+            from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
+                bind_session_file_context,
+            )
+
+            bind_session_file_context(session_id, self._sessions_root)
         active_skill_name = self._grant_store.get_active_skill_execution(
             session_id,
             agent_scope_id,

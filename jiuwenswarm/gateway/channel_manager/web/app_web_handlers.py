@@ -4062,6 +4062,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         session_id_to_delete = session_id_to_delete.strip()
+        # Match chat/session.list tenant identity when removing shared session
+        # files. Params supplied by the caller must not override connection scope.
+        delete_group, delete_bot = _ws_identity_scope(ws)
+        delete_routing = {
+            key: value for key, value in (("group_id", delete_group), ("bot_id", delete_bot))
+            if value
+        }
+        delete_metadata = {"routing": delete_routing} if delete_routing else None
 
         from jiuwenswarm.gateway.routing.session_index import is_remote_storage
 
@@ -4084,6 +4092,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         req_method=ReqMethod.SESSION_DELETE,
                         params=params,
                         user_id=user_id,
+                        metadata=delete_metadata,
                     )
                     resp = await ac.send_request(env)
                     if not resp.ok:
@@ -4194,6 +4203,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     req_method=ReqMethod.SESSION_DELETE,
                     params=params,
                     user_id=user_id,
+                    metadata=delete_metadata,
                 )
                 resp = await ac.send_request(env)
                 if resp.ok:

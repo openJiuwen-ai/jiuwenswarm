@@ -4,8 +4,10 @@
 
 import asyncio
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
     InvokeInputs,
@@ -27,6 +29,86 @@ from jiuwenswarm.agents.harness.common.rails.skill_active_state import (
 from jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail import (
     SkillCredentialInjectionRail,
 )
+
+
+@pytest.fixture(autouse=True)
+def session_files(tmp_path, monkeypatch):
+    import re
+
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization import (
+        file_store,
+    )
+
+    context_token = file_store._session_file_context.set(None)
+    sessions = tmp_path / "sessions"
+    # Existing lifecycle cases use these session identifiers as real sessions.
+    for sid in set(re.findall(r'officeclaw_[A-Za-z0-9_]+', Path(__file__).read_text())):
+        (sessions / sid).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(file_store, "get_agent_sessions_dir", lambda: sessions)
+    monkeypatch.setattr(file_store, "get_user_workspace_dir", lambda: tmp_path)
+    token = skill_active_state._current_session_var.set(None)
+    yield
+    skill_active_state._current_session_var.reset(token)
+    file_store._session_file_context.reset(context_token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "corruption"])
+async def test_state_write_failure_stops_callback_chain(monkeypatch, failure):
+    from openjiuwen.core.runner.callback.errors import AbortError
+    from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
+
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "officeclaw_storage_failure"
+    store = skill_active_state._shared_store(sid)
+    store.update_active_skill_state(
+        sid, lambda _: {"active_skill": "old", "invokes_since_skill_tool": 5}
+    )
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+    if failure == "corruption":
+        (store.session_directory(sid) / ".skill_authorization/state.json").write_text("{")
+    else:
+        def fail_write(*_args, **_kwargs):
+            raise TimeoutError("injected lock timeout")
+        monkeypatch.setattr(store, "update_active_skill_state", fail_write)
+
+    rail = SkillActiveStateRail(session_id=sid, sessions_root=store.sessions_root())
+    ctx = AgentCallbackContext(agent=MagicMock())
+    ctx.inputs = InvokeInputs(query="next turn", conversation_id=sid)
+    ctx.extra = {}
+    later_callback = []
+
+    async def use_credentials(_ctx):
+        later_callback.append(True)
+
+    callbacks = AsyncCallbackFramework()
+    await callbacks.register("before_invoke", rail.before_invoke, priority=10)
+    await callbacks.register("before_invoke", use_credentials, priority=0)
+    with pytest.raises(AbortError, match="Skill state storage unavailable"):
+        await callbacks.trigger("before_invoke", ctx)
+    assert not later_callback
+
+
+@pytest.mark.asyncio
+async def test_missing_session_callback_does_not_recreate_directory(monkeypatch, caplog):
+    import shutil
+
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "officeclaw_missing_session"
+    store = skill_active_state._shared_store(sid)
+    directory = store.session_directory(sid)
+    shutil.rmtree(directory)
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+    rail = SkillActiveStateRail(session_id=sid, sessions_root=store.sessions_root())
+    ctx = AgentCallbackContext(agent=MagicMock())
+    ctx.inputs = InvokeInputs(query="late request", conversation_id=sid)
+    ctx.extra = {}
+    await rail.before_invoke(ctx)
+    assert not directory.exists()
+    assert not [record for record in caplog.records if record.levelno >= 40]
 
 
 class TestResolveSkillSessionId(unittest.TestCase):
@@ -524,7 +606,7 @@ class TestAdoptDefaultActiveSkill(unittest.TestCase):
         )
         ctx.extra = {}
         asyncio.run(default_rail.after_tool_call(ctx))
-        assert get_session_active_skill(_DEFAULT_SESSION_ID) == "hwocr"
+        assert get_session_active_skill(_DEFAULT_SESSION_ID) is None
         return default_rail, ctx
 
     def test_adopt_unowned_orphan_for_hitl_session(self):
@@ -533,8 +615,8 @@ class TestAdoptDefaultActiveSkill(unittest.TestCase):
         )
 
         self._activate_under_default()
-        assert adopt_default_active_skill("officeclaw_adopt_sess") == "hwocr"
-        assert get_session_active_skill("officeclaw_adopt_sess") == "hwocr"
+        assert adopt_default_active_skill("officeclaw_adopt_sess") is None
+        assert get_session_active_skill("officeclaw_adopt_sess") is None
         assert get_session_active_skill(_DEFAULT_SESSION_ID) is None
 
     def test_inject_does_not_adopt_default_orphan(self):
@@ -555,23 +637,15 @@ class TestAdoptDefaultActiveSkill(unittest.TestCase):
         bash_ctx.extra = {}
         asyncio.run(inject.before_tool_call(bash_ctx))
         assert "env" not in bash_ctx.inputs.tool_args
-        assert get_session_active_skill(_DEFAULT_SESSION_ID) == "hwocr"
+        assert get_session_active_skill(_DEFAULT_SESSION_ID) is None
         assert get_session_active_skill("officeclaw_adopt_sess") is None
 
-    def test_refuse_adopt_when_source_session_mismatches(self):
-        from jiuwenswarm.agents.harness.common.rails.skill_active_state import (
-            _get_or_create_state,
-            adopt_default_active_skill,
-        )
+    def test_no_process_local_orphan_state(self):
+        from jiuwenswarm.agents.harness.common.rails import skill_active_state
 
-        state = _get_or_create_state(_DEFAULT_SESSION_ID)
-        state.active_skill = "hwocr"
-        state.source_session = "officeclaw_adopt_sess"
-        assert adopt_default_active_skill("officeclaw_other_sess") is None
-        assert get_session_active_skill(_DEFAULT_SESSION_ID) == "hwocr"
-        assert adopt_default_active_skill("officeclaw_adopt_sess") == "hwocr"
-        assert get_session_active_skill("officeclaw_adopt_sess") == "hwocr"
-        assert get_session_active_skill(_DEFAULT_SESSION_ID) is None
+        assert not hasattr(skill_active_state, "_sessions")
+        assert not hasattr(skill_active_state, "_get_or_create_state")
+        assert get_session_active_skill("officeclaw_other_sess") is None
 
     def test_before_invoke_adopts_unowned_orphan(self):
         self._activate_under_default()
@@ -583,7 +657,7 @@ class TestAdoptDefaultActiveSkill(unittest.TestCase):
         )
         invoke_ctx.extra = {}
         asyncio.run(rail.before_invoke(invoke_ctx))
-        assert get_session_active_skill("officeclaw_adopt_sess") == "hwocr"
+        assert get_session_active_skill("officeclaw_adopt_sess") is None
         assert get_session_active_skill(_DEFAULT_SESSION_ID) is None
 
         inject = SkillCredentialInjectionRail(
@@ -600,7 +674,7 @@ class TestAdoptDefaultActiveSkill(unittest.TestCase):
         )
         bash_ctx.extra = {}
         asyncio.run(inject.before_tool_call(bash_ctx))
-        assert bash_ctx.inputs.tool_args["env"]["HWOCR_AK"] == "ak"
+        assert "env" not in bash_ctx.inputs.tool_args
 
 
 if __name__ == "__main__":

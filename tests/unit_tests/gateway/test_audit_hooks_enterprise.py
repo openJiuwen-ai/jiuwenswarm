@@ -201,7 +201,11 @@ async def test_session_delete_emits_ua_and_evt(
             self.responses.append(kwargs)
 
     channel = _Chan()
-    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=None))
+    client = SimpleNamespace(
+        server_ready=True,
+        send_request=AsyncMock(return_value=SimpleNamespace(ok=True, payload={})),
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     handler = channel.handlers["session.delete"]
 
     monkeypatch.setattr(
@@ -210,7 +214,7 @@ async def test_session_delete_emits_ua_and_evt(
     )
     monkeypatch.setattr(
         "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ws_identity_scope",
-        lambda _ws: (None, None),
+        lambda _ws: ("group-1", "bot-1"),
     )
 
     deleted = {"value": True}
@@ -226,7 +230,7 @@ async def test_session_delete_emits_ua_and_evt(
     await handler(
         MagicMock(),
         "req-del-1",
-        {"session_id": "sess-del-1"},
+        {"session_id": "sess-del-1", "group_id": "forged", "bot_id": "forged"},
         "sess-del-1",
         user_id="user1",
     )
@@ -235,6 +239,13 @@ async def test_session_delete_emits_ua_and_evt(
     assert audit_cap.ua[0]["UA"] == "session_delete"
     assert audit_cap.ua[0]["UID"] == "user1"
     assert audit_cap.ua[0]["MSG"] == "deleted"
+    from jiuwenswarm.common.request_identity import web_routing_identity
+
+    forwarded = client.send_request.call_args.args[0]
+    identity = web_routing_identity(forwarded.channel_context)
+    assert identity["group_id"] == "group-1"
+    assert identity["bot_id"] == "bot-1"
+    assert forwarded.user_id == "user1"
 
     audit_cap.ua.clear()
     deleted["value"] = False

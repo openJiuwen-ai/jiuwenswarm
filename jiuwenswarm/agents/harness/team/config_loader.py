@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_ITERATIONS = 200
 _DEFAULT_COMPLETION_TIMEOUT = 600.0
 _DEFAULT_MAX_DEBATE_ROUNDS = 5
+_DEFAULT_MAX_TOTAL_ROUNDS = 30
+_DEFAULT_MAX_TOTAL_MESSAGES = 300
+_DEFAULT_TOKEN_BUDGET = 2_000_000
 _DEFAULT_AGENT_WORKSPACE = {"stable_base": True}
 _DEFAULT_TEAM_WORKSPACE = {"enabled": True}
 _DEFAULT_TRANSPORT = {"type": "inprocess"}
@@ -815,6 +818,23 @@ def load_team_spec_dict(
     configured_debate_rounds = team_raw.get("max_debate_rounds")
     spec_dict["max_debate_rounds"] = (
         _DEFAULT_MAX_DEBATE_ROUNDS if configured_debate_rounds is None else configured_debate_rounds
+    )
+    # session-level budget ceilings. The per-teammate debate
+    # cap misses the member→leader / leader→member report shapes entirely,
+    # so product templates get a whole-session budget on by default; an
+    # explicit template value overrides the product default (same semantics
+    # as max_debate_rounds above — unset, not null, means "use the default").
+    configured_total_rounds = team_raw.get("max_total_rounds")
+    spec_dict["max_total_rounds"] = (
+        _DEFAULT_MAX_TOTAL_ROUNDS if configured_total_rounds is None else configured_total_rounds
+    )
+    configured_total_messages = team_raw.get("max_total_messages")
+    spec_dict["max_total_messages"] = (
+        _DEFAULT_MAX_TOTAL_MESSAGES if configured_total_messages is None else configured_total_messages
+    )
+    configured_token_budget = team_raw.get("token_budget")
+    spec_dict["token_budget"] = (
+        _DEFAULT_TOKEN_BUDGET if configured_token_budget is None else configured_token_budget
     )
     language = _normalize_prompt_language(config_base.get("preferred_language"))
     spec_dict["leader"] = _build_leader_spec(team_raw, language=language)
