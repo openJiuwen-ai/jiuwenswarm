@@ -90,6 +90,7 @@ from jiuwenswarm.server.handlers.schedule import handle_schedule_request
 from jiuwenswarm.server.handlers.session import (
     handle_history_append_record,
     handle_history_get,
+    handle_session_delete,
     handle_session_input_intent,
     handle_session_list,
     handle_session_message_continue_queued,
@@ -198,6 +199,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SESSION_FORK: handle_session_fork,
     ReqMethod.SESSION_LIST: handle_session_list,
     ReqMethod.SESSION_RENAME: handle_session_rename,
+    ReqMethod.SESSION_DELETE: handle_session_delete,
     ReqMethod.SESSION_REBIND_PROJECT: handle_session_rebind_project,
     ReqMethod.SESSION_SWITCH: handle_session_switch,
     ReqMethod.SESSION_PLAN_STATUS: handle_session_plan_status,

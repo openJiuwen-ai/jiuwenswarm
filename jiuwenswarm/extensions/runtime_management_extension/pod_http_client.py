@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -29,6 +30,7 @@ from jiuwenswarm.extensions.runtime_management_extension.audit_emit import (
 )
 from jiuwenswarm.extensions.runtime_management_extension.link_mtls import LinkMTLSConfig
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
+    HttpMethodNotHandled,
     assemble_rest_request,
     normalize_agent_http_base,
 )
@@ -38,6 +40,31 @@ from jiuwenswarm.gateway.routing.agent_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_peer_ip(host_or_url: str | None) -> str:
+    """从 URL 取出对端地址，只给审计日志的 DSTIP 用。解析失败时记成 "-"。"""
+    text = str(host_or_url or "").strip()
+    if not text:
+        return "-"
+    host = urlsplit(text if "://" in text else f"//{text}").hostname or text
+    host = host.strip().strip("[]")
+    if not host:
+        return "-"
+    try:
+        socket.inet_pton(socket.AF_INET, host)
+        return host
+    except OSError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return "-"
+    for info in infos:
+        addr = info[4][0] if info and info[4] else ""
+        if addr:
+            return str(addr)
+    return "-"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -70,6 +97,27 @@ class _StreamScope:
     service_id: str
     workspace_key: str
     session_id: str
+
+
+def _http_method_not_handled(envelope: E2AEnvelope, message: str) -> AgentResponse:
+    """没有专用网址时直接回给调用方，不再发往 Agent。"""
+    return AgentResponse(
+        request_id=str(envelope.request_id or ""),
+        channel_id=str(envelope.channel or "web"),
+        ok=False,
+        payload={"error": message, "code": "HTTP_METHOD_NOT_HANDLED"},
+    )
+
+
+def _http_method_not_handled_chunk(
+    envelope: E2AEnvelope, message: str
+) -> AgentResponseChunk:
+    return AgentResponseChunk(
+        request_id=str(envelope.request_id or ""),
+        channel_id=str(envelope.channel or "web"),
+        payload={"error": message, "code": "HTTP_METHOD_NOT_HANDLED"},
+        is_complete=True,
+    )
 
 
 def http_unary_to_agent_response(
@@ -334,16 +382,22 @@ class HttpSseAgentServerClient(AgentServerClient):
     async def send_request(
         self, envelope: E2AEnvelope, *, base_url: str | None = None
     ) -> AgentResponse:
-        from jiuwenswarm.common.audit_net import resolve_peer_ip
-
         with AuditTimer() as timer:
-            http = self._ensure_http()
             api_root = self._resolve_api_root(base_url)
             envelope.is_stream = False
-            assembled = assemble_rest_request(envelope, base_url=api_root)
+            try:
+                assembled = assemble_rest_request(envelope, base_url=api_root)
+            except HttpMethodNotHandled as exc:
+                logger.info(
+                    "[E2A][out][http][unary] request_id=%s method=%s 没有 HTTP 处理",
+                    envelope.request_id,
+                    envelope.method,
+                )
+                return _http_method_not_handled(envelope, str(exc))
+            http = self._ensure_http()
             channel_id = str(envelope.channel or "web")
             rid = str(envelope.request_id or "")
-            peer_ip = resolve_peer_ip(assembled.url or api_root)
+            peer_ip = _resolve_peer_ip(assembled.url or api_root)
             logger.info(
                 "[E2A][out][http][unary] request_id=%s method=%s %s %s rpc=%s",
                 rid,
@@ -453,10 +507,19 @@ class HttpSseAgentServerClient(AgentServerClient):
     async def send_request_stream(
         self, envelope: E2AEnvelope, *, base_url: str | None = None
     ) -> AsyncIterator[AgentResponseChunk]:
-        http = self._ensure_http()
         api_root = self._resolve_api_root(base_url)
         envelope.is_stream = True
-        assembled = assemble_rest_request(envelope, base_url=api_root)
+        try:
+            assembled = assemble_rest_request(envelope, base_url=api_root)
+        except HttpMethodNotHandled as exc:
+            logger.info(
+                "[E2A][out][http][stream] request_id=%s method=%s 没有 HTTP 处理",
+                envelope.request_id,
+                envelope.method,
+            )
+            yield _http_method_not_handled_chunk(envelope, str(exc))
+            return
+        http = self._ensure_http()
         channel_id = str(envelope.channel or "web")
         rid = str(envelope.request_id or "")
         logger.info(

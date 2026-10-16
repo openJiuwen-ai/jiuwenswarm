@@ -296,6 +296,71 @@ async def handle_session_plan_status(ctx: RequestContext) -> None:
         resp.agent_ref = request.agent_ref
     await ctx.sink.send_response(resp)
 
+async def handle_session_delete(ctx: RequestContext) -> None:
+    """删除会话。和网页通道里的删除走同一套归档服务，避免掉进聊天。"""
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveService
+
+    request = ctx.request
+    params = request.params if isinstance(request.params, dict) else {}
+    service = SessionArchiveService(ctx.services.execution_runtime())
+    try:
+        ids = lc.parse_ids(params, delete=True)
+        results = []
+        for sid in ids:
+            try:
+                results.append(
+                    await service.session(sid, "delete", request.channel_id or "")
+                )
+            except lc.LifecycleError as exc:
+                results.append(
+                    dict(
+                        session_id=sid,
+                        ok=False,
+                        code=exc.code,
+                        error=str(exc),
+                        **exc.details,
+                    )
+                )
+        if "session_ids" not in params:
+            ok = bool(results[0]["ok"])
+            if ok:
+                payload = {
+                    "session_id": ids[0],
+                    "project_id": results[0].get("project_id", ""),
+                }
+            else:
+                payload = {
+                    key: value
+                    for key, value in results[0].items()
+                    if key not in {"session_id", "ok"}
+                }
+        else:
+            succeeded = sum(bool(item["ok"]) for item in results)
+            ok = True
+            payload = {
+                "succeeded_count": succeeded,
+                "failed_count": len(results) - succeeded,
+                "results": results,
+            }
+    except lc.LifecycleError as exc:
+        ok = False
+        payload = {"code": exc.code, "error": str(exc), **exc.details}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("session.delete failed")
+        ok = False
+        payload = {"code": "INTERNAL_ERROR", "error": str(exc)}
+    await ctx.sink.send_response(
+        AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=ok,
+            payload=payload,
+            metadata=request.metadata,
+        )
+    )
+
+
 async def handle_session_list(ctx: RequestContext) -> None:
     """处理 session.list 请求：返回历史会话基础信息列表。
 

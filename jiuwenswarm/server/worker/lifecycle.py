@@ -310,6 +310,9 @@ async def start_worker_runtime(
     server = await asyncio.to_thread(_construct_runtime_server)
     await asyncio.sleep(0)
     log_startup_stage("runtime_constructed")
+    from jiuwenswarm.server.startup_switches import resolve_websocket_enabled, ws_server_config
+
+    server._websocket_enabled = resolve_websocket_enabled(config_section=ws_server_config())
     if on_constructed is not None:
         await on_constructed(server)
     set_hooks = getattr(server, "set_runtime_lifecycle_hooks", None)
@@ -319,17 +322,6 @@ async def start_worker_runtime(
             on_warmup_retry=signals.warmup_retry,
             on_failed=signals.failed,
         )
-    from jiuwenswarm.server.startup_switches import resolve_websocket_enabled
-
-    def _ws_config() -> dict:
-        try:
-            from jiuwenswarm.common.config import get_config
-            section = get_config().get("ws_server")
-        except Exception:
-            return {}
-        return section if isinstance(section, dict) else {}
-
-    server._websocket_enabled = resolve_websocket_enabled(config_section=_ws_config())
     from jiuwenswarm.server.process_services import ProcessServices
 
     await ProcessServices(server).start()

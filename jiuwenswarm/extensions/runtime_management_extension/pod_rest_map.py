@@ -5,15 +5,12 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import quote, urljoin
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
-
-logger = logging.getLogger(__name__)
 
 API_PREFIX = "/api/v1"
 DEFAULT_HTTP_PORT = 8766
@@ -57,6 +54,19 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("mcp.server.update", "POST", "/mcp/servers/update"),
     ("mcp.server.list", "GET", "/mcp/servers"),
     ("mcp.server.get", "GET", "/mcp/servers/{name}"),
+    # 网页实际转发的是 mcp.list 这一套。用 POST 是为了保住布尔和字典，
+    # 查询串会把它们变成字符串。
+    ("mcp.list", "POST", "/mcp/actions/list"),
+    ("mcp.show", "POST", "/mcp/actions/show"),
+    ("mcp.install", "POST", "/mcp/actions/install"),
+    ("mcp.uninstall", "POST", "/mcp/actions/uninstall"),
+    ("mcp.connect", "POST", "/mcp/actions/connect"),
+    ("mcp.wait_auth", "POST", "/mcp/actions/wait-auth"),
+    ("mcp.cancel_connect", "POST", "/mcp/actions/cancel-connect"),
+    ("mcp.disconnect", "POST", "/mcp/actions/disconnect"),
+    ("mcp.register_custom", "POST", "/mcp/actions/register-custom"),
+    ("mcp.delete_custom", "POST", "/mcp/actions/delete-custom"),
+    ("mcp.save_credentials", "POST", "/mcp/actions/save-credentials"),
     ("command.sandbox", "POST", "/sessions/{session_id}/commands/sandbox"),
     ("command.btw", "POST", "/sessions/{session_id}/commands/btw"),
     ("command.add_dir", "POST", "/sessions/{session_id}/commands/add-dir"),
@@ -84,6 +94,10 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("team.binding.generate", "POST", "/teams/bindings/actions/generate"),
     ("team.session.bind", "POST", "/teams/{team_name}/sessions/{session_id}/bind"),
     ("team.snapshot", "GET", "/sessions/{session_id}/team/snapshot"),
+    ("team.list", "GET", "/sessions/{session_id}/teams"),
+    ("org.snapshot", "GET", "/sessions/{session_id}/organization/snapshot"),
+    ("a4p.config.get", "GET", "/a4p/config"),
+    ("a4p.config.update", "PUT", "/a4p/config"),
     ("team.members.get", "GET", "/sessions/{session_id}/team/members"),
     ("team.history.get", "GET", "/sessions/{session_id}/team/history"),
     ("team.mq.publish", "POST", "/teams/mq/publish"),
@@ -204,6 +218,10 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("im.hosting.login.status", "GET", "/im/hosting/login/status"),
     ("browser.runtime_restart", "POST", "/runtime/browser/actions/restart"),
     ("proactive.tick", "POST", "/proactive/actions/tick"),
+    ("proactive.feedback", "POST", "/proactive/actions/feedback"),
+    ("swarmflow.pause", "POST", "/sessions/{session_id}/swarmflow/actions/pause"),
+    ("swarmflow.resume", "POST", "/sessions/{session_id}/swarmflow/actions/resume"),
+    ("swarmflow.stop", "POST", "/sessions/{session_id}/swarmflow/actions/stop"),
     ("acp.tool_response", "POST", "/acp/tool-responses"),
     ("symphony.plan", "POST", "/symphony/actions/plan"),
     ("symphony.build_score", "POST", "/symphony/actions/build-score"),
@@ -245,6 +263,10 @@ REST_ROUTES: dict[str, tuple[str, str]] = {method: (verb, path) for method, verb
 
 class RestAssemblyError(ValueError):
     """REST 路径无法从信封拼出（缺 method / 缺路径占位符）。"""
+
+
+class HttpMethodNotHandled(RestAssemblyError):
+    """这个方法没有专用 HTTP 网址，Gateway 不再改走 /rpc。"""
 
 
 @dataclass(frozen=True)
@@ -332,17 +354,41 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     return headers
 
 
-def _lookup_route(method: str, *, is_stream: bool) -> tuple[str, str, bool]:
+def method_has_http_handler(method: str) -> bool:
+    """Agent 的 HTTP 处理表或聊天适配里有这个方法时，才使用专用网址。"""
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.server.dispatch import HANDLERS
+    from jiuwenswarm.server.http_chat import is_http_chat_method
+
+    try:
+        req_method = ReqMethod(method)
+    except ValueError:
+        return False
+    return is_http_chat_method(req_method) or req_method in HANDLERS
+
+
+def declared_http_routes() -> tuple[tuple[str, str, str], ...]:
+    """返回实际要注册的 ``(方法名, 动词, 路径)``。没有处理函数的不出现。"""
+    chosen: dict[tuple[str, str], str] = {}
+    for method, (verb, path) in REST_ROUTES.items():
+        if not method_has_http_handler(method):
+            continue
+        key = (verb, path)
+        if key not in chosen:
+            chosen[key] = method
+    return tuple((method, verb, path) for (verb, path), method in chosen.items())
+
+
+def _lookup_route(method: str, *, is_stream: bool) -> tuple[str, str]:
     if method in {"chat.send", "chat.resume"}:
         path = "/chat/completions" if method == "chat.send" else "/chat/resume"
-        return "POST", path, False
-    if method == "history.get" and is_stream:
-        return "GET", "/sessions/{session_id}/history/stream", False
+        return "POST", path
+    if method == "history.get" and is_stream and method_has_http_handler(method):
+        return "GET", "/sessions/{session_id}/history/stream"
     found = REST_ROUTES.get(method)
-    if found is not None:
-        return found[0], found[1], False
-    logger.warning("[AgentRestMap] method=%s 不在 REST 表，降级 POST /rpc/{method}", method)
-    return "POST", f"/rpc/{quote(method, safe='.')}", True
+    if found is not None and method_has_http_handler(method):
+        return found[0], found[1]
+    raise HttpMethodNotHandled(f"这个方法还没有 HTTP 处理: {method}")
 
 
 def _fill_path(template: str, values: Mapping[str, Any]) -> tuple[str, set[str]]:
@@ -388,7 +434,7 @@ def assemble_rest_request(envelope: E2AEnvelope, *, base_url: str) -> AssembledR
     if not method:
         raise RestAssemblyError("envelope.method 为空，无法组装 REST")
 
-    verb, template, rpc = _lookup_route(method, is_stream=bool(envelope.is_stream))
+    verb, template = _lookup_route(method, is_stream=bool(envelope.is_stream))
     values: dict[str, Any] = dict(envelope.params or {})
     if method in _METHODS_WITHOUT_PARAM_SESSION_ID:
         # 勿 setdefault 信封 session_id；并剥掉 params 里误带的客户端临时 id。
@@ -416,5 +462,5 @@ def assemble_rest_request(envelope: E2AEnvelope, *, base_url: str) -> AssembledR
         headers=headers,
         json_body=json_body,
         query=query,
-        used_rpc_fallback=rpc,
+        used_rpc_fallback=False,
     )

@@ -78,18 +78,6 @@ async def _start_supervisor(front: object, host: str, port: int) -> object:
     return supervisor
 
 
-def _ws_server_config() -> dict:
-    """读 WebSocket 门的配置。读不到就当没写，门保持打开。"""
-    try:
-        from jiuwenswarm.common.config import get_config
-
-        section = get_config().get("ws_server")
-    except Exception:
-        logger.debug("[AgentServer] 读取 ws_server 配置失败", exc_info=True)
-        return {}
-    return section if isinstance(section, dict) else {}
-
-
 async def _run(host: str, port: int) -> None:
     from jiuwenswarm.server.front.server import AgentServerFront
 
@@ -109,9 +97,9 @@ async def _run(host: str, port: int) -> None:
     )
 
     front = AgentServerFront(host=host, port=port)
-    from jiuwenswarm.server.startup_switches import resolve_websocket_enabled
+    from jiuwenswarm.server.startup_switches import resolve_websocket_enabled, ws_server_config
 
-    websocket_enabled = resolve_websocket_enabled(config_section=_ws_server_config())
+    websocket_enabled = resolve_websocket_enabled(config_section=ws_server_config())
     if websocket_enabled:
         await front.start()
         logger.info(
@@ -168,12 +156,6 @@ async def _run(host: str, port: int) -> None:
     finally:
         logger.info("[AgentServer] stopping…")
         stop_event.set()
-        try:
-            from jiuwenswarm.server.agent_http_server import stop_http_server
-
-            await stop_http_server()
-        except Exception as exc:
-            logger.warning("[AgentHTTPServer] stop failed: %s", exc)
         begin_drain = getattr(front, "begin_drain", None)
         if callable(begin_drain):
             begin_drain()

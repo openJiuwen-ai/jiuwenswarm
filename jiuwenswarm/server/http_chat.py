@@ -26,6 +26,11 @@ _CHAT_BOOKKEEPING = (
 )
 
 
+def is_http_chat_method(method: ReqMethod | None) -> bool:
+    """这三条聊天不在普通处理函数表里，网址直接交给聊天适配。"""
+    return method in _CHAT_BOOKKEEPING
+
+
 async def handle_http_chat(ctx: RequestContext) -> None:
     """先拦住归档或删除中的会话，再跑聊天前的三步，然后回包。"""
     request = ctx.request

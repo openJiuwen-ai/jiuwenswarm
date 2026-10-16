@@ -25,6 +25,17 @@ def _as_bool(value: Any, default: bool) -> bool:
     return default
 
 
+def ws_server_config() -> dict:
+    """读 WebSocket 门的配置。读不到就当没写，门保持打开。"""
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        section = get_config().get("ws_server")
+    except Exception:
+        return {}
+    return section if isinstance(section, dict) else {}
+
+
 def resolve_websocket_enabled(
     *,
     env: dict[str, str] | None = None,
