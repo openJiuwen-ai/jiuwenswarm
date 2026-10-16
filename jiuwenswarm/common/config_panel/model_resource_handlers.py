@@ -105,8 +105,8 @@ async def model_resource_handler(
 
 
 async def session_selection_handler(channel, ws, req_id, params, session_id):
-    from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
-    from jiuwenswarm.server.runtime.session.model_selection_store import set_session_model_selection
+    from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
+    from jiuwenswarm.common.model_selection_store import set_session_model_selection
 
     try:
         params = params or {}

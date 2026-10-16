@@ -199,7 +199,8 @@ def test_single_model_selection_rejects_route_id():
 
 
 def test_group_route_selection_round_trips_session_store(monkeypatch, tmp_path):
-    from jiuwenswarm.server.runtime.session import model_selection_store, session_metadata
+    from jiuwenswarm.common import model_selection_store
+    from jiuwenswarm.server.runtime.session import session_metadata
 
     monkeypatch.setattr(model_selection_store, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: tmp_path)

@@ -153,7 +153,7 @@ async def test_actual_missing_stdio_command_makes_capability_failed() -> None:
         "jiuwenswarm.common.mcp_config.get_mcp_server_config",
         return_value=entry,
     ), patch(
-        "jiuwenswarm.common.mcp_config.CredentialStore.get_all",
+        "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.get_all",
         return_value={},
     ):
         registry.mark_minimum_ready()

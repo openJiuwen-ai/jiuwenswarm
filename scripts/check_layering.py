@@ -53,38 +53,10 @@ logger = logging.getLogger(__name__)
 
 # 键为模块名（点号分隔）。R2 原存量 server/ipc/protocol.py -> gateway.routing.keys
 # 已被上游提交消除（2026-10-13 同步验证），不再列入。
-# 以下三对为 a6b9ea2e0（模型组前后端集成，2026-10-13 21:34 进 develop，晚于
-# 本 MR 创建 1.5 小时——本 MR 的 CI 绿只是跑得早）引入的新增反向引用，
-# 已在 !8029（B1'：model_routing_registry/model_selection_store 下沉、
-# session_metadata 注入化）修复；该 MR 合入后本三对随全表缩减。
-KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {
-    "jiuwenswarm.common.config_panel.model_resource_handlers": {
-        "jiuwenswarm.server.runtime.model_routing_registry",
-        "jiuwenswarm.server.runtime.session.model_selection_store",
-    },
-    "jiuwenswarm.common.model_migration": {
-        "jiuwenswarm.server.runtime.session.session_metadata",
-    },
-    "jiuwenswarm.common.config": {
-        "jiuwenswarm.server.runtime.mcp.state_store",
-        "jiuwenswarm.server.runtime.mcp.registry",
-        "jiuwenswarm.symphony.config",
-    },
-    "jiuwenswarm.common.config_panel.config_set_handlers": {
-        "jiuwenswarm.server.runtime.a2ui.integration",
-        "jiuwenswarm.symphony.config",
-        "jiuwenswarm.server.runtime.team_binding_store",
-        "jiuwenswarm.server.runtime.team_entity_store",
-    },
-    "jiuwenswarm.common.mcp_config": {
-        "jiuwenswarm.server.runtime.mcp.credential",
-        "jiuwenswarm.server.runtime.mcp.exc_group",
-        "jiuwenswarm.server.runtime.mcp.state_store",
-    },
-    "jiuwenswarm.common.utils": {
-        "jiuwenswarm.server.runtime.mcp.package_manifest",
-    },
-}
+# R1 存量（含 a6b9ea2e0 于 2026-10-13 引入的 3 对）已由 B1'
+# （common 注入化 + 纯模块下沉）全部消除；!8016 合入的临时白名单
+# （14 对）随本 MR 缩减为空。
+KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {}
 
 KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 
@@ -96,6 +68,17 @@ KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
         "jiuwenswarm.channels.web.directory_picker",
         "jiuwenswarm.channels.web.file_picker",
         "jiuwenswarm.agents.harness.common.browser_config",
+    },
+    # 过渡桥接（B1'）：gateway 与 AgentServer 同机部署期间的直连实现，
+    # gateway 独立成仓时整体删除并由 A-API HTTP 实现替代。
+    "jiuwenswarm.gateway.server_store_bridge": {
+        "jiuwenswarm.server.runtime.mcp.state_store",
+        "jiuwenswarm.server.runtime.mcp.registry",
+        "jiuwenswarm.server.runtime.mcp.credential",
+        "jiuwenswarm.server.runtime.a2ui.integration",
+        "jiuwenswarm.server.runtime.team_binding_store",
+        "jiuwenswarm.server.runtime.team_entity_store",
+        "jiuwenswarm.server.runtime.session.session_metadata",
     },
 }
 KNOWN_R4_EMBEDDED_FOREIGN: dict[str, set[str]] = {}
@@ -115,14 +98,14 @@ BASELINE = {
         "symphony": 11, "observability": 11, "instance_manager": 6, "channels": 4,
         "dotenv_early": 1, "llm_provider_compat_patch": 1,
     },
-    # common 反向引用（R1 存量）：6 个模块、14 个目标对（含 a6b9ea2e0 新增 3 对）
-    "common_backref_modules": 6,
-    "common_backref_imports": 14,
+    # common 反向引用（R1 存量）：B1' 已全部消除（注入化 + 纯模块下沉）
+    "common_backref_modules": 0,
+    "common_backref_imports": 0,
     # gateway/embedded/ 下 AgentServer 拷贝的规模（A1–A3/A5 迁移对象）
     "embedded_files": 27,
     "embedded_loc": 8540,
     # gateway 直接 import 的外部（非 gateway/common）模块数
-    "gateway_direct_foreign": 31,
+    "gateway_direct_foreign": 38,
 }
 
 

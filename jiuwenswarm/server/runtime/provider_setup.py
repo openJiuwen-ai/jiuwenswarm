@@ -1,0 +1,44 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Server 家族进程的注入点装配。
+
+common 经 ``common.external_providers`` 反向取用 server 侧存储实现
+（分层规则 R1），注册由实现模块在文件末尾自注册（import 即注册）。
+server 家族的进程形态中：
+
+- **AgentServer 主进程**：功能路径自然加载各实现模块，无需显式装配；
+- **runtime worker 子进程**：启动链（worker.main → service → ipc/... →
+  lifecycle）不加载任何 server runtime 模块，而 ``_preload_runtime_backend``
+  会在功能模块加载**之前**调用 ``migrate_legacy_model_selections``（经
+  ``provider("session_metadata")``）——必须在进入任何注入点调用前显式
+  装配（P0 回归：worker 启动即 ExternalProviderUnregistered，AGENT_READY
+  永不到达）。
+
+与 gateway 进程的过渡装配（``gateway/server_store_bridge``，拆仓时删除）
+不同，本模块是 server 侧的常驻服务装配。
+"""
+
+from __future__ import annotations
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+_INSTALLED = False
+
+
+def install() -> None:
+    """加载实现模块，触发其向 common 注入点自注册（幂等）。"""
+    global _INSTALLED
+    if _INSTALLED:
+        return
+    import jiuwenswarm.server.runtime.mcp.state_store  # noqa: F401
+    import jiuwenswarm.server.runtime.mcp.registry  # noqa: F401
+    import jiuwenswarm.server.runtime.mcp.credential  # noqa: F401
+    import jiuwenswarm.server.runtime.a2ui.integration  # noqa: F401
+    import jiuwenswarm.server.runtime.team_binding_store  # noqa: F401
+    import jiuwenswarm.server.runtime.team_entity_store  # noqa: F401
+    import jiuwenswarm.server.runtime.session.session_metadata  # noqa: F401
+
+    _INSTALLED = True
+    logger.debug("[server-provider-setup] common external providers installed")

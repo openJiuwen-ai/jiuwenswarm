@@ -280,3 +280,18 @@ def ensure_team_entity_for_binding(
         created_at=float(created_at) if isinstance(created_at, (int, float)) else None,
         store=store,
     )
+
+
+# --------------------------------------------------------------------------- #
+# common 注入点自注册：import 即注册，供 common 经
+# ``common.external_providers.provider("team_entity_store")`` 反向取用（分层规则 R1）。
+# --------------------------------------------------------------------------- #
+def _register_common_provider() -> None:
+    import sys
+
+    from jiuwenswarm.common.external_providers import register
+
+    register("team_entity_store", sys.modules[__name__])
+
+
+_register_common_provider()

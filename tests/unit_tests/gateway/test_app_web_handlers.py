@@ -28,6 +28,11 @@ from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     _validate_wechat_numeric_params,
 )
 from jiuwenswarm.gateway.heartbeat import HeartbeatServiceUnavailableError
+from jiuwenswarm.gateway.server_store_bridge import install as _install_server_stores
+
+# 与 gateway 进程启动装配一致（B1' 注入点）：config 面板 handler 经
+# common.external_providers 取 server 侧存储实现
+_install_server_stores()
 from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
 from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
 

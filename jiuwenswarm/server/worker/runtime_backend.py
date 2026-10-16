@@ -222,10 +222,17 @@ def preload_runtime_backend() -> None:
         # Description indexes may be consumed by SDK module imports. Repair
         # stale description layouts first, then overlap only code imports with
         # user-workspace/configuration writes. SDK imports do not read Swarm
-        # config; all Swarm Runtime imports remain after this joined barrier.
+        # config; execution Runtime imports remain after this joined barrier.
         from jiuwenswarm.common.utils import cleanup_stale_openjiuwen_descs
 
         cleanup_stale_openjiuwen_descs()
+    # Configuration migrations use common's injected stores. Install every
+    # server provider before either required-preparation branch can consume one.
+    from jiuwenswarm.server.runtime.provider_setup import install as install_providers
+
+    began = time.monotonic()
+    install_providers()
+    _log_preparation_stage("provider_setup", began)
     began = time.monotonic()
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="worker-required") as preparation:
         config = preparation.submit(_prepare_worker_configuration)
