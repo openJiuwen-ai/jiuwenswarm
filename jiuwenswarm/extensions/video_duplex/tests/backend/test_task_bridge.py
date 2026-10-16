@@ -12,10 +12,11 @@ from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.video_duplex.backend import task_adapter
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
-from jiuwenswarm.extensions.video_duplex.backend.tasks import bridge
+from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
-from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
-from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import VoiceTaskServerAdapter
+from jiuwenswarm.server.runtime.video_task import bridge
+from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
+from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
@@ -28,7 +29,7 @@ def routed_task_fixture(tmp_path, monkeypatch):
     service.kick = Mock()
     task = service.submit("alice", "voice", "create", "Plan a meeting")
     task = store.update(task["id"], lambda t: t.update(status="running", checkpoint_open=True))
-    endpoint = bridge.GatewayTaskEndpoint(store)
+    endpoint = GatewayTaskEndpoint(store)
     request = SimpleNamespace(
         channel_id="video_tool", session_id=task["core_session_id"],
         request_id=task["request_id"], user_id="alice",

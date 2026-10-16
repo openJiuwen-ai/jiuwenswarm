@@ -13,7 +13,7 @@ from jiuwenswarm.extensions.video_duplex.backend.tasks.interactions import (
     information_question,
     native_approval_question,
 )
-from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
 from jiuwenswarm.extensions.video_duplex.backend.task_adapter import AgentTaskExecutor
 from jiuwenswarm.extensions.video_duplex.backend.video_search import execute_core_agent
 from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import (
@@ -65,7 +65,7 @@ async def test_voice_answer_replay_preserves_answer_dto_without_duplicate_execut
 
 async def test_cancel_closes_only_the_exact_output_lease_without_claiming_settlement(system):
     from unittest.mock import AsyncMock
-    from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import (
+    from jiuwenswarm.server.runtime.video_task.execution import (
         TaskExecutionBinding, bind_task_output, close_task_output,
     )
 
@@ -89,7 +89,7 @@ async def test_cancel_closes_only_the_exact_output_lease_without_claiming_settle
 
 async def test_cancel_wakes_native_output_waiter_after_round_already_stopped(system):
     from openjiuwen.harness.schema.interaction import OutputLeaseManager, InteractionOutputStream
-    from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import (
+    from jiuwenswarm.server.runtime.video_task.execution import (
         TaskExecutionBinding,
         bind_task_output,
         close_task_output,
