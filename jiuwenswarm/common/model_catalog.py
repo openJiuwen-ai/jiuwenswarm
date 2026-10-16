@@ -142,6 +142,7 @@ class ModelCatalog:
 
         hit = self.get_model(model_id)
         entry = deepcopy(hit["entry"])
+        expose_api_key = include_api_key and hit["source"] == "defaults" and not is_login_model(entry)
         model_config = entry.get("model_config_obj")
         if isinstance(model_config, dict) and isinstance(model_config.get("reasoning_level"), bool):
             model_config["reasoning_level"] = "on" if model_config["reasoning_level"] else "off"
