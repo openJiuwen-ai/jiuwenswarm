@@ -250,6 +250,21 @@ def _strip_whitespace(text: str) -> str:
     """
     return re.sub(r"\s+", "", text or "")
 
+
+def _is_attach_only_subscription(params: Any) -> bool:
+    """Whether the request params describe a team attach-only subscription.
+
+    An attach-only ``chat.send`` is a passive event subscription: it submits
+    no input, creates no runtime, and runs no model.  Execution-scoped side
+    effects (model config checks, active-session marking, task reservation)
+    must skip it — otherwise a long-lived subscription keeps the session
+    marked as executing and blocks unrelated operations such as model
+    switches.
+    """
+    from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
+
+    return isinstance(params, dict) and params.get(TEAM_ATTACH_ONLY_PARAM) is True
+
 try:
     from openjiuwen.harness.tools import is_paid_search_enabled
 except ImportError:  # Compatibility with older agent-core versions.
@@ -7780,6 +7795,13 @@ class JiuWenSwarmDeepAdapter:
         return "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
 
     def _model_config_error(self, request: AgentRequest) -> tuple[str, str] | None:
+        if _is_attach_only_subscription(request.params):
+            # An attach-only subscription submits no input and creates no
+            # runtime, so model config is irrelevant to it.  Web channel
+            # requests carry no login credentials either; running the check
+            # here would reject the subscription with a spurious
+            # login-required error on every session switch or refresh.
+            return None
         if self._moa_runtime is not None:
             # Enhanced execution owns its model independently of the ordinary
             # selection, including a saved model/group that no longer exists.
@@ -16580,7 +16602,10 @@ class JiuWenSwarmDeepAdapter:
             try:
                 session_adapter = await self._get_session_adapter_for_request(
                     request,
-                    reserve_activity=True,
+                    # An attach-only subscription is not an execution: do not
+                    # reserve activity for it, or its long-lived stream keeps
+                    # the session marked busy and blocks model switches.
+                    reserve_activity=not _is_attach_only_subscription(request.params),
                     external_harness_binding=runtime_binding,
                 )
             except ExternalHarnessBindingError as exc:
@@ -16733,8 +16758,11 @@ class JiuWenSwarmDeepAdapter:
             resolved_model,
             session_id=request.session_id,
         )
-        self._mark_session_active(session_id)
-        self._register_session_agent_task(session_id)
+        # Attach subscriptions are passive observers, not executions; see the
+        # streaming twin of this guard for the full rationale.
+        if not _is_attach_only_subscription(request.params):
+            self._mark_session_active(session_id)
+            self._register_session_agent_task(session_id)
         if self._stream_event_rail is not None:
             self._stream_event_rail.reset_abort(session_id)
         image_files_token = None
@@ -16990,7 +17018,11 @@ class JiuWenSwarmDeepAdapter:
                 authorization_context.session_id,
                 authorization_context.request_id,
             )
-            self._unmark_session_active(session_id)
+            # Attach subscriptions never marked the session active; skip the
+            # unmark symmetrically so a concurrent stream's counter entry and
+            # rail state are not wiped.
+            if not _is_attach_only_subscription(request.params):
+                self._unmark_session_active(session_id)
 
         content = "".join(collected_content) if collected_content else ""
 
@@ -17288,7 +17320,10 @@ class JiuWenSwarmDeepAdapter:
             try:
                 session_adapter = await self._get_session_adapter_for_request(
                     request,
-                    reserve_activity=True,
+                    # An attach-only subscription is not an execution: do not
+                    # reserve activity for it, or its long-lived stream keeps
+                    # the session marked busy and blocks model switches.
+                    reserve_activity=not _is_attach_only_subscription(request.params),
                     external_harness_binding=runtime_binding,
                 )
             except ExternalHarnessBindingError as exc:
@@ -17867,8 +17902,14 @@ class JiuWenSwarmDeepAdapter:
             resolved_model,
             session_id=request.session_id,
         )
-        self._mark_session_active(session_id)
-        self._register_session_agent_task(session_id)
+        # An attach-only subscription is a passive observer: marking the
+        # session active for its stream lifetime would make every model
+        # switch fail with "session is executing".  The unregister/unmark in
+        # the stream finally is skipped symmetrically below.
+        attach_subscription = _is_attach_only_subscription(request.params)
+        if not attach_subscription:
+            self._mark_session_active(session_id)
+            self._register_session_agent_task(session_id)
         stream_consumer_cancelled = False
         image_files_token = None
         _run_span: Any = None
@@ -18841,10 +18882,14 @@ class JiuWenSwarmDeepAdapter:
             # _stop_session_interrupt_work sets abort flags but does NOT
             # call cleanup_session(), so skipping cleanup here would leak
             # _abort_requested / _pause_events entries on long-lived adapters.
-            self._unmark_session_active(
-                session_id,
-                cleanup_rail=True,
-            )
+            # Attach subscriptions never marked the session active; skipping
+            # symmetrically avoids popping another stream's counter entry and
+            # wiping its rail state.
+            if not attach_subscription:
+                self._unmark_session_active(
+                    session_id,
+                    cleanup_rail=True,
+                )
 
         summary = {
             "input_tokens": usage_accumulator["input_tokens"],
