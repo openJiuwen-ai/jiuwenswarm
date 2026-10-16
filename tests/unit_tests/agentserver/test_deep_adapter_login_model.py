@@ -57,6 +57,39 @@ def test_free_model_without_credentials_is_refused_not_silently_swapped(adapter)
     assert adapter._model_config_error(_request("glm-5#7"))[0] == "login_required"
 
 
+def test_attach_only_subscription_skips_model_config_check(adapter):
+    from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
+
+    # The attach subscription carries no input and no credentials; without
+    # the skip it would inherit the session's saved login model and be
+    # rejected with a spurious login-required error on every switch/refresh.
+    request = SimpleNamespace(
+        params={"model_name": "glm-5", TEAM_ATTACH_ONLY_PARAM: True},
+        session_id="s",
+    )
+    assert adapter._model_config_error(request) is None
+
+
+@pytest.mark.parametrize(
+    "params,expected",
+    [
+        ({"attach_only": True}, True),
+        ({"attach_only": False}, False),
+        ({"attach_only": "true"}, False),
+        ({}, False),
+        (None, False),
+        ("attach_only", False),
+        ({"model_name": "glm-5"}, False),
+    ],
+)
+def test_attach_only_subscription_predicate(params, expected):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        _is_attach_only_subscription,
+    )
+
+    assert _is_attach_only_subscription(params) is expected
+
+
 def test_free_model_with_request_scoped_credentials_passes(adapter, monkeypatch):
     monkeypatch.setattr(adapter, "_has_valid_model_config", lambda _name="": False)
     assert adapter._model_config_error(_request("glm-5", **SCOPED)) is None
