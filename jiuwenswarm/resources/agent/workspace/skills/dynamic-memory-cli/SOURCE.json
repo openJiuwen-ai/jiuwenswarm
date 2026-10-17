@@ -1,0 +1,6 @@
+{
+  "implementation": "jiuwenswarm.dynamic-memory-cli",
+  "contract_version": 1,
+  "path": "skills/dynamic-memory-cli/",
+  "integration": "persist-session"
+}
