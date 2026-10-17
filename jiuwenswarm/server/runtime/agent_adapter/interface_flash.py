@@ -255,6 +255,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         #   动态挂载路径上，进 keep 才不会被 _drop_non_whitelist_dynamic_rails
         #   卸载；闸门是 modes.agent.memory.enabled（flash 记忆档归一 agent）。
         "_memory_rail",
+        "_external_memory_rail",
+        "_office_ace_user_profile_rail",
         # ask_user：交互请求动态挂载，留白名单避免 churn（见上方注释）。
         "_ask_user_rail",
     })
@@ -823,7 +825,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         2. 记忆 rail：flash 的统一 memory 工具（FlashMemoryRail）走动态挂载路径，
            这里按归一后的 agent 档调 ``_handle_memory_rail_by_config``（闸门
            ``modes.agent.memory.enabled``，未开启则卸载）；``_memory_rail`` 在 keep
-           白名单内，不会被后续卸载步骤误删。
+           白名单内，不会被后续卸载步骤误删。外接记忆与云画像沿用父类的
+           engine/provider 配置入口，独立于内置 memory 的模式开关。
         3. 卸载白名单（``_FLASH_RAIL_KEEP`` ∪ ``_PROFILE_PROTECTED_RAILS``）外的、
            可能被父类/旧 reload 残留注册的动态 rail。
 
@@ -838,6 +841,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """
         self._last_mode = mode
         await self._handle_memory_rail_by_config("agent")
+        await self._handle_external_memory_rail_by_config()
+        await self._handle_office_ace_user_profile_rail_by_config()
         await self._drop_non_whitelist_dynamic_rails()
 
     async def try_start_dreaming(self, busy_checker=None) -> None:
@@ -1179,6 +1184,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         ("_context_processor_rail", "ContextProcessorRail"),
         ("_memory_rail", "MemoryRail"),
         ("_external_memory_rail", "ExternalMemoryRail"),
+        ("_office_ace_user_profile_rail", "OfficeAceUserProfileRail"),
         ("_skill_evolution_rail", "SkillEvolutionRail"),
         ("_evolution_interrupt_rail", "EvolutionInterruptRail"),
         ("_skill_create_rail", "SkillCreateRail"),
