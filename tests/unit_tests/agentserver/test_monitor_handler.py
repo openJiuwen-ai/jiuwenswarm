@@ -804,6 +804,69 @@ async def test_handle_task_updated_supplements_body_from_db() -> None:
 
 
 @pytest.mark.anyio
+async def test_handle_task_updated_without_payload_status_uses_db_status() -> None:
+    """TASK_UPDATED with no payload status carries the task's current DB status (#5189)."""
+    task_dao = _FakeTaskDao(
+        _FakeTask(task_id="task-2", title="t", content="c", status="in_progress")
+    )
+    handler = _make_handler(task_dao)
+    base = {"type": "team.task.updated", "team_id": "team-1"}
+    event = MonitorEvent(
+        event_type=MonitorEventType.TASK_UPDATED,
+        team_name="team-1",
+        timestamp=123,
+        task_id="task-2",
+        status=None,
+    )
+
+    result = await handler._handle_task(base, event)
+
+    assert result["status"] == "in_progress"
+    assert result["title"] == "t"
+    assert task_dao.get_task_call_count == 1
+
+
+@pytest.mark.anyio
+async def test_handle_task_updated_payload_status_wins_over_db_status() -> None:
+    """An explicit payload status on TASK_UPDATED is not overridden by the DB status."""
+    task_dao = _FakeTaskDao(_FakeTask(task_id="task-2", status="pending"))
+    handler = _make_handler(task_dao)
+    base = {"type": "team.task.updated", "team_id": "team-1"}
+    event = MonitorEvent(
+        event_type=MonitorEventType.TASK_UPDATED,
+        team_name="team-1",
+        timestamp=123,
+        task_id="task-2",
+        status="completed",
+    )
+
+    result = await handler._handle_task(base, event)
+
+    assert result["status"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_handle_task_updated_without_status_and_lookup_fails_omits_status() -> None:
+    """If TASK_UPDATED has no status and the DB lookup fails, status stays absent (no reset)."""
+    task_dao = _FakeTaskDao(get_task_mock=AsyncMock(side_effect=RuntimeError("db down")))
+    handler = _make_handler(task_dao)
+    base = {"type": "team.task.updated", "team_id": "team-1"}
+    event = MonitorEvent(
+        event_type=MonitorEventType.TASK_UPDATED,
+        team_name="team-1",
+        timestamp=123,
+        task_id="task-2",
+        status=None,
+    )
+
+    result = await handler._handle_task(base, event)
+
+    assert result["task_id"] == "task-2"
+    assert "status" not in result
+    assert "title" not in result
+
+
+@pytest.mark.anyio
 async def test_handle_task_created_truncates_over_limit_body() -> None:
     """When title/content exceed the limit, the event carries truncation flags."""
     long_title = "T" * (_TASK_TEXT_LIMIT + 20)
