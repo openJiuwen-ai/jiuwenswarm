@@ -487,6 +487,37 @@ test('resource selection keeps the colleague settings other than skills and conn
   assert.deepEqual(settings.capabilities.starter_prompts, ['帮我整理本周工作进展。']);
 });
 
+test('channel records map public messages and execution trace rows', async () => {
+  const calls = [];
+  const api = createJiuwenMateApi(async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'jiuwenmate.channel.list') {
+      return { channels: [{ id: 'grp_1', name: '产品群', platform: 'feishu', artifacts: 1, token_usage: 12, last_response_minutes: 3 }] };
+    }
+    if (method === 'jiuwenmate.channel.messages') {
+      return { messages: [{ id: 'm1', sender: 'Alice', sender_kind: 'human', text: '', status: 'recalled', attachments: 0 }] };
+    }
+    return {
+      started_at: '2026-10-17T08:00:00+00:00',
+      rows: [{ id: 'e1', trace_id: 'e1', turn: 1, role: 'tool', lane: 'tools', content: 'write_file', start_ms: 0, duration_ms: 4, input_tokens: 0, output_tokens: 0 }],
+    };
+  });
+  const [channel] = await api.listChannels('mate_1');
+  assert.equal(channel.name, '产品群');
+  assert.equal(channel.tokenUsage, 12);
+  const messages = await api.channelMessages('mate_1', 'grp_1');
+  assert.equal(messages[0].status, 'recalled');
+  assert.equal(messages[0].fromColleague, false);
+  const trace = await api.channelTrace('mate_1', 'grp_1');
+  assert.equal(trace.rows[0].role, 'tool');
+  assert.equal(trace.rows[0].lane, 'tools');
+  assert.deepEqual(calls.map((item) => item.method), [
+    'jiuwenmate.channel.list',
+    'jiuwenmate.channel.messages',
+    'jiuwenmate.channel.trace',
+  ]);
+});
+
 test('schedule API preserves interval, validity, completed state and real run history', async () => {
   const calls = [];
   const wire = {

@@ -10,7 +10,7 @@ import {
   Search,
   Trash2,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import collapseIcon from '../../../assets/jiuwenmate/icons/collapse.svg';
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer';
@@ -26,6 +26,7 @@ import { ConversationComposer } from '../components/ConversationComposer';
 import { SegmentedTabs } from '../components/SegmentedTabs';
 import {
   chatPhase,
+  errorMessage,
   formatSharedFileSize,
   isPending,
   type JiuwenMateChatRequest,
@@ -36,8 +37,7 @@ import { ScheduleBoard } from '../schedules/ScheduleBoard';
 import { ScheduleDialog } from '../schedules/ScheduleDialog';
 import { scheduleSummary } from '../schedules/state';
 import type { ScheduleDraft, ScheduleRun } from '../schedules/types';
-import { JIUWENMATE_CHANNEL_MESSAGES, JIUWENMATE_CHANNELS, JIUWENMATE_TRACE_ROWS, JIUWENMATE_TRACE_STARTED_AT } from '../mockData';
-import type { JiuwenMateChannel, JiuwenMateColleague } from '../types';
+import type { JiuwenMateChannel, JiuwenMateChannelMessage, JiuwenMateColleague, JiuwenMateTraceRow } from '../types';
 import { useConversations } from '../useConversations';
 import { newId, usePrivateChat, type JiuwenMateChatApi } from '../usePrivateChat';
 import {
@@ -79,6 +79,7 @@ interface ColleagueWorkspacePageProps extends ColleagueListHandlers {
   onSetScheduleEnabled?: (planId: string, enabled: boolean) => void | Promise<void>;
   onDeleteSchedule?: (planId: string) => void | Promise<void>;
   onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
+  channelApi?: JiuwenMateChannelApi;
 }
 
 const PROMPT_ICONS = [ClipboardList, CalendarDays, FileText];
@@ -88,16 +89,16 @@ const FEATURES = [
   { key: 'schedule', image: featureSchedule },
 ] as const;
 
-function colleagueChannels(colleague: JiuwenMateColleague): readonly JiuwenMateChannel[] {
-  return colleague.imConfigured ? JIUWENMATE_CHANNELS : [];
+export interface JiuwenMateChannelApi {
+  listChannels(agentId: string): Promise<readonly JiuwenMateChannel[]>;
+  channelMessages(agentId: string, groupId: string): Promise<readonly JiuwenMateChannelMessage[]>;
+  channelTrace(agentId: string, groupId: string): Promise<{ startedAt: string; rows: readonly JiuwenMateTraceRow[] }>;
 }
 
 function initialState(colleague: JiuwenMateColleague, intent?: JiuwenMateWorkspaceIntent | null): JiuwenMateWorkspaceState {
-  const channels = colleagueChannels(colleague);
-  const channelId = channels.find((item) => item.id === intent?.channelId)?.id ?? channels[0]?.id ?? null;
-  let state = createWorkspaceState(colleague.id, channelId);
+  let state = createWorkspaceState(colleague.id, intent?.channelId ?? null);
   if (intent) state = selectRecordTab(state, intent.recordTab);
-  if (intent?.trace && channelId) state = openChannelTrace(state);
+  if (intent?.trace && intent.channelId) state = openChannelTrace(state);
   return state;
 }
 
@@ -116,6 +117,7 @@ export function ColleagueWorkspacePage({
   onSetScheduleEnabled,
   onDeleteSchedule,
   onLoadScheduleHistory,
+  channelApi,
   ...listHandlers
 }: ColleagueWorkspacePageProps) {
   const { t } = useTranslation();
@@ -139,10 +141,57 @@ export function ColleagueWorkspacePage({
   const activePlan = colleaguePlans.find((plan) => plan.id === scheduleId) ?? colleaguePlans[0] ?? null;
   const chatConversationId = state.recordTab === 'schedules' && activePlan ? activePlan.conversationId : activeConversationId;
   const privateChat = usePrivateChat(chat, agentId, chatConversationId, connectionEpoch);
+  const [channels, setChannels] = useState<readonly JiuwenMateChannel[]>([]);
+  const [channelMessages, setChannelMessages] = useState<readonly JiuwenMateChannelMessage[]>([]);
+  const [traceRows, setTraceRows] = useState<readonly JiuwenMateTraceRow[]>([]);
+  const [traceStartedAt, setTraceStartedAt] = useState('');
+  const [channelNotice, setChannelNotice] = useState('');
+
+  useEffect(() => {
+    if (!channelApi || !agentId) return undefined;
+    let cancelled = false;
+    setChannelNotice('');
+    channelApi.listChannels(agentId).then((items) => {
+      if (cancelled) return;
+      setChannels(items);
+      setState((current) => {
+        if (current.selectedChannelId && items.some((item) => item.id === current.selectedChannelId)) return current;
+        return items[0] ? { ...current, selectedChannelId: items[0].id } : { ...current, selectedChannelId: null };
+      });
+    }).catch((error: unknown) => {
+      if (!cancelled) setChannelNotice(errorMessage(error) || 'failed');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [channelApi, agentId]);
+
+  useEffect(() => {
+    if (!channelApi || !agentId || !state.selectedChannelId) {
+      setChannelMessages([]);
+      setTraceRows([]);
+      setTraceStartedAt('');
+      return undefined;
+    }
+    let cancelled = false;
+    const groupId = state.selectedChannelId;
+    Promise.all([channelApi.channelMessages(agentId, groupId), channelApi.channelTrace(agentId, groupId)])
+      .then(([messages, trace]) => {
+        if (cancelled) return;
+        setChannelMessages(messages);
+        setTraceRows(trace.rows);
+        setTraceStartedAt(trace.startedAt);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setChannelNotice(errorMessage(error) || 'failed');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [channelApi, agentId, state.selectedChannelId]);
 
   if (!colleague) return null;
 
-  const channels = colleagueChannels(colleague);
   const selectedChannel = channels.find((item) => item.id === state.selectedChannelId) ?? null;
   const activeSession = records.find((item) => item.id === activeConversationId) ?? null;
   const keyword = query.trim();
@@ -156,10 +205,10 @@ export function ColleagueWorkspacePage({
     setPicked(null);
     setBoard(false);
     setScheduleId(null);
-    setState((current) => {
-      const switched = selectColleague(current, id);
-      return { ...switched, selectedChannelId: colleagueChannels(next)[0]?.id ?? null };
-    });
+    setChannels([]);
+    setChannelMessages([]);
+    setTraceRows([]);
+    setState((current) => ({ ...selectColleague(current, id), selectedChannelId: null }));
   };
 
   const openConversation = (conversationId: string) => setPicked({ agentId: colleague.id, conversationId });
@@ -380,7 +429,9 @@ export function ColleagueWorkspacePage({
                     {channel.name.slice(0, 1)}
                   </span>
                   <span>{channel.name}</span>
-                  <em className="jiuwenmate-platform-badge">{t('jiuwenmate.im.feishu')}</em>
+                  <em className="jiuwenmate-platform-badge">
+                    {channel.platform === 'feishu' ? t('jiuwenmate.im.feishu') : channel.platform}
+                  </em>
                 </button>
               </div>
             ))
@@ -505,8 +556,8 @@ export function ColleagueWorkspacePage({
       </header>
       {state.traceOpen ? (
         <ChannelTracePage
-          rows={JIUWENMATE_TRACE_ROWS}
-          startedAt={JIUWENMATE_TRACE_STARTED_AT}
+          rows={traceRows}
+          startedAt={traceStartedAt}
           metric={state.traceMetric}
           filter={state.traceFilter}
           expandedTurns={state.expandedTurns}
@@ -519,7 +570,11 @@ export function ColleagueWorkspacePage({
         />
       ) : (
         <div className="jiuwenmate-channel-view__messages">
-          {JIUWENMATE_CHANNEL_MESSAGES.map((message) => (
+          {channelNotice ? <p className="jiuwenmate-records__empty">{channelNotice}</p> : null}
+          {!channelNotice && channelMessages.length === 0 ? (
+            <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noChannelMessages')}</p>
+          ) : null}
+          {channelMessages.map((message) => (
             <article key={message.id} data-testid="jiuwenmate-channel-message" data-variant={message.id}>
               <header>
                 {message.fromColleague ? (
@@ -534,14 +589,18 @@ export function ColleagueWorkspacePage({
               <p>
                 {message.mentionColleague ? <span className="jiuwenmate-mention">@{colleague.name}</span> : null}
                 {message.mentionColleague ? ' ' : null}
-                {message.content}
+                {message.status === 'recalled' ? t('jiuwenmate.workspace.messageRecalled') : message.content}
               </p>
               {message.attachment ? (
                 <div className="jiuwenmate-attachment-card">
                   <img src={documentIcon} alt="" aria-hidden />
                   <span>
-                    <strong>{message.attachment.title}</strong>
-                    <small>{message.attachment.kind}</small>
+                    <strong>
+                      {message.attachment.kind === 'file'
+                        ? t('jiuwenmate.workspace.attachment', { count: message.attachment.title })
+                        : message.attachment.title}
+                    </strong>
+                    <small>{message.attachment.kind === 'file' ? t('jiuwenmate.workspace.attachmentKind') : message.attachment.kind}</small>
                   </span>
                 </div>
               ) : null}
@@ -558,7 +617,7 @@ export function ColleagueWorkspacePage({
       return (
         <section className="jiuwenmate-main-empty" data-testid="jiuwenmate-channel-main-empty">
           <img src={scheduleEmpty} alt="" aria-hidden />
-          <p>{t('jiuwenmate.workspace.noChannelsHint')}</p>
+          <p>{channelNotice || t('jiuwenmate.workspace.noChannelsHint')}</p>
         </section>
       );
     }

@@ -72,7 +72,7 @@ export interface JiuwenMateTemplate extends JiuwenMateColleagueDraft {
 export interface JiuwenMateChannel {
   id: string;
   name: string;
-  platform: 'feishu';
+  platform: string;
   artifacts: number;
   tokenUsage: number;
   lastResponseMinutes: number;
@@ -84,6 +84,7 @@ export interface JiuwenMateChannelMessage {
   fromColleague: boolean;
   mentionColleague: boolean;
   content: string;
+  status?: string;
   attachment?: { title: string; kind: string };
 }
 

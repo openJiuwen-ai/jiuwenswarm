@@ -513,6 +513,7 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             onSetScheduleEnabled={setScheduleEnabled}
             onDeleteSchedule={removeSchedule}
             onLoadScheduleHistory={loadScheduleHistory}
+            channelApi={api}
             {...listHandlers}
           />
         ) : null;
