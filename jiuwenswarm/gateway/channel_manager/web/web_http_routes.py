@@ -127,6 +127,40 @@ def _history_params(session_id: str, page_idx: int | None) -> dict[str, Any]:
     return {"session_id": session_id, "page_idx": int(page_idx) if page_idx is not None else 1}
 
 
+def _history_params_from_request(
+    session_id: str,
+    request: Request,
+    page_idx: int | None,
+) -> dict[str, Any]:
+    """按页面实际发来的参数组装 history.get。
+
+    当前页面用游标拉历史：``cursor=null`` 加 ``limit``。查询串会丢掉 null，
+    所以只看到 ``limit``、没有 ``page_idx`` 时也按游标协议转发。空白 cursor
+    写成空串，避免南向组查询串时把这个键丢掉。
+    """
+    query = request.query_params
+    use_cursor = "cursor" in query or (
+        "limit" in query and "page_idx" not in query and page_idx is None
+    )
+    if not use_cursor:
+        return _history_params(session_id, page_idx)
+    raw_cursor = str(query.get("cursor") or "").strip()
+    raw_limit = str(query.get("limit") or "").strip()
+    try:
+        limit = int(raw_limit) if raw_limit else 50
+    except ValueError:
+        limit = 50
+    params: dict[str, Any] = {
+        "session_id": session_id,
+        "cursor": raw_cursor,
+        "limit": limit,
+    }
+    subagent_id = str(query.get("subagent_id") or "").strip()
+    if subagent_id:
+        params["subagent_id"] = subagent_id
+    return params
+
+
 def _web_http_metadata(method: str) -> dict[str, Any]:
     return {"rpc_method": method, "transport": "web-http"}
 
@@ -189,6 +223,11 @@ def register_web_http_api_routes(
     """
     enterprise_mode = is_enterprise() if enterprise is None else bool(enterprise)
     mapped_routes = mapped_routes_for_edition(enterprise=enterprise_mode)
+    from jiuwenswarm.gateway.channel_manager.web.http_routes.share_jobs import (
+        register_share_job_routes,
+    )
+
+    register_share_job_routes(app)
 
     @app.get("/api/v1/health", tags=["health"], summary="探活")
     async def health(request: Request) -> JSONResponse:
@@ -274,7 +313,7 @@ def register_web_http_api_routes(
         request: Request,
         page_idx: int | None = Query(None, ge=1),
     ) -> Response:
-        params = _history_params(session_id, page_idx)
+        params = _history_params_from_request(session_id, request, page_idx)
         accept = (request.headers.get("accept") or "").lower()
         if "text/event-stream" in accept:
             return await _stream(request, channel, "history.get", params)

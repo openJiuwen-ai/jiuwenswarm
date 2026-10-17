@@ -1,9 +1,48 @@
 /**
- * 北向 A2 HTTP/SSE 客户端（`getWebTransport()==='http'`：显式 transport 或企业默认）。
+ * 北向 A2 HTTP/SSE 客户端（``getWebTransport()==='http'``：显式 transport 或企业默认）。
  * 对外口与 WebClient 相同：connect / request / on。映射与泵流只发生在这里。
  */
-import { WsEvent } from '../types';
+import {
+  WebConnectOptions,
+  WebConnectionState,
+  WebError,
+  WebRequestOptions,
+  WsEvent,
+} from '../types';
+import { getGatewayHttpBase } from '../utils/env';
 import { isEnterprise } from '../edition';
+import i18n from '../i18n';
+import { buildRuntimeIdentityHeaders } from './runtimeScope';
+import { createSessionEventGate } from './sessionEventGate';
+import { PauseBufferHook, PAUSABLE_STREAM_EVENTS } from './webClient';
+
+const MANAGER_ACCESS_KEY = 'openjiuwen_access_token';
+
+function managerAccessToken(): string | null {
+  if (typeof localStorage === 'undefined') return null;
+  const token = localStorage.getItem(MANAGER_ACCESS_KEY)?.trim();
+  return token || null;
+}
+
+function hasManagerSessionCredentials(): boolean {
+  return Boolean(managerAccessToken());
+}
+
+function managerAuthenticatedFetch(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const token = managerAccessToken();
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  return fetch(input, { ...init, headers, credentials: 'include' });
+}
+
+type EventHandler = (event: WsEvent) => void;
+type TypedEventHandler<TPayload> = (event: WsEvent & { payload: TPayload }) => void;
+type StateHandler = (state: WebConnectionState) => void;
+
+const MAX_RECONNECT_ATTEMPTS = 5;
+const DEFAULT_TIMEOUT_MS = 15000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -490,4 +529,687 @@ export function interruptUnaryToEvents(payload: unknown, requestId?: string): Ws
     ...(requestId ? { request_id: requestId } : {}),
     payload: { ...payload },
   };
+}
+
+function interruptIntentOf(payload: Record<string, unknown>): string {
+  return typeof payload.intent === 'string' && payload.intent.trim()
+    ? payload.intent.trim()
+    : 'cancel';
+}
+
+function isHistorySseDone(payload: Record<string, unknown>): boolean {
+  return typeof payload.status === 'string' && payload.status.trim().toLowerCase() === 'done';
+}
+
+export class WebHttpClient {
+  private state: WebConnectionState = 'idle';
+  private handlers = new Map<string, Set<EventHandler>>();
+  private stateHandlers = new Set<StateHandler>();
+  private inflight = new Map<string, AbortController>();
+  /** 仍在泵的 ``chat.send`` SSE，按 session 隔离；pause/resume 不碰。 */
+  private sseInflight = new Map<string, { controller: AbortController; sessionId: string }>();
+  /** 被后续 chat.send 顶掉的 SSE，abort 后不得再发 interrupt / 不得当发送失败。 */
+  private sseSuperseded = new Set<string>();
+  private connectAbort: AbortController | null = null;
+  private reconnectTimer: number | null = null;
+  private reconnectAttempts = 0;
+  private manualClose = false;
+  private connectPromise: Promise<void> | null = null;
+  private lastConnectOptions: WebConnectOptions = {};
+  private requestSeq = 0;
+  private streamEventFilter: ((event: WsEvent) => boolean) | null = null;
+  private pauseBufferHook: PauseBufferHook | null = null;
+  private readonly sessionEventGate = createSessionEventGate((event) => {
+    this.dispatchEventToHandlers(event);
+  });
+
+  getState(): WebConnectionState {
+    return this.state;
+  }
+
+  getInflightCount(): number {
+    return this.inflight.size;
+  }
+
+  onStateChange(handler: StateHandler): () => void {
+    this.stateHandlers.add(handler);
+    return () => {
+      this.stateHandlers.delete(handler);
+    };
+  }
+
+  /** 丢弃已 cancel 的 chat/context 流式事件（在 dispatch 前统一过滤） */
+  setStreamEventFilter(filter: ((event: WsEvent) => boolean) | null): void {
+    this.streamEventFilter = filter;
+  }
+
+  /** 暂停期间将流式输出写入暂存区，恢复后通过 replayBufferedEvent 回放 */
+  setPauseBufferHook(hook: PauseBufferHook | null): void {
+    this.pauseBufferHook = hook;
+  }
+
+  /** 回放暂存的事件——直接派发给 handler，绕过 filter 和 buffer */
+  replayBufferedEvent(event: WsEvent): void {
+    this.dispatchEventToHandlers(event);
+  }
+
+  on<TPayload = Record<string, unknown>>(
+    eventName: string,
+    handler: TypedEventHandler<TPayload>
+  ): () => void {
+    const set = this.handlers.get(eventName) ?? new Set<EventHandler>();
+    const eventHandler = handler as EventHandler;
+    set.add(eventHandler);
+    this.handlers.set(eventName, set);
+    return () => {
+      const target = this.handlers.get(eventName);
+      if (!target) {
+        return;
+      }
+      target.delete(eventHandler);
+      if (target.size === 0) {
+        this.handlers.delete(eventName);
+      }
+    };
+  }
+
+  async connect(options: WebConnectOptions = {}): Promise<void> {
+    if (this.state === 'ready') {
+      return;
+    }
+    if (this.connectPromise) {
+      return this.connectPromise;
+    }
+
+    this.lastConnectOptions = options;
+    this.manualClose = false;
+    this.updateState(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
+
+    this.connectPromise = this.openConnection();
+    return this.connectPromise;
+  }
+
+  async reconnect(reason = 'Auth changed'): Promise<void> {
+    const options = this.lastConnectOptions;
+    await this.disconnect(reason);
+    await this.connect(options);
+  }
+
+  suspendSessionEvents(sessionId: string): () => void {
+    return this.sessionEventGate.suspend(sessionId);
+  }
+
+  disconnect(_reason = 'User disconnect'): Promise<void> {
+    this.manualClose = true;
+    this.clearReconnectTimer();
+    this.connectAbort?.abort();
+    this.connectAbort = null;
+    this.abortInflight();
+    this.connectPromise = null;
+    this.updateState('closed');
+    return Promise.resolve();
+  }
+
+  async request<T = unknown>(
+    method: string,
+    params?: Record<string, unknown>,
+    options: WebRequestOptions = {}
+  ): Promise<T> {
+    await this.ensureReady();
+    if (this.state !== 'ready') {
+      throw this.createWebError(
+        i18n.t('network.connectionUnavailable'),
+        'WS_NOT_READY',
+        undefined,
+        true
+      );
+    }
+
+    const requestId = this.generateRequestId();
+    options.onRequestId?.(requestId);
+    let assembled;
+    try {
+      assembled = assembleWebRest(method, params, getGatewayHttpBase());
+    } catch (error) {
+      if (error instanceof RestAssemblyError) {
+        throw this.createWebError(error.message, 'BAD_REQUEST', requestId, false);
+      }
+      throw error;
+    }
+    if (!assembled) {
+      throw this.createWebError(
+        i18n.t('network.requestFailed'),
+        'METHOD_NOT_FOUND',
+        requestId,
+        false
+      );
+    }
+
+    const controller = new AbortController();
+    this.inflight.set(requestId, controller);
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timeoutId = window.setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+
+    const onAbort = () => {
+      controller.abort();
+    };
+    if (options.signal) {
+      if (options.signal.aborted) {
+        window.clearTimeout(timeoutId);
+        this.inflight.delete(requestId);
+        throw this.createWebError(
+          i18n.t('network.requestAborted'),
+          'REQUEST_ABORTED',
+          requestId,
+          false
+        );
+      }
+      options.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    try {
+      const chatSessionId = pickHeaderString(params?.session_id);
+      if (assembled.kind === 'sse') {
+        this.abortSseInflight({ exceptRequestId: requestId, sessionId: chatSessionId });
+        this.sseInflight.set(requestId, {
+          controller,
+          sessionId: chatSessionId ?? '',
+        });
+      }
+      const headers: Record<string, string> = {
+        ...this.identityHeaders(requestId, params ?? {}),
+        Accept: assembled.kind === 'unary' ? 'application/json' : 'text/event-stream',
+      };
+      if (assembled.jsonBody) {
+        headers['Content-Type'] = 'application/json';
+      }
+      const response = await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
+        method: assembled.verb,
+        headers,
+        body: assembled.jsonBody ? JSON.stringify(assembled.jsonBody) : undefined,
+        signal: controller.signal,
+      });
+      window.clearTimeout(timeoutId);
+
+      if (assembled.kind === 'sse' || assembled.kind === 'history-stream') {
+        if (isSseContentType(response.headers.get('content-type'))) {
+          if (!response.ok) {
+            const unwrapped = unwrapHttpUnary(await this.readJson(response), response.status);
+            throw this.createWebError(
+              unwrapped.ok ? i18n.t('network.requestFailed') : unwrapped.message,
+              unwrapped.ok ? 'HTTP_ERROR' : unwrapped.code,
+              requestId,
+              response.status >= 500
+            );
+          }
+          const accepted = {
+            accepted: true,
+            session_id: typeof params?.session_id === 'string' ? params.session_id : undefined,
+            ...(assembled.kind === 'history-stream' && params?.page_idx !== undefined
+              ? { page_idx: params.page_idx }
+              : {}),
+          };
+          void this.pumpSse(
+            response,
+            requestId,
+            assembled.kind,
+            controller,
+            chatSessionId
+          );
+          return accepted as T;
+        }
+        if (assembled.kind === 'history-stream') {
+          const page = await this.readUnaryPayload(response, requestId);
+          const sessionId = typeof params?.session_id === 'string' ? params.session_id : undefined;
+          for (const event of historyPageToEvents(page, sessionId)) {
+            this.dispatchEvent(event);
+          }
+          this.inflight.delete(requestId);
+          return page as T;
+        }
+      }
+
+      const payload = await this.readUnaryPayload(response, requestId);
+      this.inflight.delete(requestId);
+      // chat.send 在拿到响应前已登记 sseInflight。非 SSE 响应走 unary 时
+      // 不会进入 pumpSse，必须在这里卸下，否则后续 abortSseInflight 会把
+      // 该 id 永久留在 sseSuperseded。
+      this.sseInflight.delete(requestId);
+      if (method === 'chat.interrupt') {
+        const event = interruptUnaryToEvents(payload, requestId);
+        if (event) {
+          this.dispatchEvent(event);
+          if (event.payload.success === true && interruptIntentOf(event.payload) === 'cancel') {
+            this.abortSseInflight({
+              sessionId:
+                pickHeaderString(event.payload.session_id) ??
+                pickHeaderString(params?.session_id),
+            });
+          }
+        }
+      }
+      return payload as T;
+    } catch (error) {
+      window.clearTimeout(timeoutId);
+      this.inflight.delete(requestId);
+      this.sseInflight.delete(requestId);
+      if (this.sseSuperseded.delete(requestId)) {
+        // 新 chat.send 只中止浏览器读旧 SSE，Agent 侧由 Gateway new_chat_send 取消。
+        return {
+          accepted: true,
+          session_id: typeof params?.session_id === 'string' ? params.session_id : undefined,
+        } as T;
+      }
+      if (options.signal?.aborted) {
+        if (assembled.kind === 'sse' && typeof params?.session_id === 'string') {
+          void this.interruptChat(params.session_id, requestId);
+        }
+        throw this.createWebError(
+          i18n.t('network.requestAborted'),
+          'REQUEST_ABORTED',
+          requestId,
+          false
+        );
+      }
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        if (assembled.kind === 'sse' && typeof params?.session_id === 'string') {
+          void this.interruptChat(params.session_id, requestId);
+        }
+        throw this.createWebError(
+          i18n.t('network.requestTimeout'),
+          'REQUEST_TIMEOUT',
+          requestId,
+          true
+        );
+      }
+      throw this.asWebError(error, requestId, true);
+    } finally {
+      options.signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  async sendFireAndForget(
+    _method: string,
+    _params?: Record<string, unknown>,
+    _options: { isStream?: boolean } = {}
+  ): Promise<void> {
+    throw this.createWebError(
+      i18n.t('network.requestFailed'),
+      'METHOD_NOT_FOUND',
+      undefined,
+      false
+    );
+  }
+
+  private async ensureReady(): Promise<void> {
+    if (this.state === 'ready') {
+      return;
+    }
+    await this.connect(this.lastConnectOptions);
+  }
+
+  private async openConnection(): Promise<void> {
+    const requestId = this.generateRequestId();
+    this.connectAbort = new AbortController();
+    const url = `${getGatewayHttpBase().replace(/\/+$/, '')}/connection/status`;
+    try {
+      const response = await this.authenticatedFetch(url, {
+        method: 'GET',
+        headers: this.identityHeaders(requestId, {}),
+        signal: this.connectAbort.signal,
+      });
+      const unwrapped = unwrapHttpUnary(await this.readJson(response), response.status);
+      if (!unwrapped.ok) {
+        throw this.createWebError(
+          unwrapped.message,
+          unwrapped.code ?? (response.status >= 500 ? 'HTTP_ERROR' : 'WS_ERROR'),
+          unwrapped.requestId ?? requestId,
+          response.status >= 500 || !response.ok
+        );
+      }
+      this.reconnectAttempts = 0;
+      this.updateState('ready');
+      this.dispatchEvent({
+        type: 'event',
+        event: 'connection.ack',
+        payload: isRecord(unwrapped.payload) ? { ...unwrapped.payload } : {},
+      });
+    } catch (error) {
+      if (this.state !== 'ready') {
+        this.updateState('closed');
+      }
+      if (!this.manualClose) {
+        this.scheduleReconnect();
+      }
+      throw this.asWebError(error, requestId, true);
+    } finally {
+      this.connectAbort = null;
+      this.connectPromise = null;
+    }
+  }
+
+  private async pumpSse(
+    response: Response,
+    requestId: string,
+    kind: 'sse' | 'history-stream',
+    controller: AbortController,
+    sessionId?: string
+  ): Promise<void> {
+    const reader = response.body?.getReader();
+    if (!reader) {
+      this.inflight.delete(requestId);
+      this.sseInflight.delete(requestId);
+      return;
+    }
+    if (kind === 'sse') {
+      this.sseInflight.set(requestId, {
+        controller,
+        sessionId: sessionId ?? this.sseInflight.get(requestId)?.sessionId ?? '',
+      });
+    }
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let sawChatError = false;
+    let sawTaskEnd = false;
+    let readAborted = false;
+    const dispatchFrame = (frame: SseFrame): boolean => {
+      const event = sseFrameToWsEvent(frame);
+      if (!event) return false;
+      sawChatError ||= event.event === 'chat.error';
+      this.dispatchEvent(event);
+      sawTaskEnd ||= event.event === 'chat.processing_status' && event.payload.is_processing === false;
+      return kind === 'sse' ? isChatSseTerminal(event) : isHistorySseDone(event.payload);
+    };
+    try {
+      while (!controller.signal.aborted) {
+        const { done, value } = await reader.read();
+        if (controller.signal.aborted || this.sseSuperseded.has(requestId)) return;
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const consumed = consumeSseBuffer(buffer);
+        buffer = consumed.rest;
+        for (const frame of consumed.frames) {
+          if (controller.signal.aborted || this.sseSuperseded.has(requestId)) return;
+          if (dispatchFrame(frame)) {
+            await reader.cancel().catch(() => undefined);
+            return;
+          }
+        }
+      }
+      if (buffer.trim()) {
+        for (const frame of consumeSseBuffer(`${buffer}\n\n`).frames) {
+          if (controller.signal.aborted || this.sseSuperseded.has(requestId)) return;
+          if (dispatchFrame(frame)) return;
+        }
+      }
+    } catch (error) {
+      readAborted = error instanceof Error && error.name === 'AbortError';
+      if (!readAborted && !controller.signal.aborted && !this.sseSuperseded.has(requestId)) {
+        console.warn('[WebHttpClient] SSE read/dispatch failed', requestId, error);
+      }
+    } finally {
+      try {
+        // 错误流正常结束或读流失败均收尾；主动取消/替换仍由对应请求处理。
+        if (
+          kind === 'sse' &&
+          isEnterprise() &&
+          sawChatError &&
+          !sawTaskEnd &&
+          sessionId &&
+          !readAborted &&
+          !controller.signal.aborted &&
+          !this.sseSuperseded.has(requestId)
+        ) {
+          this.dispatchEvent({
+            type: 'event',
+            event: 'chat.processing_status',
+            payload: {
+              session_id: sessionId,
+              request_id: requestId,
+              is_processing: false,
+              source: 'http_error_eof',
+            },
+          });
+        }
+      } catch (error) {
+        console.warn('[WebHttpClient] Failed to settle errored SSE', requestId, error);
+      } finally {
+        this.inflight.delete(requestId);
+        this.sseInflight.delete(requestId);
+        this.sseSuperseded.delete(requestId);
+      }
+    }
+  }
+
+  private async interruptChat(sessionId: string, requestId: string): Promise<void> {
+    try {
+      const assembled = assembleWebRest(
+        'chat.interrupt',
+        { session_id: sessionId, intent: 'cancel' },
+        getGatewayHttpBase()
+      );
+      if (!assembled) {
+        return;
+      }
+      await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
+        method: assembled.verb,
+        headers: {
+          ...this.identityHeaders(requestId, { session_id: sessionId }),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(assembled.jsonBody ?? { intent: 'cancel' }),
+      });
+    } catch {
+      // 打断失败不掩盖本次 abort
+    }
+  }
+
+  private async readUnaryPayload(response: Response, requestId: string): Promise<unknown> {
+    const unwrapped = unwrapHttpUnary(await this.readJson(response), response.status);
+    if (!unwrapped.ok) {
+      throw this.createWebError(
+        unwrapped.message,
+        unwrapped.code ?? (response.status >= 500 ? 'HTTP_ERROR' : undefined),
+        unwrapped.requestId ?? requestId,
+        this.isRetriableCode(unwrapped.code) || response.status >= 500
+      );
+    }
+    if (!response.ok && response.status >= 400 && response.status !== 201) {
+      throw this.createWebError(
+        i18n.t('network.requestFailed'),
+        response.status >= 500 ? 'HTTP_ERROR' : 'BAD_REQUEST',
+        requestId,
+        response.status >= 500
+      );
+    }
+    return unwrapped.payload;
+  }
+
+  private async readJson(response: Response): Promise<unknown> {
+    const contentType = response.headers.get('content-type') || '';
+    const text = await response.text();
+    // 接口请求收到 HTML 响应（如门户登录页或反向代理错误页）说明代理未命中后端，
+    // 直接返回结构化错误，避免后续 JSON.parse 抛出难以定位的语法错误。
+    if (
+      contentType.includes('text/html') ||
+      text.trim().startsWith('<!doctype') ||
+      text.trim().startsWith('<html')
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: 'PROXY_ROUTING_ERROR',
+          message: `接口未命中后端服务（返回了 HTML 页面，状态码 ${response.status}）。请检查后端服务是否启动，以及统一门户接口前缀代理是否配置正确。`,
+        },
+      };
+    }
+    if (!text.trim()) {
+      return {};
+    }
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return { ok: false, error: { code: 'HTTP_ERROR', message: text.slice(0, 200) } };
+    }
+  }
+
+  private identityHeaders(
+    requestId: string,
+    params: Record<string, unknown>
+  ): Record<string, string> {
+    return buildRuntimeIdentityHeaders(requestId, params);
+  }
+
+  private authenticatedFetch(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
+    if (isEnterprise() && hasManagerSessionCredentials()) {
+      // 保留外部透传的 Authorization；只有 Manager 自己的 token 才走刷新包装器。
+      // 该分支仅在部署通过 REQUEST_EXT_FIELDS 启用 Authorization 透传时触达
+      // （宿主 token 经 ext.Authorization 进入请求头）；出厂空注册表下走不到，
+      // 属部署契约休眠路径，勿当死代码删除。
+      const headers = new Headers(init.headers);
+      const authorization = headers.get('Authorization');
+      const accessToken = managerAccessToken();
+      if (authorization && authorization !== (accessToken ? `Bearer ${accessToken}` : null)) {
+        return fetch(input, init);
+      }
+      return managerAuthenticatedFetch(input, init);
+    }
+    return fetch(input, init);
+  }
+
+  /** 把定时任务监听流上的帧送进现有 chat.* 处理。 */
+  injectEvent(event: WsEvent): void {
+    this.dispatchEvent(event);
+  }
+
+  private dispatchEvent(event: WsEvent): void {
+    if (this.streamEventFilter && !this.streamEventFilter(event)) {
+      return;
+    }
+    const hook = this.pauseBufferHook;
+    if (hook?.isActive()) {
+      // 企业版错误与终态按序回放；恢复时不能只剩 final 而丢失失败收尾。
+      if (
+        isEnterprise() &&
+        (event.event === 'chat.error' || (event.event === 'chat.processing_status' && event.payload.is_processing === false))
+      ) {
+        hook.onBuffer(event);
+        return;
+      }
+      if (event.event === 'chat.processing_status') {
+        return;
+      }
+      if (PAUSABLE_STREAM_EVENTS.has(event.event)) {
+        hook.onBuffer(event);
+        return;
+      }
+    }
+    this.sessionEventGate.dispatch(event);
+  }
+
+  private dispatchEventToHandlers(event: WsEvent): void {
+    const handlers = this.handlers.get(event.event);
+    if (!handlers || handlers.size === 0) {
+      return;
+    }
+    handlers.forEach((handler) => {
+      handler(event);
+    });
+  }
+
+  private scheduleReconnect(): void {
+    this.clearReconnectTimer();
+    this.reconnectAttempts += 1;
+    this.updateState('reconnecting');
+    const delay =
+      this.reconnectAttempts <= MAX_RECONNECT_ATTEMPTS
+        ? Math.min(1000 * 2 ** (this.reconnectAttempts - 1), 30000)
+        : 2000;
+    this.reconnectTimer = window.setTimeout(() => {
+      void this.connect(this.lastConnectOptions);
+    }, delay);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  private abortInflight(): void {
+    this.inflight.forEach((controller) => {
+      controller.abort();
+    });
+    this.inflight.clear();
+    this.sseInflight.clear();
+    this.sseSuperseded.clear();
+  }
+
+  private abortSseInflight(opts: { exceptRequestId?: string; sessionId?: string } = {}): void {
+    const { exceptRequestId, sessionId } = opts;
+    if (!sessionId) {
+      return;
+    }
+    const toAbort: string[] = [];
+    this.sseInflight.forEach((entry, id) => {
+      if (id === exceptRequestId || entry.sessionId !== sessionId) {
+        return;
+      }
+      toAbort.push(id);
+    });
+    for (const id of toAbort) {
+      const entry = this.sseInflight.get(id);
+      this.sseInflight.delete(id);
+      this.sseSuperseded.add(id);
+      entry?.controller.abort();
+    }
+  }
+
+  private updateState(state: WebConnectionState): void {
+    this.state = state;
+    this.stateHandlers.forEach((handler) => {
+      handler(state);
+    });
+  }
+
+  private generateRequestId(): string {
+    this.requestSeq += 1;
+    return `req_${Date.now().toString(36)}_${this.requestSeq}`;
+  }
+
+  private createWebError(
+    message: string,
+    code?: string,
+    requestId?: string,
+    retriable = false
+  ): WebError {
+    const error = new Error(message) as WebError;
+    error.code = code;
+    error.requestId = requestId;
+    error.retriable = retriable;
+    return error;
+  }
+
+  private isRetriableCode(code?: string): boolean {
+    return (
+      code === 'REQUEST_TIMEOUT' ||
+      code === 'WS_DISCONNECTED' ||
+      code === 'WS_NOT_READY' ||
+      code === 'HTTP_ERROR' ||
+      code === 'SERVICE_UNAVAILABLE'
+    );
+  }
+
+  private asWebError(error: unknown, requestId?: string, retriable = false): WebError {
+    if (error instanceof Error && 'code' in error) {
+      return error as WebError;
+    }
+    const message = error instanceof Error ? error.message : i18n.t('network.requestFailed');
+    return this.createWebError(message, 'HTTP_ERROR', requestId, retriable);
+  }
 }
