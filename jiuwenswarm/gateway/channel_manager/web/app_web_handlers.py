@@ -626,6 +626,9 @@ _FORWARD_REQ_METHODS = frozenset({
     "jiuwenmate.schedule.update",
     "jiuwenmate.schedule.run",
     "jiuwenmate.schedule.history",
+    "jiuwenmate.channel.list",
+    "jiuwenmate.channel.messages",
+    "jiuwenmate.channel.trace",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
@@ -657,6 +660,9 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "jiuwenmate.schedule.update",
     "jiuwenmate.schedule.run",
     "jiuwenmate.schedule.history",
+    "jiuwenmate.channel.list",
+    "jiuwenmate.channel.messages",
+    "jiuwenmate.channel.trace",
     "initialize",
     "session.switch",
     "session.fork",

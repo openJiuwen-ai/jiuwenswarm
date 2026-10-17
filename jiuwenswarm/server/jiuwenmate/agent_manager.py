@@ -362,6 +362,11 @@ class AgentManager:
         return await self.request_view(namespace_id, request_id)
 
     @property
+    def sessions(self) -> ExecutionRepository:
+        """Request and execution records. Group traces read only this colleague's Session."""
+        return self._sessions
+
+    @property
     def db_path(self) -> Path:
         """The SQLite file of this runtime; host tables kept beside the Sessions use it too."""
         return self._sessions.db_path
