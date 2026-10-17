@@ -576,3 +576,86 @@ async def test_send_request_clears_connection_when_send_fails():
     response = await asyncio.wait_for(task, timeout=0.1)
     assert response.ok is True
     assert client.has_message_queue_for_test("rid-after-send-close") is False
+
+
+@pytest.mark.asyncio
+async def test_send_request_reuse_rid_after_completion_within_cancel_window():
+    """复用已完成 request_id 发送第二次非流式请求时，响应不应被丢弃（issue #4940）。
+
+    第一次请求完成后 _drain_and_remove_queue 将 rid 标记为 cancelled（2s 延迟清理）。
+    若在此窗口内同 rid 重发，receiver 不应把新响应当作残余消息丢弃。
+    """
+    client = AgentClientHarness()
+    ws = FakeWebSocket()
+    client.set_ws_for_test(ws)
+    client.set_running_for_test(True)
+    client.set_server_ready_for_test(True)
+
+    rid = "rid-reuse-poll"
+    env = e2a_from_agent_fields(
+        request_id=rid,
+        channel_id="acp",
+        session_id="sess-reuse",
+        params={"content": "first"},
+        is_stream=False,
+    )
+
+    task1 = asyncio.create_task(client.send_request(env))
+    for _ in range(100):
+        if ws.sent_payloads:
+            break
+        await asyncio.sleep(0.001)
+    assert ws.sent_payloads
+
+    queue1 = client.get_message_queue_for_test(rid)
+    await queue1.put(
+        encode_agent_response_for_wire(
+            AgentResponse(
+                request_id=rid,
+                channel_id="acp",
+                ok=True,
+                payload={"status": "first-done"},
+            ),
+            response_id=rid,
+        )
+    )
+
+    resp1 = await asyncio.wait_for(task1, timeout=0.5)
+    assert resp1.ok is True
+    assert resp1.payload == {"status": "first-done"}
+    assert client.has_message_queue_for_test(rid) is False
+    assert rid in client._cancelled_request_ids
+
+    env2 = e2a_from_agent_fields(
+        request_id=rid,
+        channel_id="acp",
+        session_id="sess-reuse",
+        params={"content": "second"},
+        is_stream=False,
+    )
+
+    task2 = asyncio.create_task(client.send_request(env2))
+    for _ in range(100):
+        if len(ws.sent_payloads) >= 2:
+            break
+        await asyncio.sleep(0.001)
+    assert len(ws.sent_payloads) >= 2
+
+    assert rid not in client._cancelled_request_ids
+    queue2 = client.get_message_queue_for_test(rid)
+    await queue2.put(
+        encode_agent_response_for_wire(
+            AgentResponse(
+                request_id=rid,
+                channel_id="acp",
+                ok=True,
+                payload={"status": "second-done"},
+            ),
+            response_id=rid,
+        )
+    )
+
+    resp2 = await asyncio.wait_for(task2, timeout=0.5)
+    assert resp2.ok is True
+    assert resp2.payload == {"status": "second-done"}
+    assert client.has_message_queue_for_test(rid) is False
