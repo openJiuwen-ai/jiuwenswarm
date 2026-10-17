@@ -11,7 +11,7 @@ import {
 } from '../../utils/gitcodeOAuth';
 import { PUBLISH_RESTORE_KEY, useAssetPublish } from '../../hooks/useAssetPublish';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
-import { publishOutcome, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
+import { publishOutcome, localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
 import { publishIssueKey } from '../../features/assetPublishErrors';
 import type { AssetPublishOpenRequest, AssetReference, PublishMetadata } from '../../types/assetPublish';
 import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
@@ -92,11 +92,10 @@ const messages = {
     refresh: '刷新本地已知结果',
     queued: '已排队',
     uploading: '上传中',
-    pending_moderation: '提交成功，待审核',
-    published: '已发布',
     failed: '发布失败',
-    unknown: '结果待核实',
-    observed: '这里显示后端已知结果，不自动查询远端审核进度。',
+    submitted: '已提交',
+    unconfirmed: '提交结果未确认',
+    observed: '这里只显示本地可确定的提交状态；远端发布状态请以 Hub 为准。',
     requestFailed: '请求未完成，请重试或重新登录。',
     invalidPluginStructure: '资源包结构不符合 Hub 要求，请检查清单文件和目录结构。',
     pluginNotFound: 'Hub 中找不到要更新的资源，请检查“更新目标 Hub ID”后重试。',
@@ -180,11 +179,10 @@ const messages = {
     refresh: 'Refresh known local result',
     queued: 'Queued',
     uploading: 'Uploading',
-    pending_moderation: 'Submitted, pending moderation',
-    published: 'Published',
     failed: 'Publishing failed',
-    unknown: 'Result needs verification',
-    observed: 'This is the result known to the backend; remote moderation is not polled.',
+    submitted: 'Submitted',
+    unconfirmed: 'Submission result unconfirmed',
+    observed: 'Only locally confirmed submission states are shown here; check the Hub for remote publication status.',
     requestFailed: 'The request did not complete. Retry or sign in again.',
     invalidPluginStructure: 'The package structure does not meet Hub requirements. Check its manifest and folders.',
     pluginNotFound: 'The Hub resource to update was not found. Check the target Hub ID and retry.',
@@ -380,10 +378,11 @@ function AssetPublishDrawer({
     tags: 'tagsHelp',
   };
   const outcome = state.record ? publishOutcome(state.record) : null;
+  const recordState = state.record ? localRecordState(state.record) : null;
   const ResultIcon =
-    outcome === 'failed'
+    recordState === 'failed'
       ? CircleAlert
-      : ['queued', 'uploading', 'unknown'].includes(outcome || '')
+      : ['queued', 'uploading', 'unconfirmed'].includes(recordState || '')
         ? Clock3
         : CircleCheck;
   const zh = i18n.language.startsWith('zh');
@@ -777,13 +776,13 @@ function AssetPublishDrawer({
           aria-live="polite"
           className="asset-publish-result-card"
           data-testid="asset-publish-result"
-          data-variant={outcome}
+          data-variant={recordState}
         >
           <header className="asset-publish-result-header" data-testid="asset-publish-result-header">
-            <span className="asset-publish-result-icon" aria-hidden="true">
+            <span className="asset-publish-result-icon" aria-hidden="true" data-testid="asset-publish-result-icon">
               <ResultIcon size={20} />
             </span>
-            <h3>{text(outcome as MessageKey)}</h3>
+            <h3 data-testid="asset-publish-result-status">{text(recordState as MessageKey)}</h3>
           </header>
           <dl className="asset-publish-result-metadata" data-testid="asset-publish-result-metadata">
             {state.record.result?.asset_id && (
@@ -862,8 +861,12 @@ function AssetPublishDrawer({
                   <strong>{record.result?.version || record.version || text('empty')}</strong>
                   {record.updated_at && <small>{dateText(record.updated_at)}</small>}
                 </span>
-                <span className="asset-publish-record-status" data-variant={publishOutcome(record)}>
-                  {text(publishOutcome(record) as MessageKey)}
+                <span
+                  className="asset-publish-record-status"
+                  data-testid="asset-publish-record-status"
+                  data-variant={localRecordState(record)}
+                >
+                  {text(localRecordState(record) as MessageKey)}
                 </span>
               </button>
             ))}
