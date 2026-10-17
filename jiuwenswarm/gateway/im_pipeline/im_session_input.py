@@ -16,7 +16,11 @@ from typing import Any
 
 from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.message import Message
-from jiuwenswarm.runtime.session_input import SessionInputMode, resolve_session_input_mode
+from jiuwenswarm.extensions.sdk.queued_turn import IM_QUEUED_NEW_TURN_KEY
+from jiuwenswarm.runtime.session_input import (
+    SessionInputMode,
+    resolve_session_input_mode,
+)
 
 _SHARED_IM_CHANNELS = frozenset({
     "feishu",
@@ -29,6 +33,9 @@ _SHARED_IM_CHANNELS = frozenset({
     "whatsapp",
     "xiaoyi",
 })
+
+# Connectors set this when they release a queued message after a turn ends.
+# It prevents a stale busy signal from implicitly converting the turn to steer.
 _INTENT_KEYS = ("input_mode", "runtime_mode", "expected_execution_id")
 _ATTACHMENT_KEYS = (
     "images",
@@ -88,6 +95,8 @@ def steer_busy_im_chat(msg: Message) -> bool:
     if not is_shared_im_channel(getattr(msg, "channel_id", "")):
         return False
     if not _is_chat_send(msg):
+        return False
+    if _metadata(msg).get(IM_QUEUED_NEW_TURN_KEY) is True:
         return False
     if _has_interaction_answers(msg):
         return False

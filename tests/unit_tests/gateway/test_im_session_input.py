@@ -13,6 +13,7 @@ import pytest
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.gateway.im_pipeline.im_inbound import IMInboundPipeline
 from jiuwenswarm.gateway.im_pipeline.im_session_input import (
+    IM_QUEUED_NEW_TURN_KEY,
     is_shared_im_channel,
     prepare_im_session_input,
     steer_busy_im_chat,
@@ -122,6 +123,16 @@ def test_busy_steer_skips_resume_answers_and_attachments() -> None:
 
     team = _message("dingtalk", "继续", mode="team.work.normal")
     assert steer_busy_im_chat(team) is False
+
+
+@pytest.mark.parametrize("channel", _CHANNELS)
+def test_busy_gateway_keeps_queued_dispatch_as_a_new_turn(channel: str) -> None:
+    msg = _message(channel, "the next queued task")
+    msg.metadata[IM_QUEUED_NEW_TURN_KEY] = True
+
+    assert prepare_im_session_input(msg) is False
+    assert steer_busy_im_chat(msg) is False
+    assert "input_mode" not in msg.params
 
 
 def test_non_im_channel_is_not_rewritten_here() -> None:
