@@ -263,6 +263,17 @@ export function selectableColleagueResources(
   return { skills, connectors, plugins };
 }
 
+/** Published personal-context pages an employee can be assigned. */
+export function selectableKnowledgePages(payload: unknown): ColleagueResourceOption[] {
+  return uniqueOptions(
+    rows(record(payload).pages).flatMap((item: unknown) => {
+      const row = record(item);
+      const option = resourceOption(text(row.name), text(row.label));
+      return option ? [option] : [];
+    }),
+  );
+}
+
 /** Settings update that changes only the selected skills and connectors. */
 export function withResourceSelection(
   colleague: JiuwenMateColleague,
@@ -285,6 +296,7 @@ export function withColleagueEdit(
     skills?: readonly string[];
     connectors?: readonly string[];
     plugins?: readonly string[];
+    knowledge?: readonly string[];
   },
 ): JiuwenMateWireSettings {
   return toWireSettings(
@@ -299,6 +311,7 @@ export function withColleagueEdit(
         skills: [...(edit.skills ?? colleague.capabilities.skills)],
         connectors: [...(edit.connectors ?? colleague.capabilities.connectors)],
         plugins: [...(edit.plugins ?? colleague.capabilities.plugins)],
+        knowledge: [...(edit.knowledge ?? colleague.capabilities.knowledge)],
       },
     },
     models,

@@ -10,7 +10,12 @@ from itertools import count
 
 from jiuwenswarm.server.jiuwenmate.models import CapabilitySelection, ColleagueSettings, PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
-from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog, SkillSource, ConnectorSource
+from jiuwenswarm.server.jiuwenmate.resource_assembly import (
+    InstalledResourceCatalog,
+    KnowledgeSource,
+    SkillSource,
+    ConnectorSource,
+)
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.harness.rails.skills.skill_use_rail import SkillUseRail
@@ -39,10 +44,11 @@ class FakeModels:
 
 
 class MapCatalog:
-    def __init__(self, skills=None, plugins=None, connectors=None):
+    def __init__(self, skills=None, plugins=None, connectors=None, knowledge=None):
         self._skills = skills or {}
         self._plugins = plugins or {}
         self._connectors = connectors or {}
+        self._knowledge = knowledge or {}
 
     def skill(self, name):
         return self._skills.get(name)
@@ -52,6 +58,9 @@ class MapCatalog:
 
     def connector(self, name):
         return self._connectors.get(name)
+
+    def knowledge(self, name):
+        return self._knowledge.get(name)
 
 
 def write_skill(directory, name, body="按步骤整理纪要。"):
@@ -121,6 +130,68 @@ def test_each_colleague_gets_its_own_skill_copy_and_deletion_keeps_the_others(tm
     assert not first_copy.exists()
     assert second_copy.is_file()
     assert notes.joinpath("SKILL.md").is_file()
+
+
+def test_selected_knowledge_pages_are_copied_and_other_pages_stay_out(tmp_path):
+    context = tmp_path / "context"
+    chosen = context / "topics" / "description.md"
+    chosen.parent.mkdir(parents=True)
+    chosen.write_text("# 产品手册\n\n退货规则。\n", encoding="utf-8")
+    other = context / "private.md"
+    other.write_text("不应复制", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("secret", encoding="utf-8")
+    os.symlink(outside, context / "linked.md")
+    catalog = MapCatalog(
+        knowledge={"topics/description.md": KnowledgeSource(name="topics/description.md", path=chosen)}
+    )
+    host = service(tmp_path, catalog, iter(["mate_knowledge"]))
+
+    view = host.create_colleague(
+        NS,
+        settings(capabilities=CapabilitySelection(model="deepseek#0", knowledge=("topics/description.md",))),
+    )
+    spec = host.current_snapshot(NS, view.agent_id).load_spec()
+    office = host.workspaces.path(NS, view.agent_id)
+    copies = list((office / "resources" / "knowledge").glob("*/topics/description.md"))
+
+    assert len(copies) == 1
+    assert copies[0].read_text(encoding="utf-8") == "# 产品手册\n\n退货规则。\n"
+    assert "已装配知识" in spec.system_prompt
+    assert "topics/description.md" in spec.system_prompt
+    assert not any((office / "resources" / "knowledge").rglob("private.md"))
+    assert not any((office / "resources" / "knowledge").rglob("linked.md"))
+    copies[0].write_text("只改员工副本", encoding="utf-8")
+    assert "只改员工副本" not in chosen.read_text(encoding="utf-8")
+
+
+def test_an_unpublished_knowledge_page_refuses_publication(tmp_path):
+    host = service(tmp_path, MapCatalog(), iter(["mate_missing_knowledge"]))
+
+    with pytest.raises(PersistentAgentError, match="knowledge page is not published") as caught:
+        host.create_colleague(
+            NS,
+            settings(capabilities=CapabilitySelection(model="deepseek#0", knowledge=("missing.md",))),
+        )
+
+    assert caught.value.code == "RESOURCE_NOT_INSTALLED"
+    assert host.list_colleagues(NS)[0].current_version is None
+
+
+def test_installed_catalog_lists_only_regular_pages_inside_the_context_root(tmp_path):
+    context = tmp_path / "context"
+    page = context / "handbook.md"
+    page.parent.mkdir()
+    page.write_text("手册", encoding="utf-8")
+    outside = tmp_path / "secret.md"
+    outside.write_text("secret", encoding="utf-8")
+    os.symlink(outside, context / "linked.md")
+    (context / "notes.txt").write_text("不是页面", encoding="utf-8")
+    catalog = InstalledResourceCatalog(knowledge_root=context)
+
+    assert [item.name for item in catalog.list_knowledge()] == ["handbook.md"]
+    assert catalog.knowledge("../secret.md") is None
+    assert catalog.knowledge("linked.md") is None
 
 
 def test_a_plugin_copies_only_its_own_skill(tmp_path):

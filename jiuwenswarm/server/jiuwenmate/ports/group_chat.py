@@ -15,12 +15,11 @@ from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupAccess, Gro
 from jiuwenswarm.server.jiuwenmate.group_search_cursor_repository import GroupSearchCursorRepository
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.conversation_archive import time_micros
+from jiuwenswarm.server.jiuwenmate.search_contracts import GroupMessageSearchResult
 from openjiuwen.harness.persistent_agent import (
     ExecutionContext,
     GroupMessageQuery,
-    GroupMessageSearchHit,
     GroupMessagesResult,
-    GroupMessageSearchResult,
 )
 
 MembershipVerifier = Callable[[GroupAccess, GroupChat], Awaitable[str]]

@@ -1,9 +1,10 @@
-"""Assemble one colleague's saved Skill, connector and plugin selection into its published Spec.
+"""Assemble one colleague's saved Skill, connector, plugin and knowledge selection into its published Spec.
 
 Installation, selection and credential storage stay with the existing Swarm catalogs.
-Publishing copies only the selected skill directories into that colleague's office and
-freezes connector configuration, including resolved secrets, into the Spec. It does not
-change process environment variables, the shared skill library, or another colleague's copy.
+Publishing copies only the selected skill directories and selected personal-context pages
+into that colleague's office and freezes connector configuration, including resolved secrets,
+into the Spec. It does not change process environment variables, the shared skill library,
+the personal-context store, or another colleague's copy.
 The skill rail is mounted without bash or code tools; those still require confirmation.
 """
 
@@ -26,7 +27,9 @@ from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
 _SKILL_RAIL = "core.skill_use"
 _RESOURCE_DIR = "resources"
 _SKILL_DIR = "skills"
+_KNOWLEDGE_DIR = "knowledge"
 _NAME = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_KNOWLEDGE_NAME = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
 _PLACEHOLDER = re.compile(r"\$\{(\w+)\}")
 
 
@@ -36,6 +39,14 @@ class SkillSource:
 
     name: str
     directory: Path
+
+
+@dataclass(frozen=True, kw_only=True)
+class KnowledgeSource:
+    """One published personal-context page. ``name`` is its path relative to the context root."""
+
+    name: str
+    path: Path
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -60,6 +71,9 @@ class ResourceCatalog(Protocol):
     def connector(self, name: str) -> ConnectorSource | None:
         """Return the installed connector, or None when that name is not installed."""
 
+    def knowledge(self, name: str) -> KnowledgeSource | None:
+        """Return one published personal-context page, or None when that page is not available."""
+
 
 @dataclass(frozen=True, kw_only=True)
 class AssembledResources:
@@ -83,8 +97,9 @@ def assemble_resources(
     """
     skills = _selected_skills(capabilities, catalog)
     connectors = _selected_connectors(capabilities, catalog)
+    pages = _selected_knowledge(capabilities, catalog)
     configs = _connector_configs(agent_id, connectors)
-    if not skills and not configs:
+    if not skills and not configs and not pages:
         return AssembledResources(spec_fields={}, prompt="")
 
     fields: dict[str, Any] = {}
@@ -115,6 +130,16 @@ def assemble_resources(
         prompt += (
             "\n\n## 已装配连接器\n\n"
             "所选连接器的配置和凭据只属于这个同事的当前发布版本，不写入进程环境变量，也不替换其他同事的连接。"
+        )
+    if pages:
+        knowledge_root = _materialize_knowledge(office, pages)
+        relative = knowledge_root.relative_to(office).as_posix()
+        names = "、".join(f"`{item.name}`" for item in pages)
+        prompt += (
+            "\n\n## 已装配知识\n\n"
+            f"所选个人上下文页面的副本在办公目录的 `{relative}/` 下，页面为 {names}。"
+            "用相对路径读取这些副本。未选择的个人上下文页面不在这个目录中，不要到个人上下文目录里继续读取。"
+            "这些副本只属于这个同事，修改它们不会改动个人上下文原件。"
         )
     return AssembledResources(spec_fields=fields, prompt=prompt, skill_root=skill_root)
 
@@ -174,6 +199,33 @@ def _selected_skills(capabilities: CapabilitySelection, catalog: ResourceCatalog
     return tuple(chosen[name] for name in sorted(chosen))
 
 
+def _selected_knowledge(capabilities: CapabilitySelection, catalog: ResourceCatalog) -> tuple[KnowledgeSource, ...]:
+    found = []
+    for name in capabilities.knowledge:
+        source = catalog.knowledge(name)
+        if source is None:
+            raise PersistentAgentError(f"knowledge page is not published: {name}", code="RESOURCE_NOT_INSTALLED")
+        found.append(_checked_knowledge(source))
+    return tuple(found)
+
+
+def _checked_knowledge(source: KnowledgeSource) -> KnowledgeSource:
+    relative = _knowledge_relative(source.name)
+    path = Path(source.path)
+    if relative is None or path.is_symlink() or not path.is_file():
+        raise PersistentAgentError(f"invalid knowledge page: {source.name}", code="INVALID_RESOURCE")
+    return KnowledgeSource(name=relative.as_posix(), path=path.resolve())
+
+
+def _knowledge_relative(name: str):
+    if not isinstance(name, str) or _KNOWLEDGE_NAME.fullmatch(name) is None:
+        return None
+    relative = Path(name)
+    if relative.is_absolute() or ".." in relative.parts or relative.suffix != ".md":
+        return None
+    return relative
+
+
 def _selected_connectors(capabilities: CapabilitySelection, catalog: ResourceCatalog) -> tuple[ConnectorSource, ...]:
     found = []
     for name in capabilities.connectors:
@@ -231,6 +283,30 @@ def _materialize_skills(office: Path, skills: tuple[SkillSource, ...]) -> Path:
     return destination
 
 
+def _materialize_knowledge(office: Path, pages: tuple[KnowledgeSource, ...]) -> Path:
+    parent = office / _RESOURCE_DIR / _KNOWLEDGE_DIR
+    private_dir(parent)
+    staging = parent / f".staging-{uuid.uuid4().hex}"
+    try:
+        private_dir(staging)
+        for source in pages:
+            relative = Path(source.name)
+            destination = staging / relative
+            private_dir(destination.parent)
+            shutil.copyfile(source.path, destination)
+            os.chmod(destination, 0o600)
+        digest = _digest(staging)
+        published = parent / digest
+        if published.exists():
+            shutil.rmtree(staging)
+        else:
+            staging.rename(published)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return published
+
+
 def _copy_skill(source: Path, destination: Path) -> None:
     """Copy regular files only. A symlink is not followed, so the copy cannot escape the skill directory."""
     private_dir(destination)
@@ -272,10 +348,44 @@ class InstalledResourceCatalog:
         skills_dir: Path | None = None,
         builtin_dir: Path | None = None,
         state_file: Path | None = None,
+        knowledge_root: Path | None = None,
     ) -> None:
         self._skills_dir = skills_dir
         self._builtin_dir = builtin_dir
         self._state_file = state_file
+        self._knowledge_root = knowledge_root
+
+    def knowledge(self, name: str) -> KnowledgeSource | None:
+        relative = _knowledge_relative(name)
+        root = self._context_root()
+        if relative is None or not root.is_dir():
+            return None
+        candidate = root / relative
+        if candidate.is_symlink() or not candidate.is_file():
+            return None
+        try:
+            candidate.resolve().relative_to(root.resolve())
+        except ValueError:
+            return None
+        return KnowledgeSource(name=relative.as_posix(), path=candidate)
+
+    def list_knowledge(self) -> tuple[KnowledgeSource, ...]:
+        """Published markdown pages under the personal-context root, in path order."""
+        root = self._context_root()
+        if not root.is_dir():
+            return ()
+        found = []
+        for path in sorted(root.rglob("*.md")):
+            relative = path.relative_to(root).as_posix()
+            source = self.knowledge(relative)
+            if source is not None:
+                found.append(source)
+        return tuple(found)
+
+    def _context_root(self) -> Path:
+        if self._knowledge_root is not None:
+            return self._knowledge_root
+        return Path.home() / ".jiuwenswarm" / ".personal_context" / "workspace" / "context"
 
     def skill(self, name: str) -> SkillSource | None:
         if _NAME.fullmatch(name) is None:

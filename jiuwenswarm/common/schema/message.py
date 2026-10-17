@@ -419,6 +419,7 @@ class ReqMethod(Enum):
     JIUWENMATE_CONVERSATION_RENAME = "jiuwenmate.conversation.rename"
     JIUWENMATE_CONVERSATION_DELETE = "jiuwenmate.conversation.delete"
     JIUWENMATE_ACTIVITY_GET = "jiuwenmate.activity.get"
+    JIUWENMATE_KNOWLEDGE_LIST = "jiuwenmate.knowledge.list"
     JIUWENMATE_SCHEDULE_LIST = "jiuwenmate.schedule.list"
     JIUWENMATE_SCHEDULE_CREATE = "jiuwenmate.schedule.create"
     JIUWENMATE_SCHEDULE_SET_ENABLED = "jiuwenmate.schedule.set_enabled"

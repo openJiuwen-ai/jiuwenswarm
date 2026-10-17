@@ -17,6 +17,7 @@ import {
   toModelCatalog,
   upsertConversation,
   selectableColleagueResources,
+  selectableKnowledgePages,
   toWireSettings,
   withResourceSelection,
 } from '../node_modules/.cache/jiuwenmate-api/jiuwenmateApi.js';
@@ -460,6 +461,19 @@ test('installed skill and connected MCP names are the only selectable colleague 
   assert.deepEqual(selected.skills, [{ name: 'report-writer', label: '报告' }]);
   assert.deepEqual(selected.connectors, [{ name: 'feishu', label: '飞书' }]);
   assert.deepEqual(selected.plugins, []);
+});
+
+test('published personal-context pages are the selectable employee knowledge', () => {
+  assert.deepEqual(
+    selectableKnowledgePages({
+      pages: [
+        { name: 'topics/description.md', label: 'topics/description.md' },
+        { name: '', label: '空' },
+        { name: 'topics/description.md', label: '重复' },
+      ],
+    }),
+    [{ name: 'topics/description.md', label: 'topics/description.md' }],
+  );
 });
 
 test('resource selection keeps the colleague settings other than skills and connectors', () => {

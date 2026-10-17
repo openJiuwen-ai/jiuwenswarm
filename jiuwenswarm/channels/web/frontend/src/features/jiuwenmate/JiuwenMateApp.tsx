@@ -30,6 +30,7 @@ import {
   createJiuwenMateApi,
   errorMessage,
   selectableColleagueResources,
+  selectableKnowledgePages,
   withColleagueEdit,
   type ColleagueResourceOption,
   type JiuwenMateModelCatalog,
@@ -94,6 +95,7 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     skills: [],
     connectors: [],
     plugins: [],
+    knowledge: [],
     ready: false,
   });
   const [savingResources, setSavingResources] = useState(false);
@@ -147,13 +149,14 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
   }, []);
 
   useEffect(() => {
-    if (state.view !== 'colleague-profile') return undefined;
+    if (state.view !== 'colleague-profile' && state.view !== 'colleague-create') return undefined;
     let active = true;
-    setResourceCatalog({ skills: [], connectors: [], plugins: [], ready: false });
+    setResourceCatalog({ skills: [], connectors: [], plugins: [], knowledge: [], ready: false });
     void (async () => {
-      const [skillsResult, connectorsResult] = await Promise.allSettled([
+      const [skillsResult, connectorsResult, knowledgeResult] = await Promise.allSettled([
         webRequest('skills.list', { with_installed: true }),
         webRequest('mcp.list', { filter: 'local' }),
+        webRequest('jiuwenmate.knowledge.list', {}),
       ]);
       if (!active) return;
       const selected = selectableColleagueResources(
@@ -166,6 +169,10 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
         skills: side(skillsResult, selected.skills),
         connectors: side(connectorsResult, selected.connectors),
         plugins: side(skillsResult, selected.plugins),
+        knowledge: side(
+          knowledgeResult,
+          selectableKnowledgePages(knowledgeResult.status === 'fulfilled' ? knowledgeResult.value : null),
+        ),
         ready: true,
       });
     })();
@@ -382,6 +389,8 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             customDialogOpen={state.customDialogOpen}
             draft={state.draft}
             modelCatalog={modelCatalog}
+            knowledgeCatalog={resourceCatalog.knowledge}
+            knowledgeCatalogReady={resourceCatalog.ready}
             submitting={submitting}
             onOpenTemplateDetail={(id) => setState((current) => selectColleagueTemplate(current, id))}
             onCloseTemplateDetail={() => setState((current) => closeTemplateDetail(current))}

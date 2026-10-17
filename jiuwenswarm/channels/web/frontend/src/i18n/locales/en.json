@@ -244,6 +244,8 @@
       "catalogEmptySkills": "No installed skill can be assigned",
       "catalogEmptyConnectors": "No connected connector can be assigned",
       "catalogEmptyPlugins": "No installed plugin can be assigned",
+      "catalogEmptyKnowledge": "No published knowledge page can be assigned. Add and publish pages from Knowledge first.",
+      "knowledgeHint": "Choose published personal-context pages. After saving and publishing, copies are placed in this employee's office and later tasks can read them. Pages that are not selected stay out.",
       "joinedAt": "Joined: {{time}}",
       "quickIm": "Quick IM channel setup",
       "goConfigure": "Configure",
