@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import pytest
 
 from jiuwenswarm.agents.harness.flash.tools import flash_file_history
-from jiuwenswarm.server.utils.diff_service import DiffService
+from jiuwenswarm.server.utils.diff_service import DiffService, _entry_sort_ts
 
 TURN1_TS = 1_700_001_000.0
 EDIT1_TS = TURN1_TS + 10   # stock JSON 记录的编辑（demo.txt）
@@ -95,6 +95,15 @@ def test_jsonl_entries_merged_into_agent_history(project):
     demo_entries = history[str(demo)]
     assert len(demo_entries) == 2, "同文件的 stock+flash 条目应合并到同一列表"
     assert {e["old_content"] for e in demo_entries} == {"BEFORE\n", "AFTER\n"}
+
+
+def test_naive_timestamps_are_interpreted_as_utc():
+    """diff 侧排序键必须与 flash_bash_history 的 naive→UTC 策略一致。"""
+    naive = _entry_sort_ts("2026-01-01T00:00:00")
+    aware = _entry_sort_ts("2026-01-01T00:00:00+00:00")
+
+    assert naive == aware
+    assert naive == datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
 
 
 def test_turn_diffs_include_flash_edits(project):

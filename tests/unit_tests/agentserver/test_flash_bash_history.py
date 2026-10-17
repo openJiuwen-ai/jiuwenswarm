@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.sys_operation import OperationMode
 from openjiuwen.harness.tools.base_tool import ToolOutput
 from openjiuwen.harness.tools.shell.bash._tool import BashTool
 
@@ -55,10 +56,19 @@ class _FakeFs:
 
 class _FakeOperation:
     def __init__(self, content: str) -> None:
+        self.mode = OperationMode.LOCAL
         self._fs = _FakeFs(content)
 
     def fs(self) -> _FakeFs:
         return self._fs
+
+
+def _parsed_command(command: str = "echo hi") -> SimpleNamespace:
+    return SimpleNamespace(
+        command=command,
+        run_in_background=False,
+        workdir=None,
+    )
 
 
 @pytest.fixture
@@ -148,6 +158,21 @@ def test_delete_detection_covers_flash_only_history(temp_dir):
     entries = flash_file_history.load_flash_history(flash_path)[file_path]
     assert entries[-1]["action"] == "delete"
     assert entries[-1]["old_content"] == "flash only"
+
+
+def test_history_recording_is_disabled_in_sandbox_mode():
+    """沙箱文件不在本地文件系统可见，删除探测必须整体关闭，避免虚假 delete。"""
+    tool = FlashBashTool.__new__(FlashBashTool)
+    tool._operation = SimpleNamespace(mode=OperationMode.SANDBOX)
+
+    assert tool._history_recording_enabled(_parsed_command()) is False
+
+
+def test_history_recording_remains_enabled_in_local_mode():
+    tool = FlashBashTool.__new__(FlashBashTool)
+    tool._operation = SimpleNamespace(mode=OperationMode.LOCAL)
+
+    assert tool._history_recording_enabled(_parsed_command()) is True
 
 
 def test_delete_detection_keeps_existing_file_untouched(temp_dir):

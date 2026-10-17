@@ -368,6 +368,24 @@ async def test_crlf_edit_after_last_newline_maps_offsets(sys_op, temp_dir):
     assert Path(file_path).read_bytes() == b"first\r\nSECOND"
 
 
+async def test_mixed_eol_edit_after_last_newline_maps_offsets(sys_op, temp_dir):
+    """混合 EOL 且末换行之后有内容时，补偿必须使用累计 CRLF 数。"""
+    read_tool, edit_tool, _ = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "mixed-after-last-newline.txt")
+    Path(file_path).write_bytes(b"first\r\nsecond\nthird")
+
+    assert (await read_tool.invoke({"file_path": file_path})).success is True
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "third",
+        "new_string": "THIRD",
+    })
+
+    assert result.success is True, result.error
+    assert Path(file_path).read_bytes() == b"first\r\nsecond\nTHIRD"
+
+
 async def test_mixed_eol_preserved_and_cache_falls_back_to_fresh_read(sys_op, temp_dir):
     """混合 LF/CRLF 不能用“LF 快照 + 单一 EOL”重建，必须回退原始全量读。"""
     read_tool, edit_tool, proxy = _make_tools(sys_op)

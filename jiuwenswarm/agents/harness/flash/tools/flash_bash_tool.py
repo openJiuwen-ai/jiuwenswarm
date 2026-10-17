@@ -16,6 +16,7 @@ import asyncio
 import os
 from typing import Any, AsyncIterator, Dict
 
+from openjiuwen.core.sys_operation import OperationMode
 from openjiuwen.core.session import get_current_session
 from openjiuwen.harness.rails.sys_operation_rail import SysOperationRail
 from openjiuwen.harness.tools.base_tool import ToolOutput
@@ -51,6 +52,8 @@ class FlashBashTool(BashTool):
 
     def _history_recording_enabled(self, parsed) -> bool:
         """Mirror the stock preconditions that precede explicit-rm recording."""
+        if self._operation.mode == OperationMode.SANDBOX:
+            return False
         if not parsed.command or parsed.run_in_background:
             return False
         if parsed.workdir and not os.path.isdir(parsed.workdir):

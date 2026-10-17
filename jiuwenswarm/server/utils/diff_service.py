@@ -114,7 +114,10 @@ def _save_file_ops_data(path: Path, data: dict[str, Any]) -> None:
 def _entry_sort_ts(ts: Any) -> float:
     """条目时间戳排序键：无法解析的排最后（稳定排序保留同刻原序）。"""
     try:
-        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
     except (ValueError, TypeError):
         return float("inf")
 
