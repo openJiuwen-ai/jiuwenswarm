@@ -1,0 +1,33 @@
+{
+  "title": "QQ邮箱授权",
+  "title_en": "QQ Mail Authorization",
+  "description": "输入 QQ 邮箱地址和 IMAP/SMTP 授权码（非登录密码）。支持 @qq.com、@foxmail.com 邮箱。授权码仅保存在本机；在 QQ 邮箱设置中重新生成授权码或关闭 IMAP/SMTP 服务后，旧授权码即失效。",
+  "description_en": "Enter your QQ Mail address and IMAP/SMTP authorization code (not your login password). Supports @qq.com and @foxmail.com mailboxes. The code is stored locally only; regenerating the code or disabling IMAP/SMTP in QQ Mail settings invalidates the old one.",
+  "docUrl": "https://service.mail.qq.com/detail/0/1087",
+  "docLabel": "如何开启 IMAP/SMTP 并获取授权码",
+  "docLabel_en": "How to enable IMAP/SMTP and get an authorization code",
+  "fields": [
+    {
+      "key": "QQ_MAIL_ADDRESS",
+      "label": "邮箱地址",
+      "label_en": "Email Address",
+      "type": "text",
+      "required": true,
+      "placeholder": "yourname@qq.com",
+      "placeholder_en": "yourname@qq.com",
+      "description": "完整邮箱地址，如 xxx@qq.com、xxx@foxmail.com",
+      "description_en": "Full email address, e.g. xxx@qq.com or xxx@foxmail.com"
+    },
+    {
+      "key": "QQ_MAIL_AUTH_CODE",
+      "label": "IMAP/SMTP 授权码",
+      "label_en": "IMAP/SMTP Authorization Code",
+      "type": "password",
+      "required": true,
+      "placeholder": "在邮箱设置中生成的授权码",
+      "placeholder_en": "Authorization code generated in mailbox settings",
+      "description": "在 QQ 邮箱网页版「设置 → 账户 → POP3/IMAP/SMTP/Exchange/CardDAV/CalDAV 服务」开启 IMAP/SMTP 服务后生成的客户端授权码，不是登录密码",
+      "description_en": "Client authorization code generated after enabling IMAP/SMTP in QQ Mail web settings (Settings → Account → POP3/IMAP/SMTP/Exchange/CardDAV/CalDAV). Not your login password"
+    }
+  ]
+}
