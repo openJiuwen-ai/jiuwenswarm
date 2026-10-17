@@ -444,8 +444,6 @@ function devWsTrafficLogger(): Plugin {
   }
 }
 
-const DESIGNER_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
-
 interface MultipartFilePart {
   filename: string
   mimeType: string
@@ -1473,63 +1471,6 @@ function devFileContentApi(): Plugin {
           res.setHeader('content-type', 'application/json; charset=utf-8')
           res.end(JSON.stringify({ error: (error as Error).message }))
         }
-      })
-
-      // 设计画布上传：开发态没有网关 /file-api/upload，落在用户工作区后给 raw-file 预览。
-      server.middlewares.use('/file-api/upload', (req, res) => {
-        if (req.method !== 'POST') {
-          res.statusCode = 405
-          res.setHeader('content-type', 'application/json; charset=utf-8')
-          res.end(JSON.stringify({ error: 'method_not_allowed', files: [], errors: [{ error: 'method_not_allowed' }] }))
-          return
-        }
-        const contentType = req.headers['content-type'] || ''
-        const chunks: Buffer[] = []
-        req.on('data', (chunk: Buffer) => chunks.push(chunk))
-        req.on('end', () => {
-          try {
-            const body = Buffer.concat(chunks)
-            if (body.length > DESIGNER_UPLOAD_MAX_BYTES) {
-              res.statusCode = 413
-              res.setHeader('content-type', 'application/json; charset=utf-8')
-              res.end(JSON.stringify({ error: 'file_too_large', files: [], errors: [{ error: 'file_too_large' }] }))
-              return
-            }
-            const parts = contentType.includes('multipart/form-data')
-              ? parseMultipartFiles(contentType, body)
-              : []
-            if (parts.length === 0) {
-              res.statusCode = 400
-              res.setHeader('content-type', 'application/json; charset=utf-8')
-              res.end(JSON.stringify({ error: 'missing_file', files: [], errors: [{ error: 'missing_file' }] }))
-              return
-            }
-            const uploadDir = path.join(workspaceRootDir, 'uploads', 'designer')
-            fs.mkdirSync(uploadDir, { recursive: true })
-            const files = parts.map((part) => {
-              const safeName = path.basename(part.filename)
-                .split('')
-                .map((ch) => (ch < ' ' || '\\/:*?"<>|'.includes(ch) ? '_' : ch))
-                .join('')
-                .slice(0, 120) || 'upload.bin'
-              const storedPath = path.join(uploadDir, `${randomUUID()}_${safeName}`)
-              fs.writeFileSync(storedPath, part.data)
-              return {
-                path: storedPath,
-                filename: path.basename(part.filename) || safeName,
-                mime_type: part.mimeType,
-                size: part.data.length,
-              }
-            })
-            res.statusCode = 200
-            res.setHeader('content-type', 'application/json; charset=utf-8')
-            res.end(JSON.stringify({ ok: true, files, errors: [] }))
-          } catch (error) {
-            res.statusCode = 500
-            res.setHeader('content-type', 'application/json; charset=utf-8')
-            res.end(JSON.stringify({ error: (error as Error).message, files: [], errors: [{ error: (error as Error).message }] }))
-          }
-        })
       })
 
       // 技能上传：接收 multipart 文件，保存到临时目录，返回文件路径
