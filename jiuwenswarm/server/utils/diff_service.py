@@ -1241,7 +1241,6 @@ class DiffService:
             # First change of this hunk is at opcodes[i]; absorb following
             # changes whose separating equal run is short enough that their
             # context windows bridge the gap (run length <= 2*context_lines).
-            change_start = i
             o_lo = max(0, i1 - context_lines)
             n_lo = max(0, j1 - context_lines)
             last_i2 = i2
