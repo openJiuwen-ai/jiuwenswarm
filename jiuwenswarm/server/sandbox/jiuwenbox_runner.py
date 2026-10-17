@@ -75,7 +75,7 @@ def _apply_soft_delete_env(env: dict[str, str]) -> None:
 
     box-server 不继承父进程的全部环境, 只复制白名单和 ``JIUWENBOX_*``.
     这里显式写入, 后面的 runner 才能在挂起时装上 DLL.
-    开关打开但 DLL 不存在时直接失败, 不能无保护地启动沙箱.
+    开关打开但 DLL 不存在时只记日志, 沙箱照常启动, 删除保持系统原样.
     """
     from jiuwenbox.supervisor.win_softdelete import (
         ENV_ARCHIVE,
@@ -88,14 +88,18 @@ def _apply_soft_delete_env(env: dict[str, str]) -> None:
     existing_dll = (env.get(ENV_DLL) or "").strip()
     if env.get(ENV_ENABLED) == "1" and existing_dll:
         if not os.path.isfile(existing_dll):
-            raise RuntimeError(f"soft-delete enabled but DLL is missing: {existing_dll}")
+            logger.warning("软删除 DLL 不存在, 沙箱不启用软删除: %s", existing_dll)
+            env.pop(ENV_ENABLED, None)
+            env.pop(ENV_DLL, None)
+            env.pop(ENV_ARCHIVE, None)
         return
     enabled, archive = get_file_soft_delete_settings(get_config())
     if not enabled:
         return
     dll = dll_path()
     if not dll.is_file():
-        raise RuntimeError(f"soft-delete enabled but DLL is missing: {dll}")
+        logger.warning("软删除 DLL 不存在, 沙箱不启用软删除: %s", dll)
+        return
     env[ENV_ENABLED] = "1"
     env[ENV_DLL] = str(dll)
     if archive:
@@ -589,7 +593,9 @@ class JiuwenBoxRunner:
                 if key in os.environ
             }
             env.update({
-                key: value for key, value in os.environ.items() if key.startswith("JIUWENBOX_")
+                key: value
+                for key, value in os.environ.items()
+                if key.startswith("JIUWENBOX_") and key != "JIUWENBOX_SOFT_DELETE_PATCH_ONLY"
             })
             # Retain explicit bootstrap overrides on policy-only reloads.
             env.update(self._startup_extra_env)

@@ -53,6 +53,8 @@ def inherited_environment(*, for_runner: bool = False) -> dict[str, str]:
     inherited = {}
     for key, value in os.environ.items():
         lookup_key = key.upper() if sys.platform == "win32" else key
+        if lookup_key == "JIUWENBOX_SOFT_DELETE_PATCH_ONLY":
+            continue
         if lookup_key in key_names or (for_runner and lookup_key.startswith("JIUWENBOX_")):
             inherited[key_names.get(lookup_key, key)] = value
     return inherited
