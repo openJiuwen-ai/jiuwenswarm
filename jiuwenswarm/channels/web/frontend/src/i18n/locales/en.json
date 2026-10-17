@@ -1228,7 +1228,26 @@
     }
   },
   "sessionSidebar": {
-    "newSession": "New session"
+    "newSession": "New session",
+    "enterpriseContext": {
+      "user": "User",
+      "userContext": "User context",
+      "modeAria": "Context mode",
+      "selectAgent": "Select agent",
+      "custom": "Custom",
+      "agentOrgLabel": "Agent | organization | cluster",
+      "botId": "bot_id",
+      "groupId": "group_id",
+      "userId": "user_id",
+      "jiuwenclawId": "jiuwenclaw_id",
+      "apply": "Apply",
+      "switching": "Switching...",
+      "logout": "Log out",
+      "switchToManager": "Open manager",
+      "customRequired": "bot_id, group_id, user_id and jiuwenclaw_id are required",
+      "noMatch": "No matches",
+      "pleaseSelect": "Select"
+    }
   },
   "offloadFiles": {
     "title": "Offload Files",

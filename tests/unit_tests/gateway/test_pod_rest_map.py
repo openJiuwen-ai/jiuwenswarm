@@ -113,9 +113,20 @@ def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:
         assert sent.used_rpc_fallback is False
 
 
+def test_skills_list_uses_the_dedicated_url() -> None:
+    sent = assemble_rest_request(
+        _envelope("skills.list"),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert sent.verb == "GET"
+    assert sent.url == "http://10.0.0.8:8766/api/v1/skills"
+    assert sent.used_rpc_fallback is False
+    assert sent.query is not None
+    assert sent.query["session_id"] == "sess-1"
+
+
 def test_methods_without_handlers_are_not_sent_anywhere() -> None:
     for method in (
-        "skills.list",
         "plugins.list",
         "channel.feishu.get_conf",
         "updater.check",

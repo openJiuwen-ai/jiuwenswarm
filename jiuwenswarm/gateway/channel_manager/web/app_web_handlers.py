@@ -2113,7 +2113,77 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     # ── models.* handlers ────────────────────────────────────────
 
+    async def _enterprise_models_list_payload(params: dict) -> dict:
+        """按请求 bot_id 从 Gateway 企业库解析对话模型，不下发凭据。"""
+        from types import SimpleNamespace
+
+        from jiuwenswarm.common.request_identity import (
+            apply_routing_metadata,
+            normalize_routing_identity,
+        )
+        from jiuwenswarm.server.runtime.enterprise_config.loader import (
+            load_effective_enterprise_config,
+        )
+        from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
+
+        identity = normalize_routing_identity(params if isinstance(params, dict) else {})
+        request = SimpleNamespace(metadata=apply_routing_metadata({}, identity))
+        enterprise = await load_effective_enterprise_config(
+            request, {TemplateRefSlot.DEFAULT_MODEL},
+        )
+        entities = (
+            enterprise.models.get(TemplateRefSlot.DEFAULT_MODEL.value, [])
+            if enterprise is not None
+            else []
+        )
+        result = []
+        for idx, entity in enumerate(entities):
+            if not isinstance(entity, dict):
+                continue
+            model_name = str(entity.get("model_id") or "").strip()
+            if not model_name:
+                continue
+            parameters = entity.get("parameters")
+            if not isinstance(parameters, dict):
+                parameters = {}
+            reasoning_level = parameters.get("reasoning_level", "")
+            result.append({
+                "model_name": model_name,
+                "api_base": str(entity.get("api_base") or "").strip(),
+                "api_key": "",
+                "model_provider": str(entity.get("model_provider") or "").strip(),
+                "timeout": entity.get("timeout", 60),
+                "temperature": parameters.get("temperature", 0.95),
+                "reasoning_level": "off" if reasoning_level is False else reasoning_level,
+                "is_default": idx == 0,
+                "alias": str(entity.get("template_name") or ""),
+                "origin_index": idx,
+            })
+        return {
+            "models": result,
+            "active_model": result[0]["model_name"] if result else "",
+            "model_source": "enterprise",
+        }
+
     async def _models_list(ws, req_id, params, session_id):
+        from jiuwenswarm.edition import is_enterprise
+
+        if is_enterprise():
+            routing = getattr(ws, "_web_routing", None)
+            merged = dict(routing) if isinstance(routing, dict) else {}
+            if isinstance(params, dict):
+                merged.update({k: v for k, v in params.items() if v})
+            try:
+                payload = await _enterprise_models_list_payload(merged)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[models.list] enterprise %s", exc)
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR",
+                )
+                return
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+            return
+
         from jiuwenswarm.gateway.zen_query import fetch_zen_free_model_rows
 
         zen_rows = await fetch_zen_free_model_rows(_resolve(agent_client))
@@ -5013,7 +5083,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
             resolved_client = _resolve(agent_client)
-            if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
+            # WebSocket 单机客户端、以及 runtime HTTP 客户端都在 Gateway 本地读配置。
+            # runtime 南向没有 config.get 的 REST，转发给 AgentServer 会得到
+            # HTTP_METHOD_NOT_HANDLED。只有 AgentOS 多用户才注入目录后转发。
+            local_config = (
+                resolved_client is None
+                or is_legacy_shared_directory_client(resolved_client)
+                or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+            )
+            if local_config:
                 await local_handler(ws, req_id, params, session_id)
                 return
             await _proxy_config_request(
@@ -5047,6 +5125,20 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     # vendors.* 为本分支新增的厂商选择接口，不经 config proxy（无 AgentOS 多用户注入目录语义），
     # 直接走本地 handler。
+    async def _connection_status(ws, req_id, params, session_id):
+        """返回 Gateway / AgentServer 就绪状态，供 Web 客户端探测后端链路。"""
+        ac = _resolve(agent_client)
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=True,
+            payload={
+                "agent_ready": ac is not None and bool(getattr(ac, "server_ready", False)),
+                "protocol_version": "1.0",
+            },
+        )
+
+    channel.register_method("connection.status", _connection_status)
     channel.register_method("vendors.list", _vendors_list)
     channel.register_method("vendors.fetch_models", _vendors_fetch_models)
     channel.register_method("channel.get", _channel_get)

@@ -16,8 +16,10 @@ def _resolve_env_files() -> tuple[str | Path, ...]:
     """解析可用的 .env 路径（优先 cwd，兼容 venv 安装布局）。"""
     candidates: list[Path] = [Path.cwd() / ".env"]
     here = Path(__file__).resolve()
+    # 容器里代码挂在 /app/jiuwenswarm，祖先层数比仓库检出少，越界的深度直接跳过。
     for depth in (5, 6, 7):
-        candidates.append(here.parents[depth] / ".env")
+        if depth < len(here.parents):
+            candidates.append(here.parents[depth] / ".env")
     return tuple(p for p in candidates if p.is_file())
 
 

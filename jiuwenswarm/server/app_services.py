@@ -83,6 +83,8 @@ class AppServices:
         # 造会话运行时仍要借 WebSocket 服务器上的心跳入口。心跳本身不进工具箱。
         self.build_runtime: Any = None
         self.plan_controller: Any = None
+        # WebSocket 入口注册的用户业务适配器。HTTP 专用网址复用同一份。
+        self.adapter_registry: Any = None
 
     def execution_runtime(self) -> Any:
         """拿出会话和对话共用的运行时。还没有，或 Agent 管理器换过了，就现造一个。"""

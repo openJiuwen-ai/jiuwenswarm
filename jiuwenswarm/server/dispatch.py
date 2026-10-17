@@ -49,6 +49,7 @@ from jiuwenswarm.server.handlers.commands import (
     handle_command_status,
     handle_command_workflows,
 )
+from jiuwenswarm.server.handlers.gateway_adapter_http import handle_gateway_adapter
 from jiuwenswarm.server.handlers.extensions import (
     handle_extensions_delete,
     handle_extensions_import,
@@ -87,6 +88,7 @@ from jiuwenswarm.server.handlers.ops import (
 from jiuwenswarm.server.handlers.permissions import handle_permissions_config
 from jiuwenswarm.server.handlers.sandbox import handle_command_sandbox
 from jiuwenswarm.server.handlers.schedule import handle_schedule_request
+from jiuwenswarm.server.handlers.skills import handle_skills_request
 from jiuwenswarm.server.handlers.session import (
     handle_history_append_record,
     handle_history_get,
@@ -228,6 +230,26 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SWARMFLOW_PAUSE: handle_swarmflow_control,
     ReqMethod.SWARMFLOW_RESUME: handle_swarmflow_control,
     ReqMethod.SWARMFLOW_STOP: handle_swarmflow_control,
+    # 项目域在 AgentServer 的 ProjectAdapter。WebSocket 先走适配器注册表；
+    # 这里登记是为了让 HTTP 专用网址能调用同一份适配器。
+    ReqMethod.PROJECT_LIST: handle_gateway_adapter,
+    ReqMethod.PROJECT_INFO: handle_gateway_adapter,
+    ReqMethod.PROJECT_GET_SESSIONS: handle_gateway_adapter,
+    ReqMethod.PROJECT_GET_CRON_SESSIONS: handle_gateway_adapter,
+    ReqMethod.PROJECT_PINNED_SESSIONS: handle_gateway_adapter,
+    ReqMethod.PROJECT_CREATE: handle_gateway_adapter,
+    ReqMethod.PROJECT_RENAME: handle_gateway_adapter,
+    ReqMethod.PROJECT_PIN: handle_gateway_adapter,
+    ReqMethod.PROJECT_REMOVE: handle_gateway_adapter,
+    ReqMethod.PROJECT_RESTORE: handle_gateway_adapter,
+    # 语言配置在 AgentServer 的 ConfigAdapter。企业版 runtime 客户端会转发到这里。
+    ReqMethod.LOCALE_GET_CONF: handle_gateway_adapter,
+    ReqMethod.LOCALE_SET_CONF: handle_gateway_adapter,
+    # 会话元数据在 AgentServer 的 SessionAdapter。
+    ReqMethod.SESSION_GET_METADATA: handle_gateway_adapter,
+    # 技能列表在 AgentServer 的 SkillManager。WebSocket 经 process_message；
+    # 这里登记是为了让 HTTP 专用网址走同一条路径。
+    ReqMethod.SKILLS_LIST: handle_skills_request,
 }
 
 

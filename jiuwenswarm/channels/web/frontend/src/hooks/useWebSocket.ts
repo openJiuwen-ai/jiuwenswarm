@@ -68,6 +68,7 @@ import {
 import { requestLogin } from '../stores/authStore';
 import { describeChatError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
+import { getWebTransport } from '../utils/env';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
   fetchTtsAudio,
@@ -1986,6 +1987,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // 不再预先创建助手消息，而是在收到第一个 content_chunk 时创建
       // 这样工具调用会先显示，然后才是助手的回复
 
+      if (getWebTransport() === 'http') {
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+      }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
       // 标记本地发起的发送，用于 processing_status 处理器区分"旧任务被打断"
@@ -2110,6 +2115,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       userInputVersionRef.current += 1;
       stopAllTts();
 
+      if (getWebTransport() === 'http') {
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+      }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
 

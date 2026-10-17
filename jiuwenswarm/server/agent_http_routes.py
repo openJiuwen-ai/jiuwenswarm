@@ -14,11 +14,11 @@ import json
 import logging
 import sys
 from typing import Any
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import Headers
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from jiuwenswarm.common.log_context import (
@@ -67,23 +67,35 @@ class RequestBodyLimitMiddleware:
             return
         if body is None:
             return
-        await self.app(scope, _replay_body(body), send)
+        await self.app(scope, _replay_body(body, receive), send)
 
 
-class SessionLogMiddleware(BaseHTTPMiddleware):
-    """每条网页请求进来时，把日志绑到这次的会话上，离开时解开。"""
+class SessionLogMiddleware:
+    """每条网页请求进来时，把日志绑到这次的会话上，离开时解开。
 
-    async def dispatch(self, request: Request, call_next):
-        session_id = await _session_id_from_request(request)
+    不用 ``BaseHTTPMiddleware``：它会把流式响应当成客户端已断开并取消任务，
+    ``chat/completions`` 和 ``events/stream`` 会在发出内容前结束。
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        session_id = _session_id_from_scope(scope)
         token, previous_trace = bind_log_session(session_id)
+        method = scope.get("method", "")
+        path = scope.get("path", "")
         logger.info(
             "[AgentHTTPServer] request arrived: method=%s path=%s session_id=%s",
-            request.method,
-            request.url.path,
+            method,
+            path,
             current_log_session_id(),
         )
         try:
-            return await call_next(request)
+            await self.app(scope, receive, send)
         finally:
             unbind_log_session(token, previous_trace)
 
@@ -560,17 +572,22 @@ async def _read_bounded_body(receive: Receive) -> bytes | None:
             return b"".join(chunks)
 
 
-def _replay_body(body: bytes) -> Receive:
+def _replay_body(body: bytes, receive: Receive) -> Receive:
+    """先交还已经读完的正文，之后继续听真正的断开。
+
+    第二次读取就返回 ``http.disconnect`` 会让流式响应以为客户端已经离开，
+    ``chat/completions`` 和 ``events/stream`` 会在第一帧后被取消。
+    """
     sent = False
 
-    async def receive() -> Message:
+    async def replay() -> Message:
         nonlocal sent
-        if sent:
-            return {"type": "http.disconnect"}
-        sent = True
-        return {"type": "http.request", "body": body, "more_body": False}
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return await receive()
 
-    return receive
+    return replay
 
 
 async def _read_json(request: Request) -> dict[str, Any]:
@@ -582,6 +599,20 @@ async def _read_json(request: Request) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _session_id_from_scope(scope: Scope) -> str:
+    """只看请求头和查询串，不读正文，避免把流式连接提前消费掉。"""
+    headers = {
+        name.decode("latin-1").lower(): value.decode("latin-1")
+        for name, value in scope.get("headers") or []
+    }
+    header = headers.get("x-session-id", "").strip()
+    if header:
+        return header
+    query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+    values = query.get("session_id") or []
+    return str(values[0]).strip() if values else ""
 
 
 async def _session_id_from_request(request: Request) -> str:
