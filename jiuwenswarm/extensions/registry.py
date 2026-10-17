@@ -95,6 +95,7 @@ class ExtensionRegistry:
         self._crypto_tool: CryptoUtility | None = None
         self._third_agent: ThirdAgentExtension | None = None
         self._application_plugins: dict[str, ApplicationPluginExtension] = {}
+        self._cron_hooks: dict[str, Any] = {}
         self.callback_framework = callback_framework
         self._config = ExtensionConfig(config=config, logger=logger)
 
@@ -103,6 +104,16 @@ class ExtensionRegistry:
         if cls._instance is None:
             raise RuntimeError("ExtensionRegistry 尚未初始化，请先调用 create_instance()")
         return cls._instance
+
+    def register_cron_hooks(self, channel: str, hooks: Any) -> None:
+        """Register synchronous ``mutation`` and ``run_metadata`` callbacks."""
+        if channel in self._cron_hooks:
+            raise ValueError(f"Cron hooks already registered for {channel}")
+        self._cron_hooks[channel] = hooks
+
+    @classmethod
+    def cron_hooks(cls) -> dict[str, Any]:
+        return cls._instance._cron_hooks if cls._instance is not None else {}
 
     @classmethod
     def create_instance(
