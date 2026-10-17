@@ -332,6 +332,42 @@ async def test_crlf_eol_preserved(sys_op, temp_dir):
     assert Path(file_path).read_bytes() == b"first\r\nSECOND\r\n", "CRLF 必须按原样保留"
 
 
+async def test_lf_edit_after_last_newline_maps_offsets(sys_op, temp_dir):
+    """LF 文件末换行之后仍有内容时，offset 兜底分支不能越界。"""
+    read_tool, edit_tool, _ = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "lf-after-last-newline.txt")
+    Path(file_path).write_bytes(b"first\nsecond")
+
+    assert (await read_tool.invoke({"file_path": file_path})).success is True
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "second",
+        "new_string": "SECOND",
+    })
+
+    assert result.success is True, result.error
+    assert Path(file_path).read_bytes() == b"first\nSECOND"
+
+
+async def test_crlf_edit_after_last_newline_maps_offsets(sys_op, temp_dir):
+    """CRLF 文件末换行之后的编辑终点需要补偿全部 CRLF 长度。"""
+    read_tool, edit_tool, _ = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "crlf-after-last-newline.txt")
+    Path(file_path).write_bytes(b"first\r\nsecond")
+
+    assert (await read_tool.invoke({"file_path": file_path})).success is True
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "second",
+        "new_string": "SECOND",
+    })
+
+    assert result.success is True, result.error
+    assert Path(file_path).read_bytes() == b"first\r\nSECOND"
+
+
 async def test_mixed_eol_preserved_and_cache_falls_back_to_fresh_read(sys_op, temp_dir):
     """混合 LF/CRLF 不能用“LF 快照 + 单一 EOL”重建，必须回退原始全量读。"""
     read_tool, edit_tool, proxy = _make_tools(sys_op)

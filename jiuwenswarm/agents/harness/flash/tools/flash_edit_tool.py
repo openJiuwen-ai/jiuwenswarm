@@ -97,7 +97,9 @@ def _build_lf_offset_mapper(content: str):
         pos = bisect_left(norm_positions, normalized_index)
         if pos < len(norm_positions) and norm_positions[pos] == normalized_index:
             return orig_starts[pos]
-        return normalized_index + crlf_prefix[pos]
+        return normalized_index + (
+            crlf_prefix[pos] if pos < len(crlf_prefix) else crlf_count
+        )
 
     return to_original
 
