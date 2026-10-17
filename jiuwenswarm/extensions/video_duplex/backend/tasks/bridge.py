@@ -7,7 +7,7 @@ import weakref
 
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.runtime.host_services import send_runtime_push
+from jiuwenswarm.common.host_services import send_runtime_push
 
 _endpoints = weakref.WeakValueDictionary()
 _pending = {}

@@ -87,9 +87,11 @@ KNOWN_R4_EMBEDDED_FOREIGN: dict[str, set[str]] = {}
 BASELINE = {
     # hard 闭包 = 从 gateway 出发仅沿模块级 import 可达的外部（非 gateway/common）模块数。
     # 根包单文件（dotenv_early、llm_provider_compat_patch）计入其所属顶级名。
+    # B2.5 后：runtime 子集复制 + host_services 下沉，四大包（agents/server/
+    # runtime/symphony）hard 闭包全部归零；lazy 闭包的残留入口全部来自
+    # 已登记的拆仓处置项（过渡桥 7 + extensions lazy 12 + 小件 11，共 30 条）。
     "closure_hard": {
-        "agents": 101, "server": 56, "runtime": 32, "extensions": 19,
-        "observability": 10, "symphony": 8,
+        "extensions": 19, "observability": 10,
         "dotenv_early": 1, "llm_provider_compat_patch": 1,
     },
     # lazy 闭包 = 含函数内延迟 import 的可达模块数
@@ -105,7 +107,7 @@ BASELINE = {
     "embedded_files": 27,
     "embedded_loc": 8540,
     # gateway 直接 import 的外部（非 gateway/common）模块数
-    "gateway_direct_foreign": 38,
+    "gateway_direct_foreign": 27,
 }
 
 
@@ -303,8 +305,8 @@ def run_rules(graph: ImportGraph) -> int:
         KNOWN_R2_SERVER_TO_GATEWAY,
     )
     exit_code |= _check_rule(
-        graph, "R3 gateway 禁止 import server/agents/channels",
-        (f"{PKG}.gateway.",), ("server", "agents", "channels"),
+        graph, "R3 gateway 禁止 import server/agents/channels/runtime/symphony",
+        (f"{PKG}.gateway.",), ("server", "agents", "channels", "runtime", "symphony"),
         KNOWN_R3_GATEWAY_FOREIGN,
     )
     exit_code |= _check_rule(

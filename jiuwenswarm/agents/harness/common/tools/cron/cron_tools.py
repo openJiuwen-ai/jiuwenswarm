@@ -23,7 +23,7 @@ from jiuwenswarm.runtime.cron.models import (
     normalize_target_channel_id,
 )
 from jiuwenswarm.common.utils import get_cron_jobs_path
-from jiuwenswarm.runtime.host_services import send_runtime_push
+from jiuwenswarm.common.host_services import send_runtime_push
 
 logger = logging.getLogger(__name__)
 
