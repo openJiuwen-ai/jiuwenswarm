@@ -1,3 +1,6 @@
+# Microsoft Detours (built locally for jiuwen_softdelete.dll; see third_party/README.md)
+third_party/microsoft-detours/
+
 # Python
 __pycache__/
 *.py[cod]

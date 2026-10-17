@@ -718,12 +718,10 @@ def two_hop_spawn_and_authorize(
                 win_softdelete.inject_suspended(int(proc_handle))
             except Exception as exc:  # noqa: BLE001
                 logger.error(
-                    "软删除 DLL 注入失败, 终止 runner spawn (sandbox=%s): %s",
-                    sandbox_id, exc,
+                    "软删除 DLL 注入失败, runner 仍按原方式启动 (sandbox=%s, pid=%s): %s",
+                    sandbox_id, runner_pid, exc,
+                    exc_info=True,
                 )
-                raise RuntimeError(
-                    f"软删除 DLL 注入失败, runner 未启动 (sandbox_id={sandbox_id})"
-                ) from exc
         # 2. resume runner 主线程 (CREATE_SUSPENDED 必须被唤醒).
         try:
             win_job.resume_process(thread_handle)

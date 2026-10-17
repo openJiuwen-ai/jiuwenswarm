@@ -620,16 +620,27 @@ def stop_broker() -> None:
 def prepare_runner_recycle(env: dict[str, str], roots: list[str]) -> str | None:
     """软删除开启时登记根目录, 并把端口和令牌写进 runner 环境.
 
-    服务没起来时直接失败, 避免沙箱退回在 jbx-sandbox 身份里调用回收站.
+    转发服务没起来, 或没有可登记的目录时, 不阻止沙箱启动.
+    端口写成 0, 让沙箱里的 DLL 知道必须走转发而转发不可用, 于是留下原文件.
+    不在沙箱进程里直接调用回收站.
     """
     if not enabled_from_environ():
         return None
     broker = get_broker()
     if broker is None or not broker.running:
-        raise RuntimeError(
-            "软删除已开启, 但回收站转发服务没有在监听"
+        logger.error(
+            "软删除已开启, 但回收站转发服务没有在监听; 沙箱仍会启动, 删除会留下原文件"
         )
-    token = broker.register(roots)
+        env[ENV_RECYCLE_PORT] = "0"
+        env.pop(ENV_RECYCLE_TOKEN, None)
+        return None
+    try:
+        token = broker.register(roots)
+    except RuntimeError:
+        logger.exception("软删除回收站转发登记失败, 沙箱仍会启动, 删除会留下原文件")
+        env[ENV_RECYCLE_PORT] = "0"
+        env.pop(ENV_RECYCLE_TOKEN, None)
+        return None
     env[ENV_RECYCLE_PORT] = str(broker.port)
     env[ENV_RECYCLE_TOKEN] = token
     return token
