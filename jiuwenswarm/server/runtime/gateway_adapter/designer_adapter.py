@@ -1280,27 +1280,32 @@ def _start_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | Non
 _RUN_TASKS: set[asyncio.Task[None]] = set()
 
 
-def _launch_run_trigger(
+async def _launch_run_trigger(
     coordinator: RunCoordinator,
     payload: dict[str, Any],
     on_update: Any,
-) -> None:
-    """Run the trigger on a background task; failures land on the run record.
+) -> dict[str, Any]:
+    """Acknowledge the persisted start snapshot while execution continues."""
+    started = asyncio.get_running_loop().create_future()
 
-    The trigger's own error handling writes a failed run and pushes it
-    through ``on_update``; a task-level exception (outside the coordinator)
-    is logged — the record keeps its last persisted state.
-    """
+    def publish(updated: dict[str, Any], node_id: str | None = None) -> None:
+        if not started.done():
+            started.set_result(deepcopy(updated))
+        on_update(updated, node_id)
 
     async def _run() -> None:
         try:
-            await coordinator.start(
+            result = await coordinator.start(
                 payload["graph"],
                 node_ids=payload["node_ids"],
                 cascade=bool(payload.get("cascade")),
-                on_update=on_update,
+                on_update=publish,
             )
-        except Exception:  # noqa: BLE001 — background task must never raise
+            if not started.done():
+                started.set_result(deepcopy(result))
+        except Exception as exc:
+            if not started.done():
+                started.set_exception(exc)
             logger.exception(
                 "[DesignerAdapter] run trigger crashed: graph_id=%s",
                 payload.get("graph_id"),
@@ -1309,41 +1314,7 @@ def _launch_run_trigger(
     task = asyncio.create_task(_run())
     _RUN_TASKS.add(task)
     task.add_done_callback(_RUN_TASKS.discard)
-
-
-def _initial_running_run(payload: dict[str, Any]) -> dict[str, Any]:
-    """The 'running' snapshot the run.start response answers with.
-
-    Mirrors the first ``on_update`` the coordinator emits once the lock is
-    taken without racing the background task: read the minted run record, or
-    synthesize a draft-shaped one when the run_id is brand new.
-    """
-    graph = payload["graph"]
-    graph_id = str(graph.get("graph_id") or "")
-    meta = dict(graph.get("metadata") or {})
-    run_id = str(meta.get("team_design_run_id") or "").strip()
-    run = _store.get_run(run_id) if run_id else None
-    if run is not None:
-        return dict(run)
-    now = utc_now_ms()
-    return {
-        "schema_version": "designer-execution-run.v1",
-        "run_id": run_id,
-        "graph_id": graph_id,
-        "project_id": str(graph.get("project_id") or ""),
-        "status": "running",
-        "node_states": {
-            node_id: {
-                "status": "pending",
-                "started_at": None,
-                "completed_at": None,
-            }
-            for node_id in (payload.get("node_ids") or [])
-        },
-        "current_node_ids": [],
-        "created_at": now,
-        "updated_at": now,
-    }
+    return await started
 
 
 def _pause_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
@@ -1461,21 +1432,12 @@ class DesignerAdapter(GatewayAdapter):
                             code="CONFLICT",
                         )
                     # Accept-and-trigger: a run spans many worker LLM turns, so
-                    # answer with the initial 'running' record at once; the
+                    # answer once the initial running record is persisted; the
                     # canvas follows progress via designer.run.updated /
                     # designer.node.updated pushes and designer.run.get.
-                    _launch_run_trigger(coordinator, payload, _run_update_callback(request))
-                    run_out = _initial_running_run(payload)
-                    # Accept-and-trigger contract: answer with a RUNNING
-                    # snapshot. The stored record can still carry the previous
-                    # trigger's terminal status (the background task may not
-                    # have taken the coordinator lock yet), and the frontend's
-                    # applyRun only starts its 400ms poll on an active status —
-                    # a stale 'completed' leaves a rerun with no feedback
-                    # channel at all (pushes are its only other leg).
-                    if run_out is not None:
-                        run_out["status"] = "running"
-                        run_out["current_node_ids"] = []
+                    run_out = await _launch_run_trigger(
+                        coordinator, payload, _run_update_callback(request)
+                    )
                     warning = str(payload.get("warning") or "").strip()
                     warnings = [
                         str(x)
@@ -1488,11 +1450,6 @@ class DesignerAdapter(GatewayAdapter):
                             warnings = [warning, *warnings]
                     if warnings:
                         run_out["warnings"] = warnings[:8]
-                    await _push_designer_event(
-                        request=request,
-                        event_type=EventType.DESIGNER_RUN_UPDATED.value,
-                        payload={"run": run_out},
-                    )
                     return _ok_response(
                         request,
                         {

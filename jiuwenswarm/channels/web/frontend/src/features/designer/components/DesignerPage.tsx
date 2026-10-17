@@ -206,13 +206,22 @@ export function DesignerPage({
     const runId = run?.run_id;
     if (!runId || run?.status === 'running') return;
     for (const item of pendingRevisions) {
-      const key = `${runId}:${item.nodeId}`;
+      const key = JSON.stringify([
+        runId,
+        item.nodeId,
+        run.node_states?.[item.nodeId]?.version,
+        item.incoming.map((material) => material.uri),
+      ]);
       if (item.requiresSelection || autoPromotedRef.current.has(key)) continue;
       // Brief/storyboard versions remain pending until the user chooses one.
       autoPromotedRef.current.add(key);
-      void chooseOutput(item.nodeId, 'new').then(() => {
-        if (chooserNodeId === item.nodeId) closeRevision();
-      });
+      void chooseOutput(item.nodeId, 'new')
+        .then(() => {
+          if (chooserNodeId === item.nodeId) closeRevision();
+        })
+        .catch(() => {
+          autoPromotedRef.current.delete(key);
+        });
     }
   }, [chooseOutput, chooserNodeId, closeRevision, pendingRevisions, run?.run_id, run?.status]);
   const activeRevision =

@@ -103,12 +103,13 @@ export const designerGraphClient = {
   mediaCapabilities: (graphId?: string) =>
     webRequest<DesignerMediaCapabilities>('designer.media.capabilities', graphId ? { graph_id: graphId } : {}),
 
-  startRun: (params: { graphId?: string; runId?: string; nodeId?: string; cascade?: boolean }) =>
+  startRun: (params: { graphId?: string; runId?: string; nodeId?: string; cascade?: boolean; sessionId?: string }) =>
     webRequest<{
       run: DesignerExecutionRun;
       warning?: string | null;
       warnings?: string[] | null;
     }>('designer.run.start', {
+      ...(params.sessionId ? { session_id: params.sessionId } : {}),
       ...(params.graphId ? { graph_id: params.graphId } : {}),
       ...(params.runId ? { run_id: params.runId } : {}),
       ...(params.nodeId ? { node_id: params.nodeId } : {}),
