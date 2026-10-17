@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
+import os
 import re
 import shutil
 import socket
@@ -544,6 +547,42 @@ def _normalize_leader_direct_addr(raw: Any) -> str:
     return re.sub(r"^tcp://0\.0\.0\.0(?=[:/]|$)", "tcp://127.0.0.1", value)
 
 
+_CONTROL_SECRET_ENV = "JIUWEN_TEAM_CONTROL_SECRET"
+_CONTROL_SECRET_CFG_KEY = "control_secret"
+
+
+def _resolve_control_secret() -> str:
+    """Leader 和 teammate 共用的控制面密钥；两边配置必须一致。"""
+    secret = os.getenv(_CONTROL_SECRET_ENV, "").strip()
+    if secret:
+        return secret
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        team_cfg = get_config().get("team")
+        transport_cfg = team_cfg.get("transport") if isinstance(team_cfg, dict) else None
+        params = transport_cfg.get("params") if isinstance(transport_cfg, dict) else None
+        return str(params.get(_CONTROL_SECRET_CFG_KEY, "")).strip() if isinstance(params, dict) else ""
+    except Exception:
+        return ""
+
+
+def _canonical_control_body(body: dict[str, Any]) -> bytes:
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _sign_control_message(body: dict[str, Any], secret: str) -> str:
+    return hmac.new(secret.encode("utf-8"), _canonical_control_body(body), hashlib.sha256).hexdigest()
+
+
+def _verify_control_message(body: dict[str, Any], secret: str) -> bool:
+    provided = str(body.get("auth", ""))
+    if not provided:
+        return False
+    unsigned = {k: v for k, v in body.items() if k != "auth"}
+    return hmac.compare_digest(provided, _sign_control_message(unsigned, secret))
+
+
 def build_bootstrap_ack_envelope(
     *,
     member_name: str,
@@ -776,6 +815,9 @@ async def _send_bootstrap_via_raw_zmq(
             "payload": {"envelope": envelope},
             "sender_id": str(envelope.get("leader_member_name") or ""),
         }
+        secret = _resolve_control_secret()
+        if secret:
+            payload["auth"] = _sign_control_message(payload, secret)
         await sock.send_multipart([json.dumps(payload).encode("utf-8")])
         frames = await asyncio.wait_for(sock.recv_multipart(), timeout=max(0.2, timeout_s))
         if not any(frame == b"ok" for frame in frames):
@@ -2987,6 +3029,13 @@ async def run_teammate_bootstrap_daemon(
                 direct_bootstrap_addr,
                 local_member,
             )
+            if not _resolve_control_secret():
+                logger.warning(
+                    "[RemoteMemberBootstrap] no control secret configured; the "
+                    "bootstrap port accepts unauthenticated messages. Set %s "
+                    "before cross-machine deployment.",
+                    _CONTROL_SECRET_ENV,
+                )
             try:
                 from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import (
                     register_teammate_blank_agent_at_startup,
@@ -3033,6 +3082,17 @@ async def run_teammate_bootstrap_daemon(
                         await bootstrap_router.send_multipart([identity, b"ok"])
                         continue
                     event_type = str(raw.get("event_type", "")).strip()
+                    secret = _resolve_control_secret()
+                    if secret and not _verify_control_message(raw, secret):
+                        logger.warning(
+                            "[RemoteMemberBootstrap] control message failed "
+                            "signature check, dropped type=%s",
+                            str(raw.get("event_type", "")),
+                        )
+                        await bootstrap_router.send_multipart(
+                            [identity, b"unauthorized"]
+                        )
+                        continue
                     env = None
                     if event_type == REMOTE_BOOTSTRAP_DIRECT_EVENT_TYPE:
                         payload_obj = raw.get("payload")
