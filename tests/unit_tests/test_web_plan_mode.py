@@ -8,6 +8,28 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 
 
+@pytest.fixture(autouse=True)
+def _flash_disabled_for_mode_resolution(monkeypatch):
+    """mode 解析断言与部署机的 flash.enabled 配置解耦。
+
+    ``resolve_request_runtime_mode`` 会按部署配置把 agent 族请求注入
+    flash（上游 be4a7b022 修复后对 flash.enabled=true 的机器生效）：
+    本文件的 plan/agent 断言会随之翻转。plan 语义测试应固定 flash
+    关闭（flash 注入行为由 test_flash_mode_routing.py 专门覆盖）；
+    其余配置段原样透传，不影响依赖真实 config 的断言。
+    """
+    from jiuwenswarm.server.handlers import _shared
+
+    real_get_config = _shared.get_config
+
+    def _flash_off():
+        cfg = real_get_config() or {}
+        flash_cfg = {**(cfg.get("flash") or {}), "enabled": False}
+        return {**cfg, "flash": flash_cfg}
+
+    monkeypatch.setattr(_shared, "get_config", _flash_off)
+
+
 def _request(params, channel_id="web"):
     return AgentRequest(
         request_id="req-1",

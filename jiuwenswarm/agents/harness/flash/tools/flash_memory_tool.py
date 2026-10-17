@@ -46,7 +46,7 @@ def _unified_memory_description(language: str) -> str:
             "[Read-only mode] In cron/heartbeat/group-chat digital-avatar mode, "
             "write/edit are rejected (read/search still work).\n\n"
             "Prefer this tool (mode=write/edit) for any memory file write/edit; "
-            "do NOT use edit_file/write_file for memory/ paths — this tool validates paths "
+            "do NOT use edit_file_flash/write_file for memory/ paths — this tool validates paths "
             "and prevents traversal, the general file tools do not."
         )
     return (
@@ -60,7 +60,7 @@ def _unified_memory_description(language: str) -> str:
         "【路径安全】path 必须以 memory/ 开头（如 memory/USER.md、memory/daily_memory/2026-09-10.md）。"
         "越界路径会被拒绝。\n\n"
         "【只读态】定时任务/心跳/群聊数字分身模式下，write/edit 被拒（read/search 可用）。\n\n"
-        "记忆文件的写、改一律用本工具（mode=write/edit），不要用 edit_file/write_file——"
+        "记忆文件的写、改一律用本工具（mode=write/edit），不要用 edit_file_flash/write_file——"
         "本工具带路径校验（锁死 memory/、防越权），通用文件工具无此保护。"
     )
 

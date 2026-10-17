@@ -115,7 +115,7 @@ def test_react_override_replaces_eager_tools_and_keeps_siblings() -> None:
         "ask_user",
         "read_file",
         "write_file",
-        "edit_file",
+        "edit_file_flash",
         "glob",
         "grep",
         "bash",

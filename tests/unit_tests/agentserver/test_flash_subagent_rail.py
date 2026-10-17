@@ -1,4 +1,4 @@
-﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """FlashSubagentRail 单元测试：spec 自注入 + flash 调优文案 + 机制复用。
 
@@ -168,7 +168,7 @@ class TestFlashDescriptions:
         _make_rail(agent)
         card = agent.ability_manager.cards["task_tool"]
 
-        for tool_name in ("read_file", "write_file", "edit_file", "glob", "grep", "bash"):
+        for tool_name in ("read_file", "write_file", "edit_file_flash", "glob", "grep", "bash"):
             assert tool_name in card.description, (
                 f"available_agents 必须包含 rail 继承工具 {tool_name}"
             )

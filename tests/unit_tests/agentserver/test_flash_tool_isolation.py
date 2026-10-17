@@ -86,6 +86,7 @@ def test_flash_progressive_tools_replace_deep_web_and_cron(monkeypatch) -> None:
                 "bash",
                 "web_search",
                 "fetch_webpage",
+                "edit_file",
                 "cron_create_job",
                 "cron_metrics",
             ],
@@ -94,4 +95,6 @@ def test_flash_progressive_tools_replace_deep_web_and_cron(monkeypatch) -> None:
 
     assert result == "rail"
     eager = captured["tool_lazy_load"]["eager_tools"]
-    assert eager == ["bash", "cron_metrics", "web_flash", "cron_flash"]
+    # edit_file → edit_file_flash 与 web_search → web_flash 同款替换：
+    # stock 名从 eager 清单移除，flash 名追加（含部署侧旧配置仍写 edit_file 的归一）。
+    assert eager == ["bash", "cron_metrics", "web_flash", "cron_flash", "edit_file_flash"]

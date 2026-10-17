@@ -154,7 +154,7 @@ FLASH_TASK_TOOL_DESCRIPTION: Dict[str, str] = {
 # embedding 配置），不适合在 spec 注入时简单传入，故不在此宣称。
 FLASH_AVAILABLE_AGENTS_CN = (
     "- general-purpose: 通用型子代理，在隔离上下文中执行任务，仅最终摘要返回主上下文。"
-    "可用工具（Tools: read_file、write_file、edit_file、glob、grep、"
+    "可用工具（Tools: read_file、write_file、edit_file_flash、glob、grep、"
     "bash、web_flash、deepresearch 系列等）——"
     "可读写文件、执行 CLI 命令、联网搜索与深度调研，适合逐页研究、页面生成/修复等重活。"
 )
@@ -162,7 +162,7 @@ FLASH_AVAILABLE_AGENTS_CN = (
 FLASH_AVAILABLE_AGENTS_EN = (
     "- general-purpose: general-purpose subagent executing tasks in an isolated context; "
     "only the final summary returns to the main context. Available tools "
-    "(Tools: read_file, write_file, edit_file, glob, grep, bash, "
+    "(Tools: read_file, write_file, edit_file_flash, glob, grep, bash, "
     "web_flash, deepresearch series, etc.) — it can read/write files, run CLI commands, "
     "and do web/deep research; suited for heavy work like per-page research and page "
     "generation/fixing."

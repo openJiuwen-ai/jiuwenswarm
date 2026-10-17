@@ -1316,6 +1316,7 @@ permissions:
     cron_preview_job: allow
     web_flash: allow
     cron_flash: allow
+    edit_file_flash: allow
     acp_chat: ask
     skill_acceleration_exec: ask
 
