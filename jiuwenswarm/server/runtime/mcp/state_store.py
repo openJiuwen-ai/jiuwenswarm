@@ -304,7 +304,7 @@ def upsert_mcp_record(
             record["enabled"] = False
         # Merge the entry's transport/connection fields (placeholders kept).
         for k in ("transport", "url", "headers", "command", "args", "env",
-                  "timeout_s", "server_id_scope"):
+                  "timeout_s", "server_id_scope", "oauth_provider"):
             if k in entry:
                 record[k] = entry[k]
         record["state"] = state
@@ -378,7 +378,7 @@ def record_to_mcp_entry(name: str, record: dict[str, Any]) -> dict[str, Any] | N
     transport = record.get("transport") or "streamable-http"
     entry["transport"] = transport
     for k in ("url", "headers", "command", "args", "env",
-              "timeout_s", "server_id_scope"):
+              "timeout_s", "server_id_scope", "oauth_provider"):
         if k in record and record[k] is not None:
             entry[k] = record[k]
     # enabled is TUI-only; carry it through so TUI's loader can filter on it.
