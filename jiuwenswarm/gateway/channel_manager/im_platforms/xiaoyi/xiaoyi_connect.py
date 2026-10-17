@@ -98,8 +98,9 @@ _APPROVAL_EVENT_ACTIONS = {
     "deny": "reject",
     "refuse": "reject",
 }
-# 待答复审批有效期（超时后按普通消息处理，避免陈旧 request_id 误恢复）
-_APPROVAL_EXPIRE_S = 30 * 60
+# 待答复审批有效期（超时后按普通消息处理，避免陈旧 request_id 误恢复）。
+# 2026-10-17 调试值 2 分钟（联调超时兜底用），上线改回 30 * 60。
+_APPROVAL_EXPIRE_S = 2 * 60
 
 _APPROVAL_REPLY_HINT = (
     "请直接回复：同意（仅本次）/ 会话内允许 / 永久允许 / 拒绝。"
@@ -3933,15 +3934,15 @@ class XiaoyiChannel(BaseChannel):
         source = str(pending.get("source") or "").strip()
         question_options = pending.get("question_options") or {}
         if source == "ask_user_interrupt":
-            # 每题选第一个选项（模型给的顺序即推荐序）；无选项的问题按跳过
-            # （空答案，interface.py 保留题目映射"跳过"语义）。
+            # 每题选第一个选项（模型给的顺序即推荐序）；无选项的问题（自由
+            # 输入题）给显式默认值"跳过"，模型收到明确信号继续，不悬空。
             answers = []
             for question in pending.get("questions") or []:
                 labels = question_options.get(str(question)) or []
                 answers.append({
                     "question": str(question),
                     "selected_options": [labels[0]] if labels else [],
-                    "custom_input": "",
+                    "custom_input": "" if labels else "跳过",
                 })
             if not answers:
                 answers = [{"question": "", "selected_options": [], "custom_input": ""}]

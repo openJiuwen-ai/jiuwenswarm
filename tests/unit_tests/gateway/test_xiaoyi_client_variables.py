@@ -976,7 +976,7 @@ async def test_ask_user_timeout_default_answer(cfg_file):
             "request_id": "req-930",
             "source": "ask_user_interrupt",
             "task_id": "task-2",
-            "created_at": time.time() - 31 * 60,
+            "created_at": time.time() - 3 * 60,
             "questions": ["你想要什么风格？", "要加图标吗？"],
             "question_ids": {},
             "question_options": {
@@ -992,17 +992,17 @@ async def test_ask_user_timeout_default_answer(cfg_file):
         m = captured[-1]
         assert m.params["request_id"] == "req-930"
         assert m.params["source"] == "ask_user_interrupt"
-        # 有选项的题选第一项；无选项的题按跳过（空答案）
+        # 有选项的题选第一项；无选项的题给显式默认值"跳过"
         assert m.params["answers"] == [
             {"question": "你想要什么风格？", "selected_options": ["深色"], "custom_input": ""},
-            {"question": "要加图标吗？", "selected_options": [], "custom_input": ""},
+            {"question": "要加图标吗？", "selected_options": [], "custom_input": "跳过"},
         ]
 
         ch._pending_approvals["conv-1"] = {
             "request_id": "req-931",
             "source": "permission_interrupt",
             "task_id": "task-2",
-            "created_at": time.time() - 31 * 60,
+            "created_at": time.time() - 3 * 60,
             "questions": ["允许执行 bash 吗？"],
             "question_ids": {},
             "question_options": {"允许执行 bash 吗？": ["本次允许", "拒绝"]},
