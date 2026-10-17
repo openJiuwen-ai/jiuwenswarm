@@ -123,6 +123,14 @@ def _make_tools(sys_op):
     return read_tool, edit_tool, proxy
 
 
+async def test_tool_card_keeps_stock_edit_file_contract(sys_op):
+    """flash 实现必须保持 stock 工具名，避免安全/禁用/前端按名断链。"""
+    _, edit_tool, _ = _make_tools(sys_op)
+
+    assert edit_tool.card.name == "edit_file"
+    assert edit_tool.card.id.startswith("EditFileTool_")
+
+
 async def test_gate_requires_prior_read(sys_op, temp_dir):
     _, edit_tool, _ = _make_tools(sys_op)
     file_path = os.path.join(temp_dir, "gate.txt")
