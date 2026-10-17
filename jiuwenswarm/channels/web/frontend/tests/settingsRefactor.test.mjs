@@ -1512,7 +1512,14 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
   ]);
   assert.match(browserDefinition, /\{ value: 'openrouter', labelKey: 'settingsPanel\.browser\.providerOpenrouter' \}/);
   assert.match(browserDefinition, /\{ value: 'typesafe', labelKey: 'settingsPanel\.browser\.providerTypesafe' \}/);
-  // The Jev key is write-only: the page shows configured/not configured and never reads the key back.
+  // Keys are edited independently of the active provider, with existing values prefilled.
+  const jevSettings = source('src/features/settings/modules/browser/JevKeySettings.tsx');
+  assert.match(jevSettings, /useSettingsConfig\(\)/);
+  assert.match(jevSettings, /config=\{config\}/);
+  assert.match(jevSettings, /clearing\.provider === values\.decision_provider/);
+  for (const provider of ['openrouter', 'typesafe']) {
+    assert.match(jevSettings, new RegExp(`provider: '${provider}'`));
+  }
   assert.match(browserDefinition, /component: 'custom', render: JevKeySettings/);
   assert.match(sourceProvider, /jev_key_configured: value\?\.jev_key_configured === true/);
   for (const mode of ['llm', 'shadow', 'hybrid']) {
@@ -1984,7 +1991,7 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
   assert.equal(existsSync(new URL('src/features/settings/modules/models/OpenAIAccountField.tsx', root)), true);
 });
 
-test('Jev browser settings preserve mode, provider and write-only key contracts', () => {
+test('Jev browser settings preserve mode, independent provider credentials and readback', () => {
   const definition = source('src/features/settings/modules/browser/definition.ts');
   const provider = source('src/features/settings/services/SettingsSourceProvider.tsx');
   const keySettings = source('src/features/settings/modules/browser/JevKeySettings.tsx');
@@ -2005,9 +2012,11 @@ test('Jev browser settings preserve mode, provider and write-only key contracts'
   }
   assert.match(definition, /component: 'custom', render: JevKeySettings/);
   assert.match(provider, /jev_key_configured: value\?\.jev_key_configured === true/);
-  assert.match(keySettings, /config=\{\{\}\}/);
+  assert.match(keySettings, /config=\{config\}/);
   assert.match(keySettings, /decision_mode: 'llm'/);
-  assert.match(keySettings, /request\('config\.save_all', buildConfigSavePayload\(updates\)/);
+  assert.match(keySettings, /saveConfigFields\(updates, operation\)/);
+  assert.match(keySettings, /clearing\.provider === values\.decision_provider/);
+  assert.match(keySettings, /patchLocal\(await request<Record<string, unknown>>\('path\.get'\)\)/);
 });
 
 test('legacy page translations and Harness package state are removed without deleting shared Settings keys', () => {

@@ -1432,6 +1432,38 @@ def test_jev_provider_defaults_match_openjiuwen() -> None:
         assert {k: getattr(resolved, k) for k in defaults} == defaults
 
 
+@_requires_jev
+@pytest.mark.asyncio
+async def test_jev_credential_save_read_and_provider_switch(monkeypatch, tmp_path):
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common.config_panel import config_set_handlers as handlers
+
+    current = {"browser": {"decision": {"mode": "hybrid", "provider": "openrouter"}}}
+    monkeypatch.setenv("TYPESAFE_API_KEY", "")
+    monkeypatch.setattr(config_module, "get_config", lambda: current)
+    monkeypatch.setattr(handlers, "get_config", lambda: current)
+    monkeypatch.setattr(handlers, "get_config_raw", lambda: current)
+    monkeypatch.setattr(handlers, "ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr(handlers, "_get_crypto_provider", lambda: None)
+    monkeypatch.setattr(config_module, "update_browser_in_config", lambda updates: current["browser"].update(updates))
+    monkeypatch.setattr(
+        config_module, "update_browser_decision_in_config", lambda updates: current["browser"]["decision"].update(updates)
+    )
+    adapter = ConfigAdapter()
+    credentials = {"jev_typesafe_api_key": "synthetic-provider-key"}
+    saved = await adapter.handle(_request(ReqMethod.CONFIG_SAVE_ALL, {"config": credentials}))
+    assert saved.ok
+    assert current["browser"]["decision"]["provider"] == "openrouter"
+    assert "synthetic-provider-key" not in repr(saved.payload)
+    read = await adapter.handle(_request(ReqMethod.CONFIG_GET))
+    assert read.payload["jev_typesafe_api_key"] == "synthetic-provider-key"
+    switched = await adapter.handle(_set(decision_mode="hybrid", decision_provider="typesafe"))
+    assert switched.ok and switched.payload["decision_provider"] == "typesafe"
+    assert switched.payload["jev_key_configured"] is True
+    assert "synthetic-provider-key" not in repr(switched.payload)
+    assert current["browser"]["decision"]["api_key_env"] == "TYPESAFE_API_KEY"
+
+
 class TestBuildErrorResponse:
     def test_build_error_response(self) -> None:
         request = _request(ReqMethod.SESSION_LIST)

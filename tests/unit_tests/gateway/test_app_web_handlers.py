@@ -1501,8 +1501,8 @@ async def test_config_get_returns_setup_guide_switch(monkeypatch, raw_config, ex
 
 
 @pytest.mark.asyncio
-async def test_config_get_never_returns_the_jev_keys(monkeypatch):
-    """The Jev keys are saved through config.save_all but must not be sent back to the browser."""
+async def test_config_get_returns_jev_credentials_like_model_settings(monkeypatch):
+    """The authorized settings editor can reload the existing provider credentials."""
     channel = FakeWebChannel()
     monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-openrouter-secret")
     monkeypatch.setenv("TYPESAFE_API_KEY", "synthetic-typesafe-secret")
@@ -1518,8 +1518,8 @@ async def test_config_get_never_returns_the_jev_keys(monkeypatch):
     await channel.methods["config.get"](object(), "req-get-jev", {}, "sess-get-jev")
 
     payload = channel.responses[-1]["payload"]
-    assert payload["jev_openrouter_api_key"] == "" and payload["jev_typesafe_api_key"] == ""
-    assert "synthetic-" not in repr(payload)
+    assert payload["jev_openrouter_api_key"] == "synthetic-openrouter-secret"
+    assert payload["jev_typesafe_api_key"] == "synthetic-typesafe-secret"
     assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_openrouter_api_key"] == "OPENROUTER_API_KEY"
     assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_typesafe_api_key"] == "TYPESAFE_API_KEY"
 

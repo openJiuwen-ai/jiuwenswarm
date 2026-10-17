@@ -802,7 +802,7 @@
       },
       "decision_provider": {
         "title": "Jev 服务提供方",
-        "description": "通过 OpenRouter 调用 Jev，或直接调用 TypeSafe。"
+        "description": "通过 OpenRouter 调用 Jev，或直接调用 TypeSafe。各提供方的凭据独立配置。"
       },
       "jev_api_key": {
         "title": "Jev API 密钥"

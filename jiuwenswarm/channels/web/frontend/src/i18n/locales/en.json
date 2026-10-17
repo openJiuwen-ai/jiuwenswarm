@@ -809,7 +809,7 @@
       },
       "decision_provider": {
         "title": "Jev provider",
-        "description": "Where Jev is called: through OpenRouter, or TypeSafe directly."
+        "description": "Call Jev through OpenRouter or TypeSafe directly. Configure each provider's credentials separately."
       },
       "jev_api_key": {
         "title": "Jev API key"

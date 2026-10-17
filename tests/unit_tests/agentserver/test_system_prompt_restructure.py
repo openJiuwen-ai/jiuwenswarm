@@ -1385,13 +1385,13 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     assert "genuinely unanswered requirements" in task_section.content["en"]
     assert "a partial label or unmapped field alone does not justify" in task_section.content["en"]
     assert "Do not use `subagent_spawn` for browser_agent" in task_section.content["en"]
-    assert "Delegate only the original goal and necessary constraints" in task_section.content["en"]
+    assert "Preserve the original goal, budget, dates and object constraints" in task_section.content["en"]
     assert "top AI/knowledge/weather answers with attribution" in task_section.content["en"]
     assert "preserve explicit natural-result/detail-visit requests" in task_section.content["en"]
     assert not rail.system_prompt_builder.has_section("browser_tool_policy")
     assert "浏览器能力路由规则" in build_browser_task_prompt("cn")
     assert "不因 partial 标签或字段未结构化而重跑浏览器或交叉验证" in build_browser_task_prompt("cn")
-    assert "派发描述只保留原始目标和必要约束" in build_browser_task_prompt("cn")
+    assert "派发描述保留原始目标、预算、时间和对象约束" in build_browser_task_prompt("cn")
     assert "用户明确要求自然结果或进入详情时仍须执行" in build_browser_task_prompt("cn")
 
     agent.deep_config.subagents = [
