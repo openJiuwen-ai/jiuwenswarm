@@ -102,11 +102,6 @@ _APPROVAL_EVENT_ACTIONS = {
 # 2026-10-17 调试值 2 分钟（联调超时兜底用），上线改回 30 * 60。
 _APPROVAL_EXPIRE_S = 2 * 60
 
-_APPROVAL_REPLY_HINT = (
-    "请直接回复：同意（仅本次）/ 会话内允许 / 永久允许 / 拒绝。"
-    "回复其他内容将视为拒绝，并把该内容作为反馈转达给智能体。"
-)
-
 # ==================== AskUser 结构化选项卡（A2A artifact-update + data part） ====================
 # 出站：chat.ask_user_question → artifact-update 帧（final=false，任务等输入），
 # artifact.parts 挂 text part（人类可读正文）+ data part（commands/ToolExecute/
@@ -211,35 +206,21 @@ def _build_ask_user_command_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_ask_user_prompt_text(source: str, questions: list) -> str:
-    """审批/提问 → 手机端可读的文本正文（text part，选项卡之外的人类可读回退）。
+    """问题正文（text part）——只放模型要问的问题本身。
 
-    权限类中断保留"可选项"与回复约定提示；ask_user 自由问答只列问题本身，
-    不强加权限语义的词表提示（用户应自由作答，而非被引导成"同意/拒绝"）。
+    结构化选项卡（data part 的 ToolExecute/Invoke 指令）承载 header/选项
+    渲染与点选回传，text part 不再重复"想向您确认一个问题"标题、标签行、
+    可选项列表与回复约定话术（端侧弹卡后这些内容在气泡里重复且生硬）。
+    多问题逐行拼接。source 参数保留兼容既有调用点，正文不再区分来源。
     """
-    q0: dict[str, Any] = questions[0] if questions and isinstance(questions[0], dict) else {}
-    header = str(q0.get("header") or "").strip()
-    question = str(q0.get("question") or "").strip()
-    options = q0.get("options") or []
-    labels = [
-        str(opt.get("label") or "").strip()
-        for opt in options
-        if isinstance(opt, dict) and str(opt.get("label") or "").strip()
-    ]
-    is_permission_like = source in {"permission_interrupt", "confirm_interrupt"}
-    if is_permission_like:
-        lines = ["🔐 需要您的确认"]
-    else:
-        lines = ["❓ 想向您确认一个问题"]
-    if header:
-        lines.append(f"【{header}】")
-    if question:
-        lines.append(question)
-    if labels:
-        lines.append("可选项：" + " / ".join(labels))
-    if is_permission_like:
-        lines.append(_APPROVAL_REPLY_HINT)
-    elif not labels:
-        lines.append("请直接回复您的内容。")
+    del source
+    lines = []
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        question = str(q.get("question") or "").strip()
+        if question:
+            lines.append(question)
     return "\n".join(lines)
 
 

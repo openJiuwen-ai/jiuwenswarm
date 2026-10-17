@@ -508,9 +508,8 @@ async def test_ask_user_question_prompt_and_resume(cfg_file, workspace):
         parts = result["artifact"]["parts"]
         text_part = parts[0]
         assert text_part["kind"] == "text"
-        assert "需要您的确认" in text_part["text"]
-        assert "权限审批: bash" in text_part["text"]
-        assert "同意" in text_part["text"] and "拒绝" in text_part["text"]
+        # text part 只放问题本身：不带标题/标签/可选项/回复约定话术（卡片承载）
+        assert text_part["text"] == "允许执行 bash: zip ... 吗？"
         data_part = parts[1]
         assert data_part["kind"] == "data"
         command = data_part["data"]["commands"][0]
