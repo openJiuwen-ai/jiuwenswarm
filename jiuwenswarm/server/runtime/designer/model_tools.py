@@ -258,9 +258,13 @@ def require_media_models(*, image: bool = False, video: bool = False) -> None:
 
     Callers decide which modalities are needed. Checks the Settings > Agent
     generation slot (switch, URL / key / model, supported backend); credit and
-    endpoint failures stay on the generation call.
+    endpoint failures stay on the generation call. Banner text follows
+    ``preferred_language`` (see ``media_generation._designer_ui_language``).
     """
-    from jiuwenswarm.server.runtime.designer.media_generation import generation_problem
+    from jiuwenswarm.server.runtime.designer.media_generation import (
+        _designer_ui_language,
+        generation_problem,
+    )
 
     problems: list[str] = []
     for kind, wanted in (("image", image), ("video", video)):
@@ -269,8 +273,13 @@ def require_media_models(*, image: bool = False, video: bool = False) -> None:
             problems.append(problem)
     if not problems:
         return
+    prefix = (
+        "Media model config is incomplete: "
+        if _designer_ui_language() == "en"
+        else "媒体模型配置不完整："
+    )
     raise DesignerLlmError(
-        "Media model config is incomplete: " + " ".join(problems),
+        prefix + " ".join(problems),
         code=MEDIA_NOT_CONFIGURED,
     )
 
