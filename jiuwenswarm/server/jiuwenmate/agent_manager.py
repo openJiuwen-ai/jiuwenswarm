@@ -51,6 +51,7 @@ from jiuwenswarm.server.jiuwenmate.ports.budget import DEFAULT_RESERVATION_TOKEN
 from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.recovery_service import RecoveryService, RecoveryStore, RequestRecovery
+from jiuwenswarm.server.jiuwenmate.scheduled_requests import DEFAULT_SCHEDULE_INTERVAL, ScheduleService
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService, default_data_dir
 from jiuwenswarm.server.jiuwenmate.session_scheduler import SchedulerLimits, SessionScheduler
 from openjiuwen.harness import persistent_agent as core
@@ -166,9 +167,10 @@ class AgentManager:
         on_event: Callable[[core.AgentEvent], None] | None = None,
         delivery_service: ResultDeliveryService | None = None,
         files: OutputFileStore | None = None,
+        schedule_interval: timedelta = DEFAULT_SCHEDULE_INTERVAL,
     ) -> None:
-        if purge_interval <= timedelta(0):
-            raise ValueError("purge_interval must be positive")
+        if purge_interval <= timedelta(0) or schedule_interval <= timedelta(0):
+            raise ValueError("purge_interval and schedule_interval must be positive")
         if archive_retention < timedelta(0):
             raise ValueError("archive_retention must not be negative")
         self._service = service
@@ -176,6 +178,7 @@ class AgentManager:
         self._windows = windows
         self._archive_retention = archive_retention
         self._purge_interval = purge_interval
+        self._schedule_interval = schedule_interval
         self._clock = clock
         self._external_event_observer = on_event
         self._delivery_service = delivery_service
@@ -213,7 +216,15 @@ class AgentManager:
         self._recovery = RecoveryService(
             sessions, self._scheduler, RecoveryStore(sessions.db_path), control_of=self._control.control_of, clock=clock
         )
+        self._schedules = ScheduleService(
+            sessions,
+            self._scheduler,
+            snapshots=service.current_snapshot,
+            colleagues=service.get_colleague,
+            clock=clock,
+        )
         self._purge_task: asyncio.Task[None] | None = None
+        self._schedule_task: asyncio.Task[None] | None = None
 
     async def _verify_group_membership(self, access, group):
         return await self.verify_group_membership(access, group)
@@ -255,6 +266,7 @@ class AgentManager:
             await self._delivery_service.start()
         self._scheduler.start()
         self._purge_task = asyncio.create_task(self._purge_loop(), name="jiuwenmate-window-purge")
+        self._schedule_task = asyncio.create_task(self._schedule_loop(), name="jiuwenmate-schedules")
 
     async def aclose(self) -> None:
         """Stop every Execution, wait for their streams to end, then stop cleanup and the commit queue."""
@@ -266,11 +278,17 @@ class AgentManager:
             with suppress(asyncio.CancelledError):
                 await self._purge_task
             self._purge_task = None
+        if self._schedule_task is not None:
+            self._schedule_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._schedule_task
+            self._schedule_task = None
         await self._queue.aclose()
 
     async def delete_colleague(self, namespace_id: str, agent_id: str) -> None:
         """End the colleague's queued and running work, then remove the colleague and its window data."""
         await self._scheduler.end_agent(namespace_id, agent_id)
+        await asyncio.to_thread(self._schedules.delete_agent, namespace_id, agent_id)
         try:
             await asyncio.to_thread(self._service.delete_colleague, namespace_id, agent_id)
         finally:
@@ -428,6 +446,19 @@ class AgentManager:
             "share_mode": output.share_mode,
             "download_url": download_url,
         }
+
+    @property
+    def schedules(self) -> ScheduleService:
+        """Plans for this runtime. Due ones are accepted on start and on each interval."""
+        return self._schedules
+
+    async def _schedule_loop(self) -> None:
+        while True:
+            try:
+                await self._schedules.sweep()
+            except Exception as exc:
+                logger.warning("[JiuwenMate] schedule sweep failed: %s", exc)
+            await asyncio.sleep(self._schedule_interval.total_seconds())
 
     async def _purge_loop(self) -> None:
         while True:
