@@ -558,6 +558,83 @@ async def test_child_tool_approval_cannot_execute_after_session_storage_changes(
 
 
 @pytest.mark.asyncio
+async def test_created_subagent_uses_parent_session_files_without_inherited_main_gate(
+    stores, tmp_path,
+):
+    from types import SimpleNamespace
+
+    from openjiuwen.core.foundation.llm import (
+        Model,
+        ModelClientConfig,
+        ModelRequestConfig,
+    )
+    from openjiuwen.harness import create_deep_agent
+    from openjiuwen.harness.security.skill_authorization import (
+        get_skill_authorization_context,
+        reset_skill_authorization_context,
+        setup_skill_authorization_context,
+    )
+
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization import (
+        file_store,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
+        SkillAuthorizationPermissionRail,
+    )
+    from jiuwenswarm.agents.harness.common.rails.skill_authorization_rail import (
+        SkillAuthorizationRail,
+    )
+    from jiuwenswarm.agents.harness.common.tools.subagent_executor.authorization import (
+        install_subagent_authorization_wiring,
+    )
+
+    store, _ = stores
+    set_skill_grant_store(store)
+    policy = {"enabled": True, "skill_authorization": {"enabled": True}}
+    permission = SkillAuthorizationPermissionRail(config=policy)
+    main_gate = SkillAuthorizationRail(
+        engine=permission._engine, config_provider=lambda: policy, grant_store=store,
+    )
+    main_gate.set_sessions_root(store.sessions_root())
+    parent = create_deep_agent(
+        model=Model(
+            model_client_config=ModelClientConfig(
+                client_provider="OpenAI", api_key="test-key", api_base="http://127.0.0.1:1",
+            ),
+            model_config=ModelRequestConfig(model="test-model"),
+        ),
+        rails=[main_gate, permission],
+        add_general_purpose_agent=True,
+        workspace=str(tmp_path / "workspace"), auto_create_workspace=False,
+    )
+    auth_token = setup_skill_authorization_context("session", "main")
+    file_token = file_store._session_file_context.set(None)
+    try:
+        install_subagent_authorization_wiring(parent, config_provider=lambda: policy)
+        child = parent.create_subagent("general-purpose", "session_sub_child")
+        rails = child.configured_rails()
+        # Retain the baseline tool checks; only the child gate owns Skill approval.
+        assert permission in rails
+        gates = [rail for rail in rails if isinstance(rail, SkillAuthorizationRail)]
+        ctx = SimpleNamespace(
+            agent=child, session=SimpleNamespace(session_id="session_sub_child"),
+            inputs=SimpleNamespace(tool_name="probe"), extra={},
+        )
+        for gate in gates:
+            await gate.before_invoke(ctx)
+        for gate in gates:
+            await gate.before_tool_call(ctx)
+        assert len(gates) == 1
+        assert gates[0].resolve_scope(ctx) == ("session", "session_sub_child")
+        assert get_skill_authorization_context().session_id == "session"
+        assert (store.session_directory("session") / ".skill_authorization/state.json").is_file()
+        assert not store.session_directory("session_sub_child").exists()
+    finally:
+        file_store._session_file_context.reset(file_token)
+        reset_skill_authorization_context(auth_token)
+
+
+@pytest.mark.asyncio
 async def test_child_wiring_binds_parent_files_without_inherited_context(stores):
     from types import SimpleNamespace
 
