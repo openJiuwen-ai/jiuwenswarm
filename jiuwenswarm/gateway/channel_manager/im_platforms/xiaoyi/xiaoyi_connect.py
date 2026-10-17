@@ -468,7 +468,11 @@ class XiaoyiChannel(BaseChannel):
         self._running = False
         # ws/link 的 clawd_bot_init / heartbeat 由应用层（桌面客户端 cloud-ws-relay）
         # 统一构造发送；channel 层只发 agent_response，不再维护协议级心跳任务。
+        # ——仅适用 np:// 管道形态；直连云 WS（独立后台 server）仍由本层注册+心跳。
         self._connect_tasks: dict[str, asyncio.Task] = {}  # Connection tasks for each channel
+        # 直连云 WS（独立后台 server 形态）的连接级心跳任务；np:// 管道形态由
+        # 桌面 cloud-ws-relay 统一保活，不进本表。
+        self._heartbeat_tasks: dict[str, asyncio.Task] = {}
         self._session_task_map: dict[str, str] = {}
         # Team responses are produced by the first request's long-lived
         # stream. Keep the current platform task for each stable session so
@@ -619,6 +623,11 @@ class XiaoyiChannel(BaseChannel):
             if self._connect_tasks[url_key]:
                 self._connect_tasks[url_key].cancel()
                 self._connect_tasks[url_key] = None
+        # Cancel all connection-level heartbeat tasks (direct-WS form)
+        for url_key in list(self._heartbeat_tasks.keys()):
+            if self._heartbeat_tasks[url_key]:
+                self._heartbeat_tasks[url_key].cancel()
+                self._heartbeat_tasks[url_key] = None
         # Cancel all session heartbeat tasks
         for session_id in list(self._session_heartbeat_tasks.keys()):
             if self._session_heartbeat_tasks[session_id]:
@@ -641,6 +650,7 @@ class XiaoyiChannel(BaseChannel):
                     logger.warning(f"关闭连接失败 ({url_key}): {e}")
                 self._ws_connections[url_key] = None
         self._connect_tasks.clear()
+        self._heartbeat_tasks.clear()
         self._session_heartbeat_tasks.clear()
         self._task_timeout_tasks.clear()
         self._session_timeout_tasks.clear()
@@ -2165,8 +2175,12 @@ class XiaoyiChannel(BaseChannel):
             self._send_locks[url_key] = asyncio.Lock()
             logger.info(f"XiaoyiChannel 已连接 {url_key}: {url}")
 
-            # clawd_bot_init / heartbeat 由应用层（桌面客户端 cloud-ws-relay）统一发送，
-            # channel 层不再构造，只发 agent_response（本连接仅承担收发业务帧）。
+            # 直连小艺云形态（独立部署的后台 server）：注册帧与连接级心跳由本层
+            # 负责——cloud 侧只有收到 clawd_bot_init 才会将会话路由到本连接，且
+            # 依赖应用层心跳维持在线；np:// 管道形态才由桌面 cloud-ws-relay 统一
+            # 代发（见 _connect_pipe）。
+            await self._send_init_message(url_key)
+            self._heartbeat_tasks[url_key] = asyncio.create_task(self._heartbeat_loop(url_key))
 
             try:
                 async for raw in ws:
@@ -2174,6 +2188,9 @@ class XiaoyiChannel(BaseChannel):
             except Exception as e:
                 logger.warning(f"XiaoyiChannel 连接异常 ({url_key}): {e}")
             finally:
+                if self._heartbeat_tasks.get(url_key):
+                    self._heartbeat_tasks[url_key].cancel()
+                    self._heartbeat_tasks[url_key] = None
                 self._ws_connections[url_key] = None
                 self._send_locks.pop(url_key, None)
                 close_code = getattr(ws, "close_code", None)
@@ -2181,6 +2198,46 @@ class XiaoyiChannel(BaseChannel):
                 logger.info(
                     f"XiaoyiChannel 连接关闭 {url_key}: {url} (code={close_code}, reason={close_reason})"
                 )
+
+    async def _send_init_message(self, url_key: str) -> None:
+        """发送初始化消息 (clawd_bot_init) 到指定通道（仅直连云形态）.
+
+        cloud 侧以该帧完成 bot 连接注册，未注册的连接不会收到会话路由。
+        """
+        ws = self._ws_connections.get(url_key)
+        if not ws:
+            return
+        init_message = {
+            "msgType": "clawd_bot_init",
+            "agentId": self.config.agent_id,
+        }
+        try:
+            await self._safe_ws_send(url_key, init_message)
+            logger.info(f"XiaoyiChannel 已发送初始化消息 ({url_key})")
+        except Exception as e:
+            logger.warning(f"XiaoyiChannel 发送初始化消息失败 ({url_key}): {e}")
+            raise
+
+    async def _heartbeat_loop(self, url_key: str) -> None:
+        """连接级应用层心跳（20 秒间隔，仅直连云形态）.
+
+        cloud 侧依赖该心跳维持连接在线；发送失败即关闭传输，交由
+        ``_reconnect_loop`` 统一退避重连。
+        """
+        while self._running and self._ws_connections.get(url_key):
+            try:
+                heartbeat = {"msgType": "heartbeat", "agentId": self.config.agent_id}
+                await self._safe_ws_send(url_key, heartbeat)
+            except Exception as e:
+                logger.warning(f"XiaoyiChannel 心跳发送失败 ({url_key}): {e}")
+                ws = self._ws_connections.get(url_key)
+                if ws:
+                    try:
+                        await self._close_transport(ws)
+                    except Exception as close_error:
+                        logger.warning(f"XiaoyiChannel 关闭连接失败 ({url_key}): {close_error}")
+                break
+            await asyncio.sleep(20)
 
     async def _connect_pipe(self, url_key: str, url: str) -> None:
         """命名管道形态的本地中转连接（桌面集成形态，替代 ws://127.0.0.1:19690）。
