@@ -72,7 +72,10 @@ pytest tests/unit_tests/test_config.py -v
 # 运行特定测试
 pytest tests/unit_tests/test_config.py::TestResolveEnvVars::test_resolve_string_with_env_var -v
 
-# 生成覆盖率报告
+# Generate coverage report (recommended: make test-cov)
+make test-cov
+
+# Or invoke pytest directly
 pytest --cov=jiuwenswarm --cov-report=html --cov-report=term-missing
 ```
 
@@ -307,10 +310,6 @@ addopts =
     -v                              # 详细输出
     --strict-markers                # 严格标记检查
     --tb=short                      # 简短的错误堆栈
-    --cov=jiuwenswarm                # 覆盖率
-    --cov-report=term-missing       # 终端报告
-    --cov-report=html               # HTML 报告
-    --cov-report=xml                # XML 报告（CI）
     --asyncio-mode=auto             # 异步测试模式
 
 # 标记定义
