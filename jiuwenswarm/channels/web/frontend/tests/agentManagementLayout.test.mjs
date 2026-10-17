@@ -681,7 +681,7 @@ test('Expert Team cards and details reuse the Expert visual primitives', () => {
   assert.doesNotMatch(groupDetailSource, /detail-back mb-\[35px\]/);
   assert.doesNotMatch(groupDetailSource, /overflow-y-auto pb-\[72px\]/);
   assert.doesNotMatch(groupDetailSource, /<header className="agent-management-detail__header">/);
-  assert.match(groupDetailSource, /<PublicationDetailStatus kind="agent_group"/);
+  assert.doesNotMatch(groupDetailSource, /<PublicationDetailStatus/);
   assert.match(groupDetailSource, /openAssetPublish\(\{\s*kind: 'agent_group',\s*local_id: detail\.id/);
 });
 

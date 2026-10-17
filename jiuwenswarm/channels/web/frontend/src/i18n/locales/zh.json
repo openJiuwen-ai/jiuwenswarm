@@ -2666,11 +2666,6 @@
       "builtin": "内置技能",
       "skillPack": "技能包"
     },
-    "publishFilter": {
-      "all": "全部",
-      "published": "已发布",
-      "unpublished": "未发布"
-    },
     "skillTypes": {
       "skill": "技能包",
       "skillpack": "技能包",

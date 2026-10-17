@@ -2682,11 +2682,6 @@
       "builtin": "Built-in Skills",
       "skillPack": "Skill Packs"
     },
-    "publishFilter": {
-      "all": "All",
-      "published": "Published",
-      "unpublished": "Unpublished"
-    },
     "skillTypes": {
       "skill": "Skill Pack",
       "skillpack": "Skill Pack",

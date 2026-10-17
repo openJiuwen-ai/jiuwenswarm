@@ -1,6 +1,4 @@
 import { assetSearchNames, matchesAssetName } from '../../features/assetNameSearch';
-import { useAssetPublication } from '../../hooks/useAssetPublication';
-import { publicationLabel, matchesPublicationFilter } from '../../features/assetPublication';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
  * SkillPanel 组件
@@ -156,12 +154,11 @@ export function SkillPanel({
   onNavigateToSettings,
   isActive = false,
 }: SkillPanelProps) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   // 导航与页签
   const [activeTab, setActiveTab] = useState<'my' | 'marketplace' | 'graph'>('marketplace');
   const [marketplaceSubView, setMarketplaceSubView] = useState<MarketplaceSubView>('list');
   const [mySkillsSubTab, setMySkillsSubTab] = useState<'all' | 'enabled' | 'disabled' | 'builtin'>('all');
-  const [mySkillsPublishFilter, setMySkillsPublishFilter] = useState<'all' | 'published' | 'unpublished'>('all');
   const [marketplaceCategory, setMarketplaceCategory] = useState<(typeof MARKETPLACE_CATEGORIES)[number]>('all');
   const [detailTab, setDetailTab] = useState<'content' | 'files' | 'experience' | 'members'>('content');
 
@@ -190,7 +187,6 @@ export function SkillPanel({
   const [teamSkillsHubModalOpen, setTeamSkillsHubModalOpen] = useState(false);
   const [uploadSkillModalOpen, setUploadSkillModalOpen] = useState(false);
   const [docToSkillModalOpen, setDocToSkillModalOpen] = useState(false);
-  const [publishFilterOpen, setPublishFilterOpen] = useState(false);
   const [enableFilterOpen, setEnableFilterOpen] = useState(false);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
@@ -902,9 +898,6 @@ export function SkillPanel({
 
   // 2026-08-25：改用 utils/mySkills.ts 的共享 isSkillInstalled/filterEnabledMySkills，跟"手动创建
   // 插件"的"添加技能"弹窗（CreatePluginPage.tsx）共用同一份"已启用"判定规则，见该文件头注释。
-  const skillPublication = useAssetPublication(
-    activeTab === 'my' ? visibleSkills.map((s) => ({ kind: 'skill', local_id: s.name })) : [],
-  );
   const mySkillsFiltered = useMemo(() => {
     let filtered = visibleSkills;
     switch (mySkillsSubTab) {
@@ -920,18 +913,8 @@ export function SkillPanel({
       default:
         break;
     }
-    // 发布状态筛选
-    if (mySkillsPublishFilter === 'published') {
-      filtered = filtered.filter((s) =>
-        matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'published'),
-      );
-    } else if (mySkillsPublishFilter === 'unpublished') {
-      filtered = filtered.filter((s) =>
-        matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'unpublished'),
-      );
-    }
     return filtered;
-  }, [visibleSkills, mySkillsSubTab, mySkillsPublishFilter, installedSkillNames, skillPublication]);
+  }, [visibleSkills, mySkillsSubTab, installedSkillNames]);
 
   // 内置/非内置分组（用于"我的技能"列表分组展示）；技能包单独成组置顶
   const builtinSkills = useMemo(() => mySkillsFiltered.filter((s) => s.source === 'builtin'), [mySkillsFiltered]);
@@ -1076,9 +1059,6 @@ export function SkillPanel({
     }
     if (skill.source === 'builtin') {
       labelTags.push(t('skills.mySkillsTabs.builtin'));
-    }
-    if (activeTab === 'my') {
-      labelTags.push(publicationLabel(skillPublication({ kind: 'skill', local_id: skill.name }), i18n.language));
     }
 
     const actionContent = (
@@ -1267,32 +1247,11 @@ export function SkillPanel({
         <div className="flex items-center gap-3" data-testid="skill-panel-toolbar-actions">
           {activeTab === 'my' && (
             <>
-              {/* 已发布/未发布筛选 */}
-              <FilterDropdown
-                open={publishFilterOpen}
-                onToggle={(v) => {
-                  setPublishFilterOpen(v);
-                  setEnableFilterOpen(false);
-                }}
-                onClose={() => setPublishFilterOpen(false)}
-                value={mySkillsPublishFilter}
-                onChange={(v) => {
-                  setMySkillsPublishFilter(v);
-                  setPublishFilterOpen(false);
-                }}
-                options={[
-                  { value: 'all', label: t('skills.publishFilter.all') },
-                  { value: 'published', label: t('skills.publishFilter.published') },
-                  { value: 'unpublished', label: t('skills.publishFilter.unpublished') },
-                ]}
-                testId="skill-panel-filter-publish"
-              />
               {/* 启用/禁用筛选 */}
               <FilterDropdown
                 open={enableFilterOpen}
                 onToggle={(v) => {
                   setEnableFilterOpen(v);
-                  setPublishFilterOpen(false);
                 }}
                 onClose={() => setEnableFilterOpen(false)}
                 value={mySkillsSubTab}
