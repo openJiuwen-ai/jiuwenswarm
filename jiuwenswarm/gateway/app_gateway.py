@@ -3158,7 +3158,7 @@ async def _run(
                         SshChannel,
                         SshChannelConfig,
                     )
-                    from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import KeyRegistry
+                    from jiuwenswarm.gateway.extensions.auth.ssh_key_registry import KeyRegistry
 
                     ssh_config = SshChannelConfig.from_dict({**ssh_conf, "enabled": True})
                     ssh_channel = SshChannel(
