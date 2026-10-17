@@ -686,28 +686,16 @@ class XiaoyiChannel(BaseChannel):
             last_chunk = True
             final = True
         else:
-            # 流式模式：按事件类型计算增量与是否结束
-            is_delta = msg.event_type == EventType.CHAT_DELTA
+            # 流式模式：按事件类型判断是否为最后一块
             last_chunk = msg.event_type == EventType.CHAT_FINAL
             is_final = msg.payload.get("is_complete", False)
             last_chunk = True if is_final else last_chunk
 
-            # 获取之前发送的文本
-            previous_text = self._accumulated_texts.get(session_id, "")
-
-            # 累积当前文本
+            # 累积当前文本（供推送通知取最终文本）
             self._accumulated_texts[session_id] = content
 
-            # 计算增量文本
-            if is_delta:
-                incremental_text = content[len(previous_text):]
-            else:
-                incremental_text = content
-
-            # 在消息流中，总是使用 append=true, isFinal=false
+            # 消息流中总是增量追加，final 以事件为准
             append = True
-            final = False
-            last_chunk = last_chunk
             final = is_final
 
         # Get accumulated text for this session (for push notification)
@@ -1047,7 +1035,7 @@ class XiaoyiChannel(BaseChannel):
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"[PUSH] team push flush 失败 (agent_id=%s): %s", agent_id[:8], e)
+            logger.error("[PUSH] team push flush 失败 (agent_id=%s): %s", agent_id[:8], e)
         finally:
             self._push_flush_tasks.pop(agent_id, None)
 
