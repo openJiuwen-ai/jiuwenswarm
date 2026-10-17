@@ -100,6 +100,111 @@ async def test_empty_structured_answers_are_rejected():
     assert "answers must include at least one non-empty response" in decision.tool_result
 
 
+@pytest.mark.asyncio
+async def test_non_array_inputs_is_rejected_with_the_shape_to_send():
+    """`inputs` is now a declared key, so a malformed one is named as itself.
+
+    Without a guard of its own a bare string fell through to the question-text
+    rejection, which named the wrong field and left the model nothing to fix.
+    """
+    rail = StructuredAskUserRail()
+    tc = _make_tool_call(
+        {
+            "query": "Choose",
+            "questions": [
+                {"question": "When?", "header": "Follow-up", "inputs": "date"}
+            ],
+        }
+    )
+
+    decision = await rail.resolve_interrupt(MagicMock(), tc, None)
+
+    assert isinstance(decision, RejectResult)
+    assert "questions[0].inputs" in decision.tool_result
+    assert '"type"' in decision.tool_result
+
+
+@pytest.mark.asyncio
+async def test_inputs_question_without_question_text_interrupts():
+    """A question declaring `inputs` must not need a `question` sentence.
+
+    This is the live shape the model produced three times in a row: `header` +
+    `inputs`, no `question`. Rejecting it never raised an interrupt, so nothing
+    was ever posted to the channel; the model retried with byte-identical
+    arguments until the tool-loop detector aborted the run and the raw abort
+    string was delivered to the user as the reply.
+    """
+    rail = StructuredAskUserRail()
+    tc = _make_tool_call(
+        {
+            "query": "Please provide the details for your follow-up:",
+            "questions": [
+                {
+                    "header": "Follow-up",
+                    "inputs": [
+                        {"type": "date", "name": "d", "label": "Date"},
+                        {"type": "time", "name": "t", "label": "Time"},
+                        {"type": "text", "name": "note", "label": "Note"},
+                    ],
+                }
+            ],
+        }
+    )
+
+    decision = await rail.resolve_interrupt(MagicMock(), tc, None)
+
+    assert isinstance(decision, InterruptResult)
+
+
+@pytest.mark.asyncio
+async def test_inputs_question_without_header_or_question_interrupts():
+    """With neither `question` nor `header`, the top-level `query` is the prompt."""
+    rail = StructuredAskUserRail()
+    tc = _make_tool_call(
+        {
+            "query": "When should the follow-up happen?",
+            "questions": [{"inputs": [{"type": "datetime"}]}],
+        }
+    )
+
+    decision = await rail.resolve_interrupt(MagicMock(), tc, None)
+
+    assert isinstance(decision, InterruptResult)
+
+
+@pytest.mark.asyncio
+async def test_empty_inputs_array_is_not_a_declaration():
+    """`inputs: []` asks for nothing, so the question still needs its own text."""
+    rail = StructuredAskUserRail()
+    tc = _make_tool_call(
+        {"query": "Choose", "questions": [{"header": "Follow-up", "inputs": []}]}
+    )
+
+    decision = await rail.resolve_interrupt(MagicMock(), tc, None)
+
+    assert isinstance(decision, RejectResult)
+    assert "questions[0]" in decision.tool_result
+
+
+@pytest.mark.asyncio
+async def test_options_question_still_requires_question_text():
+    """The options shape is unchanged: it works today, and its questions carry text."""
+    rail = StructuredAskUserRail()
+    tc = _make_tool_call(
+        {
+            "query": "Choose",
+            "questions": [
+                {"header": "Choice", "options": [{"label": "A"}, {"label": "B"}]}
+            ],
+        }
+    )
+
+    decision = await rail.resolve_interrupt(MagicMock(), tc, None)
+
+    assert isinstance(decision, RejectResult)
+    assert "question" in decision.tool_result
+
+
 # Every rejection the model can reach while writing an ask_user call. A
 # rejection naming only the fault is retried unchanged -- the model has nothing
 # new to try -- and repeated identical tool calls end the run at the loop
@@ -113,10 +218,14 @@ _REJECTION_CASES = [
         {"query": "Q", "questions": [{"question": f"Q{i}"} for i in range(5)]},
     ),
     ("question_not_object", {"query": "Q", "questions": ["just a string"]}),
-    ("question_text_missing", {"query": "Q", "questions": [{"header": "H"}]}),
+    ("no_question_and_no_inputs", {"query": "Q", "questions": [{"header": "H"}]}),
     (
         "header_not_string",
         {"query": "Q", "questions": [{"question": "Q1", "header": 123}]},
+    ),
+    (
+        "inputs_not_array",
+        {"query": "Q", "questions": [{"question": "Q1", "inputs": "date"}]},
     ),
     (
         "options_not_array",
@@ -149,6 +258,7 @@ _REMEDY_WORDS = (
     "give",
     "Merge",
     "merge",
+    "declare",
     "omit",
     "drop",
     "continue",
