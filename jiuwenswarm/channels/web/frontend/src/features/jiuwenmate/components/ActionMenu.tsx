@@ -13,13 +13,14 @@ export interface JiuwenMateMenuItem {
 interface ActionMenuProps {
   label: string;
   items: readonly JiuwenMateMenuItem[];
+  emptyLabel?: string;
   trigger?: ReactNode;
   className?: string;
   align?: 'start' | 'end';
   testId?: string;
 }
 
-export function ActionMenu({ label, items, trigger, className, align = 'end', testId }: ActionMenuProps) {
+export function ActionMenu({ label, items, emptyLabel, trigger, className, align = 'end', testId }: ActionMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -61,6 +62,7 @@ export function ActionMenu({ label, items, trigger, className, align = 'end', te
       </button>
       {open ? (
         <div className="jiuwenmate-menu__list" role="menu">
+          {items.length === 0 ? <p className="jiuwenmate-menu__empty">{emptyLabel}</p> : null}
           {items.map((item) => {
             const Icon = item.icon;
             return (

@@ -8,7 +8,7 @@ import { ColleagueCard } from '../components/ColleagueCard';
 import { CustomCreateDialog } from '../components/CustomCreateDialog';
 import { TemplateDetailDrawer } from '../components/TemplateDetailDrawer';
 import { colleaguePortrait } from '../colleaguePortraits';
-import type { JiuwenMateModelCatalog } from '../jiuwenmateApi';
+import type { ColleagueResourceOption, JiuwenMateModelCatalog } from '../jiuwenmateApi';
 import { ModelLabel } from '../components/ModelLabel';
 import {
   JIUWENMATE_CAPABILITY_CATALOG,
@@ -36,6 +36,8 @@ export interface ColleagueCreatePageProps {
   customDialogOpen: boolean;
   draft: JiuwenMateColleagueDraft | null;
   modelCatalog: JiuwenMateModelCatalog;
+  knowledgeCatalog?: readonly ColleagueResourceOption[] | null;
+  knowledgeCatalogReady?: boolean;
   submitting: boolean;
   onOpenTemplateDetail: (id: string) => void;
   onCloseTemplateDetail: () => void;
@@ -60,6 +62,8 @@ export function ColleagueCreatePage(props: ColleagueCreatePageProps) {
         source={source}
         draft={draft}
         modelCatalog={props.modelCatalog}
+        knowledgeCatalog={props.knowledgeCatalog}
+        knowledgeCatalogReady={props.knowledgeCatalogReady}
         submitting={props.submitting}
         onDraftChange={props.onDraftChange}
         onCancel={props.onCancel}
@@ -113,6 +117,8 @@ interface ColleagueRefineFormProps {
   source: JiuwenMateCreationSource;
   draft: JiuwenMateColleagueDraft;
   modelCatalog: JiuwenMateModelCatalog;
+  knowledgeCatalog?: readonly ColleagueResourceOption[] | null;
+  knowledgeCatalogReady?: boolean;
   submitting: boolean;
   onDraftChange: (patch: Partial<JiuwenMateColleagueDraft>) => void;
   onCancel: () => void;
@@ -123,6 +129,8 @@ function ColleagueRefineForm({
   source,
   draft,
   modelCatalog,
+  knowledgeCatalog,
+  knowledgeCatalogReady = false,
   submitting,
   onDraftChange,
   onCancel,
@@ -285,7 +293,22 @@ function ColleagueRefineForm({
                 removeLabel={t('jiuwenmate.create.remove')}
                 emptyLabel={t(`jiuwenmate.create.empty.${kind}`)}
                 items={draft.capabilities[kind]}
-                catalog={JIUWENMATE_CAPABILITY_CATALOG[kind]}
+                catalog={
+                  kind === 'knowledge'
+                    ? (knowledgeCatalog ?? []).map((page) => page.name)
+                    : JIUWENMATE_CAPABILITY_CATALOG[kind]
+                }
+                emptyMenuLabel={
+                  kind !== 'knowledge' || (knowledgeCatalogReady && (knowledgeCatalog?.length ?? 0) > 0)
+                    ? undefined
+                    : t(
+                        !knowledgeCatalogReady
+                          ? 'jiuwenmate.profile.catalogLoading'
+                          : knowledgeCatalog === null
+                            ? 'jiuwenmate.profile.catalogFailed'
+                            : 'jiuwenmate.profile.catalogEmptyKnowledge',
+                      )
+                }
                 onChange={(items) => updateCapabilities({ [kind]: items })}
               />
             ))}

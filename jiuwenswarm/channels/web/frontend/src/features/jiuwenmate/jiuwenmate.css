@@ -661,6 +661,16 @@
   cursor: not-allowed;
 }
 
+.jiuwenmate-menu__empty {
+  max-width: 240px;
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--jm-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+}
+
 .jiuwenmate-menu__list svg,
 .jiuwenmate-menu__list img {
   width: 14px;

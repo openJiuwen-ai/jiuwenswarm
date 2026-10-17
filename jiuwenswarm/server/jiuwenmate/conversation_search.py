@@ -3,8 +3,9 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from openjiuwen.harness.persistent_agent import GroupMessage, GroupMessageQuery, GroupMessageSearchHit
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive, message_reference, time_micros
+from jiuwenswarm.server.jiuwenmate.search_contracts import GroupMessageSearchHit
+from openjiuwen.harness.persistent_agent import GroupMessage, GroupMessageQuery
 from jiuwenswarm.server.jiuwenmate.group_chat_repository import utc_time
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
 

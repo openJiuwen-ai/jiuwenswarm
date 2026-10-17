@@ -29,6 +29,7 @@ from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef, PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import ColleagueSettings, PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, WORKSPACE_WRITE
+from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
@@ -85,6 +86,7 @@ _RUNTIME_METHODS = frozenset(
         ReqMethod.JIUWENMATE_CONVERSATION_RENAME.value,
         ReqMethod.JIUWENMATE_CONVERSATION_DELETE.value,
         ReqMethod.JIUWENMATE_ACTIVITY_GET.value,
+        ReqMethod.JIUWENMATE_KNOWLEDGE_LIST.value,
         ReqMethod.JIUWENMATE_SCHEDULE_LIST.value,
         ReqMethod.JIUWENMATE_SCHEDULE_CREATE.value,
         ReqMethod.JIUWENMATE_SCHEDULE_SET_ENABLED.value,
@@ -326,6 +328,9 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 WEB_NAMESPACE, _text_param(params, "request_id"), reason=params.get("reason"), access=WEB_ACCESS
             )
             return {"request": view.to_dict()}
+        if method == ReqMethod.JIUWENMATE_KNOWLEDGE_LIST.value:
+            pages = await asyncio.to_thread(InstalledResourceCatalog().list_knowledge)
+            return {"pages": [{"name": page.name, "label": page.name} for page in pages]}
         if method == ReqMethod.JIUWENMATE_ACTIVITY_GET.value:
             report = await asyncio.to_thread(ActivityQuery(manager.db_path).report, WEB_NAMESPACE, now=_utc_now())
             return {"activity": report}
