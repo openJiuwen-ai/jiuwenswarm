@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -424,6 +426,51 @@ async def test_delivery_service_persists_the_gateway_receipt(host):
     assert row["status"] == "delivered" and row["external_message_id"] == "om_reply"
 
 
+async def test_jm11_confirmed_reply_archive_retries_without_resending(host, tmp_path):
+    from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
+    from jiuwenswarm.server.jiuwenmate.conversation_resources import ConversationResources
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    repository, _, port = host
+    groups = GroupChatRepository(repository.db_path)
+    group = groups.resolve(NS, "feishu", "oc_group", now=NOW)
+    session = repository.resolve_session(NS, AGENT, ConversationRef.group(group.group_chat_id), now=NOW)
+    route = RequestRouteSnapshot(channel="feishu", app_id="cli_bound", target_id="oc_group", source_message_id="om_1")
+    state, _ = repository.accept_request(session, snapshot=SNAPSHOT, source_ref="feishu:message:om_1", access=ACCESS,
+        request_input=core.RequestInput(kind="group_message", text="hello", reply_target="oc_group",
+            source=core.GroupMessage(message_id="om_1", sender_id="alice", sender_name="Alice", sender_kind="human",
+                                     received_at=NOW, text="hello")), received_at=NOW, route_snapshot=route)
+    record = repository.start_execution(NS, state.record.request_id, now=NOW)
+    execution = build_execution_context(state.record, record, capability_snapshot=SNAPSHOT.enabled_features)
+    await port.record(execution, candidate(execution, 1))
+    await port.record(execution, final(execution, 2))
+    archive = ConversationArchive(tmp_path / "group_messages", groups)
+    resources = ConversationResources(archive, repository)
+    sends = []
+    attempts = []
+
+    async def send(job):
+        sends.append(job)
+        return {"delivery_id": job["delivery_id"], "stage": "send", "outcome": "delivered", "external_message_id": "sent-1"}
+
+    async def save(job):
+        attempts.append(job)
+        assert repository.result_deliveries(NS, state.record.request_id)[0]["status"] == "delivered"
+        if len(attempts) == 1:
+            raise OSError("archive temporarily offline")
+        await asyncio.to_thread(resources.archive_delivery, job)
+
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=send, clock=lambda: NOW,
+                                    archive_delivery=save)
+    await service.dispatch_pending()
+    await service.reconcile_archives()
+    assert len(sends) == 1
+    page = archive.recent(NS, group.group_chat_id, cursor=None, limit=20, visible_from=NOW)
+    assert [(item.message_id, item.text) for item in page.messages] == [("sent-1", "进展如下")]
+    assert repository.pending_delivery_archives(NS) == []
+
+
 async def test_unsent_batch_deliveries_remain_pending_when_worker_is_cancelled(host):
     from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
 
@@ -660,6 +707,30 @@ async def test_closed_queue_rejects_ordinary_events_but_writes_what_was_queued(t
     assert caught.value.code == "QUEUE_CLOSED"
     log = await port.read_execution_log(execution, execution.execution_id)
     assert [event.local_seq for event in log] == [1]
+
+
+async def test_jm11_failed_archive_batch_does_not_starve_later_groups():
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    jobs = [{"updated_at": NOW.isoformat(), "delivery_id": f"d{index:03}"} for index in range(101)]
+    saved = set()
+
+    def pending(namespace_id, *, limit=100, after=None):
+        return [job for job in jobs if job["delivery_id"] not in saved
+                and (after is None or (job["updated_at"], job["delivery_id"]) > after)][:limit]
+
+    async def archive(job):
+        if job["delivery_id"] != "d100":
+            raise OSError("one group is unavailable")
+
+    sender = AsyncMock()
+    service = ResultDeliveryService(SimpleNamespace(pending_delivery_archives=pending,
+        mark_delivery_archived=lambda namespace_id, delivery_id: saved.add(delivery_id)),
+        namespace_id=NS, send_delivery=sender, archive_delivery=archive)
+    await service.reconcile_archives()
+    await service.reconcile_archives()
+    assert saved == {"d100"}
+    sender.assert_not_awaited()
 
 
 class FakeBudget:

@@ -441,6 +441,9 @@ class MessageHandler(ABC):
         """Inject the Gateway's exact-app JM-09 delivery route."""
         self._jm09_delivery_handler = handler
 
+    def set_jm11_group_handler(self, handler: Any | None) -> None:
+        self._jm11_group_handler = handler
+
     async def handle_persistent_feishu_event(
         self, event: FeishuInboundEvent
     ) -> InboundDisposition:
@@ -3341,6 +3344,12 @@ class MessageHandler(ABC):
             return
         if (
             isinstance(chunk.payload, dict)
+            and chunk.payload.get("event_type") == "jiuwenmate.group.inspect"
+        ):
+            await self._handle_jm11_group_push(chunk.payload)
+            return
+        if (
+            isinstance(chunk.payload, dict)
             and chunk.payload.get("event_type") == "jiuwenmate.delivery.send"
         ):
             if isinstance(chunk.payload.get("file"), dict):
@@ -3471,6 +3480,28 @@ class MessageHandler(ABC):
             chunk.channel_id,
             _push_app_id,
         )
+
+    async def _handle_jm11_group_push(self, payload: dict[str, Any]) -> None:
+        from jiuwenswarm.common.e2a.models import E2AEnvelope
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        query_id = payload.get("query_id")
+        if not isinstance(query_id, str) or not query_id:
+            return
+        handler = getattr(self, "_jm11_group_handler", None)
+        result = {"status": "unknown"}
+        try:
+            if callable(handler):
+                candidate = await handler(payload)
+                if isinstance(candidate, dict) and candidate.get("status") in {"active", "left", "unknown"}:
+                    result = candidate
+            await self.agent_client.send_request(E2AEnvelope(
+                request_id=f"jm11_{query_id}", channel="feishu", method=ReqMethod.JIUWENMATE_GROUP_RESPONSE.value,
+                params={**result, "query_id": query_id, "app_id": payload.get("app_id"),
+                        "chat_id": payload.get("chat_id")},
+            ))
+        except Exception:
+            logger.warning("[JM-11] membership response unavailable")
 
     async def _handle_jm09_delivery_push(self, payload: dict[str, Any]) -> None:
         """Send a persistent result through Gateway and return its platform receipt over E2A."""

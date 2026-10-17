@@ -19,6 +19,7 @@ class ReqMethod(Enum):
     CHAT_SEND = "chat.send"
     JIUWENMATE_FEISHU_INBOUND = "jiuwenmate.feishu.inbound"
     JIUWENMATE_DELIVERY_ACK = "jiuwenmate.delivery.ack"
+    JIUWENMATE_GROUP_RESPONSE = "jiuwenmate.group.response"
     CHAT_RESUME = "chat.resume"
     CHAT_CANCEL = "chat.interrupt"
     CHAT_ANSWER = "chat.user_answer"

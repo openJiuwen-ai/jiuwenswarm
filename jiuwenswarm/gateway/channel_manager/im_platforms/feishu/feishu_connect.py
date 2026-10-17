@@ -262,6 +262,65 @@ class FeishuChannel(BaseChannel):
         """Inject JM-08's pre-personal-route gate; None preserves legacy behavior."""
         self._persistent_group_fanout_callback = callback
 
+    async def inspect_persistent_group(self, chat_id: str, message_ids: tuple[str, ...] = ()) -> dict[str, Any]:
+        """Query the receiving Bot's live membership, without granting workspace access."""
+        if not getattr(self.config, "agent_id", None) or self._api_client is None:
+            return {"status": "unknown"}
+        from lark_oapi.api.im.v1 import IsInChatChatMembersRequest, GetChatRequest
+
+        try:
+            response = await self._api_client.im.v1.chat_members.ais_in_chat(
+                IsInChatChatMembersRequest.builder().chat_id(chat_id).build()
+            )
+            present = getattr(getattr(response, "data", None), "is_in_chat", None)
+            if not response.success() or type(present) is not bool:
+                return {"status": "unknown"}
+            if not present:
+                return {"status": "left"}
+            result = {"status": "active"}
+            try:
+                info = await self._api_client.im.v1.chat.aget(GetChatRequest.builder().chat_id(chat_id).build())
+                name = getattr(getattr(info, "data", None), "name", None)
+                if info.success() and isinstance(name, str) and name.strip():
+                    result["group_name"] = name
+            except Exception:
+                pass
+            if message_ids:
+                from lark_oapi.api.im.v1 import GetMessageRequest
+
+                semaphore = asyncio.Semaphore(4)
+
+                async def read_message(message_id):
+                    async with semaphore:
+                        try:
+                            read = await self._api_client.im.v1.message.aget(
+                                GetMessageRequest.builder().message_id(message_id).build())
+                            items = getattr(getattr(read, "data", None), "items", None)
+                            if not read.success() or not items or len(items) != 1:
+                                return message_id, {"status": "unavailable"}
+                            item = items[0]
+                            if item.message_id != message_id or item.chat_id != chat_id:
+                                return message_id, {"status": "unavailable"}
+                            if item.deleted is True:
+                                return message_id, {"status": "recalled"}
+                            if item.deleted is not False:
+                                return message_id, {"status": "unavailable"}
+                            content = self._persistent_content(item.body)
+                            stamp = self._persistent_received_at(item.update_time or item.create_time)
+                            if stamp is None:
+                                return message_id, {"status": "unavailable"}
+                            return message_id, {"status": "edited" if item.updated else "normal",
+                                "text": self._persistent_text(content, item),
+                                "attachment_refs": list(self._persistent_attachment_refs(message_id, content)),
+                                "changed_at": stamp.isoformat()}
+                        except Exception:
+                            return message_id, {"status": "unavailable"}
+
+                result["messages"] = dict(await asyncio.gather(*(read_message(mid) for mid in message_ids)))
+            return result
+        except Exception:
+            return {"status": "unknown"}
+
     @staticmethod
     def _persistent_event_value(value: Any, name: str, default: Any = None) -> Any:
         if isinstance(value, dict):
@@ -695,7 +754,7 @@ class FeishuChannel(BaseChannel):
 
         ws_client = None
         try:
-            event_handler = (
+            builder = (
                 lark.EventDispatcherHandler.builder(
                     config["encrypt_key"],
                     config["verification_token"],
@@ -703,8 +762,14 @@ class FeishuChannel(BaseChannel):
                 .register_p2_im_message_receive_v1(self._on_message_sync)
                 .register_p2_im_message_message_read_v1(self._on_message_read_event)
                 .register_p2_card_action_trigger(self._on_card_action_trigger_sync)
-                .build()
             )
+            if getattr(self.config, "agent_id", None):
+                builder = (builder
+                    .register_p2_im_message_recalled_v1(lambda data: self._on_persistent_change_sync(data, "recalled"))
+                    .register_p2_im_chat_member_bot_added_v1(lambda data: self._on_persistent_change_sync(data, "joined"))
+                    .register_p2_im_chat_member_bot_deleted_v1(lambda data: self._on_persistent_change_sync(data, "left"))
+                    .register_p2_im_chat_updated_v1(lambda data: self._on_persistent_change_sync(data, "group_updated")))
+            event_handler = builder.build()
 
             ws_client = lark.ws.Client(
                 config["app_id"],
@@ -2963,6 +3028,27 @@ class FeishuChannel(BaseChannel):
                 log_label=msg_id,
             )
         )
+
+    def _on_persistent_change_sync(self, data: Any, kind: str) -> None:
+        if self._main_loop and self._main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._on_persistent_change(data, kind), self._main_loop)
+
+    async def _on_persistent_change(self, data: Any, kind: str) -> None:
+        callback = getattr(self, "_persistent_group_fanout_callback", None)
+        if callback is None or not getattr(self.config, "agent_id", None):
+            return
+        value = self._persistent_event_value
+        event, header = value(data, "event"), value(data, "header")
+        changed_at = self._persistent_received_at(value(header, "create_time"))
+        if changed_at is None:
+            return
+        name = value(value(event, "after_change"), "name") or value(event, "name")
+        await callback(FeishuInboundEvent(
+            receiving_app_id=self.config.app_id, expected_agent_id=self.config.agent_id,
+            message_id=value(event, "message_id"), chat_id=value(event, "chat_id"), chat_type="group",
+            sender_type=None, sender_id=None, sender_name=None, sender_app_id=None, received_at=changed_at,
+            text=None, event_kind=kind, event_id=value(header, "event_id"), changed_at=changed_at, group_name=name,
+        ))
 
     def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
         """

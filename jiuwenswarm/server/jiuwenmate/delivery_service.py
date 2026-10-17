@@ -38,6 +38,7 @@ class ResultDeliveryService:
         clock: Callable[[], datetime] = _utc_now,
         poll_interval: float = 1.0,
         send_timeout: float = 30.0,
+        archive_delivery: Callable[[dict[str, object]], Awaitable[None]] | None = None,
         file_send_timeout: float = FILE_SEND_TIMEOUT,
     ) -> None:
         if poll_interval <= 0 or send_timeout <= 0 or file_send_timeout <= 0:
@@ -46,6 +47,8 @@ class ResultDeliveryService:
         self._repository = repository
         self._namespace_id = namespace_id
         self._send_delivery = send_delivery
+        self._archive_delivery = archive_delivery
+        self._archive_after: tuple[str, str] | None = None
         self._clock = clock
         self._poll_interval = poll_interval
         self._send_timeout = send_timeout
@@ -128,7 +131,26 @@ class ResultDeliveryService:
                 file_key=self._file_key(job, ack),
             )
             dispatched += 1
+        await self.reconcile_archives()
         return dispatched
+
+    async def reconcile_archives(self) -> None:
+        """Retry only public-record persistence after a durable send ACK; never resend the message."""
+        if self._archive_delivery is None:
+            return
+        jobs = await asyncio.to_thread(self._repository.pending_delivery_archives, self._namespace_id,
+                                       after=self._archive_after)
+        if not jobs and self._archive_after is not None:
+            self._archive_after = None
+            jobs = await asyncio.to_thread(self._repository.pending_delivery_archives, self._namespace_id)
+        if jobs:
+            self._archive_after = (jobs[-1]["updated_at"], jobs[-1]["delivery_id"])
+        for job in jobs:
+            try:
+                await self._archive_delivery(job)
+                await asyncio.to_thread(self._repository.mark_delivery_archived, self._namespace_id, job["delivery_id"])
+            except Exception:
+                logger.warning("[JM-11] confirmed delivery archive pending: delivery_id=%s", job["delivery_id"])
 
     async def apply_ack(self, ack: Mapping[str, Any]) -> dict[str, object]:
         """Persist an ACK that arrived after the request waiter timed out or disconnected."""
@@ -144,7 +166,7 @@ class ResultDeliveryService:
         error_code = ack.get("error_code")
         if outcome not in {"delivered", "failed", "unknown", "pending"}:
             raise ValueError("invalid result delivery ACK outcome")
-        return await asyncio.to_thread(
+        saved = await asyncio.to_thread(
             self._repository.update_result_delivery,
             self._namespace_id,
             delivery_id,
@@ -154,6 +176,8 @@ class ResultDeliveryService:
             now=self._clock(),
             file_key=ack.get("file_key") if isinstance(ack.get("file_key"), str) else None,
         )
+        await self.reconcile_archives()
+        return saved
 
     @staticmethod
     def _file_key(job: Mapping[str, object], ack: Mapping[str, Any] | None) -> str | None:

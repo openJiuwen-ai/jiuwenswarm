@@ -19,13 +19,17 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
+from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
+from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
 from jiuwenswarm.server.jiuwenmate.execution_models import ExecutionRecord, RequestState
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.ports.budget import HostBudgetPort
 from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import HostWorkspaceAccess, WorkspaceStore
+from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort, MembershipVerifier, unavailable_membership
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation
+from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from openjiuwen.harness import persistent_agent as core
 
 logger = logging.getLogger(__name__)
@@ -90,6 +94,11 @@ class ExecutionDriver:
         budgets: BudgetRepository,
         windows: WindowBackendStore,
         workspaces: WorkspaceStore,
+        groups: GroupChatRepository | None = None,
+        group_archive: ConversationArchive | None = None,
+        sessions: ExecutionRepository | None = None,
+        verify_group_membership: MembershipVerifier = unavailable_membership,
+        refresh_group_messages=None,
         execute: ExecuteEntry = _default_execute,
         abort: AbortEntry = _default_abort,
         clock: Callable[[], datetime] = _utc_now,
@@ -101,6 +110,11 @@ class ExecutionDriver:
         self._budgets = budgets
         self._windows = windows
         self._workspaces = workspaces
+        self._groups = groups
+        self._group_archive = group_archive
+        self._sessions = sessions
+        self._verify_group_membership = verify_group_membership
+        self._refresh_group_messages = refresh_group_messages
         self._execute = execute
         self._abort = abort
         self._clock = clock
@@ -121,11 +135,25 @@ class ExecutionDriver:
                 window_backend=self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
                 workspace_access=workspace,
                 workspace_write_access=workspace,
+                group_chat=HostGroupChatPort(
+                    self._groups, self._group_archive, self._sessions,
+                    namespace_id=record.namespace_id, agent_id=record.agent_id,
+                    verify_membership=self._verify_group_membership,
+                    refresh_messages=self._refresh_group_messages,
+                ) if record.request_input.kind == "group_message" and self._groups is not None else None,
             )
             spec, context = build_invocation(snapshot, record, execution, ports=ports)
             await handle._attach(context)
+            inputs = record.request_input
+            if ports.group_chat is not None:
+                trigger = await ports.group_chat.current_trigger(context.execution, inputs.trigger_message_id)
+                if trigger.status in {"recalled", "unavailable"}:
+                    raise PersistentAgentError("group trigger is no longer readable", code="TRIGGER_UNAVAILABLE")
+                inputs = inputs.model_copy(update={"source": trigger,
+                    "text": trigger.text or ("[附件消息]" if trigger.attachment_refs else "[群消息正文为空]"),
+                    "attachment_refs": trigger.attachment_refs})
             terminal = None
-            async with aclosing(self._execute(spec, context, record.request_input)) as events:
+            async with aclosing(self._execute(spec, context, inputs)) as events:
                 async for event in events:
                     if event.event_type in _TERMINAL:
                         terminal = event

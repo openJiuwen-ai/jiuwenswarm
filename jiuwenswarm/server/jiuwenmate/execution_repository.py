@@ -119,6 +119,9 @@ CREATE TABLE IF NOT EXISTS result_deliveries (
 );
 CREATE INDEX IF NOT EXISTS result_deliveries_by_status
     ON result_deliveries (namespace_id, channel, status, created_at);
+CREATE TABLE IF NOT EXISTS group_delivery_archives (
+    namespace_id TEXT NOT NULL, delivery_id TEXT NOT NULL, PRIMARY KEY(namespace_id, delivery_id)
+);
 """
 _TERMINAL_EVENTS = (EventType.EXECUTION_PAUSED.value, EventType.EXECUTION_FINAL.value)
 
@@ -714,6 +717,26 @@ class ExecutionRepository(SQLiteStore):
                 (namespace_id, delivery_id),
             ).fetchone()
         return dict(updated)
+
+    def pending_delivery_archives(self, namespace_id: str, *, limit: int = 100,
+                                  after: tuple[str, str] | None = None) -> list[dict[str, object]]:
+        """Confirmed platform sends not yet saved as public records; never eligible for sending again."""
+        position = "AND (d.updated_at,d.delivery_id)>(?,?) " if after is not None else ""
+        params = (namespace_id, *after, limit) if after is not None else (namespace_id, limit)
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT d.*, r.record_json, c.payload_json FROM result_deliveries d "
+                "JOIN requests r ON r.namespace_id=d.namespace_id AND r.request_id=d.request_id "
+                "JOIN candidate_outputs c ON c.namespace_id=d.namespace_id AND c.output_id=d.output_id "
+                "LEFT JOIN group_delivery_archives a ON a.namespace_id=d.namespace_id AND a.delivery_id=d.delivery_id "
+                "WHERE d.namespace_id=? AND d.status='delivered' AND d.channel='feishu' "
+                "AND a.delivery_id IS NULL " + position + "ORDER BY d.updated_at,d.delivery_id LIMIT ?", params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_delivery_archived(self, namespace_id: str, delivery_id: str) -> None:
+        with self._transaction() as conn:
+            conn.execute("INSERT OR IGNORE INTO group_delivery_archives VALUES (?,?)", (namespace_id, delivery_id))
 
     def recover_sending_result_deliveries(self, namespace_id: str, *, now: datetime) -> int:
         """Fence deliveries interrupted after dispatch; never blindly resend an unknown outcome."""

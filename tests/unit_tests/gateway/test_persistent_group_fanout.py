@@ -102,6 +102,7 @@ class _Host:
             execute=_complete_one_request,
             clock=lambda: NOW,
         )
+        self.manager.verify_group_membership = AsyncMock(return_value="active")
 
     async def start(self):
         await self.manager.start()
@@ -196,6 +197,77 @@ async def test_unbound_event_is_left_for_the_personal_route_without_creating_sta
 
     assert disposition is InboundDisposition.UNCLAIMED
     assert host.row_counts() == (0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_jm11_archives_own_echo_before_suppressing_dispatch(host):
+    from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
+
+    agent_id = host.colleague("研发同事")
+    fanout = host.fanout([_binding("app-dev", agent_id)])
+    source = _event(sender_type="bot", sender_app_id="app-dev")
+    assert await fanout.handle(source) is InboundDisposition.HANDLED
+    group = host.groups.resolve(NS, "feishu", source.chat_id, now=NOW)
+    archive = ConversationArchive(host.db.parent / "group_messages", host.groups)
+    page = archive.recent(NS, group.group_chat_id, cursor=None, limit=20, visible_from=NOW)
+    assert page.messages[0].message_id == "om_001" and page.messages[0].sender_kind == "agent"
+    assert not host.request_states(agent_id, source)
+
+
+@pytest.mark.asyncio
+async def test_jm11_two_agents_share_archive_but_not_request_dedup(host):
+    from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
+
+    first, second = host.colleague("A"), host.colleague("B")
+    fanout = host.fanout([_binding("app-a", first), _binding("app-b", second)])
+    await fanout.handle(_event(receiving_app_id="app-a"))
+    await fanout.handle(_event(receiving_app_id="app-b"))
+    group = host.groups.resolve(NS, "feishu", "oc_project", now=NOW)
+    archive = ConversationArchive(host.db.parent / "group_messages", host.groups)
+    page = archive.recent(NS, group.group_chat_id, cursor=None, limit=20, visible_from=NOW)
+    assert [item.message_id for item in page.messages] == ["om_001"]
+    assert len(host.request_states(first, _event())) == len(host.request_states(second, _event())) == 1
+
+
+@pytest.mark.asyncio
+async def test_jm11_recall_before_original_does_not_create_a_request(host):
+    agent_id = host.colleague("A")
+    fanout = host.fanout([_binding("app-dev", agent_id)])
+    await fanout.handle(_event(event_kind="recalled", event_id="recall-first", changed_at=NOW))
+    assert await fanout.handle(_event()) is InboundDisposition.HANDLED
+    assert not host.request_states(agent_id, _event())
+
+
+@pytest.mark.asyncio
+async def test_jm11_rebinding_retires_only_unconfigured_bot_access(host):
+    agent_id = host.colleague("A")
+    bindings = {"app-dev": _binding("app-dev", agent_id)}
+    fanout = host.fanout([], binding_resolver=lambda platform, app: (bindings[app],) if app in bindings else ())
+    await fanout.handle(_event())
+    bindings.clear()
+    bindings["app-new"] = _binding("app-new", agent_id)
+    await fanout.handle(_event(receiving_app_id="app-new", message_id="om_new"))
+    group = host.groups.resolve(NS, "feishu", "oc_project", now=NOW)
+    assert host.groups.access_for(NS, agent_id, group.group_chat_id).app_id == "app-new"
+    bindings.clear()
+    bindings["app-dev"] = _binding("app-dev", agent_id)
+    assert await fanout.handle(_event(message_id="om_back")) is InboundDisposition.HANDLED
+    assert host.groups.access_for(NS, agent_id, group.group_chat_id).app_id == "app-dev"
+
+
+@pytest.mark.asyncio
+async def test_jm11_recall_and_left_events_update_records_without_requests(host):
+    agent_id = host.colleague("A")
+    fanout = host.fanout([_binding("app-dev", agent_id)])
+    await fanout.handle(_event())
+    group = host.groups.resolve(NS, "feishu", "oc_project", now=NOW)
+    for kind in ("recalled", "left"):
+        changed = _event(event_kind=kind, event_id=f"event-{kind}", changed_at=NOW + timedelta(seconds=1))
+        assert await fanout.handle(changed) is InboundDisposition.HANDLED
+    page = host.manager.group_archive.recent(NS, group.group_chat_id, cursor=None, limit=20, visible_from=NOW)
+    assert page.messages[0].text is None and page.messages[0].status == "recalled"
+    assert host.groups.access_for(NS, agent_id, group.group_chat_id).status == "left"
+    assert len(host.request_states(agent_id, _event())) == 1
 
 
 @pytest.mark.asyncio

@@ -2140,7 +2140,8 @@ class AgentWebSocketServer:
             if not configured_feishu_bindings():
                 return None
             fanout, manager = create_default_persistent_group_fanout(
-                send_delivery=self._send_jm09_delivery
+                send_delivery=self._send_jm09_delivery,
+                verify_membership=self._inspect_jm11_group,
             )
             try:
                 await manager.start()
@@ -2163,6 +2164,41 @@ class AgentWebSocketServer:
             self._jm08_fanout = None
             if manager is not None:
                 await manager.aclose()
+
+    async def _inspect_jm11_group(self, app_id: str, chat_id: str, message_ids: tuple[str, ...] = ()) -> dict[str, object]:
+        """Ask the owning Gateway to verify current membership; never authorize from history alone."""
+        from uuid import uuid4
+
+        query_id = uuid4().hex
+        waiters = getattr(self, "_jm11_group_waiters", None)
+        if waiters is None:
+            waiters = self._jm11_group_waiters = {}
+        future = asyncio.get_running_loop().create_future()
+        waiters[query_id] = (future, app_id, chat_id)
+        try:
+            sent = await self.send_push({"request_id": f"jm11_{query_id}", "channel_id": "feishu", "payload": {
+                "event_type": "jiuwenmate.group.inspect", "query_id": query_id, "app_id": app_id, "chat_id": chat_id,
+                "message_ids": list(message_ids),
+            }})
+            if not sent:
+                return {"status": "unknown"}
+            return await asyncio.wait_for(future, timeout=10)
+        except TimeoutError:
+            return {"status": "unknown"}
+        finally:
+            waiters.pop(query_id, None)
+
+    async def _handle_jm11_group_response(self, ws, request, send_lock) -> None:
+        params = request.params if isinstance(request.params, dict) else {}
+        pending = getattr(self, "_jm11_group_waiters", {}).get(params.get("query_id"))
+        ok = bool(pending and (pending[1], pending[2]) == (params.get("app_id"), params.get("chat_id"))
+                  and params.get("status") in {"active", "left", "unknown"})
+        if ok and not pending[0].done():
+            pending[0].set_result(dict(params))
+        response = AgentResponse(request_id=request.request_id, channel_id=request.channel_id, ok=ok,
+                                 payload={"accepted": ok})
+        async with send_lock:
+            await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
 
     async def _send_jm09_delivery(self, job: dict[str, object]) -> dict[str, object]:
         """Push one durable Feishu result to Gateway and await its platform receipt."""
@@ -2611,6 +2647,9 @@ class AgentWebSocketServer:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        if request.req_method == ReqMethod.JIUWENMATE_GROUP_RESPONSE:
+            await self._handle_jm11_group_response(ws, request, send_lock)
+            return
         if request.req_method == ReqMethod.JIUWENMATE_DELIVERY_ACK:
             await self._handle_jm09_delivery_ack(ws, request, send_lock)
             return

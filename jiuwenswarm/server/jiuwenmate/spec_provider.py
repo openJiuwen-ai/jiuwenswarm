@@ -159,6 +159,12 @@ def build_invocation(
     if execution.recovery_ref is not None:
         raise PersistentContractError("continuation is not opened yet (PA-18)", code="PERSISTENT_NOT_OPENED")
     backend = ports.window_backend
+    if ports.group_chat is not None:
+        from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort
+
+        if not isinstance(ports.group_chat, HostGroupChatPort) or ports.group_chat.scope != (
+                request.namespace_id, request.agent_id):
+            raise PersistentContractError("group_chat must be the host port bound to this colleague")
     if not isinstance(backend, SessionWindowBackend) or backend.scope != (
         request.namespace_id,
         request.agent_id,

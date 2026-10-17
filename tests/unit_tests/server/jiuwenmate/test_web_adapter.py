@@ -222,6 +222,7 @@ def test_web_gateway_does_not_forward_internal_jiuwenmate_methods():
     internal_methods = {
         ReqMethod.JIUWENMATE_FEISHU_INBOUND.value,
         ReqMethod.JIUWENMATE_DELIVERY_ACK.value,
+        ReqMethod.JIUWENMATE_GROUP_RESPONSE.value,
     }
     web_methods = {
         method.value

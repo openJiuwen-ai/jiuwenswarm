@@ -22,6 +22,9 @@ from typing import Any
 from pydantic import ValidationError
 
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
+from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
+from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+from jiuwenswarm.server.jiuwenmate.ports.group_chat import unavailable_membership
 from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
 from jiuwenswarm.server.jiuwenmate.execution_control_service import (
     ControlStore,
@@ -176,6 +179,10 @@ class AgentManager:
         self._clock = clock
         self._external_event_observer = on_event
         self._delivery_service = delivery_service
+        self.group_chats = GroupChatRepository(sessions.db_path)
+        self.group_archive = ConversationArchive(sessions.db_path.parent / "group_messages", self.group_chats)
+        self.verify_group_membership = unavailable_membership
+        self.refresh_group_messages = None
         self._files = files or OutputFileStore(sessions.db_path.parent / OUTPUTS_DIR, service.workspaces)
         self._queue = CommitQueue(sessions, clock=clock)
         driver = ExecutionDriver(
@@ -192,6 +199,11 @@ class AgentManager:
             budgets=budgets,
             windows=windows,
             workspaces=service.workspaces,
+            groups=self.group_chats,
+            group_archive=self.group_archive,
+            sessions=sessions,
+            verify_group_membership=self._verify_group_membership,
+            refresh_group_messages=self._refresh_group_messages,
             execute=execute,
             abort=abort,
             clock=clock,
@@ -202,6 +214,14 @@ class AgentManager:
             sessions, self._scheduler, RecoveryStore(sessions.db_path), control_of=self._control.control_of, clock=clock
         )
         self._purge_task: asyncio.Task[None] | None = None
+
+    async def _verify_group_membership(self, access, group):
+        return await self.verify_group_membership(access, group)
+
+    async def _refresh_group_messages(self, access, group, messages):
+        if self.refresh_group_messages is None:
+            return messages
+        return await self.refresh_group_messages(access, group, messages)
 
     @classmethod
     def create_default(

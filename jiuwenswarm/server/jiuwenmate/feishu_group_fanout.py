@@ -46,6 +46,10 @@ class FeishuInboundEvent:
     mention_ids: tuple[str, ...] = ()
     reply_to: str | None = None
     attachment_refs: tuple[str, ...] = ()
+    event_kind: str = "message"
+    event_id: str | None = None
+    changed_at: datetime | None = None
+    group_name: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         """Return JSON-safe normalized facts for the internal Gateway E2A request."""
@@ -64,6 +68,10 @@ class FeishuInboundEvent:
             "mention_ids": list(self.mention_ids),
             "reply_to": self.reply_to,
             "attachment_refs": list(self.attachment_refs),
+            "event_kind": self.event_kind,
+            "event_id": self.event_id,
+            "changed_at": self.changed_at.isoformat() if self.changed_at else None,
+            "group_name": self.group_name,
         }
 
     @classmethod
@@ -87,6 +95,9 @@ class FeishuInboundEvent:
         if isinstance(attachment_refs, list):
             attachment_refs = tuple(attachment_refs)
 
+        changed_at = payload.get("changed_at")
+        if isinstance(changed_at, str):
+            changed_at = datetime.fromisoformat(changed_at.replace("Z", "+00:00"))
         return cls(
             receiving_app_id=payload.get("receiving_app_id"),
             expected_agent_id=payload.get("expected_agent_id"),
@@ -102,6 +113,8 @@ class FeishuInboundEvent:
             mention_ids=mention_ids,
             reply_to=payload.get("reply_to"),
             attachment_refs=attachment_refs,
+            event_kind=payload.get("event_kind", "message"), event_id=payload.get("event_id"),
+            changed_at=changed_at, group_name=payload.get("group_name"),
         )
 
 
@@ -194,8 +207,8 @@ def resolve_feishu_access(
     sender_id = event.sender_app_id if sender_type in {"bot", "app", "agent"} and _present(event.sender_app_id) else event.sender_id
     return AccessSnapshot(
         principal_ref=f"feishu:{sender_type}:{sender_id}",
-        startup_scope=frozenset(),
-        source_scope=frozenset(),
+        startup_scope=frozenset({"chat"}),
+        source_scope=frozenset({"chat"}),
         policy_revision="jm08-feishu-v1",
     )
 
@@ -204,6 +217,7 @@ def create_default_persistent_group_fanout(
     data_dir: Path | None = None,
     *,
     send_delivery: Callable[[dict[str, object]], Awaitable[Mapping[str, Any] | None]] | None = None,
+    verify_membership=None,
 ) -> tuple[PersistentGroupFanout, AgentManager]:
     """Build JM-08 on the owner's private JiuwenMate SQLite store and JM-07 manager."""
     from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
@@ -213,6 +227,8 @@ def create_default_persistent_group_fanout(
     from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
     from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
     from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService, default_data_dir
+    from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
+    from jiuwenswarm.server.jiuwenmate.conversation_resources import ConversationResources
 
     root = data_dir if data_dir is not None else default_data_dir()
     db_path = root / "agents.sqlite3"
@@ -221,12 +237,58 @@ def create_default_persistent_group_fanout(
     groups = GroupChatRepository(db_path)
     windows = WindowBackendStore(db_path)
     budgets = BudgetRepository(db_path)
+    resources = ConversationResources(ConversationArchive(root / "group_messages", groups), sessions)
+
+    async def archive_delivery(job):
+        await asyncio.to_thread(resources.archive_delivery, job)
+
     delivery_service = (
-        ResultDeliveryService(sessions, namespace_id="local", send_delivery=send_delivery)
+        ResultDeliveryService(sessions, namespace_id="local", send_delivery=send_delivery, archive_delivery=archive_delivery)
         if send_delivery is not None
         else None
     )
     manager = AgentManager(service, sessions, windows, budgets, delivery_service=delivery_service)
+    if verify_membership is not None:
+        async def verify(access, group):
+            bindings = resolve_configured_feishu_bindings("feishu", access.app_id)
+            if len(bindings) != 1 or (bindings[0].namespace_id, bindings[0].agent_id) != (
+                    access.namespace_id, access.agent_id):
+                return "unknown"
+            facts = await verify_membership(access.app_id, group.platform_chat_id)
+            if facts.get("status") == "left":
+                await asyncio.to_thread(groups.update_membership, access.namespace_id, access.agent_id,
+                                       access.group_id, access.app_id, status="left",
+                                       observed_at=datetime.now(timezone.utc), source_ref="membership:live")
+            if facts.get("status") == "active" and facts.get("group_name"):
+                await asyncio.to_thread(groups.set_name, access.namespace_id, access.group_id, facts["group_name"])
+            return facts.get("status", "unknown")
+        manager.verify_group_membership = verify
+
+        async def refresh(access, group, messages):
+            facts = await verify_membership(access.app_id, group.platform_chat_id,
+                                           tuple(item.message_id for item in messages))
+            if facts.get("status") != "active" or not isinstance(facts.get("messages"), dict):
+                raise ValueError("current group message state unavailable")
+            updated = []
+            for message in messages:
+                item = facts["messages"].get(message.message_id, {})
+                status = item.get("status")
+                if status == "recalled":
+                    await asyncio.to_thread(manager.group_archive.recall, access.namespace_id, access.group_id,
+                        message.message_id, source_ref=f"refresh:{message.message_id}", changed_at=datetime.now(timezone.utc))
+                    updated.append(message.model_copy(update={"status": "recalled", "text": None, "attachment_refs": ()}))
+                elif status in {"normal", "edited"}:
+                    changed_at = datetime.fromisoformat(item["changed_at"])
+                    fresh = type(message).model_validate({**message.model_dump(), "status": status,
+                        "text": item.get("text"), "attachment_refs": item.get("attachment_refs", ())})
+                    await asyncio.to_thread(manager.group_archive.append, access.namespace_id, access.group_id, fresh,
+                        source_ref=f"refresh:{message.message_id}", changed_at=changed_at)
+                    updated.append(fresh)
+                else:
+                    updated.append(message.model_copy(update={"status": "unavailable", "text": None, "attachment_refs": ()}))
+            return tuple(updated)
+
+        manager.refresh_group_messages = refresh
     fanout = PersistentGroupFanout(
         service=service,
         groups=groups,
@@ -309,6 +371,8 @@ class PersistentGroupFanout:
         if _present(event.expected_agent_id) and binding.agent_id != event.expected_agent_id.strip():
             return InboundDisposition.REJECTED
 
+        if event.event_kind != "message":
+            return await self._handle_group_change(binding, event)
         sender_kind = self._validated_sender_kind(event)
         if sender_kind is None:
             return InboundDisposition.REJECTED
@@ -337,9 +401,6 @@ class PersistentGroupFanout:
             # Only a platform-supplied sender application identity can prove
             # that this is the receiving Bot echoing its own message.
             sender_app_id = event.sender_app_id.strip() if _present(event.sender_app_id) else None
-            if sender_kind == "agent" and sender_app_id == event.receiving_app_id:
-                return InboundDisposition.HANDLED
-
             request_input = self._request_input(event, sender_kind)
             received_at = event.received_at.astimezone(timezone.utc)
             now = self._clock()
@@ -355,8 +416,39 @@ class PersistentGroupFanout:
                     now=now,
                 )
                 conversation = ConversationRef.group(group.group_chat_id)
+                apps = await asyncio.to_thread(self._groups.active_apps, binding.namespace_id,
+                                               binding.agent_id, group.group_chat_id)
+                for app_id in apps:
+                    if app_id == binding.app_id:
+                        continue
+                    previous = await self._call(self._resolve_bindings, "feishu", app_id)
+                    if not any((item.namespace_id, item.agent_id) == (binding.namespace_id, binding.agent_id)
+                               for item in previous):
+                        await asyncio.to_thread(self._groups.update_membership, binding.namespace_id,
+                            binding.agent_id, group.group_chat_id, app_id, status="unknown", observed_at=now,
+                            source_ref=f"binding:{binding.binding_id}")
+                await asyncio.to_thread(
+                    self._groups.observe_access, binding.namespace_id, binding.agent_id, group.group_chat_id,
+                    binding.app_id, observed_at=received_at, source_ref=f"feishu:message:{event.message_id}",
+                )
+                await asyncio.to_thread(
+                    self._agent_manager.group_archive.append, binding.namespace_id, group.group_chat_id,
+                    request_input.source, source_ref=f"feishu:message:{event.message_id}", changed_at=event.changed_at,
+                )
+                current, = await asyncio.to_thread(self._agent_manager.group_archive.current_messages,
+                    binding.namespace_id, group.group_chat_id, (event.message_id,))
+                if current.status in {"recalled", "unavailable"}:
+                    return InboundDisposition.HANDLED
+                request_input = request_input.model_copy(update={"source": current,
+                    "text": current.text or ("[附件消息]" if current.attachment_refs else "[群消息正文为空]"),
+                    "attachment_refs": current.attachment_refs})
+                if event.group_name:
+                    await asyncio.to_thread(self._groups.set_name, binding.namespace_id, group.group_chat_id, event.group_name)
             else:
                 conversation = ConversationRef.im_direct("feishu", event.chat_id)
+
+            if sender_kind == "agent" and sender_app_id == event.receiving_app_id:
+                return InboundDisposition.HANDLED
 
             session = await asyncio.to_thread(
                 self._sessions.resolve_session,
@@ -389,6 +481,33 @@ class PersistentGroupFanout:
             )
             return InboundDisposition.REJECTED
 
+        return InboundDisposition.HANDLED
+
+    async def _handle_group_change(self, binding: FeishuBinding, event: FeishuInboundEvent) -> InboundDisposition:
+        """Lifecycle and recall facts change host records, never create business Requests."""
+        if (event.event_kind not in {"recalled", "joined", "left", "group_updated"}
+                or event.chat_type != "group" or not _present(event.chat_id)
+                or not _present(event.event_id) or not _valid_received_at(event.changed_at)):
+            return InboundDisposition.REJECTED
+        try:
+            group = await asyncio.to_thread(self._groups.resolve, binding.namespace_id, "feishu", event.chat_id,
+                                             now=self._clock())
+            source = f"feishu:event:{event.event_id}"
+            if event.event_kind == "recalled":
+                if not _present(event.message_id):
+                    return InboundDisposition.REJECTED
+                await asyncio.to_thread(self._agent_manager.group_archive.recall, binding.namespace_id,
+                                         group.group_chat_id, event.message_id, source_ref=source,
+                                         changed_at=event.changed_at)
+            elif event.event_kind in {"joined", "left"}:
+                await asyncio.to_thread(self._groups.update_membership, binding.namespace_id, binding.agent_id,
+                                         group.group_chat_id, binding.app_id,
+                                         status="active" if event.event_kind == "joined" else "left",
+                                         observed_at=event.changed_at, source_ref=source)
+            if event.group_name:
+                await asyncio.to_thread(self._groups.set_name, binding.namespace_id, group.group_chat_id, event.group_name)
+        except Exception:
+            return InboundDisposition.REJECTED
         return InboundDisposition.HANDLED
 
     async def _call(self, callback: Callable[..., Any], *args: Any) -> Any:
@@ -444,6 +563,7 @@ class PersistentGroupFanout:
                 mention_ids=event.mention_ids,
                 reply_to=event.reply_to,
                 attachment_refs=attachment_refs,
+                status="edited" if event.changed_at is not None else "normal",
             )
             kind = "group_message"
         else:

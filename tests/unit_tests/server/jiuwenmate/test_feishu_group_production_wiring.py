@@ -28,6 +28,113 @@ from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
 NOW = datetime(2026, 10, 14, 9, 0, tzinfo=timezone.utc)
 
 
+@pytest.mark.asyncio
+async def test_jm11_gateway_membership_lookup_uses_exact_bound_app():
+    handler = object.__new__(MessageHandler)
+    manager = ChannelManager(handler)
+    channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
+    channel.inspect_persistent_group = AsyncMock(return_value={"status": "active", "group_name": "Project"})
+    manager.register_channel(channel)
+    result = await manager.inspect_jm11_group({"app_id": "cli_bound", "chat_id": "oc_group"})
+    assert result == {"status": "active", "group_name": "Project"}
+    missing = await manager.inspect_jm11_group({"app_id": "other", "chat_id": "oc_group"})
+    assert missing["status"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_jm11_membership_push_returns_a_correlated_response():
+    from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+
+    handler = object.__new__(MessageHandler)
+    handler.agent_client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True)))
+    handler._jm11_group_handler = AsyncMock(return_value={"status": "left"})
+    payload = {"event_type": "jiuwenmate.group.inspect", "query_id": "query-1",
+               "app_id": "cli_bound", "chat_id": "oc_group"}
+    await handler._handle_agent_server_push(build_server_push_wire({
+        "request_id": "query-1", "channel_id": "feishu", "payload": payload,
+    }))
+    envelope = handler.agent_client.send_request.await_args.args[0]
+    assert envelope.method == "jiuwenmate.group.response"
+    assert envelope.params["query_id"] == "query-1" and envelope.params["status"] == "left"
+
+
+@pytest.mark.asyncio
+async def test_jm11_server_rejects_wrong_app_response_and_cleans_up_query(monkeypatch):
+    server = object.__new__(_agent_websocket_server_type())
+    monkeypatch.setattr("jiuwenswarm.server.agent_ws_server.send_wire_payload", AsyncMock())
+
+    async def push(message):
+        params = message["payload"]
+        query_id = params["query_id"]
+        response = SimpleNamespace(request_id="response", channel_id="feishu",
+            params={"query_id": query_id, "app_id": "wrong", "chat_id": "oc_group", "status": "active"})
+        await server._handle_jm11_group_response(object(), response, asyncio.Lock())
+        assert not server._jm11_group_waiters[query_id][0].done()
+        response.params["app_id"] = "cli_bound"
+        await server._handle_jm11_group_response(object(), response, asyncio.Lock())
+        return True
+
+    server.send_push = push
+    assert (await server._inspect_jm11_group("cli_bound", "oc_group"))["status"] == "active"
+    assert server._jm11_group_waiters == {}
+    server.send_push = AsyncMock(return_value=False)
+    assert (await server._inspect_jm11_group("cli_bound", "oc_group"))["status"] == "unknown"
+    assert server._jm11_group_waiters == {}
+
+
+@pytest.mark.asyncio
+async def test_jm11_channel_checks_live_bot_membership_and_fails_closed():
+    channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
+    response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(is_in_chat=False))
+    channel._api_client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(chat_members=SimpleNamespace(
+        ais_in_chat=AsyncMock(return_value=response)))))
+    assert (await channel.inspect_persistent_group("oc_group"))["status"] == "left"
+    response.data.is_in_chat = True
+    assert (await channel.inspect_persistent_group("oc_group"))["status"] == "active"
+    response.data.is_in_chat = None
+    assert (await channel.inspect_persistent_group("oc_group"))["status"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_jm11_gateway_refreshes_edited_and_recalled_bodies_in_the_target_group():
+    channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
+    membership = SimpleNamespace(success=lambda: True, data=SimpleNamespace(is_in_chat=True))
+    edited = SimpleNamespace(message_id="m1", chat_id="oc_group", deleted=False, updated=True,
+        update_time=int(NOW.timestamp() * 1000), create_time=int(NOW.timestamp() * 1000),
+        body=SimpleNamespace(content='{"text":"new body"}'))
+    recalled = SimpleNamespace(message_id="m2", chat_id="oc_group", deleted=True)
+
+    async def read(request):
+        item = edited if request.message_id == "m1" else recalled
+        return SimpleNamespace(success=lambda: True, data=SimpleNamespace(items=[item]))
+
+    channel._api_client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(
+        chat_members=SimpleNamespace(ais_in_chat=AsyncMock(return_value=membership)),
+        message=SimpleNamespace(aget=read))))
+    result = await channel.inspect_persistent_group("oc_group", ("m1", "m2"))
+    assert result["messages"]["m1"]["text"] == "new body"
+    assert result["messages"]["m2"] == {"status": "recalled"}
+    edited.chat_id = "other-group"
+    assert (await channel.inspect_persistent_group("oc_group", ("m1",)))["messages"]["m1"]["status"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_jm11_platform_lifecycle_event_enters_only_the_bound_persistent_route():
+    channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
+    events = []
+
+    async def receive(event):
+        events.append(event)
+        return InboundDisposition.HANDLED
+
+    channel.set_persistent_group_fanout_callback(receive)
+    payload = {"header": {"event_id": "recall-1", "create_time": str(int(NOW.timestamp() * 1000))},
+               "event": {"chat_id": "oc_group", "message_id": "m1"}}
+    await channel._on_persistent_change(payload, "recalled")
+    assert events[0].event_kind == "recalled" and events[0].message_id == "m1"
+    assert events[0].changed_at == NOW
+
+
 def _event(**overrides) -> FeishuInboundEvent:
     values = {
         "receiving_app_id": "cli_bound",
@@ -120,8 +227,8 @@ def test_feishu_access_snapshot_identifies_sender_without_workspace_scopes():
     access = resolve_feishu_access(None, _event())
 
     assert access.principal_ref == "feishu:user:ou_alice"
-    assert access.startup_scope == frozenset()
-    assert access.source_scope == frozenset()
+    assert access.startup_scope == frozenset({"chat"})
+    assert access.source_scope == frozenset({"chat"})
     assert access.policy_revision
 
 
