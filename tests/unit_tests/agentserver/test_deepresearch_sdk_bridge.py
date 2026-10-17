@@ -422,6 +422,15 @@ async def test_sdk_is_lazy_logs_only_to_stderr_and_restores_tls(tmp_path: Path, 
     monkeypatch.setenv("LLM_SSL_VERIFY", "parent-llm")
     monkeypatch.delenv("TOOL_SSL_VERIFY", raising=False)
 
+    # 预热：把 redirect_stdout 块内会发生的真实 openjiuwen import 与 auth 补丁应用
+    # 提前到块外完成。pytest log_cli=true 下 live-log 每条日志都会 suspend/resume
+    # 全局捕获，resume 会把 sys.stdout 无条件重置回捕获对象、踢掉 redirect 防御；
+    # 预热后块内 import 全部命中 sys.modules 缓存、补丁命中幂等短路，零日志 emit，
+    # 本用例不再依赖套件中是否存在更早的模块预热者。
+    from jiuwenswarm.llm_sse_patch import apply_openai_auth_header_patch
+
+    apply_openai_auth_header_patch()
+
     result = await bridge.stylize_request(_request(), output)
     captured = capsys.readouterr()
     assert result["status"] == "completed"

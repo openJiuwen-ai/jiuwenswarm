@@ -135,6 +135,10 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     STATUSLINE_SETUP_AGENT_TYPE,
     build_statusline_setup_agent_config,
 )
+from jiuwenswarm.server.runtime.agent_adapter.todo_close_text_hold import (
+    TodoCloseTextHold,
+    is_todo_close_control,
+)
 
 from jiuwenswarm.agents.harness.common.tools.deepresearch import (
     get_deepresearch_tools,
@@ -4462,84 +4466,31 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any] | None = None,
     ) -> str:
         """Resolve managed-browser binary from saved browser config."""
-        if config_base is None:
-            config_base = get_config()
-        if not isinstance(config_base, dict):
-            return ""
-        config = resolve_env_vars(config_base)
-        browser_cfg = config.get("browser", {}) if isinstance(config, dict) else {}
-        if not isinstance(browser_cfg, dict):
-            return ""
-        chrome_path = browser_cfg.get("chrome_path", "")
-        if isinstance(chrome_path, str):
-            return chrome_path.strip()
-        if not isinstance(chrome_path, dict):
-            return ""
-        platform_map = {
-            "win32": "windows",
-            "cygwin": "windows",
-            "darwin": "macos",
-            "linux": "linux",
-            "linux2": "linux",
-        }
-        os_key = platform_map.get(os.sys.platform, "default")
-        for key in (os_key, "default"):
-            value = chrome_path.get(key, "")
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return ""
+        from jiuwenswarm.agents.harness.common.browser_env import (
+            resolve_managed_browser_binary,
+        )
+
+        return resolve_managed_browser_binary(config_base)
 
     @staticmethod
     def _resolve_headless_from_config(
         config_base: dict[str, Any] | None = None,
     ) -> bool:
         """Read browser.headless from config (default True = headless)."""
-        try:
-            if config_base is None:
-                config_base = get_config()
-            if not isinstance(config_base, dict):
-                return True
-            browser_cfg = config_base.get("browser", {})
-            if not isinstance(browser_cfg, dict):
-                return True
-            headless = browser_cfg.get("headless", True)
-            return bool(headless) if isinstance(headless, bool) else True
-        except Exception:
-            return True
+        from jiuwenswarm.agents.harness.common.browser_env import resolve_headless
 
+        return resolve_headless(config_base)
+
+    @staticmethod
     def _sync_browser_runtime_environment(
-        self,
         config_base: dict[str, Any] | None = None,
     ) -> None:
         """Synchronize browser launch settings before browser runtimes are built."""
-        headless = self._resolve_headless_from_config(config_base)
-        mcp_args_raw = (
-            read_env("PLAYWRIGHT_MCP_ARGS") or "-y @playwright/mcp@latest"
-        ).strip()
-        mcp_args = (
-            mcp_args_raw.split()
-            if mcp_args_raw
-            else ["-y", "@playwright/mcp@latest"]
+        from jiuwenswarm.agents.harness.common.browser_env import (
+            sync_browser_runtime_environment,
         )
-        mcp_args = [arg for arg in mcp_args if arg != "--headless"]
-        if headless:
-            mcp_args.append("--headless")
-            os.environ["BROWSER_MANAGED_ARGS"] = "--headless=new"
-        else:
-            os.environ.pop("BROWSER_MANAGED_ARGS", None)
-        os.environ["PLAYWRIGHT_MCP_ARGS"] = " ".join(mcp_args)
-        chrome_path = self._resolve_managed_browser_binary_from_config(config_base)
-        if chrome_path:
-            os.environ["BROWSER_MANAGED_BINARY"] = chrome_path
-        else:
-            os.environ.pop("BROWSER_MANAGED_BINARY", None)
 
-        logger.info(
-            "[%s] browser runtime config: headless=%s, chrome_path=%s",
-            type(self).__name__,
-            headless,
-            chrome_path or "<auto>",
-        )
+        sync_browser_runtime_environment(config_base)
 
     @staticmethod
     def _is_subagent_enabled(subagent_cfg: Any) -> bool:
@@ -4640,18 +4591,13 @@ class JiuWenSwarmDeepAdapter:
             subagents_cfg.get("browser_agent") if isinstance(subagents_cfg, dict) else {}
         )
 
-        # Swarm members and the main browser subagent read these variables when
-        # their browser runtimes are built.
-        self._sync_browser_runtime_environment(config_base)
-
         browser_enabled = self._browser_runtime_enabled()
         if browser_enabled:
-            if not str(read_env("BROWSER_DRIVER") or "").strip():
-                os.environ["BROWSER_DRIVER"] = "managed"
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] browser subagent enabled without BROWSER_DRIVER; "
-                    "defaulting to managed mode"
-                )
+            # Publish tip driver / drop stale CDP only when this agent will
+            # build a browser. Doing it for every session wipes a co-resident
+            # remote CDP endpoint. Team members sync again in
+            # build_swarm_browser_agent immediately before their own build.
+            self._sync_browser_runtime_environment(config_base)
             browser_max_iterations = None
             if isinstance(browser_agent_cfg, dict):
                 browser_max_iterations = browser_agent_cfg.get("max_iterations")
@@ -15447,6 +15393,7 @@ class JiuWenSwarmDeepAdapter:
             await self._release_memory_service_rail("_external_memory_rail")
             await self._release_memory_service_rail("_office_ace_user_profile_rail")
         self._teardown_agent_owned_tools()
+        await self._release_session_agent_callbacks()
         self._release_sys_operations()
         # 取消未到期的延时重索引 task，避免 adapter cleanup 后仍有孤儿 task
         # 去触发 manager.sync（此时 rail/manager 可能已失效）。
@@ -15474,6 +15421,144 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] agent tool teardown failed: %s", exc
+            )
+        self._purge_session_scoped_registry_entries()
+
+    def _purge_session_scoped_registry_entries(self) -> None:
+        """issue#5240 止血:会话级注册的全局资源表条目按后缀批量注销。
+
+        会话 adapter 构建时以 ``{name}_{owner}``（owner="{card}_s_{session}"，
+        见 _tool_owner_id）向 Runner.resource_mgr 注册 stateful 工具卡——id
+        内嵌会话键、每会话唯一。teardown_tools 只摘 ability_manager 侧 owner
+        命名的条目，resource_mgr 里会话后缀形态没有注销路径，逐出后永驻
+        （census 实证 gc.collect 后仍 +20 ToolCard/会话，RSS 线性涨至 OOM）。
+
+        只覆盖 ToolCard：AgentCard 不进 _id_to_card（resource_mgr.add_agent
+        仅 BaseTeam 体系调用，本服务团队运行时走 TeamRuntimeManager），其堆
+        对象滞留由 _release_session_agent_callbacks 承担。匹配用
+        ``{name}_{owner}`` 精确重构而非裸 endswith：session key 为客户端可
+        控字符串，裸后缀匹配存在会话 B 的 key 字面以会话 A 的 owner 段结尾
+        时误删 B 在用工具的理论窗口。
+        """
+        if not self._is_session_scoped_adapter:
+            return
+        try:
+            owner = self._tool_owner_id()
+            rm = Runner.resource_mgr
+            id_to_card = getattr(rm, "_id_to_card", None) or {}
+            suffix = f"_{owner}"
+            stale: list[str] = []
+            for rid in id_to_card:
+                card = id_to_card.get(rid)
+                if not rid.endswith(suffix):
+                    continue
+                if rid != f"{getattr(card, 'name', '')}_{owner}":
+                    continue
+                stale.append(rid)
+            if not stale:
+                return
+            removed = 0
+            for rid in stale:
+                try:
+                    rm.remove_tool(rid)
+                    removed += 1
+                except Exception as exc:  # noqa: BLE001 - 单条失败不中止
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session registry purge "
+                        "failed: id=%s error=%s", rid, exc,
+                    )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] session registry purged: owner=%s "
+                "removed=%d/%d", owner, removed, len(stale),
+            )
+        except Exception as exc:  # noqa: BLE001 - 止血路径不阻塞 cleanup
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] session registry purge error: %s", exc
+            )
+
+    async def _release_session_agent_callbacks(self) -> None:
+        """issue#5240 止血:反注册会话内全部 agent 实例的回调。
+
+        BaseAgent.__init__ 以实例命名空间(uuid4)向进程全局
+        Runner.callback_framework 注册 rail/hook 回调,agent 无任何生命周期
+        方法反注册——空闲逐出后 CallbackInfo 持 bound method 把整个 agent
+        对象图钉死(census 实证:_callbacks items 与存活 CallbackInfo 总数
+        一一相等,~144 个/会话,AbilityManager/ToolCard/ContextEngine/PromptSection
+        全被连带滞留,RSS 线性涨至 OOM)。
+
+        从 self._instance 出发做有界 BFS(只走前向引用,不触全局表),收集
+        _agent_callback_manager 后逐个 clear()——按实例命名空间整组反注册。
+        BFS 显式跳过 adapter 对象:skill_turbo 启用时(出厂默认开) rail 持
+        本 adapter 引用,经 _session_parent_adapter/_session_adapters 回边可
+        达常驻 root agent 与其他活跃会话的实例,误清其回调且 rail 无重注册
+        自愈。agent-core 提供 BaseAgent.aclose 时优先调用(实例+内裹 react
+        agent+子代理控制一并释放),BFS 保留作残余清扫(clear 幂等,旧版
+        core 无 aclose 时 BFS 独立兜底)。
+        """
+        if not self._is_session_scoped_adapter or self._instance is None:
+            return
+        try:
+            instance_close = getattr(self._instance, "aclose", None)
+            if instance_close is not None:
+                try:
+                    await instance_close()
+                except Exception as exc:  # noqa: BLE001 - 失败降级 BFS
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session instance aclose "
+                        "failed: %s", exc,
+                    )
+            from types import BuiltinFunctionType, FunctionType, MethodType, ModuleType
+
+            managers: list = []
+            seen: set[int] = set()
+            stack: list = [self._instance]
+            while stack and len(seen) < 4000:
+                obj = stack.pop()
+                obj_id = id(obj)
+                if obj_id in seen:
+                    continue
+                seen.add(obj_id)
+                if isinstance(
+                    obj, (type, ModuleType, FunctionType, MethodType, BuiltinFunctionType)
+                ):
+                    continue
+                if isinstance(obj, JiuWenSwarmDeepAdapter):
+                    # 切断 adapter 回边:StreamEventRail._skill_turbo_adapter、
+                    # _session_parent_adapter、_session_adapters 均以 adapter
+                    # 对象为载体,跳过即全部不可达(CR-1)。
+                    continue
+                manager = getattr(obj, "_agent_callback_manager", None)
+                if manager is not None and id(manager) not in seen:
+                    seen.add(id(manager))
+                    managers.append(manager)
+                if isinstance(obj, dict):
+                    stack.extend(obj.values())
+                elif isinstance(obj, (list, tuple, set, frozenset)):
+                    stack.extend(obj)
+                else:
+                    try:
+                        stack.extend(vars(obj).values())
+                    except TypeError:
+                        pass
+            released = 0
+            for manager in managers:
+                try:
+                    await manager.clear()
+                    released += 1
+                except Exception as exc:  # noqa: BLE001 - 单个失败不中止
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session agent callback release "
+                        "failed: error=%s", exc,
+                    )
+            if managers:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] session agent callbacks released: "
+                    "%d/%d (session_id=%s)", released, len(managers),
+                    self._parent_session_id,
+                )
+        except Exception as exc:  # noqa: BLE001 - 止血路径不阻塞 cleanup
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] session agent callback release error: %s", exc
             )
 
     def _collect_registered_ability_names(self) -> set[str]:
@@ -21325,6 +21410,35 @@ class JiuWenSwarmDeepAdapter:
             # has either handed the message over or attached to a running round.
             runner_stream_started_at = time.monotonic()
             first_chunk_seen = False
+            todo_close_hold = TodoCloseTextHold()
+
+            def _take_todo_close_chunks() -> list[AgentResponseChunk]:
+                """下发挂起的外层正文。drop 过的块不在这里。"""
+                nonlocal emitted_terminal_chat_final, has_streamed_content
+                payloads = todo_close_hold.take()
+                if not payloads:
+                    return []
+                chunks: list[AgentResponseChunk] = []
+                boundary = self._begin_visible_chat_content(
+                    stream_is_user_originated
+                )
+                if boundary is not None:
+                    chunks.append(AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload=note_chat_payload(boundary),
+                        is_complete=False,
+                    ))
+                    emitted_terminal_chat_final = False
+                for payload in payloads:
+                    chunks.append(AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload=note_chat_payload(payload),
+                        is_complete=False,
+                    ))
+                has_streamed_content = True
+                return chunks
             # A plain user-chat consumer stream (not a command.goal / attach-goal
             # stream). Only these may be hijacked by a goal round before the user
             # round produces its first visible token; used to allow a bubble
@@ -21358,8 +21472,12 @@ class JiuWenSwarmDeepAdapter:
                 if _skip:
                     continue
                 # First chunk handed back by the runner: records the time to
-                # first token for this round.
-                if not first_chunk_seen:
+                # first token for this round. Hold/drop/release are internal
+                # and are written before the model streams, so they must not
+                # count as the first token.
+                if not first_chunk_seen and not is_todo_close_control(
+                    str(getattr(chunk, "type", "") or "")
+                ):
                     first_chunk_seen = True
                     server_logger.info(
                         "[AgentServer] runner streaming first chunk: session_id=%s request_id=%s"
@@ -21439,6 +21557,19 @@ class JiuWenSwarmDeepAdapter:
                     continue
 
                 chunk_type = chunk.type
+                foreign_output = False
+                if chunk_type == "llm_output":
+                    foreign_output = _is_foreign_stream_source(chunk.payload)
+                close_action = todo_close_hold.decide(
+                    chunk_type, foreign=foreign_output,
+                )
+                if close_action == "skip":
+                    continue
+                if close_action in ("flush_skip", "flush_pass"):
+                    for held_chunk in _take_todo_close_chunks():
+                        yield held_chunk
+                    if close_action == "flush_skip":
+                        continue
                 if chunk_type == "llm_usage":
                     logger.info(f"[JiuWenSwarmDeepAdapter] llm_usage chunk: {chunk}")
                     usage_meta = (
@@ -21509,7 +21640,6 @@ class JiuWenSwarmDeepAdapter:
                     if delta_payload is None:
                         continue
                     _propagate_stream_source_id(chunk.payload, delta_payload)
-                    has_streamed_content = True
                     if accumulated_reasoning:
                         yield AgentResponseChunk(
                             request_id=rid,
@@ -21521,6 +21651,10 @@ class JiuWenSwarmDeepAdapter:
                             is_complete=False,
                         )
                         accumulated_reasoning = ""
+                    if close_action == "buffer":
+                        todo_close_hold.push(delta_payload)
+                        continue
+                    has_streamed_content = True
                     boundary = self._begin_visible_chat_content(stream_is_user_originated)
                     if boundary is not None:
                         yield AgentResponseChunk(
@@ -21736,6 +21870,9 @@ class JiuWenSwarmDeepAdapter:
             # ask_user 暂停中为 True 跳过；in-place 续跑后为 False 放行（此时
             # 轮次已正常完成/取消，flush 与合成 final 必须发出，否则前端悬挂）。
             # hitl_pending_stream 只反映"本轮出过 ask_user 卡片"，不随续跑复位。
+            if not suppress_stream_after_hitl:
+                for held_chunk in _take_todo_close_chunks():
+                    yield held_chunk
             if accumulated_text and not suppress_stream_after_hitl:
                 # Same rule as _adapt_goal_intermediate_final: demote host
                 # flush only when the flushed text belonged to a goal round.
@@ -22611,6 +22748,9 @@ class JiuWenSwarmDeepAdapter:
             if hasattr(chunk, "type") and hasattr(chunk, "payload"):
                 chunk_type = chunk.type
                 payload = chunk.payload
+
+                if is_todo_close_control(chunk_type):
+                    return None
 
                 if chunk_type == "steering_consumed":
                     # Only the root/leader receipt may divide the user's main

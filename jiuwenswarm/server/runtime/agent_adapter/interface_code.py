@@ -1142,7 +1142,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         workspace = self._workspace_dir or "./"
         sys_operation = self._sys_operation
         subagents: list[Any] = []
-        self._sync_browser_runtime_environment(config_base)
 
         statusline_setup_cfg = (
             subagents_cfg.get(STATUSLINE_SETUP_AGENT_TYPE)
@@ -1228,12 +1227,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
             browser_enabled = self._browser_runtime_enabled()
             if browser_enabled:
-                if not str(os.getenv("BROWSER_DRIVER") or "").strip():
-                    os.environ["BROWSER_DRIVER"] = "managed"
-                    logger.info(
-                        "[JiuwenSwarmCodeAdapter] browser subagent enabled without BROWSER_DRIVER; "
-                        "defaulting to managed mode"
-                    )
+                # Same gate as the deep adapter: do not rewrite driver / CDP
+                # env unless this code agent is actually registering browser.
+                self._sync_browser_runtime_environment(config_base)
                 browser_max_iterations = None
                 if isinstance(browser_agent_cfg, dict):
                     browser_max_iterations = browser_agent_cfg.get("max_iterations")

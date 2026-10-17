@@ -442,7 +442,6 @@ async def test_answered_structured_payload_can_opt_in_to_machine_state():
                 ],
             },
         },
-        "A",
     ],
 )
 async def test_legacy_answer_representations_are_rejected(legacy_input):
@@ -462,3 +461,29 @@ async def test_legacy_answer_representations_are_rejected(legacy_input):
     # Legacy / unparseable representations are treated as skipped (not
     # [INVALID_ARGUMENT]) to avoid misleading the LLM into fallback cascades.
     assert "未提供回答" in decision.tool_result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_input", ["继续", "A", "  稍等，我先补充一下背景  "])
+async def test_parse_failed_raw_text_is_injected_into_history(raw_input):
+    """修复点2：非结构化纯文本回复以原文注入 LLM 历史，不当"未答"丢弃。"""
+    rail = StructuredAskUserRail()
+    tc = _make_tool_call(
+        {
+            "query": "Choose",
+            "questions": [
+                {"question": "Which?", "header": "Choice", "options": []}
+            ],
+        }
+    )
+
+    decision = await rail.resolve_interrupt(MagicMock(), tc, raw_input)
+
+    assert isinstance(decision, RejectResult)
+    # 不是 [INVALID_ARGUMENT]（工具没坏），也不是"未提供回答"（用户确实说话了）
+    assert "[INVALID_ARGUMENT]" not in decision.tool_result
+    assert "未提供回答" not in decision.tool_result
+    # 用户原文进入历史，模型可据此推进
+    assert "用户回复原文" in decision.tool_result
+    assert raw_input.strip() in decision.tool_result
+    assert "不要重复发起相同提问" in decision.tool_result

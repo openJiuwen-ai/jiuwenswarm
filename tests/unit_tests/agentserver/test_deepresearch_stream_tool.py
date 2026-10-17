@@ -181,6 +181,10 @@ def _stream_patches(proc: _Proc, *, route: dict[str, str] | None = None):
             },
         ),
         patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)),
+        # stream action='start' 的扫库认领兜底默认打桩为未命中：真实认领会
+        # 读共享 checkpointer.db，认领专项用例不进入本桩、自行打桩
+        # _scan_resumable_checkpoint_by_query。
+        patch.object(dt, "_claim_start_snapshot", AsyncMock(return_value=None)),
     )
 
 
@@ -398,6 +402,149 @@ async def test_stream_rejects_invalid_report_type_before_child_spawn():
         "error": "report_type must be one of: professional, brief",
     }
     spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_claims_stopped_snapshot_and_resumes_stopped_node():
+    """停止恢复兜底：同主题停止快照 → start 改写为 resume node='stopped'。
+
+    回归实证（2026-10-15 19:52）：停止后新请求中 deepresearch_execute 被
+    ProgressiveToolRail 过滤（stopped 文案指引成死信），外层模型绕行
+    stream action='start' 全新起跑丢快照；认领兜底后同一入口直通续跑。
+    """
+    proc = _Proc(
+        [
+            json.dumps(
+                {"__deepsearch_status__": "started", "conversation_id": "C-STP"}
+            ),
+            json.dumps(
+                {"__deepsearch_status__": "stopped", "conversation_id": "C-STP"}
+            ),
+        ]
+    )
+    patches = _stream_patches(proc)
+    claim = {
+        "conversation_id": "C-STP",
+        "node": "report_writing",
+        "stopped": True,
+    }
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5] as spawn,
+        patch.object(
+            dt, "_scan_resumable_checkpoint_by_query", Mock(return_value=claim)
+        ),
+    ):
+        outcome = json.loads(
+            await dt.deepresearch_stream._func(
+                action="start", query="研究智能家电竞争格局"
+            )
+        )
+
+    argv = [str(arg) for arg in spawn.await_args.args]
+    assert "resume" in argv
+    assert "run" not in argv
+    assert "--query" not in argv
+    assert argv[argv.index("--conversation-id") + 1] == "C-STP"
+    assert argv[argv.index("--node") + 1] == "stopped"
+    assert outcome["status"] == "stopped"
+    assert outcome["resume_hint"]["node"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_start_claims_interrupt_snapshot_returns_synthesized_interaction():
+    """停止恢复兜底：同主题交互中断快照 → 本地合成 interrupted 重弹卡。
+
+    停止落在交互卡待答复期间时快照是 __interrupt__ 态：交互内容已由
+    扫库带出，直接合成标准 interrupted outcome（含 resume_hint 契约），
+    不拉起子进程空转一圈。
+    """
+    proc = _Proc()
+    patches = _stream_patches(proc)
+    claim = {
+        "conversation_id": "C-INT",
+        "node": "outline_interaction",
+        "questions": ["1. 重点研究哪些品类？"],
+        "outline_json": {
+            "title": "智能家电竞争格局研究",
+            "thought": "先规模后玩家",
+            "sections": [{"title": "市场规模", "is_core_section": True}],
+        },
+    }
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5] as spawn,
+        patch.object(
+            dt, "_scan_resumable_checkpoint_by_query", Mock(return_value=claim)
+        ),
+    ):
+        outcome = json.loads(
+            await dt.deepresearch_stream._func(
+                action="start", query="研究智能家电竞争格局"
+            )
+        )
+
+    spawn.assert_not_awaited()
+    assert outcome["status"] == "interrupted"
+    assert outcome["conversation_id"] == "C-INT"
+    assert outcome["node_id"] == "outline_interaction"
+    assert outcome["marker"]["questions"] == ["1. 重点研究哪些品类？"]
+    assert outcome["marker"]["outline"]["sections"] == [
+        {"title": "市场规模", "is_core_section": True}
+    ]
+    assert "市场规模" in outcome["prompt"]
+    assert outcome["resume_hint"]["node"] == "outline_interaction"
+    assert outcome["resume_hint"]["interaction_result_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_start_skips_claim_when_scan_misses():
+    """扫库未命中（无同主题快照/归属不符）→ 保持全新起跑 argv 不变。"""
+    proc = _Proc(
+        [
+            json.dumps(
+                {"__deepsearch_status__": "started", "conversation_id": "C1"}
+            ),
+            json.dumps(
+                {
+                    "__deepsearch_status__": "interrupted",
+                    "agent": "feedback_handler",
+                    "conversation_id": "C1",
+                }
+            ),
+        ]
+    )
+    patches = _stream_patches(proc)
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5] as spawn,
+        patch.object(
+            dt, "_scan_resumable_checkpoint_by_query", Mock(return_value=None)
+        ),
+    ):
+        outcome = json.loads(
+            await dt.deepresearch_stream._func(
+                action="start", query="研究智能家电竞争格局"
+            )
+        )
+
+    argv = [str(arg) for arg in spawn.await_args.args]
+    assert "run" in argv
+    assert argv[argv.index("--query") + 1] == "研究智能家电竞争格局"
+    assert "resume" not in argv
+    assert outcome["status"] == "interrupted"
 
 
 def test_only_six_standard_proxy_names_are_forwarded(tmp_path: Path, monkeypatch):
@@ -1328,6 +1475,385 @@ async def test_completed_marker_requires_nonempty_report():
         outcome = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
 
     assert outcome["error_code"] == "empty_report"
+
+
+def _write_raw_report(tmp_path: Path, cid: str, content: str) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / f"{cid}.raw_report.md").write_text(content, encoding="utf-8")
+
+
+_SALVAGE_REPORT_BODY = "# 研究报告\n" + "深度研究内容。" * 40
+
+
+def test_locate_salvage_report_reads_raw_report(tmp_path):
+    """修复7：定位并读取子进程落盘的 raw_report.md。"""
+    _write_raw_report(tmp_path, "C1", _SALVAGE_REPORT_BODY)
+    with patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)):
+        located = dt._locate_salvage_report("C1")
+
+    assert located is not None
+    assert located["response_content"].startswith("# 研究报告")
+    assert located["citation_artifacts"]["raw_report_path"].endswith(
+        "C1.raw_report.md"
+    )
+
+
+def test_locate_salvage_report_returns_none_when_missing_or_trivial(tmp_path):
+    """修复7：raw_report 缺失或内容过短 → 不可止损。"""
+    with patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)):
+        assert dt._locate_salvage_report("C-MISS") is None
+    _write_raw_report(tmp_path, "C-TINY", "太短")
+    with patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)):
+        assert dt._locate_salvage_report("C-TINY") is None
+
+
+@pytest.mark.asyncio
+async def test_salvage_deepresearch_report_redacts_config_secrets():
+    """止损交付与 stream 交付同口径脱敏 config secrets（检视修复）。"""
+    route = {
+        "request_id": "R1",
+        "channel_id": "CH1",
+        "session_id": "S1",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+
+    async def fake_deliver(*, route, conversation_id, file_name, send, reason):
+        delivered = await send(
+            {
+                "event_type": "task.update",
+                "content": "报告引用中出现 llm-secret 与 search-secret",
+            }
+        )
+        assert delivered is True
+        return {"status": "completed", "report_delivered": True}
+
+    push = AsyncMock()
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch.object(dt, "_get_route", return_value=route)
+        )
+        stack.enter_context(
+            patch.object(
+                dt,
+                "_build_deepresearch_request_config",
+                return_value=_valid_config(),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                dt, "WebSocketGatewayPushTransport", return_value=push
+            )
+        )
+        stack.enter_context(
+            patch.object(dt, "_deliver_salvaged_report", new=fake_deliver)
+        )
+        outcome = await dt.salvage_deepresearch_report(
+            conversation_id="C1", file_name="报告"
+        )
+
+    assert outcome == {"status": "completed", "report_delivered": True}
+    payload = push.send_push.await_args.args[0]["payload"]
+    assert "llm-secret" not in payload["content"]
+    assert "search-secret" not in payload["content"]
+    assert "[REDACTED]" in payload["content"]
+
+
+@pytest.mark.asyncio
+async def test_error_frame_salvages_raw_report(tmp_path):
+    """修复7：子进程异常终局但报告已落盘 → 止损交付，outcome=completed。"""
+    _write_raw_report(tmp_path, "C1", _SALVAGE_REPORT_BODY)
+    proc = _Proc(
+        [
+            json.dumps({"__deepsearch_status__": "resuming", "conversation_id": "C1"}),
+            json.dumps(
+                {
+                    "__deepsearch_status__": "error",
+                    "conversation_id": "C1",
+                    "error_code": "workflow_error",
+                    "error": "boom",
+                }
+            ),
+        ]
+    )
+    route = {
+        "request_id": "",
+        "channel_id": "CH1",
+        "session_id": "S1",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+    patches = _stream_patches(proc, route=route)
+    push = AsyncMock()
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(
+            patch.object(dt, "WebSocketGatewayPushTransport", return_value=push)
+        )
+        stack.enter_context(
+            patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path))
+        )
+        stack.enter_context(
+            patch.object(
+                dt,
+                "_write_report_artifacts_stream",
+                new=AsyncMock(
+                    return_value=({"md": "/out/report.md"}, "fallback", None, None)
+                ),
+            )
+        )
+        outcome = json.loads(
+            await dt.deepresearch_stream._func(
+                action="resume", conversation_id="C1", node="stopped"
+            )
+        )
+
+    assert outcome["status"] == "completed"
+    assert outcome["report_delivered"] is True
+    assert outcome["salvaged_report"] is True
+    assert outcome["html_style_status"] == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_empty_report_salvages_raw_report(tmp_path):
+    """修复7：completed 帧缺报告正文但 raw_report 已落盘 → 同样止损交付。"""
+    _write_raw_report(tmp_path, "C1", _SALVAGE_REPORT_BODY)
+    proc = _Proc(
+        [
+            json.dumps(
+                {
+                    "__deepsearch_status__": "completed",
+                    "conversation_id": "C1",
+                    "final_result": {"response_content": ""},
+                }
+            )
+        ]
+    )
+    route = {
+        "request_id": "",
+        "channel_id": "CH1",
+        "session_id": "S1",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+    patches = _stream_patches(proc, route=route)
+    push = AsyncMock()
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(
+            patch.object(dt, "WebSocketGatewayPushTransport", return_value=push)
+        )
+        stack.enter_context(
+            patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path))
+        )
+        stack.enter_context(
+            patch.object(
+                dt,
+                "_write_report_artifacts_stream",
+                new=AsyncMock(
+                    return_value=({"md": "/out/report.md"}, None, None, None)
+                ),
+            )
+        )
+        outcome = json.loads(
+            await dt.deepresearch_stream._func(action="start", query="q")
+        )
+
+    assert outcome["status"] == "completed"
+    assert outcome["salvaged_report"] is True
+
+
+class _RaceStopReader:
+    """stdout double：消费者首次 read 阻塞(模拟研究进行中)，被取消后由
+    帧感知排空读出自然完成输出的终局数据(修复A 竞速场景)。"""
+
+    def __init__(self, terminal: bytes):
+        self.terminal = terminal
+        self.reads = 0
+
+    async def read(self, size: int = -1) -> bytes:
+        self.reads += 1
+        if self.reads == 1:
+            # 永不触发的事件:消费者在此阻塞,直到任务被取消。
+            await asyncio.Event().wait()
+        n = size if size and size > 0 else len(self.terminal)
+        chunk, self.terminal = self.terminal[:n], self.terminal[n:]
+        return chunk or b""
+
+
+def test_capture_completed_frame_filters_terminal_frames():
+    """修复A：仅捕获带 response_content 的 completed 帧。"""
+    captured: dict[str, Any] = {}
+    dt._capture_completed_frame(b"not json", captured)
+    assert captured == {}
+    dt._capture_completed_frame(
+        json.dumps({"__deepsearch_status__": "stopped", "conversation_id": "C1"}).encode(),
+        captured,
+    )
+    assert captured == {}
+    dt._capture_completed_frame(
+        json.dumps(
+            {
+                "__deepsearch_status__": "completed",
+                "conversation_id": "C1",
+                "final_result": {"response_content": ""},
+            }
+        ).encode(),
+        captured,
+    )
+    assert captured == {}
+    dt._capture_completed_frame(
+        json.dumps(
+            {
+                "__deepsearch_status__": "completed",
+                "conversation_id": "C1",
+                "final_result": {"response_content": "report-1"},
+            }
+        ).encode(),
+        captured,
+    )
+    assert captured["final_result"]["response_content"] == "report-1"
+    dt._capture_completed_frame(
+        json.dumps(
+            {
+                "__deepsearch_status__": "completed",
+                "conversation_id": "C1",
+                "final_result": {"response_content": "report-2"},
+            }
+        ).encode(),
+        captured,
+    )
+    # 多个 completed 帧时保留最后一个
+    assert captured["final_result"]["response_content"] == "report-2"
+
+
+@pytest.mark.asyncio
+async def test_drain_stream_while_stopping_captures_completed_frame():
+    """修复A：帧感知排空捕获 completed 帧，非 completed 终态不捕获。"""
+    payload = b"".join(
+        line.encode("utf-8") + b"\n"
+        for line in (
+            json.dumps({"__deepsearch_status__": "resuming", "conversation_id": "C1"}),
+            json.dumps(
+                {
+                    "__deepsearch_status__": "completed",
+                    "conversation_id": "C1",
+                    "final_result": {"response_content": "report"},
+                }
+            ),
+            json.dumps({"__deepsearch_status__": "stopped", "conversation_id": "C1"}),
+        )
+    )
+    captured: dict[str, Any] = {}
+    await dt._drain_stream_while_stopping(_Reader(payload), captured)
+
+    assert captured["__deepsearch_status__"] == "completed"
+    assert captured["final_result"]["response_content"] == "report"
+
+
+@pytest.mark.asyncio
+async def test_drain_stream_while_stopping_without_capture_keeps_blind_drain():
+    """captured=None 时保持纯排空行为(兼容旧调用)。"""
+    payload = json.dumps(
+        {
+            "__deepsearch_status__": "completed",
+            "final_result": {"response_content": "report"},
+        }
+    ).encode("utf-8") + b"\n"
+    await dt._drain_stream_while_stopping(_Reader(payload), None)
+
+
+def _race_route() -> dict[str, str]:
+    return {
+        "request_id": "R1",
+        "channel_id": "CH1",
+        "session_id": "S1",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+
+
+@pytest.mark.asyncio
+async def test_stop_race_delivers_completed_report():
+    """修复A：停止-完成竞速——取消后子进程自然完成，帧感知排空捕获
+    completed 帧 → 报告照常交付，进度收尾为全阶段完成。"""
+    completed_frame = json.dumps(
+        {
+            "__deepsearch_status__": "completed",
+            "conversation_id": "C1",
+            "final_result": {
+                "response_content": "<html><body>研究报告</body></html>",
+                "response_content_type": "text/html",
+            },
+        }
+    )
+    proc = _Proc([], running=True)
+    proc.stdout = _RaceStopReader((completed_frame + "\n").encode("utf-8"))
+    push = AsyncMock()
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route=_race_route()):
+            stack.enter_context(item)
+        stack.enter_context(
+            patch.object(dt, "WebSocketGatewayPushTransport", return_value=push)
+        )
+        stack.enter_context(
+            patch.object(
+                dt,
+                "_write_report_html",
+                new=AsyncMock(return_value="/out/report.html"),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                dt, "deepresearch_todo_path", side_effect=RuntimeError("no todo")
+            )
+        )
+        task = asyncio.create_task(
+            dt.deepresearch_stream._func(action="start", query="race")
+        )
+        await asyncio.sleep(0.01)  # 让消费者阻塞在首次 read
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    payloads = [call.args[0]["payload"] for call in push.send_push.await_args_list]
+    file_payloads = [p for p in payloads if p.get("event_type") == "chat.file"]
+    assert file_payloads
+    assert file_payloads[0]["files"][0]["path"] == "/out/report.html"
+    assert file_payloads[0]["files"][0]["mime_type"] == "text/html"
+    task_updates = [p for p in payloads if p.get("event_type") == "task.update"]
+    assert task_updates
+    final_update = task_updates[-1]
+    assert final_update["completed_tasks"] == 4
+    assert final_update["in_progress_tasks"] == 0
+
+
+@pytest.mark.asyncio
+async def test_stop_without_race_keeps_stop_semantics():
+    """修复A回归：无 completed 帧的纯停止路径行为不变——只优雅停止，
+    不推送任何报告产物。"""
+    proc = _Proc([], running=True)
+    proc.stdout = _RaceStopReader(b"")
+    push = AsyncMock()
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route=_race_route()):
+            stack.enter_context(item)
+        stack.enter_context(
+            patch.object(dt, "WebSocketGatewayPushTransport", return_value=push)
+        )
+        task = asyncio.create_task(
+            dt.deepresearch_stream._func(action="start", query="stop")
+        )
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    payloads = [call.args[0]["payload"] for call in push.send_push.await_args_list]
+    assert not [p for p in payloads if p.get("event_type") == "chat.file"]
 
 
 @pytest.mark.asyncio
@@ -3381,6 +3907,185 @@ async def test_user_feedback_resume_can_complete_final_report_without_section_re
     )
 
 
+def test_stage_for_resume_node_maps_stop_node_to_stage():
+    """停止续跑:被停止节点 → 前端进度起始阶段;未映射节点回退 3。"""
+    from jiuwenswarm.agents.harness.common.tools.deepresearch.stream_router import (
+        stage_for_resume_node,
+    )
+
+    assert stage_for_resume_node("feedback_handler") == 1
+    assert stage_for_resume_node("outline_interaction") == 2
+    assert stage_for_resume_node("editor_team") == 3
+    assert stage_for_resume_node("brief_info_collector") == 3
+    # 最终报告节点:直播流中章节完成后流出 chunk 即开启 stage 4,
+    # 停止在这些节点 → 续跑从 stage 4 恢复(与用户停止前看到的一致)
+    assert stage_for_resume_node("brief_source_tracer") == 4
+    assert stage_for_resume_node("brief_html_reporter") == 4
+    assert stage_for_resume_node("reporter") == 4
+    assert stage_for_resume_node("source_tracer") == 4
+    # 非业务节点(start/end/agent_team 等)与空串回退研究阶段
+    assert stage_for_resume_node("start") == 3
+    assert stage_for_resume_node("") == 3
+
+
+@pytest.mark.asyncio
+async def test_stopped_resume_with_stage_hint_skips_early_stages():
+    """停止续跑:阶段提示(brief_source_tracer→3)使进度列表直接从第三阶段
+    进行中开始,不回退到第一步"研究主题澄清"转圈。"""
+    proc = _Proc(
+        [
+            json.dumps({"__deepsearch_status__": "resuming", "conversation_id": "C1"}),
+            json.dumps({"__deepsearch_status__": "error", "error": "stop"}),
+        ]
+    )
+    route = {
+        "request_id": "R",
+        "channel_id": "CH",
+        "session_id": "S",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+    push = AsyncMock()
+    patches = _stream_patches(proc, route=route)
+    token = dt._deepresearch_stage_hint_ctx.set(3)
+    try:
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(
+                patch.object(dt, "WebSocketGatewayPushTransport", return_value=push)
+            )
+            await dt.deepresearch_stream._func(
+                action="resume", conversation_id="C1", node="stopped"
+            )
+    finally:
+        dt._deepresearch_stage_hint_ctx.reset(token)
+
+    task_updates = [
+        call.args[0]["payload"]
+        for call in push.send_push.await_args_list
+        if call.args[0]["payload"].get("event_type") == "task.update"
+    ]
+    # 不出现"第一阶段进行中"的回退帧
+    assert not any(
+        task.get("task_id") == "deepresearch_stage_1"
+        and task.get("status") == "in_progress"
+        for payload in task_updates
+        for task in payload.get("tasks", [])
+    )
+    # 首个 task.update 快照:阶段1-2已完成、阶段3进行中
+    assert task_updates, "expected at least one task.update snapshot"
+    first = task_updates[0]["tasks"]
+    assert first[0]["status"] == "completed"
+    assert first[1]["status"] == "completed"
+    assert first[2]["status"] == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_start_claim_stopped_resume_pushes_stage_hint_from_claim_node():
+    """start 扫库认领续跑:阶段提示由认领分支按 claim node 推导,首个
+    task.update 快照直接落在该节点所属阶段,不回退 stage1。
+
+    回归实证(2026-10-16 日志):brief_html_reporter 停止后续跑,认领改写
+    为 resume node='stopped' 但未设置阶段提示,resuming 分支取默认
+    stage=1,前端显示"回到 stage1 从头重跑"转圈 2 分 45 秒后直跳全部
+    完成。
+    """
+    proc = _Proc(
+        [
+            json.dumps({"__deepsearch_status__": "resuming", "conversation_id": "C-CLM"}),
+            json.dumps({"__deepsearch_status__": "error", "error": "stop"}),
+        ]
+    )
+    route = {
+        "request_id": "R",
+        "channel_id": "CH",
+        "session_id": "S",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+    push = AsyncMock()
+    patches = _stream_patches(proc, route=route)
+    claim = {
+        "conversation_id": "C-CLM",
+        "node": "brief_html_reporter",
+        "stopped": True,
+    }
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(
+            patch.object(dt, "WebSocketGatewayPushTransport", return_value=push)
+        )
+        stack.enter_context(
+            patch.object(dt, "_claim_start_snapshot", AsyncMock(return_value=claim))
+        )
+        await dt.deepresearch_stream._func(
+            action="start", query="研究智能家电竞争格局"
+        )
+
+    task_updates = [
+        call.args[0]["payload"]
+        for call in push.send_push.await_args_list
+        if call.args[0]["payload"].get("event_type") == "task.update"
+    ]
+    # brief_html_reporter 属最终报告节点:阶段 1-3 已完成、阶段 4 进行中
+    assert not any(
+        task.get("task_id") == "deepresearch_stage_1"
+        and task.get("status") == "in_progress"
+        for payload in task_updates
+        for task in payload.get("tasks", [])
+    )
+    assert task_updates, "expected at least one task.update snapshot"
+    first = task_updates[0]["tasks"]
+    assert first[0]["status"] == "completed"
+    assert first[1]["status"] == "completed"
+    assert first[2]["status"] == "completed"
+    assert first[3]["status"] == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_stopped_resume_without_hint_keeps_legacy_stage_one():
+    """停止续跑:认领侧未提供阶段提示(旧路径/直调) → 维持回退第一步的
+    原有行为,不因本次改动产生回归。"""
+    proc = _Proc(
+        [
+            json.dumps({"__deepsearch_status__": "resuming", "conversation_id": "C1"}),
+            json.dumps({"__deepsearch_status__": "error", "error": "stop"}),
+        ]
+    )
+    route = {
+        "request_id": "R",
+        "channel_id": "CH",
+        "session_id": "S",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+    push = AsyncMock()
+    patches = _stream_patches(proc, route=route)
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(
+            patch.object(dt, "WebSocketGatewayPushTransport", return_value=push)
+        )
+        await dt.deepresearch_stream._func(
+            action="resume", conversation_id="C1", node="stopped"
+        )
+
+    task_updates = [
+        call.args[0]["payload"]
+        for call in push.send_push.await_args_list
+        if call.args[0]["payload"].get("event_type") == "task.update"
+    ]
+    assert any(
+        task.get("task_id") == "deepresearch_stage_1"
+        and task.get("status") == "in_progress"
+        for payload in task_updates
+        for task in payload.get("tasks", [])
+    )
+
+
 def test_artifact_bundle_ignores_blank_and_unapproved_companions():
     bundle = dt._build_related_artifact_bundle(
         {
@@ -3402,7 +4107,6 @@ def test_artifact_bundle_ignores_blank_and_unapproved_companions():
             }
         ],
     }
-
 
 @pytest.mark.asyncio
 async def test_offline_html_uses_verified_snapshot_and_preserves_occupied_output(

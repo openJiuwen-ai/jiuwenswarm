@@ -121,6 +121,8 @@ interface CronTaskDrawerProps {
   maxEnabledJobs?: number;
   /** 正在编辑的任务当前算运行中。已在跑的任务改名称或时间，不占新的名额。 */
   editingCurrentlyRunning?: boolean;
+  /** 提交请求进行中：禁用确定按钮防连点重复提交（对齐 ConfirmDialog.loading 的角色） */
+  submitting?: boolean;
   onClose: () => void;
   onSubmit: (value: CronTaskFormValue) => void;
   onSwitchToManual?: () => void;
@@ -138,7 +140,7 @@ function filterNonDefaultProjects(projects: ProjectInfo[]): ProjectInfo[] {
   return projects.filter((p) => !isDefaultLikeProject(p));
 }
 
-export default function CronTaskDrawer({ mode, initial, projects, targetOptions, proactiveLocked = false, enabledQuotaFull = false, maxEnabledJobs = 5, editingCurrentlyRunning = false, onClose, onSubmit, onSwitchToManual, onSwitchToTemplate }: CronTaskDrawerProps) {
+export default function CronTaskDrawer({ mode, initial, projects, targetOptions, proactiveLocked = false, enabledQuotaFull = false, maxEnabledJobs = 5, editingCurrentlyRunning = false, submitting = false, onClose, onSubmit, onSwitchToManual, onSwitchToTemplate }: CronTaskDrawerProps) {
   const { t } = useTranslation();
   const enterpriseMode = isEnterprise();
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
@@ -378,8 +380,8 @@ export default function CronTaskDrawer({ mode, initial, projects, targetOptions,
             <span title={missingFieldsHint}>
               <button
                 onClick={() => onSubmit(form)}
-                disabled={!canSubmit}
-                className="rounded-full bg-cron-action px-10 py-1.5 text-sm font-bold text-cron-action-foreground hover:bg-cron-action-hover disabled:opacity-50"
+                disabled={!canSubmit || submitting}
+                className="rounded-full bg-cron-action px-10 py-1.5 text-sm font-bold text-cron-action-foreground hover:bg-cron-action-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {t('cron.actions.confirm')}
               </button>
