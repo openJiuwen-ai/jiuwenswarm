@@ -143,6 +143,7 @@ import {
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
+import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 const TEAM_CONNECTION_GRACE_MS = 5000;
@@ -5373,6 +5374,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             updated_at: e.updated_at,
             workflow_run_id: e.workflow_run_id,
           });
+          const timelineEntry = toTaskTimelineEntry(event as Record<string, unknown>, e.timestamp || Date.now());
+          if (timelineEntry) {
+            useSessionStore.getState().appendTeamTaskTimeline(sessionId, [timelineEntry]);
+          }
           const normalizedTask = normalizeTaskEvent(event);
           if (normalizedTask) {
             useSessionStore.getState().upsertTeamTask(sessionId, normalizedTask);

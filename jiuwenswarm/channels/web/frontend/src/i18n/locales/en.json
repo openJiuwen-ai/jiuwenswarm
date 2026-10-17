@@ -1076,6 +1076,36 @@
     "groupChat": "Group Chat",
     "allMembers": "all",
     "noGroupMessages": "No group messages",
+    "groupChatTimeline": {
+      "scheduler": "Scheduler",
+      "taskFallback": "Task {{id}}",
+      "handoff": {
+        "task_start": "Start",
+        "task_start_plan": "Start (plan first)",
+        "review_request": "Review requested",
+        "review_renudge": "Review reminder",
+        "rework": "Rework",
+        "rework_with_limit": "Rework (up to {{max}} rounds)",
+        "rework_summary": "Rework summary requested",
+        "task_assigned": "Task assigned",
+        "other": "Scheduler message"
+      },
+      "taskEvents": {
+        "created": "created a task",
+        "createdMany": "created {{count}} tasks",
+        "claimed": "claimed the task",
+        "claimedPassive": "Task claimed",
+        "submitted_for_review": "submitted the task for review",
+        "submitted_for_reviewPassive": "Task submitted for review",
+        "verified": "Task passed review",
+        "revision_requested": "Review failed, task sent back for rework",
+        "completed": "completed the task",
+        "completedPassive": "Task completed",
+        "cancelled": "Task cancelled",
+        "released": "Task released, waiting to be claimed again",
+        "revoked": "Task revoked"
+      }
+    },
     "memberTasksTitle": "Tasks executed by {{member}}",
     "memberTasks": "Their tasks",
     "noProcessData": "No execution process data for this member",

@@ -8,6 +8,11 @@ import type {
 } from '../stores/sessionStore';
 import { normalizeFinalContent } from '../utils/finalContent';
 import {
+  mergeTaskTimeline,
+  toTaskTimelineEntry,
+  type TeamTaskTimelineEntry,
+} from '../components/teamArea/groupChatTimeline';
+import {
   findOverlappingFileExecutionEvent,
   mergeFileDownloadItems,
 } from '../utils/fileDownloadDedup';
@@ -57,6 +62,8 @@ export interface TeamHistoryPanelState {
   members: TeamMember[];
   tasks: TeamTask[];
   taskEvents: TeamTaskEvent[];
+  /** 子话题时间线用的任务流转事件，按时间升序、逐条保留。 */
+  taskTimeline: TeamTaskTimelineEntry[];
   executionEvents: TeamMemberExecutionEvent[];
   messages: Message[];
   humanShareCommands: HumanShareCommand[];
@@ -348,6 +355,7 @@ function extractTracerData(record: Record<string, unknown>): {
 function collectTeamState(records: Record<string, unknown>[], sessionId: string): TeamHistoryPanelState {
   const members = new Map<string, TeamMember>();
   const taskEvents = new Map<string, TeamTaskEvent>();
+  const taskTimeline: TeamTaskTimelineEntry[] = [];
   const tasks = new Map<string, TeamTask>();
   const executionEvents = new Map<string, TeamMemberExecutionEvent>();
   const humanShareCommands = new Map<string, HumanShareCommand>();
@@ -794,6 +802,11 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       );
     }
 
+    const timelineEntry = toTaskTimelineEntry(event, eventTimestamp);
+    if (timelineEntry) {
+      taskTimeline.push(timelineEntry);
+    }
+
     taskEvents.set(taskId, {
       id: `hist-task-${taskId}-${timestamp}`,
       type,
@@ -815,6 +828,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
     members: Array.from(members.values()),
     tasks: Array.from(tasks.values()),
     taskEvents: Array.from(taskEvents.values()),
+    taskTimeline: mergeTaskTimeline([], taskTimeline),
     executionEvents: Array.from(executionEvents.values()),
     messages,
     humanShareCommands: Array.from(humanShareCommands.values()),

@@ -1060,6 +1060,36 @@
     "groupChat": "群聊",
     "allMembers": "所有人",
     "noGroupMessages": "暂无群聊消息",
+    "groupChatTimeline": {
+      "scheduler": "调度",
+      "taskFallback": "任务 {{id}}",
+      "handoff": {
+        "task_start": "开工",
+        "task_start_plan": "开工（先提交执行计划）",
+        "review_request": "请验收",
+        "review_renudge": "催办验收",
+        "rework": "返工",
+        "rework_with_limit": "返工（最多 {{max}} 轮）",
+        "rework_summary": "请提交返工总结",
+        "task_assigned": "派发任务",
+        "other": "调度消息"
+      },
+      "taskEvents": {
+        "created": "创建了任务",
+        "createdMany": "创建了 {{count}} 个任务",
+        "claimed": "认领了任务",
+        "claimedPassive": "任务已被认领",
+        "submitted_for_review": "提交了任务，等待验收",
+        "submitted_for_reviewPassive": "任务已提交，等待验收",
+        "verified": "任务验收通过",
+        "revision_requested": "验收未通过，任务退回返工",
+        "completed": "完成了任务",
+        "completedPassive": "任务已完成",
+        "cancelled": "任务已取消",
+        "released": "任务已释放，等待重新认领",
+        "revoked": "任务已被收回"
+      }
+    },
     "memberTasksTitle": "{{member}} 执行的任务",
     "memberTasks": "Ta的任务",
     "noProcessData": "暂无该成员的执行过程数据",
