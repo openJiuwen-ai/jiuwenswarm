@@ -92,6 +92,8 @@ Common Rails can be grouped by capability:
 - Skills and evolution: `SkillUseRail`, `EvolutionRail`, `SkillCreateRail`, `SkillEvolutionRail`.
 - Sub-agents: `SubagentRail`, `VerificationContractRail`.
 
+For a step-by-step guide to writing, registering, hot-mounting, and testing your own Rail, see [CustomRails.md](./CustomRails.md).
+
 ### 3.3 Tool & Execution: Tools, System Operations, and Permission Governance
 
 Tool & Execution is the execution layer that turns model intent into real-world action. Tools describe metadata through `ToolCard`, execute actions through `Tool` instances, and are exposed to the model through the ability manager.
