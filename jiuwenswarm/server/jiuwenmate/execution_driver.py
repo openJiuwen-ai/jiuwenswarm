@@ -20,7 +20,9 @@ from typing import Literal
 
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
+from jiuwenswarm.server.jiuwenmate.conversation_search import ConversationSearch
 from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+from jiuwenswarm.server.jiuwenmate.group_search_cursor_repository import GroupSearchCursorRepository
 from jiuwenswarm.server.jiuwenmate.execution_models import ExecutionRecord, RequestState
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.ports.budget import HostBudgetPort
@@ -112,6 +114,10 @@ class ExecutionDriver:
         self._workspaces = workspaces
         self._groups = groups
         self._group_archive = group_archive
+        self._group_search = ConversationSearch(group_archive) if group_archive is not None else None
+        self._group_search_cursors = (
+            GroupSearchCursorRepository(groups.db_path) if groups is not None else None
+        )
         self._sessions = sessions
         self._verify_group_membership = verify_group_membership
         self._refresh_group_messages = refresh_group_messages
@@ -129,23 +135,31 @@ class ExecutionDriver:
                 self._snapshots, record.namespace_id, record.agent_id, record.config_version
             )
             workspace = HostWorkspaceAccess(self._workspaces, record.namespace_id, record.agent_id)
+            group_chat_port = None
+            if (record.request_input.kind in ("direct_message", "group_message") and self._groups is not None and
+                    self._group_archive is not None and self._group_search is not None and
+                    self._group_search_cursors is not None and self._sessions is not None):
+                group_chat_port = HostGroupChatPort(
+                    self._groups, self._group_archive, self._sessions,
+                    namespace_id=record.namespace_id, agent_id=record.agent_id,
+                    verify_membership=self._verify_group_membership,
+                    refresh_messages=self._refresh_group_messages,
+                    search=self._group_search,
+                    cursors=self._group_search_cursors,
+                    clock=self._clock,
+                )
             ports = core.PersistentPorts(
                 commit=self._commit_port,
                 budget=self._budget_port,
                 window_backend=self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
                 workspace_access=workspace,
                 workspace_write_access=workspace,
-                group_chat=HostGroupChatPort(
-                    self._groups, self._group_archive, self._sessions,
-                    namespace_id=record.namespace_id, agent_id=record.agent_id,
-                    verify_membership=self._verify_group_membership,
-                    refresh_messages=self._refresh_group_messages,
-                ) if record.request_input.kind == "group_message" and self._groups is not None else None,
+                group_chat=group_chat_port,
             )
             spec, context = build_invocation(snapshot, record, execution, ports=ports)
             await handle._attach(context)
             inputs = record.request_input
-            if ports.group_chat is not None:
+            if record.request_input.kind == "group_message" and ports.group_chat is not None:
                 trigger = await ports.group_chat.current_trigger(context.execution, inputs.trigger_message_id)
                 if trigger.status in {"recalled", "unavailable"}:
                     raise PersistentAgentError("group trigger is no longer readable", code="TRIGGER_UNAVAILABLE")

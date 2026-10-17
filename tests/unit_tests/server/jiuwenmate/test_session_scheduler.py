@@ -328,6 +328,103 @@ async def test_resume_is_not_opened_yet(host):
     assert excinfo.value.code == "PERSISTENT_NOT_OPENED"
 
 
+async def test_direct_message_gets_search_port_without_group_trigger_preflight(host, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort
+
+    trigger_calls = []
+    original = HostGroupChatPort.current_trigger
+
+    async def record_trigger(self, execution, message_id):
+        trigger_calls.append(message_id)
+        return await original(self, execution, message_id)
+
+    monkeypatch.setattr(HostGroupChatPort, "current_trigger", record_trigger)
+    host.core.release("请搜索产品群")
+    session = host.sessions.resolve_session(NS, "mate_dev", ConversationRef.web("private-search"), now=NOW)
+    state, _ = await host.scheduler.accept(
+        session,
+        snapshot=host.service.snapshot(NS, "mate_dev", "v1"),
+        source_ref="web:dm-1",
+        access=ACCESS,
+        request_input=core.RequestInput(
+            kind="direct_message",
+            text="请搜索产品群",
+            source=core.DirectMessageSource(
+                message_id="dm-1", sender_id="user-1", sender_name="用户", received_at=NOW,
+            ),
+            reply_target="private-search",
+        ),
+        received_at=NOW,
+    )
+    await settle(lambda: "请搜索产品群" in host.core.ended)
+    await host.scheduler.drain()
+
+    port = host.core.contexts["请搜索产品群"].ports.group_chat
+    assert isinstance(port, HostGroupChatPort)
+    assert port._search is not None and port._cursors is not None
+    assert trigger_calls == []
+
+
+async def test_scheduled_execution_does_not_get_group_search_port(host):
+    state = await host.send("定时任务")
+    host.core.release("定时任务")
+    await settle(lambda: "定时任务" in host.core.ended)
+    await host.scheduler.drain()
+
+    assert host.core.contexts["定时任务"].ports.group_chat is None
+    assert host.status(state) == ("ended", "completed")
+
+
+async def test_group_message_keeps_current_trigger_preflight_and_search_port(host, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort
+
+    trigger_calls = []
+    original = HostGroupChatPort.current_trigger
+
+    async def record_trigger(self, execution, message_id):
+        trigger_calls.append(message_id)
+        return await original(self, execution, message_id)
+
+    monkeypatch.setattr(HostGroupChatPort, "current_trigger", record_trigger)
+    group = host.manager.group_chats.resolve(NS, "feishu", "oc_group", now=NOW)
+    trigger = core.GroupMessage(
+        message_id="group-trigger",
+        sender_id="user-1",
+        sender_name="用户",
+        sender_kind="human",
+        received_at=NOW,
+        text="群内提问",
+    )
+    host.manager.group_chats.observe_access(NS, "mate_dev", group.group_chat_id, "app-mate-dev",
+                                            observed_at=NOW, source_ref="joined:group")
+    host.manager.group_archive.append(NS, group.group_chat_id, trigger, source_ref="event:group-trigger")
+
+    async def active(access, current_group):
+        return "active"
+
+    host.manager.verify_group_membership = active
+    session = host.sessions.resolve_session(NS, "mate_dev", ConversationRef.group(group.group_chat_id), now=NOW)
+    state, _ = await host.scheduler.accept(
+        session,
+        snapshot=host.service.snapshot(NS, "mate_dev", "v1"),
+        source_ref="feishu:group-trigger",
+        access=ACCESS,
+        request_input=core.RequestInput(
+            kind="group_message", text="群内提问", source=trigger, reply_target="oc_group",
+        ),
+        received_at=NOW,
+    )
+    host.core.release("群内提问")
+    await settle(lambda: "群内提问" in host.core.ended)
+    await host.scheduler.drain()
+
+    port = host.core.contexts["群内提问"].ports.group_chat
+    assert isinstance(port, HostGroupChatPort)
+    assert port._search is not None and port._cursors is not None
+    assert trigger_calls == ["group-trigger"]
+    assert host.status(state) == ("ended", "completed")
+
+
 # JM-07-V-04 lifecycle, outcomes and cleanup
 
 
