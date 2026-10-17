@@ -29,6 +29,7 @@ class FlashFileMeta:
     sha256: str
     eol: str
     encoding: str
+    mixed_eol: bool
     snapshot_mtime_ns: int
     snapshot_size_bytes: int
 
@@ -50,12 +51,40 @@ def detect_eol(raw: bytes) -> str:
     return "\r\n" if b"\r\n" in raw else "\n"
 
 
+def detect_mixed_eol(raw: bytes) -> bool:
+    """是否同时存在 CRLF 与独立 LF。
+
+    统一 CRLF / 统一 LF 都能从 LF 归一化文本无损重建；只有二者混合时，
+    “LF 归一化 + 单一 EOL” 不足以还原原始字节，必须回退全量读。
+    """
+    if b"\r\n" not in raw:
+        return False
+    idx = raw.find(b"\n")
+    while idx != -1:
+        if idx == 0 or raw[idx - 1] != 0x0D:
+            return True
+        idx = raw.find(b"\n", idx + 1)
+    return False
+
+
+def _text_has_mixed_eol(content: str) -> bool:
+    if "\r\n" not in content:
+        return False
+    idx = content.find("\n")
+    while idx != -1:
+        if idx == 0 or content[idx - 1] != "\r":
+            return True
+        idx = content.find("\n", idx + 1)
+    return False
+
+
 def record_file_meta(file_path: str, raw: bytes, mtime_ns: int, size_bytes: int) -> FlashFileMeta:
     """读取快照后记录元数据（raw 必须是刚读到的原始字节，读前 stat）。"""
     meta = FlashFileMeta(
         sha256=hashlib.sha256(raw).hexdigest(),
         eol=detect_eol(raw),
         encoding=detect_encoding(raw),
+        mixed_eol=detect_mixed_eol(raw),
         snapshot_mtime_ns=mtime_ns,
         snapshot_size_bytes=size_bytes,
     )
@@ -81,6 +110,7 @@ def record_written_meta(
         sha256=hashlib.sha256(content.encode(encoding, errors="replace")).hexdigest(),
         eol="\r\n" if "\r\n" in content else "\n",
         encoding=encoding,
+        mixed_eol=_text_has_mixed_eol(content),
         snapshot_mtime_ns=mtime_ns,
         snapshot_size_bytes=size_bytes,
     )
@@ -106,6 +136,7 @@ __all__ = [
     "clear_file_meta_cache",
     "detect_encoding",
     "detect_eol",
+    "detect_mixed_eol",
     "get_file_meta",
     "pop_file_meta",
     "record_file_meta",

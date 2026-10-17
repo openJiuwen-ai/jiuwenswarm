@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+from bisect import bisect_left
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -54,6 +55,94 @@ from openjiuwen.harness.tools.filesystem import (
 
 from .flash_file_history import append_flash_history_entry, build_flash_history_path
 from .flash_file_meta import get_file_meta, pop_file_meta, record_written_meta
+
+
+def _has_mixed_eol(content: str) -> bool:
+    """同时存在 CRLF 与独立 LF 时，单一 EOL 无法还原原始文本。"""
+    if "\r\n" not in content:
+        return False
+    idx = content.find("\n")
+    while idx != -1:
+        if idx == 0 or content[idx - 1] != "\r":
+            return True
+        idx = content.find("\n", idx + 1)
+    return False
+
+
+def _build_lf_offset_mapper(content: str):
+    """构造 LF 归一化索引 → 原始文本索引的 O(行数) 映射。
+
+    CRLF 在归一化文本中比原始文本少一个字符。这里按换行建立断点，
+    避免为每个字符保存一份 offset 列表导致大文件额外内存膨胀。
+    """
+    norm_positions: List[int] = []
+    orig_starts: List[int] = []
+    crlf_prefix: List[int] = []
+    crlf_count = 0
+    delta = 0
+    idx = content.find("\n")
+    while idx != -1:
+        is_crlf = idx > 0 and content[idx - 1] == "\r"
+        norm_positions.append(idx - delta - (1 if is_crlf else 0))
+        orig_starts.append(idx - 1 if is_crlf else idx)
+        crlf_prefix.append(crlf_count)
+        if is_crlf:
+            crlf_count += 1
+            delta += 1
+        idx = content.find("\n", idx + 1)
+
+    def to_original(normalized_index: int) -> int:
+        if not norm_positions:
+            return normalized_index
+        pos = bisect_left(norm_positions, normalized_index)
+        if pos < len(norm_positions) and norm_positions[pos] == normalized_index:
+            return orig_starts[pos]
+        return normalized_index + crlf_prefix[pos]
+
+    return to_original
+
+
+def _local_eol(original: str, start: int, end: int) -> str:
+    """为混合 EOL 文件选择替换文本新增换行的局部风格。"""
+    if "\r\n" in original[start:end]:
+        return "\r\n"
+    idx = original.find("\n", end)
+    if idx > 0 and original[idx - 1] == "\r":
+        return "\r\n"
+    idx = original.rfind("\n", 0, start)
+    if idx >= 0:
+        return "\r\n" if idx > 0 and original[idx - 1] == "\r" else "\n"
+    return "\n"
+
+
+def _replacement_with_original_eol(
+    original: str,
+    orig_start: int,
+    orig_end: int,
+    replacement: str,
+    *,
+    mixed_eol: bool,
+) -> str:
+    """按原文件/局部 EOL 写回替换文本；未编辑区域由外层原样拼接保留。"""
+    if not mixed_eol:
+        return replacement.replace("\n", "\r\n") if "\r\n" in original else replacement
+
+    styles: List[str] = []
+    idx = original.find("\n", orig_start, orig_end)
+    while idx != -1:
+        styles.append("\r\n" if idx > 0 and original[idx - 1] == "\r" else "\n")
+        idx = original.find("\n", idx + 1, orig_end)
+    local_eol = _local_eol(original, orig_start, orig_end)
+
+    pieces: List[str] = []
+    newline_index = 0
+    for char in replacement:
+        if char == "\n":
+            pieces.append(styles[newline_index] if newline_index < len(styles) else local_eol)
+            newline_index += 1
+        else:
+            pieces.append(char)
+    return "".join(pieces)
 
 FLASH_EDIT_DESCRIPTION: Dict[str, str] = {
     "cn": (
@@ -383,6 +472,7 @@ class FlashEditFileTool(EditFileTool):
             and read_state.mtime_ns == current_mtime
             and read_state.size_bytes == current_size
             and meta is not None
+            and not meta.mixed_eol
             and meta.snapshot_mtime_ns == current_mtime
             and meta.snapshot_size_bytes == current_size
         )
@@ -392,20 +482,23 @@ class FlashEditFileTool(EditFileTool):
             and read_state.size_bytes == current_size
         )
 
+        original_content: str
         if cache_ok:
             # 零读盘：registry 内容快照 + 侧车元数据同代（mtime/size 双绑）。
-            content = read_state.content
-            eol = meta.eol
+            # registry 只存 LF 归一化文本；统一 EOL 可无损重建，混合 EOL
+            # 已在 cache_ok 中排除，必须回退 fresh read 取原始文本。
+            content_lf = read_state.content
+            original_content = (
+                content_lf.replace("\n", meta.eol) if meta.eol == "\r\n" else content_lf
+            )
             expected_sha = meta.sha256
         else:
             try:
                 if is_office:
-                    content = await _read_office_plain_text_async(file_path)
-                    eol = "\n"
+                    original_content = await _read_office_plain_text_async(file_path)
                     expected_sha = None
                 else:
-                    content, raw = await self._read_existing_text(file_path)
-                    eol = self._detect_eol(raw)
+                    original_content, raw = await self._read_existing_text(file_path)
                     expected_sha = hashlib.sha256(raw).hexdigest()
             except Exception as exc:
                 return ToolOutput(success=False, error=str(exc))
@@ -413,7 +506,7 @@ class FlashEditFileTool(EditFileTool):
             if not is_unc and not mtime_matches:
                 # 外部修改检测（stock 1959-1981 的折叠实现：这一次读同时供
                 # 比对与编辑，比 stock 的"比对读一次 + 主读再一次"少一读）。
-                content_lf_check = content.replace("\r\n", "\n")
+                content_lf_check = original_content.replace("\r\n", "\n")
                 if read_state.content is None or content_lf_check != read_state.content:
                     _FILE_READ_REGISTRY.pop(file_path, None)
                     pop_file_meta(file_path)
@@ -425,7 +518,9 @@ class FlashEditFileTool(EditFileTool):
                         ),
                     )
 
-        content_lf = content.replace("\r\n", "\n")
+            content_lf = original_content.replace("\r\n", "\n")
+
+        mixed_eol = _has_mixed_eol(original_content)
 
         # ---- 逐 hunk 匹配（stock 1998-2028 的清洗/容错/唯一性逐个套用） -----
         _, ext = os.path.splitext(file_path.lower())
@@ -487,14 +582,29 @@ class FlashEditFileTool(EditFileTool):
                     ),
                 )
 
-        new_content_lf = content_lf
-        for start, end, text in reversed(planned):
-            new_content_lf = new_content_lf[:start] + text + new_content_lf[end:]
-
-        # 还原原 EOL；Office 写入器用 LF。
-        new_content = (
-            new_content_lf.replace("\n", eol) if eol == "\r\n" else new_content_lf
-        )
+        # LF span → original span 后在原始文本上一次 join：
+        # 1) 混合 EOL 文件的未编辑区域逐字节保持原样；
+        # 2) replace_all 大量匹配时不再反复切片复制整份文件。
+        to_original_offset = _build_lf_offset_mapper(original_content)
+        parts: List[str] = []
+        cursor = 0
+        for start, end, text in planned:
+            orig_start = to_original_offset(start)
+            orig_end = to_original_offset(end)
+            parts.append(original_content[cursor:orig_start])
+            parts.append(
+                _replacement_with_original_eol(
+                    original_content,
+                    orig_start,
+                    orig_end,
+                    text,
+                    mixed_eol=mixed_eol,
+                )
+            )
+            cursor = orig_end
+        parts.append(original_content[cursor:])
+        new_content = "".join(parts)
+        new_content_lf = new_content.replace("\r\n", "\n")
 
         # ---- 写回（stock 2041-2055：CAS 乐观锁仅本地后端执行） -------------
         if is_office:
@@ -541,21 +651,19 @@ class FlashEditFileTool(EditFileTool):
             pop_file_meta(file_path)
 
         # ---- history 纯追加（schema 与 stock 一致，diff_service 合并读取） --
-        # old/new 均按文件原 EOL 还原后入账：缓存路径的内容快照是 LF 归一化
-        # 的，fresh 路径是原样解码的——统一还原保证与 stock 存储口径一致
-        # （diff_service 的条目去重按 old/new 逐字比较）。
+        # old/new 均保存实际原文/写回文本：缓存路径只会在统一 EOL 下重建，
+        # 混合 EOL 强制 fresh read；Office 写入器始终消费 LF 文本。
         _session = get_current_session()
         if _session is not None:
             _history_path = build_flash_history_path(_session)
             if _history_path:
-                old_for_history = (
-                    content_lf.replace("\n", eol) if eol == "\r\n" else content_lf
-                )
+                old_for_history = content_lf if is_office else original_content
+                new_for_history = new_content_lf if is_office else new_content
                 entry = {
                     "action": "edit",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "old_content": old_for_history,
-                    "new_content": new_content,
+                    "new_content": new_for_history,
                 }
                 try:
                     await asyncio.to_thread(
