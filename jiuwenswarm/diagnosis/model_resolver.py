@@ -11,12 +11,73 @@ the session selection. When nothing can be resolved the host answers
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedModelGroup
+from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.diagnosis.models import DiagnosisHostError, ModelInfo
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_model_request_defaults(model: ResolvedModel) -> ResolvedModel:
+    """Map internal request hints (``reasoning_level``) onto core config.
+
+    ``ModelSelectionResolver`` copies ``model_config_obj`` verbatim into
+    ``request_defaults``; the core compiler forwards unknown request keys to
+    the vendor SDK, which rejects ``reasoning_level``. The chat path builds
+    models through ``build_model_from_entry``, which cleans the same keys via
+    ``reasoning_injector`` first; diagnosis applies the identical mapping here
+    (same treatment as the jiuwenswarm-new attribution host) so it behaves
+    like the chat path without touching the shared resolver.
+    """
+    cleaned = build_reasoning_model_request_kwargs(
+        model_client_config={
+            "model_name": model.model_name,
+            "client_provider": model.provider,
+            "api_base": model.api_base,
+            "api_key": model.api_key,
+        },
+        model_config_obj=model.request_defaults,
+        model_name=model.model_name,
+    )
+    return model.model_copy(update={"request_defaults": cleaned})
+
+
+def _sanitize_extra_request_config(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Clean route overrides / group request config with the same mapping."""
+    return build_reasoning_model_request_kwargs(
+        model_client_config={},
+        model_config_obj=dict(value or {}),
+        model_name="",
+    )
+
+
+def _sanitize_group(group: ResolvedModelGroup) -> ResolvedModelGroup:
+    routes = [
+        route.model_copy(
+            update={
+                "model": _sanitize_model_request_defaults(route.model),
+                "request_overrides": _sanitize_extra_request_config(route.request_overrides),
+            },
+        )
+        for route in group.routes
+    ]
+    updates: dict[str, Any] = {"routes": routes}
+    if group.request_config:
+        updates["request_config"] = _sanitize_extra_request_config(group.request_config)
+    return group.model_copy(update=updates)
+
+
+def _sanitize_resolved_selection(resolved: Any) -> Any:
+    """Strip internal request hints from a resolved selection before compiling."""
+    if isinstance(resolved, ResolvedModel):
+        return _sanitize_model_request_defaults(resolved)
+    if isinstance(resolved, ResolvedModelGroup):
+        return _sanitize_group(resolved)
+    return resolved
 
 
 @dataclass(slots=True)
@@ -87,6 +148,7 @@ def resolve_diagnosis_model(
         if selection is None:
             selection = get_session_model_selection(session_id)
         resolved = ModelSelectionResolver().resolve(selection)
+        resolved = _sanitize_resolved_selection(resolved)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[diagnosis] model resolution failed: session_id=%s error=%s", session_id, exc)
         raise DiagnosisHostError(
