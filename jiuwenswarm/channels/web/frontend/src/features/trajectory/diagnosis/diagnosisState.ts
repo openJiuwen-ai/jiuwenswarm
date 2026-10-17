@@ -26,7 +26,12 @@ export function stepRefKey(ref: Pick<StepRef, 'trace_id' | 'span_id'>): string {
   return `${ref.trace_id}:${ref.span_id}`;
 }
 
-/** Return the set of span keys named by a diagnosis, for highlighting. */
+/**
+ * Return the span keys named by a diagnosis.
+ *
+ * Without `rootCauseIds`, this is every root-cause ref plus the diagnosed
+ * focus range. Lane emphasis does not use that set: see `laneHighlightKeys`.
+ */
 export function highlightKeysOf(record: DiagnosisRecord | null, rootCauseIds?: readonly string[]): Set<string> {
   const keys = new Set<string>();
   if (record === null) return keys;
@@ -41,6 +46,22 @@ export function highlightKeysOf(record: DiagnosisRecord | null, rootCauseIds?: r
     }
   }
   return keys;
+}
+
+/**
+ * Span keys to emphasise on the trajectory lanes.
+ *
+ * Empty until the user focuses root causes. Applying the diagnosis's own
+ * focus range on run would fade every other bar.
+ */
+export function laneHighlightKeys(
+  record: DiagnosisRecord | null,
+  focusedRootCauseIds: readonly string[] | null,
+): Set<string> {
+  if (record === null || focusedRootCauseIds === null || focusedRootCauseIds.length === 0) {
+    return new Set();
+  }
+  return highlightKeysOf(record, focusedRootCauseIds);
 }
 
 function replaceStage(

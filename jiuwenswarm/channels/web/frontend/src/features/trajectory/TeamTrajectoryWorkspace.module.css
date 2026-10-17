@@ -32,6 +32,18 @@
   flex: 0 0 100%;
 }
 
+.memberCluster {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.memberCheck {
+  flex: none;
+  margin: 0;
+}
+
 .memberControl {
   display: inline-flex;
   min-width: 0;

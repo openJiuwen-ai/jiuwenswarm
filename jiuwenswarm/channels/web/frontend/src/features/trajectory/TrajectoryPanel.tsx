@@ -1520,6 +1520,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       <DiagnosisWorkspace
         active={active}
         sessionId={sessionId}
+        teamMode={teamMode}
         groups={subjectGroups}
         snapshots={subjectSnapshots}
         messages={copy.toolbar}

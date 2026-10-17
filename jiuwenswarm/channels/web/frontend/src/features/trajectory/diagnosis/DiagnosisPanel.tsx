@@ -18,30 +18,40 @@ import {
   applyProgressEvent,
   applyStatusEvent,
   canSubmitDiagnosis,
-  highlightKeysOf,
+  laneHighlightKeys,
   isRunning,
   mergeTtseResults,
   msRangeToUnixNano,
   summaryOf,
   upsertSummary,
 } from './diagnosisState';
+import { formatElapsed } from './diagnosisTimeSelection';
 import {
   DIAGNOSIS_PROGRESS_EVENT,
   DIAGNOSIS_STATUS_EVENT,
   type DiagnosisProgressEvent,
   type DiagnosisRecord,
   type DiagnosisScope,
+  type SelectionRange,
   type DiagnosisStatusEvent,
   type DiagnosisSummary,
 } from './diagnosisTypes';
 import css from './DiagnosisPanel.module.css';
 
-/** A timeline drag selection reported by one lane, in wall-clock milliseconds. */
-export interface DiagnosisSelection {
+/** One checked agent's share of the shared diagnosis window, in Unix milliseconds. */
+export interface DiagnosisSelectionRange {
   subjectId: string;
   subjectLabel: string;
   startMs: number;
   endMs: number;
+}
+
+/** The shared brush plus the agents still included in it. */
+export interface DiagnosisSelection {
+  domainStartMs: number;
+  startMs: number;
+  endMs: number;
+  ranges: DiagnosisSelectionRange[];
 }
 
 export interface DiagnosisPanelProps {
@@ -50,7 +60,7 @@ export interface DiagnosisPanelProps {
   busy: boolean;
   selection: DiagnosisSelection | null;
   onClearSelection: () => void;
-  /** Receives the span anchors of the root causes to emphasise on the lanes. */
+  /** Span anchors of a root cause the user asked to emphasise. Empty otherwise. */
   onHighlightChange: (keys: ReadonlySet<string>) => void;
 }
 
@@ -170,7 +180,7 @@ export const DiagnosisPanel = memo(function DiagnosisPanel({
   }, [refetchRecord, reloadList]);
 
   const highlightKeys = useMemo(
-    () => (record === null ? EMPTY_KEYS : highlightKeysOf(record, focusCauseIds ?? undefined)),
+    () => laneHighlightKeys(record, focusCauseIds),
     [focusCauseIds, record],
   );
   useEffect(() => {
@@ -184,7 +194,7 @@ export const DiagnosisPanel = memo(function DiagnosisPanel({
     submitting,
     running,
     fullScope,
-    hasSelection: selection !== null,
+    hasSelection: selection !== null && selection.ranges.length > 0,
   });
 
   const submit = useCallback(async () => {
@@ -192,12 +202,20 @@ export const DiagnosisPanel = memo(function DiagnosisPanel({
     if (fullScope) {
       scope = { kind: 'full' };
     } else {
-      const range = selection === null ? null : msRangeToUnixNano(selection.startMs, selection.endMs);
-      if (selection === null || range === null) return;
-      scope = { kind: 'selection', ranges: [{ subject_id: selection.subjectId, ...range }] };
+      if (selection === null || selection.ranges.length === 0) return;
+      const ranges: SelectionRange[] = [];
+      for (const item of selection.ranges) {
+        const range = msRangeToUnixNano(item.startMs, item.endMs);
+        if (range === null) return;
+        ranges.push({ subject_id: item.subjectId, ...range });
+      }
+      scope = { kind: 'selection', ranges };
     }
     setSubmitting(true);
     setNotice(null);
+    // The drag range has been copied into the request. Leave the bars at
+    // their normal colors instead of keeping the selection fade.
+    onClearSelection();
     try {
       const trimmed = note.trim();
       const started = await runDiagnosis(sessionRef.current, {
@@ -213,7 +231,7 @@ export const DiagnosisPanel = memo(function DiagnosisPanel({
     } finally {
       setSubmitting(false);
     }
-  }, [fail, fullScope, locale, note, selection]);
+  }, [fail, fullScope, locale, note, onClearSelection, selection]);
 
   const cancel = useCallback(async () => {
     const current = recordRef.current;
@@ -333,7 +351,11 @@ export const DiagnosisPanel = memo(function DiagnosisPanel({
         <span className={css.selection} data-testid="trajectory-diagnosis-selection">
           {selection === null
             ? t('trajectory.diagnosis.selectionHint')
-            : t('trajectory.diagnosis.selectionActive', { subject: selection.subjectLabel })}
+            : t('trajectory.diagnosis.selectionActive', {
+              count: selection.ranges.length,
+              start: formatElapsed(selection.startMs - selection.domainStartMs),
+              end: formatElapsed(selection.endMs - selection.domainStartMs),
+            })}
           {selection === null ? null : (
             <button
               type="button"
@@ -429,7 +451,11 @@ export const DiagnosisPanel = memo(function DiagnosisPanel({
       focusCauseIds={focusCauseIds}
       triggeringTtse={triggeringTtse}
       statusBadge={statusBadge}
-      onFocusCause={(id) => setFocusCauseIds(current => (current?.length === 1 && current[0] === id ? null : [id]))}
+      onFocusCause={(id) => {
+        const turningOff = focusCauseIds?.length === 1 && focusCauseIds[0] === id;
+        setFocusCauseIds(turningOff ? null : [id]);
+        if (!turningOff) onClearSelection();
+      }}
       onFill={fillComposer}
       onTriggerTtse={(id) => { void triggerTtse(id); }}
     />

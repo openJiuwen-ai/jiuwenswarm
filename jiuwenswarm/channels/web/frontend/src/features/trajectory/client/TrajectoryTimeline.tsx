@@ -6,7 +6,7 @@
 
 import {
   memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties,
-  type KeyboardEvent, type PointerEvent,
+  type KeyboardEvent, type PointerEvent, type RefObject,
 } from 'react'
 import { Tooltip } from '../primitives/index.ts'
 import type { TrajectoryTurnModel } from '../trajectory/model.ts'
@@ -20,6 +20,7 @@ import {
   type TrajectoryTimelineSegment,
   type TrajectoryTimelineSpan,
   type TrajectoryTimeRange,
+  withSharedWallClockDomain,
   zoomTrajectoryTimelineViewport,
 } from '../trajectory/timeline.ts'
 import css from './TrajectoryTimeline.module.css'
@@ -225,6 +226,24 @@ export interface TrajectoryTimelineProps {
   onRecordFocus?: (index: number) => void
   /** Shared presentation clock used only for open running intervals. */
   nowMilliseconds?: number
+  /**
+   * Domain shared by every diagnosis lane. Without `mapTime`, span times stay
+   * absolute and the overview no longer stretches a lane across its own span hull.
+   */
+  sharedDomain?: TrajectoryTimeRange | null
+  /** Maps absolute span times onto `sharedDomain`, dropping idle gaps. */
+  mapTime?: (time: number) => number
+  /**
+   * Drag selects a range and a left-drag does not pan.
+   * Wheel zoom stays available when `onViewportChange` shares one window.
+   */
+  lockViewport?: boolean
+  /** Shared visible window, in the same coordinates as `sharedDomain`. */
+  sharedViewport?: TrajectoryTimeRange | null
+  /** Reports a wheel zoom or pan of the shared window. Enables the wheel while locked. */
+  onViewportChange?: (viewport: TrajectoryTimeRange | null) => void
+  /** Latest shared window, so a wheel burst does not wait for the next render. */
+  sharedViewportRef?: RefObject<TrajectoryTimeRange | null>
 }
 
 function minimumZoomDomain(mode: TrajectoryTimelineMode): number {
@@ -356,10 +375,20 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   onRecordSelect,
   onRecordFocus,
   nowMilliseconds = Date.now(),
+  sharedDomain = null,
+  mapTime,
+  lockViewport = false,
+  sharedViewport = null,
+  onViewportChange,
+  sharedViewportRef,
 }: TrajectoryTimelineProps) {
   const model = useMemo(
-    () => deriveTrajectoryTimeline(turns, mode, nowMilliseconds),
-    [mode, nowMilliseconds, turns],
+    () => withSharedWallClockDomain(
+      deriveTrajectoryTimeline(turns, mode, nowMilliseconds),
+      sharedDomain,
+      mapTime,
+    ),
+    [mapTime, mode, nowMilliseconds, sharedDomain, turns],
   )
   const detailByIndex = useMemo(
     () => new Map(turns.flatMap(turn =>
@@ -384,14 +413,26 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   const [draft, setDraft] = useState<TrajectoryTimeRange | null>(null)
   const [hover, setHover] = useState<HoverPoint | null>(null)
   const [panning, setPanning] = useState(false)
-  const [viewport, setViewport] = useState<TrajectoryTimeRange | null>(null)
+  const viewportControlled = onViewportChange !== undefined
+  const [localViewport, setLocalViewport] = useState<TrajectoryTimeRange | null>(null)
+  const viewport = viewportControlled ? sharedViewport : localViewport
   const [animateViewport, setAnimateViewport] = useState(false)
   const modelRef = useRef(model)
   const viewportRef = useRef(viewport)
   const modeRef = useRef(mode)
+  const onViewportChangeRef = useRef(onViewportChange)
+  const sharedViewportSourceRef = useRef(sharedViewportRef)
+  const sharedViewportPropRef = useRef(sharedViewport)
   modelRef.current = model
   viewportRef.current = viewport
   modeRef.current = mode
+  onViewportChangeRef.current = onViewportChange
+  sharedViewportSourceRef.current = sharedViewportRef
+  sharedViewportPropRef.current = sharedViewport
+  const commitViewport = (next: TrajectoryTimeRange | null) => {
+    if (onViewportChangeRef.current !== undefined) onViewportChangeRef.current(next)
+    else setLocalViewport(next)
+  }
   useEffect(() => {
     if (
       model !== null
@@ -402,13 +443,19 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     }
   }, [model, onRangeChange, range])
   useEffect(() => {
-    if (model === null) return
+    if (model === null || viewportControlled) return
     setAnimateViewport(false)
-    setViewport(current =>
+    setLocalViewport(current =>
       current !== null && (current.end < model.start || current.start > model.end)
         ? null
         : current)
-  }, [model])
+  }, [model, viewportControlled])
+  useEffect(() => {
+    if (!viewportControlled || model === null || sharedViewport === null) return
+    if (sharedViewport.end < model.start || sharedViewport.start > model.end) {
+      onViewportChange?.(null)
+    }
+  }, [model, onViewportChange, sharedViewport, viewportControlled])
   useLayoutEffect(() => {
     const pending = pendingViewportRef.current
     if (model === null || pending === undefined || trackRef.current === null) return
@@ -419,12 +466,9 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     const selectedSpan = model.spans.find(span => spanCovers(span, selectedIndex))
     if (selectedSpan === undefined) return
     setAnimateViewport(true)
-    setViewport((current) => {
+    const follow = (current: TrajectoryTimeRange | null): TrajectoryTimeRange | null => {
       if (current === null) return current
-      if (
-        selectedSpan.end > current.start
-        && selectedSpan.start < current.end
-      ) return current
+      if (selectedSpan.end > current.start && selectedSpan.start < current.end) return current
       const duration = Math.max(1, current.end - current.start)
       const desiredStart = selectedSpan.end <= current.start
         ? selectedSpan.start
@@ -435,8 +479,15 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
       )
       if (nextStart === current.start) return current
       return { start: nextStart, end: nextStart + duration }
-    })
-  }, [model, selectedIndex])
+    }
+    if (viewportControlled) {
+      const current = sharedViewportPropRef.current
+      const next = follow(current)
+      if (next !== current) onViewportChangeRef.current?.(next)
+      return
+    }
+    setLocalViewport(follow)
+  }, [model, selectedIndex, viewportControlled])
   const geometry = model === null
     ? { domainDuration: 1, domainStart: 0, fullDuration: 1 }
     : viewportGeometry(model, viewport)
@@ -453,8 +504,9 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   const visibleRange = draftFraction ?? committed
   const activeRange = draft ?? range
   useEffect(() => {
+    if (lockViewport && onViewportChangeRef.current === undefined) return undefined
     const root = rootRef.current
-    if (root === null) return
+    if (root === null) return undefined
     const onWheel = (event: globalThis.WheelEvent): void => {
       const track = trackRef.current
       const currentModel = modelRef.current
@@ -468,9 +520,12 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
         : event.deltaX
       const pansHorizontally = event.shiftKey
         || Math.abs(event.deltaX) > Math.abs(event.deltaY)
-      const currentViewport = pendingViewportRef.current === undefined
-        ? viewportRef.current
-        : pendingViewportRef.current
+      const externalViewport = sharedViewportSourceRef.current
+      const currentViewport = externalViewport
+        ? externalViewport.current
+        : pendingViewportRef.current === undefined
+          ? viewportRef.current
+          : pendingViewportRef.current
       const nextViewport = pansHorizontally
         ? panTrajectoryTimelineViewport(
           currentModel,
@@ -486,6 +541,11 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
         )
       if (pansHorizontally && currentViewport === null) return
       event.preventDefault()
+      if (onViewportChangeRef.current !== undefined) {
+        onViewportChangeRef.current(nextViewport)
+        applyProjectedDomain(track, currentModel, nextViewport)
+        return
+      }
       pendingViewportRef.current = nextViewport
       applyProjectedDomain(track, currentModel, nextViewport)
       if (wheelCommitTimerRef.current !== null) {
@@ -497,7 +557,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
         pendingViewportRef.current = undefined
         if (pending === undefined) return
         setAnimateViewport(false)
-        setViewport(pending)
+        setLocalViewport(pending)
       }, WHEEL_SETTLE_MS)
     }
     root.addEventListener('wheel', onWheel, { passive: false })
@@ -508,7 +568,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
         wheelCommitTimerRef.current = null
       }
     }
-  }, [])
+  }, [lockViewport])
 
   if (model === null) {
     return (
@@ -557,9 +617,11 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
       ? viewport
       : pendingViewportRef.current
     const currentGeometry = viewportGeometry(model, currentViewport)
-    const startsPan = event.button === 1
+    const startsPan = !lockViewport && (
+      event.button === 1
       || event.button === 2
       || (event.button === 0 && currentViewport !== null && !event.shiftKey)
+    )
     if (startsPan) {
       panRef.current = {
         anchorClientX: event.clientX,
@@ -649,7 +711,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
         )
         if (nextDomainStart !== domainStart) {
           setAnimateViewport(false)
-          setViewport({
+          commitViewport({
             start: nextDomainStart,
             end: nextDomainStart + domainDuration,
           })
@@ -672,7 +734,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
         pendingViewportRef.current = undefined
         if (pending !== undefined) {
           setAnimateViewport(false)
-          setViewport(pending)
+          commitViewport(pending)
         }
         return
       }
@@ -730,12 +792,17 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     if (clickedSpan !== undefined) {
       // An Input block stands for the records its request consumed, so clicking it
       // focuses that whole stretch of the ledger instead of the request row itself.
-      if (clickedSpan.segment === 'input') {
+      // A locked diagnosis lane keeps the shared brush instead of replacing it.
+      if (!lockViewport && clickedSpan.segment === 'input') {
         onRangeChange({ start: clickedSpan.start, end: clickedSpan.end })
         onRecordFocus?.(clickedSpan.coveredIndexes?.[0] ?? clickedSpan.index)
         return
       }
-      onRangeChange(null)
+      if (!lockViewport) onRangeChange(null)
+      if (clickedSpan.segment === 'input') {
+        onRecordFocus?.(clickedSpan.coveredIndexes?.[0] ?? clickedSpan.index)
+        return
+      }
       onRecordSelect?.(clickedSpan.index)
       return
     }
@@ -793,7 +860,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
           ref={trackRef}
           className={css.track}
           data-panning={panning || undefined}
-          data-pannable={viewport !== null || undefined}
+          data-pannable={!lockViewport && viewport !== null || undefined}
           aria-label="Timeline overview; scroll or drag horizontally to pan, wheel to zoom, Shift-drag to focus events"
           style={domainStyle}
           tabIndex={0}

@@ -2,6 +2,7 @@
 
 import {
   memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode,
+  type RefObject,
 } from 'react'
 import type {
   TrajectoryRequest, TrajectorySnapshot, TrajectoryTurnModel,
@@ -87,6 +88,24 @@ export interface TrajectoryExplorerProps {
   onTimelineSelectionChange?: (selection: TrajectoryWallClockSelection | null) => void
   /** JiuwenSwarm extension: bump to clear this explorer's own timeline selection. */
   clearSelectionToken?: number
+  /**
+   * Controlled timeline brush, in the active projection's domain. When
+   * `onTimelineRangeChange` is set, this replaces the explorer's own range.
+   */
+  timelineRange?: TrajectoryTimeRange | null
+  /** Reports a drag on this lane, including a clear. */
+  onTimelineRangeChange?: (range: TrajectoryTimeRange | null) => void
+  /** Shared wall-clock domain so this lane lines up with the diagnosis axis. */
+  sharedTimeDomain?: TrajectoryTimeRange | null
+  /** Maps this lane's span times onto `sharedTimeDomain`. */
+  mapSharedTime?: (time: number) => number
+  /** Left-drag selects. The wheel still zooms when a shared viewport is controlled. */
+  lockTimelineViewport?: boolean
+  /** Visible window shared with the diagnosis axis and the other lanes. */
+  sharedViewport?: TrajectoryTimeRange | null
+  onSharedViewportChange?: (viewport: TrajectoryTimeRange | null) => void
+  /** Latest shared window for a wheel burst. */
+  sharedViewportRef?: RefObject<TrajectoryTimeRange | null>
   className?: string
 }
 
@@ -150,6 +169,14 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   highlightStepKeys,
   onTimelineSelectionChange,
   clearSelectionToken = 0,
+  timelineRange: controlledTimelineRange,
+  onTimelineRangeChange,
+  sharedTimeDomain = null,
+  mapSharedTime,
+  lockTimelineViewport = false,
+  sharedViewport = null,
+  onSharedViewportChange,
+  sharedViewportRef,
   className,
 }: TrajectoryExplorerProps) {
   const turns = snapshot?.turns ?? staticTurns
@@ -181,7 +208,10 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   const [searchQuery, setSearchQuery] = useState('')
   const [searchIndex] = useState(() => new TrajectorySearchIndex())
   const searchLayouts = useMemo(() => [turns], [turns])
-  const [timelineRange, setTimelineRange] = useState<TrajectoryTimeRange | null>(null)
+  const [uncontrolledTimelineRange, setUncontrolledTimelineRange] = useState<TrajectoryTimeRange | null>(null)
+  const rangeControlled = onTimelineRangeChange !== undefined
+  const timelineRange = rangeControlled ? (controlledTimelineRange ?? null) : uncontrolledTimelineRange
+  const setTimelineRange = rangeControlled ? onTimelineRangeChange : setUncontrolledTimelineRange
   const [selectedTimelineIndex, setSelectedTimelineIndex] = useState<number | null>(null)
   const [recordSelection, setRecordSelection] = useState<{ readonly index: number } | null>(null)
   const [recordFocus, setRecordFocus] = useState<{ readonly index: number } | null>(null)
@@ -210,8 +240,9 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
     actualTime: resolvedActualTime,
   })
   useEffect(() => {
-    setTimelineRange(null)
-  }, [timelineMode])
+    if (onTimelineRangeChange !== undefined) return
+    setUncontrolledTimelineRange(null)
+  }, [onTimelineRangeChange, timelineMode])
   const searchMatchIndexes = useMemo(
     () => searchIndexes(searchIndex, searchLayouts, searchQuery),
     [searchIndex, searchLayouts, searchQuery],
@@ -395,8 +426,14 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             selectedIndex={selectedTimelineIndex}
             searchMatchIndexes={timelineEmphasis}
             onRangeChange={setTimelineRange}
+            sharedDomain={sharedTimeDomain}
+            {...(mapSharedTime === undefined ? {} : { mapTime: mapSharedTime })}
+            lockViewport={lockTimelineViewport}
+            sharedViewport={sharedViewport}
+            {...(onSharedViewportChange === undefined ? {} : { onViewportChange: onSharedViewportChange })}
+            {...(sharedViewportRef === undefined ? {} : { sharedViewportRef })}
             onRecordSelect={(index) => {
-              setTimelineRange(null)
+              if (!lockTimelineViewport) setTimelineRange(null)
               setRecordSelection({ index })
               setSelectedTimelineIndex(index)
               onOverviewActivate?.()
@@ -428,7 +465,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
           recordSelection={recordSelection}
           recordFocus={recordFocus}
           historyLoading={loading}
-          onClearSelection={() => { setTimelineRange(null) }}
+          onClearSelection={() => { if (!lockTimelineViewport) setTimelineRange(null) }}
           collapsedTurns={displayedCollapsedTurns}
           onToggleTurn={toggleTurn}
           collapsedAssistants={displayedCollapsedAssistants}

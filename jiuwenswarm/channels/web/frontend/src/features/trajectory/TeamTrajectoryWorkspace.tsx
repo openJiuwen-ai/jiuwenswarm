@@ -25,18 +25,32 @@ export interface TeamTrajectoryWorkspaceProps {
   onSelectSubject: (subjectId: string | null) => void;
   /** Render one native overview, plus its ledger when the member is expanded. */
   memberView: (subjectId: string, context: TeamMemberViewContext) => ReactNode;
+  /** Hide the duration and token switches. Diagnosis locks every lane to wall-clock time. */
+  showScaleControls?: boolean;
+  /** Full-width control under the toolbar, used by the diagnosis time axis. */
+  toolbarTrailing?: ReactNode;
+  /** Per-agent inclusion checkboxes. Absent on the raw team trajectory. */
+  agentSelection?: {
+    isIncluded: (subjectId: string) => boolean;
+    onToggle: (subjectId: string) => void;
+  };
 }
 
 function MemberToolbarControl({
   lane,
   expanded,
   onClick,
+  included,
+  onToggleIncluded,
 }: {
   lane: TeamMemberLaneModel;
   expanded: boolean;
   onClick: () => void;
+  included?: boolean;
+  onToggleIncluded?: () => void;
 }) {
-  return (
+  const { t } = useTranslation();
+  const button = (
     <button
       type="button"
       className={css.memberControl}
@@ -50,6 +64,21 @@ function MemberToolbarControl({
       <span className={css.memberName} title={lane.label}>{lane.label}</span>
       <span className={css.chevron} aria-hidden="true">{expanded ? '▾' : '▸'}</span>
     </button>
+  );
+  if (onToggleIncluded === undefined) return button;
+  return (
+    <span className={css.memberCluster}>
+      <input
+        type="checkbox"
+        className={css.memberCheck}
+        checked={included === true}
+        aria-label={t('trajectory.diagnosis.includeAgent', { name: lane.label })}
+        data-testid="trajectory-diagnosis-agent-checkbox"
+        data-variant={lane.subjectId}
+        onChange={() => onToggleIncluded()}
+      />
+      {button}
+    </span>
   );
 }
 
@@ -65,6 +94,9 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   selectedSubjectId,
   onSelectSubject,
   memberView,
+  showScaleControls = true,
+  toolbarTrailing,
+  agentSelection,
 }: TeamTrajectoryWorkspaceProps) {
   const { t } = useTranslation();
   const lanes = buildTeamMemberLanes(groups.groups);
@@ -108,6 +140,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     >
       <TrajectoryToolbar
         showSearch={false}
+        showScaleControls={showScaleControls}
         actualDuration={actualDuration}
         onActualDurationChange={(value) => {
           setActualDuration(value);
@@ -125,6 +158,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
         onSearchQueryChange={() => {}}
         t={translate}
       />
+      {toolbarTrailing}
       <div
         ref={lanesRef}
         className={css.lanes}
@@ -154,7 +188,17 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
                 expanded,
                 viewState,
                 toolbarAddon: (
-                  <MemberToolbarControl lane={lane} expanded={expanded} onClick={select} />
+                  <MemberToolbarControl
+                    lane={lane}
+                    expanded={expanded}
+                    onClick={select}
+                    {...(agentSelection === undefined
+                      ? {}
+                      : {
+                        included: agentSelection.isIncluded(lane.subjectId),
+                        onToggleIncluded: () => agentSelection.onToggle(lane.subjectId),
+                      })}
+                  />
                 ),
                 onOverviewActivate: expand,
               })}

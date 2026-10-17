@@ -9,12 +9,25 @@ import {
   canSubmitDiagnosis,
   msRangeToUnixNano,
   highlightKeysOf,
+  laneHighlightKeys,
   mergeTtseResults,
   resolveStepIds,
   stepRefKey,
   summaryOf,
   upsertSummary,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisState.mjs';
+import {
+  axisTicks,
+  collectWallClockSamples,
+  compressedToWall,
+  compressSharedTimeline,
+  diagnosisSelectionRanges,
+  clampSharedViewport,
+  formatElapsed,
+  sharedWallClockDomain,
+  visibleAxisTicks,
+  wallToCompressed,
+} from '../node_modules/.cache/trajectory-diagnosis/diagnosisTimeSelection.mjs';
 
 const TRACE = 'a'.repeat(32);
 const ref = (spanId, subject = 'main') => ({ trace_id: TRACE, span_id: spanId.padEnd(16, '0'), subject_id: subject });
@@ -123,6 +136,20 @@ test('highlightKeysOf collects root-cause and focus refs, or a chosen subset', (
   assert.equal(highlightKeysOf(null).size, 0);
 });
 
+test('laneHighlightKeys stays empty until a root cause is focused', () => {
+  const current = record({
+    root_causes: [
+      { id: 'rc-1', category: 'other', subject_id: 'main', refs: [ref('1')], summary: '', evidence: '', confidence: 0.5 },
+      { id: 'rc-2', category: 'other', subject_id: 'main', refs: [ref('2')], summary: '', evidence: '', confidence: 0.5 },
+    ],
+    focus_ranges: [{ subject_id: 'main', refs: [ref('3')], start_unix_nano: '1', end_unix_nano: '2' }],
+  });
+  assert.equal(laneHighlightKeys(current, null).size, 0);
+  assert.equal(laneHighlightKeys(current, []).size, 0);
+  assert.equal(laneHighlightKeys(null, ['rc-1']).size, 0);
+  assert.deepEqual([...laneHighlightKeys(current, ['rc-2'])], [stepRefKey(ref('2'))]);
+});
+
 test('resolveStepIds separates steps that are no longer available', () => {
   const known = new Set([stepRefKey(ref('1'))]);
   const { found, missing } = resolveStepIds([ref('1'), ref('9')], known);
@@ -146,6 +173,107 @@ test('msRangeToUnixNano rejects reversed or non-finite hulls', () => {
   assert.equal(msRangeToUnixNano(5, 4), null);
   assert.equal(msRangeToUnixNano(Number.NaN, 4), null);
   assert.equal(msRangeToUnixNano(-1, 4), null);
+});
+
+test('sharedWallClockDomain spans the earliest start and latest end', () => {
+  const domain = sharedWallClockDomain([
+    { startedAt: 5_000, timeSeconds: 2 },
+    { startedAt: 1_000, timeSeconds: 1 },
+    { startedAt: 8_000, timeSeconds: null },
+    { startedAt: 9_000, timeSeconds: 1, requestOnly: true },
+  ], 10_000);
+  assert.deepEqual(domain, { startMs: 1_000, endMs: 8_000 });
+  assert.equal(sharedWallClockDomain([{ startedAt: null, timeSeconds: 1 }], 0), null);
+  assert.deepEqual(
+    sharedWallClockDomain([{ startedAt: 8_000, timeSeconds: null, status: 'running' }], 10_000),
+    { startMs: 8_000, endMs: 10_000 },
+  );
+});
+
+test('compressSharedTimeline drops idle gaps shared by every agent', () => {
+  const timeline = compressSharedTimeline([
+    { startedAt: 0, timeSeconds: 10 },
+    { startedAt: 1_000_000, timeSeconds: 5 },
+  ], 2_000_000);
+  assert.equal(timeline.durationMs, 15_000);
+  assert.equal(wallToCompressed(timeline, 0), 0);
+  assert.equal(wallToCompressed(timeline, 10_000), 10_000);
+  assert.equal(wallToCompressed(timeline, 1_000_000), 10_000);
+  assert.equal(wallToCompressed(timeline, 1_005_000), 15_000);
+  assert.equal(compressedToWall(timeline, 10_000), 1_000_000);
+  assert.equal(compressedToWall(timeline, 12_000), 1_002_000);
+  const overlap = compressSharedTimeline([
+    { startedAt: 0, timeSeconds: 10 },
+    { startedAt: 8_000, timeSeconds: 4 },
+  ], 0);
+  assert.equal(overlap.durationMs, 12_000);
+  assert.equal(overlap.segments.length, 1);
+});
+
+test('a zero-width domain stays selectable', () => {
+  assert.deepEqual(
+    sharedWallClockDomain([{ startedAt: 4_000, timeSeconds: 0 }], 0),
+    { startMs: 4_000, endMs: 4_001 },
+  );
+});
+
+test('collectWallClockSamples keeps every cell in order', () => {
+  const samples = collectWallClockSamples([
+    { groups: [{ cells: [{ startedAt: 1 }] }, { cells: [{ startedAt: 2 }] }] },
+  ]);
+  assert.deepEqual(samples.map(sample => sample.startedAt), [1, 2]);
+});
+
+test('diagnosisSelectionRanges repeats one window for each checked subject', () => {
+  const subjects = [
+    { subjectId: 'main', subjectLabel: 'Main' },
+    { subjectId: 'writer', subjectLabel: 'Writer' },
+  ];
+  const ranges = diagnosisSelectionRanges({
+    range: { startMs: 10, endMs: 40 },
+    subjects,
+    excludedSubjectIds: new Set(['writer']),
+  });
+  assert.deepEqual(ranges, [
+    { subjectId: 'main', subjectLabel: 'Main', startMs: 10, endMs: 40 },
+  ]);
+  assert.deepEqual(diagnosisSelectionRanges({
+    range: null,
+    subjects,
+    excludedSubjectIds: new Set(),
+  }), []);
+  assert.deepEqual(diagnosisSelectionRanges({
+    range: { startMs: 10, endMs: 40 },
+    subjects,
+    excludedSubjectIds: new Set(['main', 'writer']),
+  }), []);
+});
+
+test('clampSharedViewport keeps a zoom window inside the domain', () => {
+  const window = { start: 1_000, end: 4_000 };
+  assert.equal(clampSharedViewport(window, 0, 10_000), window);
+  assert.equal(clampSharedViewport({ start: 0, end: 10_000 }, 0, 10_000), null);
+  assert.deepEqual(clampSharedViewport({ start: -500, end: 1_500 }, 0, 10_000), { start: 0, end: 2_000 });
+  assert.equal(clampSharedViewport(null, 0, 10_000), null);
+});
+
+test('visibleAxisTicks label the visible window from the axis origin', () => {
+  const ticks = visibleAxisTicks(120_000, 180_000);
+  assert.equal(ticks[0].label, '2:00');
+  assert.equal(ticks[0].fraction, 0);
+  assert.equal(ticks[ticks.length - 1].label, '3:00');
+  assert.equal(ticks[ticks.length - 1].fraction, 1);
+});
+
+test('formatElapsed and axis ticks run from 0:00 to the end', () => {
+  assert.equal(formatElapsed(0), '0:00');
+  assert.equal(formatElapsed(5_000), '0:05');
+  assert.equal(formatElapsed(65_000), '1:05');
+  assert.equal(formatElapsed(3_661_000), '1:01:01');
+  const ticks = axisTicks(90_000);
+  assert.equal(ticks[0].label, '0:00');
+  assert.equal(ticks[ticks.length - 1].label, '1:30');
+  assert.equal(ticks[ticks.length - 1].fraction, 1);
 });
 
 test('canSubmitDiagnosis follows scope, busy and running state', () => {

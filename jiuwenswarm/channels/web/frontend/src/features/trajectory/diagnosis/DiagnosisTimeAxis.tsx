@@ -1,0 +1,130 @@
+/** Shared diagnosis ruler. Dragging selects one window; idle gaps are already removed from this axis. */
+
+import { useRef, useState, type PointerEvent } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TrajectoryTimeRange } from '../trajectory/timeline';
+import { visibleAxisTicks, type WallClockDomain } from './diagnosisTimeSelection';
+import css from './DiagnosisTimeAxis.module.css';
+
+const MINIMUM_DRAG_PX = 4;
+
+export interface DiagnosisTimeAxisProps {
+  domain: WallClockDomain | null;
+  /** Visible slice of `domain`. `null` shows the whole axis. */
+  viewport?: TrajectoryTimeRange | null;
+  range: TrajectoryTimeRange | null;
+  onRangeChange: (range: TrajectoryTimeRange | null) => void;
+}
+
+function clampFraction(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+function fractionAt(event: PointerEvent<HTMLDivElement>): number {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return clampFraction((event.clientX - rect.left) / Math.max(1, rect.width));
+}
+
+export function DiagnosisTimeAxis({
+  domain,
+  viewport = null,
+  range,
+  onRangeChange,
+}: DiagnosisTimeAxisProps) {
+  const { t } = useTranslation();
+  const dragRef = useRef<{ pointerId: number; anchor: number; originX: number } | null>(null);
+  const [draft, setDraft] = useState<TrajectoryTimeRange | null>(null);
+  const windowStart = domain === null
+    ? 0
+    : viewport === null ? domain.startMs : Math.max(domain.startMs, viewport.start);
+  const windowEnd = domain === null
+    ? 0
+    : viewport === null ? domain.endMs : Math.min(domain.endMs, viewport.end);
+  const duration = Math.max(0, windowEnd - windowStart);
+  const ticks = visibleAxisTicks(windowStart, duration > 0 ? windowEnd : windowStart);
+  const visible = draft ?? range;
+  const selection = visible === null || duration <= 0
+    ? null
+    : (() => {
+      const overlapStart = Math.max(visible.start, windowStart);
+      const overlapEnd = Math.min(visible.end, windowEnd);
+      if (overlapEnd <= overlapStart) return null;
+      return {
+        left: clampFraction((overlapStart - windowStart) / duration),
+        width: clampFraction((overlapEnd - overlapStart) / duration),
+      };
+    })();
+
+  const timeAt = (fraction: number): number => {
+    if (domain === null || duration <= 0) return 0;
+    return windowStart + fraction * duration;
+  };
+
+  return (
+    <div className={css.row} data-testid="trajectory-diagnosis-time-axis">
+      <div className={css.gutter} aria-hidden="true" />
+      <div
+        className={css.track}
+        aria-label={t('trajectory.diagnosis.timeAxis')}
+        data-disabled={domain === null ? 'true' : 'false'}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          onRangeChange(null);
+        }}
+        onPointerDown={(event) => {
+          if (domain === null || event.button !== 0) return;
+          const anchor = fractionAt(event);
+          dragRef.current = { pointerId: event.pointerId, anchor, originX: event.clientX };
+          setDraft({ start: timeAt(anchor), end: timeAt(anchor) });
+          if (typeof event.currentTarget.setPointerCapture === 'function') {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current;
+          if (domain === null || drag === null || drag.pointerId !== event.pointerId) return;
+          const point = fractionAt(event);
+          const start = timeAt(Math.min(drag.anchor, point));
+          const end = timeAt(Math.max(drag.anchor, point));
+          setDraft({ start, end });
+        }}
+        onPointerUp={(event) => {
+          const drag = dragRef.current;
+          if (drag === null || drag.pointerId !== event.pointerId) return;
+          dragRef.current = null;
+          setDraft(null);
+          if (domain === null) return;
+          if (Math.abs(event.clientX - drag.originX) < MINIMUM_DRAG_PX) return;
+          const point = fractionAt(event);
+          const start = timeAt(Math.min(drag.anchor, point));
+          const end = timeAt(Math.max(drag.anchor, point));
+          onRangeChange(end > start ? { start, end } : null);
+        }}
+        onPointerCancel={() => {
+          dragRef.current = null;
+          setDraft(null);
+        }}
+      >
+        {ticks.map(tick => (
+          <span
+            key={tick.offsetMs}
+            className={css.tick}
+            style={{
+              left: `${tick.fraction * 100}%`,
+              transform: tick.fraction >= 1 ? 'translateX(-100%)' : undefined,
+            }}
+          >
+            <span className={css.tickMark} />
+            <span className={css.tickLabel}>{tick.label}</span>
+          </span>
+        ))}
+        {selection === null ? null : (
+          <span
+            className={css.selection}
+            style={{ left: `${selection.left * 100}%`, width: `${Math.max(selection.width, 0.004) * 100}%` }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
