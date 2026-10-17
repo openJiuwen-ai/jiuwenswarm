@@ -2668,10 +2668,11 @@ class JiuWenSwarmDeepAdapter:
         self._memory_rail: MemoryRail | None = None
         self._external_memory_rail: Any = None
         self._external_memory_rail_registered: bool = False
-        # OfficeAceUserProfileRail：独立于 engine 的用户画像 rail，有后台周期任务，
-        # 走 config 驱动注册（不随热重载销毁，保留后台任务状态）。
+        # 外接记忆与画像共用配置驱动的生命周期；身份或宿主实例变化时重建。
         self._office_ace_user_profile_rail: Any = None
         self._office_ace_user_profile_rail_registered: bool = False
+        self._memory_service_rail_bindings: dict[str, tuple[Any, str]] = {}
+        self._memory_service_rail_lock = asyncio.Lock()
         # 记忆 embedding 配置指纹：用于检测 embed 段变化并据此重建 MemoryRail。
         # 重建 rail 才能让 _embedding_config 刷新；否则换 endpoint 时 rail 复用旧配置。
         self._memory_embedding_fingerprint: str = ""
@@ -11522,6 +11523,9 @@ class JiuWenSwarmDeepAdapter:
             mode: 实例化模式，默认 "agent"，使用 create_deep_agent。
             sub_mode: 子模式
         """
+        async with self._memory_service_rail_lock:
+            await self._release_memory_service_rail("_external_memory_rail")
+            await self._release_memory_service_rail("_office_ace_user_profile_rail")
         self._session_instance_config = dict(config or {}) if isinstance(config, dict) else None
         self._session_instance_mode = mode
         self._session_instance_sub_mode = sub_mode
@@ -15439,6 +15443,9 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] PersonalContextRail cleanup failed: %s",
                 exc,
             )
+        async with self._memory_service_rail_lock:
+            await self._release_memory_service_rail("_external_memory_rail")
+            await self._release_memory_service_rail("_office_ace_user_profile_rail")
         self._teardown_agent_owned_tools()
         self._release_sys_operations()
         # 取消未到期的延时重索引 task，避免 adapter cleanup 后仍有孤儿 task
@@ -23186,6 +23193,9 @@ class JiuWenSwarmDeepAdapter:
                 await self._instance.unregister_rail(self._memory_rail)
                 self._memory_rail = None
                 logger.info(f"[JiuWenSwarmDeepAdapter] MemoryRail unregistered for {mode} mode")
+        elif self._memory_rail is not None:
+            await self._instance.unregister_rail(self._memory_rail)
+            self._memory_rail = None
 
     def _build_external_memory_rail(self):
         from jiuwenswarm.agents.harness.common.memory.external_memory_builder import (
@@ -23200,52 +23210,90 @@ class JiuWenSwarmDeepAdapter:
         )
 
     async def _handle_external_memory_rail_by_config(self):
-        """Register / unregister ExternalMemoryRail based on config.
-
-        External memory is mode-independent — configured once and active in
-        the merged agent mode. `_external_memory_rail_registered` dedups
-        repeated calls from `_update_agent_rails()`.
-        Not part of `_get_current_agent_rails()`, so it is not torn down on
-        config hot-reload (preserves prefetch cache + circuit breaker state).
-        """
+        """Keep external memory bound to the effective configuration and Agent."""
         from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
+            get_external_memory_config,
             is_external_memory_enabled,
         )
 
         config = get_config()
-        if is_external_memory_enabled(config):
-            if self._external_memory_rail_registered:
+        ext = get_external_memory_config(config)
+        provider = ext["provider"]
+        env_keys = {
+            "officeace_cloud": ("AGENTARTS_MEMORY_BASE_URL", "AGENTARTS_MEMORY_API_KEY", "AGENTARTS_MEMORY_SPACE_ID"),
+            "mem0": ("MEM0_API_KEY", "MEM0_USER_ID"),
+            "openviking": ("OPENVIKING_ENDPOINT", "OPENVIKING_API_KEY", "OPENVIKING_ACCOUNT", "OPENVIKING_USER"),
+            "lakebase": ("LAKEBASE_API_KEY", "LAKEBASE_API_URL", "LAKEBASE_MEM_BASE_ID", "LAKEBASE_DATABASE_ID"),
+            "openjiuwen": ("MEMORY_KV_PATH", "MEMORY_VECTOR_DIR", "MEMORY_DB_PATH", "EMBED_MODEL", "EMBED_BASE_URL", "EMBED_API_KEY"),
+        }.get(provider, ())
+        fingerprint = self._stable_reload_fingerprint({
+            "provider": provider,
+            "user": ext["user_id"],
+            "scope": ext["scope_id"],
+            "options": ext.get(provider),
+            "allowed_plugins": ext["allowed_plugins"],
+            "env": {key: os.environ.get(key, "") for key in env_keys},
+            "deployment": os.environ.get("OFFICE_ACE_DEPLOYMENT", "pc"),
+            "workspace": str(self._workspace_dir),
+            "session": self._parent_session_id if provider == "officeace_cloud" else None,
+            "thread": self._parent_thread_id if provider == "officeace_cloud" else None,
+            "models": config.get("models") if provider == "openjiuwen" else None,
+            "embed": config.get("embed") if provider == "openjiuwen" else None,
+        })
+        await self._sync_memory_service_rail(
+            "_external_memory_rail", self._build_external_memory_rail,
+            enabled=is_external_memory_enabled(config) and self._memory_services_allowed_for_request(),
+            fingerprint=fingerprint,
+        )
+
+    @staticmethod
+    def _memory_services_allowed_for_request() -> bool:
+        permissions = TOOL_PERMISSION_CONTEXT.get()
+        return not (
+            permissions is not None
+            and permissions.group_digital_avatar
+            and permissions.avatar_mode
+            and not permissions.enable_memory
+        )
+
+    async def _release_memory_service_rail(self, attr: str) -> None:
+        rail = getattr(self, attr, None)
+        if rail is not None:
+            binding = self._memory_service_rail_bindings.get(attr)
+            owner = binding[0] if binding is not None else self._instance
+            # Retain the reference if teardown fails so a later request can retry.
+            if owner is not None:
+                await owner.unregister_rail(rail)
+        setattr(self, attr, None)
+        setattr(self, attr + "_registered", False)
+        self._memory_service_rail_bindings.pop(attr, None)
+
+    async def _sync_memory_service_rail(
+        self, attr: str, builder: Callable[[], Any], *, enabled: bool, fingerprint: str,
+    ) -> None:
+        async with self._memory_service_rail_lock:
+            binding = self._memory_service_rail_bindings.get(attr)
+            rail = getattr(self, attr, None)
+            if enabled and binding == (self._instance, fingerprint) and getattr(self, attr + "_registered", False):
+                is_registered = getattr(self._instance, "is_registered_rail", None)
+                is_pending = getattr(self._instance, "is_pending_rail", None)
+                if not callable(is_registered) or is_registered(rail) or (callable(is_pending) and is_pending(rail)):
+                    return
+            await self._release_memory_service_rail(attr)
+            if not enabled or self._instance is None:
                 return
-            if self._external_memory_rail is None:
-                self._external_memory_rail = self._build_external_memory_rail()
-            if self._external_memory_rail is None:
+            rail = builder()
+            if rail is None:
                 return
+            setattr(self, attr, rail)
+            self._memory_service_rail_bindings[attr] = (self._instance, fingerprint)
             try:
-                await self._instance.register_rail(self._external_memory_rail)
-                self._external_memory_rail_registered = True
-                logger.info("[JiuWenSwarmDeepAdapter] ExternalMemoryRail registered")
-            except Exception as exc:
-                logger.error("[JiuWenSwarmDeepAdapter] ExternalMemoryRail register failed: %s", exc)
-                self._external_memory_rail = None
-        elif self._external_memory_rail is not None and self._external_memory_rail_registered:
-            # Call on_session_end BEFORE unregister_rail: unregister -> uninit()
-            # is sync, and run_coroutine_threadsafe from the same event loop
-            # thread would deadlock.
-            provider = getattr(self._external_memory_rail, "_provider", None)
-            if provider is not None and hasattr(provider, "on_session_end"):
-                try:
-                    await provider.on_session_end()
-                except Exception as exc:
-                    logger.debug("[JiuWenSwarmDeepAdapter] on_session_end failed: %s", exc)
-            try:
-                await self._instance.unregister_rail(self._external_memory_rail)
-                logger.info("[JiuWenSwarmDeepAdapter] ExternalMemoryRail unregistered")
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] ExternalMemoryRail unregister failed: %s", exc
-                )
-            self._external_memory_rail = None
-            self._external_memory_rail_registered = False
+                await self._instance.register_rail(rail)
+            except Exception:
+                await self._release_memory_service_rail(attr)
+                logger.warning("[JiuWenSwarmDeepAdapter] %s registration failed", attr, exc_info=True)
+                return
+            setattr(self, attr + "_registered", True)
 
     @staticmethod
     def _build_office_ace_user_profile_rail():
@@ -23287,56 +23335,22 @@ class JiuWenSwarmDeepAdapter:
             return None
 
     async def _handle_office_ace_user_profile_rail_by_config(self):
-        """Register / unregister OfficeAceUserProfileRail based on config.
-
-        Mode-independent（同 ExternalMemoryRail），不随 config 热重载销毁。
-        画像按需拉取：rail 的 before_model_call 在本地缓存失效时才 fetch
-        （per-agent user_id）。
-        """
+        """Reuse unchanged profiles; replace them when identity or configuration changes."""
         from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
-            is_office_ace_user_profile_enabled,
+            get_office_ace_user_profile_config,
         )
 
-        config = get_config()
-        if is_office_ace_user_profile_enabled(config):
-            if self._office_ace_user_profile_rail_registered:
-                return
-            if self._office_ace_user_profile_rail is None:
-                self._office_ace_user_profile_rail = (
-                    self._build_office_ace_user_profile_rail()
-                )
-            if self._office_ace_user_profile_rail is None:
-                return
-            try:
-                await self._instance.register_rail(self._office_ace_user_profile_rail)
-                self._office_ace_user_profile_rail_registered = True
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] OfficeAceUserProfileRail registered",
-                )
-            except Exception as exc:
-                logger.error(
-                    "[JiuWenSwarmDeepAdapter] OfficeAceUserProfileRail register failed: %s",
-                    exc,
-                )
-                self._office_ace_user_profile_rail = None
-        elif (
-            self._office_ace_user_profile_rail is not None
-            and self._office_ace_user_profile_rail_registered
-        ):
-            try:
-                await self._instance.unregister_rail(
-                    self._office_ace_user_profile_rail,
-                )
-                self._office_ace_user_profile_rail_registered = False
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] OfficeAceUserProfileRail unregistered",
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] OfficeAceUserProfileRail unregister failed: %s",
-                    exc,
-                )
-            self._office_ace_user_profile_rail = None
+        config = get_office_ace_user_profile_config(get_config())
+        fingerprint = self._stable_reload_fingerprint({
+            "profile": config,
+            "deployment": os.environ.get("OFFICE_ACE_DEPLOYMENT", "pc"),
+            "cache_root": os.environ.get("OFFICE_CLAW_GLOBAL_CONFIG_ROOT", ""),
+        })
+        await self._sync_memory_service_rail(
+            "_office_ace_user_profile_rail", self._build_office_ace_user_profile_rail,
+            enabled=config["enabled"] and self._memory_services_allowed_for_request(),
+            fingerprint=fingerprint,
+        )
 
     async def compress_context(
             self,

@@ -216,6 +216,9 @@ _AGENT_CORE_STUB_MODULES = [
     "openjiuwen.core.memory.external.mem0_provider",
     "openjiuwen.core.memory.external.openviking_memory_provider",
     "openjiuwen.core.memory.external.lakebase_memory_provider",
+    "openjiuwen.core.memory.external.agentarts_memory_provider",
+    "openjiuwen.core.memory.external.office_ace_memory_cloud_provider",
+    "openjiuwen.core.memory.external.office_ace_memory_pc_provider",
 ]
 
 _STUB_ATTR_OVERRIDES = [
@@ -225,6 +228,9 @@ _STUB_ATTR_OVERRIDES = [
     ("openjiuwen.core.memory.external.mem0_provider", "Mem0MemoryProvider"),
     ("openjiuwen.core.memory.external.openviking_memory_provider", "OpenVikingMemoryProvider"),
     ("openjiuwen.core.memory.external.lakebase_memory_provider", "LakeBaseMemoryProvider"),
+    ("openjiuwen.core.memory.external.agentarts_memory_provider", "AgentArtsMemoryProvider"),
+    ("openjiuwen.core.memory.external.office_ace_memory_cloud_provider", "OfficeAceMemoryCloudProvider"),
+    ("openjiuwen.core.memory.external.office_ace_memory_pc_provider", "OfficeAceMemoryPcProvider"),
 ]
 
 _saved_sys_modules: dict = {
@@ -235,6 +241,12 @@ _saved_sys_modules: dict = {
 import jiuwenswarm.common.utils as _utils_mod
 _saved_utils_get_config_file = _utils_mod.get_config_file
 _saved_utils_get_agent_workspace_dir = _utils_mod.get_agent_workspace_dir
+_SENTINEL = object()
+_saved_core_attrs = {
+    (mod_name, attr_name): getattr(sys.modules[mod_name], attr_name, _SENTINEL)
+    for mod_name, attr_name in _STUB_ATTR_OVERRIDES
+    if mod_name in sys.modules
+}
 
 _install_jiuwenswarm_stubs()
 _install_agent_core_stubs()
@@ -258,8 +270,15 @@ def _restore_agent_core_modules():
     _utils_mod.get_agent_workspace_dir = _saved_utils_get_agent_workspace_dir
 
 _restore_agent_core_modules()
-
-_SENTINEL = object()
+# Restoring sys.modules alone does not undo mutations to an existing module.
+for (_mod_name, _attr_name), _value in _saved_core_attrs.items():
+    _module = sys.modules.get(_mod_name)
+    if _module is not None:
+        if _value is _SENTINEL:
+            if hasattr(_module, _attr_name):
+                delattr(_module, _attr_name)
+        else:
+            setattr(_module, _attr_name, _value)
 
 
 @pytest.fixture(autouse=True)
