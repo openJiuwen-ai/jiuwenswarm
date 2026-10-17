@@ -348,6 +348,47 @@ def _parse_ask_user_answer_part(data: dict[str, Any]) -> dict[str, Any] | None:
     return {"source": source, "user_cancel": False, "answers": answers}
 
 
+def _parse_invoke_rsp_agent_event(message: dict[str, Any]) -> dict[str, Any] | None:
+    """AgentEvent/InvokeRsp 事件（云端多端同步回传形态）→ 结构化应答。
+
+    云端把端侧 InvokeRsp 以 AgentEvent 通道回传（挂 content.events 等帧内
+    任意位置，与 PermissionReply 同通道），payload 与 InvokeRsp 指令同构：
+    {user_cancel, source?, answers[{question_id, selected_options, custom_text}]}。
+    question_id 对齐（不带 question 文本），路由层经待答表映射还原。
+    """
+    from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.self_evolution import (
+        find_agent_event,
+    )
+
+    event = find_agent_event(message, "InvokeRsp")
+    if not isinstance(event, dict):
+        return None
+    rsp = event.get("payload")
+    if not isinstance(rsp, dict):
+        return None
+    user_cancel = bool(rsp.get("user_cancel"))
+    source = str(rsp.get("source") or "").strip()
+    answers: list[dict[str, Any]] = []
+    for a in rsp.get("answers") or []:
+        if not isinstance(a, dict):
+            continue
+        selected = a.get("selected_options")
+        if isinstance(selected, str):
+            selected = [selected]
+        if not isinstance(selected, list):
+            selected = []
+        cleaned = [str(s).strip() for s in selected if str(s or "").strip()]
+        answers.append({
+            "question_id": str(a.get("question_id") or "").strip(),
+            "question": str(a.get("question") or "").strip(),
+            "selected_options": cleaned,
+            "custom_input": str(a.get("custom_text") or "").strip(),
+        })
+    if not answers and not user_cancel:
+        return None
+    return {"source": source, "user_cancel": user_cancel, "answers": answers}
+
+
 def _normalize_approval_text(text: str) -> str:
     """审批回复归一化：去全部空白与常见标点、转小写，便于精确匹配词表。"""
     return re.sub(r"[\s，。！？!?,.、；;：:~～…·'\"“”‘’（）()\[\]【】]+", "", text or "").lower()
@@ -3229,6 +3270,11 @@ class XiaoyiChannel(BaseChannel):
         # 权限类中断（permission/confirm/evolution）对 selected_options 做白名单
         # 校验，映射不中按拒绝处理（fail-closed），不猜测放行；ask_user_interrupt
         # 原样透传（自由问答允许选项外文本）。
+        # 云端多端同步回传形态（AgentEvent/InvokeRsp，挂 content.events 等任意
+        # 位置）：data part 三个键均不带时按事件名递归定位，payload 与 InvokeRsp
+        # 指令同构（question_id 对齐 + user_cancel + source）。
+        if ask_user_answer is None:
+            ask_user_answer = _parse_invoke_rsp_agent_event(message)
         if ask_user_answer is not None:
             pending = self._pop_pending_approval_for_answer(logical_session)
             if pending is not None:

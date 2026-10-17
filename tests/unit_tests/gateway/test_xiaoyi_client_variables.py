@@ -966,6 +966,88 @@ async def test_ask_user_e2a_style_answer_routes_resume(cfg_file):
 
 
 @pytest.mark.asyncio
+async def test_ask_user_invoke_rsp_agent_event_routes_resume(cfg_file):
+    """云端多端同步回传形态：AgentEvent/InvokeRsp 挂 content.events（c.json
+    实际形态）→ 递归定位 → question_id 对齐还原 → resume。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-940",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+            "questions": ["这份周报的主题方向？", "风格偏好？"],
+            "question_ids": {
+                "call_b6bd1b87f9304aaba47358c5d57cc701": "这份周报的主题方向？",
+                "call_b6bd1b87f9304aaba47358c5d57cc701#2": "风格偏好？",
+            },
+            "session_id": "top-1",
+            "agent_id": "ag",
+            "device_id": "dev",
+            "push_id": "push",
+        }
+        # c.json 实际形态 + relay 规范化后的顶层 conversationId（真实帧
+        # MSG_IN 日志 conv 有值，即到达 PC 时带顶层 conversationId）
+        frame = {
+            "method": "message/stream",
+            "conversationId": "conv-1",
+            "sessionId": "top-1",
+            "session": {
+                "sessionId": "top-1",
+                "conversationId": "conv-1",
+                "deviceId": "dev",
+                "requestId": "task-9",
+            },
+            "content": {
+                "events": [
+                    {
+                        "header": {"namespace": "AgentEvent", "name": "InvokeRsp"},
+                        "payload": {
+                            "action_type": "button_click",
+                            "source": "ask_user_interrupt",
+                            "user_cancel": False,
+                            "success": True,
+                            "answers": [
+                                {
+                                    "question_id": "call_b6bd1b87f9304aaba47358c5d57cc701",
+                                    "selected_options": ["工作汇报/总结"],
+                                    "custom_text": "",
+                                },
+                                {
+                                    "question_id": "call_b6bd1b87f9304aaba47358c5d57cc701#2",
+                                    "selected_options": ["科技深色渐变风"],
+                                    "custom_text": "",
+                                },
+                            ],
+                        },
+                    }
+                ]
+            },
+        }
+        await ch._handle_message_stream(frame)
+        m = captured[-1]
+        assert m.params["request_id"] == "req-940"
+        assert m.params["source"] == "ask_user_interrupt"
+        # question_id 经待答表映射还原为 question 文本，多问题逐条透传
+        assert m.params["answers"] == [
+            {
+                "question": "这份周报的主题方向？",
+                "selected_options": ["工作汇报/总结"],
+                "custom_input": "",
+            },
+            {
+                "question": "风格偏好？",
+                "selected_options": ["科技深色渐变风"],
+                "custom_input": "",
+            },
+        ]
+        assert "conv-1" not in ch._pending_approvals  # 已消费
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
 async def test_ask_user_timeout_default_answer(cfg_file):
     """超时兜底：ask_user 每题选第一个选项；权限类 fail-closed 拒绝。"""
     captured, sent = [], []
