@@ -200,8 +200,19 @@ class WorkerDispatcher:
                     error="missing payload",
                 )
                 return True
-            request = load_agent_request(payload)
             dispatch_id = str(message.get("dispatch_id") or uuid.uuid4().hex)
+            try:
+                request = load_agent_request(payload)
+            except ValueError as exc:
+                await self._done(
+                    conn,
+                    str(message.get("request_id") or ""),
+                    generation=generation,
+                    dispatch_id=dispatch_id,
+                    ok=False,
+                    error=str(exc),
+                )
+                return True
             self._reconcile_execution_state(request)
             try:
                 self._bridge.events.register(request, dispatch_id)

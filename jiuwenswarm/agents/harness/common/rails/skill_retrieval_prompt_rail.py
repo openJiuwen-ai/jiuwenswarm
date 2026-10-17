@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
@@ -66,6 +67,7 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         discovery_settings: DiscoverySettings | None = None,
         environment: SkillFS | None = None,
         config_base: dict[str, Any] | None = None,
+        skill_prompt_provider: Callable[[], tuple[frozenset[str] | None, str]] | None = None,
     ) -> None:
         super().__init__()
         settings = (
@@ -88,6 +90,7 @@ class SkillRetrievalPromptRail(DeepAgentRail):
             toolkit.environment if toolkit is not None else None
         )
         self._config_base = config_base
+        self._skill_prompt_provider = skill_prompt_provider
         self._session_enabled = is_skill_retrieval_enabled(config_base)
         self._agent = None
         self.system_prompt_builder = None
@@ -95,6 +98,12 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         self._hidden_skills_section: PromptSection | None = None
         self.attachment_manager = None
         self._frozen_prompt_snapshot: SkillPromptSnapshot | None = None
+
+    def set_skill_prompt_provider(
+        self, provider: Callable[[], tuple[frozenset[str] | None, str]] | None
+    ) -> None:
+        """Set the provider for this rail's current Skill prompt."""
+        self._skill_prompt_provider = provider
 
     def init(self, agent: Any) -> None:
         self._agent = agent
@@ -185,8 +194,9 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         self._filter_legacy_list_skill_from_model_inputs(ctx)
         self._hide_native_skills_section()
         await self._clear_runtime_skill_attachment(ctx)
+        skill_scope = self._skill_prompt_provider() if self._skill_prompt_provider else (None, "")
         try:
-            snapshot = self._prompt_snapshot()
+            snapshot = self._prompt_snapshot(scoped=skill_scope[0] is not None)
         except Exception:
             logger.warning(
                 "Unable to build the Symphony Skill prompt snapshot",
@@ -197,6 +207,15 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         await self._clear_prompt_attachments(ctx)
         self.system_prompt_builder.remove_section(self.SECTION_NAME)
         self._add_prompt_builder_section(language, candidate_appendix)
+        required = skill_scope[1]
+        if required:
+            self.system_prompt_builder.add_section(
+                PromptSection(
+                    name=SectionName.SKILLS,
+                    content={language: required},
+                    priority=self.CANDIDATE_SECTION_PRIORITY + 1,
+                )
+            )
 
     def _add_prompt_builder_section(
         self,
@@ -394,7 +413,9 @@ class SkillRetrievalPromptRail(DeepAgentRail):
             self.system_prompt_builder.add_section(self._hidden_skills_section)
         self._hidden_skills_section = None
 
-    def _prompt_snapshot(self) -> SkillPromptSnapshot:
+    def _prompt_snapshot(self, *, scoped: bool = False) -> SkillPromptSnapshot:
+        if scoped and self._prompt_skillfs is not None:
+            return self._prompt_skillfs.prompt_snapshot()
         if self._frozen_prompt_snapshot is None:
             toolkit = self._toolkit()
             self._frozen_prompt_snapshot = (

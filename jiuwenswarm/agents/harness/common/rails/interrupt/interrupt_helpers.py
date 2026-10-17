@@ -9,8 +9,11 @@ and building permission rails.
 from __future__ import annotations
 
 import copy
+import functools
+import inspect
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -173,6 +176,43 @@ def is_interrupt_resume_payload(params: Any) -> bool:
     )
 
 
+@contextmanager
+def _rail_conversation(rail: Any):
+    """Bind the conversation that the request recorded on ``rail``, if any."""
+    from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+        TOOL_PERMISSION_CHANNEL_ID,
+        TOOL_PERMISSION_CHAT_ID,
+    )
+
+    conversation = getattr(rail, "permission_conversation", None)
+    if conversation is None:
+        yield
+        return
+    channel = TOOL_PERMISSION_CHANNEL_ID.set(conversation[0])
+    chat = TOOL_PERMISSION_CHAT_ID.set(conversation[1])
+    try:
+        yield
+    finally:
+        TOOL_PERMISSION_CHAT_ID.reset(chat)
+        TOOL_PERMISSION_CHANNEL_ID.reset(channel)
+
+
+def _in_rail_conversation(callback: Callable[..., Any], get_rail: Callable[[], Any]) -> Callable[..., Any]:
+    """Wrap a host callback; tools run on the agent's scheduler, outside the request task."""
+    if inspect.iscoroutinefunction(callback):
+        @functools.wraps(callback)
+        async def bound_async(*args: Any, **kwargs: Any) -> Any:
+            with _rail_conversation(get_rail()):
+                return await callback(*args, **kwargs)
+        return bound_async
+
+    @functools.wraps(callback)
+    def bound(*args: Any, **kwargs: Any) -> Any:
+        with _rail_conversation(get_rail()):
+            return callback(*args, **kwargs)
+    return bound
+
+
 def build_permission_rail(
     config: dict[str, Any],
     llm: Any = None,
@@ -219,6 +259,9 @@ def build_permission_rail(
         load_user_permissions,
         persist_session_overlay_from_effective,
         persist_user_overlay_from_effective,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.policy_provider import (
+        get_permission_policy_provider,
     )
     from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
         SKILLS_REBUILD_SILENT,
@@ -312,12 +355,19 @@ def build_permission_rail(
             sid = (session_id or "").strip()
             return sid or bound_session_id
 
+        def _prepare_persist(
+            permissions: dict[str, Any], session_id: str | None
+        ) -> dict[str, Any]:
+            policy = get_permission_policy_provider()
+            return policy.prepare_persist(permissions, session_id) if policy else permissions
+
         def _persist_allow_rule(
             permissions: dict[str, Any], session_id: str | None = None
         ) -> bool:
             try:
                 return persist_user_overlay_from_effective(
-                    permissions, session_id=_effective_session_id(session_id)
+                    _prepare_persist(permissions, _effective_session_id(session_id)),
+                    session_id=_effective_session_id(session_id),
                 )
             except Exception as exc:
                 logger.warning("[InterruptHelpers] persist_allow_rule failed: %s", exc)
@@ -331,7 +381,9 @@ def build_permission_rail(
                 logger.warning("[InterruptHelpers] persist_session_allow_rule skipped: no session_id")
                 return False
             try:
-                return persist_session_overlay_from_effective(sid, permissions)
+                return persist_session_overlay_from_effective(
+                    sid, _prepare_persist(permissions, sid)
+                )
             except Exception as exc:
                 logger.warning("[InterruptHelpers] persist_session_allow_rule failed: %s", exc)
                 return False
@@ -679,6 +731,15 @@ def build_permission_rail(
             ):
                 return ("approve",)
 
+            policy = get_permission_policy_provider()
+            denial = policy.deny_tool(inp.normalized_tool_name) if policy else None
+            if denial:
+                logger.info(
+                    "[InterruptHelpers] policy deny tool=%s",
+                    inp.normalized_tool_name,
+                )
+                return ("reject", denial)
+
             if perm_ctx is None:
                 return None
 
@@ -691,7 +752,7 @@ def build_permission_rail(
                     channel_id=str(getattr(perm_ctx, "channel_id", "") or ""),
                     session_id=None,
                     **({
-                        "permission_config": _get_installed_permissions(),
+                        "permission_config": _get_narrowed_permissions(),
                         "use_installed_permissions": True,
                         "installed_engine": getattr(inp, "engine", None),
                     } if enable_auto_permission else {}),
@@ -771,6 +832,11 @@ def build_permission_rail(
                 return installed if isinstance(installed, dict) else {}
             return deepcopy(permission_config)
 
+        def _get_narrowed_permissions(session_id: str | None = None) -> dict[str, Any]:
+            permissions = _get_installed_permissions(session_id)
+            policy = get_permission_policy_provider()
+            return policy.narrow_config(permissions) if policy else permissions
+
         def _permission_scene_config() -> dict[str, Any]:
             if enable_auto_permission:
                 return _get_installed_permissions()
@@ -813,14 +879,19 @@ def build_permission_rail(
                 return Path(workspace_root).resolve(strict=False)
             return resolve_permission_workspace_dir(bound_session_id)
 
+        def _installed_rail() -> Any:
+            return installed_permission_rail
+
         host = ToolPermissionHost(
-            get_permissions_snapshot=_get_installed_permissions,
-            persist_allow_rule=_persist_allow_rule,
-            persist_session_allow_rule=_persist_session_allow_rule,
+            get_permissions_snapshot=_in_rail_conversation(_get_narrowed_permissions, _installed_rail),
+            persist_allow_rule=_in_rail_conversation(_persist_allow_rule, _installed_rail),
+            persist_session_allow_rule=_in_rail_conversation(_persist_session_allow_rule, _installed_rail),
             resolve_workspace_dir=_resolve_host_workspace_dir,
             permission_yaml_path=get_config_file(),
-            request_permission_confirmation=_request_permission_confirmation,
-            permission_scene_hook=_permission_scene_hook,
+            request_permission_confirmation=_in_rail_conversation(
+                _request_permission_confirmation, _installed_rail
+            ),
+            permission_scene_hook=_in_rail_conversation(_permission_scene_hook, _installed_rail),
         )
 
         permission_rail = JiuwenSwarmPermissionInterruptRail(

@@ -1,0 +1,10 @@
+# A stub package that contributes two gateway adapters, used by
+# tests/unit_tests/server/test_contributed_adapters.py. It stands in for a real
+# package shipping an adapter: the test points an ExtensionLoader at this
+# directory, so the adapters are declared through the loader a deployment uses
+# rather than by a direct call from the test.
+name: echo-session
+version: 0.0.1
+description: Replaces the built-in session.list adapter and adds one method.
+# The adapters answer RPCs on the AgentServer, not in the gateway process.
+requires_transport: false

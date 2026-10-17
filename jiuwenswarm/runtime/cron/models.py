@@ -51,7 +51,10 @@ def is_valid_target_channel_id(raw: str) -> bool:
         CronTargetChannel(s.lower())
         return True
     except ValueError:
-        return False
+        from jiuwenswarm.extensions.channel_contributions import contributed_spec_for
+
+        spec = contributed_spec_for(s)
+        return bool(spec and spec.delivery)
 
 
 def normalize_target_channel_id(
@@ -69,6 +72,11 @@ def normalize_target_channel_id(
     try:
         return CronTargetChannel(low).value
     except ValueError:
+        from jiuwenswarm.extensions.channel_contributions import contributed_spec_for
+
+        spec = contributed_spec_for(s)
+        if spec and spec.delivery:
+            return spec.channel_id
         return default
 
 

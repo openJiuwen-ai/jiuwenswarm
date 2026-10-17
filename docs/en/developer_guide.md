@@ -2,6 +2,8 @@
 
 This document is intended for developers of the JiuwenSwarm project, covering how to set up a development environment from source and run tests.
 
+See [Extension contributions](ExtensionContributions.md) for channel and agent extension APIs.
+
 ## Prerequisites
 
 | Dependency | Version Requirement | Description |

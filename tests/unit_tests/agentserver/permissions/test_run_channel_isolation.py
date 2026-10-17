@@ -35,6 +35,8 @@ def test_resident_channel_ignores_run_permissions_field(channel_id: str) -> None
         assert overlay_run_permissions(installed) is installed
     assert rail.run_permission_levels == {"existing": "ask"}
     assert RUN_PERMISSIONS.get() is None
+    # A shared adapter serves many conversations, so its rail keeps none.
+    assert not hasattr(rail, "permission_conversation")
 
 
 def test_process_cli_binds_and_restores_run_permissions() -> None:

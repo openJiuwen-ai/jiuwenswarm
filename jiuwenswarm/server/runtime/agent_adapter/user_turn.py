@@ -28,6 +28,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_PROMPT_PREFIX_ZH,
 )
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from jiuwenswarm.extensions.registry import ExtensionRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,12 @@ class UserTurn:
         envelope.update(self._sender_fields())
         envelope.update(self._skill_scene_fields())
         envelope.update(self._prefer_mcp_field())
+        registry = ExtensionRegistry.current_instance()
+        if registry is not None:
+            added = registry.turn_envelope_fields(self.channel, self.metadata)
+            if envelope.keys() & added.keys():
+                raise ValueError("extension cannot replace a turn envelope field")
+            envelope.update(added)
         return envelope
 
     def _prompt_channel(self) -> str:

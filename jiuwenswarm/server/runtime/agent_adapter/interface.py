@@ -150,6 +150,11 @@ def _with_request_runtime_context(
     return run_data
 
 
+def _suppress_final_record(request: AgentRequest, content: str) -> bool:
+    registry = ExtensionRegistry.current_instance()
+    return registry is not None and registry.suppress_final(request, content)
+
+
 class _TeamPlanApprovalPayloadError(ValueError):
     """Raised when a structured team.plan approval payload is malformed."""
 
@@ -3484,6 +3489,8 @@ class JiuWenSwarm:
                 )
                 pending_final_started_at_holder[0] = None
                 return
+            if _suppress_final_record(request, final_content):
+                return
         extra_fields = {k: v for k, v in payload.items() if k not in ("event_type", "content")}
         if not isinstance(extra_fields, dict):
             extra_fields = {}
@@ -3550,7 +3557,7 @@ class JiuWenSwarm:
             return
         pending_text = "".join(pending_final_chunks)
         pending_final_chunks.clear()
-        if not pending_text:
+        if not pending_text or _suppress_final_record(request, pending_text):
             return
         extra_fields: dict[str, Any] = {}
         extra_fields = with_cross_session_history_metadata(
@@ -3948,7 +3955,11 @@ class JiuWenSwarm:
             segment_started_at = durable_pending_final_started_at
             segment_order = durable_pending_final_order
             _reset_durable_pending_final()
-            if not pending_text or pending_text == durable_final_content:
+            if (
+                not pending_text
+                or pending_text == durable_final_content
+                or _suppress_final_record(request, pending_text)
+            ):
                 return
             extra_fields = _attach_reasoning_content({
                 **output_phase_metadata,
@@ -4634,6 +4645,9 @@ class JiuWenSwarm:
                                     await _persist_pending_final_text()
                                     final_segment_started_at = None
 
+                                if _suppress_final_record(request, payload_content):
+                                    should_record = False
+
                             if should_record:
                                 payload_dict = dict(data.payload)
                                 extra_fields = {k: v for k, v in payload_dict.items() if
@@ -4883,6 +4897,8 @@ class JiuWenSwarm:
                                 # 同上：空 final 收尾时把气泡正文落盘，别丢历史。
                                 await _persist_pending_final_text()
                                 final_segment_started_at = None
+                            if _suppress_final_record(request, payload_content):
+                                should_record = False
 
                         if should_record:
                             extra_fields = {k: v for k, v in data.items() if k not in ("event_type", "content")}
@@ -5038,26 +5054,27 @@ class JiuWenSwarm:
             ):
                 if key in request.params:
                     history_metadata[key] = request.params[key]
-            await _run_history_io(
-                append_history_record,
-                session_id=session_id,
-                request_id=rid,
-                channel_id=cid,
-                role="assistant",
-                event_type="chat.final",
-                content=finalized_assistant_message,
-                timestamp=time.time(),
-                extra=_with_heartbeat_history_metadata(
-                    _with_web_agent_template_metadata(
-                        _attach_reasoning_content(history_metadata),
+            if not _suppress_final_record(request, finalized_assistant_message):
+                await _run_history_io(
+                    append_history_record,
+                    session_id=session_id,
+                    request_id=rid,
+                    channel_id=cid,
+                    role="assistant",
+                    event_type="chat.final",
+                    content=finalized_assistant_message,
+                    timestamp=time.time(),
+                    extra=_with_heartbeat_history_metadata(
+                        _with_web_agent_template_metadata(
+                            _attach_reasoning_content(history_metadata),
+                            request.params,
+                            cid,
+                            event_type="chat.final",
+                        ),
                         request.params,
-                        cid,
-                        event_type="chat.final",
                     ),
-                    request.params,
-                ),
-                mode=request.params.get("mode", "unknown"),
-            )
+                    mode=request.params.get("mode", "unknown"),
+                )
             final_answer_content = finalized_assistant_message
             final_answer_chunks = []
             final_chunk = _make_a2ui_final_chunk(
