@@ -757,12 +757,17 @@ async def test_continuation_in_weak_session_keeps_current_model():
 
 @pytest.mark.asyncio
 async def test_continuation_does_not_accumulate_debt():
-    """续写指令不参与打分，也不欠债：低-继续-低-低 只欠到 80，仍未降档。"""
+    """续写指令不参与打分，也不欠债：高-低-继续-低 只欠 80，仍未降档。
+
+    两个真实低分轮各欠 40。若「继续」这轮也走了打分路径，它的哨兵值会被
+    ``validate_score`` 兜底成 60 → 达标清零，末尾欠债会是 40 而不是 80；故 80
+    正是「这一轮被短路跳过」的证据。低分轮再多一个就会欠满 100 而降档，故只放两个。
+    """
     rail, models, _ = await _run_session(
-        [_coding(65), _chat_easy(), _cont(), _chat_easy(), _chat_easy()]
+        [_coding(65), _chat_easy(), _cont(), _chat_easy()]
     )
 
-    assert models == ["glm-5.3"] * 5
+    assert models == ["glm-5.3"] * 4
     assert rail._get_session_tier("sess-1") == ("strong", 80)
 
 
