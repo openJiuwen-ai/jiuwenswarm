@@ -1,6 +1,7 @@
 """model_routing.rail — ModelRoutingRail."""
 from __future__ import annotations
 import os
+from collections import OrderedDict
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
@@ -19,9 +20,49 @@ from .types import (
 
 
 # auto 档（relay 下发 enable_routing=True）的分类器阈值与切换目标：
-# 分类器给任务打 0-100 分，大于等于 40 才把模型换成 glm-5.3，否则保留当前模型。
-_CLASSIFIER_SCORE_THRESHOLD: int = 40
+# 分类器给任务打 0-100 分，且分数**离散**（SCORE_TABLE：chat 5/20/40，coding 25/45/65，
+# reasoning 20/40/60，summarization 15/25/45，format 5/10/30，另有兜底 25/40/60）。
+#
+# 单 session 内「尽可能不切换」靠两条腿：
+#   1) 弱档（基准模型 flash）**不换模型**，改用思考深度承接难度（见 _DEPTH_BANDS）：
+#      score <= 10 → off，<= 20 → low，<= 30 → medium，< 45 → high。于是 40
+#      （chat/hard、reasoning/medium）不再换模型，只是「想得更久」。
+#   2) 只有 score >= _SWITCH_SCORE_THRESHOLD 才真换 glm-5.3。
+#
+# 升档不设去抖：45 是常态分（coding/medium），去抖会把「持续中等 coding」锁在弱档。
+# 降档用**欠债计分制**而不是连续轮数 —— 越闲欠得越快，接近门槛的任务欠得慢：
+#   每轮 score < 45：debt += 45 - score   （5 → +40，25 → +20，40 → +5）
+#   每轮 score >= 45：debt = 0            （达标清零）
+#   debt >= _SESSION_DEBT_LIMIT → 降回弱档
+# 连续轮数制分不清「一句你好」和「一直 40 分」（两者都算 1 轮）；计分制里前者 3 轮
+# 欠满，后者要 20 轮 —— 这才是「除非分数差别太大才切」要的形状。
+_SWITCH_SCORE_THRESHOLD: int = 45
+_SESSION_DEBT_LIMIT: int = 100
 _CLASSIFIER_TARGET_MODEL: str = "glm-5.3"
+
+# 弱档（flash）思考深度带：(分数上限, 产品语义深度)。分数离散，实际落在
+# 5/10 → off、15/20 → low、25/30 → medium、40 → high。
+_DEPTH_BANDS: tuple[tuple[int, str], ...] = ((10, "off"), (20, "low"), (30, "medium"))
+_WEAK_DEPTH_FALLBACK: str = "high"
+
+# 强档（glm-5.3）固定用产品语义的 ``default``：不是「不注入」，而是把深度交给
+# thinking 适配层的既定策略 —— glm-5.3 属于 ``_AUTO_DEFAULT_DEPTH_STYLES``，``default``
+# 会落成 ``reasoning_effort: low``（见 vendor_map._GLM53_EFFORT / DEFAULT_THINKING_DEPTH）。
+#
+# 为什么不按分数给强档调深度：glm-5.3 模型本身支持 ``low|high|max``，但 jiuwenswarm
+# 刻意限制了它 —— 该模型**始终思考**（``thinking.type=disabled`` 不被接受，``off``
+# 只能退化成 ``low``），且 ``high``/``max`` 耗时明显偏长。所以强档没有「轻量档」可用，
+# 升到 glm-5.3 就意味着实打实的长思考；要省，只能靠**不升档**，这也正是 45 这个
+# 阈值的取法依据。将来若放开限制，这里换成 ``_depth_for_score(score)`` 即可。
+_THINKING_DEFAULT: str = "default"
+
+# session 档位表容量上限（rail 实例级，按 conversation_id 记档）：长跑进程里会话
+# 数量无上界，超限按 LRU 淘汰最久未用的，避免无界增长。
+_SESSION_TIER_CAPACITY: int = 128
+
+# session 档位取值：weak = 基准模型（deepseek-v4.1-flash），strong = glm-5.3。
+_TIER_WEAK: str = "weak"
+_TIER_STRONG: str = "strong"
 
 # ``classifier`` 未显式传入时的哨兵，与显式 ``None``（关闭 auto 档路由）区分开。
 _UNSET: Any = object()
@@ -63,10 +104,33 @@ def _load_default_classifier() -> Optional[Any]:
 
 
 class ModelRoutingRail(DeepAgentRail):
-    """模型路由 Rail —— auto 档跑分类器，超阈值时切换模型。
+    """模型路由 Rail —— auto 档跑分类器，按 session 档位决定换模型还是换思考深度。
 
-    auto 档（带 ``enable_routing`` 开关）跑分类器打分，score >= 40 换成 glm-5.3，
-    否则保留 adapter 已应用的模型；具体模型名 / 空选择走 skip 分支。
+    auto 档（带 ``enable_routing`` 开关）跑分类器打分，档位规则是**升快降慢 + 欠债计分**：
+
+    - 首轮（本 session 无记录）：``score >= 45`` 进强档（glm-5.3），否则弱档；
+    - 弱档 → 强档：**单轮** ``score >= 45`` 立即升（不设去抖）；
+    - 弱档不换模型，改用思考深度承接难度：``<=10 off / <=20 low / <=30 medium /
+      <45 high``，写 ``ctx.extra["llm_call_kwargs"]`` 由 ``before_model_call`` 注入；
+    - 强档 → 弱档：**欠债** ``debt += 45 - score``，``score >= 45`` 清零，
+      ``debt >= 100`` 才降回弱档。
+
+    升档不设去抖是必须的：分类器分数离散且常态就在 40–45（coding/medium=45），
+    若升档也要高分，「先一句你好再持续做中等 coding」的 session 会永久卡在弱档。
+    降档用计分制而不是连续轮数：一句「你好」(5) 欠 40、3 轮欠满，而一直 40 分只欠 5、
+    要 20 轮才降 —— 连续轮数制把这两种情况当成一样的。强档是 glm-5.3，jiuwenswarm 对
+    它的思考深度做了限制（始终思考、``off`` 不可用、``high``/``max`` 耗时偏长），故强档
+    固定产品语义的 ``default``（实际落成 ``reasoning_effort: low``），不按分数映射。
+
+    **每轮重放**：adapter 在 ``process_message_*`` 里每请求都会把模型重置回档位基准
+    （``_apply_model_to_react_agent``），所以「保持强档」不能靠"什么都不做"，必须每轮
+    重新 ``set_llm`` 一次；续写指令（``CONTINUATION_CATEGORY``）同样重放 session 档位，
+    否则强档 session 里说一句「继续」就会静默掉回基准模型。续写没有分数可映射，故其
+    思考深度回落 ``default``。
+
+    档位按 ``ctx.inputs.conversation_id``（= ``request.session_id``）记在 rail 实例上；
+    拿不到该 id（team 成员 / 单测）时退回无状态语义（每轮按首轮阈值独立决策）。用户
+    切离 auto（具体模型 / 其它档位）时清掉该 session 档位，再切回 auto 重新决策。
 
     分类器与 Model 构造器都不需要 adapter 注入：未注入时懒加载内置
     ``rails/model_routing/classifier.py``，构造器用 openjiuwen 直构兜底。
@@ -96,6 +160,8 @@ class ModelRoutingRail(DeepAgentRail):
         self._token_counter = TiktokenCounter()
         self._apply_routing: bool = apply_routing
         self._trace_id: str = _new_trace_id()
+        # session 档位表：conversation_id -> (档位, 欠债分)，LRU 淘汰。
+        self._session_tiers: "OrderedDict[str, tuple[str, int]]" = OrderedDict()
 
     # ---- 路由 ---- #
 
@@ -125,6 +191,58 @@ class ModelRoutingRail(DeepAgentRail):
         if isinstance(extra, dict) and extra.get("enable_routing") is True:
             return True
         return _team_request_metadata(ctx).get("enable_routing") is True
+
+    # ---- session 档位（升快降慢 + 降档去抖） ---- #
+
+    def _session_key(self, ctx: AgentCallbackContext) -> str:
+        """取本 session 的档位键：``ctx.inputs.conversation_id``（= request.session_id）。
+
+        拿不到（team 成员 / 单测假 ctx）→ 空串，调用方退回无状态语义，不写档位表。
+        """
+        raw = getattr(getattr(ctx, "inputs", None), "conversation_id", None)
+        return str(raw).strip() if raw else ""
+
+    def _get_session_tier(self, key: str) -> tuple[Optional[str], int]:
+        """读 session 档位状态：``(档位, 欠债分)``；无记录返回 ``(None, 0)``。"""
+        if not key:
+            return None, 0
+        entry = self._session_tiers.get(key)
+        if entry is None:
+            return None, 0
+        self._session_tiers.move_to_end(key)
+        return entry
+
+    def _set_session_tier(self, key: str, tier: str, debt: int = 0) -> None:
+        """写 session 档位状态，并按 LRU 淘汰超容量的旧条目。"""
+        if not key:
+            return
+        self._session_tiers[key] = (tier, debt)
+        self._session_tiers.move_to_end(key)
+        while len(self._session_tiers) > _SESSION_TIER_CAPACITY:
+            self._session_tiers.popitem(last=False)
+
+    def _clear_session_tier(self, ctx: AgentCallbackContext) -> None:
+        """清掉本 session 档位（用户切离 auto 时调用，回 auto 后重新决策）。"""
+        key = self._session_key(ctx)
+        if key:
+            self._session_tiers.pop(key, None)
+
+    @staticmethod
+    def _depth_for_score(score: int) -> str:
+        """弱档思考深度带：``<=10 off / <=20 low / <=30 medium / <45 high``。"""
+        for upper, level in _DEPTH_BANDS:
+            if score <= upper:
+                return level
+        return _WEAK_DEPTH_FALLBACK
+
+    @staticmethod
+    def _set_thinking_level(ctx: AgentCallbackContext, level: str) -> None:
+        """把本轮要注入的思考深度写进 ``ctx.extra``，交给 ``before_model_call`` 消费。
+
+        每轮都显式写一次（含 ``default``），避免 ctx 复用时读到上一轮的档位。
+        """
+        if isinstance(ctx.extra, dict):
+            ctx.extra["_model_routing_thinking_level"] = level
 
     def _bind_request_id(self, ctx: AgentCallbackContext) -> None:
         """把本请求的 request_id 重绑到日志 ContextVar，修正 ``[req=]`` 标签串号。
@@ -178,7 +296,7 @@ class ModelRoutingRail(DeepAgentRail):
             input_tokens = self._count_text_tokens(prompt_text)
             agent_info = _extract_agent_info(ctx)
 
-            # --- auto 档：分类器打分，超阈值才 set_llm 换模型 ---
+            # --- auto 档：分类器打分，按 session 档位决定是否 set_llm 换模型 ---
             if self._resolve_request_routing_enabled(ctx):
                 await self._route_by_classifier(
                     ctx,
@@ -189,7 +307,11 @@ class ModelRoutingRail(DeepAgentRail):
                 return
 
             # --- 具体模型 / 空：不路由，保留 adapter 已应用的模型 ---
+            # 用户切离 auto（选具体模型或别的档位）→ 清掉 session 档位，避免下次切回
+            # auto 时莫名继承上一轮的强/弱档。
             selection = self._resolve_request_selection(ctx)
+            self._clear_session_tier(ctx)
+            self._set_thinking_level(ctx, _THINKING_DEFAULT)
             self._emit_decision(
                 ctx,
                 recommended_cap=None,
@@ -207,10 +329,12 @@ class ModelRoutingRail(DeepAgentRail):
             logger.warning("[ModelRouting] before_invoke failed: %s", exc, exc_info=True)
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
-        """按模型族注入思考参数（经 vendor_map）。
+        """按本轮路由决策注入思考参数（经 vendor_map）。
 
-        路由只选模型，不管思考深度：档位关键字已全部收回 relay 侧，这里只剩
-        「具体模型」一种输入 → 仅 GLM-5.3 族注入产品默认 depth（low），其余 no-op。
+        路由决定「换模型还是换深度」：弱档不换模型，按分类器分给 flash 注入思考深度
+        （见 ``_DEPTH_BANDS``）；强档是 glm-5.3，jiuwenswarm 限制了它的深度（见
+        ``_THINKING_DEFAULT`` 注释），固定产品语义的 ``default``。
+        深度由 ``before_invoke`` 经 ``ctx.extra["_model_routing_thinking_level"]`` 传来。
         写 ``ctx.extra["llm_call_kwargs"]``，由 ReActAgent 每次 model call 消费。
         不支持思考控制的模型：adapt 降级为空 kwargs，本方法不写入。
         """
@@ -224,8 +348,13 @@ class ModelRoutingRail(DeepAgentRail):
             cap_name = getattr(used_cap, "model_name", None)
             if isinstance(cap_name, str) and cap_name.strip():
                 model_name = cap_name.strip()
+        thinking = _THINKING_DEFAULT
+        if isinstance(extra_probe, dict):
+            level = extra_probe.get("_model_routing_thinking_level")
+            if isinstance(level, str) and level.strip():
+                thinking = level.strip()
         try:
-            profile = adapt_thinking("default", model_name=model_name)
+            profile = adapt_thinking(thinking, model_name=model_name)
             if not profile.injected or not profile.llm_call_kwargs:
                 return
             extra = getattr(ctx, "extra", None)
@@ -250,10 +379,12 @@ class ModelRoutingRail(DeepAgentRail):
         input_tokens: int,
         agent_info: dict[str, Any],
     ) -> None:
-        """auto 档：跑分类器给任务打分，score >= 40 时把模型换成 glm-5.3。
+        """auto 档：跑分类器给任务打分，按 session 档位决定换模型还是换思考深度。
 
-        分类器缺失/异常、续写指令（``CONTINUATION_CATEGORY``）、低分 → 保留当前模型。
-        切换时用**当前模型**的 client config 克隆出 glm-5.3（api_base / api_key /
+        档位规则见 ``_decide_tier``（升快降慢 + 欠债计分）。续写指令不参与打分，
+        直接重放 session 当前档位。分类器缺失/异常 → 保持现状（不动档位，也不换模型）。
+
+        换模型时用**当前模型**的 client config 克隆出 glm-5.3（api_base / api_key /
         鉴权头逐字不变，只换 model_name），经 ``_emit_decision`` 走 set_llm。
         """
         classifier = self._resolve_classifier()
@@ -268,8 +399,143 @@ class ModelRoutingRail(DeepAgentRail):
             logger.warning("[ModelRouting] classifier failed: %s", exc, exc_info=True)
             return
 
+        key = self._session_key(ctx)
+        tier, debt = self._get_session_tier(key)
+
         if category == CONTINUATION_CATEGORY:
-            # 多轮对话里的「继续/同意」不能触发换模型
+            # 「继续/同意」不参与打分，但必须重放 session 档位：adapter 每轮都把模型
+            # 重置回档位基准，不重放就会让强档 session 静默掉回基准模型。
+            self._replay_session_tier(
+                ctx, tier, input_tokens=input_tokens, agent_info=agent_info
+            )
+            return
+
+        score = validate_score(raw_score)
+        next_tier, next_debt, reason = self._decide_tier(score, tier, debt)
+
+        if next_tier == _TIER_WEAK:
+            # 弱档 = 基准模型，adapter 每轮已重置到它，无需 set_llm；改用思考深度承接难度。
+            depth = self._depth_for_score(score)
+            self._set_thinking_level(ctx, depth)
+            self._emit_decision(
+                ctx,
+                recommended_cap=None,
+                category=category,
+                difficulty=difficulty,
+                target_score=score,
+                input_tokens=input_tokens,
+                agent_info=agent_info,
+                reasoning=f"{reason}; flash thinking depth={depth}",
+            )
+            self._set_session_tier(key, next_tier, next_debt)
+            logger.info(
+                "[ModelRouting] enable_routing: score=%d (category=%s difficulty=%s) %s -> depth=%s",
+                score, category, difficulty, reason, depth,
+            )
+            return
+
+        cap = self._build_switch_cap(ctx, _CLASSIFIER_TARGET_MODEL)
+        if cap is None or cap.model is None:
+            # 换不过去就还留在 flash 上：按弱档深度兜底，别让这轮裸奔。
+            depth = self._depth_for_score(score)
+            self._set_thinking_level(ctx, depth)
+            self._emit_decision(
+                ctx,
+                recommended_cap=None,
+                category=category,
+                difficulty=difficulty,
+                target_score=score,
+                input_tokens=input_tokens,
+                agent_info=agent_info,
+                reasoning=(
+                    f"classifier score={score} but {_CLASSIFIER_TARGET_MODEL} model unavailable; "
+                    f"keep current with flash thinking depth={depth}"
+                ),
+            )
+            logger.warning(
+                "[ModelRouting] enable_routing: score=%d but cannot build %s; keep current model",
+                score, _CLASSIFIER_TARGET_MODEL,
+            )
+            return
+
+        # 真的切到 glm-5.3：深度固定产品语义的 default（实际落成 reasoning_effort=low，
+        # 见 _THINKING_DEFAULT 注释 —— 该模型 jiuwenswarm 侧限制了深度档）。
+        self._set_thinking_level(ctx, _THINKING_DEFAULT)
+        self._emit_decision(
+            ctx,
+            recommended_cap=cap,
+            category=category,
+            difficulty=difficulty,
+            target_score=score,
+            input_tokens=input_tokens,
+            agent_info=agent_info,
+            reasoning=f"{reason} -> set_llm {_CLASSIFIER_TARGET_MODEL}",
+        )
+        self._set_session_tier(key, next_tier, next_debt)
+        logger.info(
+            "[ModelRouting] enable_routing: score=%d (category=%s difficulty=%s) %s -> set_llm %s",
+            score, category, difficulty, reason, _CLASSIFIER_TARGET_MODEL,
+        )
+
+    @staticmethod
+    def _decide_tier(score: int, tier: Optional[str], debt: int) -> tuple[str, int, str]:
+        """按「升快降慢 + 欠债计分」算出本轮档位，返回 ``(档位, 新欠债, 原因)``。
+
+        - 首轮（``tier is None``）：``score >= 45`` 进强档，否则弱档。
+        - ``score >= 45``：立即（或保持）强档，欠债清零。
+        - ``score < 45``：弱档保持弱档（欠债恒 0）；强档累计 ``45 - score`` 欠债，
+          满 ``_SESSION_DEBT_LIMIT`` 才降回弱档，未满则继续持强档。
+        """
+        if tier is None:
+            if score >= _SWITCH_SCORE_THRESHOLD:
+                return _TIER_STRONG, 0, (
+                    f"classifier score={score} >= {_SWITCH_SCORE_THRESHOLD} (first turn)"
+                )
+            return _TIER_WEAK, 0, (
+                f"classifier score={score} < {_SWITCH_SCORE_THRESHOLD} (first turn)"
+            )
+        if score >= _SWITCH_SCORE_THRESHOLD:
+            if tier == _TIER_STRONG:
+                return _TIER_STRONG, 0, (
+                    f"classifier score={score} >= {_SWITCH_SCORE_THRESHOLD}, "
+                    f"hold session tier strong, debt cleared"
+                )
+            return _TIER_STRONG, 0, (
+                f"classifier score={score} >= {_SWITCH_SCORE_THRESHOLD}, "
+                f"raise session tier weak -> strong"
+            )
+        if tier == _TIER_WEAK:
+            return _TIER_WEAK, 0, (
+                f"classifier score={score} < {_SWITCH_SCORE_THRESHOLD}, hold session tier weak"
+            )
+        debt_next = debt + (_SWITCH_SCORE_THRESHOLD - score)
+        if debt_next >= _SESSION_DEBT_LIMIT:
+            return _TIER_WEAK, 0, (
+                f"classifier score={score} < {_SWITCH_SCORE_THRESHOLD}, session debt "
+                f"{debt_next} >= {_SESSION_DEBT_LIMIT}, drop session tier strong -> weak"
+            )
+        return _TIER_STRONG, debt_next, (
+            f"classifier score={score} < {_SWITCH_SCORE_THRESHOLD}, session debt "
+            f"{debt_next}/{_SESSION_DEBT_LIMIT}, hold session tier strong"
+        )
+
+    def _replay_session_tier(
+        self,
+        ctx: AgentCallbackContext,
+        tier: Optional[str],
+        *,
+        input_tokens: int,
+        agent_info: dict[str, Any],
+    ) -> None:
+        """续写指令：不重新打分，直接重放 session 当前档位。
+
+        弱档 / 无记录 → 什么都不做（adapter 每轮已把模型重置回基准，正是弱档要的模型）；
+        强档 → 重新 set_llm 换回 glm-5.3，否则「继续」会让强档 session 掉回基准模型。
+
+        续写没有分数可映射思考深度，故深度回落 ``default``（vendor 原样）。
+        """
+        self._set_thinking_level(ctx, _THINKING_DEFAULT)
+        if tier != _TIER_STRONG:
             self._emit_decision(
                 ctx,
                 recommended_cap=None,
@@ -282,63 +548,41 @@ class ModelRoutingRail(DeepAgentRail):
             logger.info("[ModelRouting] enable_routing: continuation, keep current model")
             return
 
-        score = validate_score(raw_score)
-        if score < _CLASSIFIER_SCORE_THRESHOLD:
-            self._emit_decision(
-                ctx,
-                recommended_cap=None,
-                category=category,
-                difficulty=difficulty,
-                target_score=score,
-                input_tokens=input_tokens,
-                agent_info=agent_info,
-                reasoning=(
-                    f"classifier score={score} < {_CLASSIFIER_SCORE_THRESHOLD}, keep current model"
-                ),
-            )
-            logger.info(
-                "[ModelRouting] enable_routing: score=%d < %d (category=%s difficulty=%s), keep current model",
-                score, _CLASSIFIER_SCORE_THRESHOLD, category, difficulty,
-            )
-            return
-
         cap = self._build_switch_cap(ctx, _CLASSIFIER_TARGET_MODEL)
         if cap is None or cap.model is None:
             self._emit_decision(
                 ctx,
                 recommended_cap=None,
-                category=category,
-                difficulty=difficulty,
-                target_score=score,
+                category="skipped",
+                difficulty="skipped",
                 input_tokens=input_tokens,
                 agent_info=agent_info,
                 reasoning=(
-                    f"classifier score={score} but {_CLASSIFIER_TARGET_MODEL} model unavailable; "
+                    f"continuation utterance but cannot rebuild {_CLASSIFIER_TARGET_MODEL}; "
                     f"keep current"
                 ),
             )
             logger.warning(
-                "[ModelRouting] enable_routing: score=%d but cannot build %s; keep current model",
-                score, _CLASSIFIER_TARGET_MODEL,
+                "[ModelRouting] enable_routing: continuation but cannot build %s; keep current model",
+                _CLASSIFIER_TARGET_MODEL,
             )
             return
 
         self._emit_decision(
             ctx,
             recommended_cap=cap,
-            category=category,
-            difficulty=difficulty,
-            target_score=score,
+            category="skipped",
+            difficulty="skipped",
             input_tokens=input_tokens,
             agent_info=agent_info,
             reasoning=(
-                f"classifier score={score} >= {_CLASSIFIER_SCORE_THRESHOLD} "
-                f"-> switch to {_CLASSIFIER_TARGET_MODEL}"
+                f"continuation utterance, replay session tier=strong -> "
+                f"set_llm {_CLASSIFIER_TARGET_MODEL}"
             ),
         )
         logger.info(
-            "[ModelRouting] enable_routing: score=%d >= %d (category=%s difficulty=%s) -> set_llm %s",
-            score, _CLASSIFIER_SCORE_THRESHOLD, category, difficulty, _CLASSIFIER_TARGET_MODEL,
+            "[ModelRouting] enable_routing: continuation, replay session tier=strong -> set_llm %s",
+            _CLASSIFIER_TARGET_MODEL,
         )
 
     def _build_switch_cap(

@@ -148,11 +148,13 @@ def test_ascii_word_boundaries_make_cjk_keywords_match(prompt):
     ],
 )
 async def test_cjk_hard_prompts_reach_hard_difficulty(prompt, expected_category, expected_difficulty):
-    """中文 hard 提示词能拿到 hard 档（修复前封顶 easy/medium，永远到不了切换线）。"""
+    """中文 hard 提示词能拿到 hard 档（修复前中文命不中 hard 规则，被封顶在 easy/medium）。"""
     score, category, difficulty = await classify(prompt)
     assert (category, difficulty) == (expected_category, expected_difficulty)
     assert score == SCORE_TABLE[(expected_category, expected_difficulty)]
-    assert score >= 40  # 至少达到 rail 的切换阈值
+    # hard 档最低分是 chat/hard = 40 —— 这里锁的是「没被封顶在 easy/medium」的下界。
+    # rail 的换模型线是 45，40 落在弱档深度带最高档（high，不换模型），故不能断言 >= 45。
+    assert score >= 40
 
 
 @pytest.mark.parametrize(
