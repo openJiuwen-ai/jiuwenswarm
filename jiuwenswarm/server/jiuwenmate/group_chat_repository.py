@@ -92,6 +92,16 @@ class GroupChatRepository(SQLiteStore):
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
+    @staticmethod
+    def _access(row: sqlite3.Row) -> GroupAccess:
+        return GroupAccess(
+            **{
+                **dict(row),
+                "visible_from": datetime.fromisoformat(row["visible_from"]),
+                "verified_at": datetime.fromisoformat(row["verified_at"]),
+            }
+        )
+
     def resolve(self, namespace_id: str, platform: str, platform_chat_id: str, *, now: datetime) -> GroupChat:
         """Return the group of a platform chat, creating it on first contact."""
         for name, value in (
@@ -181,6 +191,26 @@ class GroupChatRepository(SQLiteStore):
                                 "AND group_id=? AND status='active'", (namespace_id, agent_id, group_id)).fetchall()
         return tuple(row["app_id"] for row in rows)
 
+    def active_accesses(self, namespace_id: str, agent_id: str) -> tuple[GroupAccess, ...]:
+        """Return every active Agent-to-group/app binding in deterministic order."""
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT * FROM agent_group_access WHERE namespace_id=? AND agent_id=? AND status='active' "
+                "ORDER BY group_id, app_id",
+                (namespace_id, agent_id),
+            ).fetchall()
+        return tuple(self._access(row) for row in rows)
+
+    def unresolved_accesses(self, namespace_id: str, agent_id: str) -> tuple[GroupAccess, ...]:
+        """Return unknown memberships that are not known retired Bot bindings."""
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT * FROM agent_group_access WHERE namespace_id=? AND agent_id=? "
+                "AND status='unknown' AND source_ref NOT LIKE 'binding:%' ORDER BY group_id, app_id",
+                (namespace_id, agent_id),
+            ).fetchall()
+        return tuple(self._access(row) for row in rows)
+
     def set_name(self, namespace_id: str, group_id: str, name: str) -> None:
         self.get(namespace_id, group_id)
         if not isinstance(name, str) or not name.strip() or len(name) > 512:
@@ -194,6 +224,14 @@ class GroupChatRepository(SQLiteStore):
             row = conn.execute("SELECT name FROM group_details WHERE namespace_id=? AND group_chat_id=?",
                                (namespace_id, group_id)).fetchone()
         return group_id if row is None else row["name"]
+
+    def known_name_of(self, namespace_id: str, group_id: str) -> str | None:
+        """Return an explicitly stored current name; an ID fallback is not a name mapping."""
+        self.get(namespace_id, group_id)
+        with self._transaction() as conn:
+            row = conn.execute("SELECT name FROM group_details WHERE namespace_id=? AND group_chat_id=?",
+                               (namespace_id, group_id)).fetchone()
+        return None if row is None else row["name"]
 
     def get(self, namespace_id: str, group_chat_id: str) -> GroupChat:
         with self._transaction() as conn:
