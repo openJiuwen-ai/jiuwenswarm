@@ -18,12 +18,14 @@ export interface ColleagueListHandlers {
 interface ColleagueListProps extends ColleagueListHandlers {
   colleagues: readonly JiuwenMateColleague[];
   selectedId: string | null;
+  schedulesSelected?: boolean;
   onSelect: (id: string) => void;
 }
 
 export function ColleagueList({
   colleagues,
   selectedId,
+  schedulesSelected = false,
   onSelect,
   onCreateFromPlaza,
   onCreateCustom,
@@ -56,7 +58,12 @@ export function ColleagueList({
             { key: 'local', label: t('jiuwenmate.workspace.newFromLocal'), icon: FileUp, disabled: true, onSelect: () => undefined },
           ]}
         />
-        <button type="button" onClick={onOpenSchedules} data-testid="jiuwenmate-open-schedules-button">
+        <button
+          type="button"
+          aria-pressed={schedulesSelected}
+          onClick={onOpenSchedules}
+          data-testid="jiuwenmate-open-schedules-button"
+        >
           <img src={scheduleIcon} alt="" aria-hidden />
           <span>{t('jiuwenmate.workspace.tabs.schedules')}</span>
         </button>
@@ -70,11 +77,11 @@ export function ColleagueList({
             <div
               key={colleague.id}
               className="jiuwenmate-colleague-list__item"
-              aria-current={selectedId === colleague.id ? 'true' : undefined}
+              aria-current={!schedulesSelected && selectedId === colleague.id ? 'true' : undefined}
               data-testid="jiuwenmate-colleague-list-item"
               data-variant={colleague.id}
             >
-              <button type="button" aria-pressed={selectedId === colleague.id} onClick={() => onSelect(colleague.id)}>
+              <button type="button" aria-pressed={!schedulesSelected && selectedId === colleague.id} onClick={() => onSelect(colleague.id)}>
                 <ColleagueAvatar colleague={colleague} size="medium" />
                 <strong>{colleague.name}</strong>
                 {colleague.disabled ? <small>{t('jiuwenmate.office.disabledBadge')}</small> : null}

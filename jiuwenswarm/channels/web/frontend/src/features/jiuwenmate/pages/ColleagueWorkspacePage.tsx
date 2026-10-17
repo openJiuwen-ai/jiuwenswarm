@@ -29,8 +29,13 @@ import {
   formatSharedFileSize,
   isPending,
   type JiuwenMateChatRequest,
+  type JiuwenMateSchedule,
   type JiuwenMateSharedFile,
 } from '../jiuwenmateApi';
+import { ScheduleBoard } from '../schedules/ScheduleBoard';
+import { ScheduleDialog } from '../schedules/ScheduleDialog';
+import { scheduleSummary } from '../schedules/state';
+import type { ScheduleDraft, ScheduleRun } from '../schedules/types';
 import { JIUWENMATE_CHANNEL_MESSAGES, JIUWENMATE_CHANNELS, JIUWENMATE_TRACE_ROWS, JIUWENMATE_TRACE_STARTED_AT } from '../mockData';
 import type { JiuwenMateChannel, JiuwenMateColleague } from '../types';
 import { useConversations } from '../useConversations';
@@ -67,6 +72,13 @@ interface ColleagueWorkspacePageProps extends ColleagueListHandlers {
   connectionEpoch: number;
   onSelectColleague: (id: string) => void;
   onCreateSchedule: (id: string) => void;
+  schedules?: readonly JiuwenMateSchedule[];
+  savingSchedule?: boolean;
+  onSaveSchedule?: (agentId: string, draft: ScheduleDraft) => void | Promise<void>;
+  onUpdateSchedule?: (planId: string, draft: ScheduleDraft) => void | Promise<void>;
+  onSetScheduleEnabled?: (planId: string, enabled: boolean) => void | Promise<void>;
+  onDeleteSchedule?: (planId: string) => void | Promise<void>;
+  onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
 }
 
 const PROMPT_ICONS = [ClipboardList, CalendarDays, FileText];
@@ -97,12 +109,22 @@ export function ColleagueWorkspacePage({
   connectionEpoch,
   onSelectColleague,
   onCreateSchedule,
+  schedules = [],
+  savingSchedule = false,
+  onSaveSchedule,
+  onUpdateSchedule,
+  onSetScheduleEnabled,
+  onDeleteSchedule,
+  onLoadScheduleHistory,
   ...listHandlers
 }: ColleagueWorkspacePageProps) {
   const { t } = useTranslation();
   const colleague = colleagues.find((item) => item.id === selectedColleagueId) ?? colleagues[0];
   const [state, setState] = useState(() => initialState(colleague, intent));
   const [query, setQuery] = useState('');
+  const [board, setBoard] = useState(false);
+  const [scheduleId, setScheduleId] = useState<string | null>(null);
+  const [scheduleEditor, setScheduleEditor] = useState<JiuwenMateSchedule | null | undefined>(undefined);
   const [draft, setDraft] = useState('');
   // A conversation id not used yet; it becomes a listed conversation when its first message is sent.
   const [freshId, setFreshId] = useState(newId);
@@ -113,7 +135,10 @@ export function ColleagueWorkspacePage({
   const records = conversationList.conversations;
   const activeConversationId =
     picked?.agentId === agentId ? picked.conversationId : conversationList.loaded ? (records[0]?.id ?? freshId) : '';
-  const privateChat = usePrivateChat(chat, agentId, activeConversationId, connectionEpoch);
+  const colleaguePlans = schedules.filter((plan) => plan.agentId === agentId);
+  const activePlan = colleaguePlans.find((plan) => plan.id === scheduleId) ?? colleaguePlans[0] ?? null;
+  const chatConversationId = state.recordTab === 'schedules' && activePlan ? activePlan.conversationId : activeConversationId;
+  const privateChat = usePrivateChat(chat, agentId, chatConversationId, connectionEpoch);
 
   if (!colleague) return null;
 
@@ -129,6 +154,8 @@ export function ColleagueWorkspacePage({
     if (!next) return;
     onSelectColleague(id);
     setPicked(null);
+    setBoard(false);
+    setScheduleId(null);
     setState((current) => {
       const switched = selectColleague(current, id);
       return { ...switched, selectedChannelId: colleagueChannels(next)[0]?.id ?? null };
@@ -361,6 +388,7 @@ export function ColleagueWorkspacePage({
         </div>
       );
     }
+    const visiblePlans = keyword ? colleaguePlans.filter((plan) => plan.name.includes(keyword)) : colleaguePlans;
     return (
       <div className="jiuwenmate-records__section" data-testid="jiuwenmate-schedule-record-list">
         <header>
@@ -368,13 +396,28 @@ export function ColleagueWorkspacePage({
           <button
             type="button"
             className="jiuwenmate-icon-button"
-            aria-label={t('jiuwenmate.workspace.newSchedule')}
-            onClick={() => onCreateSchedule(colleague.id)}
+            aria-label={t('jiuwenmate.schedule.createTitle')}
+            onClick={() => setScheduleEditor(null)}
           >
             <Plus aria-hidden />
           </button>
         </header>
-        <p className="jiuwenmate-records__empty jiuwenmate-records__empty--start">{t('jiuwenmate.workspace.noSchedules')}</p>
+        {visiblePlans.length === 0 ? (
+          <p className="jiuwenmate-records__empty jiuwenmate-records__empty--start">{t('jiuwenmate.workspace.noSchedules')}</p>
+        ) : (
+          visiblePlans.map((plan) => (
+            <div key={plan.id} className="jiuwenmate-records__item" aria-current={plan.id === activePlan?.id ? 'true' : undefined}>
+              <button type="button" onClick={() => setScheduleId(plan.id)}>{plan.name}</button>
+              <ActionMenu
+                label={t('jiuwenmate.workspace.more')}
+                items={[
+                  { key: 'edit', label: t('jiuwenmate.schedule.editTask'), icon: PencilLine, onSelect: () => setScheduleEditor(plan) },
+                  { key: 'delete', label: t('jiuwenmate.schedule.delete'), icon: Trash2, onSelect: () => void onDeleteSchedule?.(plan.id) },
+                ]}
+              />
+            </div>
+          ))
+        )}
       </div>
     );
   };
@@ -520,13 +563,30 @@ export function ColleagueWorkspacePage({
       );
     }
     if (state.recordTab === 'schedules') {
+      if (!activePlan) {
+        return (
+          <section className="jiuwenmate-main-empty" data-testid="jiuwenmate-schedule-main-empty">
+            <img src={scheduleEmpty} alt="" aria-hidden />
+            <p>{t('jiuwenmate.workspace.noSchedules')}</p>
+            <button type="button" className="jiuwenmate-outline-button jiuwenmate-outline-button--small" onClick={() => onCreateSchedule(colleague.id)}>
+              {t('jiuwenmate.schedule.createTitle')}
+            </button>
+          </section>
+        );
+      }
       return (
-        <section className="jiuwenmate-main-empty" data-testid="jiuwenmate-schedule-main-empty">
-          <img src={scheduleEmpty} alt="" aria-hidden />
-          <p>{t('jiuwenmate.workspace.noSchedules')}</p>
-          <button type="button" className="jiuwenmate-outline-button jiuwenmate-outline-button--small" onClick={() => onCreateSchedule(colleague.id)}>
-            {t('jiuwenmate.workspace.newSchedule')}
-          </button>
+        <section className="jiuwenmate-session-view" data-testid="jiuwenmate-schedule-session">
+          <header className="jiuwenmate-main-header">
+            <strong>
+              {activePlan.name}
+              <ChevronDown aria-hidden />
+            </strong>
+            <small>{scheduleSummary(activePlan)}</small>
+          </header>
+          <ol className="jiuwenmate-session-view__body jiuwenmate-chat-messages">
+            {privateChat.requests.map(renderRequest)}
+          </ol>
+          {composer}
         </section>
       );
     }
@@ -535,17 +595,30 @@ export function ColleagueWorkspacePage({
 
   return (
     <div
-      className={`jiuwenmate-workspace${state.recordsCollapsed ? ' jiuwenmate-workspace--collapsed' : ''}`}
+      className={`jiuwenmate-workspace${board || state.recordsCollapsed ? ' jiuwenmate-workspace--collapsed' : ''}`}
       data-testid="jiuwenmate-colleague-workspace"
     >
       <ColleagueList
         colleagues={colleagues}
         selectedId={colleague.id}
+        schedulesSelected={board}
         onSelect={handleSelectColleague}
         {...listHandlers}
-        onOpenSchedules={() => setState((current) => selectRecordTab(current, 'schedules'))}
+        onOpenSchedules={() => setBoard(true)}
       />
-      {!state.recordsCollapsed ? (
+      {board && onSaveSchedule && onUpdateSchedule && onSetScheduleEnabled && onDeleteSchedule && onLoadScheduleHistory ? (
+        <ScheduleBoard
+          schedules={schedules}
+          colleagues={colleagues}
+          saving={savingSchedule}
+          onCreate={onSaveSchedule}
+          onUpdate={onUpdateSchedule}
+          onSetEnabled={onSetScheduleEnabled}
+          onDelete={onDeleteSchedule}
+          onLoadHistory={onLoadScheduleHistory}
+        />
+      ) : null}
+      {!board && !state.recordsCollapsed ? (
         <aside className="jiuwenmate-records" data-testid="jiuwenmate-record-panel">
           <header>
             <h2>{colleague.name}</h2>
@@ -580,7 +653,7 @@ export function ColleagueWorkspacePage({
           {renderRecordList()}
         </aside>
       ) : null}
-      <main className="jiuwenmate-workspace__main">
+      {!board ? <main className="jiuwenmate-workspace__main">
         {state.recordsCollapsed ? (
           <button
             type="button"
@@ -592,7 +665,18 @@ export function ColleagueWorkspacePage({
           </button>
         ) : null}
         {renderMain()}
-      </main>
+      </main> : null}
+      {scheduleEditor !== undefined && onSaveSchedule && onUpdateSchedule ? (
+        <ScheduleDialog
+          key={scheduleEditor?.id ?? 'new'}
+          open
+          plan={scheduleEditor}
+          executorId={colleague.id}
+          saving={savingSchedule}
+          onClose={() => setScheduleEditor(undefined)}
+          onSubmit={(_executor, draft) => (scheduleEditor ? onUpdateSchedule(scheduleEditor.id, draft) : onSaveSchedule(colleague.id, draft))}
+        />
+      ) : null}
     </div>
   );
 }

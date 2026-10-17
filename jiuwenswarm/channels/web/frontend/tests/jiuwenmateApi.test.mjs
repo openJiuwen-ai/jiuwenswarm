@@ -472,3 +472,39 @@ test('resource selection keeps the colleague settings other than skills and conn
   assert.equal(settings.name, '小九');
   assert.deepEqual(settings.capabilities.starter_prompts, ['帮我整理本周工作进展。']);
 });
+
+test('schedule API preserves interval, validity, completed state and real run history', async () => {
+  const calls = [];
+  const wire = {
+    plan_id: 'p1', agent_id: 'a1', name: '日报', prompt: '整理', cron_expr: '',
+    timezone: 'Asia/Shanghai', schedule_kind: 'interval', interval_seconds: 3600,
+    run_at: null, starts_at: '2026-10-18T00:00:00Z', ends_at: '2026-10-19T00:00:00Z',
+    enabled: false, next_fire_at: null, conversation_id: 'schedule:p1', run_count: 2, last_status: 'completed',
+  };
+  const api = createJiuwenMateApi(async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'jiuwenmate.schedule.list') return { plans: [wire] };
+    if (method === 'jiuwenmate.schedule.history') return { plan: wire, runs: [
+      { request_id: 'r1', scheduled_for: '2026-10-18T01:00:00Z', status: 'failed', description: '连接超时' },
+    ] };
+    if (method === 'jiuwenmate.schedule.run') return { request_id: 'r2' };
+    return { plan: wire };
+  });
+  const [plan] = await api.listSchedules();
+  assert.deepEqual(calls[0].params, {});
+  assert.equal(plan.scheduleKind, 'interval');
+  assert.equal(plan.intervalSeconds, 3600);
+  assert.equal(plan.nextFireAt, null);
+  assert.equal(plan.lastStatus, 'completed');
+  assert.equal(plan.runCount, 2);
+  assert.equal(plan.conversationId, 'schedule:p1');
+  await api.updateSchedule('p1', plan);
+  assert.equal(calls[1].params.starts_at, wire.starts_at);
+  assert.equal(calls[1].params.interval_seconds, 3600);
+  assert.equal(calls[1].params.schedule_kind, 'interval');
+  assert.equal(await api.runSchedule('p1'), 'r2');
+  const history = await api.scheduleHistory('p1');
+  assert.equal(history.runs[0].status, 'failed');
+  assert.equal(history.runs[0].description, '连接超时');
+  assert.equal(history.plan.runCount, 2);
+});

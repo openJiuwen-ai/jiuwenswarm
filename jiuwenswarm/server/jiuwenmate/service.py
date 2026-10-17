@@ -31,6 +31,7 @@ from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStor
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, WORKSPACE_WRITE, WorkspaceStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog, ResourceCatalog, assemble_resources
+from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, publish_spec
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.harness.schema.deep_agent_spec import TeamModelConfig
@@ -65,6 +66,11 @@ WORKSPACE_PROMPT = (
 
 # Feishu IM accepts uploaded files up to 30 MB, so no shared file may exceed it.
 SHARE_FILE_MAX_BYTES = 30_000_000
+# Formal execution refuses a Spec that omits the capacity check. A model entry's
+# own positive context window and output limit are kept; otherwise the host uses
+# the fixed 256K window and reserves 8192 tokens for output plus a 1024 margin.
+FORMAL_OUTPUT_RESERVE_TOKENS = 8192
+FORMAL_CAPACITY_MARGIN_TOKENS = 1024
 
 TemplateSource = Callable[[str], Mapping[str, Any] | None]
 
@@ -120,6 +126,96 @@ class ConfiguredModelProvider:
             model_client_config=ModelClientConfig(**client),
             model_request_config=ModelRequestConfig(**request),
         )
+
+
+def _positive_token_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def formal_model_capacity(model: TeamModelConfig) -> tuple[TeamModelConfig, int, int]:
+    """Fill the four values formal execution requires, keeping a configured output limit.
+
+    Returns the model, the input limit, and the safety margin. The input limit is the
+    context window minus the output reserve and the margin.
+    """
+    request = model.model_request_config or ModelRequestConfig()
+    window = _positive_token_count(request.context_window) or DEFAULT_CONTEXT_WINDOW_TOKENS
+    reserve = _positive_token_count(request.max_tokens)
+    if reserve is None:
+        reserve = min(FORMAL_OUTPUT_RESERVE_TOKENS, window - FORMAL_CAPACITY_MARGIN_TOKENS - 1)
+    if reserve is None or reserve <= 0 or reserve + FORMAL_CAPACITY_MARGIN_TOKENS >= window:
+        raise PersistentAgentError("model capacity leaves no room for input", code="INVALID_CONFIG")
+    request = request.model_copy(update={"context_window": window, "max_tokens": reserve})
+    return (
+        model.model_copy(update={"model_request_config": request}),
+        window - reserve - FORMAL_CAPACITY_MARGIN_TOKENS,
+        FORMAL_CAPACITY_MARGIN_TOKENS,
+    )
+
+
+def _model_identity(model: TeamModelConfig) -> tuple[str, str]:
+    request = model.model_request_config
+    client = model.model_client_config
+    model_name = str(getattr(request, "model_name", "") or getattr(client, "model_name", "") or "").strip()
+    provider = getattr(client, "client_provider", "") if client is not None else ""
+    return str(getattr(provider, "value", provider) or "").strip(), model_name
+
+
+def formal_context_engine(model: TeamModelConfig) -> Any | None:
+    """Publish the tokenizer spec formal execution needs to count a final request.
+
+    The capacity check accepts only an exact native count. A known model therefore
+    publishes that tokenizer. An unknown alias publishes no context configuration.
+    """
+    provider, model_name = _model_identity(model)
+    if not model_name:
+        return None
+    from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
+
+    from jiuwenswarm.server.runtime.tokenizer_service import (
+        _default_tokenizer_spec,
+        resolve_tokenizer_cache_dir,
+    )
+
+    spec = _default_tokenizer_spec(provider=provider, model=model_name)
+    if spec is None:
+        return None
+    return ContextEngineConfig(
+        model_name=model_name,
+        model_provider=provider or None,
+        tokenizer_registry=[spec],
+        tokenizer_cache_dir=str(resolve_tokenizer_cache_dir()),
+        enable_tokenizer_download=False,
+        tokenizer_offline=True,
+    )
+
+
+def cache_formal_tokenizer(config: Any) -> None:
+    """Put the published tokenizer artifact in the local cache.
+
+    Request time never downloads. Without the file, the capacity check treats the
+    count as unknown and pauses the request.
+    """
+    from openjiuwen.core.context_engine.token.tokenizer_manager import TokenizerArtifactManager
+    from openjiuwen.core.context_engine.token.tokenizer_spec import TokenizerSpec
+
+    registry = list(getattr(config, "tokenizer_registry", None) or [])
+    if not registry:
+        return
+    manager = TokenizerArtifactManager(
+        cache_dir=getattr(config, "tokenizer_cache_dir", None),
+        enable_download=True,
+        offline=False,
+    )
+    for item in registry:
+        spec = item if isinstance(item, TokenizerSpec) else TokenizerSpec.model_validate(item)
+        if manager.resolve(spec) is None:
+            raise PersistentAgentError(
+                f"tokenizer artifact is unavailable: {manager.last_error}",
+                code="INVALID_CONFIG",
+            )
 
 
 def show_agent_template(template_id: str) -> Mapping[str, Any] | None:
@@ -348,10 +444,18 @@ class PersistentAgentService:
             raise PersistentAgentError("choose a model before publishing", code="MODEL_NOT_CONFIGURED")
         office = self._workspaces.ensure(namespace_id, agent_id)
         assembled = assemble_resources(agent_id, settings.capabilities, office, self._resource_catalog())
+        model, input_limit, margin = formal_model_capacity(
+            self._models.resolve(settings.capabilities.model, client_id=f"jiuwenmate:{agent_id}")
+        )
+        context_engine = formal_context_engine(model)
+        if context_engine is not None:
+            cache_formal_tokenizer(context_engine)
         fields = {
             "card": {"id": agent_id, "name": settings.name, "description": settings.description},
             "system_prompt": self._templates.read_persona(agent_id) + WORKSPACE_PROMPT + assembled.prompt,
-            "model": self._models.resolve(settings.capabilities.model, client_id=f"jiuwenmate:{agent_id}"),
+            "model": model,
+            "model_input_limit_tokens": input_limit,
+            "capacity_safety_margin_tokens": margin,
             "enabled_features": ["construction", WORKSPACE_READ, WORKSPACE_WRITE],
             "share_file_max_bytes": SHARE_FILE_MAX_BYTES,
             # The guarded file tools need a filesystem operation; no shell tool is mounted.
@@ -360,6 +464,8 @@ class PersistentAgentService:
             "enable_read_image_multimodal": False,
             **assembled.spec_fields,
         }
+        if context_engine is not None:
+            fields["context_engine_config"] = context_engine
         try:
             if definition.current_version is not None:
                 current = self.snapshot(namespace_id, agent_id, definition.current_version)

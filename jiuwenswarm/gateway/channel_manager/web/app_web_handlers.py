@@ -618,6 +618,13 @@ _FORWARD_REQ_METHODS = frozenset({
     "jiuwenmate.conversation.rename",
     "jiuwenmate.conversation.delete",
     "jiuwenmate.activity.get",
+    "jiuwenmate.schedule.list",
+    "jiuwenmate.schedule.create",
+    "jiuwenmate.schedule.set_enabled",
+    "jiuwenmate.schedule.delete",
+    "jiuwenmate.schedule.update",
+    "jiuwenmate.schedule.run",
+    "jiuwenmate.schedule.history",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
@@ -641,6 +648,13 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "jiuwenmate.conversation.rename",
     "jiuwenmate.conversation.delete",
     "jiuwenmate.activity.get",
+    "jiuwenmate.schedule.list",
+    "jiuwenmate.schedule.create",
+    "jiuwenmate.schedule.set_enabled",
+    "jiuwenmate.schedule.delete",
+    "jiuwenmate.schedule.update",
+    "jiuwenmate.schedule.run",
+    "jiuwenmate.schedule.history",
     "initialize",
     "session.switch",
     "session.fork",

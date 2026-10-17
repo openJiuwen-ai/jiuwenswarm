@@ -33,7 +33,9 @@ import {
   withColleagueEdit,
   type ColleagueResourceOption,
   type JiuwenMateModelCatalog,
+  type JiuwenMateSchedule,
 } from './jiuwenmateApi';
+import type { ScheduleDraft } from './schedules/types';
 import { emptyCapabilities } from './mockData';
 import { ColleagueCreatePage } from './pages/ColleagueCreatePage';
 import { ColleagueEmptyPage } from './pages/ColleagueEmptyPage';
@@ -98,6 +100,8 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
   const [activity, setActivity] = useState<JiuwenMateActivity | null>(null);
   const [activityStatus, setActivityStatus] = useState<LoadStatus>('loading');
   const [activityError, setActivityError] = useState('');
+  const [schedules, setSchedules] = useState<JiuwenMateSchedule[]>([]);
+  const [savingSchedule, setSavingSchedule] = useState(false);
 
   const loadColleagues = useCallback(async () => {
     setLoadStatus('loading');
@@ -282,6 +286,71 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
   const selectedColleague = state.colleagues.find((item) => item.id === state.selectedColleagueId) ?? null;
   const authorizeColleague = state.colleagues.find((item) => item.id === state.authorizeColleagueId) ?? null;
 
+  useEffect(() => {
+    if (state.view !== 'colleague-profile' && state.view !== 'colleague-workspace') {
+      setSchedules([]);
+      return;
+    }
+    const agentIds = state.colleagues.map((item) => item.id).filter(Boolean);
+    if (agentIds.length === 0) {
+      setSchedules([]);
+      return;
+    }
+    let cancelled = false;
+    Promise.all(agentIds.map((agentId) => api.listSchedules(agentId)))
+      .then((groups) => {
+        if (!cancelled) setSchedules(groups.flat());
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setActionError(errorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, state.view, state.colleagues, connectionEpoch]);
+
+  const failSchedule = (error: unknown) => {
+    setActionError(errorMessage(error));
+    throw error;
+  };
+
+  const createSchedule = (agentId: string, draft: ScheduleDraft) => {
+    setSavingSchedule(true);
+    setActionError('');
+    return api
+      .createSchedule(agentId, draft)
+      .then((plan) => setSchedules((current) => [...current, plan]))
+      .catch(failSchedule)
+      .finally(() => setSavingSchedule(false));
+  };
+
+  const updateSchedule = (planId: string, draft: ScheduleDraft) => {
+    setSavingSchedule(true);
+    setActionError('');
+    return api
+      .updateSchedule(planId, draft)
+      .then((plan) => setSchedules((current) => current.map((item) => (item.id === plan.id ? plan : item))))
+      .catch(failSchedule)
+      .finally(() => setSavingSchedule(false));
+  };
+
+  const setScheduleEnabled = (planId: string, enabled: boolean) =>
+    api
+      .setScheduleEnabled(planId, enabled)
+      .then((plan) => setSchedules((current) => current.map((item) => (item.id === plan.id ? plan : item))))
+      .catch(failSchedule);
+
+  const removeSchedule = (planId: string) =>
+    api
+      .deleteSchedule(planId)
+      .then(() => setSchedules((current) => current.filter((item) => item.id !== planId)))
+      .catch(failSchedule);
+
+  const runSchedule = (planId: string) => api.runSchedule(planId).then(() => undefined).catch(failSchedule);
+
+  const loadScheduleHistory = (planId: string) =>
+    Promise.resolve(api.scheduleHistory(planId)).catch(failSchedule);
+
   const renderFeature = () => {
     if (loadStatus !== 'ready' && state.view !== 'colleague-create') {
       return (
@@ -402,6 +471,14 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
                 })
                 .finally(() => setSavingResources(false));
             }}
+            schedules={schedules.filter((plan) => plan.agentId === selectedColleague.id)}
+            savingSchedule={savingSchedule}
+            onCreateSchedule={(draft) => createSchedule(selectedColleague.id, draft)}
+            onUpdateSchedule={updateSchedule}
+            onSetScheduleEnabled={setScheduleEnabled}
+            onDeleteSchedule={removeSchedule}
+            onRunSchedule={runSchedule}
+            onLoadScheduleHistory={loadScheduleHistory}
             onOpenOffice={() => showFeature('office', openOffice)}
             onChat={() => openWorkspace(selectedColleague.id)}
             onConfigureIm={() => setState((current) => openColleagueAuthorization(current, selectedColleague.id))}
@@ -420,6 +497,13 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             connectionEpoch={connectionEpoch}
             onSelectColleague={(id) => setState((current) => ({ ...current, selectedColleagueId: id }))}
             onCreateSchedule={(id) => openProfile(id, 'schedules')}
+            schedules={schedules}
+            savingSchedule={savingSchedule}
+            onSaveSchedule={createSchedule}
+            onUpdateSchedule={updateSchedule}
+            onSetScheduleEnabled={setScheduleEnabled}
+            onDeleteSchedule={removeSchedule}
+            onLoadScheduleHistory={loadScheduleHistory}
             {...listHandlers}
           />
         ) : null;

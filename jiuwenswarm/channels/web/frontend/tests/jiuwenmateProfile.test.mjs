@@ -64,6 +64,40 @@ test('skills can be changed on the skills page without the pencil', () => {
   assert.doesNotMatch(markup, /AI 员工名称/);
 });
 
+test('schedules can be created on the schedules page', () => {
+  const markup = renderProfile({
+    initialSection: 'schedules',
+    schedules: [
+      {
+        id: 'plan-1',
+        agentId: 'agent-1',
+        name: '晨报',
+        prompt: '汇总昨日事项',
+        cronExpr: '0 9 * * *',
+        timezone: 'Asia/Shanghai',
+        enabled: true,
+        nextFireAt: '2026-10-18T01:00:00+00:00',
+        scheduleKind: 'cron',
+        intervalSeconds: null,
+        runAt: null,
+        startsAt: null,
+        endsAt: null,
+        conversationId: 'schedule:plan-1',
+        runCount: 0,
+        lastStatus: 'running',
+      },
+    ],
+    onCreateSchedule: noop,
+    onSetScheduleEnabled: noop,
+    onDeleteSchedule: noop,
+  });
+  assert.match(markup, /data-variant="schedules"/);
+  assert.match(markup, /晨报/);
+  assert.match(markup, /每天 9:00/);
+  assert.match(markup, /添加/);
+  assert.match(markup, /role="switch"/);
+});
+
 test('the pencil edits the current page and stays there', () => {
   const overview = renderProfile({ initialSection: 'overview', initialEditing: true });
   assert.match(overview, /aria-current="true"[^>]*data-variant="overview"/);

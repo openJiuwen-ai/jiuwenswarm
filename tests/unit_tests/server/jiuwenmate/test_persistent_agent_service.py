@@ -23,6 +23,8 @@ from jiuwenswarm.server.jiuwenmate.ports.workspace_access import HostWorkspaceAc
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog
 from jiuwenswarm.server.jiuwenmate.service import (
+    FORMAL_CAPACITY_MARGIN_TOKENS,
+    FORMAL_OUTPUT_RESERVE_TOKENS,
     WORKSPACE_PROMPT,
     ConfiguredModelProvider,
     PersistentAgentService,
@@ -31,6 +33,7 @@ from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_in
 
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.harness import persistent_agent as core
+from openjiuwen.harness.persistent_agent.execution.capacity import capacity_limits
 from openjiuwen.harness.resources.extension_loader import find_agent_template_manifest, load_agent_template_package
 from openjiuwen.harness.schema.deep_agent_spec import TeamModelConfig
 
@@ -39,10 +42,12 @@ NS = "workspace-1"
 
 
 class FakeModels:
-    def __init__(self, selections=("deepseek#0", "kimi#1"), default="deepseek#0"):
+    def __init__(self, selections=("deepseek#0", "kimi#1"), default="deepseek#0", *, window=None, max_tokens=None):
         self.selections = set(selections)
         self.default = default
         self.api_key = SECRET
+        self.window = window
+        self.max_tokens = max_tokens
 
     def default_selection(self):
         return self.default
@@ -59,7 +64,9 @@ class FakeModels:
                 api_base="https://example.invalid/v1",
                 model_name=name,
             ),
-            model_request_config=ModelRequestConfig(model=name),
+            model_request_config=ModelRequestConfig(
+                model=name, context_window=self.window, max_tokens=self.max_tokens
+            ),
         )
 
 
@@ -285,6 +292,86 @@ def test_settings_change_only_affects_requests_after_publication(tmp_path):
     )
     assert old_spec.model.model_client_config.model_name == "deepseek"
     assert new_spec.model.model_client_config.model_name == "kimi"
+
+
+def test_publication_fills_the_formal_capacity_check(tmp_path):
+    service = make_service(tmp_path)
+    view = service.create_colleague(NS, settings())
+    spec = service.current_snapshot(NS, view.agent_id).load_spec()
+    request = spec.model.model_request_config
+
+    assert request.context_window == 256 * 1024
+    assert request.max_tokens == FORMAL_OUTPUT_RESERVE_TOKENS
+    assert spec.capacity_safety_margin_tokens == FORMAL_CAPACITY_MARGIN_TOKENS
+    assert spec.model_input_limit_tokens == request.context_window - request.max_tokens - FORMAL_CAPACITY_MARGIN_TOKENS
+    limits = capacity_limits(spec)
+    assert limits is not None
+    assert limits.available_input == spec.model_input_limit_tokens
+
+
+def test_publication_records_an_exact_tokenizer_for_a_known_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.server.jiuwenmate.service.cache_formal_tokenizer",
+        lambda config: None,
+    )
+    service = make_service(tmp_path, FakeModels(selections=("deepseek-flash#0",), default="deepseek-flash#0"))
+    view = service.create_colleague(NS, settings(capabilities=CapabilitySelection(model="deepseek-flash#0")))
+    config = service.current_snapshot(NS, view.agent_id).load_spec().context_engine_config
+
+    assert config["model_name"] == "deepseek-flash"
+    assert config["model_provider"] == "OpenAI"
+    assert config["enable_tokenizer_download"] is False
+    assert config["tokenizer_offline"] is True
+    assert config["tokenizer_registry"] == [
+        {
+            "provider": "OpenAI",
+            "model": "deepseek-flash",
+            "tokenizer_id": "deepseek-ai/DeepSeek-V4-Flash",
+            "source": "huggingface",
+            "revision": None,
+            "artifact_path": None,
+            "engine": "tokenizers",
+            "fallback_policy": "family_tokenizer_then_default_tiktoken_then_string_length",
+            "chat_template": None,
+            "sha256": None,
+            "family": None,
+            "compatible_fallbacks": [],
+        }
+    ]
+
+
+def test_publication_refuses_a_tokenizer_that_cannot_be_cached(tmp_path, monkeypatch):
+    def unavailable(config):
+        raise PersistentAgentError("tokenizer artifact is unavailable: tokenizer_json_missing", code="INVALID_CONFIG")
+
+    monkeypatch.setattr("jiuwenswarm.server.jiuwenmate.service.cache_formal_tokenizer", unavailable)
+    service = make_service(tmp_path, FakeModels(selections=("deepseek-flash#0",), default="deepseek-flash#0"))
+
+    with pytest.raises(PersistentAgentError) as caught:
+        service.create_colleague(NS, settings(capabilities=CapabilitySelection(model="deepseek-flash#0")))
+
+    assert caught.value.code == "INVALID_CONFIG"
+    assert service.list_colleagues(NS)[0].current_version is None
+
+
+def test_publication_keeps_a_configured_output_reserve(tmp_path):
+    service = make_service(tmp_path, FakeModels(window=262144, max_tokens=4096))
+    view = service.create_colleague(NS, settings())
+    spec = service.current_snapshot(NS, view.agent_id).load_spec()
+
+    assert spec.model.model_request_config.context_window == 262144
+    assert spec.model.model_request_config.max_tokens == 4096
+    assert spec.model_input_limit_tokens == 262144 - 4096 - FORMAL_CAPACITY_MARGIN_TOKENS
+
+
+def test_an_output_reserve_that_fills_the_window_is_refused(tmp_path):
+    service = make_service(tmp_path, FakeModels(window=2000, max_tokens=1500))
+
+    with pytest.raises(PersistentAgentError) as caught:
+        service.create_colleague(NS, settings())
+
+    assert caught.value.code == "INVALID_CONFIG"
+    assert service.list_colleagues(NS)[0].current_version is None
 
 
 def test_publishing_unchanged_settings_keeps_the_version(tmp_path):

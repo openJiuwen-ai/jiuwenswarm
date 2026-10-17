@@ -34,11 +34,20 @@ class FakeService:
         self._core = core_fake
         self.workspaces = workspaces
         self.deleted: list[tuple[str, int]] = []
+        self.refuse_snapshot = False
 
     def snapshot(self, namespace_id: str, agent_id: str, config_version: str):
         return publish_spec(
             agent_id, config_version, {"card": {"id": agent_id, "name": "同事"}, "enable_sys_operation": False}
         )
+
+    def current_snapshot(self, namespace_id: str, agent_id: str):
+        if self.refuse_snapshot:
+            raise PersistentAgentError("colleague has no published configuration", code="NOT_PUBLISHED")
+        return self.snapshot(namespace_id, agent_id, "v1")
+
+    def get_colleague(self, namespace_id: str, agent_id: str) -> None:
+        return None
 
     def delete_colleague(self, namespace_id: str, agent_id: str) -> None:
         self.deleted.append((agent_id, self._core.live))
@@ -125,7 +134,7 @@ class FakeCore:
 
 
 class Host:
-    def __init__(self, tmp_path, *, limits: SchedulerLimits | None = None, **manager_kwargs) -> None:
+    def __init__(self, tmp_path, *, limits: SchedulerLimits | None = None, clock=None, **manager_kwargs) -> None:
         db = tmp_path / "agents.sqlite3"
         self.sessions = ExecutionRepository(db)
         self.windows = WindowBackendStore(db)
@@ -141,7 +150,7 @@ class Host:
             abort=self.core.abort,
             limits=limits,
             reservation_tokens=1000,
-            clock=lambda: NOW,
+            clock=clock or (lambda: NOW),
             **manager_kwargs,
         )
         self.scheduler = self.manager.scheduler

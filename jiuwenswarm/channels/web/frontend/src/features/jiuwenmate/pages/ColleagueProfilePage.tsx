@@ -18,12 +18,13 @@ import {
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import feishuIcon from '../../../assets/jiuwenmate/icons/feishu.svg';
-import scheduleEmpty from '../../../assets/jiuwenmate/illustrations/schedule-empty.png';
 import { ActionMenu } from '../components/ActionMenu';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ModelLabel } from '../components/ModelLabel';
-import type { ColleagueResourceOption, JiuwenMateModelCatalog } from '../jiuwenmateApi';
+import type { ColleagueResourceOption, JiuwenMateModelCatalog, JiuwenMateSchedule } from '../jiuwenmateApi';
+import type { ScheduleDraft, ScheduleRun } from '../schedules/types';
+import { ScheduleSection } from '../schedules/ScheduleSection';
 import { JIUWENMATE_WORK_DOMAINS } from '../mockData';
 import { halfYearHeatmap } from '../officeState';
 import type { JiuwenMateColleague } from '../types';
@@ -86,6 +87,14 @@ interface ColleagueProfilePageProps {
   savingResources?: boolean;
   initialEditing?: boolean;
   onSaveSettings?: (edit: ColleagueSettingsEdit) => void | Promise<void>;
+  schedules?: readonly JiuwenMateSchedule[];
+  savingSchedule?: boolean;
+  onCreateSchedule?: (draft: ScheduleDraft) => void | Promise<void>;
+  onUpdateSchedule?: (planId: string, draft: ScheduleDraft) => void | Promise<void>;
+  onSetScheduleEnabled?: (planId: string, enabled: boolean) => void | Promise<void>;
+  onDeleteSchedule?: (planId: string) => void | Promise<void>;
+  onRunSchedule?: (planId: string) => void | Promise<void>;
+  onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
   onOpenOffice: () => void;
   onChat: () => void;
   onConfigureIm: () => void;
@@ -117,6 +126,14 @@ export function ColleagueProfilePage({
   savingResources = false,
   initialEditing = false,
   onSaveSettings,
+  schedules = [],
+  savingSchedule = false,
+  onCreateSchedule,
+  onUpdateSchedule,
+  onSetScheduleEnabled,
+  onDeleteSchedule,
+  onRunSchedule,
+  onLoadScheduleHistory,
   onOpenOffice,
   onChat,
   onConfigureIm,
@@ -243,6 +260,14 @@ export function ColleagueProfilePage({
               onPluginsChange={setPlugins}
               onSaveSettings={saveSettings}
               onConfigureIm={onConfigureIm}
+              schedules={schedules}
+              savingSchedule={savingSchedule}
+              onCreateSchedule={onCreateSchedule}
+              onUpdateSchedule={onUpdateSchedule}
+              onSetScheduleEnabled={onSetScheduleEnabled}
+              onDeleteSchedule={onDeleteSchedule}
+              onRunSchedule={onRunSchedule}
+              onLoadScheduleHistory={onLoadScheduleHistory}
             />
           )}
         </div>
@@ -517,6 +542,14 @@ function ProfileSectionDetail({
   onPluginsChange,
   onSaveSettings,
   onConfigureIm,
+  schedules,
+  savingSchedule,
+  onCreateSchedule,
+  onUpdateSchedule,
+  onSetScheduleEnabled,
+  onDeleteSchedule,
+  onRunSchedule,
+  onLoadScheduleHistory,
 }: {
   colleague: JiuwenMateColleague;
   modelCatalog: JiuwenMateModelCatalog;
@@ -540,6 +573,14 @@ function ProfileSectionDetail({
   onPluginsChange: (items: string[]) => void;
   onSaveSettings?: (edit: ColleagueSettingsEdit) => void | Promise<void>;
   onConfigureIm: () => void;
+  schedules: readonly JiuwenMateSchedule[];
+  savingSchedule: boolean;
+  onCreateSchedule?: (draft: ScheduleDraft) => void | Promise<void>;
+  onUpdateSchedule?: (planId: string, draft: ScheduleDraft) => void | Promise<void>;
+  onSetScheduleEnabled?: (planId: string, enabled: boolean) => void | Promise<void>;
+  onDeleteSchedule?: (planId: string) => void | Promise<void>;
+  onRunSchedule?: (planId: string) => void | Promise<void>;
+  onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
 }) {
   const { t } = useTranslation();
   const title = t(`jiuwenmate.profile.sections.${section}`);
@@ -637,10 +678,16 @@ function ProfileSectionDetail({
     return (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <h2>{title}</h2>
-        <div className="jiuwenmate-empty-state">
-          <img src={scheduleEmpty} alt="" aria-hidden />
-          <p>{t('jiuwenmate.workspace.noSchedules')}</p>
-        </div>
+        <ScheduleSection
+          schedules={schedules}
+          saving={savingSchedule}
+          onCreate={onCreateSchedule}
+          onUpdate={onUpdateSchedule}
+          onSetEnabled={onSetScheduleEnabled}
+          onDelete={onDeleteSchedule}
+          onRun={onRunSchedule}
+          onLoadHistory={onLoadScheduleHistory}
+        />
       </section>
     );
   }
