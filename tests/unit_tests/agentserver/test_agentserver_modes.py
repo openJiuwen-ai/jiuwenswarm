@@ -912,7 +912,7 @@ def test_build_inputs_maps_team_plan_confirm_interrupt_answers_to_interactive_in
             "feedback": "",
         }
     }
-    assert raw_query == ""
+    assert raw_query.text is inputs["query"]
 
 
 def test_build_inputs_maps_team_plan_reject_answers_to_interactive_input(monkeypatch):
@@ -948,7 +948,7 @@ def test_build_inputs_maps_team_plan_reject_answers_to_interactive_input(monkeyp
             "feedback": "把任务拆得再细一点",
         }
     }
-    assert raw_query == ""
+    assert raw_query.text is inputs["query"]
 
 
 def test_build_inputs_preserves_original_request_on_ask_user_answers(monkeypatch):
@@ -1769,7 +1769,8 @@ def test_process_message_stream_treats_plain_team_query_as_first_request_after_r
     # task itself; DeepAgent interaction owns session concurrency, so
     # SessionManager.submit_task is no longer used on this path.
     assert FakeSessionManager.submit_task_calls == []
-    assert fake_adapter.seen_inputs["query"] == "你好"
+    delivered = fake_adapter.seen_inputs["query"]
+    assert json.loads(delivered[delivered.index("{"):])["content"] == "你好"
     assert chunks[0].payload == {"event_type": "chat.done"}
     assert chunks[-1].is_complete is True
 

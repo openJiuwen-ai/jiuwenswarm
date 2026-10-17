@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -113,6 +114,31 @@ def test_legacy_skill_evolution_approval_metadata_is_classified():
     assert result["approval_kind"] == "evolve"
 
 
+def test_permission_interrupt_uses_ask_title_from_metadata():
+    interaction = SimpleNamespace(
+        id="call_perm",
+        value={
+            "message": "write C:\\Users\\hanzhibin\\test1.txt\n\n工具: `write_file`\n",
+            "tool_name": "write_file",
+            "tool_args": {"file_path": r"C:\Users\hanzhibin\test1.txt"},
+            "metadata": {
+                "ask_category": "path",
+                "ask_title": "检测到受保护的文件路径访问",
+                "ask_summary": r"write C:\Users\hanzhibin\test1.txt",
+            },
+            "ui_options": [
+                {"label": "仅本次", "value": "allow_once"},
+                {"label": "拒绝", "value": "reject"},
+            ],
+        },
+    )
+    result = convert_interactions_to_ask_user_question([interaction])
+    assert result is not None
+    assert result["source"] == "permission_interrupt"
+    assert result["questions"][0]["header"] == "检测到受保护的文件路径访问"
+    assert result["questions"][0]["question"].startswith("write ")
+
+
 def _scene_hook_input(normalized_tool_name: str, user_input):
     from openjiuwen.harness.security.host import PermissionSceneHookInput
 
@@ -215,6 +241,25 @@ def test_scene_hook_leaves_other_tools_to_engine(monkeypatch: pytest.MonkeyPatch
     outcome = asyncio.run(hook(_scene_hook_input("bash", None)))
 
     assert outcome is None
+
+
+def test_filter_init_kwargs_drops_unknown_host_fields():
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        _filter_init_kwargs,
+    )
+
+    class LegacyHost:
+        def __init__(self, persist_allow_rule=None, host=None):
+            self.persist_allow_rule = persist_allow_rule
+
+    kwargs = _filter_init_kwargs(
+        LegacyHost,
+        persist_allow_rule=lambda _permissions: True,
+        persist_session_allow_rule=lambda _permissions: True,
+        host="unused",
+    )
+    assert "persist_allow_rule" in kwargs
+    assert "persist_session_allow_rule" not in kwargs
 
 
 def test_build_multi_questions_ignores_string_options():
@@ -667,3 +712,25 @@ async def test_hosted_permission_rail_hook_registry_emit_resolve_roundtrip(
         context_vars.reset_subagent_parent_session(token_parent)
         SubagentApprovalRegistry.reset_instance_for_tests()
 
+
+def test_permission_host_uses_runtime_workspace_not_agent_root(tmp_path, monkeypatch):
+    """file_guard workspace 应是当前任务目录，而不是 ~/.jiuwenswarm/agent/workspace。"""
+    from openjiuwen.core.sys_operation.cwd import _cwd_state, init_cwd
+
+    agent_ws = tmp_path / "workspace"
+    project = agent_ws / "projects" / "web_xxx"
+    project.mkdir(parents=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_workspace_dir",
+        lambda: agent_ws,
+    )
+    token = _cwd_state.set(None)
+    try:
+        init_cwd(str(project), project_root=str(project), workspace=str(project))
+        rail = build_permission_rail({"permissions": {"enabled": True, "mode": "auto"}})
+        assert rail is not None
+        resolved = Path(rail._host.resolve_workspace_dir()).resolve()
+        assert resolved == project.resolve()
+        assert resolved != agent_ws.resolve()
+    finally:
+        _cwd_state.reset(token)
