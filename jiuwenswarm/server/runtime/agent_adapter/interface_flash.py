@@ -813,10 +813,31 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         return rails, removed
 
     async def _update_rails_for_mode(self, mode: str) -> None:
-        """按配置挂载记忆组件，再清理 flash 白名单外的动态 rail。
+        """flash 的 rail 生命周期：闭合白名单，不动态注册全量 rail.
 
-        其他组件仍沿用冷启动裁剪；交互工具由 _set_user_interaction_enabled 管理。
-        内置 memory 沿用 agent 配置，外接记忆和画像使用独立的 engine/provider 条件。
+        父类 ``_update_rails_for_mode``（interface_deep.py:9990，每请求由
+        :10595 调用）调 ``_update_agent_rails()`` 动态注册 ``_context_assemble_rail`` /
+        ``_memory_rail`` / ``_external_memory_rail`` 等 rail——这些大多不在 flash 白名单
+        内，却会绕过 ``_instantiate_rails`` 的冷启动裁剪被挂上，使白名单形同虚设。
+
+        flash 覆盖此方法：**不调** ``_update_agent_rails()``，只做三件事——
+        1. 记 ``_last_mode``（父类首行本就做）；
+        2. 记忆 rail：flash 的统一 memory 工具（FlashMemoryRail）走动态挂载路径，
+           这里按归一后的 agent 档调 ``_handle_memory_rail_by_config``（闸门
+           ``modes.agent.memory.enabled``，未开启则卸载）；``_memory_rail`` 在 keep
+           白名单内，不会被后续卸载步骤误删。外接记忆与云画像沿用父类的
+           engine/provider 配置入口，独立于内置 memory 的模式开关。
+        3. 卸载白名单（``_FLASH_RAIL_KEEP`` ∪ ``_PROFILE_PROTECTED_RAILS``）外的、
+           可能被父类/旧 reload 残留注册的动态 rail。
+
+        白名单内的 rail（task_planning / context_processor / skill 等）冷启动已由
+        ``_instantiate_rails`` 挂好，这里不重复注册。
+
+        关于 ``_ask_user_rail``：它在白名单内，故本方法的卸载步骤**跳过** it——其
+        生命周期交由紧随本方法之后调用的 ``_set_user_interaction_enabled``（interface_deep.py:
+        10599）按 ``supports_user_interaction`` 管理：交互请求挂载、非交互请求卸载。
+        把它留在白名单正是为了避免每请求「本方法卸载→_set_user_interaction_enabled
+        重建」的 churn（参见 PR6431 review #4 修正）。
         """
         self._last_mode = mode
         await self._handle_memory_rail_by_config("agent")

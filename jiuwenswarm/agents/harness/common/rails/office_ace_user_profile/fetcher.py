@@ -18,8 +18,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
 import os
 import tempfile
@@ -72,7 +70,7 @@ class UserProfileFetcher:
     """周期拉取云端用户画像概览，原子写本地缓存。
 
     缓存文件（默认）：
-      * ``~/.office-claw/users/<userId>/user-profile.<source>.md``
+      * ``~/.office-claw/users/<userId>/user-profile.md`` — 概览正文
 
     新鲜度判定读缓存文件 mtime（距上次写 < fetch_interval 即新鲜），无需 meta 边车文件。
 
@@ -87,13 +85,6 @@ class UserProfileFetcher:
         cache_dir: Optional[Path] = None,
     ) -> None:
         self.config = config
-        self._cloud_deployment = os.environ.get("OFFICE_ACE_DEPLOYMENT", "pc").strip().lower() == "cloud"
-        # The same user id can refer to different people across services/spaces.
-        source = json.dumps([
-            self._cloud_deployment, config.endpoint.rstrip("/"), config.space_id,
-            config.user_id, config.api_key,
-        ], ensure_ascii=False)
-        self._source_id = hashlib.sha256(source.encode("utf-8")).hexdigest()
         self._cache_dir = cache_dir or _default_cache_dir(config.user_id)
 
     # ------------------------------------------------------------------
@@ -106,8 +97,7 @@ class UserProfileFetcher:
 
     @property
     def cache_path(self) -> Path:
-        # Keep caches at the user root so the host's logout *.md cleanup covers them.
-        return self._cache_dir / f"user-profile.{self._source_id}.md"
+        return self._cache_dir / "user-profile.md"
 
     # ------------------------------------------------------------------
     # Public API
@@ -227,9 +217,10 @@ class UserProfileFetcher:
             and self.config.user_id,
         )
 
-    def _is_cloud(self) -> bool:
-        """Use the deployment bound at construction, like the cache identity."""
-        return self._cloud_deployment
+    @staticmethod
+    def _is_cloud() -> bool:
+        """True iff OFFICE_ACE_DEPLOYMENT=cloud。"""
+        return os.environ.get("OFFICE_ACE_DEPLOYMENT", "pc").strip().lower() == "cloud"
 
     def _build_url(self) -> str:
         base = self.config.endpoint.rstrip("/")
