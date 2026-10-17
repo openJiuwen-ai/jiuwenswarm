@@ -247,7 +247,9 @@ async def generate_video(request: DesignerVideoRequest, *, save_dir: str | None 
         result = await gen_toolkits.check_video(target, pending.group(1), save_dir)
         pending = _PENDING_JOB.match(result)
     if pending:
-        return {"error": f"[ERROR]: video job {pending.group(1)} did not finish within {int(timeout)}s."}
+        return {
+            "error": f"[ERROR]: video job {pending.group(1)} did not finish within {int(timeout)}s; last={result}"
+        }
     path = None if result.startswith("[ERROR]") else _saved_path(result)
     return {"video_path": path} if path else {"error": result}
 

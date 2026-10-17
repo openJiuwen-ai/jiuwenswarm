@@ -192,6 +192,31 @@ def test_generate_video_waits_for_the_job(
     assert video_request.reference_file_path == str(tmp_path / "storyboard.md")
 
 
+def test_generate_video_keeps_polling_while_provider_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dashscope_video_slot: None
+) -> None:
+    checks = iter([
+        "Video job ds-1 is still unconfirmed - the provider could not be reached "
+        "(ConnectError('[Errno 11001] getaddrinfo failed')). Call check_video_status again to keep waiting.",
+        f"Video generated successfully!\nSaved to: {tmp_path}/v.mp4",
+    ])
+
+    async def fake_submit(*_args: Any) -> str:
+        return "Video job ds-1 submitted and still running after 300s - generation can take several minutes."
+
+    async def fake_check(*_args: Any) -> str:
+        return next(checks)
+
+    async def instant(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(mg.gen_toolkits, "submit_video", fake_submit)
+    monkeypatch.setattr(mg.gen_toolkits, "check_video", fake_check)
+    monkeypatch.setattr(mg.asyncio, "sleep", instant)
+    request = mg.DesignerVideoRequest(prompt="shot", aspect_ratio="16:9", resolution="720P")
+    assert asyncio.run(mg.generate_video(request, save_dir=str(tmp_path))) == {"video_path": f"{tmp_path}/v.mp4"}
+
+
 def test_generate_video_reports_backend_errors_and_bad_references(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dashscope_video_slot: None
 ) -> None:

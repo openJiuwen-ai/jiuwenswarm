@@ -102,6 +102,10 @@ KEYLESS_BACKENDS = (VLLM_OMNI,)
 
 _POLL_INTERVAL_SECONDS = 10
 _PENDING_STATUSES = ("queued", "running")
+# A submitted job keeps rendering (and billing) while the provider is briefly unreachable,
+# so these errors leave the job pending instead of failing it.
+_TRANSIENT_HTTP_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
+_TRANSIENT_REQUESTS_ERRORS = (requests.ConnectionError, requests.Timeout)
 
 _MINIMAX_IMAGE_ASPECT_RATIOS = {"1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16", "21:9"}
 _MINIMAX_IMAGE_MIN_SIDE = 512
@@ -378,6 +382,13 @@ def _pending_submit_message(task_id: str, status: str, elapsed: int, wait_hint: 
     )
 
 
+def _unreachable_job_message(task_id: str, exc: Exception) -> str:
+    return (
+        f"Video job {task_id} is still unconfirmed - the provider could not be reached ({exc!r}). "
+        "Call check_video_status again to keep waiting (do not use shell sleep)."
+    )
+
+
 async def _download_video(
     client: httpx.AsyncClient, task_id: str, url: str, save_dir: str | None, expiry_note: str
 ) -> str:
@@ -386,6 +397,8 @@ async def _download_video(
     try:
         # The download URL is pre-signed - it must not carry the API key.
         content = await client.get(url, follow_redirects=True, timeout=300)
+    except _TRANSIENT_HTTP_ERRORS as exc:
+        return _unreachable_job_message(task_id, exc)
     except httpx.HTTPError as exc:
         return f"[ERROR]: downloading video job {task_id} failed: {exc!r}"
     if content.status_code != 200:
@@ -576,7 +589,11 @@ async def _minimax_submit_video(target: GenerationTarget, request: VideoRequest,
             while status in _PENDING_STATUSES and elapsed < _MINIMAX_MAX_POLL_SECONDS:
                 await asyncio.sleep(_POLL_INTERVAL_SECONDS)
                 elapsed += _POLL_INTERVAL_SECONDS
-                status, task, error = await _minimax_query(client, root, headers, task_id)
+                try:
+                    status, task, error = await _minimax_query(client, root, headers, task_id)
+                except _TRANSIENT_HTTP_ERRORS as exc:
+                    logger.warning("[generate_video] polling MiniMax job %s failed, retrying: %r", task_id, exc)
+                    continue
                 if status == "auth_failed":
                     return _minimax_auth_failure_message([root], error or "")
                 if error:
@@ -637,6 +654,8 @@ async def _minimax_check_video(target: GenerationTarget, task_id: str, save_dir:
             if status in _PENDING_STATUSES:
                 return f"Video job {task_id} is still {status}."
             return await _minimax_finish(client, task_id, status, task, save_dir)
+    except _TRANSIENT_HTTP_ERRORS as exc:
+        return _unreachable_job_message(task_id, exc)
     except httpx.HTTPError as exc:
         return f"[ERROR]: checking MiniMax video job {task_id} failed: {exc!r}"
 
@@ -825,7 +844,11 @@ async def _modelark_submit_video(target: GenerationTarget, request: VideoRequest
             while status in _PENDING_STATUSES and elapsed < _MODELARK_MAX_POLL_SECONDS:
                 await asyncio.sleep(_POLL_INTERVAL_SECONDS)
                 elapsed += _POLL_INTERVAL_SECONDS
-                status, task, query_error = await _modelark_query(client, base, headers, task_id)
+                try:
+                    status, task, query_error = await _modelark_query(client, base, headers, task_id)
+                except _TRANSIENT_HTTP_ERRORS as exc:
+                    logger.warning("[generate_video] polling ModelArk job %s failed, retrying: %r", task_id, exc)
+                    continue
                 if query_error:
                     return query_error
             if status in _PENDING_STATUSES:
@@ -889,6 +912,8 @@ async def _modelark_check_video(target: GenerationTarget, task_id: str, save_dir
                     "(do not use shell sleep)."
                 )
             return await _modelark_finish(client, task_id, status, task, save_dir)
+    except _TRANSIENT_HTTP_ERRORS as exc:
+        return _unreachable_job_message(task_id, exc)
     except httpx.HTTPError as exc:
         return f"[ERROR]: checking ModelArk video job {task_id} failed: {exc!r}"
 
@@ -1182,7 +1207,11 @@ async def _dashscope_submit_video(target: GenerationTarget, request: VideoReques
             while status in _PENDING_STATUSES and elapsed < _DASHSCOPE_MAX_POLL_SECONDS:
                 await asyncio.sleep(_POLL_INTERVAL_SECONDS)
                 elapsed += _POLL_INTERVAL_SECONDS
-                status, output, query_error = await _dashscope_query(client, base, poll_headers, task_id)
+                try:
+                    status, output, query_error = await _dashscope_query(client, base, poll_headers, task_id)
+                except _TRANSIENT_HTTP_ERRORS as exc:
+                    logger.warning("[generate_video] polling DashScope job %s failed, retrying: %r", task_id, exc)
+                    continue
                 if query_error:
                     return query_error
             if status in _PENDING_STATUSES:
@@ -1214,6 +1243,8 @@ async def _dashscope_check_video(target: GenerationTarget, task_id: str, save_di
                     "(do not use shell sleep)."
                 )
             return await _dashscope_finish(client, task_id, status, output, save_dir)
+    except _TRANSIENT_HTTP_ERRORS as exc:
+        return _unreachable_job_message(task_id, exc)
     except httpx.HTTPError as exc:
         return f"[ERROR]: checking DashScope video job {task_id} failed: {exc!r}"
 
@@ -1313,6 +1344,8 @@ async def _vllm_omni_poll(target: GenerationTarget, video_id: str, save_dir: str
             vllm_omni_gen.download_vllm_omni_video_sync,
             api_key=target.api_key, api_base=target.api_base, video_id=video_id, output_path=dest,
         )
+    except _TRANSIENT_REQUESTS_ERRORS as exc:
+        return _unreachable_job_message(video_id, exc)
     except (requests.RequestException, ValueError, OSError) as exc:
         return f"[ERROR]: checking vLLM-Omni video job {video_id} failed: {exc}"
     return f"Video generated successfully!\nSaved to: {dest}\n(job {video_id} - this local file is the durable copy.)"
