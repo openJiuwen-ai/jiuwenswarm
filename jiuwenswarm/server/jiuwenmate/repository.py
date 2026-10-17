@@ -238,6 +238,8 @@ class PersistentAgentRepository(SQLiteStore):
             conn.execute(
                 "DELETE FROM config_versions WHERE namespace_id = ? AND agent_id = ?", (namespace_id, agent_id)
             )
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_group_access'").fetchone():
+                conn.execute("DELETE FROM agent_group_access WHERE namespace_id=? AND agent_id=?", (namespace_id, agent_id))
         return bool(removed)
 
 
