@@ -122,9 +122,7 @@ def load_flash_history(history_path: Union[str, Path]) -> Dict[str, list]:
     return result
 
 
-def rewrite_flash_history(history_path: Union[str, Path], data: Dict[str, Any]) -> None:
-    """按 stock 形状原子重写 JSONL（软删/恢复/截断专用，低频路径）。"""
-    path = Path(history_path)
+def _rewrite_flash_history_unlocked(path: Path, data: Dict[str, Any]) -> None:
     lines = []
     for file_path, entries in data.items():
         if not isinstance(entries, list):
@@ -136,12 +134,18 @@ def rewrite_flash_history(history_path: Union[str, Path], data: Dict[str, Any]) 
                 json.dumps({"file_path": file_path, **entry}, ensure_ascii=False)
             )
     path_str = str(path)
-    with _history_lock(path_str):
-        os.makedirs(os.path.dirname(path_str), exist_ok=True)
-        tmp = path_str + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + ("\n" if lines else ""))
-        os.replace(tmp, path_str)
+    os.makedirs(os.path.dirname(path_str), exist_ok=True)
+    tmp = path_str + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + ("\n" if lines else ""))
+    os.replace(tmp, path_str)
+
+
+def rewrite_flash_history(history_path: Union[str, Path], data: Dict[str, Any]) -> None:
+    """按 stock 形状原子重写 JSONL（软删/恢复/截断专用，低频路径）。"""
+    path = Path(history_path)
+    with _history_lock(str(path)):
+        _rewrite_flash_history_unlocked(path, data)
 
 
 def is_flash_history_name(name: str) -> bool:
