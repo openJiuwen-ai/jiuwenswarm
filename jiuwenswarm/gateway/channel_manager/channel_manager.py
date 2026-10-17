@@ -61,6 +61,9 @@ class ChannelManager(ABC):
         set_delivery_handler = getattr(message_handler, "set_jm09_delivery_handler", None)
         if callable(set_delivery_handler):
             set_delivery_handler(self.deliver_jm09_persistent_result)
+        set_group_handler = getattr(message_handler, "set_jm11_group_handler", None)
+        if callable(set_group_handler):
+            set_group_handler(self.inspect_jm11_group)
         self._channels: dict[ChannelKey, "BaseChannel"] = {}
         self._dispatch_task: asyncio.Task | None = None
         self._running = False
@@ -79,6 +82,26 @@ class ChannelManager(ABC):
         self._dispatch_diag_count: int = 0
         # Channel 连接事件订阅回调列表
         self._channel_event_callbacks: list[Callable[[ChannelEvent], Awaitable[None]]] = []
+
+    async def inspect_jm11_group(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Read current membership only through the exact connected, bound Feishu application."""
+        app_id, chat_id = payload.get("app_id"), payload.get("chat_id")
+        if not all(isinstance(value, str) and value.strip() for value in (app_id, chat_id)):
+            return {"status": "unknown"}
+        matches = [channel for key, channel in self._channels.items()
+                   if key.app_id == app_id and callable(getattr(channel, "inspect_persistent_group", None))]
+        if len(matches) != 1:
+            return {"status": "unknown"}
+        try:
+            ids = payload.get("message_ids", ())
+            if not isinstance(ids, (list, tuple)) or len(ids) > 500 or any(
+                    not isinstance(mid, str) or not mid or len(mid) > 512 for mid in ids):
+                return {"status": "unknown"}
+            if ids:
+                return await asyncio.wait_for(matches[0].inspect_persistent_group(chat_id, tuple(ids)), timeout=8)
+            return await asyncio.wait_for(matches[0].inspect_persistent_group(chat_id), timeout=8)
+        except Exception:
+            return {"status": "unknown"}
 
     async def deliver_jm09_persistent_result(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Resolve exactly one active Feishu app; never fall back to another Bot.
