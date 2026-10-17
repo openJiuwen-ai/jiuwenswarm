@@ -196,6 +196,12 @@ def _infer_tool_result_error(value: Any) -> bool | None:
                 return True
             if _boolish_true(value.get("success")):
                 return False
+        # ``ok`` 是仓库通用失败约定（sdd_advance 的 stage 拒绝、CLI JSON
+        # 输出、随包 skill 脚本与 skill_manager 均以 {"ok": False, ...}
+        # 表失败）。只读 False：ok=True 不判定成功，让 exit_code 等其余
+        # 失败信号继续参与判读。
+        if _boolish_false(value.get("ok")):
+            return True
         if _boolish_true(value.get("is_error")) or _boolish_true(value.get("isError")):
             return True
         status = value.get("status")
@@ -233,6 +239,8 @@ def _infer_tool_result_error(value: Any) -> bool | None:
             if parsed_error is not None:
                 return parsed_error
         if re.search(r"\bsuccess\s*[:=]\s*False\b", text, re.IGNORECASE):
+            return True
+        if re.search(r"\bok\s*[:=]\s*False\b", text, re.IGNORECASE):
             return True
         if text.startswith("[ERROR]"):
             return True
