@@ -26,6 +26,59 @@ class TeamEventCategory(str, Enum):
     MESSAGE = "team.message"
 
 
+class TeamEventType(str, Enum):
+    """Team 事件类型枚举.
+    
+    命名规范: team.{category}.{action}
+    - member: 成员相关事件
+    - task: 任务相关事件
+    - message: 消息相关事件
+    """
+    
+    # 成员事件
+    MEMBER_SPAWNED = "team.member.spawned"
+    MEMBER_STATUS_CHANGED = "team.member.status_changed"
+    MEMBER_EXECUTION_CHANGED = "team.member.execution_changed"
+    MEMBER_RESTARTED = "team.member.restarted"
+    MEMBER_SHUTDOWN = "team.member.shutdown"
+    
+    # 任务事件
+    TASK_CREATED = "team.task.created"
+    TASK_CLAIMED = "team.task.claimed"
+    TASK_COMPLETED = "team.task.completed"
+    TASK_CANCELLED = "team.task.cancelled"
+    TASK_UNBLOCKED = "team.task.unblocked"
+    
+    # 消息事件
+    MESSAGE_P2P = "team.message.p2p"
+    MESSAGE_BROADCAST = "team.message.broadcast"
+
+    # 验证事件
+    VERIFICATION_COMPLETED = "team.verification.completed"
+    VERIFICATION_ERROR = "team.verification.error"
+
+
+EVENT_TYPE_TO_CATEGORY: dict[TeamEventType, TeamEventCategory] = {
+    # 成员事件
+    TeamEventType.MEMBER_SPAWNED: TeamEventCategory.MEMBER,
+    TeamEventType.MEMBER_STATUS_CHANGED: TeamEventCategory.MEMBER,
+    TeamEventType.MEMBER_EXECUTION_CHANGED: TeamEventCategory.MEMBER,
+    TeamEventType.MEMBER_RESTARTED: TeamEventCategory.MEMBER,
+    TeamEventType.MEMBER_SHUTDOWN: TeamEventCategory.MEMBER,
+    # 任务事件
+    TeamEventType.TASK_CREATED: TeamEventCategory.TASK,
+    TeamEventType.TASK_CLAIMED: TeamEventCategory.TASK,
+    TeamEventType.TASK_COMPLETED: TeamEventCategory.TASK,
+    TeamEventType.TASK_CANCELLED: TeamEventCategory.TASK,
+    TeamEventType.TASK_UNBLOCKED: TeamEventCategory.TASK,
+    # 消息事件
+    TeamEventType.MESSAGE_P2P: TeamEventCategory.MESSAGE,
+    TeamEventType.MESSAGE_BROADCAST: TeamEventCategory.MESSAGE,
+    # 验证事件
+    TeamEventType.VERIFICATION_COMPLETED: TeamEventCategory.TASK,
+    TeamEventType.VERIFICATION_ERROR: TeamEventCategory.TASK,
+}
+
 # 不符合 ``<category>_<action>`` 结构、无法从 SDK 事件值推导的特例。
 _TYPE_OVERRIDES: dict[MonitorEventType, str] = {
     MonitorEventType.MESSAGE: "team.message.p2p",
