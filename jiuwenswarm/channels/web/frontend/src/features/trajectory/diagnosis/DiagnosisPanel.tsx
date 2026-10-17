@@ -29,12 +29,14 @@ import { formatElapsed } from './diagnosisTimeSelection';
 import {
   DIAGNOSIS_PROGRESS_EVENT,
   DIAGNOSIS_STATUS_EVENT,
+  asRewardPayload,
   type DiagnosisProgressEvent,
   type DiagnosisRecord,
   type DiagnosisScope,
   type SelectionRange,
   type DiagnosisStatusEvent,
   type DiagnosisSummary,
+  type RewardPayload,
 } from './diagnosisTypes';
 import css from './DiagnosisPanel.module.css';
 
@@ -475,6 +477,11 @@ export const DiagnosisPanel = memo(function DiagnosisPanel({
   return (
     <div className={css.root} aria-label={t('trajectory.diagnosis.panelTitle')} data-testid="trajectory-diagnosis-panel">
       {controls}
+      {selection !== null && !fullScope ? (
+        <p className={css.notice} data-testid="trajectory-diagnosis-selection-trim-hint">
+          {t('trajectory.diagnosis.selectionTrimHint')}
+        </p>
+      ) : null}
       {notice === null ? null : (
         <p
           className={`${css.notice} ${notice.kind === 'error' ? css.noticeError : ''}`}
@@ -570,9 +577,11 @@ function DiagnosisRecordView({
             <div className={css.cause} key={cause.id} data-testid="trajectory-diagnosis-root-cause">
               <div className={css.causeHead}>
                 <span className={css.badge}>{t(`trajectory.diagnosis.category.${cause.category}`)}</span>
-                <span className={css.hint}>
-                  {t('trajectory.diagnosis.confidence', { value: Math.round(cause.confidence * 100) })}
-                </span>
+                {cause.confidence === undefined || cause.confidence === null ? null : (
+                  <span className={css.hint}>
+                    {t('trajectory.diagnosis.confidence', { value: Math.round(cause.confidence * 100) })}
+                  </span>
+                )}
                 <span className={css.spacer} />
                 <button
                   type="button"
@@ -590,6 +599,7 @@ function DiagnosisRecordView({
           ))}
         </div>
       ) : null}
+      {done ? <RewardSection reward={asRewardPayload(record.reward)} /> : null}
         </div>
       </section>
 
@@ -670,5 +680,80 @@ function DiagnosisRecordView({
         </div>
       </section>
     </>
+  );
+}
+
+interface RewardSectionProps {
+  reward: RewardPayload | null;
+}
+
+/** Structured Reward evaluation (overall / categories / dimensions) plus the raw payload. */
+function RewardSection({ reward }: RewardSectionProps) {
+  const { t } = useTranslation();
+  if (reward === null) return null;
+  return (
+    <div data-testid="trajectory-diagnosis-reward">
+      <h3 className={css.blockTitle}>{t('trajectory.diagnosis.rewardTitle')}</h3>
+      <div className={css.rewardOverall} data-testid="trajectory-diagnosis-reward-overall">
+        <span className={css.badge}>
+          {t('trajectory.diagnosis.rewardTotal', { score: reward.overall.total_score })}
+        </span>
+        <span className={css.hint}>{reward.overall.comment}</span>
+      </div>
+      {reward.categories.length === 0 ? null : (
+        <table className={css.rewardTable} data-testid="trajectory-diagnosis-reward-categories">
+          <thead>
+            <tr>
+              <th>{t('trajectory.diagnosis.rewardCategoryName')}</th>
+              <th>{t('trajectory.diagnosis.rewardScore')}</th>
+              <th>{t('trajectory.diagnosis.rewardComment')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {reward.categories.map(category => (
+              <tr key={category.name} data-testid="trajectory-diagnosis-reward-category" data-variant={category.name}>
+                <td>{category.name}</td>
+                <td>{category.score === undefined ? '' : category.score}</td>
+                <td>{category.comment ?? ''}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {reward.dimensions.length === 0 ? null : (
+        <table className={css.rewardTable} data-testid="trajectory-diagnosis-reward-dimensions">
+          <thead>
+            <tr>
+              <th>{t('trajectory.diagnosis.rewardCategoryName')}</th>
+              <th>{t('trajectory.diagnosis.rewardRequirement')}</th>
+              <th>{t('trajectory.diagnosis.rewardScore')}</th>
+              <th>{t('trajectory.diagnosis.rewardComment')}</th>
+              <th>{t('trajectory.diagnosis.rewardRelatedSignals')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {reward.dimensions.map((dimension, index) => (
+              <tr
+                key={`${dimension.category}-${index}`}
+                data-testid="trajectory-diagnosis-reward-dimension"
+                data-variant={`${dimension.category}-${index}`}
+              >
+                <td>{dimension.category}</td>
+                <td>{dimension.requirement}</td>
+                <td>{dimension.score}</td>
+                <td>{dimension.comment}</td>
+                <td>{(dimension.related_signal_ids ?? []).join(', ')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <details className={css.rewardRaw}>
+        <summary data-testid="trajectory-diagnosis-reward-raw-toggle">{t('trajectory.diagnosis.rewardRaw')}</summary>
+        <pre className={css.output} data-testid="trajectory-diagnosis-reward-raw">
+          {JSON.stringify(reward, null, 2)}
+        </pre>
+      </details>
+    </div>
   );
 }

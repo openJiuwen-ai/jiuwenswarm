@@ -87,7 +87,8 @@ export interface RootCause {
   refs: StepRef[];
   summary: string;
   evidence: string;
-  confidence: number;
+  /** Nullable: engines without a confidence model leave it unset. */
+  confidence?: number | null;
 }
 
 export interface SkillSuggestion {
@@ -149,6 +150,75 @@ export interface DiagnosisRecord extends DiagnosisSummary {
   suggestions: DiagnosisSuggestions;
   ttse_trigger: Record<string, TtseTriggerResult>;
   error?: { code: string; message: string };
+  /** Full Reward evaluation payload (``attribution.reward.v1``); absent when skipped. */
+  reward?: RewardPayload;
+}
+
+/** One Reward evaluation dimension carried by the ``reward`` payload. */
+export interface RewardDimension {
+  category: string;
+  requirement: string;
+  comment: string;
+  score: number;
+  related_signal_ids?: string[];
+}
+
+/** One Reward evaluation category carried by the ``reward`` payload. */
+export interface RewardCategory {
+  name: string;
+  comment?: string;
+  score?: number;
+}
+
+/** The ``attribution.reward.v1`` payload the backend stores on a record. */
+export interface RewardPayload {
+  schema_version: string;
+  overall: { comment: string; total_score: number };
+  categories: RewardCategory[];
+  dimensions: RewardDimension[];
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/** Narrow an unknown wire value to a Reward payload; malformed shapes yield null. */
+export function asRewardPayload(value: unknown): RewardPayload | null {
+  if (!isObject(value)) return null;
+  const overall = value.overall;
+  if (!isObject(overall) || typeof overall.comment !== 'string' || typeof overall.total_score !== 'number') {
+    return null;
+  }
+  const categories = (Array.isArray(value.categories) ? value.categories : [])
+    .filter((item): item is Record<string, unknown> => isObject(item) && typeof item.name === 'string')
+    .map((item) => ({
+      name: String(item.name),
+      ...(typeof item.comment === 'string' ? { comment: item.comment } : {}),
+      ...(typeof item.score === 'number' ? { score: item.score } : {}),
+    }));
+  const dimensions = (Array.isArray(value.dimensions) ? value.dimensions : [])
+    .filter((item): item is Record<string, unknown> => (
+      isObject(item)
+      && typeof item.category === 'string'
+      && typeof item.requirement === 'string'
+      && typeof item.comment === 'string'
+      && typeof item.score === 'number'
+    ))
+    .map((item) => ({
+      category: String(item.category),
+      requirement: String(item.requirement),
+      comment: String(item.comment),
+      score: Number(item.score),
+      ...(Array.isArray(item.related_signal_ids)
+        ? { related_signal_ids: item.related_signal_ids.map(String) }
+        : {}),
+    }));
+  return {
+    schema_version: typeof value.schema_version === 'string' ? value.schema_version : '',
+    overall: { comment: overall.comment, total_score: overall.total_score },
+    categories,
+    dimensions,
+  };
 }
 
 export interface DiagnosisProgressEvent {

@@ -123,6 +123,37 @@ function stepKeyOfRecordId(recordId: string): string | null {
   return second < 0 ? recordId : recordId.slice(0, second)
 }
 
+/**
+ * JiuwenSwarm extension: extract every `traceId:spanId` anchor carried by a
+ * v2 event cell's raw OTLP export record (`cell.traceDetail`). v2 cell record
+ * ids are `v2:<subject>:<eventId>:<suffix>` and can never match a span anchor
+ * directly, so the diagnosis highlighter falls back to these anchors.
+ */
+function stepKeysOfTraceDetail(traceDetail: unknown): ReadonlySet<string> | null {
+  if (typeof traceDetail !== 'object' || traceDetail === null) return null
+  const resourceSpans = (traceDetail as { resourceSpans?: unknown }).resourceSpans
+  if (!Array.isArray(resourceSpans)) return null
+  const keys = new Set<string>()
+  for (const resourceSpan of resourceSpans) {
+    if (typeof resourceSpan !== 'object' || resourceSpan === null) continue
+    const scopeSpans = (resourceSpan as { scopeSpans?: unknown }).scopeSpans
+    if (!Array.isArray(scopeSpans)) continue
+    for (const scopeSpan of scopeSpans) {
+      if (typeof scopeSpan !== 'object' || scopeSpan === null) continue
+      const spans = (scopeSpan as { spans?: unknown }).spans
+      if (!Array.isArray(spans)) continue
+      for (const span of spans) {
+        if (typeof span !== 'object' || span === null) continue
+        const { traceId, spanId } = span as { traceId?: unknown; spanId?: unknown }
+        if (typeof traceId === 'string' && typeof spanId === 'string' && traceId !== '' && spanId !== '') {
+          keys.add(`${traceId}:${spanId}`)
+        }
+      }
+    }
+  }
+  return keys
+}
+
 function searchIndexes(
   index: TrajectorySearchIndex,
   layouts: readonly (readonly TrajectoryTurnModel[])[],
@@ -264,8 +295,21 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
     for (const turn of turns) {
       for (const group of turn.groups) {
         for (const cell of group.cells) {
-          const key = stepKeyOfRecordId(trajectoryRecordId(cell))
-          if (key !== null && highlightStepKeys.has(key)) matches.add(cell.index)
+          const recordId = trajectoryRecordId(cell)
+          const key = stepKeyOfRecordId(recordId)
+          if (key !== null && highlightStepKeys.has(key)) {
+            matches.add(cell.index)
+            continue
+          }
+          // JiuwenSwarm extension: v2 event cells expose the raw OTLP export
+          // record; match its span anchors so diagnosis evidence can light
+          // message rows up as well.
+          if (recordId.startsWith('v2:')) {
+            const detailKeys = stepKeysOfTraceDetail(cell.traceDetail)
+            if (detailKeys !== null && [...detailKeys].some(item => highlightStepKeys.has(item))) {
+              matches.add(cell.index)
+            }
+          }
         }
       }
     }
