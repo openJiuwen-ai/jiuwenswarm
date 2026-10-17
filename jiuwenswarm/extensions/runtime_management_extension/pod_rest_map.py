@@ -29,6 +29,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("initialize", "POST", "/initialize"),
     ("session.list", "GET", "/sessions"),
     ("session.create", "POST", "/sessions"),
+    ("session.get_metadata", "GET", "/sessions/{session_id}"),
     ("session.rename", "PATCH", "/sessions/{session_id}"),
     ("session.delete", "DELETE", "/sessions/{session_id}"),
     ("session.switch", "POST", "/sessions/{session_id}/actions/switch"),
@@ -256,6 +257,21 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("workspace.entries.delete", "DELETE", "/workspace/entries"),
     ("workspace.preview", "GET", "/workspace/preview"),
     ("workspace.download", "GET", "/workspace/download"),
+    # 项目数据在 AgentServer 的 ProjectAdapter 里。路径与北向 Gateway 路由一致。
+    # 固定路径要排在 {project_id} 前面，避免被路径参数抢走。
+    ("project.list", "GET", "/projects"),
+    ("project.pinned_sessions", "GET", "/projects/pinned-sessions"),
+    ("project.create", "POST", "/projects"),
+    ("project.restore", "POST", "/projects/actions/restore"),
+    ("project.info", "GET", "/projects/{project_id}"),
+    ("project.get_sessions", "GET", "/projects/{project_id}/sessions"),
+    ("project.get_cron_sessions", "GET", "/projects/{project_id}/cron-sessions"),
+    ("project.rename", "PATCH", "/projects/{project_id}"),
+    ("project.pin", "POST", "/projects/{project_id}/actions/pin"),
+    ("project.remove", "DELETE", "/projects/{project_id}"),
+    # 语言配置在 AgentServer 的 ConfigAdapter。个人版 WebSocket 客户端仍由 Gateway 本地读写。
+    ("locale.get_conf", "GET", "/locale"),
+    ("locale.set_conf", "PUT", "/locale"),
 )
 
 REST_ROUTES: dict[str, tuple[str, str]] = {method: (verb, path) for method, verb, path in _ROUTE_ROWS}

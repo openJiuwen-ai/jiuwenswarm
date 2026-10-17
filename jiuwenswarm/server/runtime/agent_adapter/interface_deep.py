@@ -6975,6 +6975,42 @@ class JiuWenSwarmDeepAdapter:
             return hint.strip()[:500]
         return "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
 
+    async def _ensure_enterprise_models(self, request: AgentRequest) -> None:
+        """把本次请求对应的企业模型模板写入进程内模型缓存。
+
+        列表接口读的是 Gateway 上的 ``model_template``；对话进程只在
+        ``create_instance`` 时合并配置。预热出来的会话没有 request，缓存里仍是
+        本地空配置，这里在真正校验前按 routing 补一次。
+        """
+        from jiuwenswarm.edition import is_enterprise
+
+        if not is_enterprise() or not self._is_session_scoped_adapter:
+            return
+        requested = self._requested_model_name(request)
+        if self._has_valid_model_config(requested):
+            return
+        base = self._config_base_cache if isinstance(self._config_base_cache, dict) else {}
+        try:
+            result = await self._load_enterprise_config(request, base=base)
+        except Exception:  # noqa: BLE001 — 读库失败时保持原有“未配置模型”提示
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] enterprise model load failed before chat",
+                exc_info=True,
+            )
+            return
+        loaded = getattr(result, "policy", None)
+        if loaded is None or not getattr(loaded, "models", None):
+            return
+        config_base = result.config if isinstance(result.config, dict) else base
+        self._config_base_cache = dict(config_base)
+        try:
+            self._create_model(config_base)
+        except ValueError:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] enterprise model entries are not usable",
+                exc_info=True,
+            )
+
     def _model_config_error(self, request: AgentRequest) -> tuple[str, str] | None:
         requested = self._requested_model_name(request)
         scoped = self._scoped_login_auth(request)
@@ -15667,6 +15703,7 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             raise RuntimeError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
 
+        await self._ensure_enterprise_models(request)
         _model_error = self._model_config_error(request)
         if _model_error is not None:
             return AgentResponse(
@@ -16357,6 +16394,7 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             raise RuntimeError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
 
+        await self._ensure_enterprise_models(request)
         _model_error = self._model_config_error(request)
         if _model_error is not None:
             yield AgentResponseChunk(

@@ -54,8 +54,9 @@ async def authorize_agent(envelope: E2AEnvelope) -> tuple[str, str, str] | None:
     # Do not cache admission: revocation and expiry apply to the next request.
     row = await repo.get(resource_id=bot_id)
     allowed = False
-    # PostgreSQL 读回 bool，MySQL 的布尔编解码器读回 1/0。
-    if row is not None and row.get("enabled") == 1:
+    # PostgreSQL 读回 bool，MySQL 布尔编解码器读回 1/0。
+    enabled = row.get("enabled") if row is not None else None
+    if row is not None and enabled in (1, True, "1"):
         try:
             expiry = row.get("expires_at")
             if isinstance(expiry, str):

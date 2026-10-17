@@ -4,6 +4,7 @@ import { A2UIProvider } from '@a2ui/react';
 import type { A2UIClientEventMessage } from '@a2ui/react';
 import { injectStyles } from '@a2ui/react/styles';
 import App from './App.tsx'
+import { EnterpriseEntry } from './EnterpriseEntry.tsx'
 import { ShareImageExportRunner } from './features/shareImageExport'
 import { openSourceSettingsPageDefinition } from './features/settings/registry/openSourceDefinition'
 import type { SettingsRequest } from './features/settings/services/settingsContract'
@@ -62,10 +63,12 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         locale={runnerQuery.get('locale')}
       />
     ) : (
-      <App
-        settingsPageDefinition={openSourceSettingsPageDefinition}
-        resolveSettingsRequest={resolveOpenSourceSettingsRequest}
-      />
+      <EnterpriseEntry>
+        <App
+          settingsPageDefinition={openSourceSettingsPageDefinition}
+          resolveSettingsRequest={resolveOpenSourceSettingsRequest}
+        />
+      </EnterpriseEntry>
     )}
   </A2UIProvider>,
 )
