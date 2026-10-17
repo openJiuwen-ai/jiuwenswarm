@@ -294,6 +294,27 @@ async def test_replace_all_within_hunk(sys_op, temp_dir):
     assert Path(file_path).read_text(encoding="utf-8") == "z\nz\nz\ny\n"
 
 
+async def test_replace_all_many_matches_uses_one_pass_join(sys_op, temp_dir):
+    """大量匹配不能退化为“匹配次数 × 文件长度”的反复整文复制。"""
+    read_tool, edit_tool, _ = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "replace-all-many.txt")
+    matches = 65_536
+    Path(file_path).write_bytes(b"x" * matches)
+
+    assert (await read_tool.invoke({"file_path": file_path})).success is True
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": True,
+    })
+
+    assert result.success is True, result.error
+    assert result.data["replacements"] == matches
+    assert Path(file_path).read_bytes() == b"y" * matches
+
+
 async def test_crlf_eol_preserved(sys_op, temp_dir):
     read_tool, edit_tool, _ = _make_tools(sys_op)
     file_path = os.path.join(temp_dir, "crlf.txt")
@@ -309,6 +330,70 @@ async def test_crlf_eol_preserved(sys_op, temp_dir):
 
     assert result.success is True, result.error
     assert Path(file_path).read_bytes() == b"first\r\nSECOND\r\n", "CRLF 必须按原样保留"
+
+
+async def test_mixed_eol_preserved_and_cache_falls_back_to_fresh_read(sys_op, temp_dir):
+    """混合 LF/CRLF 不能用“LF 快照 + 单一 EOL”重建，必须回退原始全量读。"""
+    read_tool, edit_tool, proxy = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "mixed-eol.txt")
+    Path(file_path).write_bytes(b"first\r\nsecond\nthird\r\n")
+
+    assert (await read_tool.invoke({"file_path": file_path})).success is True
+    reads_after_read = proxy.fs_proxy.read_calls
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "second",
+        "new_string": "SECOND",
+    })
+
+    assert result.success is True, result.error
+    assert proxy.fs_proxy.read_calls == reads_after_read + 1, "混合 EOL 必须回退一次原始读"
+    assert Path(file_path).read_bytes() == b"first\r\nSECOND\nthird\r\n", "未编辑区域的换行必须逐字节保留"
+
+
+async def test_mixed_eol_history_keeps_exact_content(sys_op, temp_dir, monkeypatch):
+    """history 必须保存混合换行原文，否则 /rewind 会恢复错误版本。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.flash.tools.flash_edit_tool.get_current_session",
+        lambda: _FakeSession(),
+    )
+    monkeypatch.setattr(flash_file_history, "get_workspace", lambda: str(temp_dir))
+
+    read_tool, edit_tool, _ = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "mixed-eol-history.txt")
+    Path(file_path).write_bytes(b"first\r\nsecond\nthird\r\n")
+    assert (await read_tool.invoke({"file_path": file_path})).success is True
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "second",
+        "new_string": "SECOND",
+    })
+    assert result.success is True, result.error
+
+    history_path = Path(temp_dir) / ".agent_history" / "file_ops_flash_flash-edit-agent_sess-flash-edit.jsonl"
+    entries = flash_file_history.load_flash_history(history_path)[file_path]
+    assert len(entries) == 1
+    assert entries[0]["old_content"] == "first\r\nsecond\nthird\r\n"
+    assert entries[0]["new_content"] == "first\r\nSECOND\nthird\r\n"
+
+
+async def test_mixed_eol_replacement_uses_local_newline_style(sys_op, temp_dir):
+    read_tool, edit_tool, _ = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "mixed-eol-newline.txt")
+    Path(file_path).write_bytes(b"first\r\nsecond\nthird\r\n")
+
+    assert (await read_tool.invoke({"file_path": file_path})).success is True
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "second\nthird",
+        "new_string": "SECOND\nTHIRD",
+    })
+
+    assert result.success is True, result.error
+    assert Path(file_path).read_bytes() == b"first\r\nSECOND\nTHIRD\r\n"
 
 
 async def test_create_new_file(sys_op, temp_dir):
