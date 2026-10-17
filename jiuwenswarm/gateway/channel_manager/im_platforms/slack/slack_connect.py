@@ -137,6 +137,8 @@ class SlackChannel(BaseChannel):
             return
 
         channel_id, thread_ts = self._extract_delivery(msg, routing_target)
+        if (msg.metadata or {}).get("post_as_root"):
+            thread_ts = ""
         if not channel_id:
             logger.warning("SlackChannel send skipped: missing target channel id")
             return
