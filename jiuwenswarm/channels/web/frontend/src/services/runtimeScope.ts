@@ -38,6 +38,14 @@ export function parseRuntimeScope(search: string): RuntimeScope {
 let runtimeScope: RuntimeScope =
   typeof window === 'undefined' ? {} : parseRuntimeScope(window.location.search);
 
+export function setRuntimeScope(scope: RuntimeScope): void {
+  runtimeScope = {
+    userId: scope.userId?.trim() || undefined,
+    groupId: scope.groupId?.trim() || undefined,
+    botId: scope.botId?.trim() || undefined,
+  };
+}
+
 export function getRuntimeScope(): RuntimeScope {
   if (typeof window === 'undefined') {
     return runtimeScope;
@@ -54,6 +62,35 @@ export function getRuntimeScope(): RuntimeScope {
     if (fallback) runtimeScope = { ...runtimeScope, userId: fallback };
   }
   return runtimeScope;
+}
+
+function isByteString(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) > 255) return false;
+  }
+  return true;
+}
+
+/** HTTP 请求头里的路由身份。业务参数仍留在 body / query。 */
+export function buildRuntimeIdentityHeaders(
+  requestId: string,
+  params: Record<string, unknown>,
+  scope: RuntimeScope = getRuntimeScope(),
+): Record<string, string> {
+  const headers: Record<string, string> = { 'X-Request-Id': requestId };
+  const userId = scope.userId ?? pickString(params.user_id);
+  const groupId = scope.groupId ?? pickString(params.group_id);
+  const botId = scope.botId ?? pickString(params.bot_id);
+  const sessionId = pickString(params.session_id);
+  const token = typeof localStorage === 'undefined'
+    ? ''
+    : (localStorage.getItem('openjiuwen_access_token')?.trim() ?? '');
+  if (userId && isByteString(userId)) headers['X-User-Id'] = userId;
+  if (groupId && isByteString(groupId)) headers['X-Group-Id'] = groupId;
+  if (botId && isByteString(botId)) headers['X-Bot-Id'] = botId;
+  if (token && isByteString(token)) headers.Authorization = `Bearer ${token}`;
+  if (sessionId && isByteString(sessionId)) headers['X-Session-Id'] = sessionId;
+  return headers;
 }
 
 /** 把当前 runtime scope 写入 WebSocket 握手 query（最小三元组下发）。 */

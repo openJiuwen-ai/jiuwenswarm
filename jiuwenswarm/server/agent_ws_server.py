@@ -787,6 +787,7 @@ class AgentWebSocketServer:
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
         ):
             self._adapter_registry.register(adapter)
+        self._ensure_app_services().adapter_registry = self._adapter_registry
         # AgentServer-side tokenizer cache/download service. The Gateway only
         # persists model profiles and notifies this process to refresh them.
         self._tokenizer_service = TokenizerService()
@@ -1587,6 +1588,7 @@ class AgentWebSocketServer:
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
                 ):
                     self._adapter_registry.register(adapter)
+                self._ensure_app_services().adapter_registry = self._adapter_registry
 
         try:
             from jiuwenswarm.symphony.service import get_swarm_symphony_service

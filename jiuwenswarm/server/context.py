@@ -105,6 +105,11 @@ class AgentServerServices:
             return override(agent)
         return resolve_adapter(agent)
 
+    @property
+    def adapter_registry(self) -> Any:
+        """当前进程的用户业务适配器。项目列表这类方法由这里执行。"""
+        return self._app.adapter_registry
+
     def execution_runtime(self) -> Any:
         """会话和对话共用的运行时。切换会话、记下用户正在输入，都走这里。"""
         override = self._overridden("_execution_runtime", "execution_runtime")

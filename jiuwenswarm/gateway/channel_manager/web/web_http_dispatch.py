@@ -163,6 +163,7 @@ async def dispatch_http_request(
         query,
         {"user_id": user_id} if user_id else None,
     )
+    setattr(outbound, "_web_routing", _routing)
     _meta = apply_routing_metadata(
         {
             "query": query,

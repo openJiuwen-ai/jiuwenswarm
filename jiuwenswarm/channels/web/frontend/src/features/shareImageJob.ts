@@ -96,6 +96,8 @@ export async function findShareImageJobForSession(
     { cache: 'no-store' },
   );
   if (activeResponse.status === 404) return null;
+  const payload = await activeResponse.clone().json().catch(() => null) as { job?: unknown } | null;
+  if (payload != null && payload.job === null) return null;
   const status = await readShareImageJobResponse(activeResponse);
   assertJobMatchesSession(status, sessionId);
   rememberPendingShareImageJob(storage, sessionId, status.job_id);

@@ -1066,7 +1066,7 @@ async def handle_history_get_page(ctx: RequestContext) -> None:
     request = ctx.request
     params = request.params if isinstance(request.params, dict) else {}
     session_id = params.get("session_id")
-    page_idx = params.get("page_idx")
+    page_idx = _coerce_query_int(params.get("page_idx"))
     subagent_id = params.get("subagent_id")
     data = get_conversation_history(
         session_id=session_id,
@@ -1100,13 +1100,33 @@ async def handle_history_get_page(ctx: RequestContext) -> None:
         )
     await ctx.sink.send_response(resp)
 
+def _coerce_query_int(value: Any) -> Any:
+    """HTTP 查询串里的数字是字符串。历史分页只接受真正的 int。"""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lstrip("-").isdigit():
+            return int(text)
+    return value
+
+
 async def handle_history_get_stream(ctx: RequestContext) -> None:
     request = ctx.request
-    params = request.params if isinstance(request.params, dict) else {}
+    params = dict(request.params) if isinstance(request.params, dict) else {}
+    if "page_idx" in params:
+        params["page_idx"] = _coerce_query_int(params.get("page_idx"))
+    if "limit" in params:
+        params["limit"] = _coerce_query_int(params.get("limit"))
+    if isinstance(params.get("cursor"), str) and not str(params.get("cursor")).strip():
+        params["cursor"] = None
     session_id = params.get("session_id")
     page_idx = params.get("page_idx")
-    cursor_protocol = "cursor" in params
-    request_cursor = params.get("cursor")
+    # 页面初次拉历史会带 limit、不带 page_idx。cursor 为空时查询串可能仍留下空键。
+    cursor_protocol = "cursor" in params or (
+        "limit" in params and "page_idx" not in params
+    )
+    request_cursor = params.get("cursor") if cursor_protocol else None
+    if isinstance(request_cursor, str) and not request_cursor.strip():
+        request_cursor = None
     subagent_id = params.get("subagent_id")
     try:
         if cursor_protocol:

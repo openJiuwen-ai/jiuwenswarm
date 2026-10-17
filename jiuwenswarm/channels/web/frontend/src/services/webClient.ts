@@ -8,7 +8,8 @@ import {
   WsRequest,
   WsResponse,
 } from '../types';
-import { getWsBase } from '../utils/env';
+import { getWebTransport, getWsBase } from '../utils/env';
+import { WebHttpClient } from './webHttpClient';
 import i18n from '../i18n';
 import { appendRuntimeScopeQuery } from './runtimeScope';
 import { GoalRecord } from '../types/goal';
@@ -27,6 +28,20 @@ interface PendingRequest {
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT_MS = 15000;
+
+/** 暂停期间暂存、恢复后回放的流式事件 */
+export const PAUSABLE_STREAM_EVENTS = new Set([
+  'chat.delta', 'chat.final', 'chat.media', 'chat.file',
+  'chat.tool_call', 'chat.tool_result', 'chat.tool_update',
+  'chat.reasoning',
+  'todo.updated', 'context.compressed', 'context.usage',
+  'chat.subtask_update', 'chat.subagent_activity', 'chat.usage_summary',
+]);
+
+export interface PauseBufferHook {
+  isActive: () => boolean;
+  onBuffer: (event: WsEvent) => void;
+}
 
 const LEGACY_EVENT_MAP: Record<string, string> = {
   connection_ack: 'connection.ack',
@@ -621,7 +636,8 @@ class WebClient {
   }
 }
 
-export const webClient = new WebClient();
+export const webClient =
+  getWebTransport() === 'http' ? new WebHttpClient() : new WebClient();
 
 export async function webRequest<T = unknown>(
   method: string,
