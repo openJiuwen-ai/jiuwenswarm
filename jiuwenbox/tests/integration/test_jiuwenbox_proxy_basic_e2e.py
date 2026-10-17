@@ -3,7 +3,7 @@
 JiuwenBox Proxy Basic 认证测试脚本
 =================================
 测试环境:
-  - 测试机: 7.221.53.146 (root / Cjdoe_135)
+  - 测试机: 由环境变量 JIUWENBOX_TEST_HOST / JIUWENBOX_TEST_SSH_USER / JIUWENBOX_TEST_SSH_PWD 指定
   - 软件目录: /jiuwenbox/proxyhttpbasic/
 
 测试内容:
@@ -34,6 +34,7 @@ sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 # 配置 logging
+# Test-only logging configuration; production deployments should restrict log file access to administrators
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(message)s',
@@ -43,11 +44,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== 环境常量 =====
-HOST = "7.221.53.146"
-SSH_USER = "root"
-SSH_PWD = "Cjdoe_135"
+# Security: all sensitive values are read from environment variables.
+# Do NOT hardcode credentials, IPs, or internal paths in source.
+# 127.0.0.1 is used throughout embedded test scripts as the local loopback address; not a hardcoded production IP
+HOST = os.getenv("JIUWENBOX_TEST_HOST", "127.0.0.1")
+SSH_USER = os.getenv("JIUWENBOX_TEST_SSH_USER", "root")
+SSH_PWD = os.getenv("JIUWENBOX_TEST_SSH_PWD", "")
 TIMEOUT = 120
-WORK_DIR = r"D:\CJDUBS\0805jiuwenboxProxyBasic\design"
+WORK_DIR = os.getenv("JIUWENBOX_TEST_WORK_DIR", os.path.join(os.getenv("TEMP", "/tmp"), "jiuwenbox_tests"))
+os.makedirs(WORK_DIR, exist_ok=True)
 POWERSHELL_PATH = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 # 测试服务端口
@@ -124,6 +129,8 @@ def ssh_exec(command: str, timeout: int = TIMEOUT) -> Tuple[str, str, int]:
     remote_cmd = f"echo {cmd_b64} | base64 -d | bash"
 
     ps_cmd = (
+        # Security: StrictHostKeyChecking=no is used here for automated
+        # e2e testing only. In production, always verify host keys.
         f"$env:SSH_ASKPASS = '{askpass_bat}'; "
         f"$env:SSH_ASKPASS_REQUIRE = 'force'; "
         f"$env:DISPLAY = ':0'; "
@@ -146,6 +153,7 @@ def ssh_exec(command: str, timeout: int = TIMEOUT) -> Tuple[str, str, int]:
     )
 
     try:
+        # shell=True used for test convenience; no user-controlled input in test code
         result = subprocess.run(
             [POWERSHELL_PATH, "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
             capture_output=True, text=True, timeout=timeout + 30,
@@ -2558,6 +2566,11 @@ def save_results() -> None:
 
 def main():
     """主函数"""
+    if not SSH_PWD:
+        logging.error("JIUWENBOX_TEST_SSH_PWD is not set. Cannot run e2e tests.")
+        logging.error("Set JIUWENBOX_TEST_HOST, JIUWENBOX_TEST_SSH_USER, JIUWENBOX_TEST_SSH_PWD")
+        logging.error("environment variables before running this test.")
+        sys.exit(1)
     log("=" * 60)
     log("JiuwenBox Proxy Basic 认证测试")
     log(f"测试机: {HOST}")

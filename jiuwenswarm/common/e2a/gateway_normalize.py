@@ -35,7 +35,43 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 与 E2A-AgentRequest-log-migration.md §7.4 一致；通道业务勿占用此前缀。
+# chat.delta 在线上被拆成 delta + 白名单字段，再在网关侧按同一份名单还原。
+# chat.final 走整包透传，不经过这份名单。主动推荐标记若只留在 final 上，
+# 流式增量会被前端当成上一轮普通回复，卡片正文出现两遍，上一轮结束时间也被藏掉。
+_CHAT_DELTA_PASSTHROUGH_KEYS = (
+    "rid",
+    "role",
+    "member_name",
+    "agent_template_name",
+    "execution_id",
+    "output_phase_id",
+    "output_suppressed",
+    "output_order",
+    "timestamp",
+    "turn_request_id",
+    "message_origin",
+    "session_message_id",
+    "cross_session",
+    "source",
+    "proactive_type",
+    "proactive_target",
+    "proactive_rec_id",
+)
+
+# Team Organization delta 身份键：chat.delta 线上往返需保留团队路由标识。
+_TEAM_DELTA_IDENTITY_KEYS = ("team_name", "team_id")
+
+
+def _copy_team_delta_identity(source: dict[str, Any], target: dict[str, Any]) -> None:
+    """Preserve Team routing and the shared organization reply ID on text deltas."""
+    for key in _TEAM_DELTA_IDENTITY_KEYS:
+        value = source.get(key)
+        if value is not None:
+            target[key] = value
+    if str(source.get("source", "")).startswith("org_") and "request_id" in source:
+        target["request_id"] = source["request_id"]
+
+# 通道业务勿占用此前缀。
 E2A_INTERNAL_CONTEXT_KEY = "_jiuwenswarm"
 E2A_FALLBACK_FAILED_KEY = "normalize_failed"
 E2A_LEGACY_AGENT_REQUEST_KEY = "legacy_agent_request"
@@ -394,11 +430,14 @@ def e2a_response_from_agent_chunk(
             "event_type": event_type,
             "source_chunk_type": sct,
         }
-        # Preserve team-member attribution fields for frontend display
-        for _key in ("role", "member_name"):
+        # Preserve round, cross-session, team-member, and proactive identity.
+        # ``rid`` must survive so Team delta and final share one key.
+        for _key in _CHAT_DELTA_PASSTHROUGH_KEYS:
             _val = pl.get(_key)
             if _val is not None:
                 body_chunk[_key] = _val
+        # Team Organization delta 身份：线上保留团队路由与组织回复关联。
+        _copy_team_delta_identity(pl, body_chunk)
     else:
         body_chunk = {
             "delta_kind": "custom",
@@ -502,14 +541,14 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
             return list(b.keys()) == ["result"]
 
         if _empty_complete_marker(body, res):
-            return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+            return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
                 request_id=rid,
                 channel_id=ch,
                 payload={"is_complete": True},
                 is_complete=True,
             )
         pl = dict(res) if isinstance(res, dict) else {}
-        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload=pl,
@@ -519,7 +558,7 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
     if kind == E2A_RESPONSE_KIND_E2A_ERROR and e2a.is_final:
         det = body.get("details")
         pl = dict(det) if isinstance(det, dict) else dict(body)
-        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload=pl,
@@ -540,12 +579,14 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
             }
             if sct is not None:
                 pl["source_chunk_type"] = sct
-            # Preserve team-member attribution fields for frontend display
-            for _key in ("role", "member_name"):
+            # Restore the same passthrough set written by e2a_response_from_agent_chunk.
+            for _key in _CHAT_DELTA_PASSTHROUGH_KEYS:
                 _val = body.get(_key)
                 if _val is not None:
                     pl[_key] = _val
-            return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+            # Team Organization delta 身份：从 body 恢复团队路由与组织回复关联。
+            _copy_team_delta_identity(body, pl)
+            return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
                 request_id=rid,
                 channel_id=ch,
                 payload=pl,
@@ -562,7 +603,7 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
                 pl2["content"] = delta
         if et is not None and "event_type" not in pl2:
             pl2["event_type"] = et
-        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload=pl2,
@@ -572,12 +613,16 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
     if kind == E2A_RESPONSE_KIND_CRON:
         body_payload = {
             "event_type": "cron.response",
+            # Gateway uses this correlation id to return the authoritative
+            # CronController result to the Agent tool.  Do not drop it while
+            # projecting the typed E2A response into a legacy chunk payload.
+            "command_id": body.get("command_id"),
             "action": body.get("action"),
             "status": body.get("status"),
             "data": body.get("data"),
             "message": body.get("message"),
         }
-        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload=body_payload,
@@ -585,7 +630,7 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
         )
 
     if kind == E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST:
-        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload={
@@ -596,7 +641,7 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
         )
 
     if kind == E2A_RESPONSE_KIND_PLAN_APPROVAL_REQUIRED:
-        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload={

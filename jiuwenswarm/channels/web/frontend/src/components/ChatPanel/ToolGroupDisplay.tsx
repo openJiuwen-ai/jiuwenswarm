@@ -1,23 +1,40 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
+import { useTimelineRowState } from './timelineRowState';
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
 import { ToolExecution } from '../../types';
 import { formatToolArguments, formatToolResult } from '../../utils';
+import {
+  countResultWords,
+  isSymphonyCommandTool,
+} from '../../utils/symphonyCommandDisplay';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
+import { AgentAvatar } from '../AgentAvatar';
 import { SkillTreePath } from './SkillTreePath';
 import { BeamSearchTree } from './BeamSearchTree';
-import { classifyToolCall, describeToolCall, type ToolCategory } from './toolCategory';
+import { MarkdownRenderer } from '../MarkdownRenderer/MarkdownRenderer';
+import { ToolActionIcon } from './ToolActionIcon';
+import { classifyToolCall, describeToolCall, getToolIconKey, type ToolCategory, type ToolIconKey } from './toolCategory';
+import {
+  resolveTeamLeaderDisplayName,
+  type TeamLeaderIdentity,
+} from '../../features/teamLeaderIdentity';
+import { AutoReviewerDetails } from './AutoReviewerStatus';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
   notices?: string[];
   showAvatar?: boolean;
   teamLayout?: boolean;
+  agentTemplateName?: string;
+  teamLeaderIdentity?: TeamLeaderIdentity | null;
   collapseSkillTreeWhenContentStarts?: boolean;
   viewedSkillIds?: string[];
 }
 
 type ToolStatusTone = 'success' | 'warning' | 'error' | 'pending';
+// 结果内容框为 168px，流程图只对齐工具栏下方的内框。
+const TOOL_FLOWCHART_CANVAS_MIN_HEIGHT = 168;
 
 function ToolStatusIcon({
   tone,
@@ -58,6 +75,9 @@ export function isToolResultSuccessful(result?: ToolExecution['result']) {
   if (!result) {
     return false;
   }
+  if (result.pending) {
+    return false;
+  }
   if (result.timedOut) {
     return false;
   }
@@ -69,6 +89,9 @@ export function isToolExecutionFailed(execution: ToolExecution): boolean {
   if (execution.status === 'error' || execution.status === 'timeout') {
     return true;
   }
+  if (execution.result?.pending) {
+    return false;
+  }
   if (execution.result && !isToolResultSuccessful(execution.result)) {
     return true;
   }
@@ -78,7 +101,7 @@ export function isToolExecutionFailed(execution: ToolExecution): boolean {
 function getExecutionLabel(
   execution: ToolExecution,
   sessionCompletedLabel: string,
-  t: (key: string) => string
+  t: (key: string, options?: Record<string, unknown>) => string
 ) {
   if (execution.toolCall.name === 'session') {
     return execution.toolCall.formatted_args || sessionCompletedLabel;
@@ -153,10 +176,17 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
   const { t } = useTranslation();
   const { toolCall, result, status } = execution;
   const isTimeout = status === 'timeout' || Boolean(result?.timedOut);
+  const isPending = Boolean(result?.pending);
   const failed = isToolExecutionFailed(execution);
-  const resultSuccess = Boolean(result) && !failed;
+  const resultSuccess = Boolean(result) && !failed && !isPending;
   const hasArguments = Object.keys(toolCall.arguments).length > 0;
   const toolNameLabel = toolCall.name?.trim() || result?.toolName || 'tool';
+  const resultWordCount = isSymphonyCommandTool(toolCall.name) && result
+    ? countResultWords(result.result)
+    : null;
+  const isSymphonyComposeGraph = toolCall.name === 'symphony_compose_graph' || result?.toolName === 'symphony_compose_graph';
+  const mermaid = isSymphonyComposeGraph ? result?.mermaid : undefined;
+  const reviewer = result?.reviewer ?? toolCall.reviewer;
 
   return (
     <div className="tool-tree-item__detail" data-testid="chat-panel-tool-execution-details">
@@ -168,7 +198,7 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
           {toolNameLabel}
         </pre>
       </div>
-
+      <AutoReviewerDetails reviewer={reviewer} />
       {hasArguments && (
         <div className="tool-tree-item__detail-block" data-testid="chat-panel-tool-execution-details-arguments">
           <div className="tool-tree-item__detail-label">
@@ -197,14 +227,48 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
                 {isTimeout ? t('chatUi.toolResult.timeout') : t('chatUi.toolResult.failed')}
               </span>
             )}
+            {isPending && (
+              <span className="tool-tree-item__detail-badge is-pending">
+                {t('chatUi.toolResult.pending')}
+              </span>
+            )}
             {resultSuccess && (
               <span className="tool-tree-item__detail-badge is-success" data-testid="chat-panel-tool-execution-details-badge" data-variant="success">
                 {t('chatUi.toolResult.success')}
               </span>
             )}
+            {resultWordCount !== null && (
+              <span className="tool-tree-item__detail-badge">
+                {t('chatUi.toolGroup.symphony.resultWords', {
+                  count: resultWordCount,
+                })}
+              </span>
+            )}
           </div>
           {result.skillTree && <SkillTreePath tree={result.skillTree} stepIntervalMs={0} />}
-          {(!result.skillTree || result.result) && (
+          {mermaid ? (
+            <>
+              <pre
+                className={clsx(
+                  'tool-tree-item__detail-pre',
+                  failed && 'is-failed',
+                  result.skillTree && 'mt-2'
+                )}
+              >
+                {formatToolResult(result.result)}
+              </pre>
+              <div className="tool-tree-item__detail-raw" data-testid="chat-panel-tool-result-mermaid">
+                <div className="tool-tree-item__detail-label">
+                  {t('chatUi.toolResult.flowchart')}
+                </div>
+                <MarkdownRenderer
+                  content={`\`\`\`mermaid\n${mermaid}\n\`\`\``}
+                  mermaidCanvasMinHeight={TOOL_FLOWCHART_CANVAS_MIN_HEIGHT}
+                  testId="chat-panel-tool-result-mermaid-renderer"
+                />
+              </div>
+            </>
+          ) : (!result.skillTree || result.result) && (
             <pre
               className={clsx(
                 'tool-tree-item__detail-pre',
@@ -247,6 +311,9 @@ function isDisplayRunning(execution: ToolExecution): boolean {
   ) {
     return false;
   }
+  if (execution.result?.pending) {
+    return true;
+  }
   if (execution.result) {
     return false;
   }
@@ -256,15 +323,16 @@ function isDisplayRunning(execution: ToolExecution): boolean {
 interface GroupHeaderLine {
   key: string;
   category: ToolCategory;
+  iconKey: ToolIconKey;
   text: string;
+  goal?: string;
   running: boolean;
   failed: boolean;
   executions: ToolExecution[];
 }
 
 /**
- * 每条工具单独一行展示可读动作名（优先后端 display_name），
- * 如「抓取 workbuddy.ai」「写入 DESIGN.md」；不再按分类收成「已完成 N 次…」。
+ * 每条工具单独一行展示前端 i18n 标题，call_goal 作可选副标题。
  */
 function buildGroupLines(
   executions: ToolExecution[],
@@ -273,15 +341,19 @@ function buildGroupLines(
   const sessionCompletedLabel = t('chatUi.toolGroup.sessionCompleted');
   return executions.map((execution) => {
     const category = classifyToolCall(execution.toolCall.name);
+    const iconKey = getToolIconKey(execution.toolCall.name);
     const running = isDisplayRunning(execution);
     const failed = !running && isToolExecutionFailed(execution);
     const label = getExecutionLabel(execution, sessionCompletedLabel, t);
+    const goal = execution.toolCall.call_goal?.trim() || undefined;
     return {
       key: execution.toolCallId,
       category,
+      iconKey,
       running,
       failed,
       executions: [execution],
+      goal,
       text: running
         ? t('chatUi.toolGroup.running', { label })
         : failed
@@ -291,37 +363,14 @@ function buildGroupLines(
   });
 }
 
-/** 五类任务各自的图标（file/search/code/system/other）。 */
-function CategoryIcon({ category }: { category: ToolCategory }) {
+/** 工具动作图标——委托给共享的 ToolActionIcon，className 与 data-testid 保持 chat-panel 约定。 */
+function CategoryIcon({ iconKey }: { iconKey: ToolIconKey }) {
   return (
-    <span className="tool-tree__cat-icon" aria-hidden="true" data-testid="chat-panel-tool-tree-cat-icon" data-variant={category}>
-      {category === 'file' ? (
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M5.5 3.5h5L15 8v8a.9.9 0 0 1-.9.9H5.5a.9.9 0 0 1-.9-.9V4.4a.9.9 0 0 1 .9-.9z" />
-          <path d="M10.3 3.5V8H15" />
-        </svg>
-      ) : category === 'search' ? (
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="9" cy="9" r="4.3" />
-          <path d="m12.3 12.3 3.4 3.4" />
-        </svg>
-      ) : category === 'code' ? (
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="m7.4 6.5-3.4 3.5 3.4 3.5" />
-          <path d="m12.6 6.5 3.4 3.5-3.4 3.5" />
-        </svg>
-      ) : category === 'system' ? (
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3.5" y="4.5" width="13" height="11" rx="1.6" />
-          <path d="m6.5 8.6 2.3 1.9-2.3 1.9" />
-          <path d="M10.8 12.7h3" />
-        </svg>
-      ) : (
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M13.4 4.6a2.7 2.7 0 0 0-3.3 3.4l-5 5a1.3 1.3 0 1 0 1.9 1.9l5-5a2.7 2.7 0 0 0 3.4-3.3l-2 2-1.9-.1-.1-1.9 2-2z" />
-        </svg>
-      )}
-    </span>
+    <ToolActionIcon
+      iconKey={iconKey}
+      className="tool-tree__cat-icon"
+      testId="chat-panel-tool-tree-cat-icon"
+    />
   );
 }
 
@@ -332,14 +381,16 @@ export function ToolGroupDisplay({
   notices = [],
   showAvatar = true,
   teamLayout = false,
+  agentTemplateName,
+  teamLeaderIdentity,
   collapseSkillTreeWhenContentStarts = false,
   viewedSkillIds: turnViewedSkillIds = [],
 }: ToolGroupDisplayProps) {
-  const { t } = useTranslation();
-  const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
+  const { t, i18n } = useTranslation();
+  const [openKeys, setOpenKeys] = useTimelineRowState<Record<string, boolean>>('tool-open-keys', {});
   const toggleLine = useCallback((key: string) => {
     setOpenKeys((current) => ({ ...current, [key]: !current[key] }));
-  }, []);
+  }, [setOpenKeys]);
   const visibleExecutions = teamLayout
     ? executions.filter((execution) => !execution.toolCall.memberName)
     : executions;
@@ -367,16 +418,34 @@ export function ToolGroupDisplay({
     <div
       className={clsx(
         'tool-group-frame',
-        teamLayout && 'tool-group-frame--team'
+        teamLayout && 'tool-group-frame--team',
+        !showAvatar && 'tool-group-frame--no-avatar'
       )}
       data-testid="chat-panel-tool-group"
     >
-      <div className="pt-0.5 tool-group-frame__avatar" data-testid="chat-panel-tool-group-avatar">
-        {showAvatar ? (
-          <TeamMemberAvatar member="team_leader" />
-        ) : null}
-      </div>
+      {showAvatar ? (
+        <div className="pt-0.5 tool-group-frame__avatar" data-testid="chat-panel-tool-group-avatar">
+          {!teamLayout && agentTemplateName ? (
+            <AgentAvatar agentId={agentTemplateName} alt="" />
+          ) : teamLeaderIdentity ? (
+            <div className="flex items-center gap-3">
+              <AgentAvatar identityOverride={teamLeaderIdentity} alt="" />
+              <span className="chat-avatar-name">
+                {resolveTeamLeaderDisplayName(teamLeaderIdentity, i18n.language)}
+              </span>
+            </div>
+          ) : (
+            <TeamMemberAvatar member="team_leader" />
+          )}
+        </div>
+      ) : null}
       <div className="min-w-0">
+        {beamSearch && (
+          <BeamSearchTree
+            progress={beamSearch}
+            autoCollapse={collapseSkillTreeWhenContentStarts}
+          />
+        )}
         <div className="tool-tree" data-testid="chat-panel-tool-tree">
           {notices.length > 0 && (
             <div className="tool-tree__notices" data-testid="chat-panel-tool-tree-notices">
@@ -399,17 +468,27 @@ export function ToolGroupDisplay({
                   data-testid="chat-panel-tool-tree-header"
                 >
                   <span className="tool-tree__header-line" data-testid="chat-panel-tool-tree-header-line">
-                    <CategoryIcon category={line.category} />
-                    <span
-                      className={clsx(
-                        'tool-tree__header-line-text',
-                        line.running && 'is-running',
-                        line.failed && 'is-failed'
-                      )}
-                      data-testid="chat-panel-tool-tree-header-line-text"
-                      data-variant={line.running ? 'running' : line.failed ? 'failed' : 'completed'}
-                    >
-                      {line.text}
+                    <CategoryIcon iconKey={line.iconKey} />
+                    <span className="tool-tree__header-text">
+                      <span
+                        className={clsx(
+                          'tool-tree__header-line-text',
+                          line.running && 'is-running',
+                          line.failed && 'is-failed'
+                        )}
+                        data-testid="chat-panel-tool-tree-header-line-text"
+                        data-variant={line.running ? 'running' : line.failed ? 'failed' : 'completed'}
+                      >
+                        {line.text}
+                      </span>
+                      {line.goal ? (
+                        <span
+                          className="tool-tree__header-goal"
+                          data-testid="chat-panel-tool-tree-header-goal"
+                        >
+                          {line.goal}
+                        </span>
+                      ) : null}
                     </span>
                     <span
                       className={clsx('tool-tree-item__disclosure', open && 'is-open')}
@@ -440,12 +519,6 @@ export function ToolGroupDisplay({
           <SkillTreePath
             trees={skillTrees}
             viewedSkillIds={viewedSkillIds}
-            autoCollapse={collapseSkillTreeWhenContentStarts}
-          />
-        )}
-        {beamSearch && (
-          <BeamSearchTree
-            progress={beamSearch}
             autoCollapse={collapseSkillTreeWhenContentStarts}
           />
         )}

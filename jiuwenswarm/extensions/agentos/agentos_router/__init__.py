@@ -17,7 +17,6 @@ from jiuwenswarm.extensions.agentos.agentos_router.models import (
     ImageInfo,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
-    HeartbeatResult,
     ImageEntry,
     InstanceRecord,
     LaunchSpec,
@@ -29,6 +28,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     RegistryHTTPError,
     RegistryNotFoundError,
     RegistryValidationError,
+    compute_backoff_delay,
     instance_service_id,
     resolve_instance_kind,
 )
@@ -46,7 +46,6 @@ __all__ = [
     "AgentRuntime",
     "AgentStatus",
     "BUILTIN_AGENT_TYPE",
-    "HeartbeatResult",
     "ImageEntry",
     "ImageInfo",
     "InstanceRecord",
@@ -59,6 +58,7 @@ __all__ = [
     "RegistryHTTPError",
     "RegistryNotFoundError",
     "RegistryValidationError",
+    "compute_backoff_delay",
     "instance_service_id",
     "is_third_party_agent_type",
     "normalize_agent_key_fields",

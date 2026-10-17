@@ -234,7 +234,7 @@ export function createSwarmflowCommand(): SlashCommand {
 
       // --- Switch mode (best-effort) ---
       if (plan.switchToTeam && !isTeamMode(ctx.mode)) {
-        const nextMode = "team";
+        const nextMode: ClientMode = "team.work.normal";
         ctx.setMode(nextMode);
         try {
           await ctx.request("mode.set", { mode: nextMode });

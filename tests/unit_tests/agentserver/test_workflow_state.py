@@ -22,6 +22,57 @@ def _make_progress(kind: str, **kwargs) -> WorkflowProgress:
     return WorkflowProgress(kind=kind, **kwargs)
 
 
+class TestSealOverride:
+    """A late real terminal event (with agent_id) must override a seal's inferred stamp.
+
+    Parallel branches that cross a phase boundary seal the previous phase while a
+    sibling node is still retrying; the seal stamps it with the phase's aggregate
+    status. The node's genuine agent_failed/agent_completed arrives later — the
+    engine's own verdict wins.
+    """
+
+    @staticmethod
+    def test_late_agent_failed_overrides_seal_completed():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="t"))
+        state.apply(_make_progress("phase", phase="Implement"))
+        state.apply(_make_progress("agent_started", phase="Implement", label="impl:heap",
+                                   agent_id='[["pipe", 0, 2, 0], ["call", 0]]'))
+        agent = state.phases[0].agents[0]
+        agent.status = "completed"  # the phase seal stamped it while it was still retrying
+        delta = state.apply(_make_progress(
+            "agent_failed", phase="Implement", label="impl:heap",
+            agent_id='[["pipe", 0, 2, 0], ["call", 0]]',
+            text="codex CLI login failed (401) — environment problem",
+        ))
+        assert agent.status == "failed"
+        assert "codex CLI login failed" in (agent.error or "")
+        assert delta is not None
+
+    @staticmethod
+    def test_late_agent_completed_overrides_seal_failed():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="t"))
+        state.apply(_make_progress("phase", phase="P"))
+        state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="k1"))
+        agent = state.phases[0].agents[0]
+        agent.status = "failed"  # seal inferred failure
+        state.apply(_make_progress("agent_completed", phase="P", label="a", agent_id="k1", outcome="ok"))
+        assert agent.status == "completed"
+        assert agent.outcome == "ok"
+
+    @staticmethod
+    def test_late_failed_without_agent_id_does_not_override():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="t"))
+        state.apply(_make_progress("phase", phase="P"))
+        state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="k1"))
+        agent = state.phases[0].agents[0]
+        agent.status = "completed"
+        state.apply(_make_progress("agent_failed", phase="P", label="a", text="boom"))
+        assert agent.status == "completed"  # label-fallback events cannot override a seal
+
+
 class TestWorkflowRunStateLifecycle:
     """Scenario 1 & 5: workflow started -> phases -> agents -> completed."""
 
@@ -140,12 +191,57 @@ class TestWorkflowRunStateLifecycle:
 
     @staticmethod
     def test_phase_sealed_on_switch_to_next_phase():
-        """A running phase is sealed to completed when an agent starts in the next phase."""
+        """_switch_to_phase seals a quiescent previous phase (no live agents).
+
+        Public events reach this only through agent/verify starts (the phase
+        event itself is ignored for top-level phases); the quiescent case is a
+        card whose agents are all terminal but was not yet auto-sealed (e.g. an
+        aborted verify round with no reviewer agents).
+        """
         state = WorkflowRunState()
         state.apply(_make_progress("workflow_started", workflow_name="test"))
-        state.apply(_make_progress("agent_started", phase="Night 1", label="agent-a"))
+        p, _ = state._switch_to_phase("Night 1")
+        p.agents.append(WorkflowAgentState(id="c:1", name="a", status="completed"))
+        target, sealed = state._switch_to_phase("Day 1")
+        assert sealed is p
+        assert p.status == "completed"
+        assert target.name == "Day 1"
+        assert target.status == "running"
+
+    @staticmethod
+    def test_switch_defers_seal_while_prev_agents_running():
+        """Interleaved parallel branches: a live sibling blocks the phase seal.
+
+        pipe([implement, verify]) per spec runs branches concurrently — the
+        first branch's verify agent (next phase) starts while sibling branches'
+        implement agents are still running. Sealing on the switch would stamp
+        those live agents completed; the seal must wait for quiescence.
+        """
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="test"))
+        state.apply(_make_progress("agent_started", phase="Implement", label="impl:codex", agent_id="c:1"))
+        state.apply(_make_progress("agent_started", phase="Implement", label="impl:claude", agent_id="c:2"))
+        state.apply(_make_progress("agent_completed", phase="Implement", label="impl:codex", agent_id="c:1", outcome="o1"))
+        # impl:claude still running — the fast sibling branch's verify agent starts.
+        state.apply(_make_progress("agent_started", phase="Verify", label="verify:local", agent_id="c:3"))
+        impl_phase = state.phases[0]
+        assert impl_phase.status == "running"            # seal deferred
+        assert impl_phase.agents[1].status == "running"  # impl:claude NOT stamped
+        assert state.phases[1].status == "running"
+
+    @staticmethod
+    def test_author_phase_seals_when_last_agent_completes():
+        """The deferred phase closes on its last terminal agent, not on the switch."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="test"))
+        state.apply(_make_progress("agent_started", phase="Implement", label="impl:codex", agent_id="c:1"))
+        state.apply(_make_progress("agent_started", phase="Implement", label="impl:claude", agent_id="c:2"))
+        state.apply(_make_progress("agent_started", phase="Verify", label="verify:local", agent_id="c:3"))
+        # First completion: impl:codex terminal but impl:claude still live — no seal.
+        state.apply(_make_progress("agent_completed", phase="Implement", label="impl:codex", agent_id="c:1", outcome="o1"))
         assert state.phases[0].status == "running"
-        state.apply(_make_progress("agent_started", phase="Day 1", label="agent-b"))
+        # Last terminal agent seals the phase.
+        state.apply(_make_progress("agent_completed", phase="Implement", label="impl:claude", agent_id="c:2", outcome="o2"))
         assert state.phases[0].status == "completed"
         assert state.phases[1].status == "running"
 
@@ -291,24 +387,107 @@ class TestWorkflowRunStateLifecycle:
         assert state.phases[1].agents[0].name == "alice-vote"
         assert state.agent_count == 3
 
+    @staticmethod
+    def test_agent_completed_model_overwrites_the_started_value():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="test"))
+        state.apply(_make_progress("phase", phase="impl"))
+        state.apply(_make_progress("agent_started", phase="impl", label="claude-one", agent_type="claude", model=None))
+        assert state.phases[0].agents[0].model is None
+        state.apply(_make_progress("agent_completed", phase="impl", label="claude-one", outcome="OK", model="GLM-5.3"))
+        assert state.phases[0].agents[0].model == "GLM-5.3"
+
+    @staticmethod
+    def test_agent_completed_without_model_keeps_the_existing_value():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="test"))
+        state.apply(_make_progress("phase", phase="impl"))
+        state.apply(_make_progress("agent_started", phase="impl", label="codex-one", agent_type="codex", model="gpt-5-codex"))
+        assert state.phases[0].agents[0].model == "gpt-5-codex"
+        state.apply(_make_progress("agent_completed", phase="impl", label="codex-one", outcome="OK"))
+        assert state.phases[0].agents[0].model == "gpt-5-codex"
+
+    @staticmethod
+    def test_agent_failed_model_overwrites_too():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="test"))
+        state.apply(_make_progress("phase", phase="impl"))
+        state.apply(_make_progress("agent_started", phase="impl", label="deepseek-one", agent_type="deepseek", model=None))
+        assert state.phases[0].agents[0].model is None
+        state.apply(_make_progress("agent_failed", phase="impl", label="deepseek-one", model="deepseek-v4-flash"))
+        assert state.phases[0].agents[0].model == "deepseek-v4-flash"
+
+    @staticmethod
+    def test_late_duplicate_completed_backfills_model_when_missing():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="test"))
+        state.apply(_make_progress("phase", phase="impl"))
+        state.apply(_make_progress("agent_started", phase="impl", label="claude-one", agent_type="claude", model=None))
+        # First completion is bare (no model, no outcome): a phase seal / teardown
+        # stamps a node completed before its real completion arrives, so the late
+        # duplicate resolves through the sealed-outcome backfill locator.
+        state.apply(_make_progress("agent_completed", phase="impl", label="claude-one"))
+        agent = state.phases[0].agents[0]
+        assert agent.model is None
+        assert agent.outcome is None
+        # Late duplicate carries the CLI-reported model + outcome — fills both.
+        delta = state.apply(_make_progress("agent_completed", phase="impl", label="claude-one", outcome="OK", model="GLM-5.3"))
+        assert agent.model == "GLM-5.3"
+        assert agent.outcome == "OK"
+        assert delta is not None  # the fill must be pushed, not silently stored
+        # A later duplicate must never clobber the filled value.
+        state.apply(_make_progress("agent_completed", phase="impl", label="claude-one", outcome="OK", model="GLM-6.0"))
+        assert agent.model == "GLM-5.3"
+
+    @staticmethod
+    def test_session_turn_reports_refresh_the_session_model():
+        """agent_session turns each carry their own CLI-reported model on their
+        own row; the session's group header (latest turn) reflects the newest."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="sess"))
+        for n, model in (("1", "claude-sonnet-4-5"), ("2", "claude-opus-5")):
+            state.apply(_make_progress(
+                "agent_started", phase="review", label="chat",
+                agent_id=f"main/call:{n}", node_type="agent_session",
+                correlation_id=f"review:chat:{n}",
+            ))
+            state.apply(_make_progress(
+                "agent_completed", phase="review", label="chat",
+                agent_id=f"main/call:{n}", correlation_id=f"review:chat:{n}",
+                outcome="ok", model=model,
+            ))
+        a0, a1 = state.phases[0].agents
+        assert a0.model == "claude-sonnet-4-5"
+        assert a1.model == "claude-opus-5"
+        # the group header (latest turn row) reflects the newest model
+        assert state.phases[0].agents[-1].model == "claude-opus-5"
+
 
 class TestWorkflowRunStateDelta:
     """Verify delta only contains changed phase/agent objects."""
 
     @staticmethod
     def test_delta_contains_finalized_and_new_phase():
-        """Entering a new phase via agent_started: delta includes finalized previous + new phase."""
+        """The last terminal agent's completion seals the phase; its delta carries it.
+
+        Interleaved branches keep the phase running until its final agent
+        completes — the seal lands on that completion's delta, not on the
+        next phase's first agent.
+        """
         state = WorkflowRunState()
         state.apply(_make_progress("workflow_started", workflow_name="test"))
-        state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a"))
-        progress = _make_progress("agent_started", phase="Phase 2", label="agent-b")
-        delta = state.apply(progress)
-        # Delta includes finalized Phase 1 + new Phase 2
-        assert len(delta["phases"]) == 2
+        state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a", agent_id="c:1"))
+        state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-b", agent_id="c:2"))
+        state.apply(_make_progress("agent_started", phase="Phase 2", label="agent-c", agent_id="c:3"))
+        delta = state.apply(_make_progress(
+            "agent_completed", phase="Phase 1", label="agent-a", agent_id="c:1", outcome="o1",
+        ))
+        assert delta["phases"][0]["status"] == "running"  # agent-b still live
+        delta = state.apply(_make_progress(
+            "agent_completed", phase="Phase 1", label="agent-b", agent_id="c:2", outcome="o2",
+        ))
         assert delta["phases"][0]["name"] == "Phase 1"
-        assert delta["phases"][0]["status"] == "completed"
-        assert delta["phases"][1]["name"] == "Phase 2"
-        assert delta["phases"][1]["status"] == "running"
+        assert delta["phases"][0]["status"] == "completed"  # sealed on last completion
 
     @staticmethod
     def test_delta_on_agent_completed_contains_updated_agent():
@@ -569,32 +748,29 @@ class TestPhaseReuseAndJump:
     def test_phase_status_jumps_completed_back_to_running():
         """A phase sealed to completed flips back to running when re-entered.
 
-        A phase is sealed only when a *different-name* phase is entered. So the
-        jump test interleaves a different-name phase to seal P, then re-enters P.
+        P seals when the next phase takes the active slot; re-entering P (same
+        name) jumps the card back to running without reviving finalized agents.
         """
         state = WorkflowRunState()
         state.apply(_make_progress("workflow_started", workflow_name="iter"))
         state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="c:1"))
+        state.apply(_make_progress("agent_completed", phase="P", label="a", agent_id="c:1", outcome="o1"))
         agent_a = None
         for ph in state.phases:
             for ag in ph.agents:
                 if ag.name == "a":
                     agent_a = ag
-        assert agent_a is not None and agent_a.status == "running"
-        # Enter a different-name phase -> seals P to completed (finalizes running agents).
+        assert agent_a is not None and agent_a.status == "completed"
+        p = state.phases[0]
+        assert p.status == "running"  # P is the active phase: not sealed yet
+        # A different-name phase takes the active slot -> switch seals quiescent P.
         state.apply(_make_progress("agent_started", phase="Q", label="b", agent_id="c:2"))
-        p, q = state.phases
         assert p.status == "completed"
-        assert q.status == "running"
-        # agent1 (label=a) was running in P; sealing P finalized it to completed.
-        assert agent_a.status == "completed"
-        assert agent_a.completed_at is not None
         # Re-enter P (same name) -> jumps back to running, same card.
         state.apply(_make_progress("agent_started", phase="P", label="c", agent_id="c:3"))
-        assert len(state.phases) == 2  # no new card
+        assert len(p.agents) == 2
         assert p.status == "running"   # jumped back from completed
         # P now holds agent1 (completed) + agent3 (running).
-        assert len(p.agents) == 2
         assert p.agents[0].status == "completed"  # agent1
         assert p.agents[1].status == "running"    # agent3
         # agent1 (label=a) still completed — the jump does not revive finalized agents.
@@ -623,29 +799,57 @@ class TestPhaseReuseAndJump:
 
     @staticmethod
     def test_different_name_phase_still_seals_previous():
-        """Switching to a different-name phase still seals the running previous one."""
+        """Switching to a different-name phase keeps a quiescent previous phase sealed."""
         state = WorkflowRunState()
         state.apply(_make_progress("workflow_started", workflow_name="iter"))
         state.apply(_make_progress("agent_started", phase="采集", label="a", agent_id="c:1"))
+        state.apply(_make_progress("agent_completed", phase="采集", label="a", agent_id="c:1", outcome="o1"))
         state.apply(_make_progress("agent_started", phase="计算", label="b", agent_id="c:2"))
-        assert state.phases[0].status == "completed"  # 采集 sealed
+        assert state.phases[0].status == "completed"  # 采集 stays sealed
         assert state.phases[1].status == "running"    # 计算 active
         assert len(state.phases) == 2
 
     @staticmethod
     def test_completed_phase_can_jump_back_to_running_then_re_sealed():
-        """A re-entered completed phase jumps to running; a later switch re-seals it."""
+        """A re-entered completed phase jumps to running; the next switch re-seals it.
+
+        The active phase does not seal between its own agents (no card
+        flapping), so the re-seal comes from a later phase transition — or the
+        run teardown for the run's last phase.
+        """
         state = WorkflowRunState()
         state.apply(_make_progress("workflow_started", workflow_name="iter"))
         state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="c:1"))
-        state.apply(_make_progress("agent_started", phase="Q", label="b", agent_id="c:2"))  # seal P
-        state.apply(_make_progress("agent_started", phase="P", label="c", agent_id="c:3"))  # jump P back
-        p, q = state.phases
-        assert p.status == "running"
-        # Switch to a different name again -> P sealed again (still one card).
-        state.apply(_make_progress("agent_started", phase="R", label="d", agent_id="c:4"))
+        state.apply(_make_progress("agent_completed", phase="P", label="a", agent_id="c:1", outcome="o1"))
+        state.apply(_make_progress("agent_started", phase="Q", label="b", agent_id="c:2"))  # switch seals P
+        p = state.phases[0]
         assert p.status == "completed"
-        assert len(state.phases) == 3
+        state.apply(_make_progress("agent_started", phase="P", label="c", agent_id="c:3"))  # jump P back
+        assert p.status == "running"
+        state.apply(_make_progress("agent_completed", phase="P", label="c", agent_id="c:3", outcome="o3"))
+        assert p.status == "running"  # active phase: completion alone does not re-seal
+        state.apply(_make_progress("agent_started", phase="Q", label="d", agent_id="c:4"))
+        assert p.status == "completed"  # re-sealed by the switch seal
+
+    @staticmethod
+    def test_active_phase_with_terminal_agents_does_not_flap():
+        """Sequential agents in the active phase must not seal/reopen the card.
+
+        Sealing between same-phase events flips the card completed/running and
+        makes the task mirror emit claimed/completed flapping; the phase closes
+        on the next phase transition (or the run teardown) instead.
+        """
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="iter"))
+        state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="c:1"))
+        state.apply(_make_progress("agent_completed", phase="P", label="a", agent_id="c:1", outcome="o1"))
+        assert state.phases[0].status == "running"  # active phase: no premature seal
+        state.apply(_make_progress("agent_started", phase="P", label="b", agent_id="c:2"))  # same-phase successor
+        assert state.phases[0].status == "running"   # never reopened — never closed
+        state.apply(_make_progress("agent_completed", phase="P", label="b", agent_id="c:2", outcome="o2"))
+        assert state.phases[0].status == "running"   # still the active phase
+        state.apply(_make_progress("agent_started", phase="Q", label="c", agent_id="c:3"))  # switch seals P
+        assert state.phases[0].status == "completed"
 
 
 class TestAgentOutcomeBackfill:
@@ -656,19 +860,17 @@ class TestAgentOutcomeBackfill:
         state = WorkflowRunState()
         state.apply(_make_progress("workflow_started", workflow_name="seal"))
         state.apply(_make_progress("agent_started", phase="P1", label="worker", agent_id="engine:1"))
-        state.apply(_make_progress("agent_started", phase="P2", label="next", agent_id="engine:2"))
+        # Simulate a seal path (teardown / parent propagate) having stamped the
+        # node terminal without an outcome — the switch seal no longer does
+        # this while the agent is live.
+        state.phases[0].agents[0].status = "completed"
         sealed = state.phases[0].agents[0]
         assert sealed.status == "completed"
         assert sealed.outcome is None
-        # Seal stamps the worker terminal (completed) — derived counters reflect it,
-        # so completed_agent_count already counts this node even before the outcome
-        # backfill arrives.
-        assert state.phases[0].completed_agent_count == 1
         state.apply(_make_progress(
             "agent_completed", phase="P1", label="worker", agent_id="engine:1", outcome="done",
         ))
         assert sealed.outcome == "done"
-        assert state.phases[0].completed_agent_count == 1
 
     @staticmethod
     def test_agent_completed_backfills_when_agent_id_mismatch():
@@ -677,7 +879,7 @@ class TestAgentOutcomeBackfill:
         state.apply(_make_progress("workflow_started", workflow_name="mismatch"))
         state.apply(_make_progress("agent_started", phase="P", label="worker"))
         assert state.phases[0].agents[0].id == "worker-1"
-        state.apply(_make_progress("agent_started", phase="Q", label="other", agent_id="engine:2"))
+        state.phases[0].agents[0].status = "completed"  # a seal path stamped it terminal
         sealed = state.phases[0].agents[0]
         assert sealed.status == "completed"
         assert sealed.outcome is None
@@ -685,7 +887,6 @@ class TestAgentOutcomeBackfill:
             "agent_completed", phase="P", label="worker", agent_id='[["call", 0]]', outcome="payload",
         ))
         assert sealed.outcome == "payload"
-        assert state.phases[0].completed_agent_count == 1
 
     @staticmethod
     def test_duplicate_agent_completed_is_idempotent():
@@ -802,6 +1003,89 @@ class TestAgentNodeType:
         assert agents[2].kind == "agent"
 
     @staticmethod
+    def test_agent_started_copies_agent_type():
+        """A third-party node carries its provider kind; snapshot and delta expose it."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="ext"))
+        delta = state.apply(_make_progress(
+            "agent_started", phase="P1", label="reviewer",
+            agent_id="main/call:0", node_type="agent", agent_type="codex", model="gpt-5-codex",
+        ))
+        agent = state.phases[0].agents[0]
+        assert agent.agent_type == "codex"
+        assert agent.kind == "agent"
+        assert agent.model == "gpt-5-codex"
+        assert agent.to_dict()["agent_type"] == "codex"
+        assert delta["phases"][0]["agents"][0]["agent_type"] == "codex"
+        assert state.to_workflow_run_dict()["phases"][0]["agents"][0]["agent_type"] == "codex"
+
+    @staticmethod
+    def test_agent_started_copies_agent_template_and_display_name():
+        """An expert node carries its member name + display name; delta and snapshot expose both;
+        a plain node omits both (exclude_none)."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="design"))
+        delta = state.apply(_make_progress(
+            "agent_started", phase="镜头", label="clip_3",
+            agent_id="main/call:0", node_type="agent",
+            agent_template="clip", display_name="视频镜头师",
+        ))
+        agent = state.phases[0].agents[0]
+        assert agent.agent_template == "clip" and agent.display_name == "视频镜头师"
+        assert delta["phases"][0]["agents"][0]["display_name"] == "视频镜头师"
+        assert state.to_workflow_run_dict()["phases"][0]["agents"][0]["agent_template"] == "clip"
+        state.apply(_make_progress("agent_started", phase="镜头", label="plain", agent_id="main/call:1", node_type="agent"))
+        plain = state.phases[0].agents[1].to_dict()
+        assert "agent_template" not in plain and "display_name" not in plain
+
+    @staticmethod
+    def test_phase_summary_keeps_node_identity_for_cold_restore():
+        """After a page refresh the tree is rebuilt from ``get_phase`` summaries; dropping the
+        identity fields there turns every expert / third-party node back into a plain one."""
+        from jiuwenswarm.server.wire_truncate import _workflow_agent_summary
+        summary = _workflow_agent_summary({
+            "id": "main/call:0", "name": "clip_3", "status": "completed",
+            "agent_template": "clip", "display_name": "视频镜头师", "agent_type": "codex",
+            "prompt": "heavy" * 100,
+        })
+        assert summary["agent_template"] == "clip"
+        assert summary["display_name"] == "视频镜头师"
+        assert summary["agent_type"] == "codex"
+        assert "prompt" not in summary and summary["detail_pending"] is True
+
+    @staticmethod
+    def test_resume_reuse_refreshes_agent_template():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="design"))
+        state.apply(_make_progress("agent_started", phase="P", label="x", agent_id="k", node_type="agent"))
+        state.apply(_make_progress("agent_completed", phase="P", label="x", agent_id="k", outcome="ok"))
+        state.apply(_make_progress("agent_started", phase="P", label="x", agent_id="k", node_type="agent",
+                                   agent_template="clip", display_name="视频镜头师"))
+        agent = state.phases[0].agents[0]
+        assert agent.agent_template == "clip" and agent.display_name == "视频镜头师"
+        assert len(state.phases[0].agents) == 1
+
+    @staticmethod
+    def test_native_agent_omits_agent_type():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="native"))
+        state.apply(_make_progress("agent_started", phase="P1", label="coder", agent_id="main/call:0", node_type="agent"))
+        agent = state.phases[0].agents[0]
+        assert agent.agent_type is None
+        assert "agent_type" not in agent.to_dict()
+
+    @staticmethod
+    def test_resume_reuse_refreshes_agent_type():
+        """Re-emitted agent_started on resume updates the existing node, no duplicate."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="resume"))
+        state.apply(_make_progress("agent_started", phase="P1", label="x", agent_id="main/call:0", node_type="agent"))
+        state.apply(_make_progress("agent_completed", phase="P1", label="x", agent_id="main/call:0", outcome="ok"))
+        state.apply(_make_progress("agent_started", phase="P1", label="x", agent_id="main/call:0", node_type="agent", agent_type="claude"))
+        assert len(state.phases[0].agents) == 1
+        assert state.phases[0].agents[0].agent_type == "claude"
+
+    @staticmethod
     def test_phase_less_node_falls_back_to_unnamed_phase():
         """A node whose event carries no ``phase`` lands on a placeholder phase
         card named "unnamed phase" (replacing the cryptic "?"). All phase-less
@@ -912,3 +1196,792 @@ def test_workflow_failed_freezes_budget():
                                            budget={"total": 500000, "spent": 500000, "remaining": 0, "scope": "leader", "exhausted": True}))
     assert r.budget["exhausted"] is True
     assert r.status == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Task 10c: workflow_paused / workflow_stopped 状态
+# ---------------------------------------------------------------------------
+
+def test_workflow_paused_marks_status_paused_non_terminal():
+    """workflow_paused sets status=paused (non-terminal, resumable) — no completed_at."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    delta = state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    assert state.is_terminal is False
+    assert state.completed_at is None
+    assert delta is not None
+    assert delta["status"] == "paused"
+
+
+def test_workflow_paused_does_not_stamp_terminal_fields():
+    """paused must not go through _stamp_workflow_terminal — no duration / completed_at."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    assert state.completed_at is None
+    assert state.duration_ms is None
+
+
+def test_workflow_paused_marks_running_agents_paused():
+    """pause marks in-flight agents paused (non-terminal, no completed_at) — matches workflow/phase paused."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a"))
+    assert state.phases[0].agents[0].status == "running"
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    assert state.phases[0].status == "paused"
+    assert state.phases[0].agents[0].status == "paused"
+    assert state.phases[0].agents[0].completed_at is None
+
+
+def test_workflow_stopped_marks_terminal_without_error():
+    """workflow_stopped is terminal (control outcome) — no error/result text."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a"))
+    delta = state.apply(_make_progress("workflow_stopped"))
+    assert state.status == "stopped"
+    assert state.is_terminal is True
+    assert state.completed_at is not None
+    assert state.error is None
+    assert state.result is None
+    assert delta["status"] == "stopped"
+
+
+def test_workflow_stopped_finalizes_running_phases_and_agents():
+    """stopped finalizes running phases/agents to stopped, mirroring completed/failed."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a"))
+    state.apply(_make_progress("workflow_stopped"))
+    assert state.status == "stopped"
+    assert state.phases[0].status == "stopped"
+    assert state.phases[0].agents[0].status == "stopped"
+    assert state.phases[0].completed_agent_count == 1
+    assert state.completed_agent_count == 1
+
+
+def test_kind_handlers_route_paused_and_stopped():
+    """_KIND_HANDLERS maps workflow_paused / workflow_stopped to their handlers.
+
+    Access via an instance (Pydantic v2 wraps the un-annotated underscore
+    attribute in a ModelPrivateAttr descriptor on the class).
+    """
+    state = WorkflowRunState()
+    assert state._KIND_HANDLERS["workflow_paused"] == "_on_workflow_paused"
+    assert state._KIND_HANDLERS["workflow_stopped"] == "_on_workflow_stopped"
+
+
+def test_resume_workflow_started_resets_paused_to_running():
+    """A paused run resumed with the same run_id re-fires workflow_started → back to running.
+
+    The Monitor reuses the existing WorkflowRunState by run_id and
+    _on_workflow_started unconditionally sets status=running — the paused state
+    is reset, not orphaned/duplicated.
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    # Resume relaunch (SwarmflowTool._relaunch re-runs with the same run_id).
+    delta = state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert state.status == "running"
+    assert state.is_terminal is False
+    assert state.completed_at is None
+    assert delta["status"] == "running"
+
+
+def test_resume_workflow_started_does_not_duplicate_phases():
+    """Re-firing workflow_started for the same run_id must NOT re-append META phases.
+
+    On resume the engine re-emits WORKFLOW_STARTED with the same full META
+    ``phases`` list for the same run_id; the Monitor reuses the existing
+    WorkflowRunState, so the phase cards must be kept — not duplicated into
+    fresh slug-4 / slug-5 / slug-6 cards.
+    """
+    phases_meta = [
+        PhasePlan(title="发牌", description="分配身份"),
+        PhasePlan(title="游戏进行"),
+        PhasePlan(title="结算"),
+    ]
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="werewolf-game", phases=phases_meta))
+    assert len(state.phases) == 3
+    ids_before = [p.id for p in state.phases]
+    # Resume relaunch re-emits workflow_started with the same full phases list.
+    delta = state.apply(_make_progress("workflow_started", workflow_name="werewolf-game", phases=phases_meta))
+    assert len(state.phases) == 3  # no duplicate phase cards
+    assert [p.name for p in state.phases] == ["发牌", "游戏进行", "结算"]
+    assert [p.id for p in state.phases] == ids_before  # ids stable, not slug-N re-append
+    assert state.status == "running"
+    assert len(delta["phases"]) == 3
+
+
+def test_workflow_paused_flips_running_phase_to_paused():
+    """A running phase flips to paused on workflow_paused (its agents pause too).
+
+    The phase stays non-terminal so a resume can continue; both the phase and
+    its in-flight agents show ``paused`` (matching the workflow control state).
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a", agent_id="c:1"))
+    assert state.phases[0].status == "running"
+    assert state.phases[0].agents[0].status == "running"
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    assert state.phases[0].status == "paused"
+    assert state.phases[0].agents[0].status == "paused"
+    assert state.phases[0].agent_count == 1
+
+
+def test_resume_agent_started_reuses_same_agent_id():
+    """On resume, agent_started with the SAME agent_id reuses the node — no duplicate.
+
+    The engine re-emits ``agent_started`` for cache-hit agents (same
+    ``agent_id``) when a paused run is relaunched. Reusing the existing node
+    instead of appending keeps ``agent_count`` from doubling while the node
+    flips back to ``running``.
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a", agent_id="c:1"))
+    assert len(state.phases[0].agents) == 1
+    assert state.phases[0].agents[0].status == "running"
+    state.apply(_make_progress("workflow_paused"))
+    assert state.phases[0].agents[0].status == "paused"
+    # Resume relaunch re-emits workflow_started + agent_started for the same node.
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    delta = state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a", agent_id="c:1"))
+    assert len(state.phases[0].agents) == 1
+    agent = state.phases[0].agents[0]
+    assert agent.status == "running"
+    assert state.phases[0].agent_count == 1
+    assert state.agent_count == 1
+    assert delta is not None
+
+
+def test_resume_workflow_started_keeps_original_started_at():
+    """A resume re-fires workflow_started — started_at must NOT be reset.
+
+    Otherwise the duration recomputes from the resume moment instead of the
+    original launch, shrinking the reported run duration on every pause/resume.
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    original = state.started_at
+    assert original is not None
+    state.apply(_make_progress("workflow_paused"))
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert state.started_at == original
+
+
+def test_relaunch_workflow_started_resets_phase_tree():
+    """A script-edit relaunch (relaunch_kind="relaunch") drops stale phases/agents.
+
+    The edited script may remove or rename phases, so the old phase cards (and
+    any agents under them) must not survive the re-run; the new META phase list
+    rebuilds from scratch. A normal resume (no relaunch_kind) keeps the tree.
+    """
+    state = WorkflowRunState()
+    old_phases = [PhasePlan(title="调研"), PhasePlan(title="分析"), PhasePlan(title="撰写")]
+    state.apply(_make_progress("workflow_started", workflow_name="test", phases=old_phases))
+    assert len(state.phases) == 3
+    # add an agent under the first phase so it must be dropped too
+    state.apply(_make_progress("agent_started", phase="调研", label="r", agent_id="k1", node_type="agent"))
+    assert state.phases[0].agents
+
+    new_phases = [PhasePlan(title="调研"), PhasePlan(title="撰写")]  # "分析" dropped
+    delta = state.apply(_make_progress(
+        "workflow_started", workflow_name="test", phases=new_phases, relaunch_kind="relaunch",
+    ))
+    assert [p.name for p in state.phases] == ["调研", "撰写"]
+    assert all(not p.agents for p in state.phases)  # stale agents cleared
+    # The started delta carries relaunch_kind so the frontend replaces the tree.
+    assert delta["relaunch_kind"] == "relaunch"
+
+
+def test_resume_workflow_started_keeps_phase_tree():
+    """A normal pause→resume (relaunch_kind="resume") keeps the existing phases."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test", phases=[PhasePlan(title="调研")]))
+    delta = state.apply(_make_progress("workflow_started", workflow_name="test", phases=[PhasePlan(title="调研")], relaunch_kind="resume"))
+    assert [p.name for p in state.phases] == ["调研"]  # not duplicated
+    # resume still carries the kind (frontend ignores it for merging), not "relaunch".
+    assert delta["relaunch_kind"] == "resume"
+
+
+def test_workflow_stopped_preserves_budget_and_scope():
+    """A session budget hit arrives as workflow_stopped carrying budget fields.
+
+    Unlike an explicit user stop (no budget), the session-budget stop must
+    preserve the budget snapshot + exhausted scope so the frontend can render
+    the exhausted layer and know it is session-scoped (not recoverable).
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    budget = {"total": 500000, "spent": 500000, "remaining": 0, "scope": "session", "exhausted": True}
+    wf_budget = {"total": 100, "spent": 50, "remaining": 50, "scope": "workflow", "exhausted": False}
+    state.apply(_make_progress(
+        "workflow_stopped",
+        text="session token budget exhausted",
+        budget=budget,
+        workflow_budget=wf_budget,
+        budget_exhausted_scope="session",
+    ))
+    assert state.status == "stopped"
+    assert state.budget == budget
+    assert state.workflow_budget == wf_budget
+    assert state.budget_exhausted_scope == "session"
+
+
+# ---------------------------------------------------------------------------
+# WorkflowRunState.script_path — 冷启动续跑情境注入
+# ---------------------------------------------------------------------------
+
+def test_workflow_started_carries_script_path():
+    """workflow_started 携带 script_path → apply 后写入 run state（情境注入用）。"""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", script_path="/abs/path/foo.py"))
+    assert state.script_path == "/abs/path/foo.py"
+
+
+def test_workflow_started_without_script_path_defaults_none():
+    """旧事件（无 script_path）→ state.script_path 默认 None，向后兼容。"""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert state.script_path is None
+
+
+def test_model_validate_keeps_script_path():
+    state = WorkflowRunState.model_validate({"id": "r1", "script_path": "/a/b.py"})
+    assert state.script_path == "/a/b.py"
+
+
+def test_model_validate_without_script_path_defaults_none():
+    state = WorkflowRunState.model_validate({"id": "r1"})
+    assert state.script_path is None
+
+
+def test_model_dump_includes_script_path_when_set():
+    state = WorkflowRunState.model_validate({"id": "r1", "script_path": "/a/b.py"})
+    dump = state.model_dump()
+    assert dump["script_path"] == "/a/b.py"
+
+
+def test_model_dump_default_has_none_script_path_when_unset():
+    state = WorkflowRunState.model_validate({"id": "r1"})
+    assert state.model_dump()["script_path"] is None
+
+
+def test_model_dump_exclude_none_omits_unset_script_path():
+    state = WorkflowRunState.model_validate({"id": "r1"})
+    assert "script_path" not in state.model_dump(exclude_none=True)
+
+
+# ---------------------------------------------------------------------------
+# pause_if_running — park a running run as paused (non-terminal)
+# ---------------------------------------------------------------------------
+
+def test_pause_if_running_parks_running_run_as_paused():
+    """running → paused (non-terminal, resumable), returns True.
+
+    Mirrors _on_workflow_paused but returns a bool instead of a delta; no
+    completed_at / duration_ms stamps (a paused run is not finished).
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a", agent_id="c:1"))
+    assert state.status == "running"
+    changed = state.pause_if_running()
+    assert changed is True
+    assert state.status == "paused"
+    assert state.is_terminal is False
+    assert state.completed_at is None
+    assert state.duration_ms is None
+    assert state.phases[0].status == "paused"
+    assert state.phases[0].agents[0].status == "paused"
+    assert state.phases[0].agents[0].completed_at is None
+
+
+def test_pause_if_running_returns_false_when_terminal():
+    """A terminal run is never un-paused nor resurrected — returns False."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("workflow_completed", text="done"))
+    assert state.is_terminal is True
+    changed = state.pause_if_running()
+    assert changed is False
+    assert state.status == "completed"
+
+
+def test_pause_if_running_returns_false_when_already_paused():
+    """An already-paused run stays paused — returns False (no double-park)."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    changed = state.pause_if_running()
+    assert changed is False
+    assert state.status == "paused"
+    assert state.is_terminal is False
+
+
+
+# ---------------------------------------------------------------------------
+# recovered — cold-start per-run button greying marker
+# ---------------------------------------------------------------------------
+
+def test_model_validate_keeps_recovered_true():
+    """model_validate preserves a persisted recovered=True marker."""
+    state = WorkflowRunState.model_validate({"id": "r1", "recovered": True})
+    assert state.recovered is True
+
+
+def test_model_validate_without_recovered_defaults_false():
+    """Fresh states default recovered=False (not a disk-restored run)."""
+    state = WorkflowRunState.model_validate({"id": "r1"})
+    assert state.recovered is False
+
+
+def test_workflow_started_clears_recovered_and_delta_carries_it():
+    """A relaunched run has a live controller handle again: the marker is cleared
+    and the clear rides the started delta (the frontend merge keeps omitted fields).
+    """
+    state = WorkflowRunState.model_validate({"id": "r1", "recovered": True})
+    delta = state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert state.recovered is False
+    assert delta is not None and delta.get("recovered") is False
+
+
+def test_workflow_started_delta_omits_recovered_when_never_set():
+    """A non-recovered run's started delta omits recovered (no noise)."""
+    state = WorkflowRunState()
+    delta = state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert delta is not None
+    assert "recovered" not in delta
+
+
+# ---------------------------------------------------------------------------
+# stop cascades through a paused run
+# ---------------------------------------------------------------------------
+
+def test_workflow_stopped_on_paused_run_finalizes_paused_phase_and_agents():
+    """Stopping a paused run must cascade: a paused phase / agent is not
+    finished, but stopped is the 'interrupted' terminal state and applies to
+    it exactly as to a running one. Leaving them paused shows a stopped run
+    card over a purple sub-tree and skews the derived completion counters.
+    """
+    state = WorkflowRunState()
+    state.id = "wf"
+    state.apply(_make_progress("workflow_started", workflow_name="t", phases=[{"title": "p1"}]))
+    state.apply(_make_progress("phase", phase="p1"))
+    state.apply(_make_progress("agent_started", phase="p1", agent_id="a1", label="w", node_type="agent"))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.phases[0].status == "paused"
+    assert state.phases[0].agents[0].status == "paused"
+
+    delta = state.apply(_make_progress("workflow_stopped"))
+
+    assert state.status == "stopped"
+    assert state.phases[0].status == "stopped"
+    assert state.phases[0].agents[0].status == "stopped"
+    assert state.phases[0].completed_agent_count == 1
+    assert delta is not None and delta["status"] == "stopped"
+
+
+def test_workflow_run_dict_carries_recovered_only_when_set():
+    """command.workflows serves the snapshot dict; the cold-start marker must
+    reach the frontend through it, not only through the started delta."""
+    state = WorkflowRunState.model_validate({"id": "r1", "recovered": True})
+    assert state.to_workflow_run_dict()["recovered"] is True
+    assert "recovered" not in WorkflowRunState.model_validate({"id": "r2"}).to_workflow_run_dict()
+
+
+# ── verify round folding (verify_started / verify_settled) ──────────────
+
+def test_verify_started_then_settled_folds_one_group():
+    """A verify round folds into one group card under its phase."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    delta = state.apply(_make_progress(
+        "verify_started", phase="评审", label="round-0",
+        verify_reviewers=2, verify_threshold=0.6,
+    ))
+    phase = state.phases[0]
+    assert len(phase.verify_groups) == 1
+    group = phase.verify_groups[0]
+    assert group.status == "running"
+    assert group.reviewers == 2
+    assert group.threshold == 0.6
+    assert group.verdict is None
+    assert delta["phases"][0]["verify_groups"][0]["label"] == "round-0"
+
+    state.apply(_make_progress(
+        "agent_started", phase="评审", agent_id="a1", label="v", node_type="agent",
+    ))
+    delta = state.apply(_make_progress(
+        "verify_settled", phase="评审", label="round-0",
+        verify_reviewers=2, verify_verdict="pass", verify_threshold=0.6,
+        verify_votes=[
+            {"name": "v", "kind": "verdict", "decision": "pass", "score": None, "feedback": "ok", "voted": True},
+            {"name": "round-0-1", "kind": "score", "decision": None, "score": 0.9, "feedback": "solid", "voted": True},
+        ],
+    ))
+    assert group.status == "settled"
+    assert group.verdict == "pass"
+    assert group.votes[1]["name"] == "round-0-1"
+    assert delta["phases"][0]["verify_groups"][0]["verdict"] == "pass"
+    # reviewers stay ordinary agent nodes in the same phase
+    assert phase.agents[0].name == "v"
+
+
+def test_verify_phase_closes_when_rounds_settle_while_still_active():
+    """A verify phase whose reviewers are all terminal and whose rounds have
+    all settled closes immediately — even while it is still the active phase.
+
+    Observed: a sibling branch kept retrying its implement node for 7+ minutes
+    after the last reviewer finished; the Verify card spun the whole time
+    because the auto-seal waited for the next phase to displace it. A fully
+    settled verify phase gets nothing further, so it must not wait. The settle
+    may land before or after the last reviewer's terminal event; both orders
+    close the card, and a phase with a round still running stays open.
+    """
+    def _run(settle_last: bool):
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="t"))
+        state.apply(_make_progress("verify_started", phase="Verify", label="r0",
+                                   verify_reviewers=1, verify_threshold=0.6))
+        state.apply(_make_progress("agent_started", phase="Verify", agent_id="v1", label="r0-verdict-0"))
+        settle = _make_progress("verify_settled", phase="Verify", label="r0", verify_reviewers=1,
+                                verify_verdict="pass", verify_threshold=0.6, verify_votes=[])
+        done = _make_progress("agent_completed", phase="Verify", agent_id="v1", label="r0-verdict-0", outcome="o")
+        for ev in ((done, settle) if settle_last else (settle, done)):
+            state.apply(ev)
+        return state.phases[0]
+
+    assert _run(settle_last=True).status == "completed"
+    assert _run(settle_last=False).status == "completed"
+
+    # A second round still running keeps the phase open.
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    state.apply(_make_progress("verify_started", phase="Verify", label="r0", verify_reviewers=1, verify_threshold=0.6))
+    state.apply(_make_progress("verify_started", phase="Verify", label="r1", verify_reviewers=1, verify_threshold=0.6))
+    state.apply(_make_progress("agent_started", phase="Verify", agent_id="v1", label="r0-verdict-0"))
+    state.apply(_make_progress("agent_completed", phase="Verify", agent_id="v1", label="r0-verdict-0", outcome="o"))
+    state.apply(_make_progress("verify_settled", phase="Verify", label="r0", verify_reviewers=1,
+                               verify_verdict="pass", verify_threshold=0.6, verify_votes=[]))
+    assert state.phases[0].status == "running"  # r1 not settled yet
+
+
+def test_verify_settled_undecided_keeps_verdict_none():
+    """verdict=None settles as undecided — never coerced to a pass."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    state.apply(_make_progress("verify_started", phase="评审", verify_reviewers=1, verify_threshold=0.85))
+    state.apply(_make_progress(
+        "verify_settled", phase="评审", verify_reviewers=1,
+        verify_verdict=None, verify_threshold=0.85,
+        verify_votes=[{"name": "v", "kind": "verdict", "decision": None, "score": None, "feedback": "", "voted": False}],
+    ))
+    group = state.phases[0].verify_groups[0]
+    assert group.status == "settled"
+    assert group.verdict is None
+    assert group.votes[0]["voted"] is False
+
+
+def test_verify_rework_loop_same_label_yields_card_per_round():
+    """A rework loop re-verifying under one label gets one group per round."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    for rnd in range(2):
+        state.apply(_make_progress("verify_started", phase="评审", label="verify", verify_reviewers=1))
+        state.apply(_make_progress(
+            "verify_settled", phase="评审", label="verify", verify_reviewers=1,
+            verify_verdict="fail" if rnd == 0 else "pass",
+        ))
+    groups = state.phases[0].verify_groups
+    assert len(groups) == 2
+    assert [g.verdict for g in groups] == ["fail", "pass"]
+    assert groups[0].id != groups[1].id
+
+
+def test_verify_settled_without_started_materializes_group():
+    """A settled event with no matching started card still lands (partial replay)."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    delta = state.apply(_make_progress(
+        "verify_settled", phase="评审", label="verify", verify_reviewers=1,
+        verify_verdict="pass",
+    ))
+    group = state.phases[0].verify_groups[0]
+    assert group.status == "settled"
+    assert group.verdict == "pass"
+    assert delta is not None
+
+
+def test_verify_completed_alias_routes_to_settled_handler():
+    """verify_completed (new kind) folds like verify_settled and stores outcome."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    state.apply(_make_progress("verify_started", phase="评审", verify_reviewers=1, verify_threshold=0.85))
+    state.apply(_make_progress(
+        "verify_completed", phase="评审", label="verify", verify_reviewers=1,
+        verify_verdict="pass", verify_threshold=0.85,
+        verify_votes=[{"name": "verify-verdict-0", "kind": "verdict", "role": "verifier",
+                       "decision": "pass", "score": None, "feedback": "ok", "voted": True}],
+        outcome='{"verdict": "pass", "votes": [{"kind": "verdict", "role": "verifier"}], "passed": true}',
+    ))
+    group = state.phases[0].verify_groups[0]
+    assert group.status == "settled"
+    assert group.verdict == "pass"
+    assert group.outcome == '{"verdict": "pass", "votes": [{"kind": "verdict", "role": "verifier"}], "passed": true}'
+    assert group.votes[0]["role"] == "verifier"
+
+
+def test_fork_agent_started_carries_parent_session_id():
+    """A fork child's agent_started lands parent_session_id on the node."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    delta = state.apply(_make_progress(
+        "agent_started", phase="分叉", agent_id="a1", label="child",
+        node_type="agent_session_fork", parent_session_id="arch",
+    ))
+    agent = state.phases[0].agents[0]
+    assert agent.parent_session_id == "arch"
+    assert delta["phases"][0]["agents"][0]["parent_session_id"] == "arch"
+
+
+def test_verify_started_records_reviewer_labels():
+    """verify_started's label roster lands on the group and serializes in deltas."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    delta = state.apply(_make_progress(
+        "verify_started", phase="评审", label="verify:V1",
+        verify_reviewers=2, verify_threshold=0.85,
+        verify_reviewer_labels=["verify:V1-verdict-0", "verify:V1-score-1"],
+    ))
+    group = state.phases[0].verify_groups[0]
+    assert group.reviewer_labels == ["verify:V1-verdict-0", "verify:V1-score-1"]
+    assert delta["phases"][0]["verify_groups"][0]["reviewer_labels"] == group.reviewer_labels
+
+
+def test_agent_completed_records_cache_tokens():
+    """agent_completed's cache_tokens lands on the agent node and in deltas."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    state.apply(_make_progress(
+        "agent_started", phase="评审", agent_id="a1", label="reviewer", node_type="agent",
+    ))
+    state.apply(_make_progress(
+        "agent_completed", phase="评审", agent_id="a1", label="reviewer",
+        outcome="ok", tokens=1000, cache_tokens=640,
+    ))
+    agent = state.phases[0].agents[0]
+    assert agent.token_count == 1000
+    assert agent.cache_token_count == 640
+    # legacy events without cache_tokens leave the field unset
+    assert WorkflowAgentState(
+        id="x", name="n", token_count=5,
+    ).cache_token_count is None
+
+
+def test_concurrent_same_label_verify_rounds_get_card_per_round():
+    """并行同 label verify 各自成卡，settled 按 verify_id 精确落卡（fork-multi-model 场景）。"""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    # 3 个并行同 label started——默认 label 下 reviewer 名册完全相同
+    for vid in ("r1", "r2", "r3"):
+        state.apply(_make_progress(
+            "verify_started", phase="交叉评审", label="verify", verify_reviewers=1,
+            verify_reviewer_labels=["verify-verdict-0"], verify_id=vid,
+        ))
+    assert len(state.phases[0].verify_groups) == 3
+    # settled 交错到达，各回各卡
+    state.apply(_make_progress(
+        "verify_settled", phase="交叉评审", label="verify", verify_id="r2",
+        verify_verdict="fail",
+        verify_votes=[{"name": "verify-verdict-0", "agent_id": "k2", "kind": "verdict",
+                       "decision": "fail", "score": None, "feedback": "", "voted": True}],
+    ))
+    state.apply(_make_progress(
+        "verify_settled", phase="交叉评审", label="verify", verify_id="r1",
+        verify_verdict="pass",
+        verify_votes=[{"name": "verify-verdict-0", "agent_id": "k1", "kind": "verdict",
+                       "decision": "pass", "score": None, "feedback": "", "voted": True}],
+    ))
+    by_id = {g.verify_id: g for g in state.phases[0].verify_groups}
+    assert by_id["r1"].verdict == "pass"
+    assert by_id["r2"].verdict == "fail"
+    # r3 仍 running，且没有吞掉 r1/r2 的票（名册相同的旧兜底不会误配）
+    assert by_id["r3"].status == "running"
+    assert by_id["r3"].votes == []
+
+
+def test_verify_started_replay_dedupes_by_verify_id():
+    """resume 回放的同 verify_id started 复用同一张卡，不翻倍。"""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    for _ in range(2):
+        state.apply(_make_progress(
+            "verify_started", phase="评审", label="verify", verify_reviewers=1,
+            verify_reviewer_labels=["verify-verdict-0"], verify_id="same",
+        ))
+    assert len(state.phases[0].verify_groups) == 1
+
+
+# ---------------------------------------------------------------------------
+# agent_activity — structured tool activity on agent nodes
+# ---------------------------------------------------------------------------
+
+def _start_two_same_label_agents(state: WorkflowRunState) -> None:
+    """Open a phase with two parallel same-label nodes (distinct agent_ids)."""
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    state.apply(_make_progress("agent_started", phase="p", label="x", agent_id="a1"))
+    state.apply(_make_progress("agent_started", phase="p", label="x", agent_id="a2"))
+
+
+def test_agent_activity_route_via_kind_handlers():
+    """_KIND_HANDLERS routes agent_activity to _on_agent_activity."""
+    state = WorkflowRunState()
+    assert state._KIND_HANDLERS["agent_activity"] == "_on_agent_activity"
+
+
+def test_agent_activity_tool_call_lands_on_node_by_agent_id():
+    """Two same-label parallel nodes: activity keys on agent_id, does not cross."""
+    state = WorkflowRunState()
+    _start_two_same_label_agents(state)
+    delta = state.apply(_make_progress(
+        "agent_activity", phase="p", label="x", agent_id="a1",
+        activity_type="tool_call", tool_call_id="t1", tool_name="bash",
+        content="ls",
+    ))
+    a1, a2 = state.phases[0].agents
+    assert len(a1.activity) == 1
+    assert len(a2.activity) == 0
+    entry = a1.activity[0]
+    assert entry.type == "tool_call"
+    assert entry.tool_call_id == "t1"
+    assert entry.tool_name == "bash"
+    assert entry.content == "ls"
+    assert entry.tool_result_preview is None
+    assert entry.timestamp is not None
+    # The delta must carry the touched phase so workflow.updated transports it.
+    assert delta is not None
+    phase_in_delta = delta["phases"][0]
+    assert phase_in_delta["id"] == state.phases[0].id
+    agents_in_delta = phase_in_delta["agents"]
+    assert len(agents_in_delta) == 2
+    a1_delta = next(a for a in agents_in_delta if a["id"] == "a1")
+    assert a1_delta["activity"][0]["tool_call_id"] == "t1"
+
+
+def test_agent_activity_label_fallback_lands_on_latest_running():
+    """Legacy event without agent_id falls back to the latest running same-label node."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="legacy"))
+    state.apply(_make_progress("agent_started", phase="p", label="x"))
+    state.apply(_make_progress("agent_started", phase="p", label="x"))
+    delta = state.apply(_make_progress(
+        "agent_activity", phase="p", label="x",
+        activity_type="tool_call", tool_call_id="t1", tool_name="bash", content="ls",
+    ))
+    assert len(state.phases[0].agents[0].activity) == 0
+    assert len(state.phases[0].agents[1].activity) == 1
+    assert delta is not None
+
+
+def test_agent_activity_tool_result_pairs_back_onto_tool_call():
+    """A tool_result with a matching tool_call_id fills the call row's preview."""
+    state = WorkflowRunState()
+    _start_two_same_label_agents(state)
+    state.apply(_make_progress(
+        "agent_activity", phase="p", label="x", agent_id="a1",
+        activity_type="tool_call", tool_call_id="t1", tool_name="bash", content="ls",
+    ))
+    delta = state.apply(_make_progress(
+        "agent_activity", phase="p", label="x", agent_id="a1",
+        activity_type="tool_result", tool_call_id="t1", tool_name="bash",
+        content="file1 file2",
+    ))
+    a1 = state.phases[0].agents[0]
+    assert len(a1.activity) == 1  # paired — no second row
+    assert a1.activity[0].type == "tool_call"
+    assert a1.activity[0].tool_result_preview == "file1 file2"
+    assert delta is not None
+
+
+def test_agent_activity_orphan_tool_result_appends_own_entry():
+    """A tool_result without a matching tool_call appends as its own row, in order."""
+    state = WorkflowRunState()
+    _start_two_same_label_agents(state)
+    state.apply(_make_progress(
+        "agent_activity", phase="p", label="x", agent_id="a1",
+        activity_type="tool_call", tool_call_id="t1", tool_name="bash", content="ls",
+    ))
+    delta = state.apply(_make_progress(
+        "agent_activity", phase="p", label="x", agent_id="a1",
+        activity_type="tool_result", tool_call_id="t2", tool_name="bash",
+        content="orphan result",
+    ))
+    a1 = state.phases[0].agents[0]
+    assert len(a1.activity) == 2  # orphan result appends after the pair
+    assert a1.activity[1].type == "tool_result"
+    assert a1.activity[1].tool_call_id == "t2"
+    assert a1.activity[1].content == "orphan result"
+    assert delta is not None
+
+
+def test_agent_activity_ring_cap_drops_oldest():
+    """The per-node activity list is capped at 200 — oldest entries dropped."""
+    state = WorkflowRunState()
+    _start_two_same_label_agents(state)
+    for i in range(250):
+        state.apply(_make_progress(
+            "agent_activity", phase="p", label="x", agent_id="a1",
+            activity_type="tool_call", tool_call_id=f"t{i}", tool_name="bash",
+            content=f"call {i}",
+        ))
+    a1 = state.phases[0].agents[0]
+    assert len(a1.activity) == 200
+    assert a1.activity[0].tool_call_id == "t50"  # oldest 50 dropped
+    assert a1.activity[-1].tool_call_id == "t249"
+
+
+def test_agent_activity_delta_carries_activity_without_status_bump():
+    """An activity delta keeps statuses untouched — only node activity changes."""
+    state = WorkflowRunState()
+    _start_two_same_label_agents(state)
+    phase_before = state.phases[0].status
+    agents_before = [(a.id, a.status) for a in state.phases[0].agents]
+    delta = state.apply(_make_progress(
+        "agent_activity", phase="p", label="x", agent_id="a1",
+        activity_type="tool_call", tool_call_id="t1", tool_name="bash", content="ls",
+    ))
+    assert state.phases[0].status == phase_before
+    assert [(a.id, a.status) for a in state.phases[0].agents] == agents_before
+    assert state.status == "running"
+    assert state.completed_agent_count == 0
+    # delta only carries phases (like other phase-level deltas) — no status change
+    assert set(delta["phases"][0].keys()) == set(state.phases[0].to_dict().keys())
+
+
+def test_agent_activity_unresolved_node_returns_none():
+    """An activity for an unknown node produces no delta and no crash."""
+    state = WorkflowRunState()
+    _start_two_same_label_agents(state)
+    delta = state.apply(_make_progress(
+        "agent_activity", phase="p", label="nope", agent_id="ghost",
+        activity_type="tool_call", tool_call_id="t1", tool_name="bash", content="ls",
+    ))
+    assert delta is None

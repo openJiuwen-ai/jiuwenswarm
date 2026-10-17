@@ -13,28 +13,37 @@ import pytest
 
 # ---------------------------------------------------------------------------
 # Inline copy of the resolver logic to avoid heavy imports.
-# Mirror of jiuwenswarm/agentserver/memory/config.py — keep in sync.
+# Mirror of jiuwenswarm/agents/harness/common/memory/config.py — keep in sync.
 # ---------------------------------------------------------------------------
+
+# agent 工作族：旧 token（agent / agent.plan / agent.fast / plan / fast）+
+# 新三段命名 agent.work.* canonical。
+_AGENT_WORK_TOKENS = frozenset({
+    "agent", "agent.plan", "agent.fast", "plan", "fast",
+    "agent.work.normal", "agent.work.plan",
+})
+
+# code profile 族：旧 code 系（code / code.normal / code.plan / code.team /
+# team.plan.code）+ 新三段命名 agent.code.* / team.code.* canonical。
+_CODE_PROFILE_TOKENS = frozenset({
+    "code", "code.normal", "code.plan", "code.team", "team.plan.code",
+    "agent.code.normal", "agent.code.plan", "team.code.normal", "team.code.plan",
+})
+
 
 def _resolve_mode_memory(mode: str, config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     modes_cfg = (config or {}).get("modes", {}) if isinstance(config, dict) else {}
     if not isinstance(modes_cfg, dict):
         return {}
     token = (mode or "").strip()
-    if "." in token:
-        top, sub = token.split(".", 1)
-        # Special handling for "code.*" -> modes.code (ignore sub_mode)
-        if top == "code":
-            node = modes_cfg.get("code", {})
-        else:
-            node = modes_cfg.get(top, {})
-            if isinstance(node, dict):
-                node = node.get(sub, {})
-    elif token == "code":
+    if token in _CODE_PROFILE_TOKENS or token.startswith("code."):
         node = modes_cfg.get("code", {})
+    elif token in _AGENT_WORK_TOKENS:
+        node = modes_cfg.get("agent", {})
     else:
-        agent_node = modes_cfg.get("agent", {}) if isinstance(modes_cfg.get("agent"), dict) else {}
-        node = agent_node.get(token, {})
+        # team 工作族（team / team.plan / team.plan.normal + 新 team.work.*）没有
+        # 对应的记忆配置节点，不落到 modes.agent / modes.code 兜底。
+        return {}
     if not isinstance(node, dict):
         return {}
     mem = node.get("memory", {})
@@ -58,13 +67,8 @@ def cfg() -> Dict[str, Any]:
     """A config shaped like the real config.yaml — matches what jiuwenswarm ships."""
     return {
         "modes": {
-            "agent": {
-                "fast": {"memory": {"enabled": True, "is_proactive": False}},
-                "plan": {"memory": {"enabled": True, "is_proactive": True}},
-            },
-            "code": {
-                "memory": {},
-            },
+            "agent": {"memory": {"enabled": True, "is_proactive": False}},
+            "code": {"memory": {"enabled": True, "is_proactive": True}},
         },
     }
 
@@ -74,26 +78,49 @@ def cfg() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("token", ["agent.plan", "plan"])
-def test_plan_tokens_route_to_modes_agent_plan(cfg, token):
+def test_plan_tokens_route_to_merged_agent(cfg, token):
+    # plan / fast 已合并为单一 agent 模式，统一读 modes.agent。
     assert is_memory_enabled(token, cfg) is True
-    assert is_proactive_memory(token, cfg) is True
+    assert is_proactive_memory(token, cfg) is False
 
 
 @pytest.mark.parametrize("token", ["agent.fast", "fast"])
-def test_fast_tokens_route_to_modes_agent_fast(cfg, token):
+def test_fast_tokens_route_to_merged_agent(cfg, token):
     assert is_memory_enabled(token, cfg) is True
     assert is_proactive_memory(token, cfg) is False
 
 
 def test_code_token_reads_modes_code(cfg):
-    # modes.code.memory is empty → disabled
-    assert is_memory_enabled("code", cfg) is False
-    assert is_proactive_memory("code", cfg) is False
+    assert is_memory_enabled("code", cfg) is True
+    assert is_proactive_memory("code", cfg) is True
 
 
 @pytest.mark.parametrize("token", ["code.normal", "code.team", "code.anything"])
 def test_code_sub_tokens_route_to_modes_code(cfg, token):
     # "code.*" should resolve to modes.code, same as bare "code"
+    assert is_memory_enabled(token, cfg) is True
+    assert is_proactive_memory(token, cfg) is True
+
+
+# 新三段命名 canonical：agent.work.* -> modes.agent；agent.code.* / team.code.*
+# -> modes.code；team.work.* -> {}（无节点，保持旧 team 行为）。
+@pytest.mark.parametrize("token", ["agent.work.normal", "agent.work.plan"])
+def test_new_agent_work_canonical_routes_to_agent_node(cfg, token):
+    assert is_memory_enabled(token, cfg) is True
+    assert is_proactive_memory(token, cfg) is False
+
+
+@pytest.mark.parametrize("token", [
+    "agent.code.normal", "agent.code.plan",
+    "team.code.normal", "team.code.plan",
+])
+def test_new_code_canonical_routes_to_code_node(cfg, token):
+    assert is_memory_enabled(token, cfg) is True
+    assert is_proactive_memory(token, cfg) is True
+
+
+@pytest.mark.parametrize("token", ["team.work.normal", "team.work.plan", "team", "team.plan.normal"])
+def test_team_work_tokens_have_no_memory_node(cfg, token):
     assert is_memory_enabled(token, cfg) is False
     assert is_proactive_memory(token, cfg) is False
 
@@ -125,10 +152,12 @@ def test_malformed_configs_return_disabled(cfg):
     assert is_memory_enabled("plan", cfg) is False
 
 
-def test_missing_enabled_defaults_to_false_but_proactive_independent():
+def test_agent_tokens_with_missing_agent_memory_are_disabled():
+    # 合并后 plan/fast 归一到 modes.agent；modes.agent.memory 缺失时一律 disabled
+    # （不再读取 modes.agent.plan.memory 等历史子节点）。
     cfg = {"modes": {"agent": {"plan": {"memory": {"is_proactive": True}}}}}
     assert is_memory_enabled("plan", cfg) is False
-    assert is_proactive_memory("plan", cfg) is True
+    assert is_proactive_memory("plan", cfg) is False
 
 
 # ---------------------------------------------------------------------------

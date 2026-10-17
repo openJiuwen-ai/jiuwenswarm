@@ -40,10 +40,12 @@ class _FakeAutoHarnessService:
 @pytest.mark.asyncio
 async def test_auto_harness_syncs_tui_channel_before_service(monkeypatch):
     """AutoHarness must preserve the TUI channel before downstream model rails run."""
-    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter.mark_as_session_scoped("tui_session_1")
+    adapter._session_instance_mode = "auto_harness"
     adapter._instance = object()
-    adapter._is_session_scoped_adapter = True
-    adapter._parent_session_id = None
+    adapter._agent_name = "main_agent"
+    adapter._sys_operation = None
     adapter._auto_harness_service = _FakeAutoHarnessService()
     adapter._stream_event_rail = None
 
@@ -96,7 +98,7 @@ def test_prompt_channel_resolver_keeps_tui_prefix_non_web():
 @pytest.mark.asyncio
 async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
     """Runtime config must sync the channel and task paths into inner rails."""
-    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter = JiuWenSwarmDeepAdapter()
     adapter._instance = object()
     adapter._is_session_scoped_adapter = True
     adapter._parent_session_id = None
@@ -156,8 +158,8 @@ async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
 
     assert captured == {
         "channel": "web",
-        "cwd": "/task/project/backend",
-        "workspace": "/task/project",
+        "cwd": "/different/project",
+        "workspace": "/different/project",
     }
 
     await adapter._update_runtime_config(

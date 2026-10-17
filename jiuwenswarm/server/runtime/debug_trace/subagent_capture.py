@@ -31,7 +31,8 @@ async def invoke_subagent_with_trace(
     subagent: Any,
     *,
     inputs: dict,
-    session: Any,
+    session: Any = None,
+    session_id: str = "",
     source_label: str,
 ) -> dict:
     """Run *subagent*, capturing its stream into the active run's debug dump.
@@ -39,7 +40,8 @@ async def invoke_subagent_with_trace(
     Args:
         subagent: A ``DeepAgent`` instance (has ``invoke`` / ``stream``).
         inputs: The inputs dict (``{"query": ..., "conversation_id": ...}``).
-        session: The parent session, forwarded to the subagent.
+        session: Optional parent session used by custom delegation paths.
+        session_id: Parent session id used by the SDK TaskTool dispatch hook.
         source_label: Dump source tag, e.g. ``subagent:builtin:explore_agent``.
 
     Returns:
@@ -49,9 +51,7 @@ async def invoke_subagent_with_trace(
     # Safety net for a subagent that reached here without going through the
     # create_subagent hook (a host-built instance, say). Idempotent, so the
     # normal path — where the hook already attached the rail — pays nothing.
-    from jiuwenswarm.agents.harness.agent_observability import (
-        attach_subagent_observability,
-    )
+    from openjiuwen.harness.observability import attach_subagent_observability
 
     attach_subagent_observability(subagent)
 
@@ -65,7 +65,9 @@ async def invoke_subagent_with_trace(
         # Same task-boundary gap as TaskTool: this helper can be reached from the
         # custom AgentTool path inside the DeepAgent's supervisor task, where the
         # per-request ContextVar isn't visible. Fall back to a session lookup.
-        sid = session.get_session_id() if hasattr(session, "get_session_id") else None
+        sid = str(session_id or "").strip()
+        if not sid and hasattr(session, "get_session_id"):
+            sid = str(session.get_session_id() or "").strip()
         if sid:
             dbg = get_debug_trace_logger_for_session(sid)
     if dbg is None or not dbg.captures_subagent_flow():

@@ -18,7 +18,6 @@ The current implementation adds a `work_mode` dimension to isolate regular work 
 | **Default projects** | Not persisted; dynamically injected by APIs. `default` is the work default project, `default_code` is the code default project. Rename/remove/pin are forbidden |
 | **`work_mode`** | Isolation dimension for projects, sessions, and scheduled tasks. Values: `work` / `code`. Web defaults to `work`; TUI defaults to `code` |
 | **Code project Git capabilities** | Real `code` projects expose Git status, init, branch, Diff, history, monitoring, and discard/redo APIs. Default projects and `work` projects do not expose Git operations |
-| **Soft delete** | `project.remove` marks `hidden:true` without deleting the record. While hidden, its non-pinned sessions temporarily fall back to the mode-specific default project |
 | **Pinned sessions** | Detached from project groups and fetched via `project.pinned_sessions`, sorted by `pin_order` ascending |
 | **Pinned projects** | Pinned projects appear first, sorted by `pin_order` ascending |
 | **Immutability** | Once `project_id`, `project_dir`, and `work_mode` are bound to a session, they cannot be changed; no cross-project/cross-mode migration API is provided |
@@ -58,7 +57,6 @@ Returned by `project.list`.
 | `pinned` | boolean | Whether pinned |
 | `pin_order` | integer | Pin order; lower comes first; `0` when not pinned |
 | `is_default` | boolean | Whether this is a default project |
-| `hidden` | boolean | Whether soft-deleted; defaults are always false |
 | `session_count` | integer | Number of non-pinned sessions in this project |
 | `last_message_at` | number \| null | Latest message timestamp (UTC seconds) |
 | `last_user_message_at` | number \| null | Latest user message timestamp; falls back to `created_at` |
@@ -231,7 +229,6 @@ Returns sorted projects with statistics and injected default projects.
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `filter` | string | no | `all` / `pinned` / `unpinned`, default `all` |
-| `include_hidden` | boolean | no | Whether to include soft-deleted projects |
 | `work_mode` | string | no | Filter by `work` / `code`; omitted returns all modes |
 
 **Response payload:** `projects` (`ProjectInfo[]`).
@@ -252,13 +249,13 @@ Returns non-pinned sessions for a project. `default` returns unbound/fallback wo
 
 ### project.create - Create project
 
-Creates a project with an optional directory. If a non-empty `project_dir` matches a hidden project in the same `work_mode`, that project is restored. Code projects automatically probe or initialize Git.
+Creates a project with an optional working directory. Duplicate directories or names within the same work mode return CONFLICT.
 
 **Request params:**
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | yes | Display name; unique within the same `work_mode`, including hidden projects |
+| `name` | string | yes | Display name; unique within the same `work_mode` |
 | `project_dir` | string | no | Absolute directory; empty path projects are allowed |
 | `work_mode` | string | no | `work` / `code`; inferred from channel when omitted |
 
@@ -266,9 +263,9 @@ Creates a project with an optional directory. If a non-empty `project_dir` match
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `project_id` | string | New or restored project ID |
+| `project_id` | string | New project ID |
 | `project_dir` | string | Project path |
-| `restored` | boolean | Whether a hidden project was restored |
+| `restored` | boolean | Always `false` (compatibility field) |
 | `project` | ProjectInfo | Full project object |
 | `work_mode` | string | Project work mode |
 | `git` | object | Git snapshot for code projects; disabled/empty for work projects |
@@ -279,7 +276,7 @@ Creates a project with an optional directory. If a non-empty `project_dir` match
 
 ### project.rename - Rename project
 
-Renames the display name only. Name conflicts are checked within the same `work_mode`, including hidden projects.
+Renames the display name only. Name conflicts are checked within the same `work_mode`.
 
 **Request params:** `project_id` (string, required), `name` (string, required)
 
@@ -301,30 +298,23 @@ Toggles project pin state and compacts pin order.
 
 ---
 
-### project.remove - Soft-delete project
+### Session lifecycle and project removal
 
-Marks a project as hidden and unpins it. Its non-pinned sessions temporarily fall back to the mode-specific default project.
+- `session.archive` / `session.unarchive`: `{session_ids:string[]}`, 1–100 IDs; returns `{succeeded_count, failed_count, results}`. Running sessions return `SESSION_BUSY` without stopping work. Cron/heartbeat execution sessions cannot be archived individually.
+- `session.archived.list`: optional `project_id`, `work_mode`, `keyword`, `limit` (default 20, maximum 200), `offset`; returns `{sessions,total,limit,offset,has_more}`. Sorts by `archived_at DESC, session_id ASC`. Each item carries `project_hidden`, marking whether its project has been removed.
+- `session.delete`: accepts `session_id` or batch `session_ids`; both active and archived sessions can be permanently deleted. Running work is stopped before cleanup.
+- `project.remove`: `{project_id:string}`; hide the project without deleting sessions, cron jobs or the working directory. The Gateway first stops the project's cron jobs (disables them and cancels in-flight runs; the job records are kept) and aborts the removal if that fails, so a hidden project never has running or firing cron jobs. Returns `{project_id,hidden:true,affected_sessions}`, where `affected_sessions` counts the active conversations hidden with the project (pinned conversations included, cron execution sessions excluded).
+- `project.restore`: `{project_id:string}`; restore a hidden project. Returns `{project_id,restored:true,work_mode,affected_sessions}`. Stopped cron jobs stay stopped after the restore and must be re-enabled manually. `project.list` / `project.info` accept `include_hidden:true`.
+- `project.sessions.archive`: `{project_id:string}`; archives a snapshot of all eligible active sessions. Busy sessions fail individually; cron jobs stay unchanged.
+- `project.sessions.delete_archived`: `{project_id:string}`; permanently deletes only archived sessions in the project.
 
-**Request params:** `project_id` (string, required)
+Both project session operations return `{project_id,succeeded_count,failed_count,results}`. Each result contains `session_id`, `ok`, and `code/error` on failure. An empty selection succeeds with zero counts. Default projects support these batch operations but cannot themselves be deleted.
 
-**Response payload:** `affected_sessions`.
+Project removal sets `hidden=true` and clears its pin. The project's active sessions disappear from the workspace with it: they are listed under neither the project nor the default project (default project lists and session counts exclude them), and pinned conversations leave the pinned area as well. Stored project IDs are unchanged. Archived sessions are unaffected and stay in the archive page under the real project name, flagged with `project_hidden` so the page can explain that the project was removed. Restoring the project, or creating it again with the same directory and work mode, brings those sessions back, pinned ones included. The project's cron jobs are stopped when it is removed — disabled, with in-flight runs cancelled — and remain in the store invisible to the cron list; after a restore they stay stopped by default. The working directory is preserved.
 
-**Error codes:** `NOT_FOUND`, `FORBIDDEN`
-
----
-
-### project.restore - Restore project
-
-Restores a hidden project. Sessions automatically reattach by `project_id`.
-
-**Request params:** `project_id` (string, required)
-
-**Response payload:** `affected_sessions`.
-
-**Error codes:** `NOT_FOUND`, `CONFLICT`, `FORBIDDEN`
+Archiving and pinning are independent: archiving keeps the session's pinned state, and unarchiving restores it and renumbers the pinned ordering. Undoing the archive of a session whose project was removed restores that project too; when another project already holds the name, the call fails with `PROJECT_NAME_CONFLICT` and the session stays archived until the user resolves the clash.
 
 ---
-
 ### project.pinned_sessions - List pinned sessions
 
 Returns all pinned sessions sorted by `pin_order`.
@@ -435,8 +425,8 @@ Fetches current worktree Diff and, when `session_id` is provided, the last agent
 | `project_id` | string | Project ID |
 | `session_id` | string \| null | Requested session |
 | `work_mode` | string | Always `code` |
-| `repo` | object | `is_git`, `repo_root`, `branch`, `head`, `transient` |
-| `current` | DiffSummary \| null | Current worktree Diff; may be null when no Git, Git missing, or transient |
+| `repo` | object | `is_git`, `repo_root`, `branch`, `head`, `transient`, `repo_is_parent_of_project` (true when the repo root is a parent of the project directory) |
+| `current` | DiffSummary \| null | Current worktree Diff; may be null when no Git, Git missing, or transient. Includes `files_truncated` (true when actual changed files exceed the preview cap) and `files_limit` (preview cap of 50 files, project-directory files first) |
 | `last_turn` | DiffSummary \| null | Last turn Diff; null when no session or no history |
 | `generated_at` | number | Generation timestamp |
 
@@ -529,7 +519,7 @@ Releases watcher resources. `all` removes the whole watcher; `files` / `detail` 
 
 ### project.git.discard_turn_changes - Discard last turn file changes
 
-Restores the current session's last agent turn file changes to their pre-turn state, or deletes files created in that turn. On full success, session-specific file_ops entries for that turn are soft-deleted (marked `discarded_out` rather than physically removed, preserving snapshots for `redo_turn_changes`) and Diff watchers are woken. On partial failure, the response uses `ok=false` and keeps file_ops so the operation can be retried.
+Restores the current session's last agent turn file changes to their pre-turn state, or deletes files created in that turn. On full success, session-specific file_ops entries for that turn are archived (marked `discarded_out` rather than physically removed, preserving snapshots for `redo_turn_changes`) and Diff watchers are woken. On partial failure, the response uses `ok=false` and keeps file_ops so the operation can be retried.
 
 **Request params:** `project_id` (code project ID), `session_id` (must belong to the project).
 
@@ -543,11 +533,15 @@ Restores the current session's last agent turn file changes to their pre-turn st
 | `restored_files` | string[] | Files restored to previous contents |
 | `deleted_files` | string[] | Newly created files deleted by discard |
 | `errors` | object[] | Per-file restore errors |
-| `file_ops_truncated` | boolean | Whether session-specific file_ops entries were marked `discarded_out` (soft-deleted, preserved for redo) |
+| `file_ops_truncated` | boolean | Whether session-specific file_ops entries were marked `discarded_out` (archived, preserved for redo) |
 | `global_file_ops_truncated` | boolean | Always `false`; global file_ops are not truncated to avoid cross-session damage |
 | `partial` | boolean | Whether the restore partially failed; when true, top-level `ok=false` and `code=PARTIAL_RESTORE_FAILED` |
 
-**Error codes:** `BAD_REQUEST`, `NOT_FOUND`, `FORBIDDEN`, `SESSION_NOT_BOUND`, `PROJECT_SESSION_MISMATCH`, `SESSION_BUSY`, `NO_TURN_TO_DISCARD`, `PARTIAL_RESTORE_FAILED`
+**Error codes:** `BAD_REQUEST`, `NOT_FOUND`, `FORBIDDEN`, `SESSION_NOT_BOUND`, `PROJECT_SESSION_MISMATCH`, `SESSION_BUSY`, `NO_TURN_TO_DISCARD`, `NOTHING_TO_DISCARD`, `DIFF_HISTORY_EXPIRED`, `PARTIAL_RESTORE_FAILED`
+
+> **`NOTHING_TO_DISCARD`:** The last turn with file changes is already in the `discarded` state (e.g. discarded by another client); nothing to discard and no workspace files are touched.
+>
+> **`DIFF_HISTORY_EXPIRED`:** The target turn no longer has a usable timestamp, or its diff history expired while being resolved; the operation is rejected before touching workspace files.
 
 ---
 
@@ -571,11 +565,13 @@ Symmetric to `discard_turn_changes`: re-applies the file changes that were disca
 | `errors` | object[] | Per-file redo errors |
 | `partial` | boolean | Whether the redo partially failed; when true, top-level `ok=false` and `code=PARTIAL_REDO_FAILED` |
 
-**Error codes:** `BAD_REQUEST`, `NOT_FOUND`, `FORBIDDEN`, `SESSION_NOT_BOUND`, `PROJECT_SESSION_MISMATCH`, `SESSION_BUSY`, `NO_TURN_TO_REDO`, `NOTHING_TO_REDO`, `REDO_HISTORY_MISSING`, `PARTIAL_REDO_FAILED`
+**Error codes:** `BAD_REQUEST`, `NOT_FOUND`, `FORBIDDEN`, `SESSION_NOT_BOUND`, `PROJECT_SESSION_MISMATCH`, `SESSION_BUSY`, `NO_TURN_TO_REDO`, `NOTHING_TO_REDO`, `DIFF_HISTORY_EXPIRED`, `REDO_HISTORY_MISSING`, `PARTIAL_REDO_FAILED`
 
 > **`REDO_HISTORY_MISSING`:** The last turn is `discarded` but no redoable file_ops entries were found (file_ops missing/corrupted/no `discarded_out` markers). The `discarded` status is preserved for investigation.
 >
 > **`NOTHING_TO_REDO`:** The last turn was not discarded (e.g. `status=applied` or `completed`); nothing to redo.
+>
+> **`DIFF_HISTORY_EXPIRED`:** The diff history for the target turn expired while being resolved; the operation is rejected before touching workspace files.
 
 ---
 
@@ -590,11 +586,9 @@ Symmetric to `discard_turn_changes`: re-applies the file changes that were disca
 | `session.pin` | Session | Pin/unpin session |
 | `project.list` | Project | List projects with pin and work_mode filters |
 | `project.get_sessions` | Project | List non-pinned sessions by project |
-| `project.create` | Project | Create/restore project; code projects auto probe/init Git |
+| `project.create` | Project | Create project; code projects auto probe/init Git |
 | `project.rename` | Project | Rename project |
 | `project.pin` | Project | Pin/unpin project |
-| `project.remove` | Project | Soft delete project |
-| `project.restore` | Project | Restore soft-deleted project |
 | `project.pinned_sessions` | Project | List pinned sessions |
 | `project.git.status` | Git | Live Git status, not persisted |
 | `project.git.probe` | Git | Re-probe Git and persist `ProjectInfo.git` |
@@ -610,3 +604,14 @@ Symmetric to `discard_turn_changes`: re-applies the file changes that were disca
 | `project.git.diff_unwatch` | `/ws/git` | Cancel watches |
 | `project.git.discard_turn_changes` | `/ws/git` | Discard the current session's last turn code changes |
 | `project.git.redo_turn_changes` | `/ws/git` | Redo the current session's last turn discarded changes |
+
+## Cross-session Agent messages and steering
+
+Non-cron Web/TUI single-Agent Sessions belonging to the same user on the same AgentServer can exchange messages through the existing tools:
+
+- Use `session_list` to find a target. `session_send_message(target_session_id, message)` defaults to `steer`: a running target handles the input in its current turn; an idle target starts a new turn.
+- Use `input_mode="follow_up"` for an independent queued task. Plan mode and active Goals always defer cross-session input to that queue. Each delivery lane is FIFO; steering can overtake independent tasks.
+- Use `session_message_list` to inspect the existing mailbox. `accepted: true` means persisted; `delivered` means supplemental input was accepted, not that the model consumed it or the target task succeeded. `succeeded` requires actual completion of an independent execution.
+- Temporary refusals before SDK submission (including pending user interactions and closing input windows) return to the independent-task queue. Interrupted or uncertain delivery becomes `unknown`, retaining the existing explicit resolution workflow without automatic replay. Failed input-boundary publication drops the supplemental input before model admission and does not fail the original task.
+
+Source Session, message ID, chain and Agent provenance are retained in delivery, UI and history. Live and restored Agent inputs use a Host-generated tool call/result pair for SDK compatibility; the payload has tool authority and grants no new user authorization. Existing ownership, idempotency, capacity and hop limits remain in force. This adds no reply protocol; previously persisted independent tasks keep their delivery mode.

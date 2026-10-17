@@ -17,6 +17,7 @@ the real trajectory module before the import chain resolves so collection succee
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -31,6 +32,84 @@ _RAIL_BUILD_NAMES = getattr(_ic_mod, "_RAIL_BUILD_NAMES")
 _RailBuildInfo = getattr(_ic_mod, "_RailBuildInfo")
 JiuwenSwarmCodeAdapter = _ic_mod.JiuwenSwarmCodeAdapter
 _FIXED_RAIL_NAMES = getattr(JiuwenSwarmCodeAdapter, "_FIXED_RAIL_NAMES")
+
+
+def test_code_adapter_propagates_enabled_permission_build_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = JiuwenSwarmCodeAdapter()
+    for method_name in (
+        "_build_runtime_prompt_rail",
+        "_build_response_prompt_rail",
+        "_build_skill_retrieval_prompt_rail",
+        "_build_stream_event_rail",
+        "_build_security_rail",
+        "_build_lsp_rail_via_config",
+        "_build_project_memory_rail",
+    ):
+        monkeypatch.setattr(adapter, method_name, lambda: None)
+
+    def fail_permission_build(**_kwargs):
+        raise RuntimeError("permission_build_failed")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.build_permission_rail",
+        fail_permission_build,
+    )
+
+    with pytest.raises(RuntimeError, match="permission_build_failed"):
+        adapter._build_agent_rails({}, {"permissions": {"enabled": True}})
+
+
+def test_code_browser_spec_keeps_prepared_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = JiuwenSwarmCodeAdapter()
+    settings = object()
+    guarded_settings = object()
+    adapter._browser_runtime_settings = object()  # A stale cache is not a spec owner.
+    monkeypatch.setenv("PLAYWRIGHT_RUNTIME_MCP_ENABLED", "true")
+    monkeypatch.setenv("BROWSER_DRIVER", "managed")
+    monkeypatch.setattr(adapter, "_sync_browser_runtime_environment", MagicMock())
+    browser_spec = SimpleNamespace(factory_kwargs={"settings": settings})
+    prepared = []
+
+    def prepare_security(spec):
+        assert adapter._browser_runtime_settings is None
+        assert spec is browser_spec and spec.factory_kwargs["settings"] is settings
+        spec.factory_kwargs["settings"] = guarded_settings
+        adapter._browser_runtime_settings = guarded_settings
+        prepared.append(spec)
+
+    monkeypatch.setattr(adapter, "_prepare_browser_runtime_security", prepare_security)
+
+    with (
+        patch.object(
+            _ic_mod,
+            "build_explore_agent_config",
+            return_value=SimpleNamespace(factory_kwargs={}),
+        ),
+        patch.object(
+            _ic_mod,
+            "build_plan_agent_config",
+            return_value=SimpleNamespace(factory_kwargs={}),
+        ),
+        patch.object(
+            _ic_mod,
+            "build_browser_agent_config",
+            return_value=browser_spec,
+        ) as build_browser,
+    ):
+        specs, _ = adapter._build_configured_subagents(MagicMock(), {"subagents": {}}, {})
+
+    # develop builds the spec first, then guards its owned settings in place.
+    assert "settings" not in build_browser.call_args.kwargs
+    assert prepared == [browser_spec] and browser_spec in specs
+    assert adapter._browser_runtime_settings is guarded_settings
+    assert browser_spec.factory_kwargs == {
+        "settings": guarded_settings,
+        "auto_create_workspace": False,
+    }
 
 
 def _make_log_capture():
@@ -71,7 +150,6 @@ def test_rail_build_names_still_contains_other_required_entries():
     """Verify other required mappings are still present after LspRail removal."""
     required_keys = [
         "SkillUseRail",
-        "HeartbeatRail",
         "ProjectMemoryRail",
         "CodingMemoryRail",
     ]
@@ -79,6 +157,9 @@ def test_rail_build_names_still_contains_other_required_entries():
         assert key in _RAIL_BUILD_NAMES, (
             f"{key} should still be present in RAIL_BUILD_NAMES"
         )
+
+    assert "HeartbeatRail" not in _RAIL_BUILD_NAMES
+    assert "HeartbeatRail" in _FIXED_RAIL_NAMES
 
 
 def test_rail_build_names_lsp_rail_via_config_method_still_accessible():

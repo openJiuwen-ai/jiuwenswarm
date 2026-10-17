@@ -2,10 +2,11 @@
 
 """Warm the process-wide image-modality probe cache.
 
-``DeepAgent._ensure_initialized`` resolves ``enable_read_image_multimodal``
-when it is left on auto: a cached verdict is applied straight away, otherwise
+``DeepAgent._ensure_initialized`` warms native image support when
+``enable_read_image_multimodal`` is left on auto. Native-image call sites read
+the cache dynamically; when no verdict exists yet,
 ``schedule_image_support_probe`` fires a background probe (one LLM round-trip
-carrying a tiny PNG) and the current run degrades to metadata-only.
+carrying a tiny PNG) and image input stays disabled until a verdict is cached.
 
 Two properties of that mechanism make the verdict unreliable in the agent
 server unless it is warmed up here:
@@ -36,9 +37,14 @@ from openjiuwen.harness.image_modality_probe import (
     probe_cache_key,
     probe_image_support,
     reset_image_support_cache,
+    set_cached_image_support,
 )
 
-from jiuwenswarm.common.config import get_config, get_default_models
+from jiuwenswarm.common.config import (
+    get_config,
+    get_configured_read_image_multimodal,
+    get_default_models,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,30 +55,16 @@ logger = logging.getLogger(__name__)
 _WARMUP_TOTAL_TIMEOUT_SECONDS = 30.0
 
 
-def _read_image_multimodal_is_explicit(config_base: dict[str, Any]) -> bool:
-    """Return whether ``enable_read_image_multimodal`` is pinned in config.
-
-    A pinned boolean short-circuits ``_resolve_read_image_multimodal`` in every
-    agent, so probing would spend LLM calls on a verdict nobody reads.
-
-    Args:
-        config_base: The resolved ``config.yaml`` mapping.
-
-    Returns:
-        True when the switch carries an explicit boolean.
-    """
-    react_cfg = config_base.get("react") if isinstance(config_base, dict) else None
-    if not isinstance(react_cfg, dict):
-        return False
-    return isinstance(react_cfg.get("enable_read_image_multimodal"), bool)
-
-
 def _build_probe_models(config_base: dict[str, Any]) -> list[Model]:
     """Build one Model per distinct probe cache key in ``models.defaults``.
 
     The probe verdict is cached by ``(api_base, model_name)``, so entries that
     collapse onto the same key (an alias of an already-listed model, a repeated
     entry) are probed once.
+
+    Entries that declare ``supports_vision`` explicitly in
+    ``model_client_config`` are not probed: the declared verdict is
+    pre-populated into the cache instead.
 
     Args:
         config_base: The resolved ``config.yaml`` mapping.
@@ -108,6 +100,18 @@ def _build_probe_models(config_base: dict[str, Any]) -> list[Model]:
         if key is None or key in seen_keys:
             continue
         seen_keys.add(key)
+
+        # Per-model declaration: skip probing and pre-populate the cache.
+        supports_vision = model_client_config.get("supports_vision")
+        if isinstance(supports_vision, bool):
+            set_cached_image_support(key, supports_vision)
+            logger.info(
+                "[ImageModalityWarmup] %s image_input=%s (declared via supports_vision)",
+                key,
+                supports_vision,
+            )
+            continue
+
         models.append(model)
     return models
 
@@ -116,7 +120,8 @@ async def warm_image_modality_cache(
     config_base: dict[str, Any] | None = None,
     *,
     reason: str,
-) -> None:
+    report_status: bool = False,
+) -> bool | None:
     """Probe every configured model once and cache the verdicts.
 
     Never raises and never leaves the caller hanging: probe failures are
@@ -130,18 +135,18 @@ async def warm_image_modality_cache(
     """
     effective_config = config_base if isinstance(config_base, dict) else get_config()
 
-    if _read_image_multimodal_is_explicit(effective_config):
+    if get_configured_read_image_multimodal(effective_config) is not None:
         logger.info(
             "[ImageModalityWarmup] skipped (%s): "
             "react.enable_read_image_multimodal is set explicitly",
             reason,
         )
-        return
+        return True if report_status else None
 
     models = _build_probe_models(effective_config)
     if not models:
         logger.info("[ImageModalityWarmup] skipped (%s): no probeable model configured", reason)
-        return
+        return True if report_status else None
 
     logger.info("[ImageModalityWarmup] probing %d model(s) (%s)", len(models), reason)
     try:
@@ -159,22 +164,27 @@ async def warm_image_modality_cache(
             _WARMUP_TOTAL_TIMEOUT_SECONDS,
             reason,
         )
-        return
+        return False if report_status else None
 
+    available = True
     for model, verdict in zip(models, verdicts):
         key = probe_cache_key(model)
         if isinstance(verdict, BaseException):
+            available = False
             logger.warning(
                 "[ImageModalityWarmup] probe failed for %s: %s",
                 key,
                 verdict,
             )
             continue
+        if verdict is None:
+            available = False
         logger.info(
             "[ImageModalityWarmup] %s image_input=%s",
             key,
             "unknown (not cached)" if verdict is None else verdict,
         )
+    return available if report_status else None
 
 
 async def refresh_image_modality_cache(

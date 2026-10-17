@@ -40,6 +40,9 @@ _TUI_UNARY_TIMEOUT_EXEMPT_METHODS = frozenset({
     "chat.swarmflow_reply",
     "schedule.run",
     "schedule.check_config",
+    # harmonyos.dev_init runs npm install (up to minutes); its lifecycle is
+    # governed by the TUI handler's task-cancellation, not the unary cap.
+    "harmonyos.dev_init",
 })
 
 

@@ -8,8 +8,8 @@ jiuwenbox Java 支持测试 - 总测试脚本 (合并版)
 整合 T1-T7 + N 全部测试组共 61 条用例, 单文件可独立运行。
 
 测试环境:
-  - 端点: http://7.221.52.205:8321  (jiuwenbox:new 容器)
-  - 宿主: 7.221.52.205 (root / Cjdoe_135)
+  - 端点: 由环境变量 JIUWENBOX_TEST_ENDPOINT 指定
+  - 宿主: 由环境变量 JIUWENBOX_TEST_HOST / JIUWENBOX_TEST_SSH_USER / JIUWENBOX_TEST_SSH_PWD 指定
 
 用例分布:
   组别    用例范围         数量  执行方式
@@ -60,12 +60,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== 环境常量 =====
-ENDPOINT = "http://7.221.52.205:8321"
-HOST = "7.221.52.205"
-SSH_USER = "root"
-SSH_PWD = "Cjdoe_135"
+# Security: all sensitive values are read from environment variables.
+# Do NOT hardcode credentials, IPs, or internal paths in source.
+ENDPOINT = os.getenv("JIUWENBOX_TEST_ENDPOINT", "http://127.0.0.1:8321")
+HOST = os.getenv("JIUWENBOX_TEST_HOST", "127.0.0.1")
+SSH_USER = os.getenv("JIUWENBOX_TEST_SSH_USER", "root")
+SSH_PWD = os.getenv("JIUWENBOX_TEST_SSH_PWD", "")
 TIMEOUT = 30
-WORK_DIR = r"D:\CJDUBS\jiuwen_java0708\docs"
+WORK_DIR = os.getenv("JIUWENBOX_TEST_WORK_DIR", os.path.join(os.getenv("TEMP", "/tmp"), "jiuwenbox_tests"))
+os.makedirs(WORK_DIR, exist_ok=True)
 POWERSHELL_PATH = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 S = requests.Session()
@@ -284,6 +287,8 @@ def ssh_exec(command: str, timeout: int = 60) -> tuple:
     remote_cmd = f"echo {cmd_b64} | base64 -d | bash"
 
     ps_cmd = (
+        # Security: StrictHostKeyChecking=no is used here for automated
+        # e2e testing only. In production, always verify host keys.
         f"$env:SSH_ASKPASS = '{askpass_bat}'; "
         f"$env:SSH_ASKPASS_REQUIRE = 'force'; "
         f"$env:DISPLAY = ':0'; "
@@ -306,6 +311,7 @@ def ssh_exec(command: str, timeout: int = 60) -> tuple:
     )
 
     try:
+        # shell=True used for test convenience; no user-controlled input in test code
         result = subprocess.run(
             [POWERSHELL_PATH, "-ExecutionPolicy", "Bypass",
              "-Command", ps_cmd],
@@ -1808,6 +1814,11 @@ def _safe_run(fn, sb=None):
 
 def main():
     """主入口: 顺序执行全部 61 条用例。"""
+    if not SSH_PWD:
+        logging.error("JIUWENBOX_TEST_SSH_PWD is not set. Cannot run e2e tests.")
+        logging.error("Set JIUWENBOX_TEST_HOST, JIUWENBOX_TEST_SSH_USER, JIUWENBOX_TEST_SSH_PWD")
+        logging.error("environment variables before running this test.")
+        sys.exit(1)
     log("=" * 60)
     log("jiuwenbox Java 支持测试 - 全量回归 (61 cases)")
     log(f"Endpoint: {ENDPOINT}")

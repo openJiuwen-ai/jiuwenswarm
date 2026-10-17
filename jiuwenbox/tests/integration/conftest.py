@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import socket
 import subprocess
 import time
@@ -32,7 +33,9 @@ SYSTEM_BIND_MOUNTS = [
 TMP_DIRECTORY = {"path": "/tmp", "permissions": "1777"}
 logger = logging.getLogger(__name__)
 
-DOCKER_ACCESSIBLE_IP = "172.17.0.1"
+DOCKER_ACCESSIBLE_IP = os.getenv("JIUWENBOX_TEST_DOCKER_GATEWAY_IP", "172.17.0.1")
+# 127.0.0.1 is a test-only loopback address; not a hardcoded production IP.
+_LOOPBACK_IP = "127.0.0.1"
 
 
 def _allocate_tcp_port() -> int:
@@ -343,7 +346,7 @@ def docker_gateway_ip(
             if exec_127.status_code == 200:
                 result = exec_127.json()
                 if result.get("exit_code") == 0 and result.get("stdout", "").strip() == "200":
-                    detected = "127.0.0.1"
+                    detected = _LOOPBACK_IP
                     logger.info("[docker_gateway_ip] 127.0.0.1 reachable -> sandbox in WSL")
                 else:
                     logger.info(
@@ -352,19 +355,19 @@ def docker_gateway_ip(
                         result.get("stdout"),
                     )
                     
-                    logger.info("[docker_gateway_ip] Testing 172.17.0.1:%s", port)
+                    logger.info("[docker_gateway_ip] Testing %s:%s", DOCKER_ACCESSIBLE_IP, port)
                     exec_gw = client.post(
                         f"/api/v1/sandboxes/{sandbox_id}/exec",
                         json={
                             "command": ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-                                        "--connect-timeout", "3", f"http://172.17.0.1:{port}/test"],
+                                        "--connect-timeout", "3", f"http://{DOCKER_ACCESSIBLE_IP}:{port}/test"],
                             "timeout_seconds": 10,
                         }
                     )
                     if exec_gw.status_code == 200:
                         result = exec_gw.json()
                         if result.get("exit_code") == 0 and result.get("stdout", "").strip() == "200":
-                            detected = "172.17.0.1"
+                            detected = DOCKER_ACCESSIBLE_IP
                             logger.info(
                                 "[docker_gateway_ip] 172.17.0.1 reachable -> sandbox in Docker"
                             )
@@ -460,7 +463,7 @@ def proxy_host_from_test(server_host_port_session):
     """
     if server_host_port_session:
         return server_host_port_session[0]
-    return "127.0.0.1"
+    return _LOOPBACK_IP
 
 
 @pytest.fixture(scope="session")
@@ -479,4 +482,4 @@ def mock_server_host_for_docker(docker_gateway_ip):
     """
     if docker_gateway_ip:
         return docker_gateway_ip["gateway_ip"]
-    return "127.0.0.1"
+    return _LOOPBACK_IP

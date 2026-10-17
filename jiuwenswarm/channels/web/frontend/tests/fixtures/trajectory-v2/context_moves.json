@@ -1,0 +1,175 @@
+{
+  "name": "context_moves",
+  "derived_from": "jiuwenswarm/channels/web/frontend/tests/trajectoryProjector.test.mjs: schema-v2 context moves do not replay unchanged timeline rows",
+  "records": [
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000002",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "2000000",
+      "endTimeUnixNano": "2000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "event-after-context-moves"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "epoch-1"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "2000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"window-after-context-moves\", \"base_window_id\": \"window-before-context-moves\", \"complete\": true, \"delta\": [{\"op\": \"move\", \"message_id\": \"message-moved-system\", \"from_index\": 0, \"index\": 2}, {\"op\": \"move\", \"message_id\": \"message-moved-user\", \"from_index\": 0, \"index\": 1}, {\"op\": \"move\", \"message_id\": \"message-moved-context\", \"from_index\": 0, \"index\": 2}], \"request_purpose\": \"assistant\", \"messages\": [{\"message_id\": \"message-moved-user\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"current user request\"}, {\"message_id\": \"message-moved-system\", \"role\": \"system\", \"origin\": \"harness_internal\", \"content\": \"stable system instructions\"}, {\"message_id\": \"message-moved-context\", \"role\": \"user\", \"origin\": \"harness_internal\", \"content\": \"<memory_block_dialogue>retained history</memory_block_dialogue>\"}]}"
+          }
+        }
+      ],
+      "parentSpanId": "inference-2"
+    },
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000001",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "1000000",
+      "endTimeUnixNano": "1000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "event-before-context-moves"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "1"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "epoch-1"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "1000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"window-before-context-moves\", \"base_window_id\": null, \"complete\": true, \"delta\": [], \"request_purpose\": \"assistant\", \"messages\": [{\"message_id\": \"message-moved-system\", \"role\": \"system\", \"origin\": \"harness_internal\", \"content\": \"stable system instructions\"}, {\"message_id\": \"message-moved-user\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"current user request\"}, {\"message_id\": \"message-moved-context\", \"role\": \"user\", \"origin\": \"harness_internal\", \"content\": \"<memory_block_dialogue>retained history</memory_block_dialogue>\"}], \"transition_kind\": \"epoch_baseline\", \"baseline_reason\": \"runtime_epoch_start\"}"
+          }
+        }
+      ],
+      "parentSpanId": "inference-1"
+    }
+  ],
+  "expected": {
+    "windows": {
+      "main": {
+        "window-before-context-moves": [
+          "message-moved-system",
+          "message-moved-user",
+          "message-moved-context"
+        ],
+        "window-after-context-moves": [
+          "message-moved-user",
+          "message-moved-system",
+          "message-moved-context"
+        ]
+      }
+    },
+    "by_inference": {
+      "inference-1": [
+        "message-moved-system",
+        "message-moved-user",
+        "message-moved-context"
+      ],
+      "inference-2": [
+        "message-moved-user",
+        "message-moved-system",
+        "message-moved-context"
+      ]
+    },
+    "issue_codes": []
+  }
+}

@@ -113,7 +113,7 @@ When the tool set is large, `ProgressiveToolRail` provides progressive tool disc
 
 Permission governance is composed of `PermissionEngine` and `PermissionInterruptRail`. `PermissionEngine` evaluates allow / ask / deny policies, while `PermissionInterruptRail` intercepts every tool call before execution and handles direct allow, direct deny, HITL confirmation, "allow once", and "always allow" flows. Shell commands go through AST analysis, and external path checks are combined with the current decision using the stricter result.
 
-Workspace is the persistence boundary of the execution layer. The default schema includes `AGENT.md`, `SOUL.md`, `HEARTBEAT.md`, `IDENTITY.md`, `memory/`, `coding_memory/`, `todo/`, `messages/`, `skills/`, `agents/`, and `context/session_memory.md`. It also supports custom directories, localized default content, team workspace links, and worktree links.
+Workspace is the persistence boundary of the execution layer. The default schema includes `AGENT.md`, `SOUL.md`, `IDENTITY.md`, `memory/`, `coding_memory/`, `todo/`, `messages/`, `skills/`, `agents/`, and `context/session_memory.md`. It also supports custom directories, localized default content, team workspace links, and worktree links.
 
 ### 3.4 Agent Mode: Runtime Modes and Plan Mode Constraints
 
@@ -310,7 +310,6 @@ This section provides a quick index of Harness built-in capabilities. Whether a 
 | `VerificationRail`, `VerificationContractRail` | Restrict verification-agent permissions and inject verification contracts into the parent agent | Registered for implementation, regression verification, and high-risk tasks |
 | `SkillCreateRail`, `TeamSkillCreateRail`, `SkillEvolutionRail`, `TeamSkillEvolutionRail` | Create personal/team skills and evolve reusable experience | Registered for skill self-evolution or team skill distillation |
 | `TrajectoryRail`, `ContextEvolutionRail`, `EvolutionRail`, `EvolutionInterruptRail` | Collect trajectories, trigger context/skill evolution, and handle evolution interrupts | Registered in experience-evolution pipelines |
-| `HeartbeatRail` | Maintain runtime heartbeat and long-task status | Registered when long tasks or host heartbeat awareness are needed |
 
 #### Built-in Subagent
 

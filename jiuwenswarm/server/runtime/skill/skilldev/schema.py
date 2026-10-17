@@ -645,10 +645,10 @@ SKILL_DESC_MAX_LEN = 1024
 
 
 def _now_iso() -> str:
-    """返回当前 UTC 时间的 ISO 8601 字符串."""
-    import datetime
+    """返回当前 UTC 时间的 ISO 8601 字符串（``YYYY-MM-DDTHH:MM:SSZ``）."""
+    from datetime import datetime, timezone
 
-    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def generate_task_id() -> str:

@@ -9,12 +9,15 @@ the live model catalog from Zen, keep the free ones (model id ending in
 ``-free``, plus the always-free ``big-pickle``), and hold them in a process-wide
 in-memory cache. Nothing is written to ``config.yaml``.
 
-Consumers read the cache through :func:`get_zen_free_model_entries`:
+Consumers read the cache through :func:`get_zen_free_model_entries`. They all
+run in the AgentServer process:
 
-- ``models.list`` (Gateway web) appends them after the user's own models so
-  they show up in the frontend dropdown.
+- ``ConfigAdapter`` appends them to ``models.list`` and answers
+  ``models.zen_entries`` so Gateway can merge the same rows into a local list.
 - ``AgentWebSocketServer._build_model_cache`` builds a :class:`Model` per entry
   so a Zen free model is resolvable when a chat selects it.
+- Cron tools accept a Zen free model id or alias. Gateway asks this process
+  for the same rows before it stores a Web or TUI job.
 
 If the catalog cannot be reached, the cache stays empty and no free models are
 offered — per the requirement that free models are only available when Zen is.
@@ -38,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from typing import Any
 
 import httpx
@@ -82,10 +86,9 @@ MODELS_DEV_URL = "https://models.opencode.ai/api.json"
 _WARM_TOTAL_TIMEOUT_SECONDS = 15.0
 _FETCH_TIMEOUT_SECONDS = 10.0
 
-# Conservative context window for free models; used only for display in the
-# frontend dropdown, not for truncation logic. models.dev may carry the real
-# ``limit.context``; we fall back to this when it is missing.
-_ZEN_FREE_CONTEXT_WINDOW = 200000
+# Fixed context window for free models; do not derive it from remote catalog
+# metadata so the UI and runtime use the same deterministic default.
+_ZEN_FREE_CONTEXT_WINDOW = 256 * 1024
 
 # 用户自配的默认模型仍为 .env 占位符（首次启动）时，回退使用的免费模型。
 # 已确认 deepseek-v4-flash-free 长期匿名免费服务（models.dev cost.input==0），
@@ -98,25 +101,39 @@ DEFAULT_FREE_MODEL_ID = "deepseek-v4-flash-free"
 _zen_free_entries: list[dict[str, Any]] = []
 _zen_free_lock = threading.Lock()
 
+# 后台定时重试：高频阶段间隔（秒）
+_BACKGROUND_RETRY_INTERVAL: float = 30.0
+
+# 后台定时重试：高频阶段持续时间（秒），启动初期用较短间隔快速恢复
+_BACKGROUND_RETRY_MAX_DURATION: float = 180.0
+
+# 后台定时重试：高频阶段耗尽后降级为低频持续重试间隔（秒），
+# 直到成功或开关关闭，不设最终停止时间
+_BACKGROUND_RETRY_LOW_INTERVAL: float = 60.0
+
+# 并发保护：确保 _populate_zen_free_entries 同一时间只有一个线程在执行
+_populate_lock = threading.Lock()
+
+# 防止重复启动后台重试循环
+_background_retry_started: bool = False
+
+# 最后一次拉取失败的错误信息（供后台重试失败日志引用，避免排查时往上翻）
+_last_fetch_error: str = ""
+
+# ---------- 免费模型就绪回调 ----------
+# 后台重试/惰性重试成功后通知 AgentServer：重建模型缓存，并向 Gateway
+# 推送 models.updated，由 Gateway 广播给页面。
+_main_event_loop: asyncio.AbstractEventLoop | None = None
+_models_ready_callbacks: list = []
+
 
 def _zen_free_models_enabled() -> bool:
     """Whether Zen free-model fetching is turned on.
 
-    Reads ``models.enable_free_models`` from config.yaml (default ``true``).
-    Returns ``True`` (enabled) on any config-read failure so start-up is never
-    broken.
+    Hard-disabled: ignore ``models.enable_free_models`` so frontend/config
+    cannot turn the probe back on.
     """
-    try:
-        from jiuwenswarm.common.config import get_config
-        cfg = get_config() or {}
-        val = (cfg.get("models") or {}).get("enable_free_models", None)
-        if val is None:
-            return True
-        if isinstance(val, bool):
-            return val
-        return str(val).strip().lower() not in ("0", "false", "no", "off")
-    except Exception:  # noqa: BLE001 - config unavailable; default on
-        return True
+    return False
 
 
 def _is_free_model(model_meta: dict[str, Any]) -> bool:
@@ -200,11 +217,13 @@ def _fetch_models_dev_catalog() -> dict[str, dict[str, Any]]:
     Returns a mapping of ``model_id -> model_meta``. On any error, returns an
     empty dict (meaning we cannot identify free models this run).
     """
+    global _last_fetch_error
     try:
         resp = httpx.get(MODELS_DEV_URL, timeout=_FETCH_TIMEOUT_SECONDS)
         resp.raise_for_status()
         payload = resp.json()
     except Exception as exc:  # noqa: BLE001 - any failure ⇒ cannot identify free
+        _last_fetch_error = f"models.dev: {exc}"
         logger.warning(
             "[OpencodeZen] failed to fetch models.dev catalog (%s); "
             "no free models available this run",
@@ -215,6 +234,7 @@ def _fetch_models_dev_catalog() -> dict[str, dict[str, Any]]:
     opencode = payload.get("opencode") if isinstance(payload, dict) else None
     models = opencode.get("models") if isinstance(opencode, dict) else None
     if not isinstance(models, dict) or not models:
+        _last_fetch_error = "models.dev: catalog has no opencode models"
         logger.warning(
             "[OpencodeZen] models.dev catalog has no opencode models; "
             "no free models available this run"
@@ -235,6 +255,7 @@ def _fetch_zen_free_models() -> list[dict[str, Any]]:
 
     Returns a list of ``{"id", "name", "context"}`` dicts.
     """
+    global _last_fetch_error
     dev_catalog = _fetch_models_dev_catalog()
     if not dev_catalog:
         return []
@@ -258,6 +279,7 @@ def _fetch_zen_free_models() -> list[dict[str, Any]]:
                 if isinstance(item, dict):
                     live_ids.add(str(item.get("id") or "").strip())
     except Exception as exc:  # noqa: BLE001 - cannot confirm live servability
+        _last_fetch_error = f"Zen /models: {exc}"
         logger.warning(
             "[OpencodeZen] failed to fetch live Zen model list (%s); "
             "no free models available this run",
@@ -266,6 +288,7 @@ def _fetch_zen_free_models() -> list[dict[str, Any]]:
         return []
 
     if not live_ids:
+        _last_fetch_error = "Zen /models: live model list is empty"
         logger.warning(
             "[OpencodeZen] live Zen model list is empty; "
             "no free models available this run"
@@ -277,16 +300,7 @@ def _fetch_zen_free_models() -> list[dict[str, Any]]:
         if mid not in live_ids:
             continue  # free in catalog but not currently served by Zen
         name = str(meta.get("name") or mid).strip()
-        context = _ZEN_FREE_CONTEXT_WINDOW
-        limit = meta.get("limit")
-        if isinstance(limit, dict):
-            try:
-                ctx = int(limit.get("context", 0) or 0)
-                if ctx > 0:
-                    context = ctx
-            except (TypeError, ValueError):
-                pass
-        free.append({"id": mid, "name": name, "context": context})
+        free.append({"id": mid, "name": name, "context": _ZEN_FREE_CONTEXT_WINDOW})
 
     if not free:
         logger.info(
@@ -305,34 +319,71 @@ def _populate_zen_free_entries() -> int:
 
     Replaces any previously cached list (idempotent on repeat calls). Returns
     the number of cached entries. Never raises.
+
+    Concurrency-safe: uses ``_populate_lock`` (non-blocking) so concurrent
+    callers (background retry + frontend lazy warm) skip if one is already
+    running, returning the current cache size instead.
     """
-    global _zen_free_entries
-    if not _zen_free_models_enabled():
-        logger.info("[OpencodeZen] fetching disabled by env; skipping")
+    global _zen_free_entries, _last_fetch_error
+
+    # 并发保护：另一个线程正在执行时跳过，返回当前缓存
+    if not _populate_lock.acquire(blocking=False):
         with _zen_free_lock:
-            _zen_free_entries = []
-        return 0
+            cache_size = len(_zen_free_entries)
+        logger.debug(
+            "[OpencodeZen] populate already in progress, skipping (cache size: %d)",
+            cache_size,
+        )
+        return cache_size
 
-    free_models = _fetch_zen_free_models()
-    entries = [
-        _build_zen_model_entry(m["id"], m["name"], m["context"])
-        for m in free_models
-    ]
-    with _zen_free_lock:
-        _zen_free_entries = entries
-    logger.info(
-        "[OpencodeZen] cached %d free model(s) in memory", len(entries)
-    )
-    return len(entries)
+    try:
+        if not _zen_free_models_enabled():
+            logger.info("[OpencodeZen] fetching disabled by env; skipping")
+            with _zen_free_lock:
+                _zen_free_entries = []
+            return 0
+
+        free_models = _fetch_zen_free_models()
+        entries = [
+            _build_zen_model_entry(m["id"], m["name"], m["context"])
+            for m in free_models
+        ]
+        with _zen_free_lock:
+            _zen_free_entries = entries
+        if entries:
+            # 仅成功后清空错误信息，失败时保留原因供后续日志引用
+            _last_fetch_error = ""
+        logger.info(
+            "[OpencodeZen] cached %d free model(s) in memory", len(entries)
+        )
+        # 缓存从空变为有数据时通知前端刷新
+        if entries:
+            _notify_models_ready()
+        return len(entries)
+    finally:
+        _populate_lock.release()
 
 
-async def warm_zen_free_models(*, reason: str) -> None:
+async def warm_zen_free_models(*, reason: str, report_status: bool = False) -> bool | None:
     """Async entry point: fetch Zen free models with a start-up timeout.
 
     Mirrors :func:`warm_image_modality_cache`: the synchronous worker runs on a
     thread, the whole round is bounded so a hung upstream never blocks
     start-up, and any failure leaves the cache empty (no free models offered).
+
+    On failure, schedules a background retry loop that keeps retrying
+    (high-frequency then low-frequency) until success or the free-models
+    toggle is turned off, so free models auto-recover without a restart.
+
+    When ``models.enable_free_models`` is off, returns immediately: no Zen
+    fetch, no startup probe, no background retry.
     """
+    if not _zen_free_models_enabled():
+        logger.info(
+            "[OpencodeZen] fetching disabled; skipping warm (reason=%s)",
+            reason,
+        )
+        return True if report_status else None
     try:
         await asyncio.wait_for(
             asyncio.to_thread(_populate_zen_free_entries),
@@ -348,6 +399,99 @@ async def warm_zen_free_models(*, reason: str) -> None:
     except Exception as exc:  # noqa: BLE001 - defensive; _populate already swallows
         logger.warning("[OpencodeZen] fetch failed (%s): %s", reason, exc)
 
+    # 预热失败后启动后台定时重试（高频→低频持续，直到成功或开关关闭）
+    if not get_zen_free_model_entries():
+        logger.info(
+            "[OpencodeZen] startup warm failed (reason=%s), cache empty, "
+            "scheduling background retry",
+            reason,
+        )
+        _start_background_retry()
+    return bool(get_zen_free_model_entries()) if report_status else None
+
+
+def _start_background_retry() -> None:
+    """启动后台定时重试循环。
+
+    高频阶段 30s 间隔，耗尽后降级为 60s 低频持续重试，直到成功或开关关闭。
+    daemon 线程，不影响进程退出。同一时间只有一个后台循环在运行：
+    ``_background_retry_started`` 在循环真正结束时重置，之后（如开关重新打开）
+    可再次启动新循环。
+    """
+    global _background_retry_started
+    with _zen_free_lock:
+        if _background_retry_started:
+            return
+        _background_retry_started = True
+    thread = threading.Thread(target=_background_retry_loop, daemon=True)
+    thread.start()
+    logger.info(
+        "[OpencodeZen] background retry scheduled (every %.0fs, then %.0fs "
+        "low-frequency)",
+        _BACKGROUND_RETRY_INTERVAL,
+        _BACKGROUND_RETRY_LOW_INTERVAL,
+    )
+
+
+def _background_retry_loop() -> None:
+    """后台定时重试循环。
+
+    高频阶段（启动初期，``_BACKGROUND_RETRY_MAX_DURATION`` 内）每
+    ``_BACKGROUND_RETRY_INTERVAL`` 秒重试一次；高频阶段耗尽后降级为每
+    ``_BACKGROUND_RETRY_LOW_INTERVAL`` 秒低频重试。循环一直运行到成功或
+    开关关闭为止，不设最终停止时间——这样"启动后很久才恢复网络"的场景
+    也能自动拿到免费模型，无需用户重启服务或刷新界面。
+
+    循环无论因何退出（成功/开关关闭）都会重置 ``_background_retry_started``，
+    允许开关重新打开后再次调度新循环。
+    """
+    global _background_retry_started
+    start = time.time()
+    attempt = 0
+    try:
+        while True:
+            elapsed = time.time() - start
+            # 高频阶段耗尽后切换低频间隔（低频持续重试，直到成功/开关关闭）
+            interval = (
+                _BACKGROUND_RETRY_INTERVAL
+                if elapsed < _BACKGROUND_RETRY_MAX_DURATION
+                else _BACKGROUND_RETRY_LOW_INTERVAL
+            )
+            time.sleep(interval)
+            elapsed = time.time() - start
+            if not _zen_free_models_enabled():
+                logger.info(
+                    "[OpencodeZen] background retry stopped: free models disabled"
+                )
+                return
+            if get_zen_free_model_entries():
+                logger.info(
+                    "[OpencodeZen] background retry skipped: cache already populated"
+                )
+                return
+            attempt += 1
+            logger.info(
+                "[OpencodeZen] background retry attempt #%d (elapsed %.0fs, "
+                "interval %.0fs)",
+                attempt, elapsed, interval,
+            )
+            _populate_zen_free_entries()
+            if get_zen_free_model_entries():
+                logger.info(
+                    "[OpencodeZen] background retry succeeded on attempt #%d "
+                    "(elapsed %.0fs), cached %d model(s)",
+                    attempt, elapsed, len(get_zen_free_model_entries()),
+                )
+                return
+            logger.warning(
+                "[OpencodeZen] background retry attempt #%d failed, "
+                "cache still empty (elapsed %.0fs, error: %s)",
+                attempt, elapsed, _last_fetch_error or "unknown",
+            )
+    finally:
+        with _zen_free_lock:
+            _background_retry_started = False
+
 
 def get_zen_free_model_entries() -> list[dict[str, Any]]:
     """Return a shallow copy of the cached Zen free-model entries.
@@ -355,9 +499,9 @@ def get_zen_free_model_entries() -> list[dict[str, Any]]:
     Returns an empty list when fetching is disabled, failed, or found nothing.
     The entries are in-memory only (never written to config.yaml).
 
-    Honors the live toggle: when ``models.enable_free_models`` is ``false``,
-    returns ``[]`` immediately even if a previously-warmed cache exists, so
-    disabling via ``config.set`` takes effect without a restart.
+    Honors the live toggle: when Zen is disabled (always, after login models
+    replaced it), returns ``[]`` immediately even if a previously-warmed cache
+    exists.
     """
     if not _zen_free_models_enabled():
         return []
@@ -382,3 +526,102 @@ def get_zen_default_free_model_entry() -> dict[str, Any] | None:
         if (entry.get("model_client_config") or {}).get("model_name") == DEFAULT_FREE_MODEL_ID:
             return entry
     return entries[0] if entries else None
+
+
+def match_zen_free_model_name(raw: Any) -> str | None:
+    """Return the canonical Zen model id when ``raw`` is that id or its alias."""
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    for entry in get_zen_free_model_entries():
+        model_config = entry.get("model_client_config") or {}
+        model_name = str(model_config.get("model_name") or "").strip()
+        alias = str(entry.get("alias") or "").strip()
+        if model_name and value in {model_name, alias}:
+            return model_name
+    return None
+
+
+def append_zen_free_models(models: list[dict[str, Any]]) -> None:
+    """Append cached Zen free models to a ``models.list`` payload.
+
+    Called from AgentServer. Entries already present by ``model_name`` are
+    left unchanged. The appended rows are the public shape Gateway also
+    merges onto a locally built list.
+    """
+    from jiuwenswarm.common.config_panel.models_handlers import reasoning_level_display
+    from jiuwenswarm.common.context_window import (
+        DEFAULT_CONTEXT_WINDOW_TOKENS,
+        parse_positive_int,
+    )
+
+    existing_names = {str(item.get("model_name") or "") for item in models}
+    for entry in get_zen_free_model_entries():
+        model_config = entry.get("model_client_config") or {}
+        model_config_obj = entry.get("model_config_obj") or {}
+        model_name = str(model_config.get("model_name") or "").strip()
+        if not model_name or model_name in existing_names:
+            continue
+        models.append({
+            "model_name": model_name,
+            "api_base": model_config.get("api_base", ""),
+            "api_key": model_config.get("api_key", ""),
+            "model_provider": model_config.get("client_provider", ""),
+            "temperature": model_config_obj.get("temperature"),
+            "reasoning_level": reasoning_level_display(model_config_obj.get("reasoning_level")),
+            "is_default": entry.get("is_default"),
+            "is_agentos": False,
+            "is_free": True,
+            "alias": entry.get("alias", ""),
+            "context_window_tokens": (
+                parse_positive_int(entry.get("context_window_tokens"))
+                or parse_positive_int(model_config_obj.get("context_window"))
+                or DEFAULT_CONTEXT_WINDOW_TOKENS
+            ),
+        })
+        existing_names.add(model_name)
+
+
+def public_zen_free_model_rows() -> list[dict[str, Any]]:
+    """Return the public Zen rows Gateway can merge without reading this cache."""
+    rows: list[dict[str, Any]] = []
+    append_zen_free_models(rows)
+    return rows
+
+
+def set_main_event_loop(loop: asyncio.AbstractEventLoop | None) -> None:
+    """注册主 event loop，供后台线程通过 call_soon_threadsafe 调度回调。"""
+    global _main_event_loop
+    _main_event_loop = loop
+
+
+def register_models_ready_callback(cb) -> None:
+    """注册回调：Zen 免费模型缓存从空变为有数据时调用。
+
+    回调将在主 event loop 线程中被 call_soon_threadsafe 调度执行，
+    因此回调内部可以安全地使用 ``asyncio.create_task`` 调度异步操作。
+    """
+    _models_ready_callbacks.append(cb)
+
+
+def _notify_models_ready() -> None:
+    """通知所有注册的回调：免费模型已就绪。
+
+    从后台线程调用时，通过 call_soon_threadsafe 安全地调度到主 event loop
+    线程执行，避免跨线程直接操作 asyncio 资源。
+    """
+    if not _models_ready_callbacks:
+        return
+    if _main_event_loop and _main_event_loop.is_running():
+        _main_event_loop.call_soon_threadsafe(_dispatch_models_ready)
+    else:
+        logger.debug("[OpencodeZen] no running event loop, skipping models ready notify")
+
+
+def _dispatch_models_ready() -> None:
+    """在主 event loop 线程中执行所有已注册的回调。"""
+    for cb in _models_ready_callbacks:
+        try:
+            cb()
+        except Exception:  # noqa: BLE001
+            logger.debug("[OpencodeZen] models ready callback failed", exc_info=True)

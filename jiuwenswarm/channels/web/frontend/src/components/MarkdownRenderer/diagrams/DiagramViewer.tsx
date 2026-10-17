@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import { Copy, Download, Ellipsis, ImageDown } from 'lucide-react';
+import { Copy, Ellipsis, ImageDown } from 'lucide-react';
 import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type DiagramExportConfig, useDiagramExportActions } from './useDiagramExportActions';
@@ -148,16 +148,9 @@ export function DiagramViewer({
   ...rootProps
 }: DiagramViewerProps): JSX.Element {
   const { t } = useTranslation();
-  const { feedback, copyCode, downloadSource, downloadImage } = useDiagramExportActions(exportConfig);
+  const { feedback, copyCode, downloadImage } = useDiagramExportActions(exportConfig);
   const downloadsDisabled = exportConfig.downloadEnabled === false;
   const menuItems: DiagramMenuItem[] = [
-    {
-      id: 'download-source',
-      icon: <Download size={17} />,
-      label: t('diagram.downloadSource'),
-      disabled: downloadsDisabled,
-      onSelect: () => void downloadSource(),
-    },
     {
       id: 'download-image',
       icon: <ImageDown size={17} />,

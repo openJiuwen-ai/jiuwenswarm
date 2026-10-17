@@ -14,9 +14,9 @@ const CASES = [
   ['diagram.svg', 'image'],
   ['recording.mp3', 'audio'],
   ['demo.mp4', 'video'],
-  ['source.py', 'code'],
+  ['source.py', 'python'],
   ['settings.yaml', 'code'],
-  ['notes.md', 'document'],
+  ['notes.md', 'md'],
 ];
 
 test('resolves each supported file category from the filename', () => {
@@ -32,7 +32,7 @@ test('matches extensions case-insensitively', () => {
 
 test('uses the final extension of multi-dot names', () => {
   assert.equal(resolveFileIconType('report.final.docx'), 'word');
-  assert.equal(resolveFileIconType('report.pdf.exe'), 'document');
+  assert.equal(resolveFileIconType('report.pdf.exe'), 'unknown');
 });
 
 test('recognizes compound archive extensions', () => {
@@ -45,16 +45,16 @@ test('recognizes dotfiles that have an explicit mapping', () => {
   assert.equal(resolveFileIconType('.env'), 'code');
 });
 
-test('uses the document icon for missing and unknown extensions', () => {
-  assert.equal(resolveFileIconType('README'), 'document');
-  assert.equal(resolveFileIconType('artifact.unknown'), 'document');
-  assert.equal(resolveFileIconType(''), 'document');
+test('uses the unknown icon for missing and unknown extensions', () => {
+  assert.equal(resolveFileIconType('README'), 'unknown');
+  assert.equal(resolveFileIconType('artifact.unknown'), 'unknown');
+  assert.equal(resolveFileIconType(''), 'unknown');
 });
 
 test('accepts Unix and Windows paths without misreading directory dots', () => {
   assert.equal(resolveFileIconType('/workspace.v2/output/report.pdf'), 'pdf');
   assert.equal(resolveFileIconType('C:\\workspace.v2\\output\\report.docx'), 'word');
-  assert.equal(resolveFileIconType('/workspace.v2/output/README'), 'document');
+  assert.equal(resolveFileIconType('/workspace.v2/output/README'), 'unknown');
 });
 
 test('formats extension labels from basenames', () => {
@@ -71,9 +71,9 @@ test('renders from either filename or an explicit icon type', () => {
   assert.equal(inferredPdf, explicitPdf);
 });
 
-test('renders the generic document icon when no source is provided', () => {
+test('renders the unknown icon when no source is provided', () => {
   const defaultIcon = renderToStaticMarkup(createElement(FileIcon));
-  const explicitDocument = renderToStaticMarkup(createElement(FileIcon, { iconType: 'document' }));
+  const explicitUnknown = renderToStaticMarkup(createElement(FileIcon, { iconType: 'unknown' }));
 
-  assert.equal(defaultIcon, explicitDocument);
+  assert.equal(defaultIcon, explicitUnknown);
 });

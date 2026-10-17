@@ -1,17 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 r"""JiuwenSwarm PyInstaller 打包配置。
 
 构建前请先：
-1. 安装依赖: uv sync --extra dev --extra claude --extra codex
+1. 安装依赖: uv sync --extra dev
 2. 构建前端: cd jiuwenswarm/channels/web/frontend && npm run build
 3. 执行平台 wrapper: .\scripts\build-exe.ps1 或 bash scripts/build-macos.sh
 """
 
 import glob
-import importlib.util
+import hashlib
+import json
 import os
 import runpy
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules, copy_metadata
@@ -47,25 +51,6 @@ OPENJIUWEN_DATA_EXCLUDES = [
     "**/deepagents/tools/browser_move/logs/**",
     "**/deepagents/tools/browser_move/.env",
 ]
-CollectedPackage = tuple[list[tuple[str, str]], list[tuple[str, str]], list[str]]
-
-
-def collect_required_all(
-    import_name: str,
-    install_hint: str,
-) -> CollectedPackage:
-    """Collect a package and fail with an actionable build hint when missing."""
-    if importlib.util.find_spec(import_name) is None:
-        raise SystemExit(f"ERROR: missing required desktop dependency '{import_name}'. {install_hint}")
-    return collect_all(import_name)
-
-
-def copy_required_metadata(distribution_name: str, install_hint: str) -> list[tuple[str, str]]:
-    """Copy distribution metadata and fail with an actionable build hint when missing."""
-    try:
-        return copy_metadata(distribution_name, recursive=True)
-    except Exception as exc:
-        raise SystemExit(f"ERROR: missing metadata for '{distribution_name}'. {install_hint}") from exc
 
 
 def collect_tree_data_files(source_dir, target_dir, patterns):
@@ -164,9 +149,67 @@ if not os.path.isdir(web_dist) or not os.listdir(web_dist):
 datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
-datas += collect_resources_data_files(
+# A controlled package embeds its immutable Runtime build identity. Computing
+# it belongs to the build, so frozen Front/Worker startup only reads this small
+# payload. Source execution still validates dirty code and dependency locks.
+_identity_helper = runpy.run_path(os.path.join(
+    project_root, "jiuwenswarm", "server", "supervisor", "identity_cache.py"))
+_source_identity = _identity_helper["full_source_fingerprint"](Path(project_root, "jiuwenswarm"))
+_build_recipe = hashlib.sha256()
+_build_recipe.update(_source_identity.encode())
+for _build_source in ("scripts/jiuwenswarm.spec", "scripts/jiuwenswarm_exe_entry.py"):
+    _build_recipe.update(Path(project_root, _build_source).read_bytes())
+_identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-")
+_identity_file = Path(_identity_directory.name, "_worker_build_identity.json")
+_identity_file.write_text(json.dumps({"schema": 1, "fingerprint": _build_recipe.hexdigest()}), encoding="utf-8")
+datas.append((str(_identity_file), "jiuwenswarm"))
+_playwright_mcp_resource_dir = os.path.join(
+    project_root,
+    "jiuwenswarm",
+    "resources",
+    "runtime",
+    "playwright-mcp",
+)
+_playwright_mcp_zip = os.path.join(
+    _playwright_mcp_resource_dir,
+    "playwright-mcp-0.0.78.zip",
+)
+_playwright_mcp_manifest = os.path.join(_playwright_mcp_resource_dir, "manifest.json")
+for _required_playwright_resource in (_playwright_mcp_zip, _playwright_mcp_manifest):
+    if not os.path.isfile(_required_playwright_resource):
+        raise SystemExit(
+            "ERROR: bundled Playwright MCP resource is missing: "
+            f"{_required_playwright_resource}. Run scripts/update_playwright_mcp_runtime.py."
+        )
+
+_resource_datas = collect_resources_data_files(
     os.path.join(project_root, "jiuwenswarm", "resources"),
     "jiuwenswarm/resources",
+)
+# Keep the ZIP explicit: generic PyInstaller resource patterns historically
+# covered only text data, while the browser runtime must remain a real file.
+datas += [
+    (
+        _playwright_mcp_zip,
+        "jiuwenswarm/resources/runtime/playwright-mcp",
+    )
+]
+datas += [
+    item
+    for item in _resource_datas
+    if os.path.normcase(os.path.abspath(item[0]))
+    != os.path.normcase(os.path.abspath(_playwright_mcp_zip))
+]
+datas += [
+    (
+        os.path.join(project_root, "OPEN_SOURCE_SOFTWARE_NOTICE.md"),
+        ".",
+    )
+]
+datas += collect_data_files(
+    "certifi",
+    include_py_files=False,
+    includes=["cacert.pem"],
 )
 datas += copy_metadata("fastmcp", recursive=True)
 datas += copy_metadata("mcp", recursive=True)
@@ -187,6 +230,13 @@ datas += collect_data_files(
     include_py_files=False,
     includes=DATA_FILE_PATTERNS,
 )
+# DesignRail 的 config.yaml + skills/ 树（SKILL.md / workflows / references / scripts）
+# 含 .mjs 脚本和 _templates/ 模板（脚本运行时读取），需额外 pattern
+datas += collect_data_files(
+    "jiuwenswarm.agents.harness.code.rails.sdd.design_rail",
+    include_py_files=False,
+    includes=["**/*.yaml", "**/*.yml", "**/*.json", "**/*.md", "**/*.mjs"],
+)
 for package_root in DISPATCH_PACKAGE_ROOTS:
     datas += collect_tree_data_files(
         os.path.join(symphony_root, package_root),
@@ -197,11 +247,57 @@ for package_root in DISPATCH_PACKAGE_ROOTS:
 # openjiuwen 使用动态导入，需要收集全部子模块
 openjiuwen_submodules = collect_submodules("openjiuwen")
 symphony_submodules = collect_submodules("jiuwenswarm.symphony")
+# Gateway adapters are re-exported through package-level __getattr__ and
+# import_module(), so PyInstaller cannot discover them from the import graph.
+gateway_adapter_submodules = collect_submodules(
+    "jiuwenswarm.server.runtime.gateway_adapter"
+)
+# The Runtime Worker is launched by module name through the frozen entrypoint's
+# runpy dispatcher. PyInstaller cannot infer this subprocess entrypoint from
+# the string passed to ``-m``, so bundle the package and all of its modules.
+runtime_worker_submodules = collect_submodules(
+    "jiuwenswarm.server.worker"
+)
+# TeamManager imports this lifecycle hook while its parent package is being
+# initialized.  Keep it explicit because PyInstaller cannot reliably infer
+# this package-attribute import from the frozen entry point.
+team_kv_cache_hiddenimports = [
+    "jiuwenswarm.agents.harness.team.kv_cache_team_delete_guard",
+]
 dispatch_submodules = collect_tree_python_modules(symphony_root, DISPATCH_PACKAGE_ROOTS)
+http2_submodules = [
+    *collect_submodules("h2"),
+    *collect_submodules("hpack"),
+    *collect_submodules("hyperframe"),
+]
 
 # 部分包需要显式声明隐藏导入
-hiddenimports = webview_hiddenimports + [
+lazy_runtime_submodules = []
+for lazy_package in (
+    "jiuwenswarm.agents.harness.common.auto_harness",
+    "jiuwenswarm.agents.harness.common.tools",
+    "jiuwenswarm.agents.harness.common.rails",
+    "jiuwenswarm.common.auth",
+    "jiuwenswarm.agents.swarm",
+):
+    lazy_runtime_submodules += collect_submodules(lazy_package)
+
+hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
+    "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
+    # ``--doctor`` imports these targets dynamically before business imports.
+    # Keep them explicit so the installed executable can diagnose a broken
+    # native dependency instead of reporting a PyInstaller collection gap.
+    "tiktoken._tiktoken",
+    "grpc._cython.cygrpc",
+    "cryptography.hazmat.bindings._rust",
+    "numpy",
+    "pandas._libs.lib",
+    "lxml.etree",
+    "PIL._imaging",
+    "bcrypt._bcrypt",
+    "faiss",
+    "chromadb_rust_bindings",
     "tiktoken_ext",  # tiktoken 编码插件（cl100k_base 等）
     "tiktoken_ext.openai_public",
     "ruamel.yaml",
@@ -218,14 +314,19 @@ hiddenimports = webview_hiddenimports + [
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
-] + openjiuwen_submodules + symphony_submodules + dispatch_submodules
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + team_kv_cache_hiddenimports + dispatch_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [
     "tkinter",
-    "matplotlib",
     "scipy",
     "numpy.tests",
+    # External CLI SDKs and their native executables are optional runtimes.
+    # Frozen Windows builds install verified wheels under the application directory on demand.
+    # Other platforms keep their managed optional runtimes in the user data directory.
+    "claude_agent_sdk",
+    "openai_codex",
+    "codex_cli_bin",
     # 测试框架辅助包（pytest 本体已 collect 进 PYZ）
     "tox",
     "hypothesis",
@@ -250,6 +351,27 @@ icon_path = os.path.join(
 # the binary placed here.
 import sysconfig as _sysconfig
 _bundled_binaries = []
+
+# RSI is initialized lazily from AgentWebSocketServer. Collect the complete
+# service trees so PyInstaller keeps their nested modules and package data,
+# including the native harness_config.yaml fallback used by clean workspaces.
+_rsi_datas, _rsi_binaries, _rsi_hidden = collect_all(
+    "jiuwenswarm.agents.harness.common.rsi"
+)
+_server_rsi_datas, _server_rsi_binaries, _server_rsi_hidden = collect_all(
+    "jiuwenswarm.server.rsi"
+)
+datas += _rsi_datas + _server_rsi_datas
+hiddenimports += _rsi_hidden + _server_rsi_hidden
+_bundled_binaries += _rsi_binaries + _server_rsi_binaries
+
+# 论文 reporting 阶段会动态生成 PDF 结果图。显式收集 matplotlib，避免
+# PyInstaller 因延迟导入或 backend/font 数据遗漏导致冻结包运行失败。
+_matplotlib_datas, _matplotlib_binaries, _matplotlib_hidden = collect_all("matplotlib")
+datas += _matplotlib_datas
+hiddenimports += _matplotlib_hidden
+_bundled_binaries += _matplotlib_binaries
+
 _ruff_suffix = ".exe" if sys.platform == "win32" else ""
 _ruff_scripts_dir = _sysconfig.get_path("scripts")
 _ruff_candidates = []
@@ -267,6 +389,40 @@ if not _bundled_binaries:
     print("WARNING: ruff binary not found in venv; auto-harness lint will be "
           "unavailable in the frozen exe (install ruff in the build venv)")
 
+# Bundle the GitCode CLI so bare `gitcode` works inside the frozen exe without
+# Python on the user's machine: gitcode-cli ships one pre-compiled binary per
+# platform (gc_cli/bin/gc-<os>-<arch>) and only the current one is staged. The
+# frozen entry already puts _internal on PATH, and `gitcode version` matching
+# the connector's pinned minVersion (compared for exact equality, so bumping it
+# needs a rebuild here too) skips the connector's pip-based init step.
+try:
+    from gc_cli.wrapper import get_binary_path as _gc_binary_path
+except ImportError:
+    raise SystemExit(
+        "错误: 打包环境缺少 gitcode-cli，冻结包将无法内置 gitcode CLI。"
+        "请先执行 uv sync --extra dev。"
+    )
+
+try:
+    _gc_source = str(_gc_binary_path())
+except RuntimeError as _gc_exc:
+    # 上游未提供当前平台的预编译二进制（如 Windows arm64），保持构建可用，
+    # 此时冻结包不内置 gitcode，连接器会退回 pip 安装流程。
+    print(f"WARNING: gitcode-cli has no prebuilt binary for this platform "
+          f"({_gc_exc}); the frozen exe will not bundle the gitcode CLI")
+except FileNotFoundError as _gc_exc:
+    raise SystemExit(f"错误: gitcode-cli 缺少当前平台的二进制文件: {_gc_exc}")
+else:
+    _gc_stage_dir = os.path.join(project_root, "build", "_gitcode_runtime")
+    os.makedirs(_gc_stage_dir, exist_ok=True)
+    _gc_stage = os.path.join(
+        _gc_stage_dir, "gitcode.exe" if sys.platform == "win32" else "gitcode"
+    )
+    shutil.copyfile(_gc_source, _gc_stage)
+    if sys.platform != "win32":
+        os.chmod(_gc_stage, 0o755)
+    _bundled_binaries.append((_gc_stage, "."))
+
 
 # Bundle pytest (pure-Python) so that `python -m pytest` works inside the
 # frozen exe. the frozen exe's -m branch uses runpy,
@@ -277,39 +433,6 @@ _py_datas, _py_binaries, _py_hidden = collect_all("py")
 datas += _pytest_datas + _pa_datas + _py_datas
 hiddenimports += _pytest_hidden + _pa_hidden + _py_hidden
 _bundled_binaries = _bundled_binaries + _pytest_binaries + _pa_binaries + _py_binaries
-
-# Bundle external CLI SDKs. The Python modules may live in the PYZ archive, but
-# their bundled CLI executables must be present as real files for SDK path
-# discovery. External CLI SDKs are required for desktop builds because frozen
-# executables do not ship pip and cannot install optional dependencies after
-# release.
-_desktop_external_cli_hint = (
-    "Run `scripts\\build-exe.ps1`, or run `uv sync --extra dev --extra claude --extra codex` "
-    "before invoking PyInstaller directly."
-)
-_claude_datas, _claude_binaries, _claude_hidden = collect_required_all(
-    "claude_agent_sdk",
-    _desktop_external_cli_hint,
-)
-datas += _claude_datas
-datas += copy_required_metadata("claude-agent-sdk", _desktop_external_cli_hint)
-hiddenimports += _claude_hidden
-_bundled_binaries = _bundled_binaries + _claude_binaries
-
-_codex_datas, _codex_binaries, _codex_hidden = collect_required_all(
-    "openai_codex",
-    _desktop_external_cli_hint,
-)
-_codex_cli_datas, _codex_cli_binaries, _codex_cli_hidden = collect_required_all(
-    "codex_cli_bin",
-    _desktop_external_cli_hint,
-)
-datas += _codex_datas + _codex_cli_datas
-datas += collect_data_files("codex_cli_bin", include_py_files=False, includes=["**/*"])
-datas += copy_required_metadata("openai-codex", _desktop_external_cli_hint)
-datas += copy_required_metadata("openai-codex-cli-bin", _desktop_external_cli_hint)
-hiddenimports += _codex_hidden + _codex_cli_hidden
-_bundled_binaries = _bundled_binaries + _codex_binaries + _codex_cli_binaries
 
 # Bundle mypy so that `python -m mypy` works inside the frozen exe.
 # `sys.executable -m mypy`. mypy ships mypyc-compiled .pyd extensions plus
@@ -357,6 +480,14 @@ datas += _rust_datas
 hiddenimports += _rust_hidden
 _bundled_binaries = _bundled_binaries + _rust_binaries
 
+# sqlite-vec 是 SQLite 的可加载扩展，包内仅含纯 Python __init__.py 与动态库 vec0.dll。
+# collect_all("sqlite_vec") 会把 vec0.dll 作为 data file 收进冻结包；缺了它，运行时
+# `sqlite_vec.load()` 找不到动态库，报 "找不到指定的模块"，记忆向量能力降级（issue #4319）。
+_sqlite_vec_datas, _sqlite_vec_binaries, _sqlite_vec_hidden = collect_all("sqlite_vec")
+datas += _sqlite_vec_datas
+hiddenimports += _sqlite_vec_hidden
+_bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
+
 a = Analysis(
     [entry_script],
     pathex=[project_root, symphony_root],
@@ -388,6 +519,20 @@ mcp_a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# A venv backed by Conda can have another Conda installation earlier on PATH.
+# Dependency discovery then finds an OpenSSL DLL without the symbols required
+# by the interpreter's _ssl.pyd. Keep the interpreter's own DLL pair together.
+if os.name == "nt":
+    _python_ssl_dir = Path(sys.base_prefix) / "Library" / "bin"
+    for _ssl_dll in ("libssl-3-x64.dll", "libcrypto-3-x64.dll"):
+        _ssl_source = _python_ssl_dir / _ssl_dll
+        if _ssl_source.is_file():
+            for _analysis in (a, mcp_a):
+                _analysis.binaries = [
+                    item for item in _analysis.binaries
+                    if os.path.normcase(item[0]) != os.path.normcase(_ssl_dll)
+                ] + [(_ssl_dll, str(_ssl_source), "BINARY")]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 mcp_pyz = PYZ(mcp_a.pure, mcp_a.zipped_data, cipher=block_cipher)
@@ -456,6 +601,7 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleName": build_config.display_name,
             "CFBundleDisplayName": build_config.display_name,
+            "CFBundleExecutable": build_config.executable_name,
             "CFBundleShortVersionString": build_config.version,
             "CFBundleVersion": build_config.version,
             "NSHighResolutionCapable": "True",

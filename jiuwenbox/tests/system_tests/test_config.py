@@ -108,6 +108,7 @@ class EnvironmentDetector:
             return False
         try:
             import subprocess
+            # shell=True used for test convenience; no user-controlled input in test code
             result = subprocess.run([docker, "ps"], capture_output=True, text=True)
             return result.returncode == 0
         except (OSError, subprocess.SubprocessError) as exc:

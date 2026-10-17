@@ -228,8 +228,11 @@ def apply_cron_team_round_event(state: dict[str, Any], event: dict[str, Any]) ->
             _apply_team_member_event(state, nested)
     elif event_type == "team.completed":
         state["team_round_completed"] = True
-    elif event_type == "chat.error":
-        error = event.get("error")
+    elif event_type in ("chat.error", "team.error"):
+        # team.error 由团队运行时直接抛出，不保证经 gateway 归一化成 chat.error，
+        # 与 chat.error 同为「本轮终端失败」信号，必须一并识别：否则轮次状态里
+        # 不会留下任何错误痕迹，cron 只能兜底成无细节的「未产生有效报告」。
+        error = event.get("error") or event.get("message")
         if isinstance(error, str) and error.strip():
             state["leader_text"] = error.strip()
         state["leader_final_seen"] = True

@@ -26,6 +26,45 @@ class TestReqMethod:
         assert ReqMethod.CONFIG_SET.value == "config.set"
 
     @staticmethod
+    def test_personal_context_methods():
+        """Test PersonalContext request methods exposed through the WebSocket gateway."""
+        methods = {
+            item.value
+            for item in ReqMethod
+            if item.value.startswith("personal_context.")
+        }
+        assert methods == {
+            "personal_context.runtime.status",
+            "personal_context.runtime.start_collection",
+            "personal_context.runtime.stop_collection",
+            "personal_context.runtime.start_agent_use",
+            "personal_context.runtime.stop_agent_use",
+            "personal_context.runtime.get_config",
+            "personal_context.runtime.patch_config",
+            "personal_context.runtime.select_model",
+            "personal_context.runtime.set_master_enabled",
+            "personal_context.fetch.list_services",
+            "personal_context.fetch.create_service",
+            "personal_context.fetch.delete_service",
+            "personal_context.fetch.patch_service",
+            "personal_context.fetch.start_service",
+            "personal_context.fetch.stop_run",
+            "personal_context.fetch.stop_service",
+            "personal_context.fetch.run_all",
+            "personal_context.fetch.run_one",
+            "personal_context.fetch.stop_run",
+            "personal_context.fetch.get_run_status",
+            "personal_context.fetch.get_authorization_status",
+            "personal_context.fetch.authorize_provider",
+            "personal_context.context.stream_graph",
+            "personal_context.context.stream_tree",
+            "personal_context.context.search_pages",
+            "personal_context.context.get_node",
+            "personal_context.context.get_source",
+        }
+        assert len(methods) == 26
+
+    @staticmethod
     def test_session_methods():
         """Test session-related request methods."""
         assert ReqMethod.SESSION_LIST.value == "session.list"
@@ -78,20 +117,24 @@ class TestMode:
 
     @staticmethod
     def test_mode_from_raw_legacy_compatibility():
-        """Test legacy agent mode strings normalize to merged agent mode."""
-        assert Mode.from_raw("agent") == Mode.AGENT
-        assert Mode.from_raw("agent.plan") == Mode.AGENT
-        assert Mode.from_raw("agent.fast") == Mode.AGENT
-        assert Mode.from_raw("plan") == Mode.AGENT
-        assert Mode.from_raw("fast") == Mode.AGENT
-        assert Mode.from_raw("code.plan") == Mode.CODE_PLAN
-        assert Mode.from_raw("code.normal") == Mode.CODE_NORMAL
-        assert Mode.from_raw("code.team") == Mode.CODE_TEAM
-        assert Mode.from_raw("team") == Mode.TEAM
-        assert Mode.from_raw("team.plan") == Mode.TEAM_PLAN_NORMAL
-        assert Mode.from_raw("team.plan.normal") == Mode.TEAM_PLAN_NORMAL
-        assert Mode.from_raw("team.plan.code") == Mode.TEAM_PLAN_CODE
-        assert Mode.from_raw("invalid") == Mode.AGENT
+        """旧 canonical 通过 DEPRECATION_MAP 静默映射到新 canonical。"""
+        assert Mode.from_raw("agent") == Mode.AGENT_WORK_NORMAL
+        assert Mode.from_raw("agent.plan") == Mode.AGENT_WORK_PLAN
+        assert Mode.from_raw("agent.fast") == Mode.AGENT_WORK_NORMAL
+        assert Mode.from_raw("plan") == Mode.AGENT_WORK_NORMAL
+        assert Mode.from_raw("fast") == Mode.AGENT_WORK_NORMAL
+        # 旧 code / team canonical 同样映射到对应新 canonical。
+        assert Mode.from_raw("code.plan") == Mode.AGENT_CODE_PLAN
+        assert Mode.from_raw("code.normal") == Mode.AGENT_CODE_NORMAL
+        assert Mode.from_raw("code.team") == Mode.TEAM_CODE_NORMAL
+        assert Mode.from_raw("team") == Mode.TEAM_WORK_NORMAL
+        assert Mode.from_raw("team.plan") == Mode.TEAM_WORK_PLAN
+        assert Mode.from_raw("team.plan.normal") == Mode.TEAM_WORK_PLAN
+        assert Mode.from_raw("team.plan.code") == Mode.TEAM_CODE_PLAN
+        # 新 canonical 原样返回；非法串回落到默认 AGENT_WORK_NORMAL。
+        assert Mode.from_raw("agent.work.normal") == Mode.AGENT_WORK_NORMAL
+        assert Mode.from_raw("team.code.plan") == Mode.TEAM_CODE_PLAN
+        assert Mode.from_raw("invalid") == Mode.AGENT_WORK_NORMAL
 
     @staticmethod
     def test_mode_to_runtime_mode():
@@ -105,6 +148,15 @@ class TestMode:
         assert Mode.TEAM.to_runtime_mode() == "team"
         assert Mode.TEAM_PLAN_NORMAL.to_runtime_mode() == "team.plan.normal"
         assert Mode.TEAM_PLAN_CODE.to_runtime_mode() == "team.plan.code"
+        # 新三段命名 canonical：原样返回，下游 acp_connect.py 注入 params["mode"]。
+        assert Mode.AGENT_WORK_NORMAL.to_runtime_mode() == "agent.work.normal"
+        assert Mode.AGENT_WORK_PLAN.to_runtime_mode() == "agent.work.plan"
+        assert Mode.AGENT_CODE_NORMAL.to_runtime_mode() == "agent.code.normal"
+        assert Mode.AGENT_CODE_PLAN.to_runtime_mode() == "agent.code.plan"
+        assert Mode.TEAM_WORK_NORMAL.to_runtime_mode() == "team.work.normal"
+        assert Mode.TEAM_WORK_PLAN.to_runtime_mode() == "team.work.plan"
+        assert Mode.TEAM_CODE_NORMAL.to_runtime_mode() == "team.code.normal"
+        assert Mode.TEAM_CODE_PLAN.to_runtime_mode() == "team.code.plan"
 
 
 class TestAgentRequest:
@@ -282,6 +334,35 @@ class TestMessage:
         assert message.is_stream is True
         assert message.stream_seq == 1
         assert message.stream_id == "stream-123"
+
+    @staticmethod
+    def test_message_mode_default_aligns_with_from_raw_fallback():
+        """客户端不传 mode 时 Message.mode 与 Mode.from_raw 的 fallback 对齐。
+
+        钉死 schema 字段默认值 = ``Mode.AGENT_WORK_NORMAL``，与
+        ``Mode.from_raw(None)`` / ``Mode.from_raw("")`` 的 fallback 保持一致。
+        旧契约是字段默认 ``Mode.AGENT``（值 ``"agent"``），P2 迁移把
+        from_raw 的 fallback 改为 ``agent.work.normal`` 后两处不一致，此处
+        钉死新契约，防止回归。下游若要做字面量比较应使用谓词
+        （``is_work_mode`` / ``to_runtime_mode()``），而非 ``mode.value == "agent"``。
+        """
+        # 构造 Message 不传 mode 字段
+        message = Message(
+            id="msg-default-mode",
+            type="req",
+            channel_id="web",
+            session_id=None,
+            params={},
+            timestamp=1234567894.0,
+            ok=True,
+        )
+        # 字段默认值钉死
+        assert message.mode is Mode.AGENT_WORK_NORMAL
+        assert message.mode.value == "agent.work.normal"
+        # 与 from_raw 的 fallback 一致（None / 空串 / 非法串三条入口都同值）
+        assert Mode.from_raw(None) == message.mode
+        assert Mode.from_raw("") == message.mode
+        assert Mode.from_raw("invalid") == message.mode
 
     @staticmethod
     def test_message_mode():

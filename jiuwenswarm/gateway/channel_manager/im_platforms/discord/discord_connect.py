@@ -238,8 +238,10 @@ class DiscordChannel(BaseChannel):
     @staticmethod
     def _extract_outgoing_text(msg: Message) -> str:
         payload = getattr(msg, "payload", None) or {}
-        if msg.event_type == EventType.HEARTBEAT_RELAY and isinstance(payload, dict) and payload.get("heartbeat"):
-            return str(payload.get("heartbeat")).strip()
+        if msg.event_type == EventType.HEALTH_CHECK_RELAY and isinstance(payload, dict):
+            health_check = payload.get("health_check")
+            if health_check:
+                return str(health_check).strip()
 
         if isinstance(payload, dict) and "content" in payload:
             content = payload.get("content")

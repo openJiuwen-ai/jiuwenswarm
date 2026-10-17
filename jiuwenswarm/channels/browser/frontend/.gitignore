@@ -1,0 +1,15 @@
+# Dependencies
+/node_modules/
+
+# Build output
+/dist/
+
+# Packed extension
+/jiuwenswarm-browser-*.zip
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

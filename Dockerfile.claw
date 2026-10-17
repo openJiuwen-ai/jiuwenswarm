@@ -1,0 +1,100 @@
+ARG BASE_IMAGE=python:3.11.4-slim-bookworm
+
+# ---------------------------------------------------------------------------
+# base - OS packages shared by every stage below (node 22, git, CJK fonts).
+# ---------------------------------------------------------------------------
+FROM ${BASE_IMAGE} AS base
+
+# Frontend build dependencies and git (required by the openjiuwen VCS dependency).
+RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
+    apt-get install -y git curl ca-certificates git net-tools fonts-noto-cjk fonts-wqy-microhei pkg-config && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    npm config set registry https://registry.npmmirror.com --global && \
+    npm install -g npm@latest && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create app user
+RUN useradd --create-home --shell /bin/bash app
+
+# Route pip / uv at domestic mirrors inside the image.
+ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+
+# ---------------------------------------------------------------------------
+# frontend - builds the web bundle. Depends only on `base`, so BuildKit runs
+# this stage in parallel with the backend stage below.
+# ---------------------------------------------------------------------------
+FROM base AS frontend
+
+# Copy project files. vite.config.ts resolves <repo>/scripts, so the whole
+# checkout is needed here, not just the frontend directory.
+COPY --chown=app:app . /app/jiuwenswarm/
+
+WORKDIR /app/jiuwenswarm/jiuwenswarm/channels/web/frontend
+RUN npm config set allow-remote all && \
+    npm config set registry https://registry.npmmirror.com
+RUN npm install
+RUN npm run build
+
+# ---------------------------------------------------------------------------
+# backend - installs runtime deps and the project into a uv virtualenv.
+# Depends only on `base`, so BuildKit runs this stage in parallel with the
+# frontend stage above.
+# ---------------------------------------------------------------------------
+FROM base AS backend
+
+COPY --chown=app:app . /app/jiuwenswarm/
+
+USER app
+WORKDIR /app/jiuwenswarm
+# Bootstrap uv (the only pip call); every install below goes through uv.
+RUN pip install --user uv
+ENV PATH=/home/app/.local/bin:$PATH
+ENV VIRTUAL_ENV=/app/.venv
+RUN uv venv "$VIRTUAL_ENV" && \
+    uv pip install cairosvg svglib reportlab && \
+    uv pip install --no-cache .
+
+# ---------------------------------------------------------------------------
+# final image - sources plus the artifacts produced by the two stages above.
+# ---------------------------------------------------------------------------
+FROM base
+
+RUN mkdir -p /app
+
+# 创建 .jiuwenswarm 目录并设置权限
+RUN mkdir -p /home/app/.jiuwenswarm/agent/.logs && \
+    mkdir -p /home/app/.jiuwenswarm/agent/pids && \
+    chown -R app:app /home/app/.jiuwenswarm
+
+COPY --chown=app:app . /app/jiuwenswarm/
+
+# Python environment (uv + virtualenv) from the backend stage.
+COPY --from=backend --chown=app:app /app/.venv /app/.venv
+COPY --from=backend --chown=app:app /home/app/.local /home/app/.local
+
+# Built web bundle from the frontend stage.
+# The wheel ships frontend/dist as package data (see [tool.setuptools.package-data]),
+# but the backend stage installs before the frontend build exists, so dist must be
+# dropped into site-packages - that is the only location app_web serves from.
+COPY --from=frontend --chown=app:app /app/jiuwenswarm/jiuwenswarm/channels/web/frontend/dist /app/.venv/lib/python3.11/site-packages/jiuwenswarm/channels/web/frontend/dist
+# Keep the source-tree copy as well, so running straight from the checkout works.
+COPY --from=frontend --chown=app:app /app/jiuwenswarm/jiuwenswarm/channels/web/frontend/dist /app/jiuwenswarm/jiuwenswarm/channels/web/frontend/dist
+COPY --from=frontend --chown=app:app /app/jiuwenswarm/jiuwenswarm/channels/web/frontend/node_modules /app/jiuwenswarm/jiuwenswarm/channels/web/frontend/node_modules
+
+USER app
+
+WORKDIR /app/jiuwenswarm
+# Bind outside the container without changing the localhost default used by
+# source, desktop, and pip installations.
+ENV FRONTEND_HOST=0.0.0.0
+ENV VIRTUAL_ENV=/app/.venv
+ENV PATH=/app/.venv/bin:/home/app/.local/bin:$PATH
+
+#RUN pip install cairosvg svglib reportlab  -i https://mirrors.aliyun.com/pypi/simple/ 
+#RUN pip install -i  https://mirrors.aliyun.com/pypi/simple/ . --no-cache-dir
+# Start claw app
+EXPOSE 5173
+CMD ["jiuwenswarm-start"]

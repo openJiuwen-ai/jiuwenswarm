@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -5,11 +7,117 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.agents.harness.observability_runtime import (
+from openjiuwen.extensions.observability.demand import (
     get_trajectory_span_processor,
+)
+from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
+    SESSION_MESSAGING_ROUTE_EXTRA_KEY,
 )
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
+
+
+def _assert_symphony_request_model_context(inputs: dict) -> None:
+    run = inputs["run"]
+    assert run["kind"] == "normal"
+    # The session-messaging route extra may ride along; it has dedicated tests
+    # in test_session_messaging.py. Here we only pin the model-reference contract.
+    assert set(run["context"]["extra"]) == {
+        SYMPHONY_LLM_CONFIG_REF_KEY,
+        SESSION_MESSAGING_ROUTE_EXTRA_KEY,
+    }
+    reference = run["context"]["extra"][SYMPHONY_LLM_CONFIG_REF_KEY]
+    assert isinstance(reference, str)
+    assert len(reference) == 64
+
+
+@pytest.mark.anyio
+async def test_team_evolution_approval_dispatches_core_continuation(monkeypatch):
+    adapter = JiuWenSwarmDeepAdapter()
+    rail = SimpleNamespace(
+        _pending_approval_snapshots={"team_skill_evolve_create_1": None},
+        pop_approval_continuation=lambda request_id: (
+            "create the approved skill"
+            if request_id == "team_skill_evolve_create_1"
+            else None
+        ),
+    )
+    manager = SimpleNamespace(interact=AsyncMock(return_value=(True, None)))
+    monkeypatch.setattr(adapter, "find_team_skill_rail", lambda *_args: rail)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_team_manager",
+        lambda _channel_id: manager,
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "approved_record_ids_from_answers",
+        lambda _answers, _labels, _record_ids: (True, None),
+    )
+    approve = AsyncMock()
+    monkeypatch.setattr(interface_deep_module, "approve_evolution_records", approve)
+
+    handled = await adapter.handle_team_skill_evolve_approval(
+        "team_skill_evolve_create_1",
+        [{"selected_options": ["接收"]}],
+        "sess-1",
+        "web",
+    )
+
+    assert handled is True
+    approve.assert_awaited_once_with(
+        rail,
+        "team_skill_evolve_create_1",
+        None,
+    )
+    manager.interact.assert_awaited_once_with("sess-1", "create the approved skill")
+
+
+@pytest.mark.anyio
+async def test_approved_evolution_stays_successful_when_continuation_delivery_fails(
+    monkeypatch,
+):
+    adapter = JiuWenSwarmDeepAdapter()
+    rail = SimpleNamespace(
+        _pending_approval_snapshots={"team_skill_evolve_create_1": None},
+        pop_approval_continuation=lambda _request_id: "create the approved skill",
+    )
+    manager = SimpleNamespace(interact=AsyncMock(return_value=(False, "session ended")))
+    push_resolution = AsyncMock()
+    monkeypatch.setattr(adapter, "find_team_skill_rail", lambda *_args: rail)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_team_manager",
+        lambda _channel_id: manager,
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "approved_record_ids_from_answers",
+        lambda _answers, _labels, _record_ids: (True, None),
+    )
+    approve = AsyncMock()
+    monkeypatch.setattr(interface_deep_module, "approve_evolution_records", approve)
+    monkeypatch.setattr(
+        adapter,
+        "_push_team_skill_evolve_resolution_status",
+        push_resolution,
+    )
+
+    handled = await adapter.handle_team_skill_evolve_approval(
+        "team_skill_evolve_create_1",
+        [{"selected_options": ["接收"]}],
+        "sess-1",
+        "web",
+    )
+
+    assert handled is True
+    approve.assert_awaited_once_with(rail, "team_skill_evolve_create_1", None)
+    manager.interact.assert_awaited_once_with("sess-1", "create the approved skill")
+    push_resolution.assert_awaited_once_with(
+        "team_skill_evolve_create_1",
+        session_id="sess-1",
+        channel_id="web",
+        accepted=True,
+    )
 
 
 @pytest.mark.anyio
@@ -436,7 +544,11 @@ def _adapter_ready_for_followup_execution(monkeypatch: pytest.MonkeyPatch) -> Ji
     monkeypatch.setattr(adapter, "_bind_runtime_cron_context", lambda **_kwargs: None)
     monkeypatch.setattr(adapter, "_reset_runtime_cron_context", lambda _tokens: None)
     monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: None)
-    monkeypatch.setattr(adapter, "_apply_model_to_react_agent", lambda _model: None)
+    monkeypatch.setattr(
+        adapter,
+        "_apply_model_to_react_agent",
+        lambda _model, **_kwargs: None,
+    )
     monkeypatch.setattr(adapter, "_mark_session_active", lambda _session_id: None)
     monkeypatch.setattr(adapter, "_register_session_agent_task", lambda _session_id: None)
     monkeypatch.setattr(adapter, "_unregister_session_agent_task", lambda _session_id: None)
@@ -477,10 +589,54 @@ def _install_interaction_followup_agent(
     )
 
 
+def _capture_agent_run_close(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    from openjiuwen.harness import observability as harness_observability
+    from jiuwenswarm.agents.harness import agent_observability as swarm_agent_observability
+
+    closed_run_spans: list[dict] = []
+    monkeypatch.setattr(
+        harness_observability,
+        "open_agent_run_span",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        harness_observability,
+        "close_agent_run_span",
+        lambda _handle, **kwargs: closed_run_spans.append(kwargs),
+    )
+    monkeypatch.setattr(
+        swarm_agent_observability,
+        "sync_agent_observability",
+        lambda **_kwargs: None,
+    )
+    return closed_run_spans
+
+
 @pytest.mark.anyio
 async def test_stream_error_answer_aborts_active_round_without_debug_logger(monkeypatch):
     adapter = _adapter_ready_for_followup_execution(monkeypatch)
     closed_with: list[bool] = []
+    opened_run_spans: list[dict] = []
+    closed_run_spans: list[dict] = []
+
+    from openjiuwen.harness import observability as harness_observability
+    from jiuwenswarm.agents.harness import agent_observability as swarm_agent_observability
+
+    monkeypatch.setattr(
+        harness_observability,
+        "open_agent_run_span",
+        lambda **kwargs: opened_run_spans.append(kwargs),
+    )
+    monkeypatch.setattr(
+        harness_observability,
+        "close_agent_run_span",
+        lambda _handle, **kwargs: closed_run_spans.append(kwargs),
+    )
+    monkeypatch.setattr(
+        swarm_agent_observability,
+        "sync_agent_observability",
+        lambda **_kwargs: None,
+    )
 
     class _FakeInteractionStream:
         def __aiter__(self):
@@ -522,11 +678,219 @@ async def test_stream_error_answer_aborts_active_round_without_debug_logger(monk
     } in payloads
     assert not any(payload.get("event_type") == "chat.final" for payload in payloads)
     assert closed_with == [True]
+    assert opened_run_spans[0]["mode"] == "agent.work.plan"
+    assert len(closed_run_spans) == 1
+    assert closed_run_spans[0]["exception"] is None
+    assert closed_run_spans[0]["error_type"] == "answer_error"
+    assert closed_run_spans[0]["error_message"] == (
+        "任务循环单轮执行超过 10 秒，已终止本轮任务。"
+    )
+
+
+@pytest.mark.anyio
+async def test_non_stream_error_answer_closes_root_with_structured_failure(monkeypatch):
+    adapter = _adapter_ready_for_followup_execution(monkeypatch)
+    opened_run_spans: list[dict] = []
+    closed_run_spans: list[dict] = []
+    seen_inputs: list[dict] = []
+
+    from openjiuwen.harness import observability as harness_observability
+    from jiuwenswarm.agents.harness import agent_observability as swarm_agent_observability
+
+    monkeypatch.setattr(
+        harness_observability,
+        "open_agent_run_span",
+        lambda **kwargs: opened_run_spans.append(kwargs),
+    )
+    monkeypatch.setattr(
+        harness_observability,
+        "close_agent_run_span",
+        lambda _handle, **kwargs: closed_run_spans.append(kwargs),
+    )
+    monkeypatch.setattr(
+        swarm_agent_observability,
+        "sync_agent_observability",
+        lambda **_kwargs: None,
+    )
+    _install_interaction_followup_agent(
+        adapter,
+        chunk=SimpleNamespace(
+            type="answer",
+            payload={"output": "provider rejected request", "result_type": "error"},
+        ),
+        seen_inputs=seen_inputs,
+    )
+
+    response = await adapter.process_message_impl(
+        AgentRequest(
+            request_id="req-provider-error",
+            channel_id="web",
+            session_id="sess-provider-error",
+            params={"query": "run", "mode": "agent.plan"},
+        ),
+        {"query": "run"},
+    )
+
+    assert response.ok is False
+    assert response.payload == {"error": "provider rejected request"}
+    assert opened_run_spans[0]["mode"] == "agent.work.plan"
+    assert len(closed_run_spans) == 1
+    assert closed_run_spans[0]["exception"] is None
+    assert closed_run_spans[0]["error_type"] == "answer_error"
+    assert closed_run_spans[0]["error_message"] == "provider rejected request"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("chunk", "expected_type", "expected_message"),
+    [
+        (
+            SimpleNamespace(
+                type=interface_deep_module.ERROR_EVENT_TYPE,
+                payload={"code": "provider_failed", "message": "model unavailable"},
+            ),
+            "provider_failed",
+            "model unavailable",
+        ),
+        (
+            SimpleNamespace(
+                type="error",
+                payload={"error_type": "transport_error", "error": "socket closed"},
+            ),
+            "transport_error",
+            "socket closed",
+        ),
+        (
+            {
+                "type": interface_deep_module.ERROR_EVENT_TYPE,
+                "payload": {"code": "dict_error", "message": "dict failure"},
+            },
+            "dict_error",
+            "dict failure",
+        ),
+    ],
+)
+async def test_stream_structured_errors_close_root_as_error(
+    monkeypatch,
+    chunk,
+    expected_type: str,
+    expected_message: str,
+):
+    adapter = _adapter_ready_for_followup_execution(monkeypatch)
+    closed_run_spans = _capture_agent_run_close(monkeypatch)
+    seen_inputs: list[dict] = []
+    _install_interaction_followup_agent(
+        adapter,
+        chunk=chunk,
+        seen_inputs=seen_inputs,
+    )
+
+    _chunks = [
+        item
+        async for item in adapter.process_message_stream_impl(
+            AgentRequest(
+                request_id="req-structured-error",
+                channel_id="web",
+                session_id="sess-structured-error",
+                params={"query": "run", "mode": "agent.plan"},
+                is_stream=True,
+            ),
+            {"query": "run"},
+        )
+    ]
+
+    assert len(closed_run_spans) == 1
+    assert closed_run_spans[0]["exception"] is None
+    assert closed_run_spans[0]["error_type"] == expected_type
+    assert closed_run_spans[0]["error_message"] == expected_message
+
+
+@pytest.mark.anyio
+async def test_stream_goal_control_error_closes_open_root_as_error(monkeypatch):
+    adapter = _adapter_ready_for_followup_execution(monkeypatch)
+    closed_run_spans = _capture_agent_run_close(monkeypatch)
+    adapter._instance.attach_output = AsyncMock(return_value=None)  # pylint: disable=protected-access
+
+    async def _goal_error(**_kwargs):
+        return {
+            "result_type": "goal_error",
+            "error_code": "invalid_goal",
+            "error": "goal rejected",
+        }
+
+    monkeypatch.setattr(adapter, "_dispatch_goal_control", _goal_error)
+
+    chunks = [
+        item
+        async for item in adapter.process_message_stream_impl(
+            AgentRequest(
+                request_id="req-goal-error",
+                channel_id="web",
+                session_id="sess-goal-error",
+                req_method=ReqMethod.COMMAND_GOAL,
+                params={
+                    "query": "",
+                    "mode": "agent.plan",
+                    "action": "set",
+                    "objective": "bad goal",
+                },
+                is_stream=True,
+            ),
+            {"query": ""},
+        )
+    ]
+
+    assert chunks[0].payload["event_type"] == interface_deep_module.ERROR_EVENT_TYPE
+    assert chunks[0].payload["code"] == "invalid_goal"
+    assert len(closed_run_spans) == 1
+    assert closed_run_spans[0]["error_type"] == "invalid_goal"
+    assert closed_run_spans[0]["error_message"] == "goal rejected"
+
+
+@pytest.mark.anyio
+async def test_non_stream_error_answer_returns_failure_instead_of_empty_success(monkeypatch):
+    """openjiuwen's terminal ``answer/result_type:error`` must reach cron callers."""
+    adapter = _adapter_ready_for_followup_execution(monkeypatch)
+    seen_inputs: list[dict] = []
+    _install_interaction_followup_agent(
+        adapter,
+        chunk=SimpleNamespace(
+            type="answer",
+            payload={
+                "output": "Error code: 401 - model access denied",
+                "result_type": "error",
+            },
+        ),
+        seen_inputs=seen_inputs,
+    )
+
+    response = await adapter.process_message_impl(
+        AgentRequest(
+            request_id="req-model-error",
+            channel_id="__cron__",
+            session_id="cron-session",
+            params={"query": "run task", "mode": "agent"},
+        ),
+        {"query": "run task"},
+    )
+
+    assert response.ok is False
+    assert response.payload == {"error": "Error code: 401 - model access denied"}
+    assert len(seen_inputs) == 1
+    assert seen_inputs[0]["query"] == "run task"
+    assert "_turn_number" not in seen_inputs[0]
+    _assert_symphony_request_model_context(seen_inputs[0])
 
 
 @pytest.mark.anyio
 async def test_agent_non_stream_slash_followup_continues_into_runner(monkeypatch):
     adapter = _adapter_ready_for_followup_execution(monkeypatch)
+    adapter._kv_cache_affinity_enabled = True
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_trajectory_turn",
+        lambda _params: SimpleNamespace(turn_id="turn-non-stream", turn_number=3),
+    )
     seen_inputs: list[dict] = []
     _install_interaction_followup_agent(
         adapter,
@@ -554,9 +918,11 @@ async def test_agent_non_stream_slash_followup_continues_into_runner(monkeypatch
         {"query": "/evolve code-runner"},
     )
 
-    assert seen_inputs == [
-        {"query": "review and evolve code-runner", "_invoke_turn_id": "req-followup"}
-    ]
+    assert len(seen_inputs) == 1
+    assert seen_inputs[0]["query"] == "review and evolve code-runner"
+    assert seen_inputs[0]["_invoke_turn_id"] == "req-followup"
+    assert seen_inputs[0]["_turn_number"] == 3
+    _assert_symphony_request_model_context(seen_inputs[0])
     assert response.ok is True
     assert response.payload == {"content": "agent completed"}
 
@@ -564,6 +930,12 @@ async def test_agent_non_stream_slash_followup_continues_into_runner(monkeypatch
 @pytest.mark.anyio
 async def test_agent_stream_slash_followup_continues_into_runner(monkeypatch):
     adapter = _adapter_ready_for_followup_execution(monkeypatch)
+    adapter._kv_cache_affinity_enabled = True
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_trajectory_turn",
+        lambda _params: SimpleNamespace(turn_id="turn-stream", turn_number=4),
+    )
     seen_inputs: list[dict] = []
     _install_interaction_followup_agent(
         adapter,
@@ -594,15 +966,18 @@ async def test_agent_stream_slash_followup_continues_into_runner(monkeypatch):
     ):
         chunks.append(chunk)
 
-    assert seen_inputs == [
-        {"query": "review and simplify code-runner", "_invoke_turn_id": "req-followup-stream"}
-    ]
+    assert len(seen_inputs) == 1
+    assert seen_inputs[0]["query"] == "review and simplify code-runner"
+    assert seen_inputs[0]["_invoke_turn_id"] == "req-followup-stream"
+    assert seen_inputs[0]["_turn_number"] == 4
+    _assert_symphony_request_model_context(seen_inputs[0])
     assert chunks[0].payload == {"event_type": "chat.delta", "content": "agent delta"}
     assert chunks[-1].is_complete is True
 
 
 @pytest.mark.anyio
-async def test_team_stream_injects_image_tool_context_for_non_vision_model(monkeypatch):
+@pytest.mark.parametrize("image_status", ["unsupported", "disabled", "unknown"])
+async def test_team_stream_injects_image_tool_context_for_non_vision_model(monkeypatch, image_status):
     """Team mode must preserve the same local-image tool context as agent mode."""
     adapter = JiuWenSwarmDeepAdapter()
     adapter._instance = SimpleNamespace()  # pylint: disable=protected-access
@@ -611,9 +986,13 @@ async def test_team_stream_injects_image_tool_context_for_non_vision_model(monke
 
     monkeypatch.setattr(adapter, "_has_valid_model_config", lambda _model_name="": True)
     monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: object())
-    monkeypatch.setattr(adapter, "_apply_model_to_react_agent", lambda _model: None)
+    monkeypatch.setattr(
+        adapter,
+        "_apply_model_to_react_agent",
+        lambda _model, **_kwargs: None,
+    )
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
-    monkeypatch.setattr(adapter, "_native_image_input_enabled", lambda *_args: False)
+    monkeypatch.setattr(adapter, "_native_image_input_status", lambda *_args: image_status)
     monkeypatch.setattr(adapter, "_write_runtime_state", lambda **_kwargs: None)
 
     async def _capture_team_inputs(_request, inputs, _instance):
@@ -644,8 +1023,16 @@ async def test_team_stream_injects_image_tool_context_for_non_vision_model(monke
         is_stream=True,
     )
 
-    async for _ in adapter.process_message_stream_impl(request, {"query": "解析图片内容"}):
-        pass
+    chunks = [chunk async for chunk in adapter.process_message_stream_impl(request, {"query": "解析图片内容"})]
 
     assert "jiuwenswarm_image_tool_context" in captured["query"]
     assert "agent/sessions/sess-team-image/uploads/persisted.png" in captured["query"]
+    assert f'"imageInputStatus": "{image_status}"' in captured["query"]
+    notices = [chunk.payload for chunk in chunks if chunk.payload.get("event_type") == "chat.notice"]
+    assert len(notices) == 1
+    assert notices[0]["image_input_status"] == image_status
+    if image_status == "unknown":
+        assert "尚未确认" in notices[0]["content"]
+        assert "尚未确认" in captured["query"]
+    if image_status != "unsupported":
+        assert "不支持" not in notices[0]["content"]

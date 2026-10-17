@@ -21,7 +21,7 @@ export function createSimplifyCommand(): SlashCommand {
     kind: CommandKind.BUILT_IN,
     takesArgs: true,
     action: async (ctx, args) => {
-      if (!ctx.mode.startsWith("code.")) {
+      if (!ctx.mode.startsWith("agent.code.") && !ctx.mode.startsWith("team.code.")) {
         ctx.addItem(
           addError(
             ctx.sessionId,

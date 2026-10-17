@@ -208,7 +208,7 @@ def resolve_git_project(
         return None, "git operations not available for this project", "FORBIDDEN"
     from jiuwenswarm.server.runtime.session import project_store
     proj = project_store.get_project_by_id(project_id, cache_bust=cache_bust)
-    if proj is None or proj.hidden:
+    if proj is None:
         return None, "project not found", "NOT_FOUND"
     if proj.work_mode != "code":
         # work 模式项目不开放 Git 接口

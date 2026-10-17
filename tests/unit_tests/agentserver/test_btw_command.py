@@ -1015,6 +1015,10 @@ class TestHandleCommandBtw:
         """Happy path: agent returns btw result, forwarded to client."""
 
         class MockAgent:
+            async def ensure_instance(self):
+                # /btw 走非 chat 通道 RPC，server 会先 ensure_instance 懒构建根 DeepAgent。
+                return None
+
             async def generate_btw_answer(self, session_id, question):
                 return {"status": "ok", "answer": "git status shows current state"}
 
@@ -1057,6 +1061,10 @@ class TestHandleCommandBtw:
         """An active session must not be routed to a new mode/project root."""
 
         class SessionAgent:
+            async def ensure_instance(self):
+                # /btw 走非 chat 通道 RPC，server 会先 ensure_instance 懒构建根 DeepAgent。
+                return None
+
             async def generate_btw_answer(self, session_id, question):
                 return {"status": "ok", "answer": "from session"}
 
@@ -1121,6 +1129,10 @@ class TestHandleCommandBtw:
         """When agent.generate_btw_answer raises, handler catches and returns ok=False."""
 
         class CrashingAgent:
+            async def ensure_instance(self):
+                # /btw 走非 chat 通道 RPC，server 会先 ensure_instance 懒构建根 DeepAgent。
+                return None
+
             async def generate_btw_answer(self, session_id, question):
                 raise RuntimeError("model unavailable")
 
@@ -1158,6 +1170,10 @@ class TestHandleCommandBtw:
         captured_mode = {}
 
         class MockAgent:
+            async def ensure_instance(self):
+                # /btw 走非 chat 通道 RPC，server 会先 ensure_instance 懒构建根 DeepAgent。
+                return None
+
             async def generate_btw_answer(self, session_id, question):
                 return {"status": "ok", "answer": "ok"}
 
@@ -1193,6 +1209,10 @@ class TestHandleCommandBtw:
         """When btw returns no_context, payload passed through unchanged."""
 
         class MockAgent:
+            async def ensure_instance(self):
+                # /btw 走非 chat 通道 RPC，server 会先 ensure_instance 懒构建根 DeepAgent。
+                return None
+
             async def generate_btw_answer(self, session_id, question):
                 return {"status": "no_context"}
 
@@ -1234,6 +1254,10 @@ class TestHandleCommandBtw:
         captured_session_id = {}
 
         class MockAgent:
+            async def ensure_instance(self):
+                # /btw 走非 chat 通道 RPC，server 会先 ensure_instance 懒构建根 DeepAgent。
+                return None
+
             async def generate_btw_answer(self, session_id, question):
                 captured_session_id["sid"] = session_id
                 return {"status": "ok", "answer": "ok"}

@@ -224,6 +224,8 @@ class TeamMonitorHandler(BaseMonitorHandler):
         base.update({
             "member_id": event.member_name,
             "force": event.force,
+            # 退场终态：shut_down 离队，dormant 休眠但仍在名册上，前端据此决定是否移除成员。
+            "target_status": event.target_status,
         })
         return base
 

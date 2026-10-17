@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from jiuwenswarm.common.client.third_agent import ThirdAgent
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentRuntime
-from jiuwenswarm.gateway.routing.third_agent import ThirdAgent
 
 if TYPE_CHECKING:
     from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
@@ -27,10 +27,12 @@ class AgentOSThirdAgent(ThirdAgent):
         *,
         user_id: str,
         current_agent_type: str = "",
+        access_mode: str = "",
     ) -> dict[str, Any]:
         return await self._router.thirdagent_list(
             user_id=user_id,
             current_agent_type=current_agent_type,
+            access_mode=access_mode,
         )
 
     async def thirdagent_switch(

@@ -1,0 +1,9 @@
+<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="16.000000" height="16.000000" fill="none">
+	<rect id="设置-setting" width="16.000000" height="16.000000" x="0.000000" y="0.000000" fill="rgb(255,255,255)" fill-opacity="0" />
+	<circle id="椭圆 3880" cx="6" cy="5" r="2" stroke="currentColor" stroke-width="1.000000" />
+	<circle id="椭圆 3881" cx="10" cy="11" r="2" stroke="currentColor" stroke-width="1.000000" />
+	<path id="直线 101" d="M8.00024 4.5L14 4.5L14 5.5L8.00024 5.5L8.00024 4.5ZM13.98 4.52L14 4.5C14.28 4.5 14.5 4.72 14.5 5C14.5 5.28 14.28 5.5 14 5.5L13.98 5.48L13.98 4.52Z" fill="currentColor" fill-rule="nonzero" />
+	<path id="直线 102" d="M2 11L8 11" stroke="currentColor" stroke-linecap="round" stroke-width="1.000000" />
+	<path id="直线 57" d="M0 0L2 0" stroke="currentColor" stroke-linecap="round" stroke-width="1.000000" transform="matrix(-1,0,0,-1,4,5)" />
+	<path id="直线 103" d="M0 0L2 0" stroke="currentColor" stroke-linecap="round" stroke-width="1.000000" transform="matrix(-1,0,0,-1,14,11)" />
+</svg>

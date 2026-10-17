@@ -1,0 +1,214 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Human, JSON, and JSONL renderers for one Runtime event stream."""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+from typing import Any, TextIO
+
+from jiuwenswarm.channels.process_cli.ui import HumanRunUI
+from jiuwenswarm.runtime.events import RuntimeEvent
+
+_HUMAN_ERROR_TRANSLATIONS = {
+    "process CLI execution timed out": "进程式 CLI 执行超时",
+    "process CLI received an interaction request but interactive input is unavailable": (
+        "当前输出模式无法接收交互输入，请使用交互式 CLI 完成此操作"
+    ),
+}
+
+
+def _event_text(payload: dict[str, Any]) -> str:
+    for key in ("delta", "content", "text", "message", "answer"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _human_error_summary(message: str) -> str:
+    translated = _HUMAN_ERROR_TRANSLATIONS.get(message, message)
+    if "model call failed" in translated.lower():
+        status = re.search(r"Error code:\s*(\d{3})", translated)
+        suffix = f"（HTTP {status.group(1)}）" if status else ""
+        if "access denied" in translated.lower():
+            return f"模型服务拒绝访问{suffix}；请检查模型账号或服务权限。"
+        if len(translated) > 240 or "\n" in translated:
+            return f"模型调用失败{suffix}；详细原因见诊断日志。"
+    first_line = (
+        translated.strip().splitlines()[0] if translated.strip() else "未知错误"
+    )
+    if len(first_line) > 240 or "\n" in translated:
+        return first_line[:240].rstrip() + "…"
+    return first_line
+
+
+class EventRenderer:
+    """Render events without influencing Runtime execution."""
+
+    def __init__(
+        self,
+        output_format: str,
+        *,
+        stdout: TextIO | None = None,
+        stderr: TextIO | None = None,
+        show_reasoning: bool = False,
+        show_tools: bool = False,
+        concise_errors: bool = False,
+    ) -> None:
+        self.output_format = output_format
+        self.stdout = stdout or sys.stdout
+        self.stderr = stderr or sys.stderr
+        self.show_reasoning = show_reasoning
+        self.show_tools = show_tools
+        self.concise_errors = concise_errors
+        self.events: list[dict[str, Any]] = []
+        self._wrote_delta = False
+        self._pending_output_break = False
+        self.failed = False
+        self._human_ui = HumanRunUI(self.stdout, self.stderr)
+
+    def start(self) -> None:
+        if self.output_format == "human":
+            self._human_ui.start()
+
+    def working(self) -> None:
+        if self.output_format == "human":
+            self._human_ui.working()
+
+    def interrupted(self) -> None:
+        if self.output_format == "human":
+            self._human_ui.interrupted()
+
+    def prepare_interaction(self) -> None:
+        """Clear transient status before the Runtime asks the user a question."""
+        if self.output_format == "human":
+            self._human_ui.end_reasoning()
+            self._human_ui.clear_status()
+
+    def live_input_ready(self, request_text: str) -> None:
+        if self.output_format == "human":
+            self._human_ui.live_input_ready(request_text)
+
+    def live_input_receipt(self, *, status: str, message: str) -> None:
+        if self.output_format == "human":
+            self._human_ui.live_input_receipt(status=status, message=message)
+
+    def render(self, event: RuntimeEvent, *, view: str | None = None) -> None:
+        data = event.to_dict()
+        self.events.append(data)
+        self.failed = (
+            self.failed
+            or not event.ok
+            or event.event_type
+            in {
+                "chat.error",
+                "runtime.error",
+                "team.error",
+            }
+        )
+        if self.output_format == "jsonl":
+            self.stdout.write(json.dumps(data, ensure_ascii=False, default=str) + "\n")
+            self.stdout.flush()
+            return
+        if self.output_format == "json":
+            return
+        if view == "skills.list" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            raw_skills = payload.get("skills")
+            self._human_ui.skills(raw_skills if isinstance(raw_skills, list) else [])
+            return
+        self._render_human(event)
+
+    def finish(
+        self,
+        *,
+        session_id: str,
+        request_id: str,
+        show_completion: bool = True,
+    ) -> None:
+        if self.output_format == "human":
+            self._human_ui.end_reasoning()
+        if self.output_format == "json":
+            document = {
+                "ok": not self.failed,
+                "session_id": session_id,
+                "request_id": request_id,
+                "events": self.events,
+            }
+            self.stdout.write(
+                json.dumps(document, ensure_ascii=False, default=str) + "\n"
+            )
+        elif self.output_format == "human" and self._wrote_delta:
+            self.stdout.write("\n")
+        if self.output_format == "human" and not self.failed and show_completion:
+            self._human_ui.completed(session_id)
+        self.stdout.flush()
+
+    def _render_human(self, event: RuntimeEvent) -> None:
+        event_type = event.event_type
+        payload = event.payload or {}
+        teammate = str(payload.get("role") or "").strip().lower() == "teammate"
+        if teammate and event_type in {"chat.delta", "chat.final", "chat.reasoning"}:
+            # Member streams run concurrently with the leader. Their text
+            # must not be spliced into the single human-readable answer.
+            return
+        text = _event_text(payload)
+        if payload.get("steering_generation_start") and self._wrote_delta:
+            self._pending_output_break = True
+        if event_type == "chat.delta":
+            self._human_ui.end_reasoning()
+            if self._pending_output_break:
+                self.stdout.write("\n\n")
+                self._pending_output_break = False
+            self._human_ui.begin_assistant()
+            self.stdout.write(text)
+            self.stdout.flush()
+            self._wrote_delta = True
+        elif event_type == "chat.final":
+            self._human_ui.end_reasoning()
+            if text and not self._wrote_delta:
+                self._human_ui.begin_assistant()
+                self.stdout.write(text)
+                self._wrote_delta = True
+            if self._wrote_delta:
+                self._pending_output_break = True
+        elif event_type == "chat.reasoning":
+            if self._wrote_delta:
+                self._pending_output_break = True
+            if self.show_reasoning and text:
+                self._human_ui.begin_assistant()
+                self._human_ui.reasoning(text)
+        elif event_type in {"chat.tool_call", "chat.tool_result"}:
+            if not teammate:
+                self._human_ui.end_reasoning()
+            if self._wrote_delta and not teammate:
+                self._pending_output_break = True
+            if self.show_tools:
+                self._human_ui.begin_assistant()
+                label = "工具" if event_type == "chat.tool_call" else "工具结果"
+                self._human_ui.tool(label, text or str(payload))
+        elif not event.ok or event_type in {
+            "chat.error",
+            "runtime.error",
+            "team.error",
+        }:
+            message = str(text or payload.get("error") or payload)
+            self._human_ui.failed(
+                _human_error_summary(message)
+                if self.concise_errors
+                else _HUMAN_ERROR_TRANSLATIONS.get(message, message)
+            )
+        elif event_type == "plan.mode_exited":
+            self._human_ui.clear_status()
+            self.stderr.write(
+                f"\n! 计划模式已退出，当前模式：{payload.get('mode', 'normal')}\n"
+            )
+        elif event_type.startswith("session."):
+            self._human_ui.session_event(event_type, payload)
+        self.stderr.flush()
+
+
+__all__ = ["EventRenderer"]

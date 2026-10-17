@@ -9,15 +9,15 @@ from typing import Any, Protocol, runtime_checkable
 
 @runtime_checkable
 class GatewayPushTransport(Protocol):
-    async def send_push(self, msg: dict[str, Any]) -> None:
-        """向 Gateway 发送一条 server_push 语义的消息（与 AgentWebSocketServer.send_push 入参一致）。"""
+    async def send_push(self, msg: dict[str, Any]) -> bool:
+        """向 Gateway 发送一条消息，并返回是否已写入传输。"""
         ...
 
 
 class WebSocketGatewayPushTransport:
     """通过进程内 AgentWebSocketServer 单例推送（分离部署 + WebSocket 默认路径）。"""
 
-    async def send_push(self, msg: dict[str, Any]) -> None:
+    async def send_push(self, msg: dict[str, Any]) -> bool:
         from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
-        await AgentWebSocketServer.get_instance().send_push(msg)
+        return bool(await AgentWebSocketServer.get_instance().send_push(msg))

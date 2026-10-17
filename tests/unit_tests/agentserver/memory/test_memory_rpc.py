@@ -38,3 +38,46 @@ def test_runtime_coding_memory_dir_uses_agent_workspace(tmp_path, monkeypatch):
     runtime_dirs = memory_rpc._get_runtime_memory_dirs(str(project_workspace))
 
     assert Path(runtime_dirs[1]) == agent_workspace / "coding_memory"
+
+
+@pytest.mark.asyncio
+async def test_missing_project_memory_file_is_creatable(tmp_path):
+    workspace = tmp_path / "agent_workspace"
+    project_dir = tmp_path / "project"
+    workspace.mkdir()
+    project_dir.mkdir()
+
+    result = await memory_rpc.handle_memory_edit(
+        str(workspace),
+        {
+            "path": "JIUWENSWARM.md",
+            "project_dir": str(project_dir),
+        },
+    )
+
+    target = project_dir / "JIUWENSWARM.md"
+    assert result["path"] == str(target)
+    assert result["exists"] is False
+    assert result["editable"] is True
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_missing_non_memory_file_remains_rejected(tmp_path):
+    workspace = tmp_path / "agent_workspace"
+    project_dir = tmp_path / "project"
+    workspace.mkdir()
+    project_dir.mkdir()
+
+    result = await memory_rpc.handle_memory_edit(
+        str(workspace),
+        {
+            "path": "notes.md",
+            "project_dir": str(project_dir),
+        },
+    )
+
+    assert result["exists"] is False
+    assert result["editable"] is False
+    assert result["reason"] == "memory file does not exist"
+    assert not (project_dir / "notes.md").exists()

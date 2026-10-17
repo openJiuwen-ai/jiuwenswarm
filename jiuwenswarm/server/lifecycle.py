@@ -1,0 +1,205 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""AgentServer readiness state machine for the Front / Runtime split."""
+
+from __future__ import annotations
+
+import asyncio
+from enum import Enum
+from typing import Any
+
+
+class ReadinessState(str, Enum):
+    """Process-visible AgentServer readiness."""
+
+    STARTING = "STARTING"
+    TRANSPORT_READY = "TRANSPORT_READY"
+    CONTROL_READY = "CONTROL_READY"
+    RUNTIME_WARMING = "RUNTIME_WARMING"
+    AGENT_READY = "AGENT_READY"
+    DEGRADED = "DEGRADED"
+    DRAINING = "DRAINING"
+    FAILED = "FAILED"
+
+
+_TRANSPORT_STATES = frozenset(
+    {
+        ReadinessState.TRANSPORT_READY,
+        ReadinessState.CONTROL_READY,
+        ReadinessState.RUNTIME_WARMING,
+        ReadinessState.AGENT_READY,
+        ReadinessState.DEGRADED,
+        ReadinessState.DRAINING,
+    }
+)
+_CONTROL_STATES = frozenset(
+    {
+        ReadinessState.CONTROL_READY,
+        ReadinessState.RUNTIME_WARMING,
+        ReadinessState.AGENT_READY,
+        ReadinessState.DEGRADED,
+        ReadinessState.DRAINING,
+    }
+)
+_WARMING_STATES = frozenset(
+    {
+        ReadinessState.RUNTIME_WARMING,
+        ReadinessState.AGENT_READY,
+        ReadinessState.DEGRADED,
+    }
+)
+_AGENT_STATES = frozenset({ReadinessState.AGENT_READY, ReadinessState.DEGRADED})
+_RUNTIME_PHASES = frozenset({"IPC_READY", "EXECUTION_MIN_READY", "FULLY_WARM"})
+_CAPABILITY_STATES = frozenset({"pending", "ready", "disabled", "failed"})
+
+
+class Readiness:
+    """Advance and snapshot AgentServer readiness.
+
+    Front listen only requires ``TRANSPORT_READY``. Control-plane RPCs become
+    available at ``CONTROL_READY``. Execution requests may queue from
+    ``RUNTIME_WARMING`` and run when ``AGENT_READY``.
+    """
+
+    def __init__(self) -> None:
+        self._state = ReadinessState.STARTING
+        self._agent_ready = asyncio.Event()
+        self._failed_reason: str | None = None
+        self._retrying = False
+        self._runtime_phase: str | None = None
+        self._capability_readiness: dict[str, str] | None = None
+
+    @property
+    def state(self) -> ReadinessState:
+        return self._state
+
+    def snapshot(self) -> dict[str, Any]:
+        transport_ready = self._state in _TRANSPORT_STATES
+        control_ready = self._state in _CONTROL_STATES
+        runtime_warming = self._state in _WARMING_STATES
+        agent_ready = self._state in _AGENT_STATES
+        snapshot = {
+            "state": self._state.value,
+            "transport_ready": transport_ready,
+            "control_ready": control_ready,
+            "runtime_warming": runtime_warming,
+            "agent_ready": agent_ready,
+            "draining": self._state is ReadinessState.DRAINING,
+            "failed": self._state is ReadinessState.FAILED,
+            "failed_reason": self._failed_reason if self._state is ReadinessState.FAILED else None,
+            "last_error": self._failed_reason,
+            "retrying": self._retrying,
+            "capabilities": {
+                "transport": transport_ready,
+                "control": control_ready,
+                "execution": agent_ready,
+            },
+        }
+        if self._runtime_phase is not None:
+            snapshot["runtime_phase"] = self._runtime_phase
+        if self._capability_readiness is not None:
+            snapshot["capability_readiness"] = dict(self._capability_readiness)
+        return snapshot
+
+    def note_runtime_progress(self, *, runtime_phase: Any = None,
+                              capability_readiness: Any = None) -> None:
+        """Retain optional Worker progress; admission still uses the old state."""
+        if isinstance(runtime_phase, str) and runtime_phase in _RUNTIME_PHASES:
+            self._runtime_phase = runtime_phase
+        if isinstance(capability_readiness, dict):
+            self._capability_readiness = {
+                name: state for name, state in capability_readiness.items()
+                if isinstance(name, str) and isinstance(state, str) and state in _CAPABILITY_STATES
+            }
+
+    def mark_transport_ready(self) -> None:
+        if self._state in {ReadinessState.FAILED, ReadinessState.DRAINING}:
+            return
+        self._state = ReadinessState.TRANSPORT_READY
+
+    def mark_control_ready(self) -> None:
+        if self._state in {ReadinessState.FAILED, ReadinessState.DRAINING}:
+            return
+        self._state = ReadinessState.CONTROL_READY
+
+    def mark_runtime_warming(self) -> None:
+        if self._state in {ReadinessState.FAILED, ReadinessState.DRAINING}:
+            return
+        self._runtime_phase = None
+        self._capability_readiness = None
+        # A restarted Worker must block chat again. Clearing the event keeps
+        # waiters parked until the next ``AGENT_READY``.
+        if self._state in _AGENT_STATES:
+            self._agent_ready.clear()
+            self._failed_reason = None
+            self._retrying = False
+        self._state = ReadinessState.RUNTIME_WARMING
+
+    def mark_agent_ready(self) -> None:
+        if self._state is ReadinessState.DRAINING:
+            return
+        self._failed_reason = None
+        self._retrying = False
+        self._state = ReadinessState.AGENT_READY
+        self._agent_ready.set()
+
+    def mark_degraded(self) -> None:
+        if self._state is not ReadinessState.AGENT_READY:
+            return
+        self._state = ReadinessState.DEGRADED
+        self._agent_ready.set()
+
+    def mark_draining(self) -> None:
+        if self._state is ReadinessState.FAILED:
+            return
+        self._state = ReadinessState.DRAINING
+        self._agent_ready.set()
+
+    def mark_failed(self, reason: str) -> None:
+        if self._state is ReadinessState.DRAINING:
+            return
+        self._state = ReadinessState.FAILED
+        self._failed_reason = reason
+        self._retrying = False
+        self._agent_ready.set()
+
+    def mark_recovering(self, reason: str) -> None:
+        """Leave ``FAILED`` for a supervised Worker restart (reload path).
+
+        ``FAILED`` is sticky against ordinary warmup progress so broken starts
+        do not loop. A config reload is the explicit "I fixed it, try again"
+        signal, so this is the only sanctioned exit from ``FAILED``: the
+        Supervisor restarts the Worker and readiness returns to
+        ``RUNTIME_WARMING`` until the next ``AGENT_READY``.
+        """
+        if self._state is not ReadinessState.FAILED:
+            return
+        self._state = ReadinessState.RUNTIME_WARMING
+        self._failed_reason = reason
+        self._retrying = True
+        self._agent_ready.clear()
+
+    def note_warmup_retry(self, reason: str) -> None:
+        """Record a retryable Runtime warmup error. Stay in ``RUNTIME_WARMING``.
+
+        Terminal ``FAILED`` is only for paths that stop retrying. Warmup still
+        loops, so new connections must keep seeing a warming control plane.
+        """
+        if self._state in {ReadinessState.FAILED, ReadinessState.DRAINING}:
+            return
+        if self._state in _AGENT_STATES:
+            return
+        self._state = ReadinessState.RUNTIME_WARMING
+        self._failed_reason = reason
+        self._retrying = True
+
+    async def wait_agent_ready(self, timeout: float | None = None) -> bool:
+        if self._state in {ReadinessState.FAILED, ReadinessState.DRAINING}:
+            return False
+        if self._agent_ready.is_set():
+            return self._state in _AGENT_STATES
+        try:
+            await asyncio.wait_for(self._agent_ready.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False
+        return self._state in _AGENT_STATES

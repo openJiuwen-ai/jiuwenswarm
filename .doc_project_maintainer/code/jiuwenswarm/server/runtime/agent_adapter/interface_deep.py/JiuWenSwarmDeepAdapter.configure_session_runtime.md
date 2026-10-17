@@ -24,3 +24,4 @@ Builds the adapter's internal runtime-config bundle from stable session identity
 - Output: no value; mutates the session-scoped adapter runtime configuration.
 - Boundary: public façade used by `prepare_session`, avoiding cross-instance access to protected implementation details.
 - Verification: covered indirectly by the DeepAdapter reload and warm-pool preparation suites.
+- Eternal conversation remains disabled on this stable/prewarm path because enablement is request-scoped; real `chat.send` runtime config binds the explicit frontend flag and interaction-resume marker.

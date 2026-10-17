@@ -39,6 +39,12 @@ export async function switchMode(
   // message is dispatched with the new mode. The backend call remains
   // best-effort because chat.send also carries the active mode.
   ctx.setMode(nextMode);
+  // 进入 plan 态时标记显式入口（与 /plan 命令一致）。这样随后 chat.send 会携带
+  // plan_entry_source=slash_command，放行后端防重入闸门；否则 /mode plan 在
+  // plan 已退出过的会话上会被静默拦截回 normal（plan.mode_exited / plan_slug）。
+  if (nextMode.endsWith(".plan")) {
+    ctx.markPlanEntryFromSlashCommand?.();
+  }
   if (options.announce !== false) {
     ctx.addItem(
       makeItem(ctx.sessionId, "info", `Mode set to ${formatModeForDisplay(nextMode)}`, "m"),
@@ -53,21 +59,33 @@ export async function switchMode(
 }
 
 const MODE_ALIASES: Record<string, ClientMode> = {
-  plan: "agent.plan",
-  agent: "agent.plan",
-  code: "code.normal",
-  "agent.plan": "agent.plan",
-  "agent.fast": "agent.fast",
-  "code.plan": "code.plan",
-  "code.normal": "code.normal",
-  "code.team": "code.team",
-  "team.work": "team",
-  "team.code": "code.team",
-  team: "team",
-  "team.plan": "team.plan.normal",
-  "team.plan.normal": "team.plan.normal",
-  "team.plan.code": "team.plan.code",
-  "team.normal": "team",
+  // Bare role aliases (no third segment) — default to *.normal variant.
+  agent: "agent.work.normal",
+  code: "agent.code.normal",
+  team: "team.work.normal",
+  "agent.work": "agent.work.normal",
+  "agent.code": "agent.code.normal",
+  "team.work": "team.work.normal",
+  "team.code": "team.code.normal",
+  "team.normal": "team.work.normal",
+  // Explicit variants.
+  "agent.work.normal": "agent.work.normal",
+  "agent.code.normal": "agent.code.normal",
+  "team.work.normal": "team.work.normal",
+  "team.code.normal": "team.code.normal",
+  // Plan 入口：映射到对应的 *.plan canonical（与 modes.ts LEGACY_MODE_TO_NEW
+  // 一致），让旧 muscle memory 的 /mode plan / agent.plan / code.plan 真正进入
+  // plan，而不是静默降级到 *.normal。进入 plan 的显式标记见 switchMode。
+  plan: "agent.work.plan",
+  "agent.plan": "agent.work.plan",
+  "code.plan": "agent.code.plan",
+  "team.plan": "team.work.plan",
+  "team.plan.normal": "team.work.plan",
+  "team.plan.code": "team.code.plan",
+  // Legacy aliases mapping onto the new canonical 8 values.
+  "agent.fast": "agent.work.normal",
+  "code.normal": "agent.code.normal",
+  "code.team": "team.code.normal",
 };
 
 /** Resolve a user-facing `/mode` token to the canonical runtime mode. */
@@ -75,27 +93,27 @@ export function resolveModeTarget(requestedMode: string): ClientMode | undefined
   return MODE_ALIASES[requestedMode.trim()];
 }
 
-/** TUI `/mode` 树形展示；分组行 value 与 modeAlias 默认一致，不修改 pi-tui。 */
+/**
+ * TUI `/mode` 树形展示；两段分组（agent / team），每段下挂 work / code 两项。
+ * `.plan` 段统一走 `/plan` 命令对称退出，不出现在此候选词中。
+ * pi-tui `AutocompleteItem` 不支持 `disabled`/`header`，组头 `value` 兜底为组首子项，
+ * 即"选中组头 = 切组首"。
+ */
 export function buildModeAutocompleteItems(): AutocompleteItem[] {
   return [
-    { value: "agent", label: "agent" },
-    { value: "agent.plan", label: "    plan" },
-    { value: "code", label: "code" },
-    { value: "code.plan", label: "    plan" },
-    { value: "code.normal", label: "    normal" },
+    { value: "agent.work", label: "agent" },
+    { value: "agent.work", label: "  agent.work" },
+    { value: "agent.code", label: "  agent.code" },
     { value: "team.work", label: "team" },
-    { value: "team.work", label: "    work" },
-    { value: "team.code", label: "    code" },
+    { value: "team.work", label: "  team.work" },
+    { value: "team.code", label: "  team.code" },
   ];
 }
 
 export function createModeCommand(): SlashCommand {
   const directModes = [
-    "agent",
-    "code",
-    "agent.plan",
-    "code.plan",
-    "code.normal",
+    "agent.work",
+    "agent.code",
     "team.work",
     "team.code",
   ] as const;
@@ -103,8 +121,8 @@ export function createModeCommand(): SlashCommand {
   return {
     name: "mode",
     description: "Switch chat mode",
-    usage: "/mode <agent|code|code.plan|code.normal|team.work|team.code>",
-    example: "/mode code",
+    usage: "/mode <agent.work|agent.code|team.work|team.code>",
+    example: "/mode agent.code",
     kind: CommandKind.BUILT_IN,
     takesArgs: true,
     completion: async () => [...directModes],
@@ -129,7 +147,7 @@ export function createModeCommand(): SlashCommand {
           makeItem(
             ctx.sessionId,
             "error",
-            "usage: /mode <agent|code|code.plan|code.normal|team.work|team.code>",
+            "usage: /mode <agent.work|agent.code|team.work|team.code>",
           ),
         );
         return;

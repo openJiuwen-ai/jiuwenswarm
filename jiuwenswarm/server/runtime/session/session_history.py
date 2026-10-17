@@ -1,24 +1,31 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import datetime
-import logging
+import hashlib
 import json
+import logging
 import os
 import queue
 import re
+import tempfile
 import threading
 import time
-from concurrent.futures import Future
+from concurrent.futures import Future, InvalidStateError
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 
+from jiuwenswarm.common.mode_matrix import is_team_mode
+from jiuwenswarm.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.common.utils import get_agent_sessions_dir
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
 
 
 logger = logging.getLogger(__name__)
 _FILE_LOCK = threading.Lock()
 _WRITE_QUEUE: queue.Queue[
-    tuple[str, dict[str, Any], Future[None] | None]
+    tuple[str, dict[str, Any], str | None, Future[None] | None, int]
 ] = queue.Queue(maxsize=20000)
 _QUEUE_ENQUEUE_LOCK = threading.Lock()
 _WORKER_STARTED = False
@@ -26,11 +33,8 @@ _WORKER_LOCK = threading.Lock()
 _LEGACY_HISTORY_FILENAME = "history.json"
 _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
-_HEARTBEAT_OK = "HEARTBEAT_OK"
+_PROBE_OK_TOKENS = {"HEALTH_CHECK_OK", "HEARTBEAT_OK"}
 SESSION_REQUEST_COMPLETED_EVENT = "chat.request_completed"
-_VALID_SESSION_ID = re.compile(
-    r"^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9_])?$"
-)
 # Gateway may inline @path as <file-content>...</file-content> before chat.send.
 # History should keep the short @path form so jsonl rows stay one physical line
 # and refresh UI does not load megabytes of file body.
@@ -38,6 +42,16 @@ _FILE_CONTENT_BLOCK_RE = re.compile(
     r"\n?<file-content\s+path=\"([^\"]*)\">.*?</file-content>\n?",
     re.DOTALL,
 )
+_HISTORY_CURSOR_VERSION = 1
+_HISTORY_CURSOR_READ_BLOCK_BYTES = 64 * 1024
+
+
+class InvalidHistoryCursor(ValueError):
+    """The cursor is malformed or belongs to a different history stream."""
+
+
+class HistorySnapshotChanged(RuntimeError):
+    """The history file was replaced or truncated after the snapshot began."""
 
 
 def collapse_file_content_blocks(content: str) -> str:
@@ -60,15 +74,50 @@ def collapse_file_content_blocks(content: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", collapsed).strip()
 
 
-def is_valid_session_id(session_id: str) -> bool:
-    """Return whether a session id is safe to use as one path component."""
+def subagent_history_dir_name(subagent_id: str) -> str:
+    """Return a safe directory name for a subagent history bucket."""
+    normalized = (subagent_id or "").strip()
+    if is_valid_session_id(normalized):
+        return normalized
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"sub_{digest}"
 
-    return _VALID_SESSION_ID.fullmatch(session_id) is not None
+
+def resolve_subagent_history_path(
+    parent_session_id: str,
+    subagent_id: str,
+    *,
+    create: bool = False,
+) -> tuple[Path | None, str | None]:
+    """Resolve the durable history file for one subagent under a parent session."""
+    parent_dir, error = resolve_session_dir(parent_session_id, create=create)
+    if error is not None or parent_dir is None:
+        return None, error or "invalid session_id"
+    if not (subagent_id or "").strip():
+        return None, "invalid subagent_id"
+
+    subagents_root = parent_dir / "subagents"
+    sub_dir = subagents_root / subagent_history_dir_name(subagent_id.strip())
+    try:
+        resolved = sub_dir.resolve(strict=False)
+        resolved.relative_to(parent_dir.resolve(strict=False))
+    except (ValueError, OSError):
+        return None, "invalid subagent_id"
+    if create:
+        resolved.mkdir(parents=True, exist_ok=True)
+    if use_legacy_history_json():
+        return resolved / _LEGACY_HISTORY_FILENAME, None
+    return resolved / _JSONL_HISTORY_FILENAME, None
+
+
+_TOOL_RESULT_TERMINAL_FIELDS = frozenset(
+    {"result", "error", "status", "success", "is_error"}
+)
 
 
 def _is_ephemeral_heartbeat_session(session_id: str) -> bool:
     """Heartbeat sessions are one-shot and should not pollute history.json(l)."""
-    return (session_id or "").startswith("heartbeat")
+    return (session_id or "").startswith(("health_check_", "heartbeat_"))
 
 
 def _has_persistable_assistant_payload(
@@ -79,30 +128,86 @@ def _has_persistable_assistant_payload(
 ) -> bool:
     """Return False for blank assistant shells that would show as empty history rows."""
     content = (content_text or "").strip()
-    if content.upper() == _HEARTBEAT_OK:
+    if content.upper() in _PROBE_OK_TOKENS:
         return False
 
     et = str(event_type or "").strip()
     payload = extra if isinstance(extra, dict) else {}
+    if et == "chat.tool_result":
+        return _is_structurally_valid_tool_result(payload)
     if content:
         return True
     if str(payload.get("reasoning_content") or "").strip():
         return True
+    if et == "context.usage":
+        # context.usage is a blank assistant event whose complete structured
+        # payload must survive history restore. Reject the legacy invalid
+        # fallback frame, which has no canonical context snapshot fields.
+        return isinstance(payload.get("context_window"), dict) and isinstance(
+            payload.get("parts"), dict
+        )
+    if et == "chat.usage_summary" and isinstance(payload.get("usage"), dict):
+        return bool(payload["usage"])
     if et == "chat.file" and payload.get("files"):
         return True
-    if et == "chat.tool_call" and (payload.get("tool_call") or payload.get("tool_calls")):
-        return True
-    if et == "chat.tool_result" and (payload.get("tool_result") or payload.get("tool_call_id")):
+    if et == "chat.tool_call" and (
+        payload.get("tool_call") or payload.get("tool_calls")
+    ):
         return True
     if payload.get("error") or payload.get("files"):
         return True
     if payload.get("tool_call") or payload.get("tool_calls"):
         return True
+    if et == "chat.subagent_activity" and isinstance(payload.get("subagent_activity"), dict):
+        return True
+    # chat.ask_user_question 的载荷在 questions[] 数组里（无 content），
+    # 否则会被下面的「空 chat.* 壳」规则丢弃，导致问题澄清对话框刷新后无法恢复。
+    if et == "chat.ask_user_question":
+        questions = payload.get("questions")
+        return isinstance(questions, list) and bool(questions)
+    # chat.ask_user_answer 的载荷在 answers[] 数组里（无 content），同理需要放行。
+    if et == "chat.ask_user_answer":
+        answers = payload.get("answers")
+        return isinstance(answers, list) and bool(answers)
     # Empty chat.final / chat.* status shells and other blank assistants: skip.
     if et.startswith("chat.") or et in {"", "chat.final"}:
         return False
     # team.* / context.* monitor events may carry structured extras without content.
     return bool(payload)
+
+
+def _is_structurally_valid_tool_result(payload: dict[str, Any]) -> bool:
+    """Accept only exact-id tool results carrying a terminal result field."""
+
+    missing = object()
+    nested = payload.get("tool_result", missing)
+    if nested is not missing and not isinstance(nested, dict):
+        return False
+    nested_payload = nested if isinstance(nested, dict) else {}
+
+    def _candidate_id(candidate: dict[str, Any]) -> tuple[str | None, bool]:
+        raw_id = candidate.get("tool_call_id", missing)
+        if raw_id is missing:
+            return None, True
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            return None, False
+        return raw_id.strip(), True
+
+    flat_id, flat_valid = _candidate_id(payload)
+    nested_id, nested_valid = _candidate_id(nested_payload)
+    if not flat_valid or not nested_valid:
+        return False
+    if flat_id is not None and nested_id is not None and flat_id != nested_id:
+        return False
+
+    def _is_complete(candidate: dict[str, Any], tool_call_id: str | None) -> bool:
+        return tool_call_id is not None and any(
+            field in candidate for field in _TOOL_RESULT_TERMINAL_FIELDS
+        )
+
+    if nested is not missing:
+        return _is_complete(nested_payload, nested_id)
+    return _is_complete(payload, flat_id)
 
 
 def _serialize_value_with_flag(obj: Any) -> tuple[Any, bool]:
@@ -114,7 +219,11 @@ def _serialize_value_with_flag(obj: Any) -> tuple[Any, bool]:
     if isinstance(obj, datetime.date):
         return obj.isoformat(), True
     if callable(obj):
-        name = getattr(obj, "__qualname__", None) or getattr(obj, "__name__", None) or type(obj).__name__
+        name = (
+            getattr(obj, "__qualname__", None)
+            or getattr(obj, "__name__", None)
+            or type(obj).__name__
+        )
         return f"<callable:{name}>", True
     if isinstance(obj, dict):
         changed = False
@@ -144,14 +253,23 @@ def _serialize_value(obj: Any) -> Any:
 
 
 def _session_dir(session_id: str, *, create: bool = True) -> Path:
-    session_dir = get_agent_sessions_dir() / session_id
-    if create:
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    if not create:
+        return lc.resolve_session(
+            session_id, must_exist=False, sessions_root=get_agent_sessions_dir()
+        )
+    with lc.resource_lock("session", session_id):
+        lc.write_guard(session_id)
+        session_dir = get_agent_sessions_dir() / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
-    return session_dir
+        return session_dir
 
 
 def resolve_session_dir(
-    session_id: str, *, create: bool = False, sessions_root: Path | None = None,
+    session_id: str,
+    *,
+    create: bool = False,
+    sessions_root: Path | None = None,
 ) -> tuple[Path | None, str | None]:
     """安全解析 session 目录路径（防路径遍历）。
 
@@ -210,8 +328,16 @@ def get_write_history_path(session_id: str) -> Path:
     return _history_jsonl_file(session_id)
 
 
-def get_read_history_path(session_id: str) -> Path:
+def get_read_history_path(session_id: str, *, subagent_id: str | None = None) -> Path:
     """Return the preferred history source, falling back to legacy json."""
+    if subagent_id:
+        path, error = resolve_subagent_history_path(session_id, subagent_id, create=False)
+        if path is not None:
+            return path
+        parent_dir, _ = resolve_session_dir(session_id, create=False)
+        if parent_dir is None:
+            return _history_jsonl_file(session_id, create=False)
+        return parent_dir / "subagents" / ".invalid" / _JSONL_HISTORY_FILENAME
     if use_legacy_history_json():
         legacy_path = _history_file(session_id, create=False)
         if legacy_path.exists():
@@ -230,8 +356,8 @@ def get_read_history_path(session_id: str) -> Path:
     return jsonl_path
 
 
-def history_exists(session_id: str) -> bool:
-    return get_read_history_path(session_id).exists()
+def history_exists(session_id: str, *, subagent_id: str | None = None) -> bool:
+    return get_read_history_path(session_id, subagent_id=subagent_id).exists()
 
 
 def get_history_mtime(session_id: str) -> float | None:
@@ -275,7 +401,9 @@ def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
             try:
                 item = json.loads(line)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("读取 history.jsonl 第 %d 行失败，已跳过: %s", lineno, exc)
+                logger.warning(
+                    "读取 history.jsonl 第 %d 行失败，已跳过: %s", lineno, exc
+                )
                 continue
             if isinstance(item, dict):
                 content = item.get("content")
@@ -299,31 +427,73 @@ def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def load_history_records(session_id: str) -> list[dict[str, Any]]:
-    path = get_read_history_path(session_id)
+def load_history_records(session_id: str, *, subagent_id: str | None = None) -> list[dict[str, Any]]:
+    path = get_read_history_path(session_id, subagent_id=subagent_id)
     if path.suffix.lower() == ".jsonl":
         return _read_history_jsonl(path)
     return _read_history(path)
 
 
+def flush_history_writes() -> None:
+    """Wait until all history records queued before this call are durable."""
+    _WRITE_QUEUE.join()
+
+
 def _write_records_to_path(path: Path, records: list[dict[str, Any]]) -> None:
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    sid = _managed_history_session_id(path)
+    if sid is None:
+        return _write_records_unfenced(path, records)
+    with lc.resource_lock("session", sid):
+        lc.write_guard(sid)
+        return _write_records_unfenced(path, records)
+
+
+def _managed_history_session_id(path: Path) -> str | None:
+    for root in (get_agent_sessions_dir(), get_agent_sessions_dir().parent / "sessions_archived"):
+        try:
+            relative = path.relative_to(root)
+            if len(relative.parts) > 1:
+                return relative.parts[0]
+        except ValueError:
+            pass
+    return None
+
+
+def _write_records_unfenced(path: Path, records: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() == ".jsonl":
-        payload = "\n".join(
-            json.dumps(record, ensure_ascii=False) for record in records
-        )
+        payload = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
         if payload:
             payload += "\n"
-        path.write_text(payload, encoding="utf-8")
-        return
+    else:
+        payload = json.dumps(records, ensure_ascii=False, indent=2)
 
-    path.write_text(
-        json.dumps(records, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    with tempfile.TemporaryDirectory(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    ) as temporary_dir:
+        temporary_path = Path(temporary_dir) / path.name
+        temporary_path.touch(mode=0o600, exist_ok=False)
+        with temporary_path.open("w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary_path, path)
 
 
 def _append_record_jsonl(path: Path, record: dict[str, Any]) -> None:
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    sid = _managed_history_session_id(path)
+    if sid is None:
+        return _append_record_unfenced(path, record)
+    with lc.resource_lock("session", sid):
+        lc.write_guard(sid)
+        return _append_record_unfenced(path, record)
+
+
+def _append_record_unfenced(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False))
@@ -342,6 +512,235 @@ def _ensure_jsonl_bootstrap(session_id: str) -> Path:
     else:
         jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     return jsonl_path
+
+
+def _cursor_stream_key(session_id: str, subagent_id: str | None) -> str:
+    raw = f"{session_id}\0{subagent_id or ''}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _encode_history_cursor(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return base64.urlsafe_b64encode(raw.encode("ascii")).decode("ascii").rstrip("=")
+
+
+def _decode_history_cursor(cursor: str) -> dict[str, Any]:
+    if not isinstance(cursor, str) or not cursor.strip():
+        raise InvalidHistoryCursor("history cursor must be a non-empty string")
+    token = cursor.strip()
+    try:
+        padding = "=" * (-len(token) % 4)
+        decoded = base64.urlsafe_b64decode((token + padding).encode("ascii"))
+        payload = json.loads(decoded.decode("ascii"))
+    except Exception as exc:  # noqa: BLE001
+        raise InvalidHistoryCursor("history cursor is malformed") from exc
+    if not isinstance(payload, dict) or payload.get("v") != _HISTORY_CURSOR_VERSION:
+        raise InvalidHistoryCursor("history cursor version is unsupported")
+    return payload
+
+
+def _history_snapshot_id(*, stream_key: str, device: int, inode: int, snapshot_end: int) -> str:
+    raw = f"{stream_key}:{device}:{inode}:{snapshot_end}".encode("ascii")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _ensure_cursor_jsonl_path(
+    session_id: str,
+    *,
+    subagent_id: str | None,
+) -> Path:
+    """Return a JSONL source, atomically migrating an old JSON history once."""
+    path = get_read_history_path(session_id, subagent_id=subagent_id)
+    if path.suffix.lower() == ".jsonl":
+        return path
+    if use_legacy_history_json():
+        raise InvalidHistoryCursor(
+            "cursor history requires JSONL storage; disable JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
+        )
+    records = _read_history(path)
+    jsonl_path = path.with_name(_JSONL_HISTORY_FILENAME)
+    _write_records_to_path(jsonl_path, records)
+    return jsonl_path
+
+
+def _iter_reverse_jsonl_lines(
+    fh: Any,
+    *,
+    start_position: int,
+    read_block_bytes: int,
+    bytes_read: list[int],
+) -> Iterator[tuple[bytes, int, int]]:
+    """Yield ``(line, start, end)`` from newest to oldest without splitting UTF-8."""
+    position = start_position
+    tail = b""
+    while position > 0:
+        read_start = max(0, position - read_block_bytes)
+        fh.seek(read_start)
+        chunk = fh.read(position - read_start)
+        bytes_read[0] += len(chunk)
+        data = chunk + tail
+        search_end = len(data)
+        while True:
+            newline = data.rfind(b"\n", 0, search_end)
+            if newline < 0:
+                break
+            line_start = newline + 1
+            yield (
+                data[line_start:search_end].rstrip(b"\r"),
+                read_start + line_start,
+                read_start + search_end,
+            )
+            search_end = newline
+        tail = data[:search_end]
+        position = read_start
+
+    if tail:
+        yield tail.rstrip(b"\r"), 0, len(tail)
+
+
+def read_history_cursor_page(
+    session_id: str,
+    *,
+    cursor: str | None,
+    limit: int,
+    is_restorable: Callable[[dict[str, Any]], bool],
+    subagent_id: str | None = None,
+    read_block_bytes: int = _HISTORY_CURSOR_READ_BLOCK_BYTES,
+) -> dict[str, Any]:
+    """Read one newest-to-oldest JSONL batch from a fixed file snapshot.
+
+    The initial call drains already-enqueued writes before fixing ``snapshot_end``.
+    Later calls validate the same file identity and never inspect appended bytes.
+    Repeated calls with the same cursor are therefore idempotent.
+    """
+    normalized_session_id = (session_id or "").strip()
+    normalized_subagent_id = (subagent_id or "").strip() or None
+    if not normalized_session_id or not is_valid_session_id(normalized_session_id):
+        raise InvalidHistoryCursor("invalid session_id")
+    if limit <= 0:
+        raise InvalidHistoryCursor("history limit must be positive")
+    if read_block_bytes <= 0:
+        raise InvalidHistoryCursor("history read block size must be positive")
+
+    stream_key = _cursor_stream_key(normalized_session_id, normalized_subagent_id)
+    cursor_payload = _decode_history_cursor(cursor) if cursor is not None else None
+    if cursor_payload is not None and cursor_payload.get("stream") != stream_key:
+        raise InvalidHistoryCursor("history cursor belongs to a different session")
+
+    queue_guard = _QUEUE_ENQUEUE_LOCK if cursor_payload is None else None
+    if queue_guard is not None:
+        queue_guard.acquire()
+    try:
+        if cursor_payload is None:
+            _WRITE_QUEUE.join()
+        with _FILE_LOCK:
+            path = _ensure_cursor_jsonl_path(
+                normalized_session_id,
+                subagent_id=normalized_subagent_id,
+            )
+            if not path.exists():
+                return {
+                    "messages": [],
+                    "next_cursor": None,
+                    "has_more": False,
+                    "snapshot_id": None,
+                    "snapshot_end": 0,
+                    "scanned_bytes": 0,
+                }
+
+            stat = path.stat()
+            device = int(stat.st_dev)
+            inode = int(stat.st_ino)
+            if cursor_payload is None:
+                snapshot_end = int(stat.st_size)
+                start_position = snapshot_end
+            else:
+                try:
+                    expected_device = int(cursor_payload["dev"])
+                    expected_inode = int(cursor_payload["ino"])
+                    snapshot_end = int(cursor_payload["end"])
+                    start_position = int(cursor_payload["pos"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise InvalidHistoryCursor("history cursor fields are invalid") from exc
+                if (
+                    device != expected_device
+                    or inode != expected_inode
+                    or stat.st_size < snapshot_end
+                ):
+                    raise HistorySnapshotChanged("history snapshot changed during restore")
+                if not 0 <= start_position <= snapshot_end:
+                    raise InvalidHistoryCursor("history cursor position is outside the snapshot")
+
+            snapshot_id = _history_snapshot_id(
+                stream_key=stream_key,
+                device=device,
+                inode=inode,
+                snapshot_end=snapshot_end,
+            )
+            records: list[dict[str, Any]] = []
+            next_position = start_position
+            has_more = False
+            bytes_read = [0]
+            with path.open("rb") as fh:
+                for raw_line, line_start, line_end in _iter_reverse_jsonl_lines(
+                    fh,
+                    start_position=start_position,
+                    read_block_bytes=read_block_bytes,
+                    bytes_read=bytes_read,
+                ):
+                    next_position = line_start
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = json.loads(line.decode("utf-8"))
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "读取 history.jsonl 游标记录失败，已跳过: session_id=%s error=%s",
+                            normalized_session_id,
+                            exc,
+                        )
+                        continue
+                    if not isinstance(item, dict) or not is_restorable(item):
+                        continue
+                    if len(records) >= limit:
+                        has_more = True
+                        next_position = line_end
+                        break
+
+                    content = item.get("content")
+                    if (
+                        item.get("role") in {"user", "human"}
+                        and isinstance(content, str)
+                        and "<file-content" in content
+                    ):
+                        item = dict(item)
+                        item["content"] = collapse_file_content_blocks(content)
+                    records.append(item)
+
+            next_cursor = None
+            if has_more:
+                next_cursor = _encode_history_cursor(
+                    {
+                        "v": _HISTORY_CURSOR_VERSION,
+                        "stream": stream_key,
+                        "dev": device,
+                        "ino": inode,
+                        "end": snapshot_end,
+                        "pos": next_position,
+                    }
+                )
+            return {
+                "messages": records,
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+                "snapshot_id": snapshot_id,
+                "snapshot_end": snapshot_end,
+                "scanned_bytes": bytes_read[0],
+            }
+    finally:
+        if queue_guard is not None:
+            queue_guard.release()
 
 
 def _ensure_legacy_json_bootstrap(session_id: str) -> Path:
@@ -375,14 +774,19 @@ def write_history_records(
     return path
 
 
-_TEAM_RELEVANT_EVENT_TYPES = frozenset({
-    "team.message",
-    "team.member",
-    "team.task",
-    "team.event",
-    "chat.tool_call", "chat.tracer_agent",
-    "chat.final", "chat.tool_result", "chat.file",
-})
+_TEAM_RELEVANT_EVENT_TYPES = frozenset(
+    {
+        "team.message",
+        "team.member",
+        "team.task",
+        "team.event",
+        "chat.tool_call",
+        "chat.tracer_agent",
+        "chat.final",
+        "chat.tool_result",
+        "chat.file",
+    }
+)
 
 
 def _is_team_relevant(item: dict[str, Any]) -> bool:
@@ -398,7 +802,10 @@ def _is_team_relevant(item: dict[str, Any]) -> bool:
             }
         if et in ("chat.tool_call", "chat.tracer_agent"):
             mode = item.get("mode")
-            return isinstance(mode, str) and mode.strip().lower() == "team"
+            # history 落盘的 mode 是前端原始发送值（resolve_request_mode 上游的 wire
+            # 值），Web 现统一发三段命名 team.work.normal / team.code.normal 等，
+            # 裸 == "team" 会漏判，用 is_team_mode 谓词覆盖全部 team canonical 变体。
+            return is_team_mode(mode)
         if et in ("chat.final", "chat.tool_result"):
             role = item.get("role")
             return isinstance(role, str) and role.strip().lower() == "teammate"
@@ -425,7 +832,11 @@ def read_team_history_records(session_id: str) -> list[dict[str, Any]]:
                 fpath.stat().st_size,
             )
 
-    return [item for item in all_records if isinstance(item, dict) and _is_team_relevant(item)]
+    return [
+        item
+        for item in all_records
+        if isinstance(item, dict) and _is_team_relevant(item)
+    ]
 
 
 def _read_history_by_path(path: Path) -> list[dict[str, Any]]:
@@ -466,7 +877,13 @@ def _is_member_relevant(item: dict[str, Any], member_name: str) -> bool:
 
     # chat.* teammate outputs: 已在 _is_team_relevant 中按 role/mode 过滤。
     # 实时投递只发给该 member 的 private 席位，历史同样只对该 member 可见。
-    if et in {"chat.final", "chat.tool_call", "chat.tool_result", "chat.file", "chat.tracer_agent"}:
+    if et in {
+        "chat.final",
+        "chat.tool_call",
+        "chat.tool_result",
+        "chat.file",
+        "chat.tracer_agent",
+    }:
         src_member = str(item.get("member_name", "") or "").strip()
         return bool(src_member) and src_member == member_name
 
@@ -475,7 +892,9 @@ def _is_member_relevant(item: dict[str, Any], member_name: str) -> bool:
     return False
 
 
-def read_member_history_records(session_id: str, member_name: str) -> list[dict[str, Any]]:
+def read_member_history_records(
+    session_id: str, member_name: str
+) -> list[dict[str, Any]]:
     """读取 team 历史记录，仅返回与指定 member 相关的记录。
 
     与实时 fan_out 投递语义一致：
@@ -507,7 +926,9 @@ def read_session_history_records(session_id: str) -> list[dict[str, Any]]:
             time.sleep(0.2 * attempt)
             all_records = _read_history_by_path(fpath)
             if all_records:
-                logger.info("read_session_history_records: recovered on retry %d", attempt)
+                logger.info(
+                    "read_session_history_records: recovered on retry %d", attempt
+                )
                 break
         if not all_records:
             logger.warning(
@@ -518,8 +939,35 @@ def read_session_history_records(session_id: str) -> list[dict[str, Any]]:
     return [item for item in all_records if isinstance(item, dict)]
 
 
-def _write_item(session_id: str, item: dict[str, Any]) -> None:
+def _write_item(
+    session_id: str,
+    item: dict[str, Any],
+    *,
+    subagent_id: str | None = None,
+) -> None:
     with _FILE_LOCK:
+        if subagent_id:
+            target_path, error = resolve_subagent_history_path(
+                session_id,
+                subagent_id,
+                create=True,
+            )
+            if error is not None or target_path is None:
+                logger.warning(
+                    "skip subagent history write: session_id=%s subagent_id=%s error=%s",
+                    session_id,
+                    subagent_id,
+                    error,
+                )
+                return
+            if target_path.suffix.lower() == ".jsonl":
+                _append_record_jsonl(target_path, item)
+            else:
+                records = _read_history(target_path)
+                records.append(item)
+                _write_records_to_path(target_path, records)
+            return
+
         if use_legacy_history_json():
             target_path = _ensure_legacy_json_bootstrap(session_id)
             records = _read_history(target_path)
@@ -541,16 +989,20 @@ def _ensure_worker_started() -> None:
 
         def _worker() -> None:
             while True:
-                sid, item, receipt = _WRITE_QUEUE.get()
+                sid, item, subagent_id, receipt, generation = _WRITE_QUEUE.get()
                 try:
-                    _write_item(sid, item)
+                    if sid is None:
+                        item.set()
+                        continue
+                    from jiuwenswarm.server.runtime.session import lifecycle as lc
+                    with lc.resource_lock("session", sid):
+                        lc.write_guard(sid, generation)
+                        _write_item(sid, item, subagent_id=subagent_id)
                 except Exception as exc:  # noqa: BLE001
-                    if receipt is not None:
-                        receipt.set_exception(exc)
+                    _settle_history_receipt(receipt, error=exc)
                     logger.warning("history 异步写入失败: %s", exc)
                 else:
-                    if receipt is not None:
-                        receipt.set_result(None)
+                    _settle_history_receipt(receipt)
                 finally:
                     _WRITE_QUEUE.task_done()
 
@@ -559,22 +1011,85 @@ def _ensure_worker_started() -> None:
         _WORKER_STARTED = True
 
 
+def flush_pending_writes(timeout: float = 10) -> bool:
+    _ensure_worker_started()
+    deadline = time.monotonic() + timeout
+    barrier = threading.Event()
+    try:
+        _WRITE_QUEUE.put((None, barrier, None, None, 0), timeout=timeout)
+    except queue.Full:
+        return False
+    return barrier.wait(max(0, deadline - time.monotonic()))
+
+
+def _settle_history_receipt(
+    receipt: Future[None] | None,
+    *,
+    error: BaseException | None = None,
+) -> None:
+    """Complete a writer receipt without letting caller cancellation kill the worker."""
+
+    if receipt is None or receipt.done():
+        return
+    try:
+        if error is None:
+            receipt.set_result(None)
+        else:
+            receipt.set_exception(error)
+    except InvalidStateError:
+        # A concurrent caller may cancel or complete the receipt after the
+        # ``done`` check.  Receipt state must never terminate the global writer.
+        logger.debug("history receipt was already completed", exc_info=True)
+
+
+async def wait_for_history_receipt(
+    receipt: Future[None],
+    *,
+    timeout: float = 5.0,
+) -> None:
+    """Wait for a history barrier without cancelling the writer-owned receipt."""
+
+    wrapped = asyncio.wrap_future(receipt)
+    await asyncio.wait_for(asyncio.shield(wrapped), timeout=timeout)
+
+
 def _enqueue_history_item(
     session_id: str,
     item: dict[str, Any],
     *,
+    subagent_id: str | None = None,
     receipt: Future[None] | None = None,
 ) -> None:
     """Keep all history records on one FIFO path, including under pressure."""
 
     _ensure_worker_started()
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    generation = lc.state("session", session_id).get("generation", 0)
+    normalized_subagent_id = (subagent_id or "").strip() or None
     with _QUEUE_ENQUEUE_LOCK:
         try:
-            _WRITE_QUEUE.put_nowait((session_id, item, receipt))
+            _WRITE_QUEUE.put_nowait((session_id, item, normalized_subagent_id, receipt, generation))
         except queue.Full:
             # A synchronous disk-write fallback can overtake queued records.
             # Block only under backpressure so request boundaries remain FIFO.
-            _WRITE_QUEUE.put((session_id, item, receipt))
+            _WRITE_QUEUE.put((session_id, item, normalized_subagent_id, receipt, generation))
+
+
+def resolve_final_record_timestamp(
+    *,
+    event_type: str,
+    segment_started_at: float | None,
+    extra_fields: dict[str, Any] | None,
+) -> float:
+    """chat.final 落盘用「气泡出现的时刻」，收尾时刻另存 completed_at。"""
+    completed_at = time.time()
+    if event_type != "chat.final" or not segment_started_at:
+        return completed_at
+    if segment_started_at >= completed_at:
+        return completed_at
+    if isinstance(extra_fields, dict):
+        extra_fields.setdefault("completed_at", completed_at)
+    return segment_started_at
 
 
 def append_history_record(
@@ -589,11 +1104,16 @@ def append_history_record(
     extra: dict[str, Any] | None = None,
     channel_metadata: dict[str, Any] | None = None,
     mode: str | None = None,
+    subagent_id: str | None = None,
 ) -> None:
     """向指定 session 的当前激活历史文件异步追加一条记录."""
     sid = (session_id or "default").strip() or "default"
     if _is_ephemeral_heartbeat_session(sid):
-        logger.debug("skip heartbeat session history: session_id=%s event_type=%s", sid, event_type)
+        logger.debug(
+            "skip heartbeat session history: session_id=%s event_type=%s",
+            sid,
+            event_type,
+        )
         return
     rid = str(request_id or "").strip()
     cid = str(channel_id or "").strip()
@@ -619,7 +1139,11 @@ def append_history_record(
         "timestamp": float(timestamp),
         "content": content_text,
     }
-    if role_norm == "assistant" and event_type:
+    if subagent_id:
+        item["subagent_id"] = subagent_id.strip()
+    if event_type and (
+        role_norm == "assistant" or event_type.startswith("design.")
+    ):
         item["event_type"] = event_type
     if isinstance(extra, dict) and extra:
         serialized_extra, extra_changed = _serialize_value_with_flag(extra)
@@ -636,7 +1160,13 @@ def append_history_record(
     if mode:
         item["mode"] = str(mode)
 
-    _enqueue_history_item(sid, item)
+    is_cross_session_user = bool(
+        role_norm == "user"
+        and isinstance(extra, dict)
+        and extra.get("message_origin") == SESSION_MESSAGE_ORIGIN
+    )
+
+    _enqueue_history_item(sid, item, subagent_id=subagent_id)
 
     # 更新会话元数据
     try:
@@ -644,20 +1174,36 @@ def append_history_record(
             set_session_delivery_context,
             update_session_metadata,
         )
+
         update_session_metadata(
             session_id=sid,
             channel_id=cid,
             increment_message_count=True,
             # 传入用户消息内容,用于自动生成标题
-            user_content=content_text if role_norm == "user" else None,
+            user_content=(
+                content_text
+                if role_norm == "user" and not is_cross_session_user
+                else None
+            ),
             # 传入渠道元数据,首次写入时持久化
             channel_metadata=channel_metadata,
-            mode=mode,
+            # A subagent record carries its own history mode, but it belongs
+            # to the parent product Session and must not replace that Session's
+            # routing mode with the internal ``subagent`` label.
+            mode=None if subagent_id else mode,
             # 用户消息时刷新 last_user_message_at(用消息时间戳,比请求到达时刻更精确;
             # 与 AgentServer 的 _sync_chat_request_metadata 互补,覆盖所有记录用户消息的路径)
-            last_user_message_at=float(timestamp) if role_norm == "user" else None,
+            last_user_message_at=(
+                float(timestamp)
+                if role_norm == "user" and not is_cross_session_user
+                else None
+            ),
         )
-        if role_norm == "user":
+        # Child transcript entries are stored under the parent Session only as
+        # an ownership relationship.  Their internal ``subagent`` channel is
+        # not an external return route and must not replace the parent's
+        # delivery context.
+        if role_norm == "user" and not subagent_id and not is_cross_session_user:
             set_session_delivery_context(
                 session_id=sid,
                 channel_id=cid,

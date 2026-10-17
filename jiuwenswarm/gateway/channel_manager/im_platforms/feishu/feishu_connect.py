@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 import requests
 from pydantic import BaseModel, Field
+from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.message import Message, ReqMethod, EventType
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter, BaseChannel
 from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_file_service import (
@@ -22,6 +23,9 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_file_service
     is_image_file,
     is_audio_file,
     is_video_file,
+)
+from jiuwenswarm.gateway.channel_manager.im_platforms.errors import (
+    AttachmentPersistError,
 )
 from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_streaming_card import (
     CardKitError,
@@ -200,12 +204,16 @@ class FeishuChannel(BaseChannel):
         self._stopping = False
         # 按 request_id 聚合 chat.delta，避免同一任务被拆分成多条消息发送到飞书。
         self._stream_text_buffers: dict[str, str] = {}
+        # 已经发过 chat.error 的请求：结束时不再补一句"[状态] 已完成"，避免看起来像是成功了
+        self._errored_stream_keys: set[str] = set()
         self._cardkit_sessions: dict[str, FeishuStreamingSession] = {}
         self._cardkit_buffers: dict[str, str] = {}
         self._cardkit_lock = asyncio.Lock()
         self._cardkit_client: FeishuCardKitClient | None = None
         # 文件服务（延迟初始化）
         self._file_service: FeishuFileService | None = None
+        # IM 附件落盘钩子（Phase 3）：由 Gateway 注入，经 E2A 落盘到目标 AgentServer。
+        self._file_persist_hook: Any = None
         # 按 request_id 记录已通过 chat.file 发送的文件路径，用于兜底去重
         # key=request_id, value=set of absolute file paths
         self._sent_file_paths_by_req: dict[str, set[str]] = {}
@@ -232,6 +240,12 @@ class FeishuChannel(BaseChannel):
             callback: 消息回调函数
         """
         self._message_callback = callback
+
+    def set_file_persist_hook(self, hook: Any) -> None:
+        """注入 IM 附件落盘钩子（Phase 3）；文件服务未创建时缓存，创建后生效。"""
+        self._file_persist_hook = hook
+        if self._file_service is not None:
+            self._file_service.set_persist_hook(hook)
 
     async def _handle_message(
         self,
@@ -375,6 +389,8 @@ class FeishuChannel(BaseChannel):
             config=self.config,
             workspace_dir=workspace_dir,
         )
+        if self._file_persist_hook is not None:
+            self._file_service.set_persist_hook(self._file_persist_hook)
         # bot_open_id 改为懒加载，在需要时才获取（见 _replace_mentions_with_names）
 
     def _fetch_bot_open_id(self) -> None:
@@ -562,6 +578,7 @@ class FeishuChannel(BaseChannel):
         self._running = False
         self._stopping = True
         self._stream_text_buffers.clear()
+        self._errored_stream_keys.clear()
         for session in list(self._cardkit_sessions.values()):
             try:
                 await session.finalize()
@@ -1633,9 +1650,13 @@ class FeishuChannel(BaseChannel):
                         return
                 else:
                     content_str = self._stream_text_buffers.pop(stream_key, "")
+                    errored = stream_key in self._errored_stream_keys
+                    self._errored_stream_keys.discard(stream_key)
                     if not content_str.strip():
                         if not streaming_enabled:
                             await self._handle_processing_status_event(msg, meta, payload)
+                            return
+                        if errored:
                             return
                         content_str = self._extract_message_content(msg)
                         if not content_str.strip():
@@ -1646,6 +1667,8 @@ class FeishuChannel(BaseChannel):
                     buffered_text = self._stream_text_buffers.pop(stream_key, "")
                 elif event_name in {"chat.error", "chat.interrupt_result"}:
                     self._stream_text_buffers.pop(stream_key, None)
+                    if event_name == "chat.error" and stream_key:
+                        self._errored_stream_keys.add(stream_key)
                 content_str = self._extract_message_content(msg)
                 is_complete = msg.payload.get("is_complete", False)
                 if is_complete:
@@ -1682,7 +1705,7 @@ class FeishuChannel(BaseChannel):
                 }
                 card_json = json.dumps(card, ensure_ascii=False)
                 request_id = str(msg.id or "").strip()
-                if request_id and msg.event_type != EventType.HEARTBEAT_RELAY:
+                if request_id and msg.event_type != EventType.HEALTH_CHECK_RELAY:
                     self._clear_group_progress_state(request_id)
                 await self._create_and_send_message(
                     FeishuMessageSendRequest(
@@ -1698,23 +1721,23 @@ class FeishuChannel(BaseChannel):
             skills_card_content = self._build_skills_list_card_content(payload, event_name)
             if skills_card_content:
                 request_id = str(msg.id or "").strip()
-                if request_id and msg.event_type != EventType.HEARTBEAT_RELAY:
+                if request_id and msg.event_type != EventType.HEALTH_CHECK_RELAY:
                     self._clear_group_progress_state(request_id)
                 await self._send_feishu_message(receive_id, id_type, skills_card_content, msg.id)
                 return
             if (
-                msg.event_type == EventType.HEARTBEAT_RELAY
+                msg.event_type == EventType.HEALTH_CHECK_RELAY
                 and isinstance(payload, dict)
-                and payload.get("heartbeat")
+                and payload.get("health_check")
             ):
-                content_str = str(payload.get("heartbeat"))
+                content_str = str(payload.get("health_check"))
 
             if not content_str.strip():
                 logger.warning("飞书发送：消息内容为空，跳过发送")
                 return
 
             request_id = str(msg.id or "").strip()
-            if request_id and msg.event_type != EventType.HEARTBEAT_RELAY:
+            if request_id and msg.event_type != EventType.HEALTH_CHECK_RELAY:
                 self._clear_group_progress_state(request_id)
 
             # 过滤群聊消息中的用户敏感信息
@@ -1862,6 +1885,12 @@ class FeishuChannel(BaseChannel):
         if event_name == "chat.processing_status":
             if payload.get("is_processing") is False:
                 return await self._finalize_cardkit_session(key, session, "")
+            # team 模式信使流只产 processing_status 没 delta：lazy 不创建 session，
+            # 等首个 chat.delta 抵达时再 lazy 创建。否则空卡片永不被 finalize → 白框。
+            # mode 由 message_handler._send_processing_status 从 _stream_modes 透传，
+            # 随消息在网关进程内流动，分进程/分布式部署同样可靠（不依赖会话磁盘）。
+            if is_team_mode(metadata.get("mode")):
+                return True
             return await self._start_cardkit_session(key, receive_id, id_type)
 
         if event_name == "chat.delta":
@@ -2172,8 +2201,8 @@ class FeishuChannel(BaseChannel):
         if event_name == "chat.interrupt_result":
             return self._extract_preferred_text(payload.get("message")) or "[状态] 任务已中断"
 
-        if event_name == "heartbeat.relay":
-            return self._extract_preferred_text(payload.get("heartbeat"))
+        if event_name in {"health_check.relay", "heartbeat.relay"}:
+            return self._extract_preferred_text(payload.get("health_check"))
 
         # Gateway/Agent 响应在 payload.content，直接发送可能在 params.content
         content_str = (msg.params or {}).get("content") or payload.get("content") or ""
@@ -2372,6 +2401,25 @@ class FeishuChannel(BaseChannel):
             await self._send_feishu_message(receive_id, id_type, card, message.message_id)
         except Exception as e:
             logger.warning(f"[FeishuChannel] 发送Team模式提示失败: {e}")
+
+    async def _send_attachment_persist_error(self, message: Any, sender: Any) -> None:
+        """决策 D6：附件落盘失败时回发可重试错误提示，整条消息按失败处理。"""
+        try:
+            open_id = (
+                getattr(getattr(sender, "sender_id", None), "open_id", None) or ""
+            )
+            chat_id = getattr(message, "chat_id", None) or ""
+            if chat_id.startswith("oc_"):
+                receive_id = chat_id
+                id_type = "chat_id"
+            else:
+                receive_id = open_id
+                id_type = "open_id"
+            hint_text = "⚠️ 附件处理失败（服务暂不可用），请稍后重试。"
+            card = self._build_card_content(hint_text)
+            await self._send_feishu_message(receive_id, id_type, card, message.message_id)
+        except Exception as e:
+            logger.warning(f"[FeishuChannel] 发送附件错误提示失败: {e}")
 
     def _build_card_content(self, content_str: str) -> str:
         """
@@ -2636,7 +2684,16 @@ class FeishuChannel(BaseChannel):
                 asyncio.create_task(self._add_reaction(message.message_id, "THUMBSUP"))
 
             # 解析消息内容（支持文件类型）
-            content, file_info = await self._parse_message_content_with_file(message)
+            try:
+                content, file_info = await self._parse_message_content_with_file(message)
+            except AttachmentPersistError:
+                # 决策 D6：目标 AgentServer 不可达，附件落盘失败。不做「附件暂缺」
+                # 降级，整条消息按可重试错误失败，回发提示并中止处理。
+                logger.warning(
+                    "[FeishuChannel] 附件落盘失败（AgentServer 不可达），整条消息按可重试错误失败"
+                )
+                await self._send_attachment_persist_error(message, sender)
+                return
             # 非流式情况下不支持 Team 模式：/mode team 与 /join（桥接 team session 同样依赖流式路径）
             # 两者共用同一套校验与报错，拦截后直接回发提示并中止处理。
             _content_stripped = (content or "").strip()
@@ -3050,6 +3107,8 @@ class FeishuChannel(BaseChannel):
 
             return "[图片下载失败]", None
 
+        except AttachmentPersistError:
+            raise
         except Exception as e:
             logger.error(f"处理图片消息失败: {e}")
             return "[图片]", None
@@ -3090,6 +3149,8 @@ class FeishuChannel(BaseChannel):
             logger.warning(f"飞书文件下载失败: {file_name}")
             return f"[文件下载失败: {file_name}]", None
 
+        except AttachmentPersistError:
+            raise
         except Exception as e:
             logger.error(f"处理文件消息失败: {e}")
             return "[文件]", None
@@ -3116,6 +3177,8 @@ class FeishuChannel(BaseChannel):
 
             return "[音频下载失败]", None
 
+        except AttachmentPersistError:
+            raise
         except Exception as e:
             logger.error(f"处理音频消息失败: {e}")
             return "[音频]", None
@@ -3142,6 +3205,8 @@ class FeishuChannel(BaseChannel):
 
             return "[视频下载失败]", None
 
+        except AttachmentPersistError:
+            raise
         except Exception as e:
             logger.error(f"处理视频消息失败: {e}")
             return "[视频]", None

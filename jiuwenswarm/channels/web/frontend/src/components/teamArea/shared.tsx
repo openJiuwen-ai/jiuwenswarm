@@ -1,15 +1,18 @@
-import { Check, ChevronRight, Circle } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
+import { conversationKey } from '../../stores/chatStore';
+import { selectedExpertTeamId } from '../../features/teamOrganization/conversation';
 import i18n from '../../i18n';
 import { ParsedTeamEvent, parseTeamEventMessage } from '../ChatPanel/teamEventUtils';
 import type { Message, TodoItem } from '../../types';
 import type { ReactNode } from 'react';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
-import type {
-  TeamTask as SessionTeamTask,
-  TeamMemberExecutionEvent,
-  TeamTaskStatus,
-} from '../../stores/sessionStore';
+import type { TeamTask as SessionTeamTask, TeamMemberExecutionEvent, TeamTaskStatus } from '../../stores/sessionStore';
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
+import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
+import StatusSuccessIcon from '../../assets/work-mode/status-success.svg?react';
+import WarningCircleIcon from '../../assets/work-mode/warning-circle.svg?react';
+import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -21,6 +24,16 @@ export interface TeamMember {
   name?: string;
   execution_status?: string | null;
   mode?: string;
+  /** TeamRole 值：leader / teammate / human_agent / bridge_agent / worker */
+  role?: string;
+  /** 外部 CLI 后端名（claude / codex / ...），普通成员为空 */
+  cli_agent?: string | null;
+  /** 镜像的 swarmflow worker 带 run id；真实队友无此字段。 */
+  workflow_run_id?: string;
+  /** 专家节点引用的专家团成员名；普通 worker 与真实队友为空 */
+  agent_template?: string | null;
+  /** 专家的展示名（manifest i18n）；与 agent_template 一起作名册辅助行 */
+  display_name?: string | null;
 }
 
 export interface TeamTaskEvent {
@@ -56,6 +69,8 @@ export interface MemberTask {
   raw?: Record<string, unknown>;
 }
 
+export type ProcessDetailRow = [label: string, value: string];
+
 export interface ProcessItem {
   id: string;
   type: 'execution' | 'message' | 'task';
@@ -68,6 +83,7 @@ export interface ProcessItem {
   execution?: TeamMemberExecutionEvent;
   linkedResult?: TeamMemberExecutionEvent;
   raw?: TeamTaskEvent;
+  detailRows?: ProcessDetailRow[];
 }
 
 interface BaseTeamAreaProps {
@@ -76,26 +92,28 @@ interface BaseTeamAreaProps {
   reviewPanel?: ReactNode;
 }
 
-export type TeamAreaProps = BaseTeamAreaProps & (
-  | {
-    expanded?: false;
-    onExpand?: (tab: TabType, memberId?: string) => void;
-  }
-  | {
-    expanded: true;
-    activeTab: TabType;
-    activeDetailTab: TeamDetailTab;
-    selectedMemberId?: string;
-    selectedArtifactId?: string;
-    onTabChange: (tab: TabType) => void;
-    onDetailTabChange: (tab: TeamDetailTab) => void;
-    onMemberSelect?: (memberId: string) => void;
-    onArtifactSelect?: (artifactId: string) => void;
-    onCollapse?: () => void;
-  }
-);
+export type TeamAreaProps = BaseTeamAreaProps &
+  (
+    | {
+      expanded?: false;
+      onExpand?: (tab: TabType, memberId?: string) => void;
+    }
+    | {
+      expanded: true;
+      activeTab: TabType;
+      activeDetailTab: TeamDetailTab;
+      selectedMemberId?: string;
+      selectedArtifactId?: string;
+      onTabChange: (tab: TabType) => void;
+      onDetailTabChange: (tab: TeamDetailTab) => void;
+      onMemberSelect?: (memberId: string) => void;
+      onArtifactSelect?: (artifactId: string) => void;
+      onCollapse?: () => void;
+      shouldFullscreen?: boolean;
+    }
+  );
 
-export type TabType = 'planning' | 'team' | 'artifacts' | 'review';
+export type TabType = 'planning' | 'team' | 'artifacts' | 'review' | 'browser';
 export type TeamDetailTab = 'members' | 'group';
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'error';
 export type TaskColumnKey = 'waiting' | 'running' | 'completed' | 'cancelled';
@@ -108,31 +126,31 @@ export const BOARD_COLUMNS: Array<{
   pillClassName: string;
   dotClassName: string;
 }> = [
-  {
-    key: 'waiting',
-    labelKey: 'team.planning.columns.waiting',
-    pillClassName: 'bg-card text-[var(--color-team-status-waiting)]',
-    dotClassName: 'bg-[var(--color-team-status-waiting)]',
-  },
-  {
-    key: 'running',
-    labelKey: 'team.planning.columns.running',
-    pillClassName: 'bg-[var(--color-team-status-running-surface)] text-[var(--color-team-status-running)]',
-    dotClassName: 'bg-[var(--color-team-status-running)]',
-  },
-  {
-    key: 'completed',
-    labelKey: 'team.planning.columns.completed',
-    pillClassName: 'bg-[var(--color-team-status-completed-surface)] text-[var(--color-team-status-completed)]',
-    dotClassName: 'bg-[var(--color-team-status-completed)]',
-  },
-  {
-    key: 'cancelled',
-    labelKey: 'team.planning.columns.cancelled',
-    pillClassName: 'bg-[var(--color-team-status-cancelled-surface)] text-[var(--color-team-status-cancelled)]',
-    dotClassName: 'bg-[var(--color-team-status-cancelled)]',
-  },
-];
+    {
+      key: 'waiting',
+      labelKey: 'team.planning.columns.waiting',
+      pillClassName: 'bg-card text-[var(--color-team-status-waiting)]',
+      dotClassName: 'bg-[var(--color-team-status-waiting)]',
+    },
+    {
+      key: 'running',
+      labelKey: 'team.planning.columns.running',
+      pillClassName: 'bg-[var(--color-team-status-running-surface)] text-[var(--color-team-status-running)]',
+      dotClassName: 'bg-[var(--color-team-status-running)]',
+    },
+    {
+      key: 'completed',
+      labelKey: 'team.planning.columns.completed',
+      pillClassName: 'bg-[var(--color-team-status-completed-surface)] text-[var(--color-team-status-completed)]',
+      dotClassName: 'bg-[var(--color-team-status-completed)]',
+    },
+    {
+      key: 'cancelled',
+      labelKey: 'team.planning.columns.cancelled',
+      pillClassName: 'bg-[var(--color-team-status-cancelled-surface)] text-[var(--color-team-status-cancelled)]',
+      dotClassName: 'bg-[var(--color-team-status-cancelled)]',
+    },
+  ];
 
 const TASK_STATUS_TO_COLUMN: Record<TeamTaskStatus, TaskColumnKey> = {
   pending: 'waiting',
@@ -178,19 +196,47 @@ export const getMemberPlainName = (member: TeamMember | string): string => {
   return displayName || memberId;
 };
 
-const resolveMemberIdentity = (
-  member: TeamMember | string
-): { memberId: string; displayName: string } => {
+/**
+ * 成员头像 key：镜像的 swarmflow worker 按 agent.name 哈希（与树视图同源），
+ * 真实队友（无 workflow_run_id）保持 member_id，与旧行为一致。
+ */
+export const getMemberAvatarKey = (member: TeamMember): string => {
+  return member.workflow_run_id ? member.name || member.member_id : member.member_id;
+};
+
+/**
+ * 成员头像身份：镜像 worker 的 avatarKey 是名字而非 member_id，组件内的
+ * 名册查找必然落空——CLI 身份（品牌头像）与人类身份必须在这里显式给出，
+ * 否则树视图（传 identity）显示品牌脸、成员列表显示哈希插画，两边对不上。
+ */
+export const getMemberAvatarIdentity = (
+  member: TeamMember,
+): { cliAgent?: string; role?: string; mode?: string; agentTemplate?: string } => {
+  if (member.cli_agent) return { cliAgent: member.cli_agent };
+  if (member.role === 'human_agent' || member.mode === 'human') return { role: 'human_agent' };
+  if (member.agent_template) return { agentTemplate: member.agent_template };
+  return {};
+};
+
+/** 名册辅助行：专家显示"展示名（成员名）"；普通成员无。 */
+export const getMemberExpertHint = (member: TeamMember): string | null => {
+  if (!member.agent_template) return null;
+  const display = member.display_name?.trim();
+  return display && display !== member.agent_template
+    ? `${display}（${member.agent_template}）`
+    : member.agent_template;
+};
+
+const resolveMemberIdentity = (member: TeamMember | string): { memberId: string; displayName: string } => {
   const memberId = (typeof member === 'string' ? member : member.member_id).trim();
-  const known = typeof member === 'string'
-    ? getSessionTeamRoster().find((item) => item.member_id === memberId)
-    : member;
+  const known = typeof member === 'string' ? getSessionTeamRoster().find(item => item.member_id === memberId) : member;
   return { memberId, displayName: known?.name?.trim() ?? '' };
 };
 
 const getSessionTeamRoster = (): TeamMember[] => {
   const activeSessionId = useChatStore.getState().activeSessionId ?? '';
-  return useSessionStore.getState().runtimes[activeSessionId]?.teamMembers ?? [];
+  const key = conversationKey(activeSessionId, selectedExpertTeamId(activeSessionId));
+  return useSessionStore.getState().runtimes[key]?.teamMembers ?? [];
 };
 
 // 名册引用没变就复用上次的统计结果：本函数在成员列表里逐行调用，每次重扫是 O(N²)。
@@ -202,7 +248,7 @@ let ambiguousNamesCache: Set<string> = new Set();
 const getAmbiguousDisplayNames = (roster: TeamMember[]): Set<string> => {
   if (ambiguousNamesRosterRef === roster) return ambiguousNamesCache;
   const seen = new Map<string, number>();
-  roster.forEach((item) => {
+  roster.forEach(item => {
     const key = item.name?.trim().toLowerCase();
     if (!key) return;
     seen.set(key, (seen.get(key) ?? 0) + 1);
@@ -239,14 +285,7 @@ export const normalizeTaskStatus = (status?: string, type?: string): TaskStatus 
 };
 
 const normalizeTeamTaskStatus = (status?: string): TeamTaskStatus => {
-  if (
-    status === 'blocked' ||
-    status === 'planning' ||
-    status === 'in_progress' ||
-    status === 'in_review' ||
-    status === 'completed' ||
-    status === 'cancelled'
-  ) {
+  if (status === 'blocked' || status === 'planning' || status === 'in_progress' || status === 'in_review' || status === 'completed' || status === 'cancelled') {
     return status;
   }
   return 'pending';
@@ -286,6 +325,8 @@ export const getMemberStatusKey = (member: TeamMember): string => {
   if (status.includes('execut') || status.includes('running') || status.includes('busy') || status.includes('working')) return 'running';
   if (status.includes('ready') || status.includes('idle')) return 'idle';
   if (status.includes('restart')) return 'restarting';
+  // 休眠成员已退场但仍在名册上，被点名即可唤醒，不能归到 shutdown。
+  if (status.includes('dormant')) return 'dormant';
   if (status.includes('shutdown') || status.includes('down')) return 'shutdown';
   if (status.includes('error') || status.includes('fail')) return 'error';
   if (status.includes('unstarted')) return 'unstarted';
@@ -299,27 +340,12 @@ export const getMemberStatusDotClass = (member: TeamMember): string => {
   if (key === 'error') return 'bg-red-500';
   if (key === 'restarting') return 'bg-amber-500';
   if (key === 'shutdown') return 'bg-gray-400';
+  if (key === 'dormant') return 'bg-indigo-300';
   return 'bg-slate-300';
 };
 
 export const getTaskStatusLabel = (status: TaskStatus): string => {
   return i18n.t(`team.taskStatus.${status}`);
-};
-
-const getTaskStatusIconClass = (status: TaskStatus): string => {
-  switch (status) {
-    case 'completed':
-      return 'bg-emerald-500 text-text-inverse';
-    case 'in_progress':
-      return 'bg-blue-500 text-text-inverse';
-    case 'cancelled':
-      return 'bg-slate-300 text-text-inverse';
-    case 'error':
-      return 'bg-red-500 text-text-inverse';
-    case 'pending':
-    default:
-      return 'bg-card text-slate-400 ring-1 ring-slate-300';
-  }
 };
 
 const getTaskEventTitle = (event: TeamTaskEvent): string => {
@@ -329,6 +355,7 @@ const getTaskEventTitle = (event: TeamTaskEvent): string => {
   if (type.includes('created')) return i18n.t('team.taskEvents.created');
   if (type.includes('cancelled')) return i18n.t('team.taskEvents.cancelled');
   if (type.includes('unblocked')) return i18n.t('team.taskEvents.unblocked');
+  if (type.includes('paused')) return i18n.t('team.taskEvents.paused');
   return i18n.t('team.taskEvents.updated');
 };
 
@@ -350,45 +377,33 @@ const isGenericTaskTitle = (title: string): boolean => {
   return GENERIC_TASK_TITLES.has(title.trim().toLowerCase());
 };
 
-const buildTaskDetail = ({
-  title,
-  content,
-  fallback,
-}: {
-  title: string;
-  content?: string;
-  fallback?: string;
-}): string => {
+const buildTaskDetail = ({ title, content, fallback }: { title: string; content?: string; fallback?: string }): string => {
   const normalizedContent = (content || '').trim();
   if (normalizedContent && normalizedContent !== title) return normalizedContent;
   if (fallback) return i18n.t('team.taskDetail.sourcePrompt', { prompt: truncate(fallback, 96) });
   return i18n.t('team.taskDetail.noDetail');
 };
 
+/** 与 CompactTaskList / SubagentStatusIcon 共用同一套状态图标（frame-time / spinner / success / warning-circle）。 */
 export function StatusIcon({ status }: { status: TaskStatus }) {
-  const completed = status === 'completed';
-  const inProgress = status === 'in_progress';
-
-  return (
-    <span className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${getTaskStatusIconClass(status)}`}>
-      {completed ? (
-        <Check size={10} strokeWidth={2.5} />
-      ) : inProgress ? (
-        <Circle size={6} strokeWidth={2} />
-      ) : (
-        <Circle size={8} strokeWidth={1.5} />
-      )}
-    </span>
-  );
+  if (status === 'completed') {
+    return <StatusSuccessIcon className="h-4 w-4 shrink-0 text-[var(--color-team-status-completed-icon)]" />;
+  }
+  if (status === 'in_progress') {
+    return <LoadingSpinner />;
+  }
+  if (status === 'cancelled') {
+    // 不传颜色，继承上下文文字色（设计稿 cancel_ignore 为中性色，不作状态着色）
+    return <CancelledIcon className="h-4 w-4 shrink-0" />;
+  }
+  if (status === 'error') {
+    return <WarningCircleIcon className="h-4 w-4 shrink-0 text-danger" />;
+  }
+  return <FrameTimeIcon className="h-4 w-4 shrink-0 text-text-meta" />;
 }
 
 export function Chevron({ expanded }: { expanded?: boolean }) {
-  return (
-    <ChevronRight
-      size={16}
-      className={` ${expanded ? 'rotate-90' : ''}`}
-    />
-  );
+  return <ChevronRight size={16} className={expanded ? 'rotate-90' : ''} />;
 }
 
 export function buildTaskMap(
@@ -400,7 +415,7 @@ export function buildTaskMap(
 ): MemberTask[] {
   const taskMap = new Map<string, MemberTask>();
 
-  todos.forEach((todo) => {
+  todos.forEach(todo => {
     if (todo.claimedBy !== memberId) return;
     const rawTitle = todo.content || todo.activeForm || i18n.t('team.taskFallback', { id: todo.id.slice(-4) });
     const fallback = isGenericTaskTitle(rawTitle) ? fallbackPrompt : undefined;
@@ -416,7 +431,7 @@ export function buildTaskMap(
     });
   });
 
-  teamTasks.forEach((task) => {
+  teamTasks.forEach(task => {
     if (!task.task_id) return;
     if (task.assignee !== memberId) return;
     const rawTitle = task.title || task.task_id;
@@ -433,7 +448,7 @@ export function buildTaskMap(
     });
   });
 
-  teamTaskEvents.forEach((event) => {
+  teamTaskEvents.forEach(event => {
     if (!event.task_id) return;
     const owner = event.assignee || event.member_id;
     const existing = taskMap.get(event.task_id);
@@ -472,15 +487,15 @@ export function buildProcessItems(
   executionEvents: TeamMemberExecutionEvent[] = [],
   t: Translate = i18n.t.bind(i18n),
 ): ProcessItem[] {
-  const memberTaskIds = new Set(memberTasks.map((task) => task.id));
+  const memberTaskIds = new Set(memberTasks.map(task => task.id));
   const taskItems = teamTaskEvents
-    .filter((event) => event.type !== 'team.task.snapshot')
-    .filter((event) => {
+    .filter(event => event.type !== 'team.task.snapshot')
+    .filter(event => {
       const owner = event.assignee || event.member_id;
       return owner === memberId || (!!event.task_id && memberTaskIds.has(event.task_id));
     })
     .map((event): ProcessItem => {
-      const relatedTask = memberTasks.find((task) => task.id === event.task_id);
+      const relatedTask = memberTasks.find(task => task.id === event.task_id);
       const timestamp = typeof event.timestamp === 'number' ? event.timestamp : Date.now();
       return {
         id: `task-${event.id}-${event.task_id}`,
@@ -523,8 +538,8 @@ export function buildProcessItems(
 
   // 先收集所有 tool_result，按 tool_call_id 分组
   executionEvents
-    .filter((e) => e.kind === 'tool_result' && e.member_id === memberId)
-    .forEach((e) => {
+    .filter(e => e.kind === 'tool_result' && e.member_id === memberId)
+    .forEach(e => {
       if (e.tool_call_id) {
         toolResultsByCallId.set(e.tool_call_id, e);
       }
@@ -532,8 +547,8 @@ export function buildProcessItems(
 
   // 处理所有 execution 事件
   executionEvents
-    .filter((event) => event.member_id === memberId && event.kind !== 'final')
-    .forEach((event) => {
+    .filter(event => event.member_id === memberId && event.kind !== 'final')
+    .forEach(event => {
       // 如果是 tool_call，尝试关联其 tool_result
       if (event.kind === 'tool_call' && event.tool_call_id) {
         const linkedResult = toolResultsByCallId.get(event.tool_call_id);
@@ -558,7 +573,7 @@ export function buildProcessItems(
           type: 'execution',
           timestamp: event.timestamp,
           title: getExecutionEventTitle(event, t),
-          subtitle: truncate(event.content || event.files?.map((file) => file.name).join(', ') || ''),
+          subtitle: truncate(event.content || event.files?.map(file => file.name).join(', ') || ''),
           status: 'execution',
           kind: event.kind,
           execution: event,
@@ -566,9 +581,7 @@ export function buildProcessItems(
       }
     });
 
-  return [...taskItems, ...messageItems, ...pairedExecutionItems]
-    .sort((a, b) => a.timestamp - b.timestamp)
-    .slice(0, 80);
+  return [...taskItems, ...messageItems, ...pairedExecutionItems].sort((a, b) => a.timestamp - b.timestamp).slice(0, 80);
 }
 
 function getExecutionEventTitle(event: TeamMemberExecutionEvent, t: Translate): string {
@@ -593,15 +606,7 @@ export function mergeUniqueMessages(messages: Message[]): Message[] {
   for (const message of messages) {
     const event = parseTeamEventMessage(message);
     const key = event
-      ? [
-          'team',
-          event.type,
-          event.messageId,
-          event.fromMember,
-          event.toMember || '',
-          event.timestamp || '',
-          event.content,
-        ].join(':')
+      ? ['team', event.type, event.messageId, event.fromMember, event.toMember || '', event.timestamp || '', event.content].join(':')
       : `${message.id}:${message.content}`;
     if (seen.has(key)) {
       continue;

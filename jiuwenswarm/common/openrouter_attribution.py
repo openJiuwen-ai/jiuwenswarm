@@ -15,18 +15,36 @@ OPENROUTER_ATTRIBUTION_HEADERS: dict[str, str] = {
 
 
 def is_openrouter_provider(provider: Optional[str]) -> bool:
+    """旧式判别：仅认 client_provider == 'OpenRouter'。
+
+    新声明下 OpenRouter 的 client_provider 是 OpenAI，方言由 endpoint_profile=openrouter
+    表达。优先用 :func:`is_openrouter_client_config` 判整个 mcc。
+    """
     if not provider:
         return False
     return str(provider).strip().lower() == "openrouter"
 
 
+def is_openrouter_client_config(mcc: dict[str, Any]) -> bool:
+    """新式判别：认 endpoint_profile=openrouter，兼容旧 client_provider=OpenRouter。
+
+    经 Anthropic 协议打 OpenRouter 时(client_provider=Anthropic)没有
+    endpoint_profile=openrouter；若仍需归因头，按 api_base 是否指向 OpenRouter 另行判断。
+    """
+    profile = str(mcc.get("endpoint_profile") or "").strip().lower()
+    if profile == "openrouter":
+        return True
+    # 兼容旧配置：client_provider 仍是 OpenRouter 别名(core 内部归一)。
+    return is_openrouter_provider(mcc.get("client_provider"))
+
+
 def inject_attribution_headers(mcc: dict[str, Any]) -> dict[str, Any]:
     """Inject OpenRouter attribution headers into model_client_config dict.
 
-    Only injects when client_provider is OpenRouter.
+    新声明下认 endpoint_profile=openrouter(兼容旧 client_provider=OpenRouter)。
     Returns the same dict (mutated in place) for chaining convenience.
     """
-    if not is_openrouter_provider(mcc.get("client_provider")):
+    if not is_openrouter_client_config(mcc):
         return mcc
 
     custom_headers = mcc.get("custom_headers")

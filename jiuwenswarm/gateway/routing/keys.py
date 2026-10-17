@@ -7,27 +7,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+# AgentRef 为纯数据结构，source of truth 在 common/schema/agent（与
+# AgentRequest.agent_ref 同源），此处转发保持 gateway 树内既有引用不变。
+from jiuwenswarm.common.schema.agent import AgentRef  # noqa: F401
+
 WILDCARD = "*"
 APP_ID_DEFAULT = "default"
-
-
-@dataclass(frozen=True)
-class AgentRef:
-    """后端智能体标识。
-
-    mode: 'agent' | 'code' | 'team'
-    id:   mode='agent'/'code' 时为 agent_id；mode='team' 时为 team_name
-    """
-
-    mode: str
-    id: str
-
-    @classmethod
-    def default(cls) -> "AgentRef":
-        return cls(mode="agent", id="default")
-
-    def __repr__(self) -> str:
-        return f"AgentRef({self.mode}:{self.id})"
 
 
 @dataclass(frozen=True)

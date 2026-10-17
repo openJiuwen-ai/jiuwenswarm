@@ -1,10 +1,12 @@
 import { useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { ChevronDown, Check } from 'lucide-react';
 import { useClickOutside } from './useClickOutside';
 
 interface SimpleSelectOption {
   value: string;
-  label: string;
+  /** 一般是纯文本；也接受 ReactNode（如带状态图标的选项），string 本身就是合法 ReactNode，不影响现有调用方 */
+  label: ReactNode;
   disabled?: boolean;
 }
 
@@ -34,6 +36,9 @@ export default function SimpleSelect({ value, onChange, options, placeholder = '
   // 例如 CronTaskDrawer 项目下拉框里代表"未选项目"的"-"），展示上仍走灰色的 muted 样式，
   // 不因为它"命中了一条真实 option"就变成跟真实选中项一样的正常文字颜色。
   const isEmptySelection = value === '';
+  const selectedLabel = selected ? selected.label : placeholder;
+  // label 允许 ReactNode（见 SimpleSelectOption 注释），只有纯字符串才能塞进 title 提示
+  const selectedTitle = typeof selectedLabel === 'string' ? selectedLabel : undefined;
 
   return (
     <div className={`relative ${className}`} ref={rootRef}>
@@ -41,10 +46,18 @@ export default function SimpleSelect({ value, onChange, options, placeholder = '
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between rounded-md border border-border bg-card px-3 py-1.5 text-sm outline-none hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border"
+        data-testid="cron-simple-select-trigger"
+        className="flex w-full items-center justify-between gap-2 rounded-md border-input bg-card px-3 py-1.5 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-50"
       >
-        <span className={selected && !isEmptySelection ? 'text-text' : 'text-text-muted'}>{selected ? selected.label : placeholder}</span>
-        <ChevronDown size={14} className={`text-text-muted transition-transform ${open ? 'rotate-180' : ''}`} />
+        {/* 选中值/占位符必须可收缩截断：项目名等用户可控长文本（项目名输入无 maxLength）
+            没有 min-w-0 + truncate 时会把右侧箭头顶出按钮边框、文字溢出控件 */}
+        <span
+          className={`min-w-0 truncate ${selected && !isEmptySelection ? 'text-text' : 'text-text-muted'}`}
+          title={selectedTitle}
+        >
+          {selectedLabel}
+        </span>
+        <ChevronDown size={14} className={`shrink-0 text-text transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && !disabled && (
         <div
@@ -64,6 +77,8 @@ export default function SimpleSelect({ value, onChange, options, placeholder = '
                   onChange(opt.value);
                   setOpen(false);
                 }}
+                data-testid="cron-simple-select-option"
+                data-variant={opt.value}
                 className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors ${
                   opt.disabled
                     ? 'cursor-not-allowed text-text-muted'
@@ -72,8 +87,11 @@ export default function SimpleSelect({ value, onChange, options, placeholder = '
                       : 'text-text hover:bg-bg-hover'
                 }`}
               >
-                {opt.label}
-                {active && !opt.disabled && <Check size={14} className="text-accent" />}
+                {/* 与触发按钮同理：长选项文本截断显示，完整内容靠 title 悬停查看 */}
+                <span className="min-w-0 truncate" title={typeof opt.label === 'string' ? opt.label : undefined}>
+                  {opt.label}
+                </span>
+                {active && !opt.disabled && <Check size={14} className="shrink-0 text-accent" />}
               </button>
             );
           })}

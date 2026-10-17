@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.acp.subprocess_env import build_acp_subprocess_env
+from jiuwenswarm.common.acp.subprocess_env import build_acp_subprocess_env
 
 
 def test_parent_openai_key_is_not_inherited(monkeypatch: pytest.MonkeyPatch) -> None:

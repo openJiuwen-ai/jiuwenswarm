@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from openjiuwen.agent_teams.harness.manifest import (
@@ -32,6 +33,8 @@ from openjiuwen.agent_teams.rails.team_context import (
 )
 from openjiuwen.harness.rails import ModelAnomalyDetectionRail
 
+from openjiuwen.harness.rails.personal_context import PersonalContextRail
+
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import (
     RuntimePromptRail,
@@ -42,6 +45,11 @@ from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import 
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyOrchestrationRail,
 )
+from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
+    SessionMessagingRouteRail,
+)
+from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
+from jiuwenswarm.agents.harness.common.tools.heartbeat_policy import is_heartbeat_supported
 from jiuwenswarm.agents.harness.team.rails.team_skill_storage_policy_rail import (
     TeamSkillStoragePolicyRail,
 )
@@ -54,10 +62,13 @@ from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail impor
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     _build_context_processor_rail,
 )
+from jiuwenswarm.common.cron_session import is_cron_execution_session
+
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 
 logger = logging.getLogger(__name__)
 
+PERSONAL_CONTEXT = "swarm.personal_context"
 RUNTIME_PROMPT = "swarm.runtime_prompt"
 TEAM_SKILL_STORAGE_POLICY = "swarm.team_skill_storage_policy"
 # Renamed from ``swarm.team_shared_skill_link_refresh``: the rail behind the
@@ -71,6 +82,103 @@ MODEL_ANOMALY_DETECTION = "swarm.model_anomaly_detection"
 PLUGIN_RAILS = "swarm.plugin_rails"
 SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
 SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
+HEARTBEAT = "swarm.heartbeat"
+SESSION_MESSAGING_ROUTE = "swarm.session_messaging_route"
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=SESSION_MESSAGING_ROUTE,
+    description="Leader-only invocation-scoped Session messaging route rail.",
+)
+def _build_session_messaging_route_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> SessionMessagingRouteRail | None:
+    """Mount Session messaging routing only on the Team leader."""
+    _ = params
+    if str(getattr(context, "role", "") or "") != "leader":
+        return None
+    return SessionMessagingRouteRail()
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=HEARTBEAT,
+    description="AgentServer-owned Heartbeat job tools bound to the Team session.",
+)
+def _build_heartbeat_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> HeartbeatRail | None:
+    """Mount the new Job Heartbeat Rail for Team members.
+
+    The service remains process-owned by AgentServer.  The provider only binds
+    the member tools to the immutable Team session identity; it never creates a
+    scheduler and never uses the deprecated ``RunKind.HEARTBEAT`` rail.
+    """
+    _ = params
+    service = getattr(context, "heartbeat_job_service", None)
+    session_id = str(getattr(context, "session_id", "") or "").strip()
+    if service is None or not session_id:
+        return None
+    metadata = dict(getattr(context, "request_metadata", None) or {})
+    # cron 执行会话不挂心跳工具（判定信号与 swarm.cron_tools / code_rails 的
+    # permission rail 对齐）：心跳任务绑定创建它的会话，从 cron 运行里再派生
+    # 心跳任务与"禁止 cron 派生 cron"同理，且随一次性 cron 会话回收无意义；
+    # 普通会话三个信号都不命中，心跳能力不受影响。
+    if (
+        metadata.get("cron")
+        or str(getattr(context, "channel_id", None) or "").strip() == "__cron__"
+        or is_cron_execution_session(session_id)
+    ):
+        logger.info(
+            "[swarm.heartbeat] skip HeartbeatRail for cron execution session %s",
+            session_id,
+        )
+        return None
+    # 小艺等渠道没有可用的主动投递路径（见 heartbeat_policy），不挂心跳工具，
+    # 否则成员会回答"心跳已创建"而结果永远送不到手机。
+    if not is_heartbeat_supported(getattr(context, "channel_id", None)):
+        logger.info(
+            "[swarm.heartbeat] skip HeartbeatRail for channel without heartbeat "
+            "support channel=%s session=%s",
+            getattr(context, "channel_id", None),
+            session_id,
+        )
+        return None
+    tool_context = SimpleNamespace(
+        channel_id=str(getattr(context, "channel_id", None) or "web"),
+        session_id=session_id,
+        metadata=metadata,
+        user_id=str(getattr(context, "user_id", None) or ""),
+        mode=str(getattr(context, "mode", None) or "team"),
+        tool_scope=(
+            f"team_member_{getattr(context, 'member_card_id', None) or 'unknown'}"
+        ),
+    )
+    return HeartbeatRail(service=service, context=tool_context)
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=PERSONAL_CONTEXT,
+    description="Personal context shared with work/code, gated by the fixed-home Agent-use switch on each model call.",
+)
+def _build_personal_context_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> PersonalContextRail | None:
+    """Mount even when disabled so live members observe subsequent switch changes."""
+    del params, context
+    try:
+        return PersonalContextRail(Path.home() / ".jiuwenswarm" / ".personal_context")
+    except Exception as exc:
+        logger.warning(
+            "[swarm.personal_context] optional Rail construction failed (%s)",
+            type(exc).__name__,
+        )
+        return None
 
 
 def _workspace_root(ctx: SwarmBuildContext) -> str | None:
@@ -80,7 +188,7 @@ def _workspace_root(ctx: SwarmBuildContext) -> str | None:
 
 
 class SkillRetrievalPromptInput(ConstructionInput):
-    """Construction inputs for the agentic skill retrieval prompt rail."""
+    """Construction inputs for the Skill directory prompt rail."""
 
     global_skills_dir: str | None = context_field(
         attr="global_skills_dir",
@@ -91,7 +199,7 @@ class SkillRetrievalPromptInput(ConstructionInput):
 @harness_element(
     kind=ElementKind.RAIL,
     name=SKILL_RETRIEVAL_PROMPT,
-    description="Lightweight prompt guidance for agentic installed-skill tree retrieval.",
+    description="Prompt guidance and session reminders for Skill directory retrieval.",
     input_model=SkillRetrievalPromptInput,
 )
 def _build_skill_retrieval_prompt_rail(
@@ -102,16 +210,19 @@ def _build_skill_retrieval_prompt_rail(
     from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
         is_skill_retrieval_enabled,
     )
-    from jiuwenswarm.agents.swarm.providers.tools import visible_skill_names_for_list_skill
-    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+    from jiuwenswarm.agents.swarm.providers.tools import (
+        skill_retrieval_toolkit_for_context,
+    )
 
-    if not is_skill_retrieval_enabled():
+    if not is_skill_retrieval_enabled(context.config):
         return None
     SkillRetrievalPromptInput.resolve(params, context)
-    manager = SkillManager()
+    toolkit = skill_retrieval_toolkit_for_context(context)
+    session_scope = toolkit.session_scope
     return SkillRetrievalPromptRail(
-        manager=manager,
-        visible_skill_names=lambda: visible_skill_names_for_list_skill(context),
+        toolkit=toolkit,
+        session_scope=session_scope,
+        config_base=context.config,
     )
 
 
@@ -152,6 +263,19 @@ class RuntimePromptInput(ConstructionInput):
         resolver=_workspace_root,
         description="Current member workspace root (cwd fallback without a project).",
     )
+    task_workspace_root: str | None = context_field(
+        attr="task_workspace_root",
+        description="Shared final-deliverables root for a projectless team "
+        "(team-workspace/artifacts/<date>/chat-<n>/). Only set when "
+        "project_dir is None; members bound to a project keep it None so "
+        "the runtime prompt rail stays on its else branch.",
+    )
+    team_outputs_dir: str | None = context_field(
+        attr="team_outputs_dir",
+        description="Final-deliverables directory under task_workspace_root. "
+        "Only set when project_dir is None. Surfaced to the team policy rail "
+        "as the team info body's deliverables bullet too.",
+    )
     trusted_dirs: list[str] | None = context_field(
         attr="trusted_dirs",
         description="Directories the client declared as trusted for this request.",
@@ -187,13 +311,50 @@ def _build_runtime_prompt_rail(
     # Report the member's real working directory. cwd and workspace are
     # separate layers (see openjiuwen.core.sys_operation.cwd): with a project
     # the member runs in the project dir, without one it runs in its own
-    # workspace. Reporting anything else makes the model resolve relative
-    # paths against a directory the tools never use.
-    rail.set_runtime_paths(
-        cwd=inp.project_dir or inp.member_workspace_root,
-        project_dir=inp.project_dir,
-        workspace_dir=inp.member_workspace_root,
-    )
+    # per-member work directory under the shared artifact root. Reporting
+    # anything else makes the model resolve relative paths against a directory
+    # the tools never use.
+    #
+    # A projectless team member (no project_dir) is handed the shared
+    # final-deliverables directory so the runtime prompt rail takes its
+    # ``has_projectless_task`` branch — the prompt then names the member's
+    # own ``work/<member>/`` as the temporary working directory (cwd moves
+    # there, so intermediate files stay isolated per member) and points final
+    # deliverables at the shared team ``outputs/``. Members bound to a project
+    # keep the task paths unset so the rail's else branch ("deliverables in the
+    # project") applies, matching single-agent behaviour.
+    #
+    # The per-member work directory is resolved through the build context
+    # (``SwarmBuildContext.resolve_member_work_dir``) so there is one creation
+    # point shared with ``AgentConfigurator``, which sets the same path as the
+    # member's shell cwd. Calling the allocator again here would be idempotent
+    # but redundant.
+    if inp.project_dir or not inp.team_outputs_dir or not inp.task_workspace_root:
+        rail.set_runtime_paths(
+            cwd=inp.project_dir or inp.member_workspace_root,
+            project_dir=inp.project_dir,
+            workspace_dir=inp.member_workspace_root,
+        )
+    else:
+        work_dir = context.resolve_member_work_dir()
+        # ``task_workspace_root`` is non-None here (guarded above), and the
+        # context's resolver returns a path whenever that root is set, so a
+        # None would be an internal invariant violation rather than a runtime
+        # condition to paper over. Use an explicit raise instead of assert so
+        # the guard survives ``python -O`` (G.TES.01).
+        if work_dir is None:
+            raise RuntimeError(
+                "resolve_member_work_dir() returned None despite "
+                "task_workspace_root being set"
+            )
+        rail.set_runtime_paths(
+            cwd=work_dir,
+            project_dir=inp.project_dir,
+            workspace_dir=inp.member_workspace_root,
+            task_workspace_root=inp.task_workspace_root,
+            task_work_dir=work_dir,
+            task_outputs_dir=inp.team_outputs_dir,
+        )
     # Without this the member never renders the trusted_dirs policy section a
     # single agent gets from ``_apply_runtime_config_stages``.
     rail.set_trusted_dirs(inp.trusted_dirs)
@@ -311,6 +472,12 @@ class TeamWorkspaceReportPathInput(ConstructionInput):
         attr="project_dir",
         description="User project root for final project deliverables.",
     )
+    team_outputs_dir: str | None = context_field(
+        attr="team_outputs_dir",
+        description="Shared final-deliverables directory for projectless members "
+        "(team-workspace/artifacts/<date>/chat-<n>/outputs/). None for members "
+        "bound to a project.",
+    )
     team_id: str = context_field(attr="team_id", default="", description="Team name.")
     language: str = context_field(
         attr="language",
@@ -346,6 +513,7 @@ def _build_team_workspace_report_path_rail(
     rail = TeamWorkspaceReportPathRail(
         root_dir=inp.team_ws_root,
         project_dir=inp.project_dir,
+        outputs_dir=inp.team_outputs_dir,
         team_id=inp.team_id,
         language=inp.language,
     )
@@ -487,6 +655,8 @@ __all__ = [
     "PLUGIN_RAILS",
     "SKILL_RETRIEVAL_PROMPT",
     "SYMPHONY_ORCHESTRATION_PROMPT",
+    "HEARTBEAT",
+    "SESSION_MESSAGING_ROUTE",
     "TEAM_PERMISSION",
     "TEAM_PERMISSION_POLICY",
 ]
@@ -554,7 +724,7 @@ class TeamPermissionInput(ConstructionInput):
     permissions_config: dict[str, Any] = param_field(
         default_factory=dict,
         description="Full permission config dict (as consumed by "
-        "openjiuwen.harness.security.engine.PermissionEngine).",
+        "openjiuwen.harness.security.permission_engine.PermissionEngine).",
     )
 
 
@@ -570,7 +740,7 @@ def _build_team_permission_rail(params: dict[str, Any], context: Any) -> Any | N
     Thin swarm provider: reads ``permissions_config`` from ``RailSpec.params``
     (baked by config_specs) and runtime handles from ``BuildContext.extras``
     (injected by AgentConfigurator). The actual permission logic —
-    openjiuwen.harness.security.engine.PermissionEngine,
+    openjiuwen.harness.security.permission_engine.PermissionEngine,
     openjiuwen.agent_teams.rails.team_permission_rail.TeamPermissionRail,
     openjiuwen.agent_teams.rails.team_permission_rail.TeamApprovalOrchestrator —
     lives in openjiuwen.
@@ -589,11 +759,15 @@ def _build_team_permission_rail(params: dict[str, Any], context: Any) -> Any | N
         TeamPermissionRail,
     )
     from openjiuwen.agent_teams.tools.message_manager import TeamMessageManager
-    from openjiuwen.harness.security.host import ToolPermissionHost
+    from openjiuwen.harness.security import ToolPermissionHost
     from openjiuwen.agent_teams.security.narrowing import narrow_permissions
 
     override = get_permissions_override(context)
-    narrowed_config = narrow_permissions(inp.permissions_config, override) if override else inp.permissions_config
+    narrowed_config = (
+        narrow_permissions(inp.permissions_config, override)
+        if override
+        else inp.permissions_config
+    )
 
     message_manager = TeamMessageManager(
         backend.team_name,

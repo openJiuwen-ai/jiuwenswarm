@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Check, ChevronDown, GitBranch, LoaderCircle, Plus, Search, X } from 'lucide-react';
+import { AlertCircle, Check, LoaderCircle, Plus, Search, X } from 'lucide-react';
+import CodehubBranchIcon from '../../assets/code-mode/codehub-branch.svg?react';
 import type { ProjectInfo, WebError } from '../../types';
 import { useWorkspaceStore } from '../../stores';
 import { gitClient } from './gitClient';
@@ -202,7 +203,7 @@ export function CodeBranchSelector({ project, compact = false, disabled = false,
           data-testid='code-mode-branch-trigger'
           data-variant='init'
         >
-          {operating ? <LoaderCircle className='code-mode-spin' size={15} /> : <GitBranch size={15} />}
+          {operating ? <LoaderCircle className='code-mode-spin' size={15} /> : <CodehubBranchIcon className='h-[15px] w-[15px]' />}
           <span>初始化 Git</span>
         </button>
       ) : (
@@ -217,9 +218,11 @@ export function CodeBranchSelector({ project, compact = false, disabled = false,
           data-testid='code-mode-branch-trigger'
           data-variant='switch'
         >
-          {loading || operating ? <LoaderCircle className='code-mode-spin' size={15} /> : <GitBranch size={15} />}
+          {loading || operating ? <LoaderCircle className='code-mode-spin' size={15} /> : <CodehubBranchIcon className='h-[15px] w-[15px]' />}
           <span>{currentBranch || '加载分支'}</span>
-          <ChevronDown size={14} className={open ? 'code-branch__chevron is-open' : 'code-branch__chevron'} />
+          <svg className={open ? 'code-branch__chevron is-open' : 'code-branch__chevron'} width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 8l4 4 4-4" />
+          </svg>
         </button>
       )}
 
@@ -243,7 +246,7 @@ export function CodeBranchSelector({ project, compact = false, disabled = false,
                 data-testid='code-mode-branch-option'
                 data-variant={branch}
               >
-                <GitBranch size={15} />
+                <CodehubBranchIcon className='h-[15px] w-[15px]' />
                 <span>{branch}</span>
                 {branch === currentBranch ? <Check size={16} /> : null}
               </button>
@@ -317,7 +320,7 @@ export function CodeBranchSelector({ project, compact = false, disabled = false,
                 <X size={18} />
               </button>
             </div>
-            <input value={branchDraft} onChange={event => setBranchDraft(event.target.value)} placeholder='请输入分支名称，如：feature/code-mode' autoFocus data-testid='code-mode-create-branch-dialog-input' />
+            <input value={branchDraft} onChange={event => setBranchDraft(event.target.value)} placeholder='请输入分支名称，如：jiuwen/xxx，分支名不能以“/”结尾' autoFocus data-testid='code-mode-create-branch-dialog-input' />
             {error ? <div className='code-mode-dialog__error' data-testid='code-mode-create-branch-dialog-error'>{error}</div> : null}
             <div className='code-mode-dialog__actions' data-testid='code-mode-create-branch-dialog-actions'>
               <button type='button' className='code-mode-button' onClick={() => setCreateOpen(false)} data-testid='code-mode-create-branch-dialog-cancel'>

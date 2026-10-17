@@ -17,6 +17,11 @@ META = {
         {"title": "<Phase 2>", "detail": "<What this phase accomplishes>"},
     ],
 }
+# OPTIONAL: `workflow_token_limit` is this workflow's per-run token ceiling and
+# belongs inside META. Add the example entry below to META only when the user
+# explicitly provides the value. This line is documentation only; do not
+# uncomment it here. Omit the field when no limit is specified (unbounded).
+#     "workflow_token_limit": 50000,
 
 # ---------------------------------------------------------------------------
 # JSON Schema for structured agent outputs.
@@ -204,6 +209,9 @@ async def run(args):
 # and the validator summarize or enforce parts of this list; do not duplicate
 # the full list elsewhere.
 # - Keep META a pure literal; do not use calls, names, f-strings, or concatenation.
+# - `workflow_token_limit` in META is optional and must come from the user, not
+#   an estimate. Add the exact positive integer only when the user explicitly
+#   specifies this workflow's per-run ceiling; otherwise omit it (unbounded).
 # - Keep a top-level async def run(args) entrypoint.
 # - Keep all prompts in this file as constants or prompt-builder functions.
 # - Build prompts with string.Template as shown above, not f-strings/str.format
@@ -344,3 +352,7 @@ async def run(args):
 #   key fields are non-empty (not just that the cache file exists). An empty
 #   scores list or null signal indicates a failed prior run and should be
 #   treated as a cache miss, not a valid result to skip.
+# - agent()/agent_session() options keys must be one of: label, phase, schema,
+#   model, timeout, isolation, agent_type, builtin_model, effort, agent_template.
+#   agent_template is the bare member name of the AgentGroup bound to the session
+#   (e.g. "clip", never "designer/clip"); omit it for a generic worker.

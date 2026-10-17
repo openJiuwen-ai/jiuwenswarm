@@ -9,10 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-from fastmcp import FastMCP
-from google import genai
-from google.genai import types
 from openai import OpenAI
 from openjiuwen.core.foundation.tool import McpServerConfig, tool
 from openjiuwen.core.runner import Runner
@@ -28,11 +24,20 @@ from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_veri
 
 
 logger = logging.getLogger(__name__)
-load_dotenv(verbose=True, override=True)
 
 _SANDBOX_MARKER = "home/user"
 
-mcp = FastMCP("vision-mcp-server")
+
+def __getattr__(name):
+    # The exported tool cards are ordinary SDK tools. Their registration does
+    # not require an independent MCP server or its OAuth dependencies.
+    if name != "mcp":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from fastmcp import FastMCP
+
+    server = FastMCP("vision-mcp-server")
+    globals()[name] = server
+    return server
 
 
 class _PathHelper:
@@ -167,6 +172,9 @@ async def _invoke_openai_vision(src: str, q: str) -> str:
 
 
 async def _invoke_gemini_vision(src: str, q: str) -> str:
+    from google import genai
+    from google.genai import types
+
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     if not gemini_key:
         return "[ERROR]: GEMINI_API_KEY is not configured for Gemini vision."
@@ -353,9 +361,16 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
     model = str(mc.get("model_name") or mc.get("model") or os.getenv("IMAGE_GEN_MODEL_NAME") or "wanx-v1").strip()
     provider = str(mc.get("client_provider") or mc.get("model_provider")
                    or os.getenv("IMAGE_GEN_PROVIDER") or "DashScope").strip()
+    # 新声明下 DashScope 不再是独立 client_provider，而是 OpenAI + endpoint_profile=dashscope。
+    # 兼容旧 IMAGE_GEN_PROVIDER=DashScope：归一为 OpenAI 并补 dashscope profile。
+    # 缺少 endpoint_profile=dashscope 时 OpenAIModelClient 会拒绝生图(方案 8.6)。
+    endpoint_profile = str(mc.get("endpoint_profile") or "").strip().lower()
+    if provider in ("DashScope", "dashscope"):
+        provider = "OpenAI"
+        endpoint_profile = endpoint_profile or "dashscope"
 
     try:
-        model_client_config = ModelClientConfig(
+        _mcc_kwargs: dict[str, Any] = dict(
             client_id="image_gen_client",
             client_provider=provider,
             api_key=api_key,
@@ -364,6 +379,9 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
             ssl_cert=mc.get("ssl_cert"),
             timeout=mc.get("timeout", 1800),
         )
+        if endpoint_profile:
+            _mcc_kwargs["endpoint_profile"] = endpoint_profile
+        model_client_config = ModelClientConfig(**_mcc_kwargs)
 
         model_config = ModelRequestConfig(
             model=model,
@@ -495,4 +513,3 @@ async def generate_image(
         response_parts.append(f"Original URL: {original_url}")
 
     return "\n".join(response_parts)
-

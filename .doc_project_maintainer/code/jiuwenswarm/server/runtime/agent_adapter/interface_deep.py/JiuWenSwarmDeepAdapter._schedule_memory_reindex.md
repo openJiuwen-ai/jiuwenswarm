@@ -19,6 +19,8 @@ confidence: confirmed
 
 Schedules a full MemoryRail reindex only when no task with the same normalized workspace and embedding fingerprint is already in flight. The singleflight key is released in the worker's `finally` path so later real configuration changes or retries remain possible.
 
+The scheduler itself is unchanged, but eternal-conversation requests do not enter the legacy MemoryRail configuration/reindex path.
+
 ## Key Signals
 
 - Input: adapter workspace and current embedding configuration.

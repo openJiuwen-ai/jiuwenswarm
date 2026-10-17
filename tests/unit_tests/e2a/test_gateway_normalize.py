@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 import time
+import pytest
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_KIND_PLAN_APPROVAL_REQUIRED
@@ -17,6 +18,112 @@ from jiuwenswarm.common.e2a.gateway_normalize import (
 )
 from jiuwenswarm.common.e2a.models import E2AEnvelope, E2AResponse
 from jiuwenswarm.common.schema.message import Message, ReqMethod
+
+
+@pytest.mark.parametrize("event_type", ["chat.delta", "chat.reasoning", "chat.final", "runtime.accepted"])
+def test_execution_binding_survives_agent_wire_and_web_payload(event_type):
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+
+    chunk = AgentResponseChunk(
+        request_id="request-A", channel_id="web", is_complete=event_type == "chat.final",
+        payload={"event_type": event_type, "execution_id": "execution-A", "content": "text"},
+    )
+    wire = e2a_response_from_agent_chunk(chunk, response_id="request-A", sequence=1)
+    restored = e2a_response_to_agent_chunk(wire)
+    message = Message(
+        id=restored.request_id, type="event", channel_id="web", session_id="session-A",
+        params={}, timestamp=1, ok=True, payload=restored.payload,
+    )
+    payload = WebChannel._build_event_payload(message, event_type)
+    assert payload["execution_id"] == "execution-A"
+    assert payload["session_id"] == "session-A"
+
+
+@pytest.mark.parametrize(
+    ("event_type", "is_complete"),
+    [("chat.delta", False), ("chat.final", False), ("chat.final", True)],
+)
+def test_cross_session_identity_survives_agent_wire_and_web_payload(event_type, is_complete):
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+
+    fields = {
+        "turn_request_id": "turn-A",
+        "message_origin": "cross_session_agent",
+        "session_message_id": "sm-A",
+        "cross_session": {"message_id": "sm-A", "source_session_id": "source-A"},
+    }
+    chunk = AgentResponseChunk(
+        request_id="wire-A", channel_id="web", is_complete=is_complete,
+        payload={"event_type": event_type, "content": "text", **fields},
+    )
+    wire = e2a_response_from_agent_chunk(chunk, response_id="wire-A", sequence=1)
+    restored = e2a_response_to_agent_chunk(wire)
+    message = Message(
+        id=restored.request_id, type="event", channel_id="web", session_id="target-A",
+        params={}, timestamp=1, ok=True, payload=restored.payload,
+    )
+    payload = WebChannel._build_event_payload(message, event_type)
+    assert {key: payload.get(key) for key in fields} == fields
+
+
+@pytest.mark.parametrize("event_type", ["chat.delta", "chat.reasoning", "chat.final", "chat.tool_call", "chat.input_received", "chat.output_phase"])
+def test_phase_boundary_and_order_survive_both_wire_conversions(event_type):
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+
+    fields = {"output_phase_id": "phase-1", "output_suppressed": True,
+              "output_order": {"request_id": "original", "sequence": 42}, "timestamp": 1800000000042}
+    if event_type == "chat.input_received":
+        fields["input_request_id"] = "input-1"
+    if event_type == "chat.output_phase":
+        fields["applied_input_ids"] = ["input-1", "input-2"]
+    chunk = AgentResponseChunk(request_id="original", channel_id="web", is_complete=False,
+                               payload={"event_type": event_type, "content": "text", **fields})
+    restored = e2a_response_to_agent_chunk(e2a_response_from_agent_chunk(chunk, response_id="original", sequence=42))
+    message = Message(id="original", type="event", channel_id="web", session_id="session",
+                      params={}, timestamp=1, ok=True, payload=restored.payload)
+    payload = WebChannel._build_event_payload(message, event_type)
+    assert {key: payload.get(key) for key in fields} == fields
+
+
+def test_proactive_markers_survive_chat_delta_wire_and_web_payload():
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+
+    fields = {
+        "source": "proactive_recommendation",
+        "proactive_type": "skill_recommend",
+        "proactive_target": "docx-pro",
+        "proactive_rec_id": "rec_1790593225843_671157ce",
+    }
+    chunk = AgentResponseChunk(
+        request_id="proactive-A",
+        channel_id="web",
+        is_complete=False,
+        payload={"event_type": "chat.delta", "content": "推荐正文", **fields},
+    )
+    restored = e2a_response_to_agent_chunk(
+        e2a_response_from_agent_chunk(chunk, response_id="proactive-A", sequence=1)
+    )
+    message = Message(
+        id=restored.request_id,
+        type="event",
+        channel_id="web",
+        session_id="session-A",
+        params={},
+        timestamp=1,
+        ok=True,
+        payload=restored.payload,
+    )
+    payload = WebChannel._build_event_payload(message, "chat.delta")
+    assert {key: payload.get(key) for key in fields} == fields
+    assert payload["content"] == "推荐正文"
 
 
 def test_message_to_e2a_or_fallback_basic():
@@ -80,6 +187,21 @@ def test_e2a_to_agent_request_roundtrip():
     assert req.metadata == {"wecom_req_id": "abc"}
 
 
+def test_e2a_to_agent_request_preserves_user_id_for_agentos_routing():
+    env = e2a_from_agent_fields(
+        request_id="cron-snapshot",
+        channel_id="web",
+        session_id="session-1",
+        req_method=ReqMethod.CRON_JOBS_SYNC,
+        params={"jobs": []},
+        user_id="alice",
+    )
+
+    req = e2a_to_agent_request(env)
+
+    assert req.user_id == "alice"
+
+
 def test_message_to_e2a_or_fallback_preserves_user_id():
     msg = Message(
         id="r-user",
@@ -94,6 +216,7 @@ def test_message_to_e2a_or_fallback_preserves_user_id():
     )
     env = message_to_e2a_or_fallback(msg)
     assert env.user_id == "alice"
+    assert e2a_to_agent_request(env).user_id == "alice"
 
 
 def test_e2a_from_agent_fields_user_id():
@@ -159,3 +282,34 @@ def test_e2a_response_to_agent_chunk_plan_approval_required():
     assert chunk.payload["plan_content"] == "## Plan\nDo the thing"
     assert chunk.payload["plan_slug"] == "bright-otter"
     assert chunk.is_complete is True
+
+
+@pytest.mark.parametrize("entrypoint", ["normalize", "wire", "public"])
+@pytest.mark.parametrize("event_type", ["chat.delta", "chat.reasoning", "chat.final"])
+@pytest.mark.parametrize("source", ["org_expert_background", "org_summary_background", "org_root_delivery"])
+def test_organization_identity_survives_protocol_package_roundtrip(entrypoint, event_type, source):
+    from jiuwenswarm.common import e2a
+    from jiuwenswarm.common.e2a import gateway_normalize, wire_codec
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+
+    payload = {
+        "event_type": event_type, "content": "report",
+        "team_id": "expert", "team_name": "expert", "source": source,
+        "request_id": "org-round", "rid": "org-round", "member_name": "analyst",
+    }
+    chunk = AgentResponseChunk(
+        request_id="org-round:3", channel_id="web", payload=payload,
+        is_complete=event_type == "chat.final",
+    )
+    if entrypoint == "normalize":
+        response = gateway_normalize.e2a_response_from_agent_chunk(
+            chunk, response_id="org-round:3", sequence=3,
+        )
+        restored = gateway_normalize.e2a_response_to_agent_chunk(response)
+    else:
+        codec = e2a if entrypoint == "public" else wire_codec
+        wire = codec.encode_agent_chunk_for_wire(chunk, response_id="org-round:3", sequence=3)
+        restored = codec.parse_agent_server_wire_chunk(wire)
+    assert restored.request_id == "org-round:3"
+    for key in ("team_id", "team_name", "source", "request_id", "rid", "member_name", "content"):
+        assert restored.payload.get(key) == payload.get(key)

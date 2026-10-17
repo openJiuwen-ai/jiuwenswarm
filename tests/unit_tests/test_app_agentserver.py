@@ -2,81 +2,76 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.server import app_agentserver
+from jiuwenswarm.server.lifecycle import Readiness
 
 
-async def _run_agentserver_for_test(host: str, port: int) -> None:
-    await getattr(app_agentserver, "_run")(host, port)
+class _FakeFront:
+    def __init__(self, host: str, port: int, **_kwargs) -> None:
+        self.host = host
+        self.port = port
+        self.readiness = Readiness()
+        self.events: list[str] = []
+
+    async def start(self) -> None:
+        self.readiness.mark_transport_ready()
+        self.readiness.mark_control_ready()
+        self.readiness.mark_runtime_warming()
+        self.events.append("front_start")
+
+    async def stop(self) -> None:
+        self.events.append("front_stop")
+
+    def attach_runtime_backend(self, backend: object) -> None:
+        self.events.append("attach")
+        _ = backend
 
 
 @pytest.mark.asyncio
-async def test_run_does_not_delete_agent_teams_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_run_does_not_delete_agent_teams_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     removed_paths: list[Path] = []
-    server_events: list[str] = []
+    fake_front = _FakeFront("127.0.0.1", 18092)
+    captured: dict[str, asyncio.Event] = {}
+    real_event = asyncio.Event
 
-    class _FakeEvent:
-        @staticmethod
-        def set() -> None:
-            return None
-
-        async def wait(self) -> None:
-            return None
-
-    class _FakeServer:
-        async def start(self) -> None:
-            server_events.append("start")
-
-        async def stop(self) -> None:
-            server_events.append("stop")
-
-    class _FakeExtensionManager:
-        def __init__(self, registry) -> None:
-            self.registry = registry
-
-        async def load_all_extensions(self) -> None:
-            return None
-
-        @staticmethod
-        def list_extensions() -> list[object]:
-            return []
-
-    async def _fake_bootstrap_daemon(*, stop_event) -> None:
-        _ = stop_event
-        return None
+    def _event_factory() -> asyncio.Event:
+        event = real_event()
+        captured["ev"] = event
+        return event
 
     def _fake_rmtree(path, *args, **kwargs) -> None:
         _ = args, kwargs
         removed_paths.append(Path(path))
 
-    monkeypatch.setattr(app_agentserver.asyncio, "Event", _FakeEvent)
+    class _NoopSupervisor:
+        async def stop(self) -> None:
+            return None
+
+    async def _fake_supervisor(front, host, port):
+        _ = host, port
+        front.attach_runtime_backend(_NoopSupervisor())
+        captured["ev"].set()
+        return _NoopSupervisor()
+
+    monkeypatch.setattr(app_agentserver.asyncio, "Event", _event_factory)
     monkeypatch.setattr("shutil.rmtree", _fake_rmtree)
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.remote_member_bootstrap.run_teammate_bootstrap_daemon",
-        _fake_bootstrap_daemon,
+        "jiuwenswarm.server.front.server.AgentServerFront",
+        lambda host, port, **kwargs: fake_front,
     )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.get_instance",
-        staticmethod(lambda **_kwargs: _FakeServer()),
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.extensions.registry.ExtensionRegistry.create_instance",
-        staticmethod(lambda **_kwargs: object()),
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.extensions.manager.ExtensionManager",
-        _FakeExtensionManager,
-    )
-    monkeypatch.setattr(
-        "openjiuwen.core.runner.Runner.callback_framework",
-        SimpleNamespace(),
-    )
+    monkeypatch.setattr(app_agentserver, "_start_supervisor", _fake_supervisor)
 
-    await _run_agentserver_for_test("127.0.0.1", 18092)
+    await app_agentserver._run("127.0.0.1", 18092)
 
-    assert server_events == ["start", "stop"]
+    assert fake_front.events[0] == "front_start"
+    assert "attach" in fake_front.events
+    assert "front_stop" in fake_front.events
+    assert fake_front.events.index("front_start") < fake_front.events.index("attach")
     assert removed_paths == []

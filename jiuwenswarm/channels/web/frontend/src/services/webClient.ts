@@ -13,6 +13,7 @@ import { resolveUserId } from '../utils/userId';
 import i18n from '../i18n';
 import { GoalRecord } from '../types/goal';
 import { createSessionEventGate } from './sessionEventGate';
+import { RuntimeResume } from './runtimeResume';
 
 type EventHandler = (event: WsEvent) => void;
 type TypedEventHandler<TPayload> = (event: WsEvent & { payload: TPayload }) => void;
@@ -22,10 +23,12 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
   timeoutId: number;
+  awaitRuntimeAccepted: boolean;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT_MS = 15000;
+const MAX_RECOVERY_ATTEMPTS = 3;
 
 const LEGACY_EVENT_MAP: Record<string, string> = {
   connection_ack: 'connection.ack',
@@ -77,6 +80,9 @@ function logDevWsTraffic(entry: DevWsLogEntry): void {
 }
 
 class WebClient {
+  private readonly runtimeResume = new RuntimeResume();
+  private resumeOwner = '';
+  private connectedOnce = false;
   private ws: WebSocket | null = null;
   private state: WebConnectionState = 'idle';
   private handlers = new Map<string, Set<EventHandler>>();
@@ -96,10 +102,6 @@ class WebClient {
     return this.state;
   }
 
-  getInflightCount(): number {
-    return this.pending.size;
-  }
-
   onStateChange(handler: StateHandler): () => void {
     this.stateHandlers.add(handler);
     return () => {
@@ -107,10 +109,7 @@ class WebClient {
     };
   }
 
-  on<TPayload = Record<string, unknown>>(
-    eventName: string,
-    handler: TypedEventHandler<TPayload>
-  ): () => void {
+  on<TPayload = Record<string, unknown>>(eventName: string, handler: TypedEventHandler<TPayload>): () => void {
     const set = this.handlers.get(eventName) ?? new Set<EventHandler>();
     const eventHandler = handler as EventHandler;
     set.add(eventHandler);
@@ -141,6 +140,9 @@ class WebClient {
     }
 
     this.lastConnectOptions = options;
+    const owner = resolveUserId() || '';
+    if (owner !== this.resumeOwner) this.runtimeResume.clear();
+    this.resumeOwner = owner;
     this.manualClose = false;
     this.updateState(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
@@ -149,8 +151,14 @@ class WebClient {
     this.connectPromise = new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(url);
       this.ws = ws;
+      const rejectClosedConnection = () =>
+        reject(this.createWebError(i18n.t('network.connectionClosed'), 'WS_CLOSED', undefined, false));
 
       ws.onopen = () => {
+        if (this.ws !== ws) {
+          rejectClosedConnection();
+          return;
+        }
         logDevWsTraffic({
           direction: 'lifecycle',
           data: { event: 'open', url },
@@ -159,23 +167,25 @@ class WebClient {
         this.updateState('ready');
         this.connectPromise = null;
         resolve();
+        if (this.connectedOnce) void this.resumeExecutions();
+        this.connectedOnce = true;
       };
 
       ws.onmessage = (event) => {
+        if (this.ws !== ws) return;
         this.handleIncoming(event.data);
       };
 
       ws.onerror = () => {
+        if (this.ws !== ws) {
+          rejectClosedConnection();
+          return;
+        }
         logDevWsTraffic({
           direction: 'lifecycle',
           data: { event: 'error' },
         });
-        const error = this.createWebError(
-          i18n.t('network.wsError'),
-          'WS_ERROR',
-          undefined,
-          true
-        );
+        const error = this.createWebError(i18n.t('network.wsError'), 'WS_ERROR', undefined, true);
         this.connectPromise = null;
         if (this.state !== 'ready') {
           reject(error);
@@ -183,6 +193,10 @@ class WebClient {
       };
 
       ws.onclose = (closeEvent) => {
+        if (this.ws !== ws) {
+          rejectClosedConnection();
+          return;
+        }
         logDevWsTraffic({
           direction: 'lifecycle',
           data: {
@@ -199,8 +213,8 @@ class WebClient {
             i18n.t('network.connectionClosedWithCode', { code: closeEvent.code }),
             'WS_DISCONNECTED',
             undefined,
-            true
-          )
+            true,
+          ),
         );
         if (this.manualClose || closeEvent.code === 1000) {
           this.updateState('closed');
@@ -213,12 +227,24 @@ class WebClient {
     return this.connectPromise;
   }
 
+  /**
+   * 断开后立刻用同一组参数重连。
+   *
+   * 登录态变化时必须调这个：登录会话 id 是 **WS 握手时**从 cookie / 请求头读的，
+   * 之后这条连接就一直用那份值。而登录走的是 HTTP，发生在握手之后——不重连的话，
+   * 连接上停留的还是登录前那份，服务端据此取凭据会取不到，
+   * 表现为"选了免费模型却跑了配置的模型"。
+   */
+  async reconnect(reason = 'Auth changed'): Promise<void> {
+    const options = this.lastConnectOptions;
+    await this.disconnect(reason);
+    await this.connect(options);
+  }
+
   disconnect(reason = 'User disconnect'): Promise<void> {
     this.manualClose = true;
     this.clearReconnectTimer();
-    this.rejectAllPending(
-      this.createWebError(i18n.t('network.connectionClosed'), 'WS_CLOSED', undefined, false)
-    );
+    this.rejectAllPending(this.createWebError(i18n.t('network.connectionClosed'), 'WS_CLOSED', undefined, false));
     const currentWs = this.ws;
     let closedPromise = Promise.resolve();
     if (currentWs) {
@@ -240,7 +266,7 @@ class WebClient {
             window.clearTimeout(timeoutId);
             finish();
           },
-          { once: true }
+          { once: true },
         );
         currentWs.close(1000, reason);
       });
@@ -254,7 +280,7 @@ class WebClient {
   async request<T = unknown>(
     method: string,
     params?: Record<string, unknown>,
-    options: WebRequestOptions = {}
+    options: WebRequestOptions = {},
   ): Promise<T> {
     await this.ensureReady();
 
@@ -282,6 +308,7 @@ class WebClient {
         resolve: (value) => resolve(value as T),
         reject,
         timeoutId,
+        awaitRuntimeAccepted: options.awaitRuntimeAccepted === true,
       };
       this.pending.set(id, pending);
 
@@ -306,7 +333,35 @@ class WebClient {
         messageType: 'req',
         data: message,
       });
-      this.ws?.send(JSON.stringify(message));
+      try {
+        options.onRequestId?.(id);
+        this.ws!.send(JSON.stringify(message));
+      } catch (error) {
+        window.clearTimeout(timeoutId);
+        this.pending.delete(id);
+        reject(error);
+      }
+    }).then(async (value) => {
+      if (method === 'session.get_metadata' && !params?.runtime_resume && typeof params?.session_id === 'string') {
+        const runtime = (value as { runtime?: Record<string, unknown> } | null)?.runtime;
+        if (
+          runtime?.recovery_pending === true ||
+          (runtime?.is_processing === true && typeof runtime.worker_instance === 'string')
+        ) {
+          // A freshly loaded page has no stream cursor yet. Reattach to the
+          // existing execution through its snapshot, never by sending input.
+          await this.resumeExecutions([
+            {
+              session_id: params.session_id,
+              runtime_resume: {
+                worker_instance: typeof runtime.worker_instance === 'string' ? runtime.worker_instance : '',
+                after: 0,
+              },
+            },
+          ]);
+        }
+      }
+      return value;
     });
   }
 
@@ -321,7 +376,7 @@ class WebClient {
   async sendFireAndForget(
     method: string,
     params?: Record<string, unknown>,
-    options: { isStream?: boolean } = {}
+    options: { isStream?: boolean } = {},
   ): Promise<void> {
     await this.ensureReady();
 
@@ -384,6 +439,8 @@ class WebClient {
       return;
     }
 
+    if (!this.runtimeResume.observe(message)) return;
+    this.resolveRuntimeAcceptedPending(message);
     this.dispatchEvent(message);
   }
 
@@ -412,10 +469,12 @@ class WebClient {
       if (!eventName) {
         return null;
       }
+      const payload = this.normalizePayload(msg.payload);
       return {
         type: 'event',
-        event: eventName,
-        payload: this.normalizePayload(msg.payload),
+        // Older gateways wrap control ACKs in chat.final; an ACK must never close a turn.
+        event: eventName === 'chat.final' && payload.event_type === 'runtime.accepted' ? 'runtime.accepted' : eventName,
+        payload,
         seq: typeof msg.seq === 'number' ? msg.seq : undefined,
         stream_id: typeof msg.stream_id === 'string' ? msg.stream_id : undefined,
       };
@@ -426,14 +485,97 @@ class WebClient {
       if (!mappedEvent) {
         return null;
       }
+      const payload = this.normalizePayload(msg.payload);
       return {
         type: 'event',
-        event: mappedEvent,
-        payload: this.normalizePayload(msg.payload),
+        event:
+          mappedEvent === 'chat.final' && payload.event_type === 'runtime.accepted' ? 'runtime.accepted' : mappedEvent,
+        payload,
       };
     }
 
     return null;
+  }
+
+  private async resumeExecutions(queries = this.runtimeResume.queries()): Promise<void> {
+    await Promise.all(queries.map((query) => this.resumeExecution(query)));
+  }
+
+  private async resumeExecution(query: ReturnType<RuntimeResume['queries']>[number]): Promise<void> {
+    const socket = this.ws;
+    const owner = this.resumeOwner;
+    for (let attempt = 0; attempt < MAX_RECOVERY_ATTEMPTS; attempt += 1) {
+      if (this.ws !== socket || this.resumeOwner !== owner || this.state !== 'ready') return;
+      try {
+        const metadata = await this.request<{ runtime?: Record<string, unknown> }>('session.get_metadata', query, {
+          timeoutMs: 10_000,
+        });
+        if (this.ws !== socket || this.resumeOwner !== owner) return;
+        const runtime = metadata?.runtime;
+        if (!runtime) return;
+        this.dispatchEvent({
+          type: 'event',
+          event: 'runtime.snapshot',
+          payload: { session_id: query.session_id, ...runtime },
+        });
+        if (runtime.recovery_pending === true) {
+          // An unfinished snapshot cannot clear a running task. Retry only the
+          // metadata/cursor query, preserving the original accepted execution.
+          if (attempt + 1 < MAX_RECOVERY_ATTEMPTS) {
+            const delay =
+              typeof runtime.retry_after_ms === 'number' && Number.isFinite(runtime.retry_after_ms)
+                ? Math.max(100, Math.min(1000, runtime.retry_after_ms))
+                : 300;
+            await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+            continue;
+          }
+          return;
+        }
+        if (typeof runtime.is_processing === 'boolean') {
+          this.dispatchEvent({
+            type: 'event',
+            event: 'chat.processing_status',
+            payload: { session_id: query.session_id, is_processing: runtime.is_processing },
+          });
+        }
+        if (runtime.interrupted === true) {
+          this.dispatchEvent({
+            type: 'event',
+            event: 'chat.error',
+            payload: {
+              session_id: query.session_id,
+              code: 'WORKER_EXECUTION_INTERRUPTED',
+              error: i18n.t('network.workerExecutionInterrupted'),
+              recoverable: false,
+            },
+          });
+        }
+        if (runtime.history_required === true) {
+          const dispatches = Array.isArray(runtime.dispatches) ? runtime.dispatches : [];
+          for (const dispatch of dispatches) {
+            const interactions = Array.isArray(dispatch.pending_interactions) ? dispatch.pending_interactions : [];
+            for (const interaction of interactions) {
+              if (typeof interaction.event_type === 'string') {
+                this.dispatchEvent({
+                  type: 'event',
+                  event: interaction.event_type,
+                  payload: { ...interaction, session_id: query.session_id },
+                });
+              }
+            }
+          }
+          this.dispatchEvent({
+            type: 'event',
+            event: 'runtime.history_required',
+            payload: { session_id: query.session_id },
+          });
+        }
+        return;
+      } catch {
+        // The next reconnect/history query reconciles state. Never retry chat.send.
+        return;
+      }
+    }
   }
 
   private normalizePayload(payload: unknown): Record<string, unknown> {
@@ -446,6 +588,9 @@ class WebClient {
   private resolvePending(message: WsResponse): void {
     const pending = this.pending.get(message.id);
     if (!pending) {
+      return;
+    }
+    if (message.ok && pending.awaitRuntimeAccepted) {
       return;
     }
     window.clearTimeout(pending.timeoutId);
@@ -461,9 +606,33 @@ class WebClient {
         message.error ?? i18n.t('network.requestFailed'),
         message.code,
         message.id,
-        this.isRetriableCode(message.code)
-      )
+        this.isRetriableCode(message.code),
+        message.payload,
+      ),
     );
+  }
+
+  private resolveRuntimeAcceptedPending(message: WsEvent): void {
+    if (message.event !== 'runtime.accepted' && message.event !== 'chat.error') {
+      return;
+    }
+    const requestId = message.payload.request_id;
+    if (typeof requestId !== 'string') {
+      return;
+    }
+    const pending = this.pending.get(requestId);
+    if (!pending?.awaitRuntimeAccepted) {
+      return;
+    }
+    window.clearTimeout(pending.timeoutId);
+    this.pending.delete(requestId);
+    if (message.event === 'runtime.accepted') {
+      pending.resolve(message.payload);
+      return;
+    }
+    const error = typeof message.payload.error === 'string' ? message.payload.error : i18n.t('network.requestFailed');
+    const code = typeof message.payload.code === 'string' ? message.payload.code : undefined;
+    pending.reject(this.createWebError(error, code, requestId, true, message.payload));
   }
 
   private dispatchEvent(event: WsEvent): void {
@@ -550,21 +719,19 @@ class WebClient {
     message: string,
     code?: string,
     requestId?: string,
-    retriable = false
+    retriable = false,
+    payload?: unknown,
   ): WebError {
     const error = new Error(message) as WebError;
     error.code = code;
     error.requestId = requestId;
     error.retriable = retriable;
+    error.payload = payload;
     return error;
   }
 
   private isRetriableCode(code?: string): boolean {
-    return (
-      code === 'REQUEST_TIMEOUT' ||
-      code === 'WS_DISCONNECTED' ||
-      code === 'WS_NOT_READY'
-    );
+    return code === 'REQUEST_TIMEOUT' || code === 'WS_DISCONNECTED' || code === 'WS_NOT_READY';
   }
 }
 
@@ -573,9 +740,103 @@ export const webClient = new WebClient();
 export async function webRequest<T = unknown>(
   method: string,
   params?: Record<string, unknown>,
-  options?: WebRequestOptions
+  options?: WebRequestOptions,
 ): Promise<T> {
   return webClient.request<T>(method, params, options);
+}
+
+// ── SwarmFlow workflow 分页 RPC 封装（command.workflows） ─────────
+
+export interface WorkflowListResponse {
+  type?: string;
+  workflows?: unknown[];
+  session_id?: string;
+  total?: number;
+  has_more?: boolean;
+}
+
+export interface WorkflowDetailResponse {
+  type?: string;
+  workflow?: unknown;
+  session_id?: string;
+  phase_total?: number;
+  has_more?: boolean;
+}
+
+export interface WorkflowPhaseResponse {
+  type?: string;
+  phase?: unknown;
+  session_id?: string;
+  agent_total?: number;
+  has_more?: boolean;
+  error?: unknown;
+}
+
+export interface WorkflowAgentResponse {
+  type?: string;
+  agent?: unknown;
+  session_id?: string;
+  error?: unknown;
+}
+
+export async function requestWorkflowList(
+  sessionId: string,
+  offset = 0,
+  limit?: number,
+): Promise<WorkflowListResponse> {
+  return webRequest<WorkflowListResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'list',
+    offset,
+    ...(limit == null ? {} : { limit }),
+  });
+}
+
+export async function requestWorkflowDetail(
+  sessionId: string,
+  workflowId: string,
+  phaseOffset = 0,
+  phaseLimit?: number,
+): Promise<WorkflowDetailResponse> {
+  return webRequest<WorkflowDetailResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_workflow',
+    workflow_id: workflowId,
+    phase_offset: phaseOffset,
+    ...(phaseLimit == null ? {} : { phase_limit: phaseLimit }),
+  });
+}
+
+export async function requestPhaseAgents(
+  sessionId: string,
+  workflowId: string,
+  phaseId: string,
+  agentOffset = 0,
+  agentLimit?: number,
+): Promise<WorkflowPhaseResponse> {
+  return webRequest<WorkflowPhaseResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_phase',
+    workflow_id: workflowId,
+    phase_id: phaseId,
+    agent_offset: agentOffset,
+    ...(agentLimit == null ? {} : { agent_limit: agentLimit }),
+  });
+}
+
+export async function requestAgentDetail(
+  sessionId: string,
+  workflowId: string,
+  phaseId: string,
+  agentId: string,
+): Promise<WorkflowAgentResponse> {
+  return webRequest<WorkflowAgentResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_agent',
+    workflow_id: workflowId,
+    phase_id: phaseId,
+    agent_id: agentId,
+  });
 }
 
 interface GoalCommandResponsePayload {
@@ -626,8 +887,16 @@ export async function sendGoalStreamCommand(params: {
   action: 'set' | 'resume';
   objective?: string;
   mode?: string;
+  modelName?: string | null;
+  modelParams?: Record<string, unknown>;
 }): Promise<void> {
-  const { sessionId, action, objective, mode } = params;
+  const { sessionId, action, objective, mode, modelName, modelParams } = params;
+  const outgoingModel =
+    modelParams && Object.keys(modelParams).length > 0
+      ? modelParams
+      : modelName
+        ? { model_name: modelName }
+        : {};
   await webClient.sendFireAndForget(
     'command.goal',
     {
@@ -635,8 +904,9 @@ export async function sendGoalStreamCommand(params: {
       action,
       mode: mode ?? 'agent',
       ...(action === 'set' ? { objective, overwrite_confirmed: true } : {}),
+      ...outgoingModel,
     },
-    { isStream: true }
+    { isStream: true },
   );
 }
 

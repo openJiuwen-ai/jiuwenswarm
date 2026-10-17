@@ -2,7 +2,7 @@ import { addError, addInfo } from "../helpers.js";
 import { CommandKind, type SlashCommand } from "../types.js";
 
 export interface ModelMeta {
-  index?: number;
+  index?: number | string;
   name: string;
   alias?: string;
   model_name?: string;
@@ -10,6 +10,8 @@ export interface ModelMeta {
   api_base?: string;
   api_key_suffix?: string;
   is_current?: boolean;
+  // agentos 备份模型标记：与 defaults 并列可选可切换，但不抢启动默认
+  is_agentos?: boolean;
   reasoning_level?: string;
 }
 
@@ -153,7 +155,7 @@ export function createModelCommand(): SlashCommand {
             }
             return {
               label: String(i + 1),
-              value: `${displayName}${keySuffix}${isCurrent ? " (current)" : ""}`,
+              value: `${displayName}${meta?.is_agentos === true ? " [agentos]" : ""}${keySuffix}${isCurrent ? " (current)" : ""}`,
             };
           });
           ctx.addItem(
@@ -182,10 +184,17 @@ export function createModelCommand(): SlashCommand {
           requested?: string;
           applied?: boolean;
           type?: string;
+          is_agentos?: boolean;
+          provider?: string;
         }>("command.model", { model: value });
 
         const isSwitch = !!payload.requested;
-        if (isSwitch) {
+        // agentos 备份模型：请求级注入路径，回包 type=switched_agentos。
+        // 不调 setModel（不改启动默认），改调 setSelectedAgentosModel 全局记录，
+        // 后续 sendMessage 注入 model_name 路由到 agentos 缓存条目。
+        if (isSwitch && (payload.type === "switched_agentos" || payload.is_agentos === true)) {
+          ctx.setSelectedAgentosModel?.(payload.current ?? payload.requested ?? value, payload.provider);
+        } else if (isSwitch) {
           ctx.setModel(payload.current ?? payload.requested ?? "");
         }
         const title = isSwitch

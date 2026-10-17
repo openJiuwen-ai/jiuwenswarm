@@ -1,3 +1,49 @@
+.toolpanel-collapsed-sections {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.toolpanel-collapsed-task-section {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.tool-panel-floating {
+  position: fixed;
+  top: 68px;
+  right: 24px;
+  width: 340px;
+  max-height: calc(100vh - 68px - 32px);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  border-left: 1px solid var(--color-border-default, rgb(240, 240, 240));
+  border-radius: 16px;
+  box-shadow: 0 2px 16px 0 rgba(0, 0, 0, 0.08);
+  z-index: 30;
+}
+
+.tool-panel-floating>div>div:not(:last-child) {
+  border-bottom: 1px solid var(--color-tool-panel-divider, #ededed);
+}
+
+.toolpanel-status-card:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--effect-tool-panel-shadow);
+  transform: translateY(-1px);
+}
+
+.toolpanel-collapsed-task-section>* {
+  min-height: 0;
+  flex: 1 1 auto;
+  border-bottom: 0;
+}
+
 .toolpanel-status-card {
   padding: 1rem 0 0 0;
   overflow-y: auto;
@@ -27,6 +73,50 @@
   align-items: center;
   justify-content: space-between;
   font-size: 0.75rem;
+}
+
+/* ===========================
+   CollapsibleSection
+   =========================== */
+
+.collapsible-section {
+  display: flex;
+  flex-direction: column;
+  transition: max-height 0.3s ease-in-out;
+}
+
+.collapsible-section__header {
+  flex-shrink: 0;
+  width: 100%;
+}
+
+.collapsible-section__toggle-icon {
+  transition: transform 0.2s ease-in-out;
+}
+
+.collapsible-section__content {
+  overflow: visible;
+  padding-bottom: 16px;
+}
+
+.collapsible-section__expand-all {
+  flex-shrink: 0;
+}
+
+.collapsible-section__expand-all button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-card);
+  transition: color 0.2s ease;
+  cursor: pointer;
+  padding-bottom: 8px;
+}
+
+.collapsible-section__expand-all button:hover {
+  color: var(--color-text-primary);
 }
 
 /* ===========================

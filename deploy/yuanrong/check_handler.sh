@@ -34,6 +34,27 @@ get_local_ip() {
     echo "127.0.0.1"
 }
 
+# yuanrong systemd 模式（agentos.sh up 默认路径）以 scripts/config.py local-ip 作为
+# values.host_ip（Python get_local_ip：UDP 出口探测 → hostname 解析 → 127.0.0.1）。
+# config.py 不可用（python 缺失 / ~/.agentos/deploy/config.yaml 缺失）时降级 bash get_local_ip。
+_yr_consistent_local_ip() {
+    local cfg_py="${SCRIPT_DIR}/../scripts/config.py"
+    local py yr_ip=""
+    if [ -f "${cfg_py}" ]; then
+        py=$(command -v "python${DEPLOY_VARS["YR_PYTHON_VERSION"]:-3.11}" 2>/dev/null \
+            || command -v python3 2>/dev/null || true)
+        if [ -n "${py}" ]; then
+            yr_ip=$("${py}" "${cfg_py}" local-ip 2>/dev/null | tr -d '\r' | head -n 1)
+            if [ -n "${yr_ip}" ]; then
+                echo "${yr_ip}"
+                return 0
+            fi
+        fi
+    fi
+    warning "scripts/config.py local-ip unavailable, falling back to hostname -I (bash get_local_ip)" >&2
+    get_local_ip
+}
+
 # 读取 config.yaml 的 ingress_virtual_ip（VIP）。gateway 监听端口统一绑定 VIP，
 # 使各服务对外可通过统一入口访问；无 VIP 配置时输出空串。
 _ingress_vip() {
@@ -54,6 +75,40 @@ except Exception:
     if [ -n "${vip}" ] && echo "${vip}" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
         echo "${vip}"
     fi
+}
+
+# 读取 config.yaml cluster.<key>（空格分隔 IP）。key 为 cluster 下的配置项名，
+# 如 etcd_nodes / master_nodes；读不到时输出空串。config 文件缺失返回 1。
+_cluster_nodes() {
+    local key="${1:?key is required}"
+    local config_file="${HOME:-/root}/.agentos/deploy/config.yaml"
+    [ -f "${config_file}" ] || return 1
+    local py="python${DEPLOY_VARS["YR_PYTHON_VERSION"]:-3.11}" nodes=""
+    if command -v "${py}" >/dev/null 2>&1 && "${py}" -c 'import yaml' >/dev/null 2>&1; then
+        nodes=$("${py}" -c '
+import sys, yaml
+try:
+    with open(sys.argv[1]) as f:
+        cfg = yaml.safe_load(f)
+    key = sys.argv[2]
+    nodes = (cfg or {}).get("cluster", {}).get(key, []) or []
+    print(" ".join(str(n).strip() for n in nodes if str(n).strip()), end="")
+except Exception:
+    print("", end="")
+' "${config_file}" "${key}" 2>/dev/null)
+    fi
+    echo "${nodes}"
+}
+
+# 读取 config.yaml 的 etcd_nodes（空格分隔 IP）。供 ETCD_ENDPOINTS 留空时拼 client URL。
+_etcd_nodes() {
+    _cluster_nodes etcd_nodes
+}
+
+# 读取 config.yaml 的 master_nodes（空格分隔 IP）。gateway 部署跟随 master_nodes：
+# 本机属于 master_nodes 即安装 systemd 服务（含 ExecStartPre VIP 拦截），启动时再判定持有 VIP。
+_master_nodes() {
+    _cluster_nodes master_nodes
 }
 
 check_cmds() {
@@ -92,9 +147,9 @@ check_jiuwenswarm_up_dependency() {
     local hosts_str="${DEPLOY_VARS["CLUSTER_HOSTS"]}"
 
     if [ -z "${hosts_str}" ]; then
-        hosts_str=$(get_local_ip)
+        hosts_str=$(_yr_consistent_local_ip)
         DEPLOY_VARS["CLUSTER_HOSTS"]="${hosts_str}"
-        warning "CLUSTER_HOSTS not set, using local IP: ${hosts_str}"
+        warning "CLUSTER_HOSTS not set, using yuanrong-consistent local IP: ${hosts_str}"
     fi
 
     IFS=',' read -ra HOST_LIST <<< "${hosts_str}"
@@ -108,16 +163,10 @@ check_jiuwenswarm_up_dependency() {
 
 check_gateway_up_dependency() {
     if [ -z "${DEPLOY_VARS["MASTER_NODE_IP"]:-}" ]; then
-        if [ -n "${DEPLOY_VARS["CLUSTER_HOSTS"]:-}" ]; then
-            IFS=',' read -ra _gw_host_list <<< "${DEPLOY_VARS["CLUSTER_HOSTS"]}"
-            DEPLOY_VARS["MASTER_NODE_IP"]="${_gw_host_list[0]}"
-            info "MASTER_NODE_IP inferred from CLUSTER_HOSTS: ${DEPLOY_VARS["MASTER_NODE_IP"]}"
-        else
-            local local_ip
-            local_ip=$(get_local_ip)
-            DEPLOY_VARS["MASTER_NODE_IP"]="${local_ip}"
-            info "MASTER_NODE_IP not set, defaulting to local: ${local_ip}"
-        fi
+        local local_ip
+        local_ip=$(_yr_consistent_local_ip)
+        DEPLOY_VARS["MASTER_NODE_IP"]="${local_ip}"
+        info "MASTER_NODE_IP defaulted (yuanrong-consistent local IP): ${local_ip}"
     fi
 
     if [ -z "${DEPLOY_VARS["FRONTEND_PORT"]:-}" ]; then
@@ -174,6 +223,26 @@ check_gateway_up_dependency() {
     if [ -z "${DEPLOY_VARS["WEB_PORT"]:-}" ]; then
         DEPLOY_VARS["WEB_PORT"]="19000"
         warning "WEB_PORT not set, using default: 19000"
+    fi
+
+    # ETCD_ENDPOINTS 留空时从 config.yaml etcd_nodes 拼 http://ip:32379,...
+    # 端口与 agentos etcd.sh / scripts/config.py 的 client port 一致（YR_ETCD_CLIENT_PORT）。
+    # 不写回 .env.custom，与 GATEWAY_HOST 相同：文件留空，启动时填 DEPLOY_VARS 再渲染模板。
+    if [ -z "${DEPLOY_VARS["ETCD_ENDPOINTS"]:-}" ]; then
+        local etcd_port="${YR_ETCD_CLIENT_PORT:-32379}"
+        local etcd_nodes etcd_endpoints="" node
+        etcd_nodes=$(_etcd_nodes || true)
+        for node in ${etcd_nodes}; do
+            echo "${node}" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || continue
+            [ -n "${etcd_endpoints}" ] && etcd_endpoints="${etcd_endpoints},"
+            etcd_endpoints="${etcd_endpoints}http://${node}:${etcd_port}"
+        done
+        if [ -n "${etcd_endpoints}" ]; then
+            DEPLOY_VARS["ETCD_ENDPOINTS"]="${etcd_endpoints}"
+            info "ETCD_ENDPOINTS defaulted from config.yaml etcd_nodes: ${etcd_endpoints}"
+        elif [ "${DEPLOY_VARS["CRON_STORE_BACKEND"]:-etcd}" = "etcd" ]; then
+            error "ETCD_ENDPOINTS is empty and no etcd_nodes in ~/.agentos/deploy/config.yaml"
+        fi
     fi
 
     # AgentOS IAM：空则默认 http://MASTER_NODE_IP:8090（与 registry/frontend 同 host 约定）。

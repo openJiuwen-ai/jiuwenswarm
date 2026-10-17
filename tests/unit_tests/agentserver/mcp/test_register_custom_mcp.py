@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
+
 from jiuwenswarm.server.runtime.mcp import registry
 
 
@@ -222,6 +224,56 @@ def test_list_enabled_false_when_disconnected(tmp_path: Path, monkeypatch) -> No
     assert "enabled" not in by_name["stale-custom"]
 
 
+def test_stale_legacy_marketplace_record_is_filtered(tmp_path: Path, monkeypatch) -> None:
+    """A removed builtin's state record must not render as a custom MCP."""
+    from jiuwenswarm.server.runtime.mcp import state_store
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(state_store, "get_workspace_dir", lambda: tmp_path)
+    state_store.upsert_mcp_record(
+        "harmonyos-mcp",
+        {"name": "harmonyos-mcp", "transport": "stdio", "command": "npx",
+         "args": ["-y", "harmonyos-mcp"], "server_id_scope": "mcp:harmonyos-mcp"},
+        state="connected",
+        integration_type="stdio-mcp",
+    )
+
+    summaries = registry.list_marketplace_mcps(mcp_filter="local")
+    assert "harmonyos-mcp" not in {s["name"] for s in summaries}
+    assert registry.get_mcp("harmonyos-mcp") is None
+
+
+def test_stale_hub_record_is_filtered(tmp_path: Path, monkeypatch) -> None:
+    """A removed Hub package's state record must not render as a custom MCP."""
+    from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
+        HubInstallRecord,
+        HubInstallStateStore,
+    )
+    from jiuwenswarm.server.runtime.mcp import state_store
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(state_store, "get_workspace_dir", lambda: tmp_path)
+    HubInstallStateStore(tmp_path / "mcp").upsert(
+        HubInstallRecord(
+            asset_id="mcp-asset-uuid",
+            package_id="stale-hub-mcp",
+            kind="mcp",
+            version="1.0.0",
+            checksum_sha256="abc123",
+            installed_at="2026-09-02T00:00:00Z",
+        )
+    )
+    state_store.upsert_mcp_record(
+        "stale-hub-mcp",
+        {"name": "stale-hub-mcp", "transport": "stdio", "command": "npx",
+         "args": ["-y", "stale-hub-mcp"], "server_id_scope": "mcp:stale-hub-mcp"},
+        state="connected",
+        integration_type="stdio-mcp",
+    )
+
+    summaries = registry.list_marketplace_mcps(mcp_filter="local")
+    assert "stale-hub-mcp" not in {s["name"] for s in summaries}
+    assert registry.get_mcp("stale-hub-mcp") is None
+
+
 def test_connect_custom_mcp_writes_connecting_until_handler_promotes(tmp_path: Path, monkeypatch) -> None:
     """connect on a registered custom MCP (no marketplace package) returns the
     definition and persists it as ``connecting`` (NOT connected).
@@ -332,6 +384,11 @@ def test_rollback_failed_connect_marketplace_wipes_stored_tokens(tmp_path: Path,
     # Marketplace package dir exists (ssh-mcp-server-like form-B token MCP).
     pkg_dir = tmp_path / "mcp" / "mcp_builtins" / "ssh-mcp-server"
     pkg_dir.mkdir(parents=True)
+    (pkg_dir / "mcp.json").write_text(
+        '{"mcpServers":{"ssh-mcp-server":{"command":"npx"}}}', encoding="utf-8"
+    )
+    (pkg_dir / "token-schema.json").write_text('{"fields":[]}', encoding="utf-8")
+    write_manifest(pkg_dir, "stdio-mcp", credentials_type="token")
     state_store.upsert_mcp_record(
         "ssh-mcp-server", {"name": "ssh-mcp-server", "transport": "stdio",
                            "command": "npx", "server_id_scope": "mcp:ssh-mcp-server"},
@@ -414,3 +471,49 @@ def test_get_mcp_custom_returns_config_fields_for_edit_prefill(tmp_path: Path, m
     assert detail["headers"] == {"Authorization": "Bearer abc"}
     assert detail["env"] == {"FOO": "bar"}
     assert detail["timeout_s"] == 30
+
+
+def test_register_custom_rejects_name_conflicting_with_builtin(tmp_path: Path, monkeypatch) -> None:
+    """A custom MCP whose name collides with a builtin marketplace package dir
+    is refused: connect_mcp dispatches by package dir existence, so a custom
+    named "feishu" would be silently shadowed by the builtin at connect time.
+    Raise McpRegistryError(code=MCP_NAME_CONFLICT) so the frontend can prompt
+    the user to rename."""
+    from jiuwenswarm.server.runtime.mcp import state_store
+    from jiuwenswarm.server.runtime.mcp.registry import (
+        CODE_NAME_CONFLICT, McpRegistryError,
+    )
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(state_store, "get_workspace_dir", lambda: tmp_path)
+    # Create a builtin package dir so the name collides.
+    package = tmp_path / "mcp" / "mcp_builtins" / "feishu"
+    package.mkdir(parents=True)
+    (package / "cli.json").write_text("{}", encoding="utf-8")
+    write_manifest(package, "cli", credentials_type="cli-oauth")
+    with pytest.raises(McpRegistryError) as exc_info:
+        registry.register_custom_mcp("feishu", {
+            "transport": "stdio", "command": "my-feishu",
+        })
+    assert exc_info.value.code == CODE_NAME_CONFLICT
+    # Nothing was written — the builtin record stays untouched.
+    assert state_store.get_mcp_record("feishu") is None
+
+
+def test_register_custom_allows_edit_of_existing_custom_same_name(tmp_path: Path, monkeypatch) -> None:
+    """Custom-vs-custom same name is an edit (upsert overwrites the prior
+    record), NOT a conflict — only builtin names are reserved. Re-registering
+    a custom that already exists must succeed and update the record."""
+    from jiuwenswarm.server.runtime.mcp import state_store
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(state_store, "get_workspace_dir", lambda: tmp_path)
+    state_store.upsert_mcp_record(
+        "my-custom", {"name": "my-custom", "transport": "stdio",
+                      "command": "old", "server_id_scope": "mcp:my-custom"},
+        state="connected", integration_type="stdio-mcp",
+    )
+    result = registry.register_custom_mcp("my-custom", {
+        "transport": "stdio", "command": "new",
+    })
+    assert result["command"] == "new"
+    rec = state_store.get_mcp_record("my-custom")
+    assert rec["command"] == "new"

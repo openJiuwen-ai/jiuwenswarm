@@ -85,7 +85,6 @@ def _sync_prompt_workspace_templates(language: str) -> None:
     file_map = [
         (f"AGENT_{suffix}.md", "AGENT.md"),
         (f"SOUL_{suffix}.md", "SOUL.md"),
-        (f"HEARTBEAT_{suffix}.md", "HEARTBEAT.md"),
         (f"IDENTITY_{suffix}.md", "IDENTITY.md"),
         (f"memory/MEMORY_{suffix}.md", "memory/MEMORY.md"),
     ]

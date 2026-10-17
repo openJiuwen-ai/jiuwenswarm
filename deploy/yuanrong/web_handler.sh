@@ -75,8 +75,10 @@ web_start_systemd() {
     remote_path=$(exec_on_host "${master_host}" "echo \$PATH" 2>/dev/null | tr -d '\r') || remote_path=""
     remote_ld_lib=$(exec_on_host "${master_host}" "echo \${LD_LIBRARY_PATH:-}" 2>/dev/null | tr -d '\r') || remote_ld_lib=""
 
-    # /ws 代理目标:web server 本机内的 gateway WebChannel
-    local proxy_target="http://127.0.0.1:${web_port_target}"
+    # /ws 代理目标:gateway 的 WebChannel(WEB_HOST)。
+    # 单机场景 WEB_HOST 可设 127.0.0.1 走回环; 多机场景用 ingress VIP / MASTER_NODE_IP 跨机可达。
+    local web_host_target="${DEPLOY_VARS["WEB_HOST"]:-127.0.0.1}"
+    local proxy_target="http://${web_host_target}:${web_port_target}"
 
     # unit 文件:ExecStart 显式传 --host/--port/--proxy-target, 不依赖 app_web.py 的 FRONTEND_HOST/PORT 默认
     local unit_content
@@ -121,12 +123,13 @@ Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
     exec_on_host "${master_host}" "systemctl enable ${svc_name}" 2>/dev/null || true
     exec_on_host "${master_host}" "systemctl restart ${svc_name}" || error "Failed to start ${svc_name} on ${master_host}"
 
-    # 健康检查:systemctl is-active
+    # 健康检查：systemd active 且静态端口(WEB_STATIC_PORT)处于 LISTEN，避免"刚开始即崩溃"误报成功
     local retry=0
     local max_retry=10
     while [ ${retry} -lt ${max_retry} ]; do
         sleep 2
-        if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null; then
+        if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null \
+            && port_is_listening "${master_host}" "${web_port}"; then
             success "Web server service is running on ${master_host} (systemd: ${svc_name}) -> http://${web_host}:${web_port}"
             return 0
         fi
@@ -134,7 +137,18 @@ Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
         info "Waiting for web server to start... (${retry}/${max_retry})"
     done
 
-    error "Web server failed to start on ${master_host}, check: journalctl -u ${svc_name}"
+    # 服务起不来：分别探测 systemd 状态与端口监听，明确给出是 web 未启动、还是启动了但端口未监听
+    local web_state="inactive"
+    exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null && web_state="active"
+    exec_on_host "${master_host}" "systemctl is-failed --quiet ${svc_name}" 2>/dev/null && web_state="failed"
+
+    local web_listen="no"
+    port_is_listening "${master_host}" "${web_port}" && web_listen="yes"
+    info "jiuwenswarm-web on ${master_host}: systemd=${web_state}; port ${web_port}(WEB_STATIC_PORT)=${web_listen}"
+
+    warning "ss -ltn on ${master_host} (port ${web_port}):"
+    exec_on_host "${master_host}" "ss -ltn 2>/dev/null | grep -E ':${web_port}\\b' || true"
+    error "jiuwenswarm-web did NOT start on ${master_host} (systemd=${web_state}, port ${web_port}=${web_listen}). Check: journalctl -u ${svc_name} -n 50"
 }
 
 # nohup 模式启动(systemd 不可用时回退)
@@ -150,7 +164,8 @@ web_start_nohup() {
     web_bin=$(exec_on_host "${master_host}" "command -v jiuwenswarm-web" 2>/dev/null | tr -d '\r') || true
     [ -n "${web_bin}" ] || error "jiuwenswarm-web not found on ${master_host}; run 'install' first (installs jiuwenswarm whl)"
 
-    local proxy_target="http://127.0.0.1:${web_port_target}"
+    local web_host_target="${DEPLOY_VARS["WEB_HOST"]:-127.0.0.1}"
+    local proxy_target="http://${web_host_target}:${web_port_target}"
     local instance_env=""
     local pidfile="/tmp/jiuwenswarm-web.pid"
     if [ -n "${instance_name}" ]; then
@@ -170,7 +185,8 @@ web_start_nohup() {
     local max_retry=10
     while [ ${retry} -lt ${max_retry} ]; do
         sleep 2
-        if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-web' >/dev/null 2>&1"; then
+        if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-web' >/dev/null 2>&1" \
+            && port_is_listening "${master_host}" "${web_port}"; then
             success "Web process is running on ${master_host} -> http://${web_host}:${web_port}"
             return 0
         fi
@@ -185,6 +201,20 @@ web_deploy_process() {
     local master_host
     master_host=$(web_resolve_host)
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]}"
+
+    # 幂等保护：服务已运行时跳过整个部署（与 gateway / agent-registry 一致），
+    # 避免重复 up 无条件 systemctl restart 重启运行中进程、中断在途连接。
+    local svc_name
+    svc_name=$(web_service_name)
+    if web_has_systemd "${master_host}"; then
+        if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null; then
+            warning "${svc_name} already running; run 'down' first to redeploy"
+            return 0
+        fi
+    elif exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-web' >/dev/null 2>&1"; then
+        warning "jiuwenswarm-web already running (process mode); run 'down' first to redeploy"
+        return 0
+    fi
 
     info "Deploying web server on ${master_host}..."
 

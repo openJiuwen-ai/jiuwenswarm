@@ -34,6 +34,7 @@
 | `/evolve_rebuild` | 基于归档与演进记录重建 `SKILL.md`（见下文） |
 | `/hooks` | 浏览已配置的 hooks（只读，见下文） |
 | `/simplify` | 代码精简审查：检查复用性、质量、效率并自动修复（仅 `code.*`，见下文） |
+| `/autofix-pr` | 修复当前分支的开放 PR，直到检查通过并处理完评审意见；自动识别平台（GitHub 走 `gh`，GitCode 走 REST）；`--watch` 持续复查直到绿/合并/关闭（仅 `code.*`，详见[自动修复 PR](自动修复PR.md)） |
 | `/sandbox` | 设置沙箱模式（见下文） |
 | `/agents` | 管理 Agent 配置（list, get, create, update, enable, disable, delete，见下文） |
 | `/auto-harness` | Auto-Harness 任务管理（`run`/`schedule`/`issue`，见下文） |
@@ -246,7 +247,6 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 | 边界 | 值 | 行为 |
 |---|---|---|
 | 详情最大文件数 | 50 | 仅前 50 个已跟踪文件有 hunks；统计仍覆盖所有变更文件 |
-| 单文件最大行数 | 400 | 超过 400 行的 hunk 被截断，设置 `isTruncated` 标志 |
 | 单文件最大 diff 大小 | 1 MB | diff 超过 1 MB 的文件跳过 hunk 解析，设置 `isLargeFile` 标志，统计仍计入 |
 | 详情最大文件数阈值 | 500 | 变更文件超过 500 时，仅返回汇总统计（无逐文件 hunk） |
 | Git 命令超时 | 10s | 超过 10 秒的 git 命令返回 `None` |
@@ -350,16 +350,16 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 
 这组命令由 TUI 本地注册并解析，随后通过普通聊天通道把 slash 文本转发给后端。实际演进逻辑在 Agent / Team 侧完成：
 
-- Agent 模式：由 `SkillEvolutionRail` 处理，仅 `agent.plan` 可用。
-- Team 模式：由 `TeamSkillEvolutionRail` 处理，用于团队技能演进。
+- Agent 模式：使用单 Agent 演进运行时，自动建议面向普通 Skill。
+- Team 模式：使用团队演进运行时，自动建议面向 Team/Swarm Skill。
 - Code 模式与 `agent.fast` 不支持这组命令。
 
 #### 子命令
 
 | 命令 | 说明 |
 |---|---|
-| `/evolve <skill_name> [user_query]` | 为指定 Skill 触发演进。`agent.plan` 会扫描当前会话中的工具失败、用户纠错等信号；Team 模式必须提供 `user_query`。 |
-| `/evolve_list <skill_name> [--sort score]` | 按分数查看某个 Skill 的演进经验，展示记录数、平均分、使用/反馈统计、section 与内容预览。 |
+| `/evolve <skill_name> [user_intent]` | 为指定 Skill 发起演进审查；尾随文本是可选的审查意图。显式命令按目标实际类型处理，支持 Team 模式手动演进普通 Skill，也支持普通模式手动演进 Team/Swarm Skill。 |
+| `/evolve_list <skill_name>` | 按分数查看某个 Skill 的演进经验，展示记录数、平均分、使用/反馈统计、section 与内容预览。 |
 | `/evolve_simplify <skill_name> [user_intent]` | 生成经验库整理方案，用于合并重复经验、拆分过长经验或清理低价值经验；尾随文本会作为整理意图传入后端。 |
 | `/evolve_rebuild <skill_name> [user_intent]` | 生成重建 `SKILL.md` 的 follow-up prompt，并继续作为一次普通 Agent / Team 任务执行。 |
 
@@ -374,7 +374,7 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 
 ```bash
 /evolve pptx 修复导出失败时的错误处理
-/evolve_list pptx --sort score
+/evolve_list pptx
 /evolve_simplify pptx 合并重复的导出失败经验
 /evolve_rebuild pptx 强化 Troubleshooting 和 Examples
 ```
@@ -511,7 +511,7 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 | `targets` | 否 | 推送渠道，默认 `tui`；可选：`tui`、`web`、`feishu`、`whatsapp`、`wecom`、`xiaoyi`、`wechat`、`dingtalk` 或 `feishu_enterprise:<app_id>`。`targets=tui` 时结果会广播到所有已连接的 TUI 窗口，详见 [定时任务 — 推送到 TUI](定时任务.md#推送到-tui-频道) |
 | `timezone` | 否 | IANA 时区，默认 `Asia/Shanghai` |
 | `mode` | 否 | 执行模式，默认 `agent.fast`。可选：`agent`、`agent.fast`、`agent.plan`、`plan`、`team`、`team.plan`、`code.team`。`team` 系列走多 Agent 流式执行，详见 [定时任务 — Team 模式](定时任务.md#team-模式与-swarmflow多智能体定时任务) |
-| `timeout_seconds` | 否 | 单次执行超时（秒），范围 60～259200。未设置时普通模式默认 600，Team 模式默认 1200 |
+| `timeout_seconds` | 否 | 单次执行超时（秒），范围 60～259200。未设置时普通模式与 Team 模式默认均为 3600（1 小时） |
 | `wake_offset_seconds` | 否 | 提前唤醒秒数，默认 0 |
 | `delete_after_run` | 否 | 执行一次后自动删除，默认 false |
 
@@ -583,7 +583,7 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 
 - **超时**：`install`、`uninstall`、`marketplace toggle` 请求在 TUI 侧有 120 秒超时；其余子命令无显式超时设置。
 - **内置技能自动识别**：使用 `/skills install <skill>` 安装时，若技能名称不带 `@`，系统会自动检查是否为内置技能并重定向到内置安装流程；若不是内置技能则返回格式提示。
-- **路径/URL 自动识别**：使用 `/skills install <path_or_url>` 安装时，若参数为本地路径（如 `/path/to/skill`、`C:\skill`）或远程 URL（如 `https://...`），系统自动走本地导入流程（`skills.import_local`）。所有 URL 统一走 import_local，不自动路由 SkillNet。
+- **路径/URL 自动识别**：使用 `/skills install <path_or_url>` 安装时，若参数为本地路径（如 `/path/to/skill`、`~/skill`、`C:\skill`）或远程 URL（如 `https://...`），系统自动走本地导入流程（`skills.import_local`）。所有 URL 统一走 import_local，不自动路由 SkillNet。本地路径须为**绝对路径**或 `~/...` 路径；`~` 表示服务端 JiuwenClaw 进程用户的 home 目录。其他相对路径、位于系统/敏感目录（如 `/etc`、`~/.ssh`）的源、符号链接，以及不含合法 `name`/`description` frontmatter 的 `SKILL.md` 会被拒绝。
 - **`@skillnet` 搜索安装**：使用 `/skills install <name>@skillnet` 时，前端先调用 `skills.skillnet.search` 搜索。**只有精确匹配 skill_name 时才自动安装**；无精确匹配时只展示搜索结果列表（含 URL 和名称），不自动安装第一个结果，用户需从中选择后用 `/skills skillnet install <url>` 或 `/skills install <精确名称>@skillnet` 安装。这是因为 SkillNet 搜索是语义匹配，搜索 "code" 可能返回 "taskflow"、"coding-agent" 等名称不含 "code" 的技能。
 - **ClawHub token 必需**：从 ClawHub 安装技能前必须先配置 CLI token（通过 `/skills marketplace clawhub token <value>`）。未配置 token 时，`@clawhub` 安装会失败并提示配置方法。Token 可在 [clawhub.ai](https://clawhub.ai) 注册获取。
 - **ClawHub slug 与展示名**：ClawHub 技能的唯一标识是 **slug**（如 `code-review-security`），而非展示名（如 "Code Review Assistant"）。当直接使用 slug 安装失败时，系统会自动搜索 ClawHub 并列出匹配结果（含真实 slug 和简介），帮助用户找到正确的技能。
@@ -805,6 +805,9 @@ TUI 通过 `hooks.list` RPC 请求 Gateway，Gateway 从 `config.yaml` 的 `hook
 
 #### Hooks 概念速览
 
+用户配置的工具 hooks 也适用于子 Agent 和 swarm 成员的工具调用。
+此时 hook 输入包含子 Agent 的 `session_id` 和 `subagent_type`（未命名的 swarm 成员使用 `"swarm_member"`）。
+
 Hooks 是在特定事件触发时自动执行的扩展逻辑，支持以下 17 种事件：
 
 | 事件 | 执行层 | 触发时机 |
@@ -835,6 +838,7 @@ Hooks 是在特定事件触发时自动执行的扩展逻辑，支持以下 17 �
 | `prompt` | 调用 LLM 审查。模板中 `$ARGUMENTS` 替换为 JSON 上下文，`$TOOL_NAME` 替换为工具名。LLM 响应中的 JSON `decision: "block"` 可阻断。 | `prompt`、`timeout`（默认 15s）、`model` |
 
 - **阻断行为**：退出码 2（command）或 `decision: "block"`（prompt）会阻止当前操作（如跳过工具调用），并将原因反馈给模型。
+- **PreToolUse 终止**：阻断时跳过该工具及同批尚未开始执行的工具（包括审批恢复后的调用），将原因保留在工具消息并作为最终响应返回，结束当前 Agent 执行及任务循环，不再调用模型自动重试。Goal 轮次（包括其审批恢复）被阻断时，会将原 Goal 标记为 `blocked` 并清除其排队的续跑任务，需解决 Hook 限制后显式恢复。被跳过工具的 `PostToolUse` 不会执行；用户仍可发起新的请求。已经开始执行的其他并行工具不会被撤销。
 - **输入修改**：PreToolUse hook 可通过 stdout JSON 的 `modifiedInput` 字段修改工具输入参数。
 - **附加上下文**：可通过 stdout JSON 的 `additionalContext` 字段注入额外信息到工具结果或模型上下文。
 - **全局开关**：`config.yaml` 中 `hooks.disable_all_hooks: true` 可禁用所有 hooks。

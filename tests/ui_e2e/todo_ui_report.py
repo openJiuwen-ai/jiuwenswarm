@@ -5,11 +5,9 @@ import asyncio
 import base64
 import contextlib
 import json
-import os
 import shutil
 import socket
 import subprocess
-import sys
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -21,19 +19,27 @@ from playwright.async_api import Browser, Page, async_playwright
 try:
     from .runtime_openjiuwen import (
         build_repo_pythonpath,
+        build_workspace_env,
+        resolve_browser_executable,
         resolve_openjiuwen_runtime,
+        resolve_npm_executable,
         resolve_runtime_python,
+        terminate_process_tree,
     )
 except ImportError:
     from runtime_openjiuwen import (
         build_repo_pythonpath,
+        build_workspace_env,
+        resolve_browser_executable,
         resolve_openjiuwen_runtime,
+        resolve_npm_executable,
         resolve_runtime_python,
+        terminate_process_tree,
     )
 
 UI_E2E_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WEB_DIR = REPO_ROOT / "jiuwenswarm" / "channels" / "web"
+WEB_DIR = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend"
 WEB_DIST_DIR = WEB_DIR / "dist"
 APP_WEB = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "app_web.py"
 DEFAULT_HOME = Path.home()
@@ -81,12 +87,7 @@ def _default_runtime_python() -> str:
 
 
 def _chrome_path() -> str | None:
-    return (
-        shutil.which("google-chrome")
-        or shutil.which("google-chrome-stable")
-        or shutil.which("chromium")
-        or shutil.which("chromium-browser")
-    )
+    return resolve_browser_executable()
 
 
 def _start_process(cmd: list[str], *, env: dict[str, str], log_path: Path, cwd: Path) -> subprocess.Popen:
@@ -116,6 +117,20 @@ async def _wait_for_log(log_path: Path, needle: str, timeout: float = 60.0) -> N
     raise RuntimeError(f"Timed out waiting for {needle!r} in {log_path}\n{tail}")
 
 
+async def _wait_for_port(port: int, timeout: float = 60.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1.0)
+            try:
+                sock.connect(("127.0.0.1", port))
+                return
+            except OSError:
+                pass
+        await asyncio.sleep(0.5)
+    raise RuntimeError(f"Timed out waiting for 127.0.0.1:{port} to accept connections")
+
+
 async def _launch_browser() -> tuple[Browser, Any]:
     playwright = await async_playwright().start()
     chrome_path = _chrome_path()
@@ -134,7 +149,7 @@ async def _close_browser(browser: Browser, playwright: Any) -> None:
 
 async def _wait_for_session(page: Page) -> str:
     await page.wait_for_selector('[data-testid="app-shell"]')
-    deadline = time.time() + 30
+    deadline = time.time() + 90
     while time.time() < deadline:
         session_id = await page.locator('[data-testid="app-shell"]').get_attribute("data-session-id")
         if session_id and session_id != "new":
@@ -371,7 +386,11 @@ async def async_main() -> int:
     args = parser.parse_args()
 
     if args.build:
-        subprocess.run(["npm", "run", "build"], cwd=str(WEB_DIR), check=True)
+        subprocess.run(
+            [resolve_npm_executable(), "run", "build"],
+            cwd=str(WEB_DIR),
+            check=True,
+        )
     elif not WEB_DIST_DIR.exists():
         raise SystemExit(f"Missing dist directory: {WEB_DIST_DIR}. Run with --build first.")
 
@@ -386,16 +405,20 @@ async def async_main() -> int:
     agent_port = args.agent_port or _pick_free_port()
     backend_port = args.backend_port or _pick_free_port()
     ui_port = args.ui_port or _pick_free_port()
+    gateway_port = _pick_free_port()
     backend_log = report_dir / "backend.log"
     ui_log = report_dir / "ui.log"
     runtime_info = resolve_openjiuwen_runtime(args.runtime_python, require=True)
 
-    env = os.environ.copy()
+    env = build_workspace_env(args.home)
     env.update(
         {
-            "HOME": str(Path(args.home).expanduser()),
             "AGENT_PORT": str(agent_port),
+            "AGENT_SERVER_PORT": str(agent_port),
             "WEB_PORT": str(backend_port),
+            "GATEWAY_PORT": str(gateway_port),
+            "JIUWENSWARM_CLI_PORTS": "1",
+            "PYTHONUTF8": "1",
             "PYTHONPATH": build_repo_pythonpath(REPO_ROOT, env.get("PYTHONPATH")),
         }
     )
@@ -434,7 +457,7 @@ async def async_main() -> int:
             log_path=ui_log,
             cwd=REPO_ROOT,
         )
-        await _wait_for_log(ui_log, f"http://127.0.0.1:{ui_port}", timeout=30)
+        await _wait_for_port(ui_port, timeout=60)
 
         browser, playwright = await _launch_browser()
         page = await browser.new_page(viewport={"width": 1440, "height": 1200})
@@ -460,13 +483,7 @@ async def async_main() -> int:
         for proc in (ui_proc, backend_proc):
             if proc is None:
                 continue
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=5)
+            terminate_process_tree(proc)
 
         if session_id:
             session_dir = Path(args.home).expanduser() / ".jiuwenswarm" / "workspace" / "session" / session_id
@@ -489,7 +506,7 @@ async def async_main() -> int:
     )
     report_path = _write_report(report_dir, context, cases)
     print(report_path)
-    return exit_code
+    return exit_code or (1 if any(case.status != "PASS" for case in cases) else 0)
 
 
 def main() -> int:

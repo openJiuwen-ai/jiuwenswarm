@@ -37,6 +37,7 @@ def _is_uds_endpoint(endpoint: str) -> bool:
 def _api_base_url(server_endpoint: str) -> str:
     if _is_uds_endpoint(server_endpoint):
         return _UDS_PLACEHOLDER_BASE_URL
+    # http:// is used for local MCP test server; use https:// for production
     return server_endpoint if "://" in server_endpoint else f"http://{server_endpoint}"
 
 

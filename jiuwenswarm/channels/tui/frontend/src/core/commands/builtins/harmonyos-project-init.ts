@@ -38,7 +38,7 @@ function showProjectReport(ctx: CommandContext, report: ProjectInitReport): void
         { label: "project", value: project.name || "(unknown)" },
         { label: "root", value: project.path || "(unknown)" },
         { label: "bundle_name", value: project.bundleName || "(unknown)" },
-        { label: "mode", value: "code.normal" },
+        { label: "mode", value: "agent.code.normal" },
         { label: "product", value: selected.product || "(select explicitly)" },
         { label: "module", value: selected.module || "(select explicitly)" },
         { label: "ability", value: selected.ability || "(select explicitly)" },
@@ -103,7 +103,7 @@ export function createHarmonyOSProjectInitCommand(): SlashCommand {
           throw new Error("backend returned an incomplete HarmonyOS project report");
         }
 
-        const switched = await switchMode(ctx, "code.normal", { announce: false });
+        const switched = await switchMode(ctx, "agent.code.normal", { announce: false });
         if (!switched) {
           ctx.addItem(
             addInfo(
@@ -124,7 +124,7 @@ export function createHarmonyOSProjectInitCommand(): SlashCommand {
           report.context ?? {},
           report.runtime?.devecocli,
         );
-        const requestId = ctx.sendMessage(prompt, undefined, "code.normal", {
+        const requestId = ctx.sendMessage(prompt, undefined, "agent.code.normal", {
           logAsUser: false,
         });
         if (!requestId) {

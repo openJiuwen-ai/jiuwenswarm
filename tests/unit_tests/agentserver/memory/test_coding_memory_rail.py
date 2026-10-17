@@ -128,17 +128,12 @@ class MockInvokeInputs:
         self,
         messages: Optional[List[Dict[str, Any]]] = None,
         is_cron: bool = False,
-        is_heartbeat: bool = False,
     ):
         self.messages = messages or []
         self._is_cron = is_cron
-        self._is_heartbeat = is_heartbeat
     
     def is_cron(self) -> bool:
         return self._is_cron
-    
-    def is_heartbeat(self) -> bool:
-        return self._is_heartbeat
 
 
 class MockContext:
@@ -228,8 +223,8 @@ class CodingMemoryRail:
         self._recalled_content = None
         self._prefetch_task = None
         
-        is_read_only = isinstance(ctx.inputs, MockInvokeInputs) and (
-            ctx.inputs.is_cron() or ctx.inputs.is_heartbeat()
+        is_read_only = (
+            isinstance(ctx.inputs, MockInvokeInputs) and ctx.inputs.is_cron()
         )
         if not is_read_only and self._manager:
             query = self._extract_last_user_query(ctx)
@@ -243,8 +238,8 @@ class CodingMemoryRail:
         
         self.system_prompt_builder.remove_section("memory")
         lang = self.system_prompt_builder.language
-        is_read_only = isinstance(ctx.inputs, MockInvokeInputs) and (
-            ctx.inputs.is_cron() or ctx.inputs.is_heartbeat()
+        is_read_only = (
+            isinstance(ctx.inputs, MockInvokeInputs) and ctx.inputs.is_cron()
         )
         
         section_content = self._build_section_content(lang, is_read_only)
@@ -475,17 +470,6 @@ class TestCodingMemoryRailBeforeInvoke:
         coding_rail.init(mock_agent)
         
         inputs = MockInvokeInputs(is_cron=True)
-        ctx = MockContext(inputs=inputs)
-        await coding_rail.before_invoke(ctx)
-
-        assert coding_rail.prefetch_task is None
-
-    @pytest.mark.asyncio
-    async def test_no_prefetch_for_heartbeat_mode(self, coding_rail: CodingMemoryRail, mock_agent: MockAgent) -> None:
-        """Test that prefetch is not started for heartbeat mode."""
-        coding_rail.init(mock_agent)
-
-        inputs = MockInvokeInputs(is_heartbeat=True)
         ctx = MockContext(inputs=inputs)
         await coding_rail.before_invoke(ctx)
 

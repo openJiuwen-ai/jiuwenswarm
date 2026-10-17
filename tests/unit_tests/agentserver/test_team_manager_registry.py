@@ -22,6 +22,19 @@ from jiuwenswarm.agents.harness.team.team_manager import (
 )
 
 
+def test_default_team_spec_accessor_preserves_loader_result(monkeypatch):
+    spec = object()
+    sessions = []
+
+    def load(session_id):
+        sessions.append(session_id)
+        return spec
+
+    monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(load))
+    assert TeamManager.load_default_team_spec("session") is spec
+    assert sessions == ["session"]
+
+
 class _TeamManagerHarness(TeamManager):
     def set_active_runtime_for_test(self, session_id: str, team_name: str) -> None:
         self.commit_runtime_ready(session_id, team_name)
@@ -86,6 +99,48 @@ class _FakeAgent:
 
     def add_rail(self, rail: object) -> None:
         self.added_rails.append(rail)
+
+
+class _FakeWorkflowHandler:
+    """Workflow handler recording finalize dispositions for cleanup tests."""
+
+    def __init__(self) -> None:
+        self.finalize_dispositions: list[str] = []
+        self.stopped = False
+
+    def finalize_pending_runs(self, *, disposition: str = "stop") -> None:
+        self.finalize_dispositions.append(disposition)
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+class _FakeBackgroundTaskController:
+    """Spy BackgroundTaskController recording full-scope pause/stop calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+
+    async def pause(self, run_id: str | None = None) -> bool:
+        self.calls.append(("pause", run_id))
+        return True
+
+    async def stop(self, run_id: str | None = None) -> bool:
+        self.calls.append(("stop", run_id))
+        return True
+
+
+def _patch_background_task_controller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> _FakeBackgroundTaskController:
+    controller = _FakeBackgroundTaskController()
+    # The registry lives on TeamManager; team_helpers only delegates to it.
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.TeamManager."
+        "get_background_task_controller",
+        lambda _self, _session_id: controller,
+    )
+    return controller
 
 
 def setup_function() -> None:
@@ -445,6 +500,13 @@ def test_find_team_skill_rail_for_request_uses_pending_governance() -> None:
     assert manager.find_team_skill_rail_for_request("missing") is None
 
 
+def test_find_team_skill_rail_for_request_uses_core_owned_child_request() -> None:
+    manager = TeamManager()
+    rail = _FakeTeamSkillEvolutionRail()
+    rail.add_pending_approval_snapshot("skill_evolve_review_req1")
+    manager.register_team_skill_rail("sess-1", rail)
+
+    assert manager.find_team_skill_rail_for_request("skill_evolve_review_req1") is rail
 @pytest.mark.asyncio
 async def test_update_evolution_config_disables_team_skill_create_rail(
     monkeypatch: pytest.MonkeyPatch,
@@ -691,6 +753,14 @@ async def test_create_team_does_not_run_global_runtime_cleanup(monkeypatch: pyte
     assert manager.get_team_agent("sess-1") is team_agent
 
 
+def test_get_team_agent_includes_runner_owned_leader() -> None:
+    manager = TeamManager()
+    leader = SimpleNamespace()
+    manager._runner_team_agents["runner-session"] = leader
+
+    assert manager.get_team_agent("runner-session") is leader
+
+
 @pytest.mark.asyncio
 async def test_create_team_appends_session_id_to_team_name(monkeypatch: pytest.MonkeyPatch) -> None:
     created_team_names: list[str] = []
@@ -810,6 +880,64 @@ async def test_prepare_session_switch_keeps_other_local_sessions_running(
 
     assert manager.get_active_team_name("sess-active") == "team-active"
     assert manager.is_runtime_pending("sess-pending") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "organization_id", "should_stop"),
+    [("local", "org-1", False), ("local", None, True), ("distributed", "org-1", True)],
+)
+async def test_session_switch_preserves_only_local_organization_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    organization_id: str | None,
+    should_stop: bool,
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_config",
+        lambda: {"team": {"runtime": {"mode": mode}}},
+    )
+    manager = _TeamManagerHarness()
+    backend = SimpleNamespace(org_task_manager=SimpleNamespace(organization_id=organization_id))
+    entry = SimpleNamespace(current_session_id="sess-owner", agent=SimpleNamespace(team_backend=backend))
+    pool = {"team-owner": entry}
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager._runner_team_runtime_manager",
+        lambda _runner: SimpleNamespace(pool=SimpleNamespace(get=AsyncMock(side_effect=pool.get))),
+    )
+    monkeypatch.setattr(
+        manager,
+        "_find_paused_runner_team_name",
+        AsyncMock(side_effect=lambda session_id: "team-owner" if session_id == "sess-owner" else None),
+    )
+
+    async def stop_runtime(*_args):
+        pool.pop("team-owner")
+        return True
+
+    stop = AsyncMock(side_effect=stop_runtime)
+    cleanup = AsyncMock()
+    monkeypatch.setattr(manager, "_stop_runner_team_runtime", stop)
+    monkeypatch.setattr(manager, "_stop_runner_team_agent_transport", AsyncMock())
+    monkeypatch.setattr(manager, "_finalize_runtime_cleanup", cleanup)
+    monkeypatch.setattr(manager, "_dispatch_swarmflow_controller", AsyncMock())
+    monkeypatch.setattr(manager, "_stop_stale_distributed_sessions", AsyncMock())
+
+    await manager.prepare_session_switch("sess-other", previous_session_id="sess-owner")
+    await manager.prepare_session_switch("sess-owner", previous_session_id="sess-other")
+
+    if should_stop:
+        stop.assert_awaited_once()
+        cleanup.assert_awaited_once()
+        assert "team-owner" not in pool
+    else:
+        stop.assert_not_awaited()
+        cleanup.assert_not_awaited()
+        assert pool["team-owner"].agent.team_backend is backend
+
+        # Explicit shutdown still releases a parked organization Team.
+        assert await manager.stop_paused_session_runtime("sess-owner", offload=False)
+        stop.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1028,17 +1156,22 @@ async def test_finalize_runtime_cleanup_releases_session_markers(
     manager = _TeamManagerHarness()
     session_id = "sess-terminal-cleanup"
     manager.commit_runtime_ready(session_id, "team-terminal")
-    manager.mark_seen_team_events(session_id)
-    manager.mark_workflow_completed(session_id)
     manager.setdefault_cron_completion(session_id, {"round_id": 1})
     getattr(manager, "_pending_team_evolution_watcher_sessions").add(session_id)
+    release_admission = AsyncMock()
+    manager.begin_round(
+        session_id,
+        "req-terminal-cleanup",
+        release_admission=release_admission,
+    )
 
     async def fake_cleanup(
         _session_id: str,
         *,
         finalize_workflows: bool = True,
+        workflow_disposition: str = "stop",
     ) -> None:
-        _ = _session_id, finalize_workflows
+        _ = _session_id, finalize_workflows, workflow_disposition
         manager._clear_team_rail_registries(session_id)
 
     monkeypatch.setattr(manager, "_cleanup_runtime_locals", fake_cleanup)
@@ -1047,9 +1180,9 @@ async def test_finalize_runtime_cleanup_releases_session_markers(
 
     assert manager.is_runtime_active(session_id) is False
     assert manager.is_session_initialized(session_id) is False
-    assert manager.has_seen_team_events(session_id) is False
-    assert manager.is_workflow_completed(session_id) is False
     assert manager.get_cron_completion(session_id) is None
+    assert manager.is_round_active(session_id) is False
+    release_admission.assert_awaited_once()
     assert session_id not in getattr(
         manager,
         "_pending_team_evolution_watcher_sessions",
@@ -1097,6 +1230,44 @@ async def test_cancel_all_stream_tasks_uses_per_session_lifecycle_locks(
 
 
 @pytest.mark.asyncio
+async def test_cancel_all_stream_tasks_preserves_heartbeat_owned_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_config",
+        lambda: {"team": {"runtime": {"mode": "local"}}},
+    )
+    manager = _TeamManagerHarness()
+    protected_cancelled = asyncio.Event()
+    ordinary_cancelled = asyncio.Event()
+
+    async def wait_until_cancelled(cancelled: asyncio.Event) -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    protected_task = asyncio.create_task(wait_until_cancelled(protected_cancelled))
+    ordinary_task = asyncio.create_task(wait_until_cancelled(ordinary_cancelled))
+    await asyncio.sleep(0)
+    manager.register_stream_task("heartbeat-session", protected_task)
+    manager.register_stream_task("user-session", ordinary_task)
+
+    await manager.cancel_all_stream_tasks(
+        exclude_session_ids={"heartbeat-session"},
+    )
+
+    assert ordinary_cancelled.is_set() is True
+    assert protected_cancelled.is_set() is False
+    assert manager.has_stream_task("heartbeat-session") is True
+    assert manager.has_stream_task("user-session") is False
+
+    protected_task.cancel()
+    await asyncio.gather(protected_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_distributed_runtime_activations_switch_atomically(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1138,7 +1309,7 @@ async def test_distributed_runtime_activations_switch_atomically(
 
 
 @pytest.mark.asyncio
-async def test_delete_session_runtime_deletes_single_team_session_team(
+async def legacy_delete_session_runtime_deletes_single_team_session_team(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _TeamManagerHarness()
@@ -1177,7 +1348,7 @@ async def test_delete_session_runtime_deletes_single_team_session_team(
 
 
 @pytest.mark.asyncio
-async def test_delete_session_runtime_uses_metadata_not_active_team_name(
+async def legacy_delete_session_runtime_uses_metadata_not_active_team_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _TeamManagerHarness()
@@ -1220,8 +1391,6 @@ async def test_stop_session_runtime_stops_runner_owned_team_runtime(
     manager.set_active_runtime_for_test("sess-1", "demo-team")
     manager.set_active_runtime_for_test("sess-2", "other-team")
     getattr(manager, "_initialized_sessions").add("sess-1")
-    manager.mark_seen_team_events("sess-1")
-    manager.mark_workflow_completed("sess-1")
     manager.mark_team_evolution_watcher_deferred("sess-1")
 
     stop_calls: list[tuple[str, str]] = []
@@ -1242,8 +1411,6 @@ async def test_stop_session_runtime_stops_runner_owned_team_runtime(
     assert manager.is_runtime_active("sess-1") is False
     assert manager.get_active_team_name("sess-2") == "other-team"
     assert manager.is_session_initialized("sess-1") is False
-    assert manager.has_seen_team_events("sess-1") is False
-    assert manager.is_workflow_completed("sess-1") is False
     assert manager.consume_team_evolution_watcher_deferred("sess-1") is False
 
 
@@ -1252,8 +1419,6 @@ async def test_stop_session_runtime_clears_stale_markers_without_live_runtime() 
     manager = _TeamManagerHarness()
     session_id = "sess-stale-markers"
     getattr(manager, "_initialized_sessions").add(session_id)
-    manager.mark_seen_team_events(session_id)
-    manager.mark_workflow_completed(session_id)
     manager.mark_team_evolution_watcher_deferred(session_id)
     manager.setdefault_cron_completion(session_id, {"round_id": 1})
 
@@ -1261,8 +1426,6 @@ async def test_stop_session_runtime_clears_stale_markers_without_live_runtime() 
 
     assert stopped is False
     assert manager.is_session_initialized(session_id) is False
-    assert manager.has_seen_team_events(session_id) is False
-    assert manager.is_workflow_completed(session_id) is False
     assert manager.consume_team_evolution_watcher_deferred(session_id) is False
     assert manager.get_cron_completion(session_id) is None
 
@@ -1274,8 +1437,6 @@ async def test_pause_session_runtime_pauses_runner_owned_team_runtime(
     manager = _TeamManagerHarness()
     manager.set_active_runtime_for_test("sess-1", "demo-team")
     getattr(manager, "_initialized_sessions").add("sess-1")
-    manager.mark_seen_team_events("sess-1")
-    manager.mark_workflow_completed("sess-1")
     manager.mark_team_evolution_watcher_deferred("sess-1")
 
     pause_calls: list[tuple[str, str]] = []
@@ -1302,9 +1463,53 @@ async def test_pause_session_runtime_pauses_runner_owned_team_runtime(
     assert pause_calls == [("demo-team", "sess-1")]
     assert manager.is_runtime_active("sess-1") is False
     assert manager.is_session_initialized("sess-1") is True
-    assert manager.has_seen_team_events("sess-1") is True
-    assert manager.is_workflow_completed("sess-1") is True
     assert manager.consume_team_evolution_watcher_deferred("sess-1") is True
+
+
+@pytest.mark.asyncio
+async def test_pause_session_runtime_pauses_controller_before_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """controller.pause_all must run BEFORE Runner.pause_agent_team.
+
+    Runner.pause tears down the leader harness, whose async-tool runtime
+    cancels the swarmflow coroutine as a plain cancel: no abort reason, no
+    pause record, and run_background's finally deregisters the handle. A
+    controller.pause that arrives afterwards finds an empty registry and is a
+    no-op — the run dies unrecorded and the tree keeps showing it running.
+    """
+    manager = _TeamManagerHarness()
+    manager.set_active_runtime_for_test("sess-1", "demo-team")
+    getattr(manager, "_initialized_sessions").add("sess-1")
+    timeline: list[str] = []
+
+    class _OrderedController(_FakeBackgroundTaskController):
+        async def pause(self, run_id: str | None = None) -> bool:
+            timeline.append("controller.pause")
+            return await super().pause(run_id)
+
+    controller = _OrderedController()
+    # The registry lives on TeamManager; team_helpers only delegates to it.
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.TeamManager."
+        "get_background_task_controller",
+        lambda _self, _session_id: controller,
+    )
+
+    async def fake_pause_agent_team(*, team_name: str, session_id: str) -> bool:
+        timeline.append("runner.pause")
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.pause_agent_team",
+        fake_pause_agent_team,
+    )
+
+    await manager.pause_session_runtime("sess-1", reason="interrupt(intent=pause): ")
+
+    assert timeline[0] == "controller.pause"
+    assert "runner.pause" in timeline
+    assert timeline.index("controller.pause") < timeline.index("runner.pause")
 
 
 @pytest.mark.asyncio
@@ -1693,7 +1898,7 @@ async def test_stop_session_runtime_uses_metadata_team_name_for_non_active_sessi
 
 
 @pytest.mark.asyncio
-async def test_delete_session_runtime_uses_metadata_team_name(
+async def legacy_delete_session_runtime_uses_metadata_team_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _TeamManagerHarness()
@@ -1731,7 +1936,7 @@ async def test_delete_session_runtime_uses_metadata_team_name(
 
 
 @pytest.mark.asyncio
-async def test_delete_session_runtime_falls_back_to_release_without_team_name(
+async def legacy_delete_session_runtime_falls_back_to_release_without_team_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _TeamManagerHarness()
@@ -1795,6 +2000,7 @@ async def test_get_swarm_enriched_team_spec_uses_bound_stable_team_name(
 
     class _Spec:
         team_name = "template_team"
+        bootstrap_mode = "leader"
 
     async def fake_ensure_postgresql(self, config_base: dict) -> None:
         _ = self, config_base
@@ -1858,6 +2064,7 @@ async def test_get_swarm_enriched_team_spec_uses_bound_team_entity_snapshot(
 
     class _Spec:
         team_name = "template_team"
+        bootstrap_mode = "leader"
 
     async def fake_ensure_postgresql(self, config_base: dict) -> None:
         _ = self, config_base
@@ -1926,6 +2133,7 @@ async def test_get_swarm_enriched_team_spec_keeps_legacy_session_scoped_team_nam
 
     class _Spec:
         team_name = "template_team"
+        bootstrap_mode = "leader"
 
     async def fake_ensure_postgresql(self, config_base: dict) -> None:
         _ = self, config_base
@@ -1973,3 +2181,313 @@ def test_pop_workflow_handler() -> None:
 def test_get_workflow_handler_returns_none_for_unknown() -> None:
     tm = TeamManager()
     assert tm.get_workflow_handler("unknown_sess") is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_runtime_locals_finalizes_by_disposition_without_driving_controller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_cleanup_runtime_locals only finalizes/stops the handler.
+
+    The swarmflow controller is driven by each lifecycle method BEFORE
+    Runner.pause/stop (see the ordering tests below); a second dispatch here
+    would be a no-op at best and misleading about where the injection point is.
+    """
+    manager = _TeamManagerHarness()
+    controller = _patch_background_task_controller(monkeypatch)
+
+    for disposition, finalize in (("stop", True), ("pause", True), ("stop", False)):
+        session_id = f"sess-cleanup-{disposition}-{finalize}"
+        handler = _FakeWorkflowHandler()
+        manager.register_workflow_handler(session_id, handler)
+        await manager._cleanup_runtime_locals(
+            session_id, finalize_workflows=finalize, workflow_disposition=disposition,
+        )
+        assert handler.finalize_dispositions == ([disposition] if finalize else [])
+        assert handler.stopped is True
+
+    assert controller.calls == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_runtime_cleanup_forwards_pause_disposition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _TeamManagerHarness()
+    session_id = "sess-finalize-pause"
+    _patch_background_task_controller(monkeypatch)
+    handler = _FakeWorkflowHandler()
+    manager.register_workflow_handler(session_id, handler)
+
+    await manager._finalize_runtime_cleanup(
+        session_id,
+        "cancel",
+        workflow_disposition="pause",
+    )
+
+    assert handler.finalize_dispositions == ["pause"]
+
+
+@pytest.mark.asyncio
+async def test_stop_paused_session_runtime_stops_controller_before_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Session switch: controller.stop_all (drop tickets) precedes Runner.stop."""
+    manager = _TeamManagerHarness()
+    session_id = "sess-1"
+    timeline: list[str] = []
+
+    class _OrderedController(_FakeBackgroundTaskController):
+        async def stop(self, run_id: str | None = None) -> bool:
+            timeline.append("controller.stop")
+            return await super().stop(run_id)
+
+    controller = _OrderedController()
+    # The registry lives on TeamManager; team_helpers only delegates to it.
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.TeamManager."
+        "get_background_task_controller",
+        lambda _self, _session_id: controller,
+    )
+
+    async def fake_find_paused(sid: str) -> str | None:
+        return "demo-team"
+
+    async def fake_stop_agent_team(*, team_name: str, session_id: str) -> bool:
+        timeline.append("runner.stop")
+        return True
+
+    monkeypatch.setattr(manager, "_find_paused_runner_team_name", fake_find_paused)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.stop_agent_team",
+        fake_stop_agent_team,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id: {},
+    )
+
+    await manager.stop_paused_session_runtime(session_id)
+
+    assert "controller.stop" in timeline and "runner.stop" in timeline
+    assert timeline.index("controller.stop") < timeline.index("runner.stop")
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_runtime_forwards_default_stop_disposition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _TeamManagerHarness()
+    session_id = "sess-cancel-stop"
+    done_task = asyncio.create_task(asyncio.sleep(0))
+    await done_task
+    manager.register_stream_task(session_id, done_task)
+    finalize_spy = AsyncMock()
+    monkeypatch.setattr(manager, "_finalize_runtime_cleanup", finalize_spy)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id: {},
+    )
+
+    cancelled = await manager.cancel_session_runtime(session_id, reason="user-stop")
+
+    assert cancelled is True
+    finalize_spy.assert_awaited_once_with(
+        session_id,
+        "cancel",
+        workflow_disposition="stop",
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_runtime_stops_controller_before_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """controller.stop_all must run BEFORE Runner.stop_agent_team."""
+    manager = _TeamManagerHarness()
+    manager.set_active_runtime_for_test("sess-1", "demo-team")
+    timeline: list[str] = []
+
+    class _OrderedController(_FakeBackgroundTaskController):
+        async def stop(self, run_id: str | None = None) -> bool:
+            timeline.append("controller.stop")
+            return await super().stop(run_id)
+
+    controller = _OrderedController()
+    # The registry lives on TeamManager; team_helpers only delegates to it.
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.TeamManager."
+        "get_background_task_controller",
+        lambda _self, _session_id: controller,
+    )
+
+    async def fake_stop_agent_team(*, team_name: str, session_id: str) -> bool:
+        timeline.append("runner.stop")
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.stop_agent_team",
+        fake_stop_agent_team,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id: {},
+    )
+
+    await manager.cancel_session_runtime("sess-1", reason="user-stop")
+
+    assert "controller.stop" in timeline and "runner.stop" in timeline
+    assert timeline.index("controller.stop") < timeline.index("runner.stop")
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_runtime_forwards_pause_disposition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _TeamManagerHarness()
+    session_id = "sess-cancel-pause"
+    done_task = asyncio.create_task(asyncio.sleep(0))
+    await done_task
+    manager.register_stream_task(session_id, done_task)
+    finalize_spy = AsyncMock()
+    monkeypatch.setattr(manager, "_finalize_runtime_cleanup", finalize_spy)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id: {},
+    )
+
+    cancelled = await manager.cancel_session_runtime(
+        session_id,
+        reason="client-disconnect",
+        workflow_disposition="pause",
+    )
+
+    assert cancelled is True
+    finalize_spy.assert_awaited_once_with(
+        session_id,
+        "cancel",
+        workflow_disposition="pause",
+    )
+
+
+# ---------------------------------------------------------------------------
+# BackgroundTaskController registry lives on TeamManager
+# ---------------------------------------------------------------------------
+
+
+def test_background_task_controller_is_session_scoped_and_lazy():
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    tm = TeamManager()
+    a = tm.get_background_task_controller("s1")
+    assert tm.get_background_task_controller("s1") is a
+    assert tm.get_background_task_controller("s2") is not a
+
+
+@pytest.mark.asyncio
+async def test_cleanup_drops_controller_on_stop_but_keeps_it_across_pause(monkeypatch):
+    """A paused team resumes in-process and must find its pause tickets again;
+    a cancelled/stopped team never will, so its controller goes with it."""
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    tm = TeamManager()
+    monkeypatch.setattr(tm, "_cancel_team_evolution_watcher", AsyncMock())
+
+    ctl = tm.get_background_task_controller("s")
+    await tm._cleanup_runtime_locals("s", finalize_workflows=False)   # pause path
+    assert tm.get_background_task_controller("s") is ctl
+
+    await tm._cleanup_runtime_locals("s")                             # stop/cancel path
+    assert tm.get_background_task_controller("s") is not ctl
+
+@pytest.mark.asyncio
+async def test_permanent_delete_quiesce_closes_team_execution_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = TeamManager()
+    monkeypatch.setattr(manager, "_dispatch_swarmflow_controller", AsyncMock())
+    monkeypatch.setattr(manager, "_cleanup_runtime_locals", AsyncMock())
+    target = SimpleNamespace(descriptor=SimpleNamespace(session_id="deleting-session"))
+
+    await manager.quiesce_for_delete(target, reason="permanent-delete")
+
+    with pytest.raises(RuntimeError, match="permanently deleted"):
+        manager.begin_round("deleting-session", "request-1")
+    with pytest.raises(RuntimeError, match="permanently deleted"):
+        await manager.prepare_runtime_activation("deleting-session", "team-1")
+
+    manager.delete_aborted(target)
+    assert "deleting-session" not in manager._terminal_delete_sessions
+
+    await manager.quiesce_for_delete(target, reason="permanent-delete-retry")
+    manager.delete_committed(target)
+    assert "deleting-session" not in manager._terminal_delete_sessions
+
+
+@pytest.mark.asyncio
+async def test_team_running_window_follows_execution_not_round_or_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only executing members block, even if an old round still owns the stream."""
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+    from openjiuwen.agent_teams.agent.member_activity import MemberActivityRegistry
+    from openjiuwen.agent_teams.schema.status import MemberStatus
+
+    manager = TeamManager()
+    monkeypatch.setattr(team_manager_module, "_team_manager", manager)
+    session_id = "sess-running"
+
+    assert not team_manager_module.is_team_session_running(session_id)
+
+    manager.begin_request(session_id, "request-1")
+    assert not team_manager_module.is_team_session_running(session_id)
+
+    manager.begin_round(session_id, "request-1")
+    assert not team_manager_module.is_team_session_running(session_id)
+
+    registry = MemberActivityRegistry("leader")
+    agent = SimpleNamespace(
+        is_agent_running=lambda: True,
+        _state=SimpleNamespace(member_registry=registry),
+    )
+    manager._runner_team_agents[session_id] = agent
+    assert team_manager_module.is_team_session_running(session_id)
+    agent.is_agent_running = lambda: False
+    registry.record("leader", MemberStatus.BUSY)  # lagging leader projection
+    assert not team_manager_module.is_team_session_running(session_id)
+    registry.record("peer", MemberStatus.BUSY)
+    assert team_manager_module.is_team_session_running(session_id)
+    registry.record("peer", MemberStatus.PAUSED)
+    assert not team_manager_module.is_team_session_running(session_id)
+
+    # 持久 stream 与常驻运行时在 round 结束后仍然存在，但不得继续算运行中。
+    manager.commit_runtime_ready(session_id, "team-1")
+    manager._stream_tasks[session_id] = SimpleNamespace()  # type: ignore[assignment]
+    await manager.release_round(session_id, "request-1")
+
+    assert not manager.is_round_active(session_id)
+    assert manager.has_stream_task(session_id)
+    assert manager.is_runtime_active(session_id)
+    assert not team_manager_module.is_team_session_running(session_id)
+
+    manager.begin_request(session_id, "request-2")
+    manager.end_request(session_id, "request-2")
+    assert not team_manager_module.is_team_session_running(session_id)
+
+
+@pytest.mark.parametrize("status", ["running", "waiting_for_human", "completed", "failed"])
+@pytest.mark.parametrize("live", [False, True])
+def test_team_running_checks_workflow_execution_only(monkeypatch, status, live):
+    from jiuwenswarm.agents.harness.team import team_manager as module
+
+    manager = TeamManager()
+    monkeypatch.setattr(module, "_team_manager", manager)
+    run = SimpleNamespace(
+        status="running",
+        phases=[SimpleNamespace(agents=[SimpleNamespace(status=status)])],
+    )
+    manager._workflow_handlers["sid"] = SimpleNamespace(get_run_states=lambda: {"wf": run})
+    manager._background_task_controllers["sid"] = SimpleNamespace(
+        _active={"wf": object()} if live else {},
+    )
+    assert module.is_team_session_running("sid") is (live and status == "running")
+    run.status = "paused"
+    assert not module.is_team_session_running("sid")

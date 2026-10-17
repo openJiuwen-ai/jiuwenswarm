@@ -32,10 +32,16 @@ class RecommendationState:
     """
 
     recommendation_history: list[dict[str, Any]] = field(default_factory=list)
-    """Past recommendations with type, target, reason, timestamp (max 20)."""
+    """Past recommendations with type, target, reason, timestamp (max 20).
+    Each record now includes 'id' (unique ID) and 'content' (LLM-generated text)."""
 
-    cooldown_records: dict[str, float] = field(default_factory=dict)
-    """Cooldown records: target -> last recommended timestamp."""
+    feedback_buffer: list[dict[str, Any]] = field(default_factory=list)
+    """Pending feedback buffer (FIFO, max 20).
+    Feedback arrives here, consumed in next tick for batch gradient update."""
+
+    strategy_gradients: list[dict[str, Any]] = field(default_factory=list)
+    """Strategy gradients / Filter Memory (max 10).
+    Text-based recommendation strategy rules."""
 
     last_updated: str = ""
 
@@ -74,7 +80,16 @@ def load_recommendation_state(path: Path | None = None) -> RecommendationState:
                 if isinstance(data.get("recommendation_history"), list)
                 else []
             ),
-            cooldown_records=data.get("cooldown_records", {}) if isinstance(data.get("cooldown_records"), dict) else {},
+            feedback_buffer=(
+                data.get("feedback_buffer", [])
+                if isinstance(data.get("feedback_buffer"), list)
+                else []
+            ),
+            strategy_gradients=(
+                data.get("strategy_gradients", [])
+                if isinstance(data.get("strategy_gradients"), list)
+                else []
+            ),
             last_updated=data.get("last_updated", ""),
         )
     except Exception as exc:

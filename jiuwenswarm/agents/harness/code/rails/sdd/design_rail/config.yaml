@@ -1,0 +1,39 @@
+# DesignRail declarative state machine (wave-1: requirements analysis & design).
+#
+# Stage advancement is TOOL-DRIVEN (not keyword matching): the LLM calls the
+# `sdd_advance` tool (registered by RailStateMachineBase when DesignRail is
+# mounted) with `stage=<target>` to advance. The tool validates the target
+# is a legal forward `next` from the current stage + checks artifacts.
+#
+# NOTE: ``next`` declares only the *forward* next stage. Rework
+# (analysis_review -> analysis, design_review -> design) is driven by the
+# StructuredAskUserTool "reject" answer in DesignRail.after_tool_call.
+#
+# Field ownership:
+#   stages.<name>.{skill,artifacts,next}  -> validated by config_loader
+#   skills_dir                            -> scanned by RailStateMachineBase
+#   priority                              -> Rail execution priority
+stages:
+  init:
+    next: [analysis]
+  analysis:
+    skill: aet-req-analysis
+    artifacts: [requirements-analysis.md]
+    next: [analysis_review]
+  analysis_review:
+    skill: aet-req-review
+    # review 阶段不产出文件——review 结果通过 ask_user 交互式确认（approve/reject），
+    # 不写 review 文档（analysis-review.md / design-review.md 不再生成）
+    next: [design]
+  design:
+    skill: aet-req-design
+    artifacts: [requirements-design.md]
+    next: [design_review]
+  design_review:
+    skill: aet-req-review
+    # review 阶段不产出文件——同 analysis_review
+    next: [done]
+  done:
+    next: []
+skills_dir: skills/
+priority: 96

@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """One-command local debug launcher for JiuWenSwarm.
 
@@ -7,7 +7,8 @@ loop that developers otherwise type by hand:
 
 1. ``npm install`` in ``jiuwenswarm/channels/web/frontend``
 2. ``npm run build`` to regenerate ``frontend/dist``
-3. ``uv sync`` at the repository root
+3. ``uv sync`` at the repository root, adding ``--extra claude`` /
+   ``--extra codex`` for every external CLI agent enabled in ``config.yaml``
 4. spawn ``jiuwenswarm-start all`` detached in the background, with stdout and
    stderr redirected to a timestamped ``swarm-<YYYYmmdd-HHMMSS>.log``
 
@@ -18,6 +19,9 @@ Step 4 records the background PID in a small JSON state file so that
 ``jiuwenswarm-stop`` can terminate exactly that service later. The service is
 spawned into its own process group / session, and stopping signals the whole
 group - see ``_stop_process_tree`` for why the leader PID alone is not enough.
+The resident Runtime Worker deliberately leaves that group so it survives Front
+restarts; ``jiuwenswarm-stop`` shuts it down over IPC afterwards, otherwise the
+next start would reattach to a Worker still running the old code.
 
 The background child is ``python -m jiuwenswarm.start_services all`` rather
 than a nested ``uv run``: it keeps the service a single direct child, so no
@@ -31,6 +35,7 @@ syncs the project dependencies, neither of which exists in a package install.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -42,8 +47,16 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+import yaml
+
+from jiuwenswarm.common.utils import get_config_file
 from jiuwenswarm.instance_manager import is_process_alive, stop_process_by_pid
+from jiuwenswarm.server.supervisor.worker_process import (
+    default_socket_path,
+    request_resident_worker_shutdown,
+)
 
 # Package source root: <repo>/jiuwenswarm in source mode.
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -89,6 +102,15 @@ BANNER_READY_MARKER = "服务已启动"
 # How long to tail the log for the access-URL banner before giving up. Slightly
 # above the 45s worst case that _wait_for_services_ready itself allows.
 BANNER_WAIT_SECONDS = 60.0
+
+# Optional-dependency extra that installs the SDK each external CLI agent needs.
+# A plain ``uv sync`` is exact: it removes every package outside the selected
+# extras, so an SDK installed from the config panel would be wiped on each
+# debug start while ``config.yaml`` still enables the agent.
+EXTERNAL_CLI_SYNC_EXTRAS: dict[str, str] = {
+    "claude": "claude",
+    "codex": "codex",
+}
 
 
 @dataclass(frozen=True)
@@ -314,6 +336,75 @@ def _run_step(label: str, cmd: list[str], cwd: Path) -> int:
     else:
         logging.info(f"[debug] ✓ {label} done")
     return completed.returncode
+
+
+def _enabled_external_cli_agents(config: dict[str, Any]) -> set[str]:
+    """Collect external CLI agent kinds enabled by any team in the config.
+
+    Args:
+        config: Parsed ``config.yaml`` mapping.
+
+    Returns:
+        The ``cli_agent`` names listed under ``modes.team.<team>.external_cli_agents``.
+    """
+    modes = config.get("modes")
+    teams = modes.get("team") if isinstance(modes, dict) else None
+    if not isinstance(teams, dict):
+        return set()
+
+    enabled: set[str] = set()
+    for team in teams.values():
+        entries = team.get("external_cli_agents") if isinstance(team, dict) else None
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            # Entries are normalized to mappings, but the plain string form is
+            # still accepted by the config loader.
+            name = entry.get("cli_agent") if isinstance(entry, dict) else entry
+            if isinstance(name, str) and name.strip():
+                enabled.add(name.strip())
+    return enabled
+
+
+def _resolve_sync_extras() -> list[str]:
+    """Return the ``uv sync`` extras required by the configured external CLI agents.
+
+    A missing or unreadable ``config.yaml`` yields no extras so debug mode
+    still starts; the agent spawn path rejects members whose SDK is absent.
+
+    Returns:
+        Sorted extra names to pass as ``--extra``.
+    """
+    config_path = get_config_file()
+    if not config_path.exists():
+        return []
+    try:
+        with config_path.open("r", encoding="utf-8") as fh:
+            config = yaml.safe_load(fh)
+    except (OSError, yaml.YAMLError) as exc:
+        logging.info(f"[debug] WARNING: cannot read {config_path} for external CLI extras: {exc}")
+        return []
+    if not isinstance(config, dict):
+        return []
+
+    agents = _enabled_external_cli_agents(config)
+    return sorted({EXTERNAL_CLI_SYNC_EXTRAS[name] for name in agents if name in EXTERNAL_CLI_SYNC_EXTRAS})
+
+
+def build_uv_sync_command(uv_path: str, extras: list[str]) -> list[str]:
+    """Build the ``uv sync`` argv including one ``--extra`` flag per extra.
+
+    Args:
+        uv_path: Resolved ``uv`` executable.
+        extras: Optional-dependency extras to keep installed.
+
+    Returns:
+        The argv to execute at the repository root.
+    """
+    command = [uv_path, "sync"]
+    for extra in extras:
+        command.extend(["--extra", extra])
+    return command
 
 
 def _check_source_checkout() -> int | None:
@@ -586,7 +677,7 @@ def run_debug(skip_build: bool = False) -> int:
         logging.info("[debug] Install uv (https://docs.astral.sh/uv/), then retry.")
         return 1
 
-    code = _run_step("uv sync", [uv_path, "sync"], REPO_ROOT)
+    code = _run_step("uv sync", build_uv_sync_command(uv_path, _resolve_sync_extras()), REPO_ROOT)
     if code != 0:
         return code
 
@@ -739,6 +830,41 @@ def _stop_process_tree(
     return not _process_group_alive(pgid)
 
 
+def _stop_resident_worker(timeout: float = DEFAULT_STOP_TIMEOUT) -> bool:
+    """Shut down the resident Runtime Worker left behind by the service.
+
+    The Worker is spawned in its own session so it outlives Front restarts,
+    which also puts it outside the process group ``_stop_process_tree``
+    signals. Call this only after the service tree is gone: a live Front
+    would respawn the Worker as soon as it disconnects.
+
+    Args:
+        timeout: Seconds to wait for a graceful exit before force-killing.
+
+    Returns:
+        True when no Worker is left running.
+    """
+    socket_path = default_socket_path()
+    try:
+        pid = asyncio.run(request_resident_worker_shutdown(socket_path))
+    except (OSError, RuntimeError, asyncio.TimeoutError) as exc:
+        logging.info(f"[debug] WARNING: cannot reach runtime worker at {socket_path}: {exc}")
+        return False
+    if pid is None:
+        return True
+
+    logging.info(f"[debug] Stopping resident runtime worker (PID={pid})...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not is_process_alive(pid):
+            return True
+        time.sleep(0.3)
+
+    logging.info(f"[debug] Runtime worker (PID={pid}) did not exit within {timeout}s; killing it.")
+    stop_process_by_pid(pid, timeout=5.0)
+    return not is_process_alive(pid)
+
+
 def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
     """Stop the background service recorded by ``jiuwenswarm-start debug``.
 
@@ -763,6 +889,9 @@ def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
             "clearing state."
         )
         clear_debug_state()
+        if not _stop_resident_worker(timeout=timeout):
+            logging.info("[debug] ERROR: failed to stop the resident runtime worker.")
+            return 1
         return 0
 
     logging.info(f"[debug] Stopping debug service (PID={state.pid})...")
@@ -773,6 +902,9 @@ def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
         return 1
 
     clear_debug_state()
+    if not _stop_resident_worker(timeout=timeout):
+        logging.info("[debug] ERROR: failed to stop the resident runtime worker.")
+        return 1
     logging.info("[debug] Debug service stopped.")
     if state.log_file:
         logging.info(f"[debug] Log kept at: {state.log_file}")

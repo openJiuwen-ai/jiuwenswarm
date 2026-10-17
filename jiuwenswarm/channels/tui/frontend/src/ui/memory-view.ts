@@ -144,7 +144,7 @@ export class MemoryViewController {
    */
   async getMemoryCompletions(sub: string): Promise<{ label: string; description: string }[]> {
     const ctx = this.appState.getCommandContext();
-    const mode = this.shortMode(ctx.mode ?? "code.normal");
+    const mode = this.shortMode(ctx.mode ?? "agent.code.normal");
 
     if (sub === "edit") {
       const { files, projectDir, userMemoryPath } = await collectOrderedMemoryFiles(ctx, mode).catch(() => ({
@@ -198,7 +198,7 @@ export class MemoryViewController {
     this.editing = false;
     this.editingPath = null;
     const ctx = this.appState.getCommandContext();
-    const fullMode = ctx.mode ?? "code.normal";
+    const fullMode = ctx.mode ?? "agent.code.normal";
     const projectDir = ctx.getCurrentProjectDir() || process.cwd();
     const initialTab: MemoryViewTab = tab ?? "edit";
 
@@ -666,8 +666,12 @@ export class MemoryViewController {
   // ── 辅助方法 ──
 
   private shortMode(mode: string): string {
-    if (mode.startsWith("code")) return "code";
-    return mode.replace("agent.", "");
+    // 新三段命名 agent.code.* / team.code.* 也是 code profile（旧实现落到 "code.normal"，
+    // modeCategory 归到 agent，导致 code 会话不显示 auto_coding_memory 开关）。
+    if (mode.startsWith("code") || mode.startsWith("agent.code") || mode.startsWith("team.code")) return "code";
+    // agent.work.* / agent.plan 归到 canonical "agent"，避免发送 "work.normal" 等非 canonical 值。
+    if (mode.startsWith("agent")) return "agent";
+    return mode;
   }
 
   private modeCategory(mode: string): "agent" | "code" {

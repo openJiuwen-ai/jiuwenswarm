@@ -187,8 +187,49 @@ assert.equal(
   "tui_agentserver_allocated",
 );
 
+class TransientSessionInUseClient extends FakeWsClient {
+  createAttempts = 0;
+
+  async request(id, method, params) {
+    this.requests.push({ id, method, params });
+    if (method === "session.create") {
+      this.createAttempts += 1;
+      if (this.createAttempts < 3) {
+        throw new Error(
+          `Session ${params.session_id} is already active in another window. Close that window first.`,
+        );
+      }
+      return {
+        type: "res",
+        id,
+        ok: true,
+        payload: {
+          session_id: params.session_id,
+          mode: "code.normal",
+          created: false,
+          prewarm_hit: false,
+          prewarm_status: "bypassed",
+        },
+      };
+    }
+    return { type: "res", id, ok: true, payload: {} };
+  }
+}
+
+const retryClient = new TransientSessionInUseClient();
+const retryState = new CliPiAppState(retryClient, "tui_restart_race");
+retryState.connectionStatus = "connected";
+const retryBootCreation = retryState.bootSessionCreation;
+retryState.initializeBootSession();
+await retryBootCreation;
+
+assert.equal(retryClient.createAttempts, 3, "startup must retry a transient SESSION_IN_USE race");
+assert.equal(retryState.getSnapshot().sessionId, "tui_restart_race");
+assert.equal(retryState.getSnapshot().lastError, null);
+
 state.stop();
 deferredState.stop();
 normalState.stop();
+retryState.stop();
 
 console.log("external session creation tests passed");

@@ -1,18 +1,21 @@
 import asyncio
+import json
 import logging
 
 import pytest
 from websockets.exceptions import ConnectionClosedError
 
-from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
+    parse_agent_server_wire_chunk,
 )
+from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.gateway.routing import agent_client
 from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 
 
 class FakeWebSocket:
@@ -37,6 +40,36 @@ class ClosingRecvWebSocket:
         raise ConnectionClosedError(None, None)
 
 
+class AckThenHangWebSocket:
+    """首次 recv 返回 connection.ack 事件帧，之后挂起（模拟 ack 迟到但连接保持）。"""
+
+    def __init__(self) -> None:
+        self.recv_calls = 0
+
+    async def recv(self) -> str:
+        self.recv_calls += 1
+        if self.recv_calls == 1:
+            return json.dumps({"type": "event", "event": "connection.ack", "params": {}})
+        await asyncio.Event().wait()  # 挂起，模拟连接保持
+
+
+class PushFramesWebSocket:
+    def __init__(self) -> None:
+        self.frames: asyncio.Queue[str] = asyncio.Queue()
+        self.read_both = asyncio.Event()
+        self.read_count = 0
+
+    async def recv(self) -> str:
+        frame = await self.frames.get()
+        self.read_count += 1
+        if self.read_count == 2:
+            self.read_both.set()
+        return frame
+
+    async def close(self) -> None:
+        pass
+
+
 class AgentClientHarness(WebSocketAgentServerClient):
     def set_ws_for_test(self, ws) -> None:
         self._ws = ws
@@ -49,6 +82,9 @@ class AgentClientHarness(WebSocketAgentServerClient):
 
     def set_server_ready_for_test(self, ready: bool) -> None:
         self._server_ready = ready
+
+    def get_server_ready_for_test(self) -> bool:
+        return self._server_ready
 
     def is_running_for_test(self) -> bool:
         return self._running
@@ -88,6 +124,102 @@ class ReconnectingAgentClientHarness(AgentClientHarness):
 def test_agent_client_uses_shared_websocket_limit():
     assert not hasattr(agent_client, "_WS_MAX_SIZE")
     assert agent_client.AGENT_WS_MAX_MESSAGE_BYTES == AGENT_WS_MAX_MESSAGE_BYTES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("second_request_id", "final_is_complete", "second_event_type"),
+    [
+        ("cross-session-turn", False, "chat.final"),
+        ("interaction-1", False, "chat.final"),
+        ("cross-session-turn", True, "chat.final"),
+        ("interaction-1", True, "chat.final"),
+        ("interaction-1", True, "chat.error"),
+    ],
+)
+async def test_server_push_frames_keep_wire_order_when_first_handler_waits(
+    second_request_id, final_is_complete, second_event_type
+):
+    client = AgentClientHarness()
+    ws = PushFramesWebSocket()
+    client.set_ws_for_test(ws)
+    client.set_running_for_test(True)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    both_handled = asyncio.Event()
+    unrelated_push_handled = asyncio.Event()
+    handled: list[int] = []
+    request_queue: asyncio.Queue[dict] = asyncio.Queue()
+    client.set_message_queue_for_test("foreground-turn", request_queue)
+    visible_text = ""
+
+    async def on_push(frame: dict) -> None:
+        nonlocal visible_text
+        index = frame["index"]
+        if index == 2:
+            unrelated_push_handled.set()
+            return
+        if index == 0:
+            first_started.set()
+            await release_first.wait()
+        payload = parse_agent_server_wire_chunk(frame).payload
+        assert payload["turn_request_id"] == "cross-session-turn"
+        assert payload["cross_session"]["message_id"] == "sm-1"
+        if payload["event_type"] == "chat.delta":
+            visible_text += payload["content"]
+        else:
+            visible_text = payload["content"]
+        handled.append(index)
+        if len(handled) == 2:
+            both_handled.set()
+
+    client.set_server_push_handler(on_push)
+    for index in (0, 1):
+        request_id = "cross-session-turn" if index == 0 else second_request_id
+        wire = encode_agent_chunk_for_wire(
+            AgentResponseChunk(
+                request_id=request_id,
+                channel_id="web",
+                payload={
+                    "event_type": "chat.delta" if index == 0 else second_event_type,
+                    "turn_request_id": "cross-session-turn",
+                    "message_origin": "cross_session_agent",
+                    "session_message_id": "sm-1",
+                    "cross_session": {"message_id": "sm-1", "source_session_id": "source-1"},
+                    "content": "杭州今日天气",
+                },
+                is_complete=index == 1 and final_is_complete,
+            ),
+            response_id=request_id,
+            sequence=index,
+        )
+        wire["index"] = index
+        wire["metadata"][E2A_WIRE_SERVER_PUSH_KEY] = True
+        ws.frames.put_nowait(json.dumps(wire))
+    ws.frames.put_nowait(json.dumps({
+        "index": 2,
+        "request_id": "unrelated-push",
+        "metadata": {E2A_WIRE_SERVER_PUSH_KEY: True},
+    }))
+    ws.frames.put_nowait(json.dumps({"request_id": "foreground-turn"}))
+
+    receiver = asyncio.create_task(client.run_message_receiver_loop_for_test())
+    try:
+        await asyncio.wait_for(first_started.wait(), 1)
+        await asyncio.wait_for(ws.read_both.wait(), 1)
+        await asyncio.wait_for(unrelated_push_handled.wait(), 1)
+        assert (await asyncio.wait_for(request_queue.get(), 1))["request_id"] == "foreground-turn"
+        await asyncio.sleep(0)
+        assert handled == []
+        release_first.set()
+        await asyncio.wait_for(both_handled.wait(), 1)
+        assert handled == [0, 1]
+        assert visible_text == "杭州今日天气"
+    finally:
+        release_first.set()
+        receiver.cancel()
+        await receiver
+        await client.disconnect()
 
 
 @pytest.mark.asyncio
@@ -209,6 +341,75 @@ async def test_send_request_stream_absorbs_duplicate_complete_frames(monkeypatch
     assert len(chunks) == 2
     assert all(chunk.is_complete for chunk in chunks)
     assert client.has_message_queue_for_test("rid-complete") is False
+
+
+@pytest.mark.asyncio
+async def test_message_receiver_loop_sets_ready_on_late_connection_ack():
+    """迟到的 connection.ack（connect 5s 首帧等待超时后才到达）补置 server_ready。
+
+    回归：e2a_proxy 等依赖 server_ready 的入口（Web session.list）在
+    ack 迟到时不得永久返回 SERVICE_UNAVAILABLE。
+    """
+    client = AgentClientHarness()
+    ws = AckThenHangWebSocket()
+    client.set_ws_for_test(ws)
+    client.set_running_for_test(True)
+    client.set_server_ready_for_test(False)  # connect 首帧等待超时后的状态
+
+    task = asyncio.create_task(client.run_message_receiver_loop_for_test())
+    for _ in range(100):
+        if client.get_server_ready_for_test():
+            break
+        await asyncio.sleep(0.001)
+
+    assert client.get_server_ready_for_test() is True
+    assert client.agent_ready is False
+    assert ws.recv_calls >= 1  # ack 帧已被消费，连接保持（第二轮 recv 挂起中）
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+def test_connection_ack_warming_is_not_agent_ready():
+    client = AgentClientHarness()
+    client._apply_connection_ack(
+        {
+            "type": "event",
+            "event": "connection.ack",
+            "payload": {"status": "ready", "readiness": "RUNTIME_WARMING"},
+        }
+    )
+    assert client.server_ready is True
+    assert client.agent_ready is False
+
+
+def test_connection_ack_failed_keeps_server_ready_not_agent_ready():
+    client = AgentClientHarness()
+    client._apply_connection_ack(
+        {
+            "type": "event",
+            "event": "connection.ack",
+            "payload": {"status": "failed", "readiness": "FAILED"},
+        }
+    )
+    assert client.server_ready is True
+    assert client.agent_ready is False
+
+
+def test_connection_ack_agent_ready_sets_execution_flag():
+    client = AgentClientHarness()
+    client._apply_connection_ack(
+        {
+            "type": "event",
+            "event": "connection.ack",
+            "payload": {"status": "ready", "readiness": "AGENT_READY"},
+        }
+    )
+    assert client.server_ready is True
+    assert client.agent_ready is True
 
 
 @pytest.mark.asyncio

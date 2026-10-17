@@ -16,13 +16,23 @@ from openjiuwen.core.foundation.tool import Tool, ToolCard, McpServerConfig, too
 from openjiuwen.core.single_agent.rail.base import AgentRail
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.core.sys_operation import SysOperation
+from openjiuwen.core.kv_cache import resolve_session_lineage
+from openjiuwen.core.session import get_current_session
 from openjiuwen.core.session.agent import Session
 from openjiuwen.harness.deep_agent import DeepAgent
 from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.rails import SysOperationRail
 from openjiuwen.harness.schema.config import SubAgentConfig
-from jiuwenswarm.common.config import get_default_models
+from jiuwenswarm.common.config import (
+    get_config,
+    get_configured_read_image_multimodal,
+    get_default_models,
+)
+from jiuwenswarm.common.kv_cache_affinity_config import (
+    build_kv_cache_affinity_config,
+    model_provider,
+)
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 
@@ -166,6 +176,7 @@ class LLMWiki:
         model: Model,
         *,
         session_id: Optional[str] = None,
+        parent_session_id: Optional[str] = None,
         card: Optional[AgentCard] = None,
         system_prompt: Optional[str] = None,
         tools: Optional[List[Tool | ToolCard]] = None,
@@ -223,7 +234,10 @@ class LLMWiki:
 
         _sid = session_id or hashlib.sha256(str(self.workspace.resolve()).encode()).hexdigest()[:16]
         self._session_id: str = _sid
-        self._session: Session = Session(session_id=_sid)
+        self._session: Session = Session(
+            session_id=_sid,
+            parent_session_id=parent_session_id,
+        )
 
     async def ensure_initialized(self):
         for d in [self.sources_dir, self.wiki_dir, self.schema_dir]:
@@ -401,6 +415,50 @@ def _resolve_workspace(workspace: str) -> Path:
     return workspace_path.resolve()
 
 
+def _create_llm_wiki(
+    *,
+    workspace: str,
+    model: Model,
+    sys_operation: Optional[SysOperation],
+) -> LLMWiki:
+    """Create the internal Wiki agent with runtime policy and KVC lineage.
+
+    Wiki tools create a separate ``DeepAgent`` instead of going through the
+    main Code/Deep adapter.  Without forwarding the explicit runtime value,
+    text-only deployments fall back to ``None`` and trigger the asynchronous
+    image-capability probe even when the parent Agent disabled native image
+    input.
+    """
+
+    config = get_config()
+    configured = get_configured_read_image_multimodal(config)
+    kwargs: Dict[str, Any] = {
+        "kv_cache_affinity_config": build_kv_cache_affinity_config(
+            config,
+            provider=model_provider(model),
+            model_client_config=getattr(model, "model_client_config", None),
+        ),
+    }
+    if isinstance(configured, bool):
+        kwargs["enable_read_image_multimodal"] = configured
+
+    owner_session_id, _ = resolve_session_lineage(get_current_session())
+    if owner_session_id:
+        workspace_scope = hashlib.sha256(
+            str(Path(workspace).resolve()).encode()
+        ).hexdigest()[:12]
+        kwargs["session_id"] = (
+            f"{owner_session_id}:subagent:wiki:{workspace_scope}"
+        )
+        kwargs["parent_session_id"] = owner_session_id
+    return LLMWiki(
+        workspace=workspace,
+        model=model,
+        sys_operation=sys_operation,
+        **kwargs,
+    )
+
+
 @tool(
     name="wiki_ingest",
     description="Ingest a source file (PDF, TXT, MD) or a directory into the LLM Wiki."
@@ -419,7 +477,11 @@ async def wiki_ingest(
     try:
         model = _get_default_model()
         final_workspace = _resolve_workspace(workspace)
-        wiki = LLMWiki(workspace=str(final_workspace), model=model, sys_operation=sys_operation)
+        wiki = _create_llm_wiki(
+            workspace=str(final_workspace),
+            model=model,
+            sys_operation=sys_operation,
+        )
         await wiki.ensure_initialized()
 
         src_path = Path(source).expanduser()
@@ -450,7 +512,7 @@ async def wiki_ingest(
             if "error" in res:
                 all_results[str(file_path)] = f"[Failed]: {res['error']}"
             elif res.get("skipped"):
-                all_results[str(file_path)] = f"[Skipped]: Deduplicated"
+                all_results[str(file_path)] = "[Skipped]: Deduplicated"
             else:
                 all_results[str(file_path)] = "[Success]"
 
@@ -479,7 +541,11 @@ async def wiki_query(
                 f"Error: The workspace '{workspace}' does not have an initialized LLM Wiki."
                 " You must use 'wiki_ingest' first to create the knowledge base."
             )
-        wiki = LLMWiki(workspace=str(final_workspace), model=model, sys_operation=sys_operation)
+        wiki = _create_llm_wiki(
+            workspace=str(final_workspace),
+            model=model,
+            sys_operation=sys_operation,
+        )
         await wiki.ensure_initialized()
 
         result = await wiki.query(question=query)
@@ -508,7 +574,11 @@ async def wiki_lint(workspace: str = "", sys_operation: Optional[SysOperation] =
                 f"Error: The workspace '{workspace}' does not have an initialized LLM Wiki."
                 " You must use 'wiki_ingest' first to create the knowledge base."
             )
-        wiki = LLMWiki(workspace=str(final_workspace), model=model, sys_operation=sys_operation)
+        wiki = _create_llm_wiki(
+            workspace=str(final_workspace),
+            model=model,
+            sys_operation=sys_operation,
+        )
         await wiki.ensure_initialized()
 
         result = await wiki.lint()

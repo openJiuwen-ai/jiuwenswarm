@@ -81,9 +81,6 @@ def mock_package_resources(monkeypatch: pytest.MonkeyPatch, temp_home: Path) -> 
     (agent_dir / "PRINCIPLE_EN.md").write_text("# Principle (EN)", encoding="utf-8")
     (agent_dir / "TONE_ZH.md").write_text("# Tone (ZH)", encoding="utf-8")
     (agent_dir / "TONE_EN.md").write_text("# Tone (EN)", encoding="utf-8")
-    (agent_dir / "HEARTBEAT_ZH.md").write_text("# Heartbeat (ZH)", encoding="utf-8")
-    (agent_dir / "HEARTBEAT_EN.md").write_text("# Heartbeat (EN)", encoding="utf-8")
-
     # Create mock config.yaml
     (resources_dir / "config.yaml").write_text("""
 # Test configuration
@@ -191,7 +188,7 @@ def verify_workspace_structure():
 
         # Check agent templates
         agent_home = workspace_dir / "agent" / "home"
-        expected_templates = ["PRINCIPLE.md", "TONE.md", "HEARTBEAT.md"]
+        expected_templates = ["PRINCIPLE.md", "TONE.md"]
         for template in expected_templates:
             template_path = agent_home / template
             if not template_path.exists():

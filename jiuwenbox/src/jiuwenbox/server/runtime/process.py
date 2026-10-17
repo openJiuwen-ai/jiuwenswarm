@@ -24,6 +24,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -33,7 +34,7 @@ from typing import Any
 import yaml
 
 from jiuwenbox.logging_config import configure_logging
-from jiuwenbox.models.policy import NetworkMode, NetworkPolicy, SecurityPolicy
+from jiuwenbox.models.policy import CgroupPolicy, NetworkMode, NetworkPolicy, SecurityPolicy
 from jiuwenbox.models.sandbox import (
     BackgroundExecResult,
     BackgroundJobStatus,
@@ -47,6 +48,7 @@ from jiuwenbox.server.runtime.base import (
     RuntimeExecRequest,
     RuntimeFileOpResult,
 )
+from jiuwenbox.server.runtime.errors import BackgroundJobNotFoundError
 from jiuwenbox.server.workspace import SANDBOX_WORKSPACE
 from jiuwenbox.supervisor import cgroup as cgroup_module
 from jiuwenbox.supervisor import network as network_module
@@ -66,8 +68,10 @@ from jiuwenbox.supervisor.daemon_ipc import (
     SANDBOX_CONTROL_SOCKET_NAME,
     SANDBOX_DAEMON_COMMAND,
     SANDBOX_DAEMON_SANDBOX_PATH,
+    SANDBOX_IP_ENV,
     SANDBOX_LAUNCHER_PATH,
     SANDBOX_RESERVED_DIR,
+    apply_sandbox_ip_env,
     encode_request,
     recv_frame,
     send_frame,
@@ -98,6 +102,19 @@ SERVER_PROTECT_PORTS_ENV = "JIUWENBOX_SERVER_PROTECT_PORTS"
 # explicitly accepted that the box-server has no host-level protection.
 LISTEN_URI_ENV = "JIUWENBOX_LISTEN"
 DEFAULT_SERVER_PROTECT_PORTS: tuple[int, ...] = (8321,)
+_API_TOKEN_ENV = "JIUWENBOX_API_TOKEN"
+
+
+def _sandbox_process_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Build the environment passed into the sandbox bwrap/daemon process.
+
+    Starts from the server process env (plus optional per-sandbox overrides),
+    then strips ``JIUWENBOX_API_TOKEN`` so the management Bearer credential
+    never becomes visible inside the sandbox.
+    """
+    process_env = {**os.environ, **(extra or {})}
+    process_env.pop(_API_TOKEN_ENV, None)
+    return process_env
 
 
 def _derive_protect_ports_from_listen() -> tuple[int, ...]:
@@ -140,6 +157,166 @@ SANDBOX_DAEMON_SOURCE = _SUPERVISOR_DIR / "sandbox_daemon.py"
 _LANDLOCK_LAUNCHER_BYTES = LANDLOCK_LAUNCHER_SOURCE.read_bytes()
 _SANDBOX_DAEMON_BYTES = SANDBOX_DAEMON_SOURCE.read_bytes()
 PYTHON_EXECUTABLE = "python3"
+
+# Python ForkServer fast path (transparent optimisation, default ON).
+# Exec requests whose command is the simple ``python3 -c CODE``
+# shape are marked ``python_fastpath: true`` in the daemon IPC payload (when
+# the fast path is enabled, which it is unless ``JIUWENBOX_PYTHON_FASTPATH=0``
+# opts out). The in-sandbox daemon routes those to a persistent ForkServer
+# (see ``sandbox_daemon.py``) instead of spawning a fresh interpreter per
+# call. The flag is inherited into the sandbox daemon via the bwrap process
+# env, so both sides agree (``_python_fastpath_enabled`` here mirrors
+# ``sandbox_daemon._fastpath_enabled``). This does not change the HTTP API or
+# the default ``/exec`` path.
+FASTPATH_ENV = "JIUWENBOX_PYTHON_FASTPATH"
+
+# Global fast-path admission cap: at most this many sandboxes in a single
+# server process may activate their worker pools. Once the cap is reached,
+# further ``python3 -c`` requests are served by the normal ``/exec`` path.
+# This bounds the machine-wide worst-case worker count (cap × per-sandbox
+# cap) and the cold-start blast radius when many sandboxes start together.
+FASTPATH_MAX_SANDBOXES_ENV = "JIUWENBOX_PYTHON_FASTPATH_MAX_SANDBOXES"
+FASTPATH_DEFAULT_MAX_SANDBOXES = 50
+# Mirrors ``sandbox_daemon`` so the server can decide whether a cgroup has
+# room for the resident pool before it marks a request.
+FASTPATH_WORKERS_ENV = "JIUWENBOX_PYTHON_FASTPATH_WORKERS"
+FASTPATH_DEFAULT_WORKERS = 2
+FASTPATH_MAX_WORKERS = 4
+# Tasks already charged against ``pids.max`` before a user process can
+# start: bwrap monitor, bwrap pid-1, the daemon's main thread, and the
+# per-request handler thread. The fast path adds an idle-reaper thread
+# at daemon startup, then one process per worker, then the user fork.
+_FASTPATH_CGROUP_PIDS_BASE = 4
+# Two warm interpreters plus the daemon do not fit under a small
+# ``memory.max``; the OOM killer then takes the daemon and the client
+# sees a closed IPC socket instead of the child's exit status.
+_FASTPATH_MIN_MEMORY_BYTES = 128 * 1024 * 1024
+
+
+def _cgroup_allows_fastpath(cgroup: CgroupPolicy) -> bool:
+    """False when a resident worker pool would break this cgroup.
+
+    The pool's reaper thread is started at daemon launch, before any
+    request, so a tight ``pids.max`` is already exhausted by the time
+    ``subprocess`` tries to spawn the user command. A tight
+    ``memory.max`` cannot hold the extra interpreters; the OOM killer
+    then takes the daemon and the client sees a closed IPC socket.
+    """
+    if cgroup.pids_max is not None:
+        needed = (
+            _FASTPATH_CGROUP_PIDS_BASE
+            + 1
+            + _fastpath_worker_count()
+            + 1
+        )
+        if cgroup.pids_max < needed:
+            return False
+    if (
+        cgroup.memory_max is not None
+        and cgroup.memory_max < _FASTPATH_MIN_MEMORY_BYTES
+    ):
+        return False
+    return True
+
+
+def _fastpath_worker_count() -> int:
+    """Resident worker target, matching ``sandbox_daemon._fastpath_worker_count``."""
+    raw = os.environ.get(FASTPATH_WORKERS_ENV)
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value >= 1:
+            return min(value, FASTPATH_MAX_WORKERS)
+    return FASTPATH_DEFAULT_WORKERS
+
+
+def _fastpath_max_sandboxes() -> int:
+    raw = os.environ.get(FASTPATH_MAX_SANDBOXES_ENV)
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value >= 1:
+            return min(value, 1000)
+    return FASTPATH_DEFAULT_MAX_SANDBOXES
+
+
+def _python_fastpath_enabled() -> bool:
+    """Whether the server marks exec requests as FastPath candidates.
+
+    The fast path is a **transparent optimisation** and is ON by
+    default. Mirrors ``sandbox_daemon._fastpath_enabled`` so both sides agree
+    (the flag is inherited into the sandbox daemon via the bwrap env, so the
+    two must read it identically):
+
+    * unset  -> ON  (default-on; the user does nothing and still gets it)
+    * ``"1"`` -> ON  (explicit enable, equivalent to the new default)
+    * ``"0"`` -> OFF (explicit opt-out)
+    * any other value -> OFF, fail-safe, with a warning.
+
+    Default-on only marks simple ``python3 -c CODE`` candidates; everything
+    else is served by the unchanged ``subprocess.Popen`` path, so the contract
+    for non-candidates is unaffected.
+    """
+    raw = os.environ.get(FASTPATH_ENV)
+    if raw is None or raw == "1":
+        return True
+    if raw == "0":
+        return False
+    logger.warning(
+        "unrecognised %s=%r; expected '0' or '1'; defaulting fast path OFF",
+        FASTPATH_ENV, raw,
+    )
+    return False
+
+
+def _python_fastpath_candidate(command: list[str]) -> bool:
+    """Whether ``command`` may be worth offering to the in-sandbox fast path.
+
+    Narrow, explicit trigger only (applied solely when the feature flag is
+    on); it is not a general auto-detector of arbitrary Python invocations.
+
+    This is a cheap *pre-filter*, not the decision. The authoritative
+    eligibility check runs inside the sandbox daemon (``_fastpath_plan``),
+    which is the only side that can see the filesystem the script and its
+    imports live on. Marking a request merely lets the daemon consider it;
+    the daemon still falls back on anything it does not fully understand.
+
+    Recognised shapes:
+      * ``python|python3 -c CODE``                    (bare ``-c`` only)
+      * ``python|python3 <script>.py [args]``          (direct script)
+      * ``bash -lc|-c '<small payload>'``              (real EDPA wrapper)
+
+    Only a *bare* ``-c`` right after the interpreter is offered: any
+    interpreter flag (``-I``/``-S``/``-E``/``-u``/``-B``) changes ``sys.flags``
+    or startup the warm worker cannot reproduce, so the daemon would reject it
+    anyway -- skipping the candidate mark sends it straight to ``subprocess``.
+    The daemon is still authoritative: for ``python -c`` it applies the
+    interpreter-identity check (``python`` must resolve to the worker), and it
+    re-checks the bare-``-c`` shape, so this pre-filter never causes a wrong
+    conversion on its own.
+    """
+    if not command:
+        return False
+    head = command[0]
+    if head in (PYTHON_EXECUTABLE, "python"):
+        if len(command) < 2:
+            return False
+        # Bare ``-c`` right after the interpreter: offer to the daemon.
+        if command[1] == "-c":
+            return len(command) >= 3
+        # Direct script form: first token after the interpreter is a .py file.
+        return not command[1].startswith("-") and command[1].endswith(".py")
+    if head == "bash" and len(command) == 3 and command[1] in ("-lc", "-c"):
+        # Only bother the daemon when the payload mentions a Python
+        # interpreter at all; the daemon does the strict recognition.
+        payload = command[2]
+        return "python" in payload and len(payload) <= 4096
+    return False
+
 
 # Per-sandbox control socket: box-server ``bind()``s a Unix socket on its
 # own host filesystem inside a per-sandbox control directory, then passes
@@ -227,6 +404,7 @@ class _DaemonExecCall:
     """
 
     socket_path: Path
+    sandbox_id: str
     command: list[str]
     env: dict[str, str] | None
     workdir: str | None
@@ -347,8 +525,6 @@ class BackgroundJob:
     stderr: str = ""
 
 
-class BackgroundJobNotFoundError(Exception):
-    """Raised when a background job id is unknown for a sandbox."""
 
 
 def _resolve_zombie_reaper_interval() -> float:
@@ -565,6 +741,7 @@ class ProcessRuntime(RuntimeAdapter):
         self._network_modes: dict[str, NetworkMode] = {}
         self._netns_names: dict[str, str] = {}
         self._uplink_handles: dict[str, network_module.UplinkHandle] = {}
+        self._sandbox_ip_addresses: dict[str, str | None] = {}
         self._directory_roots: dict[str, Path] = {}
         self._file_roots: dict[str, Path] = {}
         self._launcher_dirs: dict[str, Path] = {}
@@ -582,6 +759,12 @@ class ProcessRuntime(RuntimeAdapter):
         # outside the asyncio loop in some startup paths (CLI, tests).
         self._exec_concurrency_limit: int = _resolve_exec_concurrency()
         self._exec_semaphore: asyncio.Semaphore | None = None
+        # Global fast-path admission: bounds how many sandboxes in this
+        # process may activate their worker pools (see ``_fastpath_admit``).
+        # Released on sandbox delete via ``cleanup``.
+        self._fastpath_activated: set[str] = set()
+        self._fastpath_admit_lock = threading.Lock()
+        self._fastpath_max_sandboxes = _fastpath_max_sandboxes()
         # Zombie reaper plumbing. Plumbed in via ``register_zombie_reaper``
         # once an event loop is available (lifespan startup); we cannot
         # install a signal handler / create a Task before the loop exists.
@@ -864,6 +1047,7 @@ class ProcessRuntime(RuntimeAdapter):
         netns_attached: bool,
         seccomp_fd: int | None,
         listener_fd: int | None = None,
+        sandbox_ip: str | None = None,
     ) -> list[str]:
         """Build a ready-to-spawn bwrap argv vector for ``command``.
 
@@ -908,6 +1092,14 @@ class ProcessRuntime(RuntimeAdapter):
             # into the filesystem for the IPC endpoint, which means
             # Landlock can stay locked down.
             config.env[LISTENER_FD_ENV] = str(listener_fd)
+
+        apply_sandbox_ip_env(config.env, sandbox_ip)
+        # The daemon starts its fast-path reaper thread at launch, before
+        # any request is marked. A per-request flag cannot reclaim that
+        # thread, so a cgroup that cannot spare the pool must turn the
+        # feature off for this sandbox.
+        if not _cgroup_allows_fastpath(policy.cgroup):
+            config.env[FASTPATH_ENV] = "0"
 
         if launcher_dir is not None and landlock_enabled:
             launcher_path = launcher_dir / "landlock-launcher.py"
@@ -1814,16 +2006,8 @@ class ProcessRuntime(RuntimeAdapter):
             )
 
     async def get_sandbox_ip_address(self, sandbox_id: str) -> str | None:
-        """Return the sandbox IPv4 confirmed by the current network setup."""
-        mode = self._network_modes.get(sandbox_id)
-        if mode == NetworkMode.ISOLATED:
-            handle = self._uplink_handles.get(sandbox_id)
-            if handle is None:
-                return None
-            return handle.sandbox_ip or None
-        if mode == NetworkMode.HOST:
-            return await asyncio.to_thread(network_module.resolve_host_egress_ipv4)
-        return None
+        """Return the IPv4 snapshot injected for the current lifecycle."""
+        return self._sandbox_ip_addresses.get(sandbox_id)
 
     async def create(
         self,
@@ -1842,7 +2026,21 @@ class ProcessRuntime(RuntimeAdapter):
         self._network_modes[sandbox_id] = policy.network.mode
         self._policy_paths[sandbox_id] = Path(policy_path)
 
+        # A restart may be rebuilding a previously stopped lifecycle. Drop
+        # its snapshot before network setup so a failed rebuild cannot expose
+        # the old address through the runtime adapter.
+        self._sandbox_ip_addresses.pop(sandbox_id, None)
         netns_name = self._ensure_named_netns(sandbox_id, policy)
+        if policy.network.mode == NetworkMode.ISOLATED:
+            uplink_handle = self._uplink_handles.get(sandbox_id)
+            sandbox_ip = uplink_handle.sandbox_ip if uplink_handle is not None else None
+        elif policy.network.mode == NetworkMode.HOST:
+            sandbox_ip = await asyncio.to_thread(
+                network_module.resolve_host_egress_ipv4,
+            )
+        else:
+            sandbox_ip = None
+        self._sandbox_ip_addresses[sandbox_id] = sandbox_ip
         self._policy_binds_for_sandbox(sandbox_id, policy)
         self._install_sandbox_host_firewall_rules(sandbox_id, policy)
 
@@ -1884,10 +2082,12 @@ class ProcessRuntime(RuntimeAdapter):
             netns_attached=netns_name is not None,
             seccomp_fd=seccomp_fd,
             listener_fd=listener_fd,
+            sandbox_ip=sandbox_ip,
         )
         daemon_cmd = self._wrap_command_in_namespace(bwrap_args, netns_name)
 
-        process_env = {**os.environ, **(env or {})}
+        process_env = _sandbox_process_env(env)
+        process_env.pop(SANDBOX_IP_ENV, None)
         # ``LISTENER_FD_ENV`` is injected into the sandboxed process via
         # ``BwrapConfig.env`` -> ``bwrap --setenv``; bwrap itself never
         # consumes it, so we no longer set it on the bwrap parent env.
@@ -1940,6 +2140,7 @@ class ProcessRuntime(RuntimeAdapter):
             cgroup_procs_paths = [
                 str(group_dir / "cgroup.procs") for group_dir in cgroup_handle.paths
             ]
+        protect_oom = policy.cgroup.memory_max is not None
 
         def _preexec_attach_to_cgroup() -> None:
             # Runs in the child after fork, before execve. Writing our own
@@ -1953,6 +2154,15 @@ class ProcessRuntime(RuntimeAdapter):
             for procs_path in cgroup_procs_paths:
                 with open(procs_path, "w", encoding="utf-8") as fh:
                     fh.write(str(child_pid))
+            # Descendants inherit this score. User commands raise theirs
+            # to +1000 before exec so the OOM killer prefers them even
+            # when this write is rejected (no CAP_SYS_RESOURCE).
+            if protect_oom:
+                try:
+                    with open("/proc/self/oom_score_adj", "w", encoding="ascii") as fh:
+                        fh.write("-1000")
+                except OSError:
+                    pass
 
         preexec = _preexec_attach_to_cgroup if cgroup_procs_paths else None
 
@@ -2112,6 +2322,24 @@ class ProcessRuntime(RuntimeAdapter):
         text = data.decode("utf-8", errors="replace").rstrip()
         return text
 
+    def drop_all_host_uplinks(self) -> None:
+        """Delete every tracked host veth immediately, without waiting on daemons.
+
+        Used at the start of process shutdown so ``jwbH*`` disappears even if
+        later SIGKILL interrupts ``shutdown_all_sandboxes``.
+        """
+        handles = list(self._uplink_handles.items())
+        self._uplink_handles.clear()
+        for sandbox_id, handle in handles:
+            try:
+                network_module.teardown_network_uplink(handle)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Failed to drop host uplink for sandbox %s during shutdown",
+                    sandbox_id,
+                    exc_info=True,
+                )
+
     def _cleanup_sandbox_artifacts(
         self,
         sandbox_id: str,
@@ -2137,6 +2365,7 @@ class ProcessRuntime(RuntimeAdapter):
         if netns_name and network_module.namespace_exists(netns_name):
             network_module.delete_named_namespace(netns_name)
         self._network_modes.pop(sandbox_id, None)
+        self._sandbox_ip_addresses.pop(sandbox_id, None)
         self._runtime_policies.pop(sandbox_id, None)
         self._policy_binds.pop(sandbox_id, None)
         self._seccomp_bpf.pop(sandbox_id, None)
@@ -2328,6 +2557,58 @@ class ProcessRuntime(RuntimeAdapter):
         blob = recv_frame(sock, DAEMON_MAX_RESPONSE_BYTES)
         return json.loads(blob.decode("utf-8"))
 
+    def _fastpath_admit(self, sandbox_id: str) -> bool:
+        """Whether ``sandbox_id`` may use the Python fast path (global cap).
+
+        The first fast-path *candidate* request from a sandbox activates that
+        sandbox's worker pool inside its daemon. Callers must have already
+        confirmed the command is a fast-path candidate before admitting, so
+        the quota is only consumed by commands that will actually take the fast
+        path (not by e.g. ``ls``). Once ``_fastpath_max_sandboxes`` sandboxes
+        have activated in this process, further sandboxes are not marked and
+        their ``python3 -c`` requests take the normal ``/exec`` path.
+        ``cleanup`` (sandbox delete) releases the slot. This yields a hard
+        worst-case worker bound of ``cap × per-sandbox cap`` and bounds the
+        startup-storm blast radius when many sandboxes cold-start together.
+        """
+        if sandbox_id in self._fastpath_activated:
+            return True
+        with self._fastpath_admit_lock:
+            if len(self._fastpath_activated) >= self._fastpath_max_sandboxes:
+                return False
+            self._fastpath_activated.add(sandbox_id)
+            return True
+
+    def _fastpath_cgroup_allows(self, sandbox_id: str) -> bool:
+        """False when this sandbox's cgroup cannot spare a resident worker pool.
+
+        The pool lives in the same cgroup and pid namespace as the user
+        command. A tight ``pids.max`` is already full once the workers
+        exist, so the command fails with EAGAIN before it runs. A tight
+        ``memory.max`` lets the OOM killer take the daemon instead of the
+        allocating child. Either case falls through to a single
+        ``subprocess`` spawn, which only needs one extra process.
+        """
+        policy = self._runtime_policies.get(sandbox_id)
+        if policy is None:
+            return True
+        return _cgroup_allows_fastpath(policy.cgroup)
+
+    def _use_python_fastpath(self, command: list[str], sandbox_id: str) -> bool:
+        """Whether this exec should be marked for the in-sandbox fast path.
+
+        The candidate check runs before admission so a non-candidate such as
+        ``ls`` does not consume a global fast-path slot. A tight cgroup also
+        stays on the normal spawn path.
+        """
+        if not _python_fastpath_enabled():
+            return False
+        if not _python_fastpath_candidate(command):
+            return False
+        if not self._fastpath_cgroup_allows(sandbox_id):
+            return False
+        return self._fastpath_admit(sandbox_id)
+
     def _exec_via_daemon_blocking(self, call: _DaemonExecCall) -> ExecResult:
         """Run one ``exec`` over the IPC channel and return an ``ExecResult``.
 
@@ -2340,6 +2621,8 @@ class ProcessRuntime(RuntimeAdapter):
             "command": list(call.command),
             "stdin_size": len(call.stdin_bytes or b""),
         }
+        if self._use_python_fastpath(list(call.command), call.sandbox_id):
+            request_payload["python_fastpath"] = True
         if call.env:
             request_payload["env"] = dict(call.env)
         if call.workdir:
@@ -2475,6 +2758,12 @@ class ProcessRuntime(RuntimeAdapter):
             except OSError:
                 pass
 
+    def _cgroup_oom_kill_count(self, sandbox_id: str) -> int:
+        handle = self._cgroup_handles.get(sandbox_id)
+        if handle is None:
+            return 0
+        return cgroup_module.oom_kill_count(handle)
+
     async def _exec_via_daemon(
         self,
         sandbox_id: str,
@@ -2501,12 +2790,14 @@ class ProcessRuntime(RuntimeAdapter):
             )
 
         loop = asyncio.get_running_loop()
+        oom_before = self._cgroup_oom_kill_count(sandbox_id)
         try:
             return await loop.run_in_executor(
                 None,
                 self._exec_via_daemon_blocking,
                 _DaemonExecCall(
                     socket_path=socket_path,
+                    sandbox_id=sandbox_id,
                     command=list(request.command),
                     env=dict(request.env) if request.env else None,
                     workdir=request.workdir,
@@ -2517,6 +2808,21 @@ class ProcessRuntime(RuntimeAdapter):
         except (ConnectionError, ValueError) as exc:
             # ``ValueError`` already covers ``json.JSONDecodeError`` (G.ERR.09).
             self._daemon_socket_ready[sandbox_id] = False
+            if self._cgroup_oom_kill_count(sandbox_id) > oom_before:
+                # The memory cap killed a process in this cgroup and the
+                # daemon died with it, so no response frame was written.
+                # Report the kill instead of a transport error.
+                logger.warning(
+                    "Sandbox %s cgroup OOM-killed a process during exec; "
+                    "daemon IPC dropped: %s",
+                    sandbox_id,
+                    exc,
+                )
+                return ExecResult(
+                    exit_code=137,
+                    stdout="",
+                    stderr="Killed\n",
+                )
             logger.warning(
                 "Daemon IPC transport failure for sandbox %s: %s",
                 sandbox_id,
@@ -3144,6 +3450,7 @@ class ProcessRuntime(RuntimeAdapter):
         self._processes.pop(sandbox_id, None)
         policy_path = self._policy_paths.pop(sandbox_id, None)
         network_mode = self._network_modes.pop(sandbox_id, None)
+        self._sandbox_ip_addresses.pop(sandbox_id, None)
         self._runtime_policies.pop(sandbox_id, None)
         self._policy_binds.pop(sandbox_id, None)
         self._seccomp_bpf.pop(sandbox_id, None)
@@ -3187,6 +3494,7 @@ class ProcessRuntime(RuntimeAdapter):
             shutil.rmtree(control_dir, ignore_errors=True)
         self._background_processes.pop(sandbox_id, None)
         self._daemon_socket_ready.pop(sandbox_id, None)
+        self._fastpath_activated.discard(sandbox_id)
         # Runtime log files used to live here too; they were removed in
         # favour of the single ``audit.log`` written by ``AuditLogger``.
         # Nothing extra to clean up on this side any more.

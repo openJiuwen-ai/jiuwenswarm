@@ -1,0 +1,73 @@
+id: VER-20260910-002-runtime-public-surface-full-scope
+applies_to:
+  source_revision: 029c76a64+session-runtime-public-surface
+  modules:
+    - runtime-session
+    - agentserver-runtime
+    - gateway
+    - web-channel
+    - process-cli
+    - tui
+    - acp
+    - im-channels
+  flows:
+    - runtime-session-reference-chain
+    - agentserver-channel-delivery
+    - interaction-answer
+evidence:
+  level: live_provider
+  scenario: full-affected-scope-plus-configured-model-session-runtime
+  environment: Windows, repository .venv, Python 3.12.12, configured model provider
+  commands:
+    - >-
+      python -m pytest --no-cov -q --capture=sys tests/unit_tests/runtime
+      tests/unit_tests/process_cli
+    - >-
+      python -m pytest --no-cov -q --capture=sys tests/unit_tests/agentserver
+    - >-
+      python -m pytest --no-cov -q --capture=sys tests/unit_tests/gateway
+      tests/unit_tests/channel tests/unit_tests/channels tests/unit_tests/tui
+      tests/unit_tests/acp tests/unit_tests/e2a
+    - >-
+      python -m pytest --no-cov -q --capture=sys
+      tests/system_tests/test_process_cli_session_runtime_live.py
+    - >-
+      JIUWENSWARM_CLI_PORTS=1 python -m pytest --no-cov -q --capture=sys
+      tests/system_tests/test_cli_channel_ws.py
+    - npm exec -- tsc --noEmit && npm exec -- vite build --target chrome107
+    - npm run test:web-client-runtime-ack and nine related Web Session test scripts
+    - npm run build && npm test
+  repetitions: 1
+  successes:
+    python_unit: 5937
+    selected_system: 90
+    web_session_javascript: 72
+    live_model: 4
+    cli_websocket_roundtrip: 1
+  skips:
+    python_unit: 5
+    selected_system_unresolved: 6
+  failures:
+    python_unit_baseline: 28
+    web_frontend_build: 1
+    system_teardown: 1
+result: inconclusive
+status: active
+recorded_at: 2026-09-10T15:30:00+08:00
+supersedes: []
+evidence_paths: []
+notes: >-
+  Every directly changed Runtime, provisioning, Process CLI, AgentServer session,
+  Web/IM transport contract, interaction-answer, ACP, and TUI path passed. The
+  four configured-model gates passed Work Normal create/resume, Code Normal
+  create/resume, chat ask-user resume, and Goal ask-user resume. The real
+  AgentServer plus Gateway WebSocket roundtrip passed after preserving the test
+  port group; pytest then reported a Windows-only locked-log teardown error.
+  The 28 broad unit failures are pre-existing Windows/path, optional dependency,
+  asset-permission, CLI encoding, and AgentManager cleanup-baseline failures in
+  unchanged production files. Web Session JavaScript tests passed, while the
+  complete frontend typecheck/build remains blocked by the unresolved upstream
+  onnxruntime-web/wasm dependency. TUI build and its complete frontend test suite
+  passed. External Feishu, Slack, and other provider accounts were not available;
+  their repository integration and contract suites passed, but no live vendor API
+  claim is made.

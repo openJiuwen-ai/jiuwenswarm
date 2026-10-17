@@ -11,11 +11,16 @@ from dataclasses import dataclass
 from typing import Any
 
 from jiuwenswarm.common.schema.message import Message, ReqMethod
+from jiuwenswarm.runtime.evolution import (
+    SKILL_EVOLUTION_APPROVAL_SCHEMA as SKILL_EVOLUTION_APPROVAL_SCHEMA,
+    SKILL_EVOLUTION_APPROVAL_SOURCE as SKILL_EVOLUTION_APPROVAL_SOURCE,
+    ensure_regular_evolution_approval_metadata,
+    is_evolution_approval_payload,
+    is_evolution_approval_request_id as is_evolution_approval_request_id,
+    is_interrupt_evolution_approval_answer_payload,
+)
 
 logger = logging.getLogger(__name__)
-
-SKILL_EVOLUTION_APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
-SKILL_EVOLUTION_APPROVAL_SOURCE = "skill_evolution_approval"
 
 
 @dataclass
@@ -37,61 +42,6 @@ class DeferredEvolutionApproval:
 class EvolutionApprovalFinishResult:
     queued_supplement: dict[str, Any] | None = None
     promoted_approval: DeferredEvolutionApproval | None = None
-
-
-def is_evolution_approval_request_id(request_id: Any) -> bool:
-    # Support skill evolution (skill_evolve_*) and team skill evolution (team_skill_evolve_*).
-    # Note: skill creation (SkillCreateRail/TeamSkillCreateRail) uses ask_user + skill-creator
-    # flow, not the approval-based routing.
-    return isinstance(request_id, str) and (
-        request_id.startswith("skill_evolve_")
-        or request_id.startswith("team_skill_evolve_")
-    )
-
-
-def is_evolution_approval_payload(payload: Any) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    if is_evolution_approval_request_id(payload.get("request_id")):
-        return True
-    if payload.get("source") == "evolution_interrupt":
-        return True
-    if payload.get("source") == SKILL_EVOLUTION_APPROVAL_SOURCE:
-        return True
-    if payload.get("approval_schema") == SKILL_EVOLUTION_APPROVAL_SCHEMA:
-        return True
-
-    evolution_meta = payload.get("evolution_meta")
-    return isinstance(evolution_meta, dict) and evolution_meta.get("event_kind") == "approval"
-
-
-def is_interrupt_evolution_approval_answer_payload(payload: Any) -> bool:
-    if not is_evolution_approval_payload(payload):
-        return False
-    if str(payload.get("request_id") or "").startswith("call_"):
-        return True
-    if payload.get("source") == "evolution_interrupt":
-        return True
-    evolution_meta = payload.get("evolution_meta")
-    return (
-        isinstance(evolution_meta, dict)
-        and evolution_meta.get("approval_transport") == "interrupt"
-    )
-
-
-def ensure_regular_evolution_approval_metadata(payload: dict[str, Any]) -> dict[str, Any]:
-    enriched = dict(payload)
-    enriched["source"] = SKILL_EVOLUTION_APPROVAL_SOURCE
-    enriched.setdefault("approval_schema", SKILL_EVOLUTION_APPROVAL_SCHEMA)
-    evolution_meta = enriched.get("evolution_meta")
-    if not isinstance(evolution_meta, dict):
-        evolution_meta = {}
-    evolution_meta = dict(evolution_meta)
-    evolution_meta.setdefault("event_kind", "approval")
-    evolution_meta.setdefault("rail_kind", "regular")
-    evolution_meta.setdefault("approval_kind", "evolve")
-    enriched["evolution_meta"] = evolution_meta
-    return enriched
 
 
 class EvolutionApprovalCoordinator:

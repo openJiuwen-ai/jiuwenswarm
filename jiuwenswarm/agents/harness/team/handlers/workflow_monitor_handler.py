@@ -11,8 +11,9 @@ Lifecycle mirrors TeamMonitorHandler via BaseMonitorHandler.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from openjiuwen.agent_teams.monitor.team_monitor import TeamMonitor
 from jiuwenswarm.agents.harness.team.handlers.base_monitor_handler import BaseMonitorHandler
@@ -36,6 +37,13 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
     to be read by ``_consume_workflow_events()`` in the gateway channel.
     """
 
+    # Activity-only deltas (agent_activity) coalesce per run in this window:
+    # the first delta of a run opens the window, later activity deltas merge
+    # into the pending buffer, and a non-activity delta for that run flushes
+    # it early. Keeps a burst of tool activity from spamming the frontend
+    # with one workflow.updated per tool call.
+    _ACTIVITY_BATCH_WINDOW_SEC = 0.3
+
     def __init__(
             self,
             monitor: TeamMonitor,
@@ -46,6 +54,29 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         super().__init__(monitor, session_id)
         self._channel_id = channel_id
         self._runs: dict[str, WorkflowRunState] = dict(initial_runs or {})
+        # Session-wide (leader-shared) budget snapshot, updated from each
+        # progress event's ``budget`` field and persisted to session metadata.
+        self._session_budget: Optional[dict] = None
+        # team.task/team.member conversion dedup. Session-scoped on purpose:
+        # the consumer loop is cancelled on team pause and restarted on wake,
+        # and a resume relaunch REPLAYS the cached prefix (completed agents
+        # re-emit started+completed) — a per-loop table would re-emit the
+        # replay and double-count finished work on the task board. Public:
+        # the consumer (_consume_workflow_events) owns the emission contract
+        # and reads them cross-class.
+        self.seen_phase: dict[str, str] = {}
+        self.seen_agent: dict[str, str] = {}
+        self.spawned_members: set[str] = set()
+        # Mirrored activity rows per member (tool_call_id/type keys), owned by
+        # the consumer for the same replay-dedup reason as seen_agent.
+        self.seen_activity: dict[str, set[tuple[str, str]]] = {}
+        # Activity-only delta coalescing state, keyed by run id. A run whose
+        # first activity delta has been buffered sits in ``_activity_flush_tasks``
+        # (a flush task is scheduled); the merged workflow delta accumulates in
+        # ``_pending_activity_workflow``. A non-activity delta for the run flushes
+        # the buffer immediately (merged into its own push).
+        self._pending_activity_workflow: dict[str, dict[str, Any]] = {}
+        self._activity_flush_tasks: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -118,6 +149,10 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
             )
             return
 
+        # Track the session-wide budget snapshot from each event (leader-shared).
+        if progress.budget is not None:
+            self._session_budget = progress.budget
+
         delta = run_state.apply(progress)
         if delta is None:
             logger.debug(
@@ -128,6 +163,15 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
                 run_state.id or "(pending)",
             )
             return
+
+        # Activity-only deltas coalesce per run in a 300ms window: buffer the
+        # delta and let the first delta's flush task push the merged result.
+        # A non-activity delta for that run flushes the pending buffer early
+        # (merged into its own push) so status changes are never delayed.
+        if progress.kind == "agent_activity":
+            self._buffer_activity_delta(run_state.id, delta)
+            return
+        delta = self._flush_pending_activity(run_state.id, delta)
 
         updated_event = self._build_updated_event(delta)
 
@@ -150,13 +194,114 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         self._persist()
 
     # ------------------------------------------------------------------
+    # Activity-only delta batching (per run, 300ms window)
+    # ------------------------------------------------------------------
+
+    def _buffer_activity_delta(self, run_id: str, delta: dict[str, Any]) -> None:
+        """Buffer an activity-only delta for ``run_id``, scheduling the flush.
+
+        The first buffered delta of a run opens the window (an asyncio task
+        flushes 300ms later); later deltas just merge into the same buffer.
+        Deltas are merged by phase id — each activity delta serializes the
+        whole touched phase, so the newest phase dict is complete.
+        """
+        if run_id not in self._activity_flush_tasks:
+            self._activity_flush_tasks[run_id] = asyncio.get_running_loop().create_task(
+                self._flush_activity_delta(run_id)
+            )
+        self._pending_activity_workflow[run_id] = self._merge_workflow_delta(
+            self._pending_activity_workflow.get(run_id), delta,
+        )
+
+    def _flush_pending_activity(self, run_id: str, delta: dict[str, Any]) -> dict[str, Any]:
+        """Flush ``run_id``'s buffered activity, merged into ``delta``.
+
+        A non-activity delta for a run with a pending window flushes early so
+        status changes are not delayed by the window; the buffered activity
+        rides the same push. Returns the (possibly merged) delta.
+        """
+        flush_task = self._activity_flush_tasks.pop(run_id, None)
+        if flush_task is not None and not flush_task.done():
+            flush_task.cancel()
+        pending = self._pending_activity_workflow.pop(run_id, None)
+        if pending is not None:
+            return self._merge_workflow_delta(pending, delta)
+        return delta
+
+    @staticmethod
+    def _merge_workflow_delta(
+        base: Optional[dict[str, Any]], new: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Merge two workflow delta dicts: newer top-level fields win, phases union by id."""
+        if base is None:
+            return new
+        phases_by_id: dict[str, dict[str, Any]] = {}
+        for phase in base.get("phases", []) or []:
+            if isinstance(phase, dict) and phase.get("id"):
+                phases_by_id[phase["id"]] = phase
+        for phase in new.get("phases", []) or []:
+            if isinstance(phase, dict) and phase.get("id"):
+                phases_by_id[phase["id"]] = phase
+        merged = {**base, **new}
+        if phases_by_id:
+            merged["phases"] = list(phases_by_id.values())
+        return merged
+
+    async def _flush_activity_delta(self, run_id: str) -> None:
+        """Flush ``run_id``'s buffered activity after the window closes.
+
+        Runs as the scheduled asyncio task. Whichever of this task or a
+        status delta reaches the buffer first claims it; the other finds it
+        already gone and no-ops (both run on one event loop, and the buffer
+        read+clear below is synchronous, so no interleaving is possible).
+        """
+        await asyncio.sleep(self._ACTIVITY_BATCH_WINDOW_SEC)
+        self._activity_flush_tasks.pop(run_id, None)
+        workflow = self._pending_activity_workflow.pop(run_id, None)
+        if workflow is None:
+            return
+        updated_event = self._build_updated_event(workflow)
+        await self._event_queue.put(updated_event)
+        self._persist()
+
+    def _flush_all_pending_activity(self) -> None:
+        """Flush every pending activity buffer synchronously (handler teardown).
+
+        Pushes buffered activity before stop() so the last window of a run is
+        never lost on teardown. Used by stop(); status-delta early flushes
+        already emptied the buffers, so this is normally a no-op.
+        """
+        for run_id, task in list(self._activity_flush_tasks.items()):
+            if not task.done():
+                task.cancel()
+        self._activity_flush_tasks.clear()
+        for run_id, workflow in list(self._pending_activity_workflow.items()):
+            self._pending_activity_workflow.pop(run_id, None)
+            self._event_queue.put_nowait(self._build_updated_event(workflow))
+            self._persist()
+
+    async def stop(self) -> None:
+        """Stop monitoring, flushing any pending activity window first."""
+        self._flush_all_pending_activity()
+        await super().stop()
+
+    # ------------------------------------------------------------------
     # Checkpoint persistence
     # ------------------------------------------------------------------
 
     def _persist(self) -> None:
         try:
-            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import persist_workflow_runs
-            persist_workflow_runs(self._runs, self._session_id)
+            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+                persist_workflow_runs,
+            )
+            # runs + session_budget must land in ONE read-modify-write: two
+            # separate persists each cache_bust-read the disk before the
+            # other's queued write is flushed, and the second full-file
+            # replace reverts the first's workflow_runs (lost update that
+            # froze the checkpoint at a stale pre-terminal state).
+            persist_workflow_runs(
+                self._runs, self._session_id, session_budget=self._session_budget
+            )
         except Exception as e:
             logger.warning("[WorkflowMonitorHandler] checkpoint persist failed: %s", e)
 
@@ -168,24 +313,47 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         """Return a list of all workflow run dicts for ``command.workflows``."""
         return [run.to_workflow_run_dict() for run in self._runs.values()]
 
-    def finalize_pending_runs(self, terminal_status: str = "stopped") -> None:
-        """Mark every non-terminal run as terminal and persist the result.
+    def finalize_pending_runs(self, *, disposition: Literal["stop", "pause"] = "stop") -> None:
+        """Finalize every non-terminal run by real state, not one-size stopped.
 
-        Called on non-resumable teardown (session cancel / stop / destroy) so a
-        torn-down runtime never leaves a workflow stuck in ``running`` on the
-        checkpoint — once the runtime is gone no further ``workflow.updated``
-        events can arrive, so a restored snapshot must show a terminal status.
+        Called on non-resumable teardown. ``disposition="stop"`` (user
+        termination) stamps non-terminal runs to ``stopped``; ``disposition=
+        "pause"`` (disconnect/crash reclaim) parks them to ``paused`` so the
+        journal cache prefix stays resumable on cold start.
         """
         changed = False
         for run in self._runs.values():
-            if run.finalize_if_running(terminal_status):
-                changed = True
+            if run.is_terminal or run.status == "paused":
+                continue  # terminal / already parked → nothing to do
+            if disposition == "pause":
+                changed = run.pause_if_running() or changed
+            else:
+                changed = run.finalize_if_running("stopped") or changed
         if changed:
             self._persist()
 
     def get_run_states(self) -> dict[str, WorkflowRunState]:
         """Return a shallow copy of in-memory workflow run states."""
         return dict(self._runs)
+
+    async def stop_run(self, run_id: str) -> bool:
+        """Stamp a paused run ``stopped`` and push the delta like an engine stop.
+
+        A paused run has already unwound, so no WORKFLOW_STOPPED will ever
+        arrive from the engine; the tree-view stop must synthesize it here or
+        the frontend keeps the paused card until a reload. Only paused runs:
+        an active run's stop is announced by the engine itself while it
+        unwinds, and stamping it here too would double-finalize. Returns False
+        when the run is unknown or not paused.
+        """
+        run = self._runs.get(run_id)
+        if run is None or run.status != "paused":
+            return False
+        delta = run.apply(WorkflowProgress(kind="workflow_stopped", run_id=run_id))
+        if delta is not None:
+            await self._event_queue.put(self._build_updated_event(delta))
+        self._persist()
+        return True
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -232,12 +400,36 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
                 correlation_id=getattr(payload, "correlation_id", None),
                 node_type=getattr(payload, "node_type", None),
                 agent_id=getattr(payload, "agent_id", None),
+                agent_type=getattr(payload, "agent_type", None),
+                agent_template=getattr(payload, "agent_template", None),
+                display_name=getattr(payload, "display_name", None),
                 answer=getattr(payload, "answer", None),
+                activity_type=getattr(payload, "activity_type", None),
+                tool_call_id=getattr(payload, "tool_call_id", None),
+                tool_name=getattr(payload, "tool_name", None),
+                content=getattr(payload, "content", None),
                 tokens=getattr(payload, "tokens", None),
                 budget=getattr(payload, "budget", None),
+                workflow_budget=getattr(payload, "workflow_budget", None),
+                budget_exhausted_scope=getattr(payload, "budget_exhausted_scope", None),
+                relaunch_kind=getattr(payload, "relaunch_kind", None),
+                script_path=getattr(payload, "script_path", None),
                 phase_type=getattr(payload, "phase_type", None),
                 nested_phase=getattr(payload, "nested_phase", None),
                 parent_phase=getattr(payload, "parent_phase", None),
+                phase_iteration=getattr(payload, "phase_iteration", None),
+                parent_session_id=getattr(payload, "parent_session_id", None),
+                member_name=getattr(payload, "member_name", None),
+                verify_reviewers=getattr(payload, "verify_reviewers", None),
+                verify_verdict=getattr(payload, "verify_verdict", None),
+                verify_threshold=getattr(payload, "verify_threshold", None),
+                verify_votes=getattr(payload, "verify_votes", None),
+                verify_reviewer_labels=getattr(payload, "verify_reviewer_labels", None),
+                verify_reviewer_roles=getattr(payload, "verify_reviewer_roles", None),
+                verify_id=getattr(payload, "verify_id", None),
+                cache_tokens=getattr(payload, "cache_tokens", None),
+                token_input=getattr(payload, "token_input", None),
+                token_output=getattr(payload, "token_output", None),
             )
         except Exception:
             logger.warning("[WorkflowMonitorHandler] Failed to extract progress from event")

@@ -16,6 +16,7 @@ import ssl
 import tempfile
 from pathlib import Path
 
+# Test-only logging configuration; production deployments should restrict log file access to administrators
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

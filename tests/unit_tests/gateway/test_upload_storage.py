@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.gateway.upload_storage import (
+from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
+    atomic_write_unique,
     safe_session_dirname,
     safe_upload_filename,
     unique_upload_path,
@@ -99,3 +100,63 @@ def test_unique_upload_path_returns_free_path_unchanged(tmp_path: Path):
     target = tmp_path / "报告.md"
 
     assert unique_upload_path(target) == target
+
+
+# ---------------------------------------------------------------------------
+# atomic_write_unique
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_write_unique_writes_to_free_path(tmp_path: Path):
+    target = tmp_path / "report.md"
+
+    written = atomic_write_unique(target, b"hello")
+
+    assert written == target
+    assert target.read_bytes() == b"hello"
+
+
+def test_atomic_write_unique_does_not_overwrite_existing(tmp_path: Path):
+    """同名既有文件必须保留，新写入改走 stem-N 后缀（P1 回归核心断言）。"""
+    target = tmp_path / "report.md"
+    target.write_bytes(b"KEEP")
+
+    written = atomic_write_unique(target, b"NEW")
+
+    assert written == tmp_path / "report-1.md"
+    assert target.read_bytes() == b"KEEP"
+    assert written.read_bytes() == b"NEW"
+
+
+def test_atomic_write_unique_chains_suffixes(tmp_path: Path):
+    target = tmp_path / "report.md"
+    target.write_bytes(b"0")
+
+    first = atomic_write_unique(target, b"1")
+    second = atomic_write_unique(target, b"2")
+
+    assert first == tmp_path / "report-1.md"
+    assert second == tmp_path / "report-2.md"
+    assert first.read_bytes() == b"1"
+    assert second.read_bytes() == b"2"
+    assert target.read_bytes() == b"0"
+
+
+def test_atomic_write_unique_concurrent_writers_never_clobber(tmp_path: Path):
+    """并发写入同名文件：每个 writer 各占独占路径，无相互覆盖、无丢失。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    target = tmp_path / "report.md"
+    payload = b"same-bytes"
+    writers = 16
+
+    def _write(_index: int) -> Path:
+        return atomic_write_unique(target, payload)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        paths = list(pool.map(_write, range(writers)))
+
+    files = sorted(tmp_path.iterdir(), key=lambda p: p.name)
+    assert len(files) == writers
+    assert len({p.name for p in paths}) == writers
+    assert {p.read_bytes() for p in files} == {payload}

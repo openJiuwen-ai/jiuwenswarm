@@ -16,6 +16,7 @@ from jiuwenswarm.gateway.channel_manager.web.web_connect import (
     WebChannelConfig,
     _MethodHandlerInvocation,
 )
+from jiuwenswarm.common.schema.message import EventType, Message
 
 
 class _FakeRequestHeaders:
@@ -160,6 +161,22 @@ def test_resolve_connection_user_id_empty():
     assert uid is None
 
 
+def test_resolve_connection_user_id_client_declared_overrides_authenticated():
+    # 与 agent_os 稳定版契约一致：客户端声明（query user_id / X-User-Id，值为
+    # username）优先；authenticated_user_id（IAM UUID）只作认证门禁，
+    # 不参与连接身份推导（否则 /home/agentos/users/<uuid> 工作区不存在）。
+    ws = type("Ws", (), {"authenticated_user_id": "d8e63255-9dfd-4aa0-8b59-2b9096442154"})()
+    uid = WebChannel._resolve_connection_user_id({"user_id": "zhw"}, ws)
+    assert uid == "zhw"
+    assert WebChannel._connection_user_id(ws) == "zhw"
+
+
+def test_resolve_connection_user_id_ignores_authenticated_without_declaration():
+    ws = type("Ws", (), {"authenticated_user_id": "d8e63255-9dfd-4aa0-8b59-2b9096442154"})()
+    uid = WebChannel._resolve_connection_user_id({}, ws)
+    assert uid is None
+
+
 def test_routing_key_user_id_fallback():
     assert WebChannel._routing_key_user_id("alice", ("127.0.0.1", 1)) == "alice"
     assert WebChannel._routing_key_user_id(None, ("127.0.0.1", 1)) == "('127.0.0.1', 1)"
@@ -276,6 +293,33 @@ async def test_web_channel_invoke_method_handler_injects_user_id():
 
 
 @pytest.mark.asyncio
+async def test_web_channel_cron_push_targets_only_its_agentos_user(monkeypatch):
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    alice = FakeWebSocket(query_user_id="alice")
+    bob = FakeWebSocket(query_user_id="bob")
+    # ``clients`` is the established connection collection used by the cron
+    # broadcast compatibility path; keep the test independent from ws writers.
+    monkeypatch.setattr(WebChannel, "clients", property(lambda _: {alice, bob}))
+    sent: list[object] = []
+    monkeypatch.setattr(channel, "_enqueue_send", lambda ws, frame: sent.append(ws))
+    msg = Message(
+        id="cron-a",
+        type="event",
+        channel_id="web",
+        session_id=None,
+        params={},
+        timestamp=0,
+        ok=True,
+        payload={"content": "done", "user_id": "alice", "cron": {"job_id": "job-a"}},
+        event_type=EventType.CHAT_FINAL,
+    )
+
+    await channel.send(msg)
+
+    assert sent == [alice]
+
+
+@pytest.mark.asyncio
 async def test_openai_account_unexpected_error_uses_method_dispatcher(monkeypatch):
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     _register_web_handlers(WebHandlersBindParams(channel=channel))
@@ -341,7 +385,9 @@ async def test_session_create_uses_connection_user_id(tmp_path, monkeypatch):
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["session_id"] == "web_allocated_1"
     assert agent_client.requests[-1].user_id == "alice"
-    assert agent_client.requests[-1].params["user_id"] == "alice"
+    # user_id 由 envelope.user_id 独立承载（路由/观测权威）；params 中不得残留，
+    # 防止调用方经 params 注入与连接身份不一致的 user_id。
+    assert "user_id" not in agent_client.requests[-1].params
 
 
 @pytest.mark.asyncio
@@ -367,4 +413,6 @@ async def test_session_create_ignores_params_user_id(tmp_path, monkeypatch):
 
     assert channel.responses[-1]["ok"] is True
     assert agent_client.requests[-1].user_id == "alice"
-    assert agent_client.requests[-1].params["user_id"] == "alice"
+    # 请求 params 中显式携带的 user_id("victim")必须被忽略并移除，
+    # 不得覆盖连接身份；envelope.user_id 始终以连接为准。
+    assert "user_id" not in agent_client.requests[-1].params

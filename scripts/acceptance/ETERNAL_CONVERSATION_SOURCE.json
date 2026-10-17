@@ -1,0 +1,6 @@
+{
+  "suite": "jiuwenswarm.persist-session.200-task",
+  "workload_script": "eternal_conversation_200_workload.py",
+  "transport": "websocket",
+  "requires_real_model": true
+}

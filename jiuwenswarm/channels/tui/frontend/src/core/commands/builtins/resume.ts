@@ -1,7 +1,7 @@
 import { addError, addInfo } from "../helpers.js";
 import { CommandKind, type SlashCommand } from "../types.js";
 import type { AccentColorName } from "../../../ui/theme.js";
-import { isClientMode, isTeamMode } from "../../modes.js";
+import { isTeamMode, normalizeToClientMode } from "../../modes.js";
 
 export interface SessionMeta {
   session_id: string;
@@ -84,7 +84,9 @@ async function doResume(
   const previousSessionId = ctx.sessionId;
   const previousAccent = ctx.accentColor;
   const previousTitle = ctx.sessionTitle;
-  const targetMode = session.mode && isClientMode(session.mode) ? session.mode : ctx.mode;
+  // 历史 session 可能存旧 canonical 串，走 normalizeToClientMode 归一到新串；
+  // 空/未知串回退当前 mode。
+  const targetMode = normalizeToClientMode(session.mode ?? "") ?? ctx.mode;
   try {
     await ctx.request("session.switch", {
       session_id: session.session_id,

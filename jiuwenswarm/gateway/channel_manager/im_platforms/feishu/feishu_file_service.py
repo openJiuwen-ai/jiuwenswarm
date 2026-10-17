@@ -6,10 +6,16 @@ import asyncio
 import mimetypes
 import os
 import re
-import time
+from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.gateway.channel_manager.im_platforms.errors import (
+    AttachmentPersistError,
+)
+from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
+    atomic_write_unique,
+)
 
 # 类型别名，用于类型提示
 FeishuConfig = Any  # 避免循环导入
@@ -109,6 +115,41 @@ class FeishuFileService:
         self._config = config
         self._workspace_dir = workspace_dir
         self._download_semaphore = asyncio.Semaphore(3)  # 限制并发下载数
+        # 附件落盘钩子（Phase 3）：Gateway 下载字节后经 E2A 交给目标 AgentServer
+        # 落盘其注入目录。未注入时回落本地写盘（仅测试 / 无 AgentServer 上下文）。
+        self._persist_hook: Any = None
+
+    def set_persist_hook(self, hook: Any) -> None:
+        """注入附件落盘钩子 ``async (content, category, filename) -> dict``。
+
+        返回形如 ``{"path": ..., "name": ..., "size": ...}`` 的落盘结果；抛错
+        视为附件落盘失败（决策 D6：按可重试错误失败整条消息）。
+        """
+        self._persist_hook = hook
+
+    async def _persist_downloaded_file(
+        self, content: bytes, category: str, local_name: str,
+    ) -> dict[str, Any]:
+        """把下载字节落盘（经钩子到 AgentServer，或本地回落），返回 file_info 字段。"""
+        if self._persist_hook is not None:
+            try:
+                return await self._persist_hook(content, category, local_name)
+            except AttachmentPersistError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise AttachmentPersistError(str(exc)) from exc
+        download_dir = self._get_download_dir(category)
+        # 本地回落（仅测试 / 无 AgentServer 上下文）：用原子独占创建落盘，
+        # 同名文件自动取 stem-N 后缀，并发下载与既有文件均不会被覆盖
+        # （修复秒级时间戳重命名在同秒并发下仍会相互覆盖的 P1）。
+        # 经钩子落盘（AgentServer 注入目录）时由 AgentServer 侧去重
+        # （unique_upload_path），此处不重复处理。
+        path = atomic_write_unique(Path(download_dir) / local_name, content)
+        return {
+            "path": str(path),
+            "name": path.name,
+            "size": len(content),
+        }
 
     # ──────────────────────────────────────────────────────────────────────────
     # 工具方法
@@ -269,23 +310,22 @@ class FeishuFileService:
             local_name = self._generate_local_filename(
                 message_id, image_key, extension=extension
             )
-            download_dir = self._get_download_dir("images")
-            file_path = os.path.join(download_dir, local_name)
-
-            with open(file_path, "wb") as f:
-                f.write(file_content)
+            persisted = await self._persist_downloaded_file(file_content, "images", local_name)
+            file_path = persisted["path"]
 
             logger.info("飞书图片下载成功: %s", file_path)
 
             return {
                 "path": file_path,
-                "name": local_name,
+                "name": persisted.get("name", local_name),
                 "size": len(file_content),
                 "mime_type": self._guess_mime_type(local_name),
                 "file_key": image_key,
                 "file_category": "image",
             }
 
+        except AttachmentPersistError:
+            raise
         except Exception as e:
             logger.error("下载飞书图片失败: %s", e)
             return None
@@ -330,16 +370,11 @@ class FeishuFileService:
             local_name = self._generate_local_filename(
                 message_id, file_key, original_name, extension
             )
-            download_dir = self._get_download_dir("files")
-            file_path = os.path.join(download_dir, local_name)
+            # 同名去重由落盘侧完成：经钩子（AgentServer 注入目录 unique_upload_path）
+            # 或本地回落（下载目录内重命名）。此处不做依赖 CWD 的无效检查。
 
-            # 处理文件名冲突
-            if os.path.exists(file_path):
-                base, ext = os.path.splitext(file_path)
-                file_path = f"{base}_{int(time.time())}{ext}"
-
-            with open(file_path, "wb") as f:
-                f.write(file_content)
+            persisted = await self._persist_downloaded_file(file_content, "files", local_name)
+            file_path = persisted["path"]
 
             logger.info("飞书文件下载成功: %s", file_path)
 
@@ -352,6 +387,8 @@ class FeishuFileService:
                 "file_category": "file",
             }
 
+        except AttachmentPersistError:
+            raise
         except Exception as e:
             logger.error("下载飞书文件失败: %s", e)
             return None
@@ -401,23 +438,22 @@ class FeishuFileService:
             local_name = self._generate_local_filename(
                 message_id, file_key, extension=extension
             )
-            download_dir = self._get_download_dir("audio")
-            file_path = os.path.join(download_dir, local_name)
-
-            with open(file_path, "wb") as f:
-                f.write(file_content)
+            persisted = await self._persist_downloaded_file(file_content, "audio", local_name)
+            file_path = persisted["path"]
 
             logger.info("飞书音频下载成功: %s", file_path)
 
             return {
                 "path": file_path,
-                "name": local_name,
+                "name": persisted.get("name", local_name),
                 "size": len(file_content),
                 "mime_type": self._guess_mime_type(local_name),
                 "file_key": file_key,
                 "file_category": "audio",
             }
 
+        except AttachmentPersistError:
+            raise
         except Exception as e:
             logger.error("下载飞书音频失败: %s", e)
             return None
@@ -466,23 +502,22 @@ class FeishuFileService:
             local_name = self._generate_local_filename(
                 message_id, file_key, extension=extension
             )
-            download_dir = self._get_download_dir("media")
-            file_path = os.path.join(download_dir, local_name)
-
-            with open(file_path, "wb") as f:
-                f.write(file_content)
+            persisted = await self._persist_downloaded_file(file_content, "media", local_name)
+            file_path = persisted["path"]
 
             logger.info("飞书视频下载成功: %s", file_path)
 
             return {
                 "path": file_path,
-                "name": local_name,
+                "name": persisted.get("name", local_name),
                 "size": len(file_content),
                 "mime_type": self._guess_mime_type(local_name),
                 "file_key": file_key,
                 "file_category": "media",
             }
 
+        except AttachmentPersistError:
+            raise
         except Exception as e:
             logger.error("下载飞书视频失败: %s", e)
             return None

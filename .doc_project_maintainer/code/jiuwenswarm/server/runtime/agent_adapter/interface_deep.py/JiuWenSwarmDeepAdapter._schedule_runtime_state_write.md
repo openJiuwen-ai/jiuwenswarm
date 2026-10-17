@@ -43,6 +43,8 @@ details: {}
 
 Coalesces diagnostic runtime-state persistence to at most one active task per adapter and runs synchronous Git/file probing in a worker thread under a process-wide bound of two writers. It returns without awaiting that diagnostic work. Lightweight or restored adapters that bypassed `__init__` treat a missing task slot as idle rather than failing request configuration.
 
+The eternal-conversation request flag is intentionally not persisted here in V1; the frontend must explicitly send it, while durable memory/cursor state lives under the Session feature root.
+
 ## Key Signals
 
 - Input: stable/request runtime identity and project context.

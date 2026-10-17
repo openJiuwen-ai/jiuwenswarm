@@ -1,0 +1,23 @@
+/* DrawerStateMessage 错误态：原视觉取自 agentManagement.css 的 .agent-management-form-error
+   （554 行边框盒 + 2181 行 flex 布局两段合并），声明逐条等价迁移，保证渲染结果不变。
+   迁移原因：ui 共享组件不应依赖业务模块（AgentManagementPanel）的类名。 */
+.ui-drawer-state-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  border: 1px solid var(--color-border-danger);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  color: var(--color-feedback-danger);
+  padding: 12px 16px;
+}
+
+.ui-drawer-state-error button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}

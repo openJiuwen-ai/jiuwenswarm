@@ -1,0 +1,42 @@
+id: VER-20260909-002-session-runtime-goal-executions
+applies_to:
+  source_revision: fa2ab25a4+working-tree
+  modules: [runtime-session, agentserver-runtime, gateway]
+  flows: [runtime-session-reference-chain]
+  symbols:
+    - AgentRuntime.session_work_kind
+    - RuntimeSessionCoordinator.run_stream
+    - RuntimeSessionCoordinator.deliver_control
+    - SessionExecutionRegistry.mark_awaiting_control
+  paths:
+    - jiuwenswarm/runtime/service.py
+    - jiuwenswarm/runtime/session/coordinator.py
+    - jiuwenswarm/runtime/session/execution_registry.py
+    - jiuwenswarm/runtime/session/model.py
+    - tests/system_tests/test_process_cli_session_runtime_live.py
+evidence:
+  level: live_provider
+  scenario: goal-ask-user-exact-runtime-resume
+  environment: Windows, project uv environment, configured OpenAI-compatible model
+  command: >-
+    RUN_LIVE_SESSION_RUNTIME_TESTS=1 uv run pytest -q -o addopts=
+    -o asyncio_mode=auto -W ignore
+    tests/system_tests/test_process_cli_session_runtime_live.py
+    -k True-goal_stream
+  repetitions: 1
+  successes: 1
+  warnings: 2
+result: passed
+status: active
+recorded_at: 2026-09-09T08:07:50Z
+supersedes: []
+evidence_paths: []
+notes: >-
+  After rebasing onto upstream fa2ab25a4, the configured-provider Goal emitted
+  ask-user interactions, resumed through the interaction ID currently owned by
+  the waiting Goal execution, and returned GOAL_ASK_USER_RESUME_OK. Focused
+  Runtime, AgentServer, and Gateway tests passed 513/513; Goal history and
+  evolution tests passed 57/57. The standalone
+  test_goal_runtime_adapter.py cannot collect because it prepends a separate old
+  agent-core checkout without openjiuwen.harness; the project-installed SDK used
+  by the live test provides that package.

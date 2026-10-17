@@ -4,9 +4,11 @@ import test from 'node:test';
 import { JSDOM } from 'jsdom';
 
 import {
-  ReusableShareImageClone,
+  SerializedShareImageClone,
   cloneShareImageTreeInBlocks,
+  cloneShareImageTreeToSerializedBlocks,
   getShareImageOutputDimensions,
+  getShareImagePartOutputHeights,
   getShareImageTileSourceHeight,
   shouldIncludeShareImageCloneNode,
 } from '../node_modules/.cache/share-image/shareImageRaster.js';
@@ -56,9 +58,9 @@ function mockRect(element, top, height) {
   });
 }
 
-function cloneWithoutExcludedBlocks(source, excludedBlocks) {
+function cloneWithoutExcludedBlocks(source, excludedBlocks, isIncluded = () => true) {
   function cloneNode(node) {
-    if (node.nodeType === 1 && excludedBlocks.has(node)) {
+    if ((node.nodeType === 1 && excludedBlocks.has(node)) || !isIncluded(node)) {
       return null;
     }
     const clone = node.cloneNode(false);
@@ -71,10 +73,29 @@ function cloneWithoutExcludedBlocks(source, excludedBlocks) {
   return cloneNode(source);
 }
 
+function cloneSkeletonWithoutExcludedBlocks(source, excludedBlocks, isIncluded = () => true) {
+  return {
+    clone: cloneWithoutExcludedBlocks(source, excludedBlocks, isIncluded),
+    isIncluded: node => !(node.nodeType === 1 && excludedBlocks.has(node)) && isIncluded(node),
+  };
+}
+
 test('keeps the share image at exact 3x dimensions without global downscaling', () => {
   assert.deepEqual(getShareImageOutputDimensions(100_000), [2250, 300_000]);
   assert.equal(getShareImageTileSourceHeight(), 621);
   assert.throws(() => getShareImageOutputDimensions(0), /share_image_invalid_source_height/);
+});
+
+test('keeps ordinary exports whole and balances oversized exports below the viewer-safe height', () => {
+  assert.deepEqual(getShareImagePartOutputHeights(10_000), [30_000]);
+  assert.deepEqual(getShareImagePartOutputHeights(11_804), [35_412]);
+  assert.deepEqual(getShareImagePartOutputHeights(42_666), [127_998]);
+  assert.deepEqual(getShareImagePartOutputHeights(42_667), [64_001, 64_000]);
+  const heights = getShareImagePartOutputHeights(485_824);
+  assert.equal(heights.length, 12);
+  assert.equal(heights.reduce((sum, height) => sum + height, 0), 1_457_472);
+  assert.ok(heights.every(height => height <= 128_000));
+  assert.ok(Math.max(...heights) - Math.min(...heights) <= 1);
 });
 
 test('excludes hidden KaTeX MathML while retaining the visible formula tree', () => {
@@ -104,7 +125,7 @@ test('clones nested conversation content in bounded semantic blocks', async () =
     source,
     async (block, excludedBlocks) => {
       cloneCalls++;
-      return cloneWithoutExcludedBlocks(block, excludedBlocks);
+      return cloneSkeletonWithoutExcludedBlocks(block, excludedBlocks);
     },
     async () => {
       yields++;
@@ -116,7 +137,77 @@ test('clones nested conversation content in bounded semantic blocks', async () =
   assert.equal(yields, 9);
 });
 
-test('reuses one clone and restores message bodies at exact tile boundaries', () => {
+test('clones inline KaTeX formulas in exact sibling order with a yield between formulas', async () => {
+  const dom = new JSDOM(
+    '<div id="source"><div class="chat-timeline"><article><div class="chat-markdown"><p>before <span class="katex"><span class="katex-mathml">hidden-a</span><span class="katex-html">visible-a</span></span> between <strong>text</strong> and <span class="katex"><span class="katex-mathml">hidden-b</span><span class="katex-html">visible-b</span></span> after</p></div></article></div></div>',
+  );
+  const source = dom.window.document.querySelector('#source');
+  let yields = 0;
+  const clone = await cloneShareImageTreeInBlocks(
+    source,
+    async (block, excludedBlocks) => cloneSkeletonWithoutExcludedBlocks(block, excludedBlocks),
+    async () => {
+      yields++;
+    },
+  );
+
+  assert.equal(clone.outerHTML, source.outerHTML);
+  assert.equal(clone.querySelector('p').textContent, 'before hidden-avisible-a between text and hidden-bvisible-b after');
+  assert.equal(yields, 4);
+  assert.equal(source.ownerDocument.createTreeWalker(source, dom.window.NodeFilter.SHOW_COMMENT).nextNode(), null);
+  assert.equal(clone.ownerDocument.createTreeWalker(clone, dom.window.NodeFilter.SHOW_COMMENT).nextNode(), null);
+});
+
+test('clones KaTeX top-level atoms in exact order with a yield between atoms', async () => {
+  const dom = new JSDOM(
+    '<div id="source">before <span class="katex"><span class="katex-mathml">hidden</span><span class="katex-html"><span class="base"><span class="strut"></span><span class="mord"><span>A</span></span><span class="mop">B</span></span></span></span> after</div>',
+  );
+  const source = dom.window.document.querySelector('#source');
+  let cloneCalls = 0;
+  let yields = 0;
+  const clone = await cloneShareImageTreeInBlocks(
+    source,
+    async (block, excludedBlocks) => {
+      cloneCalls++;
+      return cloneSkeletonWithoutExcludedBlocks(block, excludedBlocks);
+    },
+    async () => {
+      yields++;
+    },
+  );
+
+  assert.equal(clone.outerHTML, source.outerHTML);
+  assert.equal(clone.querySelector('.base').textContent, 'AB');
+  assert.equal(cloneCalls, 5);
+  assert.equal(yields, 4);
+  assert.equal(source.ownerDocument.createTreeWalker(source, dom.window.NodeFilter.SHOW_COMMENT).nextNode(), null);
+  assert.equal(clone.ownerDocument.createTreeWalker(clone, dom.window.NodeFilter.SHOW_COMMENT).nextNode(), null);
+});
+
+test('maps clone slots without mutating the source tree when filtered siblings shift child indexes', async () => {
+  const dom = new JSDOM(
+    '<div id="source"><span class="katex"><span class="katex-mathml">hidden</span><span class="katex-html"><span class="base"><span class="mord">A</span><span class="mop">B</span></span></span></span></div>',
+  );
+  const source = dom.window.document.querySelector('#source');
+  for (const element of [source, ...source.querySelectorAll('*')]) {
+    element.insertBefore = () => {
+      throw new Error('source_tree_mutated');
+    };
+  }
+
+  const clone = await cloneShareImageTreeInBlocks(
+    source,
+    async (block, excludedBlocks) =>
+      cloneSkeletonWithoutExcludedBlocks(block, excludedBlocks, shouldIncludeShareImageCloneNode),
+    async () => {},
+  );
+
+  assert.equal(clone.querySelector('.katex-mathml'), null);
+  assert.equal(clone.querySelector('.katex-html').textContent, 'AB');
+  assert.equal(source.querySelector('.katex-mathml').textContent, 'hidden');
+});
+
+test('serializes semantic blocks and restores exact content at tile boundaries', async () => {
   const dom = new JSDOM(`
     <div id="source"><div class="chat-timeline">
       <article style="color: red"><span>A</span></article>
@@ -131,43 +222,56 @@ test('reuses one clone and restores message bodies at exact tile boundaries', ()
   mockRect(sourceBlocks[1], 200, 100);
   mockRect(sourceBlocks[2], 300, 100);
 
-  const clone = source.cloneNode(true);
-  const clonedBlocks = [...clone.querySelectorAll('.chat-timeline > *')];
-  const firstStyle = clonedBlocks[0].getAttribute('style');
-  const reusable = new ReusableShareImageClone(source, clone);
+  const previousHTMLElement = globalThis.HTMLElement;
+  globalThis.HTMLElement = dom.window.HTMLElement;
+  let finalized = 0;
+  const finalizedRoots = [];
+  const finalizedClones = [];
+  try {
+    const serialized = await cloneShareImageTreeToSerializedBlocks(
+      source,
+      async (block, excludedBlocks) => cloneSkeletonWithoutExcludedBlocks(block, excludedBlocks),
+      async (clone, isRoot) => {
+        finalized++;
+        finalizedRoots.push(isRoot);
+        finalizedClones.push(clone);
+      },
+      async () => {},
+    );
+    assert.ok(serialized instanceof SerializedShareImageClone);
+    assert.equal(finalized, 4);
+    assert.deepEqual(finalizedRoots, [false, false, false, true]);
+    assert.ok(finalizedClones.every(clone => clone.childNodes.length === 0));
 
-  reusable.prepareTile(0, 100);
-  assert.equal(clonedBlocks[0].textContent, 'A');
-  assert.equal(clonedBlocks[1].textContent, '');
-  assert.equal(clonedBlocks[2].textContent, '');
-  assert.equal(clonedBlocks[1].className, 'second');
-  assert.equal(clonedBlocks[1].dataset.kind, 'message');
-  assert.match(clonedBlocks[1].getAttribute('style'), /height: 100px !important/);
-  assert.match(clonedBlocks[1].getAttribute('style'), /margin: 7px 3px/);
-  assert.match(clonedBlocks[1].getAttribute('style'), /color: blue/);
+    const parseTile = (sourceY, sourceHeight) => new JSDOM(serialized.prepareTile(sourceY, sourceHeight)).window.document.body.firstElementChild;
+    const firstTileBlocks = [...parseTile(0, 100).querySelectorAll('.chat-timeline > *')];
+    assert.deepEqual(firstTileBlocks.map(block => block.textContent), ['A', '', '']);
+    assert.equal(firstTileBlocks[1].className, 'second');
+    assert.equal(firstTileBlocks[1].dataset.kind, 'message');
+    assert.match(firstTileBlocks[1].getAttribute('style'), /height: 100px !important/);
+    assert.match(firstTileBlocks[1].getAttribute('style'), /margin: 7px 3px/);
+    assert.match(firstTileBlocks[1].getAttribute('style'), /color: blue/);
 
-  reusable.prepareTile(100, 100);
-  assert.equal(clonedBlocks[0].textContent, '');
-  assert.equal(clonedBlocks[1].textContent, 'B');
-  assert.equal(clonedBlocks[2].textContent, '');
-  assert.equal(clonedBlocks[1].className, 'second');
-  assert.equal(clonedBlocks[1].dataset.kind, 'message');
-  assert.match(clonedBlocks[1].getAttribute('style'), /color: blue/);
+    const secondTileBlocks = [...parseTile(100, 100).querySelectorAll('.chat-timeline > *')];
+    assert.deepEqual(secondTileBlocks.map(block => block.textContent), ['', 'B', '']);
+    assert.equal(secondTileBlocks[1].className, 'second');
+    assert.equal(secondTileBlocks[1].dataset.kind, 'message');
+    assert.match(secondTileBlocks[1].getAttribute('style'), /color: blue/);
 
-  reusable.prepareTile(200, 100);
-  assert.equal(clonedBlocks[0].textContent, '');
-  assert.equal(clonedBlocks[1].textContent, '');
-  assert.equal(clonedBlocks[2].textContent, 'C');
+    const thirdTileBlocks = [...parseTile(200, 100).querySelectorAll('.chat-timeline > *')];
+    assert.deepEqual(thirdTileBlocks.map(block => block.textContent), ['', '', 'C']);
 
-  reusable.restore();
-  assert.deepEqual(
-    clonedBlocks.map(block => block.textContent),
-    ['A', 'B', 'C'],
-  );
-  assert.equal(clonedBlocks[0].getAttribute('style'), firstStyle);
+    const completeMarkup = serialized.prepareTile(0, 300);
+    const complete = new JSDOM(completeMarkup).window.document.body.firstElementChild;
+    assert.deepEqual([...complete.querySelectorAll('.chat-timeline > *')].map(block => block.textContent), ['A', 'B', 'C']);
+    assert.doesNotMatch(completeMarkup, /jiuwenswarm-share-clone-/);
+  } finally {
+    globalThis.HTMLElement = previousHTMLElement;
+    dom.window.close();
+  }
 });
 
-test('prunes semantic blocks inside one message that spans multiple tiles', () => {
+test('serializes nested Markdown blocks independently inside one long message', async () => {
   const dom = new JSDOM(`
     <div id="source"><div class="chat-timeline">
       <article><div class="a2ui-message-content"><div class="chat-markdown">
@@ -186,22 +290,28 @@ test('prunes semantic blocks inside one message that spans multiple tiles', () =
   mockRect(markdown, 100, 300);
   paragraphs.forEach((paragraph, index) => mockRect(paragraph, 100 + index * 100, 100));
 
-  const clone = source.cloneNode(true);
-  const clonedParagraphs = [...clone.querySelectorAll('p')];
-  const reusable = new ReusableShareImageClone(source, clone);
+  const previousHTMLElement = globalThis.HTMLElement;
+  globalThis.HTMLElement = dom.window.HTMLElement;
+  try {
+    const serialized = await cloneShareImageTreeToSerializedBlocks(
+      source,
+      async (block, excludedBlocks) => cloneSkeletonWithoutExcludedBlocks(block, excludedBlocks),
+      async () => {},
+      async () => {},
+    );
+    const tile = new JSDOM(serialized.prepareTile(100, 100)).window.document.body.firstElementChild;
+    assert.equal(tile.querySelector('article').textContent.trim(), 'B');
+    assert.deepEqual([...tile.querySelectorAll('p')].map(paragraph => paragraph.textContent), ['', 'B', '']);
 
-  reusable.prepareTile(100, 100);
-  assert.equal(clone.querySelector('article').textContent.trim(), 'B');
-  assert.deepEqual(
-    clonedParagraphs.map(paragraph => paragraph.textContent),
-    ['', 'B', ''],
-  );
-
-  reusable.restore();
-  assert.equal(clone.querySelector('article').textContent.replace(/\s/g, ''), 'ABC');
+    const complete = new JSDOM(serialized.prepareTile(0, 300)).window.document.body.firstElementChild;
+    assert.equal(complete.querySelector('article').textContent.replace(/\s/g, ''), 'ABC');
+  } finally {
+    globalThis.HTMLElement = previousHTMLElement;
+    dom.window.close();
+  }
 });
 
-test('omits zero-height collapsed content from every tile and restores it afterwards', () => {
+test('omits zero-height collapsed content from every serialized tile', async () => {
   const dom = new JSDOM(`
     <div id="source"><div class="chat-timeline">
       <div class="timeline-collapse" data-state="collapsed" style="position: absolute; visibility: hidden; width: 1px; height: 0"><span>Hidden details</span></div>
@@ -214,29 +324,54 @@ test('omits zero-height collapsed content from every tile and restores it afterw
   mockRect(sourceBlocks[0], 150, 0);
   mockRect(sourceBlocks[1], 100, 100);
 
-  const clone = source.cloneNode(true);
-  const clonedBlocks = [...clone.querySelectorAll('.chat-timeline > *')];
-  const reusable = new ReusableShareImageClone(source, clone);
-
-  reusable.prepareTile(0, 100);
-  assert.equal(clonedBlocks[0].textContent, '');
-  assert.equal(clonedBlocks[0].className, 'timeline-collapse');
-  assert.equal(clonedBlocks[0].dataset.state, 'collapsed');
-  assert.equal(clonedBlocks[0].style.getPropertyValue('position'), 'absolute');
-  assert.equal(clonedBlocks[0].style.getPropertyValue('visibility'), 'hidden');
-  assert.equal(clonedBlocks[1].textContent, 'Visible message');
-
-  reusable.restore();
-  assert.equal(clonedBlocks[0].textContent, 'Hidden details');
-  assert.equal(clonedBlocks[0].dataset.state, 'collapsed');
+  const previousHTMLElement = globalThis.HTMLElement;
+  globalThis.HTMLElement = dom.window.HTMLElement;
+  try {
+    const serialized = await cloneShareImageTreeToSerializedBlocks(
+      source,
+      async (block, excludedBlocks) => cloneSkeletonWithoutExcludedBlocks(block, excludedBlocks),
+      async () => {},
+      async () => {},
+    );
+    const tile = new JSDOM(serialized.prepareTile(0, 100)).window.document.body.firstElementChild;
+    const clonedBlocks = [...tile.querySelectorAll('.chat-timeline > *')];
+    assert.equal(clonedBlocks[0].textContent, '');
+    assert.equal(clonedBlocks[0].className, 'timeline-collapse');
+    assert.equal(clonedBlocks[0].dataset.state, 'collapsed');
+    assert.equal(clonedBlocks[0].style.getPropertyValue('position'), 'absolute');
+    assert.equal(clonedBlocks[0].style.getPropertyValue('visibility'), 'hidden');
+    assert.equal(clonedBlocks[1].textContent, 'Visible message');
+  } finally {
+    globalThis.HTMLElement = previousHTMLElement;
+    dom.window.close();
+  }
 });
 
-test('rejects a source/clone flow-block structure mismatch', () => {
+test('rejects a mismatched serialized clone structure instead of exporting partial content', async () => {
   const dom = new JSDOM('<div><div class="chat-timeline"><article>A</article></div></div>');
   const source = dom.window.document.body.firstElementChild;
-  const clone = source.cloneNode(true);
-  clone.querySelector('article').remove();
-  assert.throws(() => new ReusableShareImageClone(source, clone), /share_image_clone_structure_mismatch/);
+  mockRect(source, 0, 100);
+  mockRect(source.querySelector('article'), 0, 100);
+  const previousHTMLElement = globalThis.HTMLElement;
+  globalThis.HTMLElement = dom.window.HTMLElement;
+  try {
+    await assert.rejects(
+      cloneShareImageTreeToSerializedBlocks(
+        source,
+        async (block, excludedBlocks) => {
+          const result = cloneSkeletonWithoutExcludedBlocks(block, excludedBlocks);
+          if (block === source) result.clone.firstElementChild.remove();
+          return result;
+        },
+        async () => {},
+        async () => {},
+      ),
+      /share_image_clone_structure_mismatch/,
+    );
+  } finally {
+    globalThis.HTMLElement = previousHTMLElement;
+    dom.window.close();
+  }
 });
 
 test('streams split RGBA tiles into one lossless PNG with ancillary metadata', async () => {

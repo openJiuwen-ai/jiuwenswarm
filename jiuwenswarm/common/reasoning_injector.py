@@ -5,11 +5,39 @@ from collections.abc import Mapping
 from typing import Any
 
 from jiuwenswarm.common.reasoning_config import (
-    LEVEL_MAPPING,
-    ReasoningEffort,
     normalize_reasoning_level,
-    resolve_reasoning_target,
+    reasoning_config_for_level,
+    resolve_sampling_override,
 )
+from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
+
+
+def core_has_context_window_field() -> bool:
+    """core 的 ``ModelRequestConfig`` 是否已声明 ``context_window`` 正式字段。
+
+    用于决定 jiuwenswarm 是否需要在出口 pop 掉 ``context_window``
+    （任意模型条目的，含 defaults / agentos / video / audio / vision / image_gen）：
+
+    - **False（过渡期，core 未加正式字段）**：``context_window`` 进
+      ``ModelRequestConfig`` 的 extra，core 的
+      ``base_model_client._build_request_params`` 会把 extra 经
+      ``model_dump(exclude={model_name,model,temperature,top_p,max_tokens,stop})``
+      透传给厂商 SDK（base_model_client.py:444-449），SDK 不认该 kwarg 报
+      unexpected keyword argument -> jiuwenswarm 需在出口 pop 防发厂商。
+    - **True（core 已加正式字段）**：``context_window`` 作为正式字段进
+      ``ModelRequestConfig``，core 自行决定是否发厂商（按 core 现有 max_tokens
+      模式，"不发厂商"语义的字段会被 core 纳入上述 exclude、不进 params），
+      ``self.model_config.context_window`` 可被 core 读取 -> jiuwenswarm
+      **不得** pop，否则会切掉 core 想读的值。
+
+    自动适配 core 两种状态，无需 jiuwenswarm 与 core 人工同步去 pop。
+    """
+    try:
+        from openjiuwen.core.foundation.llm.schema.config import ModelRequestConfig
+        return "context_window" in ModelRequestConfig.model_fields
+    except Exception:
+        # core 不可用（如独立测试环境）按过渡期处理：pop 防发厂商
+        return False
 
 
 def _model_config_to_dict(model_config_obj: Any) -> dict[str, Any]:
@@ -33,47 +61,11 @@ def _resolve_model_name(model_name: str, model_config_obj: Any) -> str:
     return ""
 
 
-def _copy_extra_body(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    return {}
-
-
 def _runtime_config_copy(model_config_dict: dict[str, Any]) -> dict[str, Any]:
     runtime_model_config = dict(model_config_dict)
     # Internal hint only; must not be sent as a raw OpenAI SDK parameter.
     runtime_model_config.pop("reasoning_level", None)
     return runtime_model_config
-
-
-def inject_deepseek_official_payload(
-    model_config_obj: dict[str, Any],
-    mapped_level: ReasoningEffort,
-) -> None:
-    model_config_obj.pop("reasoning_effort", None)
-
-    extra_body = _copy_extra_body(model_config_obj.get("extra_body"))
-    extra_body["thinking"] = {
-        "type": "disabled" if mapped_level == "off" else "enabled",
-    }
-    model_config_obj["extra_body"] = extra_body
-
-    if mapped_level == "high":
-        model_config_obj["reasoning_effort"] = mapped_level
-
-
-def inject_dashscope_bailian_payload(
-    model_config_obj: dict[str, Any],
-    mapped_level: ReasoningEffort,
-) -> None:
-    model_config_obj.pop("reasoning_effort", None)
-
-    extra_body = _copy_extra_body(model_config_obj.get("extra_body"))
-    extra_body["enable_thinking"] = mapped_level != "off"
-    model_config_obj["extra_body"] = extra_body
-
-    if mapped_level == "high":
-        model_config_obj["reasoning_effort"] = mapped_level
 
 
 def inject_reasoning_params(
@@ -84,28 +76,15 @@ def inject_reasoning_params(
     model_config_dict = _model_config_to_dict(model_config_obj)
     level = normalize_reasoning_level(model_config_dict.get("reasoning_level"))
     runtime_model_config = _runtime_config_copy(model_config_dict)
+    override = resolve_sampling_override(
+        model_client_config.get("api_base") or model_client_config.get("base_url"),
+        model_client_config.get("model_name") or model_client_config.get("model"),
+    )
+    if override:
+        runtime_model_config.update(override)
     if level is None:
         return runtime_model_config
-
-    target = resolve_reasoning_target(
-        client_provider=model_client_config.get("client_provider"),
-        api_base=(
-            model_client_config.get("api_base")
-            or model_client_config.get("base_url")
-        ),
-        model_name=model_client_config.get("model_name"),
-    )
-    if target is None:
-        return runtime_model_config
-
-    provider_kind, _model = target
-    mapped_level = LEVEL_MAPPING[level]
-
-    if provider_kind == "deepseek_official":
-        inject_deepseek_official_payload(runtime_model_config, mapped_level)
-    elif provider_kind == "dashscope_bailian":
-        inject_dashscope_bailian_payload(runtime_model_config, mapped_level)
-
+    runtime_model_config["reasoning"] = reasoning_config_for_level(level)
     return runtime_model_config
 
 
@@ -115,6 +94,15 @@ def _build_model_request_kwargs(
     model_config_obj: Any,
 ) -> dict[str, Any]:
     request_kwargs = _model_config_to_dict(model_config_obj)
+    is_agentos = request_kwargs.get("_source") == "agentos"
+    # 兼容老用户配置：旧版 AgentOS 使用 max_tokens 表示模型上下文窗口，
+    # 而 core 中同名字段表示最大输出 token 数。构建 ModelRequestConfig 前将
+    # 旧值迁移到 context_window，避免误限输出；新旧字段并存时以新字段为准。
+    # 两个字段都未配置时不注入任何值，由 JiuwenSwarm 使用固定默认上下文窗口。
+    if is_agentos:
+        legacy_context_window = request_kwargs.pop("max_tokens", None)
+        if "context_window" not in request_kwargs and legacy_context_window is not None:
+            request_kwargs["context_window"] = legacy_context_window
     request_kwargs.pop("model", None)
     request_kwargs.pop("model_name", None)
     request_kwargs.pop("reasoning_level", None)
@@ -123,17 +111,33 @@ def _build_model_request_kwargs(
     # AsyncCompletions.create(**params) 时不认该 kwarg 会抛 "unexpected keyword
     # argument"。统一在此清理，覆盖 build_model_from_entry / config.validate_model
     # / image_modality_warmup 等所有走本函数的路径。
-    is_agentos = request_kwargs.get("_source") == "agentos"
     request_kwargs.pop("_source", None)
-    # agentos 的 max_tokens 是"输入侧上下文窗口"别名（-> ContextEngineConfig，
-    # 不发厂商），绝不能进 core 的 ModelRequestConfig.max_tokens（那是"输出
-    # token 上限"语义、会发厂商）。此处是所有路径的公共出口，统一在此 pop，
-    # 保证 web validate 等绕过 build_model_from_entry 的路径也不会把它误当成
-    # 输出上限。build_model_from_entry 会从原始 mco 取该值，挂到 Model 的普通属性
-    # _agentos_ctx_window（不进 ModelRequestConfig 的 extra，故不经 model_dump
-    # 流到 SDK），供 _deep_agent_context_engine_config 路径 A 读取；不依赖此处的 pop。
-    if is_agentos:
-        request_kwargs.pop("max_tokens", None)
+    # context_window（模型支持的上下文总长度）可配在任意模型条目的 model_config_obj
+    # 里（defaults / agentos / video / audio / vision / image_gen 均可），供 core
+    # 从 ModelRequestConfig 取值。是否在出口 pop 取决于 core 是否已把 context_window
+    # 加为 ModelRequestConfig 正式字段（见 core_has_context_window_field）：
+    # - core 未加字段（过渡期）：context_window 进 extra，会被 base_model_client
+    #   经 model_dump 透传给厂商 SDK 报 unexpected keyword argument -> 需 pop。
+    # - core 已加字段：context_window 作正式字段，core 自行 exclude 不发厂商、
+    #   self.model_config.context_window 可读 -> 不得 pop（否则切掉 core 想读的值）。
+    if "context_window" in request_kwargs:
+        if not core_has_context_window_field():
+            request_kwargs.pop("context_window", None)
+        else:
+            raw_context_window = request_kwargs.get("context_window")
+            if raw_context_window is not None:
+                try:
+                    normalized_context_window = (
+                        None
+                        if isinstance(raw_context_window, bool)
+                        else int(raw_context_window)
+                    )
+                except (TypeError, ValueError):
+                    normalized_context_window = None
+                if normalized_context_window is None or normalized_context_window <= 0:
+                    request_kwargs.pop("context_window", None)
+                else:
+                    request_kwargs["context_window"] = normalized_context_window
     request_kwargs["model"] = _resolve_model_name(model_name, model_config_obj)
     return request_kwargs
 
@@ -144,6 +148,10 @@ def build_reasoning_model_request_kwargs(
     model_config_obj: Any,
     model_name: str,
 ) -> dict[str, Any]:
+    # This is the shared model-construction path used by AgentServer, Gateway
+    # validation, TUI validation, AgentOS, and team models. Installing here
+    # also covers processes that never import app_agentserver.
+    apply_provider_compat_patches()
     effective_model_name = _resolve_model_name(model_name, model_config_obj)
     reasoning_client_config = dict(model_client_config or {})
     if effective_model_name:
@@ -160,7 +168,5 @@ def build_reasoning_model_request_kwargs(
 
 __all__ = [
     "build_reasoning_model_request_kwargs",
-    "inject_dashscope_bailian_payload",
-    "inject_deepseek_official_payload",
     "inject_reasoning_params",
 ]

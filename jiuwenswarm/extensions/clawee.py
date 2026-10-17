@@ -131,7 +131,7 @@ async def _ensure_server_initialized_async() -> None:
     - ExtensionRegistry / ExtensionManager 先加载（_handle_message dispatch 前调 trigger）
     - AgentWebSocketServer.get_instance() 拿单例
     - ensure_persistent_checkpointer / reset_harness_packages_state
-    - proactive engine 初始化（参照 app_agentserver.py:180-185）
+    - proactive engine 初始化（参照 app_agentserver.py 的 init_proactive_engine 调用）
     - 跳过 legacy.serve 端口监听（faas 是被动 invoke）
     """
     global _server_initialized

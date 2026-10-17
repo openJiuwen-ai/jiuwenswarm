@@ -5,19 +5,28 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec
 from jiuwenswarm.agents.swarm.config_specs import build_member_deep_agent_spec
 
 
-def _build_member(*, enabled: bool, mode: str = "team", role: str = "leader") -> DeepAgentSpec:
+def _build_member(
+    *,
+    enabled: bool,
+    mode: str = "team",
+    role: str = "leader",
+    provider: str = "AscendAffinity",
+    kv_cache_mode: str | None = None,
+) -> DeepAgentSpec:
+    model_client_config: dict[str, object] = {"client_provider": provider}
+    if kv_cache_mode is not None:
+        model_client_config["extensions"] = {
+            "kv_cache": {"mode": kv_cache_mode},
+        }
     config = {
         "models": {
             "defaults": [{
                 "is_default": True,
-                "model_client_config": {"client_provider": "AscendAffinity"},
+                "model_client_config": model_client_config,
             }]
         },
-        "react": {
-            "kv_cache_affinity_config": {
-                "enable_kv_cache_affinity": enabled,
-                "enable_kv_cache_release": False,
-            }
+        "kv_cache_affinity_config": {
+            "enable_kv_cache_affinity": enabled,
         }
     }
     return build_member_deep_agent_spec(
@@ -58,7 +67,18 @@ def test_team_member_receives_disabled_affinity_config() -> None:
     assert spec.kv_cache_affinity_config.enable_kv_cache_affinity is False
 
 
-def test_team_member_affinity_fails_closed_for_non_ascend_provider() -> None:
+def test_team_member_accepts_openai_affinity_capability() -> None:
+    spec = _build_member(
+        enabled=True,
+        provider="OpenAI",
+        kv_cache_mode="affinity",
+    )
+
+    assert spec.kv_cache_affinity_config is not None
+    assert spec.kv_cache_affinity_config.enable_kv_cache_affinity is True
+
+
+def test_team_member_affinity_fails_closed_without_capability() -> None:
     config = {
         "models": {
             "defaults": [{
@@ -66,11 +86,8 @@ def test_team_member_affinity_fails_closed_for_non_ascend_provider() -> None:
                 "model_client_config": {"client_provider": "OpenAI"},
             }]
         },
-        "react": {
-            "kv_cache_affinity_config": {
-                "enable_kv_cache_affinity": True,
-                "enable_kv_cache_release": False,
-            }
+        "kv_cache_affinity_config": {
+            "enable_kv_cache_affinity": True,
         },
     }
 

@@ -20,6 +20,7 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from jiuwenswarm.common.utils import get_workspace_dir  # re-export for test patches
+from jiuwenswarm.server.runtime.mcp.package_manifest import resolve_mcp_package
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,10 @@ logger = logging.getLogger(__name__)
 def _packages_dir() -> Path:
     """Marketplace 包目录：<workspace>/mcp/mcp_builtins/."""
     return get_workspace_dir() / "mcp" / "mcp_builtins"
+
+
+def _hub_packages_dir() -> Path:
+    return get_workspace_dir() / "mcp" / "mcp_hub"
 
 
 # Auth processes started in non-blocking mode (authWaitForExit). Keyed by MCP
@@ -49,6 +55,16 @@ def _cleanup_stale_auth_proc(name: str) -> None:
             old.kill()
         except Exception:  # noqa: BLE001
             pass
+
+
+def cancel_pending_auth_proc(name: str) -> None:
+    """Kill and drop a pending authWaitForExit proc for *name* (idempotent).
+
+    Public wrapper around :func:`_cleanup_stale_auth_proc` so the MCP registry
+    can abort a CLI OAuth flow the user cancelled (``mcp.cancel_connect``)
+    without importing a private helper.
+    """
+    _cleanup_stale_auth_proc(name)
 
 
 def _platform_key() -> str:
@@ -79,6 +95,17 @@ CommandRunner = Callable[[str], "CommandResult"]
 ProcRunner = Callable[[str], tuple[Any, str]]
 
 
+# Structured CommandResult failure kind. Empty string = unclassified.
+# binary_not_found: executable/runtime not on PATH (FileNotFoundError / WinError 2
+# / ENOENT), distinct from "ran but returned non-zero". Lets the connect flow
+# tell the user "install node" instead of dumping WinError 2.
+ERR_BINARY_NOT_FOUND = "binary_not_found"
+# install_script_dep: the package's npm/gem install script could not find
+# PowerShell (npm postinstall "spawn powershell.exe ENOENT"). Runtime exists;
+# surface "enable/restore PowerShell" instead of the generic "version too low".
+ERR_INSTALL_SCRIPT_DEP = "install_script_dep"
+
+
 @dataclass
 class CommandResult:
     command: str
@@ -86,6 +113,9 @@ class CommandResult:
     stdout: str = ""
     stderr: str = ""
     timed_out: bool = False
+    # Failure kind (see ERR_* constants). Set by default_runner; read by
+    # CliDriver.install to map FileNotFoundError onto a user-actionable error.
+    error_kind: str = ""
 
     @property
     def succeeded(self) -> bool:
@@ -100,6 +130,53 @@ _SHELL_FORBIDDEN_FIRST = {"bash", "cmd", "/bin/sh", "sh"}
 _SHELL_FORBIDDEN_SECOND = "-c"
 
 
+def _is_harmony_runtime() -> bool:
+    """Return whether this Python process runs in the HarmonyOS HNP sandbox.
+
+    HarmonyOS Python may report linux as sys.platform. The facade exposes HNP
+    executables through PATH, so the HNP path is a reliable fallback when no
+    explicit runtime marker is available.
+    """
+    if os.environ.get("JIUWEN_HARMONY_RUNTIME") == "1":
+        return True
+    if sys.platform == "ohos":
+        return True
+    return any(
+        "/data/app/" in entry and "/hnp/" in entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+    )
+
+
+def _is_binary_not_found(exc: BaseException) -> bool:
+    """True when *exc* means the executable/runtime is missing from PATH.
+
+    Matches on type (FileNotFoundError) and errno (ENOENT==2) rather than
+    locale-dependent substrings, so classification is stable across
+    Chinese/English Windows.
+    """
+    if isinstance(exc, FileNotFoundError):
+        return True
+    errno = getattr(exc, "errno", None)
+    if errno == 2:  # errno.ENOENT
+        return True
+    return False
+
+
+# Install-script output meaning the script needs PowerShell: npm postinstall's
+# "spawn powershell.exe ENOENT", or cmd's "'powershell' is not recognized".
+# Generic ENOENT/network text must NOT match (stays unclassified downstream).
+_POWERSHELL_SCRIPT_DEP_RE = re.compile(
+    r"spawn\s+\S*[Pp]owershell(?:\.exe)?\S*\s+ENOENT"
+    r"|['\"]?[Pp]owershell(?:\.exe)?['\"]?\s+(?:is not recognized|not found)"
+)
+
+
+def _is_powershell_script_dep(output: str) -> bool:
+    """True when a failed install's output shows its script needs PowerShell.
+    Text-anchored only, so CLIs that don't depend on it are never misclassified."""
+    return bool(_POWERSHELL_SCRIPT_DEP_RE.search(output or ""))
+
+
 def _safe_split_command(command: str) -> list[str]:
     """Split a command string into an argv list for ``shell=False``.
 
@@ -112,8 +189,10 @@ def _safe_split_command(command: str) -> list[str]:
     ``shutil.which`` (which searches PATHEXT — finds ``npm.CMD``). CreateProcess
     does NOT do PATHEXT resolution, so a bare ``npm`` fails with WinError 2
     even though ``npm.CMD`` is on PATH. This is the price of ``shell=False``;
-    the lookup here restores what the cmd shell used to do. No-op on POSIX
-    (execvp already searches PATH). The shell-binary ban above runs on the
+    the lookup here restores what the cmd shell used to do. HarmonyOS also
+    resolves bare HNP executables because its Python posix_spawn path can
+    return ENOENT even when PATH contains the executable. Other POSIX
+    platforms retain the existing bare-command behavior. The shell-binary ban above runs on the
     bare name, before resolution, so ``cmd``/``sh`` are still refused.
     """
     parts = shlex.split(command)
@@ -124,12 +203,45 @@ def _safe_split_command(command: str) -> list[str]:
         raise ValueError(f"refusing to run shell binary '{first}' as first arg")
     if len(parts) > 1 and parts[1] == _SHELL_FORBIDDEN_SECOND:
         raise ValueError("refusing '-c' as second arg (shell invocation)")
-    if sys.platform == "win32":
-        import shutil
+    if (sys.platform == "win32" or _is_harmony_runtime()) and not os.path.dirname(parts[0]):
         resolved = shutil.which(parts[0])
         if resolved:
             parts[0] = resolved
     return parts
+
+
+def _binary_dir_from_package() -> str | None:
+    """Return a workspace staging dir where bare ``gitcode`` resolves to the
+    gc_cli pre-built binary, else None.
+
+    The ``gc_cli`` wheel ships its binary as ``gc-<os>-<arch>``, not as
+    ``gitcode``, so adding its dir to PATH alone doesn't resolve the manifest's
+    bare ``gitcode version``.  We create a thin ``gitcode``/``gitcode.bat``
+    launcher there (mirroring the frozen-exe spec's rename to ``gitcode.exe``).
+    """
+    try:
+        from gc_cli.wrapper import get_binary_path  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    try:
+        binary = get_binary_path()
+    except Exception:  # noqa: BLE001
+        return None
+    if not binary or not binary.is_file():
+        return None
+
+    staging = get_workspace_dir() / "mcp" / ".cli_bin" / "gitcode"
+    staging.mkdir(parents=True, exist_ok=True)
+
+    if sys.platform == "win32":
+        wrapper = staging / "gitcode.bat"
+        wrapper.write_text(f'@"{binary}" %*\n', encoding="utf-8")
+    else:
+        wrapper = staging / "gitcode"
+        wrapper.write_text(f'#!/bin/sh\nexec "{binary}" "$@"\n')
+        wrapper.chmod(0o755)
+
+    return str(staging)
 
 
 def default_runner(command: str, timeout: float = 120.0, env: dict[str, str] | None = None) -> CommandResult:
@@ -159,7 +271,12 @@ def default_runner(command: str, timeout: float = 120.0, env: dict[str, str] | N
             timed_out=True,
         )
     except (OSError, ValueError) as exc:
-        return CommandResult(command=command, returncode=-1, stderr=str(exc))
+        return CommandResult(
+            command=command,
+            returncode=-1,
+            stderr=str(exc),
+            error_kind=ERR_BINARY_NOT_FOUND if _is_binary_not_found(exc) else "",
+        )
 
 
 def _parse_version(text: str) -> str | None:
@@ -169,12 +286,31 @@ def _parse_version(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _version_ge(a: str, b: str) -> bool:
+def _version_eq(a: str, b: str) -> bool:
+    """Exact version equality, tolerant of a missing ``packaging``.
+
+    A CLI manifest pins an exact version: its subcommand output (auth/status)
+    is tied to that version, so a newer/older install is not interchangeable.
+    Compare for equality rather than ``>=``.
+    """
     try:
         from packaging.version import parse as _parse
-        return _parse(a) >= _parse(b)
+        return _parse(a) == _parse(b)
     except Exception:  # noqa: BLE001
         return a == b
+
+
+def _pin_init_command(init_cmd: str, min_version: str) -> str:
+    """Fill the ``{version}`` placeholder in *init_cmd* with *min_version*.
+
+    cli.json ``init`` commands pin the exact version via the placeholder
+    (e.g. ``npm install -g @wecom/cli@{version}`` → ``...@0.1.9``) so the
+    install produces the same version the manifest's subcommands were written
+    against. Manifests without the placeholder are returned unchanged.
+    """
+    if not init_cmd or not min_version:
+        return init_cmd
+    return init_cmd.replace("{version}", min_version)
 
 
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
@@ -191,58 +327,6 @@ def _extract_url(text: str, domain_hint: str = "") -> str | None:
             if domain_hint in url:
                 return url
     return matches[0]
-
-
-def _derive_bin_name(command: str) -> str | None:
-    """Derive the CLI binary name from a versionCheck command string.
-
-    Pure CLI (feishu/dingtalk/zsxq/...) have no ``mcp.json``; their
-    stdio MCP entry runs ``<bin> mcp`` where <bin> comes from cli.json's
-    versionCheck command (e.g. ``lark-cli.cmd --version`` -> ``lark-cli``).
-
-    The versionCheck command is the ONLY reliable source — npm package names
-    in the init command (``@larksuite/cli`` / ``dingtalk-workspace-cli``) do
-    NOT map to bin names (bin is ``lark-cli`` / ``dws``), so init is not used.
-
-    Strips ``.cmd``/``.exe`` suffixes (Windows) so the registered bare name
-    resolves cross-platform via PATH (node CLIs install a .cmd shim on Windows).
-    """
-    if not command:
-        return None
-    cmd = command.strip()
-    if not cmd:
-        return None
-    # "<bin>[.cmd|.exe] [args...]" — take the first token, strip shim suffix.
-    first = cmd.split()[0] if " " in cmd else cmd
-    for suf in (".cmd", ".exe", ".bat"):
-        if first.lower().endswith(suf):
-            first = first[: -len(suf)]
-            break
-    return first or None
-
-
-def build_stdio_entry(name: str, manifest: "CliManifest") -> dict[str, Any] | None:
-    """Build a state.json ``mcp.servers`` stdio entry running ``<bin> mcp``.
-
-    For pure-CLI MCPs with no mcp.json, the MCP server is the CLI's own
-    ``mcp`` subcommand (e.g. ``lark-cli mcp`` / ``dws mcp``). <bin> is derived
-    from the manifest's versionCheck command. Returns None if versionCheck is
-    absent (hybrid packages with a real mcp.json use that instead).
-    """
-    n = str(name or "").strip()
-    if not n:
-        return None
-    bin_name = _derive_bin_name(manifest.version_cmd)
-    if not bin_name:
-        return None
-    return {
-        "name": n,
-        "transport": "stdio",
-        "command": bin_name,
-        "args": ["mcp"],
-        "enabled": True,
-        "server_id_scope": f"mcp:{n}",
-    }
 
 
 @dataclass
@@ -315,9 +399,10 @@ def load_cli_manifest(name: str) -> CliManifest | None:
     n = str(name or "").strip()
     if not n:
         return None
-    path = _packages_dir() / n / "cli.json"
-    if not path.is_file():
+    package = resolve_mcp_package(n, _packages_dir(), _hub_packages_dir())
+    if package is None or package.integration_type != "cli" or package.integration_file is None:
         return None
+    path = package.integration_file
     try:
         with path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -335,6 +420,15 @@ class InstallResult:
     min_version: str
     version_ok: bool
     error: str = ""
+    # Mirrors CommandResult.error_kind; set when a command's binary was missing
+    # so _connect_cli raises MCP_RUNTIME_MISSING instead of a raw WinError string.
+    error_kind: str = ""
+    # cli.json runtime.type (e.g. "node"/"python"), surfaced so the frontend
+    # hint can name the missing dependency. Empty when the manifest has no runtime.
+    runtime: str = ""
+    # cli.json init command for the current platform, surfaced on incomplete
+    # failures so the frontend can show the exact upgrade command.
+    install_cmd: str = ""
 
 
 @dataclass
@@ -348,6 +442,9 @@ class AuthStepResult:
     auth_domain: str = ""
     output: str = ""
     error: str = ""
+    # Mirrors CommandResult.error_kind; set when the auth command's binary was
+    # missing so _connect_cli raises MCP_CLI_INCOMPLETE instead of a raw error.
+    error_kind: str = ""
 
 
 @dataclass
@@ -384,6 +481,25 @@ class CliDriver:
             self._runner = runner
         else:
             cred_env = self._cred_env
+            # 将包内置的 gitcode 启动器目录注入 PATH，使 manifest 的裸命令
+            # （如 ``gitcode version``）无需 pip install 即可找到。注入父进程
+            # os.environ 而非仅 cred_env：Windows 的 CreateProcess 与
+            # _safe_split_command 按父环境 PATH 解析裸可执行名。
+            _bin_dir = _binary_dir_from_package()
+            if _bin_dir:
+                _cur = os.environ.get("PATH", "")
+                _prefix = f"{_bin_dir}{os.pathsep}"
+                if _cur:
+                    os.environ["PATH"] = (
+                        _cur if _cur.startswith(_prefix) else f"{_prefix}{_cur}"
+                    )
+                else:
+                    os.environ["PATH"] = _bin_dir
+                if cred_env is not None:
+                    cred_env = dict(cred_env)
+                    cred_env["PATH"] = (
+                        f"{_prefix}{cred_env.get('PATH', _cur)}"
+                    )
             self._runner = (
                 (lambda cmd: default_runner(cmd, env=cred_env))
                 if cred_env is not None
@@ -409,7 +525,10 @@ class CliDriver:
             )
         except Exception:  # noqa: BLE001
             return None
-        keys = required_tokens_from_schema(self.name)
+        try:
+            keys = required_tokens_from_schema(self.name)
+        except Exception:  # noqa: BLE001
+            return None
         if not keys:
             return None
         try:
@@ -430,41 +549,60 @@ class CliDriver:
         err = ""
         version: str | None = None
         version_ok = True
-        # Version-check first: if the CLI is already installed at a sufficient
-        # version, skip the (potentially slow, network-bound) init/install step
-        # entirely. Only fall back to init when the version check fails or
+        kind = ""
+        # Pin the install command to the manifest's exact version: the CLI's
+        # subcommand output (auth/status) is tied to that version, so installing
+        # the latest would make statusMatch unreliable. `{version}` is filled
+        # from versionCheck.minVersion; manifests without it are unchanged.
+        init_cmd = _pin_init_command(m.init_cmd, m.min_version)
+        # Version-check first: if the CLI is already installed at the exact
+        # pinned version, skip the (potentially slow, network-bound) init step
+        # entirely. Only fall back to init when the version mismatches or
         # cannot be parsed.
         if m.version_cmd:
             res = self._runner(m.version_cmd)
             version = _parse_version(res.combined_output)
             if m.min_version and version:
-                version_ok = _version_ge(version, m.min_version)
+                version_ok = _version_eq(version, m.min_version)
                 if not version_ok:
-                    logger.warning("[cli_driver] %s version %s < min %s", self.name, version, m.min_version)
+                    logger.warning("[cli_driver] %s version %s != required %s", self.name, version, m.min_version)
             elif m.min_version and not version:
                 version_ok = False
                 err = f"could not parse version from: {res.combined_output}"
+            if res.error_kind == ERR_BINARY_NOT_FOUND:
+                kind = ERR_BINARY_NOT_FOUND
         if version_ok and version:
-            # CLI already present and recent enough — skip init.
+            # CLI already present at the pinned version — skip init.
             logger.info("[cli_driver] %s skip init (version %s ok)", self.name, version)
-        elif m.init_cmd:
-            res = self._runner(m.init_cmd)
-            if not res.succeeded:
+        elif init_cmd:
+            res = self._runner(init_cmd)
+            init_failed = not res.succeeded
+            if init_failed:
                 err = f"init failed (rc={res.returncode}): {res.combined_output}"
                 logger.warning("[cli_driver] %s init failed: %s", self.name, err)
+            if res.error_kind == ERR_BINARY_NOT_FOUND:
+                kind = ERR_BINARY_NOT_FOUND
+            elif init_failed and _is_powershell_script_dep(res.combined_output):
+                # Package installer needs PowerShell; surface it instead of the
+                # generic "version too low".
+                kind = ERR_INSTALL_SCRIPT_DEP
             # re-check version after install
             if m.version_cmd:
                 res2 = self._runner(m.version_cmd)
                 version = _parse_version(res2.combined_output)
                 if m.min_version and version:
-                    version_ok = _version_ge(version, m.min_version)
+                    version_ok = _version_eq(version, m.min_version)
                 elif m.min_version:
                     version_ok = False
                     err = (err + "; " if err else "") + f"could not parse version after init: {res2.combined_output}"
+                if res2.error_kind == ERR_BINARY_NOT_FOUND and not kind:
+                    # A failed init already diagnosed the cause; don't override it.
+                    kind = ERR_BINARY_NOT_FOUND
         return InstallResult(
             name=self.name, installed=True,
             version=version, min_version=m.min_version,
-            version_ok=version_ok, error=err
+            version_ok=version_ok, error=err, error_kind=kind,
+            runtime=m.runtime_type, install_cmd=init_cmd,
         )
 
     def auth_step(self, index: int = 0) -> AuthStepResult:
@@ -513,7 +651,8 @@ class CliDriver:
             succeeded=res.succeeded, needs_user_action=bool(domain),
             auth_url=url, auth_domain=domain,
             output=res.combined_output,
-            error="" if res.succeeded else f"rc={res.returncode}: {res.combined_output}"
+            error="" if res.succeeded else f"rc={res.returncode}: {res.combined_output}",
+            error_kind=res.error_kind if not res.succeeded else "",
         )
 
     def _start_auth_proc(self, index: int, cmd: str, domain: str) -> AuthStepResult:
@@ -551,7 +690,8 @@ class CliDriver:
             return AuthStepResult(
                 name=self.name, step_index=index, command=cmd,
                 succeeded=False, needs_user_action=False,
-                error=f"failed to start auth: {exc}"
+                error=f"failed to start auth: {exc}",
+                error_kind=ERR_BINARY_NOT_FOUND if _is_binary_not_found(exc) else "",
             )
         _cleanup_stale_auth_proc(self.name)
         _PENDING_AUTH_PROCS[self.name] = proc
@@ -661,14 +801,6 @@ class CliDriver:
             return CommandResult(command="", returncode=0, stdout="no unauth command")
         return self._runner(self.manifest.unauth_cmd)
 
-    def build_stdio_entry(self, name: str, manifest: "CliManifest" | None = None) -> dict[str, Any] | None:
-        """Derive the ``<bin> mcp`` stdio config entry from the manifest.
-
-        Thin wrapper over the module-level :func:`build_stdio_entry` so callers
-        holding a CliDriver instance can ask for the stdio entry directly.
-        """
-        return build_stdio_entry(name, manifest or self.manifest)
-
 
 __all__ = [
     "CliDriver",
@@ -678,6 +810,7 @@ __all__ = [
     "InstallResult",
     "AuthStepResult",
     "StatusResult",
+    "ERR_INSTALL_SCRIPT_DEP",
     "default_runner",
     "load_cli_manifest",
 ]

@@ -42,6 +42,12 @@ precheck_and_reserve_remote_spawn = _mod.precheck_and_reserve_remote_spawn
 RemoteSpawnPrecheck = _mod.RemoteSpawnPrecheck
 
 
+def test_remote_bootstrap_has_no_server_or_websocket_transport_imports() -> None:
+    source = Path(_mod.__file__).read_text(encoding="utf-8")
+    assert "jiuwenswarm.server.agent_ws_server" not in source
+    assert "jiuwenswarm.server.gateway_push" not in source
+
+
 def _distributed_leader_cfg(*, peers: list[dict] | None = None) -> dict:
     team: dict = {"runtime": {"mode": "distributed", "role": "leader"}}
     if peers:
@@ -776,6 +782,48 @@ async def test_bootstrap_allows_later_kickoff_for_same_member_after_task_done(mo
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_control_plane_forwards_explicit_agent_manager(
+    monkeypatch,
+) -> None:
+    manager = object()
+    status = AsyncMock(return_value=None)
+    replace = AsyncMock(return_value=True)
+    kickoff = AsyncMock(return_value=(True, True))
+    monkeypatch.setattr(_mod, "_member_status_for_session", status)
+    monkeypatch.setattr(
+        _mod,
+        "_replace_teammate_card_after_direct_bootstrap",
+        replace,
+    )
+    monkeypatch.setattr(
+        _mod,
+        "_ensure_dynamic_member_execution_loop",
+        kickoff,
+    )
+    kickoff_tasks: set[asyncio.Task[Any]] = set()
+
+    await apply_bootstrap_envelope_from_control_plane(
+        processed_ids=set(),
+        loop_kicked_members=set(),
+        kickoff_tasks=kickoff_tasks,
+        adopted_member="blank",
+        envelope={
+            "bootstrap_id": "bootstrap-manager",
+            "team_name": "team-1",
+            "session_id": "session-1",
+            "member_name": "calculator",
+        },
+        source_id="source-1",
+        agent_manager=manager,
+    )
+    await asyncio.gather(*kickoff_tasks)
+
+    assert status.await_args.kwargs["agent_manager"] is manager
+    assert replace.await_args.kwargs["agent_manager"] is manager
+    assert kickoff.await_args.kwargs["agent_manager"] is manager
+
+
+@pytest.mark.asyncio
 async def test_replace_teammate_card_after_direct_bootstrap_uses_local_a2x_state(monkeypatch):
     replace_calls = []
     client = SimpleNamespace()
@@ -792,19 +840,17 @@ async def test_replace_teammate_card_after_direct_bootstrap_uses_local_a2x_state
         get_agent_nowait=lambda channel_id: agent,
         get_agent=AsyncMock(return_value=agent),
     )
-    server = SimpleNamespace(get_agent_manager=lambda: agent_manager)
-
     async def fake_replace_teammate_agent_card_after_bootstrap(*args, **kwargs):
         replace_calls.append((args, kwargs))
         return True
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.get_instance",
-        lambda: server,
-    )
-    monkeypatch.setattr(
         "jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime.replace_teammate_agent_card_after_bootstrap",
         fake_replace_teammate_agent_card_after_bootstrap,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.context.get_current_agent_manager",
+        lambda: agent_manager,
     )
     replace_teammate_card = getattr(
         _mod,
@@ -812,7 +858,10 @@ async def test_replace_teammate_card_after_direct_bootstrap_uses_local_a2x_state
         "_after_direct_bootstrap",
     )
 
-    replaced = await replace_teammate_card(channel_id="default", member_name="calculator")
+    replaced = await replace_teammate_card(
+        channel_id="default",
+        member_name="calculator",
+    )
 
     assert replaced is True
     assert len(replace_calls) == 1
@@ -824,6 +873,51 @@ async def test_replace_teammate_card_after_direct_bootstrap_uses_local_a2x_state
         "member_name": "calculator",
         "source": "teammate-direct-bootstrap",
     }
+
+
+@pytest.mark.asyncio
+async def test_replace_teammate_card_without_runtime_manager_degrades_safely(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.context.get_current_agent_manager",
+        lambda: None,
+    )
+
+    replaced = await _mod._replace_teammate_card_after_direct_bootstrap(
+        channel_id="default",
+        member_name="calculator",
+    )
+
+    assert replaced is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cleanup_notice_uses_runtime_host_transport(monkeypatch) -> None:
+    pushed: list[dict[str, Any]] = []
+
+    async def capture_push(_self, message: dict[str, Any]) -> None:
+        pushed.append(message)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.host_services.RuntimeHostPushTransport.send_push",
+        capture_push,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.build_server_push_message",
+        lambda **kwargs: kwargs,
+    )
+
+    await _mod._push_shutdown_cleanup_notice(
+        session_id="session-1",
+        channel_id="web",
+        deleted=True,
+    )
+
+    assert len(pushed) == 1
+    assert pushed[0]["session_id"] == "session-1"
+    assert pushed[0]["fallback_channel_id"] == "web"
+    assert pushed[0]["payload"]["event_type"] == "chat.final"
 
 
 def test_retarget_teammate_direct_addr_allocates_non_default_port(monkeypatch):

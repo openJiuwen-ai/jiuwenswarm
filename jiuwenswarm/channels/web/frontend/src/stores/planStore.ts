@@ -20,15 +20,17 @@ interface PlanRuntime {
    * 这个一次性标记的请求才放行。开关关闭时清零；成功发出一条 Plan 消息后消费。
    */
   pendingExplicitEntry: boolean;
+  pendingEntrySource: 'plan_toggle' | 'slash_command' | null;
 }
 
 function createEmptyRuntime(): PlanRuntime {
-  return { active: false, pendingExplicitEntry: false };
+  return { active: false, pendingExplicitEntry: false, pendingEntrySource: null };
 }
 
 interface SetActiveOptions {
   /** 是否来自用户手动打开开关（而不是后端事件 / 内部同步）。 */
   explicitEntry?: boolean;
+  entrySource?: 'plan_toggle' | 'slash_command';
 }
 
 interface PlanState {
@@ -42,6 +44,7 @@ interface PlanState {
   toggle: (sessionId: string) => void;
   /** 是否有待发送的"显式进入 Plan"标记（不消费）。 */
   hasPendingExplicitEntry: (sessionId: string) => boolean;
+  getPendingEntrySource: (sessionId: string) => 'plan_toggle' | 'slash_command' | null;
   /** 消费掉该标记。请求成功发出后调用，失败时保留以便重试。 */
   consumeExplicitEntry: (sessionId: string) => void;
 }
@@ -77,16 +80,22 @@ export const usePlanStore = create<PlanState>((set, get) => ({
       const pendingExplicitEntry = active
         ? current.pendingExplicitEntry || Boolean(options?.explicitEntry)
         : false;
+      const pendingEntrySource = active
+        ? current.pendingEntrySource || (
+          options?.explicitEntry ? options.entrySource ?? 'plan_toggle' : null
+        )
+        : null;
       if (
         current.active === active &&
-        current.pendingExplicitEntry === pendingExplicitEntry
+        current.pendingExplicitEntry === pendingExplicitEntry &&
+        current.pendingEntrySource === pendingEntrySource
       ) {
         return state;
       }
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...current, active, pendingExplicitEntry },
+          [sessionId]: { ...current, active, pendingExplicitEntry, pendingEntrySource },
         },
       };
     });
@@ -101,6 +110,9 @@ export const usePlanStore = create<PlanState>((set, get) => ({
   hasPendingExplicitEntry: (sessionId) =>
     Boolean(sessionId && get().runtimes[sessionId]?.pendingExplicitEntry),
 
+  getPendingEntrySource: (sessionId) =>
+    (sessionId && get().runtimes[sessionId]?.pendingEntrySource) || null,
+
   consumeExplicitEntry: (sessionId) => {
     if (!sessionId) return;
     set((state) => {
@@ -109,7 +121,11 @@ export const usePlanStore = create<PlanState>((set, get) => ({
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...current, pendingExplicitEntry: false },
+          [sessionId]: {
+            ...current,
+            pendingExplicitEntry: false,
+            pendingEntrySource: null,
+          },
         },
       };
     });

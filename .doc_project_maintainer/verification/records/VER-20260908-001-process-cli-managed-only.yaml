@@ -1,0 +1,39 @@
+id: VER-20260908-001-process-cli-managed-only
+applies_to:
+  source_revision: 7d97213f6+working-tree
+  modules: [runtime-session, agent-harness]
+  flows: [runtime-session-reference-chain]
+  symbols:
+    - RuntimeSessionCoordinator.deliver_control
+    - RuntimeSessionCoordinator.run_stream
+    - RuntimeSessionCoordinator.cancel_execution
+    - JiuWenSwarm.deliver_control_input
+    - JiuWenSwarm.execute_message
+    - JiuWenSwarm.process_message_stream
+  paths:
+    - jiuwenswarm/channels/process_cli/client.py
+    - jiuwenswarm/runtime/service.py
+    - jiuwenswarm/runtime/session/coordinator.py
+    - jiuwenswarm/server/runtime/agent_adapter/interface.py
+evidence:
+  level: live_provider
+  scenario: process-cli-managed-only-work-and-code-two-turn-resume
+  environment: Windows, project .venv Python, configured OpenAI-compatible model
+  command: >-
+    RUN_LIVE_SESSION_RUNTIME_TESTS=1 .venv/Scripts/python.exe -m pytest -q
+    -o addopts= tests/system_tests/test_process_cli_session_runtime_live.py
+  repetitions: 1
+  successes: 2
+  warnings: 3
+result: passed
+status: superseded
+recorded_at: 2026-09-08T06:56:58Z
+supersedes: [VER-20260907-001-runtime-session-reference-chain]
+evidence_paths: []
+notes: >-
+  Both managed-only Work and Code completed two Process CLI turns with stable
+  Session IDs, terminal output, durable history growth, and terminal Registry
+  executions. Deterministic coverage also proves that interaction answers bypass
+  the occupied work lane, remain linked to its execution, and do not create a
+  second facade chat turn. The expanded selection passed 273/274;
+  its only failure is the pre-existing Windows Chinese argparse encoding assertion.

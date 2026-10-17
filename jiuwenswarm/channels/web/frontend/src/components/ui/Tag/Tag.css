@@ -1,0 +1,41 @@
+.ui-tag {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: max-content;
+  height: 18px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  white-space: nowrap;
+  border-radius: 2px;
+}
+
+.ui-tag--success {
+  color: var(--color-feedback-success-text);
+  background: var(--color-feedback-success-toast);
+}
+
+.ui-tag--info {
+  color: var(--color-tag-info-text);
+  background: var(--color-tag-info-surface);
+}
+
+.ui-tag--warning {
+  color: var(--color-feedback-warning);
+  background: var(--color-feedback-warning-subtle);
+}
+
+.ui-tag--danger {
+  color: var(--color-feedback-danger);
+  background: var(--color-feedback-danger-subtle);
+}
+
+.ui-tag--neutral {
+  color: var(--color-tag-neutral-text);
+  background: var(--color-tag-neutral-surface);
+}

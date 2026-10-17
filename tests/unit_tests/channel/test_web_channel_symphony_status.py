@@ -1,9 +1,15 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import asyncio
 import json
 
 import pytest
 
 from jiuwenswarm.common.schema.message import EventType, Message
+from jiuwenswarm.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
+)
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
 from jiuwenswarm.gateway.channel_manager.web.web_connect import (
     WebChannel,
@@ -11,6 +17,46 @@ from jiuwenswarm.gateway.channel_manager.web.web_connect import (
 )
 from jiuwenswarm.gateway.routing.keys import RoutingKey
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+
+
+@pytest.mark.asyncio
+async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.web_connect.get_logs_dir",
+        lambda: tmp_path,
+    )
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    frame = {
+        "event": "context.usage",
+        "payload": {"session_id": "sess-context", "tokens_used": 12},
+    }
+
+    await channel._persist_frontend_context_usage(frame)
+
+    records = (tmp_path / "context_usage.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(record) for record in records] == [frame]
+
+
+def test_web_channel_rotates_frontend_context_usage_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.web_connect.get_logs_dir",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.web_connect._CONTEXT_USAGE_MAX_BYTES",
+        12,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.web_connect._CONTEXT_USAGE_BACKUP_COUNT",
+        2,
+    )
+
+    WebChannel._write_frontend_context_usage("first")
+    WebChannel._write_frontend_context_usage("second")
+
+    assert (tmp_path / "context_usage.jsonl").read_text(encoding="utf-8") == "second\n"
+    assert (tmp_path / "context_usage.jsonl.1").read_text(encoding="utf-8") == "first\n"
+    assert not (tmp_path / "context_usage.jsonl.2").exists()
 
 
 class _FakeClient:
@@ -21,6 +67,231 @@ class _FakeClient:
 
     async def send(self, data):
         self.frames.append(json.loads(data))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_user_id", ["owner", None, "local"])
+async def test_web_channel_routes_session_message_status_to_owner_only(owner_user_id):
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    owner = _FakeClient()
+    other = _FakeClient()
+    WebChannel._resolve_connection_user_id(
+        {"user_id": owner_user_id} if owner_user_id else {}, owner
+    )
+    # Session identity comes from the declared username; the authenticated IAM
+    # ID is only an authentication gate and does not replace that username.
+    other.authenticated_user_id = "other-iam-id"
+    WebChannel._resolve_connection_user_id({"user_id": "other"}, other)
+    assert WebChannel.connection_user_id(owner) == owner_user_id
+    assert WebChannel.connection_user_id(other) == "other"
+    for client, user_id in ((owner, owner_user_id or "local-peer"), (other, "other")):
+        await channel.register_ws(
+            client,
+            RoutingKey(
+                channel_id="web",
+                app_id="default",
+                user_id=user_id,
+                session_id="target-1",
+                agent_ref=None,
+            ),
+        )
+    try:
+        msg = Message(
+            id="sm-1",
+            type="event",
+            channel_id="web",
+            session_id="target-1",
+            params={},
+            timestamp=1.0,
+            ok=True,
+            payload={
+                "event_type": "session.message.updated",
+                "message": {"message_id": "sm-1", "content": "private prompt", "status": "queued"},
+            },
+            metadata={
+                "ws_id": getattr(other, "_jiuwen_ws_id", ""),
+                SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY: owner_user_id or "local",
+                SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY: owner_user_id is None,
+            },
+        )
+
+        await channel.send(msg)
+        for _ in range(20):
+            if owner.frames:
+                break
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(0.01)
+        assert owner.frames == [{
+            "type": "event",
+            "event": "session.message.updated",
+            "payload": {
+                "event_type": "session.message.updated",
+                "message": {"message_id": "sm-1", "content": "private prompt", "status": "queued"},
+                "session_id": "target-1",
+            },
+        }]
+        assert other.frames == []
+
+        msg.metadata = {"ws_id": getattr(other, "_jiuwen_ws_id", "")}
+        await channel.send(msg)
+        await asyncio.sleep(0.01)
+        assert len(owner.frames) == 1
+        assert other.frames == []
+    finally:
+        await channel.unregister_ws(owner)
+        await channel.unregister_ws(other)
+
+
+@pytest.mark.asyncio
+async def test_web_channel_preserves_a4p_authorization_request_payload():
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = _FakeClient()
+    routing_key = RoutingKey(
+        channel_id="web",
+        app_id="default",
+        user_id="test_user",
+        session_id="sess-1",
+        agent_ref=None,
+    )
+    await channel.register_ws(client, routing_key)
+    try:
+        await channel.send(
+            Message(
+                id="a4p_operation_1",
+                type="event",
+                channel_id="web",
+                session_id="sess-1",
+                params={},
+                timestamp=0.0,
+                ok=True,
+                payload={
+                    "event_type": "a4p.authorization_request",
+                    "requestId": "mdt_intent_1",
+                    "kind": "intent",
+                    "mandate": {
+                        "type": "a4p/v1/intent-mandate",
+                        "mandateId": "mdt_intent_1",
+                        "intent": {
+                            "actions": [
+                                {"name": "bash", "params": {"command": "pwd"}}
+                            ]
+                        },
+                    },
+                    "signingOptions": {},
+                    "uiContext": {"kind": "intent", "sessionId": "sess-1"},
+                },
+                event_type=None,
+            )
+        )
+        for _ in range(20):
+            if client.frames:
+                break
+            await asyncio.sleep(0.005)
+
+        assert client.frames[0]["event"] == "a4p.authorization_request"
+        assert client.frames[0]["payload"]["mandate"]["intent"]["actions"] == [
+            {"name": "bash", "params": {"command": "pwd"}}
+        ]
+        assert client.frames[0]["payload"]["session_id"] == "sess-1"
+    finally:
+        await channel.unregister_ws(client)
+
+
+def test_web_channel_exposes_heartbeat_marker_without_routing_metadata():
+    automation = {
+        "kind": "heartbeat",
+        "job_id": "hb-1",
+        "run_id": "run-1",
+        "trigger": "scheduler",
+    }
+    msg = Message(
+        id="run-1",
+        type="event",
+        channel_id="web",
+        session_id="session-1",
+        params={},
+        timestamp=1.0,
+        ok=True,
+        payload={"event_type": "chat.final", "content": "done"},
+        event_type=EventType.CHAT_FINAL,
+        metadata={"automation": automation, "ws_id": "private-route"},
+    )
+
+    payload = WebChannel._build_event_payload(msg, "chat.final")
+    frame = WebChannel._serialize_frame(object.__new__(WebChannel), msg)
+
+    assert payload["metadata"] == {"automation": automation}
+    assert frame["payload"]["metadata"] == {"automation": automation}
+    assert "ws_id" not in payload["metadata"]
+    assert "ws_id" not in frame["payload"]["metadata"]
+
+
+def test_web_channel_preserves_cross_session_stream_identity():
+    cross_session = {
+        "message_id": "sm-1",
+        "source_session_id": "source-1",
+        "source_title": "Source",
+        "content": "check",
+    }
+    msg = Message(
+        id="execution-1",
+        type="event",
+        channel_id="web",
+        session_id="target-1",
+        params={},
+        timestamp=1.0,
+        ok=True,
+        payload={
+            "event_type": "chat.final",
+            "content": "done",
+            "turn_request_id": "execution-1",
+            "final_mode": "patch_segment",
+            "message_origin": "cross_session_agent",
+            "session_message_id": "sm-1",
+            "cross_session": cross_session,
+        },
+        event_type=EventType.CHAT_FINAL,
+    )
+
+    payload = WebChannel._build_event_payload(msg, "chat.final")
+
+    assert payload == {
+        "session_id": "target-1",
+        "request_id": "execution-1",
+        "turn_request_id": "execution-1",
+        "content": "done",
+        "final_mode": "patch_segment",
+        "message_origin": "cross_session_agent",
+        "session_message_id": "sm-1",
+        "cross_session": cross_session,
+    }
+
+
+def test_web_channel_preserves_queued_session_message():
+    queued = {
+        "message_id": "sm-1",
+        "source_session_id": "source-1",
+        "source_title": "Source",
+        "target_session_id": "target-1",
+        "content": "check the weather",
+        "status": "queued",
+    }
+    msg = Message(
+        id="sm-1",
+        type="event",
+        channel_id="web",
+        session_id="target-1",
+        params={},
+        timestamp=1.0,
+        ok=True,
+        payload={"event_type": "session.message.updated", "message": queued},
+    )
+
+    assert WebChannel._build_event_payload(msg, "session.message.updated") == {
+        "event_type": "session.message.updated",
+        "message": queued,
+        "session_id": "target-1",
+    }
 
 
 def test_web_channel_preserves_goal_structured_payloads():
@@ -118,6 +389,37 @@ def test_web_channel_preserves_goal_structured_payloads():
 
     for event_name, msg, expected in messages:
         assert WebChannel._build_event_payload(msg, event_name) == expected
+
+
+def test_web_channel_preserves_organization_progress_payload():
+    """Organization milestones must retain their phase and target Team."""
+    msg = Message(
+        id="org-progress-summary_execution_delegated:0",
+        type="event",
+        channel_id="web",
+        session_id="session-1",
+        params={},
+        timestamp=0.0,
+        ok=True,
+        payload={
+            "event_type": "org.progress",
+            "phase": "summary_execution_delegated",
+            "root_task_id": "root-1",
+            "team_id": "root-team",
+            "team_name": "root-team",
+            "source": "org_root_progress",
+        },
+    )
+
+    assert WebChannel._build_event_payload(msg, "org.progress") == {
+        "event_type": "org.progress",
+        "phase": "summary_execution_delegated",
+        "root_task_id": "root-1",
+        "team_id": "root-team",
+        "team_name": "root-team",
+        "source": "org_root_progress",
+        "session_id": "session-1",
+    }
 
 
 @pytest.mark.asyncio
@@ -431,3 +733,139 @@ async def test_web_channel_routes_event_by_request_ws_id_before_session_bucket()
     finally:
         await channel.unregister_ws(client)
         await channel.unregister_ws(other_client)
+
+
+def _processing_status_message(session_id: str, is_processing: bool) -> Message:
+    return Message(
+        id="req-1",
+        type="event",
+        channel_id="web",
+        session_id=session_id,
+        params={},
+        timestamp=0.0,
+        ok=True,
+        payload={
+            "event_type": "chat.processing_status",
+            "session_id": session_id,
+            "is_processing": is_processing,
+            "is_complete": not is_processing,
+        },
+        event_type=EventType.CHAT_PROCESSING_STATUS,
+    )
+
+
+@pytest.mark.asyncio
+async def test_web_channel_session_busy_cleared_when_processing_status_routes_via_fanout():
+    """回归:集群模式下 busy 映射必须与路由路径解耦。
+
+    场景(code 模式 + 集群模式撤销报 SESSION_BUSY 的根因):
+      1. 任务开始:网关 _send_processing_status 发送 is_processing=true,
+         无 fan_out_targets → 走旧路径 → busy 置 True;
+      2. 任务结束:team_helpers 广播 is_processing=false,事件携带
+         fan_out_targets(godview 兜底),经 SessionDispatcher 以
+         routing_target 调用 send() → V2 精确路由提前 return。
+    若 busy 维护只存在于旧路径,结束事件永远写不进映射,busy 残留 True,
+    /ws/git 的 discard/redo 会被 is_session_busy 误判,永远报 SESSION_BUSY
+    (前端却显示任务已完成)。
+    """
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = _FakeClient()
+    routing_key = RoutingKey(
+        channel_id="web",
+        app_id="default",
+        user_id="test_user",
+        session_id="sess-1",
+        agent_ref=None,
+    )
+
+    await channel.register_ws(client, routing_key)
+    try:
+        # 1) 任务开始:旧路径(无 routing_target)置 busy=True
+        await channel.send(_processing_status_message("sess-1", True))
+        assert channel.is_session_busy("sess-1") is True
+
+        # 2) 集群模式任务结束:V2 精确路由(fan_out → routing_target)
+        routing_target = RoutingTarget(
+            intent="godview",
+            routing_keys=[routing_key],
+            member_names=(),
+        )
+        await channel.send(
+            _processing_status_message("sess-1", False),
+            routing_target=routing_target,
+        )
+        # busy 必须被清除(修复前残留 True)
+        assert channel.is_session_busy("sess-1") is False
+        # 前端仍应正常收到结束事件帧(V2 路径经 per-ws writer 异步送出;
+        # 开始帧可能先到,这里等的是 is_processing=false 的那一帧)
+        def _has_end_frame() -> bool:
+            return any(
+                frame["event"] == "chat.processing_status"
+                and frame["payload"]["is_processing"] is False
+                for frame in client.frames
+            )
+
+        for _ in range(40):
+            if _has_end_frame():
+                break
+            await asyncio.sleep(0.005)
+        assert _has_end_frame()
+    finally:
+        await channel.unregister_ws(client)
+
+
+@pytest.mark.asyncio
+async def test_web_channel_session_busy_tracks_interrupt_result_via_fanout():
+    """interrupt_result 的 busy 维护同样必须与路由路径解耦(V2 路径)。"""
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = _FakeClient()
+    routing_key = RoutingKey(
+        channel_id="web",
+        app_id="default",
+        user_id="test_user",
+        session_id="sess-1",
+        agent_ref=None,
+    )
+
+    await channel.register_ws(client, routing_key)
+    try:
+        routing_target = RoutingTarget(
+            intent="godview",
+            routing_keys=[routing_key],
+            member_names=(),
+        )
+
+        # resume → busy=True(V2 路径)
+        await channel.send(
+            Message(
+                id="req-1",
+                type="event",
+                channel_id="web",
+                session_id="sess-1",
+                params={},
+                timestamp=0.0,
+                ok=True,
+                payload={"event_type": "chat.interrupt_result", "intent": "resume"},
+                event_type=EventType.CHAT_INTERRUPT_RESULT,
+            ),
+            routing_target=routing_target,
+        )
+        assert channel.is_session_busy("sess-1") is True
+
+        # cancel → busy=False(旧路径,保持既有行为)
+        await channel.send(
+            Message(
+                id="req-1",
+                type="event",
+                channel_id="web",
+                session_id="sess-1",
+                params={},
+                timestamp=0.0,
+                ok=True,
+                payload={"event_type": "chat.interrupt_result", "intent": "cancel"},
+                event_type=EventType.CHAT_INTERRUPT_RESULT,
+            ),
+        )
+        assert channel.is_session_busy("sess-1") is False
+    finally:
+        await channel.unregister_ws(client)

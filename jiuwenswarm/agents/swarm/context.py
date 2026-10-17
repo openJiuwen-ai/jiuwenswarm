@@ -22,6 +22,20 @@ from openjiuwen.agent_teams import paths as ojw_paths
 from openjiuwen.agent_teams.schema.build_context import BuildContext
 
 
+_heartbeat_job_service: Any | None = None
+
+
+def set_heartbeat_job_service(service: Any | None) -> None:
+    """Publish the AgentServer-owned Heartbeat service to Team builders."""
+    global _heartbeat_job_service
+    _heartbeat_job_service = service
+
+
+def get_heartbeat_job_service() -> Any | None:
+    """Return the process-local Heartbeat service, if AgentServer installed it."""
+    return _heartbeat_job_service
+
+
 @dataclass
 class SwarmBuildContext(BuildContext):
     """BuildContext subclass carrying jiuwenswarm runtime handles.
@@ -34,6 +48,7 @@ class SwarmBuildContext(BuildContext):
     Attributes:
         session_id: Active session id.
         request_id: Originating request id (may be None).
+        user_id: Authenticated request owner, used by user-routed tools.
         channel_id: Raw channel id from the request (may be None).
         channel: Resolved channel key for ``get_team_manager`` (``channel_id``
             or "default").
@@ -48,6 +63,22 @@ class SwarmBuildContext(BuildContext):
             internal, matching single-agent behaviour.
         team_id: Team name.
         team_ws_root: Team shared workspace root path.
+        task_workspace_root: Root of the shared final-deliverables directory
+            a projectless team member is told about (``team-workspace/artifacts
+            /<date>/chat-<n>/``). Only set when ``project_dir`` is None — a
+            team member bound to a project keeps deliverables in the project
+            and these stay None so the runtime prompt rail's
+            ``has_projectless_task`` branch stays off. The per-member
+            ``task_work_dir`` (the member workspace the prompt names as the
+            temporary working directory) is resolved in the rail from each
+            member's workspace root, not carried here — it is per-member.
+        team_outputs_dir: The final-deliverables directory (under
+            ``task_workspace_root``). Declared here explicitly (though the
+            base ``BuildContext`` also carries it once openjiuwen catches up)
+            so construction does not depend on the pinned openjiuwen version,
+            and the openjiuwen configurator and the team policy rail can
+            surface it to the team info body without a platform-specific
+            accessor. None when project_dir is set.
         team_skill_visibility_path: Team-level Skill visibility metadata file
             (``team_ws_root/skills-visibility.json``). Replaces the former
             ``team_skills_dir``: a team owns no Skill directory of its own, only
@@ -58,7 +89,12 @@ class SwarmBuildContext(BuildContext):
         global_skills_dir: The one physical Skill library every agent reads.
         trajectory_span_processor: Process-level trajectory span processor
             shared by Team evolution rails.
+        heartbeat_job_service: Process-level AgentServer Heartbeat service.
+            This live handle is intentionally omitted from serialized seeds and
+            reacquired from the receiving JiuwenSwarm process.
         config: The resolved ``config.yaml`` mapping (``get_config()``).
+        skill_retrieval_toolkit: Per-member, non-serializable Symphony
+            discovery runtime shared by skill_index and its prompt rail.
 
     Note:
         Backward incompatible: the ``team_skills_dir`` field and its seed key
@@ -69,6 +105,7 @@ class SwarmBuildContext(BuildContext):
 
     session_id: str = ""
     request_id: str | None = None
+    user_id: str | None = None
     channel_id: str | None = None
     channel: str = "default"
     request_metadata: dict[str, Any] | None = None
@@ -78,10 +115,29 @@ class SwarmBuildContext(BuildContext):
     disable_teammate_worktree: bool = False
     team_id: str = ""
     team_ws_root: str | None = None
+    task_workspace_root: str | None = None
+    team_outputs_dir: str | None = None
     team_skill_visibility_path: str | None = None
     global_skills_dir: str | None = None
     trajectory_span_processor: Any = None
+    heartbeat_job_service: Any = None
     config: dict[str, Any] | None = None
+    skill_retrieval_toolkit: Any = None
+
+    def __post_init__(self) -> None:
+        """Bridge the cron signal into the SDK's ``BuildContext.extras`` slot.
+
+        The cron scheduler writes ``request_metadata["cron"]`` on every cron
+        request (see ``CronScheduler._stream_team_round``). The openjiuwen SDK
+        ``BuildContext`` does not expose ``request_metadata``, so chat-team
+        rails that receive an SDK ``BuildContext`` (e.g.
+        ``jiuwenswarm.permission_rail_bundle``) cannot read that key directly.
+        Mirroring it into ``extras["is_cron"]`` lets the SDK-derived context
+        pick the same signal up via ``extras.get("is_cron")`` after
+        ``context.derive(...)`` flows the dict through.
+        """
+        if (self.request_metadata or {}).get("cron"):
+            self.extras["is_cron"] = True
 
     def resolve_member_skill_visibility_path(self) -> str | None:
         """Resolve the current member's Skill visibility metadata file path.
@@ -115,6 +171,28 @@ class SwarmBuildContext(BuildContext):
             return None
         return str(ojw_paths.member_skill_visibility_path(self.team_id, member_name))
 
+    def resolve_member_work_dir(self) -> str | None:
+        """Resolve this member's isolated temporary working directory.
+
+        Named ``resolve_*`` on purpose: like
+        :meth:`resolve_member_skill_visibility_path`, it can only be computed
+        once the per-member view (``member_name``) is filled by ``setup_agent``
+        through ``derive()``. The member work directory lives under the shared
+        ``task_workspace_root`` (``team-workspace/artifacts/<date>/chat-<n>/
+        work/<member_slug>/``), so it is per-member and never travels in
+        :meth:`to_seed`.
+
+        Returns:
+            The absolute per-member work directory path, or ``None`` when no
+            shared artifact root is configured (a member bound to a project,
+            whose deliverables stay in the project).
+        """
+        if not self.task_workspace_root:
+            return None
+        from jiuwenswarm.common.team_artifacts import resolve_member_work_dir
+
+        return str(resolve_member_work_dir(self.task_workspace_root, self.member_name))
+
     def to_seed(self) -> dict[str, Any]:
         """Export the serializable per-team / per-process fields as a seed.
 
@@ -132,6 +210,7 @@ class SwarmBuildContext(BuildContext):
         return {
             "session_id": self.session_id,
             "request_id": self.request_id,
+            "user_id": self.user_id,
             "channel_id": self.channel_id,
             "channel": self.channel,
             "request_metadata": self.request_metadata,
@@ -141,6 +220,8 @@ class SwarmBuildContext(BuildContext):
             "disable_teammate_worktree": self.disable_teammate_worktree,
             "team_id": self.team_id,
             "team_ws_root": self.team_ws_root,
+            "task_workspace_root": self.task_workspace_root,
+            "team_outputs_dir": self.team_outputs_dir,
             "team_skill_visibility_path": self.team_skill_visibility_path,
             "global_skills_dir": self.global_skills_dir,
         }
@@ -167,20 +248,30 @@ class SwarmBuildContext(BuildContext):
         return cls(
             session_id=seed.get("session_id", ""),
             request_id=seed.get("request_id"),
+            user_id=seed.get("user_id"),
             channel_id=seed.get("channel_id"),
             channel=seed.get("channel") or "default",
             request_metadata=seed.get("request_metadata"),
             mode=seed.get("mode") or "team",
             project_dir=seed.get("project_dir"),
             trusted_dirs=seed.get("trusted_dirs"),
-            disable_teammate_worktree=bool(seed.get("disable_teammate_worktree", False)),
+            disable_teammate_worktree=bool(
+                seed.get("disable_teammate_worktree", False)
+            ),
             team_id=seed.get("team_id", ""),
             team_ws_root=seed.get("team_ws_root"),
+            task_workspace_root=seed.get("task_workspace_root"),
+            team_outputs_dir=seed.get("team_outputs_dir"),
             team_skill_visibility_path=seed.get("team_skill_visibility_path"),
             global_skills_dir=seed.get("global_skills_dir"),
             trajectory_span_processor=trajectory_span_processor,
+            heartbeat_job_service=get_heartbeat_job_service(),
             config=config,
         )
 
 
-__all__ = ["SwarmBuildContext"]
+__all__ = [
+    "SwarmBuildContext",
+    "get_heartbeat_job_service",
+    "set_heartbeat_job_service",
+]

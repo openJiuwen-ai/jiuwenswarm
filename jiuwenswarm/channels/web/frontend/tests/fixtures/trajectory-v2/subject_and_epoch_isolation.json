@@ -1,0 +1,323 @@
+{
+  "name": "subject_and_epoch_isolation",
+  "derived_from": "jiuwenswarm/channels/web/frontend/tests/trajectoryProjector.test.mjs: schema-v2 sequence validation is isolated across runtime epochs; schema-v2 subject state stays isolated when concurrent subagents reuse sequences and window IDs",
+  "records": [
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000001",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "1000000",
+      "endTimeUnixNano": "1000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "event-before-restart"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "1"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "runtime-a"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "1000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"window-before-restart\", \"base_window_id\": null, \"complete\": true, \"delta\": [], \"request_purpose\": \"assistant\", \"messages\": [{\"message_id\": \"before-restart\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"before restart\"}], \"transition_kind\": \"epoch_baseline\", \"baseline_reason\": \"runtime_epoch_start\"}"
+          }
+        }
+      ],
+      "parentSpanId": "inference-a"
+    },
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000001",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "2000000",
+      "endTimeUnixNano": "2000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "event-after-restart"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "1"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "runtime-b"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "2000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"window-after-restart\", \"base_window_id\": null, \"complete\": true, \"delta\": [], \"request_purpose\": \"assistant\", \"messages\": [{\"message_id\": \"after-restart\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"after restart\"}], \"transition_kind\": \"epoch_baseline\", \"baseline_reason\": \"runtime_epoch_start\"}"
+          }
+        }
+      ],
+      "parentSpanId": "inference-b"
+    },
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000001",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "1000000",
+      "endTimeUnixNano": "1000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "event-first"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "subagent:first"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "1"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "epoch-1"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "1000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"shared-window-id\", \"base_window_id\": null, \"complete\": true, \"delta\": [], \"request_purpose\": \"assistant\", \"messages\": [{\"message_id\": \"first\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"first subagent\"}], \"transition_kind\": \"epoch_baseline\", \"baseline_reason\": \"runtime_epoch_start\"}"
+          }
+        }
+      ],
+      "parentSpanId": "inference-first"
+    },
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000001",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "1000000",
+      "endTimeUnixNano": "1000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "event-second"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "subagent:second"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "1"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "epoch-1"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "1000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"shared-window-id\", \"base_window_id\": null, \"complete\": true, \"delta\": [], \"request_purpose\": \"assistant\", \"messages\": [{\"message_id\": \"second\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"second subagent\"}], \"transition_kind\": \"epoch_baseline\", \"baseline_reason\": \"runtime_epoch_start\"}"
+          }
+        }
+      ],
+      "parentSpanId": "inference-second"
+    }
+  ],
+  "expected": {
+    "windows": {
+      "main": {
+        "window-before-restart": [
+          "before-restart"
+        ],
+        "window-after-restart": [
+          "after-restart"
+        ]
+      },
+      "subagent:first": {
+        "shared-window-id": [
+          "first"
+        ]
+      },
+      "subagent:second": {
+        "shared-window-id": [
+          "second"
+        ]
+      }
+    },
+    "by_inference": {
+      "inference-a": [
+        "before-restart"
+      ],
+      "inference-b": [
+        "after-restart"
+      ],
+      "inference-first": [
+        "first"
+      ],
+      "inference-second": [
+        "second"
+      ]
+    },
+    "issue_codes": []
+  }
+}

@@ -27,9 +27,12 @@ test('defaults to work and skips persistence without window', () => {
   assert.doesNotThrow(() => persistWorkMode('code'));
 });
 
-test('reads code and falls back to work for unknown stored values', () => {
+test('reads code and design and falls back to work for unknown stored values', () => {
   setWindow({ localStorage: { getItem: () => 'code' } });
   assert.equal(readStoredWorkMode(), 'code');
+
+  setWindow({ localStorage: { getItem: () => 'design' } });
+  assert.equal(readStoredWorkMode(), 'design');
 
   setWindow({ localStorage: { getItem: () => 'invalid' } });
   assert.equal(readStoredWorkMode(), 'work');
@@ -68,7 +71,11 @@ test('persists the selected mode when storage is available', () => {
   });
 
   persistWorkMode('code');
-  assert.deepEqual(writes, [['jiuwenswarm_work_mode', 'code']]);
+  persistWorkMode('design');
+  assert.deepEqual(writes, [
+    ['jiuwenswarm_work_mode', 'code'],
+    ['jiuwenswarm_work_mode', 'design'],
+  ]);
 });
 
 test('ignores storage access and write failures', () => {

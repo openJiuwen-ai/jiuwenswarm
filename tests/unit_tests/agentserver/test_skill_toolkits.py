@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+import hashlib
+from unittest.mock import patch
 
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
@@ -11,7 +11,51 @@ from jiuwenswarm.agents.harness.common.recommendation.situation_report import (
 )
 
 
-def test_uninstall_skill_removes_local_skill_without_plugin_record(tmp_path):
+def test_agent_default_search_never_queries_skillnet(tmp_path, monkeypatch):
+    manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
+    toolkit = SkillToolkit(manager)
+    queried: list[str] = []
+
+    monkeypatch.setattr(toolkit, "_search_builtin_skills", lambda *_args: [])
+
+    async def _search_clawhub(_params):
+        queried.append("clawhub")
+        return {"success": True, "skills": []}
+
+    async def _search_team_skills_hub(_params):
+        queried.append("teamskillshub")
+        return {"success": True, "skills": []}
+
+    async def _unexpected_skillnet_search(_params):
+        raise AssertionError("agent must not query SkillNet")
+
+    monkeypatch.setattr(manager, "handle_skills_clawhub_search", _search_clawhub)
+    monkeypatch.setattr(manager, "handle_skills_team_skills_hub_search", _search_team_skills_hub)
+    monkeypatch.setattr(manager, "handle_skills_skillnet_search", _unexpected_skillnet_search)
+
+    result = asyncio.run(toolkit.search_skill("pdf"))
+
+    assert result["success"] is True
+    assert result["source"] == "auto"
+    assert queried == ["clawhub", "teamskillshub"]
+
+
+class _SearchManager:
+    def __init__(self, skills):
+        self.skills = skills
+        self.params = None
+
+    def get_installed_plugins(self):
+        return []
+
+    async def handle_skills_clawhub_search(self, params):
+        self.params = params
+        return {"success": True, "skills": self.skills}
+
+
+def test_uninstall_skill_removes_local_skill_without_plugin_record(
+    tmp_path, allow_macos_pytest_temp_sources
+):
     manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
     toolkit = SkillToolkit(manager)
 
@@ -245,6 +289,52 @@ def test_search_skill_with_builtin_source(tmp_path):
     assert result["source"] == "builtin"
     assert len(result["items"]) == 1
     assert result["items"][0]["name"] == "openJiuwen-DeepSearch"
+
+
+def test_search_skill_uses_stable_query_fingerprint_without_changing_search():
+    raw_query = "  private customer query  "
+    normalized_query = raw_query.strip()
+    fingerprint = hashlib.sha256(normalized_query.encode("utf-8")).hexdigest()
+    skills = [
+        {
+            "display_name": "matching-skill",
+            "summary": "matching result",
+            "slug": "matching-skill",
+        }
+    ]
+    manager = _SearchManager(skills)
+    toolkit = SkillToolkit(manager)
+
+    with patch(
+        "jiuwenswarm.agents.harness.common.tools.skill_toolkits.logger.info"
+    ) as log_info:
+        result = asyncio.run(
+            toolkit.search_skill(raw_query, source="clawhub", limit=3)
+        )
+
+    assert toolkit._search_query_fingerprint(normalized_query) == fingerprint
+    assert toolkit._search_query_fingerprint(raw_query) == fingerprint
+    assert manager.params == {"q": normalized_query, "limit": 3}
+    assert result["items"][0]["name"] == "matching-skill"
+    logged = repr(log_info.call_args_list)
+    assert fingerprint in logged
+    assert fingerprint in result["query_summary"]
+    assert normalized_query not in logged
+    assert normalized_query not in result["query_summary"]
+
+
+def test_search_skill_no_result_detail_uses_query_fingerprint():
+    raw_query = "  private empty query  "
+    normalized_query = raw_query.strip()
+    fingerprint = hashlib.sha256(normalized_query.encode("utf-8")).hexdigest()
+    toolkit = SkillToolkit(_SearchManager([]))
+
+    result = asyncio.run(toolkit.search_skill(raw_query, source="clawhub"))
+
+    assert result["success"] is True
+    assert result["items"] == []
+    assert fingerprint in result["detail"]
+    assert normalized_query not in result["detail"]
 
 
 def test_install_skill_builtin_source_routes_to_handle_skills_install_builtin(tmp_path):

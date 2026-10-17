@@ -5,11 +5,9 @@
  * including stage progress and harness messages.
  *
  * All harness runtime state is isolated per session in runtimes.
- * Package management state remains global.
  */
 
 import { create } from 'zustand';
-import { PackageInfo, NativeVersionInfo } from '../types';
 
 /**
  * Stage status types
@@ -88,16 +86,6 @@ export interface ActivateInteractionState {
 }
 
 /**
- * File tree entry for caching
- */
-export interface CachedFileTreeEntry {
-  name: string;
-  path: string;
-  is_dir: boolean;
-  children?: CachedFileTreeEntry[];
-}
-
-/**
  * Single session harness runtime state.
  * All session-level fields are isolated here.
  */
@@ -114,7 +102,7 @@ interface HarnessRuntime {
   isHarnessRunning: boolean;
   // Overall progress percentage (0-100)
   progressPercent: number;
-  // Extension ready information for file tree display
+  // Extension-ready information received from the backend
   extensionReady: ExtensionReadyInfo | null;
   sessionRuntimePath: string;
   runtimeExtensions: RuntimeExtensionInfo[];
@@ -132,26 +120,6 @@ interface HarnessState {
 
   /** App-wide notification, deliberately separate from session-bound harness state. */
   proactiveNotificationMessage: string | null;
-
-  // Package list from backend (global)
-  packages: PackageInfo[];
-  // Native version info
-  nativeVersion: NativeVersionInfo | null;
-  // Currently active package IDs (multiple can be active simultaneously)
-  activePackageIds: string[];
-  // Selected package ID in dropdown (not yet activated)
-  selectedPackageId: string | null;
-  // Loading state for packages
-  loadingPackages: boolean;
-  // Activating state
-  activatingPackage: boolean;
-  // Deactivating state
-  deactivatingPackage: boolean;
-
-  // File tree cache by runtime path (key: runtimePath, value: file tree)
-  extensionFileTreeCache: Record<string, CachedFileTreeEntry[]>;
-  // Loading state for file tree by path
-  fileTreeLoadingPaths: Record<string, boolean>;
 
   // Runtime management
   ensureRuntime: (sessionId: string) => HarnessRuntime;
@@ -177,21 +145,6 @@ interface HarnessState {
   setActivateInteraction: (sessionId: string, state: ActivateInteractionState | null) => void;
   reset: (sessionId: string) => void;
   setProactiveNotification: (message: string | null) => void;
-
-  // Global package actions
-  setPackages: (packages: PackageInfo[], nativeVersion: NativeVersionInfo, activeIds: string[]) => void;
-  isPackageActive: (packageId: string) => boolean;
-  setSelectedPackageId: (id: string | null) => void;
-  setLoadingPackages: (loading: boolean) => void;
-  setActivatingPackage: (activating: boolean) => void;
-  setDeactivatingPackage: (deactivating: boolean) => void;
-
-  // File tree cache actions (global)
-  setFileTreeCache: (runtimePath: string, files: CachedFileTreeEntry[]) => void;
-  getFileTreeCache: (runtimePath: string) => CachedFileTreeEntry[] | undefined;
-  clearFileTreeCache: (runtimePath?: string) => void;
-  setFileTreeLoading: (runtimePath: string, loading: boolean) => void;
-  isFileTreeLoading: (runtimePath: string) => boolean;
 }
 
 /**
@@ -270,17 +223,6 @@ function createEmptyRuntime(): HarnessRuntime {
 export const useHarnessStore = create<HarnessState>((set, get) => ({
   runtimes: {},
   proactiveNotificationMessage: null,
-
-  packages: [],
-  nativeVersion: null,
-  activePackageIds: [],
-  selectedPackageId: null,
-  loadingPackages: false,
-  activatingPackage: false,
-  deactivatingPackage: false,
-
-  extensionFileTreeCache: {},
-  fileTreeLoadingPaths: {},
 
   ensureRuntime: (sessionId) => {
     const existing = get().runtimes[sessionId];
@@ -604,89 +546,5 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
 
   setProactiveNotification: (message) => {
     set({ proactiveNotificationMessage: message });
-  },
-
-  setPackages: (packages, nativeVersion, activeIds) => {
-    const currentSelection = get().selectedPackageId;
-    const allIds = ['native', ...packages.map(p => p.id)];
-    const newSelection = (currentSelection && allIds.includes(currentSelection)) ? currentSelection : 'native';
-    set({
-      packages,
-      nativeVersion,
-      activePackageIds: activeIds,
-      selectedPackageId: newSelection,
-    });
-  },
-
-  isPackageActive: (packageId) => {
-    const state = get();
-    return state.activePackageIds.includes(packageId);
-  },
-
-  setSelectedPackageId: (id) => {
-    set({ selectedPackageId: id });
-  },
-
-  setLoadingPackages: (loading) => {
-    set({ loadingPackages: loading });
-  },
-
-  setActivatingPackage: (activating) => {
-    set({ activatingPackage: activating });
-  },
-
-  setDeactivatingPackage: (deactivating) => {
-    set({ deactivatingPackage: deactivating });
-  },
-
-  // File tree cache actions
-  setFileTreeCache: (runtimePath, files) => {
-    set((state) => ({
-      extensionFileTreeCache: {
-        ...state.extensionFileTreeCache,
-        [runtimePath]: files,
-      },
-      fileTreeLoadingPaths: {
-        ...state.fileTreeLoadingPaths,
-        [runtimePath]: false,
-      },
-    }));
-  },
-
-  getFileTreeCache: (runtimePath) => {
-    return get().extensionFileTreeCache[runtimePath];
-  },
-
-  clearFileTreeCache: (runtimePath) => {
-    if (runtimePath) {
-      set((state) => {
-        const newCache = { ...state.extensionFileTreeCache };
-        delete newCache[runtimePath];
-        const newLoading = { ...state.fileTreeLoadingPaths };
-        delete newLoading[runtimePath];
-        return {
-          extensionFileTreeCache: newCache,
-          fileTreeLoadingPaths: newLoading,
-        };
-      });
-    } else {
-      set({
-        extensionFileTreeCache: {},
-        fileTreeLoadingPaths: {},
-      });
-    }
-  },
-
-  setFileTreeLoading: (runtimePath, loading) => {
-    set((state) => ({
-      fileTreeLoadingPaths: {
-        ...state.fileTreeLoadingPaths,
-        [runtimePath]: loading,
-      },
-    }));
-  },
-
-  isFileTreeLoading: (runtimePath) => {
-    return get().fileTreeLoadingPaths[runtimePath] || false;
   },
 }));

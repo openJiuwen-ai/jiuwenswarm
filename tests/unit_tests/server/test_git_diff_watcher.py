@@ -123,6 +123,47 @@ async def test_current_only_watch_does_not_read_last_turn(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_remote_structural_error_pushes_once_and_pauses() -> None:
+    """E2A Git failures must retain the local watcher's pause semantics."""
+    from jiuwenswarm.server.runtime.session import git_diff_watcher
+
+    channel = _FakeChannel()
+    registry = git_diff_watcher.GitDiffWatcherRegistry(channel=channel)
+    watch = await registry.add_watch(object(), "proj-A", "sess-1")
+
+    async def failing_fetcher(*_args):
+        return False, {
+            "error": "not a git repository",
+            "code": "NOT_GIT_REPOSITORY",
+            "retryable": False,
+        }
+
+    registry.set_diff_status_fetcher(failing_fetcher)
+    await registry._poll_loop("proj-A")
+
+    assert len(channel.events) == 1
+    assert channel.events[0]["payload"]["watch_id"] == watch.watch_id
+    assert channel.events[0]["payload"]["detail"]["code"] == "NOT_GIT_REPOSITORY"
+
+
+@pytest.mark.asyncio
+async def test_remote_missing_project_cleans_watches() -> None:
+    """A deleted remote project must reclaim its Gateway-side watcher bridge."""
+    from jiuwenswarm.server.runtime.session import git_diff_watcher
+
+    registry = git_diff_watcher.GitDiffWatcherRegistry(channel=_FakeChannel())
+    await registry.add_watch(object(), "proj-A", "sess-1")
+
+    async def missing_project_fetcher(*_args):
+        return False, {"error": "project not found", "code": "PROJECT_NOT_FOUND"}
+
+    registry.set_diff_status_fetcher(missing_project_fetcher)
+    await registry._poll_loop("proj-A")
+
+    assert registry._get_watches_for_project("proj-A") == []
+
+
+@pytest.mark.asyncio
 async def test_empty_session_id_forces_include_last_turn_false(monkeypatch):
     """Bug 修复:``session_id=""`` 时强制关闭 ``include_last_turn``。
 
@@ -247,3 +288,55 @@ async def test_current_layers_share_snapshot_revision_and_limit_hunk_paths(monke
     detail_files = events_by_name["project.git.diff_detail_changed"]["payload"]["files"]
     assert detail_files["a.py"]["hunks"]
     assert "b.py" not in detail_files
+
+
+class _FetcherChannel(_FakeChannel):
+    def _extract_ws_user_id(self, ws):
+        return getattr(ws, "_gateway_user_id", "") or ""
+
+
+@pytest.mark.asyncio
+async def test_remote_fetcher_delegates_state_computation(monkeypatch):
+    """注入 diff 状态获取器后，轮询经 fetcher 委托状态计算，不本地读目录。"""
+    from jiuwenswarm.server.runtime.session import git_diff_watcher
+
+    channel = _FetcherChannel()
+    registry = git_diff_watcher.GitDiffWatcherRegistry(channel=channel)
+
+    fetch_calls: list[dict] = []
+
+    async def fake_fetcher(request):
+        fetch_calls.append(dict(request))
+        return True, {
+            "project_id": request["project_id"],
+            "session_id": request["session_id"],
+            "repo": {
+                "is_git": True,
+                "repo_root": "/tmp/proj-A",
+                "branch": "main",
+                "head": "abc123",
+                "transient": False,
+            },
+            "current": {
+                "is_dirty": False,
+                "stats": {"files_changed": 0, "lines_added": 0, "lines_removed": 0},
+                "files": {},
+            },
+            "last_turn": None,
+            "generated_at": 123.456,
+        }
+
+    registry.set_diff_status_fetcher(fake_fetcher)
+
+    ws = SimpleNamespace(_gateway_user_id="user-A")
+    await registry.add_watch(ws, "proj-A", "sess-1", include_last_turn=True)
+    watches = registry._get_watches_for_project("proj-A")
+    await registry._compute_and_push("proj-A", watches)
+
+    assert len(fetch_calls) == 2
+    assert fetch_calls[0]["session_id"] is None
+    assert fetch_calls[0]["user_id"] == "user-A"
+    assert fetch_calls[1]["session_id"] == "sess-1"
+    assert channel.events
+    assert channel.events[0]["event"] == "project.git.diff_changed"
+

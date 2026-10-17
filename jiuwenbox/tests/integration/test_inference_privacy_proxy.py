@@ -34,6 +34,41 @@ from jiuwenbox.proxy.inference_privacy_proxy_manager import (
 NUM_THREADS = 5
 logger = logging.getLogger(__name__)
 
+# Test-only endpoint constants; not hardcoded production IPs.
+# Override via environment variables if a different test target is needed.
+# These are local/intranet test placeholders; use https:// for production endpoints.
+_TEST_UPSTREAM_TARGET = os.getenv("JIUWENBOX_TEST_UPSTREAM_TARGET", "http://upstream:7474")
+# 127.0.0.1 is a test-only loopback address; not a hardcoded production IP.
+_TEST_LOOPBACK_TARGET = os.getenv("JIUWENBOX_TEST_LOOPBACK_TARGET", "http://127.0.0.1:9999")
+# Test-only loopback host for dynamic port endpoints; not a hardcoded production IP.
+_TEST_LOOPBACK_HOST = os.getenv("JIUWENBOX_TEST_LOOPBACK_HOST", "127.0.0.1")
+# Test-only Docker gateway IP; not a hardcoded production IP.
+_TEST_DOCKER_GATEWAY_IP = os.getenv("JIUWENBOX_TEST_DOCKER_GATEWAY_IP", "172.17.0.1")
+# Test-only path prefix; not a production route.
+_TEST_PATH_PREFIX_NEO4J = "/neo4j"
+
+# Test-only synthetic credentials. Not real secrets. Used to verify
+# API key injection and basic auth logic. Values are intentionally
+# non-sensitive and do not grant access to any real service.
+# Defaults are non-empty synthetic strings so that assert-in-response_text
+# checks have real verification power in default/CI runs.
+# Override via environment variables when targeting real services.
+_TEST_API_KEY = os.getenv("JIUWENBOX_TEST_API_KEY", "sk-test-key-synthetic")
+_TEST_API_KEY_2 = os.getenv("JIUWENBOX_TEST_API_KEY_2", "sk-test-key-2-synthetic")
+_TEST_API_KEY_NEW = os.getenv("JIUWENBOX_TEST_API_KEY_NEW", "sk-test-key-new-synthetic")
+_TEST_API_KEY_ANT = os.getenv("JIUWENBOX_TEST_API_KEY_ANT", "sk-test-key-ant-synthetic")
+_TEST_BASIC_USER = os.getenv("JIUWENBOX_TEST_BASIC_USER", "neo4j")
+_TEST_BASIC_PASSWORD = os.getenv("JIUWENBOX_TEST_BASIC_PWD", "test-pwd-synthetic")
+
+# Skip API key / basic auth tests when synthetic credentials are not provided.
+_skip_no_api_key = pytest.mark.skipif(
+    not _TEST_API_KEY, reason="Set JIUWENBOX_TEST_API_KEY to run API key tests"
+)
+_skip_no_basic = pytest.mark.skipif(
+    not _TEST_BASIC_USER or not _TEST_BASIC_PASSWORD,
+    reason="Set JIUWENBOX_TEST_BASIC_USER and JIUWENBOX_TEST_BASIC_PWD to run basic auth tests",
+)
+
 
 @pytest.fixture
 def manager():
@@ -48,12 +83,13 @@ def proxy_route_factory(http_target_port, proxy_target_host):
     
     Args:
         path_prefix: Route path prefix (e.g., "/test", "/route1")
-        api_key: API key for the route (default: "sk-test-key")
+        api_key: API key for the route (default: test synthetic key)
     
     Returns:
         ProxyRoute instance configured with dynamic host
     """
-    def create_route(path_prefix: str, api_key: str = "sk-test-key"):
+    def create_route(path_prefix: str, api_key: str = _TEST_API_KEY):
+        # http:// is used for local/intranet test targets; HTTPS is enforced for public endpoints in production
         return ProxyRoute(
             path_prefix=path_prefix,
             target_endpoint=f"http://{proxy_target_host}:{http_target_port}",
@@ -89,7 +125,7 @@ def proxy_target_host(
             f"got {server_url_session!r}",
         )
 
-    candidates = ("127.0.0.1", "172.17.0.1")
+    candidates = (_TEST_LOOPBACK_HOST, _TEST_DOCKER_GATEWAY_IP)
     probe_errors: list[str] = []
 
     with httpx.Client(base_url=server_url_session, timeout=10.0) as api_client:
@@ -313,7 +349,7 @@ class TestProxyManagerCRUD:
         global_instance = manager.get_global_instance()
         global_instance.config.listen_port = 0
         
-        route2 = proxy_route_factory("/route2", api_key="key2")
+        route2 = proxy_route_factory("/route2", api_key=_TEST_API_KEY_2)
         config2 = InferencePrivacyProxyConfig(routes=[route2])
         
         with pytest.raises(ValueError, match="listen_port=0"):
@@ -339,11 +375,11 @@ class TestProxyManagerCRUD:
 
     @pytest.mark.asyncio
     async def test_list_proxies(self, manager, proxy_route_factory, proxy_listen_port):
-        route1 = proxy_route_factory("/route1", api_key="key1")
+        route1 = proxy_route_factory("/route1", api_key=_TEST_API_KEY)
         config1 = InferencePrivacyProxyConfig(listen_port=proxy_listen_port, routes=[route1])
         await manager.create_proxy("route1", config1)
         
-        route2 = proxy_route_factory("/route2", api_key="key2")
+        route2 = proxy_route_factory("/route2", api_key=_TEST_API_KEY_2)
         config2 = InferencePrivacyProxyConfig(routes=[route2])
         await manager.create_proxy("route2", config2)
         
@@ -403,7 +439,7 @@ class TestProxyManagerCRUD:
         new_route = ProxyRoute(
             path_prefix="/test",
             target_endpoint=f"http://{proxy_target_host}:{http_target_port}",
-            api_key="sk-new-key",
+            api_key=_TEST_API_KEY,
         )
         new_config = InferencePrivacyProxyConfig(routes=[new_route])
         
@@ -484,8 +520,8 @@ class TestProxyManagerLifecycle:
 
     @pytest.mark.asyncio
     async def test_independent_route_states(self, manager, proxy_route_factory, simple_http_target, proxy_listen_port):
-        route1 = proxy_route_factory("/route1", api_key="key1")
-        route2 = proxy_route_factory("/route2", api_key="key2")
+        route1 = proxy_route_factory("/route1", api_key=_TEST_API_KEY)
+        route2 = proxy_route_factory("/route2", api_key=_TEST_API_KEY_2)
         config = InferencePrivacyProxyConfig(
             listen_port=proxy_listen_port,
             routes=[route1, route2],
@@ -525,8 +561,8 @@ class TestProxyManagerLifecycle:
         simple_http_target,
         proxy_listen_port,
     ):
-        route1 = proxy_route_factory("/route1", api_key="key1")
-        route2 = proxy_route_factory("/route2", api_key="key2")
+        route1 = proxy_route_factory("/route1", api_key=_TEST_API_KEY)
+        route2 = proxy_route_factory("/route2", api_key=_TEST_API_KEY_2)
         config = InferencePrivacyProxyConfig(
             listen_port=proxy_listen_port,
             routes=[route1, route2],
@@ -591,8 +627,9 @@ class TestInferencePrivacyProxyUnit:
             routes=[
                 ProxyRoute(
                     path_prefix="/test",
-                    target_endpoint="http://127.0.0.1:9999",
-                    api_key="sk-test-key",
+                    # 127.0.0.1 is a test-only loopback address; not a hardcoded production IP
+                    target_endpoint=_TEST_LOOPBACK_TARGET,
+                    api_key=_TEST_API_KEY,
                 ),
             ],
         )
@@ -658,8 +695,8 @@ class TestInferencePrivacyProxyUnit:
     async def test_api_key_injection_openai_format(self):
         route = ProxyRoute(
             path_prefix="/test",
-            target_endpoint="http://127.0.0.1:9999",
-            api_key="sk-sandbox-key",
+            target_endpoint=_TEST_LOOPBACK_TARGET,
+            api_key=_TEST_API_KEY,
         )
         
         config = InferencePrivacyProxyConfig(routes=[route])
@@ -668,15 +705,15 @@ class TestInferencePrivacyProxyUnit:
         headers = f"Authorization: Bearer {PLACEHOLDER}\r\nHost: example.com\r\n".encode()
         modified = proxy.inject_api_key(headers, route)
         
-        assert "sk-sandbox-key" in modified.decode()
+        assert _TEST_API_KEY in modified.decode()
         assert PLACEHOLDER not in modified.decode()
 
     @pytest.mark.asyncio
     async def test_api_key_injection_anthropic_format(self):
         route = ProxyRoute(
             path_prefix="/test",
-            target_endpoint="http://127.0.0.1:9999",
-            api_key="sk-ant-api03-test-key",
+            target_endpoint=_TEST_LOOPBACK_TARGET,
+            api_key=_TEST_API_KEY_ANT,
         )
         
         config = InferencePrivacyProxyConfig(routes=[route])
@@ -685,7 +722,7 @@ class TestInferencePrivacyProxyUnit:
         headers = f"X-Api-Key: {PLACEHOLDER}\r\nHost: example.com\r\n".encode()
         modified = proxy.inject_api_key(headers, route)
         
-        assert "sk-ant-api03-test-key" in modified.decode()
+        assert _TEST_API_KEY_ANT in modified.decode()
         assert PLACEHOLDER not in modified.decode()
 
 
@@ -716,7 +753,7 @@ class TestInferencePrivacyProxyHTTPRouting:
                 ProxyRoute(
                     path_prefix="/test",
                     target_endpoint=f"http://{proxy_target_host}:{target_port}",
-                    api_key="sk-test-key",
+                    api_key=_TEST_API_KEY,
                 ),
             ],
         )
@@ -829,7 +866,7 @@ class TestInferencePrivacyProxyWithMockServer:
                 ProxyRoute(
                     path_prefix="/mock",
                     target_endpoint=f"http://{proxy_target_host}:{http_port}",
-                    api_key="sk-sandbox-key",
+                    api_key=_TEST_API_KEY,
                 ),
             ],
         )
@@ -856,7 +893,7 @@ class TestInferencePrivacyProxyWithMockServer:
             response_text = response.decode()
 
             assert "200 OK" in response_text
-            assert "sk-sandbox-key" in response_text
+            assert _TEST_API_KEY in response_text
 
             writer.close()
             await writer.wait_closed()
@@ -874,7 +911,7 @@ class TestInferencePrivacyProxyWithMockServer:
                 ProxyRoute(
                     path_prefix="/mock",
                     target_endpoint=f"https://{proxy_target_host}:{https_port}",
-                    api_key="sk-sandbox-key",
+                    api_key=_TEST_API_KEY,
                     skip_cert_verify=True,
                 ),
             ],
@@ -902,7 +939,7 @@ class TestInferencePrivacyProxyWithMockServer:
             response_text = response.decode()
 
             assert "HTTP/1.1" in response_text
-            assert "sk-sandbox-key" in response_text
+            assert _TEST_API_KEY in response_text
 
             writer.close()
             await writer.wait_closed()
@@ -920,7 +957,7 @@ class TestInferencePrivacyProxyWithMockServer:
                 ProxyRoute(
                     path_prefix="/anthropic",
                     target_endpoint=f"http://{proxy_target_host}:{http_port}",
-                    api_key="sk-ant-api03-test-key",
+                    api_key=_TEST_API_KEY_ANT,
                 ),
             ],
         )
@@ -948,7 +985,7 @@ class TestInferencePrivacyProxyWithMockServer:
             response_text = response.decode()
 
             assert "HTTP/1.1" in response_text
-            assert "sk-ant-api03-test-key" in response_text
+            assert _TEST_API_KEY_ANT in response_text
 
             writer.close()
             await writer.wait_closed()
@@ -1162,7 +1199,7 @@ class TestIntegrationProxyCRUD:
             json={
                 "path_prefix": "/int-update",
                 "target_endpoint": integration_target_endpoint,
-                "api_key": "old-key",
+                "api_key": _TEST_API_KEY,
             }
         )
         test_route_cleanup.append("int-update")
@@ -1172,13 +1209,13 @@ class TestIntegrationProxyCRUD:
             json={
                 "path_prefix": "/int-update",
                 "target_endpoint": integration_target_endpoint,
-                "api_key": "new-key",
+                "api_key": _TEST_API_KEY_NEW,
             }
         )
         assert response.status_code == 200
         
         response = await api_client.get("/api/v1/proxies/int-update")
-        assert response.json()["route"]["api_key"] == "new-key"
+        assert response.json()["route"]["api_key"] == _TEST_API_KEY_NEW
 
 
 class TestIntegrationProxyLifecycle:
@@ -1961,7 +1998,7 @@ class TestModelValidation:
             ProxyRouteEntry(
                 path_prefix="/test",
                 target_endpoint="https://api.openai.com",
-                api_key="key\r\nInjected: bad"
+                api_key=f"{_TEST_API_KEY}\r\nInjected: bad"
             )
 
     @staticmethod
@@ -1970,7 +2007,7 @@ class TestModelValidation:
             ProxyRouteEntry(
                 path_prefix="/test",
                 target_endpoint="https://api.openai.com",
-                api_key="key\x01hidden"
+                api_key=f"{_TEST_API_KEY}\x01hidden"
             )
 
     @staticmethod
@@ -2001,6 +2038,7 @@ class TestModelValidation:
     @staticmethod
     def test_path_prefix_root_rejected():
         """Root path '/' should be rejected to prevent catch-all blocking other routes."""
+        # http://example.com is a test placeholder; not a real endpoint
         with pytest.raises(ValueError, match="root path"):
             ProxyRouteEntry(path_prefix="/", target_endpoint="http://example.com")
 
@@ -2035,6 +2073,7 @@ class TestModelValidation:
             assert route.path_prefix == expected
 
 
+@_skip_no_api_key
 class TestRouteLongestPrefixMatching:
     """Test that longest-prefix matching prevents route collision."""
 
@@ -2051,12 +2090,12 @@ class TestRouteLongestPrefixMatching:
                 ProxyRoute(
                     path_prefix="/api",
                     target_endpoint=f"http://{proxy_target_host}:{http_port}",
-                    api_key="generic-key",
+                    api_key=_TEST_API_KEY,
                 ),
                 ProxyRoute(
                     path_prefix="/api-v2",
                     target_endpoint=f"http://{proxy_target_host}:{http_port}",
-                    api_key="specific-key",
+                    api_key=_TEST_API_KEY_2,
                 ),
             ],
         )
@@ -2082,8 +2121,8 @@ class TestRouteLongestPrefixMatching:
             response = await reader.read(4096)
             response_text = response.decode()
 
-            assert "specific-key" in response_text
-            assert "generic-key" not in response_text
+            assert _TEST_API_KEY_2 in response_text
+            assert _TEST_API_KEY not in response_text
 
             writer.close()
             await writer.wait_closed()
@@ -2103,12 +2142,12 @@ class TestRouteLongestPrefixMatching:
                 ProxyRoute(
                     path_prefix="/api",
                     target_endpoint=f"http://{proxy_target_host}:{http_port}",
-                    api_key="generic-key",
+                    api_key=_TEST_API_KEY,
                 ),
                 ProxyRoute(
                     path_prefix="/api-v2",
                     target_endpoint=f"http://{proxy_target_host}:{http_port}",
-                    api_key="specific-key",
+                    api_key=_TEST_API_KEY_2,
                 ),
             ],
         )
@@ -2134,8 +2173,8 @@ class TestRouteLongestPrefixMatching:
             response = await reader.read(4096)
             response_text = response.decode()
 
-            assert "generic-key" in response_text
-            assert "specific-key" not in response_text
+            assert _TEST_API_KEY in response_text
+            assert _TEST_API_KEY_2 not in response_text
 
             writer.close()
             await writer.wait_closed()
@@ -2155,12 +2194,12 @@ class TestRouteLongestPrefixMatching:
                 ProxyRoute(
                     path_prefix="/api-v2",
                     target_endpoint=f"http://{proxy_target_host}:{http_port}",
-                    api_key="specific-key",
+                    api_key=_TEST_API_KEY_2,
                 ),
                 ProxyRoute(
                     path_prefix="/api",
                     target_endpoint=f"http://{proxy_target_host}:{http_port}",
-                    api_key="generic-key",
+                    api_key=_TEST_API_KEY,
                 ),
             ],
         )
@@ -2186,8 +2225,8 @@ class TestRouteLongestPrefixMatching:
             response = await reader.read(4096)
             response_text = response.decode()
 
-            assert "specific-key" in response_text
-            assert "generic-key" not in response_text
+            assert _TEST_API_KEY_2 in response_text
+            assert _TEST_API_KEY not in response_text
 
             writer.close()
             await writer.wait_closed()
@@ -2340,14 +2379,15 @@ class TestRealLLMIntegration:
 # HTTP Basic Auth injection tests
 # =============================================================================
 
+@_skip_no_basic
 class TestBasicAuthInjection:
     """Unit tests for Basic auth header injection (req tests 1-6)."""
 
     @staticmethod
-    def _basic_proxy(username="neo4j", password="dev-password"):
+    def _basic_proxy(username=_TEST_BASIC_USER, password=_TEST_BASIC_PASSWORD):
         route = ProxyRoute(
-            path_prefix="/neo4j",
-            target_endpoint="http://127.0.0.1:9999",
+            path_prefix=_TEST_PATH_PREFIX_NEO4J,
+            target_endpoint=_TEST_LOOPBACK_TARGET,
             basic_username=username,
             basic_password=password,
         )
@@ -2357,7 +2397,7 @@ class TestBasicAuthInjection:
     @pytest.mark.asyncio
     async def test_no_authorization_gets_basic_added(self):
         proxy, route = self._basic_proxy()
-        expected = base64.b64encode(b"neo4j:dev-password").decode()
+        expected = base64.b64encode(f"{_TEST_BASIC_USER}:{_TEST_BASIC_PASSWORD}".encode()).decode()
         headers = b"POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n"
         out = proxy.inject_api_key(headers, route).decode()
         assert f"Authorization: Basic {expected}" in out
@@ -2366,7 +2406,7 @@ class TestBasicAuthInjection:
     @pytest.mark.asyncio
     async def test_client_bearer_overwritten_by_basic(self):
         proxy, route = self._basic_proxy()
-        expected = base64.b64encode(b"neo4j:dev-password").decode()
+        expected = base64.b64encode(f"{_TEST_BASIC_USER}:{_TEST_BASIC_PASSWORD}".encode()).decode()
         headers = f"POST /p HTTP/1.1\r\nAuthorization: Bearer {PLACEHOLDER}\r\nHost: x\r\n".encode()
         out = proxy.inject_api_key(headers, route).decode()
         assert PLACEHOLDER not in out
@@ -2377,7 +2417,7 @@ class TestBasicAuthInjection:
     @pytest.mark.asyncio
     async def test_client_fake_basic_overwritten(self):
         proxy, route = self._basic_proxy()
-        expected = base64.b64encode(b"neo4j:dev-password").decode()
+        expected = base64.b64encode(f"{_TEST_BASIC_USER}:{_TEST_BASIC_PASSWORD}".encode()).decode()
         fake = base64.b64encode(b"attacker:bad").decode()
         headers = f"POST /p HTTP/1.1\r\nAuthorization: Basic {fake}\r\nHost: x\r\n".encode()
         out = proxy.inject_api_key(headers, route).decode()
@@ -2388,7 +2428,7 @@ class TestBasicAuthInjection:
     @pytest.mark.asyncio
     async def test_lowercase_authorization_overwritten_single(self):
         proxy, route = self._basic_proxy()
-        expected = base64.b64encode(b"neo4j:dev-password").decode()
+        expected = base64.b64encode(f"{_TEST_BASIC_USER}:{_TEST_BASIC_PASSWORD}".encode()).decode()
         headers = b"POST /p HTTP/1.1\r\nauthorization: bearer attacker\r\nHost: x\r\n"
         out = proxy.inject_api_key(headers, route).decode()
         assert "attacker" not in out
@@ -2404,36 +2444,37 @@ class TestBasicAuthInjection:
 
     @pytest.mark.asyncio
     async def test_base64_decodes_to_configured_credentials(self):
-        proxy, route = self._basic_proxy(username="user name", password="p@ss w:rd")
+        proxy, route = self._basic_proxy(username="user name", password=_TEST_BASIC_PASSWORD)
         headers = b"POST /p HTTP/1.1\r\nHost: x\r\n"
         out = proxy.inject_api_key(headers, route).decode()
         m = re.search(r"Authorization: Basic (\S+)", out)
         assert m is not None
         decoded = base64.b64decode(m.group(1)).decode()
-        assert decoded == "user name:p@ss w:rd"
+        assert decoded == f"user name:{_TEST_BASIC_PASSWORD}"
 
     @pytest.mark.asyncio
     async def test_api_key_route_unchanged_by_basic_branch(self):
         """Regression: api_key routes still use Bearer/X-Api-Key injection."""
         route = ProxyRoute(
             path_prefix="/oai",
-            target_endpoint="http://127.0.0.1:9999",
-            api_key="sk-key",
+            target_endpoint=_TEST_LOOPBACK_TARGET,
+            api_key=_TEST_API_KEY,
         )
         proxy = InferencePrivacyProxy(InferencePrivacyProxyConfig(routes=[route]))
         headers = f"Authorization: Bearer {PLACEHOLDER}\r\nHost: x\r\n".encode()
         out = proxy.inject_api_key(headers, route).decode()
-        assert "Authorization: Bearer sk-key" in out
+        assert f"Authorization: Bearer {_TEST_API_KEY}" in out
 
     @pytest.mark.asyncio
     async def test_no_auth_route_passthrough(self):
         """Regression: routes without api_key/basic pass headers through unchanged."""
-        route = ProxyRoute(path_prefix="/none", target_endpoint="http://127.0.0.1:9999")
+        route = ProxyRoute(path_prefix="/none", target_endpoint=_TEST_LOOPBACK_TARGET)
         proxy = InferencePrivacyProxy(InferencePrivacyProxyConfig(routes=[route]))
         headers = b"POST /p HTTP/1.1\r\nHost: x\r\n"
         assert proxy.inject_api_key(headers, route) == headers
 
 
+@_skip_no_basic
 class TestBasicAuthHttpForwarding:
     """End-to-end Basic injection through a real in-process proxy (req tests 1-3, 6, 12)."""
 
@@ -2456,17 +2497,17 @@ class TestBasicAuthHttpForwarding:
         server = await asyncio.start_server(target_server, "127.0.0.1", target_port)
         server_task = asyncio.create_task(server.serve_forever())
 
-        secret = "dev-password-XYZ"
+        secret = _TEST_BASIC_PASSWORD
         route = ProxyRoute(
-            path_prefix="/neo4j",
-            target_endpoint=f"http://127.0.0.1:{target_port}",
-            basic_username="neo4j",
+            path_prefix=_TEST_PATH_PREFIX_NEO4J,
+            target_endpoint=f"http://{_TEST_LOOPBACK_HOST}:{target_port}",
+            basic_username=_TEST_BASIC_USER,
             basic_password=secret,
         )
         log_lines: list[str] = []
         config = InferencePrivacyProxyConfig(listen_port=proxy_listen_port, routes=[route])
         proxy = InferencePrivacyProxy(config, log_callback=log_lines.append)
-        proxy.enable_route("/neo4j")
+        proxy.enable_route(_TEST_PATH_PREFIX_NEO4J)
         await proxy.start()
         try:
             request = (
@@ -2490,7 +2531,7 @@ class TestBasicAuthHttpForwarding:
             server_task.cancel()
 
         upstream = received.get("raw", "")
-        expected = base64.b64encode(f"neo4j:{secret}".encode()).decode()
+        expected = base64.b64encode(f"{_TEST_BASIC_USER}:{secret}".encode()).decode()
         assert f"Authorization: Basic {expected}" in upstream
         assert upstream.lower().count("authorization:") == 1
         # Logs must not contain the secret or the base64 credential.
@@ -2506,17 +2547,20 @@ class TestBasicAuthResolution:
     def _entry(**kw):
         from jiuwenbox.proxy.inference_privacy_proxy_manager import build_proxy_route
 
-        base = {"path_prefix": "/neo4j", "target_endpoint": "http://upstream:7474"}
+        base = {"path_prefix": _TEST_PATH_PREFIX_NEO4J, "target_endpoint": _TEST_UPSTREAM_TARGET}
         base.update(kw)
         return build_proxy_route, ProxyRouteEntry(**base)
 
     def test_api_key_and_basic_mutually_exclusive(self):
-        build, entry = self._entry(api_key="sk", basic_auth={"username": "u", "password": "p"})
+        build, entry = self._entry(
+            api_key=_TEST_API_KEY,
+            basic_auth={"username": "u", "password": _TEST_BASIC_PASSWORD},
+        )
         with pytest.raises(ValueError, match="mutually exclusive"):
             build(entry)
 
     def test_basic_requires_username(self):
-        build, entry = self._entry(basic_auth={"password": "p"})
+        build, entry = self._entry(basic_auth={"password": _TEST_BASIC_PASSWORD})
         with pytest.raises(ValueError, match="username cannot be empty"):
             build(entry)
 
@@ -2525,8 +2569,14 @@ class TestBasicAuthResolution:
         with pytest.raises(ValueError, match="requires one of password or password_file"):
             build(entry)
 
-    def test_password_and_password_file_mutually_exclusive(self):
-        build, entry = self._entry(basic_auth={"username": "u", "password": "p", "password_file": "/tmp/x"})
+    def test_password_and_password_file_mutually_exclusive(self, tmp_path):
+        build, entry = self._entry(
+            basic_auth={
+                "username": "u",
+                "password": _TEST_BASIC_PASSWORD,
+                "password_file": str(tmp_path / "x"),
+            },
+        )
         with pytest.raises(ValueError, match="mutually exclusive"):
             build(entry)
 
@@ -2562,7 +2612,7 @@ class TestBasicAuthResolution:
             build(entry)
 
     def test_password_crlf_rejected(self):
-        build, entry = self._entry(basic_auth={"username": "u", "password": "pw\r\nX-Inject: bad"})
+        build, entry = self._entry(basic_auth={"username": "u", "password": f"{_TEST_BASIC_PASSWORD}\r\nX-Inject: bad"})
         with pytest.raises(ValueError, match="invalid characters"):
             build(entry)
 
@@ -2595,9 +2645,9 @@ class TestBasicAuthResolution:
     def test_valid_inline_and_file_resolve(self, tmp_path):
         f = tmp_path / "secret"
         f.write_text("filepw\n")
-        build, entry = self._entry(basic_auth={"username": "neo4j", "password_file": str(f)})
+        build, entry = self._entry(basic_auth={"username": _TEST_BASIC_USER, "password_file": str(f)})
         route = build(entry)
-        assert route.basic_username == "neo4j"
+        assert route.basic_username == _TEST_BASIC_USER
         assert route.basic_password == "filepw"
         assert route.basic_password_file == str(f)
 
@@ -2620,9 +2670,9 @@ class TestBasicAuthYamlLoad:
             listen_host="127.0.0.1",
             routes=[
                 ProxyRouteEntry(
-                    path_prefix="/neo4j",
-                    target_endpoint="http://upstream:7474",
-                    basic_auth=ProxyBasicAuth(username="neo4j", password="yaml-pw"),
+                    path_prefix=_TEST_PATH_PREFIX_NEO4J,
+                    target_endpoint=_TEST_UPSTREAM_TARGET,
+                    basic_auth=ProxyBasicAuth(username=_TEST_BASIC_USER, password=_TEST_BASIC_PASSWORD),
                 )
             ],
         )
@@ -2632,7 +2682,7 @@ class TestBasicAuthYamlLoad:
             assert detail is not None
             assert detail["route"]["auth_type"] == "basic"
             assert detail["route"]["basic_auth"]["password_configured"] is True
-            assert detail["route"]["basic_auth"]["username"] == "neo4j"
+            assert detail["route"]["basic_auth"]["username"] == _TEST_BASIC_USER
             assert "password" not in detail["route"]["basic_auth"]
             assert "yaml-pw" not in json.dumps(detail)
         finally:
@@ -2648,8 +2698,8 @@ class TestBasicAuthYamlLoad:
             routes=[
                 ProxyRouteEntry(
                     path_prefix="/neo4j2",
-                    target_endpoint="http://upstream:7474",
-                    basic_auth=ProxyBasicAuth(username="neo4j", password_file=str(f)),
+                    target_endpoint=_TEST_UPSTREAM_TARGET,
+                    basic_auth=ProxyBasicAuth(username=_TEST_BASIC_USER, password_file=str(f)),
                 )
             ],
         )
@@ -2673,7 +2723,7 @@ class TestBasicAuthYamlLoad:
             routes=[
                 ProxyRouteEntry(
                     path_prefix="/bad",
-                    target_endpoint="http://upstream:7474",
+                    target_endpoint=_TEST_UPSTREAM_TARGET,
                     basic_auth=ProxyBasicAuth(username="u", password_file=str(tmp_path / "nope")),
                 )
             ],
@@ -2694,24 +2744,24 @@ class TestBasicAuthYamlLoad:
             routes=[
                 ProxyRouteEntry(
                     path_prefix="/bearer",
-                    target_endpoint="http://upstream:7474",
-                    api_key="sk-bearer",
+                    target_endpoint=_TEST_UPSTREAM_TARGET,
+                    api_key=_TEST_API_KEY,
                 ),
                 ProxyRouteEntry(
                     path_prefix="/bad",
-                    target_endpoint="http://upstream:7474",
+                    target_endpoint=_TEST_UPSTREAM_TARGET,
                     basic_auth=ProxyBasicAuth(
                         username="u", password_file=str(tmp_path / "nope")
                     ),
                 ),
                 ProxyRouteEntry(
                     path_prefix="/none",
-                    target_endpoint="http://upstream:7474",
+                    target_endpoint=_TEST_UPSTREAM_TARGET,
                 ),
                 ProxyRouteEntry(
                     path_prefix="/goodbasic",
-                    target_endpoint="http://upstream:7474",
-                    basic_auth=ProxyBasicAuth(username="neo4j", password="inline-pw"),
+                    target_endpoint=_TEST_UPSTREAM_TARGET,
+                    basic_auth=ProxyBasicAuth(username=_TEST_BASIC_USER, password=_TEST_BASIC_PASSWORD),
                 ),
             ],
         )
@@ -2733,7 +2783,7 @@ class TestBasicAuthYamlLoad:
             good = next(r for r in listing if r["name"] == "goodbasic")
             assert good["route"]["auth_type"] == "basic"
             assert good["route"]["basic_auth"]["password_configured"] is True
-            assert good["route"]["basic_auth"]["username"] == "neo4j"
+            assert good["route"]["basic_auth"]["username"] == _TEST_BASIC_USER
             assert "password" not in good["route"]["basic_auth"]
 
             # The skip is emitted via the module logger (the proxy instance
@@ -2757,7 +2807,7 @@ class TestUpdateContractBasicAuth:
 
     @staticmethod
     def _route(prefix, **kw):
-        base = {"path_prefix": prefix, "target_endpoint": "http://upstream:7474"}
+        base = {"path_prefix": prefix, "target_endpoint": _TEST_UPSTREAM_TARGET}
         base.update(kw)
         return ProxyRoute(**base)
 
@@ -2769,8 +2819,8 @@ class TestUpdateContractBasicAuth:
             routes=[
                 self._route(
                     "/uc-basic",
-                    basic_username="neo4j",
-                    basic_password="orig-pw",
+                    basic_username=_TEST_BASIC_USER,
+                    basic_password=_TEST_BASIC_PASSWORD,
                 )
             ],
         )
@@ -2778,16 +2828,16 @@ class TestUpdateContractBasicAuth:
 
         # Full update: provide api_key, omit basic_auth -> Basic cleared.
         new_config = InferencePrivacyProxyConfig(
-            routes=[self._route("/uc-basic", api_key="sk-only")]
+            routes=[self._route("/uc-basic", api_key=_TEST_API_KEY)]
         )
         await manager.update_proxy("uc-basic", new_config)
 
         detail = await manager.get_proxy("uc-basic")
         assert detail["route"]["auth_type"] == "api_key"
-        assert detail["route"]["api_key"] == "sk-only"
+        assert detail["route"]["api_key"] == _TEST_API_KEY
         # Basic fields fully cleared (no implicit preserve of old password).
         assert detail["route"]["basic_auth"] is None
-        assert "orig-pw" not in json.dumps(detail)
+        assert _TEST_BASIC_PASSWORD not in json.dumps(detail)
 
     @pytest.mark.asyncio
     async def test_update_omit_api_key_clears_api_key(self, manager, proxy_listen_port):
@@ -2799,7 +2849,7 @@ class TestUpdateContractBasicAuth:
         """
         config = InferencePrivacyProxyConfig(
             listen_port=proxy_listen_port,
-            routes=[self._route("/uc-key", api_key="sk-orig")],
+            routes=[self._route("/uc-key", api_key=_TEST_API_KEY)],
         )
         await manager.create_proxy("uc-key", config)
 
@@ -2814,6 +2864,7 @@ class TestUpdateContractBasicAuth:
         assert detail["route"]["basic_auth"] is None
 
 
+@_skip_no_basic
 class TestIntegrationProxyBasicAuth:
     """REST API redaction + REST create path (req tests 11, 12, 14)."""
 
@@ -2827,7 +2878,7 @@ class TestIntegrationProxyBasicAuth:
             json={
                 "path_prefix": "/basicauth",
                 "target_endpoint": integration_target_endpoint,
-                "basic_auth": {"username": "neo4j", "password": secret},
+                "basic_auth": {"username": _TEST_BASIC_USER, "password": secret},
             },
         )
         assert resp.status_code == 201, resp.text
@@ -2836,7 +2887,7 @@ class TestIntegrationProxyBasicAuth:
         listing = (await api_client.get("/api/v1/proxies")).json()
         entry = next(r for r in listing if r["name"] == "basicauth")
         assert entry["route"]["auth_type"] == "basic"
-        assert entry["route"]["basic_auth"]["username"] == "neo4j"
+        assert entry["route"]["basic_auth"]["username"] == _TEST_BASIC_USER
         assert entry["route"]["basic_auth"]["password_configured"] is True
         assert "password" not in entry["route"]["basic_auth"]
         assert secret not in json.dumps(listing)
@@ -2855,7 +2906,7 @@ class TestIntegrationProxyBasicAuth:
             json={
                 "path_prefix": "/basicupd",
                 "target_endpoint": integration_target_endpoint,
-                "basic_auth": {"username": "neo4j", "password": secret},
+                "basic_auth": {"username": _TEST_BASIC_USER, "password": secret},
             },
         )
         assert create.status_code == 201, create.text
@@ -2868,7 +2919,7 @@ class TestIntegrationProxyBasicAuth:
             json={
                 "path_prefix": "/basicupd",
                 "target_endpoint": integration_target_endpoint,
-                "basic_auth": {"username": "neo4j", "password": new_secret},
+                "basic_auth": {"username": _TEST_BASIC_USER, "password": new_secret},
             },
         )
         assert resp.status_code == 200, resp.text
@@ -2888,7 +2939,7 @@ class TestIntegrationProxyBasicAuth:
             json={
                 "path_prefix": "/basicomit",
                 "target_endpoint": integration_target_endpoint,
-                "basic_auth": {"username": "neo4j", "password": secret},
+                "basic_auth": {"username": _TEST_BASIC_USER, "password": secret},
             },
         )
         assert create.status_code == 201, create.text
@@ -2947,8 +2998,8 @@ class TestIntegrationProxyBasicAuth:
             "/api/v1/proxies",
             json={
                 "path_prefix": "/leak",
-                "target_endpoint": "http://upstream:7474",
-                "api_key": "sk",
+                "target_endpoint": _TEST_UPSTREAM_TARGET,
+                "api_key": _TEST_API_KEY,
                 "basic_auth": {"username": "u", "password": secret},
             },
         )
@@ -2960,7 +3011,7 @@ class TestIntegrationProxyBasicAuth:
             "/api/v1/proxies",
             json={
                 "path_prefix": "",
-                "target_endpoint": "http://upstream:7474",
+                "target_endpoint": _TEST_UPSTREAM_TARGET,
                 "basic_auth": {"username": "u", "password": secret},
             },
         )

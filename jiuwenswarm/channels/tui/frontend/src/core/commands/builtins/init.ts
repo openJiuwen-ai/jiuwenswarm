@@ -78,8 +78,8 @@ export function createInitCommand(): SlashCommand {
     action: async (ctx) => {
       const language = resolveLanguage(ctx);
 
-      // ---- Guard 1: must be in coding mode ----
-      if (!ctx.mode.startsWith("code.")) {
+      // ---- Guard 1: must be in coding mode (agent.code.* or team.code.*) ----
+      if (!ctx.mode.startsWith("agent.code.") && !ctx.mode.startsWith("team.code.")) {
         ctx.addItem(
           addError(
             ctx.sessionId,
@@ -91,15 +91,15 @@ export function createInitCommand(): SlashCommand {
         return;
       }
 
-      // ---- Guard 2: /init runs in code.normal; keep UI mode and request mode aligned ----
-      if (ctx.mode !== "code.normal") {
-        ctx.setMode("code.normal");
+      // ---- Guard 2: /init runs in agent.code.normal; keep UI mode and request mode aligned ----
+      if (ctx.mode !== "agent.code.normal") {
+        ctx.setMode("agent.code.normal");
         ctx.addItem(
           addInfo(
             ctx.sessionId,
             language === "zh"
-              ? "已自动切换到 code.normal 以便 /init 能写文件。"
-              : "Switched to code.normal for /init (needs write permission).",
+              ? "已自动切换到 agent.code.normal 以便 /init 能写文件。"
+              : "Switched to agent.code.normal for /init (needs write permission).",
             "i",
           ),
         );
@@ -193,11 +193,11 @@ export function createInitCommand(): SlashCommand {
       const prompt = buildInitPrompt({ rootDir, scopeKey, existing });
 
       // ---- Send ----
-      // The earlier guard 2 already called setMode("code.normal") if needed.
+      // The earlier guard 2 already called setMode("agent.code.normal") if needed.
       // ctx.mode is reactive state and may not reflect the change in the same
       // tick; we therefore pass the mode explicitly to sendMessage so the
-      // server still receives "code.normal" even if ctx.mode is briefly stale.
-      const requestId = ctx.sendMessage(prompt, undefined, "code.normal", {
+      // server still receives "agent.code.normal" even if ctx.mode is briefly stale.
+      const requestId = ctx.sendMessage(prompt, undefined, "agent.code.normal", {
         logAsUser: false,
       });
       if (!requestId) {

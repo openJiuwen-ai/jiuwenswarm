@@ -47,14 +47,14 @@ def _goal_set_request(session_id: str = "sess-defer") -> AgentRequest:
     )
 
 
-def test_idle_goal_set_appends_user_history_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_idle_goal_set_appends_user_history_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter()
     recorded: list[dict[str, Any]] = []
     monkeypatch.setattr(
         interface_deep, "append_history_record", lambda **kwargs: recorded.append(kwargs)
     )
 
-    adapter._record_goal_set_history_if_needed(
+    await adapter._record_goal_set_history_if_needed(
         _goal_set_request(),
         action="set",
         result_type="goal_stream",
@@ -69,14 +69,14 @@ def test_idle_goal_set_appends_user_history_immediately(monkeypatch: pytest.Monk
     assert not interface_deep._pending_goal_objective_history
 
 
-def test_busy_goal_set_defers_until_flush(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_busy_goal_set_defers_until_flush(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter()
     recorded: list[dict[str, Any]] = []
     monkeypatch.setattr(
         interface_deep, "append_history_record", lambda **kwargs: recorded.append(kwargs)
     )
 
-    adapter._record_goal_set_history_if_needed(
+    await adapter._record_goal_set_history_if_needed(
         _goal_set_request(),
         action="set",
         result_type="goal_stream",
@@ -87,7 +87,7 @@ def test_busy_goal_set_defers_until_flush(monkeypatch: pytest.MonkeyPatch) -> No
     assert "sess-defer" in interface_deep._pending_goal_objective_history
 
     prev_final_ts = 2000.0
-    adapter._flush_pending_goal_objective_history("sess-defer", timestamp=prev_final_ts + 0.5)
+    await adapter._flush_pending_goal_objective_history("sess-defer", timestamp=prev_final_ts + 0.5)
 
     assert len(recorded) == 1
     assert recorded[0]["role"] == "user"
@@ -120,7 +120,7 @@ def test_should_defer_when_other_agent_task_running() -> None:
     assert adapter._should_defer_goal_objective_history("sess-defer") is True
 
 
-def test_lease_held_early_return_does_not_flush_deferred(
+async def test_lease_held_early_return_does_not_flush_deferred(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """chat 持有 lease 时 attach 为 None：忙碌推迟绝不能立刻 flush。"""
@@ -130,7 +130,7 @@ def test_lease_held_early_return_does_not_flush_deferred(
         interface_deep, "append_history_record", lambda **kwargs: recorded.append(kwargs)
     )
 
-    adapter._record_goal_set_history_if_needed(
+    await adapter._record_goal_set_history_if_needed(
         _goal_set_request(),
         action="set",
         result_type="goal_stream",
@@ -141,17 +141,17 @@ def test_lease_held_early_return_does_not_flush_deferred(
     defer_goal_history = True
     interaction_stream = None
     if interaction_stream is None and not defer_goal_history:
-        adapter._flush_pending_goal_objective_history("sess-defer")
+        await adapter._flush_pending_goal_objective_history("sess-defer")
 
     assert recorded == []
     assert "sess-defer" in interface_deep._pending_goal_objective_history
 
-    adapter._flush_pending_goal_objective_history("sess-defer", timestamp=3000.5)
+    await adapter._flush_pending_goal_objective_history("sess-defer", timestamp=3000.5)
     assert len(recorded) == 1
     assert float(recorded[0]["timestamp"]) == 3000.5
 
 
-def test_finally_skips_flush_when_other_stream_still_running(
+async def test_finally_skips_flush_when_other_stream_still_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _make_adapter()
@@ -159,7 +159,7 @@ def test_finally_skips_flush_when_other_stream_still_running(
     monkeypatch.setattr(
         interface_deep, "append_history_record", lambda **kwargs: recorded.append(kwargs)
     )
-    adapter._record_goal_set_history_if_needed(
+    await adapter._record_goal_set_history_if_needed(
         _goal_set_request(),
         action="set",
         result_type="goal_stream",
@@ -169,7 +169,7 @@ def test_finally_skips_flush_when_other_stream_still_running(
     adapter._session_agent_tasks = {"sess-defer": {_running_task()}}
 
     if not adapter._session_has_other_running_agent_tasks("sess-defer"):
-        adapter._flush_pending_goal_objective_history("sess-defer")
+        await adapter._flush_pending_goal_objective_history("sess-defer")
 
     assert recorded == []
     assert "sess-defer" in interface_deep._pending_goal_objective_history

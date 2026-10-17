@@ -27,6 +27,9 @@ interface TeamMember {
   mode?: string;
   role?: string;
   cli_agent?: string | null;
+  workflow_run_id?: string;
+  agent_template?: string | null;
+  display_name?: string | null;
 }
 
 interface TeamTaskEvent {
@@ -291,10 +294,13 @@ function extractShutdownMemberFromToolResult(record: Record<string, unknown>): s
   const payload = extractTeamEvent(record) || record;
   const toolResult = isRecord(payload.tool_result) ? payload.tool_result : payload;
   const toolName = pickString(toolResult, ['tool_name', 'name']) || pickString(payload, ['tool_name', 'name']);
+  // The member name is in the text the model read (`rendered_result`); `result`
+  // is the compatibility string kept for records written before that field.
+  const text = parseShutdownMemberName(toolResult.rendered_result) || parseShutdownMemberName(toolResult.result);
   if (toolName !== 'shutdown_member') {
-    return parseShutdownMemberName(toolResult.result);
+    return text;
   }
-  return parseShutdownMemberName(toolResult.result) || parseShutdownMemberName(toolResult.summary);
+  return text || parseShutdownMemberName(toolResult.summary);
 }
 
 function extractTracerInput(record: Record<string, unknown>): {
@@ -347,8 +353,10 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
   const humanShareCommands = new Map<string, HumanShareCommand>();
   const messages: Message[] = [];
   const shutdownMembers = new Set<string>();
+  // 被移出名册的成员快照：旧历史里休眠退场也只记了 shutdown，
+  // 随后的 status_changed → dormant 要靠它找回展示名 / mode / role。
+  const retiredMembers = new Map<string, TeamMember>();
   let taskProgressBaseline = createTaskProgressBaseline();
-  let hasSeenMember = false;
 
   const addMember = (memberId: string, timestamp: number) => {
     if (!shouldKeepMember(memberId)) {
@@ -357,7 +365,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
     if (shutdownMembers.has(memberId)) {
       return;
     }
-    hasSeenMember = true;
     const existing = members.get(memberId);
     members.set(memberId, {
       id: `hist-member-${memberId}`,
@@ -375,6 +382,10 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       return;
     }
     shutdownMembers.add(memberId);
+    const retired = members.get(memberId);
+    if (retired) {
+      retiredMembers.set(memberId, retired);
+    }
     members.delete(memberId);
   };
 
@@ -458,6 +469,15 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       timestamp: Math.max(existing?.timestamp || 0, nextTimestamp),
       skills: skills || existing?.skills,
       files: files || existing?.files,
+      workflow_run_id: pickString(rawTask, ['workflow_run_id']) || existing?.workflow_run_id,
+      // A paused run's visual progress must not creep after a reload; the
+      // freeze point is this record's own timestamp (the pause event).
+      ...(typeof rawTask.progress_frozen === 'boolean'
+        ? {
+            progress_frozen: rawTask.progress_frozen,
+            progress_frozen_at: rawTask.progress_frozen ? nextTimestamp : undefined,
+          }
+        : { progress_frozen: existing?.progress_frozen, progress_frozen_at: existing?.progress_frozen_at }),
       // Truncation flags: read raw with explicit guards so a status-only
       // record (no flags) falls back to `existing?` — never resets to false.
       // Mirrors the title/content `|| existing?` pattern above.
@@ -592,7 +612,9 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
           const toolResult = isRecord(payload.tool_result) ? payload.tool_result : payload;
           const toolName = pickString(toolResult, ['tool_name', 'name']) || pickString(payload, ['tool_name', 'name']) || 'unknown';
           const toolCallId = pickString(toolResult, ['tool_call_id', 'toolCallId']) || pickString(payload, ['tool_call_id', 'toolCallId']);
-          const content = pickString(toolResult, ['summary', 'result', 'data', 'error']) || compactString(toolResult.result);
+          const content =
+            pickString(toolResult, ['summary', 'rendered_result', 'result', 'data', 'error']) ||
+            compactString(toolResult.result);
           const id = eventId('hist-tool-result', record.id, memberId, toolCallId, timestamp);
           executionEvents.set(id, {
             id,
@@ -704,7 +726,10 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
         );
       }
       if (pickString(event, ['type']) === 'team.member.shutdown') {
-        applyMemberShutdown(memberId);
+        // 休眠退场不离队，状态由随后的 status_changed → dormant 落定。
+        if (pickString(event, ['target_status']) !== 'dormant') {
+          applyMemberShutdown(memberId);
+        }
         continue;
       }
       if (!shouldKeepMember(memberId)) {
@@ -719,18 +744,19 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       if (
         shutdownMembers.has(memberId) &&
         memberEventType !== 'team.member.spawned' &&
-        memberEventType !== 'team.member.restarted'
+        memberEventType !== 'team.member.restarted' &&
+        // 旧历史的 shutdown 事件不带 target_status，休眠成员已被提前移出；
+        // 终态 dormant 说明它仍在名册上，要恢复回来。
+        memberStatus !== 'dormant'
       ) {
         continue;
       }
       shutdownMembers.delete(memberId);
-      if (shouldKeepMember(memberId)) {
-        hasSeenMember = true;
-      }
       // 回放是逐条覆盖同一个 member 记录的，而只有部分事件带 name / mode
       // （registered 带，spawned / status_changed 不带）。后到的事件不能把先前
       // 学到的展示名冲掉，否则恢复出来的面板会退回显示 member_id。
-      const knownMember = members.get(memberId);
+      const knownMember = members.get(memberId) ?? retiredMembers.get(memberId);
+      retiredMembers.delete(memberId);
       members.set(memberId, {
         id: `hist-member-${memberId}`,
         member_id: memberId,
@@ -741,6 +767,10 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
         mode: pickString(event, ['mode']) || knownMember?.mode || undefined,
         role: pickString(event, ['role']) || knownMember?.role || undefined,
         cli_agent: pickString(event, ['cli_agent']) || knownMember?.cli_agent || undefined,
+        // 镜像 worker 的头像键与专家身份都靠这两个字段；丢了就退回 run 作用域 id 的哈希插画
+        workflow_run_id: pickString(event, ['workflow_run_id']) || knownMember?.workflow_run_id || undefined,
+        agent_template: pickString(event, ['agent_template']) || knownMember?.agent_template || undefined,
+        display_name: pickString(event, ['display_name']) || knownMember?.display_name || undefined,
       });
       continue;
     }
@@ -779,18 +809,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       updated_at: (event.updated_at as number | string | null | undefined) ?? eventTimestamp,
     });
     upsertTask(event, eventTimestamp, status);
-  }
-
-  if (hasSeenMember && members.size === 0) {
-    return {
-      members: [],
-      tasks: [],
-      taskEvents: [],
-      executionEvents: [],
-      messages: [],
-      humanShareCommands: [],
-      taskProgressBaseline: createTaskProgressBaseline(),
-    };
   }
 
   return {

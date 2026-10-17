@@ -19,6 +19,8 @@ confidence: confirmed
 
 Applies MemoryRail configuration to the session adapter and compares embedding fingerprints. First registration records the fingerprint without forcing a repository-wide reindex; an actual change from a previous fingerprint delegates to the singleflight reindex scheduler.
 
+When the request-scoped eternal-conversation flag is active, the caller bypasses this legacy semantic-memory path so two systems cannot independently summarize the same Session. Eternal memory publication remains exclusively owned by its Session coordinator and dynamic-memory-cli state.
+
 ## Key Signals
 
 - Input: runtime mode and configured memory/embedding state.

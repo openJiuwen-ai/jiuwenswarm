@@ -114,7 +114,7 @@ Tool & Execution 是 Harness 把模型意图落到真实环境的执行层。工
 
 权限治理由 `PermissionEngine` 和 `PermissionInterruptRail` 组成。`PermissionEngine` 负责 allow / ask / deny 策略评估，`PermissionInterruptRail` 负责在工具调用前拦截所有工具，执行直接放行、直接拒绝、HITL 确认、“允许一次”和“总是允许”等流程。Shell 命令会经过 AST 分析，外部路径检查会与当前决策取更严格结果。
 
-Workspace 是执行层的落盘边界。默认 schema 包括 `AGENT.md`、`SOUL.md`、`HEARTBEAT.md`、`IDENTITY.md`、`memory/`、`coding_memory/`、`todo/`、`messages/`、`skills/`、`agents/` 和 `context/session_memory.md`，并支持自定义目录、语言化默认内容、团队 workspace 链接和 worktree 链接。
+Workspace 是执行层的落盘边界。默认 schema 包括 `AGENT.md`、`SOUL.md`、`IDENTITY.md`、`memory/`、`coding_memory/`、`todo/`、`messages/`、`skills/`、`agents/` 和 `context/session_memory.md`，并支持自定义目录、语言化默认内容、团队 workspace 链接和 worktree 链接。
 
 ### 3.4 Agent Mode：运行模式与 Plan Mode 约束
 
@@ -309,7 +309,6 @@ Cron tool 族用于对接宿主提供的定时任务 backend。它可以暴露�
 | `VerificationRail`、`VerificationContractRail` | 约束验证代理权限，向父代理注入验证契约 | 代码实现、回归验证和高风险任务场景注册 |
 | `SkillCreateRail`、`TeamSkillCreateRail`、`SkillEvolutionRail`、`TeamSkillEvolutionRail` | 创建个人 / 团队技能，沉淀和演进技能经验 | 技能自演进或团队技能沉淀场景注册 |
 | `TrajectoryRail`、`ContextEvolutionRail`、`EvolutionRail`、`EvolutionInterruptRail` | 采集轨迹、触发上下文/技能演进，并处理演进中断 | 经验演进链路注册 |
-| `HeartbeatRail` | 运行心跳和持续任务状态维护 | 长任务或宿主需要心跳感知时注册 |
 
 #### 内置 Subagent
 

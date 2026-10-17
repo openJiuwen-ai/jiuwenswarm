@@ -35,6 +35,10 @@ FILTER_WORKERS = 3
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 WORK_ROOT = SCRIPT_DIR / "work"
 OPERATION_TIMEOUT_SECONDS = 600
+# Web-page stalls must surface well inside the agent's 300s tool budget so the
+# fallback path (web_fetch_webpage) is taken instead of retrying the same scrape.
+PAGE_LOAD_TIMEOUT_SECONDS = 60
+IMAGE_FETCH_TIMEOUT_SECONDS = 30
 BILIBILI_DOWNLOAD_ATTEMPTS = 3
 BILIBILI_CHUNK_SIZE = 64 * 1024
 

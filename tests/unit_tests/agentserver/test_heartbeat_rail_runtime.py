@@ -1,0 +1,921 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+from __future__ import annotations
+
+import asyncio
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
+    HeartbeatExecutionService,
+    SessionRunAdmission,
+)
+from jiuwenswarm.agents.harness.code.rails.heartbeat.models import (
+    HeartbeatJob,
+    HeartbeatSchedule,
+)
+from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import (
+    HeartbeatRailRuntime,
+    HeartbeatRuntimeUnavailableError,
+)
+from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import (
+    HEARTBEAT_TOOL_NAMES,
+)
+from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
+from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
+    BrowserTaskPromptRail,
+)
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    JiuWenSwarmDeepAdapter,
+)
+from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+    JiuwenSwarmCodeAdapter,
+)
+from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+from jiuwenswarm.server.runtime.agent_manager import AgentManager
+
+
+class _ManagedHeartbeatServer:
+    def get_runtime(self):
+        return self
+
+    async def run_heartbeat(self, _request, operation, *, timeout_seconds):
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                await operation()
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"heartbeat execution timed out after {timeout_seconds:g} seconds"
+            ) from exc
+
+
+def test_heartbeat_injection_preserves_work_and_code_adapter_initializer_state() -> None:
+    for adapter in (JiuWenSwarmDeepAdapter(), JiuwenSwarmCodeAdapter()):
+        assert adapter._last_models_config_fingerprint is None
+        assert adapter._last_reload_system_prompt_fingerprint is None
+        assert adapter._registered_mcp_server_ids == set()
+        assert adapter._registered_mcp_servers == {}
+        assert adapter._session_selected_mcp == set()
+        assert adapter._runtime_state_write_task is None
+
+
+@pytest.mark.asyncio
+async def test_code_runtime_config_accepts_load_aware_browser_prompt_rail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Code requests must not call the removed channel API on the browser rail."""
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._instance = SimpleNamespace(
+        ability_manager=SimpleNamespace(add=lambda _card: None),
+    )
+    adapter._subagent_rail = BrowserTaskPromptRail()
+    adapter._runtime_prompt_rail = None
+    adapter._project_memory_rail = None
+    adapter._agent_workspace_dir = "/tmp"
+
+    async def async_noop(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(adapter, "_seed_runtime_cwd", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(adapter, "_write_runtime_state", lambda **_kwargs: None)
+    monkeypatch.setattr(adapter, "_update_rails_for_mode", async_noop)
+    monkeypatch.setattr(adapter, "_set_user_interaction_enabled", async_noop)
+    monkeypatch.setattr(adapter, "_update_tools_for_mode", async_noop)
+    monkeypatch.setattr(adapter, "_update_session_tools", async_noop)
+    monkeypatch.setattr(adapter, "_refresh_acp_runtime_tools", lambda *_args: None)
+    monkeypatch.setattr(adapter, "_update_prompt_for_mode", lambda *_args: None)
+    monkeypatch.setattr(adapter, "_register_shared_tool", lambda *_args: None)
+
+    await adapter._update_runtime_config(
+        JiuWenSwarmDeepAdapter._RuntimeConfig(
+            session_id="code-heartbeat-session",
+            mode="agent.code.normal",
+            channel_id="web",
+            workspace="/tmp",
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("adapter_cls", "mode"),
+    [
+        (JiuWenSwarmDeepAdapter, "agent"),
+        (JiuwenSwarmCodeAdapter, "code"),
+    ],
+)
+def test_single_agent_adapters_mount_heartbeat_rail(
+    monkeypatch: pytest.MonkeyPatch,
+    adapter_cls: type[JiuWenSwarmDeepAdapter],
+    mode: str,
+) -> None:
+    adapter = adapter_cls()
+    adapter._sys_operation = MagicMock()
+    heartbeat_service = object()
+    adapter.set_heartbeat_service(heartbeat_service)
+    declared_rails = []
+
+    def instantiate_heartbeat_only(rail_infos, _config_base):
+        declared_rails.extend(rail_infos)
+        for info in rail_infos:
+            if info.attr_name == "_stream_event_rail":
+                info.build_func(**info.params)
+        return [
+            info.build_func(**info.params)
+            for info in rail_infos
+            if info.attr_name == "_heartbeat_rail"
+        ]
+
+    monkeypatch.setattr(
+        adapter,
+        "_instantiate_rails",
+        instantiate_heartbeat_only,
+    )
+    monkeypatch.setattr(adapter, "_validate_required_agent_rails", MagicMock())
+
+    rails = adapter._build_agent_rails({}, {"models": {}}, mode=mode)
+
+    assert [info.attr_name for info in declared_rails].count("_heartbeat_rail") == 1
+    assert len(rails) == 1
+    assert isinstance(rails[0], HeartbeatRail)
+    assert rails[0]._runtime._service is heartbeat_service
+
+    registered_tools = {}
+
+    class AbilityManager:
+        @staticmethod
+        def add_ability(card, tool) -> None:  # noqa: ANN001
+            registered_tools[card.name] = tool
+
+    rails[0].init(SimpleNamespace(ability_manager=AbilityManager()))
+
+    assert set(registered_tools) == HEARTBEAT_TOOL_NAMES
+
+
+def test_session_identity_uses_legacy_owner_and_rejects_spoofing() -> None:
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        return_value={"user_id": "owner-1"},
+    ):
+        assert (
+            HeartbeatRailRuntime._validated_session_user_id("session-1", "")
+            == "owner-1"
+        )
+        with pytest.raises(PermissionError, match="another user"):
+            HeartbeatRailRuntime._validated_session_user_id(
+                "session-1", "intruder"
+            )
+
+
+def test_session_identity_keeps_empty_legacy_owner_session_scoped() -> None:
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        return_value={},
+    ):
+        assert HeartbeatRailRuntime._validated_session_user_id("session-1", "") == ""
+
+
+def test_runtime_applies_heartbeat_timeout_config(tmp_path) -> None:
+    with (
+        patch(
+            "jiuwenswarm.agents.harness.code.rails.heartbeat.runtime.get_config",
+            return_value={
+                "heartbeat": {
+                    "jobs": {
+                        "execution_timeout_seconds": 45.5,
+                        "user_preemption_timeout_seconds": 2.5,
+                    }
+                }
+            },
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.code.rails.heartbeat.runtime.get_heartbeat_jobs_path",
+            return_value=tmp_path / "heartbeat_jobs.json",
+        ),
+    ):
+        runtime = HeartbeatRailRuntime(object())
+
+    assert runtime.execution._execution_timeout_seconds == 45.5
+    assert runtime.admission._user_preemption_timeout_seconds == 2.5
+    assert runtime.controller.limits["execution_timeout_seconds"] == 45.5
+    assert runtime.controller.limits["user_preemption_timeout_seconds"] == 2.5
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["execution_timeout_seconds", "user_preemption_timeout_seconds"],
+)
+def test_runtime_rejects_non_numeric_heartbeat_timeout(key: str) -> None:
+    with patch(
+        "jiuwenswarm.agents.harness.code.rails.heartbeat.runtime.get_config",
+        return_value={"heartbeat": {"jobs": {key: "abc"}}},
+    ):
+        with pytest.raises(ValueError, match=rf"^{key} must be number$"):
+            HeartbeatRailRuntime(object())
+
+
+async def test_user_waiter_has_priority_over_next_heartbeat() -> None:
+    admission = SessionRunAdmission()
+    assert await admission.try_begin_heartbeat("s1", "hb-1") is True
+    user = asyncio.create_task(admission.begin_user("s1"))
+    await asyncio.sleep(0)
+    assert await admission.try_begin_heartbeat("s1", "hb-2") is False
+    await admission.end_heartbeat("s1", "hb-1")
+    await user
+    assert await admission.try_begin_heartbeat("s1", "hb-2") is False
+    await admission.end_user("s1")
+    assert await admission.try_begin_heartbeat("s1", "hb-2") is True
+    await admission.end_heartbeat("s1", "hb-2")
+
+
+async def test_other_heartbeat_is_session_busy_but_current_run_is_excluded() -> None:
+    admission = SessionRunAdmission()
+    service = HeartbeatExecutionService(object(), admission)
+
+    assert await admission.try_begin_heartbeat("s1", "run-a") is True
+    assert service.is_session_busy("s1", exclude_run_id="run-a") is False
+    assert service.is_session_busy("s1", exclude_run_id="run-b") is True
+    await admission.end_heartbeat("s1", "run-a")
+
+
+async def test_team_activity_blocks_heartbeat_without_serializing_steers() -> None:
+    admission = SessionRunAdmission()
+    service = HeartbeatExecutionService(object(), admission)
+
+    await admission.begin_team_user("team-busy")
+    await asyncio.wait_for(admission.begin_team_user("team-busy"), timeout=0.1)
+    assert service.is_session_busy("team-busy") is True
+    assert await admission.try_begin_heartbeat("team-busy", "hb-race") is False
+    await admission.complete_team_user_submission("team-busy", accepted=True)
+    await admission.complete_team_user_submission("team-busy", accepted=True)
+    await admission.end_team_user("team-busy")
+    assert service.is_session_busy("team-busy") is False
+
+
+async def test_team_submission_keeps_heartbeat_out_across_stale_terminal() -> None:
+    admission = SessionRunAdmission()
+
+    await admission.begin_team_user("team-submit-race")
+    await admission.end_team_user("team-submit-race")
+    assert await admission.try_begin_heartbeat("team-submit-race", "hb-early") is False
+
+    await admission.complete_team_user_submission(
+        "team-submit-race",
+        accepted=True,
+    )
+    assert await admission.try_begin_heartbeat("team-submit-race", "hb-mid") is False
+
+    await admission.end_team_user("team-submit-race")
+    assert await admission.try_begin_heartbeat("team-submit-race", "hb-next") is True
+    await admission.end_heartbeat("team-submit-race", "hb-next")
+
+
+async def test_team_session_message_admits_while_own_marker_held() -> None:
+    admission = SessionRunAdmission()
+
+    await admission.begin_session_message("sm-team", "smrun-1")
+    # The mailbox turn's own marker must not block the Team stream it is
+    # executing — that would wait for the turn to finish (self-deadlock).
+    await asyncio.wait_for(
+        admission.begin_team_session_message("sm-team"),
+        timeout=0.5,
+    )
+    # The marker still fences heartbeats while the team turn runs.
+    assert await admission.try_begin_heartbeat("sm-team", "hb-race") is False
+    await admission.end_session_message("sm-team", "smrun-1")
+
+
+async def test_team_user_still_waits_for_session_message_marker() -> None:
+    admission = SessionRunAdmission()
+
+    await admission.begin_session_message("sm-team", "smrun-1")
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(admission.begin_team_user("sm-team"), timeout=0.1)
+    # Once the mailbox turn ends, the interactive team slot opens again.
+    await admission.end_session_message("sm-team", "smrun-1")
+    await asyncio.wait_for(admission.begin_team_user("sm-team"), timeout=0.5)
+    await admission.complete_team_user_submission("sm-team", accepted=False)
+    await admission.end_team_user("sm-team")
+
+
+async def test_team_session_message_requires_active_marker() -> None:
+    admission = SessionRunAdmission()
+
+    with pytest.raises(RuntimeError, match="requires an active session-message run"):
+        await admission.begin_team_session_message("sm-early")
+
+
+async def test_team_session_message_fenced_by_quiesce() -> None:
+    admission = SessionRunAdmission()
+
+    await admission.begin_session_message("sm-team", "smrun-1")
+    await admission.quiesce_session("sm-team")
+    with pytest.raises(RuntimeError, match="quiescing"):
+        await admission.begin_team_session_message("sm-team")
+    await admission.end_session_message("sm-team", "smrun-1")
+
+
+def test_retain_agent_transfers_pin_to_current_facade() -> None:
+    events: list[tuple[str, object]] = []
+
+    class Manager:
+        def pin_agent(self, agent) -> None:  # noqa: ANN001
+            events.append(("pin", agent))
+
+        def unpin_agent(self, agent) -> None:  # noqa: ANN001
+            events.append(("unpin", agent))
+
+    manager = Manager()
+    runtime = HeartbeatRailRuntime.__new__(HeartbeatRailRuntime)
+    runtime._server = SimpleNamespace(get_agent_manager=lambda: manager)
+    runtime._pinned_agents = {}
+    old_agent = object()
+    current_agent = object()
+
+    runtime.retain_agent("s1", old_agent)
+    runtime.retain_agent("s1", current_agent)
+
+    assert events == [
+        ("pin", old_agent),
+        ("pin", current_agent),
+        ("unpin", old_agent),
+    ]
+    assert runtime._pinned_agents == {"s1": current_agent}
+
+
+@pytest.mark.parametrize("running", [False, True])
+async def test_session_delete_quiesce_breaks_real_manager_retention_cycle(
+    tmp_path, running: bool
+) -> None:
+    manager = AgentManager()
+    run_started = asyncio.Event()
+
+    class Server(_ManagedHeartbeatServer):
+        def get_agent_manager(self):
+            return manager
+
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            run_started.set()
+            await asyncio.Event().wait()
+
+    with patch(
+        "jiuwenswarm.agents.harness.code.rails.heartbeat.runtime.get_heartbeat_jobs_path",
+        return_value=tmp_path / "heartbeat_jobs.json",
+    ):
+        runtime = HeartbeatRailRuntime(Server())
+
+    class Facade:
+        live = True
+
+        async def cleanup_session_runtime(self, session_id: str) -> bool:
+            if await runtime.should_retain_session(session_id):
+                return False
+            self.live = False
+            return True
+
+        def has_session_runtime(self, session_id: str) -> bool:
+            return self.live
+
+    facade = Facade()
+    manager.agents["web"] = {"agent\0\0": facade}
+    job = await runtime.store.create_job(
+        name="retain",
+        channel_id="web",
+        session_id="s1",
+        prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        source="web_rpc",
+        next_run_at=1.0,
+        now=0.0,
+    )
+    runtime.retain_agent("s1", facade)
+
+    with pytest.raises(RuntimeError, match="cleanup_session_runtime failed"):
+        await manager.cleanup_session_runtime(channel_id="web", session_id="s1")
+
+    if running:
+        decision, claimed, _ = await runtime.store.claim_run(
+            job.id,
+            "run-delete",
+            1.0,
+            trigger="scheduler",
+            reschedule=True,
+            next_run_at_after_claim=121.0,
+        )
+        assert decision == "run"
+        message = SimpleNamespace(
+            channel_id="web",
+            chat_id=None,
+            req_method=None,
+            params={},
+            timestamp=1.0,
+            metadata={},
+            user_id="",
+            agent_ref=None,
+        )
+        assert await runtime.execution.dispatch(
+            claimed, "run-delete", message
+        ) is True
+        await run_started.wait()
+
+    await runtime.begin_session_delete("s1")
+
+    assert await runtime.should_retain_session("s1") is False
+    assert runtime.execution.active_session_ids() == set()
+    assert await manager.cleanup_session_runtime(
+        channel_id="web", session_id="s1"
+    ) is True
+    await runtime.commit_session_delete("s1")
+
+    current = await runtime.store.get_job(job.id)
+    assert current is not None
+    assert current.enabled is False
+    assert current.status == "disabled"
+    assert id(facade) not in manager._agent_pins
+
+
+async def test_agentserver_retries_heartbeat_start_after_transient_failure() -> None:
+    class Runtime:
+        def __init__(self) -> None:
+            self.is_available = False
+            self.starts = 0
+
+        async def start(self) -> None:
+            self.starts += 1
+            if self.starts == 1:
+                raise RuntimeError("transient store failure")
+            self.is_available = True
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._heartbeat_runtime = Runtime()
+
+    assert await server._try_start_heartbeat_runtime() is False
+    assert await server._try_start_heartbeat_runtime() is True
+    assert server._heartbeat_runtime.starts == 2
+
+
+async def test_agentserver_maps_runtime_not_ready_to_service_unavailable() -> None:
+    class Runtime:
+        async def handle_operation(self, *_args, **_kwargs):
+            raise HeartbeatRuntimeUnavailableError(
+                "heartbeat scheduler is not ready"
+            )
+
+    class WebSocket:
+        def __init__(self) -> None:
+            self.sent: list[dict] = []
+
+        async def send(self, payload: str) -> None:
+            self.sent.append(json.loads(payload))
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._heartbeat_runtime = Runtime()
+    ws = WebSocket()
+    request = AgentRequest(
+        request_id="heartbeat-not-ready",
+        channel_id="web",
+        session_id="session-1",
+        req_method=ReqMethod.HEARTBEAT_JOB,
+        params={"action": "list", "data": {}},
+    )
+
+    await server._handle_heartbeat_job(ws, request, asyncio.Lock())
+
+    response = parse_agent_server_wire_unary(ws.sent[-1])
+    assert response.ok is False
+    assert response.payload == {
+        "error": "heartbeat scheduler is not ready",
+        "code": "SERVICE_UNAVAILABLE",
+    }
+
+
+async def test_execution_uses_local_agentserver_and_exact_completion() -> None:
+    completed: list[tuple[str, str, str]] = []
+
+    class Server(_ManagedHeartbeatServer):
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            assert request.req_method.value == "chat.send"
+            assert request.session_id == "s1"
+            assert request.metadata["automation"]["kind"] == "heartbeat"
+
+    class Scheduler:
+        async def on_run_finished(self, job_id, run_id, *, outcome, **kwargs):  # noqa: ANN001
+            completed.append((job_id, run_id, outcome))
+            return True
+
+    service = HeartbeatExecutionService(Server(), SessionRunAdmission())
+    service.set_scheduler(Scheduler())
+    job = HeartbeatJob(
+        id="job-1",
+        name="follow up",
+        enabled=True,
+        channel_id="web",
+        session_id="s1",
+        prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        next_run_at=1.0,
+    )
+    message = SimpleNamespace(
+        channel_id="web",
+        chat_id=None,
+        req_method=__import__(
+            "jiuwenswarm.common.schema.message", fromlist=["ReqMethod"]
+        ).ReqMethod.CHAT_SEND,
+        params={"query": "continue"},
+        timestamp=1.0,
+        metadata={"automation": {"kind": "heartbeat"}},
+        user_id="u1",
+        agent_ref=None,
+    )
+    assert await service.dispatch(job, "run-1", message) is True
+    await asyncio.gather(*service._tasks.values())
+    assert completed == [("job-1", "run-1", "succeeded")]
+    assert service.active_session_ids() == set()
+
+
+async def test_execution_cancel_is_exact() -> None:
+    started = asyncio.Event()
+
+    class Server(_ManagedHeartbeatServer):
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            started.set()
+            await asyncio.Event().wait()
+
+    class Scheduler:
+        async def on_run_finished(self, *args, **kwargs):  # noqa: ANN001
+            return True
+
+    service = HeartbeatExecutionService(Server(), SessionRunAdmission())
+    service.set_scheduler(Scheduler())
+    job = HeartbeatJob(
+        id="job-1",
+        name="follow up",
+        enabled=True,
+        channel_id="web",
+        session_id="s1",
+        prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        next_run_at=1.0,
+    )
+    message = SimpleNamespace(
+        channel_id="web", chat_id=None, req_method=None, params={}, timestamp=1.0,
+        metadata={}, user_id="", agent_ref=None,
+    )
+    await service.dispatch(job, "run-1", message)
+    await started.wait()
+    assert await service.cancel("another-run") is False
+    assert service.has_active_run("run-1") is True
+    assert await service.cancel("run-1") is True
+    assert service.has_active_run("run-1") is False
+
+
+@pytest.mark.parametrize("team_request", [False, True])
+async def test_user_request_preempts_active_heartbeat(team_request: bool) -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    completed: list[tuple[str, str, str, str | None, bool]] = []
+
+    class Server(_ManagedHeartbeatServer):
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    class Scheduler:
+        async def on_run_finished(
+            self, job_id, run_id, *, outcome, error=None, consume_queue=True, **kwargs
+        ):  # noqa: ANN001
+            completed.append((job_id, run_id, outcome, error, consume_queue))
+            return True
+
+    admission = SessionRunAdmission(user_preemption_timeout_seconds=0.5)
+    service = HeartbeatExecutionService(Server(), admission)
+    service.set_scheduler(Scheduler())
+    job = HeartbeatJob(
+        id="job-preempt", name="follow up", enabled=True, channel_id="web",
+        session_id="s1", prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        next_run_at=1.0,
+    )
+    message = SimpleNamespace(
+        channel_id="web", chat_id=None, req_method=None, params={}, timestamp=1.0,
+        metadata={}, user_id="", agent_ref=None,
+    )
+
+    assert await service.dispatch(job, "run-preempt", message) is True
+    await started.wait()
+    if team_request:
+        await asyncio.wait_for(admission.begin_team_user("s1"), timeout=0.5)
+        await admission.complete_team_user_submission("s1", accepted=False)
+    else:
+        await asyncio.wait_for(admission.begin_user("s1"), timeout=0.5)
+        await admission.end_user("s1")
+
+    assert cancelled.is_set()
+    assert completed == [(
+        "job-preempt", "run-preempt", "cancelled",
+        "heartbeat preempted by user request", True,
+    )]
+    assert service.active_session_ids() == set()
+
+
+async def test_heartbeat_execution_timeout_releases_session() -> None:
+    cancelled = asyncio.Event()
+    completed: list[tuple[str, str, str, str | None]] = []
+
+    class Server(_ManagedHeartbeatServer):
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            assert isinstance(request.metadata.get("execution_deadline_at"), float)
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    class Scheduler:
+        async def on_run_finished(
+            self, job_id, run_id, *, outcome, error=None, **kwargs
+        ):  # noqa: ANN001
+            completed.append((job_id, run_id, outcome, error))
+            return True
+
+    admission = SessionRunAdmission()
+    service = HeartbeatExecutionService(
+        Server(), admission, execution_timeout_seconds=0.02
+    )
+    service.set_scheduler(Scheduler())
+    job = HeartbeatJob(
+        id="job-timeout", name="follow up", enabled=True, channel_id="web",
+        session_id="s1", prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        next_run_at=1.0,
+    )
+    message = SimpleNamespace(
+        channel_id="web", chat_id=None, req_method=None, params={}, timestamp=1.0,
+        metadata={}, user_id="", agent_ref=None,
+    )
+
+    assert await service.dispatch(job, "run-timeout", message) is True
+    await asyncio.gather(*list(service._tasks.values()))
+
+    assert cancelled.is_set()
+    assert completed == [(
+        "job-timeout", "run-timeout", "failed",
+        "heartbeat execution timed out after 0.02 seconds",
+    )]
+    await asyncio.wait_for(admission.begin_user("s1"), timeout=0.1)
+    await admission.end_user("s1")
+    assert service.active_session_ids() == set()
+
+
+async def test_user_preemption_timeout_fails_fast_and_drops_waiter() -> None:
+    admission = SessionRunAdmission(user_preemption_timeout_seconds=0.01)
+    assert await admission.try_begin_heartbeat("s1", "run-stuck") is True
+
+    async def stuck_preemptor(run_id: str) -> bool:
+        await asyncio.Event().wait()
+        return True
+
+    admission.set_heartbeat_preemptor(stuck_preemptor)
+
+    with pytest.raises(
+        RuntimeError, match="heartbeat preemption timed out after 0.01 seconds"
+    ):
+        await admission.begin_user("s1")
+
+    assert admission.is_user_active("s1") is False
+    await admission.end_heartbeat("s1", "run-stuck")
+
+
+async def test_user_preemption_requires_admission_release() -> None:
+    admission = SessionRunAdmission(user_preemption_timeout_seconds=0.01)
+    assert await admission.try_begin_heartbeat("s1", "run-not-released") is True
+
+    async def incomplete_preemptor(run_id: str) -> bool:
+        return True
+
+    admission.set_heartbeat_preemptor(incomplete_preemptor)
+
+    with pytest.raises(
+        RuntimeError, match="active heartbeat run-not-released could not be preempted"
+    ):
+        await admission.begin_user("s1")
+
+    assert admission.is_user_active("s1") is False
+    await admission.end_heartbeat("s1", "run-not-released")
+
+
+async def test_concurrent_users_share_one_heartbeat_preemption() -> None:
+    started = asyncio.Event()
+
+    class Server(_ManagedHeartbeatServer):
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            started.set()
+            await asyncio.Event().wait()
+
+    admission = SessionRunAdmission(user_preemption_timeout_seconds=0.5)
+    service = HeartbeatExecutionService(Server(), admission)
+    job = HeartbeatJob(
+        id="job-shared-preempt", name="follow up", enabled=True,
+        channel_id="web", session_id="s1", prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        next_run_at=1.0,
+    )
+    message = SimpleNamespace(
+        channel_id="web", chat_id=None, req_method=None, params={}, timestamp=1.0,
+        metadata={}, user_id="", agent_ref=None,
+    )
+
+    assert await service.dispatch(job, "run-shared-preempt", message) is True
+    await started.wait()
+    users = [asyncio.create_task(admission.begin_user("s1")) for _ in range(2)]
+    await asyncio.wait_for(asyncio.gather(*users), timeout=0.5)
+
+    assert service.active_session_ids() == set()
+    await admission.end_user("s1")
+    await admission.end_user("s1")
+
+
+async def test_cancel_before_execution_task_starts_releases_admission() -> None:
+    completed: list[tuple[str, str, str]] = []
+
+    class Server(_ManagedHeartbeatServer):
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            await asyncio.Event().wait()
+
+    class Scheduler:
+        async def on_run_finished(self, job_id, run_id, *, outcome, **kwargs):  # noqa: ANN001
+            completed.append((job_id, run_id, outcome))
+            return True
+
+    admission = SessionRunAdmission()
+    service = HeartbeatExecutionService(Server(), admission)
+    service.set_scheduler(Scheduler())
+    job = HeartbeatJob(
+        id="job-cancel-before-start", name="follow up", enabled=True,
+        channel_id="web", session_id="s1", prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        next_run_at=1.0,
+    )
+    message = SimpleNamespace(
+        channel_id="web", chat_id=None, req_method=None, params={}, timestamp=1.0,
+        metadata={}, user_id="", agent_ref=None,
+    )
+
+    assert await service.dispatch(job, "run-before-start", message) is True
+    assert await service.cancel("run-before-start") is True
+
+    assert completed == [(
+        "job-cancel-before-start", "run-before-start", "cancelled"
+    )]
+    assert service.active_session_ids() == set()
+
+
+async def test_cancel_before_start_retries_finish_error() -> None:
+    attempts = 0
+
+    class Scheduler:
+        async def on_run_finished(self, *args, **kwargs):  # noqa: ANN001
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("persist failed")
+            return True
+
+    admission = SessionRunAdmission()
+    service = HeartbeatExecutionService(object(), admission)
+    service.set_scheduler(Scheduler())
+    job = SimpleNamespace(id="job-cancel-error", session_id="s-cancel-error")
+
+    assert await service.dispatch(job, "run-cancel-error", SimpleNamespace()) is True
+    assert await service.cancel("run-cancel-error", reason="user_request") is True
+
+    assert attempts == 2
+    assert service.active_session_ids() == set()
+    assert service._tasks == {}
+    assert service._jobs == {}
+
+
+async def test_stop_retries_finish_error_without_skipping_other_runs() -> None:
+    attempts: dict[str, int] = {}
+
+    class Scheduler:
+        async def on_run_finished(
+            self, job_id, run_id, *, outcome, **kwargs
+        ):  # noqa: ANN001
+            attempts[run_id] = attempts.get(run_id, 0) + 1
+            if run_id == "run-stop-error" and attempts[run_id] == 1:
+                raise RuntimeError("persist failed")
+            return True
+
+    admission = SessionRunAdmission()
+    service = HeartbeatExecutionService(object(), admission)
+    service.set_scheduler(Scheduler())
+    message = SimpleNamespace()
+    jobs = [
+        SimpleNamespace(id="job-stop-error", session_id="s-stop-error"),
+        SimpleNamespace(id="job-stop-next", session_id="s-stop-next"),
+    ]
+
+    assert await service.dispatch(jobs[0], "run-stop-error", message) is True
+    assert await service.dispatch(jobs[1], "run-stop-next", message) is True
+    await service.stop()
+
+    assert attempts == {"run-stop-error": 2, "run-stop-next": 1}
+    assert service.active_session_ids() == set()
+    assert service._tasks == {}
+    assert service._jobs == {}
+
+
+async def test_gateway_disconnect_does_not_abort_protected_heartbeat_session() -> None:
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._is_session_scoped_adapter = True
+    adapter._parent_session_id = "heartbeat-session"
+    adapter._instance = SimpleNamespace(abort=AsyncMock())
+
+    await adapter.abort_on_gateway_disconnect(
+        exclude_session_ids={"heartbeat-session"}
+    )
+
+    adapter._instance.abort.assert_not_awaited()
+
+
+async def test_active_heartbeat_prevents_session_adapter_cleanup() -> None:
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._heartbeat_service = SimpleNamespace(
+        should_retain_session=AsyncMock(return_value=True)
+    )
+    adapter._is_session_scoped_adapter = True
+    adapter._parent_session_id = "heartbeat-session"
+    adapter.cleanup = AsyncMock()
+
+    cleaned = await adapter.cleanup_session_adapter("heartbeat-session")
+
+    assert cleaned is False
+    adapter._heartbeat_service.should_retain_session.assert_awaited_once_with(
+        "heartbeat-session"
+    )
+    adapter.cleanup.assert_not_awaited()
+
+
+async def test_completion_hook_failure_is_retried_before_releasing_owner() -> None:
+    class Server(_ManagedHeartbeatServer):
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            return None
+
+    class Scheduler:
+        async def on_run_finished(self, *args, **kwargs):  # noqa: ANN001
+            return True
+
+    attempts = 0
+
+    async def failing_hook(session_id: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError(f"release failed for {session_id}")
+
+    service = HeartbeatExecutionService(Server(), SessionRunAdmission())
+    service.set_scheduler(Scheduler())
+    service.set_completion_hook(failing_hook)
+    job = HeartbeatJob(
+        id="job-hook",
+        name="follow up",
+        enabled=True,
+        channel_id="web",
+        session_id="s-hook",
+        prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        next_run_at=1.0,
+    )
+    message = SimpleNamespace(
+        channel_id="web", chat_id=None, req_method=None, params={}, timestamp=1.0,
+        metadata={}, user_id="", agent_ref=None,
+    )
+
+    assert await service.dispatch(job, "run-hook", message) is True
+    await asyncio.gather(*service._tasks.values())
+    assert attempts == 2
+    assert service.active_session_ids() == set()

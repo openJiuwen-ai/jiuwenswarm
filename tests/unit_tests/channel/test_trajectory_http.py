@@ -1,0 +1,1791 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Tests for the Gateway single-Agent trajectory HTTP API."""
+
+from __future__ import annotations
+
+import base64
+import http.client
+import io
+import json
+import logging
+import socket
+import sqlite3
+import threading
+import time
+import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from functools import partial
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+from types import SimpleNamespace
+from urllib.parse import quote
+
+import httpx
+import pytest
+import uvicorn
+from fastapi import FastAPI
+
+from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
+from jiuwenswarm.gateway.channel_manager.web import trajectory_http
+from jiuwenswarm.gateway.channel_manager.web.trajectory_http import (
+    TRAJECTORY_API_PREFIX,
+    TRAJECTORY_ARCHIVE_ENTRY_NAME,
+    TrajectoryHttpService,
+    attach_trajectory_routes,
+)
+from jiuwenswarm.observability.config import (
+    TrajectoryStoreSettings,
+    session_database_path,
+)
+from jiuwenswarm.observability.models import StreamFrameData, TraceRecordData
+from jiuwenswarm.observability.retention import checkpoint_sequence_heads
+from jiuwenswarm.observability.store import AsyncTrajectoryReader, TrajectoryStore
+from tests.unit_tests.observability.retention_fixture_builder import (
+    SINGLE_SESSION_ID,
+    retention_now,
+    single_agent_records,
+)
+
+test_logger = logging.getLogger("tests.trajectory_http")
+
+_TRACE_ID = "4" * 32
+_SPAN_ID = "d" * 16
+_LATE_SPAN_ID = "e" * 16
+# A span still answering: it has no terminal record, so the store keeps its
+# frames (frames of an ended span are dropped as its final record lands).
+_STREAMING_SPAN_ID = "f" * 16
+
+
+def _settings(database_path: Path, *, enabled: bool = True) -> TrajectoryStoreSettings:
+    return TrajectoryStoreSettings(
+        enabled=enabled,
+        database_path=database_path,
+        retention_days=7,
+        queue_size=16,
+        batch_size=8,
+        flush_interval_ms=20,
+    )
+
+
+def _raw_record() -> bytes:
+    return (
+        b'{"resourceSpans":[{"resource":{},"scopeSpans":[{"scope":{},"spans":['
+        b'{"traceId":"44444444444444444444444444444444",'
+        b'"spanId":"dddddddddddddddd","parentSpanId":"","name":"agent.run",'
+        b'"startTimeUnixNano":"100","endTimeUnixNano":"200","status":{}}]}]}]}'
+    )
+
+
+def _seed(database_path: Path, *, session_id: str = "session-1") -> bytes:
+    raw_json = _raw_record()
+    core_record = SimpleNamespace(
+        raw_json=raw_json,
+        trace_id=_TRACE_ID,
+        span_id=_SPAN_ID,
+        parent_span_id=None,
+        start_time_unix_nano=100,
+        end_time_unix_nano=200,
+        session_id=session_id,
+        request_id="request-1",
+        run_id="run-1",
+        agent_mode="agent.work.normal",
+        schema_version="2",
+    )
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        store.write_records([TraceRecordData.from_core_record(core_record)])
+    finally:
+        store.close()
+    return raw_json
+
+
+def _append_late_span(database_path: Path, *, session_id: str = "session-1") -> None:
+    raw_json = _raw_record().replace(_SPAN_ID.encode("ascii"), _LATE_SPAN_ID.encode("ascii"))
+    core_record = SimpleNamespace(
+        raw_json=raw_json,
+        trace_id=_TRACE_ID,
+        span_id=_LATE_SPAN_ID,
+        parent_span_id=_SPAN_ID,
+        start_time_unix_nano=210,
+        end_time_unix_nano=300,
+        session_id=session_id,
+        request_id="request-1",
+        run_id="run-1",
+        agent_mode="agent.work.normal",
+        schema_version="2",
+    )
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        store.write_records([TraceRecordData.from_core_record(core_record)])
+    finally:
+        store.close()
+
+
+def _metadata_loader(mode: str = "agent.work.normal"):
+    def _load(session_id: str) -> dict[str, str]:
+        if session_id in {"session-1", "session-2"}:
+            return {"session_id": session_id, "mode": mode, "team_name": ""}
+        return {}
+
+    return _load
+
+
+def _response_json(response) -> dict:
+    return json.loads(bytes(response.body))
+
+
+def _archive_zip_lines(body: bytes) -> list[dict]:
+    """Read the one JSONL entry of an archive zip, one object per line."""
+    # A seekable writer states sizes in the local header rather than in a
+    # trailing data descriptor, which is what lets a browser inflate the entry
+    # while it is still downloading.
+    assert body[:4] == b"PK\x03\x04"
+    assert int.from_bytes(body[6:8], "little") & 0x08 == 0
+    with zipfile.ZipFile(io.BytesIO(body)) as archive:
+        assert archive.namelist() == [TRAJECTORY_ARCHIVE_ENTRY_NAME]
+        assert archive.getinfo(TRAJECTORY_ARCHIVE_ENTRY_NAME).compress_type == zipfile.ZIP_DEFLATED
+        text = archive.read(TRAJECTORY_ARCHIVE_ENTRY_NAME).decode("utf-8")
+    assert text.endswith("\n")
+    return [json.loads(line) for line in text.splitlines()]
+
+
+async def _archive_response_lines(response) -> list[dict]:
+    """Drain a streamed archive response and read its lines."""
+    chunks = [chunk async for chunk in response.body_iterator]
+    return _archive_zip_lines(b"".join(chunks))
+
+
+def _assert_archive_line_contract(lines: list[dict]) -> None:
+    """Check the ordering rules every archive must satisfy.
+
+    The header comes first and the end last; checkpoints precede every record;
+    records follow commit order; every blob and sequence is defined once,
+    before the first line that refers to it; usage lines follow every record;
+    and the end line counts what precedes it.
+    """
+    assert lines[0]["type"] == "header"
+    assert lines[-1]["type"] == "end"
+    blobs: set[str] = set()
+    sequences: set[str] = set()
+    change_seqs: list[int] = []
+    usage_started = False
+    for line in lines[1:-1]:
+        kind = line["type"]
+        assert kind in {"blob", "sequence", "checkpoint", "record", "usage"}
+        if kind == "checkpoint":
+            assert not change_seqs and not usage_started
+            for head in checkpoint_sequence_heads(line["state"]):
+                assert head in sequences
+            continue
+        if kind == "usage":
+            usage_started = True
+            continue
+        assert not usage_started
+        if kind == "blob":
+            assert line["hash"] not in blobs
+            blobs.add(line["hash"])
+        elif kind == "sequence":
+            assert line["hash"] not in sequences
+            assert line["blob"] in blobs
+            assert line["prev"] is None or line["prev"] in sequences
+            sequences.add(line["hash"])
+        else:
+            assert "otlp" not in line
+            for reference in (line.get("sequences") or {}).values():
+                assert reference["hash"] in sequences
+            change_seqs.append(int(line["change_seq"]))
+    assert change_seqs == sorted(change_seqs)
+    assert len(set(change_seqs)) == len(change_seqs)
+    assert lines[-1]["records"] == len(change_seqs)
+    assert lines[-1]["lines"] == len(lines) - 1
+
+
+@contextmanager
+def _serve_asgi(app: FastAPI) -> Iterator[int]:
+    """Serve a FastAPI app on a real loopback socket for proxy tests."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(128)
+    port = int(listener.getsockname()[1])
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level="critical",
+            access_log=False,
+            lifespan="off",
+        )
+    )
+    thread = threading.Thread(
+        target=server.run,
+        kwargs={"sockets": [listener]},
+        daemon=True,
+    )
+    thread.start()
+    deadline = time.monotonic() + 5
+    while not server.started and thread.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if not server.started:
+        server.should_exit = True
+        thread.join(timeout=5)
+        listener.close()
+        raise RuntimeError("trajectory test Gateway did not start")
+    try:
+        yield port
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+        listener.close()
+
+
+@contextmanager
+def _serve_web_proxy(api_port: int, directory: Path) -> Iterator[int]:
+    """Serve the built-in Web UI reverse proxy on a loopback socket."""
+
+    class _TestProxyHandler(_SpaStaticHandler):
+        def log_message(self, message: str, *args) -> None:
+            test_logger.debug(message, *args)
+
+    _TestProxyHandler.api_target = f"http://127.0.0.1:{api_port}"
+    _TestProxyHandler.ws_target = f"ws://127.0.0.1:{api_port}"
+    handler = partial(_TestProxyHandler, directory=str(directory))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield int(server.server_port)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _proxy_get(
+    proxy_port: int,
+    path: str,
+    *,
+    headers: dict[str, str],
+) -> tuple[int, dict[str, str], bytes]:
+    """Issue one browser-facing request through the real Web proxy."""
+    connection = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=5)
+    try:
+        connection.request("GET", path, headers=headers)
+        response = connection.getresponse()
+        body = response.read()
+        response_headers = {
+            key.lower(): value
+            for key, value in response.getheaders()
+        }
+        return response.status, response_headers, body
+    finally:
+        connection.close()
+
+
+@pytest.mark.asyncio
+async def test_http_list_detail_and_raw_preserve_contract(tmp_path: Path) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    expected_raw = _seed(database_path)
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_metadata_loader(),
+    )
+
+    list_response = await service.list_subjects("session-1", after_revision=0)
+    list_payload = _response_json(list_response)
+    detail_response = await service.get_subject(
+        "session-1",
+        "main",
+        since_revision=0,
+        limit=1000,
+    )
+    detail_payload = _response_json(detail_response)
+    raw_response = await service.get_raw_record("session-1", _TRACE_ID, _SPAN_ID)
+
+    assert list_response.status_code == 200
+    assert list_response.headers["cache-control"] == "no-store"
+    assert list_payload["items"][0]["subject_id"] == "main"
+    assert list_payload["items"][0]["first_start_time_unix_nano"] == "100"
+    assert list_payload["items"][0]["record_count"] == 1
+    assert isinstance(list_payload["watermark"], int)
+    assert list_payload["watermark"] > 0
+    assert isinstance(list_payload["store_epoch"], str)
+    assert list_payload["store_epoch"]
+    assert detail_response.status_code == 200
+    assert detail_payload["subject_id"] == "main"
+    detail_record = detail_payload["records"][0]
+    assert detail_record["record_id"] == f"{_TRACE_ID}:{_SPAN_ID}"
+    assert detail_record["record_revision"] == 1
+    assert detail_record["lifecycle"] == "final"
+    assert detail_record["operation"] == "upsert"
+    assert detail_record["change_seq"] == detail_payload["revision"]
+    assert detail_record["observed_time_unix_nano"] == "200"
+    assert detail_record["otlp"]["resourceSpans"]
+    assert raw_response.status_code == 200
+    assert raw_response.headers["cache-control"] == "no-store"
+    assert raw_response.headers["content-type"] == "application/json; charset=utf-8"
+    assert bytes(raw_response.body) == expected_raw
+    test_logger.info("HTTP contract returned list, detail, and exact raw bytes")
+
+
+def _seed_frames(
+    database_path: Path,
+    count: int,
+    *,
+    session_id: str = "session-1",
+) -> None:
+    """Append *count* text frames to a span that is still streaming."""
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        frames = [
+            StreamFrameData.from_core_frame(
+                SimpleNamespace(
+                    event_name="openjiuwen.stream.chunk",
+                    timestamp_unix_nano=1_700_000_000_000_000_000 + index,
+                    observed_timestamp_unix_nano=1_700_000_000_000_000_000 + index,
+                    trace_id=_TRACE_ID,
+                    span_id=_STREAMING_SPAN_ID,
+                    sequence=index,
+                    kind="text-delta",
+                    session_id=session_id,
+                    execution_subject_id="main",
+                    execution_subject_session_id=session_id,
+                    text=f"w{index} ",
+                    tool_call_id=None,
+                    tool_name=None,
+                    arguments_delta=None,
+                    request_id="request-1",
+                    run_id="run-1",
+                    agent_mode="agent.work.normal",
+                    schema_version="2",
+                )
+            )
+            for index in range(count)
+        ]
+        store.write_records([], frames)
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_http_stream_frames_let_a_late_reader_catch_up(tmp_path: Path) -> None:
+    """A reader resumes from its own cursor instead of restarting the answer."""
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+    _seed_frames(database_path, 120)
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_metadata_loader(),
+    )
+
+    first = _response_json(
+        await service.get_stream_frames("session-1", since_frame_seq=0, limit=50)
+    )
+    resumed = _response_json(
+        await service.get_stream_frames(
+            "session-1",
+            since_frame_seq=first["next_since_frame_seq"],
+            limit=500,
+        )
+    )
+
+    assert [frame["sequence"] for frame in first["frames"]] == list(range(50))
+    assert first["has_more"] is True
+    assert [frame["sequence"] for frame in resumed["frames"]] == list(range(50, 120))
+    assert resumed["has_more"] is False
+    assert resumed["reset"] is False
+    # The answer rebuilds byte for byte, spaces included.
+    rebuilt = "".join(
+        frame["text"] for frame in (*first["frames"], *resumed["frames"])
+    )
+    assert rebuilt == "".join(f"w{index} " for index in range(120))
+    test_logger.info("HTTP stream frames resumed from a cursor without a reset")
+
+
+@pytest.mark.asyncio
+async def test_http_stream_frames_reject_a_foreign_session(tmp_path: Path) -> None:
+    """A session reads only the file it owns, so no id reaches another's frames.
+
+    Frames no longer name their session on every row -- the file does, once.
+    That makes the file itself the boundary, so this exercises the resolver
+    the way production does rather than a filter inside the query.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    owned = session_database_path(root, "session-1")
+    owned.parent.mkdir(parents=True, exist_ok=True)
+    _seed(owned)
+    _seed_frames(owned, 5)
+    service = TrajectoryHttpService(
+        _settings(root),
+        reader=AsyncTrajectoryReader(root, session_scoped=True),
+        metadata_loader=_metadata_loader(),
+    )
+
+    own = _response_json(
+        await service.get_stream_frames("session-1", since_frame_seq=0, limit=100)
+    )
+    assert len(own["frames"]) == 5
+
+    # A session with no file of its own reaches nothing.
+    other = await service.get_stream_frames("session-2", since_frame_seq=0, limit=100)
+    assert other.status_code == 404
+
+    bad_cursor = await service.get_stream_frames(
+        "session-1",
+        since_frame_seq=-1,
+        limit=100,
+    )
+    assert bad_cursor.status_code == 400
+    oversized = await service.get_stream_frames(
+        "session-1",
+        since_frame_seq=0,
+        limit=999_999,
+    )
+    assert oversized.status_code == 400
+    test_logger.info("stream frame reads stayed inside their own session file")
+
+
+@pytest.mark.asyncio
+async def test_http_revision_feed_reports_late_trace_change(tmp_path: Path) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_metadata_loader(),
+    )
+    list_response = await service.list_subjects("session-1", after_revision=0)
+    revision_cursor = _response_json(list_response)["watermark"]
+    _append_late_span(database_path)
+
+    revision_response = await service.list_subjects(
+        "session-1",
+        after_revision=revision_cursor
+    )
+    payload = _response_json(revision_response)
+
+    assert revision_response.status_code == 200
+    assert revision_response.headers["cache-control"] == "no-store"
+    assert payload["session_id"] == "session-1"
+    assert payload["items"][0]["subject_id"] == "main"
+    assert payload["items"][0]["record_count"] == 2
+    assert payload["items"][0]["first_start_time_unix_nano"] == "100"
+    assert payload["store_epoch"] == _response_json(list_response)["store_epoch"]
+    assert payload["watermark"] > revision_cursor
+    test_logger.info("HTTP revision feed exposed a late update to an old trace")
+
+
+@pytest.mark.asyncio
+async def test_http_archive_exports_all_current_records_beyond_list_window(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    records: list[TraceRecordData] = []
+    for index in range(105):
+        trace_id = f"{index + 1:032x}"
+        span_id = f"{index + 1:016x}"
+        raw_json = _raw_record().replace(
+            _TRACE_ID.encode("ascii"),
+            trace_id.encode("ascii"),
+        ).replace(
+            _SPAN_ID.encode("ascii"),
+            span_id.encode("ascii"),
+        )
+        core_record = SimpleNamespace(
+            raw_json=raw_json,
+            trace_id=trace_id,
+            span_id=span_id,
+            parent_span_id=None,
+            start_time_unix_nano=100 + index,
+            end_time_unix_nano=200 + index,
+            session_id="session-1",
+            request_id=f"request-{index + 1}",
+            run_id="run-archive",
+            agent_mode="agent.work.normal",
+            schema_version="2",
+            record_revision=3,
+            observed_time_unix_nano=200 + index,
+        )
+        records.append(TraceRecordData.from_core_record(core_record))
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        result = store.write_records(records)
+        live_trace_id = f"{1:032x}"
+        live_span_id = "f" * 16
+        live_parent_span_id = f"{1:016x}"
+        live_raw = _raw_record().replace(
+            _TRACE_ID.encode("ascii"),
+            live_trace_id.encode("ascii"),
+        ).replace(
+            _SPAN_ID.encode("ascii"),
+            live_span_id.encode("ascii"),
+        ).replace(
+            b'"parentSpanId":""',
+            f'"parentSpanId":"{live_parent_span_id}"'.encode("ascii"),
+        ).replace(
+            b',"endTimeUnixNano":"200"',
+            b"",
+        )
+        for revision in (1, 2):
+            snapshot = SimpleNamespace(
+                raw_json=live_raw,
+                trace_id=live_trace_id,
+                span_id=live_span_id,
+                parent_span_id=live_parent_span_id,
+                start_time_unix_nano=150,
+                observed_time_unix_nano=150 + revision,
+                record_revision=revision,
+                update_kind="stream_chunk",
+                session_id="session-1",
+                request_id="request-live",
+                run_id="run-archive",
+                agent_mode="agent.work.normal",
+                schema_version="2",
+                lifecycle="running",
+            )
+            store.write_records([TraceRecordData.from_core_snapshot(snapshot)])
+    finally:
+        store.close()
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_metadata_loader(),
+    )
+
+    list_payload = _response_json(
+        await service.list_subjects("session-1", after_revision=0)
+    )
+    response = await service.export_archive("session-1")
+    lines = await _archive_response_lines(response)
+    _assert_archive_line_contract(lines)
+    header = lines[0]
+    archived_records = [line for line in lines if line["type"] == "record"]
+
+    assert result.inserted == 105
+    assert len(list_payload["items"]) == 1
+    assert list_payload["items"][0]["record_count"] == 106
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.media_type == "application/zip"
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="trajectory-session-1.trajectory.zip"'
+    )
+    assert header["format"] == "openjiuwen.trajectory.archive"
+    assert header["archive_version"] == 3
+    assert header["session_id"] == "session-1"
+    assert header["exported_at"].endswith("Z")
+    assert isinstance(header["store_epoch"], str)
+    assert header["revision"] == archived_records[-1]["change_seq"]
+    assert header["stream_frames"] is False
+    assert len(archived_records) == 106
+    assert len({record["record_id"] for record in archived_records}) == 106
+    assert {record["operation"] for record in archived_records} == {"upsert"}
+    assert all(
+        isinstance(record["change_seq"], str) and record["change_seq"].isdecimal()
+        for record in archived_records
+    )
+    live_records = [
+        record for record in archived_records if record["span_id"] == live_span_id
+    ]
+    assert len(live_records) == 1
+    assert live_records[0]["lifecycle"] == "running"
+    assert live_records[0]["record_revision"] == 2
+    # The running span was rewritten after every final one, so commit order
+    # puts it last although it started among the first.
+    assert archived_records[-1]["span_id"] == live_span_id
+    final_records = [
+        record for record in archived_records if record["span_id"] != live_span_id
+    ]
+    assert {record["lifecycle"] for record in final_records} == {"final"}
+    assert {record["record_revision"] for record in final_records} == {3}
+    assert {record["subject_id"] for record in archived_records} == {"main"}
+    assert all(
+        json.loads(record["raw_json"])["resourceSpans"] for record in archived_records
+    )
+    assert all(record["raw_valid"] is True for record in archived_records)
+    test_logger.info("archive exported every current record beyond the trace list window")
+
+
+@pytest.mark.asyncio
+async def test_http_archive_excludes_stream_frames_and_ends_with_request_usage(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+    _seed_frames(database_path, 30)
+    chat_payload = json.loads(_raw_record())
+    chat_span = chat_payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    chat_span["spanId"] = _LATE_SPAN_ID
+    chat_span["name"] = "chat"
+    chat_span["attributes"] = [
+        {"key": "gen_ai.operation.name", "value": {"stringValue": "chat"}},
+        {"key": "openjiuwen.inference.id", "value": {"stringValue": "inference-1"}},
+        {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "120"}},
+        {"key": "gen_ai.usage.output_tokens", "value": {"intValue": "30"}},
+    ]
+    core_record = SimpleNamespace(
+        raw_json=json.dumps(chat_payload, separators=(",", ":")).encode("utf-8"),
+        trace_id=_TRACE_ID,
+        span_id=_LATE_SPAN_ID,
+        parent_span_id=_SPAN_ID,
+        start_time_unix_nano=150,
+        end_time_unix_nano=180,
+        session_id="session-1",
+        request_id="request-1",
+        run_id="run-1",
+        agent_mode="agent.work.normal",
+        schema_version="2",
+    )
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        store.write_records([TraceRecordData.from_core_record(core_record)])
+    finally:
+        store.close()
+    reader = AsyncTrajectoryReader(database_path)
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=reader,
+        metadata_loader=_metadata_loader(),
+    )
+
+    lines = await _archive_response_lines(await service.export_archive("session-1"))
+    usage_items, _store_epoch = await reader.get_session_request_usage("session-1")
+
+    _assert_archive_line_contract(lines)
+    assert [line["type"] for line in lines] == ["header", "record", "record", "usage", "end"]
+    assert lines[0]["stream_frames"] is False
+    assert lines[-1] == {"type": "end", "records": 2, "lines": 4}
+    usage_lines = [
+        {key: value for key, value in line.items() if key != "type"}
+        for line in lines
+        if line["type"] == "usage"
+    ]
+    assert usage_lines == usage_items
+    assert usage_lines[0]["cumulative_usage"] == {"input": 120, "output": 30, "total": 150}
+    test_logger.info("archive carried records and usage but none of 30 stream frames")
+
+
+@pytest.mark.asyncio
+async def test_http_archive_of_a_session_without_a_store_is_an_empty_archive(
+    tmp_path: Path,
+) -> None:
+    service = TrajectoryHttpService(
+        _settings(tmp_path / "missing.sqlite3"),
+        reader=AsyncTrajectoryReader(tmp_path / "missing.sqlite3"),
+        metadata_loader=_metadata_loader(),
+    )
+
+    lines = await _archive_response_lines(await service.export_archive("session-1"))
+
+    _assert_archive_line_contract(lines)
+    assert [line["type"] for line in lines] == ["header", "end"]
+    assert lines[0]["store_epoch"] == "absent"
+    assert lines[-1] == {"type": "end", "records": 0, "lines": 1}
+    test_logger.info("archive of an absent store still carried a header and an end")
+
+
+@pytest.mark.asyncio
+async def test_http_archive_preserves_invalid_otlp_as_raw_base64(tmp_path: Path) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    malformed_raw = b'{"resourceSpans":[invalid-json'
+    binary_raw = b'{"resourceSpans":["\xff\xfe"]}'
+    core_records = [
+        SimpleNamespace(
+            raw_json=raw_json,
+            trace_id=_TRACE_ID,
+            span_id=span_id,
+            parent_span_id=None,
+            start_time_unix_nano=100,
+            end_time_unix_nano=200,
+            session_id="session-1",
+            request_id="request-invalid",
+            run_id="run-invalid",
+            agent_mode="agent.work.normal",
+            schema_version="2",
+        )
+        for span_id, raw_json in ((_SPAN_ID, malformed_raw), (_LATE_SPAN_ID, binary_raw))
+    ]
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        store.write_records(
+            [TraceRecordData.from_core_record(core_record) for core_record in core_records]
+        )
+    finally:
+        store.close()
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_metadata_loader(),
+    )
+
+    response = await service.export_archive("session-1")
+    lines = await _archive_response_lines(response)
+    _assert_archive_line_contract(lines)
+    records = {line["span_id"]: line for line in lines if line["type"] == "record"}
+    record = records[_SPAN_ID]
+    binary_record = records[_LATE_SPAN_ID]
+
+    assert response.status_code == 200
+    assert record["operation"] == "upsert"
+    assert record["raw_valid"] is False
+    assert record["raw_json"].encode("utf-8") == malformed_raw
+    assert "raw_json_base64" not in record
+    # Bytes that are not UTF-8 cannot travel as a JSON string, so they are
+    # carried as base64 instead.
+    assert binary_record["raw_valid"] is False
+    assert "raw_json" not in binary_record
+    assert base64.b64decode(binary_record["raw_json_base64"], validate=True) == binary_raw
+    test_logger.info("archive retained malformed OTLP bytes for offline diagnostics")
+
+
+@pytest.mark.asyncio
+async def test_archive_get_download_preserves_execution_subject_and_access(
+    tmp_path: Path,
+) -> None:
+    database_root = tmp_path / "sessions"
+    database_path = session_database_path(database_root, "session-1")
+    raw_payload = json.loads(_raw_record())
+    raw_span = raw_payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    subject_attributes = {
+        "openjiuwen.execution.subject.id": "subagent:research:invocation-7",
+        "openjiuwen.execution.subject.display_name": "Research Agent",
+        "openjiuwen.execution.subject.kind": "subagent",
+        "openjiuwen.execution.subject.parent_id": "main",
+        "openjiuwen.execution.subject.session_id": "subsession-research-7",
+    }
+    raw_span["attributes"] = [
+        {"key": key, "value": {"stringValue": value}}
+        for key, value in subject_attributes.items()
+    ]
+    raw_json = json.dumps(raw_payload, separators=(",", ":")).encode("utf-8")
+    core_record = SimpleNamespace(
+        raw_json=raw_json,
+        trace_id=_TRACE_ID,
+        span_id=_SPAN_ID,
+        parent_span_id=None,
+        start_time_unix_nano=100,
+        end_time_unix_nano=200,
+        session_id="session-1",
+        request_id="request-subagent",
+        run_id="run-subagent",
+        agent_mode="agent.work.normal",
+        schema_version="2",
+    )
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        store.write_records([TraceRecordData.from_core_record(core_record)])
+        connection = store._require_connection()
+        stored_raw = bytes(
+            connection.execute(
+                "SELECT raw_json FROM otlp_span_records WHERE trace_id = ? AND span_id = ?",
+                (_TRACE_ID, _SPAN_ID),
+            ).fetchone()["raw_json"]
+        )
+        current_raw = bytes(
+            connection.execute(
+                "SELECT raw_json FROM trajectory_current_records WHERE trace_id = ? AND span_id = ?",
+                (_TRACE_ID, _SPAN_ID),
+            ).fetchone()["raw_json"]
+        )
+    finally:
+        store.close()
+    app = FastAPI()
+    attach_trajectory_routes(
+        app,
+        SimpleNamespace(),
+        settings=_settings(database_root),
+        metadata_loader=_metadata_loader(),
+    )
+    team_app = FastAPI()
+    attach_trajectory_routes(
+        team_app,
+        SimpleNamespace(),
+        settings=_settings(database_root),
+        metadata_loader=_metadata_loader("team.plan.normal"),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/archive"
+        )
+        missing = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-missing/archive"
+        )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=team_app),
+        base_url="http://test",
+    ) as client:
+        forbidden = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/archive"
+        )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="trajectory-session-1.trajectory.zip"'
+    )
+    assert int(response.headers["content-length"]) == len(response.content)
+    # How the three tables hold one final span: the archive keeps the only
+    # copy and keeps it compressed, while the current-record row and the change
+    # journal store no payload at all. The download below still hands back the
+    # original bytes.
+    assert stored_raw != raw_json
+    assert len(stored_raw) < len(raw_json)
+    assert current_raw == b""
+    lines = _archive_zip_lines(response.content)
+    _assert_archive_line_contract(lines)
+    assert lines[0]["archive_version"] == 3
+    archived_records = [line for line in lines if line["type"] == "record"]
+    assert len(archived_records) == 1
+    archived_record = archived_records[0]
+    assert archived_record["raw_json"].encode("utf-8") == raw_json
+    archived_span = json.loads(archived_record["raw_json"])["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    assert {
+        attribute["key"]: attribute["value"]["stringValue"]
+        for attribute in archived_span["attributes"]
+    } == subject_attributes
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "NOT_FOUND"
+    assert forbidden.status_code == 403
+    assert forbidden.json()["code"] == "UNSUPPORTED_SESSION_MODE"
+    test_logger.info("archive GET downloaded non-empty subject-preserving single-Agent data")
+
+
+@pytest.mark.asyncio
+async def test_http_revision_feed_exposes_epoch_reset_after_retention(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_metadata_loader(),
+    )
+    baseline_payload = _response_json(
+        await service.list_subjects("session-1", after_revision=0)
+    )
+
+    store = TrajectoryStore(database_path, retention_days=1)
+    store.initialize()
+    try:
+        assert store.delete_expired(now=int(time.time()) + 2 * 86400) == 1
+    finally:
+        store.close()
+
+    response = await service.list_subjects(
+        "session-1",
+        after_revision=baseline_payload["watermark"]
+    )
+    payload = _response_json(response)
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert payload["items"] == []
+    # A rotated epoch is the reset signal now that cursors are plain integers.
+    assert payload["store_epoch"] != baseline_payload["store_epoch"]
+    test_logger.info("HTTP revision response exposed retention as an epoch reset")
+
+
+def _retired_single_agent_store(database_path: Path) -> None:
+    """Record the single-Agent retention session and retire its first two turns."""
+    store = TrajectoryStore(database_path, retention_days=1)
+    store.initialize()
+    try:
+        store.write_records(single_agent_records())
+        assert store.delete_expired(now=retention_now(2)) > 0
+    finally:
+        store.close()
+
+
+def _single_agent_metadata_loader(session_id: str) -> dict[str, str]:
+    if session_id == SINGLE_SESSION_ID:
+        return {"session_id": session_id, "mode": "agent.work.normal", "team_name": ""}
+    return {}
+
+
+@pytest.mark.asyncio
+async def test_http_checkpoints_carry_every_chain_they_refer_to(tmp_path: Path) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _retired_single_agent_store(database_path)
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_single_agent_metadata_loader,
+    )
+
+    response = await service.get_checkpoints(SINGLE_SESSION_ID)
+    payload = _response_json(response)
+    listing = _response_json(await service.list_subjects(SINGLE_SESSION_ID, after_revision=0))
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert payload["store_epoch"] == listing["store_epoch"]
+    assert {checkpoint["subject_id"] for checkpoint in payload["checkpoints"]} == {
+        "main",
+        "subagent:coder",
+        "subagent:researcher-1",
+    }
+    heads = [
+        head
+        for checkpoint in payload["checkpoints"]
+        for head in checkpoint_sequence_heads(checkpoint["state"])
+    ]
+    assert heads
+    for head in heads:
+        assert payload["sequences"][head]
+        assert all(element in payload["blobs"] for element in payload["sequences"][head])
+
+    unknown = await service.get_checkpoints("session-1")
+    assert unknown.status_code == 404
+    empty_database = tmp_path / "empty.sqlite3"
+    empty_service = TrajectoryHttpService(
+        _settings(empty_database),
+        reader=AsyncTrajectoryReader(empty_database),
+        metadata_loader=_single_agent_metadata_loader,
+    )
+    empty = _response_json(await empty_service.get_checkpoints(SINGLE_SESSION_ID))
+    assert empty["checkpoints"] == [] and empty["store_epoch"] == "absent"
+    test_logger.info("checkpoint response resolved every chain its checkpoints named")
+
+
+@pytest.mark.asyncio
+async def test_http_archive_states_checkpoints_before_records_and_keeps_usage(tmp_path: Path) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path, retention_days=1)
+    store.initialize()
+    try:
+        store.write_records(single_agent_records())
+    finally:
+        store.close()
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_single_agent_metadata_loader,
+    )
+    before = await _archive_response_lines(await service.export_archive(SINGLE_SESSION_ID))
+
+    store = TrajectoryStore(database_path, retention_days=1)
+    store.initialize()
+    try:
+        assert store.delete_expired(now=retention_now(2)) > 0
+    finally:
+        store.close()
+    after = await _archive_response_lines(await service.export_archive(SINGLE_SESSION_ID))
+
+    _assert_archive_line_contract(before)
+    _assert_archive_line_contract(after)
+    assert not any(line["type"] == "checkpoint" for line in before)
+    checkpoints = [line for line in after if line["type"] == "checkpoint"]
+    assert [line["subject_id"] for line in checkpoints] == ["main", "subagent:coder", "subagent:researcher-1"]
+    usage_before = {
+        (line["trace_id"], line["inference_id"]): line for line in before if line["type"] == "usage"
+    }
+    usage_after = [line for line in after if line["type"] == "usage"]
+    assert 0 < len(usage_after) < len(usage_before)
+    for line in usage_after:
+        assert line == usage_before[(line["trace_id"], line["inference_id"])]
+    test_logger.info("archive stated checkpoints first and kept cumulative usage")
+
+
+@pytest.mark.asyncio
+async def test_http_revision_feed_rejects_invalid_cursor(tmp_path: Path) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        metadata_loader=_metadata_loader(),
+    )
+
+    response = await service.list_subjects("session-1", after_revision=-1)
+
+    assert response.status_code == 400
+    assert response.headers["cache-control"] == "no-store"
+    assert _response_json(response)["code"] == "BAD_REQUEST"
+    test_logger.info("out-of-range revisions failed with the stable error envelope")
+
+
+@pytest.mark.asyncio
+async def test_http_forbids_auto_harness_sessions(tmp_path: Path) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+    harness_service = TrajectoryHttpService(
+        _settings(database_path),
+        metadata_loader=_metadata_loader("auto_harness"),
+    )
+    harness_plan_service = TrajectoryHttpService(
+        _settings(database_path),
+        metadata_loader=_metadata_loader("auto_harness.plan"),
+    )
+
+    harness_response = await harness_service.list_subjects(
+        "session-1", after_revision=0)
+    harness_plan_response = await harness_plan_service.list_subjects(
+        "session-1", after_revision=0)
+
+    assert harness_response.status_code == 403
+    assert harness_response.headers["cache-control"] == "no-store"
+    assert _response_json(harness_response)["code"] == "UNSUPPORTED_SESSION_MODE"
+    assert harness_plan_response.status_code == 403
+    assert harness_plan_response.headers["cache-control"] == "no-store"
+    assert _response_json(harness_plan_response)["code"] == "UNSUPPORTED_SESSION_MODE"
+    test_logger.info("non-single-Agent and non-Team sessions rejected by the server")
+
+
+@pytest.mark.asyncio
+async def test_http_accepts_team_sessions_with_team_name(tmp_path: Path) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+
+    def _team_metadata(session_id: str) -> dict[str, str]:
+        if session_id in {"session-1", "session-2"}:
+            return {
+                "session_id": session_id,
+                "mode": "team.plan.normal",
+                "team_name": "research-team",
+            }
+        return {}
+
+    team_service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_team_metadata,
+    )
+    response = await team_service.list_subjects("session-1", after_revision=0)
+    assert response.status_code == 200
+    payload = _response_json(response)
+    assert payload["session_id"] == "session-1"
+    assert len(payload["items"]) == 1
+    test_logger.info("Team sessions with a team_name accepted by the trajectory server")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "agent.work.normal",
+        "agent.work.plan",
+        "agent.code.normal",
+        "agent.code.plan",
+    ],
+)
+async def test_http_accepts_new_single_agent_canonical_modes(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_metadata_loader(mode),
+    )
+
+    response = await service.list_subjects("session-1", after_revision=0)
+
+    assert response.status_code == 200
+    assert len(_response_json(response)["items"]) == 1
+    test_logger.info("new canonical single-Agent mode can read trajectory: %s", mode)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    ["agent", "agent.fast", "agent.plan", "code", "code.normal", "code.plan"],
+)
+async def test_http_rejects_legacy_single_agent_mode_names(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_metadata_loader(mode),
+    )
+
+    response = await service.list_subjects("session-1", after_revision=0)
+
+    assert response.status_code == 403
+    assert _response_json(response)["code"] == "UNSUPPORTED_SESSION_MODE"
+    test_logger.info("legacy single-Agent mode rejected: %s", mode)
+
+
+@pytest.mark.asyncio
+async def test_http_fails_closed_for_unknown_or_missing_session_mode(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+    unknown = TrajectoryHttpService(
+        _settings(database_path),
+        metadata_loader=_metadata_loader("future.mode"),
+    )
+    missing = TrajectoryHttpService(
+        _settings(database_path),
+        metadata_loader=lambda _session_id: {"session_id": "session-1"},
+    )
+
+    unknown_response = await unknown.list_subjects("session-1", after_revision=0)
+    missing_response = await missing.list_subjects("session-1", after_revision=0)
+
+    assert unknown_response.status_code == 403
+    assert missing_response.status_code == 403
+    assert _response_json(unknown_response)["code"] == "UNSUPPORTED_SESSION_MODE"
+    assert _response_json(missing_response)["code"] == "UNSUPPORTED_SESSION_MODE"
+    test_logger.info("unknown session modes failed closed")
+
+
+@pytest.mark.asyncio
+async def test_http_prevents_cross_session_raw_access(tmp_path: Path) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path, session_id="session-1")
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        metadata_loader=_metadata_loader(),
+    )
+
+    response = await service.get_raw_record("session-2", _TRACE_ID, _SPAN_ID)
+
+    assert response.status_code == 404
+    assert _response_json(response)["code"] == "NOT_FOUND"
+    test_logger.info("raw identity cannot cross the path session")
+
+
+@pytest.mark.asyncio
+async def test_http_reports_disabled_and_invalid_session(tmp_path: Path) -> None:
+    disabled = TrajectoryHttpService(
+        _settings(tmp_path / "trajectory.sqlite3", enabled=False),
+        metadata_loader=_metadata_loader(),
+    )
+    enabled = TrajectoryHttpService(
+        _settings(tmp_path / "trajectory.sqlite3"),
+        metadata_loader=_metadata_loader(),
+    )
+
+    disabled_response = await disabled.list_subjects("session-1", after_revision=0)
+    invalid_response = await enabled.list_subjects("../session", after_revision=0)
+
+    assert disabled_response.status_code == 503
+    assert disabled_response.headers["cache-control"] == "no-store"
+    assert _response_json(disabled_response)["code"] == "TRAJECTORY_DISABLED"
+    assert invalid_response.status_code == 400
+    assert invalid_response.headers["cache-control"] == "no-store"
+    assert _response_json(invalid_response)["code"] == "BAD_REQUEST"
+    test_logger.info("disabled and invalid-session states are explicit")
+
+
+@pytest.mark.asyncio
+async def test_http_follows_a_runtime_settings_toggle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_root = tmp_path / "sessions"
+    session_path = session_database_path(store_root, "session-1")
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    _seed(session_path, session_id="session-1")
+    live = {"settings": _settings(store_root, enabled=False)}
+    monkeypatch.setattr(
+        trajectory_http,
+        "load_trajectory_store_settings",
+        lambda: live["settings"],
+    )
+    # No pinned snapshot: this is how the gateway mounts the service.
+    service = TrajectoryHttpService(metadata_loader=_metadata_loader())
+
+    disabled_response = await service.list_subjects("session-1", after_revision=0)
+    live["settings"] = _settings(store_root)
+    enabled_response = await service.list_subjects("session-1", after_revision=0)
+
+    assert disabled_response.status_code == 503
+    assert _response_json(disabled_response)["code"] == "TRAJECTORY_DISABLED"
+    assert enabled_response.status_code == 200
+    assert len(_response_json(enabled_response)["items"]) == 1
+    test_logger.info("a mounted service follows the runtime trajectory toggle")
+
+
+@pytest.mark.asyncio
+async def test_http_empty_database_returns_an_empty_list(tmp_path: Path) -> None:
+    database_path = tmp_path / "not-created" / "trajectory.sqlite3"
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        metadata_loader=_metadata_loader(),
+    )
+
+    response = await service.list_subjects("session-1", after_revision=0)
+    payload = _response_json(response)
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert payload["items"] == []
+    assert payload["watermark"] == 0
+    assert database_path.exists() is False
+    test_logger.info("missing trajectory database remained a successful empty state")
+
+
+def test_attach_trajectory_routes_registers_all_paths(tmp_path: Path) -> None:
+    app = FastAPI()
+    channel = SimpleNamespace()
+    attach_trajectory_routes(
+        app,
+        channel,
+        settings=_settings(tmp_path / "trajectory.sqlite3"),
+        metadata_loader=_metadata_loader(),
+    )
+    paths = {getattr(route, "path", None) for route in app.router.routes}
+
+    assert f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/subjects" in paths
+    assert f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/archive" in paths
+    assert f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/checkpoints" in paths
+    assert (
+        f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/subjects/{{subject_id}}/records"
+        in paths
+    )
+    assert (
+        f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/traces/{{trace_id}}/spans/{{span_id}}/raw"
+        in paths
+    )
+    test_logger.info("trajectory routes mounted on the WebChannel FastAPI app")
+
+
+@pytest.mark.asyncio
+async def test_archive_route_is_export_only_and_cannot_import_into_sqlite(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+    app = FastAPI()
+    attach_trajectory_routes(
+        app,
+        SimpleNamespace(),
+        settings=_settings(database_path),
+        metadata_loader=_metadata_loader(),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/archive",
+            json={
+                "format": "openjiuwen.trajectory.archive",
+                "archive_version": 2,
+                "records": [{"record_id": "attacker:record"}],
+            },
+        )
+
+    with sqlite3.connect(str(database_path)) as connection:
+        current_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM trajectory_current_records"
+            ).fetchone()[0]
+        )
+        raw_count = int(
+            connection.execute("SELECT COUNT(*) FROM otlp_span_records").fetchone()[0]
+        )
+    assert response.status_code == 405
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["code"] == "METHOD_NOT_ALLOWED"
+    assert current_count == 1
+    assert raw_count == 1
+    test_logger.info("archive API exposed no import mutation path")
+
+
+@pytest.mark.asyncio
+async def test_route_query_validation_keeps_no_store_header(tmp_path: Path) -> None:
+    app = FastAPI()
+    attach_trajectory_routes(
+        app,
+        SimpleNamespace(),
+        settings=_settings(tmp_path / "trajectory.sqlite3"),
+        metadata_loader=_metadata_loader(),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        list_response = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects?after_revision=invalid",
+        )
+        detail_response = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects/main/records"
+            "?since_revision=invalid",
+        )
+        huge_limit_response = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
+            params={"after_revision": "9" * 5000},
+        )
+        huge_revision_response = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects/main/records",
+            params={"since_revision": "9" * 5000},
+        )
+
+    assert list_response.status_code == 400
+    assert list_response.headers["cache-control"] == "no-store"
+    assert detail_response.status_code == 400
+    assert detail_response.headers["cache-control"] == "no-store"
+    assert huge_limit_response.status_code == 400
+    assert huge_limit_response.headers["cache-control"] == "no-store"
+    assert huge_limit_response.json() == {
+        "error": "after_revision must be an integer",
+        "code": "BAD_REQUEST",
+    }
+    assert huge_revision_response.status_code == 400
+    assert huge_revision_response.headers["cache-control"] == "no-store"
+    assert huge_revision_response.json() == {
+        "error": "since_revision must be an integer",
+        "code": "BAD_REQUEST",
+    }
+    test_logger.info("route-level query errors used the trajectory error envelope")
+
+
+@pytest.mark.asyncio
+async def test_framework_trajectory_errors_are_json_and_non_cacheable(
+    tmp_path: Path,
+) -> None:
+    app = FastAPI()
+    attach_trajectory_routes(
+        app,
+        SimpleNamespace(),
+        settings=_settings(tmp_path / "trajectory.sqlite3"),
+        metadata_loader=_metadata_loader(),
+    )
+
+    @app.get(f"{TRAJECTORY_API_PREFIX}/validation-probe")
+    async def validation_probe(required: int):
+        return {"required": required}
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        not_found = await client.get(f"{TRAJECTORY_API_PREFIX}/missing")
+        method_not_allowed = await client.post(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects"
+        )
+        validation_error = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/validation-probe"
+        )
+        trace_not_found = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects/main/records"
+        )
+
+    assert not_found.status_code == 404
+    assert not_found.headers["cache-control"] == "no-store"
+    assert not_found.json() == {
+        "error": "trajectory route not found",
+        "code": "NOT_FOUND",
+    }
+    assert method_not_allowed.status_code == 405
+    assert method_not_allowed.headers["cache-control"] == "no-store"
+    assert method_not_allowed.json() == {
+        "error": "trajectory method not allowed",
+        "code": "METHOD_NOT_ALLOWED",
+    }
+    assert validation_error.status_code == 400
+    assert validation_error.headers["cache-control"] == "no-store"
+    assert validation_error.json() == {
+        "error": "invalid trajectory request",
+        "code": "BAD_REQUEST",
+    }
+    assert trace_not_found.status_code == 404
+    assert trace_not_found.headers["cache-control"] == "no-store"
+    assert trace_not_found.json() == {
+        "error": "subject not found",
+        "code": "NOT_FOUND",
+    }
+    test_logger.info("framework 404, 405, and 422 responses used the HTTP envelope")
+
+
+@pytest.mark.asyncio
+async def test_routes_reuse_webchannel_origin_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_ENABLE_ORIGIN_CHECK", "1")
+    monkeypatch.setenv("JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS", "trusted.example")
+    app = FastAPI()
+    attach_trajectory_routes(
+        app,
+        SimpleNamespace(),
+        settings=_settings(tmp_path / "trajectory.sqlite3"),
+        metadata_loader=_metadata_loader(),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        rejected = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
+            headers={"Origin": "https://evil.example"},
+        )
+        allowed = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
+            headers={"Origin": "https://trusted.example"},
+        )
+        same_origin_without_origin = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
+            headers={
+                "Host": "trusted.example",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+        spoofed_host_without_origin = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
+            headers={
+                "Host": "evil.example",
+                "Sec-Fetch-Site": "same-origin",
+                "X-Forwarded-Host": "trusted.example",
+            },
+        )
+        cross_site_without_origin = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
+            headers={
+                "Host": "trusted.example",
+                "Sec-Fetch-Site": "cross-site",
+            },
+        )
+        cross_site_with_allowed_origin = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
+            headers={
+                "Host": "trusted.example",
+                "Origin": "https://trusted.example",
+                "Sec-Fetch-Site": "cross-site",
+            },
+        )
+        allowed_referer_without_origin = await client.get(
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
+            headers={
+                "Host": "trusted.example",
+                "Referer": "https://trusted.example/app",
+            },
+        )
+
+    assert rejected.status_code == 403
+    assert rejected.json()["code"] == "FORBIDDEN_ORIGIN"
+    assert allowed.status_code == 200
+    assert same_origin_without_origin.status_code == 200
+    assert spoofed_host_without_origin.status_code == 403
+    assert cross_site_without_origin.status_code == 403
+    assert cross_site_with_allowed_origin.status_code == 403
+    assert allowed_referer_without_origin.status_code == 200
+    for response in (
+        rejected,
+        allowed,
+        same_origin_without_origin,
+        spoofed_host_without_origin,
+        cross_site_without_origin,
+        cross_site_with_allowed_origin,
+        allowed_referer_without_origin,
+    ):
+        assert response.headers["cache-control"] == "no-store"
+    test_logger.info("trajectory HTTP applied the configured browser Origin allowlist")
+
+
+@pytest.mark.asyncio
+async def test_http_internal_failures_return_stable_generic_messages(tmp_path: Path) -> None:
+    class _FailingReader:
+        async def list_traces_with_revision_cursor(self, *args, **kwargs):
+            raise ValueError("secret sqlite path /private/trajectory.sqlite3")
+
+        async def list_trace_revisions(self, *args, **kwargs):
+            raise ValueError("secret revision query text")
+
+        async def iter_session_archive_lines(self, *args, **kwargs):
+            raise ValueError("secret archive query text")
+            yield {}
+
+        async def get_trace_records(self, *args, **kwargs):
+            raise ValueError("secret detail query text")
+
+        async def get_raw_record(self, *args, **kwargs):
+            raise ValueError("secret raw query text")
+
+    query_service = TrajectoryHttpService(
+        _settings(tmp_path / "trajectory.sqlite3"),
+        reader=_FailingReader(),
+        metadata_loader=_metadata_loader(),
+    )
+    metadata_service = TrajectoryHttpService(
+        _settings(tmp_path / "trajectory.sqlite3"),
+        metadata_loader=lambda _session_id: (_ for _ in ()).throw(
+            RuntimeError("secret metadata path")
+        ),
+    )
+
+    query_response = await query_service.list_subjects(
+        "session-1", after_revision=0)
+    valid_revision_cursor = _response_json(
+        await TrajectoryHttpService(
+            _settings(tmp_path / "baseline.sqlite3"),
+            metadata_loader=_metadata_loader(),
+        ).list_subjects("session-1", after_revision=0)
+    )["watermark"]
+    revision_response = await query_service.list_subjects(
+        "session-1",
+        after_revision=valid_revision_cursor
+    )
+    archive_response = await query_service.export_archive("session-1")
+    detail_response = await query_service.get_subject(
+        "session-1",
+        "main",
+        since_revision=0,
+        limit=1000,
+    )
+    raw_response = await query_service.get_raw_record(
+        "session-1",
+        _TRACE_ID,
+        _SPAN_ID,
+    )
+    metadata_response = await metadata_service.list_subjects(
+        "session-1", after_revision=0)
+
+    for response in (
+        query_response,
+        revision_response,
+        archive_response,
+        detail_response,
+        raw_response,
+    ):
+        assert response.status_code == 500
+        assert response.headers["cache-control"] == "no-store"
+        assert _response_json(response) == {
+            "error": "trajectory query failed",
+            "code": "TRAJECTORY_QUERY_FAILED",
+        }
+    assert metadata_response.status_code == 500
+    assert _response_json(metadata_response) == {
+        "error": "session lookup failed",
+        "code": "SESSION_LOOKUP_FAILED",
+    }
+    test_logger.info("internal exception details remained server-side")
+
+
+def test_web_proxy_preserves_canonical_outer_host_without_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        status = 200
+        reason = "OK"
+
+        @staticmethod
+        def read() -> bytes:
+            return b'{"ok":true}'
+
+        @staticmethod
+        def getheaders() -> list[tuple[str, str]]:
+            return [("Content-Type", "application/json"), ("Connection", "close")]
+
+    class _FakeConnection:
+        def __init__(self, host: str, port: int, *, timeout: int) -> None:
+            captured["target"] = (host, port, timeout)
+            captured["closed"] = False
+
+        def request(
+            self,
+            method: str,
+            path: str,
+            *,
+            body: bytes,
+            headers: dict[str, str],
+        ) -> None:
+            captured["request"] = (method, path, body, headers)
+
+        @staticmethod
+        def getresponse() -> _FakeResponse:
+            return _FakeResponse()
+
+        @staticmethod
+        def close() -> None:
+            captured["closed"] = True
+
+    monkeypatch.setattr(http.client, "HTTPConnection", _FakeConnection)
+    handler = object.__new__(_SpaStaticHandler)
+    handler.headers = http.client.HTTPMessage()
+    handler.headers.add_header("Host", "Trusted.Example.:8443")
+    handler.headers.add_header("Sec-Fetch-Site", "same-origin")
+    handler.headers.add_header("Forwarded", "host=evil.example")
+    handler.headers.add_header("X-Forwarded-Host", "evil.example")
+    handler.headers.add_header("X-Original-Host", "evil.example")
+    handler.headers.add_header("X-JiuwenSwarm-Original-Host", "evil.example")
+    handler.headers.add_header("Connection", "keep-alive")
+    handler.command = "GET"
+    handler.path = f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects"
+    handler.api_target = "http://127.0.0.1:19090"
+    handler.rfile = io.BytesIO()
+    handler.wfile = io.BytesIO()
+    sent_status: list[tuple[int, str | None]] = []
+    sent_headers: list[tuple[str, str]] = []
+    handler.send_response = lambda status, reason=None: sent_status.append((status, reason))
+    handler.send_header = lambda key, value: sent_headers.append((key, value))
+    handler.end_headers = lambda: None
+    handler.log_error = lambda *_args: None
+
+    handler._proxy_http()
+
+    assert captured["target"][:2] == ("127.0.0.1", 19090)
+    method, path, body, forwarded = captured["request"]
+    assert (method, path, body) == ("GET", handler.path, b"")
+    assert forwarded["Host"] == "trusted.example:8443"
+    assert forwarded["Sec-Fetch-Site"] == "same-origin"
+    for untrusted_header in (
+        "Forwarded",
+        "X-Forwarded-Host",
+        "X-Original-Host",
+        "X-JiuwenSwarm-Original-Host",
+        "Connection",
+    ):
+        assert untrusted_header not in forwarded
+    assert captured["closed"] is True
+    assert sent_status == [(200, "OK")]
+    assert ("Connection", "close") not in sent_headers
+    assert handler.wfile.getvalue() == b'{"ok":true}'
+
+    invalid_handler = object.__new__(_SpaStaticHandler)
+    invalid_handler.headers = http.client.HTTPMessage()
+    invalid_handler.headers.add_header("Host", "trusted.example")
+    invalid_handler.headers.add_header("Host", "evil.example")
+    assert invalid_handler._clean_outer_host() is None
+
+
+def test_real_web_proxy_preserves_outer_host_and_guards_all_trajectory_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_ENABLE_ORIGIN_CHECK", "1")
+    monkeypatch.setenv("JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS", "trusted.example")
+    database_root = tmp_path / "sessions"
+    database_path = session_database_path(database_root, "session-1")
+    expected_raw = _seed(database_path)
+    captured_headers: list[dict[str, str | None]] = []
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def capture_proxy_headers(request, call_next):
+        captured_headers.append(
+            {
+                "host": request.headers.get("host"),
+                "forwarded": request.headers.get("forwarded"),
+                "x-forwarded-host": request.headers.get("x-forwarded-host"),
+                "x-original-host": request.headers.get("x-original-host"),
+                "x-jiuwenswarm-original-host": request.headers.get(
+                    "x-jiuwenswarm-original-host"
+                ),
+            }
+        )
+        return await call_next(request)
+
+    attach_trajectory_routes(
+        app,
+        SimpleNamespace(),
+        settings=_settings(database_root),
+        metadata_loader=_metadata_loader(),
+    )
+
+    with _serve_asgi(app) as gateway_port:
+        with _serve_web_proxy(gateway_port, tmp_path) as proxy_port:
+            list_path = f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects"
+            status, headers, body = _proxy_get(
+                proxy_port,
+                list_path,
+                headers={
+                    "Host": "trusted.example",
+                    "Sec-Fetch-Site": "same-origin",
+                },
+            )
+            assert status == 200
+            assert headers["cache-control"] == "no-store"
+            revision_cursor = json.loads(body)["watermark"]
+            paths = (
+                list_path,
+                f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects"
+                f"?after_revision={revision_cursor}",
+                f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects/main/records",
+                f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces/{_TRACE_ID}"
+                f"/spans/{_SPAN_ID}/raw",
+            )
+            for path in paths:
+                allowed_status, allowed_headers, allowed_body = _proxy_get(
+                    proxy_port,
+                    path,
+                    headers={
+                        "Host": "trusted.example",
+                        "Sec-Fetch-Site": "same-origin",
+                    },
+                )
+                assert allowed_status == 200
+                assert allowed_headers["cache-control"] == "no-store"
+                if path.endswith("/raw"):
+                    assert allowed_body == expected_raw
+
+                denied_host_status, denied_host_headers, _ = _proxy_get(
+                    proxy_port,
+                    path,
+                    headers={
+                        "Host": "evil.example",
+                        "Sec-Fetch-Site": "same-origin",
+                    },
+                )
+                assert denied_host_status == 403
+                assert denied_host_headers["cache-control"] == "no-store"
+
+                denied_origin_status, denied_origin_headers, _ = _proxy_get(
+                    proxy_port,
+                    path,
+                    headers={
+                        "Host": "trusted.example",
+                        "Origin": "https://evil.example",
+                    },
+                )
+                assert denied_origin_status == 403
+                assert denied_origin_headers["cache-control"] == "no-store"
+
+                cross_site_status, cross_site_headers, _ = _proxy_get(
+                    proxy_port,
+                    path,
+                    headers={
+                        "Host": "trusted.example",
+                        "Origin": "https://trusted.example",
+                        "Sec-Fetch-Site": "cross-site",
+                    },
+                )
+                assert cross_site_status == 403
+                assert cross_site_headers["cache-control"] == "no-store"
+
+            spoofed_status, spoofed_headers, _ = _proxy_get(
+                proxy_port,
+                list_path,
+                headers={
+                    "Host": "evil.example",
+                    "Sec-Fetch-Site": "same-origin",
+                    "Forwarded": "host=trusted.example",
+                    "X-Forwarded-Host": "trusted.example",
+                    "X-Original-Host": "trusted.example",
+                    "X-JiuwenSwarm-Original-Host": "trusted.example",
+                },
+            )
+
+    assert spoofed_status == 403
+    assert spoofed_headers["cache-control"] == "no-store"
+    assert captured_headers[-1] == {
+        "host": "evil.example",
+        "forwarded": None,
+        "x-forwarded-host": None,
+        "x-original-host": None,
+        "x-jiuwenswarm-original-host": None,
+    }
+    assert any(item["host"] == "trusted.example" for item in captured_headers)
+    test_logger.info("real proxy chain guarded list, revision, detail, and raw reads")

@@ -1,0 +1,46 @@
+{
+  "archive": "playwright-mcp-0.0.78.zip",
+  "archive_sha256": "f0cffc29bd1356cdbddb90e6f688c50af2e7db08b0cc4ec233da06a0e5fded9e",
+  "cli_relative_path": "node_modules/@playwright/mcp/cli.js",
+  "minimum_node_version": 20,
+  "package": "@playwright/mcp",
+  "provenance": {
+    "browser_downloads_disabled": true,
+    "dependencies": [
+      {
+        "integrity": "sha512-XLTUeA6mEN9sQ+hJ4dfG8EIkDbxS0K3Trc2RBkUJuf02TgE2FQRNTMtq/aJfhyRMINsRl/Ybc4sxcWLtFn4/TQ==",
+        "license": "Apache-2.0",
+        "name": "@playwright/mcp",
+        "resolved": "https://registry.npmjs.org/@playwright/mcp/-/mcp-0.0.78.tgz",
+        "version": "0.0.78"
+      },
+      {
+        "integrity": "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==",
+        "license": "MIT",
+        "name": "fsevents",
+        "resolved": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.2.tgz",
+        "version": "2.3.2"
+      },
+      {
+        "integrity": "sha512-6KV9h4PP3hqu4NaGdxxcijWfYh9LJcFI/R2sP4TTC4I5cFo3oRawN0ETlW5MkE3cQEgKhhoj0KUNz4sfpCT0Tg==",
+        "license": "Apache-2.0",
+        "name": "playwright",
+        "resolved": "https://registry.npmjs.org/playwright/-/playwright-1.62.0-alpha-1783623505000.tgz",
+        "version": "1.62.0-alpha-1783623505000"
+      },
+      {
+        "integrity": "sha512-CPJZdsA/KGT2QQlekiV6Wt+QlQrZHVSZ6oiNtOI/bYYOIVLM8jfKGWTM4zQiyd4UN+40Cq4cA6lxmZHZbtPvJQ==",
+        "license": "Apache-2.0",
+        "name": "playwright-core",
+        "resolved": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.62.0-alpha-1783623505000.tgz",
+        "version": "1.62.0-alpha-1783623505000"
+      }
+    ],
+    "install_command": "npm ci --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund --bin-links=false",
+    "source_lockfile": "third_party/playwright-mcp/package-lock.json",
+    "source_lockfile_sha256": "b146bf8ae844e04537b96cf34bf2b342b0a09c316559b3c52f3c04f1af2e8df1",
+    "source_manifest": "third_party/playwright-mcp/package.json"
+  },
+  "schema_version": 1,
+  "version": "0.0.78"
+}

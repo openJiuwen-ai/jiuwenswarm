@@ -15,6 +15,11 @@ from pathlib import Path
 
 import yaml
 
+from jiuwenswarm.common.mode_matrix import (
+    NEW_AGENT_WORK_NORMAL,
+    NEW_AGENT_WORK_PLAN,
+    is_code_profile_mode,
+)
 from jiuwenswarm.common.utils import get_config_file, get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
@@ -192,7 +197,11 @@ def create_memory_settings(
 
 def is_agent_mode(mode: str) -> bool:
     normalized_mode = (mode or "").strip()
-    return normalized_mode in ("agent", "agent.plan", "agent.fast", "plan", "fast")
+    return normalized_mode in (
+        "agent", "agent.plan", "agent.fast", "plan", "fast",
+        # 新三段命名 agent 工作族 canonical。
+        NEW_AGENT_WORK_NORMAL, NEW_AGENT_WORK_PLAN,
+    )
 
 
 def _resolve_mode_memory(mode: str, config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -203,10 +212,13 @@ def _resolve_mode_memory(mode: str, config: Optional[Dict[str, Any]]) -> Dict[st
       - "agent.plan" / "agent.fast"  -> modes.agent (legacy tokens,归一)
       - "plan" / "fast"              -> modes.agent (legacy sub-tokens, 归一)
       - "code" / "code.normal"       -> modes.code
+      - 新三段命名 canonical：agent.work.* -> modes.agent，
+        agent.code.* / team.code.*   -> modes.code，team.work.* -> {}（无节点）
 
     plan / fast 已合并为单一 ``agent`` 模式，记忆配置统一读取
     ``modes.agent.memory``；历史 ``agent.plan`` / ``agent.fast`` /
-    ``plan`` / ``fast`` 均归一到该节点。
+    ``plan`` / ``fast`` 均归一到该节点。新 canonical ``agent.work.*`` 同样
+    归一到 modes.agent；``agent.code.*`` / ``team.code.*`` 归一到 modes.code。
     Returns {} when no block is found (callers treat missing as disabled).
     """
     modes_cfg = (config or {}).get("modes", {}) if isinstance(config, dict) else {}
@@ -214,15 +226,19 @@ def _resolve_mode_memory(mode: str, config: Optional[Dict[str, Any]]) -> Dict[st
         return {}
 
     normalized_mode = (mode or "").strip()
-    if is_agent_mode(normalized_mode):
-        # "agent" 或历史 "agent.plan" / "agent.fast" / 单独出现的 "plan" / "fast"
-        node = modes_cfg.get("agent", {})
-    elif normalized_mode == "code" or normalized_mode.startswith("code."):
-        # "code" 及其子模式（code.normal / code.plan / code.team...）统一读取 modes.code。
+    if is_code_profile_mode(normalized_mode) or normalized_mode == "code" or normalized_mode.startswith("code."):
+        # code profile 族：旧 "code" 及其子模式（code.normal / code.plan /
+        # code.team / team.plan.code ...）与 新 canonical agent.code.* /
+        # team.code.*，统一读取 modes.code。
         node = modes_cfg.get("code", {})
+    elif is_agent_mode(normalized_mode):
+        # agent 工作族："agent" 或历史 "agent.plan" / "agent.fast" / 单独出现的
+        # "plan" / "fast"，以及新 canonical agent.work.*。
+        node = modes_cfg.get("agent", {})
     else:
-        # 其它未识别的 mode（如 "team"、"team.plan"、"auto_harness"）没有对应的
-        # 记忆配置节点，不应落到 modes.agent / modes.code 兜底（否则会误读/误写）。
+        # 其它未识别的 mode（如 "team"、"team.plan"、"team.plan.normal" 以及
+        # 新 canonical team.work.*、"auto_harness"）没有对应的记忆配置节点，
+        # 不应落到 modes.agent / modes.code 兜底（否则会误读/误写）。
         return {}
 
     if not isinstance(node, dict):
@@ -249,10 +265,15 @@ def is_memory_enabled(mode: str, config: Optional[Dict[str, Any]] = None) -> boo
         # code 模式默认开启（之前 CodingMemoryRail 是固定挂载的）
         # agent 模式默认关闭
         # 判断需与 _resolve_mode_memory 的 code 归一逻辑一致：code 及其子模式
-        # （code.normal / code.plan / code.team ...）都应默认开启，否则用户配置
-        # 缺 enabled 字段时子模式记忆会被错误默认关闭。
+        # （code.normal / code.plan / code.team ...）与新 canonical
+        # agent.code.* / team.code.* 都应默认开启，否则用户配置缺 enabled 字段时
+        # code profile 记忆会被错误默认关闭。
         normalized_mode = (mode or "").strip()
-        is_code = normalized_mode == "code" or normalized_mode.startswith("code.")
+        is_code = (
+            is_code_profile_mode(normalized_mode)
+            or normalized_mode == "code"
+            or normalized_mode.startswith("code.")
+        )
         default_value = True if is_code else False
         return bool(mem_cfg.get("enabled", default_value))
     except Exception as e:

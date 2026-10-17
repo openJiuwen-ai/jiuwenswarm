@@ -7,6 +7,54 @@ from types import SimpleNamespace
 from jiuwenswarm.server.runtime.agent_adapter import interface_code
 
 
+def test_coding_memory_rail_uses_spec_snapshot_and_rebuilds_on_embed_change(
+    monkeypatch,
+    tmp_path,
+):
+    persisted_config = {
+        "modes": {"code": {"memory": {"enabled": False}}},
+        "embed": {"embed_model": "persisted"},
+    }
+    monkeypatch.setattr(interface_code, "get_config", lambda: persisted_config)
+
+    observed_configs = []
+
+    def fake_create_coding_memory_rail(*, project_dir, agent_workspace_dir, config):
+        del project_dir, agent_workspace_dir
+        observed_configs.append(config)
+        return object()
+
+    monkeypatch.setattr(
+        interface_code,
+        "create_coding_memory_rail",
+        fake_create_coding_memory_rail,
+    )
+
+    adapter = interface_code.JiuwenSwarmCodeAdapter()
+    adapter._project_dir = str(tmp_path)
+    adapter._workspace_dir = str(tmp_path)
+    adapter._agent_workspace_dir = str(tmp_path / "agent")
+    first_snapshot = {
+        "modes": {"code": {"memory": {"enabled": True}}},
+        "embed": {"embed_model": "first"},
+    }
+    second_snapshot = {
+        "modes": {"code": {"memory": {"enabled": True}}},
+        "embed": {"embed_model": "second"},
+    }
+
+    with adapter._code_spec_config_scope(first_snapshot):
+        first = adapter._build_coding_memory_rail()
+    with adapter._code_spec_config_scope(first_snapshot):
+        reused = adapter._build_coding_memory_rail()
+    with adapter._code_spec_config_scope(second_snapshot):
+        rebuilt = adapter._build_coding_memory_rail()
+
+    assert first is reused
+    assert rebuilt is not first
+    assert observed_configs == [first_snapshot, second_snapshot]
+
+
 def test_configure_code_team_member_uses_fallback_for_rail_without_workspace_node(
     monkeypatch,
     tmp_path,

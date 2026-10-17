@@ -168,6 +168,20 @@ def parse_agent_server_wire_unary(data: dict[str, Any]) -> AgentResponse:
     raise ValueError(f"parse_agent_server_wire_unary: unrecognized wire shape keys={list(data.keys())[:32]}")
 
 
+def _mark_terminal_error_payload(
+    chunk: AgentResponseChunk, e2a: E2AResponse
+) -> AgentResponseChunk:
+    """无 legacy blob 的终态 ``e2a.error`` 也必须还原出 ``chat.error`` 语义。"""
+    payload = dict(chunk.payload or {})
+    if "error" in payload:
+        return chunk
+    body = dict(e2a.body or {})
+    payload["event_type"] = "chat.error"
+    payload.setdefault("error", payload.get("message") or body.get("message") or "")
+    chunk.payload = payload
+    return chunk
+
+
 def parse_agent_server_wire_chunk(data: dict[str, Any]) -> AgentResponseChunk:
     """将一条流式 WebSocket JSON 解析为 ``AgentResponseChunk``。"""
     rid = str(data.get("request_id", ""))
@@ -200,6 +214,8 @@ def parse_agent_server_wire_chunk(data: dict[str, Any]) -> AgentResponseChunk:
                 e2a.response_kind,
                 e2a.is_final,
             )
+            if e2a.response_kind == E2A_RESPONSE_KIND_E2A_ERROR and e2a.is_final:
+                out = _mark_terminal_error_payload(out, e2a)
             return out
         except Exception as e:
             logger.exception(
@@ -278,6 +294,12 @@ def encode_agent_response_for_wire(
         )
 
 
+def _legacy_chunk_dict(chunk: AgentResponseChunk) -> dict[str, Any]:
+    legacy = asdict(chunk)
+    legacy.pop("runtime_completion", None)
+    return legacy
+
+
 def encode_agent_chunk_for_wire(
     chunk: AgentResponseChunk,
     *,
@@ -308,7 +330,7 @@ def encode_agent_chunk_for_wire(
                 te,
             )
             return _fallback_wire_chunk_from_legacy(
-                _json_safe(asdict(chunk)),
+                _json_safe(_legacy_chunk_dict(chunk)),
                 response_id=response_id,
                 sequence=sequence,
                 exc=te,
@@ -324,7 +346,7 @@ def encode_agent_chunk_for_wire(
             e,
         )
         return _fallback_wire_chunk_from_legacy(
-            _json_safe(asdict(chunk)),
+            _json_safe(_legacy_chunk_dict(chunk)),
             response_id=response_id,
             sequence=sequence,
             exc=e,

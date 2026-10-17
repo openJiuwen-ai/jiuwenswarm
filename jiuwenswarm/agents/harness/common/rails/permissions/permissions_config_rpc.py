@@ -19,6 +19,7 @@ _PERMISSIONS_CFG_METHODS: frozenset[ReqMethod] = frozenset(
         ReqMethod.PERMISSIONS_TOOLS_GET,
         ReqMethod.PERMISSIONS_TOOLS_SET,
         ReqMethod.PERMISSIONS_TOOLS_UPDATE,
+        ReqMethod.PERMISSIONS_TOOLS_UPDATE_USER,
         ReqMethod.PERMISSIONS_TOOLS_DELETE,
         ReqMethod.PERMISSIONS_RULES_GET,
         ReqMethod.PERMISSIONS_RULES_CREATE,
@@ -75,13 +76,54 @@ def dispatch_permissions_config_request(request: AgentRequest) -> AgentResponse:
 
     try:
         if m == ReqMethod.PERMISSIONS_TOOLS_GET:
-            return _ok(request, dict(get_permissions_tools()))
+            from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+                compose_host_effective_permissions,
+            )
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                load_global_permissions,
+                load_session_permissions,
+                load_user_permissions,
+            )
+
+            effective = compose_host_effective_permissions(
+                global_permissions=load_global_permissions(),
+                user_permissions=load_user_permissions(),
+                session_permissions=load_session_permissions(None),
+            )
+            tools = effective.get("tools") if isinstance(effective.get("tools"), dict) else {}
+            return _ok(request, {"tools": dict(tools)})
 
         if m == ReqMethod.PERMISSIONS_TOOLS_SET:
             if not isinstance(params, dict):
                 return _err(request, "params must be object")
             tools = params.get("tools")
-            replace_permissions_tools_in_config(tools)
+            if not isinstance(tools, dict):
+                return _err(request, "tools must be object")
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                update_user_permissions,
+            )
+
+            deny, ask, allow = [], [], []
+            for name, raw in tools.items():
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                level = raw.get("*") if isinstance(raw, dict) else raw
+                lv = str(level or "").strip().lower()
+                if lv == "deny":
+                    deny.append(name.strip())
+                elif lv == "ask":
+                    ask.append(name.strip())
+                elif lv == "allow":
+                    allow.append(name.strip())
+
+            def _mutate(overlay):
+                overlay["deny_tools"] = deny
+                overlay["ask_tools"] = ask
+                overlay["allow_tools"] = allow
+                return overlay
+
+            if not update_user_permissions(_mutate):
+                return _err(request, "failed to save user permissions")
             return _ok(request, {"ok": True})
 
         if m == ReqMethod.PERMISSIONS_TOOLS_UPDATE:
@@ -93,6 +135,23 @@ def dispatch_permissions_config_request(request: AgentRequest) -> AgentResponse:
             if "level" not in params:
                 return _err(request, "level is required")
             payload = update_permissions_tool_in_config(tool, params.get("level"))
+            return _ok(request, dict(payload))
+
+        if m == ReqMethod.PERMISSIONS_TOOLS_UPDATE_USER:
+            if not isinstance(params, dict):
+                return _err(request, "params must be object")
+            tool = str(params.get("tool") or params.get("name") or "").strip()
+            if not tool:
+                return _err(request, "tool is required")
+            if "level" not in params:
+                return _err(request, "level is required")
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                update_user_tool_level,
+            )
+
+            payload = update_user_tool_level(tool, params.get("level"))
+            if not payload:
+                return _err(request, "failed to save user permissions")
             return _ok(request, dict(payload))
 
         if m == ReqMethod.PERMISSIONS_TOOLS_DELETE:
@@ -160,4 +219,3 @@ __all__ = [
     "dispatch_permissions_config_request",
     "get_permissions_config_req_methods",
 ]
-

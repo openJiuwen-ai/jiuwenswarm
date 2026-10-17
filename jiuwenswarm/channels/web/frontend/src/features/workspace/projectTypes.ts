@@ -1,4 +1,4 @@
-export type WorkMode = 'work' | 'code';
+export type WorkMode = 'work' | 'code' | 'design';
 
 export type ProjectGitSnapshot = {
   enabled: boolean;
@@ -18,7 +18,7 @@ export type ProjectInfo = {
   pinned: boolean;
   pin_order: number;
   is_default: boolean;
-  hidden: boolean;
+  hidden?: boolean;
   work_mode: WorkMode;
   git: ProjectGitSnapshot;
   session_count: number;

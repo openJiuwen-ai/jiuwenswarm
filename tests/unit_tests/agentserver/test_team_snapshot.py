@@ -32,6 +32,7 @@ class _FakeMonitorHandler:
     def __init__(self, snapshot: dict[str, Any] | None, *, running: bool = True) -> None:
         self._snapshot = snapshot
         self.is_running = running
+        self.team_id = snapshot.get("team_id") if snapshot is not None else None
 
     async def get_team_snapshot(self) -> dict[str, Any] | None:
         return self._snapshot
@@ -94,8 +95,9 @@ async def _invoke(
             ".TeamMonitorHandler.get_team_snapshot_from_db",
             side_effect=_db,
         ),
-        mock.patch(
-            "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        mock.patch.object(
+            agent_ws_server,
+            "get_session_metadata",
             return_value=(
                 {"team_name": metadata_team_name} if metadata_team_name else {}
             ),

@@ -1,0 +1,6 @@
+<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="16.000000" height="16.000000" fill="none" customFrame="#000000">
+	<rect id="排队中" width="16.000000" height="16.000004" x="0.000000" y="0.000000" />
+	<path id="路径" d="M8 1C4.13438 1 1 4.13438 1 8C1 11.8656 4.13438 15 8 15C11.8656 15 15 11.8656 15 8C15 4.13438 11.8656 1 8 1Z" fill="rgb(128,128,128)" fill-rule="evenodd" />
+	<path id="路径" d="M8 1C4.13438 1 1 4.13438 1 8C1 11.8656 4.13438 15 8 15C11.8656 15 15 11.8656 15 8C15 4.13438 11.8656 1 8 1ZM2 8C2 4.68661 4.68661 2 8 2C11.3134 2 14 4.68661 14 8C14 11.3134 11.3134 14 8 14C4.68661 14 2 11.3134 2 8Z" fill="rgb(151,151,151)" fill-opacity="0" fill-rule="evenodd" />
+	<path id="矢量 11582" d="M7.78955 4.33301L7.78955 8.5651L10.4847 9.9917" stroke="rgb(247,253,248)" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.200000" />
+</svg>

@@ -28,6 +28,7 @@ from jiuwenswarm.agents.harness.common.rails.project_memory import (
 )
 from jiuwenswarm.common.coding_memory_paths import resolve_project_coding_memory_dir
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.mode_matrix import is_code_profile_mode
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
@@ -165,6 +166,11 @@ def _classify_memory_file(path: str, workspace: str) -> str:
     return "project"
 
 
+def _is_creatable_memory_file(path: str) -> bool:
+    """Whether a validated missing path is a user-managed memory entrypoint."""
+    return os.path.basename(path) in ("JIUWENSWARM.md", "JIUWENSWARM.local.md")
+
+
 def _relative_path(abs_path: str, workspace: str, project_dir: str | None = None) -> str:
     abs_path_norm = os.path.normpath(abs_path)
     if project_dir:
@@ -239,7 +245,9 @@ def _scan_md_files(directory: str, kind: str, workspace: str, project_dir: str |
 
 
 def _is_code_mode(mode: str) -> bool:
-    return mode.startswith("code")
+    # code profile 族：旧 "code"/"code.*" 前缀 + 新 canonical agent.code.* /
+    # team.code.*（复用 mode_matrix 谓词，与 memory.config 的归一逻辑一致）。
+    return is_code_profile_mode(mode) or (mode or "").startswith("code")
 
 
 def _is_agent_mode(mode: str) -> bool:
@@ -312,13 +320,14 @@ async def handle_memory_edit(
     kind = _classify_memory_file(resolved, workspace)
 
     if not exists:
+        editable = _is_creatable_memory_file(resolved)
         return {
             "path": resolved,
             "exists": False,
             "content_preview": "",
             "kind": kind,
-            "editable": False,
-            "reason": "memory file does not exist",
+            "editable": editable,
+            "reason": None if editable else "memory file does not exist",
         }
 
     try:

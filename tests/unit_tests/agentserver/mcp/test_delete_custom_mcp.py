@@ -102,9 +102,9 @@ def test_delete_builtin_raises_value_error() -> None:
         return Path("C:/some/mcp_builtins")
 
     with patch(
-        "jiuwenswarm.server.runtime.mcp.registry._packages_dir", _has_package_dir
+        "jiuwenswarm.server.runtime.mcp.registry._resolve_package",
+        return_value=object(),
     ), \
-         patch("pathlib.Path.is_dir", return_value=True), \
          patch(
              "jiuwenswarm.server.runtime.mcp.state_store.remove_mcp_record"
          ) as mock_remove, \

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+import psutil
 
 DEFAULT_RUNTIME_ENV_VAR = "JIUWENSWARM_E2E_PYTHON"
 
@@ -15,6 +19,92 @@ class OpenJiuwenRuntimeInfo:
     package_parent: Path
     resolved_ref: str | None
     source_location: str | None
+
+
+def build_workspace_env(home: str | Path) -> dict[str, str]:
+    """Return a process environment whose user workspace is isolated."""
+
+    env = os.environ.copy()
+    home_path = str(Path(home).expanduser().resolve())
+    env["HOME"] = home_path
+    if os.name == "nt":
+        env["USERPROFILE"] = home_path
+    return env
+
+
+def resolve_npm_executable() -> str:
+    """Resolve npm on POSIX and Windows without relying on shell lookup."""
+
+    candidates = ("npm.cmd", "npm") if os.name == "nt" else ("npm",)
+    for candidate in candidates:
+        executable = shutil.which(candidate)
+        if executable:
+            return executable
+    raise RuntimeError("npm is required to build the Web UI for E2E tests")
+
+
+def resolve_browser_executable() -> str | None:
+    """Return an installed Chromium-family browser, or Playwright's default."""
+
+    for candidate in (
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+        "msedge",
+    ):
+        executable = shutil.which(candidate)
+        if executable:
+            return executable
+
+    if os.name != "nt":
+        return None
+
+    roots = [
+        os.getenv("PROGRAMFILES"),
+        os.getenv("PROGRAMFILES(X86)"),
+        os.getenv("LOCALAPPDATA"),
+    ]
+    relative_paths = (
+        Path("Google/Chrome/Application/chrome.exe"),
+        Path("Microsoft/Edge/Application/msedge.exe"),
+    )
+    for root in roots:
+        if not root:
+            continue
+        for relative_path in relative_paths:
+            executable = Path(root) / relative_path
+            if executable.is_file():
+                return str(executable)
+    return None
+
+
+def terminate_process_tree(process: subprocess.Popen, timeout: float = 10.0) -> None:
+    """Stop an E2E process and every child it spawned."""
+
+    if process.poll() is not None:
+        return
+    try:
+        parent = psutil.Process(process.pid)
+        processes = parent.children(recursive=True) + [parent]
+    except psutil.Error:
+        process.terminate()
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        return
+
+    for child in reversed(processes):
+        with contextlib.suppress(psutil.Error):
+            child.terminate()
+    _, alive = psutil.wait_procs(processes, timeout=timeout)
+    for child in alive:
+        with contextlib.suppress(psutil.Error):
+            child.kill()
+    psutil.wait_procs(alive, timeout=5)
 
 
 def build_repo_pythonpath(repo_root: Path, existing: str | None = None) -> str:

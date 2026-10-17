@@ -1,33 +1,141 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """UserHookRail —— 将用户配置的 hooks 以 Rail 形态注册到 DeepAgent，拦截工具调用和 Agent 生命周期."""
 
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
+from dataclasses import replace
 
-from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+from openjiuwen.core.foundation.llm import ToolMessage
+from openjiuwen.core.runner.callback.errors import AbortError
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+from openjiuwen.core.single_agent.ability_manager import resolve_tool_message
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, RunContext
+from openjiuwen.harness.goal.schema import GoalAssessment, GoalAssessmentStatus
 from openjiuwen.harness.rails.base import DeepAgentRail
+from openjiuwen.harness.schema.config import SubAgentConfig
 
 from jiuwenswarm.common.hooks_config import HooksConfig, HookEvent
 from jiuwenswarm.server.hooks.executor import HookExecutor
 
 logger = logging.getLogger(__name__)
 
+_PENDING_GOAL_KEY = "_user_hook_pending_goal"
+
 
 class UserHookRail(DeepAgentRail):
-    """用户配置的 hooks 执行引擎.
+    """Execution engine for user-configured hooks.
 
-    Priority=60: 在 SecurityRail (80) 之后，JiuSwarmStreamEventRail (50) 之前。
-    确保安全检查先于用户 hook，用户 hook 先于流式事件发送。
+    Priority 60 runs after the security rails. ``JiuSwarmStreamEventRail``
+    projects a tool call only after every rail that rewrites its result, so
+    PostToolUse context added here is part of the streamed ``rendered_result``.
+
+    Multiple active UserHookRail instances are inherited independently;
+    overlapping hooks may execute more than once.
     """
 
     priority = 60
 
-    def __init__(self, hooks_config: HooksConfig):
+    def __init__(
+        self, hooks_config: HooksConfig, *, subagent_type: str = "", parent_hook: UserHookRail | None = None,
+    ):
         super().__init__()
-        self._config = hooks_config
+        self._hooks_config = hooks_config
+        self._parent_hook = parent_hook
         self._executor = HookExecutor()
+        self._blocking_state: ContextVar[dict | None] = ContextVar("user_hook_blocking_state", default=None)
+        self._subagent_type = subagent_type
+
+    @property
+    def _config(self) -> HooksConfig:
+        # Follow the originating policy, including replacement and in-place
+        # updates, without sharing executors or per-invocation blocking state.
+        return self._parent_hook.hooks_config if self._parent_hook is not None else self._hooks_config
+
+    @property
+    def hooks_config(self) -> HooksConfig:
+        """Return the effective policy, following the originating parent rail."""
+        return self._config
+
+    @property
+    def parent_hook(self) -> UserHookRail | None:
+        """Identify inherited ownership without exposing a writable parent link."""
+        return self._parent_hook
+
+    def fork_for_agent(self) -> UserHookRail:
+        """Keep executor, blocking state and agent identity private to each child."""
+        return UserHookRail(self._config, parent_hook=self)
+
+    def init(self, agent) -> None:
+        super().init(agent)
+        if self._parent_hook is not None:
+            self._subagent_type = agent.card.name
+        self._propagate_hooks(agent)
+
+    def _propagate_hooks(self, agent) -> None:
+        """Propagate session hooks after all subagent providers are resolved.
+
+        Copy only changed specs. Parent ownership preserves custom child hooks
+        and keeps unchanged specs/executors stable. This is a host workaround
+        until the SDK provides an inherited-rail/child-creation extension point.
+        """
+        config = getattr(agent, "deep_config", None)
+        if config is None:
+            return
+        active = [self, *agent.configured_rails()] if hasattr(agent, "configured_rails") else [self]
+        specs = []
+        for spec in config.subagents or []:
+            if isinstance(spec, SubAgentConfig):
+                rails = [rail for rail in spec.rails or [] if not self._stale(rail, active)]
+                if any(self._owns(rail) for rail in rails):
+                    specs.append(spec if len(rails) == len(spec.rails) else replace(spec, rails=rails))
+                else:
+                    specs.append(replace(spec, rails=[*rails, self.fork_for_agent()]))
+            else:
+                # The SDK also accepts preconstructed DeepAgent children.
+                # Activate queued forks through the public async API before
+                # delegation, even if this child was already initialized.
+                # init() alone only queues: the host must enter before_invoke.
+                if not any(self._owns(rail) for rail in spec.configured_rails()):
+                    spec.add_rail(self.fork_for_agent())
+                specs.append(spec)
+        if config.subagents is not None and any(a is not b for a, b in zip(config.subagents, specs)):
+            config.subagents = specs
+
+    def _owns(self, rail) -> bool:
+        return isinstance(rail, UserHookRail) and rail.parent_hook is self
+
+    @staticmethod
+    def _stale(rail, active) -> bool:
+        # Keep custom rails and forks of other still-active parent hook rails.
+        # Only retire inheritance from a parent rail that has been detached.
+        return (isinstance(rail, UserHookRail) and rail.parent_hook is not None
+                and all(rail.parent_hook is not parent for parent in active))
+
+    async def _activate_child_hooks(self, agent) -> None:
+        config = getattr(agent, "deep_config", None)
+        active = [self, *agent.configured_rails()] if hasattr(agent, "configured_rails") else [self]
+        for child in getattr(config, "subagents", None) or []:
+            if isinstance(child, SubAgentConfig):
+                continue
+            for rail in child.configured_rails():
+                if self._stale(rail, active):
+                    await child.unregister_rail(rail)
+                elif self._owns(rail) and child.is_pending_rail(rail):
+                    # register_rail initializes once and routes tool callbacks
+                    # to the inner agent. Remove the queue entry only on success.
+                    # Deliberately fail closed: registration errors abort the
+                    # parent turn rather than delegate without required hooks.
+                    await child.register_rail(rail)
+                    child.remove_pending_rail(rail)
+
+    def _identity(self, ctx: AgentCallbackContext) -> dict[str, str]:
+        identity = {"session_id": self._session_id(ctx)}
+        if self._subagent_type:
+            identity["subagent_type"] = self._subagent_type
+        return identity
 
     @staticmethod
     def _session_id(ctx: AgentCallbackContext) -> str:
@@ -39,9 +147,35 @@ class UserHookRail(DeepAgentRail):
 
     # ---- PreToolUse: BEFORE_TOOL_CALL ----
 
+    async def before_invoke(self, ctx: AgentCallbackContext) -> None:
+        try:
+            self._propagate_hooks(getattr(ctx, "agent", None))
+            await self._activate_child_hooks(getattr(ctx, "agent", None))
+        except Exception as exc:
+            # The SDK logs ordinary callback exceptions and continues. Use its
+            # explicit abort signal to fail closed before any delegation.
+            raise AbortError("Cannot safely install inherited user hooks", cause=exc) from exc
+        # HITL resumes execute tools before any model call. ContextVar also
+        # bridges DeepAgent's outer callbacks to its inner ReAct/tool tasks,
+        # while keeping concurrent invocations isolated.
+        self._blocking_state.set({})
+        if ctx.session is not None and isinstance(getattr(ctx.inputs, "query", None), InteractiveInput):
+            # Approval work is a user round with no goal run_context. Keep the
+            # interrupted generation, even if the goal changed while waiting.
+            ctx.extra[_PENDING_GOAL_KEY] = ctx.session.get_state(_PENDING_GOAL_KEY)
+
+    async def before_task_iteration(self, ctx: AgentCallbackContext) -> None:
+        self._blocking_state.set({})
+
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         tool_name = ctx.inputs.tool_name or ""
         tool_args = ctx.inputs.tool_args
+        blocking_state = self._blocking_state.get()
+        if blocking_state is None:
+            blocking_state = ctx.extra.setdefault("_hook_blocking_state", {})
+        if blocking_state:
+            self._finish_blocked_tool(ctx, blocking_state["reason"])
+            return
 
         hook_configs = self._config.match(
             HookEvent.PRE_TOOL_USE.value, query=tool_name,
@@ -55,18 +189,19 @@ class UserHookRail(DeepAgentRail):
                 "event": "PreToolUse",
                 "tool_name": tool_name,
                 "tool_input": tool_args,
-                "session_id": self._session_id(ctx),
+                **self._identity(ctx),
             },
         )
 
+        # Another tool's hook may have blocked while this hook was running.
+        if blocking_state:
+            self._finish_blocked_tool(ctx, blocking_state["reason"])
+            return
+
         for r in results:
             if r.outcome == "blocking":
-                ctx.extra["_skip_tool"] = True
-                ctx.extra["_hook_feedback"] = r.error
-                logger.info(
-                    "UserHookRail: PreToolUse BLOCKED tool=%s reason=%s",
-                    tool_name, r.error,
-                )
+                blocking_state["reason"] = r.error
+                self._finish_blocked_tool(ctx, r.error)
                 return
             if r.modified_input:
                 ctx.inputs.tool_args = r.modified_input
@@ -80,9 +215,33 @@ class UserHookRail(DeepAgentRail):
                 existing = ctx.extra.get("_hook_additional_context", "")
                 ctx.extra["_hook_additional_context"] = existing + "\n" + r.additional_context
 
+    @staticmethod
+    def _finish_blocked_tool(ctx: AgentCallbackContext, reason: str) -> None:
+        tool_name = ctx.inputs.tool_name or ""
+        ctx.extra["_skip_tool"] = True
+        ctx.extra["_hook_feedback"] = reason
+        feedback = f"[Hook blocked] PreToolUse blocked {tool_name}: {reason}"
+        ctx.inputs.tool_result = {
+            "success": False,
+            "status": "blocked",
+            "reason": reason,
+            "retryable": False,
+        }
+        ctx.inputs.tool_msg = ToolMessage(content=feedback, tool_call_id=ctx.inputs.tool_call.id)
+        # Skipping one tool does not stop ReAct from asking the model to retry.
+        ctx.request_force_finish({
+            "output": feedback,
+            "result_type": "answer",
+            "stop_reason": "hook_blocked",
+        })
+        logger.info("UserHookRail: PreToolUse BLOCKED tool=%s reason=%s", tool_name, reason)
+
     # ---- PostToolUse: AFTER_TOOL_CALL ----
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
+        # The framework fires AFTER_TOOL_CALL even when PreToolUse skipped it.
+        if "_hook_feedback" in ctx.extra:
+            return
         tool_name = ctx.inputs.tool_name or ""
 
         hook_configs = self._config.match(
@@ -98,7 +257,7 @@ class UserHookRail(DeepAgentRail):
                 "tool_name": tool_name,
                 "tool_input": ctx.inputs.tool_args,
                 "tool_result": ctx.inputs.tool_result,
-                "session_id": self._session_id(ctx),
+                **self._identity(ctx),
             },
         )
 
@@ -110,8 +269,79 @@ class UserHookRail(DeepAgentRail):
                     tool_name, r.error,
                 )
             if r.additional_context:
-                current = ctx.inputs.tool_result or ""
-                ctx.inputs.tool_result = current + "\n[Hook 发现]: " + r.additional_context
+                self._append_model_context(ctx, r.additional_context)
+
+    @staticmethod
+    def _append_model_context(ctx: AgentCallbackContext, additional_context: str) -> None:
+        """Append PostToolUse context to the tool message the model reads.
+
+        The model reads the tool message, not ``tool_result``, and the
+        structured result stays untouched for program consumers. A call that
+        raised carries its message on the execution error.
+        """
+        message = resolve_tool_message(ctx.inputs, ctx.exception)
+        if message is None or not isinstance(message.content, str):
+            logger.warning(
+                "UserHookRail: no tool message to attach PostToolUse context to, tool=%s",
+                ctx.inputs.tool_name,
+            )
+            return
+        message.content = message.content + "\n[Hook 发现]: " + additional_context
+
+    async def after_task_iteration(self, ctx: AgentCallbackContext) -> None:
+        """Keep pending tasks from automatically restarting a blocked round."""
+        await self._handle_round_result(ctx)
+
+    @staticmethod
+    def _goal_attempt(ctx: AgentCallbackContext) -> dict | None:
+        run_kind = getattr(ctx.inputs, "run_kind", None)
+        if getattr(run_kind, "value", run_kind) != "goal":
+            return ctx.extra.get(_PENDING_GOAL_KEY)
+        run_context = ctx.inputs.run_context
+        if isinstance(run_context, RunContext):
+            run_context = run_context.extra
+        elif isinstance(run_context, dict):
+            run_context = {**run_context, **(run_context.get("extra") or {})}
+        else:
+            return None
+        goal_id, revision = run_context.get("goal_id"), run_context.get("revision")
+        if goal_id is None or revision is None:
+            return None
+        return {"goal_id": goal_id, "revision": revision}
+
+    async def _handle_round_result(self, ctx: AgentCallbackContext) -> None:
+        result = getattr(ctx.inputs, "result", None)
+        if not isinstance(result, dict):
+            return
+        goal = self._goal_attempt(ctx)
+        if ctx.session is not None:
+            # Store on the session so a rail reload does not lose ownership.
+            # Repeated interruptions retain it; any final result clears it.
+            ctx.session.update_state({
+                _PENDING_GOAL_KEY: goal if result.get("result_type") == "interrupt" else None,
+            })
+        if result.get("stop_reason") != "hook_blocked":
+            return
+        coordinator = getattr(ctx.agent, "loop_coordinator", None)
+        if coordinator is not None:
+            coordinator.request_abort()
+        manager = getattr(ctx.agent, "goal_manager", None)
+        if manager is None or goal is None:
+            return
+        # Run before TaskCompletionRail (priority 10). A terminal assessment
+        # prevents both completion evaluation and the scheduler from retrying.
+        # The manager rejects stale results from a replaced/resumed goal.
+        record = await manager.apply_assessment(
+            goal_id=goal["goal_id"],
+            revision=goal["revision"],
+            assessment=GoalAssessment(
+                status=GoalAssessmentStatus.BLOCKED,
+                evidence=result["output"],
+                next_instruction="Resolve the PreToolUse hook block before explicitly resuming the goal.",
+            ),
+        )
+        if record is not None:
+            ctx.agent.event_manager.discard_goal_work(session_id=record.session_id, goal_id=record.goal_id)
 
     # ---- PostToolUseFailure: ON_TOOL_EXCEPTION ----
 
@@ -131,13 +361,18 @@ class UserHookRail(DeepAgentRail):
                 "tool_name": tool_name,
                 "tool_input": ctx.inputs.tool_args,
                 "error": str(getattr(ctx, "exception", "")),
-                "session_id": self._session_id(ctx),
+                **self._identity(ctx),
             },
         )
 
     # ---- Stop: AFTER_INVOKE ----
 
     async def after_invoke(self, ctx: AgentCallbackContext) -> None:
+        # DeepAgent routes approvals directly to ReAct, without a task
+        # iteration. Ordinary rounds were already handled there: applying
+        # their result again could undo a user's concurrent goal resume.
+        if isinstance(getattr(ctx.inputs, "query", None), InteractiveInput):
+            await self._handle_round_result(ctx)
         hook_configs = self._config.match(HookEvent.STOP.value)
         if not hook_configs:
             return
@@ -147,7 +382,7 @@ class UserHookRail(DeepAgentRail):
             hook_input={
                 "event": "Stop",
                 "final_response": getattr(ctx.inputs, "result", None),
-                "session_id": self._session_id(ctx),
+                **self._identity(ctx),
             },
         )
 

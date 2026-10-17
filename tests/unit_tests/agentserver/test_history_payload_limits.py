@@ -44,6 +44,24 @@ def make_large_tool_result_records(count: int = 20) -> list[dict]:
     ]
 
 
+def test_subagent_activity_history_record_is_restorable():
+    assert agent_ws_server_module._is_restorable_history_record(
+        {
+            "id": "subagent-activity-1",
+            "role": "assistant",
+            "event_type": "chat.subagent_activity",
+            "content": "thinking",
+            "subagent_activity": {
+                "subagent_id": "sub-a",
+                "task_id": "turn-1",
+                "seq": 1,
+                "kind": "thinking",
+                "summary": "thinking",
+            },
+        }
+    ) is True
+
+
 @pytest.fixture(autouse=True)
 def patch_wire_encoder(monkeypatch):
     monkeypatch.setattr(
@@ -151,11 +169,11 @@ def test_history_get_sanitizes_large_restorable_records(monkeypatch):
         },
     }
 
-    monkeypatch.setattr(agent_ws_server_module, "history_exists", lambda session_id: True)
+    monkeypatch.setattr(agent_ws_server_module, "history_exists", lambda session_id, **_kwargs: True)
     monkeypatch.setattr(
         agent_ws_server_module,
         "load_history_records",
-        lambda session_id: [large_record],
+        lambda session_id, **_kwargs: [large_record],
     )
 
     # get_conversation_history 现在返回 raw record（不在内部 sanitize）——

@@ -1,0 +1,52 @@
+.settings-agent-media__row > .setting-row__sub-settings {
+  padding: 0 24px 24px;
+}
+
+.settings-agent-media__row > .setting-row__sub-settings::before {
+  display: none;
+}
+
+.settings-agent-media__restart-notice {
+  padding: 10px 12px;
+  border: 1px solid var(--color-feedback-warning);
+  border-radius: 8px;
+  color: var(--color-text-primary);
+  background: var(--color-feedback-warning-subtle);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.settings-agent-media__model-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 64px;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: var(--color-settings-card-subtle);
+}
+
+.settings-agent-media__model-name {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-agent-media__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+@container setting-row (max-width: 30rem) {
+  .settings-agent-media__row > .setting-row__sub-settings {
+    padding: 0 16px 16px;
+  }
+}

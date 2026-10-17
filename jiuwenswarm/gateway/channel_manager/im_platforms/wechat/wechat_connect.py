@@ -480,7 +480,7 @@ class WechatChannel(BaseChannel):
         if msg.event_type == EventType.CHAT_PROCESSING_STATUS:
             return
 
-        if msg.event_type == EventType.HEARTBEAT_RELAY:
+        if msg.event_type == EventType.HEALTH_CHECK_RELAY:
             user_id = self._extract_platform_user_id(msg)
             if not user_id:
                 logger.warning(
@@ -846,7 +846,7 @@ class WechatChannel(BaseChannel):
         if payload.get("is_complete") is not True:
             return False
         # 仅当是「纯哨兵」帧才视作流结束标记：AgentServer 流式终帧 payload 正是
-        # ``{"is_complete": True}``（见 interface.py:2129），正文已由前置 chat.delta 下发。
+        # ``{"is_complete": True}``（见 interface.py 中 AgentServer 流式终帧 payload），正文已由前置 chat.delta 下发。
         # 但 /skills list 等非流式通知经 _send_channel_notice 也会带 is_complete=True，
         # 且其正文在 payload.content 里——若不在此排除，整段技能列表会被当哨兵丢弃。
         if payload.get("content") not in (None, ""):
@@ -1380,9 +1380,9 @@ class WechatChannel(BaseChannel):
             err = payload.get("error", "处理出错")
             return f"⚠️ {err}"
 
-        if msg.event_type == EventType.HEARTBEAT_RELAY:
+        if msg.event_type == EventType.HEALTH_CHECK_RELAY:
             payload = msg.payload if isinstance(msg.payload, dict) else {}
-            hb = payload.get("heartbeat")
+            hb = payload.get("health_check")
             return str(hb or "").strip()
 
         params = msg.params if isinstance(msg.params, dict) else {}

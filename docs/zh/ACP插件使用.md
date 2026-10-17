@@ -17,7 +17,7 @@ ACP 依赖本地 Gateway，**必须先启动主进程，再在 VS Code 中连接
 
 顺序如下：
 
-1. 安装 `jiuwenswarm`
+1. 安装 `workswarm`
 2. 执行 `jiuwenswarm-init`
 3. 配置大模型相关信息
 4. 启动主进程
@@ -102,7 +102,7 @@ python -m venv .venv
 # Linux / macOS
 source .venv/bin/activate
 
-pip install jiuwenswarm
+pip install workswarm
 ```
 
 ### 2. 初始化
@@ -129,7 +129,7 @@ python -m jiuwenswarm.app
 * **Command**：`jiuwenswarm-acp`
 * **Config / Arguments**：留空
 
-> 说明：`jiuwenswarm-acp` 是 pip install 后自动生成的命令，与 `jiuwenswarm-init`、`jiuwenswarm-start` 同级。需确保 VS Code 在已安装 jiuwenswarm 的虚拟环境中运行，否则需填写完整路径，例如 Windows：`C:\path\to\venv\Scripts\jiuwenswarm-acp.exe`，Linux / macOS：`/path/to/venv/bin/jiuwenswarm-acp`。
+> 说明：`jiuwenswarm-acp` 是 pip install 后自动生成的命令，与 `jiuwenswarm-init`、`jiuwenswarm-start` 同级。需确保 VS Code 在已安装 workswarm 的虚拟环境中运行，否则需填写完整路径，例如 Windows：`C:\path\to\venv\Scripts\jiuwenswarm-acp.exe`，Linux / macOS：`/path/to/venv/bin/jiuwenswarm-acp`。
 
 ![ACP配置](../assets/images/current-ui/09-Harness页面.png)
 

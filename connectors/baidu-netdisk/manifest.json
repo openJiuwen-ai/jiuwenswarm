@@ -1,0 +1,47 @@
+{
+  "version": "1.0.0",
+  "package_type": "mcp",
+  "id": "baidu-netdisk",
+  "name": "百度网盘",
+  "description": "接入百度网盘官方 MCP Server：文件与分类浏览、关键词与语义双检索、文件管理、分享链接、容量查询，以及文本与 URL 内容保存。",
+  "display_name": {
+    "zh": "百度网盘",
+    "en": "Baidu Netdisk"
+  },
+  "display_description": {
+    "zh": "接入百度网盘官方 MCP Server。支持文件与分类浏览、关键词与语义双检索、文件/文件夹管理、创建分享链接、容量查询，以及文本直存与 URL 转存。需使用百度网盘官方授权链接获取 Access Token（30 天有效期）。",
+    "en": "Connect to the official Baidu Netdisk MCP Server: file browsing, keyword & semantic search, file management, share links, quota query, and content saving via text or URL. An Access Token (30-day validity) from the official authorization page is required."
+  },
+  "integration": {
+    "type": "remote-mcp",
+    "file": "mcp.json"
+  },
+  "credentials": {
+    "type": "token",
+    "file": "token-schema.json"
+  },
+  "icon": "icon.png",
+  "skills": [
+    {
+      "dir": "skills/baidu-netdisk-guide",
+      "mode": "all"
+    }
+  ],
+  "category": "办公与生产力",
+  "examples": {
+    "zh": [
+      "查一下我的百度网盘还剩多少空间",
+      "帮我在网盘里找一下关于项目排期的文档",
+      "把这段会议纪要保存到网盘的「工作记录」文件夹",
+      "把这个文件生成分享链接，有效期 7 天",
+      "把这个网址的 PDF 转存到我的网盘"
+    ],
+    "en": [
+      "Check how much space is left in my Baidu Netdisk",
+      "Find documents about project scheduling in my netdisk",
+      "Save these meeting notes to the Work Log folder in my netdisk",
+      "Create a 7-day share link for this file",
+      "Save the PDF from this URL to my netdisk"
+    ]
+  }
+}

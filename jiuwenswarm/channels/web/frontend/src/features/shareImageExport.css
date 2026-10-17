@@ -1,8 +1,13 @@
-.share-image-stage {
+.share-image-export-notice {
+  margin: 24px;
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+}
+
+.share-image-export-renderer {
   position: fixed;
-  top: 0;
   left: -10000px;
-  z-index: -1;
+  top: 0;
   width: 750px;
   pointer-events: none;
 }
@@ -198,12 +203,35 @@
 
 /* Keep the full diagram visible without an inner scrollbar in share images. */
 .share-image-document .mermaid-canvas {
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
   overflow: visible !important;
 }
 
-/* Prevent Mermaid from squeezing wide diagrams in share images. */
+/*
+ * The interactive Mermaid viewer centers a transformed wrapper inside a
+ * fixed-height canvas. In a share image that wrapper must re-enter normal
+ * document flow, otherwise a tall diagram can paint over the next heading.
+ */
+.share-image-document .mermaid-svg-wrapper {
+  position: static !important;
+  inset: auto !important;
+  display: flex !important;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 0 !important;
+  align-items: center;
+  justify-content: center;
+  transform: none !important;
+}
+
+/* Fit wide diagrams to the export column while preserving their aspect ratio. */
 .share-image-document .mermaid-canvas svg {
-  max-width: none !important;
+  display: block;
+  width: auto;
+  max-width: 100% !important;
+  height: auto !important;
 }
 
 /*

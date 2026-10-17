@@ -45,7 +45,7 @@ class SessionManager:
         新任务进来，必须主动回收，否则 processor 协程永久阻塞在 queue.get()，
         连同队列/字典条目泄漏。判定口径与 interface_deep 中一致.
         """
-        return session_id.startswith("heartbeat") or session_id.startswith("cron")
+        return session_id.startswith(("health_check_", "heartbeat", "cron"))
 
     async def cancel_session_task(
         self,
@@ -94,9 +94,16 @@ class SessionManager:
                     session_id,
                 )
 
-    async def cancel_all_session_tasks(self, log_msg_prefix: str = "") -> None:
+    async def cancel_all_session_tasks(
+        self,
+        log_msg_prefix: str = "",
+        *,
+        exclude_session_ids: set[str] | None = None,
+    ) -> None:
         """取消所有 session 的非流式任务."""
         for session_id in list(self._session_tasks.keys()):
+            if session_id in (exclude_session_ids or set()):
+                continue
             await self.cancel_session_task(session_id, log_msg_prefix)
 
     @staticmethod

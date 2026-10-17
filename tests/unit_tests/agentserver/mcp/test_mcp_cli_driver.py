@@ -10,22 +10,28 @@ copying + enable flipping is exercised for real.
 
 from __future__ import annotations
 
-import json
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from jiuwenswarm.server.runtime.mcp import cli_driver
 from jiuwenswarm.server.runtime.mcp.cli_driver import (
-    AuthStepResult,
     CliDriver,
     CliManifest,
     CommandResult,
-    StatusResult,
+    ERR_BINARY_NOT_FOUND,
+    ERR_INSTALL_SCRIPT_DEP,
     _extract_url,
+    _is_binary_not_found,
+    _is_powershell_script_dep,
     _parse_version,
-    _version_ge,
+    _pin_init_command,
+    _safe_split_command,
+    _version_eq,
 )
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
 
 def _mkmanifest() -> CliManifest:
@@ -84,9 +90,96 @@ class TestVersionUtils:
         assert _parse_version("lark-cli 1.0.79 build 123") == "1.0.79"
         assert _parse_version("no version here") is None
 
-    def test_version_ge(self) -> None:
-        assert _version_ge("1.0.79", "1.0.77") is True
-        assert _version_ge("1.0.70", "1.0.77") is False
+    def test_version_eq(self) -> None:
+        assert _version_eq("1.0.79", "1.0.79") is True
+        assert _version_eq("1.0.90", "1.0.79") is False
+        assert _version_eq("1.0.70", "1.0.79") is False
+
+    def test_pin_init_command(self) -> None:
+        assert _pin_init_command("npm install -g @wecom/cli@{version}", "0.1.9") == "npm install -g @wecom/cli@0.1.9"
+        assert _pin_init_command("py -m pip install gitcode-cli=={version}", "0.9.0") == "py -m pip install gitcode-cli==0.9.0"
+        assert _pin_init_command("npm install -g @wecom/cli", "0.1.9") == "npm install -g @wecom/cli"
+        assert _pin_init_command("", "0.1.9") == ""
+
+
+class TestCommandResolution:
+    def test_harmony_resolves_bare_executable_to_absolute_path(self, monkeypatch) -> None:
+        monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+        monkeypatch.setattr(cli_driver.sys, "platform", "linux")
+        monkeypatch.setattr(
+            shutil,
+            "which",
+            lambda name: f"/data/app/hnp/bin/{name}",
+        )
+
+        assert _safe_split_command("npm install -g @larksuite/cli") == [
+            "/data/app/hnp/bin/npm",
+            "install",
+            "-g",
+            "@larksuite/cli",
+        ]
+
+    def test_harmony_hnp_path_enables_resolution_without_marker(self, monkeypatch) -> None:
+        monkeypatch.delenv("JIUWEN_HARMONY_RUNTIME", raising=False)
+        monkeypatch.setattr(cli_driver.sys, "platform", "linux")
+        monkeypatch.setenv(
+            "PATH",
+            "/data/app/el1/bundle/100/hnp/com.example/bin:/system/bin",
+        )
+        monkeypatch.setattr(shutil, "which", lambda _: "/data/app/hnp/bin/node")
+
+        assert _safe_split_command("node --version") == [
+            "/data/app/hnp/bin/node",
+            "--version",
+        ]
+
+    def test_harmony_keeps_explicit_executable_path(self, monkeypatch) -> None:
+        monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+        monkeypatch.setattr(cli_driver.sys, "platform", "linux")
+
+        def fail_which(_: str) -> None:
+            raise AssertionError("explicit paths must not be resolved")
+
+        monkeypatch.setattr(shutil, "which", fail_which)
+        command = "/data/app/hnp/bin/node --version"
+
+        assert _safe_split_command(command) == [
+            "/data/app/hnp/bin/node",
+            "--version",
+        ]
+
+    def test_non_harmony_posix_keeps_existing_bare_command_behavior(self, monkeypatch) -> None:
+        monkeypatch.delenv("JIUWEN_HARMONY_RUNTIME", raising=False)
+        monkeypatch.setattr(cli_driver.sys, "platform", "linux")
+
+        def fail_which(_: str) -> None:
+            raise AssertionError("non-Harmony POSIX must keep existing behavior")
+
+        monkeypatch.setattr(shutil, "which", fail_which)
+
+        assert _safe_split_command("node --version") == ["node", "--version"]
+
+    def test_default_runner_passes_harmony_absolute_path_to_subprocess(self, monkeypatch) -> None:
+        monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+        monkeypatch.setattr(cli_driver.sys, "platform", "linux")
+        monkeypatch.setattr(shutil, "which", lambda _: "/data/app/hnp/bin/node")
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return cli_driver.subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout="v24.13.0\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(cli_driver.subprocess, "run", fake_run)
+
+        result = cli_driver.default_runner("node --version")
+
+        assert result.succeeded is True
+        assert calls[0][0] == ["/data/app/hnp/bin/node", "--version"]
 
 
 class TestExtractUrl:
@@ -132,15 +225,123 @@ class TestCliDriverInstall:
     def test_install_skips_init_when_version_ok(self) -> None:
         runner = _FakeRunner({
             "lark-cli.cmd --version": CommandResult(
-                "lark-cli.cmd --version", 0, stdout="lark-cli 1.0.90"
+                "lark-cli.cmd --version", 0, stdout="lark-cli 1.0.79"
             ),
         })
         drv = CliDriver("feishu", _mkmanifest(), runner)
         res = drv.install()
         assert res.version_ok is True
-        assert res.version == "1.0.90"
-        # init (npm install) must NOT run when versionCheck already passes
+        assert res.version == "1.0.79"
+        # init (npm install) must NOT run when versionCheck already matches
         assert "npm install -g @larksuite/cli" not in runner.calls
+
+    def test_install_downgrades_newer_version_to_pin(self) -> None:
+        """A newer install (1.0.90) is not interchangeable — the CLI's command
+        output is tied to the pinned version. install() must run the pinned
+        init (`@1.0.79`) to downgrade, then re-check and pass."""
+        m = _mkmanifest()
+        m.init_cmd = "npm install -g @larksuite/cli@{version}"
+        calls: list[str] = []
+        downgraded = {"done": False}
+
+        def runner(command: str) -> CommandResult:
+            calls.append(command)
+            if command == "lark-cli.cmd --version":
+                ver = "1.0.79" if downgraded["done"] else "1.0.90"
+                return CommandResult(command, 0, stdout=f"lark-cli {ver}")
+            if command == "npm install -g @larksuite/cli@1.0.79":
+                downgraded["done"] = True
+                return CommandResult(command, 0)
+            return CommandResult(command, 1, stderr="unknown")
+
+        drv = CliDriver("feishu", m, runner)
+        res = drv.install()
+        assert res.version_ok is True
+        assert res.version == "1.0.79"
+        # init must run with the pinned version, not the bare "latest" command
+        assert "npm install -g @larksuite/cli@1.0.79" in calls
+
+    def test_install_cmd_carries_pinned_version(self) -> None:
+        """InstallResult.install_cmd carries the {version}-filled command so
+        the frontend hint can show the exact upgrade/downgrade command."""
+        m = _mkmanifest()
+        m.init_cmd = "npm install -g @larksuite/cli@{version}"
+        runner = _FakeRunner({
+            "lark-cli.cmd --version": CommandResult(
+                "lark-cli.cmd --version", 0, stdout="lark-cli 1.0.70"
+            ),
+            "npm install -g @larksuite/cli@1.0.79": CommandResult(
+                "npm install -g @larksuite/cli@1.0.79", 0
+            ),
+        })
+        drv = CliDriver("feishu", m, runner)
+        res = drv.install()
+        assert res.install_cmd == "npm install -g @larksuite/cli@1.0.79"
+
+    def test_install_binary_not_found_classified(self) -> None:
+        """Runtime/CLI binary missing (node/npm/dws not on PATH) surfaces as
+        error_kind=binary_not_found on InstallResult, so _connect_cli can map
+        it to MCP_RUNTIME_MISSING instead of leaking "[WinError 2]". The fake
+        runner returns a CommandResult carrying the kind that default_runner
+        would set when subprocess raises FileNotFoundError."""
+        runner = _FakeRunner({
+            "lark-cli.cmd --version": CommandResult(
+                "lark-cli.cmd --version", -1,
+                stderr="[WinError 2] 系统找不到指定的文件",
+                error_kind=ERR_BINARY_NOT_FOUND,
+            ),
+            "npm install -g @larksuite/cli": CommandResult(
+                "npm install -g @larksuite/cli", -1,
+                stderr="[WinError 2]",
+                error_kind=ERR_BINARY_NOT_FOUND,
+            ),
+        })
+        drv = CliDriver("feishu", _mkmanifest(), runner)
+        res = drv.install()
+        assert res.version_ok is False
+        assert res.error_kind == ERR_BINARY_NOT_FOUND
+        assert res.runtime == "node"
+
+    def test_install_network_failure_not_classified_as_binary(self) -> None:
+        """npm install ran (rc!=0) with a network error stays error_kind=''
+        — it is NOT binary_not_found, so _classify_install_failure maps it to
+        MCP_INSTALL_NETWORK via stderr markers, not MCP_RUNTIME_MISSING."""
+        runner = _FakeRunner({
+            "lark-cli.cmd --version": CommandResult(
+                "lark-cli.cmd --version", -1, stderr="not found",
+            ),
+            "npm install -g @larksuite/cli": CommandResult(
+                "npm install -g @larksuite/cli", 1,
+                stderr="npm ERR! code ETIMEDOUT registry timeout",
+            ),
+        })
+        drv = CliDriver("feishu", _mkmanifest(), runner)
+        res = drv.install()
+        assert res.version_ok is False
+        assert res.error_kind == ""
+        assert "ETIMEDOUT" in res.error
+
+    def test_install_powershell_script_dep_classified(self) -> None:
+        """npm postinstall could not spawn powershell → error_kind=
+        install_script_dep, surfacing the real cause (missing PowerShell)
+        instead of a misleading MCP_CLI_INCOMPLETE / MCP_RUNTIME_MISSING."""
+        runner = _FakeRunner({
+            "lark-cli.cmd --version": CommandResult(
+                "lark-cli.cmd --version", -1, stderr="not found",
+                error_kind=ERR_BINARY_NOT_FOUND,
+            ),
+            "npm install -g @larksuite/cli": CommandResult(
+                "npm install -g @larksuite/cli", 1,
+                stderr="npm ERR! command failed\nnpm ERR! spawn powershell.exe ENOENT",
+            ),
+        })
+        drv = CliDriver("feishu", _mkmanifest(), runner)
+        res = drv.install()
+        assert res.version_ok is False
+        assert res.error_kind == ERR_INSTALL_SCRIPT_DEP
+        # The post-init version probe (binary missing) must NOT override the
+        # install script's own diagnosis.
+        assert "powershell" in res.error
 
 class TestCliDriverAuth:
     def test_auth_step_skipif_skips(self) -> None:
@@ -217,7 +418,7 @@ class TestCliDriverStatus:
         assert r.authenticated is False
 
     def test_status_match_regex_authenticated(self) -> None:
-        """dingtalk/wecom's statusMatch is a regex (e.g. "authenticated"\s*:\s*true),
+        r"""dingtalk/wecom's statusMatch is a regex (e.g. "authenticated"\s*:\s*true),
         not a literal substring. A literal `in` check never matched because \s*
         was treated as literal text — authenticated stayed False forever.
         re.search matches the pattern against the status output."""
@@ -252,7 +453,7 @@ class TestCliDriverStatus:
         assert r.authenticated is False
 
     def test_status_match_regex_wecom_id(self) -> None:
-        """wecom's statusMatch is "id"\s*:\s*" — matches when the status JSON
+        r"""wecom's statusMatch is "id"\s*:\s*" — matches when the status JSON
         has an id field (present only when authenticated)."""
         m = CliManifest(
             status_cmd="wecom-cli.cmd auth show",
@@ -293,6 +494,9 @@ class TestSkillInstaller:
         )
         (pkg / "references").mkdir()
         (pkg / "references" / "ref.md").write_text("ref", encoding="utf-8")
+        package = pkg.parents[1]
+        (package / "cli.json").write_text("{}", encoding="utf-8")
+        write_manifest(package, "cli", credentials_type="cli-oauth", skills=True)
         return ws
 
     def test_install_copies_and_enables(self, tmp_path: Path) -> None:
@@ -420,6 +624,9 @@ class TestFlatSkillLayout:
         )
         (skills_dir / "references").mkdir()
         (skills_dir / "references" / "ui-locator.md").write_text("ref", encoding="utf-8")
+        package = skills_dir.parent
+        (package / "cli.json").write_text("{}", encoding="utf-8")
+        write_manifest(package, "cli", credentials_type="cli-oauth", skills=True)
         return ws
 
     def test_install_flat_skill_named_after_connector(self, tmp_path: Path) -> None:
@@ -510,3 +717,126 @@ class TestFlatSkillLayout:
 
         import asyncio
         asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Boundary-failure classification: _is_binary_not_found + _classify_install_failure
+# ---------------------------------------------------------------------------
+
+class TestBinaryNotFoundDetection:
+    def test_file_not_found_error_is_binary_missing(self) -> None:
+        assert _is_binary_not_found(FileNotFoundError("[WinError 2] x")) is True
+
+    def test_errno_enoent_is_binary_missing(self) -> None:
+        class _Err(OSError):
+            def __init__(self) -> None:
+                super().__init__(2, "no such file")
+
+        assert _is_binary_not_found(_Err()) is True
+
+    def test_permission_error_is_not_binary_missing(self) -> None:
+        assert _is_binary_not_found(PermissionError("denied")) is False
+
+    def test_generic_oserror_not_binary_missing(self) -> None:
+        assert _is_binary_not_found(OSError("broken pipe")) is False
+
+    def test_powershell_script_dep_patterns(self) -> None:
+        assert _is_powershell_script_dep("npm ERR! spawn powershell.exe ENOENT")
+        assert _is_powershell_script_dep(
+            "'powershell' is not recognized as an internal or external command"
+        )
+        # Generic ENOENT / network errors must NOT be classified as a
+        # PowerShell dependency.
+        assert not _is_powershell_script_dep("npm ERR! spawn dws.cmd ENOENT")
+        assert not _is_powershell_script_dep("npm ERR! code ETIMEDOUT registry timeout")
+        assert not _is_powershell_script_dep("")
+
+
+class TestClassifyInstallFailure:
+    """_classify_install_failure maps an InstallResult onto a CliConnectError
+    carrying a structured code + runtime, so mcp.connect can surface an
+    actionable i18n hint instead of raw WinError."""
+
+    def _mk(self, **kw):
+        from jiuwenswarm.server.runtime.mcp.cli_driver import InstallResult
+        base = dict(
+            name="dingtalk", installed=True, version=None,
+            min_version="1.0.54", version_ok=False, error="boom", error_kind="",
+            runtime="node", install_cmd="npm install -g dingtalk-workspace-cli",
+        )
+        base.update(kw)
+        return InstallResult(**base)
+
+    def test_binary_not_found_maps_to_runtime_missing(self) -> None:
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            CODE_RUNTIME_MISSING, _classify_install_failure,
+        )
+        exc = _classify_install_failure("dingtalk", self._mk(error_kind="binary_not_found"))
+        assert exc.code == CODE_RUNTIME_MISSING
+        assert exc.runtime == "node"
+        assert exc.install_cmd == "npm install -g dingtalk-workspace-cli"
+
+    def test_network_error_maps_to_install_network(self) -> None:
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            CODE_INSTALL_NETWORK, _classify_install_failure,
+        )
+        exc = _classify_install_failure(
+            "dingtalk", self._mk(error="npm ERR! ETIMEDOUT registry timeout"),
+        )
+        assert exc.code == CODE_INSTALL_NETWORK
+
+    def test_network_error_uppercase_code_matches_case_insensitively(self) -> None:
+        """npm emits uppercase error codes (ETIMEDOUT/ECONNREFUSED). The
+        match runs against a lowercased error string, so markers must be
+        lowercase too — a regression where markers stayed uppercase would
+        silently fall through to MCP_CLI_INCOMPLETE. Use an error containing
+        ONLY an uppercase code (no lowercase 'registry'/'network' word) so
+        the marker case-normalization is actually exercised."""
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            CODE_INSTALL_NETWORK, _classify_install_failure,
+        )
+        exc = _classify_install_failure(
+            "dingtalk", self._mk(error="request failed: ECONNREFUSED 127.0.0.1:443"),
+        )
+        assert exc.code == CODE_INSTALL_NETWORK
+
+    def test_script_dep_maps_to_install_script_dep(self) -> None:
+        from jiuwenswarm.server.runtime.mcp.registry import CODE_INSTALL_SCRIPT_DEP, _classify_install_failure
+        exc = _classify_install_failure(
+            "dingtalk",
+            self._mk(error="npm ERR! spawn powershell.exe ENOENT",
+                     error_kind="install_script_dep"),
+        )
+        assert exc.code == CODE_INSTALL_SCRIPT_DEP
+        assert exc.install_cmd == "npm install -g dingtalk-workspace-cli"
+
+    def test_other_failure_maps_to_cli_incomplete(self) -> None:
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            CODE_CLI_INCOMPLETE, _classify_install_failure,
+        )
+        exc = _classify_install_failure("dingtalk", self._mk(error="version too low"))
+        assert exc.code == CODE_CLI_INCOMPLETE
+        # C scenario surfaces the install/upgrade command so the frontend can
+        # show it — not a vague "uninstall and retry".
+        assert exc.install_cmd == "npm install -g dingtalk-workspace-cli"
+
+    def test_empty_runtime_does_not_crash(self) -> None:
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            CODE_RUNTIME_MISSING, _classify_install_failure,
+        )
+        exc = _classify_install_failure(
+            "dingtalk", self._mk(error_kind="binary_not_found", runtime=""),
+        )
+        assert exc.code == CODE_RUNTIME_MISSING
+        assert exc.runtime == ""
+
+    def test_cli_connect_error_is_value_error_subclass(self) -> None:
+        """except ValueError in _handle_mcp_connect still catches CliConnectError
+        as a fallback (it's caught by the dedicated except CliConnectError first,
+        but the subclass relationship guarantees no NameError fallback gap)."""
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            CliConnectError, _classify_install_failure,
+        )
+        exc = _classify_install_failure("dingtalk", self._mk())
+        assert isinstance(exc, CliConnectError)
+        assert isinstance(exc, ValueError)

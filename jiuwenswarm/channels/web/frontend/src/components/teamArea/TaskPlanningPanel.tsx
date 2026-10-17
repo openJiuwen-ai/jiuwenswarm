@@ -1,14 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { File, Maximize2, Puzzle } from 'lucide-react';
+import { File, GitBranch, Maximize2, Puzzle } from 'lucide-react';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
+import { useChatStore, useSessionStore } from '../../stores';
 import type { TeamTask as SessionTeamTask } from '../../stores/sessionStore';
 import recentTasksIcon from '../../assets/work-mode/recent-tasks.svg';
-import statusProcessingIcon from '../../assets/work-mode/status-processing.svg';
-import statusSuccessIcon from '../../assets/work-mode/status-success.svg';
-import statusWaitingIcon from '../../assets/work-mode/status-waiting.svg';
-import statusWarningIcon from '../../assets/work-mode/status-warning.svg';
 import ListViewIcon from '../../assets/work-mode/view-list.svg?react';
 import BoardViewIcon from '../../assets/work-mode/view-board.svg?react';
 import {
@@ -20,12 +17,23 @@ import {
   type TaskColumnKey,
   type TeamMember,
 } from './shared';
+import { CompactTaskList } from './CompactTaskList';
+import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
 import { getTotalTaskVisualProgressPercent } from './taskProgress';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
+import { SwarmflowTreeView } from './SwarmflowTreeView';
+import { SwarmflowGraphView } from './SwarmflowGraphView';
+import type { WorkflowAgent, WorkflowRun } from './workflowTypes';
+import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers } from './workflowTypes';
+import { useEnsurePhaseAgents } from './useEnsurePhaseAgents';
+import { groupByWorkflowRun } from './runGrouping';
+import { RunGroupHeader } from './RunGroupHeader';
 
 type TaskPlanningPanelProps = {
   variant: 'compact' | 'expanded';
   tasks: SessionTeamTask[];
   progressTasks?: SessionTeamTask[];
+  now?: number;
   members: TeamMember[];
   totalTasks: number;
   completedTasks: number;
@@ -36,21 +44,311 @@ type TaskPlanningPanelProps = {
   hideAssignee?: boolean;
   /** 紧凑态下隐藏底部边框（用于非集群模式复用本面板时） */
   hideBorder?: boolean;
+  /** 紧凑态下隐藏头部（用于外层 CollapsibleSection 提供头部时） */
+  hideHeader?: boolean;
+  /** 紧凑态下把任务行状态图标放到行尾（默认在行首） */
+  statusIconAtEnd?: boolean;
   /** 自定义标题（不传则默认用 team.taskOverview） */
   title?: string;
+  /** 耗时文本（紧凑态进度区右侧显示） */
+  duration?: string;
+  /** 自定义任务行中状态图标与标题之间的内容（如人物图标） */
+  renderTaskIcon?: (task: SessionTeamTask) => ReactNode;
+  /** 折叠态最大显示任务数（透传给 CompactTaskList） */
+  maxCollapsedCount?: number;
+  /** 是否已展开全部（透传给 CompactTaskList） */
+  expanded?: boolean;
+  /** 空列表时显示的插图 URL（透传给 CompactTaskList） */
+  emptyIllustration?: string;
 };
 
-const compactStatusIcons: Record<TaskColumnKey, string> = {
-  completed: statusSuccessIcon,
-  running: statusProcessingIcon,
-  waiting: statusWaitingIcon,
-  cancelled: statusWarningIcon,
-};
+const COLUMN_STATS: Array<{ key: TaskColumnKey | 'progress'; labelKey: string }> = [
+  { key: 'progress', labelKey: 'team.planning.metrics.progress' },
+  { key: 'completed', labelKey: 'team.planning.columns.completed' },
+  { key: 'running', labelKey: 'team.planning.columns.running' },
+  { key: 'waiting', labelKey: 'team.planning.columns.waiting' },
+  { key: 'cancelled', labelKey: 'team.planning.columns.failed' },
+];
+
+export function ProgressBar({
+  progressPercent,
+  groupedTasks,
+}: {
+  progressPercent: number;
+  groupedTasks: Record<TaskColumnKey, SessionTeamTask[]>;
+}) {
+  const { t } = useTranslation();
+  return (
+    <>
+      <div
+        className="flex flex-wrap items-baseline gap-x-8 gap-y-2 mb-2"
+        data-testid="team-area-task-planning-progress"
+      >
+        <div className="flex justify-between gap-[22px]">
+          {COLUMN_STATS.map((column) => (
+            <div
+              key={column.key}
+              data-testid="team-area-task-planning-column-stat"
+              data-variant={column.key}
+              className="flex items-center gap-2.5"
+            >
+              <span
+                className="text-xs"
+                style={{ color: 'var(--color-task-column-label)' }}
+                data-testid="team-area-task-planning-column-label"
+              >
+                {t(column.labelKey)}
+              </span>
+              <span
+                className="text-sm font-semibold text-text-strong"
+                data-testid="team-area-task-planning-column-count"
+              >
+                {column.key === 'progress' ? `${progressPercent}%` : groupedTasks[column.key].length}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div
+        className="h-1 rounded-full overflow-hidden mb-4"
+        style={{ backgroundColor: 'var(--color-task-progress-track)' }}
+        data-testid="team-area-task-planning-progress-track"
+      >
+        <div
+          className="h-full rounded-full transition-all duration-300"
+          style={{ width: `${progressPercent}%`, backgroundColor: 'var(--color-task-progress)' }}
+          data-testid="team-area-task-planning-progress-fill"
+        />
+      </div>
+    </>
+  );
+}
+
+export function ProgressSection({
+  tasks,
+  progressTasks,
+  now,
+  groupedTasks,
+  completedTasks,
+  totalTasks,
+  displayMode = 'percent',
+  members,
+  hideAssignee,
+  statusIconAtEnd,
+  renderTaskIcon,
+  maxCollapsedCount,
+  expanded,
+  emptyIllustration,
+  workflowRuns,
+}: {
+  tasks: SessionTeamTask[];
+  progressTasks?: SessionTeamTask[];
+  now?: number;
+  groupedTasks: Record<TaskColumnKey, SessionTeamTask[]>;
+  completedTasks: number;
+  totalTasks: number;
+  displayMode?: 'count' | 'percent';
+  members: TeamMember[];
+  hideAssignee?: boolean;
+  statusIconAtEnd?: boolean;
+  renderTaskIcon?: (task: SessionTeamTask) => ReactNode;
+  maxCollapsedCount?: number;
+  expanded?: boolean;
+  emptyIllustration?: string;
+  workflowRuns?: WorkflowRun[];
+}) {
+  const { t } = useTranslation();
+  const emptyIllustrationSize = displayMode === 'count' ? 48 : 72;
+  useEnsurePhaseAgents(tasks, workflowRuns);
+
+  if (tasks.length === 0) {
+    return (
+      <div
+        className="flex flex-col items-center justify-center gap-2 text-center text-sm text-text-muted"
+        style={{ height: 120 }}
+        data-testid="team-area-task-planning-empty"
+      >
+        {emptyIllustration && (
+          <img
+            src={emptyIllustration}
+            alt=""
+            width={emptyIllustrationSize}
+            height={emptyIllustrationSize}
+            className="shrink-0"
+          />
+        )}
+        <span>{t('team.noTasks')}</span>
+      </div>
+    );
+  }
+
+  const progressPercent = getTotalTaskVisualProgressPercent(progressTasks ?? tasks, now ?? Date.now());
+
+  if (displayMode === 'count') {
+    // 镜像 worker 的任务卡按 run 分组展示，组头用共享 RunGroupHeader；
+    // 无 workflow_run_id 的普通任务保持平铺（旧实现会在有 workflow 时把它们整个丢掉）。
+    const { ungrouped, groups } = groupByWorkflowRun(tasks, workflowRuns ?? []);
+    const maxPerRun = 4;
+    return (
+      <div className="flex flex-col flex-1 min-h-0" data-testid="team-area-task-planning-progress-section">
+        <div className="shrink-0" data-testid="team-area-task-planning-progress">
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-end gap-1 text-text-strong">
+                <span
+                  className="text-2xl font-semibold leading-none"
+                  data-testid="team-area-task-planning-completed-count"
+                >
+                  {completedTasks}
+                </span>
+                <span className="text-sm leading-none pb-0.5" data-testid="team-area-task-planning-total-count">
+                  / {totalTasks}
+                </span>
+              </div>
+            </div>
+            <div
+              className="h-1 rounded-full overflow-hidden"
+              style={{ backgroundColor: 'var(--color-task-progress-track)' }}
+              data-testid="team-area-task-planning-progress-track"
+            >
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${progressPercent}%`, backgroundColor: 'var(--color-task-progress)' }}
+                data-testid="team-area-task-planning-progress-fill"
+              />
+            </div>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {ungrouped.length > 0 && (
+            <CompactTaskList
+              tasks={ungrouped}
+              members={members}
+              hideAssignee={hideAssignee ?? false}
+              statusIconAtEnd={statusIconAtEnd}
+              renderTaskIcon={renderTaskIcon}
+              maxCollapsedCount={maxCollapsedCount}
+              expanded={expanded}
+              emptyText={t('team.noTasks')}
+              emptyIllustration={emptyIllustration}
+              workflowRuns={workflowRuns}
+            />
+          )}
+          {groups.map((group) => {
+            const visible = expanded ? group.items : group.items.slice(0, maxPerRun);
+            const remaining = expanded ? 0 : group.items.length - visible.length;
+            return (
+              <div key={group.runId} className="border-b border-border last:border-b-0">
+                <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} />
+                <CompactTaskList
+                  tasks={visible}
+                  members={members}
+                  hideAssignee={hideAssignee ?? false}
+                  statusIconAtEnd={statusIconAtEnd}
+                  renderTaskIcon={renderTaskIcon}
+                  maxCollapsedCount={maxCollapsedCount}
+                  expanded={expanded}
+                  emptyText={t('team.noTasks')}
+                  emptyIllustration={emptyIllustration}
+                  workflowRuns={workflowRuns}
+                />
+                {remaining > 0 && (
+                  <div className="px-2 py-1 text-xs text-text-muted">{t('team.moreTasks', { count: remaining })}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0" data-testid="team-area-task-planning-progress-section">
+      <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} />
+      <div className="flex-1 overflow-y-auto" data-testid="team-area-task-planning-task-list">
+        <CompactTaskList
+          tasks={tasks}
+          members={members}
+          hideAssignee={hideAssignee ?? false}
+          statusIconAtEnd={statusIconAtEnd}
+          renderTaskIcon={renderTaskIcon}
+          maxCollapsedCount={maxCollapsedCount}
+          expanded={expanded}
+          emptyText={t('team.noTasks')}
+          emptyIllustration={emptyIllustration}
+          workflowRuns={workflowRuns}
+        />
+      </div>
+    </div>
+  );
+}
+
+export function ViewSwitcher({
+  view,
+  onViewChange,
+  showWorkflow = false,
+}: {
+  view: 'board' | 'list' | 'workflow';
+  onViewChange: (view: 'board' | 'list' | 'workflow') => void;
+  showWorkflow?: boolean;
+}) {
+  const { t } = useTranslation();
+  const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip();
+  return (
+    <div
+      className="flex items-center gap-1 rounded-[4px] bg-secondary p-1"
+      role="group"
+      aria-label={t('team.planning.progressTitle')}
+      data-testid="team-area-task-planning-view-switcher"
+    >
+      <button
+        type="button"
+        onClick={() => onViewChange('list')}
+        data-testid="team-area-task-planning-view-list-button"
+        className={`flex h-6 w-6 items-center justify-center rounded-[4px] transition-colors ${view === 'list' ? 'bg-card text-text shadow-sm' : 'text-text-muted hover:text-text'}`}
+        aria-label={t('team.planning.views.list')}
+        data-tooltip={t('team.planning.views.list')}
+        aria-pressed={view === 'list'}
+        {...tooltipHandlers}
+      >
+        <ListViewIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+      </button>
+      <button
+        type="button"
+        onClick={() => onViewChange('board')}
+        data-testid="team-area-task-planning-view-board-button"
+        className={`flex h-6 w-6 items-center justify-center rounded-[4px] transition-colors ${view === 'board' ? 'bg-card text-text shadow-sm' : 'text-text-muted hover:text-text'}`}
+        aria-label={t('team.planning.views.board')}
+        data-tooltip={t('team.planning.views.board')}
+        aria-pressed={view === 'board'}
+        {...tooltipHandlers}
+      >
+        <BoardViewIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+      </button>
+      {tooltip}
+      {showWorkflow && (
+        <button
+          type="button"
+          onClick={() => onViewChange('workflow')}
+          data-testid="team-area-task-planning-view-workflow-button"
+          className={`flex h-6 w-6 items-center justify-center rounded-[4px] transition-colors ${view === 'workflow' ? 'bg-card text-text shadow-sm' : 'text-text-muted hover:text-text'}`}
+          aria-label={t('team.planning.views.workflow')}
+          title={t('team.planning.views.workflow')}
+          aria-pressed={view === 'workflow'}
+        >
+          <GitBranch className="h-4 w-4 shrink-0" aria-hidden="true" />
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function TaskPlanningPanel({
   variant,
   tasks,
-  progressTasks = tasks,
+  progressTasks,
+  now,
   members,
   totalTasks,
   completedTasks,
@@ -58,11 +356,18 @@ export function TaskPlanningPanel({
   hideExpandButton = false,
   hideAssignee = false,
   hideBorder = false,
+  hideHeader = false,
+  statusIconAtEnd = false,
   title,
+  renderTaskIcon,
+  maxCollapsedCount,
+  expanded,
+  emptyIllustration,
 }: TaskPlanningPanelProps) {
   const { t } = useTranslation();
-  const [now, setNow] = useState(() => Date.now());
-  const [view, setView] = useState<'board' | 'list'>('board');
+  const [view, setView] = useState<'board' | 'list' | 'workflow'>('list');
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const workflowRuns = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.workflowRuns ?? []);
   const groupedTasks = useMemo(() => {
     const groups: Record<TaskColumnKey, SessionTeamTask[]> = {
       waiting: [],
@@ -78,195 +383,115 @@ export function TaskPlanningPanel({
     return groups;
   }, [tasks]);
 
-  // 按后端 todos 数组顺序的全局序号：展开态与收起态共用同一份，保证同一任务在两种状态下序号一致。
-  // 后端在状态变更时保序，仅在显式新增/插入任务时改变顺序，序号稳定。
-  const globalIndexMap = useMemo(() => {
-    const map = new Map<string, number>();
-    tasks.forEach((task, index) => {
-      map.set(task.task_id, index + 1);
-    });
-    return map;
-  }, [tasks]);
-
-  useEffect(() => {
-    if (variant !== 'expanded') {
-      return undefined;
-    }
-    const timer = window.setInterval(() => setNow(Date.now()), 3_000);
-    return () => window.clearInterval(timer);
-  }, [variant]);
-
-  const completedProgressTasks = progressTasks.filter((task) => task.status === 'completed').length;
-  const completedProgressPercent = progressTasks.length > 0
-    ? Math.round((completedProgressTasks / progressTasks.length) * 100)
-    : 0;
-  const progressPercent = variant === 'expanded'
-    ? getTotalTaskVisualProgressPercent(progressTasks, now)
-    : completedProgressPercent;
+  const progressPercent = getTotalTaskVisualProgressPercent(progressTasks ?? tasks, now ?? Date.now());
 
   if (variant === 'compact') {
     const allTasks = tasks;
 
     return (
       <div
-        className={`flex flex-[2] flex-col overflow-hidden min-h-0 px-3 pb-3${hideBorder ? '' : ' border-b border-border'}`}
+        className={`flex flex-[2] flex-col overflow-hidden min-h-0 ${hideBorder ? '' : ' border-b border-border'}`}
         data-testid="team-area-task-planning-panel"
         data-variant="compact"
       >
-        <div className="flex w-full shrink-0 items-center justify-between bg-card px-4 py-3" data-testid="team-area-task-planning-header">
-          <div className="flex items-center gap-2">
-            <img src={recentTasksIcon} width={16} height={16} aria-hidden="true" />
-            <span className="text-sm font-medium text-text" data-testid="team-area-task-planning-title">{title ?? t('team.taskOverview')}</span>
-          </div>
-          {hideExpandButton ? null : (
-            <button
-              onClick={onExpand}
-              data-testid="team-area-task-planning-expand-button"
-              className="rounded p-2 text-text-muted  hover:bg-secondary hover:text-text"
-              title={t('team.expand')}
-            >
-              <Maximize2 size={12} aria-hidden="true" />
-            </button>
-          )}
-        </div>
-        <div className="px-4 py-3 shrink-0" data-testid="team-area-task-planning-progress">
-          {allTasks.length > 0 && (
-            <div className="mb-4">
-              <div className="flex items-center justify-start mb-2">
-                <div className="flex items-baseline gap-1">
-                  <span className="text-lg font-semibold text-text-strong" data-testid="team-area-task-planning-completed-count">{completedTasks}</span>
-                  <span className="text-sm text-text-muted" data-testid="team-area-task-planning-total-count">/ {totalTasks}</span>
-                </div>
-              </div>
-              <div className="h-2 bg-secondary rounded-full overflow-hidden" data-testid="team-area-task-planning-progress-track">
-                <div
-                  className="h-full bg-accent rounded-full  "
-                  style={{ width: `${progressPercent}%` }}
-                  data-testid="team-area-task-planning-progress-fill"
-                />
-              </div>
+        {hideHeader ? null : (
+          <div
+            className="flex w-full shrink-0 items-center justify-between bg-card px-4 py-3"
+            data-testid="team-area-task-planning-header"
+          >
+            <div className="flex items-center gap-2">
+              <img src={recentTasksIcon} width={16} height={16} aria-hidden="true" />
+              <span className="text-sm font-medium text-text" data-testid="team-area-task-planning-title">
+                {title ?? t('team.taskOverview')}
+              </span>
             </div>
-          )}
-          <div className="flex justify-between gap-2">
-            {BOARD_COLUMNS.map((column) => (
-              <div
-                key={column.key}
-                data-testid="team-area-task-planning-column-stat"
-                data-variant={column.key}
-                className={`flex-1 flex flex-col items-center justify-center py-2 rounded-md`}
+            {hideExpandButton ? null : (
+              <button
+                onClick={onExpand}
+                data-testid="team-area-task-planning-expand-button"
+                className="rounded p-2 text-text-muted  hover:bg-secondary hover:text-text"
+                title={t('team.expand')}
               >
-                <span className="text-sm font-normal text-text-strong" data-testid="team-area-task-planning-column-count">{groupedTasks[column.key].length}</span>
-                <span className="text-xs mt-1 text-text-muted" data-testid="team-area-task-planning-column-label">{t(column.labelKey)}</span>
-              </div>
-            ))}
+                <Maximize2 size={12} aria-hidden="true" />
+              </button>
+            )}
           </div>
-        </div>
-        <div className="flex-1 overflow-y-auto px-4 pb-3">
-          {allTasks.length === 0 ? (
-            <div className="text-center py-8 text-sm text-text-muted" data-testid="team-area-task-planning-empty">
-              {t('team.noTasks')}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {allTasks.map((task) => {
-                const assigneeExists = Boolean(task.assignee && members.some(member => member.member_id === task.assignee));
-                const assigneeName = getMemberDisplayName(task.assignee || '');
-                const title = getBoardTaskTitle(task);
-                const columnKey = getTaskColumnKey(task);
-                const seq = globalIndexMap.get(task.task_id) ?? 0;
-                return (
-                  <div
-                    key={task.task_id}
-                    data-testid="team-area-task-planning-task-row"
-                    data-variant={task.task_id}
-                    className="flex items-center gap-3 px-3 py-2 rounded-md"
-                  >
-                    <span
-                      className="inline-flex items-center justify-center w-[20px] h-[20px] text-xs font-medium text-muted rounded-[16px] bg-[var(--color-task-index-surface)]"
-                      data-testid="team-area-task-planning-task-seq"
-                    >
-                      {String(seq).padStart(2, '0')}
-                    </span>
-                    {!hideAssignee && (
-                      assigneeExists ? (
-                        <TeamMemberAvatar
-                          member={task.assignee}
-                          alt={assigneeName}
-                          className="h-4 w-4 rounded-full shrink-0"
-                          imageClassName="rounded-full"
-                        />
-                      ) : (
-                        <UnassignedTeamAvatar className="h-4 w-4 rounded-full shrink-0" />
-                      )
-                    )}
-                    <span className="flex-1 text-xs text-text truncate" data-testid="team-area-task-planning-task-title">{title}</span>
-                    <img
-                      src={compactStatusIcons[columnKey]}
-                      className={`h-4 w-4 shrink-0 ${columnKey === 'running' ? 'animate-spin' : ''}`}
-                      aria-hidden="true"
-                      data-testid="team-area-task-planning-task-status-icon"
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        )}
+        <ProgressSection
+          tasks={allTasks}
+          progressTasks={progressTasks}
+          now={now}
+          groupedTasks={groupedTasks}
+          completedTasks={completedTasks}
+          totalTasks={totalTasks}
+          displayMode="count"
+          members={members}
+          hideAssignee={hideAssignee}
+          statusIconAtEnd={statusIconAtEnd}
+          renderTaskIcon={renderTaskIcon}
+          maxCollapsedCount={maxCollapsedCount}
+          expanded={expanded}
+          emptyIllustration={emptyIllustration}
+          workflowRuns={workflowRuns}
+        />
       </div>
     );
   }
 
-  const viewSwitcher = (
-    <div className="flex items-center gap-1" role="group" aria-label={t('team.planning.progressTitle')} data-testid="team-area-task-planning-view-switcher">
-      <button
-        type="button"
-        onClick={() => setView('list')}
-        data-testid="team-area-task-planning-view-list-button"
-        className={`flex h-8 w-8 items-center justify-center rounded-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-card ${view === 'list' ? 'bg-secondary text-text' : 'text-text-muted hover:bg-secondary/50 hover:text-text'}`}
-        aria-label={t('team.planning.views.list')}
-        title={t('team.planning.views.list')}
-        aria-pressed={view === 'list'}
-      >
-        <ListViewIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
-      </button>
-      <button
-        type="button"
-        onClick={() => setView('board')}
-        data-testid="team-area-task-planning-view-board-button"
-        className={`flex h-8 w-8 items-center justify-center rounded-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-card ${view === 'board' ? 'bg-secondary text-text' : 'text-text-muted hover:bg-secondary/50 hover:text-text'}`}
-        aria-label={t('team.planning.views.board')}
-        title={t('team.planning.views.board')}
-        aria-pressed={view === 'board'}
-      >
-        <BoardViewIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
-      </button>
+  const viewSwitcher = <ViewSwitcher view={view} onViewChange={setView} showWorkflow={workflowRuns.length > 0} />;
+
+  const header = (
+    <div className="flex h-8 items-center justify-between gap-3 my-6">
+      <h2 className="text-sm font-semibold leading-5 text-text-strong" data-testid="team-area-task-planning-view-title">
+        {t('team.planning.progressTitle')}
+      </h2>
+      {viewSwitcher}
     </div>
   );
 
   return (
     <div className="flex-1 overflow-hidden bg-card" data-testid="team-area-task-planning-panel" data-variant="expanded">
       {view === 'list' ? (
-        <div className="flex h-full flex-col px-6 pb-6" data-testid="team-area-task-planning-list-view">
-          <div className="flex h-8 items-center gap-3">
-            <h2 className="text-sm font-medium leading-5 text-text-strong" data-testid="team-area-task-planning-view-title">{t('team.planning.progressTitle')}</h2>
-            {viewSwitcher}
-          </div>
-          <ExpandedTaskList
-            tasks={tasks}
-            groupedTasks={groupedTasks}
-            globalIndexMap={globalIndexMap}
-            progressPercent={progressPercent}
-          />
+        <div className="flex h-full min-h-0 flex-col px-6 pb-6" data-testid="team-area-task-planning-list-view">
+          {header}
+          {workflowRuns.length > 0 && activeSessionId ? (
+            <>
+              <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} />
+              <SwarmflowTreeView runs={workflowRuns} sessionId={activeSessionId} />
+            </>
+          ) : (
+            <ProgressSection
+              tasks={tasks}
+              progressTasks={progressTasks}
+              now={now}
+              groupedTasks={groupedTasks}
+              completedTasks={completedTasks}
+              totalTasks={totalTasks}
+              displayMode="percent"
+              members={members}
+              hideAssignee={hideAssignee}
+              statusIconAtEnd={statusIconAtEnd}
+              emptyIllustration={emptyIllustration}
+            />
+          )}
+        </div>
+      ) : view === 'workflow' ? (
+        <div className="flex h-full flex-col px-6 pb-6" data-testid="team-area-task-planning-workflow-view">
+          {header}
+          <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} />
+          {workflowRuns.length > 0 && activeSessionId ? (
+            <SwarmflowGraphView runs={workflowRuns} sessionId={activeSessionId} />
+          ) : null}
         </div>
       ) : (
         <div className="flex h-full flex-col px-6 pb-6">
-          <div className="mb-5 flex h-8 items-center gap-3">
-            <h2 className="text-sm font-medium leading-5 text-text-strong" data-testid="team-area-task-planning-view-title">{t('team.planning.progressTitle')}</h2>
-            {viewSwitcher}
-            <span className="text-sm font-medium text-text-strong" data-testid="team-area-task-planning-progress-percent">{progressPercent}%</span>
-          </div>
+          {header}
+          <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} />
 
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-lg bg-secondary p-6" data-testid="team-area-task-planning-board">
+          <div
+            className="min-h-0 flex-1 overflow-y-auto rounded-lg bg-secondary p-6"
+            data-testid="team-area-task-planning-board"
+          >
             <div
               className="grid min-w-[920px] gap-5"
               style={{ gridTemplateColumns: 'repeat(4, minmax(220px, 1fr))' }}
@@ -279,7 +504,7 @@ export function TaskPlanningPanel({
                   tasks={groupedTasks[column.key]}
                   members={members}
                   hideAssignee={hideAssignee}
-                  globalIndexMap={globalIndexMap}
+                  workflowRuns={workflowRuns}
                 />
               ))}
             </div>
@@ -290,84 +515,18 @@ export function TaskPlanningPanel({
   );
 }
 
-function ExpandedTaskList({
-  tasks,
-  groupedTasks,
-  globalIndexMap,
-  progressPercent,
-}: {
-  tasks: SessionTeamTask[];
-  groupedTasks: Record<TaskColumnKey, SessionTeamTask[]>;
-  globalIndexMap: Map<string, number>;
-  progressPercent: number;
-}) {
-  const { t } = useTranslation();
-
-  return (
-    <>
-      <div className="mt-2 flex min-h-7 flex-wrap items-baseline gap-x-8 gap-y-2" data-testid="team-area-task-planning-list-metrics">
-        <div className="flex shrink-0 items-baseline gap-2">
-          <span className="text-sm leading-5 text-text-muted" data-testid="team-area-task-planning-list-metrics-progress-label">{t('team.planning.metrics.progress')}</span>
-          <span className="text-base font-semibold leading-6 text-text" data-testid="team-area-task-planning-list-metrics-progress-value">{progressPercent}%</span>
-        </div>
-        {BOARD_COLUMNS.map((column) => (
-          <div key={column.key} className="flex shrink-0 items-baseline gap-2" data-testid="team-area-task-planning-list-metrics-column" data-variant={column.key}>
-            <span className="text-sm leading-5 text-text-muted" data-testid="team-area-task-planning-list-metrics-column-label">{t(column.labelKey)}</span>
-            <span className="text-base font-semibold leading-6 text-text" data-testid="team-area-task-planning-list-metrics-column-count">{groupedTasks[column.key].length}</span>
-          </div>
-        ))}
-      </div>
-      <div className="h-1 overflow-hidden rounded-full bg-secondary" data-testid="team-area-task-planning-list-progress-track">
-        <div
-          className={`h-full rounded-full transition-all duration-300 ${tasks.length > 0 && groupedTasks.completed.length === tasks.length ? 'bg-ok' : 'bg-accent'}`}
-          style={{ width: `${progressPercent}%` }}
-          data-testid="team-area-task-planning-list-progress-fill"
-        />
-      </div>
-      <div className="mt-3 min-h-0 flex-1 overflow-x-hidden overflow-y-auto" data-testid="team-area-task-planning-list-task-list">
-        {tasks.length === 0 ? (
-          <div className="py-8 text-center text-sm text-text-muted" data-testid="team-area-task-planning-list-empty">{t('team.noTasks')}</div>
-        ) : tasks.map((task) => {
-          const columnKey = getTaskColumnKey(task);
-          const seq = globalIndexMap.get(task.task_id) ?? 0;
-          const title = getBoardTaskTitle(task);
-
-          return (
-            <div
-              key={task.task_id}
-              className="flex h-12 items-center"
-              data-testid="team-area-task-planning-list-task-row"
-              data-variant={task.task_id}
-            >
-              <span className="mr-4 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-medium leading-4 text-muted">
-                {String(seq).padStart(2, '0')}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-sm font-normal leading-5 text-text" title={title}>{title}</span>
-              <img
-                src={compactStatusIcons[columnKey]}
-                className={`ml-4 h-4 w-4 shrink-0 ${columnKey === 'running' ? 'animate-spin' : ''}`}
-                aria-hidden="true"
-              />
-            </div>
-          );
-        })}
-      </div>
-    </>
-  );
-}
-
 function BoardColumn({
   column,
   tasks,
   members,
   hideAssignee,
-  globalIndexMap,
+  workflowRuns,
 }: {
-  column: typeof BOARD_COLUMNS[number];
+  column: (typeof BOARD_COLUMNS)[number];
   tasks: SessionTeamTask[];
   members: TeamMember[];
   hideAssignee: boolean;
-  globalIndexMap: Map<string, number>;
+  workflowRuns: WorkflowRun[];
 }) {
   const { t } = useTranslation();
 
@@ -382,16 +541,7 @@ function BoardColumn({
       </div>
       <div className="space-y-3" data-testid="team-area-task-planning-board-column-task-list">
         {tasks.map((task) => {
-          const seq = globalIndexMap.get(task.task_id) ?? 0;
-          return (
-            <BoardTaskCard
-              key={task.task_id}
-              task={task}
-              members={members}
-              hideAssignee={hideAssignee}
-              index={seq}
-            />
-          );
+          return <BoardTaskCard key={task.task_id} task={task} members={members} hideAssignee={hideAssignee} workflowRuns={workflowRuns} />;
         })}
       </div>
     </section>
@@ -402,17 +552,19 @@ function BoardTaskCard({
   task,
   members,
   hideAssignee,
-  index,
+  workflowRuns,
 }: {
   task: SessionTeamTask;
   members: TeamMember[];
   hideAssignee: boolean;
-  index: number;
+  workflowRuns: WorkflowRun[];
 }) {
-  const assigneeExists = Boolean(task.assignee && members.some(member => member.member_id === task.assignee));
+  const assigneeExists = Boolean(task.assignee && members.some((member) => member.member_id === task.assignee));
   const assigneeName = getMemberDisplayName(task.assignee || '');
   const title = getBoardTaskTitle(task);
   const content = getBoardTaskContent(task);
+  // 镜像的 workflow phase 任务无 assignee：按 run 的 phase agents 渲染色块头像栈。
+  const workers = task.workflow_run_id ? workflowPhaseWorkers(task, workflowRuns) : [];
 
   return (
     <article
@@ -421,67 +573,84 @@ function BoardTaskCard({
       data-variant={task.task_id}
     >
       <div className="rounded-2xl border border-border bg-card px-4 py-4">
-        <h3 className="truncate text-base font-medium leading-[18px] text-text-strong" title={title} data-testid="team-area-task-planning-board-task-title">
+        <h3
+          className="truncate text-base font-medium leading-[18px] text-text-strong"
+          title={title}
+          data-testid="team-area-task-planning-board-task-title"
+        >
           {title}
         </h3>
         {content ? (
-          <p className="mt-2 line-clamp-2 text-sm leading-5 text-text-muted" title={content} data-testid="team-area-task-planning-board-task-content">
+          <p
+            className="mt-2 line-clamp-2 text-sm leading-5 text-text-muted"
+            title={content}
+            data-testid="team-area-task-planning-board-task-content"
+          >
             {content}
           </p>
         ) : null}
         <TaskResourcePanel skills={task.skills} files={task.files} />
       </div>
-      <div className="mt-3 flex h-8 items-center bg-[var(--color-task-card-surface)] px-1 pb-1" data-testid="team-area-task-planning-board-task-footer">
-        {hideAssignee ? (
-          <span
-            className="inline-flex h-[20px] w-[20px] items-center justify-center rounded-[16px] bg-[var(--color-task-index-surface)] text-xs font-medium text-muted"
-            data-testid="team-area-task-planning-board-task-footer-seq"
-            data-variant="seq"
-          >
-            {String(index).padStart(2, '0')}
-          </span>
-        ) : assigneeExists ? (
-          <div title={assigneeName}>
-            <TeamMemberAvatar
-              member={task.assignee}
-              alt={assigneeName}
-              className="h-8 w-8 rounded-full"
-              imageClassName="rounded-full"
-            />
-          </div>
-        ) : (
-          <UnassignedTeamAvatar className="h-8 w-8 rounded-full" />
-        )}
+      <div
+        className="mt-3 flex h-8 items-center bg-[var(--color-task-card-surface)] px-1 pb-1"
+        data-testid="team-area-task-planning-board-task-footer"
+      >
+        {!hideAssignee &&
+          (workers.length > 0 ? (
+            <WorkflowWorkerAvatarStack workers={workers} />
+          ) : assigneeExists ? (
+            <div title={assigneeName}>
+              <TeamMemberAvatar
+                member={task.assignee}
+                alt={assigneeName}
+                className="h-8 w-8 rounded-full"
+                imageClassName="rounded-full"
+              />
+            </div>
+          ) : (
+            <UnassignedTeamAvatar className="h-8 w-8 rounded-full" />
+          ))}
       </div>
     </article>
   );
 }
 
-function UnassignedTeamAvatar({
-  className,
-}: {
-  className?: string;
-}) {
-  const { t } = useTranslation();
-
+/**
+ * 一叠重叠头像（最多 3 个 + "+N" 芯片），与 workflow 树视图同一套身份映射：
+ * 三方节点认 CLI 品牌脸、人类节点认人类脸、native 按名字哈希取插画。
+ * 整个栈的 title 列出全部 worker 名（含被 +N 折叠的）。
+ */
+function WorkflowWorkerAvatarStack({ workers }: { workers: WorkflowAgent[] }) {
+  const visible = workers.slice(0, 3);
+  const extra = workers.length - visible.length;
+  const names = workers.map((worker) => workflowAgentDisplayName(worker)).join(', ');
   return (
     <div
-      className={`flex shrink-0 items-center justify-center overflow-hidden border border-border bg-card text-[12px] font-medium text-muted ${className || ''}`}
-      aria-label={t('team.planning.unassignedAvatar')}
-      title={t('team.planning.unassigned')}
+      className="flex items-center"
+      title={names}
+      data-testid="team-area-task-planning-board-worker-stack"
     >
-      --
+      {visible.map((worker, index) => (
+        <div key={worker.id} className={index > 0 ? '-ml-2 rounded-full ring-2 ring-[var(--color-task-card-surface)]' : 'rounded-full'}>
+          <TeamMemberAvatar
+            member={workflowAgentAvatarName(worker)}
+            identity={workflowAgentIdentity(worker)}
+            alt={workflowAgentAvatarName(worker)}
+            className="h-8 w-8 rounded-full"
+            imageClassName="rounded-full"
+          />
+        </div>
+      ))}
+      {extra > 0 && (
+        <span className="-ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary text-xs text-text-muted ring-2 ring-[var(--color-task-card-surface)]">
+          +{extra}
+        </span>
+      )}
     </div>
   );
 }
 
-function TaskResourcePanel({
-  skills,
-  files,
-}: {
-  skills?: string[];
-  files?: string[];
-}) {
+function TaskResourcePanel({ skills, files }: { skills?: string[]; files?: string[] }) {
   const { t } = useTranslation();
   const skillCount = skills?.length ?? 0;
   const fileCount = files?.length ?? 0;
@@ -503,7 +672,12 @@ function TaskResourcePanel({
 
   return (
     <div className="mt-4 rounded-lg bg-secondary px-3 py-3" data-testid="team-area-task-planning-board-task-resources">
-      <div className="flex h-6 items-center gap-4 border-b border-border" role="tablist" aria-label={t('team.planning.resources')} data-testid="team-area-task-planning-resources-tabs">
+      <div
+        className="flex h-6 items-center gap-4 border-b border-border"
+        role="tablist"
+        aria-label={t('team.planning.resources')}
+        data-testid="team-area-task-planning-resources-tabs"
+      >
         {hasSkills && (
           <ResourceTab
             label={t('team.planning.skills')}
@@ -525,7 +699,13 @@ function TaskResourcePanel({
         {activeItems?.map((item) => (
           <ResourceLine
             key={`${resolvedActiveTab}-${item}`}
-            icon={resolvedActiveTab === 'skills' ? <Puzzle className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" /> : <File className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />}
+            icon={
+              resolvedActiveTab === 'skills' ? (
+                <Puzzle className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
+              ) : (
+                <File className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
+              )
+            }
             label={item}
           />
         ))}
@@ -553,9 +733,7 @@ function ResourceTab({
       role="tab"
       aria-selected={active}
     >
-      <span className={active ? 'font-medium text-text-strong' : 'text-text'}>
-        {label}
-      </span>
+      <span className={active ? 'font-medium text-text-strong' : 'text-text'}>{label}</span>
       <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-secondary px-1 text-[10px] leading-4 text-text-strong">
         {count}
       </span>
@@ -564,17 +742,9 @@ function ResourceTab({
   );
 }
 
-function ResourceLine({
-  icon,
-  label,
-}: {
-  icon: ReactNode;
-  label: string;
-}) {
+function ResourceLine({ icon, label }: { icon: ReactNode; label: string }) {
   return (
-    <div
-      className="mb-2 flex items-center gap-1 text-xs text-text last:mb-0"
-    >
+    <div className="mb-2 flex items-center gap-1 text-xs text-text last:mb-0">
       {icon}
       <span className="truncate">{label}</span>
     </div>

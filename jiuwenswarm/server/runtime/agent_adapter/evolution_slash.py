@@ -70,7 +70,16 @@ async def handle_evolution_slash_command(
     if command is None:
         return None
     # 合并后演进能力在 agent 模式可用（兼容历史 agent.plan token）。
-    if context.mode not in {"agent", "agent.plan", "team"}:
+    # 各自保留各自的旧放行集合，只追加新三段命名等价串：旧 {agent, agent.plan,
+    # team} + 新 {agent.work.normal, agent.work.plan, team.work.normal,
+    # team.work.plan}。
+    # agent.fast / team.plan.* / code 系仍不放行（不引入 deprecate_mode，因为它
+    # 会把 agent.fast 归一到 agent.work.normal 而误放行）。
+    if context.mode not in {
+        "agent", "agent.plan", "team",
+        "agent.work.normal", "agent.work.plan",
+        "team.work.normal", "team.work.plan",
+    }:
         display_mode = str(context.mode or "当前").strip() or "当前"
         return _error(f"{display_mode} 模式下演进功能不可用。")
     if not context.evolution_enabled:

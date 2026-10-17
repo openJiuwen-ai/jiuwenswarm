@@ -4,6 +4,7 @@
 interface ImportMetaEnv {
   readonly VITE_API_BASE?: string;
   readonly VITE_WS_BASE?: string;
+  readonly VITE_PLATFORM?: string;
 }
 
 interface ImportMeta {
@@ -24,8 +25,19 @@ interface Window {
   __JIUWEN_DESKTOP__?: boolean;
   /** Set by desktop_app.py when OS file-drag accept handlers are injected. */
   __JIUWEN_DESKTOP_DND__?: boolean;
+  jiuwenDesktop?: import('./types/electron').JiuwenElectronDesktopApi;
   pywebview?: {
     api?: {
+      paste_clipboard?: () => Promise<void>;
+      /** pywebview 桌面壳的隐式授权一键授权（对齐 Electron captureOAuthToken）：
+       * 抓厂商文档页提取当前授权直链，开子窗截取 login_success 跳转里的 access_token；
+       * 失败/用户关窗 resolve null。旧壳没有此方法，调用前需判空。 */
+      capture_oauth_token?: (options: {
+        docPageUrl: string;
+        successUrlPrefix: string;
+        title?: string;
+      }) => Promise<{ accessToken?: string } | null> | { accessToken?: string } | null;
+      open_external_url?: (url: string) => Promise<boolean> | boolean;
       download_file?: (url: string, filename: string) => Promise<DesktopSaveResult> | DesktopSaveResult;
       begin_blob_save?: (filename: string, mimeType: string, totalSize: number) => Promise<DesktopBlobSaveStartResult> | DesktopBlobSaveStartResult;
       append_blob_save?: (transferId: string, encodedChunk: string) => Promise<boolean> | boolean;
@@ -48,6 +60,8 @@ interface Window {
       get_clipboard_files?: () =>
         | Promise<Array<Record<string, unknown>>>
         | Array<Record<string, unknown>>;
+      get_close_action?: () => Promise<'ask' | 'hide' | 'quit' | null> | 'ask' | 'hide' | 'quit' | null;
+      set_close_action?: (action: 'ask' | 'hide' | 'quit') => Promise<boolean> | boolean;
     };
   };
   /** Durable ingest hook invoked by desktop_app.py run_js on native file drops. */

@@ -3,12 +3,15 @@ import { CommandKind, type SlashCommand } from "../types.js";
 import type { ClientMode } from "../../modes.js";
 
 const EVOLUTION_SUPPORTED_MODES = new Set<ClientMode>([
-  "agent.plan",
-  "team",
-  "team.plan",
-  "team.plan.normal",
-  "team.plan.code",
-  "code.team",
+  // 单 agent plan：原 agent.plan 的等价新串。
+  "agent.work.plan",
+  // team 全系列：原集合 {team, team.plan, code.team} 在新 canonical 下覆盖
+  // team.work.* / team.code.* 的 normal 与 plan 变体；只列 plan 会让
+  // team.work.normal / team.code.normal 下 /evolve 被前端误拒（回归 #1）。
+  "team.work.normal",
+  "team.work.plan",
+  "team.code.normal",
+  "team.code.plan",
 ]);
 
 function unsupportedEvolutionModeMessage(mode: ClientMode): string | null {

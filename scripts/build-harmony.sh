@@ -63,12 +63,14 @@ rm -rf dist
 # 安装依赖
 npm install
 
-# 构建（Fallback 模式使用 harmony mode：相对路径 + 动态 WS/API URL）
+# 构建：鸿蒙应用总是显式选择 Harmony 前端 profile。
+# Fallback 模式继续使用 vite harmony mode，以保留相对路径 + 动态 WS/API URL 行为。
 if [ "$FALLBACK_MODE" = "true" ]; then
-    echo "⚠️ 使用 Fallback 模式构建前端 (harmony mode: relative paths + dynamic URLs)"
-    npm run build -- --mode harmony
+    echo "⚠️ 使用 Fallback 模式构建前端 (VITE_PLATFORM=harmony, mode=harmony: relative paths + dynamic URLs)"
+    VITE_PLATFORM=harmony npm run build -- --mode harmony
 else
-    npm run build
+    echo "使用 Harmony 前端 profile 构建前端 (VITE_PLATFORM=harmony)"
+    VITE_PLATFORM=harmony npm run build
 fi
 
 # 验证构建产物

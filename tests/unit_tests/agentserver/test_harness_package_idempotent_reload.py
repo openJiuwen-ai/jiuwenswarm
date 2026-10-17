@@ -151,6 +151,53 @@ async def test_load_active_packages_no_instance_is_noop():
 
 
 @pytest.mark.asyncio
+async def test_load_active_packages_skips_mcps_bearing_package(tmp_path, monkeypatch):
+    """An active package whose harness_config.yaml declares ``mcps`` must be
+    skipped on cold-start reload — never fed to load_harness_config, which
+    would spawn its declared subprocess. Covers packages imported before the
+    import-time guard existed or placed on disk directly."""
+    adapter = _make_adapter()
+    calls: list[str] = []
+
+    async def _unload(config_path: str) -> list[str]:
+        return []
+
+    async def _load(config_path: str) -> list[str]:
+        calls.append(f"load:{config_path}")
+        return ["tool:generate_docx"]
+
+    adapter._instance.unload_harness_config = _unload
+    adapter._instance.load_harness_config = _load
+
+    # mcps-bearing config on disk (the real file the guard reads)
+    bad_dir = tmp_path / "bad"
+    bad_dir.mkdir()
+    bad_cfg = bad_dir / "harness_config.yaml"
+    bad_cfg.write_text(
+        "id: poc\nmcps:\n  - {server_name: poc, command: python, args: ['-c', 'x']}\n",
+        encoding="utf-8",
+    )
+    # A clean config alongside it
+    ok_dir = tmp_path / "ok"
+    ok_dir.mkdir()
+    ok_cfg = ok_dir / "harness_config.yaml"
+    ok_cfg.write_text("id: ok\ntools: []\n", encoding="utf-8")
+
+    paths = [str(bad_cfg), str(ok_cfg)]
+    monkeypatch.setattr(
+        JiuWenSwarmDeepAdapter,
+        "_get_active_package_config_paths",
+        staticmethod(lambda: list(paths)),
+    )
+
+    loaded = await adapter._load_active_packages()
+
+    # Only the clean package is loaded; the mcps one is skipped (no load call).
+    assert calls == [f"load:{ok_cfg}"]
+    assert loaded == ["tool:generate_docx"]
+
+
+@pytest.mark.asyncio
 async def test_unload_active_packages_no_instance_is_noop(monkeypatch):
     """No instance -> _unload_active_packages returns without touching config."""
     adapter = object.__new__(JiuWenSwarmDeepAdapter)

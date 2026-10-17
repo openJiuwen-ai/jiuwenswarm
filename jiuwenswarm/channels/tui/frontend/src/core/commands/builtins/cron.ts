@@ -41,9 +41,9 @@ async function loadCronJobMeta(ctx: CommandContext): Promise<CronJobMetaPayload>
   const payload = await ctx.request("cron.job.meta", {}) as CronJobMetaPayload;
   cachedCronMeta = {
     modes: Array.isArray(payload.modes) ? payload.modes : [],
-    default_mode: payload.default_mode || "agent.fast",
-    default_timeout_seconds: payload.default_timeout_seconds ?? 600,
-    default_team_timeout_seconds: payload.default_team_timeout_seconds ?? 1200,
+    default_mode: payload.default_mode || "agent.work.normal",
+    default_timeout_seconds: payload.default_timeout_seconds ?? 3600,
+    default_team_timeout_seconds: payload.default_team_timeout_seconds ?? 3600,
   };
   return cachedCronMeta;
 }
@@ -54,6 +54,16 @@ function isValidCronMode(modes: string[], mode: string): boolean {
 
 const TEAM_MODES = new Set([
   "team",
+  "team.work.normal",
+  "team.work.plan",
+  "team.code.normal",
+  "team.code.plan",
+  // Legacy canonical modes still arriving over the wire from cron jobs created
+  // before the three-segment rename — treat as team. See
+  // jiuwenswarm/common/mode_matrix.py DEPRECATION_MAP: these are the old
+  // canonical IDs (team.plan / team.plan.normal / team.plan.code / code.team)
+  // that the backend silently remaps to the new team.work.* / team.code.*
+  // canonicals, but stored cron jobs may still carry the old value.
   "team.plan",
   "team.plan.normal",
   "team.plan.code",
@@ -61,10 +71,13 @@ const TEAM_MODES = new Set([
 ]);
 
 function resolveDefaultTimeoutSeconds(job: Pick<CronJobPayload, "mode">, cronMeta: CronJobMetaPayload): number {
-  const mode = String(job.mode || cronMeta.default_mode || "agent.fast").trim().toLowerCase();
+  const DEFAULT_MODE = "agent.work.normal";
+  const mode = String(job.mode || cronMeta.default_mode || DEFAULT_MODE)
+    .trim()
+    .toLowerCase();
   return TEAM_MODES.has(mode)
-    ? (cronMeta.default_team_timeout_seconds ?? 1200)
-    : (cronMeta.default_timeout_seconds ?? 600);
+    ? (cronMeta.default_team_timeout_seconds ?? 3600)
+    : (cronMeta.default_timeout_seconds ?? 3600);
 }
 
 function formatTimeoutLabel(
@@ -166,7 +179,10 @@ const CRON_5FIELD_RANGES: CronFieldRange[] = [
   { min: 0, max: 23, allowQuestion: false }, // hour
   { min: 1, max: 31, allowQuestion: true },  // day
   { min: 1, max: 12, allowQuestion: false }, // month
-  { min: 0, max: 7, allowQuestion: true },   // dow (0=Sun,7=Sun)
+  // croniter uses 0=Sunday through 6=Saturday for both 5- and 7-field
+  // expressions.  Do not use Quartz's 1-7 numbering here: this command
+  // validates locally before sending the expression to the backend.
+  { min: 0, max: 6, allowQuestion: true },   // dow (0=Sun,6=Sat)
 ];
 
 const CRON_7FIELD_RANGES: CronFieldRange[] = [
@@ -175,12 +191,12 @@ const CRON_7FIELD_RANGES: CronFieldRange[] = [
   { min: 0, max: 23, allowQuestion: false }, // hour
   { min: 1, max: 31, allowQuestion: true },  // day
   { min: 1, max: 12, allowQuestion: false }, // month
-  { min: 1, max: 7, allowQuestion: true },   // dow
+  { min: 0, max: 6, allowQuestion: true },   // dow (0=Sun,6=Sat)
   // year handled separately
 ];
 
-const FIELD_NAMES_5 = ["minute(0-59)", "hour(0-23)", "day(1-31)", "month(1-12)", "dow(0-7)"];
-const FIELD_NAMES_7 = ["second(0-59)", "minute(0-59)", "hour(0-23)", "day(1-31)", "month(1-12)", "dow(1-7)", "year"];
+const FIELD_NAMES_5 = ["minute(0-59)", "hour(0-23)", "day(1-31)", "month(1-12)", "dow(0-6; 0=Sun)"];
+const FIELD_NAMES_7 = ["second(0-59)", "minute(0-59)", "hour(0-23)", "day(1-31)", "month(1-12)", "dow(0-6; 0=Sun)", "year"];
 
 function isValidCronValue(value: string, range: CronFieldRange): boolean {
   if (value === "*") return true;
@@ -199,10 +215,7 @@ function isValidCronValue(value: string, range: CronFieldRange): boolean {
     } else {
       const num = parseInt(part, 10);
       if (isNaN(num)) return false;
-      if (range.min === 0 && range.max === 7 && (num < 0 || num > 7)) return false;
-      if (range.min !== 0 || range.max !== 7) {
-        if (num < range.min || num > range.max) return false;
-      }
+      if (num < range.min || num > range.max) return false;
     }
   }
   return true;
@@ -214,7 +227,6 @@ function isValidCronRange(range: string, min: number, max: number): boolean {
   const start = parseInt(startStr, 10);
   const end = parseInt(endStr, 10);
   if (isNaN(start) || isNaN(end)) return false;
-  if (min === 0 && max === 7) return start >= 0 && end <= 7 && start <= end;
   return start >= min && end <= max && start <= end;
 }
 
@@ -294,7 +306,7 @@ export function createCronCommand(): SlashCommand {
         name: "add",
         description: "创建定时任务",
         usage: "/cron add name=... cron_expr=\"...\" description=\"...\"",
-        argGuide: "name=任务名 cron_expr=\"时间表达式(5字段或7字段)\" description=\"让Agent做什么\" mode=agent.fast|team targets=tui (默认 agent.fast；mode=team 走 Team+SwarmFlow)",
+        argGuide: "name=任务名 cron_expr=\"时间表达式(5字段或7字段)\" description=\"让Agent做什么\" mode=agent.work.normal|team targets=tui (默认 agent.work.normal；mode=team 走 Team+SwarmFlow)",
         kind: CommandKind.BUILT_IN,
         takesArgs: true,
         action: async (ctx, args) => _handleAdd(ctx, `add ${args}`),

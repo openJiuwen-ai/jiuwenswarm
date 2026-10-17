@@ -19,6 +19,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -31,6 +32,8 @@ from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
+    EXECUTION_WORK_MODES,
+    SUPPORTED_WORK_MODES,
     is_default_project_id,
     normalize_work_mode,
 )
@@ -56,8 +59,22 @@ if sys.platform == "win32":
     import msvcrt
 
     def _acquire(fd: int) -> None:
-        # LK_LOCK 自带 ~10s 重试,超时抛 OSError
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        # LK_LOCK retries once a second: a millisecond metadata write in
+        # another process can otherwise delay admission by a full second.
+        deadline = time.monotonic() + _LOCK_TIMEOUT_SEC
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                return
+            except OSError as exc:
+                import errno
+
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise OSError("timeout acquiring resource file lock") from exc
+                time.sleep(min(0.005, remaining))
 
     def _release(fd: int) -> None:
         try:
@@ -67,7 +84,6 @@ if sys.platform == "win32":
 
 else:
     import fcntl
-    import time
 
     def _acquire(fd: int) -> None:
         deadline = time.monotonic() + _LOCK_TIMEOUT_SEC
@@ -89,7 +105,7 @@ else:
 
 
 @contextmanager
-def _file_lock(data_path: Path) -> Iterator[None]:
+def file_lock(data_path: Path) -> Iterator[None]:
     """跨进程文件锁。锁文件为 ``<data_path>.lock``,与数据文件分离,
     因此数据文件的原子替换不会破坏锁。
     """
@@ -229,17 +245,19 @@ def _write_disk_locked(path: Path, projects: list[dict[str, Any]]) -> None:
 _T = TypeVar("_T")
 
 
-def _mutate(fn: Callable[[list[dict[str, Any]]], _T]) -> _T:
+def _mutate(fn: Callable[[list[dict[str, Any]]], _T], *, skip_unchanged: bool = False) -> _T:
     """在文件锁保护下: 重读磁盘 → 应用变更 → 原子写回 → 刷新缓存。
 
     重读磁盘确保拿到其他进程的最新写入,避免基于陈旧缓存做变更而丢失更新。
     """
     global _CACHE
     path = _projects_file()
-    with _file_lock(path):
+    with file_lock(path):
         projects = _read_disk_locked(path)
+        before = json.dumps(projects, sort_keys=True) if skip_unchanged else None
         result = fn(projects)
-        _write_disk_locked(path, projects)
+        if not skip_unchanged or json.dumps(projects, sort_keys=True) != before:
+            _write_disk_locked(path, projects)
         with _CACHE_LOCK:
             _CACHE = [dict(p) for p in projects]
         return result
@@ -253,7 +271,7 @@ def _load_cache(cache_bust: bool = False) -> list[dict[str, Any]]:
             if _CACHE is not None:
                 return [dict(p) for p in _CACHE]
     path = _projects_file()
-    with _file_lock(path):
+    with file_lock(path):
         raw = _read_disk_locked(path)
         # 惰性迁移:为缺 work_mode 的老项目推断并写回磁盘。
         # from_dict 已能在读取时兜底,但持久化可避免后续每次读都重复推断,
@@ -264,7 +282,7 @@ def _load_cache(cache_bust: bool = False) -> list[dict[str, Any]]:
             existing_wm = p.get("work_mode")
             if (
                 isinstance(existing_wm, str)
-                and existing_wm.strip().lower() in {"code", "work"}
+                and existing_wm.strip().lower() in SUPPORTED_WORK_MODES
             ):
                 continue
             # infer_legacy_project_work_mode 总是返回合法值(缺失/非法时回退 "work")
@@ -298,9 +316,7 @@ def get_project_by_id(
 def get_project_by_dir(
     project_dir: str, *, cache_bust: bool = False
 ) -> Project | None:
-    """按 project_dir 查找项目(不限 hidden 状态,由调用方判断)。
-
-    用于 project.create 的冲突检测与隐藏项目自动恢复。
+    """按 project_dir 查找项目。
 
     .. deprecated::
         本函数按全局路径匹配,不区分 ``work_mode``,在跨模式项目隔离场景下
@@ -346,7 +362,7 @@ def get_project_by_dir_and_mode(
     *,
     cache_bust: bool = False,
 ) -> Project | None:
-    """按 ``(work_mode, normalized project_dir)`` 查找项目(不限 hidden 状态)。
+    """按 ``(work_mode, normalized project_dir)`` 查找项目。
 
     用于跨模式隔离场景下的归属判断与冲突检测。同一 ``project_dir`` 在
     ``code`` / ``work`` 两个模式下可分别对应不同 ``project_id``。
@@ -381,7 +397,7 @@ def get_project_by_name_and_mode(
     *,
     cache_bust: bool = False,
 ) -> Project | None:
-    """按 ``(work_mode, name)`` 查找项目(不限 hidden 状态)。
+    """按 ``(work_mode, name)`` 查找项目。
 
     用于跨模式隔离场景下的名称冲突检测。同一 ``name`` 在 ``code`` / ``work``
     两个模式下可分别对应不同 ``project_id``。
@@ -535,6 +551,13 @@ def resolve_cron_project_binding(
     """
     input_mode = str(work_mode or DEFAULT_WEB_WORK_MODE).strip() or DEFAULT_WEB_WORK_MODE
     match_mode = _normalize_work_mode_value(work_mode)
+    if input_mode not in EXECUTION_WORK_MODES:
+        return CronProjectBinding(
+            project_id="",
+            work_mode=input_mode,
+            error=f"cron is not supported for work_mode: {input_mode!r}",
+            code="BAD_REQUEST",
+        )
     raw_project_id = str(project_id or "").strip()
     if raw_project_id in (DEFAULT_PROJECT_ID_WORK, DEFAULT_PROJECT_ID_CODE):
         return CronProjectBinding(
@@ -563,6 +586,13 @@ def resolve_cron_project_binding(
                 code="NOT_FOUND",
                 hidden=True,
             )
+        if proj.work_mode not in EXECUTION_WORK_MODES:
+            return CronProjectBinding(
+                project_id="",
+                work_mode=proj.work_mode,
+                error=f"cron is not supported for work_mode: {proj.work_mode!r}",
+                code="BAD_REQUEST",
+            )
         return CronProjectBinding(
             project_id=raw_project_id,
             work_mode=proj.work_mode or DEFAULT_WEB_WORK_MODE,
@@ -575,6 +605,13 @@ def resolve_cron_project_binding(
         proj = get_project_by_id(resolved_project_id, cache_bust=True)
         if proj is not None:
             resolved_work_mode = proj.work_mode or DEFAULT_WEB_WORK_MODE
+            if resolved_work_mode not in EXECUTION_WORK_MODES:
+                return CronProjectBinding(
+                    project_id="",
+                    work_mode=resolved_work_mode,
+                    error=f"cron is not supported for work_mode: {resolved_work_mode!r}",
+                    code="BAD_REQUEST",
+                )
     elif resolved_project_id == DEFAULT_PROJECT_ID_CODE:
         resolved_work_mode = DEFAULT_TUI_WORK_MODE
     elif resolved_project_id == DEFAULT_PROJECT_ID_WORK:
@@ -697,12 +734,12 @@ def get_project_dir_by_id(project_id: str) -> str:
 
 
 class ProjectDirConflict(Exception):
-    """``project_dir`` 与已有可见项目重复(由 ``create_or_restore_project`` 在锁内抛出)。"""
+    """``project_dir`` 与已有可见项目重复(由 ``create_project_checked`` 在锁内抛出)。"""
 
 
 class ProjectNameConflict(Exception):
-    """``name`` 与已有项目(含隐藏)重复(由 ``create_or_restore_project`` /
-    ``rename_project`` / ``restore_project`` 在锁内抛出)。
+    """``name`` 与已有项目重复(由 ``create_project_checked`` /
+    ``rename_project`` 在锁内抛出)。
     """
 
 
@@ -728,6 +765,35 @@ _DIR_RESERVED_NAMES = frozenset(
 )
 
 
+def sanitize_project_dir_name(name: str, *, max_len: int = 80) -> str:
+    """Turn an arbitrary prompt/title into a safe directory basename.
+
+    Collapses newlines/control chars, strips Windows-illegal path characters,
+    and truncates. Never raises — returns ``\"project\"`` if nothing usable remains.
+    """
+    import re
+
+    s = str(name or "")
+    # Prefer the first non-empty line (paste often includes a label + body).
+    for line in s.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = line.strip()
+        if line:
+            s = line
+            break
+    else:
+        s = s.strip()
+    s = re.sub(r"[\x00-\x1f\x7f]", " ", s)
+    for ch in _DIR_ILLEGAL_CHARS:
+        s = s.replace(ch, " ")
+    s = re.sub(r"\s+", " ", s).strip(" .")
+    if len(s) > max_len:
+        s = s[:max_len].rstrip(" .")
+    upper = s.upper().rstrip(".")
+    if not s or all(c in " ." for c in s) or upper in _DIR_RESERVED_NAMES:
+        return "project"
+    return s
+
+
 def validate_project_dir_name(name: str) -> str:
     """校验项目名能否作为目录名;含非法字符或为保留名时抛 ``ValueError``。
 
@@ -741,6 +807,11 @@ def validate_project_dir_name(name: str) -> str:
     s = str(name or "").strip()
     if not s:
         raise ValueError("project name is required")
+    if any(ord(c) < 32 or c == "\x7f" for c in s):
+        raise ValueError(
+            "project name contains control characters (newlines/tabs) "
+            "which are illegal in directory names"
+        )
     bad = _DIR_ILLEGAL_CHARS.intersection(s)
     if bad:
         raise ValueError(
@@ -793,7 +864,7 @@ def create_project(
 
     本函数不检测 ``project_dir`` 是否与已有项目重复,调用方需自行保证;
     ``project_id`` 在锁内查重+重生成,避免碰撞。生产路径请用
-    :func:`create_or_restore_project`(原子完成查重/恢复/新建,无 TOCTOU 窗口)。
+    :func:`create_project_checked`(原子完成查重/恢复/新建,无 TOCTOU 窗口)。
 
     Args:
         name: 项目展示名(已 strip)。
@@ -819,12 +890,12 @@ def create_project(
     return _mutate(_do)
 
 
-def create_or_restore_project(
+def create_project_checked(
     name: str,
     project_dir: str,
     work_mode: str = DEFAULT_WEB_WORK_MODE,
 ) -> tuple[Project, bool]:
-    """原子地新建或恢复项目(在文件锁内完成查重/恢复/新建,关闭 TOCTOU 窗口)。
+    """原子创建或恢复项目，同一 work_mode 内检查目录和名称冲突。
 
     冲突检测按 ``work_mode`` 隔离:同一 ``(work_mode, project_dir)`` /
     ``(work_mode, name)`` 在同模式内才视为冲突;不同 ``work_mode`` 的同目录/同名
@@ -832,10 +903,9 @@ def create_or_restore_project(
 
     - ``project_dir`` 为空时:跳过路径匹配/恢复/冲突,直接新建(允许多个空路径
       项目,靠 ``project_id`` + ``name`` + ``work_mode`` 区分,会话按 ``project_id`` 归属);
-    - ``project_dir`` 非空且命中**同 work_mode 的已隐藏项目** → 恢复(置 ``hidden=False``,
-      更新 ``name``),返回 ``(proj, True)``;
+    - ``project_dir`` 非空且命中同 work_mode 的隐藏项目 → 恢复原项目;
     - ``project_dir`` 非空且命中**同 work_mode 的可见项目** → 抛 :class:`ProjectDirConflict`;
-    - ``name`` 与**同 work_mode 的其他项目**(含隐藏项目、非命中的待恢复项)重复 →
+    - ``name`` 与**同 work_mode 的其他项目**重复 →
       抛 :class:`ProjectNameConflict`;
     - ``name`` 含文件系统非法字符 / 为保留设备名 → 抛 ``ValueError``;
     - 无匹配 → 新建(``project_id`` 锁内查重+重生成),返回 ``(proj, False)``。
@@ -882,7 +952,6 @@ def create_or_restore_project(
 
         if path_match is not None:
             if path_match.get("hidden"):
-                # 命中同 work_mode 的隐藏项目 → 自动恢复
                 path_match["hidden"] = False
                 path_match["name"] = name
                 path_match["updated_at"] = _now()
@@ -993,7 +1062,7 @@ def restore_project(project_id: str) -> Project | None:
         target["updated_at"] = _now()
         return Project.from_dict(target)
 
-    return _mutate(_do)
+    return _mutate(_do, skip_unchanged=True)
 
 
 def hide_project(project_id: str) -> Project | None:
@@ -1019,6 +1088,25 @@ def hide_project(project_id: str) -> Project | None:
             target["pin_order"] = 0
         target["updated_at"] = _now()
         return Project.from_dict(target)
+
+    return _mutate(_do)
+
+
+def purge_project(project_id: str) -> bool:
+    """Remove a project created by an uncommitted server transaction.
+
+    User-facing deletion remains soft deletion through :func:`hide_project`.
+    This primitive is intentionally reserved for rollback before a project has
+    ever been returned to a client.
+    """
+    def _do(projects: list[dict[str, Any]]) -> bool:
+        original_count = len(projects)
+        projects[:] = [
+            project
+            for project in projects
+            if str(project.get("project_id") or "") != project_id
+        ]
+        return len(projects) != original_count
 
     return _mutate(_do)
 
@@ -1078,34 +1166,28 @@ def find_or_create_code_project_for_dir(project_dir: str) -> Project | None:
     proj = get_project_by_dir_and_mode(
         pd, DEFAULT_TUI_WORK_MODE, cache_bust=True,
     )
-    if proj is not None and not proj.hidden:
+    if proj is not None:
         return proj
 
     name = os.path.basename(pd.rstrip("/\\")) or "untitled"
     restored = False
     try:
-        proj, restored = create_or_restore_project(
+        proj, restored = create_project_checked(
             name=name, project_dir=pd, work_mode=DEFAULT_TUI_WORK_MODE,
         )
     except ProjectNameConflict:
         suffix = hashlib.sha1(pd.encode("utf-8", errors="replace")).hexdigest()[:6]
-        proj, restored = create_or_restore_project(
+        proj, restored = create_project_checked(
             name=f"{name}-{suffix}", project_dir=pd, work_mode=DEFAULT_TUI_WORK_MODE,
         )
-    # 新建(非恢复)的 code 项目需要 auto git init(与 WEB project.create 路径一致)
-    # 恢复的隐藏项目也需要重新探测 Git:被隐藏期间 .git 可能被删除或分支被外部
-    # 切换,持久化的 git 快照会过期。
+    # TUI 会为当前工作目录隐式登记 code 项目。这不是用户显式创建项目的操作，
+    # 因此只刷新 Git 快照，不得在空目录中自动执行 git init。
     from jiuwenswarm.server.runtime.session.project_git import get_project_git_service
     try:
-        if not restored:
-            get_project_git_service().ensure_on_project_create(proj)
-        else:
-            # 恢复项目:做一次轻量 probe 刷新 git 快照,不自动 init
-            # (恢复场景下用户可能有意删除 .git,不应自动重建)
-            get_project_git_service().probe(proj)
+        get_project_git_service().probe(proj)
     except Exception:  # noqa: BLE001
         logger.debug(
-            "[ProjectStore] git probe/ensure failed for dir=%s restored=%s",
+            "[ProjectStore] git probe failed for dir=%s restored=%s",
             pd, restored, exc_info=True,
         )
     return proj

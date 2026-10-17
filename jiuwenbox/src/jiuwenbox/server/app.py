@@ -12,7 +12,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
 from jiuwenbox.logging_config import configure_logging
@@ -31,6 +31,7 @@ from jiuwenbox.server.policy_reader import PolicyReader
 from jiuwenbox.server.proxy_manager import ProxyManager
 from jiuwenbox.server.policy_engine import PolicyValidationError
 from jiuwenbox.server.runtime.process import enable_child_subreaper
+from jiuwenbox.supervisor.network import cleanup_orphaned_uplinks
 
 # Operator-facing env: when set, the audit JSONL is persisted to this
 # directory using a ``{sandbox_id}-{ts}.audit.log`` filename per sandbox.
@@ -41,8 +42,39 @@ from jiuwenbox.server.runtime.process import enable_child_subreaper
 # normalizes the value to an absolute path and writes it back here.
 ENV_SAVE_LOGS_DIR = "JIUWENBOX_SAVE_LOGS_DIR"
 
+# Operator-facing env: when set to a non-empty string, the ``/health``
+# endpoint returns that exact body as ``text/plain`` (HTTP 200) instead of
+# the default JSON document. Some PaaS liveness probes require a fixed
+# payload and cannot parse the JSON health report; this lets operators
+# configure the expected literal body per deployment. The value is emitted
+# verbatim - no JSON quoting, no appended newline, no charset suffix on the
+# Content-Type. The health determination itself is unchanged; an empty
+# string is treated as unset. Read per-request (same pattern as
+# ``get_configured_token``) so tests and container env wiring stay simple.
+ENV_HEALTH_RESPONSE_BODY = "JIUWENBOX_HEALTH_RESPONSE_BODY"
+
+
+def get_configured_health_body() -> str | None:
+    """Return the custom ``/health`` success body, or ``None`` when unset/empty."""
+    raw = os.environ.get(ENV_HEALTH_RESPONSE_BODY)
+    return raw or None
+
 configure_logging()
 logger = logging.getLogger(__name__)
+
+
+async def _cleanup_orphaned_sandbox_network(reason: str) -> None:
+    """Sweep leftover ``jwb*`` veths / ``jbx-*`` netns from a previous crash.
+
+    Isolated uplink state lives in the kernel, not in the jiuwenbox process, so
+    SIGKILL / OOM / stop-timeout leaves host NICs behind. Best-effort: a
+    failure here must not abort startup or shutdown.
+    """
+    try:
+        await asyncio.to_thread(cleanup_orphaned_uplinks, reason=reason)
+    except Exception:  # noqa: BLE001
+        logger.exception("orphan network cleanup (%s) failed", reason)
+
 
 _sandbox_manager: SandboxManager | None = None
 _proxy_manager: ProxyManager | None = None
@@ -275,6 +307,10 @@ async def lifespan(_application: FastAPI):
         # earliest safe point. No-op on non-Linux / when prctl is denied;
         # logs internally.
         enable_child_subreaper()
+        # Registry is ephemeral across restarts; leftover host veths / netns
+        # from a previous ungraceful stop are not. Sweep them before any new
+        # sandbox can collide with a stale ``jbx-*`` name or occupy a /30.
+        await _cleanup_orphaned_sandbox_network("startup")
         _sandbox_manager = _build_sandbox_manager(policy_reader=policy_reader)
         # Wire the SIGCHLD-driven zombie reaper onto the running uvicorn
         # loop. Failure is non-fatal: the manager logs and the server keeps
@@ -302,6 +338,12 @@ async def lifespan(_application: FastAPI):
     if get_configured_token() is not None:
         logger.info("API authentication enabled")
     await _proxy_manager.start()
+    policy_sync = None
+    if _sandbox_manager is not None and os.getenv("JIUWENBOX_RUNTIME_PROFILE", "").strip().lower() == "agentos":
+        from jiuwenbox.server.etcd_sync.service import PolicySyncService
+
+        policy_sync = PolicySyncService.from_env(_sandbox_manager)
+        await policy_sync.start()
     # 在 proxy 起来之后、yield (接受请求) 之前给 UDS 打权限: 此刻 uvicorn 已
     # 经 bind 并 listen 完成, socket inode 必然存在; 改 mode 不会和首个请求
     # 抢时序。
@@ -315,6 +357,17 @@ async def lifespan(_application: FastAPI):
     try:
         yield
     finally:
+        if policy_sync is not None:
+            await policy_sync.stop()
+        # Drop host veths first (milliseconds). Waiting on daemon SIGTERM can
+        # exceed systemd TimeoutStopSec; if SIGKILL then arrives, NICs would
+        # leak. Tear the uplinks down before that wait.
+        try:
+            if _sandbox_manager is not None:
+                await asyncio.to_thread(_sandbox_manager.drop_all_host_uplinks)
+        except Exception:  # noqa: BLE001
+            logger.exception("drop_all_host_uplinks failed during lifespan shutdown")
+        await _cleanup_orphaned_sandbox_network("shutdown-fast")
         # Stop accepting MCP requests before tearing down managed resources.
         try:
             await _mcp_session_cm.__aexit__(None, None, None)
@@ -486,6 +539,18 @@ def create_app() -> FastAPI:
         else:
             sandboxes = await _sandbox_manager.list_sandboxes()
             active = sum(1 for s in sandboxes if s.phase.value == "ready")
+
+        # Fixed-payload probe mode (e.g. PaaS liveness expecting a literal
+        # body): same health determination as below, only the success wire
+        # format changes. Auth (BearerTokenAuthMiddleware) and every other
+        # route are untouched.
+        custom_body = get_configured_health_body()
+        if custom_body is not None:
+            return Response(
+                content=custom_body,
+                status_code=200,
+                headers={"Content-Type": "text/plain"},
+            )
 
         return HealthResponse(
             version=__version__,

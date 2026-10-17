@@ -292,10 +292,10 @@ class SlackChannel(BaseChannel):
     @staticmethod
     def _extract_outgoing_text(msg: Message) -> str:
         payload = getattr(msg, "payload", None) or {}
-        if msg.event_type == EventType.HEARTBEAT_RELAY and isinstance(payload, dict):
-            heartbeat = payload.get("heartbeat")
-            if heartbeat:
-                return str(heartbeat).strip()
+        if msg.event_type == EventType.HEALTH_CHECK_RELAY and isinstance(payload, dict):
+            health_check = payload.get("health_check")
+            if health_check:
+                return str(health_check).strip()
 
         if isinstance(payload, dict):
             if "content" in payload:

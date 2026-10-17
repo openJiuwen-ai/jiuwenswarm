@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import portalocker
+
 from jiuwenswarm.instance_manager.config import (
     InstanceConfig,
     PID_FILENAME,
@@ -30,6 +32,11 @@ logger = logging.getLogger(__name__)
 LOCK_FILENAME = ".instance.lock"
 # Stale lock timeout in seconds (locks older than this are considered stale)
 STALE_LOCK_TIMEOUT = 30.0
+
+# Lock filename for per-workspace Gateway singleton (held for entire lifetime)
+GATEWAY_LOCK_FILENAME = ".gateway.lock"
+# Max seconds to wait for a (possibly shutting-down) Gateway to release the lock
+GATEWAY_LOCK_ACQUIRE_TIMEOUT = 30.0
 
 
 class InstanceLock:
@@ -191,10 +198,252 @@ class InstanceLock:
         self.release()
 
 
+class GatewayLock:
+    """Per-workspace singleton lock for the Gateway process.
+
+    Prevents two Gateway processes from serving the same workspace. A second
+    Gateway implies a second independent CronSchedulerService over the same
+    ``cron_jobs.json``, which is the root cause of duplicate cron executions
+    (course: two instances, two schedulers, one shared store).
+
+    Mutual exclusion is enforced by a persistent **OS-level file lock**
+    (portalocker: fcntl.flock on POSIX, LockFileEx on Windows) held for the
+    entire Gateway lifetime, so a crashed holder releases the lock
+    automatically and a stale lock never needs to be unlinked:
+
+    - the lock file is created once and never removed (no unlink at all, so a
+      killer TOCTOU race where process B unlinks the fresh lock just created
+      by process A is impossible);
+    - the PID stored inside the file is only informational (diagnostics,
+      ``find_holder`` preflight); authority comes from the OS lock.
+
+    Usage:
+        lock = GatewayLock(get_user_workspace_dir())
+        if not lock.acquire():
+            logger.error("Another Gateway is already running")
+            raise SystemExit(1)
+        try:
+            asyncio.run(main())
+        finally:
+            lock.release()
+    """
+
+    def __init__(self, workspace: Path) -> None:
+        """Initialize lock for given workspace root.
+
+        Args:
+            workspace: Workspace root (e.g. ``~/.jiuwenswarm``). The lock file
+                lives inside it, so different workspaces never contend.
+
+        Design (mirrors CronJobStore): the OS lock lives on a companion file
+        ``.gateway.lock.lock`` (Windows LockFileEx is a *mandatory* lock, so
+        the locked file cannot be read by other handles), while the holder
+        metadata (pid/workspace) lives in ``.gateway.lock`` which is never
+        locked and therefore always readable for preflight checks.
+        """
+        self.lock_path = workspace / GATEWAY_LOCK_FILENAME
+        self._os_lock_path = workspace / (GATEWAY_LOCK_FILENAME + ".lock")
+        self._lock: Optional[portalocker.Lock] = None
+        self._acquired = False
+
+    def acquire(self, timeout: float = GATEWAY_LOCK_ACQUIRE_TIMEOUT) -> bool:
+        """Acquire exclusive lock for this workspace.
+
+        Args:
+            timeout: Max seconds to wait for a currently-live Gateway to exit
+                (e.g. during an upgrade restart). A stale lock (crashed
+                holder) releases the OS lock automatically and is taken over
+                immediately without any file deletion.
+
+        Returns:
+            True if acquired, False otherwise.
+        """
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + max(0.0, timeout)
+
+        while True:
+            lock = portalocker.Lock(
+                str(self._os_lock_path),
+                mode="a+",
+                timeout=None,  # fail_when_locked=True below → a single attempt
+                check_interval=0.2,
+                fail_when_locked=True,
+                flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
+            )
+            try:
+                fh = lock.acquire()
+            except portalocker.exceptions.AlreadyLocked:
+                holder = self._read_holder()
+                pid = int(holder.get("pid", 0) or 0) if holder else 0
+                if pid == os.getpid():
+                    # Self-owned: an os.execv restart reuses the same PID while
+                    # the previous image's lock may still be held. We already
+                    # own the workspace — treat as acquired.
+                    logger.info(
+                        "Gateway lock already held by this process, path=%s",
+                        self.lock_path,
+                    )
+                    self._acquired = True
+                    return True
+                if time.monotonic() >= deadline:
+                    logger.error(
+                        "Another Gateway is running (pid=%d, workspace=%s); "
+                        "refusing duplicate instance: %s",
+                        pid,
+                        holder.get("workspace", "?") if holder else "?",
+                        self.lock_path,
+                    )
+                    return False
+                time.sleep(0.2)
+                continue
+            except (portalocker.exceptions.LockException, OSError):
+                if time.monotonic() >= deadline:
+                    logger.error(
+                        "Failed to acquire Gateway lock within %.1fs: %s",
+                        timeout,
+                        self.lock_path,
+                    )
+                    return False
+                time.sleep(0.2)
+                continue
+
+            # OS lock acquired: overwrite the holder info, then keep the lock
+            # object alive for the entire Gateway lifetime. The metadata file
+            # (.gateway.lock) is never OS-locked, so it stays readable.
+            try:
+                fh.seek(0)  # touch/keep companion file content sane
+                self.lock_path.write_text(
+                    json.dumps(
+                        {
+                            "pid": os.getpid(),
+                            "started_at": time.time(),
+                            "workspace": str(self.lock_path.parent),
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError:
+                lock.release()
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.2)
+                continue
+
+            self._lock = lock
+            self._acquired = True
+            logger.info(
+                "Gateway lock acquired, pid=%d, path=%s",
+                os.getpid(),
+                self.lock_path,
+            )
+            return True
+
+    def release(self) -> None:
+        """Release the lock if we own it."""
+        try:
+            if self._lock is not None:
+                # Clear the holder marker so preflight checks see a free lock,
+                # then drop the OS lock (files are kept, never unlinked).
+                try:
+                    self.lock_path.write_text(
+                        json.dumps(
+                            {
+                                "pid": 0,
+                                "started_at": 0,
+                                "workspace": str(self.lock_path.parent),
+                            },
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                except Exception as exc:  # noqa: BLE001 - cleanup must not raise
+                    logger.debug(
+                        "Gateway lock marker clear error (ignored): %s", exc
+                    )
+                try:
+                    self._lock.release()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Gateway lock release error (ignored): %s", exc)
+                self._lock = None
+        finally:
+            self._acquired = False
+
+    @staticmethod
+    def find_holder(workspace: Path) -> Optional[Dict[str, Any]]:
+        """Return lock metadata if a live Gateway owns this workspace, else None.
+
+        Used by (non-authoritative) preflight checks such as the desktop
+        launcher: a result here means another Gateway holds the workspace.
+
+        The metadata file (.gateway.lock) persists after a crash. A stale PID
+        that happens to be reused by an unrelated process would cause a false
+        positive ("Gateway still running"). To guard against this, after
+        confirming the metadata PID is alive we also probe the companion OS
+        lock (.gateway.lock.lock): if we can acquire it, the Gateway has
+        crashed and released the OS lock, so we return None.
+        """
+        lock_path = workspace / GATEWAY_LOCK_FILENAME
+        if not lock_path.exists():
+            return None
+        try:
+            data = json.loads(lock_path.read_text(encoding="utf-8"))
+            pid = int(data.get("pid", 0) or 0) if isinstance(data, dict) else 0
+            if pid <= 0 or not is_process_alive(pid):
+                return None
+            # PID is alive, but the OS lock may have been released after a
+            # crash. Probe the companion OS lock: if we can acquire it, no
+            # Gateway actually holds the workspace despite the stale metadata.
+            if not GatewayLock._is_os_lock_held(workspace):
+                return None
+            return data if isinstance(data, dict) else None
+        except (json.JSONDecodeError, IOError):
+            return None
+
+    @staticmethod
+    def _is_os_lock_held(workspace: Path) -> bool:
+        """Non-blocking probe of the companion OS lock file.
+
+        Returns True if the OS lock is genuinely held by another process.
+        Returns False if we can acquire it (no holder, or holder crashed).
+        """
+        os_lock_path = workspace / (GATEWAY_LOCK_FILENAME + ".lock")
+        probe = portalocker.Lock(
+            str(os_lock_path),
+            mode="a+",
+            timeout=None,
+            check_interval=0.2,
+            fail_when_locked=True,
+            flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
+        )
+        try:
+            probe.acquire()
+        except (portalocker.exceptions.AlreadyLocked, portalocker.exceptions.LockException):
+            return True
+        except OSError:
+            # On Windows mandatory locking, even opening the locked file may
+            # fail. Treat as held (safe default: avoid false-negative that
+            # would let a second Gateway start).
+            return True
+        try:
+            probe.release()
+        except Exception:  # noqa: BLE001 - best-effort cleanup
+            pass
+        return False
+
+    def _read_holder(self) -> Optional[Dict[str, Any]]:
+        try:
+            data = json.loads(self.lock_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else None
+        except (json.JSONDecodeError, IOError):
+            return None
+
+
 def write_pid_file(
     config: InstanceConfig,
     pid: int,
-    started_at: Optional[float] = None
+    started_at: Optional[float] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Write PID file for a running instance.
 
@@ -216,11 +465,13 @@ def write_pid_file(
     if started_at is None:
         started_at = time.time()
 
-    data = {
+    data: Dict[str, Any] = {
         "pid": pid,
         "started_at": started_at,
         "name": config.name,
     }
+    if metadata:
+        data.update(metadata)
 
     # Atomic write: temp file + rename
     pid_path.parent.mkdir(parents=True, exist_ok=True)
@@ -260,7 +511,9 @@ def read_pid_file(config: InstanceConfig) -> Optional[Dict[str, Any]]:
         return None
 
 
-def delete_pid_file(config: InstanceConfig) -> bool:
+def delete_pid_file(
+    config: InstanceConfig, expected_data: Optional[Dict[str, Any]] = None
+) -> bool:
     """Delete PID file for an instance.
 
     Args:
@@ -271,6 +524,12 @@ def delete_pid_file(config: InstanceConfig) -> bool:
     """
     pid_path = config.get_pid_file_path()
     if not pid_path.exists():
+        return False
+    if expected_data is not None and read_pid_file(config) != expected_data:
+        logger.warning(
+            "PID file for instance '%s' changed during stop; retaining newer record",
+            config.name,
+        )
         return False
     pid_path.unlink()
     logger.info(

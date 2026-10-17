@@ -543,6 +543,60 @@ class TestRewindSessionContextInjectsSummaries:
         assert "Summarized 2 messages from this point." in user_contents
 
     @pytest.mark.asyncio
+    async def test_warmup_passes_configured_context_processors(self, tmp_path, monkeypatch):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        _write_history(
+            sessions_dir / "warmup" / "history.jsonl",
+            [_make_user_record(1, "restore this conversation")],
+        )
+
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.common.session_ops_service.get_agent_sessions_dir",
+            lambda: sessions_dir,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_history.get_agent_sessions_dir",
+            lambda: sessions_dir,
+        )
+
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        processors = [("ContextWindowProcessor", MagicMock())]
+        mock_context_engine = MagicMock()
+        mock_context_engine.get_context.return_value = None
+        mock_context_engine.create_context = AsyncMock()
+
+        mock_react_agent = MagicMock()
+        mock_react_agent.context_engine = mock_context_engine
+        mock_react_agent._config = SimpleNamespace(context_processors=processors)
+
+        mock_session = MagicMock()
+        mock_session.pre_run = AsyncMock()
+
+        mock_deep_agent = MagicMock()
+        mock_deep_agent.react_agent = mock_react_agent
+        mock_deep_agent.card = MagicMock()
+
+        with patch(
+            "openjiuwen.core.single_agent.create_agent_session",
+            return_value=mock_session,
+        ):
+            from jiuwenswarm.agents.harness.common.session_ops_service import (
+                warmup_session_context,
+            )
+
+            result = await warmup_session_context(
+                deep_agent=mock_deep_agent,
+                session_id="warmup",
+            )
+
+        assert result is True
+        kwargs = mock_context_engine.create_context.call_args.kwargs
+        assert kwargs["processors"] == processors
+
+    @pytest.mark.asyncio
     async def test_rewind_summary_without_compact_summary(self, tmp_path, monkeypatch):
         sessions_dir = tmp_path / "sessions"
         sessions_dir.mkdir()

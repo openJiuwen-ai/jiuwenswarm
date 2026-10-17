@@ -16,6 +16,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def _normalize_endpoint(endpoint: str) -> str:
+    # http:// is used for local performance test server; use https:// for production
     return endpoint if "://" in endpoint else f"http://{endpoint}"
 
 

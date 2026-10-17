@@ -1,0 +1,80 @@
+<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="48.000000" height="48.000000" fill="none">
+	<defs>
+		<filter id="pixso_custom_mask_type_alpha">
+			<feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0 " />
+		</filter>
+		<clipPath id="clipPath_33">
+			<rect width="23.538464" height="15.692308" x="0.000000" y="0.000000" fill="rgb(255,255,255)" transform="matrix(-1,0,0,1,35.8616,24)" />
+		</clipPath>
+		<clipPath id="clipPath_34">
+			<rect width="7.061539" height="7.061539" x="28.799988" y="16.200195" fill="rgb(255,255,255)" />
+		</clipPath>
+		<clipPath id="clipPath_35">
+			<rect width="9.600000" height="9.601426" x="34.799988" y="21.000000" fill="rgb(255,255,255)" />
+		</clipPath>
+		<clipPath id="clipPath_36">
+			<rect width="5.400000" height="5.400000" x="36.900024" y="23.100586" fill="rgb(255,255,255)" />
+		</clipPath>
+		<clipPath id="clipPath_37">
+			<rect width="9.600000" height="9.601426" x="34.799988" y="21.000000" fill="rgb(255,255,255)" />
+		</clipPath>
+		<clipPath id="clipPath_38">
+			<rect width="5.400000" height="5.400000" x="36.900024" y="23.100586" fill="rgb(255,255,255)" />
+		</clipPath>
+	</defs>
+	<mask id="mask_15" width="48.000000" height="48.000000" x="0.000000" y="0.000000" maskUnits="userSpaceOnUse">
+		<g filter="url(#pixso_custom_mask_type_alpha)">
+			<g id="mask-2">
+				<g id="use">
+					<rect id="path-1" width="48.000000" height="48.000000" x="0.000000" y="0.000000" fill="rgb(255,255,255)" />
+				</g>
+			</g>
+		</g>
+	</mask>
+	<rect id="空状态-进度" width="48.000000" height="48.000000" x="0.000000" y="0.000000" />
+	<g id="缺省提示/502不匹配">
+		<g id="mask" mask="url(#mask_15)" />
+	</g>
+	<rect id="矩形 542793" width="31.200001" height="32.400002" x="8.400024" y="11.399414" rx="2.353846" fill="rgb(255,254.928,254.745)" />
+	<rect id="矩形 542793" width="30.600000" height="31.800001" x="8.700025" y="11.699414" rx="2.053846" stroke="rgb(219,219,219)" stroke-width="0.600000" />
+	<g id="容器 1111328">
+		<rect id="容器 1111328" width="23.538464" height="15.692308" x="0.000000" y="0.000000" transform="matrix(-1,0,0,1,35.8616,24)" />
+		<rect id="矩形备份-8" width="10.200001" height="3.138462" x="12.599976" y="24.000000" rx="1.569231" fill="rgb(245,245,245)" />
+		<rect id="矩形备份-7" width="21.000000" height="3.000000" x="12.599976" y="29.399414" rx="1.500000" fill="rgb(245,245,245)" />
+		<rect id="矩形备份-9" width="17.261539" height="3.138462" x="12.599976" y="34.799805" rx="1.569231" fill="rgb(245,245,245)" />
+	</g>
+	<g id="svg 11" clip-path="url(#clipPath_34)">
+		<rect id="svg 11" width="7.061539" height="7.061539" x="28.799988" y="16.200195" />
+		<path id="矢量 8308" d="M30.124 22.3791C30.449 22.3791 30.7125 22.1156 30.7125 21.7906C30.7125 21.4656 30.449 21.2021 30.124 21.2021C29.799 21.2021 29.5356 21.4656 29.5356 21.7906C29.5356 22.1156 29.799 22.3791 30.124 22.3791Z" fill="rgb(219,219,219)" fill-rule="nonzero" />
+		<path id="矢量 8308" d="M30.7125 21.7906C30.7125 21.4656 30.449 21.2021 30.124 21.2021C29.799 21.2021 29.5356 21.4656 29.5356 21.7906C29.5356 22.1156 29.799 22.3791 30.124 22.3791C30.449 22.3791 30.7125 22.1156 30.7125 21.7906Z" fill-rule="nonzero" stroke="rgb(128,128,128)" stroke-opacity="0" stroke-linejoin="round" stroke-width="0.392308" />
+		<path id="矢量 8309" d="M30.124 18.2599C30.449 18.2599 30.7125 17.9965 30.7125 17.6715C30.7125 17.3465 30.449 17.083 30.124 17.083C29.799 17.083 29.5356 17.3465 29.5356 17.6715C29.5356 17.9965 29.799 18.2599 30.124 18.2599Z" fill="rgb(219,219,219)" fill-rule="nonzero" />
+		<path id="矢量 8309" d="M30.7125 17.6715C30.7125 17.3465 30.449 17.083 30.124 17.083C29.799 17.083 29.5356 17.3465 29.5356 17.6715C29.5356 17.9965 29.799 18.2599 30.124 18.2599C30.449 18.2599 30.7125 17.9965 30.7125 17.6715Z" fill-rule="nonzero" stroke="rgb(128,128,128)" stroke-opacity="0" stroke-linejoin="round" stroke-width="0.392308" />
+		<path id="矢量 8310" d="M30.124 20.3185C30.449 20.3185 30.7125 20.0551 30.7125 19.7301C30.7125 19.4051 30.449 19.1416 30.124 19.1416C29.799 19.1416 29.5356 19.4051 29.5356 19.7301C29.5356 20.0551 29.799 20.3185 30.124 20.3185Z" fill="rgb(219,219,219)" fill-rule="nonzero" />
+		<path id="矢量 8310" d="M30.7125 19.7301C30.7125 19.4051 30.449 19.1416 30.124 19.1416C29.799 19.1416 29.5356 19.4051 29.5356 19.7301C29.5356 20.0551 29.799 20.3185 30.124 20.3185C30.449 20.3185 30.7125 20.0551 30.7125 19.7301Z" fill-rule="nonzero" stroke="rgb(128,128,128)" stroke-opacity="0" stroke-linejoin="round" stroke-width="0.392308" />
+		<path id="矢量 8311" d="M31.8894 19.7314L35.1259 19.7314" stroke="rgb(219,219,219)" stroke-linecap="round" stroke-linejoin="round" stroke-width="0.392308" />
+		<path id="矢量 8312" d="M31.8894 21.79L35.1259 21.79" stroke="rgb(219,219,219)" stroke-linecap="round" stroke-linejoin="round" stroke-width="0.392308" />
+		<path id="矢量 8313" d="M31.8894 17.6709L35.1259 17.6709" stroke="rgb(219,219,219)" stroke-linecap="round" stroke-linejoin="round" stroke-width="0.392308" />
+	</g>
+	<rect id="矩形 542797" width="13.200001" height="4.800000" x="17.400024" y="9.000000" rx="2.400000" fill="rgb(254.745,254.839,255)" />
+	<rect id="矩形 542797" width="12.600000" height="4.200000" x="17.700024" y="9.300000" rx="2.100000" stroke="rgb(219,219,219)" stroke-width="0.600000" />
+	<g id="容器 1111318">
+		<rect id="容器 1111318" width="9.600000" height="9.601426" x="34.799988" y="21.000000" />
+		<ellipse id="椭圆形备份" rx="4.800000" ry="4.800713" cx="39.599987" cy="25.8007126" fill="rgb(219,219,219)" />
+		<g id="svg 12" clip-path="url(#clipPath_36)">
+			<rect id="svg 12" width="5.400000" height="5.400000" x="36.900024" y="23.100586" />
+			<path id="矢量 8314" d="M37.4625 25.8006C37.4625 26.9811 38.4195 27.9381 39.6 27.9381L39.6 26.0256C39.6 25.9013 39.7008 25.8006 39.825 25.8006L41.7375 25.8006C41.7375 24.6201 40.7805 23.6631 39.6 23.6631C38.4195 23.6631 37.4625 24.6201 37.4625 25.8006Z" fill="rgb(255,255,255)" fill-rule="nonzero" />
+			<path id="矢量 8314" d="M39.6 27.9381L39.6 26.0256C39.6 25.9013 39.7008 25.8006 39.825 25.8006L41.7375 25.8006C41.7375 24.6201 40.7805 23.6631 39.6 23.6631C38.4195 23.6631 37.4625 24.6201 37.4625 25.8006C37.4625 26.9811 38.4195 27.9381 39.6 27.9381Z" fill-rule="nonzero" stroke="rgb(51,51,51)" stroke-opacity="0" stroke-linecap="round" stroke-linejoin="round" stroke-width="0.450000" />
+			<rect id="矩形 542798" width="1.350000" height="1.350000" x="40.275024" y="26.475586" fill="rgb(255,255,255)" />
+			<rect id="矩形 542798" width="1.350000" height="1.350000" x="40.275024" y="26.475586" stroke="rgb(51,51,51)" stroke-opacity="0" stroke-linecap="round" stroke-linejoin="round" stroke-width="0.450000" />
+		</g>
+	</g>
+	<g id="容器 1111320">
+		<rect id="容器 1111320" width="9.600000" height="9.601426" x="34.799988" y="21.000000" />
+		<ellipse id="椭圆形备份" rx="4.800000" ry="4.800713" cx="39.599987" cy="25.8007126" fill="rgb(219,219,219)" />
+		<g id="svg 17" clip-path="url(#clipPath_38)">
+			<rect id="svg 17" width="5.400000" height="5.400000" x="36.900024" y="23.100586" />
+			<path id="矢量 8322" d="M41.625 27.8264L41.625 23.7764L40.5 23.7764L40.275 23.7764C40.126 24.1317 39.901 24.3094 39.6 24.3094C39.299 24.3094 39.074 24.1317 38.925 23.7764L38.7 23.7764L37.575 23.7764L37.575 27.8264L41.625 27.8264Z" fill-rule="evenodd" stroke="rgb(255,255,255)" stroke-linejoin="round" stroke-width="0.450000" />
+			<path id="矢量 8323" d="M38.5875 25.801L39.2625 26.476L40.6125 25.126" fill-rule="nonzero" stroke="rgb(255,255,255)" stroke-linecap="round" stroke-linejoin="round" stroke-width="0.450000" />
+		</g>
+	</g>
+</svg>

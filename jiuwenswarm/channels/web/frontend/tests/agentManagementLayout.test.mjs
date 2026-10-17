@@ -1,0 +1,1070 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import i18next from 'i18next';
+import { initReactI18next } from 'react-i18next';
+
+const panelSource = readFileSync(new URL('../src/components/AgentManagementPanel/index.tsx', import.meta.url), 'utf8');
+const groupCatalogSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/GroupCatalogPage.tsx', import.meta.url),
+  'utf8',
+);
+const catalogPageSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/CatalogPage.tsx', import.meta.url),
+  'utf8',
+);
+const groupCardSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/GroupCard.tsx', import.meta.url),
+  'utf8',
+);
+const agentManagementCss = readFileSync(
+  new URL('../src/components/AgentManagementPanel/agentManagement.css', import.meta.url),
+  'utf8',
+);
+const entityHeaderCss = readFileSync(
+  new URL('../src/components/ui/EntityHeader/EntityHeader.css', import.meta.url),
+  'utf8',
+);
+const groupEditorSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/AgentGroupEditor.tsx', import.meta.url),
+  'utf8',
+);
+const agentDetailSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/DefinitionDetailPage.tsx', import.meta.url),
+  'utf8',
+);
+const groupDetailSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/AgentGroupDetailPage.tsx', import.meta.url),
+  'utf8',
+);
+const pluginDetailSource = readFileSync(
+  new URL('../src/components/ConnectorMarket/PluginDetailPage.tsx', import.meta.url),
+  'utf8',
+);
+const mcpDetailSource = readFileSync(
+  new URL('../src/components/ConnectorMarket/McpDetailPage.tsx', import.meta.url),
+  'utf8',
+);
+const memberPickerSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/AgentGroupMemberPicker.tsx', import.meta.url),
+  'utf8',
+);
+const agentEditorSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/AgentEditor.tsx', import.meta.url),
+  'utf8',
+);
+const pageCardSource = readFileSync(new URL('../src/components/ui/PageCard/PageCard.tsx', import.meta.url), 'utf8');
+const pickerDrawerSource = readFileSync(
+  new URL('../src/components/ui/PickerDrawer/PickerDrawer.tsx', import.meta.url),
+  'utf8',
+);
+const pickerListRegionSource = readFileSync(
+  new URL('../src/components/ui/PickerListRegion/PickerListRegion.tsx', import.meta.url),
+  'utf8',
+);
+const skillPickerDrawerSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/SkillPickerDrawer.tsx', import.meta.url),
+  'utf8',
+);
+const connectorPickerDrawerSource = readFileSync(
+  new URL('../src/components/ConnectorMarket/ConnectorPickerDrawer.tsx', import.meta.url),
+  'utf8',
+);
+const mcpPickerDrawerSource = readFileSync(
+  new URL('../src/components/ConnectorMarket/McpPickerDrawer.tsx', import.meta.url),
+  'utf8',
+);
+const groupUploadSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/AgentGroupUploadDialog.tsx', import.meta.url),
+  'utf8',
+);
+const inputAreaSource = readFileSync(new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8');
+const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const zhLocale = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
+const enLocale = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'));
+
+await i18next.use(initReactI18next).init({
+  lng: 'zh',
+  showSupportNotice: false,
+  resources: {
+    zh: {
+      translation: {
+        agentManagement: {
+          title: '专家管理',
+          subtitle: '创建并管理专家',
+          tabsLabel: '专家管理分类',
+          tabs: { catalog: '专家广场', mine: '我的专家' },
+          searchLabel: '搜索专家',
+          searchCatalog: '搜索专家',
+          searchMine: '搜索我的专家',
+          categories: { all: '全部' },
+          states: { loading: '加载中' },
+          loadMore: '加载更多内容',
+        },
+      },
+    },
+  },
+  interpolation: { escapeValue: false },
+});
+
+test('expert catalog renders inside the standard page shell and toolbar', async () => {
+  const { AgentManagementPanel } =
+    await import('../node_modules/.cache/agent-management-layout/AgentManagementPanel.mjs');
+
+  const originalConsoleError = console.error;
+  console.error = (...args) => {
+    if (!String(args[0]).includes('useLayoutEffect does nothing on the server')) {
+      originalConsoleError(...args);
+    }
+  };
+  let markup;
+  try {
+    markup = renderToStaticMarkup(React.createElement(AgentManagementPanel));
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.match(markup, /class="app-page-body"/);
+  assert.match(
+    markup,
+    /class="page-content agent-management-panel agent-management-panel--catalog"[^>]*data-testid="agent-management-panel"/,
+  );
+  assert.match(markup, /data-testid="common-page-header"/);
+  assert.match(markup, /class="page-toolbar"[^>]*data-testid="page-toolbar"/);
+  // 2026-09-11 页签迁移到共享 ui/Tabs：class 变为 "tabs ..."（role=tablist 不变），
+  // tab 项语义由 data-testid="agent-management-primary-tab" + data-variant 表达
+  assert.match(markup, /class="tabs[^"]*"[^>]*data-testid="agent-management-primary-tabs"/);
+  assert.match(markup, /data-testid="agent-management-primary-tab"[^>]*data-variant="catalog"/);
+  assert.match(markup, /data-testid="agent-management-primary-tab"[^>]*data-variant="mine"/);
+  assert.match(markup, /data-testid="agent-management-search"[^>]*class="relative flex-shrink-0"/);
+});
+
+for (const detailStatus of ['loading', 'error']) {
+  test(`expert ${detailStatus} keeps the back bar outside the centered content`, async () => {
+    const { DefinitionDetailPage } =
+      await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+    const { JSDOM } = await import('jsdom');
+    const markup = renderToStaticMarkup(
+      React.createElement(DefinitionDetailPage, {
+        detail: null,
+        detailStatus,
+        detailError: 'Unavailable',
+        onBack() {},
+        onRetry() {},
+      }),
+    );
+    const document = new JSDOM(markup).window.document;
+    const shell = document.querySelector('[data-testid="agent-detail"]');
+    assert.ok(shell, 'Loading and errors must reuse the normal detail shell');
+    assert.equal(shell.classList.contains('agent-management-detail--state'), false);
+    const back = shell.querySelector('[data-testid="agent-management-detail-back"]');
+    assert.equal(back.parentElement, shell);
+    const content = shell.querySelector('[data-testid="agent-management-detail-state"]');
+    assert.ok(content);
+    assert.equal(content.contains(back), false);
+    assert.equal(content.getAttribute('role'), detailStatus === 'loading' ? 'status' : 'alert');
+    assert.equal(
+      content.querySelector('[data-testid="agent-management-detail-retry"]') !== null,
+      detailStatus === 'error',
+    );
+  });
+}
+
+test('expert catalog shows a spinner while the first page is loading', async () => {
+  const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const markup = renderToStaticMarkup(
+    React.createElement(CatalogPage, {
+      scope: 'catalog',
+      items: [],
+      totalItems: 0,
+      query: '',
+      category: '',
+      status: 'loading',
+      error: null,
+      busyIds: new Set(),
+      onCategoryChange() {},
+      onRetry() {},
+      onOpen() {},
+      onUse() {},
+      onReconnect() {},
+      onInstall() {},
+      onCreate() {},
+    }),
+  );
+  const document = new JSDOM(markup).window.document;
+  const loading = document.querySelector('[data-testid="agent-management-catalog-loading"]');
+  assert.ok(loading);
+  assert.equal(loading.getAttribute('role'), 'status');
+  assert.ok(loading.querySelector('.animate-spin'));
+});
+
+test('Expert Team loading keeps the back bar outside the centered content', async () => {
+  const { AgentGroupDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/AgentGroupDetailPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const markup = renderToStaticMarkup(
+    React.createElement(AgentGroupDetailPage, {
+      detail: null,
+      loadingSummary: {
+        id: 'slow-team',
+        displayName: 'Slow Team',
+        description: 'Summary remains visible while details load.',
+        source: 'hub',
+        installed: false,
+        category: 'general',
+        tags: [],
+        avatarUrl: null,
+        capabilities: {},
+      },
+      detailStatus: 'loading',
+      detailError: null,
+      onBack() {},
+      onRetry() {},
+    }),
+  );
+  const document = new JSDOM(markup).window.document;
+  const shell = document.querySelector('[data-testid="agent-group-detail"]');
+  assert.ok(shell);
+  assert.equal(shell.classList.contains('agent-management-detail--state'), false);
+  const back = shell.querySelector('[data-testid="agent-group-detail-back"]');
+  assert.equal(back.parentElement, shell);
+  const content = shell.querySelector('[data-testid="agent-group-detail-state"]');
+  assert.ok(content);
+  assert.equal(content.contains(back), false);
+  assert.equal(content.getAttribute('role'), 'status');
+  assert.equal(shell.querySelector('[data-testid="agent-management-detail-name"]').textContent, 'Slow Team');
+  assert.match(shell.textContent, /Summary remains visible while details load\./);
+});
+
+test('publish actions require an installed runtime asset', () => {
+  assert.match(agentDetailSource, /canShowAssetPublish\(detail\.installed\)/);
+  assert.match(
+    groupDetailSource,
+    /canShowAssetPublish\(detail\.installed, detail\.capabilities\.canPublish\)/,
+  );
+  assert.match(pluginDetailSource, /canShowAssetPublish\(installed\)/);
+  assert.match(mcpDetailSource, /canShowAssetPublish\(connector\.installed\)/);
+});
+
+for (const [source, installed, expected] of [
+  ['local', true, 'delete'],
+  ['local', false, 'delete'],
+  ['hub', true, 'uninstall'],
+  ['builtin', true, 'uninstall'],
+]) {
+  test(`expert ${source} installed=${installed} uses ${expected}`, async () => {
+    const { DefinitionDetailPage } =
+      await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+    const { JSDOM } = await import('jsdom');
+    const detail = {
+      id: 'test',
+      runtimePackageName: 'test',
+      displayName: 'Test',
+      description: '',
+      source,
+      installed,
+      connectionState: 'connected',
+      tags: [],
+      avatarUrl: null,
+      skills: [],
+      tools: [],
+      rails: [],
+      mcps: [],
+      suggestedPrompts: [],
+      pendingConnectors: [],
+      details: '',
+      prompt: '',
+    };
+    const markup = renderToStaticMarkup(
+      React.createElement(DefinitionDetailPage, {
+        detail,
+        detailStatus: 'ready',
+        detailTab: 'content',
+        fileEntries: [],
+        onBack() {},
+        onUninstall() {},
+      }),
+    );
+    const actionTestId = installed ? 'agent-management-detail-uninstall-btn' : 'agent-management-detail-delete-btn';
+    const button = new JSDOM(markup).window.document.querySelector(`[data-testid="${actionTestId}"]`);
+    assert.equal(button.textContent, expected === 'delete' ? '删除' : '卸载');
+  });
+}
+
+test('unsupported expert files remain selectable and show the unsupported preview state', async () => {
+  const { DefinitionDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const detail = {
+    id: 'test',
+    runtimePackageName: 'test',
+    displayName: 'Test',
+    description: '',
+    source: 'local',
+    installed: true,
+    connectionState: 'connected',
+    tags: [],
+    avatarUrl: null,
+    skills: [],
+    tools: [],
+    rails: [],
+    mcps: [],
+    suggestedPrompts: [],
+    pendingConnectors: [],
+    details: '',
+    prompt: '',
+  };
+  const markup = renderToStaticMarkup(
+    React.createElement(DefinitionDetailPage, {
+      detail,
+      detailStatus: 'success',
+      detailTab: 'files',
+      files: [{ relativePath: 'runtime.bin', kind: 'file', previewable: false }],
+      filesStatus: 'success',
+      selectedFilePath: 'runtime.bin',
+      fileContent: null,
+      fileStatus: 'success',
+      onBack() {},
+      onSelectFile() {},
+    }),
+  );
+  const document = new JSDOM(markup).window.document;
+  const fileButton = document.querySelector('[data-testid="agent-management-file-tree-item"]');
+  assert.equal(fileButton.getAttribute('data-variant'), 'runtime.bin');
+  assert.equal(fileButton.disabled, false);
+  assert.equal(fileButton.textContent, 'runtime.bin');
+  assert.equal(fileButton.querySelector('[data-testid="agent-management-file-tree-item-unsupported"]'), null);
+  assert.ok(
+    document.querySelector('[data-testid="agent-management-file-preview-content-state"][data-variant="unsupported"]'),
+  );
+});
+
+test('expert PDF files render through the shared browser preview', async () => {
+  const { DefinitionDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const detail = {
+    id: 'test',
+    runtimePackageName: 'test',
+    displayName: 'Test',
+    description: '',
+    source: 'local',
+    installed: true,
+    connectionState: 'connected',
+    tags: [],
+    avatarUrl: null,
+    skills: [],
+    tools: [],
+    rails: [],
+    mcps: [],
+    suggestedPrompts: [],
+    pendingConnectors: [],
+    details: '',
+    prompt: '',
+  };
+  const markup = renderToStaticMarkup(
+    React.createElement(DefinitionDetailPage, {
+      detail,
+      detailStatus: 'success',
+      detailTab: 'files',
+      files: [{ relativePath: 'guide.pdf', kind: 'file', previewable: true }],
+      filesStatus: 'success',
+      selectedFilePath: 'guide.pdf',
+      fileContent: { relativePath: 'guide.pdf', content: null, downloadUrl: '/file-api/download?token=pdf' },
+      fileStatus: 'success',
+      onBack() {},
+      onSelectFile() {},
+    }),
+  );
+  const document = new JSDOM(markup).window.document;
+  const pdf = document.querySelector('[data-testid="agent-management-file-preview-content-pdf"]');
+  assert.equal(pdf.getAttribute('src'), '/file-api/download?token=pdf&inline=1');
+});
+
+for (const name of ['MarketCard', 'MyMarketCard']) {
+  for (const [state, quickAction, label] of [
+    ['connected', 'install', '使用'],
+    ['idle', 'install', '安装'],
+    ['idle', 'connect', '连接'],
+  ]) {
+    test(`${name} ${state}/${quickAction} exposes one text action`, async () => {
+      const module = await import(`../node_modules/.cache/agent-management-layout/${name}.mjs`);
+      const { JSDOM } = await import('jsdom');
+      const html = renderToStaticMarkup(
+        React.createElement(module[name], {
+          title: 'Test',
+          tags: ['变更审查', '行为覆盖', '合入就绪'],
+          description: '',
+          state,
+          quickAction,
+          onUse() {},
+          onQuickAdd() {},
+          onQuickInstall() {},
+        }),
+      );
+      const document = new JSDOM(html).window.document;
+      assert.ok(document.querySelector('.entity-header__tags').textContent.includes('变更审查'));
+      assert.ok(document.querySelector('.entity-header__tags').textContent.includes('行为覆盖'));
+      assert.ok(document.querySelector('.entity-header__tags').textContent.includes('合入就绪'));
+      const buttons = document.querySelectorAll('button');
+      assert.equal(buttons.length, 1);
+      assert.equal(buttons[0].textContent, label);
+      assert.ok(buttons[0].classList.contains('connector-market-card-install'));
+    });
+  }
+}
+test('Expert and Expert Team management keep the shared page shell and field limits', () => {
+  assert.match(panelSource, /<div className="page-shell flex-none"[^>]*>\s*<PageHeader/);
+  assert.match(groupCatalogSource, /className="page-shell agent-management-toolbar"/);
+  assert.match(groupCatalogSource, /className="page-scroll min-h-0 flex-1 overflow-y-auto"/);
+  assert.match(groupCardSource, /<PageCard[\s\S]*className="agent-management-page-card agent-group-card"/);
+  assert.match(groupCardSource, /headerTestId="agent-group-card-open"/);
+  assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
+  assert.match(groupCardSource, /interactive\s*\n?\s*ariaLabel/);
+  assert.match(groupCardSource, /defaultButton=\{defaultButton\}/);
+  assert.doesNotMatch(groupCardSource, /<article/);
+  assert.match(groupEditorSource, /data-testid="agent-group-editor-name"[\s\S]*maxLength=\{AGENT_NAME_MAX_LENGTH\}/);
+  assert.match(
+    groupEditorSource,
+    /data-testid="agent-group-editor-description"[\s\S]*maxLength=\{AGENT_DESCRIPTION_MAX_LENGTH\}/,
+  );
+  assert.doesNotMatch(groupEditorSource, /detail-back mb-\[35px\]/);
+});
+
+test('empty manual definitions do not synthesize an Other domain tag', () => {
+  assert.doesNotMatch(catalogPageSource, /scope === 'mine'[\s\S]*categoryOther/);
+  assert.doesNotMatch(groupCardSource, /fallbackTag|categoryOther/);
+  assert.doesNotMatch(memberPickerSource, /categoryOther/);
+  assert.match(catalogPageSource, /const labelTags: string\[\] \| undefined = item\.tags\.length > 0/);
+  assert.match(groupCardSource, /const label = item\.tags\.length > 0[\s\S]*: undefined;/);
+  assert.match(memberPickerSource, /const categoryTags = [\s\S]*agent\.tags\.length > 0[\s\S]*: undefined;/);
+  assert.match(memberPickerSource, /label=\{categoryTags\}/);
+  assert.match(groupDetailSource, /const detailTags = detail\.tags;/);
+  assert.match(groupDetailSource, /\.\.\.\(categoryLabel \? \[categoryLabel\] : \[\]\)/);
+  assert.doesNotMatch(agentDetailSource, /categoryOther/);
+});
+
+test('group card actions keep uninstall in the detail page and install created groups before listing', () => {
+  assert.doesNotMatch(groupCardSource, /onUninstall|data-variant=\{item\.installed \? 'uninstall'/);
+  assert.doesNotMatch(groupCatalogSource, /onUninstall/);
+  assert.match(groupDetailSource, /data-variant="uninstall"/);
+  assert.match(
+    panelSource,
+    /groupClient\.createGroup\([\s\S]*groupClient\.installGroup\(result\.id\)[\s\S]*loadGroups\('mine'\)/,
+  );
+  assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
+  assert.match(panelSource, /client\.createAgent\([\s\S]*handleInstall\(id\)/);
+  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id\)/);
+});
+
+test('primary management tabs retain tab semantics and chat picker enforces mode locks', () => {
+  assert.match(panelSource, /<Tabs[\s\S]*ariaLabel=\{t\('agentManagement\.tabsLabel'\)\}/);
+  assert.match(panelSource, /\{ value: 'catalog', label: t\('agentManagement\.tabs\.catalog'\) \}/);
+  assert.match(panelSource, /\{ value: 'teams', label: t\('agentManagement\.tabs\.teams'\) \}/);
+  assert.match(panelSource, /\{ value: 'mine', label: t\('agentManagement\.tabs\.mine'\) \}/);
+  assert.match(
+    inputAreaSource,
+    /const existingTeamGroupSelectionDisabled = Boolean\([\s\S]*activeSessionId !== NEW_CONVERSATION_ID/,
+  );
+  assert.match(inputAreaSource, /const agentSelectionDisabled = isTeamMode;/);
+  assert.match(
+    inputAreaSource,
+    /const teamSkillSelectionActive = isTeamMode && selectedSkills\.length > 0;[\s\S]*const agentGroupSelectionDisabled = isAgentMode \|\| agentGroupPickerLocked \|\| teamSkillSelectionActive;/,
+  );
+  assert.match(inputAreaSource, /aria-disabled=\{agentSelectionDisabled\}[\s\S]*disabled=\{agentSelectionDisabled\}/);
+  assert.match(
+    inputAreaSource,
+    /aria-disabled=\{agentGroupSelectionDisabled\}[\s\S]*disabled=\{agentGroupSelectionDisabled\}/,
+  );
+  assert.match(inputAreaSource, /chat\.agentOnlyInSingleAgentMode/);
+  assert.match(inputAreaSource, /chat\.agentGroupOnlyInTeamMode/);
+  assert.match(inputAreaSource, /chat\.teamSkillsGroupLocked/);
+  assert.match(inputAreaSource, /if \(!activeSessionId \|\| agentSelectionDisabled\) return;/);
+  assert.match(inputAreaSource, /if \(agentGroupSelectionDisabled \|\| !activeSessionId\) return;/);
+  assert.match(inputAreaSource, /agentSelectionDisabled && 'is-locked'/);
+  assert.match(inputAreaSource, /agentGroupSelectionDisabled && 'is-locked'/);
+  assert.match(inputAreaSource, /!isTeamMode \? \([\s\S]*chat-panel-agent-picker-agent-tab/);
+  assert.match(inputAreaSource, /!isAgentMode \? \([\s\S]*chat-panel-agent-picker-agent-group-tab/);
+  assert.match(inputAreaSource, /t\(isTeamMode \? 'chat\.agentGroup' : 'chat\.agent'\)/);
+});
+
+test('single-mode picker removes its redundant title and More routes to the matching My Expert type', () => {
+  assert.match(
+    inputAreaSource,
+    /tabs=\{\s*!isAgentMode && !isTeamMode \?[\s\S]*chat-panel-agent-picker-agent-tab[\s\S]*chat-panel-agent-picker-agent-group-tab[\s\S]*: null/,
+  );
+  assert.match(inputAreaSource, /onNavigateToAgents\?\.\(isTeamMode \? 'group' : 'agent'\)/);
+  assert.match(panelSource, /navigationRequest\?: \{\s*target: 'agent' \| 'group';\s*requestId: number;/);
+  assert.match(panelSource, /setView\('mine'\)[\s\S]*setMineKind\(request\.target\)/);
+  assert.match(appSource, /onNavigateToAgents=\{handleNavigateToAgentManagement\}/);
+  assert.match(appSource, /navigationRequest=\{agentManagementNavigationRequest\}/);
+});
+
+test('leader and member picker cards include the shared Expert description', () => {
+  assert.match(memberPickerSource, /import \{[^}]*PickerDrawer[^}]*PageCard[^}]*\} from '\.\.\/ui';/);
+  assert.match(memberPickerSource, /<PageCard[\s\S]*testId="agent-group-member-picker-item"/);
+  assert.match(memberPickerSource, /description=\{description\}/);
+  assert.match(
+    memberPickerSource,
+    /const description = agent\.description \|\| t\('agentManagement\.unknownDescription'\);/,
+  );
+  assert.match(pageCardSource, /selected\?: boolean;[\s\S]*disabled\?: boolean;/);
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card \.entity-header\s*\{\s*width: 100%;\s*min-width: 0;/,
+  );
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card \.page-card__body\s*\{[\s\S]*overflow-wrap: anywhere;[\s\S]*text-align: left;/,
+  );
+});
+
+test('management pickers expose source tabs and preserve install/connect actions', () => {
+  assert.match(
+    panelSource,
+    /scheduleCatalogRefresh\('agent-catalog', marketplaceCatalog\.cache, \(\) => \{ void loadCatalog\(options\); \}/,
+  );
+  assert.match(panelSource, /const skillsRevisionRef = useRef\(0\)/);
+  assert.match(panelSource, /if \(revision !== skillsRevisionRef\.current\) return;/);
+  assert.match(panelSource, /onTeamMarketplaceLoaded:/);
+  assert.match(panelSource, /scheduleCatalogRefresh\(\s*'agent-team-skill-marketplace'/);
+  assert.match(
+    panelSource,
+    /void loadCatalog\(view === 'group-create' \? \{ includeTeamCompatibility: true \} : \{\}\);/,
+  );
+  assert.match(panelSource, /catalog\.compatibility\.loading/);
+  assert.match(panelSource, /catalog\.compatibility\.error/);
+  assert.match(panelSource, /agentsStatus=\{state\.catalogCompatibilityStatus\}/);
+  assert.match(groupEditorSource, /agentsError=\{agentsError\}/);
+  assert.match(groupEditorSource, /onReloadAgents=\{onReloadAgents\}/);
+  assert.match(pickerDrawerSource, /data-testid=\{`\$\{testId\}-search`\}/);
+  assert.match(pickerDrawerSource, /wrapperTestId=\{`\$\{testId\}-tabs`\}/);
+  assert.match(pickerDrawerSource, /testId: `\$\{testId\}-tab-\$\{item\.value\}`/);
+  assert.match(memberPickerSource, /testId="agent-group-member-picker"/);
+  assert.match(memberPickerSource, /agent-group-member-picker-install/);
+  assert.match(pickerListRegionSource, /testId=\{testId \? `\$\{testId\}-error` : undefined\}/);
+  assert.match(pickerListRegionSource, /retryTestId=\{testId \? `\$\{testId\}-retry` : undefined\}/);
+  assert.match(memberPickerSource, /testId="agent-group-member-picker"/);
+  assert.match(memberPickerSource, /onReloadAgents/);
+  assert.match(memberPickerSource, /value: 'market'/);
+  assert.match(memberPickerSource, /value: 'local'/);
+  assert.match(memberPickerSource, /sortAgentGroupOptions\(sourceAgents, agentsStatus\)/);
+  assert.match(memberPickerSource, /isAgentGroupAgentCompatibilityLoading\(agent, agentsStatus\)/);
+  assert.match(memberPickerSource, /className=.*is-loading/);
+  assert.match(
+    memberPickerSource,
+    /sourceTab === 'market' \? agent\.source !== 'local' : agent\.source === 'local' \|\| agent\.installed === true/,
+  );
+  assert.match(memberPickerSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
+  assert.match(skillPickerDrawerSource, /isTeamSkillOption\(skill, sourceTab\)/);
+  assert.match(skillPickerDrawerSource, /isSkillVisibleInSourceTab\(skill, sourceTab\)/);
+  assert.match(skillPickerDrawerSource, /sortInstalledFirst\(/);
+  assert.match(skillPickerDrawerSource, /testId: `\$\{testId\}-install`/);
+  assert.match(groupEditorSource, /<SkillPickerDrawer/);
+  assert.match(groupEditorSource, /testId="agent-group-editor-skill-picker"/);
+  assert.match(groupEditorSource, /initialSelectedIds=\{draft\.skillRefs\}/);
+  assert.match(agentEditorSource, /testId="agent-editor-skill-picker"/);
+  assert.match(pickerListRegionSource, /data-testid=\{testId \? `\$\{testId\}-load-more` : undefined\}/);
+  assert.match(agentEditorSource, /testId="agent-editor-mcp-picker"/);
+  assert.match(mcpPickerDrawerSource, /testId: `\$\{testId\}-connect`/);
+  assert.match(agentEditorSource, /<McpPickerDrawer/);
+  // filterItem/tabs 必须是稳定引用（useCallback/useMemo）：内联字面量会让 PickerListRegion
+  // 的 [items] 重置效应在父组件每次渲染时把触底加载的列表打回首屏。
+  // 页签/过滤/排序/安装连接卡片已内聚在 McpPickerDrawer，专家编辑器与
+  // 手动创建插件页（connector-market-mcp-picker）共用同一组件。
+  assert.match(mcpPickerDrawerSource, /filterItem=\{filterMcpBySourceTab\}/);
+  assert.match(
+    mcpPickerDrawerSource,
+    /const filterMcpBySourceTab = useCallback\(\(mcp: McpOption, tab: McpSourceTab\)/,
+  );
+  assert.match(mcpPickerDrawerSource, /const sortedMcps = useMemo\(\(\) => sortMcpOptions\(items\), \[items\]\)/);
+  assert.match(mcpPickerDrawerSource, /const selectable = isMcpSelectable\(mcp\)/);
+  assert.match(mcpPickerDrawerSource, /interactive=\{selectable\}/);
+  assert.match(connectorPickerDrawerSource, /selected: selectedIds\.includes\(getItemKey\(item\)\)/);
+  assert.match(mcpPickerDrawerSource, /value: 'installed'/);
+  assert.doesNotMatch(agentEditorSource, /MCP_TYPE_OPTIONS|mcpTypeFilter|mcpTypeAll/);
+  assert.doesNotMatch(mcpPickerDrawerSource, /MCP_TYPE_OPTIONS|mcpTypeFilter|mcpTypeAll/);
+  assert.match(panelSource, /const \[busySkillId, setBusySkillId\] = useState<string \| null>\(null\)/);
+  assert.match(mcpPickerDrawerSource, /const \[installingId, setInstallingId\] = useState<string \| null>\(null\)/);
+  assert.match(panelSource, /setBusySkillId\(skill\.id\)/);
+  assert.match(mcpPickerDrawerSource, /setInstallingId\(mcp\.id\)/);
+  assert.match(panelSource, /installingSkillId=\{busySkillId\}/);
+  assert.match(mcpPickerDrawerSource, /disabled: installing,/);
+  assert.match(mcpPickerDrawerSource, /busy: installing,/);
+  // 挂载首跑静默清掉残留的 connectorStore.error（陈旧报错不误弹），只 toast 挂载后新发生的错误。
+  assert.match(mcpPickerDrawerSource, /const staleErrorRef = useRef\(true\)/);
+  assert.match(mcpPickerDrawerSource, /if \(staleErrorRef\.current\) \{\s*staleErrorRef\.current = false;\s*if \(connectorError\) clearConnectorError\(\);/);
+  // 安装请求落定（response 有值）即刷新列表，需凭据分支取消授权弹窗后卡片能看到已安装态。
+  assert.match(mcpPickerDrawerSource, /if \(response\) onRetry\(\);/);
+  assert.match(agentManagementCss, /agent-management-selection-card\.page-card\.is-disabled[\s\S]*opacity: 1;/);
+  assert.match(
+    agentManagementCss,
+    /agent-management-selection-card\.page-card\.is-disabled \.entity-header__tag[\s\S]*border: 1px solid var\(--color-border-default\);/,
+  );
+  assert.match(
+    agentManagementCss,
+    /agent-management-selection-card\.page-card\.is-loading[\s\S]*cursor: wait[\s\S]*opacity: 1;/,
+  );
+  assert.match(agentManagementCss, /agent-management-selection-card__loading-icon[\s\S]*animation:/);
+  assert.match(
+    agentManagementCss,
+    /agent-management-selection-card__install[\s\S]*color: var\(--color-action-primary\);/,
+  );
+  // 2026-10-09 收敛：成员/队长选择卡片的 hover 走 PageCard 默认效果（浮起阴影），选中态
+  // 与 connector-market-skill-picker / agent-group-editor-skill-picker 滚动区卡片一致
+  // （accent 底色描边）；selection-card 不再有 info 蓝底/inset 描边/install 描边类覆盖。
+  // is-disabled（未安装灰底）与 is-loading（兼容性查询骨架）仍保留专属样式。
+  assert.match(memberPickerSource, /selected=\{selected\}/);
+  assert.doesNotMatch(agentManagementCss, /\.agent-management-selection-card\.is-selected/);
+  assert.doesNotMatch(agentManagementCss, /\.agent-management-selection-card:hover/);
+  // 选中态需在 page-card 作用域按 PageCard 原值 re-assert：基础块与 .page-card--selected
+  // 同特异性且本文件打包序更晚，tie 会把选中底色/描边盖回默认（见 agentManagement.css 注释）。
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card\.page-card--selected\s*\{[^}]*background: var\(--color-chat-accent-subtle\);[^}]*border-color: var\(--color-chat-accent\);/,
+  );
+  assert.doesNotMatch(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card:hover,[\s\S]*\.agent-management-selection-card\.page-card:focus-within/,
+  );
+});
+
+test('Expert Team chat creation uses the standard new-chat welcome in Agent mode', () => {
+  const groupCreateNavigation = appSource.match(
+    /onCreateGroupViaChat=\{\(\) => requestSessionNavigation\('new', \{[\s\S]*?\}\)\}/,
+  )?.[0];
+  assert.ok(groupCreateNavigation);
+  assert.match(groupCreateNavigation, /initialSelectedSkills: \['agent-group-creator'\]/);
+  assert.match(groupCreateNavigation, /forceMode: 'agent'/);
+  assert.doesNotMatch(groupCreateNavigation, /welcomeVariant/);
+});
+
+test('Expert and Expert Team content details use the same full-width markdown layout', () => {
+  assert.match(agentDetailSource, /<MarkdownPane[\s\S]*testId="agent-management-detail-content"/);
+  assert.match(groupDetailSource, /<MarkdownPane[\s\S]*testId="agent-group-detail-content"/);
+});
+
+test('Expert Team cards and details reuse the Expert visual primitives', () => {
+  assert.match(
+    catalogPageSource,
+    /<PageCard[\s\S]*className="agent-management-page-card agent-definition-card(?:\s|")/,
+  );
+  assert.match(groupCardSource, /import \{ PageCard, type PageCardDefaultButton \} from '\.\.\/ui';/);
+  assert.match(groupCardSource, /className="agent-management-page-card agent-group-card"/);
+  assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
+  assert.match(groupCardSource, /<PageCard[\s\S]*interactive/);
+  assert.match(groupCardSource, /variant: 'use'[\s\S]*variant: 'install'/);
+  assert.doesNotMatch(groupCardSource, /agent-management-card__actions/);
+  assert.match(agentManagementCss, /\.agent-management-page-card \.entity-header__actions\s*\{\s*display: contents;/);
+  assert.match(agentManagementCss, /\.agent-management-page-card \.entity-header__identity\s*\{\s*flex: 1 1 auto;/);
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-page-card \.agent-management-card__actions\s*\{[\s\S]*position: absolute;/,
+  );
+  assert.match(agentManagementCss, /\.agent-management-page-card:focus-within \.agent-management-card__actions/);
+  assert.match(entityHeaderCss, /\.entity-header__tags\s*\{[\s\S]*width: 100%;/);
+  assert.match(
+    agentManagementCss,
+    /@media \(min-width: 801px\)[\s\S]*\.agent-management-page-card:focus-within \.entity-header__identity/,
+  );
+  assert.match(groupDetailSource, /import \{[^}]*EntityHeader[^}]*\} from '\.\.\/ui';/);
+  assert.match(groupDetailSource, /import \{[^}]*DetailSection[^}]*\} from '\.\.\/ui';/);
+  assert.match(groupDetailSource, /import \{[^}]*Tabs[^}]*\} from '\.\.\/ui';/);
+  assert.match(groupDetailSource, /<EntityHeader[\s\S]*testId="agent-management-detail-header"/);
+  assert.match(groupDetailSource, /<DetailSection[\s\S]*testId="agent-management-detail-ability"/);
+  assert.match(groupDetailSource, /<PageToolbar[\s\S]*<Tabs[\s\S]*wrapperTestId="agent-group-detail-tabs"/);
+  assert.match(groupDetailSource, /className="detail-back"/);
+  assert.match(groupDetailSource, /className="detail-body flex-1 min-h-0 overflow-y-auto"/);
+  assert.doesNotMatch(groupDetailSource, /detail-back mb-\[35px\]/);
+  assert.doesNotMatch(groupDetailSource, /overflow-y-auto pb-\[72px\]/);
+  assert.doesNotMatch(groupDetailSource, /<header className="agent-management-detail__header">/);
+  assert.match(groupDetailSource, /<PublicationDetailStatus kind="agent_group"/);
+  assert.match(groupDetailSource, /openAssetPublish\(\{\s*kind: 'agent_group',\s*local_id: detail\.id/);
+});
+
+test('installed Expert Team cards offer use while uninstall stays in detail', async () => {
+  const { GroupCard } = await import('../node_modules/.cache/agent-management-layout/GroupCard.mjs');
+  const { JSDOM } = await import('jsdom');
+  const item = {
+    id: 'group-1',
+    displayName: '测试专家团',
+    description: '测试',
+    category: '',
+    tags: [],
+    avatarUrl: null,
+    installed: true,
+    capabilities: { canUse: true, canInstall: false, canUninstall: true },
+  };
+  const markup = renderToStaticMarkup(
+    React.createElement(GroupCard, {
+      item,
+      busy: false,
+      onOpen: () => {},
+      onUse: () => {},
+      onInstall: () => {},
+    }),
+  );
+  const card = new JSDOM(markup).window.document;
+  assert.equal(card.querySelectorAll('[data-testid="agent-group-card-action"]').length, 1);
+  assert.equal(card.querySelector('[data-testid="agent-group-card-action"]').getAttribute('data-variant'), 'use');
+  assert.equal(card.querySelector('[data-variant="uninstall"]'), null);
+  assert.match(groupDetailSource, /data-variant="uninstall"/);
+});
+
+test('Expert Team leader badge does not add a redundant status icon', () => {
+  assert.doesNotMatch(groupDetailSource, /import \{ Check \} from 'lucide-react';/);
+  assert.match(
+    groupDetailSource,
+    /<span\s+className="agent-group-member-card__badge"[^>]*>\s*\{t\('agentManagement\.group\.detail\.leader'\)\}\s*<\/span>/,
+  );
+});
+
+test('uninstalled local Expert Team details expose delete before install', () => {
+  assert.match(groupDetailSource, /const canDelete = detail\.source === 'local' && !detail\.installed;/);
+  const deleteAction = groupDetailSource.indexOf("t('agentManagement.actions.delete')");
+  const installAction = groupDetailSource.indexOf("t('agentManagement.group.actions.install')");
+  assert.ok(deleteAction >= 0 && installAction >= 0 && deleteAction < installAction);
+  assert.match(groupDetailSource, /onClick=\{\(\) => onUninstall\(detail\.id\)\}/);
+});
+
+test('Expert Team upload dialog puts Expert first and removes the reference link', () => {
+  const expertTab = groupUploadSource.indexOf("t('agentManagement.group.form.uploadAgentTab')");
+  const groupTab = groupUploadSource.indexOf("t('agentManagement.group.form.uploadGroupTab')");
+  assert.ok(expertTab >= 0 && groupTab >= 0 && expertTab < groupTab);
+  assert.match(
+    groupUploadSource,
+    /const typeHint = kind === 'group' \? t\('agentManagement\.group\.form\.uploadHint'\) : t\('agentManagement\.form\.uploadHint'\)/,
+  );
+  assert.doesNotMatch(groupUploadSource, /uploadHintReference|hint-reference/);
+});
+
+test('concurrent Expert installs keep every affected card busy', async () => {
+  const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const items = ['expert-a', 'expert-b'].map((id) => ({
+    id,
+    runtimePackageName: id,
+    displayName: id,
+    description: '',
+    source: 'hub',
+    installed: false,
+    connectionState: 'disconnected',
+    tags: [],
+    avatarUrl: null,
+  }));
+  const document = new JSDOM(
+    renderToStaticMarkup(
+      React.createElement(CatalogPage, {
+        scope: 'catalog',
+        items,
+        query: '',
+        category: '',
+        status: 'success',
+        error: null,
+        busyIds: new Set(items.map((item) => item.id)),
+        onCategoryChange() {},
+        onRetry() {},
+        onOpen() {},
+        onUse() {},
+        onReconnect() {},
+        onInstall() {},
+        onCreate() {},
+      }),
+    ),
+  ).window.document;
+  const installButtons = Array.from(document.querySelectorAll('[data-testid="agent-card"] button'));
+  assert.equal(installButtons.length, 2);
+  assert.deepEqual(
+    installButtons.map((button) => button.getAttribute('aria-busy')),
+    ['true', 'true'],
+  );
+  assert.deepEqual(
+    installButtons.map((button) => button.textContent),
+    ['安装中…', '安装中…'],
+  );
+});
+
+test('pending connector installs use a queue instead of one mutable target slot', () => {
+  assert.doesNotMatch(panelSource, /installFlowTargetRef/);
+  assert.doesNotMatch(panelSource, /installFlowModeRef/);
+  assert.match(panelSource, /enqueuePendingInstall/);
+  assert.match(panelSource, /advancePendingInstallQueue/);
+});
+
+test('manual Expert Team creation requires at least one member', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { createRoot } = await import('react-dom/client');
+  const { act } = React;
+  const { AgentGroupEditor } = await import('../node_modules/.cache/agent-management-layout/AgentGroupEditor.mjs');
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+  let saveCount = 0;
+  const root = createRoot(dom.window.document.getElementById('root'));
+  try {
+    await act(async () =>
+      root.render(
+        React.createElement(AgentGroupEditor, {
+          draft: {
+            id: '',
+            name: '验收专家团',
+            description: '能力介绍',
+            persona: '专家团介绍',
+            category: '',
+            tagIds: [],
+            customTags: [],
+            leaderId: 'leader',
+            memberIds: [],
+            skillRefs: [],
+            suggestedPrompts: [],
+          },
+          agentOptions: [
+            {
+              id: 'leader',
+              runtimePackageName: 'leader',
+              displayName: '负责人',
+              description: '',
+              source: 'local',
+              installed: true,
+              connectionState: 'connected',
+              tags: [],
+              avatarUrl: null,
+            },
+          ],
+          agentsStatus: 'success',
+          agentsError: null,
+          skillOptions: [],
+          skillsStatus: 'success',
+          saving: false,
+          error: null,
+          onChange() {},
+          onReloadAgents() {},
+          onReloadSkills() {},
+          onCancel() {},
+          onSave() {
+            saveCount += 1;
+          },
+        }),
+      ),
+    );
+    const form = dom.window.document.querySelector('[data-testid="agent-group-editor-form"]');
+    await act(async () => form.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })));
+    assert.equal(saveCount, 0);
+    assert.match(dom.window.document.body.textContent, /请至少选择一名成员/);
+  } finally {
+    await act(async () => root.unmount());
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+
+test('Expert Team upload error prioritizes the latest local validation and stays below the picker', () => {
+  assert.match(groupUploadSource, /\{pickerError \|\| error\}/);
+  assert.match(
+    agentManagementCss,
+    /\.agent-group-upload-dialog \.agent-management-upload-dialog__error\s*\{[\s\S]*order: 4;[\s\S]*margin:/,
+  );
+  assert.match(agentManagementCss, /\.agent-group-upload-dialog\s*>\s*footer\s*\{[\s\S]*order: 5;/);
+});
+
+test('manual Expert Team validation names the capability description precisely', () => {
+  assert.equal(zhLocale.agentManagement.group.form.errors.descriptionRequired, '请输入专家团能力介绍');
+  assert.equal(
+    enLocale.agentManagement.group.form.errors.descriptionRequired,
+    'Enter an Expert Team capability description',
+  );
+});
+
+test('leaving Expert management discards unfinished manual-create subpages', () => {
+  assert.match(
+    panelSource,
+    /if \(!isActive && prevIsActive && \(view === 'create' \|\| view === 'group-create'\)\) \{[\s\S]*setView\('mine'\);/,
+  );
+});
+
+for (const status of ['success', 'loading', 'error']) {
+  test(`expert catalog renders every card without pagination during ${status}`, async () => {
+    const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+    const { JSDOM } = await import('jsdom');
+    const items = Array.from({ length: 20 }, (_, i) => ({
+      id: `expert-${i}`,
+      runtimePackageName: `expert-${i}`,
+      displayName: `Expert ${i}`,
+      description: '',
+      source: 'local',
+      installed: true,
+      connectionState: 'connected',
+      tags: [],
+      avatarUrl: null,
+    }));
+    const document = new JSDOM(
+      renderToStaticMarkup(
+        React.createElement(CatalogPage, {
+          scope: 'mine',
+          items,
+          totalItems: items.length,
+          query: '',
+          category: '',
+          status,
+          error: 'Refresh failed',
+          busyIds: new Set(),
+          onCategoryChange() {},
+          onRetry() {},
+          onOpen() {},
+          onUse() {},
+          onReconnect() {},
+          onInstall() {},
+          onCreate() {},
+        }),
+      ),
+    ).window.document;
+    const cards = document.querySelectorAll('[data-testid="agent-card"]');
+    assert.equal(cards.length, 20);
+    assert.equal(cards[0].getAttribute('data-variant'), 'expert-0');
+    assert.equal(document.querySelector('[data-testid="agent-catalog-pagination"]'), null);
+    assert.equal(document.querySelector('[data-testid="agent-catalog-load-more"]'), null);
+    for (const card of cards) {
+      assert.equal(card.querySelectorAll('button').length, 1);
+      assert.ok(card.querySelector('.agent-management-card-action--use'));
+    }
+  });
+}
+
+test('expert catalog shows the first 30-item batch and a bottom load-more row while more remain', async () => {
+  const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const items = Array.from({ length: 45 }, (_, i) => ({
+    id: `expert-${i}`,
+    runtimePackageName: `expert-${i}`,
+    displayName: `Expert ${i}`,
+    description: '',
+    source: 'local',
+    installed: true,
+    connectionState: 'connected',
+    tags: [],
+    avatarUrl: null,
+  }));
+  const document = new JSDOM(
+    renderToStaticMarkup(
+      React.createElement(CatalogPage, {
+        scope: 'catalog',
+        items,
+        totalItems: items.length,
+        query: '',
+        category: '',
+        status: 'success',
+        error: null,
+        busyIds: new Set(),
+        onCategoryChange() {},
+        onRetry() {},
+        onOpen() {},
+        onUse() {},
+        onReconnect() {},
+        onInstall() {},
+        onCreate() {},
+      }),
+    ),
+  ).window.document;
+  const cards = document.querySelectorAll('[data-testid="agent-card"]');
+  assert.equal(cards.length, 30);
+  assert.equal(cards[0].getAttribute('data-variant'), 'expert-0');
+  assert.equal(document.querySelector('[data-testid="agent-catalog-pagination"]'), null);
+  const loader = document.querySelector('[data-testid="agent-catalog-load-more"]');
+  assert.ok(loader, 'load-more row is rendered while more items remain');
+  assert.equal(loader.getAttribute('role'), 'status');
+  assert.match(loader.textContent, /加载更多内容/);
+  const spinner = loader.querySelector('[data-testid="agent-catalog-load-more-spinner"]');
+  assert.ok(spinner, 'load-more row contains the LoadingSpinner');
+  assert.equal(spinner.tagName.toLowerCase(), 'svg');
+});
+
+test('expert catalog appends the next batch when the list is scrolled to the bottom', async () => {
+  const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const { act } = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const items = Array.from({ length: 45 }, (_, i) => ({
+    id: `expert-${i}`,
+    runtimePackageName: `expert-${i}`,
+    displayName: `Expert ${i}`,
+    description: '',
+    source: 'local',
+    installed: true,
+    connectionState: 'connected',
+    tags: [],
+    avatarUrl: null,
+  }));
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' });
+  const globals = { window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+  }
+  try {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        React.createElement(CatalogPage, {
+          scope: 'catalog',
+          items,
+          totalItems: items.length,
+          query: '',
+          category: '',
+          status: 'success',
+          error: null,
+          busyIds: new Set(),
+          onCategoryChange() {},
+          onRetry() {},
+          onOpen() {},
+          onUse() {},
+          onReconnect() {},
+          onInstall() {},
+          onCreate() {},
+        }),
+      );
+    });
+    const content = document.querySelector('[data-testid="agent-management-catalog-content"]');
+    assert.equal(document.querySelectorAll('[data-testid="agent-card"]').length, 30);
+
+    // 未到底：滚动事件不触发追加
+    Object.defineProperty(content, 'scrollHeight', { configurable: true, value: 6000 });
+    Object.defineProperty(content, 'clientHeight', { configurable: true, value: 2000 });
+    content.scrollTop = 3000;
+    await act(async () => {
+      content.dispatchEvent(new dom.window.Event('scroll'));
+    });
+    assert.equal(document.querySelectorAll('[data-testid="agent-card"]').length, 30);
+
+    // 触底：追加下一批 30 个（45 个全部展示后加载行消失）
+    content.scrollTop = 4050;
+    await act(async () => {
+      content.dispatchEvent(new dom.window.Event('scroll'));
+    });
+    assert.equal(document.querySelectorAll('[data-testid="agent-card"]').length, 45);
+    assert.equal(document.querySelector('[data-testid="agent-catalog-load-more"]'), null);
+
+    await act(async () => root.unmount());
+  } finally {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+    dom.window.close();
+  }
+});
+
+test('expert selection matches Hub identity or runtime package without clearing a missing catalog entry', () => {
+  assert.match(inputAreaSource, /item\.id === selectedId \|\| item\.runtimePackageName === selectedId/);
+  assert.match(inputAreaSource, /selectedItem &&\s*\(selectedItem\.enabled === false/);
+});

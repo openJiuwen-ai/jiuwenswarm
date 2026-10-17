@@ -1,5 +1,9 @@
 # Browser tools
 
+> **Note:** This page documents the **server-side managed browser** (the agent's Chrome driver).
+> For the **browser extension** that puts JiuwenSwarm beside any page you read, see
+> [Browser Extension](browser-extension/BrowserExtension.md).
+
 ## 1. Overview
 
 JiuwenSwarm browser tools drive a real Chrome instance for navigation, form
@@ -9,6 +13,13 @@ Chrome is managed by the browser agent. The user configures the Chrome
 executable and display mode in the web UI, and the agent starts the browser on
 the first browser task. There is no separate browser service to start from the
 frontend.
+
+JiuwenSwarm ships a browser-free `@playwright/mcp@0.0.78` runtime, so the
+healthy browser path does not contact npm. Chrome itself is not bundled.
+Desktop releases and the Docker image include Node 22.11.0; pip/wheel and
+source installations need Node.js 20 or newer only when browser runtime
+support is enabled. Normal application startup and non-browser agents do not
+require Node.js.
 
 The managed browser can:
 
@@ -104,25 +115,52 @@ instead of silently using another installation.
 
 ### 5.2 Advanced environment overrides
 
-Most installations do not need these variables.
+Most installations do not need these variables. The `BROWSER_MANAGED_*` series are runtime-internal variables, automatically derived by the system from the `browser.*` section of `config.yaml`; **do not set them manually in `.env`** unless for advanced troubleshooting or override.
 
 | Environment variable | Default | Description |
 |---|---|---|
+| `BROWSER_PROFILE_NAME` | `Default` (`.env.template`) / `jiuwenclaw` (runtime default) | Browser profile name; see `.env.template` line 101. |
 | `BROWSER_DRIVER` | `managed` in JiuwenSwarm | Browser driver mode. |
-| `BROWSER_MANAGED_BINARY` | auto-detected | Direct openJiuwen runtime override. JiuwenSwarm derives it from `browser.chrome_path`. |
-| `BROWSER_MANAGED_PORT` | `9333` | Port for an unkeyed managed instance. Keyed instances allocate free ports automatically. |
-| `BROWSER_MANAGED_USER_DATA_DIR` | managed profile directory | Overrides the managed profile directory. |
-| `BROWSER_MANAGED_ARGS` | derived from display mode | Additional Chrome startup arguments. |
+| `BROWSER_MANAGED_BINARY` | auto-detected (from `browser.chrome_path`) | Path to the managed Chrome executable; at runtime the system sets this automatically based on `browser.chrome_path` in `config.yaml`. |
+| `BROWSER_MANAGED_PORT` | `9333` | Port for the unkeyed managed Chrome instance (different from `BROWSER_RUNTIME_MCP_PORT`; the latter is the MCP wrapper port, default 8940); keyed instances allocate free ports automatically. |
+| `BROWSER_MANAGED_USER_DATA_DIR` | managed profile directory (default under the runtime state root) | Overrides the managed profile directory. |
+| `BROWSER_MANAGED_ARGS` | derived from display mode (e.g., `--headless=new`) | Additional Chrome startup arguments; derived at runtime from `browser.headless`, etc. |
 | `BROWSER_MANAGED_KILL_EXISTING` | `false` | Allows the driver to terminate a matching existing Chrome before launch. Use only when profile ownership is understood. |
+| `PLAYWRIGHT_MCP_COMMAND` | unset | External-mode command override. Setting either Playwright MCP override disables the bundle. |
+| `PLAYWRIGHT_MCP_ARGS` | unset | JSON list or shell-style external-mode arguments. Set both variables for a direct executable. |
 
 `PLAYWRIGHT_CDP_URL` is intended for explicit remote-driver setups. It is not
 required for the normal managed-browser flow.
+
+When only one Playwright MCP override is set, the unspecified field uses the
+pinned `npx -y @playwright/mcp@0.0.78` default. The same pinned npx command is
+used, with a prominent warning, if bundle verification or local Node
+resolution fails; that fallback may access the npm registry.
+
+#### 5.2.1 Browser MCP runtime variables
+
+The following variables control how the browser MCP runtime wrapper starts and communicates (see `.env.template` lines 64-86; for MCP configuration see [MCP Configuration](MCPConfiguration.md)).
+
+| Environment variable | Default | Description |
+|---|---|---|
+| `BROWSER_RUNTIME_MCP_ENABLED` | `1` | Master switch for the browser MCP runtime (0 disable / 1 enable). |
+| `BROWSER_RUNTIME_MCP_CLIENT_TYPE` | `streamable-http` | MCP client type: `stdio` / `sse` / `streamable-http` (recommended). |
+| `BROWSER_RUNTIME_MCP_SERVER_ID` | `playwright_runtime_wrapper` | MCP server ID (registration identifier). |
+| `BROWSER_RUNTIME_MCP_SERVER_NAME` | `playwright-runtime-wrapper` | MCP server display name. |
+| `BROWSER_RUNTIME_MCP_SERVER_PATH` | `http://127.0.0.1:8940/mcp` | MCP server endpoint URL (`streamable-http` defaults to `/mcp`, `sse` defaults to `/sse`; under `stdio` it is metadata only). |
+| `BROWSER_RUNTIME_MCP_TIMEOUT_S` | `300` | MCP request timeout (seconds). |
+| `BROWSER_RUNTIME_MCP_HOST` | `127.0.0.1` | Local wrapper host (used for auto-launch). |
+| `BROWSER_RUNTIME_MCP_PORT` | `8940` | Local wrapper port (different from `BROWSER_MANAGED_PORT`; the latter is the managed Chrome instance port, default 9333). |
+| `BROWSER_RUNTIME_MCP_PATH` | `/mcp` | Local wrapper path (used for auto-launch). |
+| `BROWSER_RUNTIME_MCP_COMMAND` | empty | Override for the `stdio` mode launch command (empty means use the current Python executable). |
+| `BROWSER_RUNTIME_MCP_ARGS` | empty | Override for the `stdio` mode launch arguments (empty means use built-in defaults). |
+| `BROWSER_RUNTIME_MCP_AUTO_SSE_FALLBACK` | `1` | Whether `stdio` mode first attempts SSE fallback (1 enabled, recommended). |
 
 ## 6. Architecture
 
 The browser lifecycle is:
 
-`frontend settings -> agent browser task -> managed Chrome start -> task execution -> session reuse`
+`frontend settings -> bundled MCP extraction -> managed Chrome start -> CDP injection -> task execution -> session reuse`
 
 - The frontend `BrowserPanel` only reads and saves Chrome path and display mode.
 - JiuwenSwarm maps those settings to the browser-agent runtime.
@@ -138,11 +176,11 @@ The browser lifecycle is:
 |--------|-----------|-------------|
 | Frontend BrowserPanel | `jiuwenswarm/channels/web/frontend/src/components/BrowserPanel/index.tsx` | Reads and saves Chrome path and display mode |
 | Backend Web RPC handlers | `jiuwenswarm/gateway/channel_manager/web/app_web_handlers.py` | Provides `path.get`, `path.set` endpoints |
-| Browser MCP integration | `jiuwenswarm/agents/harness/common/tools/browser_tools.py` | MCP client, auto-start wrapper, configuration builder |
-| Chrome launch and management | `jiuwenswarm/agents/harness/common/tools/browser-move/src/playwright_runtime/drivers/managed_browser.py` | `ManagedBrowserDriver`: port allocation, Chrome process management, profile reuse |
-| Browser runtime orchestration | `jiuwenswarm/agents/harness/common/tools/browser-move/src/playwright_runtime/runtime.py` | Runtime orchestration layer |
-| Browser task execution | `jiuwenswarm/agents/harness/common/tools/browser-move/src/playwright_runtime/service.py` | Task execution, session reuse, timeout guardrails, driver lifecycle management |
-| Browser runtime config | `jiuwenswarm/agents/harness/common/tools/browser-move/src/playwright_runtime/config.py` | Playwright MCP and runtime configuration parsing |
+| Browser subagent integration | `openjiuwen.harness.subagents.browser_agent` | Browser subagent configuration and lifecycle integration |
+| Chrome launch and management | `openjiuwen.harness.tools.browser_move.drivers.managed_browser` | `ManagedBrowserDriver`: port allocation, Chrome process management, profile reuse |
+| Browser runtime orchestration | `openjiuwen.harness.tools.browser_move.playwright_runtime.runtime` | Runtime orchestration layer |
+| Browser task execution | `openjiuwen.harness.tools.browser_move.playwright_runtime.service` | Task execution, session reuse, timeout guardrails, driver lifecycle management |
+| Browser runtime config | `openjiuwen.harness.tools.browser_move.playwright_runtime.config` | Playwright MCP and runtime configuration parsing |
 
 ## 7. Summary
 

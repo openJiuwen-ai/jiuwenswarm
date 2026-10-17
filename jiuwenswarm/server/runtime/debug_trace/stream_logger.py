@@ -163,7 +163,7 @@ def _extract_content(payload: Any) -> str:
     return str(payload) if payload is not None else ""
 
 
-def _classify(ctype: str, payload: Any) -> str:
+def _classify(ctype: str) -> str:
     if ctype in (_CHUNK_LLM_OUTPUT, _CHUNK_ANSWER):
         return "text"
     if ctype == _CHUNK_LLM_REASONING:
@@ -403,12 +403,14 @@ class DebugTraceLogger:
             self._emit("other", source, _truncate(_safe_str(chunk), self._settings.generic_payload_max_chars))
             return
 
-        category = _classify(ctype, payload)
+        category = _classify(ctype)
 
         run = self._run
-        # `answer` duplicates already-streamed llm_output — drop if seen.
-        if ctype == _CHUNK_ANSWER and run is not None and run.llm_output_seen:
-            return
+        if ctype == _CHUNK_ANSWER:
+            if not self._settings.include_model_output:
+                return
+            if run is not None and run.llm_output_seen:
+                return
 
         if ctype in _ACCUMULATING_TYPES:
             if ctype == _CHUNK_LLM_OUTPUT and not self._settings.include_model_output:

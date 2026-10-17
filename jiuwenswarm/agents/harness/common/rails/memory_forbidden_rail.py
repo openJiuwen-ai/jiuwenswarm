@@ -18,6 +18,9 @@ from jiuwenswarm.agents.harness.common.memory.forbidden import (
     get_disabled_memory_filter_prompt,
     get_forbidden_memory_prompt,
 )
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SystemPromptPriority,
+)
 from jiuwenswarm.common.utils import logger
 
 
@@ -74,7 +77,7 @@ _DENIAL_MESSAGE = (
 )
 
 _PROMPT_SECTION_NAME = "memory_forbidden"
-_PROMPT_PRIORITY = 113
+_PROMPT_PRIORITY = SystemPromptPriority.MEMORY_FORBIDDEN
 
 # agent-core's MemoryRail and CodingMemoryRail both ship a fixed instruction
 # that sensitive information must never be saved.  The product switch owns

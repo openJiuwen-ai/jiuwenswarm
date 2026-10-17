@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for WebChannel dual-protocol (same-port WS; HTTP-ready) Phase 1.
+"""Tests for WebChannel same-port HTTP+WS (FastAPI/uvicorn).
 
 Avoid fastapi/starlette TestClient: some CI images ship a Starlette that requires
 ``httpx2`` and fail at import time. Exercise FastAPI route registration and the
@@ -17,8 +17,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthResult
 from jiuwenswarm.gateway.channel_manager.web.web_channel_app import (
     _reject_disallowed_origin,
+    _serve_channel_websocket,
     build_web_channel_app,
     normalize_web_ws_path,
 )
@@ -27,7 +29,7 @@ from jiuwenswarm.gateway.channel_manager.web.ws_connection_adapter import Starle
 
 
 def _make_channel(**kwargs: Any) -> WebChannel:
-    cfg = WebChannelConfig(enabled=True, dual_protocol=True, **kwargs)
+    cfg = WebChannelConfig(enabled=True, **kwargs)
     return WebChannel(cfg, RobotMessageRouter())
 
 
@@ -75,8 +77,36 @@ def test_build_app_exposes_ws_routes_only() -> None:
     paths = _route_paths(app)
     assert "/ws" in paths
     assert "/ws/git" in paths
+    assert "/ws/plugin/test" not in paths
     assert "/container-file-api/upload" not in paths
     assert "/file-api/upload" not in paths
+
+
+def test_build_app_mounts_application_plugin_websocket_routes() -> None:
+    from types import SimpleNamespace
+
+    from jiuwenswarm.extensions.sdk import WebSocketRouteContribution
+
+    async def endpoint(websocket) -> None:  # noqa: ANN001
+        await websocket.close()
+
+    plugin = SimpleNamespace(
+        plugin_id="test-plugin",
+        metadata=SimpleNamespace(id="test-plugin"),
+        is_enabled=lambda: True,
+        websocket_routes=lambda: (
+            WebSocketRouteContribution(path="/ws/plugin/test", endpoint=endpoint),
+        ),
+    )
+    channel = _make_channel()
+    channel.application_plugin_registry = SimpleNamespace(
+        get_application_plugins=lambda: (plugin,),
+        get_application_plugin=lambda plugin_id: plugin if plugin_id == "test-plugin" else None,
+    )
+
+    paths = _route_paths(build_web_channel_app(channel))
+
+    assert "/ws/plugin/test" in paths
 
 
 def test_build_app_registers_custom_config_path() -> None:
@@ -142,12 +172,97 @@ async def test_dual_protocol_custom_path_jsonrpc_roundtrip() -> None:
 
 @pytest.mark.asyncio
 async def test_dual_protocol_ws_git_path_closes_without_registry() -> None:
-    """/ws/git accepts then closes with 1011 if git registry is absent (same as legacy)."""
+    """/ws/git accepts then closes with 1011 if git registry is absent."""
     channel = _make_channel()
     ws = _QueueWebSocket("/ws/git?user_id=alice", [])
     await channel.handle_connection(ws, path=ws.path)
     assert ws.closed is True
     assert ws.close_code == 1011
+
+
+@pytest.mark.asyncio
+async def test_git_websocket_query_rejects_oversized_session_id_before_registration() -> None:
+    """/ws/git must reject an oversized query session_id like /ws does."""
+    channel = _make_channel()
+    oversized = "s" * 10_240
+    ws = _QueueWebSocket(f"/ws/git?user_id=alice&session_id={oversized}", [])
+
+    await channel.handle_connection(ws, path=ws.path)
+
+    assert ws.closed is True
+    assert ws.close_code == 1008
+    assert ws.close_reason == "session_id exceeds maximum length 80"
+    assert channel.clients == set()
+
+    # Rejection is connection-local; the channel remains responsive.
+    await _ping_roundtrip(channel, "/ws")
+
+
+@pytest.mark.asyncio
+async def test_websocket_query_rejects_oversized_session_id_before_registration() -> None:
+    channel = _make_channel()
+    oversized = "s" * 10_240
+    ws = _QueueWebSocket(f"/ws?user_id=alice&session_id={oversized}", [])
+
+    await channel.handle_connection(ws, path=ws.path)
+
+    assert ws.closed is True
+    assert ws.close_code == 1008
+    assert ws.close_reason == "session_id exceeds maximum length 80"
+    assert channel.clients == set()
+
+    # Rejection is connection-local; the channel remains responsive.
+    await _ping_roundtrip(channel, "/ws")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("params", "expected_error"),
+    [
+        (
+            {"session_id": "s" * 10_240, "run_id": "run-1"},
+            "session_id exceeds maximum length 80",
+        ),
+        (
+            {"session_id": "sess-1", "run_id": "r" * 10_240},
+            "run_id exceeds maximum length 256",
+        ),
+    ],
+)
+async def test_swarmflow_control_rejects_oversized_ids_before_forwarding(
+    params: dict[str, str], expected_error: str,
+) -> None:
+    channel = _make_channel()
+    forwarded: list[Any] = []
+    channel.on_message(lambda message: forwarded.append(message))
+    req = json.dumps(
+        {
+            "type": "req",
+            "id": "oversized-control",
+            "method": "swarmflow.pause",
+            "params": params,
+        }
+    )
+    ws = _QueueWebSocket("/ws?user_id=alice&session_id=sess-1", [req])
+
+    await channel.handle_connection(ws, path=ws.path)
+    await asyncio.sleep(0)
+
+    responses = [
+        frame for frame in ws.sent
+        if frame.get("type") == "res" and frame.get("id") == "oversized-control"
+    ]
+    assert responses == [
+        {
+            "type": "res",
+            "id": "oversized-control",
+            "ok": False,
+            "payload": {},
+            "error": expected_error,
+            "code": "BAD_REQUEST",
+        }
+    ]
+    assert forwarded == []
 
 
 @pytest.mark.asyncio
@@ -180,9 +295,52 @@ def test_starlette_adapter_path_includes_query() -> None:
     assert adapter.request_headers.get("x-user-id") == "u1"
 
 
-def test_webchannel_config_dual_protocol_default_true() -> None:
-    assert WebChannelConfig().dual_protocol is True
+@pytest.mark.asyncio
+async def test_serve_ws_does_not_accept_when_unauthorized() -> None:
+    channel = _make_channel()
+
+    async def deny(**_kwargs: Any) -> AuthResult:
+        return AuthResult(success=False, error="Token 无效或已过期")
+
+    channel.set_handshake_auth(deny)
+    websocket = MagicMock()
+    websocket.headers = {}
+    websocket.url.path = "/ws"
+    websocket.url.query = "token=fake"
+    websocket.client = MagicMock(host="127.0.0.1", port=9)
+    websocket.send_denial_response = AsyncMock()
+    websocket.accept = AsyncMock()
+    await _serve_channel_websocket(channel, websocket)
+    websocket.accept.assert_not_called()
+    websocket.send_denial_response.assert_awaited_once()
+    assert websocket.send_denial_response.await_args.args[0].status_code == 401
 
 
-def test_webchannel_config_legacy_flag() -> None:
-    assert WebChannelConfig(dual_protocol=False).dual_protocol is False
+@pytest.mark.asyncio
+async def test_serve_ws_uses_authenticated_identity_over_query() -> None:
+    channel = _make_channel()
+    calls = []
+
+    async def authenticate(**_kwargs: Any) -> AuthResult:
+        calls.append("auth")
+        return AuthResult(success=True, user_id="owner")
+
+    async def handle_connection(adapter, *, path):
+        calls.append("connect")
+        assert path == "/ws?user_id=other"
+        assert channel._resolve_connection_user_id({"user_id": "other"}, adapter) == "owner"
+
+    channel.set_handshake_auth(authenticate)
+    channel.handle_connection = handle_connection
+    websocket = MagicMock()
+    websocket.headers = {}
+    websocket.url.path = "/ws"
+    websocket.url.query = "user_id=other"
+    websocket.client = MagicMock(host="127.0.0.1", port=9)
+    websocket.scope = {}
+    websocket.accept = AsyncMock()
+
+    await _serve_channel_websocket(channel, websocket)
+
+    assert calls == ["auth", "connect"]
+    websocket.accept.assert_awaited_once()

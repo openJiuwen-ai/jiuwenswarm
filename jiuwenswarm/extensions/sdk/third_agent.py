@@ -3,7 +3,7 @@
 from abc import abstractmethod
 
 from jiuwenswarm.extensions.sdk.base import BaseExtension
-from jiuwenswarm.gateway.routing.third_agent import ThirdAgent
+from jiuwenswarm.common.client.third_agent import ThirdAgent
 
 
 class ThirdAgentExtension(BaseExtension):

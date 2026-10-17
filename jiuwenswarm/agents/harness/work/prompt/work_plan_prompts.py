@@ -195,9 +195,15 @@ WORK_PLAN_ALLOWED_TOOLS: tuple[str, ...] = (
     "exit_plan_mode",
     # 与用户澄清
     "ask_user",
-    # 委派子 agent 做只读调研。没有配置子 agent 时 AgentModeRail 不会注册
-    # task_tool，放进白名单不会凭空多出工具。
+    # 委派子 agent。runtime 开启时由 subagent_* 替换 task_tool；未注册的工具
+    # 放进白名单不会凭空多出能力。
     "task_tool",
+    "subagent_spawn",
+    "subagent_wait",
+    "subagent_list",
+    "subagent_send_input",
+    "subagent_close",
+    "subagent_resume",
     # 只读文件与检索
     "read_file",
     "grep",

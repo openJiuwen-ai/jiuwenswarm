@@ -21,7 +21,7 @@ import {
   buildModeAutocompleteItems,
   resolveModeTarget,
 } from "../dist/core/commands/builtins/mode.js";
-import { resolvePlanTarget } from "../dist/core/commands/builtins/plan.js";
+import { resolvePlanTarget, resolveNormalTarget } from "../dist/core/commands/builtins/plan.js";
 import { buildAppScreenLines } from "../dist/ui/screen-layout.js";
 import { buildWelcomeLines } from "../dist/ui/welcome.js";
 import {
@@ -34,6 +34,7 @@ import {
   isWorkflowBudgetLow,
   isSessionNode,
   mergeWorkflowRun,
+  pendingHumanViewHint,
   shouldShowSessionTree,
   shouldShowTurnInDetailOrReply,
   sessionTurnLabelNumber,
@@ -47,32 +48,145 @@ import {
 import { createHarmonyOSDevInitCommand } from "../dist/core/commands/builtins/harmonyos-dev-init.js";
 import { createHarmonyOSProjectInitCommand } from "../dist/core/commands/builtins/harmonyos-project-init.js";
 import { buildHarmonyOSProjectInitPrompt } from "../dist/core/commands/builtins/harmonyos-project-init.prompts.js";
-import { formatModeForDisplay } from "../dist/core/modes.js";
+import { formatModeForDisplay, normalizeToClientMode } from "../dist/core/modes.js";
+import { createInitCommand } from "../dist/core/commands/builtins/init.js";
+import { createSimplifyCommand } from "../dist/core/commands/builtins/simplify.js";
+import {
+  bindPermissionCardAnswer,
+  handleIncomingFrame,
+} from "../dist/core/event-handlers.js";
 
 const planQuestion = "**Plan Approval**\n\nThe agent has completed a plan.";
 const planApprovalKind = "plan_approval";
 
 const modeItems = buildModeAutocompleteItems();
-assert.ok(modeItems.some((item) => item.value === "team.work" && item.label === "    work"));
-assert.ok(modeItems.some((item) => item.value === "team.code" && item.label === "    code"));
+// 6 行：2 组头 + 4 子项，无 .plan 段
+assert.equal(modeItems.length, 6);
+assert.ok(modeItems.some((item) => item.value === "agent.work" && item.label === "agent"));
+assert.ok(modeItems.some((item) => item.value === "agent.work" && item.label === "  agent.work"));
+assert.ok(modeItems.some((item) => item.value === "agent.code" && item.label === "  agent.code"));
+assert.ok(modeItems.some((item) => item.value === "team.work" && item.label === "team"));
+assert.ok(modeItems.some((item) => item.value === "team.work" && item.label === "  team.work"));
+assert.ok(modeItems.some((item) => item.value === "team.code" && item.label === "  team.code"));
 assert.equal(modeItems.some((item) => item.value === "team.plan.normal"), false);
 assert.equal(modeItems.some((item) => item.value === "team.plan.code"), false);
 assert.equal(modeItems.some((item) => item.value === "code.team"), false);
+// 无 .plan 段（/plan 走 /plan 命令对称退出）
+assert.equal(modeItems.some((item) => / \.plan$|\.plan$/.test(item.value)), false);
 
-assert.equal(resolveModeTarget("team.work"), "team");
-assert.equal(resolveModeTarget("team.code"), "code.team");
-assert.equal(resolveModeTarget("team"), "team");
-assert.equal(resolveModeTarget("code.team"), "code.team");
-assert.equal(formatModeForDisplay("code.team"), "team.code");
-assert.equal(formatModeForDisplay("team.plan.code"), "team.plan.code");
+assert.equal(resolveModeTarget("team.work"), "team.work.normal");
+assert.equal(resolveModeTarget("team.code"), "team.code.normal");
+assert.equal(resolveModeTarget("team"), "team.work.normal");
+assert.equal(resolveModeTarget("code.team"), "team.code.normal");
+assert.equal(resolveModeTarget("agent"), "agent.work.normal");
+assert.equal(resolveModeTarget("code"), "agent.code.normal");
+assert.equal(resolveModeTarget("agent.fast"), "agent.work.normal");
+assert.equal(resolveModeTarget("agent.plan"), "agent.work.plan");
+assert.equal(resolveModeTarget("code.normal"), "agent.code.normal");
+assert.equal(resolveModeTarget("code.plan"), "agent.code.plan");
+assert.equal(resolveModeTarget("team.normal"), "team.work.normal");
 
-assert.equal(resolvePlanTarget("team"), "team.plan.normal");
-assert.equal(resolvePlanTarget("team.plan"), "team.plan.normal");
-assert.equal(resolvePlanTarget("team.plan.normal"), "team.plan.normal");
-assert.equal(resolvePlanTarget("code.team"), "team.plan.code");
-assert.equal(resolvePlanTarget("team.plan.code"), "team.plan.code");
-assert.equal(resolvePlanTarget("code.normal"), "code.plan");
-assert.equal(resolvePlanTarget("agent.fast"), "agent.plan");
+// formatModeForDisplay：小写 + 去掉 .normal 段；.plan 保留
+assert.equal(formatModeForDisplay("agent.work.normal"), "agent.work");
+assert.equal(formatModeForDisplay("agent.code.plan"), "agent.code.plan");
+assert.equal(formatModeForDisplay("team.work.plan"), "team.work.plan");
+assert.equal(formatModeForDisplay("team.code.normal"), "team.code");
+
+// /plan：non-plan → plan 变体（保留 role+env）
+assert.equal(resolvePlanTarget("agent.work.normal"), "agent.work.plan");
+assert.equal(resolvePlanTarget("agent.code.normal"), "agent.code.plan");
+assert.equal(resolvePlanTarget("team.work.normal"), "team.work.plan");
+assert.equal(resolvePlanTarget("team.code.normal"), "team.code.plan");
+// /plan：已是 plan → 保持不变（action 不会再切）
+assert.equal(resolvePlanTarget("agent.work.plan"), "agent.work.plan");
+assert.equal(resolvePlanTarget("team.code.plan"), "team.code.plan");
+
+// /plan：对称退出 — plan → normal 变体
+assert.equal(resolveNormalTarget("agent.work.plan"), "agent.work.normal");
+assert.equal(resolveNormalTarget("agent.code.plan"), "agent.code.normal");
+assert.equal(resolveNormalTarget("team.work.plan"), "team.work.normal");
+assert.equal(resolveNormalTarget("team.code.plan"), "team.code.normal");
+// 非 plan 模式 → /plan 不触发退出
+assert.equal(resolveNormalTarget("agent.work.normal"), undefined);
+assert.equal(resolveNormalTarget("team.code.normal"), undefined);
+
+// /init 与 /simplify 的 coding-mode 守门：team.code.*（旧 code.team 的等价物）
+// 与 agent.code.* 都属 code profile，必须放行；agent.work.* / team.work.* 仍拒收。
+async function runSimplifyGuard(mode) {
+  const entries = [];
+  const sent = [];
+  const command = createSimplifyCommand();
+  await command.action(
+    {
+      sessionId: "simplify-guard-test",
+      mode,
+      preferredLanguage: "zh",
+      addItem: (item) => entries.push(item),
+      setRunningCommand: () => undefined,
+      request: async (method, params) => {
+        if (method !== "command.simplify") throw new Error(`unexpected request: ${method}`);
+        return { prompt: `review:${params?.target ?? ""}` };
+      },
+      sendMessage: (content, _attachments, requestMode, options) => {
+        sent.push({ requestMode, options });
+        return "simplify-request-1";
+      },
+    },
+    "src/init.ts",
+  );
+  return { entries, sent };
+}
+
+for (const codeMode of ["agent.code.normal", "agent.code.plan", "team.code.normal", "team.code.plan"]) {
+  const { entries, sent } = await runSimplifyGuard(codeMode);
+  assert.equal(
+    entries.some((e) => /需要在 code 模式/.test(e.content)),
+    false,
+    `${codeMode}: must not be rejected as non-code`,
+  );
+  assert.equal(sent.length, 1, `${codeMode}: should proceed to review`);
+}
+for (const nonCodeMode of ["agent.work.normal", "team.work.normal"]) {
+  const { entries, sent } = await runSimplifyGuard(nonCodeMode);
+  assert.equal(sent.length, 0, `${nonCodeMode}: must be rejected before request`);
+  assert.match(entries[0].content, /需要在 code 模式/);
+}
+
+async function runInitGuard(mode) {
+  const entries = [];
+  const sent = [];
+  const command = createInitCommand();
+  await command.action({
+    sessionId: "init-guard-test",
+    mode,
+    preferredLanguage: "zh",
+    addItem: (item) => entries.push(item),
+    setMode: () => undefined,
+    getWorkspaceDir: () => process.cwd(),
+    askQuestions: async (questions) => [{ selected_options: [questions[0].options[0].label] }],
+    request: async () => ({}),
+    sendMessage: (content, _attachments, requestMode, options) => {
+      sent.push({ requestMode, options });
+      return "init-request-1";
+    },
+  });
+  return { entries, sent };
+}
+
+for (const codeMode of ["agent.code.normal", "team.code.normal", "team.code.plan"]) {
+  const { entries, sent } = await runInitGuard(codeMode);
+  assert.equal(
+    entries.some((e) => /需要在 coding 模式/.test(e.content)),
+    false,
+    `${codeMode}: must not be rejected as non-coding`,
+  );
+  assert.equal(sent.length, 1, `${codeMode}: should proceed`);
+}
+for (const nonCodeMode of ["agent.work.normal", "team.work.normal"]) {
+  const { entries, sent } = await runInitGuard(nonCodeMode);
+  assert.equal(sent.length, 0, `${nonCodeMode}: must be rejected before request`);
+  assert.match(entries[0].content, /需要在 coding 模式/);
+}
 
 assert.equal(isPlanApprovalRequest("confirm_interrupt", planApprovalKind), true);
 assert.equal(isPlanApprovalRequest("confirm_interrupt", "permission"), false);
@@ -123,6 +237,69 @@ assert.equal(
   "[ use \x1b[7m \x1b[0mpytest ]",
 );
 assert.deepEqual(getPlanApprovalListLayout(), { minPrimaryColumnWidth: 10, maxPrimaryColumnWidth: 10 });
+
+assert.deepEqual(
+  bindPermissionCardAnswer(
+    [
+      { selected_options: ["本次允许"], card_id: "caller" },
+    ],
+    [
+      { header: "one", question: "one", options: [], cardId: "inv-1" },
+    ],
+  ),
+  [
+    { selected_options: ["本次允许"], card_id: "inv-1" },
+  ],
+);
+assert.deepEqual(
+  bindPermissionCardAnswer(
+    [{ selected_options: ["本次允许"] }],
+    [{ header: "missing", question: "missing", options: [] }],
+  ),
+  [],
+);
+const capturedPermissionQuestions = [];
+const permissionDelegate = new Proxy(
+  {},
+  {
+    get: (_target, property) => {
+      if (property === "getSessionId") return () => "root-session";
+      if (property === "getMode") return () => "agent.fast";
+      if (property === "setPendingQuestion") {
+        return (question) => capturedPermissionQuestions.push(question);
+      }
+      return () => undefined;
+    },
+  },
+);
+for (const cardId of ["card-1", "card-2", "card-3"]) {
+  handleIncomingFrame(permissionDelegate, {
+    event: "chat.ask_user_question",
+    payload: {
+      request_id: `request-${cardId}`,
+      source: "permission_interrupt",
+      questions: [
+        {
+          header: "Permission",
+          question: "Continue?",
+          options: [],
+          card_id: cardId,
+        },
+      ],
+    },
+  });
+}
+assert.deepEqual(
+  capturedPermissionQuestions.map((pending) => pending.questions[0]?.cardId),
+  ["card-1", "card-2", "card-3"],
+);
+assert.deepEqual(
+  bindPermissionCardAnswer(
+    [{ selected_options: ["本次允许"] }],
+    capturedPermissionQuestions[1].questions,
+  ),
+  [{ selected_options: ["本次允许"], card_id: "card-2" }],
+);
 
 const narrowQuestionTitle =
   "[Redis 方案] Redis 接入有三种方案，范围和依赖递增。请根据当前项目选择。";
@@ -200,7 +377,7 @@ assert.equal(shouldCaptureTerminalMouse(false, false, true), true);
 const teamSnapshot = {
   connectionStatus: "connected",
   sessionId: "team-session",
-  mode: "code.normal",
+  mode: "agent.code.normal",
   themeName: "default",
   accentColor: "blue",
   transcriptMode: "compact",
@@ -267,20 +444,175 @@ const teamLayoutOptions = {
   overlayTranscriptLines: [],
 };
 const stripAnsi = (value) => value.replace(/\u001b\[[0-9;]*m/g, "");
+
+// /resume should spend its limited primary-column width on the human-readable
+// title before the opaque session id.
+const resumeSessionIds = ["tui_sameprefix_A_common_abcd", "tui_sameprefix_B_common_abcd"];
+const resumeSessionTitle = "这是一个用于验证恢复列表展示完整性的很长会话名称";
+async function openResumeScreen(sessions) {
+  const screen = Object.create(AppScreen.prototype);
+  Object.assign(screen, {
+    resumeSessionList: null,
+    state: {
+      getSnapshot: () => ({ sessionId: "current-session" }),
+      request: async (method, params) => {
+        assert.equal(method, "session.list");
+        assert.deepEqual(params, { all_projects: false });
+        return {
+          sessions,
+          total: sessions.length,
+          current_branch: "HEAD",
+        };
+      },
+      addItem: () => undefined,
+    },
+    tui: { terminal: { rows: 40 }, requestRender: () => undefined },
+  });
+  await screen.openResumeSessionList(false);
+  return screen;
+}
+
+const resumeSessions = resumeSessionIds.map((sessionId) => ({
+  session_id: sessionId,
+  title: resumeSessionTitle,
+  last_message_at: Date.now() / 1000,
+  message_count: 3,
+}));
+const resumeScreen = await openResumeScreen(resumeSessions);
+const resumeItem = resumeScreen.resumeSessionList.list.getSelectedItem();
+assert.equal(resumeItem?.value, resumeSessionIds[0]);
+for (const width of [80, 60, 40]) {
+  const resumeLines = resumeScreen.resumeSessionList.list.render(width).map(stripAnsi);
+  const resumeRows = resumeLines.map((line) => line.replace(/^[→ ]+/, ""));
+  assert.equal(resumeLines.length, resumeSessionIds.length);
+  assert.ok(resumeLines.every((line) => visibleWidth(line) <= width));
+  assert.ok(resumeRows.every((line) => line.startsWith(resumeSessionTitle.slice(0, 12))));
+  assert.ok(resumeRows.every((line, index) => line.includes(`#${index + 1}:abcd`)));
+  assert.notEqual(resumeLines[0], resumeLines[1]);
+  if (width === 80) {
+    assert.ok(resumeRows.every((line, index) => line.includes(resumeSessionIds[index])));
+  }
+}
+resumeScreen.updateResumeSearchQuery("B_common");
+assert.equal(resumeScreen.resumeSessionList.list.getSelectedItem()?.value, resumeSessionIds[1]);
+
+const uniqueResumeScreen = await openResumeScreen([resumeSessions[0]]);
+const uniqueResumeLine = stripAnsi(uniqueResumeScreen.resumeSessionList.list.render(80)[0] ?? "");
+assert.ok(uniqueResumeLine.includes(resumeSessionTitle.slice(0, 18)));
+assert.equal(uniqueResumeLine.includes("#1:"), false);
+
+const activeResumeScreen = await openResumeScreen([
+  { ...resumeSessions[0], active_in_window: true },
+]);
+const activeResumeLine = stripAnsi(activeResumeScreen.resumeSessionList.list.render(80)[0] ?? "");
+assert.ok(activeResumeLine.includes("in another window"));
+assert.ok(activeResumeLine.includes(resumeSessionIds[0].slice(0, 10)));
+
+const untitledSessionId = "tui_untitled_session";
+const untitledResumeScreen = await openResumeScreen([{ session_id: untitledSessionId }]);
+const untitledResumeLine = stripAnsi(
+  untitledResumeScreen.resumeSessionList.list.render(40)[0] ?? "",
+);
+assert.ok(untitledResumeLine.includes(untitledSessionId));
+
+const longPreviewSessionId = `tui_${"a".repeat(120)}`;
+const resumePreviewLines = activeResumeScreen.buildResumeSessionPreviewLines(
+  80,
+  { ...resumeSessions[0], session_id: longPreviewSessionId },
+  [],
+).map(stripAnsi);
+const compactResumePreview = resumePreviewLines.join("").replace(/\s/g, "");
+assert.ok(resumePreviewLines.every((line) => visibleWidth(line) <= 80));
+assert.ok(compactResumePreview.includes(resumeSessionTitle));
+assert.ok(compactResumePreview.includes(`Session:${longPreviewSessionId}`));
+
 const collapsedTeamLines = buildAppScreenLines(teamSnapshot, teamLayoutOptions);
 assert.equal(collapsedTeamLines.some((line) => line.includes("teammate")), false);
 assert.equal(collapsedTeamLines.some((line) => line.includes("Member 1")), false);
 
 const codeTeamDisplay = stripAnsi(
-  buildAppScreenLines({ ...teamSnapshot, mode: "code.team" }, teamLayoutOptions).join("\n"),
+  buildAppScreenLines({ ...teamSnapshot, mode: "team.code.normal" }, teamLayoutOptions).join("\n"),
 );
 assert.equal(codeTeamDisplay.includes("mode:team.code"), true);
 assert.equal(codeTeamDisplay.includes("code.team"), false);
 const codeTeamWelcome = stripAnsi(
-  buildWelcomeLines(160, "connected", teamSnapshot.modelInfo, "code.team").join("\n"),
+  buildWelcomeLines(160, "connected", teamSnapshot.modelInfo, "team.code.normal").join("\n"),
 );
 assert.equal(codeTeamWelcome.includes("Mode: team.code"), true);
 assert.equal(codeTeamWelcome.includes("code.team"), false);
+
+// Plan 第二行：plan 态追加 accent 高亮 + 右对齐
+const planModeCases = [
+  "agent.work.plan",
+  "agent.code.plan",
+  "team.work.plan",
+  "team.code.plan",
+];
+for (const planMode of planModeCases) {
+  const planLines = buildAppScreenLines(
+    { ...teamSnapshot, mode: planMode },
+    teamLayoutOptions,
+  );
+  const planJoined = stripAnsi(planLines.join("\n"));
+  // ≥2 行，末行含 ◐ Plan + /plan 退出（MODE_ALIASES 已删 plan 别名，退出走 /plan）
+  assert.ok(planLines.length >= 2, `${planMode}: expected >=2 lines`);
+  const lastPlanLine = stripAnsi(planLines.at(-1));
+  assert.ok(
+    lastPlanLine.includes("◐ Plan") && lastPlanLine.includes("/plan 退出"),
+    `${planMode}: expected plan hint line, got: ${lastPlanLine}`,
+  );
+}
+const normalModeCases = [
+  "agent.work.normal",
+  "agent.code.normal",
+  "team.work.normal",
+  "team.code.normal",
+];
+for (const normalMode of normalModeCases) {
+  const normalLines = buildAppScreenLines(
+    { ...teamSnapshot, mode: normalMode },
+    teamLayoutOptions,
+  );
+  const normalJoined = stripAnsi(normalLines.join("\n"));
+  assert.equal(
+    normalJoined.includes("◐ Plan"),
+    false,
+    `${normalMode}: plan hint must not appear in non-plan mode`,
+  );
+}
+
+// plan.mode_exited：plan 态下收到对应 profile 的 normal 变体才复位（各 role+env）
+function runPlanModeExited(currentMode, eventMode) {
+  let mode = currentMode;
+  const delegate = {
+    getMode: () => mode,
+    getSessionId: () => "plan-mode-exited-test",
+    setMode: (m) => {
+      mode = m;
+    },
+  };
+  handleIncomingFrame(delegate, {
+    type: "event",
+    event: "plan.mode_exited",
+    payload: { event_type: "plan.mode_exited", mode: eventMode },
+  });
+  return mode;
+}
+assert.equal(runPlanModeExited("agent.code.plan", "agent.code.normal"), "agent.code.normal");
+assert.equal(runPlanModeExited("agent.work.plan", "agent.work.normal"), "agent.work.normal");
+assert.equal(runPlanModeExited("team.code.plan", "team.code.normal"), "team.code.normal");
+assert.equal(runPlanModeExited("team.work.plan", "team.work.normal"), "team.work.normal");
+// 非 plan 态不复位；profile 不匹配不复位；缺 mode 字段不复位
+assert.equal(runPlanModeExited("agent.code.normal", "agent.code.normal"), "agent.code.normal");
+assert.equal(runPlanModeExited("agent.code.plan", "team.code.normal"), "agent.code.plan");
+assert.equal(runPlanModeExited("team.work.plan", "agent.work.normal"), "team.work.plan");
+assert.equal(runPlanModeExited("agent.code.plan", ""), "agent.code.plan");
+// 后端推旧 canonical 串（历史 session / cron）也应经 normalizeToClientMode 复位，
+// 否则两端精确匹配失败会让 UI 卡在 plan 态不复位。
+assert.equal(runPlanModeExited("agent.work.plan", "agent"), "agent.work.normal");
+assert.equal(runPlanModeExited("agent.code.plan", "code.normal"), "agent.code.normal");
+assert.equal(runPlanModeExited("team.work.plan", "team"), "team.work.normal");
+assert.equal(runPlanModeExited("team.code.plan", "code.team"), "team.code.normal");
 
 const expandedTeamLines = buildAppScreenLines(teamSnapshot, {
   ...teamLayoutOptions,
@@ -446,6 +778,108 @@ const slashCommands = AppScreen.prototype.buildSlashCommands.call({
 assert.deepEqual(
   slashCommands.map((command) => command.name),
   ["swarmflows", "workspace"],
+);
+
+function createHumanInputShortcutScreen({ hasPendingHumanInput = true } = {}) {
+  const editorInputs = [];
+  const notices = [];
+  let pendingListOpenCount = 0;
+  const pendingHumanPrompts = hasPendingHumanInput
+    ? new Map([["workflow-1:human-1", { workflowId: "workflow-1", agentId: "human-1" }]])
+    : new Map();
+  const snapshot = {
+    pendingQuestion: null,
+    btwOverlay: null,
+    btwActive: false,
+    cancellableWork: null,
+    runningCommand: null,
+    pendingHumanPrompts,
+    isProcessing: false,
+  };
+  const editor = {
+    text: "draft ",
+    getText() {
+      return this.text;
+    },
+    setText(value) {
+      this.text = value;
+    },
+    handleInput(data) {
+      editorInputs.push(data);
+      if (data.length === 1) this.text += data;
+    },
+  };
+  const screen = Object.create(AppScreen.prototype);
+  Object.assign(screen, {
+    transcriptScrollOffset: 0,
+    btwOverlayScrollOffset: 0,
+    escClearPending: false,
+    transientNotice: null,
+    startupPromptList: null,
+    resumeSessionList: null,
+    statusViewState: null,
+    mcpDetail: null,
+    mcpToolDetail: null,
+    mcpList: null,
+    mcpTools: null,
+    modelList: null,
+    toolSelector: null,
+    themeList: null,
+    swarmWorkflowsViewState: null,
+    configEditorState: null,
+    fileViewerState: null,
+    diffViewerState: null,
+    mvController: null,
+    showTeamPanel: false,
+    replyingToHumanPrompt: null,
+    editor,
+    state: {
+      recordActivity: () => undefined,
+      getSnapshot: () => snapshot,
+      isHelpVisible: () => false,
+      hasServerTask: () => false,
+      requestLocalInterrupt: () => false,
+    },
+    tui: {
+      terminal: { rows: 40 },
+      requestRender: () => undefined,
+      invalidate: () => undefined,
+    },
+    enterSwarmWorkflowsPendingList: async () => {
+      pendingListOpenCount += 1;
+    },
+    showTransientNotice: (message) => {
+      notices.push(message);
+    },
+  });
+  return {
+    screen,
+    editorInputs,
+    notices,
+    getPendingListOpenCount: () => pendingListOpenCount,
+  };
+}
+
+const humanInputShortcut = createHumanInputShortcutScreen();
+humanInputShortcut.screen.handleInput("h");
+assert.deepEqual(humanInputShortcut.editorInputs, ["h"]);
+assert.equal(humanInputShortcut.getPendingListOpenCount(), 0);
+
+humanInputShortcut.screen.handleInput("\x1bh");
+assert.deepEqual(humanInputShortcut.editorInputs, ["h"]);
+assert.equal(humanInputShortcut.getPendingListOpenCount(), 1);
+
+const noPendingHumanInputShortcut = createHumanInputShortcutScreen({
+  hasPendingHumanInput: false,
+});
+noPendingHumanInputShortcut.screen.handleInput("\x1bh");
+assert.equal(noPendingHumanInputShortcut.getPendingListOpenCount(), 0);
+assert.deepEqual(noPendingHumanInputShortcut.notices, ["No human inputs waiting."]);
+
+assert.equal(pendingHumanViewHint("alt+h"), "alt+h to view human inputs");
+assert.equal(
+  pendingHumanViewHint(null),
+  "use /swarmflows to view human inputs",
 );
 
 // Escape and left both move from the workflow's agents panel back to phases.
@@ -963,7 +1397,7 @@ assert.equal(mergedWorkflowUsage.phases[0]?.phase_type, "child");
 assert.equal(mergedWorkflowUsage.phases[0]?.parent_phase, "parent");
 
 assert.deepEqual(
-  planSwarmflowToggle({ target: "on", currentEnabled: true, mode: "team" }),
+  planSwarmflowToggle({ target: "on", currentEnabled: true, mode: "team.work.normal" }),
   {
     writeConfig: false,
     switchToTeam: false,
@@ -971,7 +1405,7 @@ assert.deepEqual(
   },
 );
 assert.deepEqual(
-  planSwarmflowToggle({ target: "on", currentEnabled: true, mode: "code.normal" }),
+  planSwarmflowToggle({ target: "on", currentEnabled: true, mode: "agent.code.normal" }),
   {
     writeConfig: false,
     switchToTeam: true,
@@ -979,15 +1413,16 @@ assert.deepEqual(
   },
 );
 assert.deepEqual(
-  planSwarmflowToggle({ target: "off", currentEnabled: false, mode: "team" }),
+  planSwarmflowToggle({ target: "off", currentEnabled: false, mode: "team.work.normal" }),
   {
     writeConfig: false,
     switchToTeam: false,
     message: "Already off. Mode remains team. No changes. Use /mode to leave team.",
   },
 );
+const teamWorkNormalMode = "team.work.normal";
 assert.equal(
-  planSwarmflowToggle({ target: "on", currentEnabled: false, mode: "team" }).writeConfig,
+  planSwarmflowToggle({ target: "on", currentEnabled: false, mode: teamWorkNormalMode }).writeConfig,
   true,
 );
 
@@ -1028,7 +1463,7 @@ assert.match(
 const projectInitRequests = [];
 const projectInitEvents = [];
 const projectInitEntries = [];
-let projectInitMode = "agent.plan";
+let projectInitMode = "agent.work.plan";
 let activeProjectDir = "/workspace/old";
 let sentProjectPrompt = null;
 const projectInitCommand = createHarmonyOSProjectInitCommand();
@@ -1083,7 +1518,7 @@ await projectInitCommand.action(
   "/workspace/demo",
 );
 assert.equal(activeProjectDir, "/workspace/demo");
-assert.equal(projectInitMode, "code.normal");
+assert.equal(projectInitMode, "agent.code.normal");
 assert.deepEqual(
   projectInitRequests.map((entry) => entry.method),
   ["harmonyos.project_init", "mode.set"],
@@ -1093,7 +1528,7 @@ assert.equal(
   false,
 );
 assert.equal(projectInitEvents[0].method, "command.add_dir");
-assert.equal(sentProjectPrompt.mode, "code.normal");
+assert.equal(sentProjectPrompt.mode, "agent.code.normal");
 assert.deepEqual(sentProjectPrompt.options, { logAsUser: false });
 assert.equal(sentProjectPrompt.skills, undefined);
 assert.match(sentProjectPrompt.content, /selected_ability: EntryAbility/);
@@ -1596,7 +2031,8 @@ await devInitCommand.action({
             name: "harmonyos_developer_knowledge",
             enabled: true,
             transport: "sse",
-            url: "https://example.com/other",
+            // Reserved test-only host: this URL must never reach a live service.
+            url: "https://example.invalid/other",
           },
         ],
       };
@@ -1614,3 +2050,25 @@ assert.equal(
 assert.match(cancelledDevInitEntries.at(-1).content, /cancelled.*not installed/i);
 
 console.log("frontend tests passed");
+
+// normalizeToClientMode:旧 canonical 串应归一到新三段 canonical，
+// 新串原样返回,未知串返回 undefined。后端推送路径(session.updated /
+// plan.mode_exited / session.create 响应)仍可能带旧 canonical,接收侧靠此函数
+// 归一,避免 isClientMode 拒收导致 UI mode 与后端真实状态错位。
+assert.equal(normalizeToClientMode("agent"), "agent.work.normal");
+assert.equal(normalizeToClientMode("agent.plan"), "agent.work.plan");
+assert.equal(normalizeToClientMode("agent.fast"), "agent.work.normal");
+assert.equal(normalizeToClientMode("plan"), "agent.work.plan");
+assert.equal(normalizeToClientMode("fast"), "agent.work.normal");
+assert.equal(normalizeToClientMode("code"), "agent.code.normal");
+assert.equal(normalizeToClientMode("code.normal"), "agent.code.normal");
+assert.equal(normalizeToClientMode("code.plan"), "agent.code.plan");
+assert.equal(normalizeToClientMode("code.team"), "team.code.normal");
+assert.equal(normalizeToClientMode("team"), "team.work.normal");
+assert.equal(normalizeToClientMode("team.plan"), "team.work.plan");
+assert.equal(normalizeToClientMode("team.plan.normal"), "team.work.plan");
+assert.equal(normalizeToClientMode("team.plan.code"), "team.code.plan");
+assert.equal(normalizeToClientMode("agent.work.normal"), "agent.work.normal");
+assert.equal(normalizeToClientMode("team.code.plan"), "team.code.plan");
+assert.equal(normalizeToClientMode("unknown_mode"), undefined);
+assert.equal(normalizeToClientMode(""), undefined);

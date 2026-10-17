@@ -2,9 +2,14 @@
 
 """统一消息模型."""
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal
+
+from jiuwenswarm.common.mode_matrix import deprecate_mode
+
+logger = logging.getLogger(__name__)
 
 
 class ReqMethod(Enum):
@@ -18,6 +23,13 @@ class ReqMethod(Enum):
     CHAT_SWARMFLOW_REPLY = "chat.swarmflow_reply"
     SSH_RELAY = "ssh.relay"
     HISTORY_GET = "history.get"
+    GROUP_CREATE = "group.create"
+    GROUP_DELETE = "group.delete"
+    GROUP_LIST = "group.list"
+    GROUP_GET = "group.get"
+    GROUP_UPDATE = "group.update"
+    GROUP_MEMBER_ADD = "group.member.add"
+    GROUP_HISTORY_GET = "group.history.get"
     COMMAND_BTW = "command.btw"
     COMMAND_ADD_DIR = "command.add_dir"
     COMMAND_CHROME = "command.chrome"
@@ -34,15 +46,43 @@ class ReqMethod(Enum):
     COMMAND_SESSION = "command.session"
     COMMAND_WORKFLOWS = "command.workflows"
     COMMAND_STATUS = "command.status"
+    SWARMFLOW_PAUSE = "swarmflow.pause"
+    SWARMFLOW_RESUME = "swarmflow.resume"
+    SWARMFLOW_STOP = "swarmflow.stop"
 
     CONFIG_GET = "config.get"
+    CONFIG_MOA_STATUS = "config.moa_status"
     CONFIG_SET = "config.set"
+    CONFIG_SAVE_ALL = "config.save_all"
+    CONFIG_VALIDATE_MODEL = "config.validate_model"
+    MODELS_LIST = "models.list"
+    MODELS_ZEN_ENTRIES = "models.zen_entries"
+    MODELS_ZEN_WARM = "models.zen_warm"
+    MODELS_GET = "models.get"
+    MODELS_REPLACE_ALL = "models.replace_all"
+    MODELS_VALIDATE = "models.validate"
+    MODELS_UPSERT = "models.upsert"
+    MODELS_DELETE = "models.delete"
+    MODELS_REFERENCES = "models.references"
+    MODEL_GROUPS_LIST = "model_groups.list"
+    MODEL_GROUPS_UPSERT = "model_groups.upsert"
+    MODEL_GROUPS_DELETE = "model_groups.delete"
+    SESSION_SELECTION_SET = "session.selection.set"
+    LOCALE_GET_CONF = "locale.get_conf"
+    LOCALE_SET_CONF = "locale.set_conf"
     CHANNEL_GET = "channel.get"
 
     SESSION_LIST = "session.list"
+    SESSION_GET_METADATA = "session.get_metadata"
+    SESSION_MESSAGE_CONTINUE_QUEUED = "session.message.continue_queued"
+    SESSION_PLAN_STATUS = "session.plan_status"
+    SESSION_PIN = "session.pin"
+    SESSION_COLOR_SET = "session.color_set"
+    SESSION_PREVIEW = "session.preview"
     SESSION_CREATE = "session.create"
     SESSION_SWITCH = "session.switch"
     SESSION_DELETE = "session.delete"
+    SESSION_INPUT_INTENT = "session.input.intent"
     SESSION_RENAME = "session.rename"
     SESSION_FORK = "session.fork"
     SESSION_REBIND_PROJECT = "session.rebind_project"
@@ -52,6 +92,7 @@ class ReqMethod(Enum):
     SESSION_REWIND_COMPACT = "session.rewind_compact"
     SESSION_RESTORE_FILES = "session.restore_files"
     HISTORY_LIST_TURNS = "history.list_turns"
+    HISTORY_APPEND_RECORD = "history.append_record"
     TEAM_TEMPLATES_LIST = "team.templates.list"
     TEAM_BINDINGS_LIST = "team.bindings.list"
     TEAM_BINDING_CREATE = "team.binding.create"
@@ -61,20 +102,119 @@ class ReqMethod(Enum):
 
     PATH_GET = "path.get"
     PATH_SET = "path.set"
+    PATH_SELECT_DIRECTORY = "path.select_directory"
+    PATH_SELECT_FILES = "path.select_files"
 
     BROWSER_RUNTIME_RESTART = "browser.runtime_restart"
 
     CONFIG_CACHE_CLEAR = "config.cache_clear"
     AGENT_RELOAD_CONFIG = "agent.reload_config"
     AGENT_PREWARM_SYNC = "agent.prewarm.sync"
+    # Gateway → AgentServer：登录模型凭据续期后的新 token / 会话注销后的撤销
+    AUTH_CREDENTIALS_UPDATE = "auth.credentials.update"
 
     MEMORY_COMPUTE = "memory.compute"
+    # TUI memory management (Phase 3: execute in the target AgentServer's
+    # injected user directory; Gateway only forwards the request).
+    MEMORY_LIST = "memory.list"
+    MEMORY_EDIT = "memory.edit"
+    MEMORY_STATUS = "memory.status"
+    MEMORY_TOGGLE = "memory.toggle"
+    MEMORY_OPEN = "memory.open"
+
+    # Project domain (Phase 3).  The Gateway routes these calls but all
+    # project-store and session-metadata access happens in AgentServer.
+    PROJECT_INFO = "project.info"
+    PROJECT_PINNED_SESSIONS = "project.pinned_sessions"
+    PROJECT_GET_SESSIONS = "project.get_sessions"
+    PROJECT_GET_CRON_SESSIONS = "project.get_cron_sessions"
+    # Resolve a cron project's binding in the selected AgentServer directory.
+    # Gateway keeps the job store/scheduler but must not inspect user projects.
+    PROJECT_CRON_RESOLVE_BINDING = "project.cron.resolve_binding"
+    PROJECT_LIST = "project.list"
+    PROJECT_CREATE = "project.create"
+    PROJECT_RENAME = "project.rename"
+    PROJECT_PIN = "project.pin"
+    SESSION_ARCHIVE = "session.archive"
+    SESSION_UNARCHIVE = "session.unarchive"
+    SESSION_ARCHIVED_LIST = "session.archived.list"
+    CRON_SESSIONS_DELETE = "cron.sessions.delete"
+    PROJECT_REMOVE = "project.remove"
+    PROJECT_RESTORE = "project.restore"
+    PROJECT_LIFECYCLE = "project.lifecycle"
+    PROJECT_SESSIONS_ARCHIVE = "project.sessions.archive"
+    PROJECT_SESSIONS_DELETE_ARCHIVED = "project.sessions.delete_archived"
+    PROJECT_GIT_STATUS = "project.git.status"
+    PROJECT_GIT_PROBE = "project.git.probe"
+    PROJECT_GIT_INIT = "project.git.init"
+    PROJECT_GIT_SWITCH_BRANCH = "project.git.switch_branch"
+    PROJECT_GIT_CREATE_BRANCH = "project.git.create_branch"
+    PROJECT_GIT_COMMIT = "project.git.commit"
+    PROJECT_GIT_PUSH = "project.git.push"
+    PROJECT_GIT_DIFF_STATUS = "project.git.diff_status"
+    PROJECT_GIT_TURN_DIFF_LIST = "project.git.turn_diff_list"
+    PROJECT_GIT_TURN_DIFF = "project.git.turn_diff"
+    PROJECT_GIT_DISCARD_TURN_CHANGES = "project.git.discard_turn_changes"
+    PROJECT_GIT_REDO_TURN_CHANGES = "project.git.redo_turn_changes"
+
+    # Designer execution graph (canvas + subagent orchestration shell)
+    DESIGNER_WORKSPACE_CREATE = "designer.workspace.create"
+    DESIGNER_WORKSPACE_GET = "designer.workspace.get"
+    DESIGNER_WORKSPACE_SESSION_CREATE = "designer.workspace.session.create"
+    DESIGNER_WORKSPACE_SESSION_COMPOSE = "designer.workspace.session.compose"
+    DESIGNER_GRAPH_GET = "designer.graph.get"
+    DESIGNER_GRAPH_LIST = "designer.graph.list"
+    DESIGNER_GRAPH_SAVE = "designer.graph.save"
+    DESIGNER_GRAPH_BOOTSTRAP = "designer.graph.bootstrap"
+    DESIGNER_GRAPH_PATCH = "designer.graph.patch"
+    DESIGNER_GRAPH_CHAT = "designer.graph.chat"
+    DESIGNER_MEDIA_CAPABILITIES = "designer.media.capabilities"
+    DESIGNER_RUN_START = "designer.run.start"
+    DESIGNER_RUN_GET = "designer.run.get"
+    DESIGNER_RUN_PAUSE = "designer.run.pause"
+    DESIGNER_RUN_CANCEL = "designer.run.cancel"
+    DESIGNER_RUN_CHOOSE_OUTPUT = "designer.run.choose_output"
 
     PROACTIVE_TICK = "proactive.tick"  # Trigger proactive recommendation tick (from Cron)
+    PROACTIVE_FEEDBACK = "proactive.feedback"  # User feedback on proactive recommendation (like/dislike)
     COMMAND_GOAL = "command.goal"
+    COMMANDS_LIST = "commands.list"
 
     FILES_LIST = "files.list"
     FILES_GET = "files.get"
+
+    # 媒体/文档附件（Phase 2 WorkspaceFileAdapter）
+    MEDIA_PERSIST = "media.persist"
+    # 丢弃尚未发送的会话 uploads 副本。只删当前会话 uploads 内的普通文件。
+    MEDIA_DISCARD = "media.discard"
+    DOCUMENT_PERSIST = "document.persist"
+    DOCUMENT_FORMATS = "document.formats"
+    # chat.send 上行外部 url 文件导入（Phase 2：AgentServer 下载落盘注入目录，Gateway 不落盘）
+    FILE_IMPORT_URL = "file.import_url"
+    # 分块上传：用于 AgentOS 多用户场景的大文件，避免单个 E2A WebSocket 帧超过限制。
+    FILE_UPLOAD_CHUNK = "file.upload_chunk"
+    # Smart Approval sealed assets: validate and read one bounded chunk in the
+    # routed AgentServer. Gateway must never authorize these from token paths.
+    FILE_DOWNLOAD_VERIFIED_CHUNK = "file.download_verified_chunk"
+
+    # IM 平台附件落盘（Phase 3：Gateway 下载字节后经 base64 交给 AgentServer
+    # 落盘至其注入目录的 <平台>_files/downloads/，Gateway 不直写用户目录）
+    IM_FILE_PERSIST = "im.file_persist"
+
+    # Gateway cron 单源的只读内存快照。AgentServer 只消费该快照供本轮
+    # cron 工具查询/更新，不持久化、不恢复、更不会启动本地调度器。
+    CRON_JOBS_SYNC = "cron.jobs.sync"
+    CRON_COMMAND_ACK = "cron.command.ack"
+    CRON_RUN_NOW_ACK = "cron.run_now.ack"
+
+    # Gateway owns voice task records; AgentServer returns execution facts/files.
+    VOICE_TASK_CHECKPOINT_ACK = "voice.task.checkpoint.ack"
+    VOICE_TASK_FILES = "voice.task.files"
+
+    # HarmonyOS TUI DevEco bootstrap（Phase 3：用户态在目标 AgentServer 注入目录执行）
+    HARMONYOS_PROJECT_INIT = "harmonyos.project_init"
+    HARMONYOS_DEV_INIT = "harmonyos.dev_init"
+
     TTS_SYNTHESIZE = "tts.synthesize"
 
     AGENTS_LIST = "agents.list"
@@ -87,12 +227,24 @@ class ReqMethod(Enum):
     AGENTS_TOOLS_LIST = "agents.tools_list"
     AGENT_SWITCH = "3rdagent.switch"
     AGENT_LIST = "3rdagent.list"
+    AGENT_WEB = "3rdagent.web"
+
+    # Unified asset publishing; dispatched by AgentServer independently of chats.
+    ASSETS_PUBLISH_DESCRIBE = "assets.publish.describe"
+    ASSETS_PUBLISH_PREPARE = "assets.publish.prepare"
+    ASSETS_PUBLISH_COMMIT = "assets.publish.commit"
+    ASSETS_PUBLISH_STATUS = "assets.publish.status"
+    ASSETS_PUBLISH_RECORDS = "assets.publish.records"
+    ASSETS_PUBLISH_LOCAL_STATUS = "assets.publish.local_status"
 
     # mcp management.
     MCP_LIST = "mcp.list"
     MCP_SHOW = "mcp.show"
+    MCP_INSTALL = "mcp.install"
+    MCP_UNINSTALL = "mcp.uninstall"
     MCP_CONNECT = "mcp.connect"
     MCP_WAIT_AUTH = "mcp.wait_auth"
+    MCP_CANCEL_CONNECT = "mcp.cancel_connect"
     MCP_DISCONNECT = "mcp.disconnect"
     MCP_REGISTER_CUSTOM = "mcp.register_custom"
     MCP_DELETE_CUSTOM = "mcp.delete_custom"
@@ -102,6 +254,10 @@ class ReqMethod(Enum):
     SKILLS_LIST = "skills.list"
     SKILLS_INSTALLED = "skills.installed"
     SKILLS_GET = "skills.get"
+    SKILLS_VERSIONS_LIST = "skills.versions.list"
+    SKILLS_FILES_LIST = "skills.files.list"
+    SKILLS_FILES_GET = "skills.files.get"
+    SKILLS_REBUILD = "skills.rebuild"
     SKILLS_TOGGLE = "skills.toggle"
     # Per-workspace Skill visibility (team mode): the Skill entities themselves
     # live in exactly one global library, so who may see which Skill is metadata
@@ -110,12 +266,16 @@ class ReqMethod(Enum):
     SKILLS_VISIBILITY_SET = "skills.visibility.set"
     SKILLS_VISIBILITY_UPDATE = "skills.visibility.update"
     SKILLS_INSTALL = "skills.install"
+    SKILLS_PACK_MEMBER_INSTALL = "skills.pack_member.install"
     SKILLS_IMPORT_LOCAL = "skills.import_local"
+    SKILLS_IMPORT_UPLOAD = "skills.import_upload"
+    SKILLS_CREATE_FROM_KNOWLEDGE = "skills.create_from_knowledge"
     SKILLS_MARKETPLACE_ADD = "skills.marketplace.add"
     SKILLS_MARKETPLACE_REMOVE = "skills.marketplace.remove"
     SKILLS_MARKETPLACE_TOGGLE = "skills.marketplace.toggle"
     SKILLS_UNINSTALL = "skills.uninstall"
     SKILLS_ONLINE_SEARCH = "skills.online_search.search"
+    SKILLS_ONLINE_SEARCH_INSTALL = "skills.online_search.install"
     SKILLS_SKILLNET_SEARCH = "skills.skillnet.search"
     SKILLS_SKILLNET_INSTALL = "skills.skillnet.install"
     SKILLS_SKILLNET_INSTALL_STATUS = "skills.skillnet.install_status"
@@ -129,9 +289,11 @@ class ReqMethod(Enum):
     SKILLS_TEAMSKILLS_HUB_VALIDATE = "skills.teamskillshub.validate"
     SKILLS_TEAMSKILLS_HUB_PACK = "skills.teamskillshub.pack"
     SKILLS_TEAMSKILLS_HUB_SEARCH = "skills.teamskillshub.search"
+    SKILLS_SWARMSKILLS_HUB_RECOMMEND = "skills.swarmskillshub.recommend"
     SKILLS_TEAMSKILLS_HUB_INSTALL = "skills.teamskillshub.install"
     SKILLS_TEAMSKILLS_HUB_PUBLISH = "skills.teamskillshub.publish"
     SKILLS_TEAMSKILLS_HUB_DELETE = "skills.teamskillshub.delete"
+    SKILLS_SWARMSKILLS_HUB_DETAIL = "skills.swarmskillshub.detail"
     SKILLS_RETRIEVAL_STATUS = "skills.retrieval.status"
     SKILLS_RETRIEVAL_INDEX_BUILD = "skills.retrieval.index_build"
     SKILLS_RETRIEVAL_INDEX_CANCEL = "skills.retrieval.index_cancel"
@@ -147,6 +309,62 @@ class ReqMethod(Enum):
     SKILLS_GRAPH_STATUS = "skills.graph.status"
     SKILLS_GRAPH_GET = "skills.graph.get"
     SKILLS_GRAPH_CANCEL = "skills.graph.cancel"
+    SKILLS_EXPERIENCE_LIST = "skills.experience.list"
+    SKILLS_EXPERIENCE_REQUEST = "skills.experience.request"
+
+    # Task (session) assets: named files referenceable with @name in the chat box.
+    SESSION_ASSETS_LIST = "session.assets.list"
+    SESSION_ASSETS_REGISTER = "session.assets.register"
+    SESSION_ASSETS_RENAME = "session.assets.rename"
+
+    # 技能同步（Server / Client 分离部署）。外部入口为 HTTP /skill-sync/*
+    # （Bearer token 鉴权）。WS 侧仅保留 reload：web 进程 HTTP apply 落盘后的
+    # 进程间通知（参数仅 applied 名称列表，纯 JSON）；diff / package / apply
+    # 不注册 WS 路由（经 WS 调用会绕过 token 鉴权，且 package 泄漏临时目录、
+    # apply 的 zip_bytes 无法过 JSON 序列化，均不可用）。
+    SKILL_SYNC_DIFF = "skills.sync.diff"
+    SKILL_SYNC_PACKAGE = "skills.sync.package"
+    SKILL_SYNC_APPLY = "skills.sync.apply"
+    SKILL_SYNC_RELOAD = "skills.sync.reload"
+
+    PERSONAL_CONTEXT_RUNTIME_STATUS = "personal_context.runtime.status"
+    PERSONAL_CONTEXT_RUNTIME_START_COLLECTION = (
+        "personal_context.runtime.start_collection"
+    )
+    PERSONAL_CONTEXT_RUNTIME_STOP_COLLECTION = (
+        "personal_context.runtime.stop_collection"
+    )
+    PERSONAL_CONTEXT_RUNTIME_START_AGENT_USE = (
+        "personal_context.runtime.start_agent_use"
+    )
+    PERSONAL_CONTEXT_RUNTIME_STOP_AGENT_USE = "personal_context.runtime.stop_agent_use"
+    PERSONAL_CONTEXT_RUNTIME_SET_MASTER_ENABLED = (
+        "personal_context.runtime.set_master_enabled"
+    )
+    PERSONAL_CONTEXT_RUNTIME_GET_CONFIG = "personal_context.runtime.get_config"
+    PERSONAL_CONTEXT_RUNTIME_PATCH_CONFIG = "personal_context.runtime.patch_config"
+    PERSONAL_CONTEXT_RUNTIME_SELECT_MODEL = "personal_context.runtime.select_model"
+    PERSONAL_CONTEXT_FETCH_LIST_SERVICES = "personal_context.fetch.list_services"
+    PERSONAL_CONTEXT_FETCH_CREATE_SERVICE = "personal_context.fetch.create_service"
+    PERSONAL_CONTEXT_FETCH_DELETE_SERVICE = "personal_context.fetch.delete_service"
+    PERSONAL_CONTEXT_FETCH_PATCH_SERVICE = "personal_context.fetch.patch_service"
+    PERSONAL_CONTEXT_FETCH_START_SERVICE = "personal_context.fetch.start_service"
+    PERSONAL_CONTEXT_FETCH_STOP_SERVICE = "personal_context.fetch.stop_service"
+    PERSONAL_CONTEXT_FETCH_RUN_ALL = "personal_context.fetch.run_all"
+    PERSONAL_CONTEXT_FETCH_RUN_ONE = "personal_context.fetch.run_one"
+    PERSONAL_CONTEXT_FETCH_STOP_RUN = "personal_context.fetch.stop_run"
+    PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS = "personal_context.fetch.get_run_status"
+    PERSONAL_CONTEXT_FETCH_GET_AUTHORIZATION_STATUS = (
+        "personal_context.fetch.get_authorization_status"
+    )
+    PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER = (
+        "personal_context.fetch.authorize_provider"
+    )
+    PERSONAL_CONTEXT_CONTEXT_STREAM_GRAPH = "personal_context.context.stream_graph"
+    PERSONAL_CONTEXT_CONTEXT_STREAM_TREE = "personal_context.context.stream_tree"
+    PERSONAL_CONTEXT_CONTEXT_SEARCH_PAGES = "personal_context.context.search_pages"
+    PERSONAL_CONTEXT_CONTEXT_GET_NODE = "personal_context.context.get_node"
+    PERSONAL_CONTEXT_CONTEXT_GET_SOURCE = "personal_context.context.get_source"
 
     # Plugin management (reuses skills marketplace infrastructure)
     PLUGINS_LIST = "plugins.list"
@@ -161,29 +379,49 @@ class ReqMethod(Enum):
     EXTENSIONS_DELETE = "extensions.delete"
     EXTENSIONS_TOGGLE = "extensions.toggle"
 
-    # agent_template / plugin package catalog + lifecycle RPCs.
+    # AgentGroup selection + agent_template / plugin package catalog RPCs.
+    AGENT_GROUPS_LIST = "agent_groups.list"
+    AGENT_GROUPS_SHOW = "agent_groups.show"
+    AGENT_GROUPS_FILE_LIST = "agent_groups.file.list"
+    AGENT_GROUPS_FILE_READ = "agent_groups.file.read"
+    AGENT_GROUPS_CREATE = "agent_groups.create"
+    AGENT_GROUPS_IMPORT_LOCAL = "agent_groups.import_local"
+    AGENT_GROUPS_INSTALL = "agent_groups.install"
+    AGENT_GROUPS_UNINSTALL = "agent_groups.uninstall"
     AGENT_TEMPLATES_LIST = "agent_templates.list"
     AGENT_TEMPLATES_SHOW = "agent_templates.show"
     AGENT_TEMPLATES_FILE_LIST = "agent_templates.file.list"
     AGENT_TEMPLATES_FILE_READ = "agent_templates.file.read"
     AGENT_TEMPLATES_CREATE = "agent_templates.create"
+    AGENT_TEMPLATES_UPDATE = "agent_templates.update"
+    AGENT_TEMPLATES_DELETE = "agent_templates.delete"
+    AGENT_TEMPLATES_IMPORT_LOCAL = "agent_templates.import_local"
     AGENT_TEMPLATES_INSTALL = "agent_templates.install"
     AGENT_TEMPLATES_UNINSTALL = "agent_templates.uninstall"
     PLUGIN_PACKAGES_LIST = "plugin_packages.list"
     PLUGIN_PACKAGES_SHOW = "plugin_packages.show"
     PLUGIN_PACKAGES_CREATE = "plugin_packages.create"
+    PLUGIN_PACKAGES_IMPORT_LOCAL = "plugin_packages.import_local"
     PLUGIN_PACKAGES_INSTALL = "plugin_packages.install"
     PLUGIN_PACKAGES_UNINSTALL = "plugin_packages.uninstall"
 
     HOOKS_LIST = "hooks.list"
 
+    # 旧探活使用 health_check 命名空间。
+    HEALTH_CHECK_GET_CONF = "health_check.get_conf"
+    HEALTH_CHECK_SET_CONF = "health_check.set_conf"
+    # Deprecated probe RPC aliases kept for clients upgrading across the rename.
     HEARTBEAT_GET_CONF = "heartbeat.get_conf"
     HEARTBEAT_SET_CONF = "heartbeat.set_conf"
+
+    # Gateway -> AgentServer proxy for AgentServer-owned Heartbeat job operations.
+    HEARTBEAT_JOB = "heartbeat.job"
 
     # 安全防护 permissions（与 Web ``register_method`` 同名，经 E2A → AgentServer 处理；owner_scopes 仅走 Web 直连）
     PERMISSIONS_TOOLS_GET = "permissions.tools.get"
     PERMISSIONS_TOOLS_SET = "permissions.tools.set"
     PERMISSIONS_TOOLS_UPDATE = "permissions.tools.update"
+    PERMISSIONS_TOOLS_UPDATE_USER = "permissions.tools.update_user"
     PERMISSIONS_TOOLS_DELETE = "permissions.tools.delete"
     PERMISSIONS_RULES_GET = "permissions.rules.get"
     PERMISSIONS_RULES_CREATE = "permissions.rules.create"
@@ -191,6 +429,19 @@ class ReqMethod(Enum):
     PERMISSIONS_RULES_DELETE = "permissions.rules.delete"
     PERMISSIONS_APPROVAL_OVERRIDES_GET = "permissions.approval_overrides.get"
     PERMISSIONS_APPROVAL_OVERRIDES_DELETE = "permissions.approval_overrides.delete"
+    PERMISSIONS_OWNER_SCOPES_GET = "permissions.owner_scopes.get"
+    PERMISSIONS_OWNER_SCOPES_SET = "permissions.owner_scopes.set"
+
+    MEMORY_FORBIDDEN_GET = "memory.forbidden.get"
+    MEMORY_FORBIDDEN_SET = "memory.forbidden.set"
+
+    # A4P 授权桥接（Web User Authorizer → AgentServer A4PServer）
+    A4P_AUTHORIZATION_REPREPARE = "a4p.authorization.reprepare"
+    A4P_AUTHORIZATION_COMPLETE = "a4p.authorization.complete"
+    A4P_AUTHORIZATION_REJECT = "a4p.authorization.reject"
+    A4P_AUTHORIZATION_PENDING = "a4p.authorization.pending"
+    A4P_CONFIG_GET = "a4p.config.get"
+    A4P_CONFIG_UPDATE = "a4p.config.update"
 
     CHANNEL_FEISHU_GET_CONF = "channel.feishu.get_conf"
     CHANNEL_FEISHU_SET_CONF = "channel.feishu.set_conf"
@@ -222,6 +473,8 @@ class ReqMethod(Enum):
     TEAM_HISTORY_GET = "team.history.get"
     TEAM_MEMBERS_GET = "team.members.get"
     TEAM_MQ_PUBLISH = "team.mq.publish"
+    TEAM_LIST = "team.list"
+    ORG_SNAPSHOT = "org.snapshot"
 
     # Harness package management
     HARNESS_PACKAGES_GET = "harness.packages.get"
@@ -231,6 +484,26 @@ class ReqMethod(Enum):
     HARNESS_PACKAGES_DELETE = "harness.packages.delete"
     HARNESS_PACKAGES_IMPORT = "harness.packages.import"
     HARNESS_PACKAGES_EXPORT = "harness.packages.export"
+
+    # RSI 优化平台（web → gateway → agentserver 全链路，web 契约 v0.3 §4）
+    RSI_DATASET_VALIDATE = "rsi.dataset.validate"
+    RSI_TASK_CREATE = "rsi.task.create"
+    RSI_TASK_LIST = "rsi.task.list"
+    RSI_TASK_GET = "rsi.task.get"
+    RSI_TASK_DELETE = "rsi.task.delete"
+    RSI_TRAINING_START = "rsi.training.start"
+    RSI_TRAINING_PAUSE = "rsi.training.pause"
+    RSI_TRAINING_RESUME = "rsi.training.resume"
+    RSI_TRAINING_TERMINATE = "rsi.training.terminate"
+    RSI_REPORT_GET = "rsi.report.get"
+    RSI_USAGE_GET = "rsi.usage.get"
+    RSI_ARTIFACT_DOWNLOAD = "rsi.artifact.download"
+    RSI_ARTIFACT_FILES_LIST = "rsi.artifact.files.list"
+    RSI_ARTIFACT_FILES_GET = "rsi.artifact.files.get"
+    RSI_TREE_GET = "rsi.tree.get"
+    RSI_HARNESS_INSTALL = "rsi.harness.install"
+    RSI_HARNESS_VERSIONS_LIST = "rsi.harness.versions.list"
+    RSI_HARNESS_ROLLBACK = "rsi.harness.rollback"
 
     # Schedule task management
     SCHEDULE_CHECK_CONFIG = "schedule.check_config"
@@ -249,6 +522,15 @@ class ReqMethod(Enum):
 
 
 class EventType(Enum):
+    SESSION_ARCHIVED = "session.archived"
+    SESSION_UNARCHIVED = "session.unarchived"
+    SESSION_DELETED = "session.deleted"
+    SESSION_LIFECYCLE_UPDATED = "session.lifecycle.updated"
+    PROJECT_LIFECYCLE_UPDATED = "project.lifecycle.updated"
+    # 项目移除(软删除)/恢复：其会话与定时任务的可见性随之变化，
+    # 其他端必须据此刷新工作区、归档页与定时任务列表。
+    PROJECT_REMOVED = "project.removed"
+    PROJECT_RESTORED = "project.restored"
     CONNECTION_ACK = "connection.ack"
     HELLO = "hello"
     CHAT_DELTA = "chat.delta"
@@ -263,6 +545,7 @@ class EventType(Enum):
     CHAT_TOOL_UPDATE = "chat.tool_update"
     CHAT_TOOL_RESULT = "chat.tool_result"
     CHAT_SYMPHONY_STATUS = "chat.symphony_status"
+    CHAT_MESSAGE_UPDATED = "chat.message_updated"
     CONTEXT_USAGE = "context.usage"
     TODO_UPDATED = "todo.updated"
     CHAT_PROCESSING_STATUS = "chat.processing_status"
@@ -270,6 +553,7 @@ class EventType(Enum):
     CHAT_INTERRUPT_RESULT = "chat.interrupt_result"
     CHAT_EVOLUTION_STATUS = "chat.evolution_status"
     CHAT_SUBTASK_UPDATE = "chat.subtask_update"
+    CHAT_SUBAGENT_ACTIVITY = "chat.subagent_activity"
     CHAT_ASK_USER_QUESTION = "chat.ask_user_question"
     PLAN_APPROVAL_REQUIRED = "plan.approval_required"
     CHAT_SESSION_RESULT = "chat.session_result"
@@ -281,9 +565,24 @@ class EventType(Enum):
     TEAM_TASK = "team.task"
     TEAM_MESSAGE = "team.message"
     WORKFLOW_UPDATED = "workflow.updated"
-    HEARTBEAT_RELAY = "heartbeat.relay"
+    DESIGNER_RUN_UPDATED = "designer.run.updated"
+    DESIGNER_NODE_UPDATED = "designer.node.updated"
+    DESIGNER_GRAPH_UPDATED = "designer.graph.updated"
+    DESIGNER_LEADER_ACTIVITY = "designer.leader.activity"
+    # 旧探活结果通过 health_check.relay 发送。
+    # 新心跳任务(heartbeat.job.*)不使用 relay 事件,结果通过普通 chat.send 进入原会话。
+    HEALTH_CHECK_RELAY = "health_check.relay"
+    # Deprecated source-level alias. Legacy wire frames are normalized by
+    # _missing_ so every downstream channel sees HEALTH_CHECK_RELAY.
+    HEARTBEAT_RELAY = "health_check.relay"
     HISTORY_GET = "history.message"
     PROACTIVE_RECOMMENDATION = "proactive_recommendation"
+
+    @classmethod
+    def _missing_(cls, value):
+        if value == "heartbeat.relay":
+            return cls.HEALTH_CHECK_RELAY
+        return None
 
 
 class Mode(Enum):
@@ -297,37 +596,59 @@ class Mode(Enum):
     TEAM = "team"
     TEAM_PLAN_NORMAL = "team.plan.normal"
     TEAM_PLAN_CODE = "team.plan.code"
+    # 新三段命名 canonical（P2 引入；旧成员保留以兼容历史持久化反解析）。
+    AGENT_WORK_NORMAL = "agent.work.normal"
+    AGENT_WORK_PLAN = "agent.work.plan"
+    AGENT_CODE_NORMAL = "agent.code.normal"
+    AGENT_CODE_PLAN = "agent.code.plan"
+    TEAM_WORK_NORMAL = "team.work.normal"
+    TEAM_WORK_PLAN = "team.work.plan"
+    TEAM_CODE_NORMAL = "team.code.normal"
+    TEAM_CODE_PLAN = "team.code.plan"
 
     @classmethod
     def from_raw(cls, raw_mode: Any, default: "Mode | None" = None) -> "Mode":
-        """解析 mode。plan / fast 已合并：agent.plan / agent.fast 归一为 agent。"""
-        fallback = default or cls.AGENT
+        """解析 mode：新 canonical 原样返回，旧 canonical 静默映射到新 canonical。
+
+        单一逻辑路径——不再维护手写白名单：``deprecate_mode`` 对新 canonical
+        原样返回（不在 :data:`DEPRECATION_MAP` 里），对旧 canonical 映射到新串，
+        对未知串原样返回后由 ``cls(...)`` 抛 ``ValueError`` 兜底到 ``fallback``。
+        裸 ``plan`` / ``fast`` 与 CLI ``MODE_ALIASES`` 同语义，直接落到
+        :attr:`AGENT_WORK_NORMAL`，不绕 ``agent.fast`` 中间步。
+        """
+        fallback = default or cls.AGENT_WORK_NORMAL
         if isinstance(raw_mode, Mode):
-            # 历史枚举成员归一到合并后的 AGENT。
-            if raw_mode in (cls.AGENT_PLAN, cls.AGENT_FAST):
-                return cls.AGENT
-            return raw_mode
+            raw_mode = raw_mode.value
         if not isinstance(raw_mode, str):
             return fallback
         normalized = raw_mode.strip().lower()
         if not normalized:
             return fallback
-        # 任何 agent* 请求（agent / agent.plan / agent.fast）归一到 AGENT。
-        if normalized.split(".", 1)[0] == "agent":
-            return cls.AGENT
-        # 历史裸 plan / fast（同 CLI MODE_ALIASES）显式归一到 AGENT，
-        # 不依赖 fallback 默认值恰好等于 AGENT。
         if normalized in ("plan", "fast"):
-            return cls.AGENT
-        if normalized == "team.plan":
-            return cls.TEAM_PLAN_NORMAL
+            logger.debug("Mode.from_raw: bare '%s' -> AGENT_WORK_NORMAL", normalized)
+            return cls.AGENT_WORK_NORMAL
+        new_mode_str = deprecate_mode(normalized)
         try:
-            return cls(normalized)
+            mode = cls(new_mode_str)
         except ValueError:
+            logger.warning(
+                "Mode.from_raw: 无法识别的 mode=%r (deprecate 后=%r)，兜底 %s",
+                raw_mode, new_mode_str, fallback.value,
+            )
             return fallback
+        if new_mode_str != normalized:
+            logger.debug(
+                "Mode.from_raw: '%s' -> '%s' (legacy canonical 静默迁移)",
+                normalized, new_mode_str,
+            )
+        return mode
 
     def to_runtime_mode(self) -> str:
-        """输出 runtime mode 值；历史 agent.plan / agent.fast 归一为 agent。"""
+        """输出 runtime mode 值；历史 agent.plan / agent.fast 归一为 agent。
+
+        新枚举原样返回（canonical 串即 runtime 串）。旧枚举按历史语义归一为
+        合并后的 ``agent`` / 自身 canonical 串。
+        """
         if self in (Mode.AGENT_PLAN, Mode.AGENT_FAST):
             return Mode.AGENT.value
         return self.value
@@ -352,7 +673,12 @@ class Message:
     payload: dict | None = None
     req_method: ReqMethod | None = None
     event_type: EventType | None = None
-    mode: Mode = Mode.AGENT
+    # 与 Mode.from_raw 的 fallback 对齐：客户端不传 mode 时落到 canonical
+    # ``agent.work.normal``，避免 schema 默认值与 from_raw 不一致导致
+    # Message.mode 在两条入口路径下产生不同默认值。旧 ``Mode.AGENT`` 仍由
+    # from_raw("agent") 经 DEPRECATION_MAP 映射到 AGENT_WORK_NORMAL，故不会
+    # 丢失旧 canonical 的反解析能力。
+    mode: Mode = Mode.AGENT_WORK_NORMAL
     is_stream: bool = False
     stream_seq: int | None = None
     stream_id: str | None = None

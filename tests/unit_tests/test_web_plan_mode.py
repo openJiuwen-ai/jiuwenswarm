@@ -283,15 +283,21 @@ def test_project_dir_still_separates_agents():
 
 
 class _FakeAgentFacade:
-    """只实现 ``_open_plan_state_session`` 用到的两个入口。"""
+    """只实现 ``_open_plan_state_session`` 用到的入口。"""
 
-    def __init__(self, live_instance=None, root_instance=None):
+    def __init__(self, live_instance=None, root_instance=None, started_instance=None):
         self._live_instance = live_instance
         self._root_instance = root_instance
+        self._started_instance = started_instance
         self.ensure_instance_calls = 0
+        self.ensure_live_calls = 0
 
     def get_live_session_instance(self, session_id):  # noqa: ARG002
         return self._live_instance
+
+    async def ensure_live_session_instance(self, session_id):  # noqa: ARG002
+        self.ensure_live_calls += 1
+        return self._started_instance
 
     async def ensure_instance(self):
         self.ensure_instance_calls += 1
@@ -311,11 +317,28 @@ async def test_plan_state_session_prefers_the_running_session():
 
     assert (deep_agent, session, live) == (live_agent, live_session, True)
     assert agent.ensure_instance_calls == 0
+    assert agent.ensure_live_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_plan_state_session_starts_live_session_on_first_turn():
+    """第一轮还没有 live session 时，先绑即将 invoke 的那份，再写 plan。"""
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    live_session = SimpleNamespace(get_session_id=lambda: "s1")
+    started_agent = SimpleNamespace(_interaction_session=live_session)
+    agent = _FakeAgentFacade(started_instance=started_agent)
+
+    deep_agent, session, live = await AgentWebSocketServer._open_plan_state_session(agent, "s1")
+
+    assert (deep_agent, session, live) == (started_agent, live_session, True)
+    assert agent.ensure_live_calls == 1
+    assert agent.ensure_instance_calls == 0
 
 
 @pytest.mark.asyncio
 async def test_plan_state_session_falls_back_before_the_first_turn(monkeypatch):
-    """会话还没跑过任何一轮时没有长命 session，退回一次性 session 读 checkpointer。"""
+    """agent 没法启动长命 session 时，才退回一次性 session 读 checkpointer。"""
     import openjiuwen.core.single_agent as single_agent
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
@@ -337,6 +360,8 @@ async def test_plan_state_session_falls_back_before_the_first_turn(monkeypatch):
 
     assert (deep_agent, session, live) == (root_agent, temp_session, False)
     assert created.pre_run_calls == 1
+    assert agent.ensure_live_calls == 1
+    assert agent.ensure_instance_calls == 1
 
 
 # ── 常挂 work plan rail：非 plan 态不得多露工具 ─────────────────────────────

@@ -144,10 +144,10 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
 | `/config` | `/settings`, `/setting` | 查看/设置后端配置 | `/config`、`/config get`、`/config set key value` | 全部 |
 | `/context` | - | 查看上下文窗口占用与 Token 用量明细 | `/context` | 全部 |
 | `/diff` | - | 交互式回顾按轮次 diff + 未提交工作树改动 | `/diff` | 全部 |
-| `/evolve` | - | 触发技能演进 | `/evolve myskill 修正错误处理` | `agent.plan` / `team`（见下） |
-| `/evolve_list` | - | 列出某技能的演进条目 | `/evolve_list myskill --sort score` | `agent.plan` / `team` |
-| `/evolve_rebuild` | - | 从归档与演进记录重建 SKILL.md | `/evolve_rebuild myskill 强化错误处理` | `agent.plan` / `team` |
-| `/evolve_simplify` | - | 整理、合并某技能的演进经验 | `/evolve_simplify myskill 合并重复经验` | `agent.plan` / `team` |
+| `/evolve` | - | 触发技能演进 | `/evolve myskill 修正错误处理` | Agent / Team（见下） |
+| `/evolve_list` | - | 列出某技能的演进条目 | `/evolve_list myskill` | Agent / Team |
+| `/evolve_rebuild` | - | 从归档与演进记录重建 SKILL.md | `/evolve_rebuild myskill 强化错误处理` | Agent / Team |
+| `/evolve_simplify` | - | 整理、合并某技能的演进经验 | `/evolve_simplify myskill 合并重复经验` | Agent / Team |
 | `/init` | - | 在 **Code 模式** 下初始化 `JIUWENSWARM.md` / `JIUWENSWARM.local.md` | `/init` | **仅 `code.*`** |
 | `/mcp` | - | 管理 MCP 服务 | `/mcp list`、`/mcp add ...` | 全部 |
 | `/mode` | - | 切换或查看模式 | `/mode`、`/mode code`、`/mode team` | 全部 |
@@ -357,16 +357,16 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
 
 | 命令 | 用途 | 行为要点 |
 |------|------|----------|
-| `/evolve <skill_name> [user_query]` | 为单个 Skill 生成演进记录 | `agent.plan` 下会先扫描当前会话中的工具失败和用户纠错信号；若没有信号且未给 `user_query`，返回“未发现明确演进信号”。Team 模式必须提供 `<user_query>`。 |
-| `/evolve_list <skill_name> [--sort score]` | 查看某 Skill 的经验库 | 展示记录数、平均分、使用/反馈统计、目标 section 与内容预览；当前实现按 score 获取记录。 |
+| `/evolve <skill_name> [user_intent]` | 为指定 Skill 发起演进审查 | 尾随文本是可选的审查意图。显式命令按目标实际类型处理，支持 Team 模式手动演进普通 Skill，也支持普通模式手动演进 Team/Swarm Skill。 |
+| `/evolve_list <skill_name>` | 查看某 Skill 的经验库 | 展示记录数、平均分、使用/反馈统计、目标 section 与内容预览；当前实现按 score 获取记录。 |
 | `/evolve_simplify <skill_name> [user_intent]` | 智能整理经验库 | 生成可审批的整理方案，用于合并、拆分或清理演进经验。尾随文本会作为整理意图传给后端，不是独立 CLI flag。 |
 | `/evolve_rebuild <skill_name> [user_intent]` | 重建 SKILL.md | 由后端生成 follow-up prompt，并继续作为普通 Agent / Team 任务执行，用归档历史与演进记录重建 Skill 文档。 |
 
 适用条件：
 
-- `agent.plan`：用于单 Agent Skill 自演进；其它 Agent / Code 子模式不处理这组命令。
-- `team`：使用团队技能演进 rail；`/evolve <skill_name> <user_query>`、`/evolve_list`、`/evolve_simplify`、`/evolve_rebuild` 可用。
-- 无参数 `/evolve` 仅在 `agent.plan` 下返回待处理演进记录摘要；Team 模式会要求补充 Skill 名称和演进意图。
+- Agent 普通或规划模式：自动建议面向普通 Skill；上述命令可用。
+- Team 模式：自动建议面向 Team/Swarm Skill；`/evolve <skill_name> [user_intent]`、`/evolve_list`、`/evolve_simplify`、`/evolve_rebuild` 可用。
+- 无参数 `/evolve` 在 Agent 模式下返回待处理演进记录摘要；Team 模式会要求补充 Skill 名称，演进意图仍为可选。
 
 审批与状态：
 
@@ -526,9 +526,10 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
   - **Hook 详情卡片**：每个 hook 按 Type、Command/Prompt、Timeout、Shell、Status 展示。
 - 无配置时：显示 `No hooks configured.`，提示通过 `/config edit` 编辑配置。
 - Hooks 概念：
+  - 用户配置的工具 hooks 也适用于子 Agent 和 swarm 成员的工具调用。此时 hook 输入包含子 Agent 的 `session_id` 和 `subagent_type`（未命名的 swarm 成员使用 `"swarm_member"`）。
   - **17 种触发事件**：Agent Rail 层（`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop`、`PermissionRequest`、`PermissionDenied`、`SubagentStart`、`SubagentStop`、`BeforeModelCall`、`AfterModelCall`）和 Gateway 层（`UserPromptSubmit`、`SessionStart`、`SessionEnd`、`Notification`、`ConfigChange`、`InstructionsLoaded`、`Setup`）。
   - **2 种 Hook 类型**：`command`（执行 shell 命令，退出码 0 = 成功、2 = 阻断）和 `prompt`（LLM 审查，响应 JSON `decision: "block"` 阻断）。
-  - **阻断行为**：PreToolUse 阻断可跳过工具调用并将原因反馈给模型。
+  - **阻断行为**：PreToolUse 阻断会跳过该工具及同批尚未执行的工具（包括审批恢复后的调用），将原因保留在工具消息并作为最终响应返回，结束当前 Agent 执行及任务循环，不再自动重试。Goal 轮次（包括其审批恢复）被阻断时，会将原 Goal 标记为 `blocked` 并清除其排队的续跑任务，需解决 Hook 限制后显式恢复；用户可发起新的请求。
   - **输入修改**：PreToolUse hook 可通过 stdout JSON 的 `modifiedInput` 修改工具参数。
   - **附加上下文**：可通过 stdout JSON 的 `additionalContext` 注入信息到工具结果或模型上下文。
   - **全局开关**：`config.yaml` 中 `hooks.disable_all_hooks: true` 禁用所有 hooks。

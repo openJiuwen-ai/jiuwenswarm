@@ -1,0 +1,355 @@
+import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
+import { openAssetPublish } from '../../features/assetPublishEvents';
+import { canShowAssetPublish } from '../../features/assetPublishState';
+
+import { useTranslation } from 'react-i18next';
+import {
+  getAgentAvatarUrl,
+  type AgentFileContent,
+  type AgentDetail,
+  type DefinitionFileEntry,
+  type RequestStatus,
+} from '../../features/agentManagement';
+import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
+import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
+import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
+import { DetailPromptChip, DetailSection, EntityHeader, MarkdownPane, PageToolbar, Tabs } from '../ui';
+import { DefinitionFilePreview } from './DefinitionFilePreview';
+
+type DefinitionDetailPageProps = {
+  detail: AgentDetail | null;
+  detailStatus: RequestStatus;
+  detailError: string | null;
+  detailTab: 'content' | 'files';
+  files: DefinitionFileEntry[];
+  filesStatus: RequestStatus;
+  filesError: string | null;
+  selectedFilePath: string | null;
+  fileContent: AgentFileContent | null;
+  fileStatus: RequestStatus;
+  fileError: string | null;
+  actionNotice: string | null;
+  busy: boolean;
+  onBack: () => void;
+  onRetry: () => void;
+  onTabChange: (tab: 'content' | 'files') => void;
+  onRetryFiles: () => void;
+  onSelectFile: (path: string) => void;
+  onUse: (id: string) => void;
+  onUsePrompt?: (id: string, prompt: string) => void;
+  onReconnect: (id: string) => void;
+  onInstall: (id: string) => void;
+  onUninstall: (id: string) => void;
+  onDelete: (id: string, name: string) => void;
+  onEdit: (id: string) => void;
+};
+
+export function DefinitionDetailPage({
+  detail,
+  detailStatus,
+  detailError,
+  detailTab,
+  files,
+  filesStatus,
+  filesError,
+  selectedFilePath,
+  fileContent,
+  fileStatus,
+  fileError,
+  actionNotice,
+  busy,
+  onBack,
+  onRetry,
+  onTabChange,
+  onRetryFiles,
+  onSelectFile,
+  onUse,
+  onUsePrompt,
+  onReconnect,
+  onInstall,
+  onUninstall,
+  onDelete,
+}: DefinitionDetailPageProps) {
+  const { t } = useTranslation();
+
+  if (!detail) {
+    const loading = detailStatus === 'loading';
+    return (
+      <div className={`agent-management-detail${loading ? ' detail-loading-shell' : ''}`} data-testid="agent-detail" aria-busy={loading}>
+        <button type="button" className="detail-back" data-testid="agent-management-detail-back" onClick={onBack}>
+          <BackIcon aria-hidden="true" />
+          {t('agentManagement.actions.back')}
+        </button>
+        <div
+          className={loading ? 'detail-loading-center' : 'detail-body flex-1 min-h-0 overflow-y-auto pb-[72px]'}
+          data-testid="agent-management-detail-state-body"
+        >
+          <div
+            className={`agent-management-detail--state${loading ? '' : ' agent-management-state--error'}`}
+            data-testid="agent-management-detail-state"
+            data-variant={loading ? 'loading' : undefined}
+            role={loading ? 'status' : 'alert'}
+          >
+            <p>{loading ? t('common.loading') : detailError || t('agentManagement.states.detailError')}</p>
+            {!loading && (
+              <button
+                type="button"
+                className="agent-management-button agent-management-button--secondary"
+                data-testid="agent-management-detail-retry"
+                onClick={onRetry}
+              >
+                {t('common.retry')}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const avatarUrl = getAgentAvatarUrl(detail);
+  const canUse = detail.installed && detail.connectionState === 'connected' && detail.enabled !== false;
+  const needsConnection = detail.installed && detail.connectionState !== 'connected';
+  const canDelete = detail.source === 'local' && !detail.installed;
+  const category = detail.category?.trim() || '';
+  const categoryLabel = category
+    ? t(`agentManagement.categories.${category}`, {
+        defaultValue: category,
+      })
+    : null;
+  const capabilityGroups = [
+    { title: t('agentManagement.detail.tags'), items: detail.tags.map((tag) => ({ id: tag.id, name: tag.label })) },
+    { title: t('agentManagement.detail.skills'), items: detail.skills },
+    { title: t('agentManagement.detail.tools'), items: detail.tools },
+    { title: t('agentManagement.detail.rails'), items: detail.rails },
+    { title: t('agentManagement.detail.mcps'), items: detail.mcps },
+  ].filter((group) => group.items.length > 0);
+  return (
+    <div className="agent-management-detail" data-testid="agent-detail">
+      <button type="button" className="detail-back" onClick={onBack} data-testid="agent-management-detail-back">
+        <BackIcon aria-hidden="true" />
+        {t('agentManagement.actions.back')}
+      </button>
+      <div className="detail-body flex-1 min-h-0 overflow-y-auto">
+        <PublicationDetailStatus kind="agent_template" localId={detail.runtimePackageName} />
+        <EntityHeader
+          testId="agent-management-detail-header"
+          avatar={{ name: detail.displayName, iconUrl: avatarUrl, testId: 'agent-management-detail-avatar' }}
+          title={detail.displayName}
+          titleTestId="agent-management-detail-name"
+          tags={[
+            ...(categoryLabel ? [categoryLabel] : []),
+            t('agentManagement.detail.sourcePrefix', {
+              source: t(`agentManagement.source.${detail.source}`),
+            }),
+            ...(detail.installed ? [t('agentManagement.states.installed')] : []),
+          ]}
+          actions={
+            /* 收敛到共享类 .detail-actions/.detail-action（index.css，与 plugin/MCP 详情页同款）：
+               发布/卸载/删除为文字链接态，连接/使用为 28px 药丸（detail-action--use），安装为实底
+               药丸（detail-action--install）。原 .agent-management-detail__actions 一套私有类已删除。 */
+            <div className="detail-actions">
+              {canShowAssetPublish(detail.installed) && (
+                <button
+                  type="button"
+                  className="detail-action"
+                  data-testid="agent-management-agent-template-publish"
+                  onClick={() =>
+                    openAssetPublish({
+                      kind: 'agent_template',
+                      local_id: detail.runtimePackageName,
+                      avatar_url: avatarUrl || undefined,
+                    })
+                  }
+                >
+                  <PromptSendIcon aria-hidden="true" />
+                  {t('skills.actions.publish')}
+                </button>
+              )}
+              {detail.installed ? (
+                <>
+                  {needsConnection ? (
+                    <button
+                      type="button"
+                      className="detail-action detail-action--use"
+                      disabled={busy}
+                      aria-busy={busy}
+                      onClick={() => onReconnect(detail.id)}
+                      data-testid="agent-management-detail-connect-btn"
+                    >
+                      {busy ? t('agentManagement.actions.connecting') : t('agentManagement.actions.connect')}
+                    </button>
+                  ) : null}
+
+                  <button
+                    type="button"
+                    className="detail-action"
+                    disabled={busy}
+                    aria-busy={busy}
+                    onClick={() =>
+                      detail.source === 'local' ? onDelete(detail.id, detail.displayName) : onUninstall(detail.id)
+                    }
+                    data-testid="agent-management-detail-uninstall-btn"
+                  >
+                    <UninstallIcon aria-hidden="true" />
+                    {t(
+                      detail.source === 'local'
+                        ? busy
+                          ? 'agentManagement.actions.deleting'
+                          : 'agentManagement.actions.delete'
+                        : busy
+                          ? 'agentManagement.actions.uninstalling'
+                          : 'agentManagement.actions.uninstall',
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className="detail-action detail-action--use"
+                    disabled={!canUse || busy}
+                    aria-disabled={!canUse}
+                    onClick={() => onUse(detail.id)}
+                    data-testid="agent-management-detail-use-btn"
+                  >
+                    {t('agentManagement.actions.use')}
+                  </button>
+                </>
+              ) : (
+                <>
+                  {canDelete ? (
+                    <button
+                      type="button"
+                      className="detail-action"
+                      disabled={busy}
+                      aria-busy={busy}
+                      onClick={() => onDelete(detail.id, detail.displayName)}
+                      data-testid="agent-management-detail-delete-btn"
+                    >
+                      <UninstallIcon aria-hidden="true" />
+                      {busy ? t('agentManagement.actions.deleting') : t('agentManagement.actions.delete')}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="detail-action detail-action--install"
+                    disabled={busy}
+                    aria-busy={busy}
+                    onClick={() => onInstall(detail.id)}
+                    data-testid="agent-management-detail-install-btn"
+                  >
+                    {busy ? t('agentManagement.actions.installing') : t('agentManagement.actions.install')}
+                  </button>
+                </>
+              )}
+            </div>
+          }
+        />
+
+        {actionNotice ? (
+          <div
+            className="agent-management-inline-notice"
+            role="status"
+            data-testid="agent-management-detail-action-notice"
+          >
+            {actionNotice}
+          </div>
+        ) : null}
+
+        {detailStatus === 'error' ? (
+          /* 详情加载失败：与 skill 详情一致的内联灰字条（不加边框底色） */
+          <div
+            className="text-sm text-text-muted"
+            role="status"
+            data-testid="agent-management-detail-state"
+            data-variant="error"
+          >
+            {detailError || t('agentManagement.states.detailError')}
+          </div>
+        ) : null}
+
+        {needsConnection ? (
+          <div
+            className="agent-management-connection-warning"
+            role="status"
+            data-testid="agent-management-detail-connection-warning"
+          >
+            {t('agentManagement.states.connectionUnavailable')}
+          </div>
+        ) : null}
+
+        <DetailSection testId="agent-management-detail-ability" title={t('agentManagement.detail.ability')}>
+          <p>{detail.description || t('agentManagement.unknownDescription')}</p>
+        </DetailSection>
+
+        {capabilityGroups.map((group) => (
+          <DetailSection key={group.title} title={group.title}>
+            <div className="detail-chip-row">
+              {group.items.map((item) => (
+                <span key={item.id} className="detail-chip">
+                  {item.name}
+                </span>
+              ))}
+            </div>
+          </DetailSection>
+        ))}
+
+        {detail.suggestedPrompts.length > 0 ? (
+          <DetailSection testId="agent-management-detail-prompts" title={t('agentManagement.detail.quickInputs')}>
+            {/* 共享组件 ui/DetailPromptChip：文案+发送图标两端对齐、每项独占一行（容器
+                .detail-prompt-list），与连接器详情"试试这样用"示例同款。整行是一个 button：
+                点击行内任意位置（含文案）都跳会话预填 prompt。图标降级为纯装饰 span——
+                button 内不允许嵌套 button。testid/variant 保持不变。 */}
+            <div className="detail-prompt-list">
+              {detail.suggestedPrompts.map((prompt, index) => (
+                <DetailPromptChip
+                  key={prompt}
+                  text={prompt}
+                  disabled={!canUse || busy || !onUsePrompt}
+                  onClick={() => onUsePrompt?.(detail.runtimePackageName, prompt)}
+                  testId="agent-management-detail-prompt-send"
+                  variant={index}
+                />
+              ))}
+            </div>
+          </DetailSection>
+        ) : null}
+
+        <div data-testid="agent-management-detail-tabs-section" className="flex flex-col min-h-0">
+          <PageToolbar style={{ marginTop: 0, flexShrink: 0 }}>
+            <Tabs
+              role="tablist"
+              ariaLabel={t('agentManagement.detail.tabsLabel')}
+              wrapperTestId="agent-management-detail-tabs"
+              itemTestId="agent-management-detail-tab"
+              className="page-tabs"
+              value={detailTab}
+              onChange={onTabChange}
+              items={[
+                { value: 'content', label: t('agentManagement.detail.contentTab') },
+                { value: 'files', label: t('agentManagement.detail.filesTab') },
+              ]}
+            />
+          </PageToolbar>
+          {detailTab === 'content' ? (
+            <MarkdownPane
+              testId="agent-management-detail-content"
+              content={detail.details || null}
+              emptyText={t('skills.noContent')}
+            />
+          ) : (
+            <DefinitionFilePreview
+              files={files}
+              filesStatus={filesStatus}
+              filesError={filesError}
+              selectedFilePath={selectedFilePath}
+              fileContent={fileContent}
+              fileStatus={fileStatus}
+              fileError={fileError}
+              onRetryFiles={onRetryFiles}
+              onSelectFile={onSelectFile}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

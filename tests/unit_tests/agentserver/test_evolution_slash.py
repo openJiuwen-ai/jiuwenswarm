@@ -27,6 +27,37 @@ def _write_skill(tmp_path, name: str, *, kind: str | None = None) -> str:
     return str(skills_dir)
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "command",
+    (
+        "/evolve demo-pack",
+        "/evolve_list demo-pack",
+        "/evolve_simplify demo-pack",
+        "/evolve_rebuild demo-pack",
+        "/evolve_rollback demo-pack",
+    ),
+)
+async def test_evolution_slash_rejects_skillpack(tmp_path, command):
+    skills_dir = _write_skill(tmp_path, "demo-pack", kind="skillpack")
+
+    result = await handle_evolution_slash_command(
+        command,
+        EvolutionSlashContext(
+            mode="agent.plan",
+            session_id="sess-agent-plan",
+            skills_dir=skills_dir,
+            evolution_enabled=True,
+        ),
+    )
+
+    assert result is not None
+    assert result["result_type"] == "error"
+    assert result["output"].startswith("SKILL_OPERATION_UNSUPPORTED:")
+    assert not (tmp_path / "skills" / "demo-pack" / "evolutions.json").exists()
+    assert not (tmp_path / "skills" / "demo-pack" / "archive").exists()
+
+
 def _evolution_log_json(skill_name: str, marker: str) -> str:
     return json.dumps(
         {

@@ -22,6 +22,8 @@ export interface SessionCreatePayload {
   projectDir?: string;
   work_mode?: WorkMode | string;
   workMode?: WorkMode | string;
+  persist_session?: boolean;
+  persistSession?: boolean;
 }
 
 export interface CreatedConversationSession {
@@ -29,6 +31,7 @@ export interface CreatedConversationSession {
   project_id?: string;
   project_dir?: string;
   work_mode?: WorkMode;
+  persist_session: boolean;
 }
 
 export interface CreateConversationSessionOptions {
@@ -37,8 +40,26 @@ export interface CreateConversationSessionOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
+export interface PersistSessionCommand {
+  content: string;
+  persistSession: boolean;
+}
+
+/**
+ * Persist Session is a creation-time choice.  Keep the command parsing in the
+ * client so the control prefix never becomes part of the user message or the
+ * generated session title.
+ */
+export function parsePersistSessionCommand(input: string): PersistSessionCommand {
+  const match = input.match(/^\/persist(?=$|\s)/i);
+  if (!match) return { content: input, persistSession: false };
+
+  const remainder = input.slice(match[0].length).trim();
+  return { content: remainder, persistSession: true };
+}
+
 function normalizeWorkMode(value: unknown): WorkMode | undefined {
-  return value === 'work' || value === 'code' ? value : undefined;
+  return value === 'work' || value === 'code' || value === 'design' ? value : undefined;
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -70,6 +91,7 @@ function normalizeCreatedSession(payload: SessionCreatePayload): CreatedConversa
     project_id: payload.project_id ?? payload.projectId,
     project_dir: payload.project_dir ?? payload.projectDir,
     work_mode: normalizeWorkMode(payload.work_mode ?? payload.workMode),
+    persist_session: (payload.persist_session ?? payload.persistSession) === true,
   };
 }
 

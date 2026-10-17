@@ -4,7 +4,7 @@ encoded: tests__unit_tests__agentserver
 modules:
   - agentserver-runtime
 confidence: confirmed
-last_updated: 2026-07-07
+last_updated: 2026-08-16
 read_when: "Checking expected AgentServer behavior or adding tests for runtime handlers."
 ---
 
@@ -23,6 +23,7 @@ Main unit test surface for AgentServer handler contracts, modes, ACP, commands, 
 - `test_history_payload_limits.py`: bounded history payload behavior.
 - `test_agent_reload_scope.py`: scoped reload and pending deep adapter reload.
 - `test_team_helpers.py`, `test_remote_member_bootstrap.py`, `test_workflow_state.py`: team, distributed, and workflow behavior.
+- `rails/test_eternal_conversation_rail.py`: Raw History recovery/integrity, Pending/Built unified retrieval, two background Agents, no-loss cursor catch-up, Adapter cleanup/restart recovery, runtime flag, and permission-resume task boundaries.
 
 ## Coverage
 

@@ -11,7 +11,7 @@ import {
   type A2UIContentPart,
 } from './a2uiContent';
 import { recordA2UIActionDefaults } from './actionDefaults';
-import { isA2UIFeatureEnabled } from './featureConfig';
+import { useA2UIFeatureEnabled } from './featureConfig';
 import { getA2UIRenderer } from './rendererRegistry';
 import { A2UIErrorBoundary } from './A2UIErrorBoundary';
 import { a2uiError } from './formDefaults';
@@ -55,7 +55,7 @@ export const A2UIMessageContent = memo(function A2UIMessageContent({
   const { processMessages } = useA2UIActions();
   const { t } = useTranslation();
   const namespace = useMemo(() => `msg_${safeNamespace(messageId)}`, [messageId]);
-  const a2uiEnabled = isA2UIFeatureEnabled();
+  const a2uiEnabled = useA2UIFeatureEnabled();
 
   const renderParts = useMemo<RenderPart[]>(() => {
     const parsed = parseA2UIContent(content, {

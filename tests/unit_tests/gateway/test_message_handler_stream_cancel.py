@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.exc import TimeoutError as DatabaseTimeoutError
 
 from jiuwenswarm.common.schema import Message
+from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.gateway.message_handler.message_handler import ChannelMode, MessageHandler
@@ -66,7 +69,7 @@ class _FailedCancelAgentClient:
         return SimpleNamespace(
             request_id="interrupt-failed",
             channel_id="tui",
-            ok=False,
+            ok=True,
             payload={
                 "event_type": "chat.interrupt_result",
                 "success": False,
@@ -121,13 +124,15 @@ def _chat_send_message(
     )
 
 
-def _team_transport_message(*, request_id: str, method: ReqMethod, ws_id: str) -> Message:
+def _team_transport_message(
+    *, request_id: str, method: ReqMethod, ws_id: str, mode: str = "team"
+) -> Message:
     return Message(
         id=request_id,
         type="req",
         channel_id="web",
         session_id="sess-godview",
-        params={"mode": "team"},
+        params={"mode": mode},
         timestamp=0.0,
         ok=True,
         req_method=method,
@@ -272,6 +277,133 @@ async def test_process_stream_publishes_error_and_stops_processing_on_connection
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [
+    TimeoutError(),
+    DatabaseTimeoutError("QueuePool limit of size 8 overflow 0 reached, connection timed out, timeout 10.00"),
+    RuntimeError("database driver failed"),
+    ValueError("invalid stream response"),
+])
+@pytest.mark.parametrize("other_session", ["sess-failed", "sess-other"])
+async def test_stream_failure_is_visible_and_later_requests_are_isolated(failure, other_session):
+    class Client:
+        fail = True
+
+        async def send_request_stream(self, env):
+            if self.fail:
+                raise failure
+            yield AgentResponseChunk(
+                request_id=env.request_id,
+                channel_id="web",
+                payload={"event_type": "chat.final", "content": "done", "is_complete": True},
+                is_complete=True,
+            )
+
+    client = Client()
+    handler = _TestMessageHandler.create_with_client(client)
+    other = _seed_stream_task(
+        handler, rid="unrelated", channel_id="web", session_id=other_session,
+    )
+    handler._stream_emits_processing_status["unrelated"] = True
+
+    async def send(request_id, session_id):
+        msg = _chat_send_message(channel_id="web", session_id=session_id)
+        msg.id = request_id
+        msg.app_id = "app-4720"
+        msg.metadata = {"ws_id": "ws-4720"}
+        env = e2a_from_agent_fields(
+            request_id=request_id, channel_id="web", session_id=session_id,
+            req_method=ReqMethod.CHAT_SEND, params=msg.params, is_stream=True,
+            timestamp=0.0,
+        )
+        await handler._start_stream_task(msg, env, request_id)
+        task = handler._stream_tasks[request_id]
+        await asyncio.wait_for(task, timeout=1.0)
+        assert task.exception() is None
+        assert request_id not in handler._stream_tasks
+        assert request_id not in handler._stream_modes
+        return await _drain_robot_messages(handler)
+
+    try:
+        outputs = await send("failed", "sess-failed")
+        errors = [msg for msg in outputs if (msg.payload or {}).get("event_type") == "chat.error"]
+        assert len(errors) == 1
+        assert errors[0].ok is False
+        assert errors[0].payload["is_complete"] is True
+        assert errors[0].payload["error"]
+        assert errors[0].metadata == {"ws_id": "ws-4720"}
+        assert errors[0].app_id == "app-4720"
+        assert not any((msg.payload or {}).get("event_type") == "chat.final" for msg in outputs)
+        stopped = [
+            msg for msg in outputs
+            if (msg.payload or {}).get("event_type") == "chat.processing_status"
+            and msg.payload.get("is_processing") is False
+        ]
+        if other_session == "sess-failed":
+            assert stopped == []  # The same session still owns live work.
+        else:
+            assert len(stopped) == 1
+            assert stopped[0].session_id == "sess-failed"
+        assert not other.done()
+        assert handler._stream_tasks["unrelated"] is other
+
+        client.fail = False
+        for request_id, session_id in (("retry", "sess-failed"), ("new", "sess-new")):
+            outputs = await send(request_id, session_id)
+            assert any((msg.payload or {}).get("content") == "done" for msg in outputs)
+            assert not any((msg.payload or {}).get("event_type") == "chat.error" for msg in outputs)
+            assert not other.done()
+
+        client.fail = True
+        outputs = await send("still-failing", "sess-new")
+        assert any((msg.payload or {}).get("event_type") == "chat.error" for msg in outputs)
+        assert not other.done()
+    finally:
+        other.cancel()
+        await asyncio.gather(other, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["agent.plan", "team"])
+async def test_chat_send_queue_continues_after_stream_failure(mode, monkeypatch):
+    class Client:
+        async def send_request_stream(self, env):
+            if env.request_id.startswith("fail"):
+                raise DatabaseTimeoutError("QueuePool limit of size 8: connection timed out")
+            yield AgentResponseChunk(
+                request_id=env.request_id, channel_id="web",
+                payload={"event_type": "chat.final", "content": "done", "is_complete": True},
+                is_complete=True,
+            )
+
+    handler = _TestMessageHandler.create_with_client(Client())
+    handler._gateway_hook_handler = None
+    monkeypatch.setattr(handler, "_trigger_before_chat_request_hook", AsyncMock())
+    await handler.start_forwarding()
+    try:
+        for rid, sid in (("fail-1", "session-1"), ("retry", "session-1"),
+                         ("new", "session-2"), ("fail-2", "session-2")):
+            msg = _chat_send_message(channel_id="web", session_id=sid, mode=mode)
+            msg.id = rid
+            await handler.publish_user_messages(msg)
+            outputs = []
+            async with asyncio.timeout(2.0):
+                while True:
+                    output = await handler.consume_robot_messages(timeout=None)
+                    outputs.append(output)
+                    payload = output.payload or {}
+                    if payload.get("event_type") == "chat.processing_status":
+                        if payload.get("is_processing") is False:
+                            break
+            expected = "chat.error" if rid.startswith("fail") else "chat.final"
+            assert any((output.payload or {}).get("event_type") == expected for output in outputs)
+            assert handler._forward_task is not None
+            assert not handler._forward_task.done()
+            assert not handler._stream_tasks
+    finally:
+        await handler.stop_forwarding()
+
+
+@pytest.mark.asyncio
 async def test_tui_no_longer_cancels_orphan_session() -> None:
     """TUI is no longer single-user: different session does not cancel orphan stream."""
     handler = _TestMessageHandler.create()
@@ -308,6 +440,24 @@ async def test_web_channel_only_cancels_matching_session() -> None:
     assert not other_session_task.cancelled()
     await asyncio.sleep(0)
     assert len(_FakeAgentClient.sent_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_ordinary_replacement_keeps_develop_cleanup_failure_behavior() -> None:
+    handler = _TestMessageHandler.create_with_client(_FailedCancelAgentClient())
+    old_task = _seed_stream_task(
+        handler,
+        rid="rid-old",
+        channel_id="web",
+        session_id="sess-replace",
+    )
+
+    cancelled = await handler.cancel_stream_tasks_for_channel(
+        _chat_send_message(channel_id="web", session_id="sess-replace")
+    )
+
+    assert cancelled == 1
+    assert old_task.cancelled()
 
 
 @pytest.mark.asyncio
@@ -700,14 +850,14 @@ async def test_disconnect_cancel_marks_request_as_client_disconnect() -> None:
 
 
 @pytest.mark.asyncio
-async def test_disconnect_cancel_reports_agent_cleanup_failure() -> None:
+async def test_disconnect_cancel_preserves_develop_acknowledgement_semantics() -> None:
     handler = _TestMessageHandler.create_with_client(_FailedCancelAgentClient())
 
     cleaned = await handler.cancel_agent_sessions_on_disconnect(
         [("tui", "sess_cleanup_failed")],
     )
 
-    assert cleaned is False
+    assert cleaned is True
 
 
 @pytest.mark.asyncio
@@ -735,6 +885,38 @@ async def test_manual_cancel_does_not_forward_client_disconnect_source() -> None
     assert len(_FakeAgentClient.sent_requests) == 1
     assert "cancel_source" not in _FakeAgentClient.sent_requests[0].params
     assert "_jiuwenswarm_cancel_source" not in _FakeAgentClient.sent_requests[0].channel_context
+
+
+@pytest.mark.asyncio
+async def test_cancel_preserves_runtime_work_mode_and_project_identity() -> None:
+    handler = _TestMessageHandler.create()
+    msg = Message(
+        id="project-cancel",
+        type="req",
+        channel_id="tui",
+        session_id="sess_project",
+        params={
+            "intent": "cancel",
+            "mode": "agent",
+            "work_mode": "code",
+            "project_dir": "D:/workspace/project-a",
+        },
+        timestamp=0.0,
+        ok=True,
+        req_method=ReqMethod.CHAT_CANCEL,
+        is_stream=False,
+    )
+
+    await handler.cancel_agent_work_for_session(msg, "sess_project")
+
+    assert len(_FakeAgentClient.sent_requests) == 1
+    assert _FakeAgentClient.sent_requests[0].params == {
+        "intent": "cancel",
+        "session_id": "sess_project",
+        "mode": "agent",
+        "work_mode": "code",
+        "project_dir": "D:/workspace/project-a",
+    }
 
 
 @pytest.mark.asyncio
@@ -858,12 +1040,36 @@ async def test_godview_registration_is_unique_per_websocket() -> None:
     assert len(subscriptions) == 2
 
 
+@pytest.mark.asyncio
+async def test_godview_registers_for_two_segment_team_work_mode() -> None:
+    """issue #4168: mode="team.work" must register GodView too."""
+    handler = _TestMessageHandler.create()
+
+    await handler._maybe_register_godview(
+        _team_transport_message(
+            request_id="web-team-work",
+            method=ReqMethod.CHAT_SEND,
+            ws_id="web-ws-team-work",
+            mode="team.work",
+        )
+    )
+
+    registry = handler.get_session_sharing_registry()
+    subscriptions = registry.lookup_member("sess-godview", SubRole.GODVIEW)
+    assert len(subscriptions) == 1
+    assert subscriptions[0].delivery.ws_id == "web-ws-team-work"
+
+
 @pytest.mark.parametrize(
     "mode,expected",
     [
         ("team", True),
         ("code.team", True),
         ("team.plan", True),
+        # issue #4168: shorthand names must count as team modes.
+        ("team.work", True),
+        ("team.normal", True),
+        ("team.code", True),
         ("agent.plan", False),
         ("agent.fast", False),
         ("code.plan", False),
@@ -883,6 +1089,8 @@ def test_is_team_mode(mode: str, expected: bool) -> None:
         ("team", True),
         ("code.team", True),
         ("team.plan", True),
+        ("team.work", True),
+        ("team.code", True),
         ("agent.plan", False),
     ],
 )

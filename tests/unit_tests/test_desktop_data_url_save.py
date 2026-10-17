@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("webview")
+
 from jiuwenswarm.channels.desktop import desktop_app
 
 

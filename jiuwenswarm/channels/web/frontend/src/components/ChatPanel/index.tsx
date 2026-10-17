@@ -6,24 +6,59 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowRight, CheckCircle2, ClipboardList, Copy, Info, LoaderCircle, Share2, Sparkles, X } from 'lucide-react';
+import {
+  Activity,
+  ArrowRight,
+  CheckCircle2,
+  ClipboardList,
+  Copy,
+  Code2,
+  FileText,
+  GitFork,
+  Image as ImageIcon,
+  Info,
+  LoaderCircle,
+  Megaphone,
+  PanelBottomClose,
+  PanelBottomOpen,
+  Presentation,
+  Share2,
+  Sparkles,
+  Table2,
+  X,
+} from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
-import { AgentMode, MediaItem, Message, UserAnswer, type ProjectInfo } from '../../types';
+import { useChatStore, useHarnessStore, useSessionStore, useTodoStore, useWorkspaceStore } from '../../stores';
+import {
+  AgentMode,
+  MediaItem,
+  type ChatSendOptions,
+  Message,
+  UserAnswer,
+  type MessageForkPoint,
+  type Permission,
+  type ProjectInfo,
+} from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
+import type { AgentGroupIdentity } from '../../features/agentManagement';
+import { useAgentGroupVisualIdentity } from '../../features/agentManagement/useAgentGroupAvatars';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { InputArea, type InputAreaHandle } from './InputArea';
-import chatIcon from '../../assets/chat.svg';
-import expandIcon from '../../assets/expand.svg';
+import ChatOverviewIcon from '../../assets/chat-overview.svg?react';
+import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 import lineUpIcon from '../../assets/lineUp.svg';
+import beeFlyingIcon from '../../assets/bee-flying.webp';
+import beeStaticIcon from '../../assets/bee-static.png';
+import homeBanner from '../../assets/home-banner.svg';
+import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import loadSendIcon from '../../assets/load-send.svg';
 import editIcon from '../../assets/edit.svg';
 import deleteIcon from '../../assets/delete.svg';
 import moveIcon from '../../assets/move.svg';
 import restartIcon from '../../assets/restart.svg';
-import { SubtaskProgress } from './SubtaskProgress';
+import ShareExportIcon from '../../assets/share-export.svg?react';
 import { InlineQuestionCard } from './InlineQuestionCard';
 import { InteractionSlot } from '../InteractionSlot';
 import { GoalBar } from '../GoalBar';
@@ -31,8 +66,8 @@ import { HarnessProgressBar } from './HarnessProgressBar';
 import { AgentTeamActivityCard } from './TeamEventGroupDisplay';
 import { isTeamActivityMessage, parseTeamEventMessage } from './teamEventUtils';
 import { isTeamLeaderMember, type TeamMemberIdentity } from '../../utils/teamMemberAvatar';
+import { writeClipboard } from '../../utils/writeClipboard';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
-import welcomeBanner from '../../assets/home-banner-workswarm.png';
 import './ChatPanel.css';
 import { CodeChangesCard } from '../../features/code-mode/CodeChangesCard';
 import { useCodeTurnDiffHistory } from '../../features/code-mode/useCodeTurnDiffHistory';
@@ -51,11 +86,16 @@ import {
   type DesktopLocalFilesEventDetail,
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
-import { useDesktopLocalFilePickerReady } from '../../hooks';
+import { useDesktopLocalFilePickerReady, useWelcomeBubblePosition } from '../../hooks';
+import { ApplicationPluginTaskRuntimes, flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
+import { generateUuidV4 } from '../../utils/uuid';
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { requestLogin, useAuthStore } from '../../stores/authStore';
 
 export interface ChatHistoryPagerProps {
-  loadedPages: number;
-  totalPages: number;
+  loadedBatchSeq: number;
+  publishedBatchSeq: number;
+  hasMore: boolean;
   loadingMore: boolean;
   prepending?: boolean;
   retryAvailable?: boolean;
@@ -63,26 +103,47 @@ export interface ChatHistoryPagerProps {
 }
 
 interface ChatPanelProps {
-  onSendMessage: (content: string, mediaItems?: MediaItem[]) => void;
-  onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<{
+  onSendMessage: (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => void;
+  onEnsureSession: (initialTitle?: string) => Promise<string | null>;
+  onForkSession: (
+    sourceSessionId: string,
+    forkPoint?: MessageForkPoint,
+  ) => Promise<void>;
+  continuedFromSessionId?: string | null;
+  onOpenContinuedFromSession?: (sourceSessionId: string) => void;
+  onInputIntent?: (sessionId: string) => void;
+  onPersistMedia: (
+    content: string,
+    mediaItems: MediaItem[],
+  ) => Promise<{
     content?: string;
     query?: string;
     media_items?: Record<string, unknown>[];
     files?: Record<string, unknown>;
   }>;
-  onPersistDocuments: (content: string, mediaItems: MediaItem[]) => Promise<{
+  onPersistDocuments: (
+    content: string,
+    mediaItems: MediaItem[],
+  ) => Promise<{
     content?: string;
     query?: string;
     media_items?: Record<string, unknown>[];
     files?: Record<string, unknown>;
   }>;
+  onDiscardMedia?: (sessionId: string, path: string) => Promise<unknown>;
   onInterrupt: (newInput?: string) => void;
   onCancel: () => void;
   onSwitchMode: (mode: AgentMode) => void;
   isProcessing: boolean;
-  onUserAnswer: (requestId: string, answers: UserAnswer[], source?: string) => void;
+  onUserAnswer: (
+    requestId: string,
+    answers: UserAnswer[],
+    source?: string,
+  ) => Promise<boolean>;
   onExportShare?: () => void | Promise<void>;
   isExportingShare?: boolean;
+  shareExportProgress?: string;
+  isWaitingShareExportTab?: boolean;
   canExportShare?: boolean;
   sessionTitle?: string;
   sessionProjectName?: string;
@@ -91,24 +152,48 @@ interface ChatPanelProps {
   historyPager?: ChatHistoryPagerProps | null;
   /** 历史会话首屏恢复中：保持聊天布局，避免短暂退回欢迎态 */
   isHistoryRestoring?: boolean;
-  /** 右侧面板展开状态：展开时隐藏对话框上方的活跃成员 */
-  teamAreaExpanded?: boolean;
+  /** 右侧面板展开状态：展开时隐藏对话框上方的活跃成员，null 表示面板隐藏 */
+  teamAreaExpanded?: boolean | null;
   autoFocusKey?: string | null;
   /** 跳转到技能管理页 */
   onNavigateToSkills?: () => void;
-  /** 切换右侧紧缩面板展开状态 */
-  onToggleTeamArea?: (expanded: boolean) => void;
+  /** 跳转到专家管理页，可指定“我的专家”下的资产类型 */
+  onNavigateToAgents?: (target?: 'agent' | 'group') => void;
+  /** 切换右侧紧缩面板展开状态，传 null 表示隐藏面板 */
+  onToggleTeamArea?: (expanded: boolean | null) => void;
   /** 打开右侧面板并切换到代码审核 Tab */
   onOpenCodeReview?: (target: CodeReviewTarget) => void;
-  permissionsEnabled: boolean;
+  /** 心跳面板展开状态：由 App.tsx 统一管理，跟团队/代码审核面板一样占用右侧工作区一栏 */
+  heartbeatPanelOpen?: boolean;
+  /** 切换心跳面板展开状态 */
+  onToggleHeartbeatPanel?: () => void;
+  permissionProfile: Permission;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
   /** Goal（持续目标）控制，见 GoalBar 组件 */
-  onSetGoal?: (sessionId: string, objective: string) => void;
-  onPauseGoal?: (sessionId: string) => void;
-  onResumeGoal?: (sessionId: string) => void;
-  onClearGoal?: (sessionId: string) => void;
+  onSetGoal?: (sessionId: string, objective: string) => void | Promise<void>;
+  onPauseGoal?: (sessionId: string) => void | Promise<void>;
+  onResumeGoal?: (sessionId: string) => void | Promise<void>;
+  onRefreshGoal?: (sessionId: string) => void | Promise<void>;
+  onClearGoal?: (sessionId: string) => void | Promise<void>;
   /** 目标 active 但当前无处理中任务时，消息入队后主动排空一次，见 InputArea.tsx 对应调用点 */
   onDrainTaskQueueIfIdle?: (sessionId: string) => void;
+  onContinueQueuedSessionMessages?: (sessionId: string) => void | Promise<void>;
+  /** 专家团「通过聊天创建」入口的 4.9 高保真欢迎态。 */
+  welcomeVariant?: 'group-create' | null;
+  /**
+   * 轨迹视图停靠模式：消息区让位给轨迹表格，输入区仍保留在底部可用。
+   * 见 App.css 中 `.single-agent-surface--trajectory` 的可见性例外。
+   */
+  composerDocked?: boolean;
+  /** 停靠模式下输入区是否收起为“仅观看”。非停靠模式忽略。 */
+  composerCollapsed?: boolean;
+  /** 切换停靠模式下的输入区收起状态；缺省时不渲染收起按钮。 */
+  onToggleComposerCollapsed?: () => void;
+  /**
+   * 上报输入区实测高度，供轨迹视图留出底部空白，避免末尾记录被输入区遮住。
+   * 仅在停靠模式下回调；收起时上报 0。
+   */
+  onComposerHeightChange?: (height: number) => void;
 }
 
 // 邀请指令只对 human_agent 成员存在（见 upsertHumanShareCommandFromEvent 的
@@ -117,7 +202,12 @@ const HUMAN_SHARE_IDENTITY: TeamMemberIdentity = { role: 'human_agent' };
 
 function SuggestionCard({ text, onClick }: { text: string; onClick: () => void }) {
   return (
-    <button className="chat-suggestion-card" data-testid="chat-panel-welcome-suggestion" data-variant={text} onClick={onClick}>
+    <button
+      className="chat-suggestion-card"
+      data-testid="chat-panel-welcome-suggestion"
+      data-variant={text}
+      onClick={onClick}
+    >
       <Sparkles className="chat-suggestion-card__icon" strokeWidth={2} />
       <span className="chat-suggestion-card__text">{text}</span>
       <ArrowRight className="chat-suggestion-card__arrow" strokeWidth={2} />
@@ -145,22 +235,30 @@ function InterruptResultBubble() {
   );
 }
 
-function ActiveTeamGroupEntry({ isProcessing, teamAreaExpanded }: { isProcessing: boolean; teamAreaExpanded?: boolean }) {
+function ActiveTeamGroupEntry({
+  isProcessing,
+  teamAreaExpanded,
+}: {
+  isProcessing: boolean;
+  teamAreaExpanded?: boolean | null;
+}) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const teamHistoryMessages = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamHistoryMessages ?? []);
-  const teamMemberExecutionEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? []);
+  const teamMemberExecutionEvents = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? [],
+  );
   const teamTaskEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers ?? []);
   const todos = useTodoStore((s) => s.runtimes[activeSessionId ?? '']?.todos ?? []);
   const activeTeamMessages = useMemo(
     () => getActiveTeamMessages(teamHistoryMessages, messages),
-    [teamHistoryMessages, messages]
+    [teamHistoryMessages, messages],
   );
   const hasVisibleMembers = teamMembers.some(
-    (m) => m.member_id && m.member_id !== 'user' && !isTeamLeaderMember(m.member_id)
+    (m) => m.member_id && m.member_id !== 'user' && !isTeamLeaderMember(m.member_id),
   );
 
   if (mode !== 'team' || !hasVisibleMembers || teamAreaExpanded) {
@@ -180,7 +278,15 @@ function ActiveTeamGroupEntry({ isProcessing, teamAreaExpanded }: { isProcessing
 }
 
 /** 单 Agent 模式的消息队列卡片，展示在输入框上方 */
-function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProcessing: boolean; onSendTask?: (content: string, mediaItems?: MediaItem[]) => void }) {
+export function AgentActivityCard({
+  isProcessing: _isProcessing,
+  onSendTask,
+  onContinueQueuedSessionMessages,
+}: {
+  isProcessing: boolean;
+  onSendTask?: (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => void;
+  onContinueQueuedSessionMessages?: (sessionId: string) => void | Promise<void>;
+}) {
   const [expanded, setExpanded] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
@@ -188,6 +294,10 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const taskQueue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.taskQueue ?? []);
+  const queuedSessionMessages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuedSessionMessages ?? []);
+  const canContinueQueuedSessionMessages = useChatStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.canContinueQueuedSessionMessages ?? false
+  );
   const queuePaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuePaused ?? false);
   const removeFromTaskQueue = useChatStore((s) => s.removeFromTaskQueue);
   const reorderTaskQueue = useChatStore((s) => s.reorderTaskQueue);
@@ -195,15 +305,31 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
   const setInputValue = useChatStore((s) => s.setInputValue);
 
   const isAgentMode = mode === 'agent';
+  const visibleTaskQueue = isAgentMode ? taskQueue : [];
 
   // 有等待任务时自动展开
   useEffect(() => {
-    if (taskQueue.length > 0) {
+    if (taskQueue.length > 0 || queuedSessionMessages.length > 0) {
       setExpanded(true);
     }
-  }, [taskQueue.length]);
+  }, [taskQueue.length, queuedSessionMessages.length]);
 
-  if (!isAgentMode || taskQueue.length === 0) {
+  // While a queue reorder drag is active, preventDefault any dragover/drop that
+  // lands outside the queue card so the page doesn't navigate to the drag image.
+  useEffect(() => {
+    if (dragIndex === null) return undefined;
+    const preventDefault = (event: DragEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener('dragover', preventDefault, true);
+    window.addEventListener('drop', preventDefault, true);
+    return () => {
+      window.removeEventListener('dragover', preventDefault, true);
+      window.removeEventListener('drop', preventDefault, true);
+    };
+  }, [dragIndex]);
+
+  if (visibleTaskQueue.length === 0 && queuedSessionMessages.length === 0) {
     return null;
   }
 
@@ -213,12 +339,16 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
     if (!sid) return;
     setQueuePaused(sid, false);
     // 触发下一条队列任务
-    const runtime = useChatStore.getState().getRuntime(sid);
-    const nextTask = runtime?.taskQueue[0];
+    const nextTask = onSendTask && useChatStore.getState().claimQueuedTask(sid);
     if (nextTask) {
-      removeFromTaskQueue(sid, nextTask.id);
       onSendTask?.(nextTask.content, nextTask.mediaItems);
     }
+  };
+
+  const handleContinueQueuedSessionMessages = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const sid = useChatStore.getState().activeSessionId;
+    if (sid) void onContinueQueuedSessionMessages?.(sid);
   };
 
   const handleRemoveTask = (e: React.MouseEvent, taskId: string) => {
@@ -229,21 +359,15 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
     }
   };
 
-  const handleEditTask = (
-    e: React.MouseEvent,
-    taskId: string,
-    content: string,
-    mediaItemCount = 0,
-  ) => {
+  const handleEditTask = (e: React.MouseEvent, taskId: string, content: string, mediaItemCount = 0) => {
     e.stopPropagation();
     const sid = useChatStore.getState().activeSessionId;
     if (sid) {
+      const task = useChatStore.getState().getRuntime(sid)?.taskQueue.find((item) => item.id === taskId);
+      if (!task || task.status === 'sending') return;
       // Editing restores only the text into the input; attachments cannot follow
       // and will be removed together with the task — confirm first.
-      if (
-        mediaItemCount > 0 &&
-        !window.confirm(t('chat.editTaskDropAttachments', { count: mediaItemCount }))
-      ) {
+      if (mediaItemCount > 0 && !window.confirm(t('chat.editTaskDropAttachments', { count: mediaItemCount }))) {
         return;
       }
       setInputValue(sid, content);
@@ -252,30 +376,40 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
     }
   };
 
-  const handleSendTask = (
-    e: React.MouseEvent,
-    taskId: string,
-    content: string,
-    mediaItems?: MediaItem[],
-  ) => {
+  const handleSendTask = (e: React.MouseEvent, taskId: string, content: string, mediaItems?: MediaItem[]) => {
     e.stopPropagation();
     const sid = useChatStore.getState().activeSessionId;
-    if (sid) {
-      removeFromTaskQueue(sid, taskId);
-    }
-    onSendTask?.(content, mediaItems);
+    if (!sid) return;
+    onSendTask?.(content, mediaItems, { queuedTaskId: taskId });
   };
 
-  const handleDragStart = (index: number) => {
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    try {
+      // Explicit marker so the desktop shell can tell this app-internal drag
+      // apart from an OS file drag (see desktop_app.py _mark_desktop_shell).
+      e.dataTransfer.setData('application/x-jiuwen-internal-drag', '1');
+      e.dataTransfer.setData('text/plain', String(index));
+      e.dataTransfer.effectAllowed = 'move';
+    } catch (_err) {
+      // ignore
+    }
     setDragIndex(index);
   };
 
   const handleDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault();
+    e.stopPropagation();
+    try {
+      e.dataTransfer.dropEffect = 'move';
+    } catch (_err) {
+      // ignore
+    }
     setDragOverIndex(index);
   };
 
-  const handleDrop = (index: number) => {
+  const handleDrop = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.stopPropagation();
     if (dragIndex === null || dragIndex === index) {
       setDragIndex(null);
       setDragOverIndex(null);
@@ -301,27 +435,51 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
           type="button"
           className="team-event-group-summary"
           data-testid="chat-panel-task-queue-header"
-          onClick={() => setExpanded(prev => !prev)}
+          onClick={() => setExpanded((prev) => !prev)}
           aria-expanded={expanded}
         >
           <span className="team-event-group-summary__main">
             <span className="team-event-group-summary__title">{t('chatUi.messageQueue')}</span>
-            {queuePaused && (
-              <span data-testid="chat-panel-task-queue-paused-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', marginLeft: '8px' }}>
-                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--color-chat-paused)', flexShrink: 0 }} />
+            {queuePaused && queuedSessionMessages.length === 0 && (
+              <span
+                data-testid="chat-panel-task-queue-paused-badge"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', marginLeft: '8px' }}
+              >
+                <span
+                  style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    background: 'var(--color-chat-paused)',
+                    flexShrink: 0,
+                  }}
+                />
                 <span style={{ fontSize: '13px', color: 'var(--color-text-secondary)' }}>{t('chat.paused')}</span>
               </span>
             )}
           </span>
-          {queuePaused && (
+          {queuePaused && queuedSessionMessages.length === 0 && (
             <span
               role="button"
               tabIndex={0}
               className="team-event-group-summary__activity"
               data-testid="chat-panel-task-queue-resume"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', marginLeft: 'auto', justifyContent: 'end', flexShrink: 0, cursor: 'pointer' }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                marginLeft: 'auto',
+                justifyContent: 'end',
+                flexShrink: 0,
+                cursor: 'pointer',
+              }}
               onClick={handleResume}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); handleResume(e as unknown as React.MouseEvent); } }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.stopPropagation();
+                  handleResume(e as unknown as React.MouseEvent);
+                }
+              }}
             >
               <img src={restartIcon} alt="" className="w-3.5 h-3.5" />
               {t('chat.resume')}
@@ -330,7 +488,59 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
         </button>
         {expanded && (
           <div className="team-event-group-list team-event-group-list--activity">
-            {taskQueue.map((task, index) => (
+            {queuedSessionMessages.length > 0 && (
+              <div className="team-event-group-row team-event-group-row--activity" data-testid="chat-panel-cross-session-queue-section">
+                <span>{t('chatUi.crossSessionMessageQueue')}</span>
+                {canContinueQueuedSessionMessages && (
+                  <button
+                    type="button"
+                    data-testid="chat-panel-cross-session-queue-resume"
+                    onClick={handleContinueQueuedSessionMessages}
+                    style={{ marginLeft: 'auto', border: 0, background: 'transparent', color: 'var(--color-text-primary)', cursor: 'pointer' }}
+                  >
+                    {t('chat.resume')}
+                  </button>
+                )}
+              </div>
+            )}
+            {queuedSessionMessages.map((message) => (
+              <div
+                key={message.messageId}
+                className="team-event-group-row team-event-group-row--activity"
+                data-testid="chat-panel-cross-session-queue-item"
+                data-variant={message.messageId}
+              >
+                <div className="team-event-group-row__main" style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                  <div className="team-event-group-row__avatar">
+                    <img src={lineUpIcon} alt="" className="w-4 h-4" />
+                  </div>
+                  <span className="team-event-group-row__member" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {message.content}
+                  </span>
+                </div>
+                <span
+                  title={message.sourceSessionId}
+                  data-testid="chat-panel-cross-session-queue-source"
+                  style={{ flexShrink: 0, maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
+                  {t('crossSession.messageBadge', { title: message.sourceTitle || message.sourceSessionId })}
+                </span>
+              </div>
+            ))}
+            {queuedSessionMessages.length > 0 && visibleTaskQueue.length > 0 && (
+              <div className="team-event-group-row team-event-group-row--activity" data-testid="chat-panel-task-queue-local-section" style={{ alignItems: 'center' }}>
+                <span>{t('chatUi.localMessageQueue')}</span>
+                {queuePaused && (
+                  <span data-testid="chat-panel-task-queue-paused-badge" style={{ marginLeft: 'auto', color: 'var(--color-text-secondary)' }}>{t('chat.paused')}</span>
+                )}
+                {queuePaused && (
+                  <button type="button" data-testid="chat-panel-task-queue-resume" onClick={handleResume} style={{ border: 0, background: 'transparent', color: 'var(--color-text-primary)', cursor: 'pointer' }}>
+                    {t('chat.resume')}
+                  </button>
+                )}
+              </div>
+            )}
+            {visibleTaskQueue.map((task, index) => (
               <div
                 key={task.id}
                 className="team-event-group-row team-event-group-row--activity"
@@ -345,24 +555,38 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
                   background: dragOverIndex === index ? 'var(--color-surface-hover)' : 'transparent',
                 }}
                 onDragOver={(e) => handleDragOver(e, index)}
-                onDrop={() => handleDrop(index)}
+                onDrop={(e) => handleDrop(e, index)}
                 onDragEnd={handleDragEnd}
               >
-                <div className="team-event-group-row__main" style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                  {/* 拖动图标：所有任务可拖，悬浮显示 */}
-                  <img
-                    src={moveIcon}
-                    alt=""
+                <div
+                  className="team-event-group-row__main"
+                  style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}
+                >
+                  {/* 拖动图标：所有任务可拖，悬浮显示。draggable 放在 span 上而非
+                      <img> 上——以图片元素为拖拽源时 Chromium 会往 dataTransfer 里
+                      塞 Files/uri-list 假信号，桌面壳会误判成 OS 文件拖入。 */}
+                  <span
                     draggable
-                    onDragStart={() => handleDragStart(index)}
+                    onDragStart={(e) => handleDragStart(e, index)}
                     className="queue-drag-handle"
                     data-testid="chat-panel-task-queue-item-drag"
                     title={t('chat.dragTask')}
-                  />
+                    style={{ display: 'inline-flex' }}
+                  >
+                    <img
+                      src={moveIcon}
+                      alt=""
+                      draggable={false}
+                      style={{ width: '100%', height: '100%' }}
+                    />
+                  </span>
                   <div className="team-event-group-row__avatar" style={{ display: 'flex', alignItems: 'center' }}>
                     <img src={lineUpIcon} alt="" className="w-4 h-4" />
                   </div>
-                  <span className="team-event-group-row__member" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span
+                    className="team-event-group-row__member"
+                    style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  >
                     {task.content}
                   </span>
                   {(task.mediaItems?.length ?? 0) > 0 && (
@@ -425,16 +649,14 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
 
 function getActiveTeamMessages(historyMessages: Message[], messages: Message[]): Message[] {
   const seen = new Set<string>();
-  return [...historyMessages, ...messages]
-    .filter(isTeamActivityMessage)
-    .filter((message) => {
-      const key = getTeamMessageIdentity(message);
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
+  return [...historyMessages, ...messages].filter(isTeamActivityMessage).filter((message) => {
+    const key = getTeamMessageIdentity(message);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function getTeamMessageIdentity(message: Message): string {
@@ -455,28 +677,32 @@ function getTeamMessageIdentity(message: Message): string {
 
 function WelcomeHeading() {
   const { i18n } = useTranslation();
+  const workMode = useWorkspaceStore((state) => state.workMode);
   const isZh = i18n.language.startsWith('zh');
-
-  if (isZh) {
-    return (
-      <>
-        WorkSwarm 轻松解决工作每个问题！
-      </>
-    );
-  }
+  const suffix = workMode === 'design'
+    ? (isZh ? '轻松解决每个设计问题！' : 'solves every design problem!')
+    : (isZh ? '轻松解决工作每个问题！' : 'makes work easier!');
 
   return (
     <>
-      WorkSwarm makes work easier!
+      <span className="chat-welcome__heading-highlight">WorkSwarm</span>
+      <span>{suffix}</span>
     </>
   );
 }
 
-function getShareExportTitle(
-  t: TFunction,
-  isExportingShare: boolean,
-  canExportShare: boolean
-): string {
+function GroupCreateWelcomeHeading() {
+  const { t } = useTranslation();
+
+  return (
+    <>
+      <span className="chat-welcome__heading-highlight">{t('chat.groupCreateWelcomeBrand')}</span>
+      <span>{t('chat.groupCreateWelcomeSuffix')}</span>
+    </>
+  );
+}
+
+function getShareExportTitle(t: TFunction, isExportingShare: boolean, canExportShare: boolean): string {
   if (isExportingShare) {
     return t('share.exporting');
   }
@@ -498,18 +724,12 @@ function getHumanShareStatusClass(command: HumanShareCommand): string {
   return 'human-share-modal__badge';
 }
 
-function HumanSharePanel({
-  commands,
-  onClose,
-}: {
-  commands: HumanShareCommand[];
-  onClose: () => void;
-}) {
+function HumanSharePanel({ commands, onClose }: { commands: HumanShareCommand[]; onClose: () => void }) {
   const { t } = useTranslation();
   const [copiedKey, setCopiedKey] = React.useState<string | null>(null);
   const sortedCommands = useMemo(
     () => [...commands].sort((a, b) => a.memberName.localeCompare(b.memberName)),
-    [commands]
+    [commands],
   );
   const joinedCount = sortedCommands.filter((command) => command.status === 'joined').length;
   const exitCommand =
@@ -533,10 +753,11 @@ function HumanSharePanel({
 
   const copyText = useCallback(async (key: string, text: string) => {
     if (!text) return;
-    await navigator.clipboard.writeText(text);
+    const ok = await writeClipboard(text);
+    if (!ok) return;
     setCopiedKey(key);
     window.setTimeout(() => {
-      setCopiedKey((current) => current === key ? null : current);
+      setCopiedKey((current) => (current === key ? null : current));
     }, 1200);
   }, []);
 
@@ -553,7 +774,13 @@ function HumanSharePanel({
         <div className="human-share-modal__header" data-testid="chat-panel-human-share-modal-header">
           <div>
             <div className="human-share-modal__title-row">
-              <h2 id="human-share-title" className="human-share-modal__title" data-testid="chat-panel-human-share-modal-title">{t('humanShare.title')}</h2>
+              <h2
+                id="human-share-title"
+                className="human-share-modal__title"
+                data-testid="chat-panel-human-share-modal-title"
+              >
+                {t('humanShare.title')}
+              </h2>
             </div>
             <p className="human-share-modal__summary" data-testid="chat-panel-human-share-modal-summary">
               {allJoined
@@ -561,7 +788,13 @@ function HumanSharePanel({
                 : t('humanShare.waiting', { joined: joinedCount, total: sortedCommands.length })}
             </p>
           </div>
-          <button type="button" className="human-share-modal__close" data-testid="chat-panel-human-share-modal-close" onClick={onClose} aria-label={t('common.close')}>
+          <button
+            type="button"
+            className="human-share-modal__close"
+            data-testid="chat-panel-human-share-modal-close"
+            onClick={onClose}
+            aria-label={t('common.close')}
+          >
             <X size={18} />
           </button>
         </div>
@@ -576,7 +809,12 @@ function HumanSharePanel({
             const copied = copiedKey === `join:${command.memberName}`;
             const shouldShowJoinCommand = command.status !== 'joined' && Boolean(command.joinCommand);
             return (
-              <section key={`${command.sessionId}:${command.memberName}`} className="human-share-modal__item" data-testid="chat-panel-human-share-modal-member" data-variant={command.memberName}>
+              <section
+                key={`${command.sessionId}:${command.memberName}`}
+                className="human-share-modal__item"
+                data-testid="chat-panel-human-share-modal-member"
+                data-variant={command.memberName}
+              >
                 <div className="human-share-modal__member" data-testid="chat-panel-human-share-modal-member-info">
                   <TeamMemberAvatar
                     member={command.memberName}
@@ -589,13 +827,26 @@ function HumanSharePanel({
                       <div className="human-share-modal__member-id">{command.memberName}</div>
                     )}
                   </div>
-                  <span className={getHumanShareStatusClass(command)} data-testid="chat-panel-human-share-modal-member-status" data-variant={command.status}>
+                  <span
+                    className={getHumanShareStatusClass(command)}
+                    data-testid="chat-panel-human-share-modal-member-status"
+                    data-variant={command.status}
+                  >
                     {getHumanShareStatusLabel(command, t)}
                   </span>
                 </div>
                 {shouldShowJoinCommand ? (
-                  <div className="human-share-modal__command-row" data-testid="chat-panel-human-share-modal-member-join" data-variant="pending">
-                    <code className="human-share-modal__command" data-testid="chat-panel-human-share-modal-member-join-command">{command.joinCommand}</code>
+                  <div
+                    className="human-share-modal__command-row"
+                    data-testid="chat-panel-human-share-modal-member-join"
+                    data-variant="pending"
+                  >
+                    <code
+                      className="human-share-modal__command"
+                      data-testid="chat-panel-human-share-modal-member-join-command"
+                    >
+                      {command.joinCommand}
+                    </code>
                     <button
                       type="button"
                       className="human-share-modal__copy"
@@ -618,9 +869,7 @@ function HumanSharePanel({
                   >
                     {command.status === 'joined' ? <CheckCircle2 size={15} /> : <ClipboardList size={15} />}
                     <span>
-                      {command.status === 'joined'
-                        ? t('humanShare.joinedNote')
-                        : t('humanShare.commandPending')}
+                      {command.status === 'joined' ? t('humanShare.joinedNote') : t('humanShare.commandPending')}
                     </span>
                   </div>
                 )}
@@ -630,9 +879,13 @@ function HumanSharePanel({
 
           {exitCommand && (
             <section className="human-share-modal__exit" data-testid="chat-panel-human-share-modal-exit">
-              <div className="human-share-modal__exit-title" data-testid="chat-panel-human-share-modal-exit-title">{t('humanShare.exitTitle')}</div>
+              <div className="human-share-modal__exit-title" data-testid="chat-panel-human-share-modal-exit-title">
+                {t('humanShare.exitTitle')}
+              </div>
               <div className="human-share-modal__command-row">
-                <code className="human-share-modal__command" data-testid="chat-panel-human-share-modal-exit-command">{exitCommand}</code>
+                <code className="human-share-modal__command" data-testid="chat-panel-human-share-modal-exit-command">
+                  {exitCommand}
+                </code>
                 <button
                   type="button"
                   className="human-share-modal__copy"
@@ -648,21 +901,15 @@ function HumanSharePanel({
         </div>
       </section>
     </div>,
-    document.body
+    document.body,
   );
 }
 
-function HumanShareCard({
-  commands,
-  onShare,
-}: {
-  commands: HumanShareCommand[];
-  onShare: () => void;
-}) {
+function HumanShareCard({ commands, onShare }: { commands: HumanShareCommand[]; onShare: () => void }) {
   const { t } = useTranslation();
   const sortedCommands = useMemo(
     () => [...commands].sort((a, b) => a.memberName.localeCompare(b.memberName)),
-    [commands]
+    [commands],
   );
   const joinedCount = sortedCommands.filter((command) => command.status === 'joined').length;
   const pendingCount = sortedCommands.filter((command) => command.status !== 'joined').length;
@@ -681,7 +928,9 @@ function HumanShareCard({
         <ClipboardList size={18} strokeWidth={2} />
       </div>
       <div className="human-share-card__content" data-testid="chat-panel-human-share-card-content">
-        <div className="human-share-card__title" data-testid="chat-panel-human-share-card-title">{t('humanShare.cardTitle')}</div>
+        <div className="human-share-card__title" data-testid="chat-panel-human-share-card-title">
+          {t('humanShare.cardTitle')}
+        </div>
         <div className="human-share-card__summary" data-testid="chat-panel-human-share-card-summary">
           {t('humanShare.cardSummary', {
             pending: pendingCount,
@@ -691,7 +940,12 @@ function HumanShareCard({
         </div>
         <div className="human-share-card__members" data-testid="chat-panel-human-share-card-members">
           {previewCommands.map((command) => (
-            <span key={command.memberName} className="human-share-card__member-pill" data-testid="chat-panel-human-share-card-member-pill" data-variant={command.memberName}>
+            <span
+              key={command.memberName}
+              className="human-share-card__member-pill"
+              data-testid="chat-panel-human-share-card-member-pill"
+              data-variant={command.memberName}
+            >
               <TeamMemberAvatar
                 member={command.memberName}
                 identity={HUMAN_SHARE_IDENTITY}
@@ -701,7 +955,9 @@ function HumanShareCard({
             </span>
           ))}
           {sortedCommands.length > previewCommands.length ? (
-            <span className="human-share-card__more" data-testid="chat-panel-human-share-card-more">+{sortedCommands.length - previewCommands.length}</span>
+            <span className="human-share-card__more" data-testid="chat-panel-human-share-card-more">
+              +{sortedCommands.length - previewCommands.length}
+            </span>
           ) : null}
         </div>
       </div>
@@ -730,17 +986,77 @@ function scrollToBottom(el: HTMLDivElement): void {
   el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
 }
 
-export function ChatPanel({
+const BEE_ANIMATION_DURATION = 4536;
+const WELCOME_BUBBLE_HIDE_DELAY = 3000;
+
+function BeeBanner({
+  className,
+  altText,
+  onTrigger,
+  onLeave,
+}: {
+  className: string;
+  altText: string;
+  onTrigger: () => void;
+  onLeave: () => void;
+}) {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleMouseEnter = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
+    setIsPlaying(true);
+    onTrigger();
+    timerRef.current = setTimeout(() => {
+      setIsPlaying(false);
+      timerRef.current = null;
+    }, BEE_ANIMATION_DURATION);
+  }, [onTrigger]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  return (
+    <img
+      className={className}
+      src={isPlaying ? beeFlyingIcon : beeStaticIcon}
+      alt={altText}
+      data-testid="chat-panel-welcome-banner"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={onLeave}
+    />
+  );
+}
+
+/**
+ * The chat surface stays mounted while the user inspects trajectory data.
+ * Keep this boundary memoized so changing only the active surface does not
+ * rebuild a potentially very large message timeline and composer subtree.
+ */
+export const ChatPanel = React.memo(function ChatPanel({
   onSendMessage,
+  onEnsureSession,
+  onForkSession,
+  continuedFromSessionId = null,
+  onOpenContinuedFromSession,
+  onInputIntent,
   onPersistMedia,
   onPersistDocuments,
+  onDiscardMedia,
   onInterrupt,
   onCancel,
   onSwitchMode,
-  isProcessing,
+  isProcessing: sessionIsProcessing,
   onUserAnswer,
   onExportShare,
   isExportingShare = false,
+  shareExportProgress,
+  isWaitingShareExportTab = false,
   canExportShare = false,
   sessionTitle,
   sessionProjectName,
@@ -750,81 +1066,264 @@ export function ChatPanel({
   teamAreaExpanded = false,
   autoFocusKey = null,
   onNavigateToSkills,
+  onNavigateToAgents,
   onToggleTeamArea,
   onOpenCodeReview,
-  permissionsEnabled,
+  heartbeatPanelOpen = false,
+  onToggleHeartbeatPanel,
+  permissionProfile,
   onSavePermission,
   onSetGoal,
   onPauseGoal,
   onResumeGoal,
+  onRefreshGoal,
   onClearGoal,
   onDrainTaskQueueIfIdle,
+  onContinueQueuedSessionMessages,
+  welcomeVariant = null,
+  composerDocked = false,
+  composerCollapsed = false,
+  onToggleComposerCollapsed,
+  onComposerHeightChange,
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
-  const isThinking = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isThinking ?? false);
-  const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
+  const conversationId = useOrganizationConversationKey(activeSessionId);
+  const expertIsProcessing = useChatStore((s) => s.runtimes[conversationId]?.isProcessing ?? false);
+  const isProcessing = conversationId === activeSessionId ? sessionIsProcessing : expertIsProcessing;
+  const agentGroupUnavailable = useChatStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.agentGroupUnavailable ?? false,
+  );
+  const messages = useChatStore((s) => s.runtimes[conversationId]?.messages ?? []);
+  const isThinking = useChatStore((s) => s.runtimes[conversationId]?.isThinking ?? false);
+  const toolExecutionOrder = useChatStore((s) => s.runtimes[conversationId]?.toolExecutionOrder ?? []);
   const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
-  const hasHarnessProgress = useHarnessStore((s) => (
-    mode === 'auto_harness' && (s.runtimes[activeSessionId ?? '']?.stageResults.length ?? 0) > 0
-  ));
-  const teamHumanShareCommands = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamHumanShareCommands ?? []);
+  const [pickedGroupIdentity, setTeamGroupIdentity] = useState<AgentGroupIdentity | null>(null);
+  // 输入框的专家团列表是异步的，切会话后到达前 Leader 头像会退成首字母；已绑定的会话
+  // 直接用缓存的专家团身份兜底，列表到了再以它为准。
+  const boundGroupId = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.agentGroupBinding ?? null);
+  const boundGroupIdentity = useAgentGroupVisualIdentity(boundGroupId)?.identity ?? null;
+  const teamGroupIdentity = pickedGroupIdentity ?? boundGroupIdentity;
+  const [agentGroupDeletedNoticeOpen, setAgentGroupDeletedNoticeOpen] = useState(false);
+  useEffect(() => {
+    setTeamGroupIdentity(null);
+  }, [activeSessionId]);
+  useEffect(() => {
+    setAgentGroupDeletedNoticeOpen(agentGroupUnavailable);
+  }, [agentGroupUnavailable, activeSessionId]);
+  const hasHarnessProgress = useHarnessStore(
+    (s) => mode === 'auto_harness' && (s.runtimes[activeSessionId ?? '']?.stageResults.length ?? 0) > 0,
+  );
+  const teamHumanShareCommands = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.teamHumanShareCommands ?? [],
+  );
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const panelShellRef = useRef<HTMLDivElement>(null);
+  const composeRef = useRef<HTMLDivElement>(null);
+  const bubbleRef = useRef<HTMLDivElement>(null);
   const inputAreaRef = useRef<InputAreaHandle>(null);
   const desktopFileDropAcceptUntilRef = useRef(0);
   const lastConsumedDesktopDropIdRef = useRef<string | null>(null);
   const historyLayoutSnapshotRef = useRef<{
     sessionId: string;
-    loadedPages: number;
     scrollHeight: number;
     scrollTop: number;
   } | null>(null);
-  const suppressNextScrollToEndRef = useRef(false);
   const stickToBottomUntilStableRef = useRef(false);
   const [isSending, setIsSending] = React.useState(false);
   const isDesktopAttachmentDropEnabled = useDesktopLocalFilePickerReady();
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
   const hasConversation = Boolean(isHistoryRestoring || historyPager || hasTimelineContent);
-  const historyLoadedPages = historyPager?.loadedPages ?? 0;
-  const historyTotalPages = historyPager?.totalPages ?? 0;
+  const isGroupCreateWelcome = welcomeVariant === 'group-create';
+  const historyLoadedBatchSeq = historyPager?.loadedBatchSeq ?? 0;
+  const historyPublishedBatchSeq = historyPager?.publishedBatchSeq ?? 0;
+  const historyHasMore = historyPager?.hasMore ?? false;
   const historyLoadingMore = historyPager?.loadingMore ?? false;
   const historyPrepending = historyPager?.prepending ?? false;
   const historyRetryAvailable = historyPager?.retryAvailable ?? false;
   const historyOnLoadMore = historyPager?.onLoadMore;
-  const hasHistoryPager = Boolean(historyPager);
   const historyLoadMoreState = {
-    loadedPages: historyLoadedPages,
-    totalPages: historyTotalPages,
+    loadedBatchSeq: historyLoadedBatchSeq,
+    publishedBatchSeq: historyPublishedBatchSeq,
+    hasMore: historyHasMore,
     loadingMore: historyLoadingMore,
     prepending: historyPrepending,
   };
-  const canRequestOlderHistory = Boolean(
-    historyOnLoadMore && canLoadOlderHistory(historyLoadMoreState)
-  );
+  const canRequestOlderHistory = Boolean(historyOnLoadMore && canLoadOlderHistory(historyLoadMoreState));
   const showHistoryRetry = Boolean(
     historyOnLoadMore &&
-      shouldShowHistoryRetry({
-        ...historyLoadMoreState,
-        retryAvailable: historyRetryAvailable,
-      })
+    shouldShowHistoryRetry({
+      ...historyLoadMoreState,
+      retryAvailable: historyRetryAvailable,
+    }),
   );
   const chatContentClassName = hasConversation
     ? `chat-content${mode === 'team' ? ' chat-content--team' : ''}`
     : 'chat-content chat-content--welcome';
-  const suggestions = [
-    t('chat.welcomeSuggestions.journey'),
-    t('chat.welcomeSuggestions.skills'),
-  ];
+  const suggestions = [t('chat.welcomeSuggestions.journey'), t('chat.welcomeSuggestions.skills')];
   const shouldShowChatHeader = hasConversation;
-  const shareExportTitle = getShareExportTitle(t, isExportingShare, canExportShare);
+  const composerDockVisible = composerDocked && hasConversation;
+  // Report the composer's measured height so the docked trajectory view can
+  // keep its last records clear of it. A collapsed or undocked composer covers
+  // nothing, so it reports zero rather than its laid-out size.
+  useEffect(() => {
+    if (onComposerHeightChange === undefined) return undefined;
+    const element = composeRef.current;
+    if (!composerDockVisible || composerCollapsed || element === null) {
+      onComposerHeightChange(0);
+      return undefined;
+    }
+    let reported = -1;
+    const publish = () => {
+      const height = Math.ceil(element.getBoundingClientRect().height);
+      if (height === reported) return;
+      reported = height;
+      onComposerHeightChange(height);
+    };
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      onComposerHeightChange(0);
+    };
+  }, [composerCollapsed, composerDockVisible, onComposerHeightChange]);
+  const shareExportTitle = isWaitingShareExportTab ? t('share.openExportTab') : isExportingShare && shareExportProgress
+    ? shareExportProgress : getShareExportTitle(t, isExportingShare, canExportShare);
   const shouldShowShareExport = Boolean(onExportShare);
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
+  const isAuthorized = useAuthStore((state) => state.islogin);
+  const [bubbleVisible, setBubbleVisible] = useState(false);
+  const [freeModelsPromptDismissed, setFreeModelsPromptDismissed] = useState(false);
+  const bubbleHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleBubbleShow = useCallback(() => {
+    if (!isAuthorized && freeModelsPromptDismissed) return;
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+      bubbleHideTimerRef.current = null;
+    }
+    setBubbleVisible(true);
+  }, [freeModelsPromptDismissed, isAuthorized]);
+  const handleBubbleLeave = useCallback(() => {
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+    }
+    bubbleHideTimerRef.current = setTimeout(() => {
+      bubbleHideTimerRef.current = null;
+      setBubbleVisible(false);
+    }, WELCOME_BUBBLE_HIDE_DELAY);
+  }, []);
+  const handleFreeModelsPromptClose = useCallback(() => {
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+      bubbleHideTimerRef.current = null;
+    }
+    setFreeModelsPromptDismissed(true);
+    setBubbleVisible(false);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (bubbleHideTimerRef.current) {
+        clearTimeout(bubbleHideTimerRef.current);
+        bubbleHideTimerRef.current = null;
+      }
+    };
+  }, []);
+  // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
+  const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
+  const handlePluginConversationItem = useCallback((sid: string, role: 'user' | 'assistant', text: string, presentation?: 'tool_result') => {
+    const content = text.trim();
+    if (!content) return;
+    useChatStore.getState().addMessage(sid, {
+      id: `full-duplex-${generateUuidV4()}`,
+      role,
+      content,
+      presentation,
+      keepExpanded: role === 'assistant',
+      timestamp: new Date().toISOString(),
+    });
+  }, []);
+  const handlePluginAssistantStream = useCallback(
+    (sid: string, update: { streamId: string; content: string; final: boolean }) => {
+      const streamId = update.streamId.trim();
+      if (!streamId) return;
+      const messageId = `full-duplex-${streamId}`;
+      const chatStore = useChatStore.getState();
+      const runtime = chatStore.getRuntime(sid);
+      const existing = runtime?.messages.find((message) => message.id === messageId);
+      const content = update.content.trim();
+
+      if (!existing && !content) return;
+      if (!existing) {
+        chatStore.addMessage(sid, {
+          id: messageId,
+          role: 'assistant',
+          content,
+          keepExpanded: true,
+          timestamp: new Date().toISOString(),
+          isStreaming: !update.final,
+          ...(update.final ? { completedAt: new Date().toISOString() } : {}),
+        });
+        if (!update.final && !runtime?.currentStreamId) {
+          chatStore.startStreaming(sid, messageId, messageId);
+        }
+        return;
+      }
+
+      chatStore.updateMessage(sid, messageId, {
+        ...(content ? { content } : {}),
+        keepExpanded: true,
+        isStreaming: !update.final,
+        ...(update.final ? { completedAt: new Date().toISOString() } : {}),
+      });
+      if (update.final && chatStore.getRuntime(sid)?.currentStreamId === messageId) {
+        chatStore.stopStreaming(sid, messageId);
+      }
+    },
+    [],
+  );
+  const handlePluginToolCall = useCallback(
+    (
+      sid: string,
+      toolCall: Parameters<ReturnType<typeof useChatStore.getState>['addToolCall']>[1],
+      startedAt?: string,
+    ) => {
+      useChatStore.getState().addToolCall(sid, toolCall, { startedAt });
+    },
+    [],
+  );
+  const handlePluginToolResult = useCallback(
+    (
+      sid: string,
+      toolResult: Parameters<ReturnType<typeof useChatStore.getState>['addToolResult']>[1],
+      updatedAt?: string,
+    ) => {
+      useChatStore.getState().addToolResult(sid, toolResult, { updatedAt });
+    },
+    [],
+  );
+  const handlePluginReasoning = useCallback((sid: string, content: string, atMs?: number) => {
+    useChatStore.getState().appendReasoning(sid, content, { atMs });
+  }, []);
+  const handlePluginFileItems = useCallback(
+    (
+      sid: string,
+      files: Parameters<ReturnType<typeof useChatStore.getState>['addFileItems']>[1],
+      timestampIso?: string,
+    ) => {
+      useChatStore.getState().addFileItems(sid, files, { timestampIso });
+    },
+    [],
+  );
+  const handlePluginReasoningClose = useCallback((sid: string, atMs?: number) => {
+    useChatStore.getState().closeReasoning(sid, { atMs });
+  }, []);
   const {
     turnsByMessageId: codeTurnsByMessageId,
+    turnCardAnchors: codeTurnCardAnchors,
     loading: codeTurnHistoryLoading,
     reload: reloadCodeTurnHistory,
     latestTurnKey: latestCodeTurnKey,
@@ -839,40 +1338,113 @@ export function ChatPanel({
     isProcessing,
     messages,
   });
-  const renderCodeChangesAfterMessage = useCallback((message: Message) => {
-    const turns = codeTurnsByMessageId.get(message.id);
-    if (!turns?.length) return null;
-    return turns.map(turn => {
-      const turnKey = turnDiffKey(turn);
-      const isLatest = turnKey === latestCodeTurnKey;
+  const renderCodeChangesAfterMessage = useCallback(
+    (message: Message) => {
+      const turns = codeTurnsByMessageId.get(message.id);
+      if (!turns?.length) return null;
+      // 同一轮的多条消息共享同一个 id（后端每个 chat.final 一条记录、同一个
+      // `<request_id>:assistant`），只在锚点消息上出卡片，避免重复渲染多张。
+      if (!codeTurnCardAnchors.has(message)) return null;
+      return turns.map((turn) => {
+        const turnKey = turnDiffKey(turn);
+        const isLatest = turnKey === latestCodeTurnKey;
+        return (
+          <CodeChangesCard
+            key={turnKey}
+            diff={turn}
+            refreshing={codeTurnHistoryLoading}
+            isLatest={isLatest}
+            isProcessing={isProcessing}
+            operation={isLatest ? (turnChangeOperation?.action ?? null) : null}
+            operationError={turnChangeError?.turnKey === turnKey ? turnChangeError.message : null}
+            onRefresh={() => void reloadCodeTurnHistory()}
+            onReview={(target) => onOpenCodeReview?.(target)}
+            onDiscard={() => void discardLatestTurn()}
+            onRedo={() => void redoLatestTurn()}
+          />
+        );
+      });
+    },
+    [
+      codeTurnCardAnchors,
+      codeTurnHistoryLoading,
+      codeTurnsByMessageId,
+      discardLatestTurn,
+      isProcessing,
+      latestCodeTurnKey,
+      onOpenCodeReview,
+      redoLatestTurn,
+      reloadCodeTurnHistory,
+      turnChangeError,
+      turnChangeOperation,
+    ],
+  );
+
+  const forkBoundaryMessageKey = useMemo(() => {
+    if (!continuedFromSessionId) return null;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.forkedFromSessionId === continuedFromSessionId) {
+        return message.renderKey ?? message.id;
+      }
+    }
+    return null;
+  }, [continuedFromSessionId, messages]);
+
+  const renderAfterMessage = useCallback(
+    (message: Message) => {
+      const codeChanges = renderCodeChangesAfterMessage(message);
+      const messageKey = message.renderKey ?? message.id;
+      if (
+        !forkBoundaryMessageKey ||
+        messageKey !== forkBoundaryMessageKey ||
+        !continuedFromSessionId ||
+        !onOpenContinuedFromSession
+      ) {
+        return codeChanges;
+      }
       return (
-        <CodeChangesCard
-          key={turnKey}
-          diff={turn}
-          refreshing={codeTurnHistoryLoading}
-          isLatest={isLatest}
-          isProcessing={isProcessing}
-          operation={isLatest ? turnChangeOperation?.action ?? null : null}
-          operationError={turnChangeError?.turnKey === turnKey ? turnChangeError.message : null}
-          onRefresh={() => void reloadCodeTurnHistory()}
-          onReview={target => onOpenCodeReview?.(target)}
-          onDiscard={() => void discardLatestTurn()}
-          onRedo={() => void redoLatestTurn()}
-        />
+        <>
+          {codeChanges}
+          <button
+            type="button"
+            className="chat-fork-origin"
+            data-testid="chat-panel-continued-from-chat"
+            title={t('chat.openSourceChat')}
+            aria-label={t('chat.openSourceChat')}
+            onClick={() => onOpenContinuedFromSession(continuedFromSessionId)}
+          >
+            <span className="chat-fork-origin__label" data-testid="chat-panel-continued-from-chat-label">
+              <GitFork size={14} strokeWidth={1.75} aria-hidden="true" />
+              {t('chat.continuedFromChat')}
+            </span>
+          </button>
+        </>
       );
-    });
-  }, [
-    codeTurnHistoryLoading,
-    codeTurnsByMessageId,
-    discardLatestTurn,
-    isProcessing,
-    latestCodeTurnKey,
-    onOpenCodeReview,
-    redoLatestTurn,
-    reloadCodeTurnHistory,
-    turnChangeError,
-    turnChangeOperation,
-  ]);
+    },
+    [
+      continuedFromSessionId,
+      forkBoundaryMessageKey,
+      onOpenContinuedFromSession,
+      renderCodeChangesAfterMessage,
+      t,
+    ],
+  );
+
+  const handleForkFromMessage = useCallback(
+    (message: Message) => {
+      if (!activeSessionId || activeSessionId === NEW_CONVERSATION_ID) {
+        return Promise.reject(new Error('A persisted session is required to fork'));
+      }
+      return onForkSession(activeSessionId, {
+        messageId: message.id,
+        role: message.role,
+        content: message.content,
+        timestamp: message.completedAt ?? message.timestamp,
+      });
+    },
+    [activeSessionId, onForkSession],
+  );
 
   // 跟踪用户是否正在查看历史消息（不在底部）
   const userScrolledUpRef = useRef(false);
@@ -889,28 +1461,33 @@ export function ChatPanel({
     }
   }, []);
 
-  const updateHistoryLayoutSnapshot = useCallback((sessionId: string, el: HTMLDivElement) => {
-    historyLayoutSnapshotRef.current = {
-      sessionId,
-      loadedPages: historyLoadedPages,
-      scrollHeight: el.scrollHeight,
-      scrollTop: el.scrollTop,
-    };
-  }, [historyLoadedPages]);
+  const updateHistoryLayoutSnapshot = useCallback(
+    (sessionId: string, el: HTMLDivElement) => {
+      historyLayoutSnapshotRef.current = {
+        sessionId,
+        scrollHeight: el.scrollHeight,
+        scrollTop: el.scrollTop,
+      };
+    },
+    [],
+  );
 
-  const restoreSessionScrollTop = useCallback((sessionId: string, el: HTMLDivElement): boolean => {
-    const savedScrollTop = sessionScrollTopMapRef.current.get(sessionId);
-    if (savedScrollTop === undefined) {
-      return false;
-    }
+  const restoreSessionScrollTop = useCallback(
+    (sessionId: string, el: HTMLDivElement): boolean => {
+      const savedScrollTop = sessionScrollTopMapRef.current.get(sessionId);
+      if (savedScrollTop === undefined) {
+        return false;
+      }
 
-    el.scrollTop = savedScrollTop;
-    const atBottom = isScrollAtBottom(el);
-    userScrolledUpRef.current = !atBottom;
-    stickToBottomUntilStableRef.current = atBottom;
-    updateHistoryLayoutSnapshot(sessionId, el);
-    return true;
-  }, [updateHistoryLayoutSnapshot]);
+      el.scrollTop = savedScrollTop;
+      const atBottom = isScrollAtBottom(el);
+      userScrolledUpRef.current = !atBottom;
+      stickToBottomUntilStableRef.current = atBottom;
+      updateHistoryLayoutSnapshot(sessionId, el);
+      return true;
+    },
+    [updateHistoryLayoutSnapshot],
+  );
 
   // 检测用户滚动位置
   const handleScroll = useCallback(() => {
@@ -925,12 +1502,23 @@ export function ChatPanel({
 
     const currentSessionId = activeSessionId ?? '';
     rememberSessionScrollTop(currentSessionId, el);
+    updateHistoryLayoutSnapshot(currentSessionId, el);
 
     // 当滚动到顶部且有更多历史消息时，加载更多
-    if (el.scrollTop <= LOAD_OLDER_THRESHOLD_PX && canRequestOlderHistory && historyOnLoadMore) {
+    if (
+      el.scrollTop <= LOAD_OLDER_THRESHOLD_PX
+      && canRequestOlderHistory
+      && historyOnLoadMore
+    ) {
       void historyOnLoadMore();
     }
-  }, [activeSessionId, canRequestOlderHistory, historyOnLoadMore, rememberSessionScrollTop]);
+  }, [
+    activeSessionId,
+    canRequestOlderHistory,
+    historyOnLoadMore,
+    rememberSessionScrollTop,
+    updateHistoryLayoutSnapshot,
+  ]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -949,27 +1537,33 @@ export function ChatPanel({
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [
-    activeSessionId,
-    historyLoadingMore,
-    historyPrepending,
-    updateHistoryLayoutSnapshot,
-  ]);
+  }, [activeSessionId, historyLoadingMore, historyPrepending, updateHistoryLayoutSnapshot]);
+
+  // 根据 chat-panel 宽度动态调整 welcome bubble 的 right 值
+  useWelcomeBubblePosition({
+    panelRef: panelShellRef,
+    bubbleRef,
+    active: !hasConversation,
+  });
 
   // 检测鼠标滚轮事件，即使没有滚动条也能触发加载更多
-  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    // 只有向上滚动时才触发
-    if (e.deltaY < 0) {
-      stickToBottomUntilStableRef.current = false;
-    }
-    if (e.deltaY < 0 && canRequestOlderHistory && historyOnLoadMore) {
-      // 检查是否已经在顶部（没有滚动条时 scrollTop 始终为 0）
-      const el = scrollContainerRef.current;
-      if (el && el.scrollTop <= LOAD_OLDER_THRESHOLD_PX) {
-        void historyOnLoadMore();
+  const handleWheel = useCallback(
+    (e: React.WheelEvent<HTMLDivElement>) => {
+      // 只有向上滚动时才触发
+      if (e.deltaY < 0) {
+        userScrolledUpRef.current = true;
+        stickToBottomUntilStableRef.current = false;
       }
-    }
-  }, [canRequestOlderHistory, historyOnLoadMore]);
+      if (e.deltaY < 0 && canRequestOlderHistory && historyOnLoadMore) {
+        // 检查是否已经在顶部（没有滚动条时 scrollTop 始终为 0）
+        const el = scrollContainerRef.current;
+        if (el && el.scrollTop <= LOAD_OLDER_THRESHOLD_PX) {
+          void historyOnLoadMore();
+        }
+      }
+    },
+    [canRequestOlderHistory, historyOnLoadMore],
+  );
 
   // 监听浏览器 tab 可见性变化：隐藏时记录位置，恢复可见时抑制自动滚底
   useEffect(() => {
@@ -999,26 +1593,24 @@ export function ChatPanel({
     const snapshot = historyLayoutSnapshotRef.current;
     const currentSessionId = activeSessionId ?? '';
 
+    // 以真实布局为准补偿可能被主线程繁忙延迟的 scroll 事件：内容高度未变、
+    // scrollTop 却已变化时，按当前真实位置更新阅读意图，再处理新页。
     if (
-      lastSessionIdRef.current === currentSessionId &&
-      hasHistoryPager &&
-      snapshot &&
-      snapshot.sessionId === currentSessionId &&
-      snapshot.loadedPages > 0 &&
-      historyLoadedPages > snapshot.loadedPages
+      snapshot?.sessionId === currentSessionId &&
+      snapshot.scrollHeight === el.scrollHeight &&
+      snapshot.scrollTop !== el.scrollTop
     ) {
-      const delta = el.scrollHeight - snapshot.scrollHeight;
-      if (delta !== 0) {
-        el.scrollTop = snapshot.scrollTop + delta;
-        suppressNextScrollToEndRef.current = true;
+      const atBottom = isScrollAtBottom(el);
+      userScrolledUpRef.current = !atBottom;
+      if (!atBottom) {
+        stickToBottomUntilStableRef.current = false;
       }
     }
 
     updateHistoryLayoutSnapshot(currentSessionId, el);
   }, [
     activeSessionId,
-    hasHistoryPager,
-    historyLoadedPages,
+    historyPublishedBatchSeq,
     messages.length,
     toolExecutionOrder.length,
     updateHistoryLayoutSnapshot,
@@ -1049,11 +1641,6 @@ export function ChatPanel({
       return;
     }
 
-    if (suppressNextScrollToEndRef.current) {
-      suppressNextScrollToEndRef.current = false;
-      return;
-    }
-
     // tab 重新可见后 300ms 内不自动滚底，避免切回时被状态更新拉到底部
     if (Date.now() - visibilityRestoredAtRef.current < VISIBILITY_RESTORE_SCROLL_SUPPRESS_MS) {
       return;
@@ -1074,7 +1661,7 @@ export function ChatPanel({
     isThinking,
     contextCompressionRuntime,
     contextCompressionSummary,
-    historyLoadedPages,
+    historyPublishedBatchSeq,
     historyLoadingMore,
     historyPrepending,
     teamHumanShareCommands.length,
@@ -1082,10 +1669,14 @@ export function ChatPanel({
   ]);
 
   // 包装发送消息函数，添加滚动逻辑
-  const handleSendMessage = useCallback((content: string, mediaItems?: MediaItem[]) => {
-    setIsSending(true);
-    onSendMessage(content, mediaItems);
-  }, [onSendMessage]);
+  const handleSendMessage = useCallback(
+    async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
+      if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
+      setIsSending(true);
+      onSendMessage(content, mediaItems, options);
+    },
+    [activeSessionId, onSendMessage],
+  );
 
   // 当发送消息时强制滚动到底部
   useEffect(() => {
@@ -1101,10 +1692,7 @@ export function ChatPanel({
     }
   }, [activeSessionId, isSending, updateHistoryLayoutSnapshot]);
 
-  const handleSuggestion = useCallback(
-    (text: string) => handleSendMessage(text),
-    [handleSendMessage],
-  );
+  const handleSuggestion = useCallback((text: string) => handleSendMessage(text), [handleSendMessage]);
 
   const markDesktopFileDropZoneActive = useCallback(() => {
     desktopFileDropAcceptUntilRef.current = Date.now() + 1200;
@@ -1143,7 +1731,8 @@ export function ChatPanel({
 
   const ingestDesktopLocalFiles = useCallback(
     (detail: DesktopLocalFilesEventDetail | null | undefined, files: LocalFilePick[]) => {
-      if (detail?.source && detail.source !== 'drop') return;
+      // Native drop bridge uses source=drop; context-menu paste uses source=paste.
+      if (detail?.source && detail.source !== 'drop' && detail.source !== 'paste') return;
       if (!files.length) {
         clearDesktopFileDropZone();
         return;
@@ -1162,9 +1751,7 @@ export function ChatPanel({
       let inZone = false;
       if (hasCoords) {
         const hit = document.elementFromPoint(clientX, clientY);
-        inZone = Boolean(
-          hit?.closest('.chat-panel-shell') || hit?.closest('.chat-layout__surface'),
-        );
+        inZone = Boolean(hit?.closest('.chat-panel-shell') || hit?.closest('.chat-layout__surface'));
       }
       // Native bridge trusted=true always accepts (coords from WebView2 are often wrong).
       const trusted = detail?.trusted === true;
@@ -1194,7 +1781,9 @@ export function ChatPanel({
     [canAcceptDesktopFileDrag, markDesktopFileDropZoneActive],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // Replace the consumer during the session commit, before pending native file
+    // reads can resolve. ChatPanel stays mounted when activeSessionId changes.
     // Durable bridge lives in localFilePicker; ChatPanel only registers a consumer.
     // Never delete window.__JIUWEN_INGEST_LOCAL_FILES__ — Python run_js requires it.
     const unregister = registerDesktopLocalFilesConsumer((detail, files) => {
@@ -1220,18 +1809,34 @@ export function ChatPanel({
       window.removeEventListener(DESKTOP_LOCAL_FILES_EVENT, onDesktopLocalFiles as EventListener);
       window.removeEventListener(DESKTOP_FILE_DRAG_EVENT, onDesktopFileDrag as EventListener);
     };
-  }, [ingestDesktopLocalFiles, markDesktopFileDropZoneActive]);
+  }, [activeSessionId, ingestDesktopLocalFiles, markDesktopFileDropZoneActive]);
 
   return (
     <div
-      className="chat-panel-shell flex flex-col h-full"
+      ref={panelShellRef}
+      className={`chat-panel-shell flex flex-col h-full ${teamAreaExpanded === false ? 'chat-panel-shell--team-floating' : ''} ${composerDockVisible ? 'chat-panel-shell--composer-docked' : ''} ${composerDockVisible && composerCollapsed ? 'chat-panel-shell--composer-collapsed' : ''}`}
       data-testid="chat-panel"
       onDragEnter={handleDesktopFileDragEnter}
       onDragOver={handleDesktopFileDragOver}
       onDrop={handleDesktopFileDrop}
     >
+      <ApplicationPluginTaskRuntimes
+        sessionId={activeSessionId}
+        onConversationItem={handlePluginConversationItem}
+        onAssistantStream={handlePluginAssistantStream}
+        onReasoning={handlePluginReasoning}
+        onReasoningClose={handlePluginReasoningClose}
+        onToolCall={handlePluginToolCall}
+        onToolResult={handlePluginToolResult}
+        onFileItems={handlePluginFileItems}
+      />
       {turnChangeNotice ? (
-        <div className="code-turn-change-toast" role="status" aria-live="polite" data-testid="chat-panel-code-turn-change-toast">
+        <div
+          className="code-turn-change-toast"
+          role="status"
+          aria-live="polite"
+          data-testid="chat-panel-code-turn-change-toast"
+        >
           <CheckCircle2 size={17} aria-hidden="true" />
           <span>{turnChangeNotice}</span>
         </div>
@@ -1243,34 +1848,56 @@ export function ChatPanel({
               {sessionTitle}
             </div>
             {sessionProjectName && (
-              <div className="chat-panel-header__project" title={sessionProjectName} data-testid="chat-panel-header-project">
+              <div
+                className="chat-panel-header__project"
+                title={sessionProjectName}
+                data-testid="chat-panel-header-project"
+              >
                 <span className="chat-config-icon chat-config-icon--folder" aria-hidden="true" />
                 <span>{sessionProjectName}</span>
               </div>
             )}
           </div>
           <div className="chat-panel-header__actions" data-testid="chat-panel-header-actions">
+            {composerDockVisible && onToggleComposerCollapsed && (
+              <button
+                type="button"
+                className={`chat-header-icon-btn ${composerCollapsed ? '' : 'chat-header-icon-btn--active'}`}
+                data-testid="chat-panel-header-composer-toggle"
+                data-variant={composerCollapsed ? 'expand' : 'collapse'}
+                aria-expanded={!composerCollapsed}
+                title={composerCollapsed ? t('trajectory.composer.expand') : t('trajectory.composer.collapse')}
+                aria-label={composerCollapsed ? t('trajectory.composer.expand') : t('trajectory.composer.collapse')}
+                onClick={onToggleComposerCollapsed}
+              >
+                {composerCollapsed
+                  ? <PanelBottomOpen size={16} strokeWidth={2} aria-hidden />
+                  : <PanelBottomClose size={16} strokeWidth={2} aria-hidden />}
+              </button>
+            )}
             {shouldShowShareExport && (
               <button
                 type="button"
-                className={`icon-btn share-export-btn ${isExportingShare ? 'share-export-btn--loading' : ''}`}
+                className={`chat-header-icon-btn icon-btn share-export-btn ${isExportingShare ? 'share-export-btn--loading' : ''}`}
                 data-testid="chat-panel-share-export"
-                data-variant={isExportingShare ? 'exporting' : 'ready'}
+                data-variant={isWaitingShareExportTab ? 'waiting' : isExportingShare ? 'exporting' : 'ready'}
                 title={shareExportTitle}
                 aria-label={shareExportTitle}
-                aria-busy={isExportingShare}
-                disabled={!canExportShare || isExportingShare}
+                aria-busy={isExportingShare && !isWaitingShareExportTab}
+                disabled={!isWaitingShareExportTab && (!canExportShare || isExportingShare)}
                 onClick={() => {
                   void onExportShare?.();
                 }}
               >
                 {isExportingShare ? (
                   <>
-                    <LoaderCircle className="share-export-btn__spinner" size={14} strokeWidth={2} />
-                    <span className="share-export-btn__label" data-testid="chat-panel-share-export-loading-label">{t('share.generating')}</span>
+                    {!isWaitingShareExportTab && <LoaderCircle className="share-export-btn__spinner" size={14} strokeWidth={2} />}
+                    <span className="share-export-btn__label" aria-live="polite" data-testid="chat-panel-share-export-loading-label">
+                      {isWaitingShareExportTab ? t('share.openExportTab') : shareExportProgress || t('share.generating')}
+                    </span>
                   </>
                 ) : (
-                  <Share2 size={14} strokeWidth={2} />
+                  <ShareExportIcon className="h-[32px] w-[32px]" />
                 )}
               </button>
             )}
@@ -1285,39 +1912,58 @@ export function ChatPanel({
                 <Sparkles size={16} strokeWidth={2} />
               </button>
             )}
+            {heartbeatAvailable && (
+              <button
+                type="button"
+                className={`chat-header-icon-btn ${heartbeatPanelOpen ? 'chat-header-icon-btn--active' : ''}`}
+                onClick={() => onToggleHeartbeatPanel?.()}
+                title={t('heartbeat.panel.title')}
+              >
+                <Activity size={14} strokeWidth={2} />
+              </button>
+            )}
             <button
               type="button"
-              className={`chat-header-icon-btn ${!teamAreaExpanded ? 'chat-header-icon-btn--active' : ''}`}
+              className={`chat-header-icon-btn ${teamAreaExpanded === false && !heartbeatPanelOpen ? 'chat-header-icon-btn--active' : ''}`}
               data-testid="chat-panel-header-chat-toggle"
               data-variant="collapse"
-              onClick={() => onToggleTeamArea?.(false)}
+              data-team-area-toggle="true"
+              onClick={() => onToggleTeamArea?.(teamAreaExpanded === false ? null : false)}
             >
-              <img src={chatIcon} alt="" className="chat-header-icon-btn__icon" />
+              <ChatOverviewIcon className="h-[32px] w-[32px]" aria-hidden />
             </button>
-            <button
-              type="button"
-              className={`chat-header-icon-btn ${teamAreaExpanded ? 'chat-header-icon-btn--active' : ''}`}
-              data-testid="chat-panel-header-expand-toggle"
-              data-variant="expand"
-              onClick={() => onToggleTeamArea?.(true)}
-            >
-              <img src={expandIcon} alt="" className="chat-header-icon-btn__icon" />
-            </button>
+            {!teamAreaExpanded && (
+              <button
+                type="button"
+                className="chat-header-icon-btn"
+                data-testid="chat-panel-header-expand-toggle"
+                data-variant="expand"
+                data-team-area-toggle="true"
+                onClick={() => onToggleTeamArea?.(true)}
+              >
+                <PanelCollapseIcon className="h-[32px] w-[32px]" aria-hidden />
+              </button>
+            )}
           </div>
         </div>
       )}
       {hasHarnessProgress && (
-        <div className="sticky top-0 z-10 px-3 pt-2 bg-bg/95 backdrop-blur-sm" data-testid="chat-panel-harness-progress-mount">
+        <div
+          className="sticky top-0 z-10 px-3 pt-2 bg-bg/95 backdrop-blur-sm"
+          data-testid="chat-panel-harness-progress-mount"
+        >
           <HarnessProgressBar />
         </div>
       )}
-      {humanShareOpen && (
-        <HumanSharePanel
-          commands={teamHumanShareCommands}
-          onClose={() => setHumanShareOpen(false)}
-        />
-      )}
-      <div ref={scrollContainerRef} className="chat-scroll flex-1 overflow-y-auto" data-testid="chat-panel-scroll" onScroll={handleScroll} onWheel={handleWheel}>
+      {humanShareOpen && <HumanSharePanel commands={teamHumanShareCommands} onClose={() => setHumanShareOpen(false)} />}
+      <div
+        ref={scrollContainerRef}
+        className="chat-scroll flex-1 overflow-y-auto"
+        data-timeline-scroll-root
+        data-testid="chat-panel-scroll"
+        onScroll={handleScroll}
+        onWheel={handleWheel}
+      >
         <div className={chatContentClassName} data-testid="chat-panel-content">
           {hasConversation ? (
             <>
@@ -1335,55 +1981,152 @@ export function ChatPanel({
               )}
               {hasTimelineContent ? (
                 <>
-                  <MessageList messages={messages} renderAfterMessage={renderCodeChangesAfterMessage} />
+                  <MessageList
+                    messages={messages}
+                    renderAfterMessage={renderAfterMessage}
+                    canLoadOlderHistory={canRequestOlderHistory}
+                    onLoadOlderHistory={historyOnLoadMore}
+                    teamGroupIdentityOverride={teamGroupIdentity}
+                    onForkFromMessage={handleForkFromMessage}
+                  />
                   {shouldShowHumanShare && (
-                    <HumanShareCard
-                      commands={teamHumanShareCommands}
-                      onShare={() => setHumanShareOpen(true)}
-                    />
+                    <HumanShareCard commands={teamHumanShareCommands} onShare={() => setHumanShareOpen(true)} />
                   )}
-                  <SubtaskProgress />
                   {/* 内联审批卡片（演进审批 & 权限审批共用） */}
                   <InlineQuestionCard onSubmit={onUserAnswer} />
-                  <ContextCompressionLines
-                    runtime={contextCompressionRuntime}
-                    summary={contextCompressionSummary}
-                  />
+                  <ContextCompressionLines runtime={contextCompressionRuntime} summary={contextCompressionSummary} />
                 </>
               ) : isHistoryRestoring ? (
-                <div className="flex h-32 items-center justify-center" role="status" aria-live="polite" data-testid="chat-panel-history-loading">
-                  <div className="text-sm text-text-muted">
-                    {t('chat.historyLoading')}
-                  </div>
+                <div
+                  className="flex h-32 items-center justify-center"
+                  role="status"
+                  aria-live="polite"
+                  data-testid="chat-panel-history-loading"
+                >
+                  <div className="text-sm text-text-muted">{t('chat.historyLoading')}</div>
                 </div>
               ) : null}
             </>
           ) : (
-            <div className="chat-welcome" data-testid="chat-panel-welcome">
-              <img className="chat-welcome__banner" src={welcomeBanner} alt={t('chat.welcomeLogoAlt')} data-testid="chat-panel-welcome-banner" />
-              <h2 className="chat-welcome__heading" data-testid="chat-panel-welcome-heading"><WelcomeHeading /></h2>
+            <div
+              className={`chat-welcome${isGroupCreateWelcome ? ' chat-welcome--group-create' : ''}`}
+              data-testid="chat-panel-welcome"
+              data-variant={isGroupCreateWelcome ? 'group-create' : 'default'}
+            >
+              {isGroupCreateWelcome && (
+                <img
+                  className="chat-welcome__group-create-banner"
+                  src={homeBanner}
+                  alt={t('chat.groupCreateBannerAlt')}
+                  data-testid="chat-panel-welcome-group-banner"
+                />
+              )}
+              <h2 className="chat-welcome__heading" data-testid="chat-panel-welcome-heading">
+                {isGroupCreateWelcome ? <GroupCreateWelcomeHeading /> : <WelcomeHeading />}
+              </h2>
               <div className="chat-welcome__composer" data-testid="chat-panel-welcome-composer">
+                {!isGroupCreateWelcome && (
+                  <>
+                    <div
+                      ref={bubbleRef}
+                      className={`chat-welcome__banner chat-welcome__banner--bubble${!isAuthorized ? ' chat-welcome__banner--bubble--campaign' : ''}${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
+                      data-testid="chat-panel-welcome-banner-bubble"
+                      onMouseEnter={handleBubbleShow}
+                      onMouseLeave={handleBubbleLeave}
+                    >
+                      {isAuthorized ? (
+                        t('chat.welcomeBubbleText')
+                      ) : (
+                        <>
+                          <div className="chat-welcome__campaign-heading">
+                            <span>
+                              <Megaphone aria-hidden />
+                              {t('chat.freeModelsCampaign.title')}
+                            </span>
+                            <button
+                              type="button"
+                              className="chat-welcome__campaign-close"
+                              onClick={handleFreeModelsPromptClose}
+                              aria-label={t('common.close')}
+                              title={t('common.close')}
+                            >
+                              <X aria-hidden />
+                            </button>
+                          </div>
+                          <p>{t('chat.freeModelsCampaign.description')}</p>
+                          <button
+                            type="button"
+                            className="chat-welcome__campaign-claim"
+                            onClick={() => requestLogin()}
+                            data-testid="chat-panel-free-models-claim"
+                          >
+                            {t('chat.freeModelsCampaign.claim')}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    <BeeBanner
+                      className="chat-welcome__banner chat-welcome__banner--bee"
+                      altText={t('chat.welcomeLogoAlt')}
+                      onTrigger={handleBubbleShow}
+                      onLeave={handleBubbleLeave}
+                    />
+                  </>
+                )}
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
-                <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
+                <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
                 <InterruptResultBubble />
                 <InteractionSlot onSubmit={onUserAnswer} />
                 <InputArea
                   ref={inputAreaRef}
                   onSubmit={handleSendMessage}
+                  onEnsureSession={onEnsureSession}
+                  onForkSession={onForkSession}
+                  onInputIntent={onInputIntent}
                   onPersistMedia={onPersistMedia}
                   onPersistDocuments={onPersistDocuments}
+                  onDiscardMedia={onDiscardMedia}
                   onInterrupt={onInterrupt}
                   onCancel={onCancel}
                   onSwitchMode={onSwitchMode}
                   isProcessing={isProcessing}
                   autoFocusKey={autoFocusKey}
                   onNavigateToSkills={onNavigateToSkills}
-                  permissionsEnabled={permissionsEnabled}
+                  onNavigateToAgents={onNavigateToAgents}
+                  onAgentGroupIdentityChange={setTeamGroupIdentity}
+                  permissionProfile={permissionProfile}
                   onSavePermission={onSavePermission}
                   onSetGoal={onSetGoal}
+                  onPauseGoal={onPauseGoal}
+                  onResumeGoal={onResumeGoal}
+                  onRefreshGoal={onRefreshGoal}
                   onClearGoal={onClearGoal}
                 />
               </div>
+              {isGroupCreateWelcome && (
+                <div className="chat-welcome__capabilities" data-testid="chat-panel-welcome-capabilities">
+                  <span className="chat-welcome__capability">
+                    <Code2 aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.web')}
+                  </span>
+                  <span className="chat-welcome__capability">
+                    <FileText aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.document')}
+                  </span>
+                  <span className="chat-welcome__capability">
+                    <Presentation aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.slides')}
+                  </span>
+                  <span className="chat-welcome__capability">
+                    <Table2 aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.spreadsheet')}
+                  </span>
+                  <span className="chat-welcome__capability">
+                    <ImageIcon aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.imageGeneration')}
+                  </span>
+                </div>
+              )}
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
                 {suggestions.map((text) => (
                   <SuggestionCard key={text} text={text} onClick={() => handleSuggestion(text)} />
@@ -1396,9 +2139,9 @@ export function ChatPanel({
       </div>
 
       {hasConversation && (
-        <div className="chat-compose" data-testid="chat-panel-compose">
+        <div ref={composeRef} className="chat-compose" data-testid="chat-panel-compose">
           <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
-          <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
+          <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
           <InterruptResultBubble />
           <InteractionSlot onSubmit={onUserAnswer} />
           {onSetGoal && onPauseGoal && onResumeGoal && onClearGoal && (
@@ -1412,17 +2155,26 @@ export function ChatPanel({
           <InputArea
             ref={inputAreaRef}
             onSubmit={handleSendMessage}
+            onEnsureSession={onEnsureSession}
+            onForkSession={onForkSession}
+            onInputIntent={onInputIntent}
             onPersistMedia={onPersistMedia}
             onPersistDocuments={onPersistDocuments}
+            onDiscardMedia={onDiscardMedia}
             onInterrupt={onInterrupt}
             onCancel={onCancel}
             onSwitchMode={onSwitchMode}
             isProcessing={isProcessing}
             autoFocusKey={autoFocusKey}
             onNavigateToSkills={onNavigateToSkills}
-            permissionsEnabled={permissionsEnabled}
+            onNavigateToAgents={onNavigateToAgents}
+            onAgentGroupIdentityChange={setTeamGroupIdentity}
+            permissionProfile={permissionProfile}
             onSavePermission={onSavePermission}
             onSetGoal={onSetGoal}
+            onPauseGoal={onPauseGoal}
+            onResumeGoal={onResumeGoal}
+            onRefreshGoal={onRefreshGoal}
             onClearGoal={onClearGoal}
             onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
           />
@@ -1431,6 +2183,19 @@ export function ChatPanel({
       <div className="chat-ai-disclaimer" data-testid="chat-panel-ai-disclaimer">
         {t('share.aiNotice')}
       </div>
+      {agentGroupDeletedNoticeOpen && (
+        <div className="conversation-dialog" role="dialog" aria-modal="true" aria-label={t('chat.agentGroupDeletedTitle')} data-testid="agent-group-deleted-dialog">
+          <button type="button" className="conversation-dialog__backdrop" onClick={() => setAgentGroupDeletedNoticeOpen(false)} aria-label={t('common.close')} />
+          <div className="conversation-dialog__panel">
+            <button type="button" className="conversation-dialog__close" onClick={() => setAgentGroupDeletedNoticeOpen(false)} aria-label={t('common.close')}><X size={20} /></button>
+            <h2>{t('chat.agentGroupDeletedTitle')}</h2>
+            <p>{t('chat.agentGroupDeletedDescription')}</p>
+            <div className="conversation-dialog__actions">
+              <button type="button" className="is-primary" onClick={() => setAgentGroupDeletedNoticeOpen(false)}>{t('common.confirm')}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
-}
+});

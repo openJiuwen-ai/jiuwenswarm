@@ -70,9 +70,11 @@ export interface HandoffPort {
    * 请求 handoff：二次校验后调用统一顶层关闭路径，以 launcher 注入的动作退出码退出。
    * switchContent 是原始命令文本（如 "switch <agent_type>"），会在退出前以 handoff JSON
    * 输出到 stdout，供 launcher 读取并解析后发起 3rdagent.switch RPC。
+   * cmd 是可选的透传命令（来自 3rdagent.list 的 agent 条目），非空时作为独立字段
+   * 写入 handoff JSON；不拼接进 switchContent 或 parsed。
    * 成功路径不会返回（process.exit）。
    */
-  requestHandoff(target: HandoffTarget, switchContent: string): Promise<void>;
+  requestHandoff(target: HandoffTarget, switchContent: string, cmd?: string): Promise<void>;
 }
 
 /** 重新认证触发原因。 */

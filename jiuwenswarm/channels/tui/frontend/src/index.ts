@@ -14,16 +14,29 @@ import { UiLifecyclePortImpl } from "./core/supervision/ui-lifecycle.js";
 import { readSupervisionEnv } from "./core/supervision/supervised-env.js";
 import type { UiExitReason } from "./core/supervision/protocol.js";
 
-const { values } = parseArgs({
-  options: {
-    url: { type: "string", default: "ws://127.0.0.1:19001/tui" },
-    session: { type: "string" },
-    token: { type: "string", default: "" },
-    "user-id": { type: "string", default: "" },
-    help: { type: "boolean", short: "h" },
-  },
-  strict: true,
-});
+function parseCliArgs() {
+  return parseArgs({
+    options: {
+      url: { type: "string", default: "ws://127.0.0.1:19001/tui" },
+      session: { type: "string" },
+      token: { type: "string", default: "" },
+      "persist-session": { type: "boolean", default: false },
+      "user-id": { type: "string", default: "" },
+      help: { type: "boolean", short: "h" },
+    },
+    strict: true,
+  }).values;
+}
+
+let values: ReturnType<typeof parseCliArgs>;
+try {
+  values = parseCliArgs();
+} catch (err: unknown) {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`jiuwenswarm-tui: ${message}`);
+  console.error("使用 -h 或 --help 查看可用选项。");
+  process.exit(2);
+}
 
 if (values.help) {
   console.log(`jiuwenswarm-tui - Terminal CLI for JiuwenSwarm
@@ -32,6 +45,8 @@ Options:
   --url <url>       Gateway CLI WebSocket URL (default: ws://127.0.0.1:19001/tui)
   --session <id>    Resume or create a specific session by id. id 需匹配
                     [A-Za-z0-9._-]、长度 ≤ 128（作为目录名落盘，受文件系统限制）
+  --persist-session 启用会话级永续记忆。仅首次 session.create 生效，
+                    默认为关闭。
   --token <token>   Authentication token
   --user-id <id>    User identifier for the session
   -h, --help        Show this help
@@ -136,16 +151,21 @@ function buildUiLifecycle(): UiLifecyclePortImpl {
 // AppState 构造函数会接收已构造的端口；这里先用占位引用，构造后回填。
 let uiLifecycle = buildUiLifecycle();
 
-const appState = new CliPiAppState(wsClient, values.session, {
-  // 在构造 AppState 之前无法直接构造 TaskLifecyclePort/HandoffPort/ReauthPort
-  // （它们依赖 AppState 的方法）；这里先传 null，构造后回填。
-  handoffPort: null,
-  taskLifecycle: null,
-  reauthPort: null,
-  uiLifecycle,
-  isRemote,
-  remoteProjectDir,
-});
+const appState = new CliPiAppState(
+  wsClient,
+  values.session,
+  values["persist-session"],
+  {
+    // 在构造 AppState 之前无法直接构造 TaskLifecyclePort/HandoffPort/ReauthPort
+    // （它们依赖 AppState 的方法）；这里先传 null，构造后回填。
+    handoffPort: null,
+    taskLifecycle: null,
+    reauthPort: null,
+    uiLifecycle,
+    isRemote,
+    remoteProjectDir,
+  },
+);
 
 // AppState 已构造完成，现在构造依赖 AppState 的端口并回填。
 const taskLifecycle = new TaskLifecyclePortImpl({

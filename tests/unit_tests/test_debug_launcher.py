@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """Unit tests for ``jiuwenswarm-start debug`` and ``jiuwenswarm-stop``."""
 
@@ -37,6 +37,8 @@ def debug_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     monkeypatch.setattr(debug_launcher, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(debug_launcher, "WEB_DEV_DIR", frontend)
+    # Keep the developer's real config.yaml out of the uv sync extras.
+    monkeypatch.setattr(debug_launcher, "get_config_file", lambda: tmp_path / "config.yaml")
     return tmp_path
 
 
@@ -444,6 +446,53 @@ def test_run_debug_skip_build_omits_npm_steps(debug_root: Path):
     assert read_debug_state() is not None
 
 
+def test_run_debug_syncs_extras_for_enabled_external_cli_agents(debug_root: Path):
+    """Enabled external CLI agents keep their SDK extras across uv sync."""
+    (debug_root / "config.yaml").write_text(
+        "modes:\n"
+        "  team:\n"
+        "    jiuwen_team:\n"
+        "      external_cli_agents:\n"
+        "        - cli_agent: codex\n"
+        "          cli_path: /opt/homebrew/bin/codex\n"
+        "        - claude\n"
+        "    other_team:\n"
+        "      external_cli_agents:\n"
+        "        - cli_agent: claude\n",
+        encoding="utf-8",
+    )
+    (debug_launcher.WEB_DEV_DIR / "dist").mkdir()
+    (debug_launcher.WEB_DEV_DIR / "dist" / "index.html").write_text("x", encoding="utf-8")
+
+    patches, calls = _patch_pipeline(run_codes=[0])
+    _enter(patches)
+    try:
+        assert run_debug(skip_build=True) == 0
+    finally:
+        _exit(patches)
+
+    assert calls[0][0] == ["/usr/bin/uv", "sync", "--extra", "claude", "--extra", "codex"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "modes:\n  team:\n    jiuwen_team:\n      display_name: team\n",
+        "modes:\n  team:\n    jiuwen_team:\n      external_cli_agents:\n        - cli_agent: unknown\n",
+        "modes: [",
+        "- not a mapping\n",
+    ],
+)
+def test_resolve_sync_extras_ignores_configs_without_known_agents(debug_root: Path, content: str):
+    (debug_root / "config.yaml").write_text(content, encoding="utf-8")
+
+    assert debug_launcher._resolve_sync_extras() == []
+
+
+def test_resolve_sync_extras_without_config_file(debug_root: Path):
+    assert debug_launcher._resolve_sync_extras() == []
+
+
 def test_run_debug_skip_build_requires_existing_dist(debug_root: Path):
     """Skipping the build without a dist would start a web server that dies."""
     patches, calls = _patch_pipeline(run_codes=[0])
@@ -551,7 +600,10 @@ def test_run_debug_clears_stale_state(debug_root: Path):
 
 
 def test_stop_without_state_is_noop(debug_root: Path):
-    assert stop_debug_service() == 0
+    with patch.object(debug_launcher, "_stop_resident_worker") as worker_stopper:
+        assert stop_debug_service() == 0
+
+    worker_stopper.assert_not_called()
 
 
 def test_stop_terminates_recorded_process(debug_root: Path):
@@ -559,19 +611,32 @@ def test_stop_terminates_recorded_process(debug_root: Path):
     alive = iter([True, False])
     with patch.object(debug_launcher, "is_process_alive", side_effect=lambda _pid: next(alive)):
         with patch.object(debug_launcher, "_stop_process_tree", return_value=True) as stopper:
-            assert stop_debug_service(timeout=1.0) == 0
+            with patch.object(debug_launcher, "_stop_resident_worker", return_value=True) as worker_stopper:
+                assert stop_debug_service(timeout=1.0) == 0
 
     stopper.assert_called_once_with(5555, timeout=1.0)
+    worker_stopper.assert_called_once_with(timeout=1.0)
     assert read_debug_state() is None
+
+
+def test_stop_fails_when_resident_worker_survives(debug_root: Path):
+    write_debug_state(_state(pid=5555))
+    alive = iter([True, False])
+    with patch.object(debug_launcher, "is_process_alive", side_effect=lambda _pid: next(alive)):
+        with patch.object(debug_launcher, "_stop_process_tree", return_value=True):
+            with patch.object(debug_launcher, "_stop_resident_worker", return_value=False):
+                assert stop_debug_service(timeout=1.0) == 1
 
 
 def test_stop_clears_state_when_already_dead(debug_root: Path):
     write_debug_state(_state(pid=5555))
     with patch.object(debug_launcher, "is_process_alive", return_value=False):
         with patch.object(debug_launcher, "_stop_process_tree") as stopper:
-            assert stop_debug_service() == 0
+            with patch.object(debug_launcher, "_stop_resident_worker", return_value=True) as worker_stopper:
+                assert stop_debug_service() == 0
 
     stopper.assert_not_called()
+    worker_stopper.assert_called_once()
     assert read_debug_state() is None
 
 
@@ -579,9 +644,62 @@ def test_stop_keeps_state_when_process_survives(debug_root: Path):
     write_debug_state(_state(pid=5555))
     with patch.object(debug_launcher, "is_process_alive", return_value=True):
         with patch.object(debug_launcher, "_stop_process_tree", return_value=False):
-            assert stop_debug_service() == 1
+            with patch.object(debug_launcher, "_stop_resident_worker") as worker_stopper:
+                assert stop_debug_service() == 1
 
+    worker_stopper.assert_not_called()
     assert read_debug_state().pid == 5555
+
+
+# --------------------------------------------------------------------------
+# Resident runtime worker teardown
+# --------------------------------------------------------------------------
+
+
+def _patch_worker_shutdown(result: int | None | Exception):
+    async def _fake(_socket_path: str) -> int | None:
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    return patch.object(debug_launcher, "request_resident_worker_shutdown", side_effect=_fake)
+
+
+def test_stop_resident_worker_noop_without_worker():
+    with _patch_worker_shutdown(None):
+        with patch.object(debug_launcher, "stop_process_by_pid") as killer:
+            assert debug_launcher._stop_resident_worker(timeout=1.0) is True
+
+    killer.assert_not_called()
+
+
+def test_stop_resident_worker_waits_for_graceful_exit():
+    alive = iter([True, False])
+    with _patch_worker_shutdown(7777):
+        with patch.object(debug_launcher, "is_process_alive", side_effect=lambda _pid: next(alive)):
+            with patch.object(debug_launcher, "stop_process_by_pid") as killer:
+                assert debug_launcher._stop_resident_worker(timeout=5.0) is True
+
+    killer.assert_not_called()
+
+
+def test_stop_resident_worker_kills_after_timeout():
+    killed: list[int] = []
+    with _patch_worker_shutdown(7777):
+        with patch.object(debug_launcher, "is_process_alive", side_effect=lambda pid: pid not in killed):
+            with patch.object(
+                debug_launcher,
+                "stop_process_by_pid",
+                side_effect=lambda pid, timeout: killed.append(pid) or True,
+            ):
+                assert debug_launcher._stop_resident_worker(timeout=0.0) is True
+
+    assert killed == [7777]
+
+
+def test_stop_resident_worker_reports_unreachable_worker():
+    with _patch_worker_shutdown(RuntimeError("expected worker hello")):
+        assert debug_launcher._stop_resident_worker(timeout=1.0) is False
 
 
 # --------------------------------------------------------------------------

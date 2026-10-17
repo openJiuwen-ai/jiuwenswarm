@@ -12,6 +12,7 @@ import jiuwenswarm.common.utils as utils
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
 
 AGENT_TEMPLATES = "agent_templates"
+AGENT_GROUPS = "agent_groups"
 PLUGIN_PACKAGES = "plugin_packages"
 
 
@@ -20,7 +21,9 @@ def extension_workspace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path
     """Isolate equipment workspace and hide the real resources shelf."""
     monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / ".jiuwenswarm")
     monkeypatch.setattr(catalog, "get_equipment_resources_agent_templates_dir", lambda: None)
+    monkeypatch.setattr(catalog, "get_equipment_resources_agent_groups_dir", lambda: None)
     monkeypatch.setattr(catalog, "get_equipment_resources_plugin_packages_dir", lambda: None)
+    catalog._clear_hub_preview_archives()
     return utils.get_agent_workspace_dir()
 
 
@@ -37,13 +40,13 @@ def point_resources_shelf(
         pkg = root / AGENT_TEMPLATES / name
         pkg.mkdir(parents=True, exist_ok=True)
         (pkg / "manifest.json").write_text(
-            json.dumps({"packageType": "agent_template"}), encoding="utf-8"
+            json.dumps({"package_type": "agent_template"}), encoding="utf-8"
         )
     for name in plugins or []:
         pkg = root / PLUGIN_PACKAGES / name
         pkg.mkdir(parents=True, exist_ok=True)
         (pkg / "manifest.json").write_text(
-            json.dumps({"packageType": "plugin"}), encoding="utf-8"
+            json.dumps({"package_type": "plugin"}), encoding="utf-8"
         )
     at = root / AGENT_TEMPLATES
     pp = root / PLUGIN_PACKAGES
@@ -74,7 +77,7 @@ def seed_package(
     package_type = "agent_template" if kind == AGENT_TEMPLATES else "plugin"
     pkg = ws / "plugins" / kind / under / package_id
     pkg.mkdir(parents=True, exist_ok=True)
-    manifest: dict = {"packageType": package_type}
+    manifest: dict = {"package_type": package_type}
     if extra_manifest:
         manifest.update(extra_manifest)
     if connectors:
@@ -101,7 +104,7 @@ def create_package(kind: str, package_id: str) -> None:
         catalog.create_agent_template(
             {
                 "id": package_id,
-                "name": "N",
+                "name": package_id,
                 "description": "D",
                 "persona": "P",
                 "skills": [],

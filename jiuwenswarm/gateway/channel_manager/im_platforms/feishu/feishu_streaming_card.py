@@ -52,7 +52,7 @@ class FeishuCardKitClient:
             },
             "body": {
                 "elements": [
-                    {"tag": "markdown", "element_id": "content", "content": ""}
+                    {"tag": "markdown", "element_id": "content", "content": "正在生成回复…"}
                 ]
             },
         }

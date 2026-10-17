@@ -1,5 +1,6 @@
 export const CODE_LANGUAGE_EXTENSIONS = [
   'bash',
+  'bib',
   'c',
   'cc',
   'cjs',
@@ -23,7 +24,9 @@ export const CODE_LANGUAGE_EXTENSIONS = [
   'rs',
   'sh',
   'sql',
+  'sty',
   'swift',
+  'tex',
   'toml',
   'ts',
   'tsx',

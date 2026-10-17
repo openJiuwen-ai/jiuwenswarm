@@ -1,4 +1,4 @@
-export type FileIconType = 'video' | 'image' | 'document' | 'audio' | 'archive' | 'code' | 'html' | 'pdf' | 'ppt' | 'word' | 'xls';
+export type FileIconType = 'video' | 'image' | 'document' | 'audio' | 'archive' | 'code' | 'html' | 'pdf' | 'ppt' | 'word' | 'xls' | 'md' | 'python' | 'folder' | 'structure' | 'unknown';
 
 const EXTENSION_GROUPS: ReadonlyArray<readonly [FileIconType, readonly string[]]> = [
   ['pdf', ['.pdf']],
@@ -10,6 +10,7 @@ const EXTENSION_GROUPS: ReadonlyArray<readonly [FileIconType, readonly string[]]
   ['audio', ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma']],
   ['video', ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv']],
   ['archive', ['.zip', '.rar', '.7z', '.tar', '.gz', '.tgz', '.bz2']],
+  ['python', ['.py', '.pyw', '.ipynb']],
   [
     'code',
     [
@@ -30,10 +31,8 @@ const EXTENSION_GROUPS: ReadonlyArray<readonly [FileIconType, readonly string[]]
       '.sh',
       '.bash',
       '.ps1',
-      '.py',
       '.css',
       '.json',
-      '.ipynb',
       '.xml',
       '.yaml',
       '.yml',
@@ -44,7 +43,8 @@ const EXTENSION_GROUPS: ReadonlyArray<readonly [FileIconType, readonly string[]]
       '.env',
     ],
   ],
-  ['document', ['.txt', '.md', '.markdown', '.log']],
+  ['md', ['.md', '.markdown']],
+  ['document', ['.txt', '.log']],
 ];
 
 const COMPOUND_EXTENSION_TO_TYPE: Readonly<Record<string, FileIconType>> = Object.freeze({
@@ -78,7 +78,7 @@ export function resolveFileIconType(fileName: string): FileIconType {
   }
 
   const dotIndex = normalizedName.lastIndexOf('.');
-  if (dotIndex < 0) return 'document';
+  if (dotIndex < 0) return 'unknown';
 
-  return EXTENSION_TO_TYPE[normalizedName.slice(dotIndex)] ?? 'document';
+  return EXTENSION_TO_TYPE[normalizedName.slice(dotIndex)] ?? 'unknown';
 }

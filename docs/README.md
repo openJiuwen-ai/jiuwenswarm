@@ -15,7 +15,7 @@
 本文档汇总了 JiuwenSwarm 的常用使用说明、功能文档与开发实践，内容按照使用流程和功能类型划分为 **安装**、**基础使用**、**高阶操作**、**附录** 和 **开发实践** 五个部分。
 
 * **安装**：面向首次使用 JiuwenSwarm 的用户，包含基础安装、环境准备、TUI 模式安装以及快速启动相关说明。
-* **基础使用**：介绍日常使用中常见的功能入口，包括页面概览、对话、智能体、会话、定时任务、技能、频道、配置信息、浏览器服务、日志和 MCP 服务设置等内容。
+* **基础使用**：介绍日常使用中常见的功能入口，包括页面概览、对话、设计、智能体、会话、定时任务、技能、频道、配置信息、浏览器服务、日志和 MCP 服务设置等内容。
 * **高阶操作**：介绍系统的进阶能力与扩展机制，包括上下文压缩、Skill 自演进、工具权限与安全防护、E2A / A2A 协议、多智能体协作、记忆系统和 TUI 模式等内容。
 * **附录**：提供与项目使用和维护相关的补充资料，包括打包 EXE、Windows 自动更新设计和开发者文档。
 * **开发实践**：整理基于 JiuwenSwarm 构建的实际 Agent 应用案例，帮助开发者参考已有实践进行二次开发和能力扩展。
@@ -66,6 +66,11 @@
       <td width="50%">Web 对话入口，支持消息发送、新建会话以及规划 / 性能 / 集群模式切换。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>设计</strong></td>
+      <td width="28%"><a href="zh/设计.md">设计</a></td>
+      <td width="50%">面向视频、图片创作的工作流画布：一句话生成简报、分镜、关键帧和视频片段，支持逐节点修改与重跑。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>任务规划</strong></td>
       <td width="28%"><a href="zh/任务规划.md">任务规划</a></td>
       <td width="50%">任务拆解、规划与执行管理，支持 TodoToolkit 工具进行任务跟踪。</td>
@@ -86,6 +91,11 @@
       <td width="50%">受控通道指令与命令行操作指南。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>进程式 CLI 会话查询</strong></td>
+      <td width="28%"><a href="zh/进程式CLI会话查询.md">进程式 CLI 会话查询</a></td>
+      <td width="50%">普通终端只读查询完整会话 ID、搜索翻页、获取最近会话与跨进程续接。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>定时任务</strong></td>
       <td width="28%"><a href="zh/定时任务.md">定时任务</a></td>
       <td width="50%">定时触发任务的配置、运行与管理。</td>
@@ -93,7 +103,7 @@
     <tr>
       <td width="22%"><strong>技能</strong></td>
       <td width="28%"><a href="zh/技能.md">技能</a></td>
-      <td width="50%">智能体技能挂载、调用与扩展机制。</td>
+      <td width="50%">智能体技能挂载、调用与扩展机制；含 Server / Client 分离部署的技能同步接口。</td>
     </tr>
     <tr>
       <td width="22%"><strong>技能交响乐</strong></td>
@@ -111,9 +121,29 @@
       <td width="50%">系统参数、大模型 API、运行环境相关配置。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>进程式 CLI 模型配置</strong></td>
+      <td width="28%"><a href="zh/Process_CLI_Model.md">非交互命令的模型连接配置</a></td>
+      <td width="50%">通过 CMD 指定本次任务的模型、API 地址、密钥环境变量与协议提供方。</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>IDE 插件</strong></td>
+      <td width="28%"><a href="zh/ide/jetbrains/JetBrains插件.md">JetBrains</a> / <a href="zh/ide/vscode/VSCode插件.md">VS Code</a>（<a href="zh/ide/jetbrains/JetBrains插件指南.md">指南</a> · <a href="zh/ide/vscode/VSCode插件指南.md">指南</a>）</td>
+      <td width="50%">在 JetBrains IDE 与 VS Code 中嵌入 JiuwenSwarm 智能体，提供原生聊天面板。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>浏览器服务</strong></td>
       <td width="28%"><a href="zh/浏览器.md">浏览器</a></td>
       <td width="50%">网页访问、信息获取与浏览器工具调用能力。</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>桌面自动化</strong></td>
+      <td width="28%"><a href="zh/桌面自动化.md">桌面自动化（cua_agent）</a></td>
+      <td width="50%">通过截图与真实鼠标键盘输入操作本机原生应用窗口。</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>浏览器扩展</strong></td>
+      <td width="28%"><a href="zh/browser-extension/浏览器扩展.md">浏览器扩展</a> / <a href="zh/browser-extension/浏览器扩展指南.md">指南</a> / <a href="zh/browser-extension/浏览器扩展安装.md">安装</a></td>
+      <td width="50%">一款 Chromium 扩展，将 JiuwenSwarm 智能体带到你阅读的任意页面旁。</td>
     </tr>
     <tr>
       <td width="22%"><strong>日志</strong></td>
@@ -154,6 +184,11 @@
       <td width="50%">技能迭代、自我优化与能力沉淀机制。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>TTSE 双轨自演进</strong></td>
+      <td width="28%"><a href="zh/TTSE.md">TTSE</a></td>
+      <td width="50%">FACT/TIP 双轨经验归纳与 consult，独立于 Skill 正文演进。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>工具权限与安全</strong></td>
       <td width="28%"><a href="zh/工具权限与安全防护.md">工具权限与安全防护</a></td>
       <td width="50%">系统命令、文件操作、工具调用中的安全拦截与权限管控。</td>
@@ -170,18 +205,18 @@
     </tr>
     <tr>
       <td width="22%"><strong>Agent Team</strong></td>
-      <td width="28%"><a href="zh/AgentTeam.md">Agent Teams</a> / <a href="zh/SwarmSkills.md">Swarm Skills</a> / <a href="zh/分布式Team.md">分布式 Team</a></td>
+      <td width="28%"><a href="zh/AgentTeam.md">Agent Teams</a> / <a href="zh/TeamOrganization使用指南.md">Team Organization</a> / <a href="zh/SwarmSkills.md">Swarm Skills</a> / <a href="zh/分布式Team.md">分布式 Team</a></td>
       <td width="50%">支持多智能体团队协作、团队级技能编排与复用，以及多进程分布式 Team 的运行模式。</td>
     </tr>
     <tr>
       <td width="22%"><strong>记忆</strong></td>
-      <td width="28%"><a href="zh/记忆.md">记忆</a> / <a href="zh/自动记忆.md">自动记忆</a> / <a href="zh/编码记忆.md">编码记忆</a> / <a href="zh/经验记忆.md">经验记忆</a></td>
-      <td width="50%">支持长短期记忆管理、对话后自动提取记忆、编码场景下的专属记忆沉淀，以及任务经验的检索、复用与持续积累。</td>
+      <td width="28%"><a href="zh/记忆.md">记忆</a> / <a href="zh/自动记忆.md">自动记忆</a> / <a href="zh/编码记忆.md">编码记忆</a> / <a href="zh/经验记忆.md">经验记忆</a> / <a href="zh/JiuwenMemory-SDK接入.md">JiuwenMemory SDK</a></td>
+      <td width="50%">支持长短期记忆管理、对话后自动提取记忆、编码场景下的专属记忆沉淀，任务经验的检索、复用与持续积累，以及以 SDK 模式接入 agent-memory 记忆引擎。</td>
     </tr>
     <tr>
       <td width="22%"><strong>TUI 模式</strong></td>
-      <td width="28%"><a href="zh/SLASH_COMMAND_ARCHITECTURE.md">Slash 命令架构</a> / <a href="zh/Slash命令表.md">Slash 命令速查</a> / <a href="zh/模式系统.md">模式系统</a> / <a href="zh/TUI使用SwarmFlow指南.md">SwarmFlow（TUI）</a></td>
-      <td width="50%">支持 TUI 终端中的 Slash 命令体系、常用命令速查、PLAN / AGENT / CODE / TEAM 模式切换，以及 SwarmFlow 开关、运行树查看与 HITL 回复。</td>
+      <td width="28%"><a href="zh/SLASH_COMMAND_ARCHITECTURE.md">Slash 命令架构</a> / <a href="zh/Slash命令表.md">Slash 命令速查</a> / <a href="zh/模式系统.md">模式系统</a> / <a href="zh/TUI使用SwarmFlow指南.md">SwarmFlow（TUI）</a> / <a href="zh/自动修复PR.md">自动修复 PR</a></td>
+      <td width="50%">支持 TUI 终端中的 Slash 命令体系、常用命令速查、PLAN / AGENT / CODE / TEAM 模式切换，SwarmFlow 开关、运行树查看与 HITL 回复，以及 <code>/autofix-pr</code> 自动修复 PR 直至检查通过。</td>
     </tr>
     <tr>
       <th colspan="3" align="left" bgcolor="#f3f4f6"><h3>📄 附录</h3></th>

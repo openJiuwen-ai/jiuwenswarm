@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -120,10 +121,12 @@ async def test_concurrent_get_agent_creates_one_cached_root() -> None:
 
 
 @pytest.mark.asyncio
-async def test_same_key_creation_waits_for_old_root_cleanup() -> None:
+async def test_same_key_creation_waits_for_old_root_cleanup(tmp_path) -> None:
     manager = _SlowCreateAgentManager()
     old_agent = _BlockingRootCleanupAgent()
-    cache_key = "code:normal:/tmp/shared-project"
+    project_dir = str(tmp_path / "shared-project")
+    project_key = os.path.normcase(os.path.abspath(project_dir)).casefold()
+    cache_key = f"code:normal:{project_key}"
     manager.agents["tui"] = {cache_key: old_agent}
 
     cleanup_task = asyncio.create_task(
@@ -134,7 +137,7 @@ async def test_same_key_creation_waits_for_old_root_cleanup() -> None:
     )
     await old_agent.cleanup_started.wait()
     create_task = asyncio.create_task(
-        manager.get_agent("tui", "code", "/tmp/shared-project", "normal")
+        manager.get_agent("tui", "code", project_dir, "normal")
     )
     await asyncio.sleep(0)
 
@@ -306,3 +309,48 @@ async def test_cleanup_session_runtime_rejects_retained_session_state() -> None:
             channel_id="tui",
             session_id="tui_busy_session",
         )
+
+
+@pytest.mark.asyncio
+async def test_release_subagent_runtime_uses_existing_agent_adapter() -> None:
+    calls: list[tuple[str, str]] = []
+
+    class Adapter:
+        async def release_subagent_runtime_for_session(
+            self,
+            session_id: str,
+            *,
+            reason: str,
+        ) -> None:
+            calls.append((session_id, reason))
+
+        async def apply_sandbox_runtime_patch(self) -> None:
+            return None
+
+    class Agent:
+        def __init__(self) -> None:
+            self._adapter = Adapter()
+
+    manager = AgentManager()
+    manager.agents["web"] = {"agent::": Agent()}
+
+    released = await manager.release_subagent_runtime_for_session(
+        channel_id="web",
+        session_id="delete-session",
+        reason="session_deleted",
+    )
+
+    assert released is True
+    assert calls == [("delete-session", "session_deleted")]
+
+
+@pytest.mark.asyncio
+async def test_release_subagent_runtime_is_noop_without_existing_adapter() -> None:
+    manager = AgentManager()
+
+    released = await manager.release_subagent_runtime_for_session(
+        channel_id="web",
+        session_id="missing-session",
+    )
+
+    assert released is False

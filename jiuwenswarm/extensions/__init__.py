@@ -1,20 +1,48 @@
-from jiuwenswarm.extensions.loader import ExtensionLoader
-from jiuwenswarm.extensions.manager import ExtensionManager
-from jiuwenswarm.extensions.registry import ExtensionRegistry
-from jiuwenswarm.extensions.sdk.agent_server_client import AgentServerClientExtension
-from jiuwenswarm.extensions.sdk.base import BaseExtension
-from jiuwenswarm.extensions.sdk.crypto_utility import CryptoUtility
-from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
-from jiuwenswarm.extensions.types import ExtensionConfig, ExtensionMetadata
+"""Extension public surface with transport adapters loaded lazily."""
 
-__all__ = [
-    "BaseExtension",
-    "AgentServerClientExtension",
-    "CryptoUtility",
-    "ThirdAgentExtension",
-    "ExtensionMetadata",
-    "ExtensionConfig",
-    "ExtensionRegistry",
-    "ExtensionLoader",
-    "ExtensionManager",
-]
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+_EXPORTS = {
+    "ExtensionLoader": ("jiuwenswarm.extensions.loader", "ExtensionLoader"),
+    "ExtensionManager": ("jiuwenswarm.extensions.manager", "ExtensionManager"),
+    "ExtensionRegistry": ("jiuwenswarm.extensions.registry", "ExtensionRegistry"),
+    "AgentServerClientExtension": (
+        "jiuwenswarm.extensions.sdk.agent_server_client",
+        "AgentServerClientExtension",
+    ),
+    "ApplicationPluginExtension": (
+        "jiuwenswarm.extensions.sdk.application_plugin",
+        "ApplicationPluginExtension",
+    ),
+    "BaseExtension": ("jiuwenswarm.extensions.sdk.base", "BaseExtension"),
+    "CryptoUtility": (
+        "jiuwenswarm.extensions.sdk.crypto_utility",
+        "CryptoUtility",
+    ),
+    "ThirdAgentExtension": (
+        "jiuwenswarm.extensions.sdk.third_agent",
+        "ThirdAgentExtension",
+    ),
+    "ExtensionConfig": ("jiuwenswarm.extensions.types", "ExtensionConfig"),
+    "ExtensionMetadata": ("jiuwenswarm.extensions.types", "ExtensionMetadata"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    target = _EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(name)
+    module_name, attribute = target
+    value = getattr(import_module(module_name), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXPORTS))
+
+
+__all__ = list(_EXPORTS)

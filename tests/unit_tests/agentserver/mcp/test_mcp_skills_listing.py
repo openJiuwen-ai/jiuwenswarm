@@ -15,9 +15,9 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from jiuwenswarm.server.runtime.mcp import registry
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
 
 def _mk_pkg(workspace: Path, name: str, *, cli: dict | None = None, mcp: dict | None = None, skills: dict[str, str] | None = None) -> Path:
@@ -34,6 +34,10 @@ def _mk_pkg(workspace: Path, name: str, *, cli: dict | None = None, mcp: dict | 
             sp = sdir / sname
             sp.mkdir(parents=True, exist_ok=True)
             (sp / "SKILL.md").write_text(body, encoding="utf-8")
+    if cli is not None:
+        write_manifest(pkg, "cli", credentials_type="cli-oauth", skills=bool(skills))
+    else:
+        write_manifest(pkg, "remote-mcp", skills=bool(skills))
     return pkg
 
 

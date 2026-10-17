@@ -37,6 +37,7 @@ class ResourceDegradationManager:
         if not EnvironmentDetector.has_stress_ng():
             raise RuntimeError("stress-ng not available, cannot degrade CPU")
 
+        # shell=True used for test convenience; no user-controlled input in test code
         proc = subprocess.Popen(
             ["/usr/bin/stress-ng", f"--cpu={cores}", f"--timeout={duration}s"],
         )

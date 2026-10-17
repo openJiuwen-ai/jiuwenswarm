@@ -19,10 +19,27 @@ DeepAdapter（normal）和 CodeAdapter（code）。
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from jiuwenswarm.common.work_mode import SUPPORTED_WORK_MODES
+from jiuwenswarm.common.work_mode import EXECUTION_WORK_MODES
+
+logger = logging.getLogger(__name__)
+
+# ── 新三段命名：8 种 canonical 模式 ──
+# 提前到这里定义，因为下面的 WEB_COMPOSABLE_MODES 需要引用其中的两个
+# agent.work.* 串（P6.4：让组合分支接住 Web 前端 wireMode.ts 产出的新串）。
+NEW_AGENT_WORK_NORMAL = "agent.work.normal"
+NEW_AGENT_WORK_PLAN = "agent.work.plan"
+NEW_AGENT_CODE_NORMAL = "agent.code.normal"
+NEW_AGENT_CODE_PLAN = "agent.code.plan"
+NEW_TEAM_WORK_NORMAL = "team.work.normal"
+NEW_TEAM_WORK_PLAN = "team.work.plan"
+NEW_TEAM_CODE_NORMAL = "team.code.normal"
+NEW_TEAM_CODE_PLAN = "team.code.plan"
+# Designer 团队模式：design 画布会话专属，environment 段=design 直通 team manager。
+NEW_TEAM_DESIGN = "team.design"
 
 # Web 组合模式覆盖单 agent 和 Team 的 work/code profile。其余取值一律按历史完整
 # 模式处理。Team 不支持独立的 Web Plan，但 ``team + code`` 必须进入与 TUI
@@ -30,8 +47,18 @@ from jiuwenswarm.common.work_mode import SUPPORTED_WORK_MODES
 WEB_BASE_AGENT: str = "agent"
 WEB_PLAN_AGENT: str = "agent.plan"
 
+# P6.4：把 Web 前端 wireMode.ts 产出的新三段命名串（agent.work.normal /
+# agent.work.plan）也纳入 Web 组合分支，使 resolve_request_mode 的组合路径
+# 接住新串而不落 legacy。``team`` / ``agent`` / ``agent.plan`` 等旧串保留
+# 作历史兼容。
 WEB_COMPOSABLE_MODES: frozenset[str] = frozenset(
-    {WEB_BASE_AGENT, WEB_PLAN_AGENT, "team"}
+    {
+        WEB_BASE_AGENT,
+        WEB_PLAN_AGENT,
+        "team",
+        NEW_AGENT_WORK_NORMAL,
+        NEW_AGENT_WORK_PLAN,
+    }
 )
 
 # Team plan 的规范模式与兼容别名。
@@ -41,16 +68,81 @@ MODE_ALIASES: dict[str, str] = {
     "team.plan": TEAM_PLAN_NORMAL_MODE,
     # TUI 的用户-facing 名称；运行时沿用历史 canonical ID。
     "team.code": "code.team",
+    # issue #4168: shorthand names (full name minus ".normal"). The TUI
+    # translates them before sending; direct chat.send callers do not.
+    "team.work": NEW_TEAM_WORK_NORMAL,
+    "team.normal": NEW_TEAM_WORK_NORMAL,
+    "agent.work": NEW_AGENT_WORK_NORMAL,
+    "agent.code": NEW_AGENT_CODE_NORMAL,
+}
+
+NEW_CANONICAL_MODES: frozenset[str] = frozenset(
+    {
+        NEW_AGENT_WORK_NORMAL,
+        NEW_AGENT_WORK_PLAN,
+        NEW_AGENT_CODE_NORMAL,
+        NEW_AGENT_CODE_PLAN,
+        NEW_TEAM_WORK_NORMAL,
+        NEW_TEAM_WORK_PLAN,
+        NEW_TEAM_CODE_NORMAL,
+        NEW_TEAM_CODE_PLAN,
+        NEW_TEAM_DESIGN,
+    }
+)
+
+# 旧 canonical → 新 canonical 的静默映射表。
+DEPRECATION_MAP: dict[str, str] = {
+    "agent": NEW_AGENT_WORK_NORMAL,
+    "agent.plan": NEW_AGENT_WORK_PLAN,
+    "agent.fast": NEW_AGENT_WORK_NORMAL,  # 历史已归一 agent
+    "code": NEW_AGENT_CODE_NORMAL,  # 裸 code 语义等价旧 code.normal
+    "code.normal": NEW_AGENT_CODE_NORMAL,
+    "code.plan": NEW_AGENT_CODE_PLAN,
+    "code.team": NEW_TEAM_CODE_NORMAL,
+    "team": NEW_TEAM_WORK_NORMAL,
+    TEAM_PLAN_NORMAL_MODE: NEW_TEAM_WORK_PLAN,  # team.plan.normal
+    TEAM_PLAN_CODE_MODE: NEW_TEAM_CODE_PLAN,  # team.plan.code
 }
 
 # 所有表示"集群"的 canonical 模式。
 TEAM_CANONICAL_MODES: frozenset[str] = frozenset(
-    {"team", TEAM_PLAN_NORMAL_MODE, "code.team", TEAM_PLAN_CODE_MODE}
+    {
+        "team",
+        TEAM_PLAN_NORMAL_MODE,
+        "code.team",
+        TEAM_PLAN_CODE_MODE,
+        NEW_TEAM_WORK_NORMAL,
+        NEW_TEAM_WORK_PLAN,
+        NEW_TEAM_CODE_NORMAL,
+        NEW_TEAM_CODE_PLAN,
+        NEW_TEAM_DESIGN,
+    }
+)
+
+# Modes whose traces are eligible for the first-phase single-Agent trajectory
+# UI. This is deliberately an allowlist: future modes must opt in explicitly
+# instead of becoming readable merely because they are not known Team modes.
+SINGLE_AGENT_CANONICAL_MODES: frozenset[str] = frozenset(
+    {
+        NEW_AGENT_WORK_NORMAL,
+        NEW_AGENT_WORK_PLAN,
+        NEW_AGENT_CODE_NORMAL,
+        NEW_AGENT_CODE_PLAN,
+    }
 )
 
 # 所有表示"正处于 plan"的 canonical 模式。
 PLAN_CANONICAL_MODES: frozenset[str] = frozenset(
-    {"agent.plan", "code.plan", TEAM_PLAN_NORMAL_MODE, TEAM_PLAN_CODE_MODE}
+    {
+        "agent.plan",
+        "code.plan",
+        TEAM_PLAN_NORMAL_MODE,
+        TEAM_PLAN_CODE_MODE,
+        NEW_AGENT_WORK_PLAN,
+        NEW_AGENT_CODE_PLAN,
+        NEW_TEAM_WORK_PLAN,
+        NEW_TEAM_CODE_PLAN,
+    }
 )
 
 # canonical plan 模式退出 plan 后应回到的普通模式。
@@ -59,9 +151,16 @@ _PLAN_EXIT_MODES: dict[str, str] = {
     "code.plan": "code.normal",
     TEAM_PLAN_NORMAL_MODE: "team",
     TEAM_PLAN_CODE_MODE: "code.team",
+    NEW_AGENT_WORK_PLAN: NEW_AGENT_WORK_NORMAL,
+    NEW_AGENT_CODE_PLAN: NEW_AGENT_CODE_NORMAL,
+    NEW_TEAM_WORK_PLAN: NEW_TEAM_WORK_NORMAL,
+    NEW_TEAM_CODE_PLAN: NEW_TEAM_CODE_NORMAL,
 }
 
 # (mode, work_mode) -> (manager_mode, sub_mode, canonical_mode)
+# P6.4：加入 agent.work.normal / agent.work.plan 两个新串的 work profile 项。
+# code profile 不在 Web 组合表里 —— 这两个新串已经自带 work profile，前端
+# wireMode.ts 只在 plan on 时产出 agent.work.plan，code 系走 legacy 路径。
 _WEB_MODE_TABLE: dict[tuple[str, str], tuple[str, str | None, str]] = {
     (WEB_BASE_AGENT, "work"): ("agent", None, "agent"),
     (WEB_PLAN_AGENT, "work"): ("agent", "plan", "agent.plan"),
@@ -69,6 +168,27 @@ _WEB_MODE_TABLE: dict[tuple[str, str], tuple[str, str | None, str]] = {
     (WEB_PLAN_AGENT, "code"): ("code", "plan", "code.plan"),
     ("team", "work"): ("team", None, "team"),
     ("team", "code"): ("code", "team", "code.team"),
+    (NEW_AGENT_WORK_NORMAL, "work"): ("agent", None, NEW_AGENT_WORK_NORMAL),
+    (NEW_AGENT_WORK_PLAN, "work"): ("agent", "plan", NEW_AGENT_WORK_PLAN),
+}
+
+# 新三段命名 canonical → 按 ``.`` 直接切分的原始三段 ``(role, environment, state)``。
+# 不再手写 manager/sub 等派生语义（那样写容易与实际串语义漂移），三段就是串本身
+# 的分割，manager/sub 由 :func:`resolve_new_canonical_mode` 从三段按命名规则推导：
+#   agent.work.normal ↔ ("agent", "work", "normal")   team.work.normal ↔ ("team", "work", "normal")
+#   agent.work.plan   ↔ ("agent", "work", "plan")     team.work.plan   ↔ ("team", "work", "plan")
+#   agent.code.normal ↔ ("agent", "code", "normal")   team.code.normal ↔ ("team", "code", "normal")
+#   agent.code.plan   ↔ ("agent", "code", "plan")     team.code.plan   ↔ ("team", "code", "plan")
+NEW_CANONICAL_MODE_RESOLUTION: dict[str, tuple[str, str, str]] = {
+    NEW_AGENT_WORK_NORMAL: ("agent", "work", "normal"),
+    NEW_AGENT_WORK_PLAN: ("agent", "work", "plan"),
+    NEW_AGENT_CODE_NORMAL: ("agent", "code", "normal"),
+    NEW_AGENT_CODE_PLAN: ("agent", "code", "plan"),
+    NEW_TEAM_WORK_NORMAL: ("team", "work", "normal"),
+    NEW_TEAM_WORK_PLAN: ("team", "work", "plan"),
+    NEW_TEAM_CODE_NORMAL: ("team", "code", "normal"),
+    NEW_TEAM_CODE_PLAN: ("team", "code", "plan"),
+    NEW_TEAM_DESIGN: ("team", "design", "normal"),
 }
 
 
@@ -119,7 +239,7 @@ def normalize_work_mode(raw: Any) -> str | None:
     if not isinstance(raw, str):
         return None
     value = raw.strip().lower()
-    return value if value in SUPPORTED_WORK_MODES else None
+    return value if value in EXECUTION_WORK_MODES else None
 
 
 def read_request_work_mode(params: Mapping[str, Any] | None) -> str | None:
@@ -148,21 +268,62 @@ def is_team_mode(canonical_mode: Any) -> bool:
     return canonicalize_mode_text(canonical_mode) in TEAM_CANONICAL_MODES
 
 
+def is_single_agent_mode(canonical_mode: Any) -> bool:
+    """Return whether *mode* is explicitly eligible for single-Agent flows."""
+    return canonicalize_mode_text(canonical_mode) in SINGLE_AGENT_CANONICAL_MODES
+
+
+def supports_single_agent_permission_profile(
+    mode: Any, sub_mode: Any = None, *, work_mode: Any = None,
+) -> bool:
+    """Allow only known independent normal/plan profiles for Smart permissions."""
+    if not str(getattr(mode, "value", mode) or "").strip():
+        return False
+    text = canonicalize_mode_text(mode)
+    sub = str(sub_mode or "").strip().lower()
+    work = str(work_mode or "").strip().lower()
+    if work not in {"", "work", "code"}:
+        return False
+    if text in {"agent", "code"}:
+        allowed = {"", "normal", "plan", "fast"} if text == "agent" else {"", "normal", "plan"}
+        if sub not in allowed:
+            return False
+        if sub in {"plan", "fast"}:
+            text = f"{text}.{sub}"
+    elif sub and sub not in {"normal", "plan"}:
+        return False
+    if text in {"agent", "agent.plan"} and work:
+        text = compose_web_mode(text, work)[2]
+    canonical = deprecate_mode(text)
+    if canonical not in SINGLE_AGENT_CANONICAL_MODES:
+        return False
+    return not work or (".code." in canonical) == (work == "code")
+
+
 def is_team_plan_mode(mode: Any) -> bool:
     """Return whether *mode* is either normal or code Team Plan."""
     return canonicalize_mode_text(mode) in {
         TEAM_PLAN_NORMAL_MODE,
         TEAM_PLAN_CODE_MODE,
+        NEW_TEAM_WORK_PLAN,
+        NEW_TEAM_CODE_PLAN,
     }
 
 
 def is_code_profile_mode(mode: Any) -> bool:
     """Return whether *mode* selects the code profile."""
     return canonicalize_mode_text(mode) in {
+        # 裸 code：DEPRECATION_MAP["code"] -> agent.code.normal，语义等价旧 code.normal。
+        # 补齐它使未先经 deprecate_mode 归一就直接判定的调用方行为一致。
+        "code",
         "code.normal",
         "code.plan",
         "code.team",
         TEAM_PLAN_CODE_MODE,
+        NEW_AGENT_CODE_NORMAL,
+        NEW_AGENT_CODE_PLAN,
+        NEW_TEAM_CODE_NORMAL,
+        NEW_TEAM_CODE_PLAN,
     }
 
 
@@ -172,7 +333,34 @@ def base_mode_without_plan(canonical_mode: Any) -> str:
     return _PLAN_EXIT_MODES.get(text, text)
 
 
-def compose_web_mode(mode_text: str, work_mode: str) -> tuple[str, str | None, str] | None:
+def is_new_canonical_mode(mode: Any) -> bool:
+    """是否为新三段命名 canonical。"""
+    return canonicalize_mode_text(mode) in NEW_CANONICAL_MODES
+
+
+def deprecate_mode(mode: Any) -> str:
+    """旧 canonical 静默映射到新 canonical；非旧串原样返回。
+
+    铁律 3：None / 空 / 空白串原样返回（``deprecate_mode(None) is None``、
+    ``deprecate_mode("") == ""``），不做 ``normalize_mode_text`` 的空串回落，
+    避免把空值误映射成 ``agent.work.normal``。归一化由调用方在上游完成。
+    """
+    raw_value = getattr(mode, "value", mode)
+    if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+        return raw_value
+    text = canonicalize_mode_text(mode)
+    new_text = DEPRECATION_MAP.get(text, text)
+    if new_text != text:
+        logger.debug(
+            "deprecate_mode: legacy canonical '%s' -> new canonical '%s'",
+            text, new_text,
+        )
+    return new_text
+
+
+def compose_web_mode(
+    mode_text: str, work_mode: str
+) -> tuple[str, str | None, str] | None:
     """把 Web 的 ``mode`` + ``work_mode`` 组合成后端三元组。
 
     Args:
@@ -183,6 +371,43 @@ def compose_web_mode(mode_text: str, work_mode: str) -> tuple[str, str | None, s
         ``(manager_mode, sub_mode, canonical_mode)``；不是 Web 组合时返回 None。
     """
     return _WEB_MODE_TABLE.get((mode_text, work_mode))
+
+
+def resolve_new_canonical_mode(mode: Any) -> tuple[str, str | None, str] | None:
+    """把新三段命名 canonical 直接解析成三元组，不经过 legacy 归并。
+
+    新 canonical 的 environment / state 段已经内嵌在串里（``agent.work.plan``
+    即 agent + work + plan），交给 legacy ``resolve_agent_request_mode`` 反而会被
+    错误归并（如 ``agent.work.plan`` + work_mode="code" 被折叠成 ``code.normal``，
+    造成 TUI 显示与模型感知的模式不一致）。此处按串自身语义短路返回：
+    work environment 下 manager 即 role（agent/team），state=plan 时 sub_mode 为
+    plan、否则 None；code environment 单 agent 的 manager 为 code、sub_mode 即
+    state；``team.code.*`` 沿用 ``code.team`` 历史约定（manager code、sub team，
+    is_team 由 canonical 串判定，不走 sub）。
+
+    Args:
+        mode: 任意 mode 值（Mode 枚举 / str）。
+
+    Returns:
+        ``(manager_mode, sub_mode, canonical_mode)``；非新 canonical 时返回 None。
+    """
+    text = canonicalize_mode_text(mode)
+    segments = NEW_CANONICAL_MODE_RESOLUTION.get(text)
+    if segments is None:
+        return None
+    role, environment, state = segments
+    if role == "team" and environment == "code":
+        manager_mode, sub_mode = "code", "team"
+    elif environment == "code":
+        manager_mode, sub_mode = "code", state
+    else:
+        manager_mode = role
+        sub_mode = "plan" if state == "plan" else None
+    logger.debug(
+        "resolve_new_canonical_mode: '%s' -> manager='%s' sub='%s' canonical='%s'",
+        text, manager_mode, sub_mode, text,
+    )
+    return manager_mode, sub_mode, text
 
 
 def resolve_request_mode(
@@ -214,6 +439,14 @@ def resolve_request_mode(
         composed = compose_web_mode(mode_text, work_mode)
         if composed is not None:
             manager_mode, sub_mode, canonical_mode = composed
+            logger.debug(
+                "resolve_request_mode: web-composed mode='%s' work_mode='%s' -> "
+                "manager='%s' sub='%s' canonical='%s' is_plan=%s is_team=%s",
+                mode_text, work_mode, manager_mode, sub_mode,
+                canonical_mode,
+                canonical_mode in PLAN_CANONICAL_MODES,
+                canonical_mode in TEAM_CANONICAL_MODES,
+            )
             return ResolvedMode(
                 manager_mode=manager_mode,
                 sub_mode=sub_mode,
@@ -229,6 +462,14 @@ def resolve_request_mode(
 
     manager_mode, sub_mode, canonical_mode = legacy_resolver(
         mode_text, work_mode=work_mode
+    )
+    logger.debug(
+        "resolve_request_mode: legacy mode='%s' work_mode='%s' -> "
+        "manager='%s' sub='%s' canonical='%s' is_plan=%s is_team=%s",
+        mode_text, work_mode, manager_mode, sub_mode,
+        canonical_mode,
+        canonical_mode in PLAN_CANONICAL_MODES,
+        canonical_mode in TEAM_CANONICAL_MODES,
     )
     return ResolvedMode(
         manager_mode=manager_mode,
@@ -246,7 +487,10 @@ def resolve_request_mode(
 
 __all__ = [
     "PLAN_CANONICAL_MODES",
+    "SINGLE_AGENT_CANONICAL_MODES",
     "MODE_ALIASES",
+    "DEPRECATION_MAP",
+    "NEW_CANONICAL_MODES",
     "ResolvedMode",
     "TEAM_PLAN_CODE_MODE",
     "TEAM_PLAN_NORMAL_MODE",
@@ -255,13 +499,17 @@ __all__ = [
     "base_mode_without_plan",
     "canonicalize_mode_text",
     "compose_web_mode",
-    "is_plan_mode",
+    "deprecate_mode",
+    "is_single_agent_mode",
     "is_code_profile_mode",
+    "is_new_canonical_mode",
+    "is_plan_mode",
     "is_team_plan_mode",
     "is_team_mode",
     "is_web_composable_mode",
     "normalize_mode_text",
     "normalize_work_mode",
     "read_request_work_mode",
+    "resolve_new_canonical_mode",
     "resolve_request_mode",
 ]

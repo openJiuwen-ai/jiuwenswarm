@@ -684,7 +684,40 @@ def auto_open_models(
                             logging.debug("检测开通成功提示失败: %s", e)
 
                     if success:
-                        opened.extend(checked_models)
+                        # 弹窗关闭 ≠ 开通生效，回表格逐个验证状态
+                        _close_dialog(page, dialog)
+                        emit("model", "弹窗已关闭，回表格验证开通状态…")
+                        time.sleep(3.0)
+                        try:
+                            page.reload(wait_until="domcontentloaded",
+                                        timeout=20_000)
+                            _wait_table_ready(page)
+                            _dismiss_satisfaction_popup(page)
+                        except Exception as e:
+                            logging.debug("开通后刷新页面失败: %s", e)
+                        for model_name in checked_models:
+                            row = _find_model_row(page, model_name)
+                            if row is not None:
+                                status = _row_status_text(row)
+                                if "已开通" in status:
+                                    opened.append(model_name)
+                                    emit("model",
+                                         f"{model_name} 验证通过: {status}")
+                                else:
+                                    failed.append({
+                                        "model": model_name,
+                                        "error": f"开通后状态为"
+                                                 f"'{status or '未知'}'，"
+                                                 f"可能未真正生效",
+                                    })
+                                    emit("model",
+                                         f"{model_name} 状态异常: "
+                                         f"{status or '未知'}")
+                            else:
+                                failed.append({
+                                    "model": model_name,
+                                    "error": "开通后未能在列表中找到该模型",
+                                })
                         # 未能在弹窗中勾选的模型标记为失败
                         for model_name in pending:
                             if model_name not in checked_models:
@@ -693,7 +726,9 @@ def auto_open_models(
                                     "error": "未能在弹窗中找到并勾选该模型",
                                 })
                         emit("model",
-                             f"批量开通成功: {', '.join(checked_models)}")
+                             f"开通验证完成: 已开通 "
+                             f"{', '.join(opened) if opened else '无'}，"
+                             f"失败 {len(failed)} 个")
                     else:
                         for model_name in checked_models:
                             failed.append({

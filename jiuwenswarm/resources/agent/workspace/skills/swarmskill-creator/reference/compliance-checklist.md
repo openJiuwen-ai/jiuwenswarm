@@ -222,6 +222,13 @@ For every budget-dependent loop or fan-out, verify:
 
 A syntactically guarded budget policy can still spend everything before producing a usable answer.
 
+### B15. Workflow token limits come from the user
+
+If `META.workflow_token_limit` is present, confirm that its exact value came
+from an explicit user instruction for this workflow's per-run ceiling. Do not
+accept an AI estimate, a default, or a value derived from another budget. If the
+user did not specify a limit, confirm that the field is absent.
+
 ---
 
 ## Part C: Cross-Swarm-Skill consistency (only when publishing multiple together)

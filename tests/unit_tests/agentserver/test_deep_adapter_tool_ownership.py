@@ -62,8 +62,8 @@ def _resource_mgr(monkeypatch: pytest.MonkeyPatch) -> _FakeResourceMgr:
 
 
 def _make_adapter(session_id: str | None) -> JiuWenSwarmDeepAdapter:
-    """Create a bare adapter carrying only the state the owner id derives from."""
-    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    """Use initialized lifecycle state with the requested tool owner."""
+    adapter = JiuWenSwarmDeepAdapter()
     adapter._is_session_scoped_adapter = session_id is not None
     adapter._parent_session_id = session_id
     return adapter

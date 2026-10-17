@@ -201,10 +201,24 @@ class GitDiffWatcherRegistry:
         self._project_watches: dict[str, set[str]] = {}
         self._poll_tasks: dict[str, asyncio.Task] = {}
         self._lock = asyncio.Lock()
+        # 可选 diff 状态提供方：由 Gateway 注入（经 E2A 转发到目标 AgentServer）。
+        # 未注入时回落到本地计算（仅测试 / 无 AgentServer 的上下文中使用）。
+        self._diff_status_fetcher: Any = None
 
     def set_channel(self, channel: Any) -> None:
         """注入 WebChannel 实例(用于 send_event)。"""
         self._channel = channel
+
+    def set_diff_status_fetcher(self, fetcher: Any) -> None:
+        """注入 diff 状态获取器，将状态计算委托给目标 AgentServer。
+
+        ``fetcher(project_id, session_id, include_files, include_hunks,
+        hunk_paths, user_id) -> (ok, payload)``，``ok=False`` 时 ``payload`` 为
+        ``{"error": ..., "code": ...}``。由 Gateway 用 E2A
+        ``PROJECT_GIT_DIFF_STATUS`` 实现，确保状态计算与工作目录访问都发生在
+        目标 AgentServer 的注入目录（方案 §4 / §10.6 C 类）。
+        """
+        self._diff_status_fetcher = fetcher
 
     async def add_watch(
         self,
@@ -884,11 +898,14 @@ class GitDiffWatcherRegistry:
         diff 结果,不线性复制昂贵的 Git 命令)。``last_turn`` 是 session 级的,
         每个 session 独立计算。
         """
+        if self._diff_status_fetcher is not None:
+            await self._compute_and_push_remote(project_id, watches)
+            return
         # cache_bust=False:轮询周期 2 秒,强制读盘代价高;同进程内 hide/remove
-        # 项目会经 store 写路径刷新缓存,且 project.remove 会调 cleanup_project
+        # 项目删除会刷新 store，下一次检查清理对应 watcher。
         from jiuwenswarm.server.runtime.session import project_store
         proj = project_store.get_project_by_id(project_id)
-        if proj is None or proj.hidden:
+        if proj is None:
             # 项目已删除/隐藏,清理所有 watcher
             logger.debug(
                 "[GitDiffWatcher] project gone, cleaning watches for %s",
@@ -1049,6 +1066,161 @@ class GitDiffWatcherRegistry:
                             watch, status_dict, files_dict, detail_fp, revision,
                         )
 
+    def _resolve_watch_user_id(self, watches: list[GitDiffWatch]) -> str | None:
+        """返回该项目 watcher 的路由 user_id（供 E2A 状态获取器路由到目标 AgentServer）。
+
+        项目归属按用户隔离，同一 project_id 下的 watcher 共享同一 user_id；
+        取第一个非空连接级 user_id。单用户模式下为空串，由传输层客户端透明转发。
+        """
+        if self._channel is None:
+            return None
+        extractor = getattr(self._channel, "_extract_ws_user_id", None)
+        for watch in watches:
+            if extractor is not None:
+                try:
+                    uid = str(extractor(watch.ws) or "").strip()
+                except Exception:  # noqa: BLE001
+                    uid = ""
+                if uid:
+                    return uid
+        return None
+
+    async def _compute_and_push_remote(
+        self,
+        project_id: str,
+        watches: list[GitDiffWatch],
+    ) -> None:
+        """经注入的 diff 状态获取器（E2A → AgentServer）计算 diff 并推送。
+
+        状态计算与工作目录访问全部发生在目标 AgentServer 的注入目录；本进程
+        只做指纹比对与事件推送（方案 §10.6 C 类：桥接请求经 E2A 转发）。
+        """
+        current_need_files = any(
+            w.files_source == "current"
+            or (w.detail_source == "current" and w.detail_files)
+            for w in watches
+        )
+        current_detail_files: set[str] = set()
+        for watch in watches:
+            if watch.detail_source == "current" and watch.detail_files:
+                current_detail_files.update(watch.detail_files)
+        current_need_hunks = bool(current_detail_files)
+
+        user_id = self._resolve_watch_user_id(watches)
+        ok, current_status = await self._diff_status_fetcher(
+            {
+                "project_id": project_id,
+                "session_id": None,
+                "include_files": current_need_files,
+                "include_hunks": current_need_hunks,
+                "hunk_paths": sorted(current_detail_files) or None,
+                "user_id": user_id,
+            }
+        )
+        if not ok:
+            error_code = str(current_status.get("code") or "GIT_COMMAND_FAILED")
+            if error_code == "PROJECT_NOT_FOUND":
+                # The target AgentServer is the authority for project state in
+                # remote mode.  Mirror the local project's deleted/hidden
+                # branch by reclaiming the Gateway-side bridge watches.
+                logger.debug(
+                    "[GitDiffWatcher] remote project gone, cleaning watches for %s",
+                    project_id,
+                )
+                self.cleanup_project(project_id)
+                return
+            # Keep remote E2A failures semantically identical to local Git
+            # failures: structural errors pause the poll loop until a later
+            # mark_dirty (for example after git init), while transient errors
+            # retain the normal backoff path.
+            from jiuwenswarm.server.runtime.session.project_git import (
+                GitError,
+                GitOperationError,
+            )
+
+            raise GitOperationError(
+                GitError(
+                    code=error_code,
+                    message=str(current_status.get("error") or "diff fetch failed"),
+                    retryable=bool(current_status.get("retryable", True)),
+                )
+            )
+
+        revision = _build_revision(
+            "gitdiff",
+            _fingerprint(project_id, current_status.get("generated_at", 0)),
+        )
+
+        session_groups: dict[str, list[GitDiffWatch]] = {}
+        for watch in watches:
+            session_groups.setdefault(watch.session_id, []).append(watch)
+
+        for session_id, group_watches in session_groups.items():
+            last_turn_need_files = any(
+                w.files_source == "last_turn"
+                or (w.detail_source == "last_turn" and w.detail_files)
+                for w in group_watches
+            )
+            last_turn_need_hunks = any(
+                w.detail_source == "last_turn" and w.detail_files
+                for w in group_watches
+            )
+            group_needs_last_turn = any(
+                w.include_last_turn
+                or w.files_source == "last_turn"
+                or w.detail_source == "last_turn"
+                for w in group_watches
+            )
+
+            status_dict = current_status
+            if session_id and group_needs_last_turn:
+                ok, session_status = await self._diff_status_fetcher(
+                    {
+                        "project_id": project_id,
+                        "session_id": session_id,
+                        "include_files": last_turn_need_files,
+                        "include_hunks": last_turn_need_hunks,
+                        "hunk_paths": None,
+                        "user_id": user_id,
+                    }
+                )
+                if ok:
+                    status_dict = session_status
+                else:
+                    # last_turn 获取失败：降级为仅 current（last_turn=None），
+                    # 与本地路径 get_turn_diff_summaries 异常兜底一致。
+                    status_dict = dict(current_status)
+                    status_dict["session_id"] = session_id
+                    status_dict["last_turn"] = None
+
+            for watch in group_watches:
+                summary_fp = _summary_fingerprint(
+                    status_dict, include_last_turn=watch.include_last_turn,
+                )
+                if summary_fp != watch.last_summary_fingerprint:
+                    watch.last_summary_fingerprint = summary_fp
+                    await self._push_diff_changed(
+                        watch, status_dict, summary_fp, revision,
+                    )
+
+                if watch.files_source:
+                    files_dict = self._extract_files(status_dict, watch.files_source)
+                    files_fp = _files_fingerprint(files_dict)
+                    if files_fp != watch.last_files_fingerprint:
+                        watch.last_files_fingerprint = files_fp
+                        await self._push_files_changed(
+                            watch, status_dict, files_dict, files_fp, revision,
+                        )
+
+                if watch.detail_source and watch.detail_files:
+                    files_dict = self._extract_files(status_dict, watch.detail_source)
+                    detail_fp = _detail_fingerprint(files_dict, watch.detail_files)
+                    if detail_fp != watch.last_detail_fingerprint:
+                        watch.last_detail_fingerprint = detail_fp
+                        await self._push_detail_changed(
+                            watch, status_dict, files_dict, detail_fp, revision,
+                        )
+
     @staticmethod
     def _extract_files(
         status_dict: dict[str, Any],
@@ -1094,6 +1266,7 @@ class GitDiffWatcherRegistry:
                 "branch": repo.get("branch"),
                 "head": repo.get("head"),
                 "transient": repo.get("transient", False),
+                "repo_is_parent_of_project": repo.get("repo_is_parent_of_project", False),
             },
             "current": self._summary_entry(current) if current else None,
             "last_turn": self._turn_summary_entry(last_turn) if last_turn else None,

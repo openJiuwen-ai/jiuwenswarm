@@ -14,6 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.common.mode_matrix import (
+    NEW_AGENT_WORK_NORMAL,
+    NEW_AGENT_WORK_PLAN,
+    deprecate_mode,
+)
 from jiuwenswarm.server.runtime.session.session_history import (
     _read_history,
     _read_history_jsonl,
@@ -204,7 +209,13 @@ class Sweeper:
         if not sessions_root.exists():
             return []
 
-        all_ids = {d.name for d in sessions_root.iterdir() if d.is_dir() and not d.name.startswith("heartbeat")}
+        all_ids: set[str] = set()
+        for session_dir in sessions_root.iterdir():
+            if not session_dir.is_dir():
+                continue
+            if session_dir.name.startswith(("health_check_", "heartbeat_")):
+                continue
+            all_ids.add(session_dir.name)
         scanned_ids = set(self.scanned_sessions.keys())
         brand_new = all_ids - scanned_ids
 
@@ -452,7 +463,10 @@ class Sweeper:
         if not output.exists():
             return empty_label
 
-        if self._mode == "agent":
+        # agent 工作族（旧 "agent" / 新 canonical agent.work.*）走 DREAMING.md；
+        # deprecate 归一后统一判定，避免新 canonical 串（agent.work.normal）被
+        # == "agent" 误判落入 code 分支。
+        if deprecate_mode(self._mode) in (NEW_AGENT_WORK_NORMAL, NEW_AGENT_WORK_PLAN):
             dreaming_path = output / "DREAMING.md"
             if not dreaming_path.exists():
                 return empty_label
@@ -481,7 +495,9 @@ class Sweeper:
     def _promote(self, title: str, content: str, session_id: str) -> str | None:
         if not title or not content:
             return None
-        if self._mode == "agent":
+        # 与 load_existing_summary 的判定保持一致：agent 工作族（旧 "agent" / 新
+        # canonical agent.work.*）走 promote_agent。
+        if deprecate_mode(self._mode) in (NEW_AGENT_WORK_NORMAL, NEW_AGENT_WORK_PLAN):
             return self.promote_agent(title, content, session_id)
         return self.promote_code(title, content, session_id)
 

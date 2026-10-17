@@ -1,15 +1,34 @@
-import { Message, MessageRole, UsageSummary, FileDownloadItem, MediaItem, WsEvent, ToolExecution } from '../types';
+import { readOutputOrder, isSuppressedOutput } from './sessionOutput';
+import type { OutputOrder } from '../types/message';
+import { Message, MessageRole, UsageSummary, FileDownloadItem, MediaItem, WsEvent, ToolExecution, AskUserQuestionPayload, Question, UserAnswer } from '../types';
 import { webClient } from '../services/webClient';
 import { normalizeFinalContent } from '../utils/finalContent';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
+import { extractAutomation } from '../utils/heartbeatAutomation';
+import { proactiveAssistantMessageId } from '../utils/proactiveRecommendation';
+import {
+  crossSessionAssistantMessageId,
+  crossSessionUserMessageId,
+  extractCrossSessionMessage,
+} from '../utils/crossSessionMessage';
 import { isA2UIClientEventContent } from './a2ui/a2uiContent';
+import { buildQaSummaryContent } from '../components/InteractionSlot/qaSummary';
+import i18n from '../i18n';
 import { normalizeToolCallPayload, normalizeToolResultPayload } from './tool-events/toolEventNormalizer';
 import {
   buildGoalCompletedContent,
   isGoalCompletedContent,
 } from '../components/GoalBar/goalCompletedMessage';
 import { HistoryRecordReassembler } from './historyRecordReassembler';
+import { expertTeamId } from './teamOrganization/conversation';
+import { isTeamOrganizationUiEnabled } from './teamOrganization/featureConfig';
+import { readAgentTemplateName } from './agentIdentity';
+import {
+  isSingleAgentContextUsageSnapshot,
+  isTeamLeaderContextUsageSnapshot,
+  parseContextUsageSnapshot,
+} from './contextUsage/contextUsageModel';
 
 export { HistoryRecordReassembler };
 
@@ -33,12 +52,17 @@ const ALLOWED_ASSISTANT_EVENT_TYPES = new Set([
   'chat.tool_result',
   'chat.usage_summary',
   'chat.file',
+  'chat.subtask_update',
+  'chat.ask_user_question',
+  'chat.ask_user_answer',
+  'chat.error',
   'team.message',
   'team.member',
   'team.task',
   'harness.message',
   'harness.stage_result',
   'harness.extension_ready',
+  'context.usage',
   'context.compact_boundary'
 ]);
 
@@ -51,10 +75,360 @@ export interface HistoryToolReplayItem {
   payload: Record<string, unknown>;
 }
 
+/** Merge tool replay pages before pairing calls with their results. */
+export function mergeHistoryToolReplayItems(
+  existing: HistoryToolReplayItem[],
+  incoming: HistoryToolReplayItem[],
+): HistoryToolReplayItem[] {
+  const merged = new Map<string, HistoryToolReplayItem>();
+  for (const item of [...existing, ...incoming]) {
+    merged.set(JSON.stringify(item), item);
+  }
+  return [...merged.values()];
+}
+
+export interface HistorySubagentRecovery {
+  subagent: Record<string, unknown>;
+  turns?: Array<{ task_id: string; task_description: string; started_at: number }>;
+  result?: {
+    subagent_id: string;
+    content: string;
+    output_file?: string;
+  };
+}
+
+function readQuotedToken(input: string, start: number): { value: string; next: number } | null {
+  const quote = input[start];
+  if (quote !== "'" && quote !== '"') return null;
+  let value = '';
+  for (let index = start + 1; index < input.length; index += 1) {
+    const char = input[index];
+    if (char === '\\') {
+      const escaped = input[index + 1];
+      if (escaped === undefined) return null;
+      value += escaped === 'n' ? '\n' : escaped === 'r' ? '\r' : escaped === 't' ? '\t' : escaped;
+      index += 1;
+      continue;
+    }
+    if (char === quote) return { value, next: index + 1 };
+    value += char;
+  }
+  return null;
+}
+
+function findQuotedField(raw: string, field: string): string | null {
+  const fieldPattern = new RegExp(`(?<![A-Za-z0-9_])(?:['"])?${field}(?:['"])?\\s*:`);
+  const match = fieldPattern.exec(raw);
+  if (!match) return null;
+  let index = match.index + match[0].length;
+  while (/\s/.test(raw[index] ?? '')) index += 1;
+  return readQuotedToken(raw, index)?.value ?? null;
+}
+
+function findQuotedMapping(raw: string, field: string): Record<string, string> {
+  const fieldPattern = new RegExp(`(?<![A-Za-z0-9_])(?:['"])?${field}(?:['"])?\\s*:\\s*\\{`);
+  const match = fieldPattern.exec(raw);
+  if (!match) return {};
+  let index = match.index + match[0].length;
+  const values: Record<string, string> = {};
+  while (index < raw.length) {
+    while (/\s|,/.test(raw[index] ?? '')) index += 1;
+    if (raw[index] === '}') break;
+    const key = readQuotedToken(raw, index);
+    if (!key) break;
+    index = key.next;
+    while (/\s/.test(raw[index] ?? '')) index += 1;
+    if (raw[index] !== ':') break;
+    index += 1;
+    while (/\s/.test(raw[index] ?? '')) index += 1;
+    const value = readQuotedToken(raw, index);
+    if (!value) break;
+    values[key.value] = value.value;
+    index = value.next;
+  }
+  return values;
+}
+
+// Reads the compatibility `result` string (str() of the structured tool result)
+// that the subagent history parsers below scan; removed once the UI reads
+// structured data instead.
+function extractToolResultText(payload: Record<string, unknown>): string {
+  const nested = isRecord(payload.tool_result) ? payload.tool_result : payload;
+  return typeof nested.result === 'string' ? nested.result : '';
+}
+
+function extractHistorySubagentIds(payload: Record<string, unknown>): string[] {
+  const raw = extractToolResultText(payload);
+  const ids = new Set<string>();
+  const direct = findQuotedField(raw, 'subagent_id');
+  if (direct) ids.add(direct);
+  for (const field of ['statuses', 'results', 'output_files']) {
+    for (const id of Object.keys(findQuotedMapping(raw, field))) ids.add(id);
+  }
+  return [...ids];
+}
+
+function parseHistorySubagentWaitResult(payload: Record<string, unknown>): {
+  statuses: Record<string, string>;
+  results: Record<string, string>;
+  outputFiles: Record<string, string>;
+} {
+  const nested = isRecord(payload.tool_result) ? payload.tool_result : payload;
+  const structured = isRecord(nested.subagent_wait) ? nested.subagent_wait : null;
+  if (structured) {
+    const statuses = isRecord(structured.statuses) ? structured.statuses : {};
+    const results = isRecord(structured.results) ? structured.results : {};
+    const outputFiles = isRecord(structured.output_files) ? structured.output_files : {};
+    return {
+      statuses: Object.fromEntries(Object.entries(statuses).flatMap(([id, value]) => typeof value === 'string' ? [[id, value]] : [])),
+      results: Object.fromEntries(Object.entries(results).flatMap(([id, value]) => typeof value === 'string' ? [[id, value]] : [])),
+      outputFiles: Object.fromEntries(Object.entries(outputFiles).flatMap(([id, value]) => typeof value === 'string' ? [[id, value]] : [])),
+    };
+  }
+  const raw = extractToolResultText(payload);
+  return {
+    statuses: findQuotedMapping(raw, 'statuses'),
+    results: findQuotedMapping(raw, 'results'),
+    outputFiles: findQuotedMapping(raw, 'output_files'),
+  };
+}
+
+function normalizeRecoveredSubagentStatus(status: string): {
+  status: 'running' | 'idle' | 'closed';
+  turn_outcome: 'completed' | 'failed' | 'cancelled' | null;
+  lifecycle: 'live' | 'closed';
+  can_send_input: boolean;
+  needs_resume: boolean;
+  closed_reason: 'failed' | 'cancelled' | 'completed' | 'parent_ended' | 'manual' | 'evicted' | null;
+} | null {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === 'failed' || normalized === 'errored' || normalized === 'error') {
+    return { status: 'idle', turn_outcome: 'failed', lifecycle: 'live', can_send_input: true, needs_resume: false, closed_reason: null };
+  }
+  if (normalized === 'cancelled' || normalized === 'canceled' || normalized === 'interrupted') {
+    return { status: 'idle', turn_outcome: 'cancelled', lifecycle: 'live', can_send_input: true, needs_resume: false, closed_reason: null };
+  }
+  if (normalized === 'closed') {
+    return { status: 'closed', turn_outcome: null, lifecycle: 'closed', can_send_input: false, needs_resume: true, closed_reason: 'manual' };
+  }
+  if (normalized === 'completed' || normalized === 'idle') {
+    return { status: 'idle', turn_outcome: 'completed', lifecycle: 'live', can_send_input: true, needs_resume: false, closed_reason: null };
+  }
+  if (normalized === 'running' || normalized === 'pending' || normalized === 'pending_init') {
+    return { status: 'running', turn_outcome: null, lifecycle: 'live', can_send_input: false, needs_resume: false, closed_reason: null };
+  }
+  return null;
+}
+
+/**
+ * Recover subagent roster/result hints from the parent history's structured tool records.
+ * The parent history endpoint currently filters chat.subtask_update, so this is only a
+ * discovery bridge to the independent subagent history; it never treats tool-result text
+ * as a transcript/result body except the explicit subagent_wait.results mapping.
+ */
+export function recoverSubagentToolHistory(
+  items: HistoryToolReplayItem[],
+  sessionId: string,
+): HistorySubagentRecovery[] {
+  type MutableRecovery = {
+    id: string;
+    subagentType: string;
+    displayName: string;
+    role: string;
+    taskDescription: string;
+    turns: Map<string, { task_id: string; task_description: string; started_at: number }>;
+    status: NonNullable<ReturnType<typeof normalizeRecoveredSubagentStatus>>;
+    createdAt: number;
+    updatedAt: number;
+    revision: number;
+    result?: { content: string; output_file?: string };
+  };
+
+  const records = new Map<string, MutableRecovery>();
+  const pendingSpawns: Array<{ subagentType: string; displayName: string; role: string; taskDescription: string; at: number }> = [];
+  const pendingFollowUps = new Map<string, Array<{ taskDescription: string; at: number }>>();
+  const ordered = [...items].sort((left, right) => parseTimestampToMs(left.at) - parseTimestampToMs(right.at));
+  const ensure = (id: string, at: number, metadata?: { subagentType?: string; displayName?: string; role?: string; taskDescription?: string; taskId?: string }): MutableRecovery => {
+    const existing = records.get(id);
+    if (existing) {
+      if (metadata?.subagentType) existing.subagentType = metadata.subagentType;
+      if (metadata?.displayName) existing.displayName = metadata.displayName;
+      if (metadata?.role) existing.role = metadata.role;
+      if (metadata?.taskDescription) existing.taskDescription = metadata.taskDescription;
+      if (metadata?.taskId && metadata.taskDescription) {
+        existing.turns.set(metadata.taskId, {
+          task_id: metadata.taskId,
+          task_description: metadata.taskDescription,
+          started_at: at,
+        });
+      }
+      return existing;
+    }
+    const created = {
+      id,
+      subagentType: metadata?.subagentType || 'general-purpose',
+      displayName: metadata?.displayName || metadata?.subagentType || 'general-purpose',
+      role: metadata?.role || '',
+      taskDescription: metadata?.taskDescription || '',
+      turns: new Map<string, { task_id: string; task_description: string; started_at: number }>(),
+      status: normalizeRecoveredSubagentStatus('running')!,
+      createdAt: Number.isFinite(at) ? at : 0,
+      updatedAt: Number.isFinite(at) ? at : 0,
+      revision: 0,
+    };
+    if (metadata?.taskId && metadata.taskDescription) {
+      created.turns.set(metadata.taskId, {
+        task_id: metadata.taskId,
+        task_description: metadata.taskDescription,
+        started_at: at,
+      });
+    }
+    records.set(id, created);
+    return created;
+  };
+  const update = (record: MutableRecovery, status: string, at: number) => {
+    const normalized = normalizeRecoveredSubagentStatus(status);
+    if (!normalized) {
+      records.delete(record.id);
+      return;
+    }
+    record.status = normalized;
+    record.updatedAt = Number.isFinite(at) ? at : record.updatedAt;
+    record.revision += 1;
+  };
+
+  const toolResultSucceeded = (payload: Record<string, unknown>): boolean | null => {
+    const nested = isRecord(payload.tool_result) ? payload.tool_result : payload;
+    if (typeof nested.success === 'boolean') return nested.success;
+    const raw = extractToolResultText(payload);
+    const match = /\bsuccess\s*=\s*(True|False)\b/.exec(raw);
+    if (match) return match[1] === 'True';
+    const status = (typeof nested.status === 'string' ? nested.status : findQuotedField(raw, 'status'))?.trim().toLowerCase();
+    if (!status) return null;
+    if (['error', 'failed', 'failure', 'timeout', 'timed_out'].includes(status)) return false;
+    if (['pending', 'queued', 'accepted', 'running', 'completed', 'success', 'succeeded'].includes(status)) return true;
+    return null;
+  };
+
+  for (const item of ordered) {
+    const at = parseTimestampToMs(item.at);
+    if (item.kind === 'tool_call') {
+      const call = normalizeToolCallPayload(item.payload);
+      if (!call.name.startsWith('subagent_')) continue;
+      const args = call.arguments;
+      if (call.name === 'subagent_spawn') {
+        pendingSpawns.push({
+          subagentType: typeof args.subagent_type === 'string' ? args.subagent_type : 'general-purpose',
+          displayName: typeof args.display_name === 'string' ? args.display_name.trim() : '',
+          role: typeof args.role === 'string' ? args.role.trim() : '',
+          taskDescription: typeof args.task_description === 'string' ? args.task_description : '',
+          at,
+        });
+        continue;
+      }
+      if (call.name === 'subagent_send_input') {
+        const subagentId = typeof args.subagent_id === 'string' ? args.subagent_id.trim() : '';
+        const taskDescription = typeof args.query === 'string' ? args.query.trim() : '';
+        if (subagentId && taskDescription) {
+          pendingFollowUps.set(subagentId, [
+            ...(pendingFollowUps.get(subagentId) ?? []),
+            { taskDescription, at },
+          ]);
+        }
+      }
+      // Do not optimistically change a roster from a tool call. The bfb runtime
+      // rejects close on a running subagent; only its successful tool result is
+      // authoritative for the recovered status.
+      continue;
+    }
+
+    const toolName = normalizeToolResultPayload(item.payload).toolName;
+    if (!toolName.startsWith('subagent_')) continue;
+    if (toolResultSucceeded(item.payload) !== true) continue;
+    const rawResult = extractToolResultText(item.payload);
+    if (toolName === 'subagent_spawn') {
+      const id = findQuotedField(rawResult, 'subagent_id');
+      if (!id) continue;
+      const metadata = pendingSpawns.shift();
+      const taskId = findQuotedField(rawResult, 'task_id') ?? undefined;
+      ensure(id, at, metadata ? { ...metadata, taskId } : { taskId });
+      continue;
+    }
+    if (toolName === 'subagent_wait') {
+      const wait = parseHistorySubagentWaitResult(item.payload);
+      for (const [id, status] of Object.entries(wait.statuses)) {
+        const record = ensure(id, at);
+        update(record, status, at);
+        const content = wait.results[id]?.trim();
+        if (content) {
+          record.result = {
+            content: wait.results[id],
+            ...(wait.outputFiles[id]?.trim() ? { output_file: wait.outputFiles[id].trim() } : {}),
+          };
+        }
+      }
+      continue;
+    }
+    if (toolName === 'subagent_close') {
+      const id = findQuotedField(rawResult, 'subagent_id') ?? extractHistorySubagentIds(item.payload)[0];
+      if (id) update(ensure(id, at), 'closed', at);
+      continue;
+    }
+    if (toolName === 'subagent_send_input' || toolName === 'subagent_resume') {
+      const id = findQuotedField(rawResult, 'subagent_id') ?? extractHistorySubagentIds(item.payload)[0];
+      const status = findQuotedField(rawResult, 'status');
+      if (id && status) {
+        const record = ensure(id, at);
+        update(record, status, at);
+        if (toolName === 'subagent_send_input') {
+          const followUps = pendingFollowUps.get(id) ?? [];
+          const followUp = followUps.shift();
+          if (followUps.length > 0) pendingFollowUps.set(id, followUps);
+          else pendingFollowUps.delete(id);
+          if (followUp) {
+            record.taskDescription = followUp.taskDescription;
+            record.updatedAt = Math.max(record.updatedAt, followUp.at);
+            const taskId = findQuotedField(rawResult, 'task_id');
+            if (taskId) {
+              record.turns.set(taskId, {
+                task_id: taskId,
+                task_description: followUp.taskDescription,
+                started_at: followUp.at,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return [...records.values()].map((record) => ({
+    subagent: {
+      subagent_id: record.id,
+      parent_session_id: sessionId,
+      subagent_type: record.subagentType,
+      display_name: record.displayName || record.subagentType,
+      role: record.role,
+      task_description: record.taskDescription,
+      ...record.status,
+      closed_at: record.status.status === 'closed' ? record.updatedAt : null,
+      error: record.status.turn_outcome === 'failed' ? { code: 'SUBAGENT_ERROR', message: 'Subagent turn failed' } : null,
+      created_at: record.createdAt,
+      updated_at: record.updatedAt,
+      revision: record.revision,
+    },
+    turns: [...record.turns.values()].sort((left, right) => left.started_at - right.started_at),
+    ...(record.result ? { result: { subagent_id: record.id, ...record.result } } : {}),
+  }));
+}
+
 /** 历史中随 chat.final / chat.tool_call 落盘的模型思考（reasoning_content），用于刷新后重建思考块。 */
 export interface HistoryReasoningReplayItem {
+  outputOrder?: OutputOrder;
   at: string;
   text: string;
+  /** Web 单 Agent reasoning 所属的专家；Team/旧 history 缺失时为空。 */
+  agentTemplateName?: string;
   /** 末帧时刻（epoch ms）；异常结束时即使无收尾事件，耗时终点也能落在最后一个真实帧。 */
   updatedAt?: number;
 }
@@ -80,18 +454,48 @@ export interface HistoryTeamReplayItem {
   };
 }
 
+export interface HistorySubagentReplayItem {
+  kind: 'updated' | 'message' | 'activity';
+  at: string;
+  payload: Record<string, unknown>;
+}
+
+/** 完整恢复 context.usage；payload 不在这里裁剪，交给 context usage parser 校验。 */
+export interface HistoryContextUsageReplayItem {
+  at: string;
+  payload: Record<string, unknown>;
+}
+
+/** 历史恢复出的问题澄清对话框（chat.ask_user_question），重组为 AskUserQuestionPayload 重新入队弹框。 */
+export interface HistoryPendingQuestionReplayItem {
+  at: string;
+  payload: AskUserQuestionPayload;
+}
+
+/** 历史恢复出的问题澄清答案（chat.ask_user_answer），按 request_id 与 pending_question 配对。 */
+export interface HistoryAnsweredQuestionReplayItem {
+  at: string;
+  payload: { request_id: string; answers: UserAnswer[] };
+}
+
 type HistoryTimelineEntry =
   | { kind: 'message'; message: Message }
   | { kind: 'tool_call'; at: string; payload: Record<string, unknown> }
   | { kind: 'tool_result'; at: string; payload: Record<string, unknown> }
   | { kind: 'usage_summary'; at: string; usage: UsageSummary }
+  | { kind: 'context_usage'; at: string; payload: Record<string, unknown> }
   | { kind: 'file_items'; at: string; files: FileDownloadItem[] }
   | { kind: 'team_member'; at: string; payload: { event: Record<string, unknown> } }
   | { kind: 'team_task'; at: string; payload: { event: Record<string, unknown> } }
   | { kind: 'harness_message'; at: string; content: string; stage?: string }
   | { kind: 'harness_stage_result'; at: string; stage: string; status: string; error: string; messages: string[]; metrics: Record<string, unknown> }
   | { kind: 'compaction'; at: string; summary: string }
-  | { kind: 'reasoning'; at: string; text: string; updatedAt?: number };
+  | { kind: 'reasoning'; outputOrder?: OutputOrder; at: string; text: string; agentTemplateName?: string; updatedAt?: number }
+  | { kind: 'subagent_update'; at: string; payload: Record<string, unknown> }
+  | { kind: 'subagent_message'; at: string; payload: Record<string, unknown> }
+  | { kind: 'subagent_activity'; at: string; payload: Record<string, unknown> }
+  | { kind: 'pending_question'; at: string; payload: AskUserQuestionPayload }
+  | { kind: 'answered_question'; at: string; payload: { request_id: string; answers: UserAnswer[] } };
 
 /** 历史回放出的压缩汇总：boundary 记录计数，metadata 拼 tooltip 明细行 */
 export interface HistoryCompactionReplay {
@@ -101,20 +505,41 @@ export interface HistoryCompactionReplay {
 
 interface BeginHistoryRestoreOptions {
   sessionId: string;
-  onReady: (messages: Message[], totalPages: number | null) => void;
+  subagentId?: string;
+  onReady: (messages: Message[], cursor: HistoryCursorMeta) => void;
   /** 与消息同一时间线顺序，用于恢复 ToolGroupDisplay */
   onToolReplay?: (items: HistoryToolReplayItem[]) => void;
   /** 与消息同一时间线顺序，用于恢复 HarnessProgressBar */
   onHarnessReplay?: (items: HistoryHarnessReplayItem[]) => void;
   /** 与消息同一时间线顺序，用于恢复 Team 成员/任务状态 */
   onTeamReplay?: (items: HistoryTeamReplayItem[]) => void;
+  /** 恢复独立 subagent history 中的 roster/status 与 transcript */
+  onSubagentReplay?: (items: HistorySubagentReplayItem[]) => void;
   /** 与消息同一时间线顺序，用于恢复模型思考块（chat.reasoning） */
   onReasoningReplay?: (items: HistoryReasoningReplayItem[]) => void;
   /** 恢复上下文压缩汇总（context.compact_boundary），用于回显「本轮完成上下文压缩 N 次」 */
   onCompactionReplay?: (info: HistoryCompactionReplay) => void;
-  /** 无消息且无工具回放时调用；`totalPages` 来自流中最后一帧（若有） */
-  onEmpty?: (totalPages: number | null) => void;
+  /** 恢复最新的完整 context.usage 快照，供刷新/续接后恢复上下文用量指示器 */
+  onContextUsage?: (payload: Record<string, unknown>) => void;
+  /** 恢复问题澄清对话框（chat.ask_user_question），重新入 pendingQuestion 队列弹交互框 */
+  onPendingQuestionReplay?: (items: HistoryPendingQuestionReplayItem[]) => void;
+  /** 无消息且无工具回放时调用；游标元数据仍决定是否存在更早记录。 */
+  onEmpty?: (cursor: HistoryCursorMeta) => void;
+  onFailure?: (failure: HistoryRestoreFailure) => void;
   onError?: (message: string) => void;
+}
+
+export interface HistoryCursorMeta {
+  requestCursor: string | null;
+  nextCursor: string | null;
+  hasMore: boolean;
+  snapshotId: string | null;
+  snapshotEnd: number;
+}
+
+export interface HistoryRestoreFailure {
+  code: string;
+  message: string;
 }
 
 export interface HistoryRestoreHandle {
@@ -125,12 +550,15 @@ export interface HistoryRestoreHandle {
 let restoreGeneration = 0;
 const activeHistoryRequests = new Map<string, HistoryRestoreHandle>();
 
-function makeHistoryRestoreKey(sessionId: string): string {
-  return `${sessionId}:restore`;
+function makeHistoryRestoreKey(sessionId: string, subagentId?: string): string {
+  return subagentId ? `${sessionId}:subagent:${subagentId}:restore` : `${sessionId}:restore`;
 }
 
-function makeHistoryPageKey(sessionId: string, pageIdx: number): string {
-  return `${sessionId}:page:${pageIdx}`;
+function makeHistoryCursorKey(sessionId: string, cursor: string | null, subagentId?: string): string {
+  const cursorKey = cursor ?? 'initial';
+  return subagentId
+    ? `${sessionId}:subagent:${subagentId}:cursor:${cursorKey}`
+    : `${sessionId}:cursor:${cursorKey}`;
 }
 
 function replaceActiveHistoryRequest(key: string): void {
@@ -162,7 +590,7 @@ function isProactiveRecommendationRecord(record: Record<string, unknown>): boole
  * 重建后会污染上一条用户消息的思考状态（"已完成" → "已完成 N 次思考"），故跳过。
  */
 function extractHistoryReasoningText(record: Record<string, unknown>): string {
-  if (isProactiveRecommendationRecord(record)) return '';
+  if (isProactiveRecommendationRecord(record) || isSuppressedOutput(record) || isSuppressedOutput(buildEventPayloadForRecord(record))) return '';
   const direct = record.reasoning_content;
   if (typeof direct === 'string' && direct.trim()) {
     return direct.trim();
@@ -318,6 +746,79 @@ function buildEventPayloadForRecord(record: Record<string, unknown>): Record<str
   return base;
 }
 
+function readHistoryAgentTemplateName(record: Record<string, unknown>): string | undefined {
+  if (isProactiveRecommendationRecord(record)) return undefined;
+  const payload = buildEventPayloadForRecord(record);
+  return readAgentTemplateName(payload) ?? readAgentTemplateName(record);
+}
+
+function readForkSourceSessionId(value: Record<string, unknown>): string {
+  const marker = value.forked_from ?? value.forkedFrom;
+  if (typeof marker === 'string') return marker.trim();
+  if (!isRecord(marker)) return '';
+  return pickFirstString(marker, ['session_id', 'sessionId']) ?? '';
+}
+
+function hasMismatchedHistoryBoundary(
+  value: unknown,
+  sessionId: string,
+  inheritedForkSourceSessionId = '',
+): boolean {
+  if (Array.isArray(value)) {
+    return value.some((item) => hasMismatchedHistoryBoundary(item, sessionId, inheritedForkSourceSessionId));
+  }
+  if (!isRecord(value)) return false;
+  const forkSourceSessionId = readForkSourceSessionId(value) || inheritedForkSourceSessionId;
+  if (
+    ['session_id', 'parent_session_id', 'sessionId', 'parentSessionId'].some((key) => {
+      const boundary = pickFirstString(value, [key]);
+      return Boolean(boundary && boundary !== sessionId && boundary !== forkSourceSessionId);
+    })
+  )
+    return true;
+  return Object.entries(value).some(
+    ([key, nested]) =>
+      key !== 'forked_from' &&
+      key !== 'forkedFrom' &&
+      hasMismatchedHistoryBoundary(nested, sessionId, forkSourceSessionId),
+  );
+}
+
+export function parseSubagentHistoryReplay(
+  record: Record<string, unknown>,
+  sessionId: string,
+  subagentId: string,
+): HistorySubagentReplayItem | null {
+  const forkSourceSessionId = readForkSourceSessionId(record);
+  if (hasMismatchedHistoryBoundary(record, sessionId)) return null;
+
+  const eventType = typeof record.event_type === 'string' ? record.event_type.trim() : '';
+  if (normalizeHistoryRole(record.role) !== 'assistant' && eventType !== 'chat.subtask_update') return null;
+  const at = recordTimestampIso(record) ?? '';
+  const payload = buildEventPayloadForRecord(record);
+  if (eventType === 'chat.subtask_update' && typeof record.role === 'string' && payload.role == null) {
+    payload.role = record.role;
+  }
+  if (hasMismatchedHistoryBoundary(payload, sessionId, forkSourceSessionId)) return null;
+
+  if (eventType === 'chat.final') {
+    const content = typeof payload.content === 'string' ? payload.content : '';
+    return content.trim() ? { kind: 'message', at, payload } : null;
+  }
+
+  if (eventType === 'chat.subtask_update') {
+    const rosterSubagentId = pickFirstString(payload, ['subagent_id', 'subagentId']);
+    return rosterSubagentId === subagentId ? { kind: 'updated', at, payload } : null;
+  }
+
+  if (eventType !== 'chat.subagent_activity') return null;
+  const activity = isRecord(payload.subagent_activity) ? payload.subagent_activity : payload;
+  if (hasMismatchedHistoryBoundary(activity, sessionId, forkSourceSessionId)) return null;
+  const activitySubagentId = pickFirstString(activity, ['subagent_id', 'subagentId']);
+  if (!activitySubagentId || activitySubagentId !== subagentId) return null;
+  return { kind: 'activity', at, payload: activity };
+}
+
 function extractTeamEventRecord(record: Record<string, unknown>): Record<string, unknown> | null {
   if (isRecord(record.event)) {
     return record.event;
@@ -398,10 +899,19 @@ function appendHistoryMediaItems(
   seenKeys: Set<string>,
   value: unknown
 ): void {
-  if (!Array.isArray(value)) {
+  // Support new scoped structure: { items: [...], scope: "current_turn" }
+  let items: unknown;
+  if (isRecord(value) && Array.isArray(value.items)) {
+    items = value.items;
+  } else if (Array.isArray(value)) {
+    items = value;
+  } else {
     return;
   }
-  for (const item of value) {
+  if (!Array.isArray(items)) {
+    return;
+  }
+  for (const item of items) {
     const normalized = normalizeHistoryMediaItem(item);
     if (!normalized) {
       continue;
@@ -439,6 +949,42 @@ function extractHistoryMediaItems(record: Record<string, unknown>): MediaItem[] 
 
 function isTruthyHistoryFlag(value: unknown): boolean {
   return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+function extractHistorySupplementalInput(
+  record: Record<string, unknown>
+): Message['supplementalInput'] | undefined {
+  const payload = buildEventPayloadForRecord(record);
+  const raw = isRecord(record.supplemental_input)
+    ? record.supplemental_input
+    : isRecord(payload.supplemental_input)
+      ? payload.supplemental_input
+      : null;
+  const marked =
+    isTruthyHistoryFlag(record.is_supplemental_input) ||
+    isTruthyHistoryFlag(payload.is_supplemental_input) ||
+    Boolean(raw);
+  if (!marked) return undefined;
+
+  const executionId = raw ? pickFirstString(raw, ['execution_id', 'executionId']) ?? '' : '';
+  const streamMessageId = raw
+    ? pickFirstString(raw, ['stream_message_id', 'streamMessageId'])
+    : undefined;
+  const rawOffset = raw?.stream_offset ?? raw?.streamOffset;
+  const numericOffset =
+    typeof rawOffset === 'number'
+      ? rawOffset
+      : typeof rawOffset === 'string' && rawOffset.trim()
+        ? Number(rawOffset)
+        : 0;
+  // Older records nested the input ID; new records use the ordinary request_id.
+  const requestId = raw?.request_id ?? record.request_id ?? payload.request_id;
+  return {
+    executionId,
+    ...(typeof requestId === 'string' ? { requestId } : {}),
+    ...(streamMessageId ? { streamMessageId } : {}),
+    streamOffset: Number.isFinite(numericOffset) && numericOffset >= 0 ? numericOffset : 0,
+  };
 }
 
 function compactTokenCount(value: number): string {
@@ -489,13 +1035,34 @@ function formatCompactBoundarySummary(record: Record<string, unknown>): string {
 
 function parseHistoryTimelineEntry(
   record: Record<string, unknown>,
-  sessionId: string
+  sessionId: string,
+  subagentId?: string,
 ): HistoryTimelineEntry | null {
+  const teamId = expertTeamId({ ...buildEventPayloadForRecord(record), ...record }, sessionId);
+  if (teamId && !isTeamOrganizationUiEnabled()) return null;
+  const entry = parseSessionHistoryTimelineEntry(record, sessionId, subagentId);
+  if (teamId && entry) {
+    // Expert history never replays tools or lifecycle into the owner's runtime.
+    if (entry.kind !== 'message') return null;
+    entry.message.teamId = teamId;
+  }
+  return entry;
+}
+
+function parseSessionHistoryTimelineEntry(
+  record: Record<string, unknown>,
+  sessionId: string,
+  subagentId?: string,
+): HistoryTimelineEntry | null {
+  const eventPayload = buildEventPayloadForRecord(record);
+  if ((isSuppressedOutput(record) || isSuppressedOutput(eventPayload)) && record.event_type !== 'chat.tool_result') return null;
   const role = normalizeHistoryRole(record.role);
-  // 无有效时间戳时用空串占位（勿用 Date.now()）；排序/工具构建侧已对空串做防护。
   const at = recordTimestampIso(record) ?? '';
+  const forkedFromSessionId = readForkSourceSessionId(record);
 
   if (role === 'user') {
+    const userEventType = typeof record.event_type === 'string' ? record.event_type.trim() : '';
+    if (userEventType.startsWith('design.')) return null;
     const rawContent = record.content ?? record.text ?? record.body;
     if (isA2UIClientEventContent(rawContent)) {
       return null;
@@ -505,20 +1072,41 @@ function parseHistoryTimelineEntry(
     if (!content.trim() && mediaItems.length === 0) {
       return null;
     }
-    const id =
+    const restoredId =
       pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-user-${sessionId}-${at}`;
     const isGoalObjectiveMessage =
       isTruthyHistoryFlag(record.is_goal_objective_message) ||
       isTruthyHistoryFlag(record.isGoalObjectiveMessage);
+    const rawSkills = record.skills;
+    const skills = Array.isArray(rawSkills)
+      ? rawSkills.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+      : undefined;
+    // §9：Heartbeat 自动轮的 user/assistant 消息后端会带 metadata.automation 落盘，
+    // 历史恢复时读回同一个标记，保证刷新/切会话/后端重启后仍能识别 Heartbeat 轮。
+    // 与实时链路（useWebSocket.ts）共用同一个 extractAutomation。
+    const userAutomation = extractAutomation(record) ?? extractAutomation(buildEventPayloadForRecord(record));
+    const userCrossSession =
+      extractCrossSessionMessage(record) ??
+      extractCrossSessionMessage(buildEventPayloadForRecord(record));
+    const supplementalInput = extractHistorySupplementalInput(record);
+    const id = userCrossSession
+      ? crossSessionUserMessageId(userCrossSession.messageId)
+      : restoredId;
     return {
       kind: 'message',
       message: {
         id,
         role: 'user',
+        outputOrder: readOutputOrder(record) ?? readOutputOrder(eventPayload),
         content,
         timestamp: at,
+        ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
         ...(mediaItems.length > 0 ? { mediaItems } : {}),
         ...(isGoalObjectiveMessage ? { isGoalObjectiveMessage: true } : {}),
+        ...(skills && skills.length > 0 ? { skills } : {}),
+        ...(userAutomation ? { automation: userAutomation } : {}),
+        ...(userCrossSession ? { crossSession: userCrossSession } : {}),
+        ...(supplementalInput ? { supplementalInput } : {}),
       },
     };
   }
@@ -537,6 +1125,17 @@ function parseHistoryTimelineEntry(
     eventType = 'chat.final';
   }
 
+  if (subagentId) {
+    const replay = parseSubagentHistoryReplay(record, sessionId, subagentId);
+    if (!replay) return null;
+    const kind = replay.kind === 'updated'
+      ? 'subagent_update'
+      : replay.kind === 'activity'
+        ? 'subagent_activity'
+        : 'subagent_message';
+    return { kind, at: replay.at, payload: replay.payload };
+  }
+
   if (!ALLOWED_ASSISTANT_EVENT_TYPES.has(eventType)) {
     return null;
   }
@@ -553,8 +1152,9 @@ function parseHistoryTimelineEntry(
       message: {
         id,
         role: 'system',
-        content: `team.event:${JSON.stringify(teamPayload)}`,
-        timestamp: at,
+          content: `team.event:${JSON.stringify(teamPayload)}`,
+          timestamp: at,
+          ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
       },
     };
   }
@@ -572,6 +1172,37 @@ function parseHistoryTimelineEntry(
   }
 
   const payload = buildEventPayloadForRecord(record);
+
+  if (eventType === 'chat.subtask_update') {
+    return { kind: 'subagent_update', at, payload };
+  }
+
+  if (eventType === 'chat.error') {
+    // 后端仅 interface.py 一处把 chat.error 落盘（content=str(data)，error_type 在顶层，
+    // code 未落盘——见 interface.py:4040 的 extra 只带 error_type）。历史恢复时转成
+    // role=system 消息，与实时 useWebSocket.ts chat.error 分支对齐（实时 content=
+    // t('network.errorPrefix', {message})，历史层无 i18n，直接用错误原文）。
+    // code 缺失无法走 describeChatError 翻译生命周期错误，仅展示原文。
+    const errContent =
+      (typeof record.content === 'string' && record.content) ||
+      (typeof payload.content === 'string' && payload.content) ||
+      '';
+    if (!errContent.trim()) {
+      return null;
+    }
+    const restoredId =
+      pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-error-${sessionId}-${at}`;
+    return {
+      kind: 'message',
+      message: {
+        id: restoredId,
+        role: 'system',
+        content: errContent,
+        timestamp: at,
+        ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
+      },
+    };
+  }
 
   if (eventType === 'chat.final') {
     // Goal 完成卡片落盘的是 `goal.completed:` + JSON 信封，不是展示文本。
@@ -599,7 +1230,7 @@ function parseHistoryTimelineEntry(
     if (!content.trim()) {
       return null;
     }
-    const id =
+    const restoredId =
       pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-final-${sessionId}-${at}`;
     if (isTeamModeRecord(record)) {
       if (isHiddenTeamTeammateMessageRecord(record)) {
@@ -608,13 +1239,14 @@ function parseHistoryTimelineEntry(
       return {
         kind: 'message',
         message: {
-          id: `team-leader-${id}`,
+          id: `team-leader-${restoredId}`,
           role: 'system',
           content: `team.leader:${JSON.stringify({
             content,
             timestamp: safeTimestampMs(at),
           })}`,
           timestamp: at,
+          ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
         },
       };
     }
@@ -623,6 +1255,18 @@ function parseHistoryTimelineEntry(
     const histSource = typeof payload.source === 'string' ? payload.source : '';
     const isProactiveRecommendation = histSource === 'proactive_recommendation';
     const histProactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : '';
+    const agentTemplateName = isProactiveRecommendation
+      ? undefined
+      : readAgentTemplateName(payload) ?? readAgentTemplateName(record);
+    // 刷新后历史里的 proactive 消息也需带 proactiveRecId，否则赞/踩按钮在历史消息上不出现。
+    const histProactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
+    const assistantCrossSession =
+      extractCrossSessionMessage(payload) ?? extractCrossSessionMessage(record);
+    const id = assistantCrossSession
+      ? crossSessionAssistantMessageId(record.request_id, assistantCrossSession.messageId)
+      : isProactiveRecommendation && histProactiveRecId
+        ? proactiveAssistantMessageId(histProactiveRecId)
+        : restoredId;
     // completed_at：收尾时刻（耗时）；timestamp 已是气泡出现/首包时刻（排序）
     const completedAt =
       (typeof record.completed_at === 'number' || typeof record.completed_at === 'string'
@@ -636,12 +1280,31 @@ function parseHistoryTimelineEntry(
       message: {
         id,
         role: 'assistant',
+        outputOrder: readOutputOrder(record) ?? readOutputOrder(payload),
+        outputPhaseId: typeof record.output_phase_id === 'string' ? record.output_phase_id : undefined,
         content,
         timestamp: at,
+        ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
+        ...(payload.presentation === 'tool_result' || record.presentation === 'tool_result'
+          ? { presentation: 'tool_result' as const }
+          : {}),
+        // Full-duplex chat.final records are spoken replies, including earlier acknowledgements.
+        // Infer from the persisted channel so existing conversations also retain their replies.
+        ...(record.channel_id === 'video_duplex' || payload.channel_id === 'video_duplex'
+          ? { keepExpanded: true }
+          : {}),
         ...(completedAt ? { completedAt } : {}),
         ...(isProactiveRecommendation ? { isProactiveRecommendation } : {}),
         ...(isProactiveRecommendation && histProactiveType
           ? { proactiveType: histProactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
+          : {}),
+        ...(agentTemplateName ? { agentTemplateName } : {}),
+        ...(isProactiveRecommendation && histProactiveRecId ? { proactiveRecId: histProactiveRecId } : {}),
+        ...(assistantCrossSession ? { crossSession: assistantCrossSession } : {}),
+        // §9：Heartbeat 自动轮的 assistant 消息同样带 metadata.automation 落盘，恢复时读回。
+        // 优先读 payload（event_payload 已提升），再回退到 record 顶层。
+        ...((extractAutomation(payload) ?? extractAutomation(record))
+          ? { automation: (extractAutomation(payload) ?? extractAutomation(record))! }
           : {}),
       },
     };
@@ -691,6 +1354,29 @@ function parseHistoryTimelineEntry(
     return null;
   }
 
+  if (eventType === 'context.usage') {
+    const contextPayload: Record<string, unknown> = { ...payload, event_type: eventType };
+    // These keys are normally history-record metadata and are therefore
+    // omitted by buildEventPayloadForRecord. They are also part of the full
+    // context.usage event, so put them back for the restored frontend payload.
+    for (const key of ['request_id', 'session_id', 'timestamp', 'mode']) {
+      if (contextPayload[key] === undefined && record[key] !== undefined) {
+        contextPayload[key] = record[key];
+      }
+    }
+    if (
+      contextPayload.role === undefined &&
+      (record.role === 'leader' || record.role === 'teammate')
+    ) {
+      contextPayload.role = record.role;
+    }
+    return {
+      kind: 'context_usage',
+      at,
+      payload: contextPayload,
+    };
+  }
+
   if (eventType === 'chat.file') {
     const rawFiles = payload.files;
     if (!Array.isArray(rawFiles) || rawFiles.length === 0) {
@@ -701,6 +1387,112 @@ function parseHistoryTimelineEntry(
       kind: 'file_items',
       at,
       files,
+    };
+  }
+
+  // 问题澄清对话框（chat.ask_user_question）落盘的是问题列表（含完整 options）。
+  // 历史恢复时把 questions 重组为 AskUserQuestionPayload 作为 pending_question 条目。
+  // 在 materializeHistoryTimeline 里：若能按 request_id 配对到 chat.ask_user_answer，
+  // 渲染成带答案的 qa.summary 回显卡；否则渲染成 answers 为空的只读 qa.summary 卡片
+  // （不弹实时交互框——web 重连后后端不重发挂起中断，弹框 + resume 会报
+  // "session has no active execution"，见下方未配对分支）。
+  if (eventType === 'chat.ask_user_question') {
+    const rawQuestions = payload.questions;
+    if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) {
+      return null;
+    }
+    const questions: Question[] = [];
+    for (const q of rawQuestions) {
+      if (!isRecord(q)) continue;
+      const questionText = typeof q.question === 'string' ? q.question : '';
+      if (!questionText.trim()) continue;
+      const rawOptions = Array.isArray(q.options) ? q.options : [];
+      const options: Question['options'] = [];
+      for (const opt of rawOptions) {
+        if (!isRecord(opt)) continue;
+        const label = typeof opt.label === 'string' ? opt.label : '';
+        if (!label.trim()) continue;
+        const option: { label: string; description?: string; value?: string } = { label };
+        if (typeof opt.description === 'string' && opt.description.trim()) {
+          option.description = opt.description;
+        }
+        if (typeof opt.value === 'string' && opt.value.trim()) {
+          option.value = opt.value;
+        }
+        options.push(option);
+      }
+      const item: Question = {
+        question: questionText,
+        header: typeof q.header === 'string' && q.header.trim() ? q.header : 'Question',
+        options,
+        multi_select: !!q.multi_select,
+      };
+      if (typeof q.card_id === 'string' && q.card_id.trim()) {
+        item.card_id = q.card_id;
+      }
+      questions.push(item);
+    }
+    if (questions.length === 0) {
+      return null;
+    }
+    const requestId =
+      (typeof payload.request_id === 'string' ? payload.request_id : '') ||
+      (typeof record.request_id === 'string' ? record.request_id : '');
+    if (!requestId) {
+      return null;
+    }
+    const pendingPayload: AskUserQuestionPayload = {
+      request_id: requestId,
+      questions,
+      source: typeof payload.source === 'string' ? payload.source : undefined,
+    };
+    return {
+      kind: 'pending_question',
+      at,
+      payload: pendingPayload,
+    };
+  }
+
+  // 问题澄清答案（chat.ask_user_answer）落盘的是 answers 数组（含 question /
+  // selected_options / custom_input），request_id 与对应 chat.ask_user_question 一致。
+  // 历史恢复时在 materializeHistoryTimeline 里按 request_id 与 pending_question 配对：
+  // 配对成功的渲染成带答案的 qa.summary 回显卡，未配对的 pending_question 才弹框。
+  if (eventType === 'chat.ask_user_answer') {
+    const requestId =
+      (typeof payload.request_id === 'string' ? payload.request_id : '') ||
+      (typeof record.request_id === 'string' ? record.request_id : '');
+    if (!requestId) {
+      return null;
+    }
+    const rawAnswers = payload.answers;
+    if (!Array.isArray(rawAnswers) || rawAnswers.length === 0) {
+      return null;
+    }
+    const answers: UserAnswer[] = [];
+    for (const a of rawAnswers) {
+      if (!isRecord(a)) continue;
+      const selected = Array.isArray(a.selected_options)
+        ? a.selected_options.filter((o): o is string => typeof o === 'string' && o.trim().length > 0)
+        : [];
+      const answer: UserAnswer = {
+        question: typeof a.question === 'string' ? a.question : undefined,
+        selected_options: selected,
+      };
+      if (typeof a.custom_input === 'string' && a.custom_input.trim()) {
+        answer.custom_input = a.custom_input;
+      }
+      if (typeof a.card_id === 'string' && a.card_id.trim()) {
+        answer.card_id = a.card_id;
+      }
+      answers.push(answer);
+    }
+    if (answers.length === 0) {
+      return null;
+    }
+    return {
+      kind: 'answered_question',
+      at,
+      payload: { request_id: requestId, answers },
     };
   }
 
@@ -773,7 +1565,11 @@ interface MaterializedHistoryTimeline {
   toolReplay: HistoryToolReplayItem[];
   harnessReplay: HistoryHarnessReplayItem[];
   teamReplay: HistoryTeamReplayItem[];
+  subagentReplay: HistorySubagentReplayItem[];
   reasoningReplay: HistoryReasoningReplayItem[];
+  contextUsageReplay: HistoryContextUsageReplayItem[];
+  pendingQuestionReplay: HistoryPendingQuestionReplayItem[];
+  answeredQuestionReplay: HistoryAnsweredQuestionReplayItem[];
 }
 
 function entryTimestamp(entry: HistoryTimelineEntry): string {
@@ -826,6 +1622,133 @@ function sinkGoalCompletionCardsToTurnEnd(
   );
 }
 
+/** 未答的澄清问题（pending_question）沉到本轮末尾。
+ *
+ * 实时侧未答问题框是 LLM 那轮产出全部完成后才弹出（吸附输入框底部），
+ * 但历史里 chat.ask_user_question 的落盘时刻略早于同轮收尾的 chat.final /
+ * chat.usage_summary（LLM 流式产出时 question chunk 先到、final 后到），
+ * 直接按时间戳排序会把未答 qa.summary 卡排到 chat.final 前面，与实时反过来。
+ * 已答的 pending_question 不在此处理——它们在主循环里被跳过，改由
+ * answered_question 条目处 push（位置已对）。
+ */
+function sinkUnansweredQuestionsToTurnEnd(
+  entries: HistoryTimelineEntry[]
+): HistoryTimelineEntry[] {
+  const answeredRequestIds = new Set<string>();
+  for (const e of entries) {
+    if (e.kind === 'answered_question') {
+      answeredRequestIds.add(e.payload.request_id);
+    }
+  }
+  const out = [...entries];
+  let changed = false;
+
+  for (let i = 0; i < out.length; i += 1) {
+    const entry = out[i];
+    if (entry.kind !== 'pending_question') {
+      continue;
+    }
+    if (answeredRequestIds.has(entry.payload.request_id)) {
+      // 已答：主循环会从 answered_question 处 push，这里不动。
+      continue;
+    }
+    const cardMs = safeTimestampMs(entryTimestamp(entry));
+    let turnEndMs = cardMs;
+    // 向后扫到下一个 user 消息（本轮边界），取本轮末尾时间。
+    for (let j = i + 1; j < out.length; j += 1) {
+      const next = out[j];
+      if (next.kind === 'message' && next.message.role === 'user') {
+        break;
+      }
+      turnEndMs = Math.max(turnEndMs, safeTimestampMs(entryTimestamp(next)));
+    }
+    if (turnEndMs <= cardMs) {
+      continue;
+    }
+    const iso = timestampMsToIso(turnEndMs + 1);
+    if (!iso) {
+      continue;
+    }
+    out[i] = { ...entry, at: iso };
+    changed = true;
+  }
+
+  if (!changed) {
+    return entries;
+  }
+  return out.sort(
+    (a, b) => safeTimestampMs(entryTimestamp(a)) - safeTimestampMs(entryTimestamp(b))
+  );
+}
+
+/** 已答问题合并成 qa.summary 回显卡消息（QaSummaryCard 渲染，带答案）。 */
+function buildAnsweredQaSummaryMessage(
+  at: string,
+  pending: AskUserQuestionPayload,
+  answers: UserAnswer[],
+): Message | null {
+  const answerByQuestion = new Map<string, UserAnswer>();
+  for (const a of answers) {
+    if (a.question) {
+      answerByQuestion.set(a.question, a);
+    }
+  }
+  const items = (pending.questions ?? []).map((q) => {
+    const ans = answerByQuestion.get(q.question);
+    const answerTexts: string[] = [];
+    const answerSources: Array<'option' | 'input'> = [];
+    if (ans) {
+      for (const opt of ans.selected_options ?? []) {
+        if (opt.trim()) {
+          answerTexts.push(opt);
+          answerSources.push('option');
+        }
+      }
+      if (ans.custom_input && ans.custom_input.trim()) {
+        answerTexts.push(ans.custom_input);
+        answerSources.push('input');
+      }
+    }
+    const header = q.header && q.header.trim() ? q.header : undefined;
+    return { header, question: q.question, answers: answerTexts, answerSources };
+  });
+  if (items.length === 0) {
+    return null;
+  }
+  return {
+    id: `qa-summary-hist-${pending.request_id || at}`,
+    role: 'assistant',
+    content: buildQaSummaryContent({ title: i18n.t('qaSummary.title'), items }),
+    timestamp: at,
+  };
+}
+
+/**
+ * 历史恢复出的「未答」问题澄清对话框——渲染成只读 qa.summary 卡片
+ * （QaSummaryCard 在 answers 为空时展示「—」），不弹实时交互框。
+ *
+ * 见 materializeHistoryTimeline 里 pending_question 未配对分支的说明：
+ * 后端 execution handle 在页面刷新后不可靠，弹框 + resume 会报
+ * "session has no active execution"，所以只读展示。
+ */
+function buildUnansweredQaSummaryMessage(
+  at: string,
+  pending: AskUserQuestionPayload,
+): Message | null {
+  const items = (pending.questions ?? []).map((q) => ({
+    header: q.header && q.header.trim() ? q.header : undefined,
+    question: q.question,
+    answers: [] as string[],
+  }));
+  if (items.length === 0) return null;
+  return {
+    id: `qa-summary-hist-${pending.request_id || at}`,
+    role: 'assistant',
+    content: buildQaSummaryContent({ title: i18n.t('qaSummary.title'), items }),
+    timestamp: at,
+  };
+}
+
 /** 将 history 条目折叠成消息/工具/思考，供 restore / page / 文件预览共用。入口统一升序。 */
 function materializeHistoryTimeline(
   rawEntries: HistoryTimelineEntry[]
@@ -834,16 +1757,72 @@ function materializeHistoryTimeline(
   const sortedEntries = [...rawEntries].sort(
     (a, b) => safeTimestampMs(entryTimestamp(a)) - safeTimestampMs(entryTimestamp(b))
   );
-  const entries = sinkGoalCompletionCardsToTurnEnd(sortedEntries);
+  const entries = sinkUnansweredQuestionsToTurnEnd(
+    sinkGoalCompletionCardsToTurnEnd(sortedEntries),
+  );
   const messages: Message[] = [];
   const toolReplay: HistoryToolReplayItem[] = [];
   const harnessReplay: HistoryHarnessReplayItem[] = [];
   const teamReplay: HistoryTeamReplayItem[] = [];
+  const subagentReplay: HistorySubagentReplayItem[] = [];
   const reasoningReplay: HistoryReasoningReplayItem[] = [];
+  const contextUsageReplay: HistoryContextUsageReplayItem[] = [];
+  const pendingQuestionReplay: HistoryPendingQuestionReplayItem[] = [];
+  const answeredQuestionReplay: HistoryAnsweredQuestionReplayItem[] = [];
+
+  // 先扫一遍收集已答问题，供 pending_question / answered_question 配对：
+  // 已答的渲染成带答案的 qa.summary 回显卡（进 messages）；
+  // 未答的也渲染成 qa.summary 卡片（answers 为空），不弹实时交互框（见下方分支）。
+  const answeredByRequestId = new Map<string, UserAnswer[]>();
+  // pending_question 的 payload（问题原文+选项），按 request_id 索引——
+  // 已答的 qa.summary 卡改在 answered_question 条目处 push（用答案时间定位），
+  // 但卡内容需要问题+答案合并，故需在此预扫一遍把问题 payload 存起来。
+  const pendingQuestionByRequestId = new Map<string, AskUserQuestionPayload>();
+  for (const e of entries) {
+    if (e.kind === 'answered_question') {
+      answeredByRequestId.set(e.payload.request_id, e.payload.answers);
+    } else if (e.kind === 'pending_question') {
+      pendingQuestionByRequestId.set(e.payload.request_id, e.payload);
+    }
+  }
 
   for (const e of entries) {
     if (e.kind === 'message') {
       messages.push(e.message);
+      continue;
+    }
+    if (e.kind === 'pending_question') {
+      const answers = answeredByRequestId.get(e.payload.request_id);
+      if (answers) {
+        // 已答：不在问题出现位置 push qa.summary 卡——改由下方 answered_question
+        // 条目处 push（用答案提交时间定位，与实时回显位置一致：实时回显的 qa.summary
+        // 卡在用户点确认那一刻追加到列表末尾，而非问题出现时刻）。这里直接跳过。
+      } else {
+        // 未答：不再弹实时交互框。
+        // web 通道重连后后端不会重新派发挂起的 chat.ask_user_question（_on_connect
+        // 只发 connection.ack，session.get_metadata 也不含 pending interaction），
+        // 原 execution handle 在刷新/重启后已不可靠——用户点确认会发 chat.send resume，
+        // 后端找不到 WAITING_FOR_CONTROL 的 parent 而抛 "session has no active execution"。
+        // 改成只读 qa.summary 回显卡（answers 为空，QaSummaryCard 渲染「—」），
+        // 让用户看到曾经被问过什么，但不提供无法兑现的确认按钮。
+        const unansweredMessage = buildUnansweredQaSummaryMessage(e.at, e.payload);
+        if (unansweredMessage) {
+          messages.push(unansweredMessage);
+        }
+      }
+      continue;
+    }
+    if (e.kind === 'answered_question') {
+      // 已答：在此处（答案提交时间位置）push qa.summary 回显卡，与实时回显位置一致。
+      // 用 answered_question 的 at（chat.ask_user_answer 落盘时间），而非问题的 at。
+      const pending = pendingQuestionByRequestId.get(e.payload.request_id);
+      if (pending) {
+        const qaMessage = buildAnsweredQaSummaryMessage(e.at, pending, e.payload.answers);
+        if (qaMessage) {
+          messages.push(qaMessage);
+        }
+      }
+      answeredQuestionReplay.push({ at: e.at, payload: e.payload });
       continue;
     }
     if (e.kind === 'usage_summary') {
@@ -853,6 +1832,10 @@ function materializeHistoryTimeline(
           break;
         }
       }
+      continue;
+    }
+    if (e.kind === 'context_usage') {
+      contextUsageReplay.push({ at: e.at, payload: e.payload });
       continue;
     }
     if (e.kind === 'harness_message') {
@@ -894,8 +1877,26 @@ function materializeHistoryTimeline(
       teamReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
       continue;
     }
+    if (e.kind === 'subagent_update' || e.kind === 'subagent_message' || e.kind === 'subagent_activity') {
+      subagentReplay.push({
+        kind: e.kind === 'subagent_update'
+          ? 'updated'
+          : e.kind === 'subagent_activity'
+            ? 'activity'
+            : 'message',
+        at: e.at,
+        payload: e.payload,
+      });
+      continue;
+    }
     if (e.kind === 'reasoning') {
-      reasoningReplay.push({ at: e.at, text: e.text, updatedAt: e.updatedAt });
+      reasoningReplay.push({
+        at: e.at,
+        text: e.text,
+        outputOrder: e.outputOrder,
+        agentTemplateName: e.agentTemplateName,
+        updatedAt: e.updatedAt,
+      });
       continue;
     }
     if (e.kind === 'compaction') {
@@ -905,7 +1906,35 @@ function materializeHistoryTimeline(
     toolReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
   }
 
-  return { messages, toolReplay, harnessReplay, teamReplay, reasoningReplay };
+  return {
+    messages,
+    toolReplay,
+    harnessReplay,
+    teamReplay,
+    subagentReplay,
+    reasoningReplay,
+    contextUsageReplay,
+    pendingQuestionReplay,
+    answeredQuestionReplay,
+  };
+}
+
+function selectLatestContextUsagePayload(items: HistoryContextUsageReplayItem[]): Record<string, unknown> | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    const snapshot = parseContextUsageSnapshot(item.payload);
+    if (!snapshot) continue;
+
+    const mode = typeof item.payload.mode === 'string' ? item.payload.mode.trim().toLowerCase() : '';
+    const eligible =
+      mode === 'team'
+        ? isTeamLeaderContextUsageSnapshot(snapshot)
+        : mode === 'agent'
+          ? isSingleAgentContextUsageSnapshot(snapshot)
+          : isTeamLeaderContextUsageSnapshot(snapshot) || isSingleAgentContextUsageSnapshot(snapshot);
+    if (eligible) return item.payload;
+  }
+  return null;
 }
 
 /**
@@ -922,8 +1951,20 @@ export function parseHistoryJsonFileToPreviewMessages(
 export interface HistoryTimelinePreview {
   messages: Message[];
   executions: ToolExecution[];
-  reasoningSegments: { id: string; text: string; startedAt: number; closed: true; updatedAt?: number; closedAt?: number }[];
+  reasoningSegments: {
+    outputOrder?: OutputOrder;
+    id: string;
+    text: string;
+    startedAt: number;
+    closed: true;
+    agentTemplateName?: string;
+    updatedAt?: number;
+    closedAt?: number;
+  }[];
   mode: 'team' | null;
+  contextUsageSnapshot: Record<string, unknown> | null;
+  pendingQuestions: HistoryPendingQuestionReplayItem[];
+  answeredQuestions: HistoryAnsweredQuestionReplayItem[];
 }
 
 /**
@@ -934,7 +1975,7 @@ export function parseHistoryJsonFileToTimelinePreview(
   sessionId: string
 ): HistoryTimelinePreview {
   if (!Array.isArray(parsed)) {
-    return { messages: [], executions: [], reasoningSegments: [], mode: null };
+    return { messages: [], executions: [], reasoningSegments: [], mode: null, contextUsageSnapshot: null, pendingQuestions: [], answeredQuestions: [] };
   }
 
   const entries: HistoryTimelineEntry[] = [];
@@ -955,8 +1996,10 @@ export function parseHistoryJsonFileToTimelinePreview(
     if (reasoningText) {
       entries.push({
         kind: 'reasoning',
+        outputOrder: readOutputOrder(item, 'reasoning_output_order'),
         at: recordTimestampIso(item) ?? '',
         text: reasoningText,
+        agentTemplateName: readHistoryAgentTemplateName(item),
         updatedAt: extractHistoryReasoningUpdatedAt(item),
       });
     }
@@ -969,7 +2012,7 @@ export function parseHistoryJsonFileToTimelinePreview(
     return safeTimestampMs(aAt) - safeTimestampMs(bAt);
   });
 
-  const { messages, toolReplay, reasoningReplay } = materializeHistoryTimeline(entries);
+  const { messages, toolReplay, reasoningReplay, contextUsageReplay, pendingQuestionReplay, answeredQuestionReplay } = materializeHistoryTimeline(entries);
   const executions = buildToolExecutionsFromReplay(toolReplay);
   const reasoningSegments = buildReasoningSegmentsFromReplay(sessionId, reasoningReplay);
 
@@ -978,6 +2021,9 @@ export function parseHistoryJsonFileToTimelinePreview(
     executions,
     reasoningSegments,
     mode: isTeam ? 'team' : null,
+    contextUsageSnapshot: selectLatestContextUsagePayload(contextUsageReplay),
+    pendingQuestions: pendingQuestionReplay,
+    answeredQuestions: answeredQuestionReplay,
   };
 }
 
@@ -989,10 +2035,11 @@ function buildReasoningSegmentsFromReplay(
   const seen = new Set<string>();
   items.forEach((item, index) => {
     const text = item.text?.trim();
-    if (!text || seen.has(text)) {
+    const identity = item.outputOrder ? `${item.outputOrder.requestId}:${item.outputOrder.sequence}` : text;
+    if (!text || seen.has(identity)) {
       return;
     }
-    seen.add(text);
+    seen.add(identity);
     const parsed = parseTimestampToMs(item.at);
     // 解析失败时跳过该段，勿用 index 当 epoch（会让 startMs≈0，耗时爆炸）
     if (!Number.isFinite(parsed)) {
@@ -1009,8 +2056,10 @@ function buildReasoningSegmentsFromReplay(
     segments.push({
       id: `hist-preview-rsn-${sessionId}-${index}`,
       text,
+      outputOrder: item.outputOrder,
       startedAt,
       closed: true,
+      ...(item.agentTemplateName ? { agentTemplateName: item.agentTemplateName } : {}),
       closedAt: startedAt,
       updatedAt,
     });
@@ -1038,22 +2087,27 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
       if (!startedAt) {
         continue;
       }
+      const agentTemplateName = readAgentTemplateName(item.payload);
       byId.set(n.id, {
         toolCallId: n.id,
+        outputOrder: n.outputOrder,
         toolCall: {
           id: n.id,
           name: n.name,
           arguments: n.arguments,
           description: n.description,
           formatted_args: n.formatted_args,
+          call_goal: n.call_goal,
           display_name: n.display_name,
           memberName: n.memberName,
+          reviewer: n.reviewer,
         },
         // 与实时一致：先 pending，等 tool_result 再落终态；无 result 的孤儿在循环末尾结算。
         status: 'pending',
         startedAt,
         updatedAt: startedAt,
         timeoutAt: startedAt,
+        ...(agentTemplateName ? { agentTemplateName } : {}),
       });
       order.push(n.id);
       continue;
@@ -1068,17 +2122,22 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
       toolName: n.toolName,
       result: n.result,
       success: n.success,
+      ...(n.pending ? { pending: true as const } : {}),
       toolCallId: n.toolCallId,
       summary: n.summary,
       skillTree: n.skillTree,
+      ...(n.mermaid ? { mermaid: n.mermaid } : {}),
       ...(n.timedOut ? { timedOut: true as const } : {}),
       ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
+      reviewer: n.reviewer,
     };
-    const resultStatus: ToolExecution['status'] = n.timedOut
-      ? 'timeout'
-      : n.success
-        ? 'completed'
-        : 'error';
+    const resultStatus: ToolExecution['status'] = n.pending
+      ? 'pending'
+      : n.timedOut
+        ? 'timeout'
+        : n.success
+          ? 'completed'
+          : 'error';
     const parsed = parseTimestampToMs(item.at);
     const atIso = Number.isFinite(parsed) ? timestampMsToIso(parsed) : undefined;
     if (!existing) {
@@ -1154,17 +2213,27 @@ function isHistoryBatchEnd(payload: Record<string, unknown>): boolean {
  * 仅处理属于当前 `history.get` 会话的帧，避免多标签/乱序下的串台。
  * 无 `session_id` 时：丢弃数据行；仍接受明确的结束帧（兼容未注入 id 的旧链路）。
  */
-function shouldProcessHistoryPayload(
+export function shouldProcessHistoryPayload(
   payload: Record<string, unknown>,
   expectedSessionId: string,
   expectedPageIdx?: number,
-  allowLegacyNoSession = false
+  allowLegacyNoSession = false,
+  expectedSubagentId?: string,
+  expectedCursor?: string | null,
 ): boolean {
-  const sid = typeof payload.session_id === 'string' ? payload.session_id.trim() : '';
+  if (hasMismatchedHistoryBoundary(payload, expectedSessionId)) return false;
+  const sid = pickFirstString(payload, ['session_id', 'sessionId']) ?? '';
   if (sid && sid !== expectedSessionId) {
     return false;
   }
+  const subagentId = pickFirstString(payload, ['subagent_id', 'subagentId']) ?? '';
+  if (subagentId !== (expectedSubagentId ?? '')) {
+    return false;
+  }
   if (expectedPageIdx !== undefined && payload.page_idx !== expectedPageIdx) {
+    return false;
+  }
+  if (expectedCursor !== undefined && payload.cursor !== expectedCursor) {
     return false;
   }
   if (!sid) {
@@ -1173,8 +2242,38 @@ function shouldProcessHistoryPayload(
   return true;
 }
 
+function readHistoryCursorMeta(
+  payload: Record<string, unknown>,
+  requestCursor: string | null,
+): HistoryCursorMeta | null {
+  const hasMore = payload.has_more;
+  const nextCursor = payload.next_cursor;
+  const snapshotId = payload.snapshot_id;
+  const snapshotEnd = payload.snapshot_end;
+  if (typeof hasMore !== 'boolean') return null;
+
+  let normalizedNextCursor: string | null = null;
+  if (hasMore) {
+    if (typeof nextCursor !== 'string' || !nextCursor) return null;
+    normalizedNextCursor = nextCursor;
+  } else if (nextCursor !== null) {
+    return null;
+  }
+
+  if (snapshotId !== null && typeof snapshotId !== 'string') return null;
+  if (typeof snapshotEnd !== 'number' || !Number.isFinite(snapshotEnd) || snapshotEnd < 0) return null;
+
+  return {
+    requestCursor,
+    nextCursor: normalizedNextCursor,
+    hasMore,
+    snapshotId,
+    snapshotEnd,
+  };
+}
+
 export function beginHistoryRestore(options: BeginHistoryRestoreOptions): HistoryRestoreHandle {
-  const requestKey = makeHistoryRestoreKey(options.sessionId);
+  const requestKey = makeHistoryRestoreKey(options.sessionId, options.subagentId);
   const releaseLiveEvents = webClient.suspendSessionEvents(options.sessionId);
   replaceActiveHistoryRequest(requestKey);
 
@@ -1182,7 +2281,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
   restoreGeneration = generation;
 
   const entries: HistoryTimelineEntry[] = [];
-  let totalPages: number | null = null;
+  let cursorMeta: HistoryCursorMeta | null = null;
   let disposed = false;
   let finalized = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1194,12 +2293,28 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     }
 
     const payload = event.payload;
-    if (!shouldProcessHistoryPayload(payload, options.sessionId, undefined, activeHistoryRequests.size === 1)) {
+    if (!shouldProcessHistoryPayload(
+      payload,
+      options.sessionId,
+      undefined,
+      false,
+      options.subagentId,
+      null,
+    )) {
       return;
     }
 
-    if (typeof payload.total_pages === 'number' && Number.isFinite(payload.total_pages)) {
-      totalPages = payload.total_pages;
+    const nextMeta = readHistoryCursorMeta(payload, null);
+    if (nextMeta) {
+      cursorMeta = nextMeta;
+    }
+
+    if (payload.status === 'error') {
+      fail({
+        code: typeof payload.code === 'string' ? payload.code : 'HISTORY_RESTORE_FAILED',
+        message: typeof payload.error === 'string' ? payload.error : 'history restore failed',
+      });
+      return;
     }
 
     if (isHistoryRestoreDonePayload(payload)) {
@@ -1214,7 +2329,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
       if (!full) {
         return;
       }
-      const entry = parseHistoryTimelineEntry(full, options.sessionId);
+      const entry = parseHistoryTimelineEntry(full, options.sessionId, options.subagentId);
       if (entry) {
         entries.unshift(entry);
       }
@@ -1222,8 +2337,10 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
       if (reasoningText) {
         entries.unshift({
           kind: 'reasoning',
+          outputOrder: readOutputOrder(full, 'reasoning_output_order'),
           at: recordTimestampIso(full) ?? '',
           text: reasoningText,
+          agentTemplateName: readHistoryAgentTemplateName(full),
           updatedAt: extractHistoryReasoningUpdatedAt(full),
         });
       }
@@ -1252,22 +2369,69 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     releaseLiveEvents();
   }
 
+  function fail(failure: HistoryRestoreFailure): void {
+    if (disposed || finalized) return;
+    finalized = true;
+    stopListening();
+    try {
+      options.onFailure?.(failure);
+    } finally {
+      releaseLiveEvents();
+    }
+  }
+
   function finalize(): void {
     if (disposed || finalized) return;
     finalized = true;
     reassembler.flush();
 
-    const { messages, toolReplay, harnessReplay, teamReplay, reasoningReplay } =
-      materializeHistoryTimeline(entries);
+    if (!cursorMeta) {
+      stopListening();
+      try {
+        options.onFailure?.({
+          code: 'INVALID_HISTORY_RESPONSE',
+          message: 'history response did not include cursor metadata',
+        });
+      } finally {
+        releaseLiveEvents();
+      }
+      return;
+    }
+
+    const {
+      messages,
+      toolReplay,
+      harnessReplay,
+      teamReplay,
+      subagentReplay,
+      reasoningReplay,
+      contextUsageReplay,
+      pendingQuestionReplay,
+      answeredQuestionReplay,
+    } = materializeHistoryTimeline(entries);
+    const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
 
     stopListening();
 
     try {
-      if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0) {
-        options.onEmpty?.(totalPages);
+      const isEmpty = (
+        messages.length === 0
+        && toolReplay.length === 0
+        && harnessReplay.length === 0
+        && teamReplay.length === 0
+        && subagentReplay.length === 0
+        && pendingQuestionReplay.length === 0
+        && answeredQuestionReplay.length === 0
+        && !latestContextUsage
+      );
+      if (isEmpty) {
+        options.onEmpty?.(cursorMeta);
         return;
       }
-      options.onReady(messages, totalPages);
+      options.onReady(messages, cursorMeta);
+      if (latestContextUsage) {
+        options.onContextUsage?.(latestContextUsage);
+      }
       if (toolReplay.length > 0) {
         options.onToolReplay?.(toolReplay);
       }
@@ -1277,8 +2441,14 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
       if (teamReplay.length > 0) {
         options.onTeamReplay?.(teamReplay);
       }
+      if (subagentReplay.length > 0) {
+        options.onSubagentReplay?.(subagentReplay);
+      }
       if (reasoningReplay.length > 0) {
         options.onReasoningReplay?.(reasoningReplay);
+      }
+      if (pendingQuestionReplay.length > 0) {
+        options.onPendingQuestionReplay?.(pendingQuestionReplay);
       }
       const compactionCount = entries.reduce((n, e) => (e.kind === 'compaction' ? n + 1 : n), 0);
       if (compactionCount > 0) {
@@ -1294,65 +2464,75 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
 
   const handle: HistoryRestoreHandle = { generation, dispose };
   activeHistoryRequests.set(requestKey, handle);
-  // 兜底：后端 history.get 流超时（faas 旧 session runtime 过 TTL 被
-  // 回收、init 60s 超时）时不发结束帧，强制 finalize 恢复 isLoadingHistory，
-  // 避免前端永久转圈、吞掉后续 chat.processing_status(is_processing=false)。
+  // 超时是一次明确失败，不能把不完整批次当作成功历史发布。
   restoreTimer = setTimeout(() => {
     if (disposed || finalized) return;
-    finalize();
+    fail({ code: 'HISTORY_RESTORE_TIMEOUT', message: 'history restore timed out' });
   }, HISTORY_RESTORE_TIMEOUT_MS);
   return handle;
 }
 
-export interface FetchHistoryPageResult {
+export interface FetchHistoryCursorBatchResult {
   messages: Message[];
   toolReplay: HistoryToolReplayItem[];
   harnessReplay: HistoryHarnessReplayItem[];
   teamReplay: HistoryTeamReplayItem[];
+  subagentReplay: HistorySubagentReplayItem[];
   reasoningReplay: HistoryReasoningReplayItem[];
-  totalPages: number | null;
+  contextUsageSnapshot: Record<string, unknown> | null;
+  cursor: HistoryCursorMeta;
 }
 
-export interface FetchHistoryPageOptions {
+export interface FetchHistoryCursorBatchOptions {
   sessionId: string;
-  pageIdx: number;
-  onReady: (result: FetchHistoryPageResult) => void;
-  onEmpty?: (totalPages: number | null) => void;
+  cursor: string | null;
+  subagentId?: string;
+  onReady: (result: FetchHistoryCursorBatchResult) => void;
+  onFailure?: (failure: HistoryRestoreFailure) => void;
   onError?: (message: string) => void;
 }
 
-/**
- * 拉取单页历史（用于「加载更早」）。
- * 调用方需在订阅建立后再发 `history.get`（含对应 `page_idx`）。
- */
-export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryRestoreHandle {
-  const requestKey = makeHistoryPageKey(options.sessionId, options.pageIdx);
+/** Subscribe before sending the matching cursor-based ``history.get`` request. */
+export function fetchHistoryCursorBatch(
+  options: FetchHistoryCursorBatchOptions,
+): HistoryRestoreHandle {
+  const requestKey = makeHistoryCursorKey(options.sessionId, options.cursor, options.subagentId);
   replaceActiveHistoryRequest(requestKey);
 
   const generation = restoreGeneration + 1;
   restoreGeneration = generation;
 
   const entries: HistoryTimelineEntry[] = [];
-  let totalPages: number | null = null;
+  let cursorMeta: HistoryCursorMeta | null = null;
   let disposed = false;
   let finalized = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
   const reassembler = new HistoryRecordReassembler();
 
   const unsubscribe = webClient.on(HISTORY_MESSAGE_EVENT, (event: WsEvent) => {
-    if (disposed) {
-      return;
-    }
-
+    if (disposed) return;
     const payload = event.payload;
-    if (!shouldProcessHistoryPayload(payload, options.sessionId, options.pageIdx, activeHistoryRequests.size === 1)) {
+    if (!shouldProcessHistoryPayload(
+      payload,
+      options.sessionId,
+      undefined,
+      false,
+      options.subagentId,
+      options.cursor,
+    )) {
       return;
     }
 
-    if (typeof payload.total_pages === 'number' && Number.isFinite(payload.total_pages)) {
-      totalPages = payload.total_pages;
-    }
+    const nextMeta = readHistoryCursorMeta(payload, options.cursor);
+    if (nextMeta) cursorMeta = nextMeta;
 
+    if (payload.status === 'error') {
+      fail({
+        code: typeof payload.code === 'string' ? payload.code : 'HISTORY_RESTORE_FAILED',
+        message: typeof payload.error === 'string' ? payload.error : 'history restore failed',
+      });
+      return;
+    }
     if (isHistoryRestoreDonePayload(payload)) {
       finalize();
       return;
@@ -1362,27 +2542,22 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
     const record = normalizeHistoryContent(raw, options.onError);
     if (record) {
       const full = reassembler.feed(record);
-      if (!full) {
-        return;
-      }
-      const entry = parseHistoryTimelineEntry(full, options.sessionId);
-      if (entry) {
-        entries.unshift(entry);
-      }
+      if (!full) return;
+      const entry = parseHistoryTimelineEntry(full, options.sessionId, options.subagentId);
+      if (entry) entries.unshift(entry);
       const reasoningText = extractHistoryReasoningText(full);
       if (reasoningText) {
         entries.unshift({
           kind: 'reasoning',
+          outputOrder: readOutputOrder(full, 'reasoning_output_order'),
           at: recordTimestampIso(full) ?? '',
           text: reasoningText,
+          agentTemplateName: readHistoryAgentTemplateName(full),
           updatedAt: extractHistoryReasoningUpdatedAt(full),
         });
       }
     }
-
-    if (isHistoryBatchEnd(payload)) {
-      finalize();
-    }
+    if (isHistoryBatchEnd(payload)) finalize();
   });
 
   function dispose(): void {
@@ -1398,29 +2573,35 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
     }
   }
 
+  function fail(failure: HistoryRestoreFailure): void {
+    if (disposed || finalized) return;
+    finalized = true;
+    dispose();
+    options.onFailure?.(failure);
+  }
+
   function finalize(): void {
     if (disposed || finalized) return;
     finalized = true;
     reassembler.flush();
-
-    const { messages, toolReplay, harnessReplay, teamReplay, reasoningReplay } =
-      materializeHistoryTimeline(entries);
-
-    dispose();
-
-    if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0) {
-      options.onEmpty?.(totalPages);
+    if (!cursorMeta) {
+      dispose();
+      options.onFailure?.({
+        code: 'INVALID_HISTORY_RESPONSE',
+        message: 'history response did not include cursor metadata',
+      });
       return;
     }
-    options.onReady({ messages, toolReplay, harnessReplay, teamReplay, reasoningReplay, totalPages });
+    const materialized = materializeHistoryTimeline(entries);
+    const contextUsageSnapshot = selectLatestContextUsagePayload(materialized.contextUsageReplay);
+    dispose();
+    options.onReady({ ...materialized, contextUsageSnapshot, cursor: cursorMeta });
   }
 
   const handle: HistoryRestoreHandle = { generation, dispose };
   activeHistoryRequests.set(requestKey, handle);
-  // 同 beginHistoryRestore：兜底超时，避免分页 history.get 流卡死。
   restoreTimer = setTimeout(() => {
-    if (disposed || finalized) return;
-    finalize();
+    fail({ code: 'HISTORY_RESTORE_TIMEOUT', message: 'history restore timed out' });
   }, HISTORY_RESTORE_TIMEOUT_MS);
   return handle;
 }

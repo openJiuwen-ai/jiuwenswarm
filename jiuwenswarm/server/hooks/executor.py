@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """Hook 执行器 —— 执行 command / prompt 两类 hook，返回统一 HookResult."""
 
@@ -11,7 +11,14 @@ import os
 import re
 from dataclasses import dataclass
 
+from openjiuwen.harness_providers.jsonsafe import to_json_safe
+
 logger = logging.getLogger(__name__)
+
+
+def _hook_input_json(hook_input: dict) -> str:
+    """Serialize hook input; tool results are models (e.g. ``ToolOutput``), not plain JSON."""
+    return json.dumps(to_json_safe(hook_input), ensure_ascii=False)
 
 
 class HookOutcome:
@@ -65,7 +72,7 @@ class HookExecutor:
 
         timeout = config.get("timeout", 30)
         shell = config.get("shell", "bash")
-        hook_input_json = json.dumps(hook_input, ensure_ascii=False)
+        hook_input_json = _hook_input_json(hook_input)
 
         env = os.environ.copy()
         env["ARGUMENTS"] = hook_input_json
@@ -179,7 +186,7 @@ class HookExecutor:
         timeout = config.get("timeout", 15)
         model_name = config.get("model", "")
 
-        hook_input_json = json.dumps(hook_input, ensure_ascii=False)
+        hook_input_json = _hook_input_json(hook_input)
         final_prompt = prompt_template.replace("$ARGUMENTS", hook_input_json)
         tool_name = hook_input.get("tool_name", "")
         final_prompt = final_prompt.replace("$TOOL_NAME", tool_name)

@@ -1,0 +1,2 @@
+export const AGENT_NAME_MAX_LENGTH = 50;
+export const AGENT_DESCRIPTION_MAX_LENGTH = 2000;

@@ -1,0 +1,1052 @@
+import type { TeamMemberIdentity } from '../../utils/teamMemberAvatar';
+import type { TeamTask } from '../../stores/sessionStore';
+
+/**
+ * SwarmFlow workflow 共享类型与工具函数。
+ *
+ * 从 TUI 的 workflows.ts 提取，供 web 端树视图渲染使用。
+ * 包含 WorkflowRun → WorkflowPhase → WorkflowAgent 树结构定义、
+ * 增量合并逻辑（mergeWorkflowRun）以及状态/格式化工具函数。
+ */
+
+export type WorkflowStatus =
+  | 'planned'
+  | 'pending'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'stopped'
+  | 'waiting_for_human';
+
+export type WorkflowNodeType = 'agent' | 'agent_session' | 'agent_session_fork' | 'human' | 'human_session';
+
+export interface WorkflowAgentActivity {
+  timestamp: string;
+  type: 'tool_call' | 'tool_result';
+  content: string;
+  /** The invoked tool; set on both call rows and orphan result rows. */
+  tool_name?: string | null;
+  /** Pairs a tool_call row with its result; absent on legacy rows. */
+  tool_call_id?: string | null;
+  /** Paired result preview, filled on the call row when its result arrives. */
+  tool_result_preview?: string | null;
+}
+
+export interface WorkflowBudget {
+  total: number | null;
+  spent: number;
+  remaining: number | null;
+  scope: 'leader' | 'session' | 'workflow';
+  exhausted: boolean;
+}
+
+/**
+ * Compact token-count label, same rounding as the TUI's formatTokenCount:
+ * ``500`` stays ``500`` (no premature K-rounding — 500 must not read as 1K),
+ * ``1250`` → ``1.3K``, ``220000`` → ``220K``.
+ */
+export function compactTokenLabel(value: number): string {
+  if (value < 1000) return `${Math.round(value)}`;
+  if (value < 1_000_000) {
+    const k = (value / 1000).toFixed(1);
+    return `${k.endsWith('.0') ? k.slice(0, -2) : k}K`;
+  }
+  const m = (value / 1_000_000).toFixed(1);
+  return `${m.endsWith('.0') ? m.slice(0, -2) : m}M`;
+}
+
+/**
+ * Compact token-budget label, e.g. ``12K/50K`` or ``480/500``.
+ * An unbounded ledger (``total == null``) shows spent only — the caller appends
+ * the localized "unbounded" suffix (same wording as the TUI).
+ */
+export function formatBudgetK(budget: WorkflowBudget): string {
+  const spent = compactTokenLabel(budget.spent ?? 0);
+  if (budget.total == null) return spent;
+  return `${spent}/${compactTokenLabel(budget.total)}`;
+}
+
+export interface WorkflowAgentPart {
+  part_idx: number;
+  total_parts: number;
+  content: string;
+}
+
+/** One reviewer's vote inside a verify group (mirrors the engine's settled shape). */
+export interface WorkflowVerifyVote {
+  /** Matches the reviewer agent node's label in the same phase. */
+  name: string;
+  /** The reviewer agent() call's deterministic node id (second join key). */
+  agent_id?: string | null;
+  kind: 'verdict' | 'score';
+  /** Display-only business role (verifier / inspector / challenger); judgement never reads it. */
+  role?: string | null;
+  /** 'pass' | 'fail' | null (not voted / malformed). */
+  decision?: 'pass' | 'fail' | null;
+  score?: number | null;
+  feedback?: string;
+  voted?: boolean;
+}
+
+/** One verify() round folded under a phase by the backend (VERIFY_STARTED → VERIFY_COMPLETED). */
+export interface WorkflowVerifyGroup {
+  id: string;
+  label: string;
+  /** Engine round identity (structural call position); None on legacy events. */
+  verify_id?: string;
+  /** 'running' until VERIFY_COMPLETED arrives. */
+  status: 'running' | 'settled';
+  threshold?: number;
+  reviewers?: number;
+  /** Reviewer label roster in fan-out order (verify_started); unique across rounds. */
+  reviewer_labels?: string[];
+  /** Reviewer business role roster (verify_started), same fan-out order as labels; display-only. */
+  reviewer_roles?: (string | null)[];
+  /** 'pass' | 'fail' | null = undecided (a reviewer did not vote — never a silent pass). */
+  verdict?: 'pass' | 'fail' | null;
+  votes?: WorkflowVerifyVote[];
+  /** Complete round output as a JSON string (engine _preview(VerifyResult)); absent on legacy runs. */
+  outcome?: string;
+  started_at?: string;
+  settled_at?: string;
+}
+
+export interface WorkflowAgent {
+  id: string;
+  name: string;
+  status: WorkflowStatus;
+  model?: string;
+  prompt?: string;
+  prompt_parts?: WorkflowAgentPart[];
+  activity?: WorkflowAgentActivity[];
+  outcome?: string;
+  outcome_parts?: WorkflowAgentPart[];
+  error?: string;
+  error_parts?: WorkflowAgentPart[];
+  started_at?: string;
+  completed_at?: string;
+  token_count?: number | null;
+  /** Prompt-cache-hit tokens (subset of token_count); null when the provider reported none. */
+  cache_token_count?: number | null;
+  /** Prompt input tokens; null on old runs that only carry the total. */
+  input_token_count?: number | null;
+  /** Completion output tokens; null on old runs that only carry the total. */
+  output_token_count?: number | null;
+  duration_ms?: number | null;
+  kind?: 'agent' | 'human';
+  node_type?: WorkflowNodeType;
+  /** External provider kind on third-party nodes ("claude" | "codex"); absent for native workers. */
+  agent_type?: string;
+  /** AgentGroup member picked via options.agent_template; absent for the generic worker. */
+  agent_template?: string;
+  /** That expert's display name; shown instead of the label and used as the avatar key. */
+  display_name?: string;
+  correlation_id?: string;
+  /**
+   * Fork child (node_type=agent_session_fork): parent session's avatar member
+   * name (unique per session) — the fork-edge source. Resolves the exact
+   * parent even for chained / same-label forks; a label is NOT unique here
+   * because fork() inherits the parent label by default.
+   */
+  parent_session_id?: string;
+  /** This session's avatar member name (constant across turns); join key for parent_session_id. */
+  member_name?: string;
+  human_prompt?: string;
+  human_prompt_parts?: WorkflowAgentPart[];
+  human_reply?: string;
+  human_reply_parts?: WorkflowAgentPart[];
+  activity_parts?: WorkflowAgentPart[];
+  /** True on get_phase summaries — full body fetched on demand via get_agent. */
+  detail_pending?: boolean;
+  /** ~200-char outcome stub carried on get_phase summaries (full text via get_agent). */
+  outcome_preview?: string;
+  /** ~200-char error stub carried on get_phase summaries (full text via get_agent). */
+  error_preview?: string;
+}
+
+export interface WorkflowPhase {
+  id: string;
+  name: string;
+  description?: string;
+  status: WorkflowStatus;
+  agent_count?: number;
+  completed_agent_count?: number;
+  /** Absent on phase summaries from ``action=get_workflow``. */
+  agents?: WorkflowAgent[];
+  /** verify() rounds folded under this phase (backend VERIFY_STARTED/SETTLED). */
+  verify_groups?: WorkflowVerifyGroup[];
+  phase_type?: 'child' | null;
+  parent_phase?: string | null;
+  iteration?: number | null;
+  detail_pending?: boolean;
+  agent_total?: number;
+  has_more?: boolean;
+}
+
+export interface WorkflowRun {
+  id: string;
+  name: string;
+  summary: string;
+  status: WorkflowStatus;
+  agent_count?: number;
+  completed_agent_count?: number;
+  started_at?: string;
+  completed_at?: string;
+  script?: string;
+  result?: string;
+  error?: string;
+  logs?: string[];
+  logs_truncated?: boolean;
+  token_count?: number | null;
+  duration_ms?: number | null;
+  estimated_token_count?: number | null;
+  budget?: WorkflowBudget | null;
+  /** Per-run ledger snapshot (META.workflow_token_limit); null when unset. */
+  workflow_budget?: WorkflowBudget | null;
+  /** Which ledger triggered a budget failure: 'session' | 'workflow'. */
+  budget_exhausted_scope?: 'session' | 'workflow' | null;
+  /** 'relaunch' = script-edit re-run (replace the phase tree); 'resume' = normal pause→resume. */
+  relaunch_kind?: 'relaunch' | 'resume' | null;
+  /** Absent on list summaries from ``action=list``. */
+  phases?: WorkflowPhase[];
+  detail_pending?: boolean;
+  phase_total?: number;
+  has_more?: boolean;
+  /** 冷启动恢复的 run（无进程内 controller 句柄）；true 时控制按钮应置灰。 */
+  recovered?: boolean;
+}
+
+const SPLITTABLE_AGENT_FIELDS = [
+  'prompt',
+  'outcome',
+  'human_prompt',
+  'human_reply',
+  'activity',
+  'error',
+] as const;
+
+/** Reassemble ``{field}_parts`` arrays back into the base string field. */
+export function reassembleAgentFieldParts(agent: WorkflowAgent): WorkflowAgent {
+  let out = agent;
+  for (const field of SPLITTABLE_AGENT_FIELDS) {
+    const partsKey = `${field}_parts`;
+    const parts = (out as unknown as Record<string, unknown>)[partsKey];
+    if (!Array.isArray(parts) || parts.length === 0) continue;
+    const sorted = [...parts].sort(
+      (a, b) =>
+        (a as WorkflowAgentPart).part_idx - (b as WorkflowAgentPart).part_idx,
+    );
+    const joined = sorted
+      .map((p) => (p as WorkflowAgentPart).content ?? '')
+      .join('');
+    const next: WorkflowAgent = { ...out, [field]: joined } as WorkflowAgent;
+    delete (next as unknown as Record<string, unknown>)[partsKey];
+    out = next;
+  }
+  return out;
+}
+
+// ── 状态图标 ──────────────────────────────────────────────
+
+export const WAITING_FOR_HUMAN_ICON = '\u263A';
+
+export function workflowStatusIcon(status: WorkflowStatus): string {
+  switch (status) {
+    case 'planned':
+      return '\u25C7';
+    case 'completed':
+      return '\u2713';
+    case 'failed':
+      return '\u00D7';
+    case 'running':
+      return '\u25D0';
+    case 'paused':
+      return '\u2016';
+    case 'pending':
+      return '\u25CB';
+    case 'stopped':
+      return '\u25A0';
+    case 'waiting_for_human':
+      return WAITING_FOR_HUMAN_ICON;
+  }
+}
+
+// ── Session 节点工具 ──────────────────────────────────────
+
+export function isSessionNode(agent: Pick<WorkflowAgent, 'node_type'>): boolean {
+  return agent.node_type === 'agent_session'
+    || agent.node_type === 'agent_session_fork'
+    || agent.node_type === 'human_session';
+}
+
+/** 判断是否为 fork 子会话节点 */
+export function isForkSessionNode(agent: Pick<WorkflowAgent, 'node_type'>): boolean {
+  return agent.node_type === 'agent_session_fork';
+}
+
+/**
+ * 把 fork 父引用（avatar member name，形如 ``wf-sess-<label>-<n>``，或带 run
+ * 前缀的 ``wf-<run>-sess-<label>-<n>``）缩成友好显示名 ``<label>``。旧数据 /
+ * 非常规值原样返回。
+ */
+export function forkParentDisplay(parentSessionId?: string): string {
+  if (!parentSessionId) return '';
+  const stripped = parentSessionId.replace(/^wf-(?:[a-z0-9]+-)?(?:sess|human)-/, '');
+  if (stripped === parentSessionId) return parentSessionId;
+  const lastDash = stripped.lastIndexOf('-');
+  // 尾段是 per-run counter（数字）；label 本身可含连字符，故只剥最后一段
+  if (lastDash > 0 && /^\d+$/.test(stripped.slice(lastDash + 1))) {
+    return stripped.slice(0, lastDash);
+  }
+  return stripped;
+}
+
+/**
+ * 解析 verify outcome，返回徽章类型和分数。
+ * pass: 绿色✓，fail:红色✗，score ≥ threshold 绿色，否则红色，
+ * undecided: 票形态存在但值畸形（decision 非法 / score 非数字）——按未投处理，
+ * null: 普通文本（不是 verify 票）。文案由渲染端按 i18n key 生成；
+ * threshold 由调用方传 group 阈值（与 summarizeVerifyVotes / voteBadgeFor 同口径）。
+ */
+export function parseVerifyOutcome(
+  outcome?: string,
+  _threshold = 0.85,
+): {
+  type: 'pass' | 'fail' | 'score' | 'undecided' | null;
+  score?: number;
+} | null {
+  if (!outcome) return null;
+  try {
+    const obj = JSON.parse(outcome);
+    if (obj && typeof obj === 'object') {
+      if (obj.decision === 'pass') return { type: 'pass' };
+      if (obj.decision === 'fail') return { type: 'fail' };
+      if (typeof obj.score === 'number') {
+        return { type: 'score', score: obj.score };
+      }
+      if ('decision' in obj || 'score' in obj) {
+        return { type: 'undecided' };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/** verify 徽章文案：type/score → i18n 文本（TreeView/GraphView/弹窗共用）。 */
+export function verifyVoteText(
+  t: (key: string, opts?: Record<string, unknown>) => string,
+  verdict: { type: 'pass' | 'fail' | 'score' | 'undecided' | null; score?: number },
+): string {
+  if (verdict.type === 'pass') return t('swarmflow.verifyPass');
+  if (verdict.type === 'fail') return t('swarmflow.verifyFail');
+  if (verdict.type === 'score' && typeof verdict.score === 'number') {
+    return t('swarmflow.verifyScore', { score: verdict.score.toFixed(2) });
+  }
+  return t('swarmflow.verifyVoteUndecided');
+}
+
+/** verify 组裁决文案：status/verdict → i18n 文本（树/图共用，替代两份内联三元）。 */
+export function verifyRoundText(
+  t: (key: string, opts?: Record<string, unknown>) => string,
+  group: Pick<WorkflowVerifyGroup, 'status' | 'verdict'>,
+): string {
+  if (group.status !== 'settled') return t('swarmflow.verifyReviewingShort');
+  if (group.verdict === 'pass') return t('swarmflow.verifyPass');
+  if (group.verdict === 'fail') return t('swarmflow.verifyFail');
+  return t('swarmflow.verifyUndecided');
+}
+
+/**
+ * 节点身份 → 头像身份：三方节点认 CLI 品牌脸，人类节点认人类脸，专家节点带成员名
+ * 让头像组件去专家团包里取图；native 节点给空身份，只按名字哈希取插画，不回落名册。
+ * agent_type 优先于 kind：三方节点永远不是人；专家与 agent_type 在引擎侧互斥。
+ */
+export function workflowAgentIdentity(
+  agent: Pick<WorkflowAgent, 'agent_type' | 'kind' | 'agent_template'>,
+): TeamMemberIdentity {
+  if (agent.agent_type) return { cliAgent: agent.agent_type };
+  if (agent.kind === 'human') return { role: 'human_agent' };
+  if (agent.agent_template) return { agentTemplate: agent.agent_template };
+  return {};
+}
+
+
+/** Label the tree / task cards show for a node: always the call label, same as the mirrored roster. */
+export function workflowAgentDisplayName(agent: Pick<WorkflowAgent, 'name' | 'display_name'>): string {
+  return agent.name;
+}
+
+/** String the avatar illustration is hashed from — the call label, same as the mirrored member list. */
+export function workflowAgentAvatarName(agent: Pick<WorkflowAgent, 'name' | 'display_name'>): string {
+  return agent.name;
+}
+
+export function sessionGroupKey(
+  agent: Pick<WorkflowAgent, 'name' | 'node_type'>,
+): string | null {
+  if (!isSessionNode(agent)) return null;
+  return `${agent.name}\0${agent.node_type}`;
+}
+
+/**
+ * Tally a verify group's votes into badge-friendly counts.
+ *
+ * A vote counts as pass/fail by its own outcome; anything else (not voted /
+ * malformed) is undecided. The score pool reads against ``threshold``.
+ */
+export function summarizeVerifyVotes(
+  group: Pick<WorkflowVerifyGroup, 'votes' | 'threshold'>,
+): { pass: number; fail: number; undecided: number } {
+  let pass = 0;
+  let fail = 0;
+  let undecided = 0;
+  for (const vote of group.votes ?? []) {
+    if (vote.kind === 'verdict') {
+      if (vote.decision === 'pass') pass += 1;
+      else if (vote.decision === 'fail') fail += 1;
+      else undecided += 1;
+    } else {
+      const threshold = group.threshold ?? 0.85;
+      if (typeof vote.score === 'number') {
+        if (vote.score >= threshold) pass += 1;
+        else fail += 1;
+      } else {
+        undecided += 1;
+      }
+    }
+  }
+  return { pass, fail, undecided };
+}
+
+export function parseTurnFromCorrelationId(correlationId?: string): number | null {
+  if (!correlationId) return null;
+  const parts = correlationId.split(':');
+  const last = parts[parts.length - 1];
+  if (last === undefined) return null;
+  const turn = Number.parseInt(last, 10);
+  return Number.isFinite(turn) ? turn : null;
+}
+
+export function sortWorkflowAgentsByTurn(agents: WorkflowAgent[]): WorkflowAgent[] {
+  return [...agents].sort((a, b) => {
+    const turnA = parseTurnFromCorrelationId(a.correlation_id);
+    const turnB = parseTurnFromCorrelationId(b.correlation_id);
+    if (turnA !== null && turnB !== null) return turnA - turnB;
+    return (a.started_at ?? '').localeCompare(b.started_at ?? '');
+  });
+}
+
+/**
+ * Collect one session's turns across ALL phases of a run (member_name join).
+ *
+ * A session's turns can land in different phases (analyst in 基线/综合/裁决);
+ * per-phase grouping would only see one slice. member_name is the avatar's
+ * member name — constant across turns and unique per session — so it is the
+ * correct join key across phases. Returns [] when the run carries no matching
+ * member_name (old runs predating the field) — caller falls back to per-phase.
+ */
+export function sessionMembersAcrossPhases(
+  workflow: WorkflowRun | undefined,
+  memberName: string | undefined,
+  sessionLabel: string,
+  nodeType?: WorkflowNodeType,
+): WorkflowAgent[] {
+  if (!workflow || !memberName) return [];
+  const members: WorkflowAgent[] = [];
+  for (const phase of workflow.phases ?? []) {
+    for (const agent of phase.agents ?? []) {
+      if (
+        agent.member_name === memberName &&
+        agent.name === sessionLabel &&
+        isSessionNode(agent) &&
+        (nodeType === undefined || agent.node_type === nodeType)
+      ) {
+        members.push(agent);
+      }
+    }
+  }
+  if (members.length === 0) return [];
+  const byTurn = new Map<string, WorkflowAgent>();
+  for (const m of members) {
+    byTurn.set(m.correlation_id ?? m.id, m);
+  }
+  return sortWorkflowAgentsByTurn([...byTurn.values()]);
+}
+
+export function sessionMembersInPhase(
+  phaseAgents: WorkflowAgent[],
+  sessionLabel: string,
+  nodeType?: WorkflowNodeType,
+): WorkflowAgent[] {
+  const members = phaseAgents.filter(
+    (agent) =>
+      agent.name === sessionLabel &&
+      isSessionNode(agent) &&
+      (nodeType === undefined || agent.node_type === nodeType),
+  );
+  // Deduplicate by turn (correlation_id): a session agent may emit multiple
+  // agent_started events with different agent_id (e.g. a retry after a failed
+  // structured-output attempt). Only the last agent for each turn survives —
+  // earlier retries are stale and would render duplicate "turn 0" rows.
+  const byTurn = new Map<string, WorkflowAgent>();
+  for (const m of members) {
+    const turn = m.correlation_id ?? m.id;
+    byTurn.set(turn, m); // last wins (phaseAgents is in emission order)
+  }
+  return sortWorkflowAgentsByTurn([...byTurn.values()]);
+}
+
+export function phaseLocalTurnNumber(
+  agent: WorkflowAgent,
+  phaseAgents: WorkflowAgent[],
+): number | null {
+  if (!agent.correlation_id) return null;
+  const members = sessionMembersInPhase(phaseAgents, agent.name, agent.node_type);
+  const index = members.findIndex((member) => member.id === agent.id);
+  return index >= 0 ? index : null;
+}
+
+export function shouldShowSessionTree(
+  agent: WorkflowAgent,
+  phaseAgents: WorkflowAgent[],
+): boolean {
+  if (!isSessionNode(agent)) return false;
+  return sessionMembersInPhase(phaseAgents, agent.name, agent.node_type).length >= 1;
+}
+
+/**
+ * 将 phase agents 分为 session 树与 one-shot 节点。
+ * 每个 agent_session / human_session 组成为一棵树（即使只有一个 turn）。
+ */
+export function groupWorkflowAgentsByName(agents: WorkflowAgent[]): {
+  sessions: Array<{ label: string; members: WorkflowAgent[] }>;
+  oneShots: WorkflowAgent[];
+} {
+  const bySessionKey = new Map<string, WorkflowAgent[]>();
+  const oneShots: WorkflowAgent[] = [];
+
+  for (const agent of agents) {
+    const key = sessionGroupKey(agent);
+    if (!key) {
+      oneShots.push(agent);
+      continue;
+    }
+    const existing = bySessionKey.get(key) ?? [];
+    existing.push(agent);
+    bySessionKey.set(key, existing);
+  }
+
+  const sessions: Array<{ label: string; members: WorkflowAgent[] }> = [];
+  for (const members of bySessionKey.values()) {
+    const sorted = sortWorkflowAgentsByTurn(members);
+    sessions.push({ label: sorted[0]?.name ?? 'session', members: sorted });
+  }
+
+  return { sessions, oneShots };
+}
+
+/**
+ * 把 one-shot agent 按 verify 容器归属分桶。
+ *
+ * 归属键是精确等值：agent.name ∈ group.reviewer_labels（verify_started 名册，
+ * 引擎保证跨 verify 唯一），或已 settled 的 votes[].name 兜底（旧事件无名册）。
+ * 无名册的旧 run：所有 one-shot 落 orphans，保持旧行为。
+ */
+export function partitionAgentsByVerifyGroups(
+  oneShotAgents: WorkflowAgent[],
+  verifyGroups: WorkflowVerifyGroup[],
+): {
+  containers: Array<{ group: WorkflowVerifyGroup; reviewers: WorkflowAgent[] }>;
+  orphans: WorkflowAgent[];
+} {
+  // "Second round" semantics: only verify() calls under the SAME label are
+  // rounds of one group (the backend folds one round per group card). Each
+  // agent belongs to exactly one round — settled rounds claim their reviewers
+  // by votes[].agent_id (exact, engine-guaranteed), running rounds by the
+  // roster names. Reviewers of a different verify label therefore never mix
+  // into another group's rounds.
+  const claimed = new Set<string>();
+  const reviewersByGroup = new Map<string, WorkflowAgent[]>();
+  for (const group of verifyGroups) {
+    if (group.status !== 'settled') continue;
+    const ids = new Set(
+      (group.votes ?? [])
+        .map((v) => v.agent_id)
+        .filter((id): id is string => Boolean(id)),
+    );
+    if (ids.size === 0) continue;
+    const members: WorkflowAgent[] = [];
+    for (const agent of oneShotAgents) {
+      if (ids.has(agent.id) && !claimed.has(agent.id)) {
+        members.push(agent);
+        claimed.add(agent.id);
+      }
+    }
+    reviewersByGroup.set(group.id, members);
+  }
+  // Running rounds (no votes yet) and legacy settled rounds without vote
+  // agent_ids join by name (labels are unique per round on new runs).
+  for (const group of verifyGroups) {
+    if (reviewersByGroup.has(group.id)) continue;
+    const names = group.reviewer_labels?.length
+      ? group.reviewer_labels
+      : (group.votes ?? []).map((v) => v.name);
+    const nameSet = new Set(names);
+    const members: WorkflowAgent[] = [];
+    for (const agent of oneShotAgents) {
+      if (nameSet.has(agent.name) && !claimed.has(agent.id)) {
+        members.push(agent);
+        claimed.add(agent.id);
+      }
+    }
+    reviewersByGroup.set(group.id, members);
+  }
+  const containers = verifyGroups.map((group) => ({
+    group,
+    reviewers: reviewersByGroup.get(group.id) ?? [],
+  }));
+  const orphans = oneShotAgents.filter((a) => !claimed.has(a.id));
+  return { containers, orphans };
+}
+
+// ── 子工作流（child phase） ───────────────────────────────
+
+export function childPhasesOf(workflow: WorkflowRun, parent: WorkflowPhase): WorkflowPhase[] {
+  return (workflow.phases ?? []).filter(
+    (phase) => phase.phase_type === 'child' && phase.parent_phase === parent.name,
+  );
+}
+
+// ── 镜像任务 worker 解析 ──────────────────────────────────
+
+/**
+ * workflow phase 任务 → 该 phase 的 workers。
+ *
+ * 镜像 task 的 task_id 是 ``<run_id>:<phase_id>``（后端 _workflow_updated_to_team_events
+ * 构造），workflow_run_id 即 run id——按 phase id 直连 run.phases 是诚实 join。
+ * 同名 worker 去重（循环迭代复用同一 worker，栈上每个 worker 只出现一次）；
+ * phase agents 尚未懒加载（detail_pending）时返回 []，调用方回落旧渲染。
+ */
+/** 镜像 phase 任务对应的 run phase；不是镜像任务或 run 未加载时为 null。 */
+export function workflowPhaseForTask(
+  task: Pick<TeamTask, 'task_id' | 'workflow_run_id'>,
+  runs: WorkflowRun[],
+): { runId: string; phase: WorkflowPhase } | null {
+  const runId = task.workflow_run_id;
+  if (!runId || !task.task_id) return null;
+  const run = runs.find((candidate) => candidate.id === runId);
+  if (!run) return null;
+  const prefix = `${runId}:`;
+  if (!task.task_id.startsWith(prefix)) return null;
+  const phase = (run.phases ?? []).find((candidate) => candidate.id === task.task_id.slice(prefix.length));
+  return phase ? { runId, phase } : null;
+}
+
+export function workflowPhaseWorkers(task: TeamTask, runs: WorkflowRun[]): WorkflowAgent[] {
+  const phase = workflowPhaseForTask(task, runs)?.phase;
+  if (!phase?.agents) return [];
+  const seen = new Set<string>();
+  const workers: WorkflowAgent[] = [];
+  for (const agent of phase.agents) {
+    // agent_session 的多轮共用一个 avatar（member_name），只算一个 worker；
+    // 一次性 agent() 调用各算一个——同名节点（3 个并行 assemble）是不同成员，不能合并。
+    const key = agent.member_name ? `session:${agent.member_name}` : `node:${agent.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    workers.push(agent);
+  }
+  return workers;
+}
+
+// ── 增量合并 ──────────────────────────────────────────────
+
+function preferHumanPrompt(existing?: string, incoming?: string): string | undefined {
+  const left = existing?.trim();
+  const right = incoming?.trim();
+  if (!left) return right || undefined;
+  if (!right) return left;
+  return right.length > left.length ? right : left;
+}
+
+function mergeWorkflowAgent(
+  existing: WorkflowAgent | undefined,
+  incoming: WorkflowAgent,
+): WorkflowAgent {
+  const reassembled = reassembleAgentFieldParts(incoming);
+  // get_agent returns the full body (heavy text fields present) — clear
+  // detail_pending so views know no further fetch is needed. get_phase returns
+  // a summary (no heavy fields) — keep detail_pending:true.
+  const incomingHasHeavy =
+    reassembled.prompt !== undefined ||
+    reassembled.outcome !== undefined ||
+    reassembled.human_prompt !== undefined ||
+    reassembled.human_reply !== undefined ||
+    reassembled.error !== undefined ||
+    reassembled.activity !== undefined;
+  const detailPending = incomingHasHeavy ? false : reassembled.detail_pending ?? false;
+  // Full body arrived — drop the now-stale summary previews.
+  const clearPreviews = incomingHasHeavy;
+  const result: WorkflowAgent = {
+    ...existing,
+    ...reassembled,
+    activity: reassembled.activity ?? existing?.activity,
+    human_prompt: preferHumanPrompt(existing?.human_prompt, reassembled.human_prompt),
+    detail_pending: detailPending,
+  };
+  if (clearPreviews) {
+    delete result.outcome_preview;
+    delete result.error_preview;
+  }
+  return result;
+}
+
+function mergeWorkflowPhase(
+  existing: WorkflowPhase | undefined,
+  incoming: WorkflowPhase,
+): WorkflowPhase {
+  const incomingHasAgents = Object.prototype.hasOwnProperty.call(incoming, 'agents');
+  if (!incomingHasAgents) {
+    return { ...existing, ...incoming, agents: existing?.agents };
+  }
+  const existingAgents = existing?.agents ?? [];
+  const mergedAgents = [...existingAgents];
+
+  for (const incomingAgent of incoming.agents ?? []) {
+    const index = mergedAgents.findIndex((agent) => agent.id === incomingAgent.id);
+    const nextAgent = mergeWorkflowAgent(
+      index === -1 ? undefined : mergedAgents[index],
+      incomingAgent,
+    );
+    if (index === -1) {
+      mergedAgents.push(nextAgent);
+    } else {
+      mergedAgents[index] = nextAgent;
+    }
+  }
+
+  return { ...existing, ...incoming, agents: mergedAgents };
+}
+
+export function mergeWorkflowRun(
+  existing: WorkflowRun | undefined,
+  incoming: WorkflowRun,
+): WorkflowRun {
+  // Script-edit relaunch: the backend reset the phase/agent tree (stale cards
+  // from the prior run were dropped). Replace the phases outright instead of
+  // incrementally merging, or the old agents would survive.
+  if (incoming.relaunch_kind === 'relaunch') {
+    return {
+      ...existing,
+      ...incoming,
+      phases: Array.isArray(incoming.phases) ? incoming.phases : [],
+    };
+  }
+  const existingPhases = existing?.phases ?? [];
+  const mergedPhases = [...existingPhases];
+  const incomingLogs = Array.isArray(incoming.logs)
+    ? incoming.logs.filter((log): log is string => typeof log === 'string')
+    : undefined;
+
+  const incomingPhases = Array.isArray(incoming.phases) ? incoming.phases : [];
+  for (const incomingPhase of incomingPhases) {
+    const index = mergedPhases.findIndex((phase) => phase.id === incomingPhase.id);
+    const nextPhase = mergeWorkflowPhase(
+      index === -1 ? undefined : mergedPhases[index],
+      incomingPhase,
+    );
+    if (index === -1) {
+      mergedPhases.push(nextPhase);
+    } else {
+      mergedPhases[index] = nextPhase;
+    }
+  }
+
+  const merged: WorkflowRun = { ...existing, ...incoming, phases: mergedPhases };
+  if (incomingLogs) {
+    const incomingHasPhases = Object.prototype.hasOwnProperty.call(incoming, 'phases');
+    merged.logs =
+      existing && !incomingHasPhases ? [...(existing.logs ?? []), ...incomingLogs] : incomingLogs;
+  } else if (existing?.logs && !Object.prototype.hasOwnProperty.call(incoming, 'logs')) {
+    merged.logs = existing.logs;
+  }
+  if (Object.prototype.hasOwnProperty.call(incoming, 'detail_pending')) {
+    merged.detail_pending = incoming.detail_pending;
+  }
+  if (Object.prototype.hasOwnProperty.call(incoming, 'has_more')) {
+    merged.has_more = incoming.has_more;
+  }
+  if (Object.prototype.hasOwnProperty.call(incoming, 'phase_total')) {
+    merged.phase_total = incoming.phase_total;
+  }
+
+  return merged;
+}
+
+export function normalizeWorkflowRun(workflow: WorkflowRun): WorkflowRun {
+  return {
+    ...workflow,
+    logs: Array.isArray(workflow.logs)
+      ? workflow.logs.filter((log): log is string => typeof log === 'string')
+      : undefined,
+    phases: Array.isArray(workflow.phases)
+      ? workflow.phases.map((phase) => ({
+          ...phase,
+          agents: Array.isArray(phase.agents)
+            ? phase.agents.map((agent) =>
+                reassembleAgentFieldParts({
+                  ...agent,
+                  activity: Array.isArray(agent.activity)
+                    ? agent.activity.filter(
+                        (activity): activity is WorkflowAgentActivity =>
+                          Boolean(
+                            activity && typeof activity === 'object' && !Array.isArray(activity),
+                          ),
+                      )
+                    : undefined,
+                }),
+              )
+            : phase.agents,
+        }))
+      : workflow.phases,
+  };
+}
+
+export function applyWorkflowUpdate(
+  workflows: WorkflowRun[],
+  incoming: WorkflowRun,
+): WorkflowRun[] {
+  const index = workflows.findIndex((workflow) => workflow.id === incoming.id);
+  if (index === -1) {
+    return [normalizeWorkflowRun(incoming), ...workflows];
+  }
+  return workflows.map((workflow, itemIndex) =>
+    itemIndex === index ? normalizeWorkflowRun(mergeWorkflowRun(workflow, incoming)) : workflow,
+  );
+}
+
+// ── 统计工具 ──────────────────────────────────────────────
+
+export function countWaitingForHuman(workflow: WorkflowRun): number {
+  let n = 0;
+  for (const phase of workflow.phases ?? []) {
+    for (const agent of phase.agents ?? []) {
+      if (agent.status === 'waiting_for_human') n += 1;
+    }
+  }
+  return n;
+}
+
+export function collectWaitingForHuman(workflow: WorkflowRun): {
+  phase: WorkflowPhase;
+  agent: WorkflowAgent;
+}[] {
+  const out: { phase: WorkflowPhase; agent: WorkflowAgent }[] = [];
+  for (const phase of workflow.phases ?? []) {
+    for (const agent of phase.agents ?? []) {
+      if (agent.status === 'waiting_for_human') out.push({ phase, agent });
+    }
+  }
+  return out;
+}
+
+export function findWorkflowAgent(
+  workflows: WorkflowRun[],
+  workflowId: string,
+  agentId: string,
+): { workflow: WorkflowRun; phase: WorkflowPhase; agent: WorkflowAgent } | null {
+  const workflow = workflows.find((item) => item.id === workflowId);
+  if (!workflow) return null;
+  for (const phase of workflow.phases ?? []) {
+    const agent = (phase.agents ?? []).find((item) => item.id === agentId);
+    if (agent) return { workflow, phase, agent };
+  }
+  return null;
+}
+
+// ── 循环检测工具 ──────────────────────────────────────────
+
+export interface AgentLoopGroup {
+  /** agent 名称（循环内同名） */
+  name: string;
+  /** 各迭代的 agent，按时间排序 */
+  members: WorkflowAgent[];
+}
+
+export interface PhaseLoopGroup {
+  /** phase 基础名（去掉数字后缀） */
+  baseName: string;
+  /** 各迭代的 phase，按序号排序 */
+  members: WorkflowPhase[];
+}
+
+/**
+ * 场景 A：检测同名 agent 循环。
+ *
+ * 当一个 phase 内有多个同名（非 session）agent 时，
+ * 它们来自 for 循环的不同迭代。
+ */
+export function detectAgentLoops(agents: WorkflowAgent[]): {
+  loops: AgentLoopGroup[];
+  unique: WorkflowAgent[];
+} {
+  const byName = new Map<string, WorkflowAgent[]>();
+  for (const agent of agents) {
+    if (isSessionNode(agent)) continue;
+    const existing = byName.get(agent.name) ?? [];
+    existing.push(agent);
+    byName.set(agent.name, existing);
+  }
+  const loops: AgentLoopGroup[] = [];
+  const unique: WorkflowAgent[] = [];
+  for (const [name, members] of byName) {
+    if (members.length > 1) {
+      loops.push({ name, members: sortWorkflowAgentsByTurn(members) });
+    } else {
+      unique.push(members[0]);
+    }
+  }
+  return { loops, unique };
+}
+
+const PHASE_NUM_SUFFIX = /^(.+?)[_\-](\d+)$/;
+
+/** Extract the loop base name: strip ``_N`` / ``-N`` suffix, or use the name as-is. */
+function phaseBaseName(phase: WorkflowPhase): string {
+  const match = phase.name.match(PHASE_NUM_SUFFIX);
+  return match ? match[1] : phase.name;
+}
+
+/** Sort key for loop members: prefer ``iteration`` field, fall back to suffix number. */
+function phaseIterationKey(phase: WorkflowPhase): number {
+  if (phase.iteration != null) return phase.iteration;
+  const m = phase.name.match(PHASE_NUM_SUFFIX);
+  return m ? parseInt(m[2], 10) : 0;
+}
+
+/**
+ * 检测 phase 循环（loop-aware）。
+ *
+ * 两种模式均支持：
+ * 1. **iteration 字段**（新）：同名 phase 带 ``iteration`` 字段（1, 2, 3…），
+ *    后端按 ``(title, iteration)`` 不合并，前端按 name 分组。
+ * 2. **数字后缀**（旧兼容）：phase 名形如 ``review_0`` / ``review_1``。
+ */
+export function detectPhaseLoops(phases: WorkflowPhase[]): {
+  loops: PhaseLoopGroup[];
+  unique: WorkflowPhase[];
+} {
+  const byBase = new Map<string, WorkflowPhase[]>();
+  for (const phase of phases) {
+    const base = phaseBaseName(phase);
+    const existing = byBase.get(base) ?? [];
+    existing.push(phase);
+    byBase.set(base, existing);
+  }
+  const loops: PhaseLoopGroup[] = [];
+  const loopedIds = new Set<string>();
+  for (const [baseName, members] of byBase) {
+    if (members.length > 1) {
+      members.sort((a, b) => phaseIterationKey(a) - phaseIterationKey(b));
+      loops.push({ baseName, members });
+      members.forEach((m) => loopedIds.add(m.id));
+    }
+  }
+  const unique = phases.filter((p) => !loopedIds.has(p.id));
+  return { loops, unique };
+}
+
+/**
+ * 按"实际执行顺序"重排 phases。
+ *
+ * 后端在 ``_on_workflow_started`` 按 META phases 列表 pre-create planned
+ * 卡片（占了数组前 N 位），运行时新建的 phase（不在 META 里，如
+ * ``对抗验证``、``回归验收-held-in``）被 append 到末尾，导致显示顺序
+ * 与执行顺序不一致。
+ *
+ * 修复策略：有 agent 的 phase 按第一个 agent 的 ``started_at`` 排序，
+ * 空 planned 卡片（无 agent）排到末尾。child phases 紧跟其 parent。
+ */
+export function sortPhasesByExecution(phases: WorkflowPhase[]): WorkflowPhase[] {
+  const topLevel = phases.filter((p) => p.phase_type !== 'child');
+  const children = phases.filter((p) => p.phase_type === 'child');
+
+  const withAgents = topLevel.filter((p) => p.agents && p.agents.length > 0);
+  const withoutAgents = topLevel.filter((p) => !p.agents || p.agents.length === 0);
+
+  withAgents.sort((a, b) => {
+    const aTime = a.agents?.[0]?.started_at ?? '';
+    const bTime = b.agents?.[0]?.started_at ?? '';
+    return aTime.localeCompare(bTime);
+  });
+
+  const sortedTop = [...withAgents, ...withoutAgents];
+
+  // 把 child phases 插回各自 parent 之后
+  if (children.length === 0) return sortedTop;
+  const result = [...sortedTop];
+  for (const child of children) {
+    const parentIdx = result.findIndex(
+      (p) => p.name === child.parent_phase || p.id === child.parent_phase,
+    );
+    if (parentIdx >= 0) {
+      result.splice(parentIdx + 1, 0, child);
+    } else {
+      result.push(child);
+    }
+  }
+  return result;
+}
+
+/**
+ * 计算 session 卡片代表节点的状态。
+ *
+ * 不能直接取 members[0]（Turn 0）——session 的 turn 是按轮递增的多条记录，
+ * Turn0 completed 而 Turn1 running 时，members[0] 会让整张卡片提前变绿。
+ * 聚合规则：任一成员还活着（waiting_for_human / running / paused）就按活着的
+ * 状态渲染；全部 terminal 后取最新一轮 turn 的状态。
+ */
+export function computeSessionStatus<T extends { status: WorkflowStatus }>(
+  members: T[],
+): WorkflowStatus {
+  if (members.length === 0) return 'planned';
+  if (members.some((m) => m.status === 'waiting_for_human')) return 'waiting_for_human';
+  if (members.some((m) => m.status === 'running')) return 'running';
+  if (members.some((m) => m.status === 'paused')) return 'paused';
+  return members[members.length - 1]?.status ?? 'planned';
+}
+
+/**
+ * 计算循环迭代的整体状态。
+ * 优先级：running > waiting_for_human > failed > pending > planned > completed > stopped
+ */
+export function computeLoopStatus<T extends { status: WorkflowStatus }>(
+  members: T[],
+): WorkflowStatus {
+  if (members.length === 0) return 'planned';
+  const statuses = members.map((m) => m.status);
+  if (statuses.includes('running')) return 'running';
+  if (statuses.includes('paused')) return 'paused';
+  if (statuses.includes('waiting_for_human')) return 'waiting_for_human';
+  if (statuses.includes('failed')) return 'failed';
+  if (statuses.includes('pending')) return 'pending';
+  if (statuses.includes('planned')) return 'planned';
+  if (statuses.every((s) => s === 'completed')) return 'completed';
+  if (statuses.every((s) => s === 'stopped')) return 'stopped';
+  return 'running';
+}
+
+/**
+ * 找到当前应展开的迭代索引（最新的非 completed 迭代，或最后一个）。
+ */
+export function findActiveIterationIndex<T extends { status: WorkflowStatus }>(
+  members: T[],
+): number {
+  for (let i = members.length - 1; i >= 0; i--) {
+    const s = members[i].status;
+    if (s === 'running' || s === 'paused' || s === 'waiting_for_human' || s === 'pending' || s === 'planned') {
+      return i;
+    }
+  }
+  return members.length - 1;
+}

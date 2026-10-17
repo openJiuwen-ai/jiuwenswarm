@@ -5,23 +5,53 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import os
 import time
 import uuid
-from typing import Any, TYPE_CHECKING
+from contextlib import asynccontextmanager
+from copy import deepcopy
+from typing import Any, Callable, NamedTuple, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
-from jiuwenswarm.agents.harness.team import get_team_manager
-from jiuwenswarm.common.config import get_config, get_default_models
+from jiuwenswarm.common.config import get_available_models, get_config
+from jiuwenswarm.common.mode_matrix import (
+    NEW_AGENT_WORK_NORMAL,
+    NEW_AGENT_WORK_PLAN,
+    canonicalize_mode_text,
+    compose_web_mode,
+    deprecate_mode,
+    normalize_work_mode,
+    resolve_new_canonical_mode,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
+    is_auto_permission_enabled,
+    resolve_declared_auto_workspace,
+    supports_phase_auto_root,
+)
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    is_interrupt_resume_payload,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+    RootPermissionQueueError,
+)
+from jiuwenswarm.agents.harness.common.rsi.errors import RsiHarnessInstallConflict
 
 if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 
 
 logger = logging.getLogger(__name__)
+
+
+def get_team_manager(channel_id: str | None = None) -> Any:
+    """Keep Team-mode imports outside ordinary single-agent startup."""
+    from jiuwenswarm.agents.harness.team import get_team_manager as resolve
+
+    return resolve(channel_id)
 
 
 ACP_DEFAULT_CAPABILITIES: dict[str, Any] = build_acp_initialize_result()
@@ -44,9 +74,55 @@ def _normalize_project_dir(project_dir: str | None) -> str:
     if not raw:
         return ""
     try:
-        return os.path.normcase(os.path.abspath(os.path.expanduser(raw)))
+        return os.path.normcase(os.path.abspath(os.path.expanduser(raw))).casefold()
     except Exception:
         return raw
+
+
+def _auto_permission_request_workspace(request: Any) -> str | None:
+    """Resolve the first immutable Auto workspace without changing generic E2A."""
+
+    params = getattr(request, "params", {})
+    params = params if isinstance(params, dict) else {}
+    permission_config = get_config().get("permissions", {})
+    if (
+        not isinstance(permission_config, dict)
+        or not is_auto_permission_enabled(permission_config)
+        or not supports_phase_auto_root(params)
+    ):
+        return None
+    metadata = getattr(request, "metadata", {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    declared = resolve_declared_auto_workspace(params, metadata)
+    return os.path.normcase(str(declared)) if declared is not None else ""
+
+
+def _resolve_request_owner_mode(
+    params: dict[str, Any],
+    *,
+    mode: str | None,
+    sub_mode: str | None,
+) -> tuple[str, str | None]:
+    """Resolve the manager owner without duplicating Web mode composition."""
+
+    if mode is not None:
+        return mode, sub_mode
+    mode_text = canonicalize_mode_text(params.get("mode", "agent"))
+    canonical = resolve_new_canonical_mode(mode_text)
+    if canonical is not None:
+        return canonical[0], canonical[1]
+    work_mode = normalize_work_mode(params.get("work_mode"))
+    if work_mode is not None:
+        composed = compose_web_mode(mode_text, work_mode)
+        if composed is not None:
+            manager_mode, manager_sub_mode, _canonical_mode = composed
+            return manager_mode, manager_sub_mode
+    if mode_text in {"agent", "code", "team"}:
+        return mode_text, sub_mode
+    canonical = resolve_new_canonical_mode(deprecate_mode(mode_text))
+    if canonical is not None:
+        return canonical[0], canonical[1]
+    return mode_text.split(".", 1)[0], sub_mode
 
 
 # 单 agent 的 plan 是**会话运行期状态**（``DeepAgentState.plan_mode``），不是另一种
@@ -84,6 +160,31 @@ def _make_agent_cache_key(mode: str | None, sub_mode: str | None, project_dir: s
     return f"{mode_key}:{sub_mode_key}:{project_key}"
 
 
+def _matches_single_agent_owner(cache_key: str, mode: str | None) -> bool:
+    if mode is None:
+        return True
+    parts = str(cache_key).split(":", 2)
+    if len(parts) < 2 or parts[0] != _normalize_mode(mode):
+        return False
+    allowed = {"", "normal", "plan", "fast"} if parts[0] == "agent" else {"", "normal", "plan"}
+    return parts[0] in {"agent", "code"} and parts[1] in allowed
+
+
+def _make_defined_agent_cache_key(
+    mode: str | None,
+    sub_mode: str | None,
+    project_dir: str | None,
+    definition_fingerprint: str,
+) -> str:
+    """Isolate a declared root Agent without changing default cache keys."""
+    fingerprint = str(definition_fingerprint or "").strip().lower()
+    if len(fingerprint) != 64 or any(
+        character not in "0123456789abcdef" for character in fingerprint
+    ):
+        raise ValueError("invalid Agent definition fingerprint")
+    return f"{_make_agent_cache_key(mode, sub_mode, project_dir)}:agent:{fingerprint}"
+
+
 def _build_acp_agent_config(extra_config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return the dedicated ACP agent profile config.
 
@@ -113,6 +214,9 @@ class AgentManager:
 
     def __init__(self) -> None:
         self.agents: dict[str, dict[str, "JiuWenSwarm"]] = {}
+        # Snapshot of the optional PersonalContext runtime switch.  New
+        # cached agents inherit it before their first rail synchronization.
+        self._personal_context_runtime_enabled: bool = False
         # 记录每个 (channel_id, mode) 的创建参数, 便于 recreate_agent 立刻重建
         self._agent_create_params: dict[str, dict[str, dict[str, Any]]] = {}
         self._client_capabilities_by_channel: dict[str, dict[str, Any]] = {}
@@ -126,8 +230,13 @@ class AgentManager:
         # disconnect cleanup cannot tear it down in that gap.
         self._agent_borrowers: dict[int, set[asyncio.Task]] = {}
         self._agent_pins: dict[int, int] = {}
+        self._heartbeat_service: Any | None = None
         self._pending_tui_retirements: set[int] = set()
         self._retirement_tasks: dict[int, asyncio.Task] = {}
+        self._permissions_reload_tasks: set[asyncio.Task[None]] = set()
+        self._permissions_reload_closing = False
+        self._permissions_reload_tail: asyncio.Task[None] | None = None
+        self._permissions_reload_schedule_failure: tuple[object, Exception] | None = None
         self._agent_create_locks: WeakValueDictionary[
             tuple[str, str], asyncio.Lock
         ] = WeakValueDictionary()
@@ -139,6 +248,138 @@ class AgentManager:
         from jiuwenswarm.server.runtime.agent_warm_pool import AgentWarmPool
 
         self.warm_pool = AgentWarmPool(self)
+
+    def set_heartbeat_service(self, service: Any | None) -> None:
+        """Inject the process-owned Heartbeat service into single and Team agents."""
+        self._heartbeat_service = service
+        from jiuwenswarm.agents.swarm.context import set_heartbeat_job_service
+
+        set_heartbeat_job_service(service)
+        for agents in self.agents.values():
+            for agent in agents.values():
+                agent.set_heartbeat_service(service)
+
+    async def _run_scheduled_permissions_reload(
+        self,
+        config: dict[str, Any] | None,
+        observed_schedule_failure: tuple[object, Exception] | None,
+    ) -> None:
+        if config is None:
+            # Smart grants/add-dir publish D only, without reloading ordinary owners.
+            async with self._reload_lock:
+                desired = get_config()
+                for agents in self.agents.values():
+                    for agent in list(agents.values()):
+                        if agent.has_smart_permission_lifecycle(desired):
+                            await agent.reload_permissions_config(desired, include_legacy=False)
+        else:
+            # RPCs retain develop's captured full reload for ordinary owners.
+            await self.reload_agents_config(config, None, permission_notification=True)
+        if (
+            self._permissions_reload_tail is asyncio.current_task()
+            and self._permissions_reload_schedule_failure
+            is observed_schedule_failure
+        ):
+            self._permissions_reload_schedule_failure = None
+
+    def has_smart_permission_lifecycle(self, config: dict[str, Any]) -> bool:
+        return any(
+            agent.has_smart_permission_lifecycle(config)
+            for agents in self.agents.values() for agent in agents.values()
+        )
+
+    def schedule_permissions_reload(
+        self, config: dict[str, Any] | None = None,
+    ) -> asyncio.Task[None]:
+        """Publish one manager-owned reload tail after permission persistence."""
+        if self._permissions_reload_closing:
+            raise RuntimeError("permission reload owner is closing")
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError as exc:
+            self._permissions_reload_schedule_failure = (object(), exc)
+            raise
+
+        reload_coro = self._run_scheduled_permissions_reload(
+            config,
+            self._permissions_reload_schedule_failure,
+        )
+        try:
+            task = loop.create_task(reload_coro)
+        except Exception as exc:
+            reload_coro.close()
+            self._permissions_reload_schedule_failure = (object(), exc)
+            raise
+        self._permissions_reload_tail = task
+        self._permissions_reload_tasks.add(task)
+
+        def _finish(done: asyncio.Task[None]) -> None:
+            self._permissions_reload_tasks.discard(done)
+            if done.cancelled():
+                if not self._permissions_reload_closing:
+                    self._permissions_reload_schedule_failure = (
+                        object(), RuntimeError("permission reload cancelled"),
+                    )
+                return
+            failure = done.exception()
+            if failure is not None:
+                self._permissions_reload_schedule_failure = (object(), failure)
+                logger.error("[AgentManager] permissions reload notification failed: %s", failure)
+
+        task.add_done_callback(_finish)
+        return task
+
+    async def wait_for_permissions_ready(self) -> None:
+        """Wait for all visible notifications, including an older unfinished task."""
+        tasks = set(self._permissions_reload_tasks)
+        if self._permissions_reload_tail is not None:
+            tasks.add(self._permissions_reload_tail)
+        results = await asyncio.gather(
+            *(asyncio.shield(task) for task in tasks), return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        schedule_failure = self._permissions_reload_schedule_failure
+        if schedule_failure is not None:
+            raise RuntimeError("permission reload scheduling failed") from schedule_failure[1]
+
+    def build_permissions_external_input_context(self, install_session_config):
+        """Serialize one Host external-input Permission publication attempt."""
+        if not callable(install_session_config):
+            raise TypeError("install_session_config must be callable")
+
+        @asynccontextmanager
+        async def external_input_context():
+            for _attempt in range(3):
+                tail = self._permissions_reload_tail
+                tail_error: BaseException | None = None
+                try:
+                    await self.wait_for_permissions_ready()
+                except asyncio.CancelledError as exc:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise
+                    tail_error = exc
+                except BaseException as exc:
+                    tail_error = exc
+
+                async with self._reload_lock:
+                    if tail is not self._permissions_reload_tail:
+                        continue
+                    schedule_failure = self._permissions_reload_schedule_failure
+                    if schedule_failure is not None:
+                        raise RuntimeError(
+                            "permission reload scheduling failed"
+                        ) from schedule_failure[1]
+                    if tail_error is not None:
+                        raise tail_error
+                    await install_session_config()
+                    yield
+                    return
+            raise RuntimeError("permission_reload_not_stable")
+
+        return external_input_context
 
     def _get_agent_create_lock(
         self,
@@ -412,6 +653,9 @@ class AgentManager:
         config: dict[str, Any] | None = None,
         sub_mode: str = None,
         cache_key: str | None = None,
+        *,
+        agent_definition: dict[str, Any] | None = None,
+        agent_definition_fingerprint: str | None = None,
     ) -> "JiuWenSwarm":
         """创建 Agent 实例.
 
@@ -422,7 +666,10 @@ class AgentManager:
         Returns:
             JiuWenSwarm 实例
         """
-        from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+        facade = await asyncio.to_thread(
+            importlib.import_module, "jiuwenswarm.server.runtime.agent_adapter.interface",
+        )
+        agent_class = facade.JiuWenSwarm
 
         for env_key, env_value in self._latest_env_overrides.items():
             key = str(env_key)
@@ -432,6 +679,17 @@ class AgentManager:
                 os.environ[key] = str(env_value)
         channel_key = _normalize_channel_id(agent_key)
         mode_key = _normalize_mode(mode)
+        from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import resolve_sdk_choice
+
+        if resolve_sdk_choice() == "harness":
+            # Import only the backend selected by this request. The adapter
+            # factory and all loop-owned objects are still constructed below
+            # on the Runtime loop after these synchronous imports complete.
+            await asyncio.to_thread(
+                importlib.import_module,
+                "jiuwenswarm.server.runtime.agent_adapter.interface_code" if mode_key == "code"
+                else "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+            )
         # 用并轨后的子模式装配实例，和缓存键保持同一套语义。
         sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
         project_dir = _normalize_project_dir((config or {}).get("project_dir"))
@@ -446,22 +704,104 @@ class AgentManager:
             sub_mode_key or None,
             project_dir or None,
         )
-        agent = JiuWenSwarm()
-        await agent.create_instance(config, mode=mode_key, sub_mode=sub_mode_key or None)
+        agent = agent_class()
+        agent.set_heartbeat_service(self._heartbeat_service)
+        setter = getattr(agent, "set_personal_context_runtime_enabled", None)
+        if callable(setter):
+            setter(self._personal_context_runtime_enabled)
+        agent.set_permissions_changed_notifier(self.schedule_permissions_reload)
+        agent.set_permissions_external_input_context_builder(
+            self.build_permissions_external_input_context
+        )
+        definition_snapshot = (
+            deepcopy(agent_definition) if agent_definition is not None else None
+        )
+        create_kwargs: dict[str, Any] = {
+            "mode": mode_key,
+            "sub_mode": sub_mode_key or None,
+        }
+        if definition_snapshot is not None:
+            create_kwargs["agent_definition"] = deepcopy(definition_snapshot)
+        try:
+            await agent.create_instance(config, **create_kwargs)
+        except BaseException as create_error:
+            # A declared Agent can fail after allocating Adapter resources but
+            # before it is inserted into the manager cache.  Runtime.close()
+            # cannot discover that partial instance, so unwind it here while
+            # preserving the original construction failure.
+            if definition_snapshot is not None:
+                cleanup = getattr(agent, "cleanup", None)
+                if callable(cleanup):
+                    try:
+                        await cleanup()
+                    except BaseException as cleanup_error:
+                        logger.warning(
+                            "[AgentManager] declared Agent rollback failed "
+                            "while preserving %s: %s",
+                            type(create_error).__name__,
+                            cleanup_error,
+                            exc_info=(
+                                type(cleanup_error),
+                                cleanup_error,
+                                cleanup_error.__traceback__,
+                            ),
+                        )
+            raise
         setattr(agent, "_jiuwenswarm_agent_cache_key", agent_cache_key)
         setattr(agent, "_jiuwenswarm_agent_mode", mode_key)
         setattr(agent, "_jiuwenswarm_agent_sub_mode", sub_mode_key)
         setattr(agent, "_jiuwenswarm_agent_project_dir", project_dir)
         self.agents.setdefault(channel_key, {})[agent_cache_key] = agent
         # 记录创建参数, recreate_agent() 时可原样复用
-        self._agent_create_params.setdefault(channel_key, {})[agent_cache_key] = {
+        create_params: dict[str, Any] = {
             "mode": mode_key,
             "sub_mode": sub_mode_key or None,
             "config": dict(config or {}),
             "cache_key": agent_cache_key,
         }
+        if definition_snapshot is not None:
+            create_params["agent_definition"] = deepcopy(definition_snapshot)
+            create_params["agent_definition_fingerprint"] = (
+                agent_definition_fingerprint
+            )
+        self._agent_create_params.setdefault(channel_key, {})[
+            agent_cache_key
+        ] = create_params
         logger.info("[AgentManager] %s agent created cache_key=%s", channel_key, agent_cache_key)
         return agent
+
+    async def set_personal_context_runtime_enabled(self, enabled: bool) -> None:
+        """Broadcast the Host switch to already cached Agent facades.
+
+        The manager deliberately iterates only existing wrappers.  Toggling
+        PersonalContext must not create an Agent or otherwise affect normal
+        AgentServer work when the feature is disabled.
+        """
+
+        self._personal_context_runtime_enabled = bool(enabled)
+        for channel_agents in list(self.agents.values()):
+            if not isinstance(channel_agents, dict):
+                continue
+            for agent in list(channel_agents.values()):
+                cancelled: asyncio.CancelledError | None = None
+                try:
+                    setter = getattr(
+                        agent, "set_personal_context_runtime_enabled", None
+                    )
+                    if callable(setter):
+                        setter(self._personal_context_runtime_enabled)
+                    refresher = getattr(agent, "refresh_personal_context_rail", None)
+                    if callable(refresher):
+                        await refresher()
+                except asyncio.CancelledError as exc:
+                    cancelled = exc
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[AgentManager] PersonalContext Rail refresh failed: %s",
+                        type(exc).__name__,
+                    )
+                if cancelled is not None:
+                    raise cancelled
 
     async def initialize(
         self, channel_id: str = "", extra_config: dict[str, Any] | None = None
@@ -501,12 +841,20 @@ class AgentManager:
             return ACP_DEFAULT_CAPABILITIES.copy()
         return None
 
-    async def cancel_all_inflight_work(self, reason: str = "[gateway ws disconnect] ") -> None:
+    async def cancel_all_inflight_work(
+        self,
+        reason: str = "[gateway ws disconnect] ",
+        *,
+        exclude_session_ids: set[str] | None = None,
+    ) -> None:
         """Gateway 与 AgentServer 的 WebSocket 断开时：取消所有已创建 Agent 实例上的在途任务。"""
         for modes in list(self.agents.values()):
             for agent in list(modes.values()):
                 try:
-                    await agent.cancel_inflight_work(reason)
+                    await agent.cancel_inflight_work(
+                        reason,
+                        exclude_session_ids=exclude_session_ids,
+                    )
                 except Exception:
                     logger.exception("[AgentManager] cancel_inflight_work failed")
 
@@ -606,6 +954,112 @@ class AgentManager:
                 f"session_id={sid}"
             )
         return cleaned
+
+    async def cancel_session_tasks(
+        self, *, channel_id: str = "", session_id: str
+    ) -> None:
+        """Cancel and join session request tasks before lifecycle cleanup."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        channel_key = _normalize_channel_id(channel_id)
+        for agent in list(self.agents.get(channel_key, {}).values()):
+            cancel = getattr(agent, "cancel_session_tasks", None)
+            if callable(cancel):
+                await cancel(sid)
+
+    def session_has_live_subagents(
+        self,
+        *,
+        channel_id: str | None,
+        session_id: str,
+    ) -> bool:
+        """Whether the session-scoped adapter still holds live subagents.
+
+        Reads the registry the adapter already keeps, without creating either
+        the Agent or a subagent control, so asking never hydrates work.  Pairs
+        with :meth:`release_subagent_runtime_for_session`: a Session that is
+        busy only because subagents are still tearing down must not be
+        reported as one the user has to stop.
+        """
+        agent = self._resolve_session_agent(channel_id, session_id)
+        adapter = self._resolve_runtime_adapter(agent)
+        probe = getattr(adapter, "_session_has_live_subagents", None)
+        if not callable(probe):
+            return False
+        try:
+            return bool(probe(session_id))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[AgentManager] live subagent probe failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            return False
+
+    def _resolve_session_agent(
+        self,
+        channel_id: str | None,
+        session_id: str,
+    ) -> "JiuWenSwarm | None":
+        """Return the cached channel Agent that actually owns ``session_id``.
+
+        Subagent controls and session adapters are held per Agent, so both the
+        release and the live probe have to land on the owning Agent: a channel
+        caches one Agent per project and mode, and the first match is another
+        project's or mode's Agent whenever the channel holds more than one.
+        Releasing against that Agent cancels nothing and leaves the resident
+        subagents running, which is what made the Session look busy.
+
+        Falls back to the channel's Agent when no Agent claims the Session's
+        runtime — already torn down, or never bound — so a release that used to
+        run still gets a chance to run.
+        """
+        owner = self.get_agent_for_session_nowait(
+            channel_id=channel_id or "", session_id=session_id
+        )
+        if owner is not None:
+            return owner
+        return self.get_agent_nowait(channel_id=channel_id or "")
+
+    async def release_subagent_runtime_for_session(
+        self,
+        *,
+        channel_id: str | None,
+        session_id: str,
+        reason: str = "session_deleted",
+    ) -> bool:
+        """Release subagent control owned by the Agent running ``session_id``.
+
+        Product Session deletion historically performed a first-Agent lookup in
+        AgentServer.  Resolving the owning Agent here instead keeps the adapter
+        selection while hiding Agent/Adapter internals behind the Runtime-owned
+        manager boundary.
+        """
+        agent = self._resolve_session_agent(channel_id, session_id)
+        adapter = self._resolve_runtime_adapter(agent)
+        release_runtime = getattr(
+            adapter,
+            "release_subagent_runtime_for_session",
+            None,
+        )
+        if not callable(release_runtime):
+            return False
+        await release_runtime(session_id, reason=reason)
+        return True
+
+    @staticmethod
+    def _resolve_runtime_adapter(agent: Any) -> Any:
+        """Resolve the same adapter shape used by the legacy Server path."""
+        if agent is None:
+            return None
+        for attr in ("_adapter", "adapter", "_active_adapter"):
+            inner = getattr(agent, attr, None)
+            if inner is not None and hasattr(inner, "apply_sandbox_runtime_patch"):
+                return inner
+        if hasattr(agent, "apply_sandbox_runtime_patch"):
+            return agent
+        return None
 
     async def apply_mcp_change(
         self, name: str, action: str, *, enabled: bool = True,
@@ -810,7 +1264,9 @@ class AgentManager:
         project_dir: str | None,
         work_mode: str,
         is_swarm: bool,
+        persist_session: bool = False,
         prewarm_eligible: bool = True,
+        moa_enabled: bool = False,
         create_token: str | None = None,
     ):
         token = str(create_token or "").strip()
@@ -821,7 +1277,10 @@ class AgentManager:
             work_mode=work_mode,
             is_swarm=is_swarm,
         )
-        create_signature = (key, bool(prewarm_eligible))
+        # persist_session 不属于 WarmKey：同一预热 Agent 可服务开启或关闭的
+        # Session，避免为布尔开关复制预热槽。但它属于 session.create 的幂等
+        # 身份，同一 create_token 不允许用不同值重试。
+        create_signature = (key, bool(prewarm_eligible), bool(persist_session), bool(moa_enabled))
         token_key = (key.channel_id, token)
         async with self._session_create_token_lock:
             if token:
@@ -871,7 +1330,11 @@ class AgentManager:
             channel_id: str = "",
             mode: str = "agent",
             project_dir: str = None,
-            sub_mode: str = None
+            sub_mode: str = None,
+            *,
+            agent_definition: dict[str, Any] | None = None,
+            agent_definition_fingerprint: str | None = None,
+            run_permissions_enabled: bool = False,
     ) -> "JiuWenSwarm | None":
         """获取 Agent 实例（自动创建）.
 
@@ -890,7 +1353,24 @@ class AgentManager:
         mode_key = _normalize_mode(mode)
         sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
         project_key = _normalize_project_dir(project_dir)
-        cache_key = _make_agent_cache_key(mode_key, sub_mode_key, project_key)
+        if (agent_definition is None) is not (
+            agent_definition_fingerprint is None
+        ):
+            raise ValueError(
+                "Agent definition and fingerprint must be provided together"
+            )
+        cache_key = (
+            _make_defined_agent_cache_key(
+                mode_key,
+                sub_mode_key,
+                project_key,
+                agent_definition_fingerprint or "",
+            )
+            if agent_definition is not None
+            else _make_agent_cache_key(mode_key, sub_mode_key, project_key)
+        )
+        if run_permissions_enabled:
+            cache_key += ":run-permissions"
         channel_agents = self.agents.get(channel_key, {})
         if cache_key in channel_agents:
             return self._borrow_agent(channel_agents[cache_key])
@@ -909,24 +1389,43 @@ class AgentManager:
             # state.json enabled; web = session-level via chat.send's mcp field,
             # init loads nothing).
             config["channel_id"] = channel_key
+            if run_permissions_enabled:
+                config["run_permissions_enabled"] = True
             if channel_key == "acp":
                 config = {
                     **config,
                     **_build_acp_agent_config()
                 }
+            create_kwargs: dict[str, Any] = {"cache_key": cache_key}
+            if agent_definition is not None:
+                create_kwargs["agent_definition"] = agent_definition
+                create_kwargs["agent_definition_fingerprint"] = (
+                    agent_definition_fingerprint
+                )
             agent = await self._create_agent(
                 channel_key,
                 mode_key,
                 config,
                 sub_mode_key or None,
-                cache_key=cache_key,
+                **create_kwargs,
             )
             return self._borrow_agent(agent)
+
+    def has_active_goal(self, channel_id: str, session_id: str) -> bool:
+        """Inspect cached Goal owners without borrowing or creating an Agent."""
+        channel_agents = self.agents.get(_normalize_channel_id(channel_id), {})
+        for agent in channel_agents.values():
+            checker = getattr(agent, "has_active_goal", None)
+            if callable(checker) and checker(session_id):
+                return True
+        return False
 
     def get_agent_for_session_nowait(
         self,
         channel_id: str,
         session_id: str,
+        *,
+        mode: str | None = None,
     ) -> "JiuWenSwarm | None":
         """Return the cached channel agent that owns ``session_id`` runtime."""
         sid = str(session_id or "").strip()
@@ -939,6 +1438,8 @@ class AgentManager:
             return None
 
         for cache_key, agent in channel_agents.items():
+            if not _matches_single_agent_owner(cache_key, mode):
+                continue
             has_runtime = getattr(agent, "has_session_runtime", None)
             if not callable(has_runtime):
                 continue
@@ -952,6 +1453,37 @@ class AgentManager:
                     channel_key,
                     sid,
                     cache_key,
+                )
+        return None
+
+    def get_auto_permission_agent_for_session_nowait(
+        self,
+        channel_id: str,
+        session_id: str,
+        *,
+        mode: str | None = None,
+    ) -> "JiuWenSwarm | None":
+        """Return the exact cached channel agent owning this Auto session."""
+
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        channel_agents = self.agents.get(_normalize_channel_id(channel_id), {})
+        if not isinstance(channel_agents, dict):
+            return None
+        for cache_key, agent in channel_agents.items():
+            if not _matches_single_agent_owner(cache_key, mode):
+                continue
+            checker = getattr(agent, "has_auto_permission_session", None)
+            try:
+                if callable(checker) and checker(sid):
+                    return self._borrow_agent(agent)
+            except Exception:
+                logger.exception(
+                    "[AgentManager] Auto session owner lookup failed: "
+                    "channel_id=%s session_id=%s",
+                    channel_id,
+                    sid,
                 )
         return None
 
@@ -997,7 +1529,13 @@ class AgentManager:
 
         if mode is None and project_dir is None and sub_mode is None:
             for agent in channel_agents.values():
-                if getattr(agent, "_jiuwenswarm_agent_mode", "") == "agent":
+                # 默认回落优先取"普通 agent"实例：旧串 "agent" 与新 canonical
+                # agent.work.* 都要命中。deprecate 归一把新旧形式统一成
+                # agent.work.normal / agent.work.plan 再判定。
+                if deprecate_mode(getattr(agent, "_jiuwenswarm_agent_mode", "")) in (
+                    NEW_AGENT_WORK_NORMAL,
+                    NEW_AGENT_WORK_PLAN,
+                ):
                     return self._borrow_agent(agent)
             agent = next(iter(channel_agents.values()), None)
             return self._borrow_agent(agent) if agent is not None else None
@@ -1095,6 +1633,104 @@ class AgentManager:
                         exc,
                     )
 
+    async def broadcast_rsi_harness_change(
+        self,
+        *,
+        old_installation: dict[str, Any] | None,
+        new_installation: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Hot-load an RSI Harness on agent/code facades only.
+
+        This path intentionally calls the dedicated facade API, which owns
+        ``DeepAgent.load_plugin`` LoadRecords and session fan-out.  It never
+        touches the legacy ``harness-packages.json`` broadcast.
+        """
+
+        # ``new_installation=None`` is used only by the installer while
+        # restoring the pre-install state after an active-pointer write
+        # failure.  In that case the ``old_installation`` argument is the
+        # version currently loaded in live agents and must be deactivated.
+        operation = "activate"
+        target_installation = new_installation
+        if target_installation is None:
+            if old_installation is None:
+                return {"attempted": 0, "succeeded": 0, "failed": []}
+            operation = "deactivate"
+            target_installation = old_installation
+        installation_id = str(target_installation.get("installation_id") or "").strip()
+        runtime_path = str(target_installation.get("runtime_path") or "").strip()
+        if not installation_id or not runtime_path:
+            raise ValueError("RSI Harness installation record is incomplete")
+        target_modes = {"agent", "code"}
+        attempted = 0
+        succeeded = 0
+        failed: list[dict[str, str]] = []
+        applied: list[Any] = []
+
+        for channel_key, channel_agents in list(self.agents.items()):
+            if not isinstance(channel_agents, dict):
+                continue
+            for cache_key, agent in list(channel_agents.items()):
+                mode = str(cache_key).split(":", 1)[0]
+                if mode not in target_modes:
+                    continue
+                attempted += 1
+                try:
+                    ensure = getattr(agent, "ensure_instance", None)
+                    if callable(ensure):
+                        await ensure()
+                    apply = getattr(agent, "apply_rsi_harness_install", None)
+                    if not callable(apply):
+                        raise RuntimeError("agent facade does not support RSI Harness installation")
+                    await apply(
+                        operation,
+                        config_path=runtime_path,
+                        installation_id=installation_id,
+                    )
+                    succeeded += 1
+                    applied.append(agent)
+                except Exception as exc:  # noqa: BLE001 - rollback below
+                    failed.append(
+                        {
+                            "channel": str(channel_key),
+                            "agent": str(cache_key),
+                            "error": str(exc),
+                        }
+                    )
+                    break
+            if failed:
+                break
+
+        if failed:
+            rollback_failures: list[str] = []
+            for agent in reversed(applied):
+                try:
+                    apply = getattr(agent, "apply_rsi_harness_install", None)
+                    if not callable(apply):
+                        continue
+                    if old_installation:
+                        await apply(
+                            "activate",
+                            config_path=str(old_installation.get("runtime_path") or ""),
+                            installation_id=str(old_installation.get("installation_id") or ""),
+                        )
+                    else:
+                        await apply(
+                            "deactivate",
+                            config_path=runtime_path,
+                            installation_id=installation_id,
+                        )
+                except Exception as exc:  # noqa: BLE001 - expose rollback conflict
+                    rollback_failures.append(str(exc))
+            if rollback_failures:
+                raise RsiHarnessInstallConflict(
+                    "RSI Harness 广播失败且回滚失败: " + "; ".join(rollback_failures)
+                )
+            raise RsiHarnessInstallConflict(
+                "RSI Harness 广播失败: " + "; ".join(item["error"] for item in failed)
+            )
+        return {"attempted": attempted, "succeeded": succeeded, "failed": failed}
+
     async def reload_agents_config(
         self,
         config,
@@ -1103,17 +1739,17 @@ class AgentManager:
         target_channel_id: str | None = None,
         target_session_id: str | None = None,
         reload_scopes: set[str] | None = None,
+        permission_notification: bool = False,
     ) -> None:
         """reload agent config.
 
         使用 ``self._reload_lock`` 串行化, 避免高频触发(如批量 MCP 增删)时多个
         reload 并发叠加, 同时重建大量 agent 实例导致内存暴涨被 OOM kill.
 
-        ``reload_scopes`` 含 ``"model"`` 时, 模型配置属于所有 channel 共享的
-        全局配置段, 此时忽略 ``target_channel_id`` 的窄化, fan-out 到全部
-        channel——否则 web 保存模型后只有 web 通道被热更新, IM 长连接通道
-        (xiaoyi 等)的 session adapter 会继续用旧错误模型, 直到用户手动
-        /new_session 才恢复.
+        ``reload_scopes`` 含 ``"model"``、``"multimodal"`` 或 ``"search"`` 时, 配置属于所有
+        channel 共享的全局配置段, 此时忽略 ``target_channel_id`` 的窄化,
+        fan-out 到全部 channel。否则 web 保存后只有 web 通道被热更新,
+        IM 长连接通道的 session adapter 会继续使用旧配置。
         """
         async with self._reload_lock:
             self._latest_env_overrides = dict(env) if isinstance(env, dict) else {}
@@ -1126,15 +1762,29 @@ class AgentManager:
 
             target_channel = str(target_channel_id or "").strip() or None
             target_session = str(target_session_id or "").strip() or None
-            # model 是全局共享配置: 变更时必须广播到所有 channel, 否则非触发
-            # 通道(如 IM 长连接 xiaoyi)的 agent 不会收到热更新, 旧模型残留。
+            # 对话模型、多模态和搜索工具都是全局共享配置，必须广播到所有 channel。
             scope_set = set(reload_scopes) if reload_scopes else set()
+            search_changed = any(
+                f"{provider}_API_KEY" in self._latest_env_overrides
+                for provider in ("BOCHA", "PERPLEXITY", "SERPER", "JINA")
+            )
+            # Older callers can omit scopes; keep their full-reload semantics.
+            if search_changed and scope_set:
+                scope_set.add("search")
             model_scope = "model" in scope_set
-            effective_target_channel = None if model_scope else target_channel
-            if target_channel and model_scope:
+            global_scope = search_changed or bool(scope_set & {"model", "multimodal", "search"})
+            if not scope_set or "search" in scope_set:
+                from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import refresh_mcp_paid_search_tools
+
+                refresh_mcp_paid_search_tools()
+            effective_target_channel = None if global_scope else target_channel
+            if search_changed or "search" in scope_set:
+                target_session = None
+            if target_channel and global_scope:
                 logger.info(
-                    "[AgentManager] model config changed via channel=%s; fan-out reload "
-                    "to all channels (model is global)",
+                    "[AgentManager] global config scopes=%s changed via channel=%s; "
+                    "fan-out reload to all channels",
+                    sorted(scope_set & {"model", "multimodal", "search"}),
                     target_channel,
                 )
             effective_config = config
@@ -1182,7 +1832,12 @@ class AgentManager:
                     }
                     if target_session:
                         reload_kwargs["target_session_id"] = target_session
-                    await agent.reload_agent_config(**reload_kwargs)
+                    if scope_set:
+                        reload_kwargs["reload_scopes"] = scope_set
+                    if permission_notification:
+                        await agent.reload_permissions_config(effective_config, include_legacy=True)
+                    else:
+                        await agent.reload_agent_config(**reload_kwargs)
                 try:
                     team_config = effective_config if isinstance(effective_config, dict) else get_config()
                     await get_team_manager(channel_id).update_evolution_config(team_config)
@@ -1232,12 +1887,35 @@ class AgentManager:
             logger.warning("[AgentManager] LLM client evict skipped (import failed): %s", exc)
             return
 
-        def _diff_key(cfg: Any) -> tuple:
-            return (str(cfg.client_provider), cfg.api_key, cfg.api_base, cfg.verify_ssl, cfg.ssl_cert)
+        class _ConnDiffKey(NamedTuple):
+            # 新声明下同一 api_base 可能对应不同 endpoint_profile / auth_mode / api_mode，
+            # 这些会影响连接身份(如 affinity 走 custom_headers 不带 Authorization)。
+            # 纳入 diff key 避免误关/漏关连接池。core 侧 connection_key 已按归一 api_base
+            # + 鉴权分桶，此处 diff 至少不比 Client 更粗。
+            client_provider: str
+            endpoint_profile: Any
+            auth_mode: Any
+            api_mode: Any
+            api_key: str
+            api_base: str
+            verify_ssl: bool
+            ssl_cert: Any
+
+        def _diff_key(cfg: Any) -> _ConnDiffKey:
+            return _ConnDiffKey(
+                client_provider=str(cfg.client_provider),
+                endpoint_profile=getattr(cfg, "endpoint_profile", None),
+                auth_mode=getattr(cfg, "auth_mode", None),
+                api_mode=getattr(cfg, "api_mode", None),
+                api_key=cfg.api_key,
+                api_base=cfg.api_base,
+                verify_ssl=cfg.verify_ssl,
+                ssl_cert=cfg.ssl_cert,
+            )
 
         new_configs: dict[tuple, Any] = {}
         try:
-            entries = get_default_models(effective_config if isinstance(effective_config, dict) else None)
+            entries = get_available_models(effective_config if isinstance(effective_config, dict) else None)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[AgentManager] build live model configs failed: %s", exc)
             return
@@ -1326,12 +2004,21 @@ class AgentManager:
         # 3. 立即按原参数重建
         for mode_key, params in backup_params.items():
             try:
+                create_kwargs: dict[str, Any] = {
+                    "cache_key": params.get("cache_key") or mode_key
+                }
+                agent_definition = params.get("agent_definition")
+                if agent_definition is not None:
+                    create_kwargs["agent_definition"] = agent_definition
+                    create_kwargs["agent_definition_fingerprint"] = params.get(
+                        "agent_definition_fingerprint"
+                    )
                 await self._create_agent(
                     channel_key,
                     mode=params.get("mode") or mode_key,
                     config=params.get("config"),
                     sub_mode=params.get("sub_mode"),
-                    cache_key=params.get("cache_key") or mode_key,
+                    **create_kwargs,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error(
@@ -1345,6 +2032,179 @@ class AgentManager:
             existing_modes,
         )
 
+    async def get_agent_for_request(
+        self,
+        request: Any,
+        *,
+        mode: str | None = None,
+        sub_mode: str | None = None,
+        project_dir: str | None = None,
+        admit_request: Callable[[], str | None] | None = None,
+        agent_definition: dict[str, Any] | None = None,
+        agent_definition_fingerprint: str | None = None,
+    ) -> "JiuWenSwarm | None":
+        """Admit one request and pin Auto sessions to their first owner/root."""
+
+        channel_id = getattr(request, "channel_id", "")
+        params = getattr(request, "params", {})
+        params = params if isinstance(params, dict) else {}
+        mode_full = params.get("mode", "agent")
+        selected_mode, selected_sub_mode = _resolve_request_owner_mode(
+            params,
+            mode=mode,
+            sub_mode=sub_mode,
+        )
+        if project_dir is None:
+            project_dir = params.get("project_dir")
+        auto_workspace = _auto_permission_request_workspace(request)
+        session_id = getattr(request, "session_id", "")
+        owner = self.get_auto_permission_agent_for_session_nowait(
+            channel_id, session_id, mode=selected_mode
+        )
+        owner_auto = getattr(owner, "has_auto_permission_session", None)
+        needs_auto_owner = supports_phase_auto_root(params) and (
+            auto_workspace is not None
+            or (
+                owner is not None
+                and callable(owner_auto)
+                and owner_auto(session_id)
+            )
+        )
+        if needs_auto_owner:
+            lock = self._get_agent_create_lock(
+                _normalize_channel_id(channel_id),
+                f"auto-session:{session_id or 'default'}",
+            )
+            async with lock:
+                params = getattr(request, "params", {})
+                params = params if isinstance(params, dict) else {}
+                metadata = getattr(request, "metadata", {})
+                metadata = metadata if isinstance(metadata, dict) else {}
+                declared_before_admission = resolve_declared_auto_workspace(
+                    params,
+                    metadata,
+                )
+                permission_resume = is_interrupt_resume_payload(params)
+                owner = self.get_auto_permission_agent_for_session_nowait(
+                    channel_id, session_id, mode=selected_mode
+                )
+                owner_auto = getattr(owner, "has_auto_permission_session", None)
+                has_auto_owner = bool(
+                    owner is not None
+                    and callable(owner_auto)
+                    and owner_auto(session_id)
+                )
+                if permission_resume and not has_auto_owner:
+                    # A pending manual call still belongs to its installed owner
+                    # after Smart is selected. Never prepare a new owner for an answer.
+                    owner = self.get_agent_for_session_nowait(
+                        channel_id, session_id, mode=selected_mode,
+                    )
+                    if owner is None:
+                        raise RootPermissionQueueError("permission_resume_owner_missing")
+                new_task_without_owner = not has_auto_owner and not permission_resume
+                if (
+                    new_task_without_owner
+                    and session_id
+                    and declared_before_admission is not None
+                ):
+                    # Cold recovery has no in-memory owner to validate the root.
+                    # Reject against the persisted lock before the admission
+                    # callback can update unrelated session metadata.
+                    from jiuwenswarm.server.runtime.session.session_metadata import (
+                        get_session_metadata,
+                    )
+
+                    persisted_metadata = get_session_metadata(
+                        str(session_id),
+                        cache_bust=True,
+                        enable_writeback=False,
+                    )
+                    persisted_workspace = resolve_declared_auto_workspace(
+                        {},
+                        persisted_metadata,
+                    )
+                    if (
+                        persisted_workspace is not None
+                        and persisted_workspace != declared_before_admission
+                    ):
+                        raise RootPermissionQueueError(
+                            "auto_permission_workspace_changed:new_session_required"
+                        )
+                validator = getattr(
+                    owner, "validate_auto_permission_workspace_request", None
+                )
+                if callable(validator):
+                    validator(request)
+                if admit_request is not None:
+                    project_dir = admit_request()
+                params = getattr(request, "params", {})
+                params = params if isinstance(params, dict) else {}
+                auto_workspace = _auto_permission_request_workspace(request)
+                metadata = getattr(request, "metadata", {})
+                metadata = metadata if isinstance(metadata, dict) else {}
+                declared_after_admission = resolve_declared_auto_workspace(
+                    params,
+                    metadata,
+                )
+                if (
+                    declared_before_admission is not None
+                    and declared_after_admission is not None
+                    and declared_before_admission != declared_after_admission
+                ):
+                    raise RootPermissionQueueError(
+                        "auto_permission_workspace_changed:new_session_required"
+                    )
+                validator = getattr(
+                    owner, "validate_auto_permission_workspace_request", None
+                )
+                if callable(validator):
+                    validator(request)
+                if has_auto_owner or permission_resume:
+                    return owner
+                if auto_workspace is not None:
+                    get_kwargs: dict[str, Any] = {
+                        "channel_id": channel_id,
+                        "mode": selected_mode,
+                        "project_dir": auto_workspace,
+                        "sub_mode": selected_sub_mode,
+                    }
+                    if agent_definition is not None:
+                        get_kwargs["agent_definition"] = agent_definition
+                        get_kwargs["agent_definition_fingerprint"] = (
+                            agent_definition_fingerprint
+                        )
+                    agent = await self.get_agent(
+                        **get_kwargs,
+                    )
+                    prepare = getattr(agent, "prepare_session", None)
+                    if not callable(prepare):
+                        raise RuntimeError("auto_permission_session_owner_unavailable")
+                    await prepare(
+                        session_id=str(session_id or "default"),
+                        channel_id=channel_id,
+                        mode=str(mode_full or selected_mode),
+                        project_dir=auto_workspace or None,
+                    )
+                    return agent
+        else:
+            if admit_request is not None:
+                project_dir = admit_request()
+        get_kwargs = {
+            "channel_id": channel_id,
+            "mode": selected_mode,
+            "project_dir": project_dir,
+            "sub_mode": selected_sub_mode,
+        }
+        if channel_id == "process_cli" and isinstance(params.get("run_permissions"), dict):
+            get_kwargs["run_permissions_enabled"] = True
+        if agent_definition is not None:
+            get_kwargs["agent_definition"] = agent_definition
+            get_kwargs["agent_definition_fingerprint"] = (
+                agent_definition_fingerprint
+            )
+        return await self.get_agent(**get_kwargs)
+
     async def process_message(self, request: Any) -> Any:
         """处理非流式请求.
 
@@ -1357,16 +2217,7 @@ class AgentManager:
         try:
             await self.wait_for_session_prewarm(getattr(request, "session_id", None))
             channel_id = getattr(request, "channel_id", "")
-            params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
-            mode_full = params.get("mode", "agent")
-            mode = str(mode_full).split(".")[0] if mode_full else "agent"
-            workspace_dir = params.get("workspace_dir")
-
-            agent = await self.get_agent(
-                channel_id=channel_id,
-                mode=mode,
-                project_dir=workspace_dir,
-            )
+            agent = await self.get_agent_for_request(request)
             if agent is None:
                 raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")
 
@@ -1387,16 +2238,7 @@ class AgentManager:
         try:
             await self.wait_for_session_prewarm(getattr(request, "session_id", None))
             channel_id = getattr(request, "channel_id", "")
-            params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
-            mode_full = params.get("mode", "agent")
-            mode = str(mode_full).split(".")[0] if mode_full else "agent"
-            workspace_dir = params.get("workspace_dir")
-
-            agent = await self.get_agent(
-                channel_id=channel_id,
-                mode=mode,
-                project_dir=workspace_dir,
-            )
+            agent = await self.get_agent_for_request(request)
             if agent is None:
                 raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")
 
@@ -1409,6 +2251,20 @@ class AgentManager:
 
     async def cleanup(self) -> None:
         """清理所有 agent 实例."""
+        self._permissions_reload_closing = True
+        reload_tasks = [
+            task for task in self._permissions_reload_tasks
+            if task is not asyncio.current_task()
+        ]
+        for task in reload_tasks:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        if reload_tasks:
+            # Wait for adapter/SDK finally blocks before tearing down agents.
+            await asyncio.gather(*reload_tasks, return_exceptions=True)
+        self._permissions_reload_tasks.clear()
+        self._permissions_reload_tail = None
+        self._permissions_reload_schedule_failure = None
         await self.warm_pool.close()
         retirement_tasks = [
             task

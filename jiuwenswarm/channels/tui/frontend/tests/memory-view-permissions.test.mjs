@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { createMemoryCommand } from "../dist/core/commands/builtins/memory.js";
 import { MemoryViewController } from "../dist/ui/memory-view.js";
 
 function stripAnsi(value) {
@@ -76,6 +77,27 @@ controller.state = {
 };
 
 try {
+  const [projectMemoryItem] = controller.buildEditItems(
+    [
+      {
+        path: join(tempRoot, "JIUWENSWARM.md"),
+        relative_path: "JIUWENSWARM.md",
+        kind: "project",
+        exists: false,
+        size: 0,
+        mtime: 0,
+        lines: 0,
+      },
+    ],
+    tempRoot,
+    null,
+  );
+  assert.match(
+    projectMemoryItem.description,
+    /^Saved in /,
+    "project memory in a non-Git directory must be described as saved",
+  );
+
   chmodSync(memoryDir, 0o444);
 
   // Windows does not enforce chmod write bits on directories. In that case,
@@ -235,4 +257,51 @@ try {
   rmSync(lifecycleRoot, { recursive: true, force: true });
 }
 
-console.log("memory view permission and edit lifecycle tests passed");
+const directEditRoot = mkdtempSync(join(tmpdir(), "jiuwenswarm-memory-direct-edit-"));
+const directEditPath = join(directEditRoot, "JIUWENSWARM.md");
+
+try {
+  const addedItems = [];
+  let editorOpenCount = 0;
+  const memoryCommand = createMemoryCommand();
+  const editCommand = memoryCommand.subCommands.find((command) => command.name === "edit");
+  assert.ok(editCommand, "the memory edit subcommand must be registered");
+
+  await editCommand.action(
+    {
+      sessionId: "session-direct-edit",
+      mode: "code.normal",
+      getTrustedDirs: () => [],
+      getCurrentProjectDir: () => directEditRoot,
+      getWorkspaceDir: () => directEditRoot,
+      request: async (method, params) => {
+        assert.equal(method, "memory.edit");
+        assert.equal(params.path, directEditPath, "missing relative paths resolve against the project");
+        return {
+          path: directEditPath,
+          exists: false,
+          content_preview: "",
+          kind: "project",
+          editable: true,
+        };
+      },
+      openInEditor: async (filePath, onDone) => {
+        assert.equal(filePath, directEditPath);
+        assert.equal(existsSync(filePath), true, "the memory file must exist before the editor opens");
+        editorOpenCount += 1;
+        onDone?.(true);
+      },
+      addItem: (item) => addedItems.push(item),
+    },
+    "JIUWENSWARM.md",
+  );
+
+  assert.equal(existsSync(directEditPath), true);
+  assert.equal(editorOpenCount, 1);
+  assert.equal(addedItems.length, 1);
+  assert.match(addedItems[0].content, /Memory file edited successfully:/);
+} finally {
+  rmSync(directEditRoot, { recursive: true, force: true });
+}
+
+console.log("memory view and direct edit tests passed");

@@ -35,8 +35,8 @@ from openjiuwen.harness.prompts import resolve_language
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.common.mode_matrix import (
-    TEAM_PLAN_NORMAL_MODE,
     is_code_profile_mode,
+    is_team_mode,
     is_team_plan_mode,
 )
 from jiuwenswarm.common.utils import get_agent_workspace_dir
@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 # Provider name constants; namespaced under the shared "swarm." prefix.
 CODE_RUNTIME_PROMPT = "swarm.code_runtime_prompt"
 CODE_PROJECT_MEMORY = "swarm.code_project_memory"
+CODE_AGENT_MD = "swarm.code_agent_md"
 PERMISSION_INTERRUPT = "swarm.permission_interrupt"
 CODE_CODING_MEMORY = "swarm.code_coding_memory"
 CODE_AGENT_MODE = "swarm.code_agent_mode"
@@ -62,16 +63,14 @@ CODING_MEMORY_EXTRAS_KEY = "_coding_memory_rail"
 _TEAM_PLAN_EXIT_NOTIFICATION_EN = """\
 <system-reminder>
 The user approved the team plan. Continue as the Team Leader inside the
-team runtime. Do not implement directly as a single code agent. Start the
-approved team workflow with team tools such as build_team, create_task,
-spawn_teammate, and send_message.
+team runtime. Do not implement directly as a single agent. Organize the team,
+delegate the approved work, and coordinate the members through completion.
 </system-reminder>"""
 
 _TEAM_PLAN_EXIT_NOTIFICATION_CN = """\
 <system-reminder>
 用户已批准团队计划。请继续作为 Team Leader 工作，不要由 Leader 独自完成全部任务。
-立即使用 build_team、create_task、spawn_teammate、send_message 等 Team 工具启动并分派
-已批准的团队工作流。
+立即按已批准的计划组织团队协作、分派工作并推动成员完成交付。
 </system-reminder>"""
 
 
@@ -100,7 +99,7 @@ def code_runtime_language(ctx: SwarmBuildContext) -> str:
 
 def structured_ask_user_language(ctx: SwarmBuildContext) -> str:
     """Resolve the StructuredAskUserRail language for team/code profiles."""
-    if ctx.role == "leader" and (ctx.mode == "team" or is_team_plan_mode(ctx.mode)):
+    if ctx.role == "leader" and (is_team_mode(ctx.mode) or is_team_plan_mode(ctx.mode)):
         return resolve_language((ctx.config or {}).get("preferred_language", "zh"))
     return code_runtime_language(ctx)
 
@@ -167,6 +166,38 @@ def build_code_runtime_prompt(params: dict[str, Any], ctx: SwarmBuildContext) ->
         return None
 
 
+class CodeAgentMdInput(ConstructionInput):
+    """Construction inputs for the code member project-instruction rail."""
+
+    project_dir: str | None = context_field(
+        attr="project_dir",
+        description="Resolved user project directory (search root for instruction files).",
+    )
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=CODE_AGENT_MD,
+    description="Code-member project instruction attachment (agent.md / claude.md, "
+    "nearest hit from the session working directory upward within three levels).",
+    input_model=CodeAgentMdInput,
+)
+def build_code_agent_md(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
+    """Build the AgentMdPromptRail for code members (prompt attachment)."""
+    from jiuwenswarm.agents.harness.code.rails.agent_md_prompt_rail import (
+        AgentMdPromptRail,
+    )
+
+    try:
+        inp = CodeAgentMdInput.resolve(params, ctx)
+        rail = AgentMdPromptRail()
+        rail.set_runtime_paths(cwd=inp.project_dir)
+        return rail
+    except Exception as exc:
+        logger.warning("[swarm.code_agent_md] create failed: %s", exc)
+        return None
+
+
 class CodeProjectMemoryInput(ConstructionInput):
     """Construction inputs for the code project-memory rail."""
 
@@ -224,6 +255,10 @@ class PermissionInterruptInput(ConstructionInput):
         attr="trusted_dirs",
         description="Directories the client declared as trusted for this request.",
     )
+    project_dir: str | None = context_field(
+        attr="project_dir",
+        description="Frontend/session project directory; merged into file_guard trusted_dirs.",
+    )
 
 
 class _TeamPlanPermissionInterruptRail:
@@ -273,19 +308,34 @@ def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -
     """Build PermissionInterruptRail (None unless ``permissions.enabled`` in config)."""
     try:
         from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            apply_permission_trusted_dirs,
             build_permission_rail,
         )
+        from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_enabled
+
+        # Without A4P, skip cron: the scheduler tags every cron request with
+        # ``request_metadata["cron"]`` (see ``CronScheduler._stream_team_round``
+        # at jiuwenswarm/gateway/cron/scheduler.py). The ``channel_id == "__cron__"``
+        # fallback covers single-agent sessions where the SDK may not propagate
+        # ``request_metadata`` into ``SwarmBuildContext``.
+        request_meta = getattr(ctx, "request_metadata", None) or {}
+        is_cron = bool(request_meta.get("cron") or getattr(ctx, "channel_id", None) == "__cron__")
+        if is_cron and not is_a4p_enabled(ctx.config or {}):
+            return None
 
         inp = PermissionInterruptInput.resolve(params, ctx)
         rail = build_permission_rail(
             config={"permissions": inp.permissions_config},
             llm=None,
             model_name=inp.model_name,
+            session_id=getattr(ctx, "session_id", None) or None,
         )
-        if rail is not None and inp.trusted_dirs:
-            # Mirrors the single agent: trusted subtrees count as internal, so
-            # the external_directory check skips ask/deny inside them.
-            rail.set_trusted_dirs(inp.trusted_dirs)
+        if rail is not None:
+            apply_permission_trusted_dirs(
+                rail,
+                trusted_dirs=inp.trusted_dirs,
+                project_dir=inp.project_dir,
+            )
         if rail is not None and _is_team_plan_leader(ctx):
             return _TeamPlanPermissionInterruptRail(rail)
         return rail
@@ -351,7 +401,11 @@ def build_code_coding_memory(params: dict[str, Any], ctx: SwarmBuildContext) -> 
 def build_code_agent_mode(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
     """Build one profile-aware plan rail for code or normal Team Plan contexts."""
     try:
-        if ctx.mode == TEAM_PLAN_NORMAL_MODE and ctx.role == "leader":
+        if (
+            is_team_plan_mode(ctx.mode)
+            and not is_code_profile_mode(ctx.mode)
+            and ctx.role == "leader"
+        ):
             from jiuwenswarm.agents.harness.work.rails.work_agent_mode_rail import (
                 WorkAgentModeRail,
             )
@@ -375,8 +429,9 @@ def build_code_agent_mode(params: dict[str, Any], ctx: SwarmBuildContext) -> Any
             CodeAgentModeRail,
         )
         from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
-            _ENTER_PLAN_MODE_INSTRUCTIONS_EN,
+            _CODE_PLAN_ALLOWED_TOOLS,
             _PLAN_MODE_SYSTEM_NOTE,
+            _code_enter_plan_instructions,
         )
 
         exit_notification = (
@@ -385,21 +440,9 @@ def build_code_agent_mode(params: dict[str, Any], ctx: SwarmBuildContext) -> Any
             else None
         )
         return CodeAgentModeRail(
-            allowed_tools=[
-                "enter_plan_mode",
-                "exit_plan_mode",
-                "ask_user",
-                "task_tool",
-                "read_file",
-                "grep",
-                "list_files",
-                "glob",
-                "bash",
-                "write_file",
-                "edit_file",
-            ],
+            allowed_tools=list(_CODE_PLAN_ALLOWED_TOOLS),
             plan_mode_system_note=_PLAN_MODE_SYSTEM_NOTE,
-            enter_plan_instructions=_ENTER_PLAN_MODE_INSTRUCTIONS_EN,
+            enter_plan_instructions=_code_enter_plan_instructions(ctx.config),
             exit_plan_notification=exit_notification,
         )
     except Exception as exc:
@@ -528,7 +571,7 @@ def build_user_hooks(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
         inp = UserHooksInput.resolve(params, ctx)
         hooks_config = load_hooks_config({"hooks": inp.hooks_section})
         if getattr(hooks_config, "events", None):
-            return UserHookRail(hooks_config)
+            return UserHookRail(hooks_config, subagent_type=ctx.member_name or "swarm_member")
         return None
     except Exception as exc:
         logger.warning("[swarm.user_hooks] create failed: %s", exc)

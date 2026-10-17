@@ -21,13 +21,27 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import re
 import time
+import uuid
+from contextvars import ContextVar
+from dataclasses import dataclass
 
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_INVOCATION_AGENT: ContextVar = ContextVar("proactive_invocation_agent", default=None)
+
+
+@dataclass(eq=False)
+class _AgentGeneration:
+    generation: int
+    agent: Any
+    users: int = 0
+    close_task: asyncio.Task | None = None
 
 
 # proactive 数值配置项的合法区间（与 web handler _validate_proactive_int 保持一致）。
@@ -85,6 +99,14 @@ class ProactiveEngine:
         # 推荐专用 agent：只做决策（无 session、无 tools、单轮、输出 JSON），
         # 替代 proactive_actions._analyze_and_decide 里的裸 model.invoke。
         self._proactive_agent: Any = None
+        self._agent_builder: Any = None
+        self._agent_generation = 0
+        self._prepared_agent: _AgentGeneration | None = None
+        self._prepare_tasks: dict[int, asyncio.Task] = {}
+        self._retired_agents: set[_AgentGeneration] = set()
+        self._tick_tasks: set[asyncio.Task] = set()
+        self._closed = False
+        self._close_task: asyncio.Task | None = None
         # 触发主 agent 跑一轮生成话术的回调。
         self._trigger_main_agent_callback: Any = None
         # 检查目标 channel 是否有活跃 agent（避免 agent 被 evict 后白调 LLM）。
@@ -100,7 +122,143 @@ class ProactiveEngine:
             agent: A DeepAgent instance (no tools, no task_loop, single-round).
                    Built by app_agentserver via create_deep_agent.
         """
+        if self._closed:
+            raise RuntimeError("Proactive engine is closed")
+        if self._prepared_agent is not None and self._prepared_agent.agent is agent:
+            self._agent_builder = None
+            return
+        self._invalidate_agent()
+        self._agent_builder = None
         self._proactive_agent = agent
+        self._prepared_agent = _AgentGeneration(self._agent_generation, agent) if agent is not None else None
+
+    def set_proactive_agent_builder(self, builder: Any) -> None:
+        """Register first-use preparation; constructing the Engine stays light."""
+        if self._closed:
+            raise RuntimeError("Proactive engine is closed")
+        if not callable(builder):
+            raise TypeError("proactive agent builder must be callable")
+        self._invalidate_agent()
+        self._agent_builder = builder
+
+    def _invalidate_agent(self) -> None:
+        self._agent_generation += 1
+        previous, self._prepared_agent = self._prepared_agent, None
+        self._proactive_agent = None
+        if previous is not None:
+            self._retired_agents.add(previous)
+            self._schedule_retired_close(previous)
+
+    @staticmethod
+    async def _close_agent(entry: _AgentGeneration) -> None:
+        # Use public owner lifecycle methods only. SDK Model client pools keep
+        # their existing application/Runner owner; no private client is closed.
+        for name in ("aclose", "close", "stop"):
+            close = getattr(entry.agent, name, None)
+            if callable(close):
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+                break
+
+    def _schedule_retired_close(self, entry: _AgentGeneration) -> None:
+        if entry.users or entry.close_task is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # An embedding may inject outside a loop; close() owns it.
+
+        async def close() -> None:
+            await self._close_agent(entry)
+            self._retired_agents.discard(entry)
+
+        entry.close_task = loop.create_task(close(), name="proactive-agent-retire")
+        entry.close_task.add_done_callback(self._consume_preparation_result)
+
+    @staticmethod
+    def _consume_preparation_result(task: asyncio.Task) -> None:
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.warning("[ProactiveEngine] optional preparation/retirement failed: %s", error)
+
+    async def _ensure_proactive_agent(self) -> _AgentGeneration | None:
+        while not self._closed:
+            generation = self._agent_generation
+            entry = self._prepared_agent
+            if entry is not None and entry.generation == generation:
+                return entry
+            if self._agent_builder is None:
+                # Compatibility with embedding/test code that supplied the old
+                # field directly rather than calling set_proactive_agent().
+                if self._proactive_agent is not None:
+                    self._prepared_agent = _AgentGeneration(generation, self._proactive_agent)
+                return self._prepared_agent
+            task = self._prepare_tasks.get(generation)
+            if task is None:
+                builder = self._agent_builder
+
+                async def prepare(builder=builder, generation=generation):
+                    agent = builder()
+                    if inspect.isawaitable(agent):
+                        agent = await agent
+                    if agent is None:
+                        return None
+                    prepared = _AgentGeneration(generation, agent)
+                    if self._closed or generation != self._agent_generation:
+                        self._retired_agents.add(prepared)
+                        self._schedule_retired_close(prepared)
+                    else:
+                        self._prepared_agent = prepared
+                        self._proactive_agent = agent
+                    return prepared
+
+                task = asyncio.create_task(prepare(), name=f"proactive-agent-prepare:{generation}")
+                self._prepare_tasks[generation] = task
+
+                def consumed(completed, generation=generation):
+                    if self._prepare_tasks.get(generation) is completed:
+                        self._prepare_tasks.pop(generation, None)
+                    self._consume_preparation_result(completed)
+                task.add_done_callback(consumed)
+            try:
+                entry = await asyncio.shield(task)
+            finally:
+                if task.done() and self._prepare_tasks.get(generation) is task:
+                    self._prepare_tasks.pop(generation, None)
+            if generation == self._agent_generation and not self._closed:
+                return entry
+        return None
+
+    async def close(self) -> None:
+        """Stop first-use preparations and ticks before retiring their owners."""
+        self._closed = True
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_owned(), name="proactive-engine-close")
+        # Cancelling one waiter never cancels teardown owned by the Engine.
+        # The enclosing Worker deadline still owns forced process exit.
+        await asyncio.shield(self._close_task)
+
+    async def _close_owned(self) -> None:
+        self._invalidate_agent()
+        tasks = [*self._prepare_tasks.values(), *self._tick_tasks]
+        current = asyncio.current_task()
+        tasks = [task for task in tasks if task is not current]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._prepare_tasks.clear()
+        for entry in tuple(self._retired_agents):
+            if entry.users:
+                raise RuntimeError("Proactive close cannot retire an active caller")
+            self._schedule_retired_close(entry)
+        results = await asyncio.gather(*(entry.close_task for entry in tuple(self._retired_agents)
+            if entry.close_task is not None), return_exceptions=True)
+        errors = [result for result in results if isinstance(result, BaseException)]
+        if errors:
+            raise RuntimeError("Proactive agent retirement did not complete") from errors[0]
 
     @property
     def last_tick_at(self) -> float:
@@ -108,23 +266,13 @@ class ProactiveEngine:
         return self._last_tick_at
 
     def rebuild_proactive_agent(self, builder: Any) -> None:
-        """Rebuild the proactive agent (e.g. after model config changed).
+        """Invalidate the next decision after model/credential configuration changes.
 
-        The proactive agent is built once at AgentServer startup with the then-
-        current model config. When the user changes models (frontend config
-        save → agent.reload_config), the main agents hot-reload, but the
-        proactive agent would keep the stale model. Call this to rebuild it
-        with the latest model config.
-
-        Args:
-            builder: Callable ``() -> DeepAgent | None`` (the proactive_adapter
-                     ``build_proactive_agent``), re-reads model config at call.
+        Existing ticks retain their generation until completion. First use of
+        the replacement reads the latest configuration through the builder.
         """
         try:
-            new_agent = builder()
-            if new_agent is not None:
-                self._proactive_agent = new_agent
-                logger.info("[ProactiveEngine] proactive agent rebuilt (model config refreshed)")
+            self.set_proactive_agent_builder(builder)
         except Exception as exc:
             logger.warning("[ProactiveEngine] proactive agent rebuild failed: %s", exc)
 
@@ -174,17 +322,36 @@ class ProactiveEngine:
         Returns:
             True if a recommendation was made, False otherwise.
         """
-        if not self._enabled:
+        if self._closed or not self._enabled:
             logger.debug("[ProactiveEngine] engine disabled, skipping tick")
             return False
 
         logger.info("[ProactiveEngine] tick_now called (target_channel=%s)", target_channel)
+        task = asyncio.current_task()
+        if task is not None:
+            self._tick_tasks.add(task)
+        entry = None
+        token = None
         try:
+            entry = await self._ensure_proactive_agent()
+            if entry is None or self._closed:
+                self._last_tick_at = time.time()
+                return False
+            entry.users += 1
+            token = _INVOCATION_AGENT.set((self, entry.agent))
             pushed = await self._tick(target_channel=target_channel)
             return bool(pushed)
         except Exception as exc:
             logger.warning("[ProactiveEngine] tick_now failed: %s", exc, exc_info=True)
             return False
+        finally:
+            if token is not None:
+                _INVOCATION_AGENT.reset(token)
+                entry.users -= 1
+                if entry in self._retired_agents:
+                    self._schedule_retired_close(entry)
+            if task is not None:
+                self._tick_tasks.discard(task)
 
     async def _tick(self, target_channel: str | None = None) -> bool:
         """Single tick: build situation → analyze → push.
@@ -196,15 +363,15 @@ class ProactiveEngine:
         Returns:
             True if a recommendation was actually pushed to the channel,
             False if the tick was skipped for any reason (daily limit reached,
-            empty situation, no model, no decision, cooldown, no delivery
+            empty situation, no model, no decision, no delivery
             target). Callers (CronScheduler / manual trigger) should use this
             to report an accurate status instead of assuming "sent".
         """
+        active = _INVOCATION_AGENT.get()
+        proactive_agent = active[1] if active is not None and active[0] is self else self._proactive_agent
         from jiuwenswarm.agents.harness.common.recommendation.proactive_actions import (
             _today_recommend_count,
             _increment_daily_count,
-            _is_cooled_down,
-            _mark_recommended,
             _get_all_skills,
             _analyze_and_decide,
             _trigger_main_agent,
@@ -222,6 +389,11 @@ class ProactiveEngine:
             self.run_maintenance()
         except Exception as exc:
             logger.debug("[ProactiveEngine] maintenance failed: %s", exc)
+
+        # 本 tick 的语言基准：config.yaml preferred_language，决策/指令/梯度渲染共用，
+        # 与正常聊天的回复语言同源（改设置即时生效）。
+        from jiuwenswarm.common.config import get_config
+        preferred_language = str(get_config().get("preferred_language") or "zh")
 
         # Step 0: 检查目标 channel 是否有活跃 agent——agent 被 evict 后白调 LLM 是浪费 token。
         if self._check_agent_available_callback is not None:
@@ -265,15 +437,53 @@ class ProactiveEngine:
 
         report_text = report.render_for_llm()
 
-        # ── Step 2: LLM analysis + decision ────────────────────
+        # ── Step 1.5: Consume feedback buffer → update gradients ──
         state = load_recommendation_state()
-        if self._proactive_agent is None:
+        if state.feedback_buffer and proactive_agent is not None:
+            try:
+                from jiuwenswarm.agents.harness.common.recommendation.feedback_collector import (
+                    consume_feedback_buffer,
+                )
+                from jiuwenswarm.agents.harness.common.recommendation.gradient_updater import (
+                    update_gradients,
+                )
+
+                feedbacks = consume_feedback_buffer(state)
+                if feedbacks:
+                    updated = await update_gradients(
+                        feedbacks, state.strategy_gradients, proactive_agent,
+                    )
+                    # 留最新 20 条：截断方向反映"保留最近反馈学到的梯度"。revise 挪位
+                    # （apply_operations）+ 留最新配合 → 被新反馈更新/新增的规则优先保留，
+                    # 早期未被触及的规则优先淘汰（LRU 语义）。容量 20 与喂 LLM 的决策层
+                    # 10 + 话术层 10 = 20 一致，存储满载时喂 LLM 也能取满。
+                    state.strategy_gradients = updated[-20:]  # Limit to 20 gradients
+                    state.touch()
+                    save_recommendation_state(state)
+                    logger.info("[ProactiveEngine] updated %d gradients from %d feedbacks",
+                                len(updated), len(feedbacks))
+            except Exception as exc:
+                logger.warning("[ProactiveEngine] gradient update failed: %s", exc, exc_info=True)
+
+        # ── Step 2: LLM analysis + decision ────────────────────
+        if proactive_agent is None:
             logger.debug("[ProactiveEngine] no proactive agent available, skipping tick")
             self._last_tick_at = time.time()
             return False
 
+        # Build decision rules from gradients (gradient attribution)
+        from jiuwenswarm.agents.harness.common.recommendation.gradient_updater import (
+            render_decision_rules,
+        )
+        decision_rules_text = render_decision_rules(
+            state.strategy_gradients,
+            language=preferred_language,
+        )
+
         result = await _analyze_and_decide(
-            report_text, state, available_skills, self._proactive_agent,
+            report_text, available_skills, proactive_agent,
+            decision_rules_text=decision_rules_text,
+            language=preferred_language,
         )
 
         # ── Step 3: Check if we have a recommendation ───────────
@@ -283,11 +493,14 @@ class ProactiveEngine:
             self._last_tick_at = time.time()
             return False
 
-        # ── Step 4: Cooldown check ─────────────────────────────
-        if not _is_cooled_down(decision.target, state):
-            logger.debug("[ProactiveEngine] '%s' still in cooldown, skipping", decision.target)
-            self._last_tick_at = time.time()
-            return False
+        # ── Step 4: (removed) Cooldown check ──────────────────
+        # 原来用 cooldown_records 做字面精确去重（同 target 24h 不推），但这对三类推荐
+        # 语义都是错配：skill 同名不同事可再推（误杀）、task 未闭环该再提醒（误杀）、
+        # exploration 字面不同换皮又挡不住（漏放）。去重改由决策 LLM 承担——历史推荐
+        # 记录（type/target/reason）已喂进决策 prompt 当硬约束，LLM 决策时即跳过已推。
+        # 假送达连推（bug A）已由 _push_chunks 识别 chat.error 不调 on_delivered 堵住，
+        # 并发由 _proactive_push_inflight 去重，总量由 max_recommend_per_day 限。cooldown
+        # 不再有独立价值，移除 gate；cooldown_records 字段保留但不再作 gate、不再写入。
 
         # ── Step 5: Pick delivery target ───────────────────────
         # 两种触发（cron 自然到点 / Cron 面板"立即执行"）统一：都用"最活跃会话"。
@@ -317,30 +530,65 @@ class ProactiveEngine:
             self._last_tick_at = time.time()
             return False
 
-        def _on_delivered() -> None:
-            """后台送达后才执行的状态更新（Step 7）。"""
+        # Build style rules from gradients (gradient attribution)
+        from jiuwenswarm.agents.harness.common.recommendation.gradient_updater import (
+            render_style_rules,
+        )
+        style_rules_section = render_style_rules(
+            state.strategy_gradients,
+            language=preferred_language,
+        )
+
+        # Generate unique recommendation ID BEFORE triggering (so frontend can use it for feedback)
+        # rec_id 加 uuid 后缀避免碰撞：纯毫秒时间戳在并发（cron 到点 + 手动"立即执行"
+        # 同毫秒触发）或测试快速执行时可能重复，而 feedback_collector 按 rec_id 去重，
+        # 重复 rec_id 会让第二条推荐的反馈被丢弃。
+        rec_id = f"rec_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+
+        def _on_delivered(generated_message: str = "") -> None:
+            """后台送达后才执行的状态更新（Step 7）。
+
+            重新 load 最新 state 再持久化——本回调在后台 task 真正跑完时才执行，
+            距 tick 时载入的 ``state`` 快照可能已隔了一段时间。期间用户可能已发
+            chat.send 触发隐式反馈写入 feedback_buffer（见 _try_record_implicit_feedback），
+            或别的路径改过 state。若直接复用旧快照 save，会把中间的反馈/状态覆盖丢失。
+            重新 load 拿到最新持久化态再 add_recommendation，与 buffer 消费各自独立
+            load/save 的粒度一致。
+            """
+            from jiuwenswarm.agents.harness.common.recommendation.profile_extractor import (
+                load_recommendation_state,
+            )
+            fresh_state = load_recommendation_state()
             _increment_daily_count()
-            _mark_recommended(decision.target, state)
-            state.add_recommendation({
+
+            fresh_state.add_recommendation({
+                "id": rec_id,
                 "type": decision.type,
                 "target": decision.target,
                 "reason": decision.reason,
                 "urgency": decision.urgency,
                 "tick_at": time.time(),
                 "session_id": target_session.session_id,
+                "content": generated_message,  # LLM-generated recommendation text
             })
-            state.touch()
-            save_recommendation_state(state)
-            logger.info("[ProactiveEngine] delivered '%s' (type=%s, urgency=%.2f, session=%s)",
-                         decision.target, decision.type, decision.urgency,
+            fresh_state.touch()
+            save_recommendation_state(fresh_state)
+            logger.info("[ProactiveEngine] delivered '%s' (id=%s, type=%s, urgency=%.2f, session=%s)",
+                         decision.target, rec_id, decision.type, decision.urgency,
                          target_session.session_id[:20])
 
-        triggered = await _trigger_main_agent(
+        from jiuwenswarm.server.runtime.proactive_adapter import ProactiveTriggerRequest
+        trigger_request = ProactiveTriggerRequest(
             session_id=target_session.session_id,
-            channel_id=target_channel,
             decision=decision,
-            trigger_callback=self._trigger_main_agent_callback,
+            channel_id=target_channel,
             on_delivered=_on_delivered,
+            rec_id=rec_id,
+            style_rules_section=style_rules_section,
+        )
+        triggered = await _trigger_main_agent(
+            self._trigger_main_agent_callback,
+            trigger_request,
         )
         if not triggered:
             logger.info("[ProactiveEngine] not triggered (session busy, duplicate inflight, "
@@ -357,22 +605,15 @@ class ProactiveEngine:
 
     @staticmethod
     def run_maintenance() -> None:
-        """Prune stale data from daily counts and cooldown records.
+        """Prune stale daily counts.
 
-        This should be called periodically (e.g., by Cron) to keep the
-        recommendation state clean.
+        cooldown_records 已完全移除（字段/函数/常量），不再有读写，
+        recommendation.json 不再有该键。daily_counts 仍由 tick 写（每日额度计数），
+        需 prune 清掉老日期 key。
         """
         from jiuwenswarm.agents.harness.common.recommendation.proactive_actions import (
             _prune_daily_counts,
-            _prune_cooldown_records,
-        )
-        from jiuwenswarm.agents.harness.common.recommendation.profile_extractor import (
-            load_recommendation_state,
-            save_recommendation_state,
         )
 
         _prune_daily_counts()
-        state = load_recommendation_state()
-        _prune_cooldown_records(state)
-        save_recommendation_state(state)
         logger.debug("[ProactiveEngine] maintenance completed")

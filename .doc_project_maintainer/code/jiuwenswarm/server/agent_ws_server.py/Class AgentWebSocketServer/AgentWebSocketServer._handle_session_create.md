@@ -31,7 +31,7 @@ audit:
   audited_source_hash: sha256:5fbbae5104a1791ca98014aeed0b81fea243b57dcd2faac3f8f37886833c4fa5
   audited_symbol_hash: sha256:33487351f0a252dd739869feacd05acef75371d18829a892b7f4d27be460572e
   confidence: confirmed
-  expired_reason: "Implementation changed through 2026-08-03 for AgentServer-owned allocation and scoped TUI explicit-ID session.create compatibility; no independent symbol health re-audit was performed."
+  expired_reason: "Implementation changed through 2026-08-18 for AgentServer-owned allocation, scoped TUI explicit-ID compatibility, and immutable persist_session creation metadata; no independent symbol health re-audit was performed."
 issues:
   - id: ISSUE-001
     dimension: boundary_safety
@@ -57,14 +57,14 @@ issues:
     severity: high
     status: open
     summary: "Tests cover mocked success and one successful team switch only."
-    evidence: "Direct tests now cover normal creation, TUI explicit-ID idempotency/concurrency, unsafe and cross-channel IDs, stable binding, warm bypass, and team preparation. See AgentWebSocketServer._handle_session_create/risks.md#issue-004."
+    evidence: "Direct tests now cover normal creation, Persist Session locking and input validation, TUI immutable-state conflict, explicit-ID idempotency/concurrency, unsafe and cross-channel IDs, stable binding, warm bypass, and team preparation. See AgentWebSocketServer._handle_session_create/risks.md#issue-004."
 ---
 
 # AgentWebSocketServer._handle_session_create
 
 ## Actual Role
 
-Handles both AgentServer-allocated `session.create` and its scoped TUI explicit-ID compatibility form. It validates project/work-mode identity, claims an eligible warm or warming Session for normal creation, or validates and serializes a caller-supplied TUI ID while bypassing prewarm; it then persists or restores authoritative metadata, runs the switch-owner lifecycle, and returns normalized identity/status. The health audit remains expired pending an independent re-audit.
+Handles both AgentServer-allocated `session.create` and its scoped TUI explicit-ID compatibility form. It validates project/work-mode identity and the boolean `persist_session` creation field, includes that field in create-token idempotency without widening the warm key, claims an eligible warm or warming Session for normal creation, or validates and serializes a caller-supplied TUI ID while bypassing prewarm. It persists or restores authoritative immutable Persist Session metadata, runs the switch-owner lifecycle, and returns normalized identity/status. The health audit remains expired pending an independent re-audit.
 
 ## Audit Details
 

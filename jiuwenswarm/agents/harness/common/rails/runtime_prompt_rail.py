@@ -1,28 +1,37 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-"""RuntimePromptRail — Inject dynamic time/runtime info per model call.
+"""RuntimePromptRail — Assemble stable and dynamic runtime prompt state.
 
-Time and runtime state (model, mode, language, etc.) are injected fresh on
-every model call by reading runtime_state.yaml in Python, so the LLM always
-sees the current values without needing to call any tool.
+Stable environment rules and the conversation-start git snapshot stay in the
+system prompt. Dynamic runtime state is managed as a prompt attachment.
+Request date/time remains in the real user message's JSON envelope.
 """
 from __future__ import annotations
 
+import json
 import os
-import shutil
 import sys
+from contextvars import ContextVar
+from pathlib import Path
 from typing import Any
 
 import yaml
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+from openjiuwen.core.sys_operation.cwd import init_cwd
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
     PromptAttachmentKind,
 )
 
 from openjiuwen.harness.rails.base import DeepAgentRail
-from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SystemPromptPriority,
+)
+from jiuwenswarm.agents.harness.common.prompt.shell_environment import (
+    build_shell_environment_prompt,
+    get_shell_capabilities,
+)
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_runtime_state_path,
@@ -32,7 +41,7 @@ from jiuwenswarm.common.utils import (
 
 
 class RuntimePromptRail(DeepAgentRail):
-    """在 before_model_call 中注入时间及运行时状态文件路径。"""
+    """Keep stable system context separate from dynamic prompt attachments."""
 
     priority = 5  # 高优先级，确保早于其他 rail 执行
 
@@ -52,10 +61,23 @@ class RuntimePromptRail(DeepAgentRail):
         self._cwd: str | None = None
         self._project_dir: str | None = None
         self._workspace_dir: str | None = None
+        self._task_workspace_root: str | None = None
+        self._task_work_dir: str | None = None
+        self._task_outputs_dir: str | None = None
+        self._execution_cwd: str | None = None
+        self._execution_project_root: str | None = None
+        self._execution_workspace: str | None = None
+        self._execution_paths_revision = 0
+        self._bound_execution_paths_revision: ContextVar[int] = ContextVar(
+            "runtime_prompt_bound_execution_paths_revision",
+            default=-1,
+        )
         self._model_name: str = ""
         self._mode: str = ""
         self._session_id: str | None = None
         self._force_english: bool = False
+        self._request_metadata: dict[str, Any] = {}
+        self._a4p_authorizer_available: bool = False
 
     def init(self, agent) -> None:
         """从 agent 获取 system_prompt_builder 引用。"""
@@ -73,9 +95,16 @@ class RuntimePromptRail(DeepAgentRail):
             self.system_prompt_builder.remove_section("directory_boundaries")
             self.system_prompt_builder.remove_section("tui_current_project_policy")
             self.system_prompt_builder.remove_section("trusted_dirs_policy")
+            self.system_prompt_builder.remove_section("git_status")
         self._agent = None
         self.system_prompt_builder = None
         self.attachment_manager = None
+        self._task_workspace_root = None
+        self._task_work_dir = None
+        self._task_outputs_dir = None
+        self._execution_cwd = None
+        self._execution_project_root = None
+        self._execution_workspace = None
 
     def set_language(self, language: str) -> None:
         """per-request 更新语言。"""
@@ -84,6 +113,10 @@ class RuntimePromptRail(DeepAgentRail):
     def set_channel(self, channel: str) -> None:
         """per-request 更新频道。"""
         self._channel = channel
+
+    def set_a4p_authorizer_available(self, available: bool) -> None:
+        """Record whether this request has an interactive Web authorizer route."""
+        self._a4p_authorizer_available = bool(available)
 
     def set_trusted_dirs(self, trusted_dirs: list[str] | None) -> None:
         """per-request 更新可信目录。"""
@@ -95,8 +128,11 @@ class RuntimePromptRail(DeepAgentRail):
         cwd: str | None = None,
         project_dir: str | None = None,
         workspace_dir: str | None = None,
+        task_workspace_root: str | None = None,
+        task_work_dir: str | None = None,
+        task_outputs_dir: str | None = None,
     ) -> None:
-        """Per-request stable project identity, dynamic cwd and own workspace.
+        """Per-request project identity, task paths, cwd, and own workspace.
 
         Args:
             cwd: Working directory shell runs in and relative paths resolve against.
@@ -104,6 +140,10 @@ class RuntimePromptRail(DeepAgentRail):
             workspace_dir: This agent's own workspace (artifacts, memory, skills
                 view). Team members each have their own; falls back to the
                 process-wide agent workspace when unset.
+            task_workspace_root: Root of an automatically allocated projectless
+                task workspace.
+            task_work_dir: Temporary/intermediate files directory.
+            task_outputs_dir: Final deliverables directory.
         """
         self._cwd = cwd.strip() if isinstance(cwd, str) and cwd.strip() else None
         self._project_dir = (
@@ -116,10 +156,49 @@ class RuntimePromptRail(DeepAgentRail):
             if isinstance(workspace_dir, str) and workspace_dir.strip()
             else None
         )
+        self._task_workspace_root = (
+            task_workspace_root.strip()
+            if isinstance(task_workspace_root, str) and task_workspace_root.strip()
+            else None
+        )
+        self._task_work_dir = (
+            task_work_dir.strip()
+            if isinstance(task_work_dir, str) and task_work_dir.strip()
+            else None
+        )
+        self._task_outputs_dir = (
+            task_outputs_dir.strip()
+            if isinstance(task_outputs_dir, str) and task_outputs_dir.strip()
+            else None
+        )
 
     def set_model_name(self, model_name: str) -> None:
         """per-request 更新模型名称，作为文件读取失败时的兜底。"""
         self._model_name = model_name or ""
+
+    def set_execution_paths(
+        self,
+        *,
+        cwd: str,
+        project_root: str,
+        workspace: str,
+    ) -> None:
+        """Bind Agent/Code paths inside the task that executes the round."""
+        execution_paths = (cwd, project_root, workspace)
+        if execution_paths == (
+            self._execution_cwd,
+            self._execution_project_root,
+            self._execution_workspace,
+        ):
+            return
+        self._execution_cwd = cwd
+        self._execution_project_root = project_root
+        self._execution_workspace = workspace
+        # A session normally keeps one fixed operational directory. Increment
+        # only when those paths actually change, so repeated requests in the
+        # same session do not overwrite a cwd selected by runtime tools (for
+        # example, a Code worktree).
+        self._execution_paths_revision += 1
 
     def set_mode(self, mode: str) -> None:
         """per-request 更新运行模式，作为文件读取失败时的兜底。"""
@@ -133,9 +212,38 @@ class RuntimePromptRail(DeepAgentRail):
             else None
         )
 
+    def set_request_metadata(self, metadata: dict[str, Any] | None) -> None:
+        """Store request metadata used by channel-specific attachments."""
+        self._request_metadata = dict(metadata or {})
+
     def set_force_english(self, force: bool) -> None:
         """Force English for runtime scaffolding in code mode."""
         self._force_english = force
+
+    def _bind_execution_paths(self) -> None:
+        """Bind request paths in the asyncio task that runs the current round."""
+        if (
+            self._execution_cwd is None
+            or self._execution_project_root is None
+            or self._execution_workspace is None
+        ):
+            return
+        if (
+            self._bound_execution_paths_revision.get()
+            == self._execution_paths_revision
+        ):
+            return
+        init_cwd(
+            self._execution_cwd,
+            project_root=self._execution_project_root,
+            workspace=self._execution_workspace,
+        )
+        self._bound_execution_paths_revision.set(self._execution_paths_revision)
+
+    def _uses_round_execution_paths(self) -> bool:
+        """Return whether Agent/Code rounds need request path rebinding."""
+        mode_root = str(self._mode or "").strip().lower().split(".", 1)[0]
+        return mode_root in {"agent", "code"}
 
     @staticmethod
     def _existing_dirs(paths: list[str] | None) -> list[str]:
@@ -185,7 +293,15 @@ class RuntimePromptRail(DeepAgentRail):
         configured_mode: str,
     ) -> str:
         """用 DeepAgent session state 覆盖 code 模式的请求初始快照。"""
-        if configured_mode not in {"code", "code.normal", "code.plan"}:
+        # 只对单 agent 的 code profile 走 live 覆盖（返回的 legacy 串
+        # "code.plan"/"code.normal" 只携带单 agent code 语义）。保留旧
+        # {"code", "code.normal", "code.plan"} 语义，并补上新三段命名单 agent
+        # code canonical agent.code.*；code.team / team.code.* / team.plan.code
+        # 仍按原样返回，避免把 team 系覆盖成单 agent 串。
+        if configured_mode not in {
+            "code", "code.normal", "code.plan",
+            "agent.code.normal", "agent.code.plan",
+        }:
             return configured_mode
 
         agent = self._agent or ctx.agent
@@ -214,7 +330,20 @@ class RuntimePromptRail(DeepAgentRail):
             return "code.normal"
         return configured_mode
 
+    async def before_invoke(self, ctx: AgentCallbackContext) -> None:
+        """Prepare conversation-start context before the first model call."""
+        self._bind_execution_paths()
+        runtime_state = await self._refresh_dynamic_attachments(ctx)
+        await self._sync_git_system_context(ctx, runtime_state)
+
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        # Long-lived Agent/Code interactions execute rounds in a supervisor task
+        # created before the request arrives. Rebind inside that task so its
+        # subsequently spawned Bash/file tool tasks inherit the request cwd,
+        # rather than the Agent's internal data workspace captured at startup.
+        if self._uses_round_execution_paths():
+            self._bind_execution_paths()
+        runtime_state = await self._refresh_dynamic_attachments(ctx)
         if not self.system_prompt_builder:
             return
 
@@ -227,88 +356,25 @@ class RuntimePromptRail(DeepAgentRail):
             "trusted_dirs_policy"):
             self.system_prompt_builder.remove_section(name)
 
-        # ── runtime ──
-        runtime_state: dict[str, Any] = {}
-        state_path = get_runtime_state_path(self._session_id)
-        try:
-            with open(state_path, encoding="utf-8") as f:
-                runtime_state = yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            logger.warning("Failed to read runtime state file %s: %s", state_path, e)
-
-        configured_models: list[str] = []
-        raw_available_models = runtime_state.get("available_models") or []
-        available_models: list[str] = [
-            str(item).strip()
-            for item in raw_available_models
-            if str(item).strip()
-        ] if isinstance(raw_available_models, list) else []
-        if not available_models or not runtime_state.get("model"):
-            configured_models = self._configured_model_names()
-        if not available_models:
-            available_models = configured_models
-        fallback_model = configured_models[0] if configured_models else ""
-        model = str(
-            runtime_state.get("model")
-            or self._model_name
-            or fallback_model
-            or "unknown"
-        ).strip()
-        available_models_str = ", ".join(available_models) if available_models else model
-        configured_mode = str(
-            runtime_state.get("mode") or self._mode or "unknown"
-        ).strip()
-        mode = self._resolve_current_mode(ctx, configured_mode)
-        language_val = (
-            self._language
-            or runtime_state.get("language")
-            or "unknown"
-        ).strip()
         channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
-
-        if not self._force_english and self._language == "cn":
-            runtime_content = (
-                "# 运行时状态\n\n"
-                f"- 当前模型：{model}\n"
-                f"- 可用模型：{available_models_str}\n"
-                f"- 当前模式：{mode}\n"
-                f"- 当前语言：{language_val}\n"
-                f"- 当前渠道：{channel}"
-            )
-        else:
-            runtime_content = (
-                "# Runtime State\n\n"
-                f"- Current model: {model}\n"
-                f"- Available models: {available_models_str}\n"
-                f"- Current mode: {mode}\n"
-                f"- Current language: {language_val}\n"
-                f"- Current channel: {channel}"
-            )
-        await self._clear_prompt_attachment(ctx, section="runtime.setting")
-        await self._upsert_prompt_attachment(
-            ctx,
-            section="runtime.setting",
-            content=runtime_content,
-            kind=PromptAttachmentKind.RUNTIME,
-            priority=95,
-        )
 
         # ── Platform, shell, encoding, time-query and channel rules ──
         os_type = sys.platform
+        shell_capabilities = await get_shell_capabilities(os_type)
         shell_path = os.environ.get("SHELL", "")
         if os_type.startswith("win"):
             # Windows normally has no SHELL variable. Prefer the actual
             # PowerShell executable so the prompt does not report unknown.
-            shell_path = shutil.which("pwsh") or shutil.which("powershell") or ""
+            shell_path = shell_capabilities.powershell or ""
             shell_name = "PowerShell" if shell_path else "unknown"
         else:
             shell_name = os.path.basename(shell_path) if shell_path else "unknown"
         import platform as plat
         os_version = f"{plat.system()} {plat.release()}"
         env_language = "cn" if not self._force_english and self._language == "cn" else "en"
-        shell_env_prompt = build_shell_environment_prompt(env_language, os_type)
+        shell_env_prompt = build_shell_environment_prompt(
+            env_language, os_type, capabilities=shell_capabilities
+        )
 
         if not self._force_english and self._language == "cn":
             env_content = (
@@ -349,17 +415,568 @@ class RuntimePromptRail(DeepAgentRail):
         self.system_prompt_builder.add_section(PromptSection(
             name="env",
             content={"cn": env_content, "en": env_content},
-            priority=89,
+            priority=SystemPromptPriority.ENV,
         ))
 
-        # ── Git status section ──
+        # ── Channel: directory and file-operation boundaries ──
+        # Remove both the consolidated section and legacy sections first so
+        # switching to a channel without local directory guidance clears it.
+        self.system_prompt_builder.remove_section("directory_boundaries")
+        self.system_prompt_builder.remove_section("tui_current_project_policy")
+        self.system_prompt_builder.remove_section("trusted_dirs_policy")
+        if self._channel in ("tui", "web", "ws_client", "process_cli"):
+            installed_workspace_dir = Path(get_agent_workspace_dir())
+            user_workspace_dir = Path(get_user_workspace_dir())
+            # This agent's own workspace. Team members each own one; without
+            # it (single-agent runs) the process-wide agent workspace is the
+            # same directory anyway.
+            agent_workspace_dir = self._existing_dir(self._workspace_dir) or str(
+                installed_workspace_dir
+            )
+            installed_skills_dir = installed_workspace_dir / "skills" / "{skill_name}"
+            installed_agent_templates_dir = (
+                installed_workspace_dir / "plugins" / "agent_templates" / "local"
+            )
+            installed_agent_groups_dir = (
+                user_workspace_dir / ".agent_teams" / "agent_groups" / "local"
+            )
+            installed_plugin_packages_dir = (
+                installed_workspace_dir / "plugins" / "plugin_packages" / "local"
+            )
+            installed_mcp_hub_dir = installed_workspace_dir / "mcp" / "mcp_hub"
+            config_dir = str(user_workspace_dir / "config")
+            project_dir = self._existing_dir(self._project_dir)
+            task_workspace_root = self._existing_dir(self._task_workspace_root)
+            task_work_dir = self._existing_dir(self._task_work_dir)
+            task_outputs_dir = self._existing_dir(self._task_outputs_dir)
+            runtime_cwd = (
+                self._existing_dir(self._cwd)
+                or task_work_dir
+                or project_dir
+                or agent_workspace_dir
+            )
+            has_projectless_task = (
+                project_dir is None
+                and task_workspace_root is not None
+                and task_work_dir is not None
+                and task_outputs_dir is not None
+            )
+            has_project = project_dir is not None
+            prompt_project_dir = project_dir or runtime_cwd
+            has_distinct_cwd = bool(
+                has_project
+                and not self._same_path(project_dir or "", runtime_cwd)
+            )
+
+            if not self._force_english and self._language == "cn":
+                if has_projectless_task:
+                    active_directory_content = (
+                        "## 当前任务目录\n\n"
+                        f"- 当前任务根目录：`{task_workspace_root}`\n"
+                        f"- 临时工作目录：`{task_work_dir}`\n"
+                        f"- 最终产物目录：`{task_outputs_dir}`\n\n"
+                        "- 相对路径以临时工作目录为基准。\n"
+                        "- Bash 未显式传入 `workdir` 时，默认在临时工作目录执行。\n"
+                        "- 中间文件、缓存和临时脚本放在临时工作目录。\n"
+                        "- 报告、导出文件、图片、数据等最终产物放在最终产物目录。\n\n"
+                    )
+                    directory_content = (
+                        "# 目录与文件操作边界\n\n"
+                        f"{active_directory_content}"
+                        "## 通用目录规则\n\n"
+                    )
+                elif not has_project:
+                    active_directory_content = (
+                        "## 当前项目目录\n\n"
+                        f"- 项目目录是当前运行时工作空间：`{prompt_project_dir}`\n\n"
+                        "- 相对路径以项目目录为基准。\n"
+                        "- Bash 未显式传入 `workdir` 时，默认在项目目录执行。\n"
+                        "- 未指定保存位置时，任务产物放在项目目录内的合理位置。\n\n"
+                    )
+                    directory_content = (
+                        "# 目录与文件操作边界\n\n"
+                        f"{active_directory_content}"
+                        "## 通用目录规则\n\n"
+                    )
+                else:
+                    project_description = (
+                        "- 项目目录是当前项目的根目录与项目上下文边界，"
+                        if has_distinct_cwd
+                        else "- 项目目录是你当前的工作空间，"
+                    )
+                    cwd_description = (
+                        f"- 当前工作目录（cwd、相对路径基准及 Bash 默认目录）是：`{runtime_cwd}`\n\n"
+                        if has_distinct_cwd
+                        else "\n"
+                    )
+                    separation_rule = (
+                        "- 项目目录与当前工作目录是两个独立概念，不得互相替换。\n"
+                        if has_distinct_cwd
+                        else ""
+                    )
+                    operation_directory = "当前工作目录" if has_distinct_cwd else "当前项目目录"
+                    directory_content = (
+                        "# 目录与文件操作边界\n\n"
+                        "## 项目目录\n\n"
+                        "### 项目目录说明\n\n"
+                        f"{project_description}"
+                        f"当前项目目录是：`{prompt_project_dir}`\n"
+                        f"{cwd_description}"
+                        "### 项目目录规则\n\n"
+                        f"{separation_rule}"
+                        f"- 用户任务中的相对路径必须相对于{operation_directory}路径去解析。\n"
+                        f"- Bash 未显式传入 `workdir` 时，默认在{operation_directory}执行。\n"
+                    )
+            else:
+                if has_projectless_task:
+                    active_directory_content = (
+                        "## Current Task Directories\n\n"
+                        f"- Current task root: `{task_workspace_root}`\n"
+                        f"- Temporary working directory: `{task_work_dir}`\n"
+                        f"- Final deliverables directory: `{task_outputs_dir}`\n\n"
+                        "- Resolve relative paths against the temporary working directory.\n"
+                        "- When Bash is called without an explicit `workdir`, "
+                        "run it in the temporary working directory.\n"
+                        "- Put intermediate files, caches, and temporary scripts in the temporary working directory.\n"
+                        "- Put reports, exports, images, data, and other final "
+                        "deliverables in the final deliverables directory.\n\n"
+                    )
+                    directory_content = (
+                        "# Directory and File-Operation Boundaries\n\n"
+                        f"{active_directory_content}"
+                        "## General Directory Rules\n\n"
+                    )
+                elif not has_project:
+                    active_directory_content = (
+                        "## Current Project Directory\n\n"
+                        f"- The project directory is the current runtime workspace: `{prompt_project_dir}`\n\n"
+                        "- Resolve relative paths against the project directory.\n"
+                        "- When Bash is called without an explicit `workdir`, run it in the project directory.\n"
+                        "- When no save location is specified, put task artifacts in "
+                        "an appropriate location under the project directory.\n\n"
+                    )
+                    directory_content = (
+                        "# Directory and File-Operation Boundaries\n\n"
+                        f"{active_directory_content}"
+                        "## General Directory Rules\n\n"
+                    )
+                else:
+                    project_description = (
+                        "- The project directory is the project root and project-context boundary; "
+                        if has_distinct_cwd
+                        else "- The project directory is your current workspace; "
+                    )
+                    cwd_description = (
+                        f"- The current working directory (cwd, relative-path base, and Bash default) is: "
+                        f"`{runtime_cwd}`\n\n"
+                        if has_distinct_cwd
+                        else "\n"
+                    )
+                    separation_rule = (
+                        "- The project directory and current working directory are independent concepts; do not "
+                        "substitute one for the other.\n"
+                        if has_distinct_cwd
+                        else ""
+                    )
+                    operation_directory = (
+                        "current working directory" if has_distinct_cwd else "current project directory"
+                    )
+                    directory_content = (
+                        "# Directory and File-Operation Boundaries\n\n"
+                        "## Project Directory\n\n"
+                        "### Project Directory Description\n\n"
+                        f"{project_description}"
+                        f"the current project directory is: `{prompt_project_dir}`\n"
+                        f"{cwd_description}"
+                        "### Project Directory Rules\n\n"
+                        f"{separation_rule}"
+                        f"- Resolve relative paths in user tasks against the {operation_directory}.\n"
+                        f"- When Bash is called without an explicit `workdir`, run it in the {operation_directory}.\n"
+                    )
+            if not self._force_english and self._language == "cn":
+                directory_content += (
+                    "- 用户已经提供明确路径时直接使用，不要重复询问。\n"
+                    "- 只有任务确实需要操作某个项目、且现有上下文无法确定项目位置时，才询问项目路径。\n\n"
+                    "## JiuwenSwarm 内部目录\n\n"
+                    "### 核心内部数据\n\n"
+                    f"- 智能体内部数据目录：`{agent_workspace_dir}`\n"
+                    f"- JiuwenSwarm 启动配置目录：`{config_dir}`\n"
+                    "- `IDENTITY.md`、`memory/`、`todo/` 和运行状态属于智能体内部数据。\n\n"
+                    "### 已安装扩展资产\n\n"
+                    f"- 已安装的 Skill 根目录：`{installed_skills_dir}`\n"
+                    f"- 已安装的专家模板存放在：`{installed_agent_templates_dir}`\n"
+                    f"- 已安装的专家团存放在：`{installed_agent_groups_dir}`\n"
+                    f"- 已安装的插件包存放在：`{installed_plugin_packages_dir}`\n"
+                    f"- 已安装的 MCP 存放在：`{installed_mcp_hub_dir}`\n\n"
+                    "### 目录使用规则\n\n"
+                    "- 不要把普通任务产物写入智能体内部目录或启动配置目录。\n"
+                    "- 仅当用户明确要求创建、安装、更新或管理 JiuwenSwarm 内部资产时，才写入对应目录。\n"
+                    "- 修改或删除已有内部资产前，确认目标及操作范围，避免影响其他智能体或会话。\n"
+                    "- 用户任务中的 `config/`、`memory/`、`skills/`、`todo/`、`plugins/`、`mcp/` "
+                    "或 `workspace/` 不自动映射到 JiuwenSwarm 内部目录。\n"
+                    "- 目录中存在某项资产，不代表当前会话可以直接调用；实际可用性以当前技能、工具和 MCP 注册状态为准。"
+                )
+            else:
+                directory_content += (
+                    "- When the user has provided an explicit path, use it directly without asking again.\n"
+                    "- Ask for a project path only when the task truly requires a "
+                    "project and its location cannot be determined from the existing "
+                    "context.\n\n"
+                    "## JiuwenSwarm Internal Directories\n\n"
+                    "### Core Internal Data\n\n"
+                    f"- Agent internal data directory: `{agent_workspace_dir}`\n"
+                    f"- JiuwenSwarm startup configuration directory: `{config_dir}`\n"
+                    "- `IDENTITY.md`, `memory/`, `todo/`, and runtime state are Agent internal data.\n\n"
+                    "### Installed Extension Assets\n\n"
+                    f"- Installed Skill root: `{installed_skills_dir}`\n"
+                    f"- Installed Agent templates: `{installed_agent_templates_dir}`\n"
+                    f"- Installed Agent groups: `{installed_agent_groups_dir}`\n"
+                    f"- Installed plugin packages: `{installed_plugin_packages_dir}`\n"
+                    f"- Installed MCPs: `{installed_mcp_hub_dir}`\n\n"
+                    "### Directory Usage Rules\n\n"
+                    "- Do not write ordinary task artifacts to the Agent internal data "
+                    "directory or startup configuration directory.\n"
+                    "- Write to these directories only when the user explicitly asks to "
+                    "create, install, update, or manage JiuwenSwarm internal assets.\n"
+                    "- Before modifying or deleting an existing internal asset, confirm the "
+                    "target and operation scope to avoid affecting other Agents or sessions.\n"
+                    "- `config/`, `memory/`, `skills/`, `todo/`, `plugins/`, `mcp/`, or "
+                    "`workspace/` in a "
+                    "user task do not automatically refer to JiuwenSwarm internal "
+                    "directories.\n"
+                    "- An asset's presence in one of these directories does not make it "
+                    "directly callable in the current session; actual availability follows "
+                    "the current Skill, tool, and MCP registrations."
+                )
+            self.system_prompt_builder.add_section(PromptSection(
+                name="directory_boundaries",
+                content={"cn": directory_content, "en": directory_content},
+                priority=SystemPromptPriority.DIRECTORY_BOUNDARIES,
+            ))
+
+    async def _refresh_dynamic_attachments(
+        self,
+        ctx: AgentCallbackContext,
+    ) -> dict[str, Any]:
+        """Refresh runtime and git sections without touching the system prefix."""
+        runtime_state: dict[str, Any] = {}
+        state_path = get_runtime_state_path(self._session_id)
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                loaded_state = yaml.safe_load(f) or {}
+                if isinstance(loaded_state, dict):
+                    runtime_state = loaded_state
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning("Failed to read runtime state file %s: %s", state_path, exc)
+
+        configured_models: list[str] = []
+        raw_available_models = runtime_state.get("available_models") or []
+        available_models: list[str] = [
+            str(item).strip()
+            for item in raw_available_models
+            if str(item).strip()
+        ] if isinstance(raw_available_models, list) else []
+        if not available_models or not runtime_state.get("model"):
+            configured_models = self._configured_model_names()
+        if not available_models:
+            available_models = configured_models
+        fallback_model = configured_models[0] if configured_models else ""
+        model = str(
+            runtime_state.get("model")
+            or self._model_name
+            or fallback_model
+            or "unknown"
+        ).strip()
+        available_models_str = ", ".join(available_models) if available_models else model
+        configured_mode = str(
+            self._mode or runtime_state.get("mode") or "unknown"
+        ).strip()
+        mode = self._resolve_current_mode(ctx, configured_mode)
+        language_val = (
+            self._language
+            or runtime_state.get("language")
+            or "unknown"
+        ).strip()
+        channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
+
+        if not self._force_english and self._language == "cn":
+            runtime_content = (
+                "# 运行时状态\n\n"
+                f"- 当前模型：{model}\n"
+                f"- 可用模型：{available_models_str}\n"
+                f"- 当前模式：{mode}\n"
+                f"- 当前语言：{language_val}\n"
+                f"- 当前渠道：{channel}"
+            )
+        else:
+            runtime_content = (
+                "# Runtime State\n\n"
+                f"- Current model: {model}\n"
+                f"- Available models: {available_models_str}\n"
+                f"- Current mode: {mode}\n"
+                f"- Current language: {language_val}\n"
+                f"- Current channel: {channel}"
+            )
+        await self._upsert_prompt_attachment(
+            ctx,
+            section="runtime.setting",
+            content=runtime_content,
+            kind=PromptAttachmentKind.RUNTIME,
+            priority=95,
+        )
+        await self._sync_a4p_intent_authorization_attachment(ctx)
+        await self._sync_a4p_cron_authorization_scope_attachment(ctx)
+
+        return runtime_state
+
+    async def _sync_a4p_intent_authorization_attachment(
+        self,
+        ctx: AgentCallbackContext,
+    ) -> None:
+        section = "a4p.intent_authorization"
+        if self._channel != "web" or not self._a4p_authorizer_available:
+            await self._clear_prompt_attachment(ctx, section=section)
+            return
+        try:
+            from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_enabled
+            from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
+                get_a4p_supported_action_names,
+            )
+            from jiuwenswarm.common.config import get_config
+
+            enabled = is_a4p_enabled(get_config())
+            action_names = get_a4p_supported_action_names()
+        except Exception as exc:
+            logger.warning("Failed to resolve A4P intent authorization prompt: %s", exc)
+            enabled = False
+            action_names = []
+        if not enabled:
+            await self._clear_prompt_attachment(ctx, section=section)
+            return
+
+        actions = "、".join(f"`{name}`" for name in action_names)
+        if self._force_english or self._language != "cn":
+            actions = ", ".join(f"`{name}`" for name in action_names)
+            content = (
+                "# A4P Intent Authorization\n\n"
+                "## Authorization boundaries\n"
+                f"- Web: when using {actions}, call `request_a4p_intent_authorization` before the first protected tool "
+                "call. Every protected call must match a valid approved scope, including read-only operations. "
+                "Authorization permits execution; it does not execute actions.\n"
+                "- Unprotected tools may be used first to read necessary information, discover tool capabilities, and "
+                "determine parameters. One authorization may include multiple `actions` covering currently known "
+                "scopes. Use real tool names and security-critical parameters; ordinary parameters not used for "
+                "authorization matching need not be known in advance.\n"
+                "- For Shell tools, authorize each complete exact command by default. Use a narrowly scoped wildcard "
+                "only when one dynamic argument cannot be known in advance and the wildcard cannot absorb whitespace, "
+                "Shell operators, redirections, or extra arguments.\n"
+                "- For read_file/write_file/edit_file, use a concrete file path or a filename glob under a fixed "
+                "directory. Never use a "
+                "bare `*` or substitute a directory path for a file scope. Use dedicated file tools for file writes.\n"
+                "- read_file, list_files, glob and grep require explicit absolute paths in both authorization and "
+                "execution; "
+                "do not omit path, use relative paths or include parent traversal. list_files/glob authorize an exact "
+                "directory; "
+                "grep authorizes an exact file or directory. glob searches filenames recursively; grep may read "
+                "recursive "
+                "content snippets. Keywords and result limits may vary within that root. These are separate "
+                "permissions: "
+                "listing/searching filenames does not authorize read_file, and reading does not authorize writing.\n"
+                "- When paths are known, request reads, creates and edits together before reading the inputs. If "
+                "discovery "
+                "is necessary, authorize listing/search first, then request newly discovered read/edit scopes. Cron "
+                "still "
+                "requires the complete future scope before enabling the job.\n"
+                "\n"
+                "## Planning and convergence\n"
+                "- Choose a feasible plan that satisfies the user request and has explicit authorization scopes. "
+                "Do not "
+                "search for an optimal plan or prove that equivalent alternatives are worse.\n"
+                "- Plan once: identify necessary operations and dependencies; determine tools and scopes for protected "
+                "operations; check requirement coverage, parameter dependencies, and authorization scopes. Once these "
+                "checks pass, immediately make the next tool call.\n"
+                "- Without new information, do not reconsider selected tools, operation grouping, data sources, or "
+                "execution order. Do not restructure a feasible plan to reduce the number of actions.\n"
+                "- Revise only affected steps and their dependencies when requirements change, new facts appear, a "
+                "tool "
+                "returns an error, or a concrete requirement or authorization violation is discovered. Hypothetical "
+                "concerns alone do not justify restarting planning.\n"
+                "\n"
+                "## Unknown information and dynamic parameters\n"
+                "- Use facts already established by context and tool documentation without repeatedly verifying them. "
+                "If missing information affects execution or authorization, obtain it through appropriate tools rather "
+                "than repeatedly guessing tool behavior.\n"
+                "- For values produced at runtime, specify how they will be obtained and used in later parameters; "
+                "their actual values need not be known in advance.\n"
+                "- Plans may describe variables and substitution rules. Authorization requests must use valid concrete "
+                "scopes or supported patterns; actual tool calls must use resolved values, never unresolved "
+                "placeholders.\n"
+                "- Only unknowns affecting feasibility, authorization scope, or correct execution block progress. For "
+                "other implementation choices, select a reasonable option and proceed. If necessary information cannot "
+                "be obtained and no feasible plan with explicit scopes exists, report the specific missing "
+                "information; "
+                "do not guess parameters or broaden authorization to compensate.\n"
+                "\n"
+                "## Interactive sessions and Cron\n"
+                "- Interactive sessions may use staged authorization: authorize and execute a known stage, then "
+                "request "
+                "another authorization only if the later stage is not covered by an approved scope. A runtime value "
+                "becoming known does not itself require another authorization.\n"
+                "- Cron authorization cannot be staged or depend on interactive approval during execution. Runtime "
+                "values may vary, but their construction and allowed scopes must be expressible in advance; otherwise, "
+                "do not enable the job.\n"
+                "- When the user only requests creating a scheduled job, put task execution and necessary preparation "
+                "in the future plan. Execute operations in the current session only if creation or authorization "
+                "actually depends on their results, or the user explicitly requests immediate execution. Otherwise, do "
+                "not trial-run the task or request additional session-level authorization.\n"
+                "- Generate the job `description` and authorization `actions` from the same execution plan. The "
+                "description records execution steps, selected call parameters, and dynamic parameter resolution; "
+                "actions cover corresponding protected calls. Future execution must follow that plan without selecting "
+                "equivalent implementations again.\n"
+                "- Use the system-designated default Cron creation tool. Execute in order: create disabled -> "
+                "authorize "
+                "the complete future scope using the returned `cronJobId` -> enable after `ok=true`. When the "
+                "preceding "
+                "step succeeds, proceed directly to the next step. If authorization fails, is denied, or is "
+                "insufficient, keep the job disabled and handle the actual result; do not repeatedly submit the same "
+                "request.\n"
+            )
+        else:
+            content = (
+                "# A4P 意图授权\n\n"
+                "## 授权边界\n"
+                f"- Web：涉及 {actions} 时，在第一个受保护的工具调用前，调用 `request_a4p_intent_authorization` "
+                "获取授权。每个受保护调用必须匹配有效的已批准范围，只读操作也不例外。授权只允许执行，不代表操作已经完成。\n"
+                "- 可先使用受保护列表外的工具读取必要信息、发现工具能力和确定参数。一次授权可通过多个 `actions` 覆盖当前已确定的范围。使用真实工具名及其安全关键参数；无需提前确定不参与授权匹配的普通参数。\n"
+                "- 对 Shell 工具，默认分别授权完整精确命令。只有单个动态参数无法提前确定，且通配不会覆盖空白、Shell 运算符、重定向或额外参数时，才使用窄范围通配。\n"
+                "- 对 read_file/write_file/edit_file，使用具体文件路径，或固定目录下的文件名 glob。不得使用裸 * 或以目录路径代替文件范围。使用专用文件工具完成文件写入。\n"
+                "- read_file、list_files、glob、grep 在申请和执行时均须显式使用绝对路径，不得省略路径、使用相对路径或包含上级目录跳转。list_files/glob 授权具体目录，grep "
+                "授权具体文件或目录。glob 可递归搜索文件名；grep 可递归搜索正文并返回片段。范围内关键词和结果条数可以变化。目录浏览、文件名搜索不包含 read_file 权限，读取不包含写入权限。\n"
+                "- 输入和输出路径已知时，将读取、新建、修改合并申请后再读取资料；必须先发现文件时，先申请浏览或搜索，再对新增读取和修改范围补充授权。定时任务仍须在启用前明确完整未来范围。\n"
+                "\n"
+                "## 规划与收敛\n"
+                "- 选择满足用户需求、权限范围明确且能够执行的方案。无需寻找最优方案，也无需证明其他等价方案更差。\n"
+                "- 完成一次规划：确定必要操作和依赖；确定受保护操作的工具和授权范围；检查需求覆盖、参数依赖和权限范围。三项检查通过后，立即进入下一步工具调用。\n"
+                "- 没有新增信息时，不重新比较已经选定的工具、操作拆分、数据来源或执行顺序。不要为了减少 actions 数量重组已经可行的方案。\n"
+                "- 只有用户需求变化、新获得的事实、工具返回错误，或发现具体的需求或授权约束不满足时，才修改受影响的步骤及其依赖。假设性问题本身不构成重新规划的理由。\n"
+                "\n"
+                "## 未知信息与动态参数\n"
+                "- 直接使用上下文和工具说明中已明确的事实，不重复验证。缺失信息若影响执行或授权，使用必要的信息获取工具确认，不反复猜测工具行为。\n"
+                "- 对运行时产生的信息，在计划中说明获取方式及其如何构成后续参数；无需提前取得实际值。\n"
+                "- 计划可以描述变量和替换关系；提交授权时必须使用有效的具体范围或受支持的模式；实际调用时必须使用已解析的真实参数，不得提交未解析的占位符。\n"
+                "- 只有影响任务可行性、授权范围或正确执行的未知信息需要阻塞下一步。"
+                "其他实现选择选定一种合理方案后继续。"
+                "若必要信息无法获取，且不存在权限范围明确、能够执行的方案，说明具体缺失信息；"
+                "不得以扩大授权或猜测参数代替解决问题。"
+                "\n"
+                "\n"
+                "## 当前会话与定时任务\n"
+                "- 当前交互会话允许分阶段授权：先授权并执行参数已明确的阶段；仅当后续阶段不在已批准范围内时再申请授权。运行时值变为已知，本身不意味着需要再次授权。\n"
+                "- Cron 授权不能分阶段，也不能依赖触发时的交互审批。运行时参数值可以变化，但其构成方式及允许范围必须能够预先表达；无法表达时，不启用任务。\n"
+                "- 用户只要求创建定时任务时，将任务执行及其必要准备操作纳入未来执行计划。"
+                "只有创建或授权本身确实依赖当前操作的结果，或用户明确要求立即执行时，才在当前会话执行相应操作；"
+                "否则不试运行任务或申请额外的会话级授权。"
+                "\n"
+                "- 从同一份执行计划生成任务 description 和授权 actions：description 记录执行步骤、已确定的调用参数及动态参数解析关系；actions "
+                "表达对应的受保护调用范围。未来执行应遵循该计划，不重新选择等价实现。\n"
+                "- 使用系统指定的默认 Cron 创建工具，顺序执行：create disabled -> 使用返回的 cronJobId 一次性授权完整未来范围 -> ok=true 后 "
+                "enable。前一步成功时直接进入下一步。授权失败、被拒绝或范围不足时保持任务禁用，并根据实际结果处理，不反复提交相同请求。\n"
+            )
+        await self._upsert_prompt_attachment(
+            ctx,
+            section=section,
+            content=content,
+            kind=PromptAttachmentKind.RUNTIME,
+            priority=94,
+        )
+
+    async def _sync_a4p_cron_authorization_scope_attachment(
+        self,
+        ctx: AgentCallbackContext,
+    ) -> None:
+        section = "a4p.cron_authorization_scope"
+        cron = self._request_metadata.get("cron")
+        cron = cron if isinstance(cron, dict) else {}
+        job_id = str(cron.get("job_id") or cron.get("jobId") or "").strip()
+        if self._channel not in {"cron", "__cron__"} or not job_id:
+            await self._clear_prompt_attachment(ctx, section=section)
+            return
+        try:
+            from jiuwenswarm.agents.harness.common.a4p.runtime import (
+                get_a4p_runtime,
+                is_a4p_enabled,
+            )
+            from jiuwenswarm.common.config import get_config
+
+            summary = (
+                get_a4p_runtime().cron_intent_authorization_summary(job_id)
+                if is_a4p_enabled(get_config())
+                else None
+            )
+        except Exception as exc:
+            logger.warning("Failed to resolve A4P cron authorization scope: %s", exc)
+            summary = None
+
+        english = self._force_english or self._language != "cn"
+        if summary is None:
+            content = (
+                f"# A4P Cron Authorization Scope\n\n- Current cron job: `{job_id}`.\n"
+                "- No active A4P intent authorization is available. Protected calls fail closed because cron "
+                "cannot approve interactively."
+                if english
+                else f"# A4P 定时任务授权范围\n\n- 当前定时任务：`{job_id}`。\n"
+                "- 当前任务没有可用的 A4P intent 授权。定时执行无法交互审批，受保护调用将 fail-closed。"
+            )
+        else:
+            display_actions = [
+                {key: value for key, value in action.items() if key != "allowExtraParams"}
+                for action in summary.get("actions") or []
+                if isinstance(action, dict)
+            ]
+            actions_json = json.dumps(display_actions, ensure_ascii=False, indent=2, sort_keys=True)
+            if english:
+                content = (
+                    f"# A4P Cron Authorization Scope\n\n- Current cron job: `{job_id}`.\n"
+                    f"- Expires at: `{summary.get('expireAt') or 'unknown'}`.\n"
+                    f"- Authorized actions:\n```json\n{actions_json}\n```\n"
+                    "Only invoke protected tools inside this scope; out-of-scope, expired, or identity-mismatched "
+                    "calls fail closed."
+                )
+            else:
+                content = (
+                    f"# A4P 定时任务授权范围\n\n- 当前定时任务：`{job_id}`。\n"
+                    f"- 到期时间：`{summary.get('expireAt') or 'unknown'}`。\n"
+                    f"- 已授权 actions：\n```json\n{actions_json}\n```\n"
+                    "仅调用 scope 内的受保护工具；scope 外、过期或 identity 不匹配时 fail-closed。"
+                )
+        await self._upsert_prompt_attachment(
+            ctx,
+            section=section,
+            content=content,
+            kind=PromptAttachmentKind.RUNTIME,
+            priority=94,
+        )
+
+    async def _sync_git_system_context(
+        self,
+        ctx: AgentCallbackContext,
+        runtime_state: dict[str, Any],
+    ) -> None:
+        """Install the conversation git snapshot in the cacheable system prefix."""
+        # Clear the legacy per-model-call attachment when upgrading a live agent.
+        await self._clear_prompt_attachment(ctx, section="git_status")
+        if self.system_prompt_builder is None:
+            return
+
+        self.system_prompt_builder.remove_section("git_status")
         git_branch = str(runtime_state.get("git_branch") or "").strip()
         if git_branch and git_branch != "N/A":
             git_main_branch = str(runtime_state.get("git_main_branch") or "").strip()
             git_status_text = str(runtime_state.get("git_status") or "").strip()
             git_recent_commits = str(runtime_state.get("git_recent_commits") or "").strip()
             git_user = str(runtime_state.get("git_user") or "").strip()
-
             git_lines = [
                 "This is the git status at the start of the conversation. "
                 "Note that this status is a snapshot in time, and will not update during the conversation. "
@@ -375,117 +992,11 @@ class RuntimePromptRail(DeepAgentRail):
                 git_lines.append(f"Git user: {git_user}")
             git_lines.append(f"Status:\n{git_status_text or '(clean)'}")
             git_lines.append(f"Recent commits:\n{git_recent_commits or '(none)'}")
-
             git_content = "\n\n".join(git_lines)
-
-            await self._upsert_prompt_attachment(
-                ctx,
-                section="git_status",
-                content=git_content,
-                kind=PromptAttachmentKind.WORKSPACE_DELTA,
-                priority=87,
-            )
-        else:
-            await self._clear_prompt_attachment(
-                ctx,
-                section="git_status",
-            )
-
-        # ── Channel: directory and file-operation boundaries ──
-        # Remove both the consolidated section and legacy sections first so
-        # switching away from TUI/Web cannot leave stale directory guidance.
-        self.system_prompt_builder.remove_section("directory_boundaries")
-        self.system_prompt_builder.remove_section("tui_current_project_policy")
-        self.system_prompt_builder.remove_section("trusted_dirs_policy")
-        if self._channel in ("tui", "web", "ws_client"):
-            # This agent's own workspace. Team members each own one; without
-            # it (single-agent runs) the process-wide agent workspace is the
-            # same directory anyway.
-            agent_workspace_dir = self._existing_dir(self._workspace_dir) or str(get_agent_workspace_dir())
-            config_dir = str(get_user_workspace_dir() / "config")
-            project_dir = self._existing_dir(self._project_dir)
-            runtime_cwd = (
-                self._existing_dir(self._cwd)
-                or project_dir
-                or agent_workspace_dir
-            )
-            has_project = project_dir is not None
-            # The prompt consistently calls the active path the project
-            # directory. When no explicit project is bound, cwd is the
-            # project directory shown to the model.
-            prompt_project_dir = project_dir or runtime_cwd
-
-            if not self._force_english and self._language == "cn":
-                if has_project:
-                    project_path = project_dir
-                else:
-                    project_path = runtime_cwd
-                directory_content = (
-                    "# 目录与文件操作边界\n\n"
-                    "## 项目目录\n\n"
-                    "### 项目目录说明\n\n"
-                    "- 项目目录是你当前的工作空间，"
-                    f"当前项目目录是：`{project_path}`\n\n"
-                    "### 项目目录规则\n\n"
-                    "- 用户任务中的相对路径必须相对于当前项目目录路径去解析。\n"
-                    "- Bash 未显式传入 `workdir` 时，默认在当前项目目录执行。\n"
-                    "- 用户已经提供明确路径时直接使用，不要重复询问。\n"
-                    "- 只有任务确实需要操作某个项目、且现有上下文无法确定项目位置时，才询问项目路径。\n"
-                    "- 用户明确指定保存位置时，优先使用用户指定位置；否则，项目代码、测试、配置、构建文件、项目文档、报告、导出文件、图片和数据文件等放在当前工作目录的合理位置。\n\n"
-                    "## JiuwenSwarm 内部目录\n\n"
-                    f"- 智能体内部数据目录：`{agent_workspace_dir}`\n"
-                    f"- JiuwenSwarm 启动配置目录：`{config_dir}`\n\n"
-                    "以下资源由 JiuwenSwarm 提供，路径相对于运行时给出的智能体内部数据目录：\n\n"
-                    "- `IDENTITY.md`：用户为智能体指定的身份信息。\n"
-                    "- `skills/`：当前已安装并启用的技能。\n"
-                    "- `todo/`：任务和待办状态。\n\n"
-                    "目录规则：\n\n"
-                    "- 智能体内部数据目录只保存智能体自身数据，不是用户项目目录。\n"
-                    "- 智能体身份、记忆、技能、待办和运行状态只能保存在对应的内部数据目录。\n"
-                    f"- 技能执行产生的内部技能资产放在 `{agent_workspace_dir}/skills/{{skill_name}}/`。\n"
-                    "- JiuwenSwarm 启动配置目录不得用于保存普通任务产物。\n"
-                    "- 用户任务中的 `config/`、`memory/`、`skills/`、`todo/` 或 `workspace/` 不自动映射到 JiuwenSwarm 内部目录。"
-                )
-            else:
-                directory_content = (
-                    "# Directory and File-Operation Boundaries\n\n"
-                    "## Project Directory\n\n"
-                    "### Project Directory Description\n\n"
-                    "- The project directory is your current workspace; "
-                    f"the current project directory is: `{prompt_project_dir}`\n\n"
-                    "### Project Directory Rules\n\n"
-                    "- Resolve relative paths in user tasks against the current project directory.\n"
-                    "- When Bash is called without an explicit `workdir`, run it in the current project "
-                    "directory.\n"
-                    "- When the user has provided an explicit path, use it directly without asking again.\n"
-                    "- Ask for a project path only when the task truly requires a project and its location "
-                    "cannot be determined from the existing context.\n"
-                    "- Prefer a user-specified save location. Otherwise, place project code, tests, "
-                    "configuration, build files, project documentation, reports, exports, images, and data "
-                    "files in an appropriate location under the current working directory.\n\n"
-                    "## JiuwenSwarm Internal Directories\n\n"
-                    f"- Agent internal data directory: `{agent_workspace_dir}`\n"
-                    f"- JiuwenSwarm startup configuration directory: `{config_dir}`\n\n"
-                    "The following resources are provided by JiuwenSwarm. Their paths are relative to the "
-                    "Agent internal data directory supplied at runtime:\n\n"
-                    "- `IDENTITY.md`: identity information assigned to the Agent by the user.\n"
-                    "- `skills/`: currently installed and enabled skills.\n"
-                    "- `todo/`: task and to-do state.\n\n"
-                    "Directory rules:\n\n"
-                    "- The Agent internal data directory stores only the Agent's own data; it is not a user "
-                    "project directory.\n"
-                    "- Agent identity, memory, skills, to-dos, and runtime state must be stored only in their "
-                    "corresponding internal data directories.\n"
-                    f"- Internal skill assets produced by skill execution belong in "
-                    f"`{agent_workspace_dir}/skills/{{skill_name}}/`.\n"
-                    "- Do not use the JiuwenSwarm startup configuration directory for ordinary task deliverables.\n"
-                    "- `config/`, `memory/`, `skills/`, `todo/`, or `workspace/` in a user task do not "
-                    "automatically refer to JiuwenSwarm internal directories."
-                )
             self.system_prompt_builder.add_section(PromptSection(
-                name="directory_boundaries",
-                content={"cn": directory_content, "en": directory_content},
-                priority=89,
+                name="git_status",
+                content={"cn": git_content, "en": git_content},
+                priority=SystemPromptPriority.GIT_STATUS,
             ))
 
     async def _upsert_prompt_attachment(

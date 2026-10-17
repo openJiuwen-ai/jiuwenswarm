@@ -1,0 +1,1 @@
+export { generalModule } from './definition';

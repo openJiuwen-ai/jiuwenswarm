@@ -13,10 +13,14 @@ Tests for:
 """
 
 import json
+import multiprocessing
+import multiprocessing.queues
+import multiprocessing.synchronize
 import os
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -92,6 +96,58 @@ def _try_acquire_lock_with_result(workspace_str: str, result_queue) -> None:
     """
     result = _try_acquire_lock_for_multiprocess(workspace_str)
     result_queue.put(result)
+
+
+def _try_acquire_gateway_lock(workspace_str: str, result_queue) -> None:
+    """Try acquiring a GatewayLock in a subprocess (must be module-level for Windows)."""
+    from jiuwenswarm.instance_manager.lock import GatewayLock
+
+    _lock = GatewayLock(Path(workspace_str))
+    result = _lock.acquire(timeout=0.5)
+    if result:
+        _lock.release()
+    result_queue.put(result)
+
+
+def _hold_gateway_lock(
+    workspace_str: str,
+    result_queue: multiprocessing.queues.Queue,
+    release_event: multiprocessing.synchronize.Event,
+    hold_seconds: float = 5.0,
+) -> None:
+    """Acquire a GatewayLock and hold it (module-level for Windows spawn).
+
+    Args:
+        workspace_str: Workspace directory that owns the lock file.
+        result_queue: Receives whether the lock was acquired.
+        release_event: Set by the parent once it has finished asserting, so
+            the holder exits right away instead of sleeping out its budget.
+        hold_seconds: Upper bound on how long the lock is held when the
+            parent never sets ``release_event``; tests that wait for a timed
+            release rely on it.
+    """
+    from jiuwenswarm.instance_manager.lock import GatewayLock
+
+    lock = GatewayLock(Path(workspace_str))
+    ok = lock.acquire(timeout=5.0)
+    result_queue.put(ok)
+    if ok:
+        release_event.wait(timeout=hold_seconds)
+        lock.release()
+
+
+def _concurrent_stale_takeover(
+    workspace_str: str, result_queue, hold_seconds: float = 3.0
+) -> None:
+    """Race two processes for a stale GatewayLock (module-level for Windows spawn)."""
+    from jiuwenswarm.instance_manager.lock import GatewayLock
+
+    lock = GatewayLock(Path(workspace_str))
+    ok = lock.acquire(timeout=1.5)
+    result_queue.put(ok)
+    if ok:
+        time.sleep(hold_seconds)
+        lock.release()
 
 
 class TestInstanceNameValidation:
@@ -1497,3 +1553,606 @@ class TestStartServicesFallback:
         # And pre-existing unrelated keys preserved.
         assert "API_KEY=sk-keep" in txt
         assert "MODEL_NAME=m-keep" in txt
+
+
+class TestGatewayLock:
+    """Test GatewayLock per-workspace Gateway singleton."""
+
+    @staticmethod
+    def test_acquire_and_release(tmp_path):
+        """Acquire writes our pid; release clears it but keeps the file."""
+        from jiuwenswarm.instance_manager.lock import GatewayLock
+
+        lock = GatewayLock(tmp_path)
+        assert lock.acquire(timeout=1.0) is True
+        assert lock.lock_path.exists()
+        data = json.loads(lock.lock_path.read_text(encoding="utf-8"))
+        assert data["pid"] == os.getpid()
+
+        lock.release()
+        # File is never unlinked (no TOCTOU unlink race), but holder is cleared.
+        assert lock.lock_path.exists()
+        data = json.loads(lock.lock_path.read_text(encoding="utf-8"))
+        assert data.get("pid", 1) == 0
+        assert GatewayLock.find_holder(tmp_path) is None
+
+    @staticmethod
+    def test_reacquire_after_release(tmp_path):
+        """A released lock can be re-acquired immediately."""
+        from jiuwenswarm.instance_manager.lock import GatewayLock
+
+        lock = GatewayLock(tmp_path)
+        assert lock.acquire(timeout=1.0) is True
+        lock.release()
+        assert lock.acquire(timeout=1.0) is True
+        lock.release()
+
+    @staticmethod
+    def test_second_acquire_fails_while_live(tmp_path):
+        """A lock held by a LIVE foreign process refuses a second acquire."""
+        from jiuwenswarm.instance_manager.lock import GatewayLock
+
+        ctx = multiprocessing.get_context("spawn")
+        result_queue = ctx.Queue()
+        release_event = ctx.Event()
+        holder = ctx.Process(
+            target=_hold_gateway_lock,
+            args=(str(tmp_path), result_queue, release_event, 3.0),
+        )
+        holder.start()
+        try:
+            # Wait until the child really holds the OS lock.
+            assert result_queue.get(timeout=10.0) is True
+
+            lock = GatewayLock(tmp_path)
+            assert lock.acquire(timeout=1.0) is False
+
+            # The live lock file must still point at the foreign holder.
+            data = json.loads(lock.lock_path.read_text(encoding="utf-8"))
+            assert data["pid"] != os.getpid()
+        finally:
+            release_event.set()
+            holder.join(timeout=10.0)
+            if holder.is_alive():
+                holder.terminate()
+                holder.join(timeout=5.0)
+
+    @staticmethod
+    def test_concurrent_stale_takeover_single_winner(tmp_path):
+        """Exactly ONE of two racing processes takes over a stale lock.
+
+        Regression for the TOCTOU unlink race: with an OS-level lock held for
+        the Gateway lifetime, the loser can no longer delete the winner's fresh
+        lock file, so at most one Gateway can start.
+        """
+        import multiprocessing
+
+        from jiuwenswarm.instance_manager.lock import GatewayLock
+
+        # Seed a stale lock file (holder PID dead, no OS lock held).
+        (tmp_path / ".gateway.lock").write_text(
+            json.dumps(
+                {
+                    "pid": 999999999,
+                    "started_at": time.time(),
+                    "workspace": str(tmp_path),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        ctx = multiprocessing.get_context("spawn")
+        results: list[bool] = []
+        processes = []
+        for _ in range(2):
+            q = ctx.Queue()
+            p = ctx.Process(
+                target=_concurrent_stale_takeover,
+                args=(str(tmp_path), q, 3.0),
+            )
+            p.start()
+            processes.append((p, q))
+
+        try:
+            for p, q in processes:
+                results.append(q.get(timeout=10.0))
+            assert sum(1 for r in results if r) == 1, results
+            assert GatewayLock.find_holder(tmp_path) is not None
+        finally:
+            for p, _ in processes:
+                if p.is_alive():
+                    p.terminate()
+                    p.join(timeout=5.0)
+
+    @staticmethod
+    def test_self_pid_takeover(tmp_path):
+        """A lock whose pid equals our own is taken over (os.execv restart).
+
+        The gateway self-restart replaces the process image in-place via
+        os.execv, reusing the same PID; the fresh process must be allowed to
+        acquire the lock left behind by its previous image.
+        """
+        from jiuwenswarm.instance_manager.lock import GatewayLock
+
+        (tmp_path / ".gateway.lock").write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "started_at": time.time(),
+                    "workspace": str(tmp_path),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        lock = GatewayLock(tmp_path)
+        try:
+            assert lock.acquire(timeout=1.0) is True
+            data = json.loads(lock.lock_path.read_text(encoding="utf-8"))
+            assert data["pid"] == os.getpid()
+        finally:
+            lock.release()
+
+    @staticmethod
+    def test_takeover_when_holder_dead(tmp_path):
+        """A lock held by a DEAD pid is taken over without waiting."""
+        from jiuwenswarm.instance_manager.lock import GatewayLock
+
+        (tmp_path / ".gateway.lock").write_text(
+            json.dumps(
+                {
+                    "pid": 999999999,  # certainly not running
+                    "started_at": time.time(),
+                    "workspace": str(tmp_path),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        lock = GatewayLock(tmp_path)
+        try:
+            assert lock.acquire(timeout=1.0) is True
+            data = json.loads(lock.lock_path.read_text(encoding="utf-8"))
+            assert data["pid"] == os.getpid()
+        finally:
+            lock.release()
+
+    @staticmethod
+    def test_acquire_waits_for_release(tmp_path):
+        """Acquire waits (up to timeout) for a foreign live holder to exit."""
+        from jiuwenswarm.instance_manager.lock import GatewayLock
+
+        ctx = multiprocessing.get_context("spawn")
+        result_queue = ctx.Queue()
+        # Never set: the holder must release on its own timer for this test.
+        release_event = ctx.Event()
+        holder = ctx.Process(
+            target=_hold_gateway_lock,
+            args=(str(tmp_path), result_queue, release_event, 1.2),
+        )
+        holder.start()
+        try:
+            # Wait until the child really holds the OS lock.
+            assert result_queue.get(timeout=10.0) is True
+
+            # Child releases after 1.2s; acquire (5s budget) must eventually win.
+            lock = GatewayLock(tmp_path)
+            try:
+                assert lock.acquire(timeout=5.0) is True
+            finally:
+                lock.release()
+        finally:
+            holder.join(timeout=10.0)
+            if holder.is_alive():
+                holder.terminate()
+                holder.join(timeout=5.0)
+
+    @staticmethod
+    def test_find_holder_live_and_dead(tmp_path):
+        """find_holder reports None for dead pid or live pid without OS lock."""
+        from jiuwenswarm.instance_manager.lock import GatewayLock
+
+        lock_path = tmp_path / ".gateway.lock"
+        # Dead pid -> no holder.
+        lock_path.write_text(
+            json.dumps(
+                {
+                    "pid": 999999999,
+                    "started_at": time.time(),
+                    "workspace": str(tmp_path),
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert GatewayLock.find_holder(tmp_path) is None
+
+        # Live pid but NO OS lock held (e.g. crashed Gateway) -> no holder.
+        lock_path.write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "started_at": time.time(),
+                    "workspace": str(tmp_path),
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert GatewayLock.find_holder(tmp_path) is None
+
+    @staticmethod
+    def test_find_holder_with_os_lock_held(tmp_path):
+        """find_holder returns metadata when a live Gateway holds the OS lock.
+
+        A subprocess acquires the GatewayLock (writes its PID + holds the OS
+        lock); the main process then calls find_holder and must see the holder.
+        """
+        from jiuwenswarm.instance_manager.lock import GatewayLock
+
+        ctx = multiprocessing.get_context("spawn")
+        result_queue = ctx.Queue()
+        release_event = ctx.Event()
+        holder = ctx.Process(
+            target=_hold_gateway_lock,
+            args=(str(tmp_path), result_queue, release_event, 5.0),
+        )
+        holder.start()
+        try:
+            assert result_queue.get(timeout=10.0) is True
+
+            found = GatewayLock.find_holder(tmp_path)
+            assert found is not None
+            assert found["pid"] == holder.pid
+        finally:
+            release_event.set()
+            holder.join(timeout=10.0)
+            if holder.is_alive():
+                holder.terminate()
+                holder.join(timeout=5.0)
+
+    @staticmethod
+    def test_find_holder_ignores_reused_pid_when_os_lock_free(tmp_path):
+        """find_holder returns None when metadata PID is alive but OS lock is free.
+
+        Simulates a crashed Gateway whose PID was reused by an unrelated
+        process: the OS lock is released, so preflight must NOT report a
+        holder despite the stale metadata showing a live PID.
+        """
+        from jiuwenswarm.instance_manager.lock import GatewayLock
+
+        # Stale metadata: crashed Gateway's PID happens to match a live process.
+        (tmp_path / ".gateway.lock").write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "started_at": time.time(),
+                    "workspace": str(tmp_path),
+                }
+            ),
+            encoding="utf-8",
+        )
+        # No OS lock held (Gateway crashed and released it).
+        assert GatewayLock.find_holder(tmp_path) is None
+
+    @staticmethod
+    def test_cross_process_exclusion(tmp_path):
+        """A second PROCESS cannot acquire the same workspace lock."""
+        import multiprocessing
+
+        from jiuwenswarm.instance_manager.lock import GatewayLock
+
+        lock = GatewayLock(tmp_path)
+        assert lock.acquire(timeout=1.0) is True
+        try:
+            ctx = multiprocessing.get_context("spawn")
+            result_queue = ctx.Queue()
+            p = ctx.Process(
+                target=_try_acquire_gateway_lock,
+                args=(str(tmp_path), result_queue),
+            )
+            p.start()
+            p.join(timeout=10.0)
+            assert not p.is_alive()
+            if not result_queue.empty():
+                subprocess_result = result_queue.get(timeout=1.0)
+                assert subprocess_result is False, (
+                    "Second Gateway process must not acquire a held workspace lock"
+                )
+        finally:
+            lock.release()
+class TestIssue2788SafeStop:
+    """Regression coverage for ownership-validated setsid cleanup."""
+
+    @staticmethod
+    def test_reused_live_pid_is_not_signalled(tmp_path):
+        from jiuwenswarm.instance_manager import status as status_mod
+
+        # A current-format record carries launcher birth identity, so a PID
+        # that is alive but whose creation time no longer matches is treated
+        # as a recycled PID and must not be signalled.
+        config = InstanceConfig("manager", tmp_path, {"gateway": 20001})
+        write_pid_file(
+            config, 4242, started_at=100.0,
+            metadata={
+                "schema_version": 2,
+                "launcher": {"pid": 4242, "create_time": 100.0},
+                "pgid": 4242,
+                "sid": 4242,
+                "dedicated_session": True,
+                "witnesses": [],
+            },
+        )
+        with patch.object(status_mod, "is_process_alive", return_value=True), \
+             patch.object(status_mod, "_pid_matches_record", return_value=False), \
+             patch.object(status_mod.os, "killpg") as killpg, \
+             patch.object(status_mod, "stop_process_by_pid") as kill_pid:
+            assert status_mod.stop_instance_process(config) is False
+
+        killpg.assert_not_called()
+        kill_pid.assert_not_called()
+        assert read_pid_file(config) is not None
+
+    @staticmethod
+    def test_pid_birth_time_matches_current_process():
+        from jiuwenswarm.instance_manager import status as status_mod
+        import psutil
+
+        assert status_mod._pid_matches_record(
+            os.getpid(), psutil.Process(os.getpid()).create_time()
+        ) is True
+
+    @staticmethod
+    def test_legacy_live_record_is_not_rejected_by_birth_time(tmp_path):
+        from jiuwenswarm.instance_manager import status as status_mod
+
+        config = InstanceConfig("manager", tmp_path, {"gateway": 20001})
+        write_pid_file(config, 4242, started_at=100.0)
+        with patch.object(status_mod, "is_process_alive", return_value=True), \
+             patch.object(status_mod, "_pid_matches_record", return_value=False), \
+             patch.object(status_mod, "stop_process_by_pid", return_value=True) as stop_pid, \
+             patch.object(status_mod, "_ports_are_clear", return_value=True):
+            assert status_mod.stop_instance_process(config) is True
+
+        stop_pid.assert_called_once_with(4242, 10.0)
+
+    @staticmethod
+    def test_dead_leader_group_requires_recorded_witness_not_port_scan(tmp_path):
+        from jiuwenswarm.instance_manager import status as status_mod
+
+        config = InstanceConfig("manager", tmp_path, {"gateway": 20001})
+        write_pid_file(
+            config, 4242, started_at=100.0,
+            metadata={
+                "schema_version": 2,
+                "launcher": {"pid": 4242, "create_time": 100.0},
+                "pgid": 4242,
+                "sid": 4242,
+                "dedicated_session": True,
+                "witnesses": [{"pid": 5000, "create_time": 101.0,
+                               "module": "jiuwenswarm.app", "dotenv": "/tmp/manager.env"}],
+            },
+        )
+        with patch.object(status_mod, "is_process_alive", return_value=False), \
+             patch.object(status_mod, "_has_live_group_witness", return_value=True) as witness, \
+             patch.object(status_mod, "_listener_pids", side_effect=AssertionError("no port scan")), \
+             patch.object(status_mod, "_stop_process_group", return_value=True) as stop_group, \
+             patch.object(status_mod, "_ports_are_clear", return_value=True):
+            assert status_mod.stop_instance_process(config) is True
+
+        witness.assert_called_once()
+        stop_group.assert_called_once_with(4242, 10.0)
+        assert read_pid_file(config) is None
+
+    @staticmethod
+    def test_live_dedicated_launcher_stops_its_group(tmp_path):
+        from jiuwenswarm.instance_manager import status as status_mod
+
+        config = InstanceConfig("manager", tmp_path, {"gateway": 20001})
+        write_pid_file(
+            config, 4242, started_at=100.0,
+            metadata={
+                "schema_version": 2,
+                "launcher": {"pid": 4242, "create_time": 100.0},
+                "pgid": 4242,
+                "sid": 4242,
+                "dedicated_session": True,
+            },
+        )
+        with patch.object(status_mod, "is_process_alive", return_value=True), \
+             patch.object(status_mod, "_pid_matches_record", return_value=True), \
+             patch.object(status_mod, "_has_dedicated_session", return_value=True), \
+             patch.object(status_mod.os, "getpgid", return_value=4242), \
+             patch.object(status_mod.os, "getsid", return_value=4242), \
+             patch.object(status_mod, "_stop_process_group", return_value=True) as stop_group, \
+             patch.object(status_mod, "_ports_are_clear", return_value=True):
+            assert status_mod.stop_instance_process(config) is True
+
+        stop_group.assert_called_once_with(4242, 10.0)
+
+    @staticmethod
+    def test_stop_retains_record_when_new_start_holds_final_lock(tmp_path):
+        from jiuwenswarm.instance_manager import status as status_mod
+
+        config = InstanceConfig("manager", tmp_path, {"gateway": 20001})
+        write_pid_file(
+            config, 4242, started_at=100.0,
+            metadata={
+                "schema_version": 2,
+                "launcher": {"pid": 4242, "create_time": 100.0},
+                "pgid": 4242,
+                "sid": 4242,
+                "dedicated_session": True,
+            },
+        )
+        final_lock = MagicMock()
+        final_lock.acquire.return_value = False
+        with patch.object(status_mod, "is_process_alive", return_value=True), \
+             patch.object(status_mod, "_pid_matches_record", return_value=True), \
+             patch.object(status_mod, "_has_dedicated_session", return_value=True), \
+             patch.object(status_mod.os, "getpgid", return_value=4242), \
+             patch.object(status_mod.os, "getsid", return_value=4242), \
+             patch.object(status_mod, "_stop_process_group", return_value=True), \
+             patch.object(status_mod, "_ports_are_clear", return_value=True), \
+             patch.object(status_mod, "InstanceLock", return_value=final_lock):
+            assert status_mod.stop_instance_process(config) is False
+
+        assert read_pid_file(config) is not None
+
+    @staticmethod
+    def test_witness_requires_dedicated_session_and_exact_dotenv(tmp_path):
+        from jiuwenswarm.instance_manager import status as status_mod
+        import sys
+
+        dotenv = str((tmp_path / "manager.env").resolve())
+        data = {
+            "pid": 4242,
+            "started_at": 100.0,
+            "schema_version": 2,
+            "launcher": {"pid": 4242, "create_time": 100.0},
+            "pgid": 4242,
+            "sid": 4242,
+            "dedicated_session": True,
+            "witnesses": [{"pid": 5000, "create_time": 101.0,
+                           "module": "jiuwenswarm.app", "dotenv": dotenv}],
+        }
+        fake_psutil = MagicMock()
+        fake_psutil.Process.return_value.create_time.return_value = 101.0
+        fake_psutil.Process.return_value.cmdline.return_value = [
+            "python", "-m", "jiuwenswarm.app", "--dotenv", dotenv,
+        ]
+        with patch.dict(sys.modules, {"psutil": fake_psutil}), \
+             patch.object(status_mod.os, "getpgid", return_value=4242), \
+             patch.object(status_mod.os, "getsid", return_value=4242):
+            assert status_mod._has_live_group_witness(data, 4242) is True
+
+        data["witnesses"][0]["dotenv"] = str(tmp_path / "other.env")
+        with patch.dict(sys.modules, {"psutil": fake_psutil}), \
+             patch.object(status_mod.os, "getpgid", return_value=4242), \
+             patch.object(status_mod.os, "getsid", return_value=4242):
+            assert status_mod._has_live_group_witness(data, 4242) is False
+
+    @staticmethod
+    def test_dead_leader_without_proof_does_not_kill_group(tmp_path):
+        from jiuwenswarm.instance_manager import status as status_mod
+
+        config = InstanceConfig("manager", tmp_path, {"gateway": 20001})
+        write_pid_file(config, 4242, started_at=100.0)
+        with patch.object(status_mod, "is_process_alive", return_value=False), \
+             patch.object(status_mod, "_find_owned_listener_pids", return_value=[]), \
+             patch.object(status_mod, "_stop_owned_listeners", return_value=True), \
+             patch.object(status_mod, "_ports_are_clear", return_value=False), \
+             patch.object(status_mod, "_stop_process_group") as stop_group:
+            assert status_mod.stop_instance_process(config) is False
+
+        stop_group.assert_not_called()
+        assert read_pid_file(config) is not None
+
+    @staticmethod
+    def test_listener_identity_requires_instance_dotenv_and_group(tmp_path):
+        from jiuwenswarm.instance_manager import status as status_mod
+        import sys
+
+        config = InstanceConfig("manager", tmp_path, {"gateway": 20001})
+        fake_psutil = MagicMock()
+        fake_psutil.Process.return_value.cmdline.return_value = [
+            "python", "-m", "jiuwenswarm.app", "--dotenv", "/other/.env"
+        ]
+        with patch.dict(sys.modules, {"psutil": fake_psutil}):
+            assert status_mod._listener_matches_instance(5000, config, 4242) is False
+
+    @staticmethod
+    def test_listener_pids_keeps_only_configured_listeners(tmp_path):
+        from jiuwenswarm.instance_manager import status as status_mod
+        import sys
+
+        config = InstanceConfig("manager", tmp_path, {"gateway": 20001})
+        fake_psutil = MagicMock()
+        fake_psutil.net_connections.return_value = [
+            SimpleNamespace(status="LISTEN", laddr=SimpleNamespace(port=20001), pid=5000),
+            SimpleNamespace(status="LISTEN", laddr=SimpleNamespace(port=20002), pid=5001),
+            SimpleNamespace(status="ESTABLISHED", laddr=SimpleNamespace(port=20001), pid=5002),
+            SimpleNamespace(status="LISTEN", laddr=None, pid=5003),
+        ]
+        with patch.dict(sys.modules, {"psutil": fake_psutil}):
+            assert status_mod._listener_pids(config) == [5000]
+
+    @staticmethod
+    def test_stop_and_restart_propagate_cleanup_failure(tmp_path):
+        from jiuwenswarm import start_services
+
+        cmd = MagicMock()
+        cmd.validate_and_load.return_value = None
+        cmd.check_running.return_value = False
+        cmd.config = InstanceConfig("manager", tmp_path, {"gateway": 20001})
+        cmd.name = "manager"
+        cmd.is_default = False
+        with patch.object(start_services, "InstanceCommand", return_value=cmd), \
+             patch.object(start_services, "stop_instance_process", return_value=False), \
+             patch.object(start_services, "_start_named_instance") as start:
+            assert start_services._action_stop("manager") == 1
+            assert start_services._action_restart("manager") == 1
+
+        start.assert_not_called()
+
+    @staticmethod
+    def test_windows_reused_pid_is_not_taskkilled(tmp_path):
+        from jiuwenswarm.instance_manager import status as status_mod
+
+        config = InstanceConfig("manager", tmp_path, {"gateway": 20001})
+        write_pid_file(
+            config, 4242, started_at=100.0,
+            metadata={"schema_version": 2, "launcher": {"pid": 4242, "create_time": 100.0}},
+        )
+        with patch.object(status_mod.platform, "system", return_value="Windows"), \
+             patch.object(status_mod, "is_process_alive", return_value=True), \
+             patch.object(status_mod, "_pid_matches_record", return_value=False), \
+             patch.object(status_mod.subprocess, "run") as taskkill:
+            assert status_mod.stop_instance_process(config) is False
+
+        taskkill.assert_not_called()
+
+    @staticmethod
+    def test_launcher_pid_record_uses_process_birth_time():
+        from jiuwenswarm import start_services
+        import sys
+
+        fake_psutil = MagicMock()
+        fake_psutil.Process.return_value.create_time.return_value = 123.5
+        with patch.dict(sys.modules, {"psutil": fake_psutil}):
+            assert start_services._launcher_create_time() == 123.5
+
+    @staticmethod
+    def test_windows_metadata_skips_posix_process_group_calls():
+        from jiuwenswarm import start_services
+
+        # Windows does not expose these POSIX APIs.  A named launch must still
+        # produce a v2 record instead of raising AttributeError.
+        with patch.object(start_services.os, "getpgid", None, create=True), \
+             patch.object(start_services.os, "getsid", None, create=True):
+            metadata = start_services._instance_process_metadata({}, 123.5)
+
+        assert metadata["schema_version"] == 2
+        assert metadata["launcher"] == {"pid": os.getpid(), "create_time": 123.5}
+        assert metadata["pgid"] is None
+        assert metadata["sid"] is None
+        assert metadata["dedicated_session"] is False
+
+    @staticmethod
+    def test_named_launcher_writes_process_birth_time_to_pid_file(tmp_path):
+        from jiuwenswarm import start_services
+
+        config = InstanceConfig("manager", tmp_path, {"gateway": 20001})
+        process = MagicMock()
+        process.poll.return_value = 0
+        with patch.object(start_services, "_start_process", return_value=process), \
+             patch.object(start_services, "_launcher_create_time", return_value=123.5), \
+             patch.object(start_services, "_instance_process_metadata", return_value={"schema_version": 2}) as metadata, \
+             patch.object(start_services, "write_pid_file") as write_pid, \
+             patch.object(start_services, "_wait_for_services_ready"), \
+             patch.object(start_services, "_terminate_processes"):
+            assert start_services._run_instance_with_pid(
+                [("app", ["stub"], tmp_path)], config
+            ) == 0
+
+        write_pid.assert_called_once()
+        assert write_pid.call_args.args == (config, os.getpid(), 123.5, {"schema_version": 2})
+        metadata.assert_called_once_with({"app": process}, 123.5)

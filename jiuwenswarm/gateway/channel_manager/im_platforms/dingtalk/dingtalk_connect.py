@@ -14,7 +14,10 @@ import httpx
 
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter, BaseChannel
 from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import DingTalkFileService
-from jiuwenswarm.common.schema.message import Message, ReqMethod
+from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
+from jiuwenswarm.gateway.channel_manager.im_platforms.errors import (
+    AttachmentPersistError,
+)
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.gateway.routing.keys import DeliveryTarget
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
@@ -224,6 +227,17 @@ class DingTalkHandler(CallbackHandler):
 
             return AckMessage.STATUS_OK, "OK"
 
+        except AttachmentPersistError:
+            # 决策 D6：目标 AgentServer 不可达，附件落盘失败。不做「附件暂缺」
+            # 降级，整条消息按可重试错误失败，回发提示。
+            logger.warning(
+                "[DingTalkChannel] 附件落盘失败（AgentServer 不可达），整条消息按可重试错误失败"
+            )
+            await self.channel.send_attachment_error_reply(
+                sender_id, conversation_id, conversation_type,
+            )
+            return AckMessage.STATUS_OK, "OK"
+
         except Exception as e:
             logger.error(f"处理钉钉消息时出错: {e}")
             # 返回OK以避免钉钉服务器重试循环
@@ -255,6 +269,8 @@ class DingTalkChannel(BaseChannel):
 
         # 文件服务
         self._file_service: DingTalkFileService | None = None
+        # IM 附件落盘钩子（Phase 3）
+        self._file_persist_hook: Any = None
         # 按 request_id 记录已发送文件路径，避免重复发送
         self._sent_file_paths_by_req: dict[str, set[str]] = {}
 
@@ -266,6 +282,12 @@ class DingTalkChannel(BaseChannel):
     def on_message(self, callback: Callable[[Message], None]) -> None:
         """注册钉钉通道的回调函数"""
         self._gateway_callback = callback
+
+    def set_file_persist_hook(self, hook: Any) -> None:
+        """注入 IM 附件落盘钩子（Phase 3）；文件服务未创建时缓存，创建后生效。"""
+        self._file_persist_hook = hook
+        if self._file_service is not None:
+            self._file_service.set_persist_hook(hook)
 
     async def _handle_message(
             self,
@@ -370,6 +392,8 @@ class DingTalkChannel(BaseChannel):
                 api_base=self.config.api_base,
                 oapi_base=self.config.oapi_base,
             )
+            if self._file_persist_hook is not None:
+                self._file_service.set_persist_hook(self._file_persist_hook)
 
             self._initialize_stream_client()
 
@@ -483,6 +507,12 @@ class DingTalkChannel(BaseChannel):
 
     def _extract_message_content(self, msg: Message) -> str | None:
         """从消息对象中提取内容"""
+        if msg.event_type == EventType.HEALTH_CHECK_RELAY and isinstance(
+            msg.payload, dict
+        ):
+            health_check = msg.payload.get("health_check")
+            if health_check:
+                return str(health_check)
         if msg.params and "content" in msg.params:
             return str(msg.params["content"])
         elif msg.payload and "content" in msg.payload:
@@ -564,6 +594,19 @@ class DingTalkChannel(BaseChannel):
                 logger.debug("钉钉消息已发送至 %s", chat_id)
         except Exception as e:
             logger.error(f"发送钉钉消息时出错: {e}")
+
+    async def send_attachment_error_reply(
+        self, sender_id: str, conversation_id: str, conversation_type: str,
+    ) -> None:
+        """决策 D6：附件落盘失败时回发可重试错误提示，整条消息按失败处理。"""
+        token = await self._get_access_token()
+        if not token:
+            return
+        content = "⚠️ 附件处理失败（服务暂不可用），请稍后重试。"
+        url, data = self._build_send_request(
+            sender_id, content, conversation_type, conversation_id,
+        )
+        await self._send_http_request(url, data, token, sender_id)
 
     async def send(
         self, msg: Message,

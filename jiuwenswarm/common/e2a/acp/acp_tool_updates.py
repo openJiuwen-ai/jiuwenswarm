@@ -9,6 +9,7 @@ _TOOL_NAME_ALIASES = {
     "free_search": "mcp_free_search",
     "paid_search": "mcp_paid_search",
     "fetch_webpage": "mcp_fetch_webpage",
+    "web_fetch_webpage": "mcp_fetch_webpage",
     "exec_command": "mcp_exec_command",
 }
 
@@ -84,7 +85,7 @@ _EXECUTE_TOOL_NAMES = frozenset(
         "wait_for_terminal_exit",
     }
 )
-_FETCH_TOOL_NAMES = frozenset({"fetch", "fetch_webpage", "mcp_fetch_webpage"})
+_FETCH_TOOL_NAMES = frozenset({"fetch", "fetch_webpage", "mcp_fetch_webpage", "web_fetch_webpage"})
 _TERMINAL_CREATE_TOOL_NAMES = frozenset({"create_terminal", "terminal_create"})
 _TERMINAL_WAIT_EXIT_TOOL_NAMES = frozenset({"wait_for_terminal_exit"})
 
