@@ -85,6 +85,13 @@ _RUNTIME_METHODS = frozenset(
         ReqMethod.JIUWENMATE_CONVERSATION_RENAME.value,
         ReqMethod.JIUWENMATE_CONVERSATION_DELETE.value,
         ReqMethod.JIUWENMATE_ACTIVITY_GET.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_LIST.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_CREATE.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_SET_ENABLED.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_DELETE.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_UPDATE.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_RUN.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_HISTORY.value,
     }
 )
 
@@ -110,6 +117,21 @@ def _text_param(params: Mapping[str, Any], name: str) -> str:
     if not isinstance(value, str) or not value:
         raise PersistentAgentError(f"{name} is required")
     return value
+
+
+def _schedule_fields(params: Mapping[str, Any]) -> dict[str, Any]:
+    interval = params.get("interval_seconds")
+    return {
+        "name": _text_param(params, "name"),
+        "prompt": _text_param(params, "prompt"),
+        "cron_expr": str(params.get("cron_expr") or ""),
+        "timezone_name": str(params.get("timezone") or "Asia/Shanghai"),
+        "schedule_kind": str(params.get("schedule_kind") or "cron"),
+        "interval_seconds": interval if isinstance(interval, int) else None,
+        "run_at": params.get("run_at") or None,
+        "starts_at": params.get("starts_at") or None,
+        "ends_at": params.get("ends_at") or None,
+    }
 
 
 def _settings(params: Mapping[str, Any]) -> ColleagueSettings:
@@ -307,6 +329,39 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         if method == ReqMethod.JIUWENMATE_ACTIVITY_GET.value:
             report = await asyncio.to_thread(ActivityQuery(manager.db_path).report, WEB_NAMESPACE, now=_utc_now())
             return {"activity": report}
+        if method == ReqMethod.JIUWENMATE_SCHEDULE_LIST.value:
+            agent_id = params.get("agent_id")
+            plans = await asyncio.to_thread(
+                manager.schedules.list, WEB_NAMESPACE, agent_id if isinstance(agent_id, str) and agent_id else None
+            )
+            return {"plans": [plan.to_dict() for plan in plans]}
+        if method == ReqMethod.JIUWENMATE_SCHEDULE_CREATE.value:
+            plan = await asyncio.to_thread(
+                manager.schedules.create, WEB_NAMESPACE, _text_param(params, "agent_id"), **_schedule_fields(params)
+            )
+            return {"plan": plan.to_dict()}
+        if method == ReqMethod.JIUWENMATE_SCHEDULE_UPDATE.value:
+            plan = await asyncio.to_thread(
+                manager.schedules.update, WEB_NAMESPACE, _text_param(params, "plan_id"), **_schedule_fields(params)
+            )
+            return {"plan": plan.to_dict()}
+        if method == ReqMethod.JIUWENMATE_SCHEDULE_RUN.value:
+            request_id = await manager.schedules.run(WEB_NAMESPACE, _text_param(params, "plan_id"))
+            return {"request_id": request_id}
+        if method == ReqMethod.JIUWENMATE_SCHEDULE_HISTORY.value:
+            report = await asyncio.to_thread(manager.schedules.history, WEB_NAMESPACE, _text_param(params, "plan_id"))
+            return report
+        if method == ReqMethod.JIUWENMATE_SCHEDULE_SET_ENABLED.value:
+            plan = await asyncio.to_thread(
+                manager.schedules.set_enabled,
+                WEB_NAMESPACE,
+                _text_param(params, "plan_id"),
+                enabled=bool(params.get("enabled")),
+            )
+            return {"plan": plan.to_dict()}
+        if method == ReqMethod.JIUWENMATE_SCHEDULE_DELETE.value:
+            await asyncio.to_thread(manager.schedules.delete, WEB_NAMESPACE, _text_param(params, "plan_id"))
+            return {"deleted": True}
         agent_id = _text_param(params, "agent_id")
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value:
             await manager.delete_colleague(WEB_NAMESPACE, agent_id)

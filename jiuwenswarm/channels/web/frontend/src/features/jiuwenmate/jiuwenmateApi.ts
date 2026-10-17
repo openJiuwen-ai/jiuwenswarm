@@ -1,3 +1,4 @@
+import type { Schedule, ScheduleDraft, ScheduleRun } from './schedules/types';
 import type {
   JiuwenMateActivity,
   JiuwenMateActivityChannel,
@@ -30,7 +31,16 @@ export const JIUWENMATE_METHODS = {
   conversationRename: 'jiuwenmate.conversation.rename',
   conversationDelete: 'jiuwenmate.conversation.delete',
   activityGet: 'jiuwenmate.activity.get',
+  scheduleList: 'jiuwenmate.schedule.list',
+  scheduleCreate: 'jiuwenmate.schedule.create',
+  scheduleSetEnabled: 'jiuwenmate.schedule.set_enabled',
+  scheduleDelete: 'jiuwenmate.schedule.delete',
+  scheduleUpdate: 'jiuwenmate.schedule.update',
+  scheduleRun: 'jiuwenmate.schedule.run',
+  scheduleHistory: 'jiuwenmate.schedule.history',
 } as const;
+
+export type JiuwenMateSchedule = Schedule;
 
 /** Server push carrying reply fragments of a running private message. */
 export const JIUWENMATE_STREAM_EVENT = 'jiuwenmate.chat.stream';
@@ -614,6 +624,43 @@ export function toActivity(value: unknown): JiuwenMateActivity {
   };
 }
 
+export function toSchedule(value: unknown): JiuwenMateSchedule {
+  const plan = record(value);
+  return {
+    id: text(plan.plan_id),
+    agentId: text(plan.agent_id),
+    name: text(plan.name),
+    prompt: text(plan.prompt),
+    cronExpr: text(plan.cron_expr),
+    timezone: text(plan.timezone),
+    enabled: plan.enabled === true,
+    nextFireAt: text(plan.next_fire_at) || null,
+    scheduleKind: plan.schedule_kind === 'interval' || plan.schedule_kind === 'once' ? plan.schedule_kind : 'cron',
+    intervalSeconds: typeof plan.interval_seconds === 'number' ? plan.interval_seconds : null,
+    runAt: text(plan.run_at) || null,
+    startsAt: text(plan.starts_at) || null,
+    endsAt: text(plan.ends_at) || null,
+    conversationId: text(plan.conversation_id) || `schedule:${text(plan.plan_id)}`,
+    runCount: typeof plan.run_count === 'number' ? plan.run_count : 0,
+    lastStatus: plan.last_status === 'failed' || plan.last_status === 'completed' || plan.last_status === 'paused'
+      ? plan.last_status : plan.enabled === true ? 'running' : 'paused',
+  };
+}
+
+function scheduleParams(draft: ScheduleDraft): Record<string, unknown> {
+  return {
+    name: draft.name,
+    prompt: draft.prompt,
+    cron_expr: draft.cronExpr,
+    timezone: draft.timezone,
+    schedule_kind: draft.scheduleKind,
+    interval_seconds: draft.intervalSeconds,
+    run_at: draft.runAt,
+    starts_at: draft.startsAt,
+    ends_at: draft.endsAt,
+  };
+}
+
 export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: JiuwenMateSubscribe) {
   const colleague = async (method: string, params?: Record<string, unknown>) =>
     toColleague(record(await request(method, params)).colleague);
@@ -649,6 +696,50 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     },
     async loadActivity(): Promise<JiuwenMateActivity> {
       return toActivity(record(await request(JIUWENMATE_METHODS.activityGet)).activity);
+    },
+    async listSchedules(agentId?: string): Promise<JiuwenMateSchedule[]> {
+      const listed = record(await request(JIUWENMATE_METHODS.scheduleList, agentId ? { agent_id: agentId } : {}));
+      return (Array.isArray(listed.plans) ? listed.plans : []).map(toSchedule);
+    },
+    async createSchedule(agentId: string, draft: ScheduleDraft): Promise<JiuwenMateSchedule> {
+      const created = record(
+        await request(JIUWENMATE_METHODS.scheduleCreate, {
+          agent_id: agentId,
+          ...scheduleParams(draft),
+        }),
+      );
+      return toSchedule(created.plan);
+    },
+    async updateSchedule(planId: string, draft: ScheduleDraft): Promise<JiuwenMateSchedule> {
+      const updated = record(await request(JIUWENMATE_METHODS.scheduleUpdate, {
+        plan_id: planId, ...scheduleParams(draft),
+      }));
+      return toSchedule(updated.plan);
+    },
+    async runSchedule(planId: string): Promise<string> {
+      return text(record(await request(JIUWENMATE_METHODS.scheduleRun, { plan_id: planId })).request_id);
+    },
+    async scheduleHistory(planId: string): Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }> {
+      const result = record(await request(JIUWENMATE_METHODS.scheduleHistory, { plan_id: planId }));
+      return {
+        plan: toSchedule(result.plan),
+        runs: (Array.isArray(result.runs) ? result.runs : []).map((item) => {
+          const run = record(item);
+          return {
+            requestId: text(run.request_id), scheduledFor: text(run.scheduled_for),
+            status: text(run.status), description: text(run.description),
+          };
+        }),
+      };
+    },
+    async setScheduleEnabled(planId: string, enabled: boolean): Promise<JiuwenMateSchedule> {
+      const updated = record(
+        await request(JIUWENMATE_METHODS.scheduleSetEnabled, { plan_id: planId, enabled }),
+      );
+      return toSchedule(updated.plan);
+    },
+    async deleteSchedule(planId: string): Promise<void> {
+      await request(JIUWENMATE_METHODS.scheduleDelete, { plan_id: planId });
     },
     /** Sends a private message; resending the same message id returns the request it already created. */
     async sendMessage(

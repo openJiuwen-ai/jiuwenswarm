@@ -1366,6 +1366,11 @@
   padding: 0;
 }
 
+.jiuwenmate-colleague-list__actions > button[aria-pressed='true'] {
+  background: var(--jm-hover);
+  font-weight: 600;
+}
+
 .jiuwenmate-colleague-list__actions > button:hover,
 .jiuwenmate-colleague-list__new .jiuwenmate-menu__trigger:hover,
 .jiuwenmate-colleague-list__new.jiuwenmate-menu--open .jiuwenmate-menu__trigger {
@@ -2069,6 +2074,277 @@
 }
 
 .jiuwenmate-main-empty,
+.jiuwenmate-schedule-section__bar,
+.jiuwenmate-schedule-board__tools,
+.jiuwenmate-schedule-plan,
+.jiuwenmate-schedule-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.jiuwenmate-schedule-section__bar {
+  justify-content: flex-end;
+}
+
+.jiuwenmate-schedule-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.jiuwenmate-schedule-cards li,
+.jiuwenmate-schedule-board__tools {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.jiuwenmate-schedule-cards li {
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-radius: 8px;
+}
+
+.jiuwenmate-schedule-cards small {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.jiuwenmate-switch {
+  width: 36px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  background: #d0d5dd;
+}
+
+.jiuwenmate-switch[aria-checked='true'] {
+  background: #2f6bff;
+}
+
+.jiuwenmate-schedule-modes button[aria-selected='true'] {
+  background: #eef3ff;
+}
+
+.jiuwenmate-schedule-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.jiuwenmate-schedule-board,
+.jiuwenmate-schedule-history {
+  flex: 1;
+  min-width: 0;
+  padding: 28px 32px 40px;
+}
+
+.jiuwenmate-schedule-board__header h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.jiuwenmate-schedule-board__header p {
+  margin-top: 6px;
+  color: var(--jm-text-3);
+  font-size: 12px;
+}
+
+.jiuwenmate-schedule-board .jiuwenmate-schedule-board__tools {
+  justify-content: space-between;
+  margin-top: 22px;
+  gap: 16px;
+}
+
+.jiuwenmate-schedule-board__summary,
+.jiuwenmate-schedule-board__filters,
+.jiuwenmate-schedule-board__executor,
+.jiuwenmate-schedule-board__status,
+.jiuwenmate-schedule-board__actions {
+  display: flex;
+  align-items: center;
+}
+
+.jiuwenmate-schedule-board__summary {
+  gap: 16px;
+  color: var(--jm-text);
+  font-size: 13px;
+}
+
+.jiuwenmate-schedule-board__summary em {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--jm-text-2);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.jiuwenmate-schedule-board__summary i,
+.jiuwenmate-schedule-board__status i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #c8c8c8;
+}
+
+.jiuwenmate-schedule-board__summary em[data-tone='running'] i,
+.jiuwenmate-schedule-board__status[data-tone='running'] i {
+  background: #12b5a6;
+}
+
+.jiuwenmate-schedule-board__summary em[data-tone='failed'] i,
+.jiuwenmate-schedule-board__status[data-tone='failed'] i {
+  background: var(--jm-danger);
+}
+
+.jiuwenmate-schedule-board__filters {
+  gap: 12px;
+  margin-left: auto;
+}
+
+.jiuwenmate-schedule-board__filters select {
+  height: 32px;
+  padding: 0 22px 0 2px;
+  border: 0;
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%23666' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right center;
+  appearance: none;
+  cursor: pointer;
+}
+
+.jiuwenmate-schedule-board__search {
+  display: flex;
+  width: 220px;
+  height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--jm-border-strong);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.jiuwenmate-schedule-board__search svg {
+  width: 14px;
+  height: 14px;
+  color: var(--jm-text-3);
+}
+
+.jiuwenmate-schedule-board__search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+}
+
+.jiuwenmate-schedule-board__table {
+  margin-top: 16px;
+  overflow: visible;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+}
+
+.jiuwenmate-schedule-board table,
+.jiuwenmate-schedule-history table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.jiuwenmate-schedule-board th,
+.jiuwenmate-schedule-board td,
+.jiuwenmate-schedule-history th,
+.jiuwenmate-schedule-history td {
+  padding: 14px 16px;
+  text-align: left;
+  border-bottom: 1px solid #f3f3f3;
+}
+
+.jiuwenmate-schedule-board th {
+  background: #f7f8fa;
+  color: var(--jm-text-3);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.jiuwenmate-schedule-board th:first-child {
+  border-top-left-radius: 8px;
+}
+
+.jiuwenmate-schedule-board th:last-child {
+  border-top-right-radius: 8px;
+}
+
+.jiuwenmate-schedule-board tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.jiuwenmate-schedule-board__executor {
+  gap: 8px;
+}
+
+.jiuwenmate-schedule-board__status {
+  gap: 6px;
+}
+
+.jiuwenmate-schedule-board__actions {
+  gap: 16px;
+}
+
+.jiuwenmate-schedule-board__empty {
+  color: var(--jm-text-3);
+  text-align: center;
+}
+
+.jiuwenmate-schedule-board__more .jiuwenmate-menu__trigger {
+  height: auto;
+  padding: 0;
+  color: var(--jm-blue);
+  background: none;
+  font-size: 12px;
+}
+
+.jiuwenmate-schedule-board__more .jiuwenmate-menu__trigger:hover,
+.jiuwenmate-schedule-board__more.jiuwenmate-menu--open .jiuwenmate-menu__trigger {
+  color: var(--jm-blue);
+  background: none;
+}
+
+.jiuwenmate-schedule-board__more .jiuwenmate-menu__trigger svg {
+  width: 12px;
+  height: 12px;
+}
+
+.jiuwenmate-schedule-board__more .jiuwenmate-menu__list {
+  min-width: 96px;
+}
+
+.jiuwenmate-schedule-history dl {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px 16px;
+}
+
+.jiuwenmate-schedule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.jiuwenmate-schedule-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+}
+
 .jiuwenmate-empty-state {
   display: grid;
   flex: 1;
