@@ -53,7 +53,9 @@ from jiuwenswarm.instance_manager import (
     write_pid_file,
     PORT_TYPES,
     PORT_ENV_NAMES,
+    PORT_ENV_OVERRIDES,
     compute_auto_port,
+    pinned_port_types,
 )
 
 # Runtime data root:
@@ -225,8 +227,77 @@ def _log_port_table(prefix: str, ports: dict[str, int]) -> None:
         logging.info(f"  {port_type}: {ports.get(port_type, 0)}")
 
 
-def _resolve_ports_with_fallback(cmd: InstanceCommand, scan_range: int = 10) -> int | None:
+def _reject_pinned_port_conflicts(
+    conflicts: list[tuple[str, int]],
+) -> int | None:
+    """Refuse to relocate a port group while any port in it is pinned.
+
+    Scanning is right for auto-allocated ports -- it is what makes ``--name foo``
+    work -- but wrong for a ``JIUWENSWARM_<TYPE>_PORT``: that port was chosen
+    because something else talks to it, so shifting it yields a healthy-looking
+    process nothing can reach.
+
+    The unit of relocation is the whole group. ``find_available_ports`` returns
+    ``calculate_instance_ports(index)``, which is ``base + index * 1000`` for
+    every port type at once, and the caller assigns that group over
+    ``cmd.config.ports`` entire. There is no group in which a pinned port keeps
+    its value while an auto-allocated one beside it moves. So the question is
+    not whether a pinned port is among the conflicting ones: an unpinned
+    conflict relocates the pinned ports just the same, and persists the shift.
+
+    Only reached when something already conflicts, so a pin alone never stops a
+    start; a pin plus a conflict does.
+
+    Returns:
+        1 when any port type is pinned (caller aborts), None when the group is
+        entirely auto-allocated and scanning may proceed.
+    """
+    pinned = pinned_port_types()
+    if not pinned:
+        return None
+
+    logging.info(
+        "[start_services] ERROR: %d port(s) in use and %d pinned, so the port "
+        "group cannot be relocated:",
+        len(conflicts),
+        len(pinned),
+    )
+    for port_type, port in conflicts:
+        pinned_by = PORT_ENV_OVERRIDES.get(port_type, "?")
+        logging.info(
+            "  ✗ %s: %s in use%s",
+            port_type,
+            port,
+            f", pinned by {pinned_by}" if port_type in pinned else "",
+        )
+    for port_type in sorted(pinned - {pt for pt, _ in conflicts}):
+        logging.info(
+            "  · %s: free, pinned by %s",
+            port_type,
+            PORT_ENV_OVERRIDES.get(port_type, "?"),
+        )
+    logging.info(
+        "[start_services] A relocation moves every port in the group by the "
+        "same step, the pinned ones included, and persists the result. A silent "
+        "shift would leave clients talking to an address nothing is listening on."
+    )
+    logging.info(
+        "[start_services] Free the port in use (ss -ltnp | grep <port>), change "
+        "the pinned value, or unset the variable to allow automatic allocation."
+    )
+    return 1
+
+
+def _resolve_ports_with_fallback(
+    cmd: InstanceCommand,
+    scan_range: int = 10,
+    conflicts: list[tuple[str, int]] | None = None,
+) -> int | None:
     """Resolve port conflicts by scanning for an available port group.
+
+    Aborts instead of scanning when any port type is pinned through
+    ``JIUWENSWARM_<TYPE>_PORT``, because a scan moves the whole group and would
+    move the pinned ports with it (see ``_reject_pinned_port_conflicts``).
 
     Called when ``cmd.check_ports_conflicts()`` is non-empty. Scans upward from
     the instance's own index (0 for default) for the first fully-available
@@ -260,6 +331,12 @@ def _resolve_ports_with_fallback(cmd: InstanceCommand, scan_range: int = 10) -> 
     )
 
     if cmd.config is None:
+        return 1
+
+    # Reuse the caller's list; re-probing is wasteful and can disagree.
+    if conflicts is None:
+        conflicts = cmd.check_ports_conflicts()
+    if _reject_pinned_port_conflicts(conflicts) is not None:
         return 1
 
     # Determine the scan starting index: the instance's own declared index.
@@ -840,8 +917,9 @@ def _run(mode: str) -> int:
     if cmd.validate_and_load():
         return 1
 
-    if cmd.check_ports_conflicts():
-        if _resolve_ports_with_fallback(cmd) is not None:
+    conflicts = cmd.check_ports_conflicts()
+    if conflicts:
+        if _resolve_ports_with_fallback(cmd, conflicts=conflicts) is not None:
             return 1
         # Fallback already persisted the resolved ports to .env.
     else:
@@ -992,8 +1070,9 @@ def _start_named_instance(name: str, mode: str) -> int:
     # Port availability: on conflict, try to fall back to a free port group
     # (persists to instances.yaml + bootstrap .env so subprocesses/TUI/CLI
     # pick up the new ports). Only hard-fail if no fallback is possible.
-    if cmd.check_ports_conflicts():
-        if _resolve_ports_with_fallback(cmd) is not None:
+    conflicts = cmd.check_ports_conflicts()
+    if conflicts:
+        if _resolve_ports_with_fallback(cmd, conflicts=conflicts) is not None:
             return 1
 
     config = cmd.config
