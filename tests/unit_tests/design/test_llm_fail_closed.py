@@ -338,3 +338,54 @@ def test_require_media_models_allows_vllm_omni_without_key_and_model(
         protocol="vllm-omni",
     )
     _require_media_models(image=True)
+
+
+def test_require_media_models_follows_chinese_preference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#5003: Chinese UI must not show the English MEDIA_NOT_CONFIGURED banner."""
+    _set_slot(monkeypatch, "VISUAL_GEN", enabled="true")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"preferred_language": "zh"},
+    )
+    with pytest.raises(DesignerLlmError) as excinfo:
+        _require_media_models(image=True)
+    message = str(excinfo.value)
+    assert excinfo.value.code == model_tools.MEDIA_NOT_CONFIGURED
+    assert "媒体模型配置不完整" in message
+    assert "图片生成未配置" in message
+    assert "Media model config is incomplete" not in message
+
+
+def test_require_media_models_stays_english_for_en_preference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_slot(monkeypatch, "VISUAL_GEN", enabled="true")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"preferred_language": "en"},
+    )
+    with pytest.raises(DesignerLlmError) as excinfo:
+        _require_media_models(image=True)
+    message = str(excinfo.value)
+    assert "Media model config is incomplete" in message
+    assert "Image generation is not configured" in message
+    assert "媒体模型配置不完整" not in message
+
+
+def test_generation_problem_switched_off_follows_chinese(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.designer import media_generation as mg
+
+    _minimax_slot(monkeypatch, "VISUAL_GEN")
+    monkeypatch.setenv("VISUAL_GEN_ENABLED", "false")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"preferred_language": "zh"},
+    )
+    problem = mg.generation_problem("image")
+    assert problem is not None
+    assert "图片生成已在「设置 > Agent」中关闭" in problem
+    assert "switched off" not in problem
