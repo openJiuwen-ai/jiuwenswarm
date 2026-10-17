@@ -434,7 +434,8 @@ def test_transcript_is_trimmed_to_the_budget_and_keeps_both_ends() -> None:
     assert "lines omitted" in text
 
 
-def test_production_host_runs_diagnoses_with_the_llm_engine() -> None:
+def test_production_host_runs_diagnoses_with_the_attribution_core_engine() -> None:
+    from jiuwenswarm.diagnosis.attribution_engine import AttributionCoreEngine
     from jiuwenswarm.server.diagnosis.host import build_diagnosis_engine
 
-    assert isinstance(build_diagnosis_engine(), LlmDiagnosisEngine)
+    assert isinstance(build_diagnosis_engine(), AttributionCoreEngine)

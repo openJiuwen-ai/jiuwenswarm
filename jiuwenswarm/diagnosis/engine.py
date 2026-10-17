@@ -71,6 +71,7 @@ from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel
 from jiuwenswarm.diagnosis.models import (
     ALLOWED_ROOT_CAUSE_CATEGORIES,
     ArtifactEval,
+    DiagnosisError,
     DiagnosisSuggestions,
     FocusRange,
     ModeProfile,
@@ -136,13 +137,20 @@ class EngineInputs:
 
 @dataclass(slots=True)
 class EngineResult:
-    """Structured engine output, before host-side filtering."""
+    """Structured engine output, before host-side filtering.
+
+    ``error`` carries a terminal failure the engine wants the host to keep
+    alongside the partial results (for example an attribution that ran out of
+    budget after reporting some causes): the host stores it on the record and
+    marks the failed stage, but keeps the record completed.
+    """
 
     headline: str | None = None
     artifact_eval: ArtifactEval | None = None
     focus_ranges: list[FocusRange] = field(default_factory=list)
     root_causes: list[RootCause] = field(default_factory=list)
     suggestions: DiagnosisSuggestions = field(default_factory=DiagnosisSuggestions)
+    error: DiagnosisError | None = None
 
 
 class DiagnosisEngine(Protocol):

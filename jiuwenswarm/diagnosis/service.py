@@ -234,6 +234,7 @@ def filter_engine_result(
         focus_ranges=focus_ranges,
         root_causes=root_causes,
         suggestions=suggestions,
+        error=result.error,
     )
 
 
@@ -526,7 +527,9 @@ class DiagnosisService:
         if not await asyncio.to_thread(self._session_exists, session_id):
             logger.info("[diagnosis] session is gone, record not persisted: session_id=%s", session_id)
             return
-        await asyncio.to_thread(self._store.save, record)
+        # The dump runs on a worker thread while the engine task may still be
+        # mutating the record; snapshot it first so the saved file is consistent.
+        await asyncio.to_thread(self._store.save, record.model_copy(deep=True))
 
     def _session_exists(self, session_id: str) -> bool:
         try:
@@ -544,6 +547,9 @@ class DiagnosisService:
         evaluation = result.artifact_eval or ArtifactEval(applied=False, skipped_reason="not_produced")
         record.evidence.artifact_eval = evaluation
         record.artifact_eval_applied = bool(evaluation.applied)
+        # An engine may report a terminal attribution failure while keeping
+        # its partial results; the record stays completed but carries the error.
+        record.error = result.error
 
     async def _mark_selectable(self, record: DiagnosisRecord, context: SessionContext) -> None:
         if context.mode_profile is not ModeProfile.TEAM or self._skill_lookup is None:

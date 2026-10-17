@@ -36,12 +36,13 @@ PushSender = Callable[[dict[str, Any]], Awaitable[bool | None]]
 def build_diagnosis_engine() -> DiagnosisEngine:
     """Return the engine the production host runs diagnoses with.
 
-    This is the only place that picks the engine. It is the simple LLM engine
-    for now; plug the formal engine in by returning it here.
+    This is the only place that picks the engine. The formal engine runs the
+    agent-core attribution pipeline; the placeholder ``LlmDiagnosisEngine`` and
+    its helpers stay in the tree until the formal engine has stabilised.
     """
-    from jiuwenswarm.diagnosis.engine import LlmDiagnosisEngine
+    from jiuwenswarm.diagnosis.attribution_engine import AttributionCoreEngine
 
-    return LlmDiagnosisEngine()
+    return AttributionCoreEngine()
 
 
 def _first_validation_error(exc: ValidationError) -> str:

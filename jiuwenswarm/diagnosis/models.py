@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -281,7 +281,7 @@ class RootCause(_Model):
     refs: list[StepRef] = Field(default_factory=list)
     summary: str
     evidence: str = ""
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class ArtifactFix(_Model):
@@ -392,6 +392,7 @@ class DiagnosisRecord(DiagnosisSummary):
     suggestions: DiagnosisSuggestions = Field(default_factory=DiagnosisSuggestions)
     ttse_trigger: dict[str, TtseTriggerResult] = Field(default_factory=dict)
     error: DiagnosisError | None = None
+    reward: dict[str, Any] | None = None
 
     def to_summary(self) -> DiagnosisSummary:
         """Return the list-endpoint projection of this record."""
