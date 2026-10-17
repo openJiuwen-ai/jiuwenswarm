@@ -7,9 +7,12 @@ import type {
   JiuwenMateActivityHour,
   JiuwenMateActivityMember,
   JiuwenMateCategory,
+  JiuwenMateChannel,
+  JiuwenMateChannelMessage,
   JiuwenMateColleague,
   JiuwenMateColleagueDraft,
   JiuwenMateModelOption,
+  JiuwenMateTraceRow,
 } from './types';
 
 /** Server RPCs handled by the AgentServer JiuwenMate adapter; the server fixes the namespace. */
@@ -38,6 +41,9 @@ export const JIUWENMATE_METHODS = {
   scheduleUpdate: 'jiuwenmate.schedule.update',
   scheduleRun: 'jiuwenmate.schedule.run',
   scheduleHistory: 'jiuwenmate.schedule.history',
+  channelList: 'jiuwenmate.channel.list',
+  channelMessages: 'jiuwenmate.channel.messages',
+  channelTrace: 'jiuwenmate.channel.trace',
 } as const;
 
 export type JiuwenMateSchedule = Schedule;
@@ -674,6 +680,58 @@ function scheduleParams(draft: ScheduleDraft): Record<string, unknown> {
   };
 }
 
+const TRACE_ROLES = ['system', 'context', 'user', 'assistant', 'tool'] as const;
+const TRACE_LANES = ['input', 'model', 'tools'] as const;
+
+export function toChannel(value: unknown): JiuwenMateChannel {
+  const wire = record(value);
+  const platform = text(wire.platform);
+  return {
+    id: text(wire.id),
+    name: text(wire.name) || text(wire.id),
+    platform,
+    artifacts: Number(wire.artifacts) || 0,
+    tokenUsage: Number(wire.token_usage) || 0,
+    lastResponseMinutes: Number(wire.last_response_minutes) || 0,
+  };
+}
+
+export function toChannelMessage(value: unknown): JiuwenMateChannelMessage {
+  const wire = record(value);
+  const attachments = Number(wire.attachments) || 0;
+  return {
+    id: text(wire.id),
+    sender: text(wire.sender),
+    fromColleague: wire.sender_kind === 'agent',
+    mentionColleague: false,
+    content: text(wire.text),
+    status: text(wire.status) || 'normal',
+    ...(attachments > 0 ? { attachment: { title: String(attachments), kind: 'file' } } : {}),
+  };
+}
+
+export function toChannelTrace(value: unknown): { startedAt: string; rows: JiuwenMateTraceRow[] } {
+  const wire = record(value);
+  const rows = (Array.isArray(wire.rows) ? wire.rows : []).map((item) => {
+    const row = record(item);
+    const role = text(row.role);
+    const lane = text(row.lane);
+    return {
+      id: text(row.id),
+      traceId: text(row.trace_id) || text(row.id),
+      turn: Number(row.turn) || 1,
+      role: TRACE_ROLES.includes(role as (typeof TRACE_ROLES)[number]) ? (role as JiuwenMateTraceRow['role']) : 'system',
+      lane: TRACE_LANES.includes(lane as (typeof TRACE_LANES)[number]) ? (lane as JiuwenMateTraceRow['lane']) : 'input',
+      content: text(row.content),
+      startMs: Number(row.start_ms) || 0,
+      durationMs: Number(row.duration_ms) || 0,
+      inputTokens: Number(row.input_tokens) || 0,
+      outputTokens: Number(row.output_tokens) || 0,
+    };
+  });
+  return { startedAt: text(wire.started_at), rows };
+}
+
 export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: JiuwenMateSubscribe) {
   const colleague = async (method: string, params?: Record<string, unknown>) =>
     toColleague(record(await request(method, params)).colleague);
@@ -753,6 +811,17 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     },
     async deleteSchedule(planId: string): Promise<void> {
       await request(JIUWENMATE_METHODS.scheduleDelete, { plan_id: planId });
+    },
+    async listChannels(agentId: string): Promise<JiuwenMateChannel[]> {
+      const listed = record(await request(JIUWENMATE_METHODS.channelList, { agent_id: agentId }));
+      return (Array.isArray(listed.channels) ? listed.channels : []).map(toChannel);
+    },
+    async channelMessages(agentId: string, groupId: string): Promise<JiuwenMateChannelMessage[]> {
+      const listed = record(await request(JIUWENMATE_METHODS.channelMessages, { agent_id: agentId, group_id: groupId }));
+      return (Array.isArray(listed.messages) ? listed.messages : []).map(toChannelMessage);
+    },
+    async channelTrace(agentId: string, groupId: string): Promise<{ startedAt: string; rows: JiuwenMateTraceRow[] }> {
+      return toChannelTrace(await request(JIUWENMATE_METHODS.channelTrace, { agent_id: agentId, group_id: groupId }));
     },
     /** Sends a private message; resending the same message id returns the request it already created. */
     async sendMessage(
