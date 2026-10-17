@@ -830,13 +830,13 @@ python3 /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator/scripts/val
 
 ### 5.4 上传到 Swarm Skills Hub
 
-创建完成后，可以将 Swarm Skill 分享到社区，共建团队技能生态：
+创建完成后，可以将 Swarm Skill 分享到社区，共建团队技能生态。可以通过 WorkSwarm 桌面端（推荐）、Hub 网站或 TUI 命令行发布。
 
 **步骤一：验证完整性**
 
 ```bash
 # 方式一：使用 TUI 内置命令（推荐）
-/teamskills validate path/to/<swarmskill-name>/ --type swarmskills
+/teamskills validate path/to/<swarmskill-name>/ --type teamskills
 
 # 方式二：使用独立验证脚本（脚本随 swarmskill-creator 技能提供）
 python3 scripts/validate_swarmskill.py path/to/<swarmskill-name>/
@@ -844,27 +844,47 @@ python3 scripts/validate_swarmskill.py path/to/<swarmskill-name>/
 
 确保退出码为 0（合规）。
 
-**步骤二：上传发布**
+**步骤二：在 WorkSwarm 中发布**
 
-在 jiuwenSwarm 的「技能」面板中：
-1. 点击「Swarm Skills Hub」
-2. 选择要发布的 Swarm Skill
-3. 点击「上传」
-4. 首次使用需要认证（输入 Swarm Skills Hub Token）
+1. 确认技能已出现在「技能」→「我的技能」中。如需添加本地技能，点击「创建」→「上传技能」，选择包含 `SKILL.md` 的 `.zip` 文件。
+2. 点击技能进入详情页，点击「发布」，打开「发布资源」面板，「发布到」处显示目标 Hub 地址。
+3. 点击「使用 GitHub」或「使用 GitCode」登录 Hub，并在浏览器中完成授权。Hub 以你的 GitHub 或 GitCode 账号作为发布者身份，无需单独注册 Hub 账号，也无需 API Token。
+4. 填写发布信息：
 
-> **Token 获取方式**：访问 [Swarm Skills Hub](https://teamskills.openjiuwen.com) 注册账号后，在个人设置页面获取 API Token。
+   | 字段 | 说明 |
+   |------|------|
+   | 「发布名称」 | Hub 中资源包的技术标识，只支持小写字母、数字、下划线和连字符，最长 64 个字符 |
+   | 「版本」 | 例如 `1.0.0`，或七位小写提交号如 `abcdef0` |
+   | 「展示名称」 | 用于 Hub 广场卡片和详情页展示，最长 128 个字符 |
+   | 「简介」 | 显示在 Hub 广场卡片和详情页中；登录后自动从 `SKILL.md` 读取 |
+   | 「标签」 | 用于 Hub 的分类、搜索和资源识别，多个标签使用逗号分隔 |
+   | 「可见范围」 | 「公开」：审核通过后可在 Hub 中公开展示。「私有」：仅对当前发布账号可见。 |
+   | 「版本说明」 | 本次版本的说明 |
+   | 「高级设置」 | 「更新目标 Hub ID（首次发布留空）」用于更新 Hub 中已有的资源；「覆盖已有版本（明确确认后开启）」用于覆盖已提交过的同一版本 |
 
-也可以通过命令行发布：
+5. 点击「检查发布内容」。WorkSwarm 会生成发布副本，并在「发布内容检查」中列出：「文件」「排除项」「发布副本调整」「依赖」「提示」「需要修正」「技术详情」。
+   - 发布副本中会自动生成 `plugin.yaml`，并按表单内容更新副本中 `SKILL.md` 的 frontmatter（如 `display_name`、`version`），这些改动列在「发布副本调整」中。本地技能目录不会被修改。
+   - 「需要修正」中的问题必须先处理。
+   - 检查结果有有效期（见「技术详情」中的「检查结果有效期」），过期后请重新点击「检查发布内容」。
+6. 点击「确认发布」。提交成功后，面板显示「提交成功，待审核」和「Hub 资产 ID」，「我的技能」中的技能卡片显示「待审核」。
+7. 在 Hub 网站查看审核进度：使用同一 GitHub 或 GitCode 账号登录，打开「我的上传」。提交会依次经过「审查中」「审核中」，最终显示「发布成功」，未通过时显示「发布失败」及原因。WorkSwarm 面板中的「本地发布记录」只显示本机发起的发布任务，不代表 Hub 最新审核状态。
 
-```
-# 发布到 Swarm Skills Hub（需要鉴权）
-/teamskills publish path/to/<swarmskill-name> --version 1.0.0 --token <TOKEN>
+> **可见范围说明**：公开和私有提交都需要经过审核。审核通过后，公开资源会在 Hub 广场展示，私有资源不会进入公开市场，发布者可在「我的上传」中查看。Hub 中的一个资源只能是公开或私有之一，同一资源的后续版本请保持相同的「可见范围」。
 
-# 如需覆盖已有版本，添加 --force
-/teamskills publish path/to/<swarmskill-name> --version 1.0.1 --token <TOKEN> --force
-```
+**其他发布方式**
 
-> **鉴权说明**：发布和删除操作需要提供 `--token`（用户 Token）或 `--system-token`（系统 Token），且只能选择一种。Token 可通过 `/teamskills config --token <TOKEN>` 预配置，避免每次手动输入。Token 获取方式：访问 [Swarm Skills Hub](https://teamskills.openjiuwen.com) 注册账号后在个人设置页面获取。
+- **Hub 网站**：在 [Swarm Skills Hub](https://swarmskills.openjiuwen.com) 使用 GitHub 或 GitCode 登录后，通过发布入口上传包含 `SKILL.md` 的目录。详见 Hub 文档 [发布 SwarmSkill](https://github.com/openJiuwen-ai/skillhub/blob/develop/docs/zh/4.%20%E7%94%A8%E6%88%B7%E6%8C%87%E5%8D%97/%E5%8F%91%E5%B8%83SwarmSkill.md)。
+- **TUI 命令行**（CLI 方式）：
+
+  ```
+  # 发布到 Swarm Skills Hub（需要鉴权）
+  /teamskills publish path/to/<swarmskill-name> --version 1.0.0 --token <TOKEN>
+
+  # 如需覆盖已有版本，添加 --force
+  /teamskills publish path/to/<swarmskill-name> --version 1.0.1 --token <TOKEN> --force
+  ```
+
+  > **鉴权说明**：发布和删除操作需要提供 `--token`（用户 Token）或 `--system-token`（系统 Token），且只能选择一种。Token 可通过 `/teamskills config --token <TOKEN>` 预配置，避免每次手动输入。
 
 **步骤三：维护更新**
 
@@ -898,11 +918,13 @@ python3 scripts/validate_swarmskill.py path/to/<swarmskill-name>/
 | 安装 Swarm Skill | `/teamskills install <asset_id> --version <x.y.z>` |
 | 查看已安装技能 | `/teamskills list` |
 | 卸载 Swarm Skill | `/teamskills uninstall <name>` |
-| 创建 Swarm Skill 脚手架 | `/teamskills init <name> --type swarmskills` |
-| 验证 Swarm Skill | `/teamskills validate <path> --type swarmskills` |
+| 创建 Swarm Skill 脚手架 | `/teamskills init <name> --type teamskills` |
+| 验证 Swarm Skill | `/teamskills validate <path> --type teamskills` |
 | 打包 Swarm Skill | `/teamskills pack <path> --output <dir>` |
 | 配置 Hub URL 和 Token | `/teamskills config --market-url <url> --token <TOKEN>` |
-| 发布到 Swarm Skills Hub | `/teamskills publish <path> --version <x.y.z> --token <TOKEN>` |
+| 在 WorkSwarm 中发布 | 「技能」→「我的技能」→ 技能详情 →「发布」 |
+| 查看审核状态 | Hub 网站 →「我的上传」 |
+| 通过 TUI 发布 | `/teamskills publish <path> --version <x.y.z> --token <TOKEN>` |
 | 删除 Hub 上的技能 | `/teamskills delete <skill_id> --version <x.y.z> --token <TOKEN>` |
 | 使用 swarmskill-creator 创建 | 使用 `swarmskill-creator` 技能的 CREATE 模式 |
 | 使用 swarmskill-creator 修改 | 使用 `swarmskill-creator` 技能的 MODIFY 模式 |
@@ -928,13 +950,21 @@ A: 是的。SKILL.md、roles/、workflow.md、bind.md、dependencies.yaml 都是
 
 **Q: Swarm Skills Hub 的默认地址是什么？**
 
-A: 默认地址为 `https://teamskills.openjiuwen.com`，可通过环境变量 `TEAM_SKILLS_HUB_BASE_URL` 覆盖。
+A: 默认地址为 `https://swarmskills.openjiuwen.com`，可通过环境变量 `TEAM_SKILLS_HUB_BASE_URL` 覆盖。
+
+**Q: 发布时需要 Hub API Token 吗？**
+
+A: 不需要。通过 WorkSwarm 或 Hub 网站发布时，使用 GitHub 或 GitCode 登录即可。只有 TUI 的 `/teamskills publish` 命令需要 Token，详见 [5.4 上传到 Swarm Skills Hub](#54-上传到-swarm-skills-hub)。
+
+**Q: 在哪里查看 Swarm Skill 是否已通过审核？**
+
+A: 使用发布时的账号登录 Hub 网站，在「我的上传」中查看。WorkSwarm 中的「本地发布记录」显示后端已知结果，不自动查询远端审核进度。
 
 ---
 
 *文档版本：v2.0*
 *适用对象：jiuwenSwarm 用户、技能开发者*
-*最后更新：2026-07-13*
+*最后更新：2026-10-07*
 ---
 
 ## 返回导航
