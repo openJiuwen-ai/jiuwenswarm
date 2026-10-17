@@ -52,15 +52,14 @@ from jiuwenswarm.agents.harness.common.cua_defaults import (
     resolve_cua_factory_options,
 )
 from jiuwenswarm.common.config import (
-    get_default_model_provider,
     get_evolution_auto_save_enabled,
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    KVCacheAffinityConfig,
     build_kv_cache_affinity_config,
-    get_default_model_client_config,
+    get_kv_cache_control_model_client_config,
+    get_kv_cache_control_model_provider,
 )
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
@@ -90,8 +89,8 @@ _CODE_MODES: frozenset[str] = frozenset(
 def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
     return build_kv_cache_affinity_config(
         config,
-        provider=get_default_model_provider(config),
-        model_client_config=get_default_model_client_config(config),
+        provider=get_kv_cache_control_model_provider(config),
+        model_client_config=get_kv_cache_control_model_client_config(config),
     )
 
 
@@ -1002,7 +1001,7 @@ def build_member_subagent_specs(
     if not _is_code_mode(mode):
         return specs
 
-# Explore / plan are the code profile's core sub-agents and stay mounted
+    # Explore / plan are the code profile's core sub-agents and stay mounted
     # unless a config entry turns them off explicitly, so an absent entry keeps
     # the long-standing behaviour.
     for name, factory_name in (
