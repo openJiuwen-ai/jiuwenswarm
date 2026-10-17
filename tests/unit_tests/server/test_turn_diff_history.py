@@ -1155,7 +1155,8 @@ def test_get_session_extra_history_roots_adds_spawned_member_workspaces(tmp_path
             },
         ),
         patch(
-            "jiuwenswarm.server.runtime.session.session_history.load_history_records",
+            # 成员名扫描现在走流式读取，不再全量载入 history。
+            "jiuwenswarm.server.runtime.session.session_history.iter_history_records",
             return_value=history,
         ),
         patch(

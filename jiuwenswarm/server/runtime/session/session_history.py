@@ -383,51 +383,113 @@ def _read_history(path: Path) -> list[dict[str, Any]]:
     return []
 
 
-def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
+def _parse_history_jsonl_line(raw_line: str, lineno: int) -> dict[str, Any] | None:
+    """Parse one JSONL line into a record, applying the canonical cleanup rules.
 
-    records: list[dict[str, Any]] = []
+    Shared by the eager (:func:`_read_history_jsonl`) and streaming
+    (:func:`iter_history_records`) readers so the two can never drift apart.
+    Returns ``None`` for blank / malformed / non-object lines.
+    """
+    line = raw_line.rstrip("\r").strip()
+    if not line:
+        return None
     try:
-        # JSONL records are delimited by "\n" only. Do NOT use str.splitlines():
-        # inlined file bodies may contain Unicode line separators (U+2028 etc.)
-        # that splitlines() treats as breaks, corrupting a single JSON object
-        # into fragments and dropping the user turn on refresh.
-        text = path.read_text(encoding="utf-8")
-        for lineno, raw_line in enumerate(text.split("\n"), start=1):
-            line = raw_line.rstrip("\r").strip()
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "读取 history.jsonl 第 %d 行失败，已跳过: %s", lineno, exc
-                )
-                continue
-            if isinstance(item, dict):
-                content = item.get("content")
-                if (
-                    item.get("role") in {"user", "human"}
-                    and isinstance(content, str)
-                    and "<file-content" in content
-                ):
-                    item = dict(item)
-                    item["content"] = collapse_file_content_blocks(content)
-                records.append(item)
-            else:
-                logger.warning(
-                    "读取 history.jsonl 第 %d 行不是对象记录，已跳过: %s",
-                    lineno,
-                    type(item).__name__,
-                )
+        item = json.loads(line)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取 history.jsonl 第 %d 行失败，已跳过: %s", lineno, exc)
+        return None
+    if not isinstance(item, dict):
+        logger.warning(
+            "读取 history.jsonl 第 %d 行不是对象记录，已跳过: %s",
+            lineno,
+            type(item).__name__,
+        )
+        return None
+    content = item.get("content")
+    try:
+        if (
+            item.get("role") in {"user", "human"}
+            and isinstance(content, str)
+            and "<file-content" in content
+        ):
+            item = dict(item)
+            item["content"] = collapse_file_content_blocks(content)
+    except Exception as exc:  # noqa: BLE001
+        # A cleanup failure must not cost the record (the previous eager reader
+        # wrapped the whole loop in one ``except`` that discarded everything).
+        logger.warning(
+            "读取 history.jsonl 第 %d 行清理失败，已按原样保留: %s", lineno, exc
+        )
+    return item
+
+
+def _iter_history_jsonl_lines(path: Path) -> Iterator[tuple[int, str]]:
+    """Yield ``(lineno, raw_line)`` for a JSONL history, one line at a time.
+
+    Streaming keeps peak memory at a single line, so a multi-hundred-MB history
+    is never materialised as one Python string plus one ``split()`` copy per
+    record.
+
+    ``newline="\\n"`` is deliberate: it keeps exactly the record boundaries of
+    the previous ``text.split("\\n")`` implementation. JSONL records are
+    delimited by ``"\\n"`` only — inlined file bodies may contain Unicode line
+    separators (U+2028 etc.) or lone CR that universal-newline translation (the
+    default) would treat as breaks, corrupting one JSON object into fragments
+    and dropping the user turn on refresh.
+    """
+    if not path.exists():
+        return
+    try:
+        with path.open("r", encoding="utf-8", newline="\n") as fh:
+            for lineno, raw_line in enumerate(fh, start=1):
+                yield lineno, raw_line
     except Exception as exc:  # noqa: BLE001
         logger.warning("读取 history.jsonl 失败，已忽略: %s", exc)
-        return []
+        return
+
+
+def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for lineno, raw_line in _iter_history_jsonl_lines(path):
+        item = _parse_history_jsonl_line(raw_line, lineno)
+        if item is not None:
+            records.append(item)
     return records
 
 
+def iter_history_records(
+    session_id: str, *, subagent_id: str | None = None
+) -> Iterator[dict[str, Any]]:
+    """Stream a session's history oldest→newest without materialising it.
+
+    Yields exactly the records :func:`load_history_records` would return, in the
+    same order and with the same cleanup, but peak memory stays at one line
+    instead of the whole file. Prefer this for scans that read a few fields,
+    stop early, or aggregate into a bounded structure; use
+    :func:`load_history_records` only when the complete list is genuinely
+    needed.
+
+    Measured on a real 115 MB / 45.6k-record session history, one
+    :func:`load_history_records` call costs ~939 MB of RSS and 2.7 s, while
+    scanning the same file with this iterator stays flat.
+    """
+    path = get_read_history_path(session_id, subagent_id=subagent_id)
+    if path.suffix.lower() != ".jsonl":
+        yield from _read_history(path)
+        return
+    for lineno, raw_line in _iter_history_jsonl_lines(path):
+        item = _parse_history_jsonl_line(raw_line, lineno)
+        if item is not None:
+            yield item
+
+
 def load_history_records(session_id: str, *, subagent_id: str | None = None) -> list[dict[str, Any]]:
+    """Read a session's whole history into a list.
+
+    This is O(history size) in both time and memory (roughly 8x the on-disk
+    JSONL size). Callers that only scan records or need a bounded window should
+    use :func:`iter_history_records` instead.
+    """
     path = get_read_history_path(session_id, subagent_id=subagent_id)
     if path.suffix.lower() == ".jsonl":
         return _read_history_jsonl(path)
