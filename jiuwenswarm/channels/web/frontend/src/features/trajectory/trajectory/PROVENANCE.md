@@ -18,4 +18,6 @@ JiuwenSwarm copies selected DSH Trajectory sources under the MIT license and ada
 | `preview.ts` | `packages/client/ui-trajectory/src/client/trajectory-preview.ts` |
 | `record.ts` | `packages/client/ui-trajectory/src/client/trajectory-record.ts` |
 
+`../client/TrajectoryExplorer.tsx` is JiuwenSwarm's own assembly of these copies. For trajectory diagnosis it adds three optional props, `highlightStepKeys`, `onTimelineSelectionChange` and `clearSelectionToken`; they only emphasise timeline spans and report the wall-clock hull of the drag selection, and leave the DSH-derived ledger, timeline and projection logic untouched.
+
 `../theme/` starts from the five token sheets in `packages/client/ui-theme/src/styles` and scopes them to the trajectory host; [`../theme/PROVENANCE.md`](../theme/PROVENANCE.md) records the source revision and adaptation. [`../primitives/PROVENANCE.md`](../primitives/PROVENANCE.md) records the locally copied React primitives. JiuwenSwarm does not resolve an upstream workspace package at build or runtime.

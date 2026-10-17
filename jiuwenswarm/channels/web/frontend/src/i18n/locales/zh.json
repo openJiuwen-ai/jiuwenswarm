@@ -919,6 +919,10 @@
         "title": "启用轨迹界面",
         "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
       },
+      "trajectory_ui_diagnosis_enabled": {
+        "title": "启用轨迹诊断",
+        "description": "在轨迹页中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。需先启用轨迹界面。"
+      },
       "team_organization_ui_enabled": {
         "title": "启用 Team Organization",
         "description": "启用组织视图及后端组织工具。修改后请完整重启后端并新建会话；不会立即停止已有组织任务。"
@@ -1027,6 +1031,100 @@
     "team": {
       "memberLanes": "成员轨迹泳道",
       "members": "成员"
+    },
+    "diagnosis": {
+      "toggle": "诊断与归因",
+      "rawView": "原始轨迹",
+      "toggleBack": "返回轨迹",
+      "panelTitle": "诊断与归因",
+      "noteLabel": "补充说明（可选）",
+      "notePlaceholder": "用户补充信息",
+      "fullScope": "基于全量轨迹",
+      "fullScopeBusy": "会话运行中，无法诊断完整轨迹",
+      "evaluateArtifact": "是否评估产物质量",
+      "run": "执行",
+      "starting": "正在启动…",
+      "cancel": "取消诊断",
+      "selectionHint": "在任一泳道的时间轴上拖选一段，可只诊断该时间范围。",
+      "selectionActive": "已选择 {{subject}} 的一段时间范围",
+      "clearSelection": "清除选择",
+      "records": "诊断记录",
+      "noRecords": "还没有诊断记录",
+      "recordTitle": "诊断 #{{ordinal}}",
+      "view": "查看",
+      "delete": "删除",
+      "deleteConfirm": "确定删除该诊断记录吗？",
+      "backToList": "返回记录列表",
+      "scopeKind": {
+        "full": "完整轨迹",
+        "selection": "选中范围"
+      },
+      "status": {
+        "running": "进行中",
+        "completed": "已完成",
+        "failed": "失败",
+        "cancelled": "已取消",
+        "interrupted": "已中断"
+      },
+      "evidence": {
+        "ruleScan": "规则扫描",
+        "artifacts": "产物",
+        "userNote": "用户说明",
+        "ruleScanCount": "{{count}} 项发现",
+        "artifactsCount": "{{replies}} 条回复 · {{files}} 个文件",
+        "none": "无"
+      },
+      "stages": "诊断进展",
+      "selectRecord": "从左侧选择一条诊断记录",
+      "outletsPending": "诊断完成后在这里给出优化建议",
+      "stageStatus": {
+        "running": "进行中",
+        "completed": "完成",
+        "failed": "失败",
+        "skipped": "已跳过"
+      },
+      "rootCauses": "根因",
+      "noRootCause": "未发现明确根因",
+      "category": {
+        "skill_defect": "Skill 缺陷",
+        "ttse_gap": "经验缺口",
+        "tool_or_env": "工具或环境",
+        "model_capability": "模型能力",
+        "requirement_unclear": "需求不明确",
+        "other": "其他"
+      },
+      "confidence": "置信度 {{value}}%",
+      "highlight": "在轨迹中高亮",
+      "suggestions": "优化出口",
+      "artifactFix": "产物修复建议",
+      "skills": "Skill 进化建议",
+      "ttse": "TTSE 经验生成信号",
+      "fillInput": "填入输入框",
+      "filled": "已填入对话输入框，请切换到“对话”页确认后发送。",
+      "triggerTtse": "触发经验生成",
+      "triggeringTtse": "触发中…",
+      "ttseOutcome": {
+        "fail": "任务失败",
+        "partial": "部分完成"
+      },
+      "ttseResult": {
+        "triggered": "已触发，TTSE 正在后台生成并保存经验",
+        "failed": "触发失败"
+      },
+      "blocked": "暂不可用：{{reason}}",
+      "errors": {
+        "FEATURE_DISABLED": "轨迹诊断未开启",
+        "UNSUPPORTED_SESSION_MODE": "当前会话模式不支持诊断",
+        "SESSION_NOT_FOUND": "会话不存在",
+        "DIAGNOSIS_ALREADY_RUNNING": "已有诊断正在进行",
+        "FULL_SCOPE_WHILE_BUSY": "会话运行中，无法诊断完整轨迹",
+        "EMPTY_SCOPE": "所选范围内没有可诊断的步骤",
+        "MODEL_UNAVAILABLE": "诊断模型不可用，请先配置模型",
+        "AGENT_UNAVAILABLE": "Agent 暂不可用",
+        "TTSE_NOT_SUPPORTED": "当前会话不支持 TTSE 经验生成",
+        "TTSE_UNAVAILABLE": "当前会话未启用 TTSE",
+        "default": "操作失败"
+      }
     },
     "composer": {
       "collapse": "收起输入框",

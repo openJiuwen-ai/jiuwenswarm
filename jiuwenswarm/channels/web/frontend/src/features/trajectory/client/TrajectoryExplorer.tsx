@@ -75,7 +75,33 @@ export interface TrajectoryExplorerProps {
   viewState?: TrajectoryViewState
   /** Expand an overview-only host after a timeline record is activated. */
   onOverviewActivate?: () => void
+  /**
+   * JiuwenSwarm extension: `traceId:spanId` anchors to emphasise on the timeline
+   * (diagnosis evidence). The ledger is never filtered by this set.
+   */
+  highlightStepKeys?: ReadonlySet<string>
+  /**
+   * JiuwenSwarm extension: reports the wall-clock hull (Unix ms) of the records
+   * covered by the current timeline drag selection, or `null` when it is cleared.
+   */
+  onTimelineSelectionChange?: (selection: TrajectoryWallClockSelection | null) => void
+  /** JiuwenSwarm extension: bump to clear this explorer's own timeline selection. */
+  clearSelectionToken?: number
   className?: string
+}
+
+/** Wall-clock hull of a timeline selection, in Unix milliseconds. */
+export interface TrajectoryWallClockSelection {
+  startMs: number
+  endMs: number
+}
+
+/** Extract the `traceId:spanId` anchor from a projected record id. */
+function stepKeyOfRecordId(recordId: string): string | null {
+  const first = recordId.indexOf(':')
+  if (first <= 0) return null
+  const second = recordId.indexOf(':', first + 1)
+  return second < 0 ? recordId : recordId.slice(0, second)
 }
 
 function searchIndexes(
@@ -121,6 +147,9 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   toolbarAddon,
   viewState,
   onOverviewActivate,
+  highlightStepKeys,
+  onTimelineSelectionChange,
+  clearSelectionToken = 0,
   className,
 }: TrajectoryExplorerProps) {
   const turns = snapshot?.turns ?? staticTurns
@@ -198,6 +227,56 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
       ),
     [liveNowMilliseconds, timelineMode, timelineRange, turns],
   )
+  const highlightIndexes = useMemo<ReadonlySet<number> | null>(() => {
+    if (highlightStepKeys === undefined || highlightStepKeys.size === 0) return null
+    const matches = new Set<number>()
+    for (const turn of turns) {
+      for (const group of turn.groups) {
+        for (const cell of group.cells) {
+          const key = stepKeyOfRecordId(trajectoryRecordId(cell))
+          if (key !== null && highlightStepKeys.has(key)) matches.add(cell.index)
+        }
+      }
+    }
+    return matches
+  }, [highlightStepKeys, turns])
+  const timelineEmphasis = searchMatchIndexes ?? highlightIndexes
+  const selectionListenerRef = useRef(onTimelineSelectionChange)
+  selectionListenerRef.current = onTimelineSelectionChange
+  const hasSelectionListener = onTimelineSelectionChange !== undefined
+  useEffect(() => {
+    if (!hasSelectionListener) return
+    if (timelineFocusIndexes === null) {
+      selectionListenerRef.current?.(null)
+      return
+    }
+    let startMs = Number.POSITIVE_INFINITY
+    let endMs = Number.NEGATIVE_INFINITY
+    for (const turn of turns) {
+      for (const group of turn.groups) {
+        for (const cell of group.cells) {
+          if (!timelineFocusIndexes.has(cell.index)) continue
+          const started = cell.startedAt
+          if (started === null || started === undefined || !Number.isFinite(started)) continue
+          const seconds = cell.timeSeconds
+          const duration = typeof seconds === 'number' && Number.isFinite(seconds)
+            ? Math.max(0, seconds * 1_000)
+            : 0
+          startMs = Math.min(startMs, started)
+          endMs = Math.max(endMs, started + duration)
+        }
+      }
+    }
+    selectionListenerRef.current?.(
+      Number.isFinite(startMs) && Number.isFinite(endMs) ? { startMs, endMs } : null,
+    )
+  }, [hasSelectionListener, timelineFocusIndexes, turns])
+  const clearTokenRef = useRef(clearSelectionToken)
+  useEffect(() => {
+    if (clearTokenRef.current === clearSelectionToken) return
+    clearTokenRef.current = clearSelectionToken
+    setTimelineRange(null)
+  }, [clearSelectionToken])
   const collapsibleTurnIds = useMemo(
     () => turns.flatMap(turn => turn.turn !== null && turn.groups.reduce(
       (count, group) => count + group.cells.filter(cell =>
@@ -314,7 +393,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             mode={timelineMode}
             range={timelineRange}
             selectedIndex={selectedTimelineIndex}
-            searchMatchIndexes={searchMatchIndexes}
+            searchMatchIndexes={timelineEmphasis}
             onRangeChange={setTimelineRange}
             onRecordSelect={(index) => {
               setTimelineRange(null)

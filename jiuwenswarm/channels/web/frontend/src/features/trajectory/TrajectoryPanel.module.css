@@ -57,9 +57,58 @@
   background: var(--color-surface-hover);
 }
 
+.archiveActionActive {
+  border-color: var(--color-border-accent);
+  color: var(--color-text-primary);
+}
+
 .archiveAction:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.viewSwitch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  padding: 0.125rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.5rem;
+  background: var(--color-surface-card);
+}
+
+.viewSwitchButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  line-height: 1.25rem;
+  padding: 0.1875rem 0.625rem;
+}
+
+.viewSwitchButton:hover {
+  background: var(--color-surface-hover);
+}
+
+.viewSwitchButtonActive,
+.viewSwitchButtonActive:hover {
+  border-color: var(--color-action-primary);
+  background: rgba(var(--color-action-primary-rgb), 0.08);
+  color: var(--color-action-primary);
+}
+
+.viewSwitchSpark {
+  width: 0.875rem;
+  height: 0.875rem;
+  flex: 0 0 auto;
+  color: #f5a524;
 }
 
 /* Opens the MIT attribution, which is a reference rather than an action, so it

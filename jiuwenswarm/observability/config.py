@@ -154,12 +154,36 @@ def load_trajectory_store_settings(
     )
 
 
+def is_trajectory_diagnosis_enabled(config: Mapping[str, Any] | None = None) -> bool:
+    """Return whether the trajectory diagnosis feature is switched on.
+
+    The switch lives next to ``trajectory_ui.enabled`` but is deliberately not
+    part of :class:`TrajectoryStoreSettings`: that dataclass is compared to
+    decide whether the AgentServer sink must restart, and toggling diagnosis
+    must never restart the trajectory writer.
+
+    Args:
+        config: Optional complete JiuwenSwarm configuration mapping.
+
+    Returns:
+        ``True`` only when both the trajectory UI and diagnosis switches are on.
+    """
+    source = config if config is not None else get_config()
+    raw_section = source.get("trajectory_ui", {}) if isinstance(source, Mapping) else {}
+    section = raw_section if isinstance(raw_section, Mapping) else {}
+    return _as_bool(section.get("enabled"), False) and _as_bool(
+        section.get("diagnosis_enabled"),
+        False,
+    )
+
+
 __all__ = [
     "DEFAULT_DETAIL_MAX_BYTES",
     "DEFAULT_DISCARD_FINAL_SPAN_FRAMES",
     "DEFAULT_SESSION_DATABASE_DIRECTORY",
     "TrajectoryStoreSettings",
     "database_files",
+    "is_trajectory_diagnosis_enabled",
     "load_trajectory_store_settings",
     "session_database_path",
 ]
