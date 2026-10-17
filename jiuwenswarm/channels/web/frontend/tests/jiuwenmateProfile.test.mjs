@@ -36,6 +36,7 @@ const catalog = {
   skills: [{ name: 'report-writer', label: '报告' }],
   connectors: [{ name: 'feishu', label: '飞书' }],
   plugins: [],
+  knowledge: [{ name: 'topics/description.md', label: 'topics/description.md' }],
   ready: true,
 };
 
@@ -114,4 +115,30 @@ test('the pencil edits the current page and stays there', () => {
   assert.match(model, /aria-label="编辑模型"/);
   assert.match(model, /data-testid="jiuwenmate-profile-detail"[^>]*data-variant="model"/);
   assert.match(model, /data-testid="jiuwenmate-profile-model-select"/);
+});
+
+test('knowledge can be chosen from published pages and still shows the office directory', () => {
+  const markup = renderProfile({
+    initialSection: 'knowledge',
+    colleague: {
+      ...colleague,
+      workspaceDir: '/tmp/office',
+      capabilities: { ...colleague.capabilities, knowledge: ['topics/description.md'] },
+    },
+  });
+  assert.match(markup, /data-variant="knowledge"/);
+  assert.match(markup, /添加知识/);
+  assert.match(markup, /topics\/description\.md/);
+  assert.match(markup, /\/tmp\/office/);
+  assert.match(markup, /个人上下文已发布的页面/);
+});
+
+test('an empty knowledge catalog tells the user to publish a page first', () => {
+  const markup = renderProfile({
+    initialSection: 'knowledge',
+    resourceCatalog: { ...catalog, knowledge: [] },
+  });
+  assert.match(markup, /添加知识/);
+  assert.match(markup, /没有可装载的已发布知识页面/);
+  assert.match(markup, /左侧「知识」/);
 });

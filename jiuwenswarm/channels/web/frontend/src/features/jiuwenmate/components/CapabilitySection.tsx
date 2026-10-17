@@ -40,12 +40,23 @@ interface CapabilitySectionProps {
   addLabel: string;
   removeLabel: string;
   emptyLabel: string;
+  emptyMenuLabel?: string;
   items: readonly string[];
   catalog: readonly string[];
   onChange: (items: string[]) => void;
 }
 
-export function CapabilitySection({ kind, title, addLabel, removeLabel, emptyLabel, items, catalog, onChange }: CapabilitySectionProps) {
+export function CapabilitySection({
+  kind,
+  title,
+  addLabel,
+  removeLabel,
+  emptyLabel,
+  emptyMenuLabel,
+  items,
+  catalog,
+  onChange,
+}: CapabilitySectionProps) {
   const options = catalog.filter((item) => !items.includes(item));
   return (
     <CollapsibleSection
@@ -61,6 +72,7 @@ export function CapabilitySection({ kind, title, addLabel, removeLabel, emptyLab
               <span>{addLabel}</span>
             </>
           }
+          emptyLabel={options.length === 0 ? emptyMenuLabel ?? emptyLabel : undefined}
           items={options.map((option) => ({ key: option, label: option, onSelect: () => onChange([...items, option]) }))}
         />
       }

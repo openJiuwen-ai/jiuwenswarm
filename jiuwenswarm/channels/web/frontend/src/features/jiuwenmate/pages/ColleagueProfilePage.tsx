@@ -61,10 +61,11 @@ export interface ColleagueResourceCatalog {
   skills: readonly ColleagueResourceOption[] | null;
   connectors: readonly ColleagueResourceOption[] | null;
   plugins: readonly ColleagueResourceOption[] | null;
+  knowledge: readonly ColleagueResourceOption[] | null;
   ready: boolean;
 }
 
-const RESOURCE_SECTIONS = ['skills', 'connectors', 'plugins'] as const;
+const RESOURCE_SECTIONS = ['skills', 'connectors', 'plugins', 'knowledge'] as const;
 type ResourceSection = (typeof RESOURCE_SECTIONS)[number];
 const PENCIL_SECTIONS = ['overview', 'persona', 'model'] as const;
 
@@ -76,6 +77,7 @@ export interface ColleagueSettingsEdit {
   skills?: string[];
   connectors?: string[];
   plugins?: string[];
+  knowledge?: string[];
 }
 
 interface ColleagueProfilePageProps {
@@ -150,6 +152,7 @@ export function ColleagueProfilePage({
   const [skills, setSkills] = useState(colleague.capabilities.skills);
   const [connectors, setConnectors] = useState(colleague.capabilities.connectors);
   const [plugins, setPlugins] = useState(colleague.capabilities.plugins);
+  const [knowledge, setKnowledge] = useState(colleague.capabilities.knowledge);
   const showPencil = PENCIL_SECTIONS.some((item) => item === section);
   const saveSettings = (edit: ColleagueSettingsEdit) => {
     void Promise.resolve(onSaveSettings?.(edit))
@@ -249,6 +252,7 @@ export function ColleagueProfilePage({
               skills={skills}
               connectors={connectors}
               plugins={plugins}
+              knowledge={knowledge}
               resourceCatalog={resourceCatalog}
               savingResources={savingResources}
               onNameChange={setName}
@@ -258,6 +262,7 @@ export function ColleagueProfilePage({
               onSkillsChange={setSkills}
               onConnectorsChange={setConnectors}
               onPluginsChange={setPlugins}
+              onKnowledgeChange={setKnowledge}
               onSaveSettings={saveSettings}
               onConfigureIm={onConfigureIm}
               schedules={schedules}
@@ -531,6 +536,7 @@ function ProfileSectionDetail({
   skills,
   connectors,
   plugins,
+  knowledge,
   resourceCatalog,
   savingResources,
   onNameChange,
@@ -540,6 +546,7 @@ function ProfileSectionDetail({
   onSkillsChange,
   onConnectorsChange,
   onPluginsChange,
+  onKnowledgeChange,
   onSaveSettings,
   onConfigureIm,
   schedules,
@@ -562,6 +569,7 @@ function ProfileSectionDetail({
   skills: readonly string[];
   connectors: readonly string[];
   plugins: readonly string[];
+  knowledge: readonly string[];
   resourceCatalog?: ColleagueResourceCatalog;
   savingResources: boolean;
   onNameChange: (value: string) => void;
@@ -571,6 +579,7 @@ function ProfileSectionDetail({
   onSkillsChange: (items: string[]) => void;
   onConnectorsChange: (items: string[]) => void;
   onPluginsChange: (items: string[]) => void;
+  onKnowledgeChange: (items: string[]) => void;
   onSaveSettings?: (edit: ColleagueSettingsEdit) => void | Promise<void>;
   onConfigureIm: () => void;
   schedules: readonly JiuwenMateSchedule[];
@@ -694,19 +703,44 @@ function ProfileSectionDetail({
 
   if (RESOURCE_SECTIONS.some((item) => item === section) && onSaveSettings) {
     const resourceSection = section as ResourceSection;
-    const selected = resourceSection === 'skills' ? skills : resourceSection === 'connectors' ? connectors : plugins;
+    const selected =
+      resourceSection === 'skills'
+        ? skills
+        : resourceSection === 'connectors'
+          ? connectors
+          : resourceSection === 'plugins'
+            ? plugins
+            : knowledge;
     const catalog = resourceCatalog?.[resourceSection] ?? null;
-    const changeSelected = resourceSection === 'skills' ? onSkillsChange : resourceSection === 'connectors' ? onConnectorsChange : onPluginsChange;
+    const changeSelected =
+      resourceSection === 'skills'
+        ? onSkillsChange
+        : resourceSection === 'connectors'
+          ? onConnectorsChange
+          : resourceSection === 'plugins'
+            ? onPluginsChange
+            : onKnowledgeChange;
     const dirty =
       !sameNames(skills, colleague.capabilities.skills) ||
       !sameNames(connectors, colleague.capabilities.connectors) ||
-      !sameNames(plugins, colleague.capabilities.plugins);
+      !sameNames(plugins, colleague.capabilities.plugins) ||
+      !sameNames(knowledge, colleague.capabilities.knowledge);
     const emptyKey =
       resourceSection === 'skills'
         ? 'jiuwenmate.profile.catalogEmptySkills'
         : resourceSection === 'connectors'
           ? 'jiuwenmate.profile.catalogEmptyConnectors'
-          : 'jiuwenmate.profile.catalogEmptyPlugins';
+          : resourceSection === 'plugins'
+            ? 'jiuwenmate.profile.catalogEmptyPlugins'
+            : 'jiuwenmate.profile.catalogEmptyKnowledge';
+    const available = (catalog ?? []).filter((option) => !selected.includes(option.name));
+    const menuEmpty = !resourceCatalog?.ready
+      ? t('jiuwenmate.profile.catalogLoading')
+      : catalog === null
+        ? t('jiuwenmate.profile.catalogFailed')
+        : catalog.length === 0
+          ? t(emptyKey)
+          : undefined;
     return (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <header>
@@ -721,16 +755,27 @@ function ProfileSectionDetail({
                 <span>{t(`jiuwenmate.create.add.${resourceSection}`)}</span>
               </>
             }
-            items={(catalog ?? [])
-              .filter((option) => !selected.includes(option.name))
-              .map((option) => ({
-                key: option.name,
-                label: option.label,
-                onSelect: () => changeSelected([...selected, option.name]),
-              }))}
+            emptyLabel={menuEmpty}
+            items={available.map((option) => ({
+              key: option.name,
+              label: option.label,
+              onSelect: () => changeSelected([...selected, option.name]),
+            }))}
           />
         </header>
-        <p className="jiuwenmate-capability-empty">{t('jiuwenmate.profile.resourcesHint')}</p>
+        <p className="jiuwenmate-capability-empty">
+          {t(resourceSection === 'knowledge' ? 'jiuwenmate.profile.knowledgeHint' : 'jiuwenmate.profile.resourcesHint')}
+        </p>
+        {resourceSection === 'knowledge' && colleague.workspaceDir ? (
+          <div data-testid="jiuwenmate-profile-workspace-dir">
+            <dl className="jiuwenmate-profile__facts">
+              <dt>{t('jiuwenmate.profile.workspaceDir')}</dt>
+              <dd>
+                <code>{colleague.workspaceDir}</code>
+              </dd>
+            </dl>
+          </div>
+        ) : null}
         {resourceCatalog && !resourceCatalog.ready ? (
           <p className="jiuwenmate-capability-empty">{t('jiuwenmate.profile.catalogLoading')}</p>
         ) : null}
@@ -764,7 +809,14 @@ function ProfileSectionDetail({
             type="button"
             className="jiuwenmate-dark-button"
             disabled={!dirty || savingResources}
-            onClick={() => onSaveSettings({ skills: [...skills], connectors: [...connectors], plugins: [...plugins] })}
+            onClick={() =>
+              onSaveSettings({
+                skills: [...skills],
+                connectors: [...connectors],
+                plugins: [...plugins],
+                knowledge: [...knowledge],
+              })
+            }
             data-testid="jiuwenmate-profile-resource-save"
           >
             {savingResources ? t('jiuwenmate.profile.savingResources') : t('jiuwenmate.profile.saveResources')}
