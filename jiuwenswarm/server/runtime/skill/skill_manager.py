@@ -317,6 +317,24 @@ _ONLINE_SEARCH_SOURCE_TIMEOUT = 30.0
 _TEAM_SKILL_PLUGIN_TYPES = {"swarmskill", "swarm-skill", "teamskills", "team-skill"}
 _SINGLE_SKILL_PLUGIN_TYPES = {"skill"}
 
+_SKILL_DISPLAY_FILENAME = "skill_display.md"
+_BUILTIN_SKILL_UI_WHITELIST = frozenset(
+    {
+        "advanced-daily-report",
+        "gitcode-api",
+        "financial-document-parser",
+        "skill-gen-4-enterprise-doc",
+        "skill-creator",
+        "swarmskill-creator",
+    }
+)
+_SKILL_DISPLAY_KEYS = (
+    "display_name_zh",
+    "description_zh",
+    "display_name_en",
+    "description_en",
+)
+
 # 自研内置技能名单（内置技能目录下 _proprietary_skills.json）。名单内的内置技能标记
 # proprietary=true（自研），名单外的内置技能一律视为三方下载——不配置即默认三方。
 _PROPRIETARY_SKILLS_FILENAME = "_proprietary_skills.json"
@@ -1100,6 +1118,8 @@ class SkillManager:
         meta["is_builtin"] = bool(base_meta.get("is_builtin", False))
         meta["is_builtin_source"] = bool(base_meta.get("is_builtin_source", False))
         meta["proprietary"] = bool(base_meta.get("proprietary", False))
+        if "installed" in base_meta:
+            meta["installed"] = bool(base_meta.get("installed"))
         if "marketplace" in base_meta:
             meta["marketplace"] = base_meta.get("marketplace")
         meta["has_evolutions"] = _has_effective_evolutions(
@@ -1118,6 +1138,8 @@ class SkillManager:
                 )
             except SkillPackValidationError as exc:
                 raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+
+        self._apply_skill_display(meta, read_root)
 
         # 返回前改写本地相对图片为受控预览 URL（不改磁盘）
         session_id = str(params.get("_session_id") or params.get("session_id") or "").strip()
@@ -6129,17 +6151,100 @@ class SkillManager:
         return meta
 
     @staticmethod
+    def _parse_skill_display_md(skill_dir: Path) -> dict[str, str]:
+        """解析 skill_display.md，提取展示用中英文字段.
+
+        Returns:
+            仅包含非空展示字段的 dict；文件不存在或解析失败时返回空 dict.
+        """
+        path = skill_dir / _SKILL_DISPLAY_FILENAME
+        if not path.is_file():
+            return {}
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            logger.warning("无法读取文件: %s", path)
+            return {}
+
+        fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", text, re.DOTALL)
+        if not fm_match:
+            return {}
+        try:
+            loaded = yaml.safe_load(fm_match.group(1))
+        except Exception:
+            logger.warning("无法解析 skill_display.md: %s", path)
+            return {}
+        if not isinstance(loaded, dict):
+            return {}
+
+        out: dict[str, str] = {}
+        for key in _SKILL_DISPLAY_KEYS:
+            val = loaded.get(key)
+            if val is None:
+                continue
+            text_val = str(val).strip()
+            if text_val:
+                out[key] = text_val
+        return out
+
+    @staticmethod
+    def _apply_skill_display(meta: dict, skill_dir: Path) -> None:
+        """将 skill_display.md 展示字段合并进 meta（原地修改）.
+
+        - 始终填充 display_name_zh / description_zh（缺失时回退 SKILL.md 的 name / description）
+        - 英文字段可空
+        - 仅当 skill_display.md 提供了对应中文字段时，覆盖响应层的 display_name / description
+          （避免无展示文件时冲掉 ClawHub 等来源的 display_name）
+        - 本地已安装副本若缺少 skill_display.md，回退读取同名内置源中的展示文件
+        """
+        display = SkillManager._parse_skill_display_md(skill_dir)
+        if not display:
+            try:
+                builtin_dir = get_builtin_skills_dir()
+                builtin_skill = builtin_dir / skill_dir.name
+                if (
+                    builtin_skill.is_dir()
+                    and builtin_skill.resolve() != Path(skill_dir).resolve()
+                ):
+                    display = SkillManager._parse_skill_display_md(builtin_skill)
+            except OSError as exc:
+                logger.debug(
+                    "跳过内置 skill_display 回退 %s: %s",
+                    skill_dir,
+                    exc,
+                )
+
+        skill_name = str(meta.get("name") or "").strip()
+        skill_description = str(meta.get("description") or "").strip()
+
+        zh_name = display.get("display_name_zh", "")
+        zh_desc = display.get("description_zh", "")
+        meta["display_name_zh"] = zh_name or skill_name
+        meta["description_zh"] = zh_desc or skill_description
+        meta["display_name_en"] = display.get("display_name_en", "")
+        meta["description_en"] = display.get("description_en", "")
+
+        if zh_name:
+            meta["display_name"] = zh_name
+        if zh_desc:
+            meta["description"] = zh_desc
+
+    @staticmethod
     def _try_find_skill_file(directory: Path) -> Path | None:
         """在目录中查找 skill 文件.
 
-        优先查找 SKILL.md，其次查找任意 .md 文件.
+        优先查找 SKILL.md，其次查找任意 .md 文件（排除 skill_display.md）.
         """
         skill_md = directory / "SKILL.md"
         if skill_md.is_file():
             return skill_md
 
-        # 兼容：查找任意 .md 文件
-        md_files = list(directory.glob("*.md"))
+        # 兼容：查找任意 .md 文件（排除展示元数据文件）
+        md_files = [
+            p
+            for p in directory.glob("*.md")
+            if p.name.lower() != _SKILL_DISPLAY_FILENAME.lower()
+        ]
         if md_files:
             return md_files[0]
 
@@ -6315,6 +6420,7 @@ class SkillManager:
                 )
                 return None
             meta["has_evolutions"] = False
+        self._apply_skill_display(meta, child)
         # 不在列表中返回 body
         meta.pop("body", None)
         return meta
@@ -6373,6 +6479,7 @@ class SkillManager:
         """扫描内置技能目录中尚未安装到用户目录的技能.
 
         返回的技能列表仅包含那些存在于内置目录但尚未在用户目录中的技能。
+        仅白名单内的内置技能会展示。
         """
         results: list[dict] = []
         builtin_dir = get_builtin_skills_dir()
@@ -6399,6 +6506,8 @@ class SkillManager:
 
             # 设置内置技能的标记
             meta["name"] = self._resolve_skill_name(child, md, meta)
+            if meta["name"] not in _BUILTIN_SKILL_UI_WHITELIST:
+                continue
             meta["source"] = "builtin"
             meta["is_builtin"] = True
             meta["is_builtin_source"] = True
@@ -6408,6 +6517,7 @@ class SkillManager:
             meta["has_evolutions"] = False
             self._apply_enabled_config(meta, meta.get("name", ""))
             self.apply_archive_version_and_type(meta, child)
+            self._apply_skill_display(meta, child)
             # 不在列表中返回 body
             meta.pop("body", None)
             results.append(meta)
@@ -6943,6 +7053,33 @@ class SkillManager:
                             "is_builtin": False,
                             "is_builtin_source": False,
                         }
+
+        # 未安装的内置技能（白名单内）
+        builtin_dir = get_builtin_skills_dir()
+        if builtin_dir.exists() and builtin_dir.is_dir():
+            for child in builtin_dir.iterdir():
+                if not child.is_dir() or child.name.startswith("_"):
+                    continue
+                md = self._try_find_skill_file(child)
+                if md is None:
+                    continue
+                meta = self._parse_skill_md(md)
+                if meta is None:
+                    continue
+                resolved_name = self._resolve_skill_name(child, md, meta)
+                if resolved_name != name:
+                    continue
+                if resolved_name not in _BUILTIN_SKILL_UI_WHITELIST:
+                    continue
+                return child, {
+                    "name": resolved_name,
+                    "source": "builtin",
+                    "display_name": resolved_name,
+                    "is_builtin": True,
+                    "is_builtin_source": True,
+                    "proprietary": resolved_name in _load_proprietary_builtin_names(),
+                    "installed": False,
+                }
         return None, None
 
     def _get_skill_evolution_path(self, skill_name: str) -> Path | None:
@@ -7009,6 +7146,7 @@ class SkillManager:
                 meta["has_evolutions"] = False
                 self._apply_enabled_config(meta, meta.get("name", ""))
                 self.apply_archive_version_and_type(meta, plugin_dir)
+                self._apply_skill_display(meta, plugin_dir)
                 meta.pop("body", None)
                 results.append(meta)
 
