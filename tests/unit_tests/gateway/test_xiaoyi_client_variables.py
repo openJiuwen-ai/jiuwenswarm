@@ -533,6 +533,22 @@ async def test_ask_user_question_prompt_and_resume(cfg_file, workspace):
             "本次允许", "会话内记住", "永久记住", "拒绝",
         ]
 
+        # AskUser 挂起期间收到流收尾事件（is_processing=false）：不得发
+        # completed/final=true（手机气泡会显示"已完成"并关闭等待态），
+        # 应降级为 working"等待您的确认"，且不触发会话收尾。
+        ch._session_active.add("top-1")  # 状态分支守卫按顶层 sessionId 判活跃
+        proc = type("M", (), {})()
+        proc.event_type = EventType.CHAT_PROCESSING_STATUS
+        proc.payload = {"is_processing": False}
+        proc.metadata = ask.metadata
+        proc.session_id = "conv-1"
+        proc.id = "req-777"
+        await ch._send_legacy(proc)
+        inner = json.loads(sent[-1]["msgDetail"])
+        assert inner["result"]["status"]["state"] == "working"
+        assert inner["result"]["final"] is False
+        assert "等待您的确认" in inner["result"]["status"]["message"]["parts"][0]["text"]
+
         # 用户回复「同意」→ interrupt resume 路由（回原始任务气泡）
         await ch._handle_message_stream(_build_stream_msg("同意", None, task="task-9"))
         m = captured[-1]
@@ -573,6 +589,31 @@ def _build_ask_answer_msg(answers, source, conv="conv-1", top="top-1", task="tas
                 "parts": [{"kind": "data", "data": {
                     "askUserAnswer": {"source": source, "answers": answers},
                 }}],
+                "role": "user",
+            },
+            "sessionId": conv,
+        },
+        "sessionId": top,
+        "agentId": "agent0c18",
+        "agentMode": "OpenClawToC",
+        "userId": "u1",
+    }
+
+
+def _build_e2a_style_msg(data, conv="conv-1", top="top-1", task="task-1"):
+    """端侧 E2A 风格应答帧（对齐桌面端 chat.send 参数的 data part）：仅 data part。"""
+    return {
+        "conversationId": conv,
+        "deviceId": "dev",
+        "id": task,
+        "jsonrpc": "2.0",
+        "method": "message/stream",
+        "params": {
+            "id": task,
+            "message": {
+                "kind": "message",
+                "messageId": task,
+                "parts": [{"kind": "data", "data": data}],
                 "role": "user",
             },
             "sessionId": conv,
@@ -881,6 +922,100 @@ async def test_ask_user_invoke_rsp_user_cancel(cfg_file):
         m = captured[-1]
         assert m.params["answers"][0]["selected_options"] == ["拒绝"]
         assert m.params["answers"][0]["custom_input"] == "用户取消了选项卡"
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_e2a_style_answer_routes_resume(cfg_file):
+    """E2A 风格应答（data 顶层 request_id/source/answers，桌面端 chat.send 同构）
+    → interrupt resume。端侧复用桌面端报文结构经 A2A data part 回传。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-920",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+            "questions": ["你想要什么风格？"],
+            "question_ids": {},
+        }
+        await ch._handle_message_stream(_build_e2a_style_msg({
+            "request_id": "req-920",
+            "source": "ask_user_interrupt",
+            "answers": [{
+                "question": "你想要什么风格？",
+                "selected_options": ["深色"],
+                "custom_input": "夜间用",
+            }],
+        }, task="task-9"))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-920"
+        assert m.params["source"] == "ask_user_interrupt"
+        # question 文本对齐 + snake_case 字段原样透传
+        assert m.params["answers"] == [
+            {
+                "question": "你想要什么风格？",
+                "selected_options": ["深色"],
+                "custom_input": "夜间用",
+            }
+        ]
+        assert "conv-1" not in ch._pending_approvals  # 已消费
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_timeout_default_answer(cfg_file):
+    """超时兜底：ask_user 每题选第一个选项；权限类 fail-closed 拒绝。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-930",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time() - 31 * 60,
+            "questions": ["你想要什么风格？", "要加图标吗？"],
+            "question_ids": {},
+            "question_options": {
+                "你想要什么风格？": ["深色", "浅色"],
+                "要加图标吗？": [],
+            },
+            "session_id": "top-1",
+            "agent_id": "ag",
+            "device_id": "dev",
+            "push_id": "push",
+        }
+        await ch._resume_timed_out_ask_user("conv-1", ch._pending_approvals.pop("conv-1"))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-930"
+        assert m.params["source"] == "ask_user_interrupt"
+        # 有选项的题选第一项；无选项的题按跳过（空答案）
+        assert m.params["answers"] == [
+            {"question": "你想要什么风格？", "selected_options": ["深色"], "custom_input": ""},
+            {"question": "要加图标吗？", "selected_options": [], "custom_input": ""},
+        ]
+
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-931",
+            "source": "permission_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time() - 31 * 60,
+            "questions": ["允许执行 bash 吗？"],
+            "question_ids": {},
+            "question_options": {"允许执行 bash 吗？": ["本次允许", "拒绝"]},
+            "session_id": "top-1",
+            "agent_id": "ag",
+            "device_id": "dev",
+            "push_id": "push",
+        }
+        await ch._resume_timed_out_ask_user("conv-1", ch._pending_approvals.pop("conv-1"))
+        m = captured[-1]
+        # 权限类超时绝不默认放行：fail-closed 拒绝
+        assert m.params["answers"][0]["selected_options"] == ["拒绝"]
+        assert "超时未应答" in m.params["answers"][0]["custom_input"]
     finally:
         _cleanup_tasks(ch)
 
