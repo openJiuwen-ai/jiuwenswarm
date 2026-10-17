@@ -31,6 +31,22 @@ if TYPE_CHECKING:
 
 PREVIOUS_SESSION_MODE_KEY = "_session_previous_mode"
 
+_VALID_STORED_MANAGER_MODES = frozenset({"agent", "code", "team", "auto_harness"})
+
+
+def _is_recognized_stored_mode(mode_text: str) -> bool:
+    """Return True if *mode_text* resolves to a known manager mode.
+
+    Older versions may have stored history tags like ``"subagent"`` or
+    ``"unknown"`` as ``metadata.mode``.  These are not real agent modes and
+    must not be inherited as the session mode (issue #4903).
+    """
+    try:
+        manager_mode, _sub, _canonical = resolve_agent_request_mode(mode_text)
+    except Exception:
+        return False
+    return manager_mode in _VALID_STORED_MANAGER_MODES
+
 CHAT_TURN_METHODS = frozenset(
     {
         ReqMethod.CHAT_SEND,
@@ -360,10 +376,14 @@ async def prepare_chat_turn(
         if isinstance(stored_session_mode, str) and stored_session_mode.strip():
             stored_session_mode = stored_session_mode.strip()
             params[PREVIOUS_SESSION_MODE_KEY] = stored_session_mode
-            if not explicit_mode_provided:
+            if not explicit_mode_provided and _is_recognized_stored_mode(
+                stored_session_mode
+            ):
                 # Internal turns (including Heartbeat) inherit the Session's
                 # locked mode without turning that inheritance into an
-                # explicit client-requested transition.
+                # explicit client-requested transition.  Invalid history tags
+                # (e.g. "subagent", "unknown") are ignored so the default
+                # mode resolution kicks in (issue #4903).
                 params["mode"] = stored_session_mode
         if isinstance(stored_work_mode, str) and stored_work_mode.strip().lower() in {
             "code",
