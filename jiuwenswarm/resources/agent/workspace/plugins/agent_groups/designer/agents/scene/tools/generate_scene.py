@@ -47,6 +47,10 @@ class GenerateScene(Tool):
             "error": error,
         }
 
+    def _reject(self, data: dict, prompt: str, error: str) -> dict:
+        node_tools().note_rejection(data.get("shot_ticket"), "scene", "generate_scene", error)
+        return self._failure(prompt, error)
+
     async def invoke(self, inputs: Any, **kwargs: Any) -> dict:
         del kwargs
         prompt = ""
@@ -55,12 +59,12 @@ class GenerateScene(Tool):
             prompt = data.get("prompt") if isinstance(data.get("prompt"), str) else ""
             if data.get("__node_guard_reject__") == "generate_already_called" or self._used:
                 self._used = True
-                return self._failure(prompt, "generate_already_called")
+                return self._reject(data, prompt, "generate_already_called")
             ticket = ticket_of(data)
             if ticket is None:
-                return self._failure(prompt, "missing_shot_ticket")
+                return self._reject(data, prompt, "missing_shot_ticket")
             if not prompt.strip():
-                return self._failure(prompt, "missing_prompt")
+                return self._reject(data, prompt, "missing_prompt")
             self._used = True
             return await node_tools().generate_node_output(
                 ticket,
