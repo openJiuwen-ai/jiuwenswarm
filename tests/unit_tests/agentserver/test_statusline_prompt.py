@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import json
+from zoneinfo import ZoneInfo
 
 import pytest
 
+from jiuwenswarm.server.runtime.agent_adapter import user_turn as user_turn_module
 from jiuwenswarm.server.runtime.agent_adapter.interface import (
     _STATUSLINE_KNOWN_SUBCOMMANDS,
     _STATUSLINE_PROMPT_REGEX,
@@ -128,7 +130,14 @@ class TestBuildUserPromptStatusline:
         assert _STATUSLINE_SETUP_PROMPT not in prompt
 
     @staticmethod
-    def test_statusline_keeps_envelope_metadata():
+    def test_statusline_keeps_envelope_metadata(monkeypatch):
+        # Pin the instance default so the envelope timestamp is machine-independent:
+        # with no config/env the default is the process-local timezone.
+        monkeypatch.setattr(
+            user_turn_module,
+            "get_default_timezone",
+            lambda: ZoneInfo("Asia/Shanghai"),
+        )
         prompt = build_user_prompt(
             "/statusline show git branch",
             files={"test.py": "content"},
