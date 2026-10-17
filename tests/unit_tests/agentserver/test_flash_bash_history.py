@@ -83,12 +83,14 @@ def _entry(
     timestamp: str,
     old_content: str,
     new_content: str | None,
+    **extra,
 ) -> dict:
     return {
         "action": action,
         "timestamp": timestamp,
         "old_content": old_content,
         "new_content": new_content,
+        **extra,
     }
 
 
@@ -158,6 +160,215 @@ def test_delete_detection_covers_flash_only_history(temp_dir):
     entries = flash_file_history.load_flash_history(flash_path)[file_path]
     assert entries[-1]["action"] == "delete"
     assert entries[-1]["old_content"] == "flash only"
+
+
+def test_delete_detection_keeps_rewound_edit_as_current_content(temp_dir):
+    """conversation rewind 不恢复工作区，删除前内容必须取 rewound edit。"""
+    file_path = str(Path(temp_dir) / "rewound-edit.txt")
+    flash_path = (
+        Path(temp_dir) / ".agent_history" / "file_ops_flash_agent_session.jsonl"
+    )
+    flash_file_history.append_flash_history_entry(
+        str(flash_path),
+        file_path,
+        _entry(
+            "edit",
+            "2026-01-01T00:00:00+00:00",
+            "original",
+            "updated",
+            rewound_out=True,
+        ),
+    )
+
+    record_detected_deletions(None, str(flash_path))
+
+    entries = flash_file_history.load_flash_history(flash_path)[file_path]
+    assert len(entries) == 2
+    assert entries[-1]["old_content"] == "updated"
+
+
+def test_delete_detection_does_not_duplicate_rewound_delete(temp_dir):
+    """rewound delete 已表示当前文件缺失，不能再追加旧内容的 delete。"""
+    file_path = str(Path(temp_dir) / "rewound-delete.txt")
+    flash_path = (
+        Path(temp_dir) / ".agent_history" / "file_ops_flash_agent_session.jsonl"
+    )
+    flash_file_history.append_flash_history_entry(
+        str(flash_path),
+        file_path,
+        _entry(
+            "edit",
+            "2026-01-01T00:00:00+00:00",
+            "original",
+            "updated",
+        ),
+    )
+    flash_file_history.append_flash_history_entry(
+        str(flash_path),
+        file_path,
+        _entry(
+            "delete",
+            "2026-01-01T00:01:00+00:00",
+            "updated",
+            None,
+            rewound_out=True,
+        ),
+    )
+
+    record_detected_deletions(None, str(flash_path))
+
+    entries = flash_file_history.load_flash_history(flash_path)[file_path]
+    assert len(entries) == 2
+    assert entries[-1]["action"] == "delete"
+    assert entries[-1]["old_content"] == "updated"
+
+
+def test_delete_detection_skips_discarded_edit(temp_dir):
+    """discard 已恢复工作区，删除前内容必须取更早的有效版本。"""
+    file_path = str(Path(temp_dir) / "discarded-edit.txt")
+    flash_path = (
+        Path(temp_dir) / ".agent_history" / "file_ops_flash_agent_session.jsonl"
+    )
+    flash_file_history.append_flash_history_entry(
+        str(flash_path),
+        file_path,
+        _entry(
+            "edit",
+            "2026-01-01T00:00:00+00:00",
+            "original",
+            "updated",
+        ),
+    )
+    flash_file_history.append_flash_history_entry(
+        str(flash_path),
+        file_path,
+        _entry(
+            "edit",
+            "2026-01-01T00:01:00+00:00",
+            "updated",
+            "discarded",
+            discarded_out=True,
+        ),
+    )
+
+    record_detected_deletions(None, str(flash_path))
+
+    entries = flash_file_history.load_flash_history(flash_path)[file_path]
+    assert len(entries) == 3
+    assert entries[-1]["action"] == "delete"
+    assert entries[-1]["old_content"] == "updated"
+
+
+def test_delete_detection_treats_discard_as_stronger_than_rewind(temp_dir):
+    """同一条 rewound+discarded 时，按 discard 处理。"""
+    file_path = str(Path(temp_dir) / "discarded-rewound.txt")
+    flash_path = (
+        Path(temp_dir) / ".agent_history" / "file_ops_flash_agent_session.jsonl"
+    )
+    flash_file_history.append_flash_history_entry(
+        str(flash_path),
+        file_path,
+        _entry(
+            "edit",
+            "2026-01-01T00:00:00+00:00",
+            "original",
+            "updated",
+        ),
+    )
+    flash_file_history.append_flash_history_entry(
+        str(flash_path),
+        file_path,
+        _entry(
+            "edit",
+            "2026-01-01T00:01:00+00:00",
+            "updated",
+            "discarded",
+            rewound_out=True,
+            discarded_out=True,
+        ),
+    )
+
+    record_detected_deletions(None, str(flash_path))
+
+    entries = flash_file_history.load_flash_history(flash_path)[file_path]
+    assert entries[-1]["action"] == "delete"
+    assert entries[-1]["old_content"] == "updated"
+
+
+def test_delete_detection_after_all_history_discarded_uses_restored_content(temp_dir):
+    """文件首次修改后被 discard 时，删除前内容是恢复后的 old_content。"""
+    file_path = str(Path(temp_dir) / "all-discarded.txt")
+    flash_path = (
+        Path(temp_dir) / ".agent_history" / "file_ops_flash_agent_session.jsonl"
+    )
+    flash_file_history.append_flash_history_entry(
+        str(flash_path),
+        file_path,
+        _entry(
+            "edit",
+            "2026-01-01T00:00:00+00:00",
+            "original",
+            "updated",
+            discarded_out=True,
+        ),
+    )
+
+    record_detected_deletions(None, str(flash_path))
+
+    entries = flash_file_history.load_flash_history(flash_path)[file_path]
+    assert len(entries) == 2
+    assert entries[-1]["action"] == "delete"
+    assert entries[-1]["old_content"] == "original"
+
+
+def test_delete_detection_after_discarded_delete_uses_restored_content(temp_dir):
+    """discard 一个 delete 会恢复 old_content，后续删除不能记录为已删除。"""
+    file_path = str(Path(temp_dir) / "discarded-delete.txt")
+    flash_path = (
+        Path(temp_dir) / ".agent_history" / "file_ops_flash_agent_session.jsonl"
+    )
+    flash_file_history.append_flash_history_entry(
+        str(flash_path),
+        file_path,
+        _entry(
+            "delete",
+            "2026-01-01T00:00:00+00:00",
+            "original",
+            None,
+            discarded_out=True,
+        ),
+    )
+
+    record_detected_deletions(None, str(flash_path))
+
+    entries = flash_file_history.load_flash_history(flash_path)[file_path]
+    assert len(entries) == 2
+    assert entries[-1]["action"] == "delete"
+    assert entries[-1]["old_content"] == "original"
+
+
+def test_delete_detection_after_discarded_create_does_not_record(temp_dir):
+    """discard agent 新建文件后文件本应不存在，无需追加 delete。"""
+    file_path = str(Path(temp_dir) / "discarded-create.txt")
+    flash_path = (
+        Path(temp_dir) / ".agent_history" / "file_ops_flash_agent_session.jsonl"
+    )
+    flash_file_history.append_flash_history_entry(
+        str(flash_path),
+        file_path,
+        _entry(
+            "edit",
+            "2026-01-01T00:00:00+00:00",
+            None,
+            "created",
+            discarded_out=True,
+        ),
+    )
+
+    record_detected_deletions(None, str(flash_path))
+
+    entries = flash_file_history.load_flash_history(flash_path)[file_path]
+    assert len(entries) == 1
 
 
 def test_history_recording_is_disabled_in_sandbox_mode():

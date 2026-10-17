@@ -34,9 +34,11 @@ import hashlib
 import os
 from bisect import bisect_left
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.common.logging import logger
 from openjiuwen.core.session import get_current_session
 from openjiuwen.core.sys_operation import OperationMode
 from openjiuwen.harness.tools.base_tool import ToolOutput
@@ -57,28 +59,30 @@ from .flash_file_history import append_flash_history_entry, build_flash_history_
 from .flash_file_meta import get_file_meta, pop_file_meta, record_written_meta
 
 
-def _has_mixed_eol(content: str) -> bool:
-    """同时存在 CRLF 与独立 LF 时，单一 EOL 无法还原原始文本。"""
-    if "\r\n" not in content:
-        return False
-    idx = content.find("\n")
-    while idx != -1:
-        if idx == 0 or content[idx - 1] != "\r":
-            return True
-        idx = content.find("\n", idx + 1)
-    return False
+@dataclass
+class _EolContext:
+    """一次扫描得到的 EOL 元数据，供 offset 映射和替换文本复用。"""
+
+    to_original: Any
+    orig_starts: List[int]
+    styles: List[str]
+    # None 仅表示混合 EOL；无换行时默认 LF。
+    uniform_eol: Optional[str]
 
 
-def _build_lf_offset_mapper(content: str):
-    """构造 LF 归一化索引 → 原始文本索引的 O(行数) 映射。
+def _build_eol_context(content: str) -> _EolContext:
+    """构造 LF 归一化索引 → 原始索引映射，并记录每个换行的原始风格。
 
     CRLF 在归一化文本中比原始文本少一个字符。这里按换行建立断点，
-    避免为每个字符保存一份 offset 列表导致大文件额外内存膨胀。
+    避免为每个字符保存一份 offset 列表导致大文件额外内存膨胀。EOL 风格
+    也在同一次扫描中确定，后续大量 replace_all 不再反复扫描全文。
     """
     norm_positions: List[int] = []
     orig_starts: List[int] = []
+    styles: List[str] = []
     crlf_prefix: List[int] = []
     crlf_count = 0
+    lf_count = 0
     delta = 0
     idx = content.find("\n")
     while idx != -1:
@@ -89,7 +93,20 @@ def _build_lf_offset_mapper(content: str):
         if is_crlf:
             crlf_count += 1
             delta += 1
+            styles.append("\r\n")
+        else:
+            lf_count += 1
+            styles.append("\n")
         idx = content.find("\n", idx + 1)
+
+    if not styles:
+        uniform_eol = "\n"
+    elif crlf_count and not lf_count:
+        uniform_eol = "\r\n"
+    elif lf_count and not crlf_count:
+        uniform_eol = "\n"
+    else:
+        uniform_eol = None
 
     def to_original(normalized_index: int) -> int:
         if not norm_positions:
@@ -101,50 +118,62 @@ def _build_lf_offset_mapper(content: str):
             crlf_prefix[pos] if pos < len(crlf_prefix) else crlf_count
         )
 
-    return to_original
-
-
-def _local_eol(original: str, start: int, end: int) -> str:
-    """为混合 EOL 文件选择替换文本新增换行的局部风格。"""
-    if "\r\n" in original[start:end]:
-        return "\r\n"
-    idx = original.find("\n", end)
-    if idx > 0 and original[idx - 1] == "\r":
-        return "\r\n"
-    idx = original.rfind("\n", 0, start)
-    if idx >= 0:
-        return "\r\n" if idx > 0 and original[idx - 1] == "\r" else "\n"
-    return "\n"
+    return _EolContext(
+        to_original=to_original,
+        orig_starts=orig_starts,
+        styles=styles,
+        uniform_eol=uniform_eol,
+    )
 
 
 def _replacement_with_original_eol(
-    original: str,
+    context: _EolContext,
     orig_start: int,
     orig_end: int,
     replacement: str,
-    *,
-    mixed_eol: bool,
 ) -> str:
     """按原文件/局部 EOL 写回替换文本；未编辑区域由外层原样拼接保留。"""
-    if not mixed_eol:
-        return replacement.replace("\n", "\r\n") if "\r\n" in original else replacement
+    if "\n" not in replacement:
+        return replacement
+    if context.uniform_eol is not None:
+        return replacement.replace("\n", context.uniform_eol)
 
-    styles: List[str] = []
-    idx = original.find("\n", orig_start, orig_end)
-    while idx != -1:
-        styles.append("\r\n" if idx > 0 and original[idx - 1] == "\r" else "\n")
-        idx = original.find("\n", idx + 1, orig_end)
-    local_eol = _local_eol(original, orig_start, orig_end)
+    # 混合 EOL：替换区间内的换行按原风格还原；新增换行沿用邻近风格。
+    left = bisect_left(context.orig_starts, orig_start)
+    right = bisect_left(context.orig_starts, orig_end)
+    span_styles = context.styles[left:right]
+    if "\r\n" in span_styles:
+        local_eol = "\r\n"
+    elif right < len(context.styles):
+        local_eol = context.styles[right]
+    elif left > 0:
+        local_eol = context.styles[left - 1]
+    else:
+        local_eol = "\n"
 
+    remaining_styles = iter(span_styles)
     pieces: List[str] = []
-    newline_index = 0
-    for char in replacement:
-        if char == "\n":
-            pieces.append(styles[newline_index] if newline_index < len(styles) else local_eol)
-            newline_index += 1
-        else:
-            pieces.append(char)
+    for index, segment in enumerate(replacement.split("\n")):
+        if index:
+            pieces.append(next(remaining_styles, local_eol))
+        pieces.append(segment)
     return "".join(pieces)
+
+
+async def _office_registry_content(file_path: str, written_content: str) -> str:
+    """Office 写入后读取实际抽取文本，保持 registry 与 stock 口径一致。"""
+    try:
+        content = await _read_office_plain_text_async(file_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[FlashEditFileTool] Failed to re-read office content after write "
+            "(%s): %s; falling back to written text",
+            file_path,
+            exc,
+        )
+        return written_content.replace("\r\n", "\n")
+    return content.replace("\r\n", "\n")
+
 
 FLASH_EDIT_DESCRIPTION: Dict[str, str] = {
     "cn": (
@@ -330,6 +359,8 @@ class FlashEditFileTool(EditFileTool):
         try:
             _st = os.stat(file_path)
             registered = new_str.replace("\r\n", "\n")
+            if is_office:
+                registered = await _office_registry_content(file_path, new_str)
             line_count = len(registered.splitlines()) if registered else 0
             _FILE_READ_REGISTRY[file_path] = _FileReadState(
                 mtime_ns=_st.st_mtime_ns,
@@ -339,9 +370,13 @@ class FlashEditFileTool(EditFileTool):
                 total_lines=line_count,
                 read_ranges=[(1, line_count)] if line_count > 0 else [],
             )
-            record_written_meta(
-                file_path, new_str, mtime_ns=_st.st_mtime_ns, size_bytes=_st.st_size
-            )
+            if not is_office:
+                record_written_meta(
+                    file_path,
+                    new_str,
+                    mtime_ns=_st.st_mtime_ns,
+                    size_bytes=_st.st_size,
+                )
         except OSError:
             _FILE_READ_REGISTRY.pop(file_path, None)
             pop_file_meta(file_path)
@@ -522,8 +557,6 @@ class FlashEditFileTool(EditFileTool):
 
             content_lf = original_content.replace("\r\n", "\n")
 
-        mixed_eol = _has_mixed_eol(original_content)
-
         # ---- 逐 hunk 匹配（stock 1998-2028 的清洗/容错/唯一性逐个套用） -----
         _, ext = os.path.splitext(file_path.lower())
         preserve_md = ext in self._MD_EXTENSIONS
@@ -533,6 +566,11 @@ class FlashEditFileTool(EditFileTool):
             where = f"hunks[{idx}]" if len(hunks) > 1 else "old_string"
             old_clean = self._desanitize(hunk_old).replace("\r\n", "\n")
             new_clean = self._desanitize(hunk_new).replace("\r\n", "\n")
+            if not old_clean:
+                return ToolOutput(
+                    success=False,
+                    error=f"{where} is empty after sanitization.",
+                )
             if not preserve_md:
                 new_clean = self._strip_trailing_whitespace(new_clean)
 
@@ -587,20 +625,19 @@ class FlashEditFileTool(EditFileTool):
         # LF span → original span 后在原始文本上一次 join：
         # 1) 混合 EOL 文件的未编辑区域逐字节保持原样；
         # 2) replace_all 大量匹配时不再反复切片复制整份文件。
-        to_original_offset = _build_lf_offset_mapper(original_content)
+        eol_context = _build_eol_context(original_content)
         parts: List[str] = []
         cursor = 0
         for start, end, text in planned:
-            orig_start = to_original_offset(start)
-            orig_end = to_original_offset(end)
+            orig_start = eol_context.to_original(start)
+            orig_end = eol_context.to_original(end)
             parts.append(original_content[cursor:orig_start])
             parts.append(
                 _replacement_with_original_eol(
-                    original_content,
+                    eol_context,
                     orig_start,
                     orig_end,
                     text,
-                    mixed_eol=mixed_eol,
                 )
             )
             cursor = orig_end
@@ -633,11 +670,15 @@ class FlashEditFileTool(EditFileTool):
         try:
             _st2 = os.stat(file_path)
             line_count = len(new_content_lf.splitlines()) if new_content_lf else 0
+            registered = new_content_lf
+            if is_office:
+                registered = await _office_registry_content(file_path, new_content_lf)
+                line_count = len(registered.splitlines()) if registered else 0
             _FILE_READ_REGISTRY[file_path] = _FileReadState(
                 mtime_ns=_st2.st_mtime_ns,
                 size_bytes=_st2.st_size,
                 is_partial=False,
-                content=new_content_lf,
+                content=registered,
                 total_lines=line_count,
                 read_ranges=[(1, line_count)] if line_count > 0 else [],
             )
@@ -674,8 +715,6 @@ class FlashEditFileTool(EditFileTool):
                 except Exception as exc:  # noqa: BLE001
                     # history 是旁路账本：写失败不阻断编辑主流程（stock 同款
                     # 容忍度，只 warning）。
-                    from openjiuwen.core.common.logging import logger
-
                     logger.warning(
                         "[FlashEditFileTool] Failed to append flash history: %s", exc
                     )

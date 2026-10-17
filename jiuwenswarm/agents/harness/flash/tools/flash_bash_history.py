@@ -35,9 +35,10 @@ from .flash_file_history import (
 
 logger = logging.getLogger(__name__)
 
-# 与 diff_service 的显示层口径一致：rewind/discard 软隐藏的条目不代表当前
-# 工作区状态，不能作为删除前的最新内容。
-_SOFT_HIDDEN_KEYS = ("rewound_out", "discarded_out")
+# ``rewound_out`` 只回退对话可见性，工作区文件仍保留该次编辑的结果；只有
+# ``discarded_out`` 表示 discard 已经把工作区恢复到旧版本。删除探测关注
+# 磁盘当前内容，因此不能把 conversation rewind 的条目排除掉。
+_DISCARDED_OUT_KEY = "discarded_out"
 
 
 def _load_stock_history(history_path: Optional[str]) -> Dict[str, List[Dict[str, Any]]]:
@@ -88,14 +89,43 @@ def _entry_sort_ts(entry: Dict[str, Any]) -> float:
 
 
 def _latest_effective_entry(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    candidates = [
+    """返回能代表当前磁盘状态的最新条目。
+
+    ``rewound_out`` 只影响对话可见性，工作区仍保留该次写入，因此按普通条目
+    参与重放。``discarded_out`` 表示 discard 已经把该时间戳之后的写入恢复到
+    本轮开始前；如果被丢弃的是文件的全部历史（例如文件首次被 agent 修改后
+    又被 discard），不能因为没有更早的有效条目而丢失删除前内容，应取首个
+    discarded 条目的 ``old_content``。
+    """
+    if not entries:
+        return None
+
+    latest = max(entries, key=_entry_sort_ts)
+    if not latest.get(_DISCARDED_OUT_KEY):
+        return latest
+
+    non_discarded = [
+        entry for entry in entries if not entry.get(_DISCARDED_OUT_KEY)
+    ]
+    baseline_ts = (
+        max(_entry_sort_ts(entry) for entry in non_discarded)
+        if non_discarded
+        else float("-inf")
+    )
+    discarded_suffix = [
         entry
         for entry in entries
-        if not any(entry.get(key) for key in _SOFT_HIDDEN_KEYS)
+        if entry.get(_DISCARDED_OUT_KEY) and _entry_sort_ts(entry) > baseline_ts
     ]
-    if not candidates:
+    if not discarded_suffix:
         return None
-    return max(candidates, key=_entry_sort_ts)
+
+    restored = min(discarded_suffix, key=_entry_sort_ts)
+    old_content = restored.get("old_content")
+    if old_content is None:
+        # 文件在被丢弃的轮次开始前不存在；discard 已经把它删除。
+        return {"action": "delete", "new_content": None}
+    return {"action": "edit", "new_content": old_content}
 
 
 def _merged_latest_by_path(

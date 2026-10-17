@@ -32,6 +32,7 @@ from openjiuwen.harness.tools.filesystem import (
 )
 
 from jiuwenswarm.agents.harness.flash.tools import flash_file_history
+from jiuwenswarm.agents.harness.flash.tools import flash_edit_tool
 from jiuwenswarm.agents.harness.flash.tools.flash_edit_tool import FlashEditFileTool
 from jiuwenswarm.agents.harness.flash.tools.flash_file_meta import clear_file_meta_cache
 from jiuwenswarm.agents.harness.flash.tools.flash_read_tool import FlashReadFileTool
@@ -332,6 +333,27 @@ async def test_crlf_eol_preserved(sys_op, temp_dir):
     assert Path(file_path).read_bytes() == b"first\r\nSECOND\r\n", "CRLF 必须按原样保留"
 
 
+async def test_replace_all_many_crlf_matches_is_linear(sys_op, temp_dir):
+    """统一 CRLF 的大量替换也不能在每个匹配上重复扫描全文。"""
+    read_tool, edit_tool, _ = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "replace-all-crlf.txt")
+    matches = 20_000
+    Path(file_path).write_bytes(b"x\r\n" * matches)
+
+    assert (await read_tool.invoke({"file_path": file_path})).success is True
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "x",
+        "new_string": "y",
+        "replace_all": True,
+    })
+
+    assert result.success is True, result.error
+    assert result.data["replacements"] == matches
+    assert Path(file_path).read_bytes() == b"y\r\n" * matches
+
+
 async def test_lf_edit_after_last_newline_maps_offsets(sys_op, temp_dir):
     """LF 文件末换行之后仍有内容时，offset 兜底分支不能越界。"""
     read_tool, edit_tool, _ = _make_tools(sys_op)
@@ -450,6 +472,62 @@ async def test_mixed_eol_replacement_uses_local_newline_style(sys_op, temp_dir):
     assert Path(file_path).read_bytes() == b"first\r\nSECOND\nTHIRD\r\n"
 
 
+async def test_mixed_eol_newline_without_span_newline_uses_next_style(sys_op, temp_dir):
+    """替换片段自身无换行时，新增换行沿用后续原换行风格。"""
+    read_tool, edit_tool, _ = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "mixed-eol-following-style.txt")
+    Path(file_path).write_bytes(b"first\r\nsecond\nthird\r\n")
+
+    assert (await read_tool.invoke({"file_path": file_path})).success is True
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "second",
+        "new_string": "SECOND\nTAIL",
+    })
+
+    assert result.success is True, result.error
+    assert Path(file_path).read_bytes() == b"first\r\nSECOND\nTAIL\nthird\r\n"
+
+
+async def test_file_without_newline_defaults_to_lf(sys_op, temp_dir):
+    """无换行文件插入新行时默认 LF，不依赖平台换行。"""
+    read_tool, edit_tool, _ = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "without-newline.txt")
+    Path(file_path).write_bytes(b"alpha")
+
+    assert (await read_tool.invoke({"file_path": file_path})).success is True
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "alpha",
+        "new_string": "one\ntwo",
+    })
+
+    assert result.success is True, result.error
+    assert Path(file_path).read_bytes() == b"one\ntwo"
+
+
+async def test_empty_old_string_after_sanitization_is_rejected(
+    sys_op, temp_dir, monkeypatch
+):
+    """清洗后 old_string 为空必须直接报错，不能进入匹配循环。"""
+    monkeypatch.setattr(FlashEditFileTool, "_desanitize", lambda self, value: "")
+    read_tool, edit_tool, _ = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "empty-after-sanitize.txt")
+    Path(file_path).write_text("hello\n", encoding="utf-8")
+    assert (await read_tool.invoke({"file_path": file_path})).success is True
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "hello",
+        "new_string": "world",
+    })
+
+    assert result.success is False
+    assert result.error == "old_string is empty after sanitization."
+
+
 async def test_create_new_file(sys_op, temp_dir):
     _, edit_tool, _ = _make_tools(sys_op)
     file_path = os.path.join(temp_dir, "created", "new.txt")
@@ -467,6 +545,74 @@ async def test_create_new_file(sys_op, temp_dir):
     # 创建即注册读状态：紧接着的编辑不应再要求 read_file。
     follow = await edit_tool.invoke({"file_path": file_path, "old_string": "brand", "new_string": "BRAND"})
     assert follow.success is True, follow.error
+
+
+async def test_office_create_registers_readback_content(sys_op, temp_dir, monkeypatch):
+    """Office 创建后 registry 必须登记抽取器看到的实际文本。"""
+    async def fake_write(file_path: str, content: str) -> None:
+        Path(file_path).write_text(content, encoding="utf-8")
+
+    async def fake_read(file_path: str) -> str:
+        # 模拟 DOCX 写入器/抽取器把单个换行展开为空行的行为。
+        return Path(file_path).read_text(encoding="utf-8").replace("\n", "\n\n")
+
+    monkeypatch.setattr(flash_edit_tool, "_write_office_document_async", fake_write)
+    monkeypatch.setattr(flash_edit_tool, "_read_office_plain_text_async", fake_read)
+    _, edit_tool, _ = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "created.docx")
+
+    result = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "",
+        "new_string": "alpha\nbeta\n",
+    })
+
+    assert result.success is True, result.error
+    assert _FILE_READ_REGISTRY[file_path].content == "alpha\n\nbeta\n\n"
+
+
+async def test_office_edit_registers_readback_and_survives_mtime_only_change(
+    sys_op, temp_dir, monkeypatch
+):
+    """Office 编辑后读回注册；仅 mtime 变化且内容一致时不能误报外部修改。"""
+    async def fake_write(file_path: str, content: str) -> None:
+        Path(file_path).write_text(content, encoding="utf-8")
+
+    async def fake_read(file_path: str) -> str:
+        return Path(file_path).read_text(encoding="utf-8").replace("\n", "\n\n")
+
+    monkeypatch.setattr(flash_edit_tool, "_write_office_document_async", fake_write)
+    monkeypatch.setattr(flash_edit_tool, "_read_office_plain_text_async", fake_read)
+    _, edit_tool, _ = _make_tools(sys_op)
+    file_path = os.path.join(temp_dir, "edit.docx")
+
+    assert (
+        await edit_tool.invoke({
+            "file_path": file_path,
+            "old_string": "",
+            "new_string": "alpha\nbeta\n",
+        })
+    ).success is True
+
+    edited = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "beta",
+        "new_string": "BETA",
+    })
+    assert edited.success is True, edited.error
+    assert _FILE_READ_REGISTRY[file_path].content == "alpha\n\n\n\nBETA\n\n\n\n"
+
+    stat_before = os.stat(file_path)
+    os.utime(
+        file_path,
+        ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns + 1),
+    )
+    retry = await edit_tool.invoke({
+        "file_path": file_path,
+        "old_string": "BETA",
+        "new_string": "GAMMA",
+    })
+    assert retry.success is True, retry.error
 
 
 async def test_history_jsonl_appended_purely(sys_op, temp_dir, monkeypatch):
