@@ -2,12 +2,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """OfficeAceUserProfileRail -- jiuwenswarm product-side rail.
 
-每轮 ``before_model_call`` 从本地缓存读取云端用户画像概览，注入
-``office_ace_user_profile`` prompt 段。缓存文件不存在时同步触发一次拉取
-（带超时，不阻塞对话）。
-
-后台周期任务在 ``init`` 启动、``uninit`` 取消，每 N 分钟拉一次概览，
-原子写缓存（tmp→rename）。
+每轮 ``before_model_call`` 读取云端用户画像缓存并注入 prompt。
+缓存缺失或过期时等待带超时的拉取，失败回退旧缓存；后台刷新由进程级 manager 负责。
 
 本 rail 住在 jiuwenswarm（非 agent-core），与 ProjectMemoryRail 同构。
 """
@@ -38,7 +34,7 @@ if TYPE_CHECKING:
 class OfficeAceUserProfileRail(DeepAgentRail):
     """Inject the cloud-side user profile (memory overview) into the system prompt.
 
-    Loaded source: ``~/.office-claw/users/<userId>/user-profile.md``, written
+    Loaded source: ``~/.office-claw/users/<userId>/user-profile.<source>.md``, written
     by :class:`UserProfileFetcher` (on-demand sync fetch in ``before_model_call``
     when the local cache is missing or stale).
 
@@ -78,6 +74,7 @@ class OfficeAceUserProfileRail(DeepAgentRail):
                 self._system_prompt_builder.remove_section(SECTION_NAME)
             except Exception:  # noqa: BLE001
                 pass
+        self._system_prompt_builder = None
 
     # ------------------------------------------------------------------
     # Hook
@@ -89,7 +86,7 @@ class OfficeAceUserProfileRail(DeepAgentRail):
             return
 
         # 先读本地缓存。缓存新鲜（距上次拉取 < interval）直接用，不拉云端。
-        # 缓存不存在或已过期才同步触发一次拉取（带超时，不阻塞对话）。
+        # 缓存不存在或已过期时，模型调用前等待一次带超时的拉取。
         # 拉取失败/业务态无内容时降级用过期缓存（可能略旧）而非清空，零阻断。
         content = self._fetcher.read_cache()
         if content is None or not self._fetcher.is_cache_fresh():
