@@ -244,25 +244,47 @@ test('re-detecting keeps the card layout stable instead of unmounting the path b
   // block and install button during probes, collapsing and regrowing the card
   // (the whole settings page shook on every 检测 click).
   assert.match(sectionSource, /const installed = isInstalledStatus\(result\);/);
-  // Controls stay mounted and are merely disabled while detecting (or while
-  // this agent's own install is running).
+  // Controls stay mounted and are merely disabled while detecting. Detect and
+  // install disable independently: detect is a read-only probe, so it stays
+  // usable while the agent's own install runs — only the install button
+  // freezes then (a re-click would fire a duplicate force install).
   assert.doesNotMatch(sectionSource, /\{!detectingNow \? \(/);
-  assert.match(sectionSource, /disabled=\{disabled \|\| !onDetect \|\| agentInstalling\}/);
+  assert.match(sectionSource, /disabled=\{disabled \|\| !onDetect\}/);
+  assert.doesNotMatch(sectionSource, /!onDetect \|\| agentInstalling/);
+  // Symmetrically, a running detect must not freeze the install entries:
+  // the two actions are independent read-only/probe vs. commit operations.
+  assert.doesNotMatch(sectionSource, /!onCommitAgent \|\| detectingNow/);
 });
 
-test('installed cards drop the one-click install button and show the built-in path', () => {
+test('installed cards keep the detect+install pair and not-installed ones show the hint', () => {
   const sectionSource = readFileSync(
     new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
     'utf8',
   );
 
-  // The installed card only carries the detect button: the one-click install
-  // entry lives solely in the not-installed hint block.
+  // One-click install lives in two mutually exclusive places: the path-row
+  // button pair (installed card) and the not-installed hint banner. The
+  // banner is suppressed after a manual Detect click so re-detecting never
+  // pops it up.
   const installBtnMatches = sectionSource.match(/settings-panel-external-cli-agent-install-btn/g) ?? [];
-  assert.equal(installBtnMatches.length, 1);
+  assert.equal(installBtnMatches.length, 2);
+  assert.match(sectionSource, /installNow\(cliAgent\)/);
+  assert.match(sectionSource, /!manualDetectAgents\.has\(cliAgent\)/);
+  // The suppression is not sticky: when the config signature changes (path or
+  // built-in/custom switch) auto-detect takes over and the banner returns, so
+  // the effect must remove the agent from manualDetectAgents.
+  assert.match(
+    sectionSource,
+    /observedCliPathsRef\.current\[cliAgent\] = cliPath;[\s\S]{0,240}?setManualDetectAgents\(\(prev\) => \{[\s\S]{0,200}?next\.delete\(cliAgent\);/,
+  );
   // Built-in mode shows the actual built-in CLI path from detection instead of
   // the generic placeholder text.
   assert.match(sectionSource, /useBuiltin && detectedPath \? \(/);
+  // MRU history entries carry a per-option remove button; the active path and
+  // the detected PATH lookup must stay non-removable.
+  assert.match(sectionSource, /for \(const path of \[cliPath, detectedPath\]\) pushPathOption\(path, false\);/);
+  assert.match(sectionSource, /for \(const path of pathHistories\[cliAgent\] \?\? \[\]\) pushPathOption\(path, true\);/);
+  assert.match(sectionSource, /const removePathHistory = useCallback/);
 });
 
 test('install-now bypasses the no-change short circuit so a deleted built-in CLI can be repaired', () => {
