@@ -1033,9 +1033,20 @@
       "members": "成员"
     },
     "diagnosis": {
-      "toggle": "诊断与归因",
-      "rawView": "原始轨迹",
-      "toggleBack": "返回轨迹",
+      "entry": "轨迹分析",
+      "page": {
+        "loading": "正在加载轨迹…",
+        "emptyTitle": "暂无可诊断的轨迹",
+        "emptyTeam": "当前团队会话还没有记录到轨迹，运行一段时间后再来查看。",
+        "emptyAgent": "当前会话还没有记录到轨迹，发送消息后再来查看。",
+        "retry": "重试",
+        "errors": {
+          "TRAJECTORY_DISABLED": "轨迹功能未启用，无法进行轨迹分析。",
+          "UNSUPPORTED_SESSION_MODE": "当前会话模式不支持轨迹分析。",
+          "RETENTION_RUNNING": "轨迹正在整理中，请稍后重试。",
+          "FAILED": "轨迹加载失败。"
+        }
+      },
       "panelTitle": "诊断与归因",
       "noteLabel": "补充说明（可选）",
       "notePlaceholder": "用户补充信息",

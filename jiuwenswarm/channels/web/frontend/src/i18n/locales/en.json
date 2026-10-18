@@ -1049,9 +1049,20 @@
       "members": "Members"
     },
     "diagnosis": {
-      "toggle": "Diagnosis & attribution",
-      "rawView": "Raw trajectory",
-      "toggleBack": "Back to trajectory",
+      "entry": "Trajectory analysis",
+      "page": {
+        "loading": "Loading trajectory…",
+        "emptyTitle": "No trajectory to diagnose yet",
+        "emptyTeam": "This team session has no recorded trajectory yet. Check back after it has run for a while.",
+        "emptyAgent": "This session has no recorded trajectory yet. Check back after sending a message.",
+        "retry": "Retry",
+        "errors": {
+          "TRAJECTORY_DISABLED": "The trajectory feature is disabled, so trajectory analysis is unavailable.",
+          "UNSUPPORTED_SESSION_MODE": "This session mode does not support trajectory analysis.",
+          "RETENTION_RUNNING": "The trajectory is being organized. Please try again shortly.",
+          "FAILED": "Failed to load the trajectory."
+        }
+      },
       "panelTitle": "Diagnosis & attribution",
       "noteLabel": "Note (optional)",
       "notePlaceholder": "e.g. I think the wrong tool was chosen in step two",

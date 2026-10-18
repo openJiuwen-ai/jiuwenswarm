@@ -99,12 +99,6 @@ import {
   type TrajectoryTurnRange,
 } from './trajectoryTurnGaps';
 import { TeamTrajectoryWorkspace } from './TeamTrajectoryWorkspace';
-import {
-  readDiagnosisView,
-  useTrajectoryDiagnosisEnabled,
-  writeDiagnosisView,
-} from './diagnosis/diagnosisFeatureConfig';
-import { DiagnosisWorkspace } from './diagnosis/DiagnosisWorkspace';
 import css from './TrajectoryPanel.module.css';
 import './client/theme.css';
 
@@ -219,7 +213,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   mode = 'agent',
   sessionId,
 }: TrajectoryPanelProps) {
-  const { i18n, t: translateDiagnosis } = useTranslation();
+  const { i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
   const sessionTeamMode = mode === 'team';
   // The panel is not remounted when the session or its mode changes, so the
@@ -303,18 +297,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   // from the header rather than standing permanently at the bottom, where it
   // took reading space from every session.
   const [attributionOpen, setAttributionOpen] = useState(false);
-  const diagnosisEnabled = useTrajectoryDiagnosisEnabled();
-  const [diagnosisOpen, setDiagnosisOpen] = useState(() => readDiagnosisView(sessionId));
-  // Re-entering the trajectory page restores the sub-view this session last left.
-  useEffect(() => {
-    setDiagnosisOpen(readDiagnosisView(sessionId));
-  }, [sessionId]);
-  const chooseDiagnosisView = useCallback((open: boolean) => {
-    setDiagnosisOpen(open);
-    writeDiagnosisView(sessionId, open);
-  }, [sessionId]);
-  const diagnosisAvailable = diagnosisEnabled && replayArchive === null && sessionId !== 'new';
-  const diagnosisVisible = diagnosisAvailable && diagnosisOpen;
   const [rawHeight, setRawHeight] = useState(RAW_INSPECTOR_DEFAULT_HEIGHT);
   const [rawContainerHeightPx, setRawContainerHeightPx] = useState(600);
 
@@ -1513,26 +1495,8 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       />
     )
     : null;
-  const diagnosisContent = diagnosisVisible && contentMode !== 'new'
-    && contentMode !== 'loading' && contentMode !== 'blocking-error'
-    && contentMode !== 'empty'
-    ? (
-      <DiagnosisWorkspace
-        active={active}
-        sessionId={sessionId}
-        teamMode={teamMode}
-        groups={subjectGroups}
-        snapshots={subjectSnapshots}
-        messages={copy.toolbar}
-        selectedSubjectId={selectedSubjectId}
-        onSelectSubject={selectSubject}
-      />
-    )
-    : null;
   let content;
-  if (diagnosisContent !== null) {
-    content = diagnosisContent;
-  } else if (teamContent !== null) {
+  if (teamContent !== null) {
     content = teamContent;
   } else if (contentMode === 'new') {
     content = (
@@ -1670,38 +1634,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
               {copy.exitReplay}
             </button>
           )}
-          {diagnosisAvailable ? (
-            <div className={css.viewSwitch} role="group" aria-label={translateDiagnosis('trajectory.diagnosis.toggle')}>
-              <button
-                type="button"
-                className={`${css.viewSwitchButton} ${diagnosisOpen ? '' : css.viewSwitchButtonActive}`}
-                aria-pressed={!diagnosisOpen}
-                onClick={() => chooseDiagnosisView(false)}
-                data-testid="trajectory-diagnosis-raw-view"
-              >
-                {translateDiagnosis('trajectory.diagnosis.rawView')}
-              </button>
-              <button
-                type="button"
-                className={`${css.viewSwitchButton} ${diagnosisOpen ? css.viewSwitchButtonActive : ''}`}
-                aria-pressed={diagnosisOpen}
-                onClick={() => chooseDiagnosisView(true)}
-                data-testid="trajectory-diagnosis-toggle"
-              >
-                <svg className={css.viewSwitchSpark} viewBox="0 0 16 16" aria-hidden="true">
-                  <path
-                    fill="currentColor"
-                    d="M7.2 1.1c.2-.5.9-.5 1.1 0l1.1 3.2 3.2 1.1c.5.2.5.9 0 1.1L9.4 9.6 8.3 12.8c-.2.5-.9.5-1.1 0L6.1 9.6 2.9 8.5c-.5-.2-.5-.9 0-1.1l3.2-1.1 1.1-3.2Z"
-                  />
-                  <path
-                    fill="currentColor"
-                    d="M12.6.8c.1-.3.5-.3.6 0l.5 1.4 1.4.5c.3.1.3.5 0 .6l-1.4.5-.5 1.4c-.1.3-.5.3-.6 0l-.5-1.4-1.4-.5c-.3-.1-.3-.5 0-.6l1.4-.5.5-1.4Z"
-                  />
-                </svg>
-                {translateDiagnosis('trajectory.diagnosis.toggle')}
-              </button>
-            </div>
-          ) : null}
           <button
             type="button"
             className={`${css.attributionToggle} ${attributionOpen ? css.attributionToggleActive : ''}`}
@@ -1772,7 +1704,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
           </div>
         </div>
       ) : null}
-      {!teamMode && diagnosisContent === null && subjectGroups.groups.length > 1 ? (
+      {!teamMode && subjectGroups.groups.length > 1 ? (
         <div className={css.subjectBar}>
           <div className={css.subjectTabs} role="tablist" aria-label={copy.subjectTabs}>
             {subjectGroups.groups.map(group => (

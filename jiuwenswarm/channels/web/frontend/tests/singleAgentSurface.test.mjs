@@ -443,3 +443,123 @@ test('disabled trajectory feature restores the legacy chat-only Agent surface', 
   });
   container.remove();
 });
+
+function renderDiagnosisSurface(props) {
+  return React.createElement(SingleAgentSurface, {
+    chat: React.createElement('div', { 'data-testid': 'diagnosis-chat-probe' }, 'chat'),
+    chatLabel: 'Chat',
+    mode: 'agent',
+    onViewChange: () => {},
+    tabListLabel: 'Single Agent surface',
+    trajectory: React.createElement('div', { 'data-testid': 'diagnosis-trajectory-probe' }, 'trace'),
+    trajectoryEnabled: true,
+    trajectoryLabel: 'Trajectory',
+    trajectoryRequested: false,
+    diagnosis: React.createElement('div', { 'data-testid': 'diagnosis-probe' }, 'diagnosis'),
+    ...props,
+  });
+}
+
+test('diagnosis view mounts only after the first request and never touches the trajectory view', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'chat',
+      diagnosisEnabled: true,
+      diagnosisRequested: false,
+    }));
+  });
+  assert.equal(container.querySelector('[data-testid="single-agent-diagnosis-view"]'), null);
+  assert.equal(container.querySelectorAll('[role="tab"]').length, 2);
+
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'diagnosis',
+      diagnosisEnabled: true,
+      diagnosisRequested: true,
+    }));
+  });
+  const view = container.querySelector('[data-testid="single-agent-diagnosis-view"]');
+  assert.ok(view);
+  assert.equal(view.getAttribute('aria-hidden'), 'false');
+  assert.ok(container.querySelector('[data-testid="diagnosis-probe"]'));
+  assert.equal(container.querySelector('[data-testid="single-agent-trajectory-view"]'), null);
+  assert.ok(container.querySelector('.single-agent-surface--diagnosis'));
+  // The 对话/轨迹 tab bar is not shown inside the diagnosis view.
+  assert.equal(container.querySelector('[data-testid="single-agent-surface-tabs"]'), null);
+  assert.equal(container.querySelectorAll('[role="tab"]').length, 0);
+
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'chat',
+      diagnosisEnabled: true,
+      diagnosisRequested: true,
+    }));
+  });
+  // Leaving the view keeps it mounted but hidden.
+  assert.equal(
+    container.querySelector('[data-testid="single-agent-diagnosis-view"]').getAttribute('aria-hidden'),
+    'true',
+  );
+  assert.ok(container.querySelector('[data-testid="diagnosis-probe"]'));
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test('diagnosis view falls back to chat when the entry is unavailable', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'diagnosis',
+      diagnosisEnabled: false,
+      diagnosisRequested: true,
+    }));
+  });
+  assert.equal(container.querySelector('[data-testid="single-agent-diagnosis-view"]'), null);
+  assert.ok(container.querySelector('.single-agent-surface--chat'));
+  assert.equal(
+    container.querySelector('[data-testid="single-agent-chat-view"]').getAttribute('aria-hidden'),
+    'false',
+  );
+
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'diagnosis',
+      diagnosisEnabled: true,
+      diagnosisRequested: true,
+      mode: 'auto_harness',
+    }));
+  });
+  assert.equal(container.querySelector('[data-testid="single-agent-diagnosis-view"]'), null);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test('diagnosis entry lives in the chat header and no longer in the trajectory panel', () => {
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const chatSource = readFileSync(
+    new URL('../src/components/ChatPanel/index.tsx', import.meta.url),
+    'utf8',
+  );
+  const panelSource = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryPanel.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(chatSource, /data-testid="chat-panel-header-diagnosis-toggle"/);
+  assert.match(chatSource, /t\('trajectory\.diagnosis\.entry'\)/);
+  assert.match(appSource, /onToggleDiagnosis=\{toggleDiagnosisView\}/);
+  assert.match(appSource, /selectChatSurfaceView\(chatSurfaceView === 'diagnosis' \? 'chat' : 'diagnosis'\)/);
+  assert.doesNotMatch(panelSource, /diagnosis/i);
+});
