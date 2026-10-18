@@ -15,7 +15,7 @@
 This page collects common JiuwenSwarm usage instructions, feature documentation, and development practices. The content is organized into five sections: **Installation**, **Basic Usage**, **Advanced Operations**, **Appendix**, and **Development Practices**.
 
 * **Installation**: For first-time JiuwenSwarm users, covering basic installation, environment preparation, TUI mode installation, and quick start guidance.
-* **Basic Usage**: Introduces common daily-use entry points, including page overview, conversation, agents, sessions, scheduled tasks, skills, channels, configuration, browser service, logs, and MCP service settings.
+* **Basic Usage**: Introduces common daily-use entry points, including page overview, conversation, design, agents, sessions, scheduled tasks, skills, channels, configuration, browser service, logs, and MCP service settings.
 * **Advanced Operations**: Covers advanced capabilities and extension mechanisms, including context compression, Skill self-evolution, tool permissions and security, E2A / A2A protocols, multi-agent collaboration, memory systems, and TUI mode.
 * **Appendix**: Provides supplementary materials for project usage and maintenance, including EXE packaging, Windows auto-update design, and developer documentation.
 * **Development Practices**: Collects real Agent application cases built with JiuwenSwarm, helping developers reference existing practices for secondary development and capability extension.
@@ -66,6 +66,16 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">Web conversation entry point, supporting message sending, new sessions, and planning / performance / cluster mode switching.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Design</strong></td>
+      <td width="28%"><a href="en/Design.md">Design</a></td>
+      <td width="50%">Workflow canvas for video and image creation: turn one sentence into a brief, storyboard, keyframes, and video clips, with per-node editing and re-runs.</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>Process CLI Session Queries</strong></td>
+      <td width="28%"><a href="en/ProcessCLISessionQueries.md">Process CLI Session Queries</a></td>
+      <td width="50%">Read full local session IDs, search and paginate, select the latest session, and resume a task in a new process.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Agent</strong></td>
       <td width="28%"><a href="en/Agent.md">Agent</a></td>
       <td width="50%">Agents with different roles, workspace creation, and workspace management flows.</td>
@@ -101,6 +111,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">System parameters, LLM APIs, and runtime environment configuration.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Process CLI Model Configuration</strong></td>
+      <td width="28%"><a href="en/Process_CLI_Model.md">Model connection flags</a></td>
+      <td width="50%">Select a model, API base, key environment variable, and provider for one CMD invocation.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>IDE Plugins</strong></td>
       <td width="28%"><a href="en/ide/jetbrains/JetBrains.md">JetBrains</a> / <a href="en/ide/vscode/VSCode.md">VS Code</a> (<a href="en/ide/jetbrains/JetBrainsGuide.md">Guide</a> · <a href="en/ide/vscode/VSCodeGuide.md">Guide</a>)</td>
       <td width="50%">Embed the JiuwenSwarm agent in JetBrains IDEs and VS Code with a native chat panel.</td>
@@ -109,6 +124,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="22%"><strong>Browser Service</strong></td>
       <td width="28%"><a href="en/Browser.md">Browser</a></td>
       <td width="50%">Web access, information retrieval, and browser tool invocation capabilities.</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>Desktop Automation</strong></td>
+      <td width="28%"><a href="en/DesktopAutomation.md">Desktop automation (cua_agent)</a></td>
+      <td width="50%">Operate native application windows through screenshots and real mouse/keyboard input.</td>
     </tr>
     <tr>
       <td width="22%"><strong>Browser Extension</strong></td>
@@ -165,7 +185,7 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
     </tr>
     <tr>
       <td width="22%"><strong>Agent Team</strong></td>
-      <td width="28%"><a href="en/AgentTeam.md">Agent Teams</a> / <a href="en/SwarmSkills.md">Swarm Skills</a> / <a href="en/DistributedTeam.md">Distributed Team</a></td>
+      <td width="28%"><a href="en/AgentTeam.md">Agent Teams</a> / <a href="en/TeamOrganization.md">Team Organization</a> / <a href="en/SwarmSkills.md">Swarm Skills</a> / <a href="en/DistributedTeam.md">Distributed Team</a></td>
       <td width="50%">Supports multi-agent team collaboration, team-level skill orchestration and reuse, and multi-process distributed Team runtime mode.</td>
     </tr>
     <tr>

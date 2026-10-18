@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
 
@@ -20,6 +20,13 @@ const desktopApi = Object.freeze({
   getCloseAction: () => invoke('desktop:get-close-action'),
   setCloseAction: action => invoke('desktop:set-close-action', action),
   openExternalUrl: url => invoke('desktop:open-external-url', url),
+  captureOAuthToken: options => invoke('desktop:capture-oauth-token', options),
+  exportShareImage: (sessionId, locale) => invoke('desktop:export-share-image', sessionId, locale),
+  onShareImageExportProgress: callback => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('desktop:share-image-export-progress', listener);
+    return () => ipcRenderer.removeListener('desktop:share-image-export-progress', listener);
+  },
   downloadFile: (url, filename) => invoke('desktop:download-file', url, filename),
   installUpdate: installerPath => invoke('desktop:install-update', installerPath),
   saveDataUrl: (dataUrl, filename) => invoke('desktop:save-data-url', dataUrl, filename),
@@ -31,6 +38,14 @@ const desktopApi = Object.freeze({
   selectLocalFiles: (allowMultiple, initialDir) => invoke('desktop:select-local-files', allowMultiple, initialDir),
   selectLocalFilePath: (initialPath, title) => invoke('desktop:select-local-file-path', initialPath, title),
   describeLocalFiles: paths => invoke('desktop:describe-local-files', paths),
+  describeDroppedFiles: files => {
+    // File objects cannot cross IPC. Resolve their native paths in the preload.
+    const paths = Array.from(files, file => webUtils.getPathForFile(file));
+    if (!paths.length || paths.some(filePath => !filePath)) {
+      return Promise.resolve([]);
+    }
+    return invoke('desktop:describe-local-files', [...new Set(paths)]);
+  },
   getClipboardFiles: () => invoke('desktop:get-clipboard-files'),
   pasteClipboard: () => invoke('desktop:paste-clipboard'),
   clearHuaweiSignIn: () => invoke('auth:clear-huawei-sign-in'),
@@ -75,6 +90,7 @@ contextBridge.exposeInMainWorld('pywebview', {
     get_close_action: desktopApi.getCloseAction,
     set_close_action: desktopApi.setCloseAction,
     open_external_url: desktopApi.openExternalUrl,
+    capture_oauth_token: desktopApi.captureOAuthToken,
     download_file: desktopApi.downloadFile,
     install_update: desktopApi.installUpdate,
     save_data_url: desktopApi.saveDataUrl,

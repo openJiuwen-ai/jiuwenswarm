@@ -122,8 +122,8 @@ test('history pairs chat.ask_user_answer with chat.ask_user_question by request_
   assert.equal(preview.messages[0].content.startsWith('qa.summary:'), true);
   const parsed = JSON.parse(preview.messages[0].content.slice('qa.summary:'.length));
   assert.deepEqual(parsed.items, [
-    { header: 'Question', question: '用哪种方案?', answers: ['方案A'] },
-    { header: 'Question', question: '备注?', answers: ['加急'] },
+    { header: 'Question', question: '用哪种方案?', answers: ['方案A'], answerSources: ['option'] },
+    { header: 'Question', question: '备注?', answers: ['加急'], answerSources: ['input'] },
   ]);
   assert.equal(preview.answeredQuestions.length, 1);
   assert.equal(preview.answeredQuestions[0].payload.request_id, 'req-pair-1');
@@ -242,7 +242,7 @@ test('history places an answered qa.summary card at the answer-time position, no
   assert.equal(preview.messages[1].content.startsWith('qa.summary:'), true);
   const parsed = JSON.parse(preview.messages[1].content.slice('qa.summary:'.length));
   assert.deepEqual(parsed.items, [
-    { header: 'Question', question: '用哪种方案?', answers: ['方案A'] },
+    { header: 'Question', question: '用哪种方案?', answers: ['方案A'], answerSources: ['option'] },
   ]);
 });
 
@@ -1041,4 +1041,16 @@ test('history skips chat.error with empty content', () => {
     },
   ], sessionId);
   assert.equal(messages.length, 0);
+});
+
+test('4470 history preserves token-related choices while masking custom input', () => {
+  const question = '用哪种方式更新令牌？';
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {id:'q4470',role:'assistant',event_type:'chat.ask_user_question',content:'',request_id:'4470',source:'ask_user_interrupt',questions:[{question,options:[{label:'让你代登录'}]}],timestamp:1},
+    {id:'a4470',role:'assistant',event_type:'chat.ask_user_answer',content:'',request_id:'4470',source:'ask_user_interrupt',answers:[{question,selected_options:['让你代登录'],custom_input:'FAKE-4470'}],timestamp:2},
+  ], sessionId);
+  const summary = preview.messages.find(m=>m.content.startsWith('qa.summary:'));
+  const parsed = JSON.parse(summary.content.slice('qa.summary:'.length));
+  assert.deepEqual(parsed.items[0].answers,['让你代登录','••••••']);
+  assert.ok(!summary.content.includes('FAKE-4470'));
 });

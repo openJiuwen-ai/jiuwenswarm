@@ -216,6 +216,9 @@ class SwarmSymphonyService:
         self._runtime: SymphonyRuntimeType | None = None
         self._runtime_key: tuple[Any, ...] | None = None
         self._flow_started = False
+        self._flow_start_task: asyncio.Task | None = None
+        self._flow_start_runtime: Any = None
+        self._close_task: asyncio.Task | None = None
         self._recovered_candidates: tuple[CombinationCandidateType, ...] = ()
         self._candidate_locks: dict[tuple[str, int], asyncio.Lock] = {}
         self._notified_candidates: set[tuple[str, int]] = set()
@@ -766,9 +769,12 @@ class SwarmSymphonyService:
             session_id=session_id,
             capture_mode=capture_mode,
         )
-        recovered = self._recovered_candidates
+        recovered = ()
         try:
-            recovered = (*recovered, *await self._start_flow(runtime))
+            started_candidates = await self._start_flow(runtime)
+            # Background recovery may finish while this caller awaits the same
+            # single-flight. Read its retained candidates after that await.
+            recovered = (*self._recovered_candidates, *started_candidates)
             if execution_graph.get("outcome") == "success":
                 self._recovered_candidates = ()
             else:
@@ -799,9 +805,30 @@ class SwarmSymphonyService:
         self,
         runtime: SymphonyRuntimeType,
     ) -> tuple[CombinationCandidateType, ...]:
+        if self._closing:
+            raise RuntimeError("Symphony service is closing")
         if runtime.flow_engine is None or self._flow_started:
             return ()
-        candidates = await runtime.flow_engine.start()
+        task = self._flow_start_task
+        if task is not None and self._flow_start_runtime is not runtime:
+            if not task.done():
+                raise RuntimeError("Symphony Flow is preparing for another runtime")
+            task = None
+        retry = task is None
+        if task is not None:
+            retry = task.cancelled() or (task.done() and task.exception() is not None)
+        if retry:
+            task = asyncio.create_task(runtime.flow_engine.start(), name="symphony-flow-start")
+            self._flow_start_task = task
+            self._flow_start_runtime = runtime
+            task.add_done_callback(self._consume_flow_start_result)
+        candidates = await asyncio.shield(task)
+        if self._closing:
+            raise RuntimeError("Symphony service is closing")
+        # The recovered candidates have exactly one claimant. Other callers
+        # consume the shared retained queue through submit_evolution_and_notify.
+        if self._flow_started:
+            return ()
         self._flow_started = True
         return tuple(candidates)
 
@@ -1064,9 +1091,18 @@ class SwarmSymphonyService:
     async def close(self) -> None:
         """Drain Flow and Graph workers and release the process runtime."""
 
-        if self._closing:
-            return
-        self._closing = True
+        if self._close_task is None or self._close_task.done():
+            self._closing = True
+            self._close_task = asyncio.create_task(self._close_owned(), name="symphony-service-close")
+            self._close_task.add_done_callback(self._consume_close_result)
+        await asyncio.shield(self._close_task)
+
+    async def _close_owned(self) -> None:
+        preparation, self._flow_start_task = self._flow_start_task, None
+        self._flow_start_runtime = None
+        if preparation is not None and not preparation.done():
+            preparation.cancel()
+            await asyncio.gather(preparation, return_exceptions=True)
         runtime, self._runtime = self._runtime, None
         self._runtime_key = None
         self._flow_started = False
@@ -1087,6 +1123,16 @@ class SwarmSymphonyService:
             self._closing = False
         if runtime_error is not None:
             raise runtime_error
+
+    @staticmethod
+    def _consume_flow_start_result(task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("Symphony Flow preparation failed", exc_info=task.exception())
+
+    @staticmethod
+    def _consume_close_result(task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("Symphony service close failed", exc_info=task.exception())
 
     @staticmethod
     def _read_graph_artifact(graph_dir: Path) -> dict[str, Any]:

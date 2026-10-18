@@ -30,7 +30,7 @@ from jiuwenswarm.server.runtime.attachments.upload_storage import (
 logger = logging.getLogger(__name__)
 
 #: 浏览器上传文档的大小上限（base64 裸字节，base64 膨胀前）。
-_MAX_DOCUMENT_BYTES: int = 10 * 1024 * 1024
+_MAX_DOCUMENT_BYTES: int = 100 * 1024 * 1024
 #: 单次文档上传的最大条数（与图片 _MAX_IMAGE_COUNT 对齐）。
 _MAX_DOCUMENT_COUNT: int = 8
 

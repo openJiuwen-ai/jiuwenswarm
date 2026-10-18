@@ -53,11 +53,13 @@ class ConfigUpdaterApplier:
         *,
         config_provider: ConfigProvider | None = None,
         refresh_handler: RefreshHandler | None = None,
+        overrides_handler: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._effective_config = copy.deepcopy(dict(config))
         self._config_provider = config_provider or (lambda: self._effective_config)
         self._managed_overrides: dict[str, Any] = {}
         self._refresh_handler = refresh_handler
+        self._overrides_handler = overrides_handler
         self._last_applied_mod_revision = 0
         self._pending_refresh_mod_revision = 0
         self._pending_config: dict[str, Any] | None = None
@@ -125,7 +127,9 @@ class ConfigUpdaterApplier:
                     retryable=True,
                 )
             merge_section(merged, managed_overrides)
-            if merged == self._effective_config:
+            if merged == self._effective_config and (
+                self._overrides_handler is None or managed_overrides == self._managed_overrides
+            ):
                 self._last_applied_mod_revision = mod_revision
                 return ApplyResult(skipped_reason="no-change")
             self._pending_refresh_mod_revision = mod_revision
@@ -145,6 +149,11 @@ class ConfigUpdaterApplier:
         managed_overrides: dict[str, Any],
         mod_revision: int,
     ) -> ApplyResult:
+        if self._overrides_handler is not None:
+            try:
+                self._overrides_handler(copy.deepcopy(managed_overrides))
+            except Exception as exc:
+                return ApplyResult(skipped_reason="runtime-apply-failed", errors=[str(exc)], retryable=True)
         if self._refresh_handler is not None:
             try:
                 refreshed = await self._refresh_handler(copy.deepcopy(merged))
@@ -177,6 +186,7 @@ class ConfigUpdaterService:
         config: Mapping[str, Any],
         config_provider: ConfigProvider | None = None,
         refresh_handler: RefreshHandler | None = None,
+        overrides_handler: Callable[[dict[str, Any]], None] | None = None,
         client: ConfigUpdaterClient | None = None,
     ) -> None:
         self._endpoints = [
@@ -185,6 +195,7 @@ class ConfigUpdaterService:
         self._config = copy.deepcopy(dict(config))
         self._config_provider = config_provider
         self._refresh_handler = refresh_handler
+        self._overrides_handler = overrides_handler
         self._client = client
         self._task: asyncio.Task[None] | None = None
 
@@ -204,6 +215,7 @@ class ConfigUpdaterService:
             self._config,
             config_provider=self._config_provider,
             refresh_handler=self._refresh_handler,
+            overrides_handler=self._overrides_handler,
         )
         self._task = asyncio.create_task(
             self._watch(client, applier),
@@ -226,26 +238,44 @@ class ConfigUpdaterService:
         client: ConfigUpdaterClient,
         applier: ConfigUpdaterApplier,
     ) -> None:
-        async def _apply(fetched: Any) -> None:
-            delay = _APPLY_RETRY_INITIAL_DELAY
-            while True:
-                result = await applier.apply(fetched)
-                if not result.retryable:
-                    return
-                logger.warning(
-                    "[ConfigUpdater] apply retry in %.1fs mod_revision=%s: %s",
-                    delay,
-                    int(getattr(fetched, "mod_revision", 0) or 0),
-                    "; ".join(result.errors) or result.skipped_reason,
-                )
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, _APPLY_RETRY_MAX_DELAY)
+        changed = asyncio.Event()
+        latest: Any = None
 
+        async def _receive(fetched: Any) -> None:
+            nonlocal latest
+            if latest is None or fetched.mod_revision >= latest.mod_revision:
+                latest = fetched
+                changed.set()
+
+        async def _apply_latest() -> None:
+            while True:
+                await changed.wait()
+                changed.clear()
+                fetched = latest
+                delay = _APPLY_RETRY_INITIAL_DELAY
+                while True:
+                    result = await applier.apply(fetched)
+                    if not result.retryable:
+                        break
+                    logger.warning("[ConfigUpdater] retry revision=%s in %.1fs: %s",
+                                   fetched.mod_revision, delay, result.skipped_reason)
+                    # Keep watching while a refresh fails. A newer management
+                    # revision supersedes the pending one instead of starving.
+                    try:
+                        await asyncio.wait_for(changed.wait(), timeout=delay)
+                    except asyncio.TimeoutError:
+                        delay = min(delay * 2, _APPLY_RETRY_MAX_DELAY)
+                    else:
+                        break
+
+        worker = asyncio.create_task(_apply_latest(), name="config-updater-applier")
         try:
-            await client.watch_loop(_apply)
+            await client.watch_loop(_receive)
         except Exception as exc:  # noqa: BLE001 - never take the gateway down
             logger.warning("[ConfigUpdater] watcher exited: %s", exc)
         finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
             await client.aclose()
             if self._task is asyncio.current_task():
                 self._task = None

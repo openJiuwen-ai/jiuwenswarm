@@ -829,6 +829,92 @@ class TestAgentGroupLifecycle:
         assert after["source"] == "builtin"
         assert after["installed"] is False
 
+    def test_builtin_shelf_groups_install_once_on_startup(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        extension_workspace: Path,
+        tmp_path: Path,
+    ) -> None:
+        source_workspace = tmp_path / "resource-home" / "agent" / "workspace"
+        resource_package = _seed_valid_agent_group(
+            source_workspace, "designer", under="resources"
+        )
+        monkeypatch.setattr(
+            catalog,
+            "get_equipment_resources_agent_groups_dir",
+            lambda: resource_package.parent,
+        )
+
+        assert catalog.ensure_builtin_agent_groups_installed() == ["designer"]
+        installed_copy = (
+            extension_workspace.parent.parent
+            / ".agent_teams"
+            / AGENT_GROUPS
+            / "built_in"
+            / "designer"
+        )
+        assert installed_copy.is_dir()
+        assert catalog.resolve_agent_group_dir("designer") == installed_copy.resolve()
+        assert catalog.show_agent_group("designer")["installed"] is True
+
+        # Second start: already seeded, user edits preserved, nothing re-copied.
+        marker = installed_copy / "USER_EDIT.md"
+        marker.write_text("keep", encoding="utf-8")
+        assert catalog.ensure_builtin_agent_groups_installed() == []
+        assert marker.read_text(encoding="utf-8") == "keep"
+
+    def test_builtin_shelf_uninstall_is_respected_on_next_start(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        extension_workspace: Path,
+        tmp_path: Path,
+    ) -> None:
+        source_workspace = tmp_path / "resource-home" / "agent" / "workspace"
+        resource_package = _seed_valid_agent_group(
+            source_workspace, "designer", under="resources"
+        )
+        monkeypatch.setattr(
+            catalog,
+            "get_equipment_resources_agent_groups_dir",
+            lambda: resource_package.parent,
+        )
+
+        assert catalog.ensure_builtin_agent_groups_installed() == ["designer"]
+        installed_copy = (
+            extension_workspace.parent.parent
+            / ".agent_teams"
+            / AGENT_GROUPS
+            / "built_in"
+            / "designer"
+        )
+        assert installed_copy.is_dir()
+
+        catalog.uninstall_agent_group({"id": "designer"})
+        assert catalog.ensure_builtin_agent_groups_installed() == []
+        assert not installed_copy.exists()
+
+    def test_builtin_shelf_install_skips_broken_package_without_raising(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        extension_workspace: Path,
+        tmp_path: Path,
+    ) -> None:
+        shelf = tmp_path / "shelf"
+        (shelf / "broken").mkdir(parents=True)
+        (shelf / "broken" / "manifest.json").write_text("{not json", encoding="utf-8")
+        monkeypatch.setattr(
+            catalog, "get_equipment_resources_agent_groups_dir", lambda: shelf
+        )
+
+        assert catalog.ensure_builtin_agent_groups_installed() == []
+        assert not (
+            extension_workspace.parent.parent
+            / ".agent_teams"
+            / AGENT_GROUPS
+            / "built_in"
+            / "broken"
+        ).exists()
+
     @pytest.mark.parametrize("unsafe_kind", ["traversal", "symlink"])
     def test_import_group_archive_rejects_unsafe_members(
         self,
@@ -859,6 +945,120 @@ class TestAgentGroupLifecycle:
 
 class TestCreateInstallUninstall:
     """create → local/; install copy or flip flags; uninstall deletes user copy."""
+
+    def test_install_external_runtime_preserves_typed_manifest(
+        self, extension_workspace: Path
+    ) -> None:
+        package = seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "codex-expert",
+            extra_manifest={
+                "name": "codex-expert",
+                "description": "External Codex expert.",
+                "runtime": {
+                    "provider_name": "codex",
+                    "provider_version": "1.2.3",
+                    "sdk_paths": ["sdk/codex"],
+                    "config": {"model": "test-model"},
+                },
+            },
+        )
+        sdk_file = package / "sdk" / "codex"
+        sdk_file.parent.mkdir(parents=True, exist_ok=True)
+        sdk_file.write_text("", encoding="utf-8")
+
+        catalog.install_agent_template({"id": "codex-expert"})
+
+        from openjiuwen.harness.resources import load_agent_template_package
+
+        spec = load_agent_template_package(package / "manifest.json")
+        runtime = catalog.agent_template_runtime(spec)
+        assert runtime is not None
+        assert runtime.provider_name == "codex"
+        assert runtime.provider_version == "1.2.3"
+        assert runtime.sdk_paths == [str(sdk_file.resolve())]
+        assert runtime.config == {"model": "test-model"}
+        assert next(
+            entry
+            for entry in catalog.read_agent_template_marketplace_entries()
+            if entry["id"] == "codex-expert"
+        )["installed"] is True
+
+    @pytest.mark.parametrize("provider_name", ["", "claude-code", "deepseek-harness", "native"])
+    def test_install_external_runtime_rejects_provider_outside_allowlist(
+        self, extension_workspace: Path, provider_name: str
+    ) -> None:
+        seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "invalid-runtime",
+            extra_manifest={
+                "name": "invalid-runtime",
+                "description": "External expert with an invalid provider.",
+                "runtime": {"provider_name": provider_name},
+            },
+        )
+
+        with pytest.raises(ValueError, match="provider_name.*claudecode.*codex.*dsh"):
+            catalog.install_agent_template({"id": "invalid-runtime"})
+
+        assert catalog.read_agent_template_marketplace_entries() == []
+
+    @pytest.mark.parametrize("unsupported_field", ["tools", "rails", "subagents"])
+    def test_install_external_runtime_rejects_native_agent_capabilities(
+        self, extension_workspace: Path, unsupported_field: str
+    ) -> None:
+        seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "unsupported-runtime",
+            extra_manifest={
+                "name": "unsupported-runtime",
+                "description": "External expert with unsupported native capabilities.",
+                "runtime": {"provider_name": "dsh"},
+                unsupported_field: [{"file": "unsupported.py"}],
+            },
+        )
+
+        with pytest.raises(ValueError, match=unsupported_field):
+            catalog.install_agent_template({"id": "unsupported-runtime"})
+
+        assert catalog.read_agent_template_marketplace_entries() == []
+
+    @pytest.mark.parametrize(
+        ("runtime", "error_field"),
+        [
+            ({"provider_name": "codex", "sdk_paths": ["missing/sdk"]}, "missing"),
+            ({"provider_name": "codex", "provider_version": 3}, "provider_version"),
+            ({"provider_name": "codex", "config": []}, "config"),
+        ],
+    )
+    def test_install_external_runtime_rejects_invalid_structure(
+        self,
+        extension_workspace: Path,
+        runtime: dict[str, object],
+        error_field: str,
+    ) -> None:
+        seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "malformed-runtime",
+            extra_manifest={
+                "name": "malformed-runtime",
+                "description": "External expert with malformed runtime metadata.",
+                "runtime": runtime,
+            },
+        )
+
+        if error_field == "missing":
+            with pytest.raises(FileNotFoundError):
+                catalog.install_agent_template({"id": "malformed-runtime"})
+        else:
+            with pytest.raises(ValueError, match=error_field):
+                catalog.install_agent_template({"id": "malformed-runtime"})
+
+        assert catalog.read_agent_template_marketplace_entries() == []
 
     @pytest.mark.parametrize("kind", _KINDS)
     def test_create_writes_local_uninstalled(
@@ -949,6 +1149,57 @@ class TestCreateInstallUninstall:
         assert shown is not None
         assert shown["tags"] == manifest["tags"]
         assert shown["quickInputs"] == manifest["quick_inputs"]
+
+    def test_create_external_harness_writes_runtime_and_tag(
+        self, extension_workspace: Path
+    ) -> None:
+        catalog.create_agent_template(
+            {
+                "id": "mine",
+                "name": "N",
+                "description": "D",
+                "persona": "P",
+                "skills": [],
+                "tags": [{"zh": "产品研发", "en": "Product Development"}],
+                "runtime": {"provider_name": "claudecode", "config": {}},
+            }
+        )
+        pkg = extension_workspace / "plugins" / AGENT_TEMPLATES / "local" / "mine"
+        manifest = json.loads((pkg / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["runtime"] == {"provider_name": "claudecode", "config": {}}
+        assert "mcps" not in manifest
+        assert manifest["tags"] == [
+            {"zh": "产品研发", "en": "Product Development"},
+            {"zh": "三方Harness", "en": "External Harness"},
+        ]
+        shown = catalog.show_agent_template("mine")
+        assert shown is not None
+        assert shown["runtime"] == manifest["runtime"]
+
+        with pytest.raises(ValueError, match="does not support connectors"):
+            catalog.create_agent_template(
+                {
+                    "id": "other",
+                    "name": "N",
+                    "description": "D",
+                    "persona": "P",
+                    "skills": [],
+                    "mcps": ["amap"],
+                    "runtime": {"provider_name": "codex", "config": {}},
+                }
+            )
+
+        catalog.update_agent_template(
+            {
+                "id": "mine",
+                "name": "N",
+                "description": "D",
+                "persona": "P",
+                "skills": [],
+            }
+        )
+        updated = json.loads((pkg / "manifest.json").read_text(encoding="utf-8"))
+        assert "runtime" not in updated
 
     @pytest.mark.parametrize("kind", _KINDS)
     @pytest.mark.parametrize("conflict", ["local", "built_in", "resources"])

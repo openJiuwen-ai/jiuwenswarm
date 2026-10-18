@@ -86,6 +86,15 @@ export class JoyAIProvider {
     return Boolean(this.sessionId);
   }
 
+  setMicrophoneMuted(muted: boolean): void {
+    this.voice?.setMicrophoneMuted(muted);
+    if (muted) this.userSpeechActive = false;
+  }
+
+  setSpeakerMuted(muted: boolean): void {
+    this.voice?.setSpeakerMuted(muted);
+  }
+
   async start(): Promise<void> {
     if (this.active) return;
     const sessionId = crypto.randomUUID();

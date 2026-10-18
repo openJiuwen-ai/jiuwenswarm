@@ -162,7 +162,10 @@ def _core_accesses(
     if root is None:
         return (), (), False
     try:
-        accesses = extract_accesses_native(capability.tool_name, args, root)
+        access_args = args
+        if capability.tool_name == "lsp" and args.get("operation") == "workspaceSymbol":
+            access_args = {**args, "file_path": str(root)}
+        accesses = extract_accesses_native(capability.tool_name, access_args, root)
     except (OSError, RuntimeError, TypeError, ValueError):
         return (), (), False
     reads: list[str] = []

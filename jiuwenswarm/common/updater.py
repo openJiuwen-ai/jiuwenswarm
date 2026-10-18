@@ -13,7 +13,7 @@ from urllib.parse import urljoin
 
 from jiuwenswarm.common._build_config import PACKAGE_NAME
 from jiuwenswarm.common.config import get_config_raw
-from jiuwenswarm.common.version import __version__
+from jiuwenswarm.common.version import __version__, get_runtime_version
 from jiuwenswarm.common.upgrade_executor import create_executor
 from jiuwenswarm.common.version_source import (
     GitHubReleasesSource,
@@ -117,7 +117,7 @@ class UpdaterService:
         self._lock = threading.Lock()
         self._download_thread: threading.Thread | None = None
         self._status = UpdateStatus(
-            current_version=__version__,
+            current_version=get_runtime_version(),
             install_mode=_detect_install_mode(),
         )
 

@@ -189,6 +189,7 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "plugin_packages.uninstall",
         "permissions.tools.get",
         "permissions.tools.update",
+        "permissions.tools.update_user",
         "permissions.tools.delete",
         "permissions.rules.get",
         "permissions.rules.create",
@@ -321,6 +322,7 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "plugin_packages.uninstall",
         "permissions.tools.get",
         "permissions.tools.update",
+        "permissions.tools.update_user",
         "permissions.tools.delete",
         "permissions.rules.get",
         "permissions.rules.create",
@@ -744,10 +746,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         async def _rebind_from_shared_dir() -> None:
             """Pre-AgentOS behavior, valid only when both processes share one dir."""
-            from jiuwenswarm.server.runtime.session.project_store import (
+            from jiuwenswarm.gateway.embedded.runtime.session.project_store import (
                 find_or_create_code_project_for_tui_params,
             )
-            from jiuwenswarm.server.runtime.session.session_metadata import (
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import (
                 get_session_metadata,
                 rebind_session_project,
             )
@@ -884,17 +886,13 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         )
 
     async def _forward_rewind_e2a(params: ForwardRewindE2AParams) -> bool:
-        """Try to forward a rewind request to AgentServer via E2A.
+        """Forward a rewind request to AgentServer via E2A.
 
-        Returns True if the request was successfully handled by AgentServer.
-        In AgentOS, failures are returned to the client and never fall back to
-        the Gateway deployment directory.  The legacy local fallback remains
-        available only for the single-user WebSocket client.
+        Always returns True: failures are reported to the client and never
+        fall back to the Gateway deployment directory.  AgentServer will
+        support fast startup, so the legacy local fallback was removed.
         """
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-        )
 
         real_client = _resolve_agent_client(agent_client)
         if real_client is None:
@@ -918,38 +916,32 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             resp = await _send_tui_agent_request(
                 real_client, env, label=params.error_label,
             )
+            pl = resp.payload if isinstance(resp.payload, dict) else {}
             if resp.ok:
-                pl = resp.payload if isinstance(resp.payload, dict) else {}
                 await channel.send_response(params.ws, params.req_id, ok=True, payload=pl)
                 return True
-            pl = resp.payload if isinstance(resp.payload, dict) else {}
             err = pl.get("error", params.error_label)
-            if not is_legacy_shared_directory_client(real_client):
-                await channel.send_response(
-                    params.ws, params.req_id, ok=False, error=str(err),
-                    code=pl.get("code") or "BAD_REQUEST",
-                )
-                return True
-            logger.warning("[cli %s] AgentServer returned error, fallback local: %s", params.error_label, err)
-            return False
+            await channel.send_response(
+                params.ws, params.req_id, ok=False, error=str(err),
+                code=pl.get("code") or "BAD_REQUEST",
+            )
+            return True
         except Exception as e:
-            if not is_legacy_shared_directory_client(real_client):
-                await channel.send_response(
-                    params.ws, params.req_id, ok=False, error=str(e),
-                    code="SERVICE_UNAVAILABLE",
-                )
-                return True
-            logger.warning("[cli %s] forward to agent failed, fallback local: %s", params.error_label, e)
-            return False
+            await channel.send_response(
+                params.ws, params.req_id, ok=False, error=str(e),
+                code="SERVICE_UNAVAILABLE",
+            )
+            return True
 
     async def _forward_tui_unary(
         ws, req_id, params, session_id, user_id, *, req_method, label
     ) -> bool:
-        """Forward a TUI user-state operation; only legacy mode may fall back."""
+        """Forward a TUI user-state operation to AgentServer.
+
+        Always returns True: failures are reported to the client and never
+        fall back to local execution (AgentServer will support fast startup).
+        """
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-        )
 
         real_client = _resolve_agent_client(agent_client)
         if real_client is None:
@@ -971,24 +963,20 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             response = await _send_tui_agent_request(real_client, env, label=label)
         except Exception as exc:  # noqa: BLE001
-            if not is_legacy_shared_directory_client(real_client):
-                await channel.send_response(
-                    ws, req_id, ok=False, error=str(exc), code="SERVICE_UNAVAILABLE"
-                )
-                return True
-            return False
+            await channel.send_response(
+                ws, req_id, ok=False, error=str(exc), code="SERVICE_UNAVAILABLE"
+            )
+            return True
         payload = response.payload if isinstance(response.payload, dict) else {}
         if response.ok:
             await channel.send_response(ws, req_id, ok=True, payload=payload)
             return True
-        if not is_legacy_shared_directory_client(real_client):
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error=str(payload.get("error") or f"{label} failed"),
-                code=payload.get("code") or "BAD_REQUEST",
-            )
-            return True
-        return False
+        await channel.send_response(
+            ws, req_id, ok=False,
+            error=str(payload.get("error") or f"{label} failed"),
+            code=payload.get("code") or "BAD_REQUEST",
+        )
+        return True
 
     async def _compact_partial_via_e2a(
         target_sid: str,
@@ -1034,8 +1022,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         return None, 0
 
     async def _session_rewind(ws, req_id, params, session_id, user_id=None):
-        """session.rewind: E2A → AgentServer（权威写入者），fallback 本地."""
-        from jiuwenswarm.agents.harness.common.session_ops_service import rewind_session
+        """session.rewind: E2A → AgentServer（权威写入者），不可达即报错."""
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(params, dict):
@@ -1063,7 +1050,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             return
 
-        if await _forward_rewind_e2a(
+        await _forward_rewind_e2a(
             ForwardRewindE2AParams(
                 ws=ws,
                 req_id=req_id,
@@ -1073,19 +1060,9 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 error_label="session.rewind failed",
                 user_id=user_id,
             )
-        ):
-            return
-
-        try:
-            result = rewind_session(session_id=target_sid, turn_index=turn_index)
-            await channel.send_response(ws, req_id, ok=True, payload=result)
-        except ValueError as e:
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
-        except Exception as e:
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        )
 
     async def _history_list_turns(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.agents.harness.common.session_ops_service import list_session_turns
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(params, dict):
@@ -1098,23 +1075,13 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return
         forward_params = dict(params)
         forward_params["session_id"] = target_sid
-        if await _forward_tui_unary(
+        await _forward_tui_unary(
             ws, req_id, forward_params, target_sid, user_id,
             req_method=ReqMethod.HISTORY_LIST_TURNS, label="history.list_turns",
-        ):
-            return
-        try:
-            result = list_session_turns(session_id=target_sid)
-            await channel.send_response(ws, req_id, ok=True, payload=result)
-        except Exception as e:
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        )
 
     async def _session_rewind_and_restore(ws, req_id, params, session_id, user_id=None):
-        """session.rewind_and_restore: E2A → AgentServer（权威写入者），fallback 本地."""
-        from jiuwenswarm.agents.harness.common.session_ops_service import (
-            restore_session_files,
-            rewind_session,
-        )
+        """session.rewind_and_restore: E2A → AgentServer（权威写入者），不可达即报错."""
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(params, dict):
@@ -1142,7 +1109,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             return
 
-        if await _forward_rewind_e2a(
+        await _forward_rewind_e2a(
             ForwardRewindE2AParams(
                 ws=ws,
                 req_id=req_id,
@@ -1152,27 +1119,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 error_label="session.rewind_and_restore failed",
                 user_id=user_id,
             )
-        ):
-            return
-
-        try:
-            restore_result = restore_session_files(session_id=target_sid, turn_index=turn_index)
-            rewind_result = rewind_session(session_id=target_sid, turn_index=turn_index)
-            combined = {
-                **rewind_result,
-                "restored_files": restore_result.get("restored_files", []),
-                "deleted_files": restore_result.get("deleted_files", []),
-                "restore_errors": restore_result.get("errors", []),
-            }
-            await channel.send_response(ws, req_id, ok=True, payload=combined)
-        except ValueError as e:
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
-        except Exception as e:
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        )
 
     async def _session_restore_files(ws, req_id, params, session_id, user_id=None):
-        """session.restore_files: 仅恢复文件，不截断对话."""
-        from jiuwenswarm.agents.harness.common.session_ops_service import restore_session_files
+        """session.restore_files: 仅恢复文件，不截断对话；不可达即报错."""
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(params, dict):
@@ -1202,18 +1152,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         forward_params = dict(params)
         forward_params["session_id"] = target_sid
         forward_params["turn_index"] = turn_index
-        if await _forward_tui_unary(
+        await _forward_tui_unary(
             ws, req_id, forward_params, target_sid, user_id,
             req_method=ReqMethod.SESSION_RESTORE_FILES, label="session.restore_files",
-        ):
-            return
-        try:
-            result = restore_session_files(session_id=target_sid, turn_index=turn_index)
-            await channel.send_response(ws, req_id, ok=True, payload=result)
-        except ValueError as e:
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
-        except Exception as e:
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        )
 
     async def _command_rewind_compact(ws, req_id, params, session_id, user_id=None):
         """command.rewind_compact: LLM 摘要(E2A→AgentServer) + 截断 + 记录写入(AgentServer E2A)。"""
@@ -1248,10 +1190,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             return
 
-        from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-
         real_client = _resolve_agent_client(agent_client)
-        agentos_routing = is_agentos_routing_client(real_client)
         try:
             llm_summary, summarized_count = await _compact_partial_via_e2a(
                 target_sid, turn_index, direction, user_id=user_id
@@ -1293,38 +1232,24 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                     await channel.send_response(ws, req_id, ok=True, payload=pl)
                     return
                 logger.warning("[cli command.rewind_compact] E2A failed: %s", resp.payload)
+                pl = resp.payload if isinstance(resp.payload, dict) else {}
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error=str(pl.get("error") or "command.rewind_compact failed"),
+                    code=pl.get("code") or "BAD_REQUEST",
+                )
+                return
             except Exception as e:
-                if agentos_routing:
-                    await channel.send_response(
-                        ws, req_id, ok=False, error=str(e), code="SERVICE_UNAVAILABLE"
-                    )
-                    return
-                logger.warning("[cli command.rewind_compact] E2A failed, fallback local: %s", e)
+                logger.warning("[cli command.rewind_compact] E2A failed: %s", e)
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(e), code="SERVICE_UNAVAILABLE"
+                )
+                return
 
-        if agentos_routing:
-            await channel.send_response(
-                ws, req_id, ok=False, error="AgentServer is unavailable",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-
-        # Fallback: local truncation + record writing
-        try:
-            from jiuwenswarm.agents.harness.common.session_ops_service import compact_partial_session
-            result = compact_partial_session(
-                session_id=target_sid,
-                turn_index=turn_index,
-                direction=direction,
-                llm_summary=llm_summary,
-            )
-            result["summary"] = llm_summary
-            result["summarized_messages"] = summarized_count
-            await channel.send_response(ws, req_id, ok=True, payload=result)
-        except ValueError as e:
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
-        except Exception as e:
-            logger.exception("[cli command.rewind_compact] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        await channel.send_response(
+            ws, req_id, ok=False, error="AgentServer is unavailable",
+            code="SERVICE_UNAVAILABLE",
+        )
 
     async def _session_rename(ws, req_id, params, session_id, user_id=None):
         """优先经 E2A 转发至 AgentServer；单用户共享目录不可达时由薄代理跑
@@ -1579,7 +1504,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         "execution: %s",
                         exc,
                     )
-                    from jiuwenswarm.server.runtime.harmonyos.harmonyos_dev import (
+                    from jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev import (
                         run_harmonyos_dev_init,
                     )
 
@@ -2057,7 +1982,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 and session_id
             ):
                 try:
-                    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+                    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
                     meta = get_session_metadata(session_id, cache_bust=True)
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")
@@ -2222,7 +2147,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 return
             await channel.send_response(ws, req_id, ok=True, payload={"deleted": True})
         except Exception as exc:
-            from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+            from jiuwenswarm.gateway.embedded.runtime.session.lifecycle import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "INTERNAL_ERROR")
             logger.warning("[cron.job.delete] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=code)

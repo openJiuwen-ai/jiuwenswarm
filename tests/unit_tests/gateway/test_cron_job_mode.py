@@ -388,10 +388,10 @@ class TestCronJobLazyMigration:
         root = tmp_path / "agent"
         root.mkdir()
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.session.project_store.get_agent_root_dir",
+            "jiuwenswarm.gateway.embedded.runtime.session.project_store.get_agent_root_dir",
             lambda: root,
         )
-        from jiuwenswarm.server.runtime.session import project_store
+        from jiuwenswarm.gateway.embedded.runtime.session import project_store
         project_store.invalidate_cache()
         proj = project_store.create_project("P", str(tmp_path / "app"), work_mode="code")
 
@@ -413,10 +413,10 @@ class TestCronJobLazyMigration:
         root = tmp_path / "agent"
         root.mkdir()
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.session.project_store.get_agent_root_dir",
+            "jiuwenswarm.gateway.embedded.runtime.session.project_store.get_agent_root_dir",
             lambda: root,
         )
-        from jiuwenswarm.server.runtime.session import project_store
+        from jiuwenswarm.gateway.embedded.runtime.session import project_store
         project_store.invalidate_cache()
         proj = project_store.create_project("P", str(tmp_path / "app"), work_mode="code")
         records = json.loads((root / "projects.json").read_text(encoding="utf-8"))

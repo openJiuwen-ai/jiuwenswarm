@@ -18,6 +18,9 @@ from jiuwenswarm.runtime.session.execution_registry import SessionExecutionRegis
 from jiuwenswarm.runtime.session.model import (
     SessionExecutionHandle,
     SessionExecutionState,
+    TeamExecutionContext,
+    TeamExecutionDetails,
+    TeamWaiterKind,
 )
 from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import SessionRunAdmission
 
@@ -1179,3 +1182,99 @@ async def test_interrupted_descendant_cancel_keeps_child_tracked() -> None:
         child.execution_id,
     }
     await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_team_stream_receives_context_and_parks_persistent_owner() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    release = asyncio.Event()
+    contexts: list[TeamExecutionContext] = []
+
+    async def operation(context: TeamExecutionContext):
+        contexts.append(context)
+        yield "accepted"
+        await release.wait()
+
+    details = TeamExecutionDetails(waiter_kind=TeamWaiterKind.PERSISTENT)
+    stream = coordinator.run_team_stream(
+        "session-a",
+        "team-request",
+        SessionWorkKind.TEAM_REQUEST,
+        operation,
+        channel_id="web",
+        details=details,
+    )
+    assert await anext(stream) == "accepted"
+    assert contexts[0].session.generation == 1
+    assert contexts[0].details is details
+    assert contexts[0].details.waiter_kind is TeamWaiterKind.PERSISTENT
+
+    coordinator.mark_session_waiting_for_input("session-a", 1)
+    snapshot = coordinator.snapshot_session("session-a")
+    assert snapshot is not None
+    assert snapshot.executions[-1].team is details
+    assert snapshot.executions[-1].state is SessionExecutionState.WAITING_FOR_INPUT
+
+    coordinator.resume_waiting_for_input("session-a", 1)
+    snapshot = coordinator.snapshot_session("session-a")
+    assert snapshot is not None
+    assert snapshot.executions[-1].state is SessionExecutionState.RUNNING
+
+    release.set()
+    await stream.aclose()
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_generic_stream_rejects_team_work_kind() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+
+    async def operation():
+        yield "unused"
+
+    stream = coordinator.run_stream(
+        "session-a",
+        "team-request",
+        SessionWorkKind.TEAM_REQUEST,
+        operation,
+    )
+    with pytest.raises(ValueError, match="run_team_stream"):
+        await anext(stream)
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_team_stream_rejects_non_team_work_kind() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+
+    async def operation(context: TeamExecutionContext):
+        del context
+        yield "unused"
+
+    stream = coordinator.run_team_stream(
+        "session-a",
+        "chat-request",
+        SessionWorkKind.CHAT_STREAM,
+        operation,
+        details=TeamExecutionDetails(),
+    )
+    with pytest.raises(ValueError, match="non-Team work"):
+        await anext(stream)
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_quiesced_admission_rejects_every_new_team_input() -> None:
+    admission = SessionRunAdmission()
+    await admission.quiesce_session("session-a")
+
+    with pytest.raises(RuntimeError, match="quiescing"):
+        await admission.begin_team_user("session-a")
+    with pytest.raises(RuntimeError, match="quiescing"):
+        await admission.begin_bounded_team_user("session-a")
+    with pytest.raises(RuntimeError, match="quiescing"):
+        await admission.begin_session_message("session-a", "message-run")
+    assert await admission.try_begin_heartbeat("session-a", "heartbeat-run") is False

@@ -104,6 +104,25 @@ async def test_personal_context_rail_disabled_does_not_register() -> None:
 
 
 @pytest.mark.asyncio
+async def test_personal_context_rail_uses_the_trusted_data_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from jiuwenswarm.common import utils
+
+    monkeypatch.setattr(interface_deep, "PersonalContextRail", _FakeRail)
+    homes = []
+    for name in ("deployment-a", "deployment-b"):
+        data_dir = tmp_path / name
+        monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(data_dir))
+        monkeypatch.setattr(utils, "_workspace_base_dir", None)
+        adapter = _adapter(_FakeAgent())
+        await adapter._sync_personal_context_rail("agent")
+        homes.append(adapter._personal_context_rail.home)
+        assert homes[-1] == data_dir / ".personal_context"
+    assert homes[0] != homes[1]
+
+
+@pytest.mark.asyncio
 async def test_personal_context_runtime_refresh_unregisters_and_reregisters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

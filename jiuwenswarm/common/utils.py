@@ -46,6 +46,7 @@ import logging
 from logging.handlers import BaseRotatingHandler
 from ruamel.yaml import YAML
 
+from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
 
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
@@ -328,9 +329,24 @@ def _load_logging_config_from_yaml() -> dict[str, Any]:
         cf = get_config_file()
         if not cf.exists():
             return {}
-        rt = YAML()
-        with open(cf, "r", encoding="utf-8") as f:
-            data = rt.load(f) or {}
+        # Logging reads values only. Round-trip comment preservation makes
+        # importing this module parse the entire config on the Front startup path.
+        rt = YAML(typ="safe")
+        content = cf.read_text(encoding="utf-8")
+        section = re.search(r'(?m)^(?:logging|[\"\']logging[\"\'])\s*:', content)
+        if section is None:
+            # A valid flow mapping need not have a standalone logging section.
+            data = rt.load(content) or {}
+        else:
+            boundary = re.search(r"(?m)^[^\s#]", content[section.end():])
+            end = section.end() + boundary.start() if boundary else len(content)
+            try:
+                data = rt.load(content[section.start():end]) or {}
+            except Exception:
+                # A logging alias may reference an anchor from another section.
+                data = YAML(typ="safe").load(content) or {}
+        if not isinstance(data, dict):
+            return {}
         raw = data.get("logging")
         if isinstance(raw, dict):
             return raw
@@ -886,6 +902,7 @@ def ensure_config_migrated_from_template(
 ) -> bool:
     """将模板新增的配置项合并进用户 config.yaml（保留用户已有值）。
 
+    AgentOS 配置由部署模板管理，跳过包内默认模板的结构同步。
     版本号短路：用户 config.config_version == 程序 VERSION 时跳过迁移；
     不一致时迁移，迁移成功后由 migrate_config_from_template 把 config_version 写回程序版本。
 
@@ -897,6 +914,9 @@ def ensure_config_migrated_from_template(
     purely additive: keys the operator added that the template does not contain
     are preserved, so this is safe to call on every start.
     """
+    if is_agentos_runtime():
+        return False
+
     from jiuwenswarm.common.config import migrate_config_from_template, load_yaml_round_trip
     from jiuwenswarm.common._build_config import VERSION
 
@@ -1097,7 +1117,8 @@ def prepare_workspace(
     config_dest_dir.mkdir(parents=True, exist_ok=True)
     config_yaml_dest = config_dest_dir / "config.yaml"
 
-    if overwrite or not config_yaml_dest.exists():
+    config_initialized = overwrite or not config_yaml_dest.exists()
+    if config_initialized:
         with TrackCopyDiff(
             dest=config_yaml_dest,
             is_file=True,
@@ -1264,7 +1285,10 @@ def prepare_workspace(
     from jiuwenswarm.common.config import migrate_config_from_template, set_preferred_language_in_config_file
 
     migrate_config_from_template(config_yaml_src, config_yaml_dest)
-    set_preferred_language_in_config_file(config_yaml_dest, resolved_lang)
+    # Runtime MCP repairs must leave an existing AgentOS deployment config intact.
+    # Fresh initialization and an explicit language choice can still set the language.
+    if config_initialized or preferred_language is not None or not is_agentos_runtime():
+        set_preferred_language_in_config_file(config_yaml_dest, resolved_lang)
 
     # ----- 默认安装内置技能: skill-creator 和 swarmskill-creator -----
     _install_default_builtin_skills(
@@ -1462,7 +1486,7 @@ def _ensure_mcp_builtins(
                 "MCP seed contains unexpected root files: "
                 + ", ".join(sorted(unexpected_root_files))
             )
-        from jiuwenswarm.server.runtime.mcp.package_manifest import iter_mcp_packages
+        from jiuwenswarm.common.mcp_package_manifest import iter_mcp_packages
 
         package_dirs = [
             path for path in tmp_dir.iterdir()
@@ -2648,6 +2672,79 @@ def _mask_named_sensitive_kv(text: str) -> str:
 
 
 def _sanitize_log_text(text: str) -> str:
+    """Redact JSON by value, preserving numbers and valid serialization.
+
+    Metrics can contain 18 decimal digits; applying an identity-number regex to
+    serialized JSON corrupts them. Plain text retains the existing redaction.
+    """
+    decoder = json.JSONDecoder()
+    # Logger prefixes precede a JSON object/array. A bounded scan also handles
+    # embedded JSON in messages without quadratic work on arbitrary page text.
+    for match in list(re.finditer(r'[\{\[]', text))[:32]:
+        try:
+            value, end = decoder.raw_decode(text, match.start())
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(value, (dict, list)):
+            continue
+        return (
+            _sanitize_plain_log_text(text[:match.start()])
+            + json.dumps(_sanitize_log_value(value), ensure_ascii=False, separators=(",", ":"))
+            + _sanitize_log_text(text[end:])
+        )
+    return _sanitize_plain_log_text(text)
+
+
+_SAFE_AUTHORIZATION_OUTCOMES = ("allow", "deny", "block", "cancel")
+_TOKEN_COUNT_KEYS = frozenset(
+    {"input_tokens", "output_tokens", "total_tokens", "cached_tokens", "reasoning_tokens", "tokens_used"}
+)
+
+
+def _sanitize_log_value(value: Any, *, mask_values: bool = False) -> Any:
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            safe_outcome = key == "authorization_outcome" and item in _SAFE_AUTHORIZATION_OUTCOMES
+            # Reuse the existing key classifier without letting quotes/escapes in
+            # actual values change the matching boundaries.
+            sensitive = mask_values or _NAMED_SENSITIVE_KEY_PATTERN.search(str(key)) is not None
+            if key in _TOKEN_COUNT_KEYS and _is_plain_number(item):
+                sensitive = False
+            result[_sanitize_plain_log_text(str(key))] = _sanitize_log_value(
+                item, mask_values=sensitive and not safe_outcome
+            )
+        return result
+    if isinstance(value, list):
+        sanitized = []
+        for index, item in enumerate(value):
+            previous = value[index - 1] if index else None
+            flag_value = isinstance(previous, str) and _CLI_FLAG_SENSITIVE_PATTERN.fullmatch(
+                previous + " value"
+            )
+            sanitized.append(_sanitize_log_value(item, mask_values=mask_values or bool(flag_value)))
+        return sanitized
+    if mask_values:
+        return _masked_with_fp(value)
+    if isinstance(value, str):
+        return _sanitize_log_text(value)
+    if _is_plain_int(value) and any(
+        pattern.fullmatch(str(value)) for pattern in _SENSITIVE_PII_PATTERNS
+    ):
+        return _SENSITIVE_MASK
+    return value
+
+
+def _is_plain_int(value: Any) -> bool:
+    # bool is an int subclass; True/False are never token counts or identity numbers.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_plain_number(value: Any) -> bool:
+    return _is_plain_int(value) or isinstance(value, float)
+
+
+def _sanitize_plain_log_text(text: str) -> str:
     if not text:
         return text
 

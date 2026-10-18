@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 /**
  * Generated OpenJiuwen trajectory semantic conventions.
  *
@@ -26,6 +28,7 @@ export const OPENJIUWEN_SEMCONV = {
   OJ_STEP_ID: 'openjiuwen.step.id',
   OJ_STEP_NUMBER: 'openjiuwen.step.number',
   OJ_INFERENCE_ID: 'openjiuwen.inference.id',
+  OJ_INFERENCE_INPUT_OBSERVED: 'openjiuwen.inference.input_observed',
   OJ_REQUEST_NUMBER: 'openjiuwen.request.number',
   OJ_REQUEST_PURPOSE: 'openjiuwen.request.purpose',
   OJ_REQUEST_RETRY_COUNT: 'openjiuwen.request.retry_count',

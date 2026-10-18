@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 # 兼容标识：子类可覆写 defaults，或由 GatewayServer 注入
 _BROADCAST_FALLBACK_CHANNEL_IDS: frozenset[str] = frozenset()
 
+# per-ws 出站队列硬顶：writer 正常时队列几乎恒空；触顶说明对端已停止读取，
+# 继续排队只堆内存。丢弃并告警（停滞 transport 由写停滞看门狗回收，issue #4946）。
+_SEND_QUEUE_MAX_FRAMES = 512
+
 
 class BaseWsChannel(BaseWebChannel):
     """WebSocket 通道共享基类。
@@ -110,7 +114,7 @@ class BaseWsChannel(BaseWebChannel):
                 self._ws_by_id[ws_id] = ws
                 self._id_by_ws[ws_key] = ws_id
                 # 新 ws：建出站队列 + 起常驻 writer 协程
-                self._send_queues[ws_id] = asyncio.Queue()
+                self._send_queues[ws_id] = asyncio.Queue(maxsize=_SEND_QUEUE_MAX_FRAMES)
                 self._writers[ws_id] = asyncio.create_task(
                     self._writer_loop(ws, ws_id), name=f"ws-writer-{ws_id}"
                 )
@@ -173,6 +177,15 @@ class BaseWsChannel(BaseWebChannel):
                 ws_id,
             )
         return affected
+
+    async def routing_keys_for_ws(self, ws: Any) -> list[RoutingKey]:
+        """Return the logical routes currently associated with a WebSocket."""
+        async with self._lock:
+            return [
+                routing_key
+                for routing_key, sockets in self._clients_by_key.items()
+                if ws in sockets
+            ]
 
     # ── 出站 ──
 

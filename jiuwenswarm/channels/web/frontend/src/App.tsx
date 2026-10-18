@@ -1,3 +1,9 @@
+import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
+import {
+  applyMultiModelCollaborationSnapshot,
+  getMultiModelCollaborationRevision,
+  isMultiModelCollaborationEnabled,
+} from './features/multiModelCollaboration/featureConfig';
 import { AssetPublishHost } from './components/AssetPublishDrawer';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
@@ -14,6 +20,10 @@ import { SessionSidebar } from './components/SessionSidebar';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
 import { RsiPage } from './features/rsi/RsiPage';
+import { RsiRailPeek } from './features/rsi/components/RsiRailPeek';
+import { useRsiStore } from './features/rsi/rsiStore';
+import { useMediaQuery } from './hooks/useResponsive';
+import { useSecondarySidebarPeek, useSecondarySidebarPreference, type SecondarySidebar } from './hooks/useSecondarySidebar';
 import {
   normalizeRSIEnabled,
   setRSIFeatureEnabled,
@@ -24,12 +34,12 @@ import CronPanel from './components/CronPanel';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
-import { ExternalCliInstallDialog, type ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
+import type { ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
 import { PersonalContextPanel } from './components/PersonalContext';
 import { LoadingSpinner, ToastStack, toast } from './components/ui';
 import { SettingsPage } from './features/settings/SettingsPage';
 import type { SettingsPageDefinition } from './features/settings/registry/types';
-import type { SettingsRequest } from './features/settings/services/settingsContract';
+import { SETTINGS_CONFIG_CHANGED_EVENT, type SettingsRequest } from './features/settings/services/settingsContract';
 import {
   SETTINGS_MODULE_NAVIGATION_EVENT,
   requestSettingsModule,
@@ -37,6 +47,8 @@ import {
 } from './features/settings/settingsNavigation';
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
+import { DesignerPage } from './features/designer/components/DesignerPage';
+import { submitDesignComposer } from './features/designer/designerEntry';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
 import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
@@ -66,7 +78,8 @@ import {
 import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
-import { webRequest } from './services/webClient';
+import { webClient, webRequest } from './services/webClient';
+import { attachTeamSession, resetTeamAttachments } from './services/teamAttach';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
@@ -74,12 +87,14 @@ import { useBrowserAgentActivity } from './features/browserAgentActivity';
 import {
   AgentMode,
   MediaItem,
+  type ProjectInfo,
   type ChatSendOptions,
   UserAnswer,
   ModelEntry,
   type MessageForkPoint,
   type Session,
 } from './types';
+import { parseModelGroups, parseModelSelection } from './features/settings/modules/models/modelGroupAdapters';
 import type { WorkMode } from './features/workspace/projectTypes';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
@@ -91,7 +106,7 @@ import {
 import {
   loadExternalCliPendingChoices,
   persistExternalCliPendingChoices,
-} from './features/settings/modules/experimental/externalCliInstallState';
+} from './features/settings/modules/agent/externalCliInstallState';
 import {
   ensureSessionRuntimes,
   useSessionStore,
@@ -153,12 +168,17 @@ import { useApplicationPlugins } from './applicationPlugins/useApplicationPlugin
 import type { ApplicationPluginNavKey } from './applicationPlugins/types';
 import {
   findShareImageJobForSession,
+  fetchShareImageJobStatus,
   forgetPendingShareImageJob,
   readPendingShareImageJobId,
   readShareImageJobResponse,
   rememberPendingShareImageJob,
+  resumeBrowserShareImageJob,
+  waitForShareImageJobTransfer,
+  startShareImageJobDownload,
   type ShareImageExportJobStatus,
 } from './features/shareImageJob';
+import { cancelShareImageJobForClosedTab, openShareImageExportTab } from './features/shareImageBrowserExport';
 import {
   ModelSetupGuide,
   type ModelSetupGuideStep,
@@ -179,6 +199,14 @@ import {
   useTrajectoryUiEnabled,
 } from './features/trajectory/featureConfig';
 import './App.css';
+import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
+import {
+  normalizeTeamBootstrapMode,
+  normalizeTeamDispatchMode,
+  resolveNewSessionBootstrapMode,
+  resolveNewSessionDispatchMode,
+  setTeamScheduledDispatchEnabled,
+} from './features/teamDispatch/featureConfig';
 
 const LazyTrajectoryPanel = lazy(async () => {
   const module = await import('./features/trajectory/TrajectoryPanel');
@@ -357,15 +385,21 @@ async function saveShareImageJob(jobId: string, filename: string): Promise<boole
 async function waitForShareImageJob(
   initialStatus: ShareImageExportJobStatus,
   isCurrentMonitor: () => boolean,
+  onStatus: (status: ShareImageExportJobStatus) => Promise<ShareImageExportJobStatus>,
+  onQueryInterrupted: () => void,
 ): Promise<ShareImageExportJobStatus | null> {
-  let status = initialStatus;
+  let status = await onStatus(initialStatus);
   while (status.state === 'queued' || status.state === 'running') {
     if (!isCurrentMonitor()) return null;
     await new Promise(resolve => window.setTimeout(resolve, SHARE_IMAGE_EXPORT_POLL_MS));
-    status = await readShareImageJobResponse(await fetch(
-      `/share-api/jobs/${encodeURIComponent(status.job_id)}`,
-      { cache: 'no-store' },
-    ));
+    try {
+      status = await fetchShareImageJobStatus(status.job_id);
+      status = await onStatus(status);
+    } catch (error) {
+      if (!(error instanceof TypeError) && !(error instanceof Error && error.message === 'share_export_status_timeout')) throw error;
+      onQueryInterrupted();
+      continue;
+    }
   }
   return isCurrentMonitor() ? status : null;
 }
@@ -394,6 +428,8 @@ function AppContent({
   const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
+  // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
+  const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -405,6 +441,10 @@ function AppContent({
   const [restartModalOpen, setRestartModalOpen] = useState(false);
   const [restartSuccess, setRestartSuccess] = useState(false);
   const [exportingShareSessionIds, setExportingShareSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [shareExportProgress, setShareExportProgress] = useState<Record<string, string>>({});
+  const [waitingShareExportSessionIds, setWaitingShareExportSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const waitingBrowserExportsRef = useRef(new Map<string, { status: ShareImageExportJobStatus; locale: string }>());
+  const browserExportTabsRef = useRef(new Map<string, Window>());
   const [restartSeenDisconnect, setRestartSeenDisconnect] = useState(false);
   const [appliedWithoutRestart, setAppliedWithoutRestart] = useState(false);
   const [saveToastVisible, setSaveToastVisible] = useState(false);
@@ -413,7 +453,6 @@ function AppContent({
   const [proactiveToastMessage, setProactiveToastMessage] = useState('');
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
-  const [externalCliInstallDialogOpen, setExternalCliInstallDialogOpen] = useState(false);
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
   const [hasVisitedAgents, setHasVisitedAgents] = useState(false);
   const [agentManagementNavigationRequest, setAgentManagementNavigationRequest] = useState<{
@@ -434,12 +473,21 @@ function AppContent({
   const {
     isMobile,
     isToolPanelAutoHideViewport,
-    conversationSidebarCollapsed,
-    setConversationSidebarCollapsed,
-    conversationSidebarFloating,
     toolPanelHidden,
     setToolPanelHidden,
   } = useResponsiveLayout();
+
+  const [secondarySidebarCollapsed, setSecondarySidebarCollapsed] = useSecondarySidebarPreference();
+  const {
+    target: sidebarPeek,
+    open: openSidebarPeek,
+    hover: hoverSidebarPeek,
+    close: closeSidebarPeek,
+    surfaceProps: peekSurfaceProps,
+  } = useSecondarySidebarPeek();
+  const isRsiNarrowViewport = useMediaQuery('(max-width: 1250px)');
+  const rsiHasExperiments = useRsiStore((s) => s.list.length > 0);
+  const rsiListKnownEmpty = useRsiStore((s) => s.listLoadedOnce && s.list.length === 0);
 
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
   const [composerFocusNonce, setComposerFocusNonce] = useState(0);
@@ -453,12 +501,7 @@ function AppContent({
 
   useEffect(() => {
     if (activeNav === 'chat') {
-      const { defaultModelName, setSelectedModelName } = useSessionStore.getState();
-      const runtime = useSessionStore.getState().getRuntime(sessionId);
-      if (defaultModelName && !runtime?.selectedModelName) {
-        useSessionStore.getState().ensureRuntime(sessionId);
-        setSelectedModelName(sessionId, defaultModelName);
-      }
+      useSessionStore.getState().initializeDefaultModel(sessionId);
     }
   }, [activeNav, sessionId]);
 
@@ -512,6 +555,11 @@ function AppContent({
   /** 仅用于强制重跑「首屏 history」effect：从会话列表恢复时若 sessionId 未变，也要重新拉 history 并恢复 historyPagerMeta */
   const [historyBootstrapKey, setHistoryBootstrapKey] = useState(0);
   const sessionIdRef = useRef(sessionId);
+  useEffect(() => webClient.on('runtime.history_required', (event) => {
+    if (event.payload.session_id === sessionIdRef.current) {
+      setHistoryBootstrapKey((key) => key + 1);
+    }
+  }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
   const sessionViewIdRef = useRef(generateUuidV4());
@@ -538,6 +586,7 @@ function AppContent({
   /** 为 true 表示刚从「会话列表」恢复；history 为空时在 useEffect 的 onEmpty 中提示一次 */
   const historyRestoreFromPanelHintRef = useRef(false);
   const { loadProjects, setSelectedProject } = useWorkspaceStore();
+  const workspaceWorkMode = useWorkspaceStore((state) => state.workMode);
 
   const setHistoryRetryAvailable = useCallback((sid: string, available: boolean) => {
     setHistoryRetrySessions((current) => {
@@ -618,6 +667,20 @@ function AppContent({
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
       setActiveNav('chat');
+    } else if (route.kind === 'design-project') {
+      sessionIdRef.current = NEW_CONVERSATION_ID;
+      setSessionId(NEW_CONVERSATION_ID);
+      setActiveNav('chat');
+      void useWorkspaceStore.getState().setWorkMode('design').then(() => {
+        const project = useWorkspaceStore.getState().projects.find(
+          (item) => item.project_id === route.projectId,
+        );
+        useWorkspaceStore.getState().setSelectedProject(project ?? null);
+      });
+      setSecondarySidebarCollapsed(true);
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
+      setToolPanelHidden(true);
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== '/chat/new') {
         navigate({ kind: 'chat-new' }, { replace: true });
@@ -634,7 +697,7 @@ function AppContent({
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
     }
-  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
+  }, [navigate, route, setSecondarySidebarCollapsed, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden]);
 
   useEffect(() => {
     ensureSessionRuntimes(sessionId);
@@ -642,9 +705,22 @@ function AppContent({
     useSubagentStore.getState().hydrateRuntime(sessionId);
   }, [sessionId]);
 
+  // 进入 team 会话时挂接实时事件订阅（attach_only）：mailbox / 后台触发的
+  // 轮次输出才能实时到达前端。失败仅记录并静默降级（下次进入或重连重试），
+  // 不打断会话使用。
+  useEffect(() => {
+    if (!sessionId || sessionId === 'new') return;
+    const sessionRuntime = useSessionStore.getState().getRuntime(sessionId);
+    if (sessionRuntime?.mode !== 'team') return;
+    attachTeamSession(sessionId, sessionRuntime.mode).catch((error) => {
+      console.warn('[teamAttach] failed to attach session:', sessionId, error);
+    });
+  }, [sessionId]);
+
   const {
     setCurrentSession,
     setAvailableModels,
+    setAvailableModelGroups,
     setMode,
     setTeamLeaderMemberIds,
   } = useSessionStore.getState();
@@ -981,14 +1057,23 @@ function AppContent({
     }
   }, [panelExpanded, toolPanelHidden, setToolPanelHidden]);
 
-  const { shouldFullscreen } = useResponsivePanelResize({
+  const { shouldFullscreen, sidebarAutoCollapsed } = useResponsivePanelResize({
     isTeamAreaExpanded,
-    conversationSidebarCollapsed,
-    setConversationSidebarCollapsed,
+    conversationSidebarCollapsed: secondarySidebarCollapsed,
     setSingleAgentPanelExpanded,
     setTeamAreaExpanded,
     mode,
   });
+  const conversationSidebarCollapsed = secondarySidebarCollapsed || isMobile || sidebarAutoCollapsed;
+  const rsiSidebarCollapsed = secondarySidebarCollapsed || isRsiNarrowViewport;
+  const hasFixedSecondarySidebar =
+    ((activeNav === 'chat' || activeNav === 'cron') && !conversationSidebarCollapsed) ||
+    (activeNav === 'experiments' && rsiHasExperiments && !rsiSidebarCollapsed);
+
+  useEffect(() => {
+    if (hasFixedSecondarySidebar) closeSidebarPeek();
+  }, [hasFixedSecondarySidebar, closeSidebarPeek]);
+
   const trajectoryTaskPanelAvailable = toolPanelHasContent || isRestoringTeamHistory;
   const effectiveTeamAreaExpanded = isTeamAreaExpanded;
   const insetTrajectoryFloatingTasks = shouldInsetTrajectoryForFloatingTasks(
@@ -1028,6 +1113,18 @@ function AppContent({
       // store 静默清空，且无其它重试入口，导致 project 页签定时任务空白直到
       // 侧边栏重新挂载。这里在每次连接可用后补齐拉取。
       void useCronStore.getState().loadJobs();
+      // 断线重连后旧的 team attach 订阅已随连接终止（后端随之移除 waiter）；
+      // 清空防重复标记并对当前停留的 team 会话重挂，恢复实时事件流。
+      resetTeamAttachments();
+      const activeSessionId = sessionIdRef.current;
+      if (activeSessionId && activeSessionId !== 'new') {
+        const sessionRuntime = useSessionStore.getState().getRuntime(activeSessionId);
+        if (sessionRuntime?.mode === 'team') {
+          attachTeamSession(activeSessionId, sessionRuntime.mode).catch((error) => {
+            console.warn('[teamAttach] failed to re-attach session:', activeSessionId, error);
+          });
+        }
+      }
     },
     onDisconnect: () => {
       console.log('Disconnected');
@@ -1596,7 +1693,11 @@ function AppContent({
       const response = await request<Session>('session.get_metadata', {
         session_id: targetSessionId,
       });
-      const { queued_session_messages: queuedMessages, ...session } = response;
+      const {
+        queued_session_messages: queuedMessages,
+        can_continue_queued_session_messages: canContinueQueuedMessages,
+        ...session
+      } = response;
       if ((session as unknown as Record<string, unknown>).archived === true) {
         if (sessionIdRef.current === targetSessionId) {
           navigate({ kind: 'chat-new' }, { replace: true });
@@ -1617,6 +1718,10 @@ function AppContent({
             }))
         );
       }
+      useChatStore.getState().setCanContinueQueuedSessionMessages(
+        targetSessionId,
+        canContinueQueuedMessages === true,
+      );
       upsertSessionMetadata(session, { setCurrent: sessionIdRef.current === targetSessionId });
       useWorkspaceStore.getState().upsertSession(session);
       // is_processing 由 Gateway 在 session.get_metadata 响应入队前读取当前
@@ -1666,14 +1771,22 @@ function AppContent({
         // 同 handleRestoreSession：拿到后端 metadata 里的 model 后还原 selectedModelName，
         // 覆盖"targetSession 为空、走 loadSessionMetadata"这条恢复路径（如从 cron 触发
         // 会话列表点进来的占位 session 之后补全元数据的场景，bug002）。
-        if (session?.model) {
+        // Prefer stable model_selection when present; never restore a group from active_model/model name.
+        const restoredSelection = parseModelSelection(session?.model_selection);
+        if (restoredSelection) {
+          useSessionStore.getState().setSelectedModelSelection(targetSessionId, restoredSelection);
+        } else if (session?.model) {
           useSessionStore.getState().setSelectedModelName(targetSessionId, session.model);
         }
         // 恢复会话时同步 swarmflow 开关 + budget：后端 metadata 里的
         // session_swarmflow_config 是上次会话持久化的配置，刷新/重进后读回。
         const sfConfig = (session as unknown as Record<string, unknown> | null)?.session_swarmflow_config;
         if (sfConfig && typeof sfConfig === 'object') {
-          const cfg = sfConfig as { enable_swarmflow?: boolean; swarmflow_budget?: number | null };
+          const cfg = sfConfig as {
+            enable_swarmflow?: boolean;
+            swarmflow_budget?: number | null;
+            swarmflow_worktree?: boolean;
+          };
           if (cfg.enable_swarmflow) {
             useSessionStore.getState().setSwarmflowActive(
               targetSessionId,
@@ -1681,6 +1794,25 @@ function AppContent({
               cfg.swarmflow_budget ?? undefined,
             );
           }
+          if (cfg.swarmflow_worktree !== undefined) {
+            useSessionStore.getState().setSwarmflowWorktree(
+              targetSessionId,
+              cfg.swarmflow_worktree,
+            );
+          }
+        }
+        // 恢复会话时同步团队调度模式：团队建好后不可再改，前端只读展示。
+        const restoredDispatchMode = normalizeTeamDispatchMode(
+          (session as unknown as Record<string, unknown> | null)?.session_team_dispatch_mode,
+        );
+        if (restoredDispatchMode) {
+          useSessionStore.getState().setTeamDispatchMode(targetSessionId, restoredDispatchMode);
+        }
+        const restoredBootstrapMode = normalizeTeamBootstrapMode(
+          (session as unknown as Record<string, unknown> | null)?.session_team_bootstrap_mode,
+        );
+        if (restoredBootstrapMode) {
+          useSessionStore.getState().setTeamBootstrapMode(targetSessionId, restoredBootstrapMode);
         }
       }
       return session;
@@ -1696,6 +1828,7 @@ function AppContent({
   const handleContinueQueuedSessionMessages = useCallback(async (targetSessionId: string) => {
     try {
       await request('session.message.continue_queued', { session_id: targetSessionId });
+      useChatStore.getState().setCanContinueQueuedSessionMessages(targetSessionId, false);
     } catch {
       toast.open({ content: t('network.resumeFailed'), variant: 'error' });
     }
@@ -1716,11 +1849,21 @@ function AppContent({
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
     try {
+      const collaborationRevision = getMultiModelCollaborationRevision();
       const config = await request<Record<string, unknown>>('config.get');
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
-      setServerConfig(config);
+      setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
+      setTeamScheduledDispatchEnabled(config.team_scheduled_dispatch_enabled);
+      const collaborationSnapshotApplied = applyMultiModelCollaborationSnapshot(
+        config.multi_model_collaboration_enabled,
+        collaborationRevision,
+      );
+      setServerConfig(collaborationSnapshotApplied ? config : {
+        ...config,
+        multi_model_collaboration_enabled: isMultiModelCollaborationEnabled(),
+      });
       setConfigError(null);
       if (!modelSetupGuideEvaluatedRef.current) {
         modelSetupGuideEvaluatedRef.current = true;
@@ -1734,16 +1877,17 @@ function AppContent({
       setServerConfig(null);
       setConfigError(t('app.configError'));
     }
-    // 同步获取多模型列表
+    // 同步获取多模型列表与模型组目录
     try {
-      const resp = await request<{ models: ModelEntry[]; active_model: string }>('models.list');
+      const resp = await request<{ models: ModelEntry[]; active_model: string; model_groups?: unknown }>('models.list');
       if (resp?.models) {
         setAvailableModels(resp.models, resp.active_model);
       }
+      setAvailableModelGroups(parseModelGroups(resp?.model_groups));
     } catch (error) {
       console.warn('Failed to fetch models list:', error);
     }
-  }, [request, t, setAvailableModels]);
+  }, [request, t, setAvailableModelGroups, setAvailableModels]);
 
   useEffect(() => {
     if (!FEATURE_APP_UPDATER_UI || !isConnected || startupUpdateCheckRef.current) {
@@ -1824,6 +1968,7 @@ function AppContent({
   }, []);
 
   const handleConfigChanged = useCallback(() => {
+    window.dispatchEvent(new Event(SETTINGS_CONFIG_CHANGED_EVENT));
     void fetchConfig();
   }, [fetchConfig]);
 
@@ -1833,14 +1978,15 @@ function AppContent({
 
   const handleModelsRefresh = useCallback(async () => {
     try {
-      const resp = await request<{ models: ModelEntry[]; active_model: string }>('models.list');
+      const resp = await request<{ models: ModelEntry[]; active_model: string; model_groups?: unknown }>('models.list');
       if (resp?.models) {
         setAvailableModels(resp.models, resp.active_model);
       }
+      setAvailableModelGroups(parseModelGroups(resp?.model_groups));
     } catch (error) {
       console.warn('Failed to refresh models list:', error);
     }
-  }, [request, setAvailableModels]);
+  }, [request, setAvailableModelGroups, setAvailableModels]);
 
   useEffect(() => {
     const onAuthChanged = (event: Event) => {
@@ -1860,7 +2006,11 @@ function AppContent({
     };
   }, [handleModelsRefresh]);
 
-  const detectExternalCli = useCallback(async (cliAgent: ExternalCliAgentKind, cliPath?: string) => {
+  const detectExternalCli = useCallback(async (
+    cliAgent: ExternalCliAgentKind,
+    cliPath?: string,
+    useBuiltin?: boolean,
+  ) => {
     return request<{
       cli_agent: ExternalCliAgentKind;
       status: "ok" | "warning" | "missing" | "unsupported" | "unavailable";
@@ -1871,6 +2021,7 @@ function AppContent({
     }>("external_cli.detect", {
       cli_agent: cliAgent,
       cli_path: cliPath || "",
+      use_builtin: useBuiltin ? "true" : "false",
     });
   }, [request]);
 
@@ -1935,13 +2086,12 @@ function AppContent({
     };
   }, [getExternalCliDependencyInstallStatus, isConnected]);
 
-  const trackExternalCliDependencyInstalls = useCallback(
-    (statuses: ExternalCliInstallStatuses) => {
-      setExternalCliInstallStatuses(statuses);
-      setExternalCliInstallDialogOpen(true);
-    },
-    [],
-  );
+  const trackExternalCliDependencyInstalls = useCallback((statuses: ExternalCliInstallStatuses) => {
+    // Merge, not replace: a save response may only carry a subset of agents
+    // (e.g. the one just committed), and replacing would drop another agent's
+    // in-flight install state and stop its progress updates.
+    setExternalCliInstallStatuses((current) => ({ ...current, ...statuses }));
+  }, []);
 
   const updateExternalCliInstallStatus = useCallback(
     (cliAgent: ExternalCliAgentKind, status: ExternalCliDependencyInstallStatus) => {
@@ -2072,15 +2222,19 @@ function AppContent({
     }, 8000);
   }, [clearProactiveToastTimer, proactiveNotificationMessage, setProactiveNotification]);
 
+  const configFetchedForConnectionRef = useRef(false);
   useEffect(() => {
-    if (!isConnected || initialDataLoaded) {
+    if (!isConnected) {
+      configFetchedForConnectionRef.current = false;
       return;
     }
+    if (configFetchedForConnectionRef.current) return;
+    configFetchedForConnectionRef.current = true;
     void (async () => {
       await fetchConfig();
       setInitialDataLoaded(true);
     })();
-  }, [fetchConfig, initialDataLoaded, isConnected]);
+  }, [fetchConfig, isConnected]);
 
   const initialProjectsLoadedRef = useRef(false);
 
@@ -2634,7 +2788,7 @@ function AppContent({
     // 模式，无论当前会话是什么模式、也无论有没有未发送的集群模式草稿，跳转会话都要回到单
     // agent 模式（bug003）。
     const nextMode = options.forceMode ?? resolvedEntrySettings.mode;
-    const { selectedModelName } = resolvedEntrySettings;
+    const { selectedModelName, selectedModelSelection } = resolvedEntrySettings;
     setChatWelcomeVariant(options.welcomeVariant ?? null);
     const selectedProject = options.project ?? useWorkspaceStore.getState().selectedProject;
     const projectDir = resolveNewConversationProjectDir(
@@ -2656,7 +2810,7 @@ function AppContent({
       && pendingNewRuntime?.agentGroupSelectionIntent.kind === 'select'
       ? pendingNewRuntime.agentGroupSelectionIntent
       : null;
-    resetNewConversationRuntime({ mode: nextMode, selectedModelName, projectDir });
+    resetNewConversationRuntime({ mode: nextMode, selectedModelName, selectedModelSelection, projectDir });
     if (pendingAgentSelection) {
       useSessionStore.getState().setAgentSelectionIntent(NEW_CONVERSATION_ID, pendingAgentSelection);
     }
@@ -2796,6 +2950,7 @@ function AppContent({
     const runtimeSettings = {
       mode: pendingRuntime?.mode ?? mode,
       selectedModelName: sessionStore.getEffectiveModelName(NEW_CONVERSATION_ID),
+      selectedModelSelection: pendingRuntime?.selectedModelSelection ?? null,
       projectDir: pendingRuntime?.projectDirectory ?? null,
       persistSession: false,
     };
@@ -2826,7 +2981,7 @@ function AppContent({
         createParams.previous_session_id = previousSession.sessionId;
         createParams.previous_mode = previousSession.mode;
       }
-      if (runtimeSettings.selectedModelName) createParams.model_name = runtimeSettings.selectedModelName;
+      Object.assign(createParams, useSessionStore.getState().getModelSelectionPayload(NEW_CONVERSATION_ID));
       if (workContext.project_id) createParams.project_id = workContext.project_id;
       if (workContext.project_dir) createParams.project_dir = workContext.project_dir;
 
@@ -2849,12 +3004,35 @@ function AppContent({
       (pendingRuntime?.enabledPlugins ?? []).forEach((id) => sessionStore.addEnabledPlugin(newSid, id));
       (pendingRuntime?.enabledMcps ?? []).forEach((name) => sessionStore.addEnabledMcp(newSid, name));
       if (pendingRuntime?.metadata) sessionStore.setSessionMetadata(newSid, pendingRuntime.metadata);
+      if (pendingRuntime?.selectedModelSelection) {
+        sessionStore.setSelectedModelSelection(newSid, pendingRuntime.selectedModelSelection);
+        void request('session.selection.set', {
+          session_id: newSid,
+          model_selection: pendingRuntime.selectedModelSelection,
+        }).catch((error) => {
+          console.warn('Failed to persist model selection for new session:', error);
+        });
+      }
       sessionStore.setAgentSelectionIntent(
         newSid,
         pendingRuntime?.agentSelectionIntent ?? { kind: 'keep' as const },
       );
       if (pendingRuntime?.enableSwarmflow) {
         sessionStore.setSwarmflowActive(newSid, true, pendingRuntime.swarmflowBudget);
+      }
+      if (pendingRuntime?.swarmflowWorktree !== undefined) {
+        sessionStore.setSwarmflowWorktree(newSid, pendingRuntime.swarmflowWorktree);
+      }
+      const pendingDispatchMode = resolveNewSessionDispatchMode(pendingRuntime?.teamDispatchMode);
+      if (pendingDispatchMode) {
+        sessionStore.setTeamDispatchMode(newSid, pendingDispatchMode);
+      }
+      const pendingBootstrapMode = resolveNewSessionBootstrapMode(
+        pendingDispatchMode,
+        pendingRuntime?.teamBootstrapMode,
+      );
+      if (pendingBootstrapMode) {
+        sessionStore.setTeamBootstrapMode(newSid, pendingBootstrapMode);
       }
       if (usePlanStore.getState().isActive(NEW_CONVERSATION_ID)) {
         usePlanStore.getState().setActive(newSid, true, {
@@ -2906,6 +3084,26 @@ function AppContent({
       await sendMessage(content, currentSessionId, mediaItems, options);
       return;
     }
+    const currentState = useSessionStore.getState();
+    const currentRuntime = currentState.getRuntime(currentSessionId);
+    const currentMetadata = currentState.currentSession?.session_id === currentSessionId
+      ? currentState.currentSession
+      : currentState.sessions.find((session) => session.session_id === currentSessionId);
+    const isDesignLanding = currentSessionId === NEW_CONVERSATION_ID
+      && useWorkspaceStore.getState().workMode === 'design';
+    if (
+      !isDesignLanding &&
+      !useChatStore.getState().getRuntime(currentSessionId)?.isProcessing &&
+      isConversationModelGroupBlocked({
+        mode: currentRuntime?.mode,
+        cronId: currentMetadata?.cron_id,
+        selectedModelSelection: currentRuntime?.selectedModelSelection,
+        collaborationEnabled: isMultiModelCollaborationEnabled(),
+      })
+    ) {
+      toast.open({ content: t('chat.modelSelector.collaborationDisabled'), variant: 'error' });
+      return;
+    }
     if (currentSessionId === NEW_CONVERSATION_ID) {
       const persistCommand = parsePersistSessionCommand(content);
       if (persistCommand.persistSession && !persistCommand.content) {
@@ -2916,10 +3114,52 @@ function AppContent({
       if (creatingSessionRef.current) return;
       creatingSessionRef.current = true;
       useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, true);
+      if (isDesignLanding) {
+        try {
+          const created = await submitDesignComposer({
+            prompt: messageContent,
+            mediaItems,
+          });
+          const store = useWorkspaceStore.getState();
+          if (!store.expandedProjectIds[created.projectId]) {
+            store.toggleProjectExpanded(created.projectId);
+          }
+          await store.loadProjects();
+          await store.loadProjectSessions(created.projectId);
+          const project = useWorkspaceStore.getState().projects.find(
+            (item) => item.project_id === created.projectId,
+          );
+          if (project && !project.is_default) store.setSelectedProject(project);
+          navigate({
+            kind: 'design-project',
+            projectId: created.projectId,
+            sessionId: created.sessionId,
+          });
+        } catch (error) {
+          const code = error instanceof Error ? error.message : '';
+          const referenceError = code === 'image_limit'
+            ? t('designer.chat.limitImages')
+            : code === 'video_limit'
+              ? t('designer.chat.limitVideo')
+              : code === 'audio_limit'
+                ? t('designer.chat.limitAudio')
+                : code === 'too_large'
+                  ? t('designer.chat.tooLarge')
+                  : code === 'unsupported'
+                    ? t('designer.chat.unsupported')
+                    : '';
+          window.alert(referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')));
+        } finally {
+          creatingSessionRef.current = false;
+          useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+        }
+        return;
+      }
       const newRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
       const runtimeSettings = {
         mode: newRuntime?.mode ?? mode,
         selectedModelName: useSessionStore.getState().getEffectiveModelName(NEW_CONVERSATION_ID),
+        selectedModelSelection: newRuntime?.selectedModelSelection ?? null,
         projectDir: newRuntime?.projectDirectory ?? null,
         persistSession: persistCommand.persistSession,
       };
@@ -2961,9 +3201,7 @@ function AppContent({
           createParams.previous_session_id = previousSession.sessionId;
           createParams.previous_mode = previousSession.mode;
         }
-        if (runtimeSettings.selectedModelName) {
-          createParams.model_name = runtimeSettings.selectedModelName;
-        }
+        Object.assign(createParams, useSessionStore.getState().getModelSelectionPayload(NEW_CONVERSATION_ID));
         if (workContext.project_id) {
           createParams.project_id = workContext.project_id;
         }
@@ -2995,6 +3233,15 @@ function AppContent({
           useSessionStore.getState().setSessionMetadata(newSid, pendingMetadata);
           useSessionStore.getState().setSessionMetadata(NEW_CONVERSATION_ID, null);
         }
+        if (newRuntime?.selectedModelSelection) {
+          useSessionStore.getState().setSelectedModelSelection(newSid, newRuntime.selectedModelSelection);
+          void request('session.selection.set', {
+            session_id: newSid,
+            model_selection: newRuntime.selectedModelSelection,
+          }).catch((error) => {
+            console.warn('Failed to persist model selection for new session:', error);
+          });
+        }
         // 同样搬家：欢迎页（'new'）上如果已经通过"+"菜单"扩展"面板开了某些插件/MCP 的会话内
         // 开关（或者是"使用"按钮带过来的 initialEnabledPlugins/initialEnabledMcps），真实
         // session_id 创建后要跟着过去，否则下面 removeRuntime('new') 会把这些选择直接冲掉。
@@ -3019,6 +3266,24 @@ function AppContent({
         const newConvSwarmflow = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
         if (newConvSwarmflow?.enableSwarmflow) {
           useSessionStore.getState().setSwarmflowActive(newSid, true, newConvSwarmflow.swarmflowBudget);
+        }
+        if (newConvSwarmflow?.swarmflowWorktree !== undefined) {
+          useSessionStore.getState().setSwarmflowWorktree(
+            newSid,
+            newConvSwarmflow.swarmflowWorktree,
+          );
+        }
+        // 调度模式同理，且在这里落成显式值：团队按首条消息建好后就不能再改。
+        const newConvDispatchMode = resolveNewSessionDispatchMode(newConvSwarmflow?.teamDispatchMode);
+        if (newConvDispatchMode) {
+          useSessionStore.getState().setTeamDispatchMode(newSid, newConvDispatchMode);
+        }
+        const newConvBootstrapMode = resolveNewSessionBootstrapMode(
+          newConvDispatchMode,
+          newConvSwarmflow?.teamBootstrapMode,
+        );
+        if (newConvBootstrapMode) {
+          useSessionStore.getState().setTeamBootstrapMode(newSid, newConvBootstrapMode);
         }
         pendingNewConversationRef.current = false;
         useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
@@ -3287,7 +3552,11 @@ function AppContent({
         // 会话打开时若后端 metadata 带 model（首条 chat.send 显式携带 model_name 时
         // 由后端落盘），写进 runtime.selectedModelName——单 Agent 与集群（team）会话
         // 同样恢复，保证刷新页面后模型选择不回退到默认模型。
-        if (targetSession.model) {
+        // Prefer stable model_selection when present; never restore a group from active_model/model name.
+        const restoredSelection = parseModelSelection(targetSession.model_selection);
+        if (restoredSelection) {
+          useSessionStore.getState().setSelectedModelSelection(targetSessionId, restoredSelection);
+        } else if (targetSession.model) {
           useSessionStore.getState().setSelectedModelName(targetSessionId, targetSession.model);
         }
       } else {
@@ -3429,33 +3698,82 @@ function AppContent({
     [handleRestoreSession, mode, request],
   );
 
-  const requestSessionNavigation = useCallback((target: Session | 'new', options?: NewConversationOptions) => {
-    if (target === 'new') {
-      enterNewConversation(mode, options, { clearPreviousSession: options?.clearPreviousSession });
+  // 离开 settings 前的未保存更改确认（导航图标与 peek 内会话切换共用同一守卫）；返回 false 表示用户取消
+  const confirmLeaveSettings = useCallback((): boolean => {
+    if (activeNav !== 'settings' || !settingsHasChangesRef.current) {
+      return true;
+    }
+    return window.confirm(t('settingsPanel.dialog.discardConfirm'));
+  }, [activeNav, t]);
+
+  const handleSelectDesignSession = useCallback((project: ProjectInfo, nextSessionId: string) => {
+    if (!confirmLeaveSettings()) {
       return;
     }
-    if (isToolPanelAutoHideViewport) {
-      setTeamAreaExpanded(false);
-      setSingleAgentPanelExpanded(false);
-      setToolPanelHidden(true);
-    }
-    void handleRestoreSession(target.session_id, target.mode, target);
-  }, [enterNewConversation, handleRestoreSession, isToolPanelAutoHideViewport, mode, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden]);
+    setSelectedProject(project);
+    setActiveNav('chat');
+    navigate({
+      kind: 'design-project',
+      projectId: project.project_id,
+      sessionId: nextSessionId,
+    });
+  }, [confirmLeaveSettings, navigate, setSelectedProject]);
 
-  const handleNavigate = useCallback(
-    (nav: MainNavKey) => {
-      if (
-        activeNav === 'settings' &&
-        nav !== 'settings' &&
-        settingsHasChangesRef.current &&
-        !window.confirm(t('settingsPanel.dialog.discardConfirm'))
-      ) {
+  const handleProjectRemoved = useCallback((projectId: string, removedWorkMode: WorkMode) => {
+    // 目前Design功能页是唯一需要处理项目软删除的场景
+    // 打开项目的URL是 `/design/<id>`，但是回到上层是`/chat/new`
+    if (
+      removedWorkMode === 'design'
+      && route.kind === 'design-project'
+      && route.projectId === projectId
+    ) {
+      navigate({ kind: 'chat-new' });
+    }
+  }, [navigate, route]);
+
+  const requestSessionNavigation = useCallback(
+    (target: Session | 'new', options?: NewConversationOptions) => {
+      // 会话切换同样尊重未保存守卫：非设置页恒放行，设置页（仅 peek 入口可达）弹确认框
+      if (!confirmLeaveSettings()) {
         return;
       }
+      closeSidebarPeek();
+      if (target === 'new') {
+        enterNewConversation(mode, options, { clearPreviousSession: options?.clearPreviousSession });
+        return;
+      }
+      if (isToolPanelAutoHideViewport) {
+        setTeamAreaExpanded(false);
+        setSingleAgentPanelExpanded(false);
+        setToolPanelHidden(true);
+      }
+      void handleRestoreSession(target.session_id, target.mode, target);
+    },
+    [
+      confirmLeaveSettings,
+      closeSidebarPeek,
+      enterNewConversation,
+      handleRestoreSession,
+      isToolPanelAutoHideViewport,
+      mode,
+      setSingleAgentPanelExpanded,
+      setTeamAreaExpanded,
+      setToolPanelHidden,
+    ],
+  );
+
+  const handleNavigate = useCallback(
+    (nav: MainNavKey, peekTarget: SecondarySidebar | null = null): boolean => {
+      if (nav !== 'settings' && !confirmLeaveSettings()) {
+        return false;
+      }
+      if (peekTarget) openSidebarPeek(peekTarget);
+      else closeSidebarPeek();
+      // 创建对话框信号一次性消费：归零避免携带旧 nonce 重进实验页时误开对话框
+      setRsiOpenCreateNonce(0);
       if (nav !== 'settings') setRequestedSettingsModuleId(null);
       setActiveNav(nav);
       if (nav === 'chat') {
-        setConversationSidebarCollapsed(false);
         if (isMobile) {
           setTeamAreaExpanded(false);
           setSingleAgentPanelExpanded(false);
@@ -3469,9 +3787,42 @@ function AppContent({
       if (nav === 'agents') setHasVisitedAgents(true);
       if (nav === 'skills') setHasVisitedSkills(true);
       if (nav === 'personalContext') setHasVisitedPersonalContext(true);
+      if (nav === 'design') {
+        setTeamAreaExpanded(false);
+        setToolPanelHidden(true);
+      }
+      return true;
     },
-    [activeNav, isMobile, modelSetupGuideStep, setSingleAgentPanelExpanded, setHasVisitedPersonalContext, setRequestedSettingsModuleId, setTeamAreaExpanded, setToolPanelHidden, t],
+    [
+      closeSidebarPeek,
+      openSidebarPeek,
+      confirmLeaveSettings,
+      isMobile,
+      modelSetupGuideStep,
+      setSingleAgentPanelExpanded,
+      setHasVisitedPersonalContext,
+      setRequestedSettingsModuleId,
+      setTeamAreaExpanded,
+      setToolPanelHidden,
+    ],
   );
+
+  const handleNavItemClick = (nav: MainNavKey) => {
+    const peekTarget = (
+      (nav === 'chat' && conversationSidebarCollapsed) ||
+      (nav === 'experiments' && !rsiListKnownEmpty && rsiSidebarCollapsed)
+    ) ? nav : null;
+    handleNavigate(nav, peekTarget);
+  };
+
+  const pinSecondarySidebar = (target: SecondarySidebar) => {
+    if (!handleNavigate(target === 'chat' && activeNav === 'cron' ? 'cron' : target)) return;
+    setSecondarySidebarCollapsed(false);
+    if (target === 'chat' && sidebarAutoCollapsed) {
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
+    }
+  };
 
   const handleNavigateToAgentManagement = useCallback(
     (target: 'agent' | 'group' = 'agent') => {
@@ -3515,6 +3866,19 @@ function AppContent({
   }, [request]);
 
   const setShareExportSessionActive = useCallback((targetSessionId: string, active: boolean) => {
+    if (!active) {
+      waitingBrowserExportsRef.current.delete(targetSessionId);
+      setWaitingShareExportSessionIds(current => {
+        const next = new Set(current);
+        next.delete(targetSessionId);
+        return next;
+      });
+    }
+    if (!active) setShareExportProgress(current => {
+      const next = { ...current };
+      delete next[targetSessionId];
+      return next;
+    });
     setExportingShareSessionIds(current => {
       const next = new Set(current);
       if (active) next.add(targetSessionId);
@@ -3523,28 +3887,114 @@ function AppContent({
     });
   }, []);
 
+  const closeShareExportTab = useCallback((targetSessionId: string) => {
+    browserExportTabsRef.current.get(targetSessionId)?.close();
+    browserExportTabsRef.current.delete(targetSessionId);
+  }, []);
+
+  const shareExportPhaseText = useCallback((phase?: string, progress?: number | null) => (
+    phase === 'rendering' && progress != null
+      ? t('share.renderingProgress', { percent: progress })
+      : phase === 'download_started' ? t('share.downloading')
+        : phase === 'saving' || phase === 'completed' || phase === 'download_sent'
+        ? t(window.jiuwenDesktop?.isElectron ? 'share.savingDesktop' : 'share.saving')
+        : phase === 'rendering' ? t('share.preparingDocument')
+          : phase === 'loading_snapshot' ? t('share.loadingHistory') : t('share.preparing')
+  ), [t]);
+
+  useEffect(() => {
+    if (!window.jiuwenDesktop?.isElectron || typeof window.jiuwenDesktop.onShareImageExportProgress !== 'function') return;
+    return window.jiuwenDesktop.onShareImageExportProgress(({ sessionId: targetSessionId, phase, progress }) => {
+      if (!shareExportMonitorTokensRef.current.has(targetSessionId)) return;
+      setShareExportProgress(previous => ({ ...previous, [targetSessionId]: shareExportPhaseText(phase, progress) }));
+    });
+  }, [shareExportPhaseText]);
+
   const monitorAndSaveShareImageJob = useCallback(async (
     initialStatus: ShareImageExportJobStatus,
     targetSessionId: string,
     token: symbol,
+    startBrowser = false,
   ) => {
-    const status = await waitForShareImageJob(
+    initialStatus = await resumeBrowserShareImageJob(initialStatus, targetSessionId, window.sessionStorage);
+    let startedBrowser = false;
+    let status = await waitForShareImageJob(
       initialStatus,
       () => shareExportMonitorTokensRef.current.get(targetSessionId) === token,
+      async current => {
+        current = await cancelShareImageJobForClosedTab(
+          { ...current, client_token: initialStatus.client_token },
+          browserExportTabsRef.current.get(targetSessionId),
+        );
+        const text = shareExportPhaseText(current.phase, current.progress);
+        setShareExportProgress(previous => ({ ...previous, [targetSessionId]: text }));
+        if (current.state !== 'queued') {
+          waitingBrowserExportsRef.current.delete(targetSessionId);
+          setWaitingShareExportSessionIds(previous => {
+            if (!previous.has(targetSessionId)) return previous;
+            const next = new Set(previous); next.delete(targetSessionId); return next;
+          });
+        }
+        if (current.renderer === 'browser' && current.state === 'queued' && !startedBrowser) {
+          startedBrowser = true;
+          const browserJob = { status: { ...current, client_token: initialStatus.client_token }, locale: initialStatus.locale ?? i18n.resolvedLanguage ?? i18n.language };
+          rememberPendingShareImageJob(window.sessionStorage, targetSessionId, browserJob.status, browserJob.locale);
+          const tab = startBrowser ? openShareImageExportTab(browserJob.status, browserJob.locale) : null;
+          if (tab) browserExportTabsRef.current.set(targetSessionId, tab);
+          else {
+            waitingBrowserExportsRef.current.set(targetSessionId, browserJob);
+            setWaitingShareExportSessionIds(previous => new Set(previous).add(targetSessionId));
+          }
+        }
+        return current;
+      },
+      () => setShareExportProgress(previous => ({ ...previous, [targetSessionId]: tRef.current('share.statusReconnecting') })),
     );
     if (status === null) return;
     if (status.state === 'failed') {
+      closeShareExportTab(targetSessionId);
       forgetPendingShareImageJob(window.sessionStorage, targetSessionId, status.job_id);
+      if (status.error === 'share_export_tab_closed') {
+        const sessionState = useSessionStore.getState();
+        const exportedSession = sessionState.currentSession?.session_id === targetSessionId
+          ? sessionState.currentSession
+          : sessionState.sessions.find(session => session.session_id === targetSessionId);
+        const exportedSessionTitle = toDisplaySessionTitle(exportedSession?.title ?? '') || targetSessionId;
+        toast.open({
+          id: `share-export-stopped:${status.job_id}`,
+          content: tRef.current('share.exportStopped', { sessionTitle: exportedSessionTitle }),
+          duration: 5,
+          wide: true,
+          testId: 'app-share-export-stopped-toast',
+          dataVariant: targetSessionId,
+        });
+        return;
+      }
       throw new Error(status.error || 'share_export_job_failed');
     }
 
-    const saved = await saveShareImageJob(status.job_id, status.filename.trim());
+    if (status.renderer === 'browser' && initialStatus.state === 'completed' && status.phase !== 'download_started' && status.phase !== 'download_sent') {
+      // A reloaded chat can resume a published artifact after its renderer has gone.
+      status = await startShareImageJobDownload({ ...status, client_token: initialStatus.client_token });
+    }
+    let saved: boolean;
+    try {
+      saved = status.renderer === 'browser'
+        ? await waitForShareImageJobTransfer(status, () => shareExportMonitorTokensRef.current.get(targetSessionId) === token,
+          current => setShareExportProgress(previous => ({ ...previous, [targetSessionId]: shareExportPhaseText(current.phase, current.progress) }))) !== null
+        : await saveShareImageJob(status.job_id, status.filename.trim());
+    } catch (error) {
+      if (error instanceof Error && ['share_export_download_start_timeout', 'share_export_download_interrupted'].includes(error.message)) closeShareExportTab(targetSessionId);
+      throw error;
+    }
+    if (saved) closeShareExportTab(targetSessionId);
     forgetPendingShareImageJob(window.sessionStorage, targetSessionId, status.job_id);
     if (saved) showSaveToast();
-  }, [showSaveToast]);
+  }, [closeShareExportTab, showSaveToast, shareExportPhaseText, i18n.language, i18n.resolvedLanguage]);
 
   useEffect(() => {
     const targetSessionId = sessionId;
+    if (window.jiuwenDesktop?.isElectron) return;
     if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return;
     if (shareExportMonitorTokensRef.current.has(targetSessionId)) return;
 
@@ -3559,6 +4009,9 @@ function AppContent({
         return;
       }
       if (status === null) return;
+      // A failed transfer is retried by the user's next export click. Reloading
+      // preserves its artifact without repeating the failure dialog or download.
+      if (status.renderer === 'browser' && status.state === 'completed' && status.phase === 'download_failed') return;
       if (shareExportMonitorTokensRef.current.has(targetSessionId)) return;
 
       const token = Symbol(targetSessionId);
@@ -3572,7 +4025,10 @@ function AppContent({
         );
       } catch (error) {
         console.error('Failed to monitor share image export:', error);
-        window.alert(tRef.current('share.exportFailed'));
+        const message = error instanceof Error ? error.message : '';
+        window.alert(tRef.current(message === 'share_export_download_start_timeout' ? 'share.downloadStartFailed'
+          : message === 'share_export_download_interrupted' ? 'share.downloadInterrupted'
+          : message === 'share_export_status_timeout' ? 'share.statusTimeout' : 'share.exportFailed'));
       } finally {
         if (shareExportMonitorTokensRef.current.get(targetSessionId) === token) {
           shareExportMonitorTokensRef.current.delete(targetSessionId);
@@ -3584,6 +4040,23 @@ function AppContent({
 
   const handleExportShare = useCallback(async () => {
     const currentSessionId = sessionIdRef.current;
+    if (window.jiuwenDesktop?.isElectron && typeof window.jiuwenDesktop.onShareImageExportProgress !== 'function') {
+      window.alert(t('share.desktopRestartRequired'));
+      return;
+    }
+    const waitingJob = waitingBrowserExportsRef.current.get(currentSessionId);
+    if (waitingJob) {
+      const tab = openShareImageExportTab(waitingJob.status, waitingJob.locale);
+      if (!tab) { window.alert(t('share.popupBlocked')); return; }
+      browserExportTabsRef.current.set(currentSessionId, tab);
+      waitingBrowserExportsRef.current.delete(currentSessionId);
+      setWaitingShareExportSessionIds(previous => {
+        const next = new Set(previous);
+        next.delete(currentSessionId);
+        return next;
+      });
+      return;
+    }
     if (
       !currentSessionId
       || currentSessionId === NEW_CONVERSATION_ID
@@ -3593,9 +4066,24 @@ function AppContent({
       return;
     }
     const token = Symbol(currentSessionId);
+    const plainWeb = !window.jiuwenDesktop?.isElectron && !window.pywebview;
     shareExportMonitorTokensRef.current.set(currentSessionId, token);
     setShareExportSessionActive(currentSessionId, true);
+    setShareExportProgress(current => ({ ...current, [currentSessionId]: t('share.preparing') }));
     try {
+      if (window.jiuwenDesktop?.isElectron) {
+        const saved = await window.jiuwenDesktop.exportShareImage(
+          currentSessionId,
+          i18n.resolvedLanguage ?? i18n.language,
+        );
+        if (saved) showSaveToast();
+        return;
+      }
+      const pending = await findShareImageJobForSession(currentSessionId, window.sessionStorage);
+      if (pending && pending.state === 'completed') {
+        await monitorAndSaveShareImageJob(pending, currentSessionId, token);
+        return;
+      }
       const createResponse = await fetch('/share-api/jobs', {
         method: 'POST',
         cache: 'no-store',
@@ -3603,25 +4091,41 @@ function AppContent({
         body: JSON.stringify({
           session_id: currentSessionId,
           locale: i18n.resolvedLanguage ?? i18n.language,
+          allow_browser_render: plainWeb,
         }),
       });
       const created = await readShareImageJobResponse(createResponse);
-      rememberPendingShareImageJob(window.sessionStorage, currentSessionId, created.job_id);
+      rememberPendingShareImageJob(window.sessionStorage, currentSessionId, created, i18n.resolvedLanguage ?? i18n.language);
       await monitorAndSaveShareImageJob(
         created,
         currentSessionId,
         token,
+        plainWeb,
       );
     } catch (error) {
       console.error('Failed to export share image:', error);
-      window.alert(t('share.exportFailed'));
+      const message = error instanceof Error ? error.message : '';
+      window.alert(t(message === 'share_export_popup_blocked' ? 'share.popupBlocked'
+        : message === 'share_export_tab_closed' ? 'share.browserTabClosed'
+          : message === 'share_export_download_start_timeout' ? 'share.downloadStartFailed'
+            : message === 'share_export_download_interrupted' ? 'share.downloadInterrupted'
+            : message === 'share_export_status_timeout' ? 'share.statusTimeout' : 'share.exportFailed'));
     } finally {
       if (shareExportMonitorTokensRef.current.get(currentSessionId) === token) {
         shareExportMonitorTokensRef.current.delete(currentSessionId);
         setShareExportSessionActive(currentSessionId, false);
       }
     }
-  }, [i18n.language, i18n.resolvedLanguage, isPaused, isProcessing, monitorAndSaveShareImageJob, setShareExportSessionActive, t]);
+  }, [
+    i18n.language,
+    i18n.resolvedLanguage,
+    isPaused,
+    isProcessing,
+    monitorAndSaveShareImageJob,
+    setShareExportSessionActive,
+    showSaveToast,
+    t,
+  ]);
 
   const routeSessionMissing = routeSessionId !== null
     && initialDataLoaded
@@ -3652,11 +4156,18 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       {/* Navigation Sidebar */}
       <SessionSidebar
         activeNav={activeNav}
-        onNavigate={handleNavigate}
+        onNavigate={handleNavItemClick}
         onNewSession={handleNewSession}
         showNewSession={false}
         hiddenNavItems={hiddenNavItems}
         applicationPlugins={visibleApplicationPlugins}
+        onNavItemHover={(key) => {
+          const target = key === 'chat' || (key === 'experiments' && !rsiListKnownEmpty) ? key : null;
+          hoverSidebarPeek(!hasFixedSecondarySidebar ? target : null);
+        }}
+        onNavItemPointerDownCapture={(key) => {
+          if (key === sidebarPeek) peekSurfaceProps.onPointerDownCapture();
+        }}
       />
 
       {modelSetupGuideStep !== null ? (
@@ -3681,6 +4192,35 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         )}
 
+        {sidebarPeek && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (
+          <div className="chat-layout--peek-host" {...peekSurfaceProps}>
+            {sidebarPeek === 'chat' ? (
+              <ConversationSidebar
+                activeSessionId={activeNav === 'cron' || sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                onNew={(options) => requestSessionNavigation('new', options)}
+                onSelect={requestSessionNavigation}
+                onSelectDesignSession={handleSelectDesignSession}
+                activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
+                onProjectRemoved={handleProjectRemoved}
+                onOpenCron={() => handleNavigate('cron')}
+                isCronActive={activeNav === 'cron'}
+                collapsed={false}
+                floating
+                peek
+                onToggleCollapse={isMobile ? undefined : () => pinSecondarySidebar('chat')}
+              />
+            ) : (
+              <RsiRailPeek
+                onOpenExperiments={() => handleNavigate('experiments')}
+                onCreate={() => {
+                  if (handleNavigate('experiments')) setRsiOpenCreateNonce((n) => n + 1);
+                }}
+                onPin={isRsiNarrowViewport ? undefined : () => pinSecondarySidebar('experiments')}
+              />
+            )}
+          </div>
+        )}
+
         {activeNav === 'chat' && (
           <>
             <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
@@ -3688,12 +4228,39 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
+                onSelectDesignSession={handleSelectDesignSession}
+                activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
+                onProjectRemoved={handleProjectRemoved}
                 onOpenCron={() => handleNavigate('cron')}
                 isCronActive={false}
                 collapsed={conversationSidebarCollapsed}
-                floating={conversationSidebarFloating}
-                onToggleCollapse={() => setConversationSidebarCollapsed((v) => !v)}
+                onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
+                hideCollapseButton={
+                  workspaceWorkMode === 'design' && route.kind === 'design-project'
+                }
               />
+              {workspaceWorkMode === 'design' && route.kind === 'design-project' ? (
+                  <DesignerPage
+                    projectId={route.projectId}
+                    sessionId={route.sessionId}
+                    sidebarCollapsed={conversationSidebarCollapsed}
+                    onToggleSidebarCollapse={() => {
+                      if (isMobile) {
+                        if (sidebarPeek === 'chat') closeSidebarPeek();
+                        else openSidebarPeek('chat');
+                        return;
+                      }
+                      closeSidebarPeek();
+                      setSecondarySidebarCollapsed((v) => !v);
+                    }}
+                    onOpenSession={(nextProjectId, nextSessionId, options) => {
+                      navigate(
+                        { kind: 'design-project', projectId: nextProjectId, sessionId: nextSessionId },
+                        options,
+                      );
+                    }}
+                  />
+              ) : (
               <div
                 className={`chat-workspace flex-1 flex min-h-0 overflow-hidden ${insetTrajectoryFloatingTasks ? 'chat-workspace--trajectory-floating-tools' : ''}`}
               >
@@ -3740,6 +4307,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onUserAnswer={handleUserAnswer}
                         onExportShare={handleExportShare}
                         isExportingShare={isExportingShare}
+                        shareExportProgress={shareExportProgress[sessionId]}
+                        isWaitingShareExportTab={waitingShareExportSessionIds.has(sessionId)}
                         canExportShare={Boolean(sessionId && sessionId !== NEW_CONVERSATION_ID && (!isProcessing || isPaused))}
                         sessionTitle={sessionTitle}
                         sessionProjectName={sessionProjectName}
@@ -3855,12 +4424,17 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                   <HeartbeatPanel sessionId={sessionId} onClose={() => setHeartbeatPanelOpen(false)} />
                 )}
               </div>
+              )}
             </div>
           </>
         )}
         {activeNav === 'experiments' && (
           <div className="app-section">
-            <RsiPage />
+            <RsiPage
+              collapsed={rsiSidebarCollapsed}
+              onCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
+              openCreateNonce={rsiOpenCreateNonce}
+            />
           </div>
         )}
         {hasVisitedAgents && (
@@ -3904,11 +4478,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               activeSessionId={null}
               onNew={(options) => requestSessionNavigation('new', options)}
               onSelect={requestSessionNavigation}
+              onSelectDesignSession={handleSelectDesignSession}
               onOpenCron={() => handleNavigate('cron')}
               isCronActive
               collapsed={conversationSidebarCollapsed}
-              floating={conversationSidebarFloating}
-              onToggleCollapse={() => setConversationSidebarCollapsed((v) => !v)}
+              onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
             />
             <div className="chat-workspace flex-1 flex min-h-0 overflow-hidden">
               <CronPanel
@@ -3953,10 +4527,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onSelectExternalCliPath={selectExternalCliPath}
               onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
               externalCliInstallStatuses={externalCliInstallStatuses}
-              externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
-                (status) => status?.status === 'running',
-              )}
-              onOpenExternalCliInstallDialog={() => setExternalCliInstallDialogOpen(true)}
+              onGetExternalCliInstallStatus={getExternalCliDependencyInstallStatus}
+              onExternalCliInstallStatusChange={updateExternalCliInstallStatus}
               externalCliPendingChoices={externalCliPendingChoices}
               onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
               externalCliDetectResults={externalCliDetectResults}
@@ -4136,14 +4708,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         </div>
       )}
-
-      <ExternalCliInstallDialog
-        open={externalCliInstallDialogOpen}
-        statuses={externalCliInstallStatuses}
-        onClose={() => setExternalCliInstallDialogOpen(false)}
-        onGetStatus={getExternalCliDependencyInstallStatus}
-        onStatusChange={updateExternalCliInstallStatus}
-      />
 
       {/* 登录弹窗：默认不显示，由 requestLogin() 等事件唤起 */}
       <LoginDialog />

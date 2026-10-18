@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from gateway_protocol.agent_client import AgentServerClient
-from gateway_protocol.sdk.agent_server_client import AgentServerClientExtension
-from gateway_protocol.sdk.third_agent import ThirdAgentExtension
-from gateway_protocol.third_agent import ThirdAgent
+from jiuwenswarm.common.client.agent_client import AgentServerClient
+from jiuwenswarm.extensions.sdk.agent_server_client import AgentServerClientExtension
+from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
+from jiuwenswarm.common.client.third_agent import ThirdAgent
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentManager
@@ -78,6 +78,23 @@ class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
 
     def get_third_agent(self) -> ThirdAgent:
         return self._third_agent
+
+    async def resolve_web_endpoint(
+        self,
+        user_id: str,
+        agent_type: str,
+        protocol: str,
+        *,
+        acquire: bool = False,
+    ) -> str | None:
+        """Delegate to router client for the WebChannel agent UI proxy."""
+        return await self._router_client.resolve_web_endpoint(
+            user_id, agent_type, protocol, acquire=acquire
+        )
+
+    async def release_web_endpoint(self, user_id: str, agent_type: str) -> None:
+        """Drop one web-proxy task hold taken by ``resolve_web_endpoint``."""
+        await self._router_client.release_web_endpoint(user_id, agent_type)
 
     def set_key_issuer(
         self,

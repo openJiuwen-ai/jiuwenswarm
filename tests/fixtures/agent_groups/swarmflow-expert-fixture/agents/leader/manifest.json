@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "package_type": "agent_template",
+  "name": "leader",
+  "description": "Fixture leader: routes every ticket to the echo expert.",
+  "persona": {
+    "dir": "."
+  },
+  "display_name": {
+    "en": "Fixture Leader",
+    "zh": "验收负责人"
+  },
+  "source": "local"
+}

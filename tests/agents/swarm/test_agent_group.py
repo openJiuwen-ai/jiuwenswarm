@@ -11,6 +11,7 @@ import pytest
 
 from jiuwenswarm.agents.swarm.agent_group import (
     load_agent_group_package,
+    load_agent_group_package_bundle,
 )
 from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
 
@@ -63,6 +64,27 @@ def test_load_agent_group_uses_directory_as_id_and_name_as_display_name(
     assert templates["member1"].agent_card.name == "member1 display name"
 
 
+def test_load_agent_group_bundle_reuses_manifest_and_templates(tmp_path: Path) -> None:
+    group = _minimal_group(tmp_path)
+    manifest_path = group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(
+        {
+            "instruction": "  analyze carefully  ",
+            "capabilities": ["analysis", "risk", "analysis", ""],
+        }
+    )
+    _write_json(manifest_path, manifest)
+
+    package = load_agent_group_package_bundle(group)
+
+    assert package.package_dir == group.resolve()
+    assert package.manifest["name"] == "group"
+    assert set(package.templates) == {"leader", "member1"}
+    assert package.instruction == "analyze carefully"
+    assert package.capabilities == ("analysis", "risk")
+
+
 def test_load_agent_group_rejects_member_agent_md(tmp_path: Path) -> None:
     group = _minimal_group(tmp_path)
     (group / "agents" / "member1" / "AGENT.md").write_text(
@@ -72,6 +94,28 @@ def test_load_agent_group_rejects_member_agent_md(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="must not contain AGENT.md"):
         load_agent_group_package(group)
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        ({"tags": [{"id": "legal", "zh": "法律", "en": "Legal"}]}, ("legal",)),
+        ({"tags": [{"zh": "法律", "en": "Legal"}, {"en": "Risk"}, "finance"]},
+         ("法律", "Risk", "finance")),
+        ({"tags": [{"id": "legal"}, {"id": "legal"}, {}, " "]}, ("legal",)),
+        ({"capabilities": ["finance"], "tags": [{"id": "legal"}]}, ("finance",)),
+        ({"capabilities": [], "tags": [{"id": "legal"}]}, ()),
+        ({}, ()),
+    ],
+)
+def test_group_capabilities_use_stable_tags_unless_explicit(tmp_path, fields, expected):
+    group = _minimal_group(tmp_path)
+    manifest_path = group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(fields)
+    _write_json(manifest_path, manifest)
+
+    assert load_agent_group_package_bundle(group).capabilities == expected
 
 
 def test_load_agent_group_discovers_unlisted_skills(tmp_path: Path) -> None:

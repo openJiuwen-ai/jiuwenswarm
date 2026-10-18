@@ -280,8 +280,12 @@ def resolve_session(
 
 
 def raw_metadata(session_id: str) -> dict:
-    path = resolve_session(session_id, must_exist=False)
-    return read_json(path / "metadata.json")
+    # Match the metadata writer's existing lifecycle lock across processes.
+    # An unlocked Windows reader can race an atomic replacement and receive a
+    # sharing violation during admission even though the Session is healthy.
+    with resource_lock("session", session_id):
+        path = resolve_session(session_id, must_exist=False)
+        return read_json(path / "metadata.json")
 
 
 def build_project_lookup() -> tuple[

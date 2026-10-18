@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 import shutil
 import threading
@@ -11,11 +12,13 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
+from jiuwenswarm.server.runtime.session import lifecycle as lc
 from jiuwenswarm.server.runtime.session.session_history import (
     flush_history_writes,
     get_read_history_path,
@@ -29,6 +32,92 @@ if TYPE_CHECKING:
     from openjiuwen.harness import DeepAgent
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SessionHistorySnapshot:
+    """One request's pre-read history, fenced by its existing Runtime owner."""
+
+    session_id: str
+    before_request_id: str
+    generation: int
+    runtime_owner: tuple[int, float]
+    path: Path
+    file_identity: tuple[int, int, int, int, int]
+    records: tuple[dict[str, Any], ...]
+
+
+def _history_file_identity(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _history_runtime_owner(value: dict[str, Any]) -> tuple[int, float] | None:
+    owner = value.get("runtime_owner") or {}
+    if owner.get("pid") != os.getpid() or owner.get("started_at") is None:
+        return None
+    return (owner["pid"], owner["started_at"])
+
+
+def prefetch_session_history(
+    session_id: str, *, history_before_request_id: str | None,
+) -> SessionHistorySnapshot | None:
+    """Read a complete request prefix while Agent resources are prepared.
+
+    Missing ownership or an undelivered user-history receipt keeps the original
+    late read. The caller retains the session adapter lock until this I/O drains.
+    No session files, transactions, metadata or ownership are changed here.
+    """
+    boundary = str(history_before_request_id or "").strip()
+    if not boundary:
+        return None
+    try:
+        with lc.resource_lock("session", session_id):
+            lc.guard(session_id)
+            value = lc.state("session", session_id)
+            owner = _history_runtime_owner(value)
+            if owner is None or value.get("write_blocked"):
+                return None
+            path = get_read_history_path(session_id)
+            if not path.exists():
+                return None
+            identity = _history_file_identity(path)
+            records = load_history_records(session_id)
+            if get_read_history_path(session_id) != path or identity != _history_file_identity(path):
+                return None
+            if not any(
+                str(record.get("request_id") or "").strip() == boundary
+                and record.get("role") in {"user", "human"}
+                for record in records
+            ):
+                return None
+            return SessionHistorySnapshot(
+                session_id, boundary, int(value.get("generation", 0)), owner,
+                path, identity, tuple(records),
+            )
+    except Exception as exc:
+        logger.debug("session history pre-read unavailable for %s: %s", session_id, exc)
+        return None
+
+
+def _history_snapshot_is_current(
+    snapshot: SessionHistorySnapshot, session_id: str, boundary: str,
+) -> bool:
+    if snapshot.session_id != session_id or snapshot.before_request_id != boundary:
+        return False
+    try:
+        with lc.resource_lock("session", session_id):
+            lc.guard(session_id)
+            value = lc.state("session", session_id)
+            return (
+                int(value.get("generation", 0)) == snapshot.generation
+                and not value.get("write_blocked")
+                and _history_runtime_owner(value) == snapshot.runtime_owner
+                and get_read_history_path(session_id) == snapshot.path
+                and _history_file_identity(snapshot.path) == snapshot.file_identity
+            )
+    except Exception:
+        return False
 
 _FORK_HISTORY_SESSION_KEYS = frozenset({
     "session_id",
@@ -436,6 +525,9 @@ def fork_session(
         "project_id": source_meta.get("project_id", ""),
         "project_dir": source_meta.get("project_dir", ""),
     }
+    metadata["moa_enabled"] = source_meta.get("moa_enabled") is True
+    if "model_selection" in source_meta:
+        metadata["model_selection"] = copy.deepcopy(source_meta["model_selection"])
     if "model" in source_meta:
         metadata["model"] = source_meta["model"]
     source_equipment = source_meta.get("session_equipment")
@@ -462,6 +554,7 @@ def fork_session(
         "session_id": target_session_id,
         "source_session_id": source_session_id,
         "title": final_title,
+        "moa_enabled": metadata["moa_enabled"],
     }
 
 
@@ -1242,6 +1335,8 @@ def _build_context_messages_from_history(
                     messages = [UserMessage(
                         content=content,
                         metadata={
+                            **({"duplex_history_id": record.get("id") or record.get("request_id")}
+                               if record.get("channel_id") == "video_duplex" else {}),
                             OPENJIUWEN_MESSAGE_ORIGIN_METADATA: OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
                             OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA: source_kind,
                         },
@@ -1337,6 +1432,8 @@ def _build_context_messages_from_history(
                 context_messages.append(AssistantMessage(
                     content=content.strip() if content.strip() else "",
                     reasoning_content=reasoning if reasoning else None,
+                    metadata=({"duplex_history_id": record.get("id") or record.get("request_id")}
+                              if record.get("channel_id") == "video_duplex" else {}),
                 ))
 
         elif event_type == "context.compact_summary":
@@ -1412,6 +1509,7 @@ async def warmup_session_context(
     deep_agent: "DeepAgent",
     session_id: str,
     history_before_request_id: str | None = None,
+    history_snapshot: SessionHistorySnapshot | None = None,
 ) -> bool:
     """Restart-safe restore of context_engine messages from on-disk history.
 
@@ -1427,6 +1525,10 @@ async def warmup_session_context(
     作为历史和实时 query 注入。与 ``rewind_session_context`` 的区别：不改写
     history、不清理 Session state（agent/workflow 状态已由 checkpointer 在
     pre_run 恢复）、不强写 checkpointer（消息持久化本就由 history.jsonl 承担）。
+
+    ``history_snapshot`` is an optional request-local pre-read. Reuse requires
+    the same owner, lifecycle generation, cutoff and unchanged history file;
+    otherwise this function keeps its original on-disk read and filtering.
     """
     react_agent = getattr(deep_agent, "react_agent", None)
     if react_agent is None:
@@ -1438,20 +1540,24 @@ async def warmup_session_context(
         # 内存上下文已存在（进程未重启 / 已 warmup / rewind 重建过）
         return True
 
-    if not history_exists(session_id):
-        # 全新会话，磁盘无历史，静默跳过
-        return False
-
-    try:
-        history_records = load_history_records(session_id)
-    except OSError as exc:
-        logger.warning("warmup_session_context: failed to read history for %s: %s", session_id, exc)
-        return False
+    boundary_request_id = str(history_before_request_id or "").strip()
+    if history_snapshot is not None and _history_snapshot_is_current(
+        history_snapshot, session_id, boundary_request_id,
+    ):
+        history_records = list(history_snapshot.records)
+    else:
+        if not history_exists(session_id):
+            # 全新会话，磁盘无历史，静默跳过
+            return False
+        try:
+            history_records = load_history_records(session_id)
+        except OSError as exc:
+            logger.warning("warmup_session_context: failed to read history for %s: %s", session_id, exc)
+            return False
 
     if not isinstance(history_records, list) or not history_records:
         return False
 
-    boundary_request_id = str(history_before_request_id or "").strip()
     if boundary_request_id:
         for index, record in enumerate(history_records):
             if str(record.get("request_id") or "").strip() == boundary_request_id:
@@ -1492,6 +1598,13 @@ async def warmup_session_context(
             processors=_get_context_processors(react_agent),
             history_messages=context_messages,
         )
+        restored_context = context_engine.get_context(session_id=session_id)
+        if restored_context is not None:
+            restored_context.duplex_history_ids = {
+                record.get("id") or record.get("request_id")
+                for record in history_records
+                if record.get("channel_id") == "video_duplex"
+            }
     except Exception as exc:
         logger.warning("warmup_session_context: create_context failed for %s: %s", session_id, exc)
         return False

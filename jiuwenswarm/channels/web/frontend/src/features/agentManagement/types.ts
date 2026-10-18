@@ -11,6 +11,7 @@ export type AgentCatalogItem = {
   runtimePackageName: string;
   hubAssetId?: string;
   displayName: string;
+  searchNames?: string[];
   description: string;
   category: string;
   source: AgentSource;
@@ -25,6 +26,8 @@ export type AgentCatalogItem = {
     leader: boolean;
     member: boolean;
   };
+  /** Present when manifest declares an External Harness runtime (三方专家). */
+  runtime?: { provider_name: string };
 };
 
 export type AgentCapability = {
@@ -43,6 +46,7 @@ export type AgentDetail = AgentCatalogItem & {
   mcps: AgentCapability[];
   suggestedPrompts: string[];
   pendingConnectors: string[];
+  runtime?: { provider_name: string };
 };
 
 export type AgentGroupSource = 'builtin' | 'local' | 'hub';
@@ -69,6 +73,7 @@ export type AgentGroupCatalogItem = {
   id: string;
   name: string;
   displayName: string;
+  searchNames?: string[];
   description: string;
   category: string;
   source: AgentGroupSource;
@@ -160,6 +165,8 @@ export type McpOption = {
   icon?: string | null;
 };
 
+export type ExternalHarnessProvider = 'claudecode' | 'codex';
+
 export type AgentDraft = {
   id: string;
   name: string;
@@ -170,6 +177,8 @@ export type AgentDraft = {
   skillRefs: string[];
   mcpRefs: string[];
   suggestedPrompts: string[];
+  useExternalHarness: boolean;
+  externalHarnessProvider: ExternalHarnessProvider;
 };
 
 export type AgentSelectionIntent = { kind: 'keep' } | { kind: 'clear' } | { kind: 'select'; id: string };

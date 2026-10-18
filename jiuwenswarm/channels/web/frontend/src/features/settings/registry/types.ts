@@ -36,10 +36,14 @@ export type SettingSelectOption = {
 export type SettingSubItems = {
   show: 'always' | 'when-parent-checked';
   disabled: 'never' | 'when-parent-unchecked';
+  /** Turning the parent switch off also turns off every sub-item switch in the same save. */
+  uncheckWithParent?: boolean;
   items: readonly SettingItemDefinition[];
 };
 export type SettingsCustomItemProps = {
   disabled: boolean;
+  /** Report an active editor so a parent switch cannot unmount its unsaved draft. */
+  onEditingChange?: (editing: boolean) => void;
 };
 export type SettingItemDefinition =
   | (SettingItemBase & {

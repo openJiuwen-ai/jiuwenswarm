@@ -375,3 +375,18 @@ def get_team_binding_store() -> TeamBindingStore:
             if _DEFAULT_STORE is None:
                 _DEFAULT_STORE = TeamBindingStore()
     return _DEFAULT_STORE
+
+
+# --------------------------------------------------------------------------- #
+# common 注入点自注册：import 即注册，供 common 经
+# ``common.external_providers.provider("team_binding_store")`` 反向取用（分层规则 R1）。
+# --------------------------------------------------------------------------- #
+def _register_common_provider() -> None:
+    import sys
+
+    from jiuwenswarm.common.external_providers import register
+
+    register("team_binding_store", sys.modules[__name__])
+
+
+_register_common_provider()

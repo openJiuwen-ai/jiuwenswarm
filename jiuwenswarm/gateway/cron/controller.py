@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
+from jiuwenswarm.common.work_mode import EXECUTION_WORK_MODES
 from jiuwenswarm.gateway.cron.cron_expr import normalize_cron_expr
 from jiuwenswarm.gateway.cron.models import (
     CRON_JOB_DESCRIPTION_MAX_LENGTH,
@@ -316,7 +317,7 @@ class CronController:
         model_selection = params.get("model_selection")
         if model_selection is not None:
             from jiuwenswarm.common.model_selection import ModelSelection
-            from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+            from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver
             selection = ModelSelection.model_validate(model_selection)
             ModelSelectionResolver().resolve(selection)
             model_selection = selection.model_dump()
@@ -345,7 +346,7 @@ class CronController:
         timeout_seconds = params.get("timeout_seconds")
         # work_mode 解析(严格校验:非法值由 resolve_request_work_mode 返回 BAD_REQUEST);
         # 默认值按 controller 目标通道推断(tui→code,web/未设置→work)
-        from jiuwenswarm.server.runtime.session.work_mode import (
+        from jiuwenswarm.gateway.embedded.runtime.session.work_mode import (
             resolve_request_work_mode,
         )
 
@@ -380,7 +381,7 @@ class CronController:
             if caller_work_mode in ("code", "work"):
                 work_mode = caller_work_mode
         else:
-            from jiuwenswarm.server.runtime.session.project_store import (
+            from jiuwenswarm.gateway.embedded.runtime.session.project_store import (
                 resolve_cron_project_binding,
             )
 
@@ -391,6 +392,8 @@ class CronController:
                 raise ValueError(binding.error)
             resolved_project_id = binding.project_id
             work_mode = binding.work_mode
+        if work_mode not in EXECUTION_WORK_MODES:
+            raise ValueError(f"cron is not supported for work_mode: {work_mode!r}")
         app_id = str(params.get("app_id") or "").strip()
         # user_id：web 端创建定时任务时由 handler 注入 params（见 _cron_job_create），
         # 执行时透传给 faas 的 X-Session-Context。agent 内部创建的 cron 无 user_id 即存空串。
@@ -490,7 +493,7 @@ class CronController:
                 else (existing.work_mode or DEFAULT_WEB_WORK_MODE)
             )
         else:
-            from jiuwenswarm.server.runtime.session.project_store import (
+            from jiuwenswarm.gateway.embedded.runtime.session.project_store import (
                 resolve_cron_job_patch,
             )
 

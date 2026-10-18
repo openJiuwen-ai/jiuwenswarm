@@ -17,6 +17,24 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 
+# 小艺 push webhook 对文本长度有硬限制：``artifacts[0].parts[0].text`` 必须 ≤1024，
+# 超了直接 400 invalidParam（而且不会重试）——长回复（如子 agent 产出的代码）会
+# 整条丢失，用户只看得到先前那条"正在执行中"占位。超长时截断并给出提示，
+# 至少保证前段送达；完整正文仍在会话历史里。
+PUSH_TEXT_MAX_CHARS = 1024
+PUSH_TEXT_TRUNCATED_SUFFIX = "…（内容过长，已截断）"
+
+
+def clip_push_text(value: str, *, limit: int = PUSH_TEXT_MAX_CHARS) -> str:
+    """把推送文本截断到 webhook 上限内；超长时保留截断提示。"""
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    suffix = PUSH_TEXT_TRUNCATED_SUFFIX
+    keep = max(0, limit - len(suffix))
+    return (text[:keep] + suffix)[:limit]
+
+
 @dataclass
 class PushConfig:
     """Push 消息配置."""
@@ -67,6 +85,16 @@ class XiaoYiPushService:
         try:
             timestamp = str(int(time.time() * 1000))
             message_id = self._generate_uuid()
+
+            # webhook 对正文长度有硬限制（>1024 → 400），这里先截断再发送。
+            if len(str(push_text or "")) > PUSH_TEXT_MAX_CHARS:
+                logger.warning(
+                    "[PUSH] push text too long, truncating: %d -> %d chars",
+                    len(str(push_text or "")),
+                    PUSH_TEXT_MAX_CHARS,
+                )
+            push_text = clip_push_text(push_text)
+            text = clip_push_text(text)
 
             payload = {
                 "jsonrpc": "2.0",

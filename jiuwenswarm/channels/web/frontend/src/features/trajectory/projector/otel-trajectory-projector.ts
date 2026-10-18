@@ -929,13 +929,18 @@ function assistantCell(span: ProjectedSpan): TrajectoryCell {
   // given. Saying so is the difference between a model that stayed silent and
   // content the store no longer holds.
   const outputExpired = span.unresolvedAttributes.includes(STANDARD_ATTRIBUTES.outputMessages)
+  // Likewise, a reply rebuilt without its request logs may simply be missing
+  // what the model said; empty output there is a gap in observation.
+  const inputUnobserved = span.attributes.inferenceInputObserved === false
   const text = output
     ?? thinking
     ?? (toolCalls.length > 0
       ? 'Tool call only'
       : outputExpired
         ? 'Output content is no longer stored'
-        : span.lifecycle === 'running' ? 'Waiting for model response…' : 'No output content')
+        : inputUnobserved
+          ? 'Output not observed (request logs did not arrive)'
+          : span.lifecycle === 'running' ? 'Waiting for model response…' : 'No output content')
   const usageValue = usage(span.attributes)
   const firstChunkSeconds = span.attributes.responseTimeToFirstChunkSeconds
   const firstTokenMs = span.attributes.responseTimeToFirstTokenMs
@@ -968,6 +973,7 @@ function assistantCell(span: ProjectedSpan): TrajectoryCell {
         : Number(span.endTimeUnixNano / NANOSECONDS_PER_MILLISECOND),
       usageProvided: Object.keys(usageValue).length > 0,
       outputTokens: usageValue.output ?? null,
+      ...(inputUnobserved ? { inputObserved: false } : {}),
     },
     ...(error === undefined ? {} : { isError: true, result: error }),
     ...(usageValue.input === undefined ? {} : { input: usageValue.input }),

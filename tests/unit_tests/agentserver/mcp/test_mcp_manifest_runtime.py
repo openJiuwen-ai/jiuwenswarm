@@ -8,7 +8,8 @@ import json
 from pathlib import Path
 from unittest.mock import Mock
 
-from jiuwenswarm.server.runtime.mcp import credential, package_manifest, registry
+from jiuwenswarm.common import mcp_package_manifest as package_manifest
+from jiuwenswarm.server.runtime.mcp import credential, registry
 
 
 def _write_json(path: Path, value: dict) -> None:

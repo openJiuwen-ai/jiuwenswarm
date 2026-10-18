@@ -494,6 +494,58 @@ def test_processing_status_is_only_emitted_for_chat_streams() -> None:
     ) is False
 
 
+def test_attach_only_stream_does_not_emit_processing_status() -> None:
+    """An attach subscription must not raise or own the processing state."""
+    from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
+
+    handler = _TestMessageHandler.create()
+    attach_message = _message(ReqMethod.CHAT_SEND)
+    attach_message.params = {TEAM_ATTACH_ONLY_PARAM: True}
+
+    assert handler.should_emit_processing_status_for_stream(attach_message) is False
+
+
+@pytest.mark.asyncio
+async def test_attach_only_stream_does_not_block_processing_false() -> None:
+    """A terminal is_processing=false must pass while an attach stream is live."""
+    handler = _TestMessageHandler.create()
+    _FakeAgentClient.stream_payloads = [
+        {"event_type": "chat.delta", "request_id": "turn-1", "content": "hi"},
+        {
+            "event_type": "chat.processing_status",
+            "request_id": "turn-1",
+            "session_id": "sess-attach",
+            "is_processing": False,
+            "is_complete": True,
+        },
+    ]
+    # Seed an in-flight attach stream on the same session (emit=False).
+    getattr(handler, "_stream_emits_processing_status")["attach-1"] = False
+    getattr(handler, "_stream_methods")["attach-1"] = ReqMethod.CHAT_SEND.value
+    getattr(handler, "_stream_sessions")["attach-1"] = "sess-attach"
+    getattr(handler, "_stream_modes")["attach-1"] = "team.work.normal"
+    getattr(handler, "_stream_channels")["attach-1"] = "web"
+
+    await handler.process_stream(
+        SimpleNamespace(
+            request_id="turn-1",
+            channel="web",
+            method=ReqMethod.CHAT_SEND.value,
+            params={"query": "hi", "mode": "team.work.normal"},
+        ),
+        "sess-attach",
+        None,
+        emit_processing_status=True,
+    )
+
+    payloads = await _drain_robot_payloads_for_permission_resume(handler)
+    assert any(
+        p.get("event_type") == "chat.processing_status"
+        and p.get("is_processing") is False
+        for p in payloads
+    ), "attach stream must not block the terminal processing_status=false"
+
+
 
 @pytest.mark.asyncio
 async def test_permission_resume_stream_keeps_processing_while_goal_stream_active() -> None:

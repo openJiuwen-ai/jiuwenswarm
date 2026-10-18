@@ -352,3 +352,7 @@ async def run(args):
 #   key fields are non-empty (not just that the cache file exists). An empty
 #   scores list or null signal indicates a failed prior run and should be
 #   treated as a cache miss, not a valid result to skip.
+# - agent()/agent_session() options keys must be one of: label, phase, schema,
+#   model, timeout, isolation, agent_type, builtin_model, effort, agent_template.
+#   agent_template is the bare member name of the AgentGroup bound to the session
+#   (e.g. "clip", never "designer/clip"); omit it for a generic worker.

@@ -171,11 +171,11 @@ function invalidateDetail(detailCache: Record<string, ConnectorDetail>, name: st
 
 // 2026-08-20 MCP 连接错误提示友好化（见 MCP连接错误提示友好化-接口对接说明.md）：CLI 驱动型
 // MCP（飞书/钉钉/企微等）连接失败时，后端在 mcp.connect/mcp.wait_auth 的 ok:false payload 里新增
-// code（MCP_RUNTIME_MISSING/MCP_INSTALL_NETWORK/MCP_CLI_INCOMPLETE 三种可分类失败）+ runtime +
-// install_cmd 结构化字段，替代原来直接透传的底层报错串（如 `[WinError 2]`）。这里按 code 选 i18n
-// key 拼出用户可读文案；非这三种 code（如 MCP_BAD_REQUEST、非 CLI 路径失败）走 error.message 兜底，
-// 不受影响。只有 connect/waitAuth 两个 action 的 catch 分支会用到——文档明确只有这两个 RPC 的 CLI
-// 边界失败会下发新字段，disconnect/deleteConnector/registerCustom 等不受影响。
+// code（MCP_RUNTIME_MISSING/MCP_INSTALL_NETWORK/MCP_CLI_INCOMPLETE/MCP_INSTALL_SCRIPT_DEP 四种
+// 可分类失败）+ runtime + install_cmd 结构化字段，替代原来直接透传的底层报错串（如 `[WinError 2]`）。
+// 这里按 code 选 i18n key 拼出用户可读文案；非这几种 code（如 MCP_BAD_REQUEST、非 CLI 路径失败）走
+// error.message 兜底，不受影响。只有 connect/waitAuth 两个 action 的 catch 分支会用到——文档明确
+// 只有这两个 RPC 的 CLI 边界失败会下发新字段，disconnect/deleteConnector/registerCustom 等不受影响。
 const RUNTIME_LABELS: Record<string, string> = { node: 'Node.js', python: 'Python' };
 
 function friendlyCliError(error: unknown): string {
@@ -192,6 +192,9 @@ function friendlyCliError(error: unknown): string {
       : i18n.t('connectorMarket.errors.runtimeMissing');
   }
   if (code === 'MCP_INSTALL_NETWORK') return i18n.t('connectorMarket.errors.installNetwork');
+  if (code === 'MCP_INSTALL_SCRIPT_DEP') {
+    return i18n.t('connectorMarket.errors.installScriptDep');
+  }
   if (code === 'MCP_CLI_INCOMPLETE') {
     return installCmd
       ? i18n.t('connectorMarket.errors.cliIncompleteNamed', { command: installCmd })

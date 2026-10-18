@@ -57,6 +57,7 @@ import {
   AgentDetailModal,
   buildDetailSections,
   type AgentModalState,
+  type CallRecordsSource,
   type DetailSectionKey,
 } from './AgentDetailModal';
 
@@ -606,7 +607,9 @@ function addPhaseChildren(
       nodes.push({
         id: nodeId,
         type: 'sessionNode',
-        data: { agent: nodeAgent, members: session.members, run, sessionId },
+        // runId mirrors agentNode: onNodeClick reads it for the ask-user
+        // request id and the detail modal's call-record member key.
+        data: { agent: nodeAgent, members: session.members, run, runId: run.id, sessionId },
         position: { x: 0, y: 0 },
       });
       edges.push({
@@ -850,6 +853,7 @@ export function SwarmflowGraphView({
 
   const [modalState, setModalState] = useState<AgentModalState | null>(null);
   const [modalAgentName, setModalAgentName] = useState('');
+  const [callRecordsSource, setCallRecordsSource] = useState<CallRecordsSource | null>(null);
 
   // 统一处理节点点击：agent/session 节点 → waiting_for_human 打开 ask-user，否则打开详情弹窗
   const onNodeClick = useCallback((_evt: React.MouseEvent, node: Node) => {
@@ -884,7 +888,9 @@ export function SwarmflowGraphView({
     // 其它状态：若有输入/输出等内容则打开详情弹窗
     const sections = buildDetailSections(t, agent);
     if (sections.length > 0) {
+      const runId = (node.data?.runId as string) ?? '';
       setModalAgentName(agent.name);
+      setCallRecordsSource({ sessionId, memberId: `${runId}:${agent.id}` });
       setModalState({ sections, activeKey: sections[0].key });
     }
   }, [sessionId, t]);
@@ -912,10 +918,14 @@ export function SwarmflowGraphView({
       <AgentDetailModal
         state={modalState}
         agentName={modalAgentName}
-        onClose={() => setModalState(null)}
+        onClose={() => {
+          setModalState(null);
+          setCallRecordsSource(null);
+        }}
         onTabChange={(key: DetailSectionKey) =>
           setModalState((prev) => (prev ? { ...prev, activeKey: key } : prev))
         }
+        callRecordsSource={callRecordsSource}
       />
     </div>
   );

@@ -16,7 +16,7 @@ const DEFAULT_CODE_PROJECT_ID = 'default_code';
 function normalizeProject(project: ProjectInfo, fallbackWorkMode: WorkMode): ProjectInfo {
   return {
     ...project,
-    work_mode: project.work_mode === 'code' || project.work_mode === 'work'
+    work_mode: project.work_mode === 'code' || project.work_mode === 'work' || project.work_mode === 'design'
       ? project.work_mode
       : fallbackWorkMode,
     git: project.git ?? {
@@ -95,6 +95,33 @@ function isDefaultProject(project: ProjectInfo): boolean {
 // 因此按当前 UI 语言在展示层替换即可，不存在覆盖用户自定义名称的风险。
 export function getProjectDisplayName(project: ProjectInfo): string {
   return isDefaultProject(project) ? i18n.t('multiSession.project.defaultProjectName') : project.name;
+}
+
+function designDefaultProject(): ProjectInfo {
+  return {
+    project_id: DEFAULT_PROJECT_ID,
+    name: i18n.t('multiSession.project.defaultProjectName'),
+    project_dir: '',
+    pinned: false,
+    pin_order: 0,
+    is_default: true,
+    hidden: false,
+    work_mode: 'design',
+    git: {
+      enabled: false,
+      repo_root: '',
+      initialized_by_jiuwenswarm: false,
+      detected_at: 0,
+      status: 'disabled',
+      branch: '',
+      error: '',
+      is_dirty: false,
+    },
+    session_count: 0,
+    last_message_at: null,
+    last_user_message_at: null,
+    created_at: 0,
+  };
 }
 
 function findDefaultProjectId(projects: ProjectInfo[]): string {
@@ -327,6 +354,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       const projects = (payload.projects || []).map((project) => (
         normalizeProject(project, requestedWorkMode)
       ));
+      if (requestedWorkMode === 'design' && !projects.some(isDefaultProject)) {
+        projects.push(designDefaultProject());
+      }
       set((state) => {
         // 项目会话需要经过 Gateway → AgentServer，并且后端每次查询都会扫描
         // 当前用户的会话元数据。首屏若把所有历史项目默认展开，会同时触发 N 次
@@ -357,10 +387,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   loadProjectSessions: async (projectId, limit, refreshEpoch) => {
     const requestedLimit = limit ?? getVisibleCount(get(), projectId);
     try {
-      const payload = await projectRegistryClient.getSessions(projectId, requestedLimit);
+      const mode = get().workMode;
+      const payload = await projectRegistryClient.getSessions(projectId, requestedLimit, mode);
       if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
       const sessions = reconcileVisibleProjectSessions(
-        payload.sessions || [],
+        (payload.sessions || []).filter((session) => (session.work_mode || 'work') === mode),
         get().projectSessions[projectId] || [],
       );
       const total = getReconciledTotal(payload.total, sessions);
@@ -380,7 +411,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       }));
     } catch (error) {
       console.error('Failed to load project sessions', error);
-      set({ error: error instanceof Error ? error.message : String(error) });
+      set((state) => ({
+        error: error instanceof Error ? error.message : String(error),
+        projectSessions: Object.prototype.hasOwnProperty.call(state.projectSessions, projectId)
+          ? state.projectSessions
+          : { ...state.projectSessions, [projectId]: [] },
+      }));
     }
   },
 

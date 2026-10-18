@@ -1,6 +1,7 @@
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
 import { AgentMediaSettings, AgentSearchSettings, VideoGenSettings, VisualGenSettings } from './AgentSettings';
+import { ExternalCliSettingsItem } from './ExternalCliAgentsSettings';
 
 export const agentModule: SettingsModuleDefinition = {
   id: 'agent',
@@ -37,6 +38,13 @@ export const agentModule: SettingsModuleDefinition = {
         { id: 'media-tools-settings', component: 'custom', render: AgentMediaSettings },
         { id: 'video-gen-settings', component: 'custom', render: VideoGenSettings },
         { id: 'visual-gen-settings', component: 'custom', render: VisualGenSettings },
+      ],
+    },
+    {
+      id: 'external-cli-agents',
+      titleKey: 'settingsPanel.agent.externalCliAgents',
+      items: [
+        { id: 'external-cli-agents', component: 'custom', render: ExternalCliSettingsItem },
       ],
     },
   ],

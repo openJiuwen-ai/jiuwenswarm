@@ -176,3 +176,12 @@ for (const provider of ['gitcode', 'github']) {
     });
   }
 }
+
+test('credential question keeps choices but masks typed answers and legacy answers', () => {
+  const result = parseQaSummaryContent(buildQaSummaryContent({items:[
+    {question:'用哪种方式更新令牌？',answers:['让你代登录','FAKE-4470'],answerSources:['option','input']},
+    {question:'请输入 token',answers:['FAKE-LEGACY']},
+  ]}));
+  assert.deepEqual(result.items[0].answers,['让你代登录','••••••']);
+  assert.deepEqual(result.items[1].answers,['••••••']);
+});

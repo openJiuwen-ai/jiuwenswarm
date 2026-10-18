@@ -2626,6 +2626,39 @@ def test_remove_team_mode_session_dirs_at_startup_keeps_stable_team_sessions(
 # ===========================================================================
 # rebind_session_project：并发场景（陈旧异步快照 vs 重绑）
 # ===========================================================================
+def test_external_harness_checkpoint_survives_stale_snapshot(sessions_dir):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        _enqueue_write,
+        get_session_metadata,
+        init_session_metadata,
+        update_session_metadata,
+    )
+
+    session_id = "external-checkpoint-stale"
+    init_session_metadata(session_id=session_id, channel_id="web")
+    stale = get_session_metadata(session_id, cache_bust=True)
+    checkpoint = {
+        "agent_template_name": "codex-expert",
+        "provider_name": "codex",
+        "checkpoint": {
+            "checkpoint_id": "checkpoint-2",
+            "sequence": 2,
+        },
+    }
+    update_session_metadata(
+        session_id=session_id,
+        session_harness_checkpoint=checkpoint,
+        touch_last_message_at=False,
+        cache_bust=True,
+        sync_write=True,
+    )
+
+    _enqueue_write(session_id, stale, sync_write=True)
+
+    metadata = get_session_metadata(session_id, cache_bust=True)
+    assert metadata["session_harness_checkpoint"] == checkpoint
+
+
 class TestRebindSessionProjectConcurrency:
     """覆盖 P1 关键场景：rebind 的 sync 写入与队列中陈旧异步快照的竞态。
 
@@ -2868,7 +2901,8 @@ class TestRebindSessionProjectConcurrency:
         item_sid, _meta, options = captured[0]
         assert item_sid == sid
         assert options.rebind_gen_at_enqueue == 0
-        assert options.merge_fields is None
+        # A no-op update owns no fields; it must not replace a cross-process snapshot.
+        assert options.merge_fields == frozenset()
 
         # rebind: bump gen
         _bump_rebind_gen(sid)
@@ -3058,3 +3092,69 @@ class TestSessionPinOptimization:
             after = _read_json(sessions_dir / sid / "metadata.json")
             assert after["pin_order"] == order
             assert after["last_message_at"] == before[sid]["last_message_at"]
+
+class TestCanonicalModeBoundary:
+    """公共会话数据保持 canonical mode；客户端兼容由 Gateway 出口负责。"""
+
+    @staticmethod
+    def test_sync_explicit_mode_stores_canonical_mode(sessions_dir):
+        """请求旧 mode 仍归一化，不新增用于全局回显的 wire_mode。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            init_session_metadata,
+            sync_session_request_metadata,
+            get_session_metadata,
+        )
+
+        init_session_metadata(session_id="s_wire")
+        sync_session_request_metadata(
+            session_id="s_wire", mode="team", explicit_mode_provided=True
+        )
+        _drain_queue()
+        meta = get_session_metadata("s_wire")
+        assert meta["mode"] == "team.work.normal"
+        assert "wire_mode" not in meta
+
+    @staticmethod
+    def test_to_session_info_ignores_legacy_wire_mode():
+        """已有 wire_mode 数据也不能覆盖公共出口的 canonical mode。"""
+        from jiuwenswarm.server.runtime.session.session_info import to_session_info
+
+        assert to_session_info({"mode": "team.work.normal", "wire_mode": "team"})["mode"] == "team.work.normal"
+        assert to_session_info({"mode": "team.work.normal"})["mode"] == "team.work.normal"
+        assert to_session_info({})["mode"] == "unknown"
+
+    @staticmethod
+    def test_chat_turn_code_team_stores_canonical_mode(sessions_dir):
+        """聊天请求的 mode/work_mode 组合在公共元数据中保持 canonical。"""
+        from jiuwenswarm.common.schema.agent import AgentRequest
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.runtime.request import (
+            apply_resolved_mode_to_request,
+            sync_chat_request_metadata,
+        )
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+            init_session_metadata,
+        )
+
+        init_session_metadata(session_id="s_code_team")
+        request = AgentRequest(
+            request_id="r1",
+            channel_id="web",
+            session_id="s_code_team",
+            req_method=ReqMethod.CHAT_SEND,
+            params={"mode": "team", "work_mode": "code"},
+        )
+        apply_resolved_mode_to_request(request, work_mode="code")
+        assert request.params["mode"] == "code.team", "前置：组合发生在 sync 之前"
+        sync_chat_request_metadata(
+            request,
+            None,
+            request.params["mode"],
+            explicit_mode_provided=True,
+            user_id="u1",
+        )
+        _drain_queue()
+        meta = get_session_metadata("s_code_team")
+        assert meta["mode"] == "team.code.normal"
+        assert "wire_mode" not in meta

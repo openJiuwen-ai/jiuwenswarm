@@ -254,6 +254,7 @@ class PortableRuntime:
                 session_id=target_session_id,
                 source_session_id=provision_input.source_session_id,
                 title=provision_input.title,
+                moa_enabled=False,
             )
         )
 
@@ -549,6 +550,7 @@ async def test_session_fork_preserves_business_order_and_complete_result() -> No
         "session_id": "fork-target",
         "source_session_id": "fork-source",
         "title": "Forked session",
+        "moa_enabled": False,
     }
     # session.fork historically does not echo request metadata.
     assert response.metadata is None
@@ -892,8 +894,6 @@ async def test_disconnect_cancel_failure_still_cleans_before_single_legacy_error
 async def test_physical_disconnect_keeps_ack_only_and_cleanup_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jiuwenswarm.agents.harness import team as team_module
-
     trace: list[str] = []
     server, manager, _ = make_server(trace, agent=None)
     ws = EmptyConnectionWebSocket(trace)
@@ -922,15 +922,6 @@ async def test_physical_disconnect_keeps_ack_only_and_cleanup_order(
     async def stop_scheduler() -> None:
         trace.append("scheduler.stop")
 
-    async def cancel_team_streams(
-        *,
-        reason: str,
-        exclude_session_ids: set[str],
-    ) -> None:
-        assert "gateway ws closed" in reason
-        assert exclude_session_ids == {"heartbeat-session"}
-        trace.append("team_streams.cancel_all")
-
     monkeypatch.setattr(
         server,
         "_clear_ws_acp_client_capabilities",
@@ -943,12 +934,6 @@ async def test_physical_disconnect_keeps_ack_only_and_cleanup_order(
         raising=False,
     )
     monkeypatch.setattr(server, "_stop_scheduler", stop_scheduler)
-    monkeypatch.setattr(
-        team_module,
-        "cancel_all_team_stream_tasks_across_managers",
-        cancel_team_streams,
-    )
-
     await server._connection_handler(ws)
 
     assert trace == [
@@ -956,7 +941,6 @@ async def test_physical_disconnect_keeps_ack_only_and_cleanup_order(
         "capabilities.clear",
         "manager.cancel_all",
         "scheduler.stop",
-        "team_streams.cancel_all",
         "session_tasks.clear",
     ]
     assert ws.sent == [
@@ -991,18 +975,22 @@ async def test_stale_gateway_disconnect_keeps_new_push_connection(
         is_available=True,
         execution=SimpleNamespace(active_session_ids=lambda: ()),
     )
+    mailbox_availability: list[bool] = []
+
+    async def set_mailbox_available(available: bool) -> None:
+        mailbox_availability.append(available)
+
+    server._session_message_service = SimpleNamespace(
+        set_available=set_mailbox_available,
+    )
 
     async def cancel_runtime(*_args: Any, **_kwargs: Any) -> None:
         trace.append("runtime.cancel")
-
-    async def cancel_team(*_args: Any, **_kwargs: Any) -> None:
-        trace.append("team.cancel")
 
     async def stop_scheduler(*_args: Any, **_kwargs: Any) -> None:
         trace.append("scheduler.stop")
 
     monkeypatch.setattr(runtime, "cancel_all_inflight_work", cancel_runtime)
-    monkeypatch.setattr(runtime, "cancel_all_team_stream_tasks", cancel_team)
     monkeypatch.setattr(server, "_stop_scheduler", stop_scheduler)
 
     old_ws = BlockingConnectionWebSocket(trace, 19001)
@@ -1018,9 +1006,9 @@ async def test_stale_gateway_disconnect_keeps_new_push_connection(
 
         assert server._current_ws is new_ws
         assert "runtime.cancel" not in trace
-        assert "team.cancel" not in trace
         assert "scheduler.stop" not in trace
         assert "new-session" in server._session_stream_tasks
+        assert mailbox_availability == [True, True]
         assert await server.send_push({"channel_id": "web"}) is True
         assert len(new_ws.sent) == 2
     finally:
@@ -1031,16 +1019,59 @@ async def test_stale_gateway_disconnect_keeps_new_push_connection(
     assert server._current_send_lock is None
     assert server._session_stream_tasks == {}
     assert trace.count("runtime.cancel") == 1
-    assert trace.count("team.cancel") == 1
     assert trace.count("scheduler.stop") == 1
+    assert mailbox_availability == [True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_ipc_gateway_lifecycle_controls_mailbox_availability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace: list[str] = []
+    server, _, runtime = make_server(trace, agent=None)
+    server._current_ws = None
+    server._current_send_lock = None
+    server._acp_client_capabilities_by_ws = {}
+    server._session_stream_tasks = {}
+    server._heartbeat_runtime = SimpleNamespace(
+        execution=SimpleNamespace(active_session_ids=lambda: ()),
+    )
+    mailbox_availability: list[bool] = []
+
+    async def set_mailbox_available(available: bool) -> None:
+        mailbox_availability.append(available)
+
+    async def cancel_runtime(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def stop_scheduler(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    server._session_message_service = SimpleNamespace(
+        set_available=set_mailbox_available,
+    )
+    monkeypatch.setattr(runtime, "cancel_all_inflight_work", cancel_runtime)
+    monkeypatch.setattr(server, "_stop_scheduler", stop_scheduler)
+
+    gateway = object()
+    send_lock = asyncio.Lock()
+    await server.attach_gateway_connection(gateway, send_lock)
+
+    assert server._current_ws is gateway
+    assert server._current_send_lock is send_lock
+    assert mailbox_availability == [True]
+
+    await server.on_gateway_disconnect(gateway, "ipc disconnected")
+
+    assert server._current_ws is None
+    assert server._current_send_lock is None
+    assert mailbox_availability == [True, False]
 
 
 @pytest.mark.asyncio
 async def test_physical_disconnect_runtime_cancel_failure_keeps_cleaning_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jiuwenswarm.agents.harness import team as team_module
-
     trace: list[str] = []
     handler_started = asyncio.Event()
     never_finish = asyncio.Event()
@@ -1080,15 +1111,6 @@ async def test_physical_disconnect_runtime_cancel_failure_keeps_cleaning_up(
     async def stop_scheduler() -> None:
         trace.append("scheduler.stop")
 
-    async def cancel_team_streams(
-        *,
-        reason: str,
-        exclude_session_ids: set[str],
-    ) -> None:
-        assert "gateway ws closed" in reason
-        assert exclude_session_ids == {"heartbeat-session"}
-        trace.append("team_streams.cancel_all")
-
     monkeypatch.setattr(server, "_handle_message", blocking_handler)
     monkeypatch.setattr(
         server,
@@ -1101,12 +1123,6 @@ async def test_physical_disconnect_runtime_cancel_failure_keeps_cleaning_up(
         failing_runtime_cancel_all,
     )
     monkeypatch.setattr(server, "_stop_scheduler", stop_scheduler)
-    monkeypatch.setattr(
-        team_module,
-        "cancel_all_team_stream_tasks_across_managers",
-        cancel_team_streams,
-    )
-
     await server._connection_handler(ws)
 
     assert trace == [
@@ -1115,7 +1131,6 @@ async def test_physical_disconnect_runtime_cancel_failure_keeps_cleaning_up(
         "capabilities.clear",
         "runtime.cancel_all",
         "scheduler.stop",
-        "team_streams.cancel_all",
         "connection_task.settle",
         "session_tasks.clear",
     ]

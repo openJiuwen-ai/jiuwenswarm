@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from jiuwenswarm.common.model_errors import MODEL_RUNTIME_UNAVAILABLE, ModelSelectionError
-from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedSelection
+from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedSelection
 
 
 def compile_model_selection(resolved: ResolvedSelection) -> Any:
@@ -47,6 +47,9 @@ def compile_model_selection(resolved: ResolvedSelection) -> Any:
 
 def build_model_from_selection(resolved: ResolvedSelection) -> Any:
     from openjiuwen.core.foundation.llm import Model
+    # Single-Agent uses a manual pool; Team compiles the original routing directly.
+    if isinstance(resolved, ResolvedModelGroup):
+        resolved = resolved.model_copy(update={"routing": {}})
     compiled = compile_model_selection(resolved)
     return Model(
         model_client_config=compiled.model_client_config,

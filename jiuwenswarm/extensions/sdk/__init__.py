@@ -1,55 +1,46 @@
-"""Extension SDK exports; contract modules resolve to gateway_protocol.
-
-惰性机制保留：transport 相关契约仍按需 import；纯契约模块已迁
-``gateway_protocol.{types,sdk}``，此处的旧路径仅为过渡期兼容
-（与 common/e2a 转发别名同模式，同一对象非副本）。
-ExtensionLoader/Manager/Registry 为实现类，仍由本仓扩展框架提供。
-"""
+"""Extension SDK exports; transport-specific contracts are lazy imports."""
 
 from __future__ import annotations
 
 from importlib import import_module
 from typing import Any
 
+_APPLICATION_PLUGIN_MODULE = "jiuwenswarm.extensions.sdk.application_plugin"
+
 _EXPORTS = {
-    "ExtensionLoader": ("jiuwenswarm.extensions.loader", "ExtensionLoader"),
-    "ExtensionManager": ("jiuwenswarm.extensions.manager", "ExtensionManager"),
-    "ExtensionRegistry": ("jiuwenswarm.extensions.registry", "ExtensionRegistry"),
     "AgentServerClientExtension": (
-        "gateway_protocol.sdk.agent_server_client",
+        "jiuwenswarm.extensions.sdk.agent_server_client",
         "AgentServerClientExtension",
     ),
     "ApplicationPluginExtension": (
-        "gateway_protocol.sdk.application_plugin",
+        _APPLICATION_PLUGIN_MODULE,
         "ApplicationPluginExtension",
     ),
     "ApplicationPluginServices": (
-        "gateway_protocol.sdk.application_plugin",
+        _APPLICATION_PLUGIN_MODULE,
         "ApplicationPluginServices",
     ),
     "FrontendContribution": (
-        "gateway_protocol.sdk.application_plugin",
+        _APPLICATION_PLUGIN_MODULE,
         "FrontendContribution",
     ),
     "ManifestApplicationPlugin": (
-        "gateway_protocol.sdk.application_plugin",
+        _APPLICATION_PLUGIN_MODULE,
         "ManifestApplicationPlugin",
     ),
     "WebSocketRouteContribution": (
-        "gateway_protocol.sdk.application_plugin",
+        _APPLICATION_PLUGIN_MODULE,
         "WebSocketRouteContribution",
     ),
-    "BaseExtension": ("gateway_protocol.sdk.base", "BaseExtension"),
+    "BaseExtension": ("jiuwenswarm.extensions.sdk.base", "BaseExtension"),
     "CryptoUtility": (
-        "gateway_protocol.sdk.crypto_utility",
+        "jiuwenswarm.extensions.sdk.crypto_utility",
         "CryptoUtility",
     ),
     "ThirdAgentExtension": (
-        "gateway_protocol.sdk.third_agent",
+        "jiuwenswarm.extensions.sdk.third_agent",
         "ThirdAgentExtension",
     ),
-    "ExtensionConfig": ("gateway_protocol.types", "ExtensionConfig"),
-    "ExtensionMetadata": ("gateway_protocol.types", "ExtensionMetadata"),
 }
 
 

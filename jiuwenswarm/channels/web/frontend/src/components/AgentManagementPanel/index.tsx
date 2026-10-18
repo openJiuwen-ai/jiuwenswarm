@@ -80,6 +80,8 @@ const EMPTY_DRAFT: AgentDraft = {
   skillRefs: [],
   mcpRefs: [],
   suggestedPrompts: [],
+  useExternalHarness: false,
+  externalHarnessProvider: 'claudecode',
 };
 
 const EMPTY_GROUP_DRAFT: AgentGroupDraft = {
@@ -98,10 +100,15 @@ const EMPTY_GROUP_DRAFT: AgentGroupDraft = {
 
 function detailToDraft(detail: AgentDetail): AgentDraft {
   const presetIds = new Set<string>(AGENT_TAG_OPTIONS.map((option) => option.id));
+  const harnessTagLabels = new Set(['三方Harness', 'External Harness']);
   const tagIds = detail.tags
     .map((tag) => tag.id)
     .filter((id): id is string => presetIds.has(id));
-  const customTags = detail.tags.filter((tag) => !presetIds.has(tag.id)).map((tag) => tag.label);
+  const customTags = detail.tags
+    .filter((tag) => !presetIds.has(tag.id) && !harnessTagLabels.has(tag.label) && !harnessTagLabels.has(tag.id))
+    .map((tag) => tag.label);
+  const provider = detail.runtime?.provider_name;
+  const useExternalHarness = provider === 'claudecode' || provider === 'codex';
   return {
     id: detail.id,
     name: detail.displayName,
@@ -110,8 +117,10 @@ function detailToDraft(detail: AgentDetail): AgentDraft {
     tagIds,
     customTags,
     skillRefs: detail.skills.map((skill) => skill.id),
-    mcpRefs: detail.mcps.map((mcp) => mcp.id),
+    mcpRefs: useExternalHarness ? [] : detail.mcps.map((mcp) => mcp.id),
     suggestedPrompts: detail.suggestedPrompts,
+    useExternalHarness,
+    externalHarnessProvider: provider === 'codex' ? 'codex' : 'claudecode',
   };
 }
 
@@ -436,8 +445,12 @@ export function AgentManagementPanel({
       ]);
       if (requestScope !== catalogScope()) return;
       const cache = scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(options); }, () => catalogRevisionRef.current === revision);
+      const mineNames = new Map(mineCatalog.map(item => [item.id, item.searchNames]));
       const catalog = Array.from(
-        new Map([...mineCatalog, ...marketplaceCatalog].map((item) => [item.id, item])).values(),
+        new Map([...mineCatalog, ...marketplaceCatalog].map(item => [item.id, {
+          ...item,
+          searchNames: mineNames.get(item.id) ?? item.searchNames,
+        }])).values(),
       );
       if (revision !== catalogRevisionRef.current) return;
       withCatalogCache(catalog, cache);
@@ -1285,7 +1298,7 @@ export function AgentManagementPanel({
                 wrapperTestId="agent-management-search"
                 inputTestId="agent-management-search-input"
                 name="agent-management-search"
-                aria-label={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView ? 'agentManagement.searchMineGroup' : isMine ? 'agentManagement.searchMine' : 'agentManagement.searchCatalog')}
+                aria-label={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView || isMine ? 'common.searchName' : 'agentManagement.searchCatalog')}
                 autoComplete="off"
                 disabled={connectorFlowId !== null}
                 value={view === 'teams' ? groupCatalogQuery : isGroupView ? groupMineQuery : isMine ? mineQuery : query}
@@ -1312,7 +1325,7 @@ export function AgentManagementPanel({
                     setQuery('');
                   }
                 }}
-                placeholder={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView ? 'agentManagement.searchMineGroup' : isMine ? 'agentManagement.searchMine' : 'agentManagement.searchCatalog')}
+                placeholder={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView || isMine ? 'common.searchName' : 'agentManagement.searchCatalog')}
               />
               {isMine ? (
                 <div className="agent-management-create-menu" data-testid="agent-management-create-menu">

@@ -207,3 +207,36 @@ def test_session_dto_is_frozen_slotted_and_keyword_only() -> None:
         parameter.kind is Parameter.KEYWORD_ONLY
         for parameter in signature(SessionSummary).parameters.values()
     )
+
+
+def test_team_listing_is_explicit_and_keeps_sdk_default_scope(monkeypatch):
+    items = [
+        _metadata("owned", last_message_at=10),
+        _metadata("team", mode="team.code.normal", last_message_at=20),
+        _metadata(
+            "foreign", channel_id="web", mode="team.work.normal", last_message_at=30
+        ),
+        _metadata("unknown", mode="workflow", last_message_at=40),
+    ]
+    monkeypatch.setattr(
+        session_catalog, "_collect_session_metadata", lambda **kw: items
+    )
+    request = SessionListInput(channel_id="process_cli")
+    assert [item.session_id for item in list_sessions(request).sessions] == ["owned"]
+    assert [
+        item.session_id for item in list_sessions(request, include_team=True).sessions
+    ] == ["team", "owned"]
+    monkeypatch.setattr(session_catalog, "_read_session_metadata", lambda _: items[1])
+    assert (
+        get_session(SessionGetInput(channel_id="process_cli", session_id="team"))
+        is None
+    )
+
+
+def test_read_only_list_disables_metadata_inference_writeback(monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    collector = Mock(return_value=[])
+    monkeypatch.setattr(session_metadata, "collect_all_sessions_metadata", collector)
+    list_sessions(SessionListInput(channel_id="process_cli"), read_only=True)
+    collector.assert_called_once_with(enable_writeback=False)

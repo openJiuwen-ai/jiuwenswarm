@@ -245,6 +245,7 @@ test('normalizes interface source variants and bilingual display fields', () => 
     id: 'python-code-reviewer',
     runtimePackageName: 'python-code-reviewer',
     displayName: 'Python Code Reviewer',
+    searchNames: ['Python 代码检视专家', 'Python Code Reviewer'],
     description: 'Reviews Python code',
     category: 'Engineering',
     source: 'builtin',
@@ -483,7 +484,7 @@ test('catalog view model filters mine/search and returns the full filtered list'
   const view = buildCatalogViewModel(catalog, {
     scope: 'mine',
     category: '',
-    query: '市场',
+    query: '甲',
   });
 
   assert.equal(view.totalItems, 1);
@@ -634,4 +635,16 @@ test('agent detail does not display summary data when the full detail request fa
   assert.equal(failed.detailStatus, 'error');
   assert.equal(failed.detail, null);
   assert.equal(failed.detailError, 'Hub timeout');
+});
+
+test('mine experts match both display languages and exclude description, tags and ids', () => {
+  const item = normalizeAgentTemplateListItem({
+    id: 'hidden-package-6', source: 'local', installed: true,
+    displayName: { zh: '工程顾问', en: 'Quality Advisor' },
+    displayDescription: { zh: '生成报告' }, category: 'hidden-category',
+    tags: [{ zh: 'hidden-tag' }],
+  }, 'zh');
+  const search = query => buildCatalogViewModel([item], { scope: 'mine', category: '', query }).totalItems;
+  for (const q of ['工程', ' QUALITY ', 'ＱＵＡＬＩＴＹ']) assert.equal(search(q), 1, q);
+  for (const q of ['生成', 'hidden', '6']) assert.equal(search(q), 0, q);
 });

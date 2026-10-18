@@ -32,34 +32,12 @@ class _FakeFront:
         _ = backend
 
 
-class _FakeServer:
-    def __init__(self) -> None:
-        self.agent_manager = object()
-        self.started_with_bind: bool | None = None
-
-    async def start(self, *, bind_transport: bool = True) -> None:
-        self.started_with_bind = bind_transport
-
-    async def stop(self) -> None:
-        return None
-
-    def get_agent_manager(self) -> object:
-        return self.agent_manager
-
-    def schedule_image_modality_warmup(self, *, reason: str) -> None:
-        _ = reason
-
-    async def send_push(self, payload: object) -> None:
-        _ = payload
-
-
 @pytest.mark.asyncio
 async def test_run_does_not_delete_agent_teams_directory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     removed_paths: list[Path] = []
     fake_front = _FakeFront("127.0.0.1", 18092)
-    fake_server = _FakeServer()
     captured: dict[str, asyncio.Event] = {}
     real_event = asyncio.Event
 
@@ -72,18 +50,15 @@ async def test_run_does_not_delete_agent_teams_directory(
         _ = args, kwargs
         removed_paths.append(Path(path))
 
-    def _fake_spawn(_stop_event, _server) -> asyncio.Task:
-        async def _noop() -> None:
+    class _NoopSupervisor:
+        async def stop(self) -> None:
             return None
 
-        return asyncio.create_task(_noop())
-
-    async def _fake_backend(front, host, port):
+    async def _fake_supervisor(front, host, port):
         _ = host, port
-        await fake_server.start(bind_transport=False)
-        front.attach_runtime_backend(fake_server)
+        front.attach_runtime_backend(_NoopSupervisor())
         captured["ev"].set()
-        return fake_server
+        return _NoopSupervisor()
 
     monkeypatch.setattr(app_agentserver.asyncio, "Event", _event_factory)
     monkeypatch.setattr("shutil.rmtree", _fake_rmtree)
@@ -91,8 +66,7 @@ async def test_run_does_not_delete_agent_teams_directory(
         "jiuwenswarm.server.front.server.AgentServerFront",
         lambda host, port, **kwargs: fake_front,
     )
-    monkeypatch.setattr(app_agentserver, "_start_runtime_backend", _fake_backend)
-    monkeypatch.setattr(app_agentserver, "_spawn_teammate_bootstrap", _fake_spawn)
+    monkeypatch.setattr(app_agentserver, "_start_supervisor", _fake_supervisor)
 
     await app_agentserver._run("127.0.0.1", 18092)
 
@@ -100,5 +74,4 @@ async def test_run_does_not_delete_agent_teams_directory(
     assert "attach" in fake_front.events
     assert "front_stop" in fake_front.events
     assert fake_front.events.index("front_start") < fake_front.events.index("attach")
-    assert fake_server.started_with_bind is False
     assert removed_paths == []

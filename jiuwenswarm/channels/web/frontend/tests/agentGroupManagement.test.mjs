@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import {
   buildAgentGroupCreatePayload,
@@ -75,6 +76,8 @@ test('builds a group create payload without unsupported Agent fields', () => {
   assert.deepEqual(payload.skills, ['review']);
   assert.deepEqual(payload.quickInputs, ['评审方案']);
   assert.equal(payload.tags[0].zh, '产品研发');
+  assert.equal(payload.tags[0].id, 'product-development');
+  assert.equal(payload.tags[1].id, '交付');
   for (const forbidden of ['model', 'mcps', 'pluginNames', 'apiKey', 'apiBase', 'path']) {
     assert.equal(Object.hasOwn(payload, forbidden), false, forbidden);
   }
@@ -147,7 +150,7 @@ test('only an unbound Team selection creates the first group payload', () => {
   assert.deepEqual(buildAgentGroupSelectionPayloadForMode('agent', { kind: 'select', id: 'review-team' }, null), {});
 });
 
-test('group view model separates catalog and mine scopes and searches tags', () => {
+test('group view model separates catalog and mine scopes and excludes tags from mine search', () => {
   const local = normalizeAgentGroupListItem({
     ...rawGroup,
     id: 'local-team',
@@ -172,7 +175,7 @@ test('group view model separates catalog and mine scopes and searches tags', () 
     buildGroupCatalogViewModel([item, local], {
       scope: 'mine',
       category: '',
-      query: '本地专属',
+      query: '本地团队',
       page: 1,
       pageSize: 15,
     }).totalItems,
@@ -218,4 +221,45 @@ test('group upload accepts zip, tar and tar.gz only', () => {
   assert.equal(isAgentGroupUploadFilename('team.tar'), true);
   assert.equal(isAgentGroupUploadFilename('team.tar.gz'), true);
   assert.equal(isAgentGroupUploadFilename('team.json'), false);
+});
+
+test('mine group search matches bilingual display names only (#4473)', () => {
+  const item = normalizeAgentGroupListItem({
+    ...rawGroup, name: 'hidden-package-s-6',
+    displayName: { zh: '旅游规划专家团', en: 'Travel Team' },
+    displayDescription: { zh: '生成可执行旅行方案' },
+    category: 'hidden-category', tags: [{ zh: 'hidden-tag' }],
+  }, 'zh');
+  const search = query => buildGroupCatalogViewModel([item], {
+    scope: 'mine', category: '', query, page: 1, pageSize: 12,
+  }).items.length;
+  for (const query of ['生成', 'hidden', 's', '6']) assert.equal(search(query), 0, query);
+  for (const query of ['旅游', ' travel ', 'ＴＲＡＶＥＬ']) assert.equal(search(query), 1, query);
+});
+
+test('catalog filtering keeps description matches while mine excludes them', () => {
+  const item = normalizeAgentGroupListItem({ ...rawGroup, displayDescription: { zh: 'description-only' } }, 'zh');
+  const options = { category: '', query: 'description-only', page: 1, pageSize: 12 };
+  assert.equal(buildGroupCatalogViewModel([item], { ...options, scope: 'catalog' }).totalItems, 1);
+  assert.equal(buildGroupCatalogViewModel([item], { ...options, scope: 'mine' }).totalItems, 0);
+});
+
+test('chat group picker submits runtime package names and keeps selection checked', () => {
+  const source = readFileSync(new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8');
+  const picker = source.slice(source.indexOf('filteredGroupOptions.map((item) => {'));
+  const handler = picker.match(/onClick=\{\(\) => \{([\s\S]*?)\}\}/)[1];
+  const selectedExpression = picker.match(/const isSelected = ([^;]+);/)[1];
+  for (const item of [
+    { id: 'hub-asset-uuid', name: 'presentation-generation' },
+    { id: 'local-team', name: 'local-team' },
+  ]) {
+    let intent;
+    new Function('item', 'agentGroupSelectionDisabled', 'activeSessionId', 'useSessionStore',
+      'setAgentGroupSelectionIntent', 'setAgentSelectionIntent', 'clearSelectedSkills', 'setAttachMenuOpen', handler)(
+      item, false, 'new', { getState: () => ({ setMode() {} }) },
+      (_session, value) => { intent = value; }, () => {}, () => {}, () => {},
+    );
+    assert.deepEqual(buildAgentGroupSelectionPayloadForMode('team', intent), { agent_group_name: item.name });
+    assert.equal(new Function('item', 'selectedGroupId', `return ${selectedExpression}`)(item, item.name), true);
+  }
 });

@@ -32,6 +32,7 @@ def _consume_background_task_result(task: asyncio.Task[Any]) -> None:
 
 @dataclass
 class _SessionAdmissionState:
+    quiescing: bool = False
     active_users: int = 0
     user_waiters: int = 0
     team_user_submissions: int = 0
@@ -77,6 +78,17 @@ class SessionRunAdmission:
 
     def _state(self, session_id: str) -> _SessionAdmissionState:
         return self._states.setdefault(session_id, _SessionAdmissionState())
+
+    async def quiesce_session(self, session_id: str) -> None:
+        """Fence new user, automation, and mailbox admission for a Session."""
+        async with self._condition:
+            self._state(session_id).quiescing = True
+            self._condition.notify_all()
+
+    def _ensure_accepting(self, session_id: str) -> None:
+        state = self._states.get(session_id)
+        if state is not None and state.quiescing:
+            raise RuntimeError(f"Session {session_id} is quiescing")
 
     def is_user_active(self, session_id: str) -> bool:
         state = self._states.get(session_id)
@@ -229,6 +241,7 @@ class SessionRunAdmission:
         team: bool,
     ) -> None:
         async with self._condition:
+            self._ensure_accepting(session_id)
             state = self._state(session_id)
             state.user_waiters += 1
             heartbeat_run_id = state.heartbeat_run_id
@@ -237,11 +250,15 @@ class SessionRunAdmission:
             async with self._condition:
                 await self._condition.wait_for(
                     lambda: (
-                        self._state(session_id).heartbeat_run_id is None
-                        and self._state(session_id).session_message_run_id is None
-                        and (not team or self._state(session_id).active_users == 0)
+                        self._state(session_id).quiescing
+                        or (
+                            self._state(session_id).heartbeat_run_id is None
+                            and self._state(session_id).session_message_run_id is None
+                            and (not team or self._state(session_id).active_users == 0)
+                        )
                     )
                 )
+                self._ensure_accepting(session_id)
                 state = self._state(session_id)
                 if team:
                     state.team_user_submissions += 1
@@ -261,6 +278,7 @@ class SessionRunAdmission:
     async def begin_control(self, session_id: str) -> None:
         """Block new Heartbeats while input resumes existing Session work."""
         async with self._condition:
+            self._ensure_accepting(session_id)
             self._state(session_id).active_users += 1
 
     async def begin_team_user(self, session_id: str) -> None:
@@ -272,6 +290,29 @@ class SessionRunAdmission:
         never wait for one another.
         """
         await self._begin_interactive_user(session_id, team=True)
+
+    async def begin_team_session_message(self, session_id: str) -> None:
+        """Admit a Team turn whose exclusivity its mailbox execution owns.
+
+        The mailbox worker already holds ``session_message_run_id`` for this
+        exact turn, which excludes Heartbeats, later interactive inputs, and
+        later mailbox turns. ``begin_team_user`` would instead wait for that
+        marker to clear — i.e. wait for this very turn to finish — so the
+        Team stream must not take the interactive slot. Only the accepting
+        check and a marker sanity assertion remain.
+
+        Raises:
+            RuntimeError: No session-message run is admitted for the Session,
+                or the Session is quiescing.
+        """
+        async with self._condition:
+            self._ensure_accepting(session_id)
+            state = self._states.get(session_id)
+            if state is None or state.session_message_run_id is None:
+                raise RuntimeError(
+                    "team session-message admission requires an active "
+                    f"session-message run: session={session_id}"
+                )
 
     async def complete_team_user_submission(
         self,
@@ -293,12 +334,17 @@ class SessionRunAdmission:
     async def begin_bounded_team_user(self, session_id: str) -> None:
         """Exclusively admit bounded Cron automation around Team activity."""
         async with self._condition:
+            self._ensure_accepting(session_id)
             state = self._state(session_id)
             state.user_waiters += 1
             try:
                 await self._condition.wait_for(
-                    lambda: self._bounded_team_user_can_begin(session_id)
+                    lambda: (
+                        self._state(session_id).quiescing
+                        or self._bounded_team_user_can_begin(session_id)
+                    )
                 )
+                self._ensure_accepting(session_id)
                 state.active_users += 1
             finally:
                 state.user_waiters -= 1
@@ -353,7 +399,7 @@ class SessionRunAdmission:
                 or state.session_message_run_id is not None
                 or state.session_message_waiters > 0
             )
-            if state.heartbeat_blocked or session_has_work:
+            if state.quiescing or state.heartbeat_blocked or session_has_work:
                 return False
             state.heartbeat_run_id = run_id
             return True
@@ -368,10 +414,12 @@ class SessionRunAdmission:
         """
 
         async with self._condition:
+            self._ensure_accepting(session_id)
             state = self._state(session_id)
             state.session_message_waiters += 1
             try:
                 while not self._session_message_can_begin(session_id):
+                    self._ensure_accepting(session_id)
                     # A persistent Goal can settle without a foreground stream
                     # (and therefore without an admission notification). Read
                     # its live state periodically instead of mirroring events.
@@ -394,7 +442,8 @@ class SessionRunAdmission:
     def _session_message_can_begin(self, session_id: str) -> bool:
         state = self._state(session_id)
         return bool(
-            not state.heartbeat_blocked
+            not state.quiescing
+            and not state.heartbeat_blocked
             and state.heartbeat_run_id is None
             and state.session_message_run_id is None
             and state.active_users == 0
@@ -454,7 +503,7 @@ class SessionRunAdmission:
             or state.session_message_run_id is not None
             or state.session_message_waiters > 0
         )
-        if not session_has_work and not state.heartbeat_blocked:
+        if not session_has_work and not state.heartbeat_blocked and not state.quiescing:
             self._states.pop(session_id, None)
 
 

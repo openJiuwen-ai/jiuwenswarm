@@ -6,7 +6,8 @@ const DEFAULT_WORK_MODE: WorkMode = 'work';
 export function readStoredWorkMode(): WorkMode {
   if (typeof window === 'undefined') return DEFAULT_WORK_MODE;
   try {
-    return window.localStorage.getItem(WORK_MODE_STORAGE_KEY) === 'code' ? 'code' : DEFAULT_WORK_MODE;
+    const stored = window.localStorage.getItem(WORK_MODE_STORAGE_KEY);
+    return stored === 'code' || stored === 'design' ? stored : DEFAULT_WORK_MODE;
   } catch {
     return DEFAULT_WORK_MODE;
   }
