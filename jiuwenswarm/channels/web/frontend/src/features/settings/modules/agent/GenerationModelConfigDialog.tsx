@@ -6,12 +6,10 @@ import { Form, FormDialog, useForm, useFormState, type FormItem } from '../../..
 import { SettingsConfirmDialog } from '../../components';
 import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
-import { ContextWindowField } from '../models/ContextWindowField';
 import { ModelNameField } from '../models/ModelNameField';
 import { ModelProviderSelect } from '../models/ModelProviderSelect';
 import {
   normalizeContextWindowTokens,
-  parseContextWindowTokens,
   resolveDraftContextWindowTokens,
 } from '../models/contextWindow';
 import {
@@ -291,9 +289,6 @@ export function GenerationModelConfigDialog({
     const modelName = values.model_name.trim();
     if (!modelName && !optionalCredentials) next.model_name = t('config.modelList.modelNameRequired');
     else if (modelName.length > 100) next.model_name = t('config.modelList.modelNameTooLong');
-    if (parseContextWindowTokens(values.context_window_tokens) === null) {
-      next.context_window_tokens = t('settingsPanel.models.validation.contextWindowInvalid');
-    }
     return next;
   }, [custom, optionalCredentials, preset, showApiBase, t, values]);
 
@@ -389,25 +384,6 @@ export function GenerationModelConfigDialog({
         />
       ),
     },
-    {
-      name: 'context_window_tokens',
-      label: t('settingsPanel.models.contextWindow'),
-      component: 'custom',
-      required: true,
-      helpTips: t('settingsPanel.models.contextWindowHint'),
-      render: ({ id, value, error, disabled, onChange, onBlur }) => (
-        <ContextWindowField
-          id={id}
-          value={value}
-          error={error}
-          disabled={disabled}
-          placeholder={t('settingsPanel.models.contextWindowPlaceholder')}
-          presetLabel={t('settingsPanel.models.contextWindowPresets')}
-          onChange={onChange}
-          onBlur={onBlur}
-        />
-      ),
-    },
   );
 
   const confirm = async () => {
@@ -472,7 +448,6 @@ export function GenerationModelConfigDialog({
             api_base: [{ validator: () => errors.api_base }],
             api_key: [{ validator: () => errors.api_key }],
             model_name: [{ validator: () => errors.model_name }],
-            context_window_tokens: [{ validator: () => errors.context_window_tokens }],
           }}
           items={formItems}
         />
