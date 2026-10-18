@@ -10,7 +10,7 @@ description: 运行 JiuwenSwarm Web UI 端到端测试并收集截图、日志�
 ## 使用脚本
 
 - `todo_ui_report.py`：验证待办创建、状态更新、Tool Panel 展示。
-- `cron_ui_report.py`：验证定时任务面板、结构化提醒、预览、立即执行、开关、删除。
+- `cron_ui_report.py`：验证定时任务面板中的创建、预览、立即执行、开关和删除。
 - `task_multimodal_ui_report.py`：验证任务输入框 ASR 录音态、实验功能 ASR 配置和全双工入口。
 - `run_suite.py`：顺序执行多个场景并汇总结果。
 
@@ -39,6 +39,10 @@ export JIUWENSWARM_E2E_PYTHON=.venv/bin/python
 优先使用仓库自己的虚拟环境，不要硬编码个人机器路径。
 
 ## 执行
+
+`run_suite.py` 和三个场景脚本的 `--home` 默认值均为当前用户的家目录（`Path.home()`），不会自动创建临时 `HOME`。
+
+需要使用临时 `HOME` 做冒烟验证时，先准备独立目录及运行所需配置，再在套件或单场景命令中显式传入 `--home /tmp/ui-e2e-home`。
 
 运行完整套件：
 
@@ -69,8 +73,6 @@ python3 tests/ui_e2e/cron_ui_report.py \
   --report-dir /tmp/cron-ui-report
 ```
 
-默认使用临时 `HOME` 做冒烟验证；只有确认真实工作区行为时，再显式传入真实 `--home`。
-
 ## 产物
 
 - `report.md`
@@ -84,7 +86,7 @@ python3 tests/ui_e2e/cron_ui_report.py \
 ## 场景
 
 - `todo_ui_report.py`：启动真实 `jiuwenswarm.app`，验证待办工具链和 Tool Panel。
-- `cron_ui_report.py`：启动真实 `jiuwenswarm.app`，验证 Cron 面板和结构化提醒。
+- `cron_ui_report.py`：启动真实 `jiuwenswarm.app`，验证 Cron 面板中的定时任务流程。
 - `task_multimodal_ui_report.py`：启动真实服务和浏览器，以确定性麦克风夹具验证任务多模态入口。
 
 ## 输出结论
