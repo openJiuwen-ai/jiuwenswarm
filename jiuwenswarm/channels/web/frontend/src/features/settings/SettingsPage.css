@@ -1295,10 +1295,15 @@
   cursor: pointer;
 }
 
-.settings-model-group-route-picker__option:hover,
-.settings-model-group-route-picker__option:focus-visible {
+.settings-model-group-route-picker__option:hover:not(:disabled),
+.settings-model-group-route-picker__option:focus-visible:not(:disabled) {
   background: var(--color-icon-btn-hover-surface);
   outline: none;
+}
+
+.settings-model-group-route-picker__option:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .settings-model-group-route-picker__option-actions {
