@@ -79,6 +79,10 @@ CODE_NAME_CONFLICT = "MCP_NAME_CONFLICT"
 # token-schema env var; the CLI's auth status rejected the stored token at
 # connect time. Frontend maps this to a "token invalid, re-enter" hint.
 CODE_CREDENTIALS_INVALID = "MCP_CREDENTIALS_INVALID"
+# CLI install script could not find PowerShell (npm postinstall spawn
+# powershell.exe ENOENT); frontend shows a friendly hint instead of the
+# misleading "version too low".
+CODE_INSTALL_SCRIPT_DEP = "MCP_INSTALL_SCRIPT_DEP"
 
 # Network-failure substrings matched (case-insensitively) against init command
 # stderr. Covers npm's common registry/connectivity errors; the token codes are
@@ -216,6 +220,7 @@ def _load_index_entry(name: str) -> dict[str, Any]:
     examples = raw.get("examples") if isinstance(raw.get("examples"), dict) else {}
     return {
         **raw,
+        "display_name_i18n": display_name,
         "display_name": display_name.get("zh") or package.name,
         "display_name_en": display_name.get("en") or package.name,
         "name": display_name.get("zh") or package.name,
@@ -347,6 +352,7 @@ def _build_summary(
         "name": name,
         # 中文名优先：display_name > name(中文) > name_zh > 包名
         "display_name": meta.get("display_name") or meta.get("name") or meta.get("name_zh") or name,
+        "display_name_i18n": meta.get("display_name_i18n", {}),
         # 中文描述优先（索引里 description_zh 是干净中文，description 是英文）
         "description": meta.get("description_zh") or meta.get("description", ""),
         "category": meta.get("category", ""),
@@ -1048,8 +1054,9 @@ def _cli_cred_tokens_stored(name: str) -> bool:
 
 def _classify_install_failure(n: str, inst: Any) -> CliConnectError:
     """Map a failed CliDriver.install() onto a CliConnectError by cause:
-    binary_not_found → MCP_RUNTIME_MISSING, network stderr → MCP_INSTALL_NETWORK,
-    else → MCP_CLI_INCOMPLETE. ``runtime``/``install_cmd`` are surfaced so the
+    binary_not_found → MCP_RUNTIME_MISSING, install_script_dep →
+    MCP_INSTALL_SCRIPT_DEP, network stderr → MCP_INSTALL_NETWORK, else →
+    MCP_CLI_INCOMPLETE. ``runtime``/``install_cmd`` are surfaced so the
     frontend hint can name the dependency / show the upgrade command.
     """
     runtime = inst.runtime or ""
@@ -1058,6 +1065,13 @@ def _classify_install_failure(n: str, inst: Any) -> CliConnectError:
         return CliConnectError(
             CODE_RUNTIME_MISSING,
             f"mcp '{n}' CLI runtime '{runtime or 'unknown'}' not found on PATH; {inst.error}",
+            runtime=runtime, install_cmd=install_cmd,
+        )
+    if inst.error_kind == "install_script_dep":
+        # Structured CliDriver signal; outranks the network-text heuristic.
+        return CliConnectError(
+            CODE_INSTALL_SCRIPT_DEP,
+            f"mcp '{n}' CLI install script requires PowerShell but none was found; {inst.error}",
             runtime=runtime, install_cmd=install_cmd,
         )
     err_lower = (inst.error or "").lower()
@@ -1521,4 +1535,20 @@ __all__ = [
     "CODE_CLI_INCOMPLETE",
     "CODE_NAME_CONFLICT",
     "CODE_CREDENTIALS_INVALID",
+    "CODE_INSTALL_SCRIPT_DEP",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# common 注入点自注册：import 即注册，供 common 经
+# ``common.external_providers.provider("mcp_registry")`` 反向取用（分层规则 R1）。
+# --------------------------------------------------------------------------- #
+def _register_common_provider() -> None:
+    import sys
+
+    from jiuwenswarm.common.external_providers import register
+
+    register("mcp_registry", sys.modules[__name__])
+
+
+_register_common_provider()

@@ -698,7 +698,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         if token_payload.get("kind") == _VERIFIED_ASSET_TOKEN_KIND:
             from jiuwenswarm.common.schema.message import ReqMethod
             from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
-            from jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter import (
+            from jiuwenswarm.gateway.embedded.runtime.file_download import (
                 _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES,
             )
 

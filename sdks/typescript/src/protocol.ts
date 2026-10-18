@@ -14,33 +14,90 @@ export type Mode =
   | "agent.work.normal"
   | "agent.work.plan";
 export interface Workspace {
-  cwd?: string;
-  project_dir?: string;
+  cwd?: string | null;
+  project_dir?: string | null;
   trusted_dirs?: string[];
 }
 export interface AgentDefinition {
   name: string;
   instructions: string;
-  description?: string;
-  model?: string;
+  description?: string | null;
+  model?: string | null;
   tools?: string[];
   skills?: string[];
-  max_iterations?: number;
+  max_iterations?: number | null;
 }
 export interface RunInput {
   input: string;
-  request_id?: string;
-  session_id?: string;
-  mode?: Mode;
-  model?: string;
-  skills?: string[];
-  mcp?: string[];
-  permissions?: { tools?: { [tool: string]: "allow" | "ask" | "deny" } };
-  agent?: AgentDefinition;
-  workspace?: Workspace;
-  timeout_seconds?: number;
+  request_id?: string | null;
+  session_id?: string | null;
+  mode?: Mode | null;
+  model?: string | null;
+  skills?: string[] | null;
+  mcp?: string[] | null;
+  permissions?: { tools?: { [tool: string]: "allow" | "ask" | "deny" } } | null;
+  output_schema?: JsonObject | null;
+  max_turns?: number | null;
+  max_budget_usd?: number | null;
+  host_tools?: HostTool[];
+  agent?: AgentDefinition | null;
+  workspace?: Workspace | null;
+  timeout_seconds?: number | null;
+}
+export interface HostTool {
+  name: string;
+  description: string;
+  input_schema: JsonObject;
+}
+export interface TextPayload {
+  text: string;
+}
+export interface ToolObservation {
+  call_id: string;
+  name: string;
+  arguments: JsonObject | null;
+  status: "started" | "completed" | "failed";
+  result: Json;
+}
+export interface ToolPayload {
+  tool: ToolObservation;
+}
+export interface InteractionQuestion {
+  question_id: string;
+  question: string;
+  options: { value: string; label: string }[];
+  card_id: string | null;
+  allow_custom_input: boolean;
+}
+export interface InteractionPayload {
+  interaction_id: string;
+  kind: "permission" | "question" | "confirmation";
+  questions: InteractionQuestion[];
+  interaction: JsonObject;
+}
+export interface HostToolPayload {
+  call_id: string;
+  name: string;
+  arguments: JsonObject;
+}
+export interface ProtocolCapabilities {
+  schema_version: string;
+  supported_schema_versions: string[];
+  protocol_revision: number;
+  features: { [feature: string]: boolean };
+  run_fields: string[];
+  query_operations: string[];
+  control_types: string[];
+  stable_event_types: string[];
+  input_encoding: string;
+  output_encoding: string;
+  output_format: string;
+  max_input_bytes: number;
+  compatibility: { [rule: string]: string };
 }
 export type QueryOperation =
+  | "protocol.capabilities"
+  | "protocol.schema"
   | "session.get"
   | "session.list"
   | "model.list"
@@ -74,6 +131,7 @@ export interface Terminal extends Envelope {
 export interface RunResult extends Terminal {
   type: "result";
   output: string | null;
+  output_json: JsonObject | null;
   usage: JsonObject;
 }
 export interface QueryResult extends Terminal {
@@ -209,6 +267,13 @@ export class Records {
         throw new ProtocolError("successful query requires data and operation");
     } else if (this.sessionId === null)
       throw new ProtocolError("successful run requires Session identity");
+    if (
+      this.operation === undefined &&
+      value.output_json !== null &&
+      value.output_json !== undefined &&
+      !object(value.output_json)
+    )
+      throw new ProtocolError("output_json must be an object or null");
   }
 
   finish(code: number | null): RunResult | QueryResult {

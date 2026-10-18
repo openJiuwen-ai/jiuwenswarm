@@ -170,7 +170,7 @@ def test_optional_fields_and_skills_are_strict(field: str, value: object) -> Non
     assert caught.value.field is not None
 
 
-@pytest.mark.parametrize("tools", [("read_file",), ["read_file", "write_file"]])
+@pytest.mark.parametrize("tools", [(), [], ("read_file",), ["read_file", "write_file"]])
 def test_explicit_tool_allowlist_is_canonical(tools: object) -> None:
     definition = _definition(tools=tools)
     assert definition.tools == tuple(tools)
@@ -185,8 +185,8 @@ def test_invalid_tool_allowlist_is_rejected(tools: object) -> None:
     assert caught.value.field == "tools"
 
 
-@pytest.mark.parametrize("tools", [None, 7, (), [], [""], [1]])
-def test_malformed_or_empty_tool_policy_is_invalid(tools: object) -> None:
+@pytest.mark.parametrize("tools", [None, 7, [""], [1]])
+def test_malformed_tool_policy_is_invalid(tools: object) -> None:
     with pytest.raises(RuntimeAgentDefinitionError) as caught:
         _definition(tools=tools)
 

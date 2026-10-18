@@ -223,17 +223,23 @@ class InProcessRuntimeClient:
             session_id=session_id,
         )
 
-    def stream(self, request: AgentRequest) -> AsyncIterator[RuntimeEvent]:
+    def stream(
+        self, request: AgentRequest, *, on_agent_ready: Any = None
+    ) -> AsyncIterator[RuntimeEvent]:
         _require_process_cli_channel(getattr(request, "channel_id", None))
-        return self._runtime.stream(request)
+        return self._runtime.stream(request, on_agent_ready=on_agent_ready)
 
     def stream_agent(
         self,
         request: AgentRequest,
         definition: RuntimeAgentDefinition | Mapping[str, Any],
+        *,
+        on_agent_ready: Any = None,
     ) -> AsyncIterator[RuntimeEvent]:
         _require_process_cli_channel(getattr(request, "channel_id", None))
-        return self._runtime.stream_agent(request, definition)
+        return self._runtime.stream_agent(
+            request, definition, on_agent_ready=on_agent_ready
+        )
 
     async def invoke(self, request: AgentRequest) -> list[RuntimeEvent]:
         """Invoke one non-streaming request through the shared Runtime."""
@@ -282,19 +288,18 @@ class InProcessRuntimeClient:
         )
 
     async def close(self) -> None:
-        # AgentRuntime.close() owns Session Coordinator and AgentManager
-        # cleanup.  Team requests also keep a process-wide producer whose
-        # stream deliberately survives a completed round, so stop only that
-        # extra Runtime-owned stage before closing the Runtime itself.
+        """Close the Runtime and flush pending Session persistence writes."""
         cleanup_errors: list[BaseException] = []
         try:
-            await self._runtime.cancel_all_team_stream_tasks(
-                reason="[process CLI close] ",
-            )
+            await self._runtime.close()
         except BaseException as exc:
             cleanup_errors.append(exc)
         try:
-            await self._runtime.close()
+            from jiuwenswarm.channels.process_cli.persistence import (
+                flush_session_writes,
+            )
+
+            await flush_session_writes()
         except BaseException as exc:
             cleanup_errors.append(exc)
         if cleanup_errors:

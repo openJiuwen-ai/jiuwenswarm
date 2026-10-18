@@ -43,6 +43,15 @@ async def test_distinct_query_processes():
 
 
 @pytest.mark.asyncio
+async def test_null_request_id_is_generated_and_correlated_over_real_pipes():
+    result = await client().run(
+        {"input": "test", "request_id": None}, deadline_seconds=10
+    )
+    assert isinstance(result["request_id"], str) and result["request_id"]
+    assert result["status"] == "completed"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mode",
     [
@@ -113,6 +122,31 @@ async def test_two_answers_same_process():
 async def test_no_automatic_approval():
     with pytest.raises(InteractionRequired):
         await client("ask").run({"input": "test"}, deadline_seconds=10)
+
+
+@pytest.mark.asyncio
+async def test_permission_is_rejected_and_child_continues_without_handler():
+    result = await client("permission_without_handler").run(
+        {"input": "test"}, deadline_seconds=10
+    )
+    assert result["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_host_tool_callback_returns_to_same_child():
+    seen = []
+
+    async def tool(event):
+        seen.append(event["payload"])
+        return {"value": "world"}
+
+    result = await client("host_tool").run(
+        {"input": "test", "host_tools": [{"name": "lookup"}]},
+        on_tool_call=tool,
+        deadline_seconds=10,
+    )
+    assert result["status"] == "completed"
+    assert seen[0]["arguments"] == {"key": "hello"}
 
 
 @pytest.mark.asyncio

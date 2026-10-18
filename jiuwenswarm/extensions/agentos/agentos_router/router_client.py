@@ -6,12 +6,15 @@ import asyncio
 import logging
 import os
 import re
+import shlex
 import stat
 import time
 import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Coroutine
+
+from jiuwenswarm.common.client.agent_client import AgentServerClient
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
@@ -35,6 +38,8 @@ from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthCon
 from jiuwenswarm.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
     SshChannelEndpoint,
+    read_mapping_path,
+    read_optional_float,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import (
     agentos_extra,
@@ -55,7 +60,12 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     RegistryValidationError,
     cmd_for_access_mode,
     compute_backoff_delay,
+    http_web_port_from_access_mode,
     instance_service_id,
+    parse_access_mode,
+)
+from jiuwenswarm.extensions.agentos.registry_watcher.decode import (
+    web_svc_port as _web_svc_port,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.stale_cleanup import (
     cleanup_stale_sandboxes,
@@ -86,10 +96,7 @@ from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import SshKeyIssuer
 from jiuwenswarm.gateway import ChannelManager
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
 from jiuwenswarm.server.runtime.attachments.document_attachments import is_forbidden_document
-from jiuwenswarm.gateway.routing.agent_client import (
-    AgentServerClient,
-    WebSocketAgentServerClient,
-)
+from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
 from jiuwenswarm.server.runtime.attachments.upload_storage import safe_upload_filename
 
 
@@ -231,6 +238,11 @@ def _first_nonempty(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _pick_keys(source: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    """Copy only the ``keys`` that exist in ``source``."""
+    return {key: source[key] for key in keys if key in source}
 
 
 def _extract_placement_ips(instance_info: Mapping[str, Any] | None) -> tuple[str, str]:
@@ -389,8 +401,53 @@ def build_inline_runtime_spec(image_info: ImageInfo) -> AgentRuntimeSpec:
     return dict(raw_spec)  # type: ignore[return-value]
 
 
+def _positive_int(value: Any) -> int | None:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    return port if port > 0 else None
+
+
+def _access_mode_from_image_metadata(meta: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(meta, Mapping):
+        return []
+    raw = meta.get("access_mode")
+    if not raw:
+        launch = meta.get("launch_spec")
+        if isinstance(launch, Mapping):
+            raw = launch.get("access_mode")
+    return parse_access_mode(raw)
+
+
+def _resolve_agent_web_port(
+    *,
+    image_metadata: Mapping[str, Any] | None = None,
+) -> int | None:
+    """HTTP web port from registry ``access_mode`` (not written into rootfs.ports).
+
+    Prefer ``access_mode`` row ``name=web`` with HTTP protocol; then a
+    configured ``web_port``. No hardcoded default.
+    """
+    meta = image_metadata if isinstance(image_metadata, Mapping) else {}
+    port = http_web_port_from_access_mode(_access_mode_from_image_metadata(meta))
+    if port is None:
+        port = _positive_int(meta.get("web_port"))
+    return port
+
+
+def _web_port_from_runtime(runtime: AgentRuntime) -> int | None:
+    meta = runtime.info.metadata if runtime.info is not None else {}
+    if not isinstance(meta, dict):
+        meta = {}
+    port = _positive_int(meta.get("web_port"))
+    if port:
+        return port
+    return http_web_port_from_access_mode(_access_mode_from_image_metadata(meta))
+
+
 def _third_agent_ssh_probe_port(ssh_relay: YuanrongSshRelay | None) -> int:
-    """YuanRong SSH 南向端口（默认 2222），用作 3rdagent startup 探针。"""
+    """YuanRong SSH 南向端口（默认 2222），无 web access_mode 时用作探针。"""
     if ssh_relay is not None:
         try:
             port = int(getattr(ssh_relay, "backend_port", 0) or 0)
@@ -399,6 +456,18 @@ def _third_agent_ssh_probe_port(ssh_relay: YuanrongSshRelay | None) -> int:
         if port > 0:
             return port
     return DEFAULT_SSH_PORT
+
+
+def _third_agent_probe_port(
+    ssh_relay: YuanrongSshRelay | None,
+    *,
+    image_metadata: Mapping[str, Any] | None = None,
+) -> int:
+    """3rdagent YuanRong TCP 探针端口：有 ``access_mode.web`` 用 web port，否则 SSH。"""
+    web_port = _resolve_agent_web_port(image_metadata=image_metadata)
+    if web_port:
+        return web_port
+    return _third_agent_ssh_probe_port(ssh_relay)
 
 
 def _resolve_third_agent_probe_settings(
@@ -423,8 +492,9 @@ def _with_default_third_agent_probes(
     ssh_port: int,
     probe_settings: RuntimeProbeSettings | None = None,
 ) -> dict[str, Any]:
-    """Registry 未带 probes 时补 startup+liveness TCP（默认端口 2222）。
+    """Registry 未带 probes 时补 startup+liveness TCP。
 
+    端口由调用方传入（有 ``access_mode.web`` 用 web port，否则 SSH 默认 2222）。
     未改 gateway/env 探针时序时：startup delay 2 / period 3 / timeout 2 /
     failure 8；liveness timeout 2 / failure 3。yaml 或 AGENTOS_PROBE_* 相对
     builtin 默认值有改动时改用配置值。
@@ -438,6 +508,47 @@ def _with_default_third_agent_probes(
         return spec
     settings = _resolve_third_agent_probe_settings(probe_settings)
     spec["probes"] = settings.tcp_probes(int(ssh_port), with_liveness=True)
+    return spec
+
+
+_ACCESS_MODE_CMD_CONTINUATION = re.compile(r"\\\s+")
+_ACCESS_MODE_CMD_SPACES = re.compile(r"[ \t]+")
+
+
+def _normalize_access_mode_shell_cmd(cmd: str) -> str:
+    """Collapse registry line-continuation backslashes in ``access_mode.cmd``."""
+    text = _ACCESS_MODE_CMD_CONTINUATION.sub(" ", str(cmd or "").strip())
+    return _ACCESS_MODE_CMD_SPACES.sub(" ", text).strip()
+
+
+def _with_web_access_cmds(
+    runtime_spec: Mapping[str, Any],
+    *,
+    image_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Prepend ``access_mode`` ``name=web`` command to ``runtime_spec.cmds``.
+
+    YuanRong bootstrap reads ``cmds`` as a list of argv arrays. The web start
+    command is always placed first; existing registry cmds follow it.
+    """
+    spec = dict(runtime_spec)
+    existing = spec.get("cmds")
+    rest = (
+        [row for row in existing if isinstance(row, list)]
+        if isinstance(existing, list)
+        else []
+    )
+    cmd = _normalize_access_mode_shell_cmd(
+        cmd_for_access_mode(_access_mode_from_image_metadata(image_metadata), "web")
+    )
+    argv = shlex.split(cmd, posix=True) if cmd else []
+    if not argv:
+        if rest:
+            spec["cmds"] = rest
+        else:
+            spec.pop("cmds", None)
+        return spec
+    spec["cmds"] = [argv, *rest]
     return spec
 
 
@@ -535,9 +646,12 @@ class AgentOSRouterClient(AgentServerClient):
         self._ws_clients_lock = asyncio.Lock()
         # instance_id → 正在进行的 connect Future（合并并发首连，避免多路同时打 502）
         self._ws_connecting: dict[str, asyncio.Future[WebSocketAgentServerClient]] = {}
+        # sandbox_id 集合：已确认 web 南向 running。所有访问同一沙箱的请求
+        # 共享就绪结果，热了直接跳过（避免每请求一次 GET）；沙箱删除时移除。
+        self._web_ready_sandboxes: set[str] = set()
         self._ws_client_factory = ws_client_factory or WebSocketAgentServerClient
         self._push_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None
-
+        self._server_config: dict[str, Any] = {}
 
     def set_channel_manager(self, channel_manager: ChannelManager) -> None:
         """Attach handshake IAM for Web/TUI and subscribe channel disconnect events."""
@@ -1210,6 +1324,9 @@ class AgentOSRouterClient(AgentServerClient):
         config: dict[str, Any],
         env: dict[str, str] | None = None,
     ) -> None:
+        if config:
+            import copy
+            self._server_config = copy.deepcopy(config)
         self._yuanrong.set_or_update_server_config(config=config, env=env)
 
     def set_server_push_handler(
@@ -1222,6 +1339,116 @@ class AgentOSRouterClient(AgentServerClient):
             setter(handler)
         for ws_client in self._ws_clients.values():
             ws_client.set_server_push_handler(handler)
+
+    async def resolve_web_endpoint(
+        self,
+        user_id: str,
+        agent_type: str,
+        protocol: str,
+        *,
+        acquire: bool = False,
+    ) -> str | None:
+        """Resolve the YuanRong frontend URL for an agent's Web UI.
+
+        Reuses cached ``metadata.web_port`` and ``sandbox_id``. Missing READY
+        runtime for a 3rd-agent creates the sandbox (single-flight). In-flight
+        create raises :class:`AgentCreating` (proxy maps to 503 Retry-After).
+
+        With ``acquire=True`` the runtime ``task_count`` is held so the idle
+        reaper cannot delete the sandbox while HTTP/WS proxy is in flight.
+        Callers must pair a non-``None`` return with :meth:`release_web_endpoint`.
+        """
+        uid = str(user_id or "").strip()
+        if not uid:
+            return None
+        try:
+            normalized = AgentRuntime.normalize_agent_type(agent_type)
+        except ValueError:
+            return None
+        runtime = await self._agent_manager.get_agent(
+            uid, normalized, acquire=acquire
+        )
+        # 仅当返回 endpoint 时，才把活动计数交给调用方；其余退出路径本次自行释放。
+        held = bool(acquire and runtime is not None and runtime.is_ready())
+        if runtime is None or not runtime.is_ready():
+            if self._uses_direct_yuanrong(normalized):
+                return None
+            try:
+                runtime = await self._agent_manager.get_or_create_agent(
+                    uid,
+                    normalized,
+                    creator=self._create_agent,
+                    wait=False,
+                    acquire=acquire,
+                )
+                held = bool(acquire)
+            except (
+                ValueError,
+                AgentCreatingTimeout,
+                AgentCreateFailed,
+                AgentDeleted,
+                AgentPreCreateError,
+                YuanrongAgentApiError,
+                RegistryError,
+            ):
+                return None
+        if runtime is None or not runtime.is_ready():
+            await self._release_web_hold(runtime, held)
+            return None
+        sandbox_id = runtime.info.sandbox_id
+        port = _web_port_from_runtime(runtime)
+        if not sandbox_id or not port:
+            await self._release_web_hold(runtime, held)
+            return None
+        # create 返回不代表端口就绪：按 sandbox_id 共享就绪结果，所有访问同一
+        # 沙箱的请求都等到 running；确认后记入缓存，后续请求直接跳过。
+        if (
+            not self._uses_direct_yuanrong(normalized)
+            and sandbox_id not in self._web_ready_sandboxes
+        ):
+            try:
+                await self._wait_yuanrong_running(
+                    sandbox_id,
+                    user_id=uid,
+                    session_id=str(runtime.info.metadata.get("session_id") or ""),
+                    agent_type=normalized,
+                )
+            except YuanrongAgentApiError as exc:
+                await self._cleanup_agent_on_instance_unavailable(runtime, exc=exc)
+                await self._release_web_hold(runtime, held)
+                return None
+            except BaseException:
+                await self._release_web_hold(runtime, held)
+                raise
+            self._web_ready_sandboxes.add(sandbox_id)
+        protocol_name = str(protocol or "").strip().lower()
+        if protocol_name == "http":
+            return self._agent_http_url(sandbox_id, port)
+        if protocol_name == "ws":
+            return self._agent_web_ws_url(sandbox_id, port)
+        await self._release_web_hold(runtime, held)
+        return None
+
+    async def _release_web_hold(
+        self, runtime: AgentRuntime | None, held: bool
+    ) -> None:
+        """Release this call's activity hold when no endpoint is handed to the caller."""
+        if held and runtime is not None:
+            await self._agent_manager.release(runtime.key)
+
+    async def release_web_endpoint(self, user_id: str, agent_type: str) -> None:
+        """Drop one web-proxy task hold taken by ``resolve_web_endpoint``."""
+        uid = str(user_id or "").strip()
+        if not uid:
+            return
+        try:
+            normalized = AgentRuntime.normalize_agent_type(agent_type)
+        except ValueError:
+            return
+        runtime = await self._agent_manager.get_agent(uid, normalized)
+        if runtime is None:
+            return
+        await self._agent_manager.release(runtime.key)
 
     def _agent_ws_url(self, instance_id: str, agent_port: int) -> str:
         """YuanRong frontend 的 instance WS 代理地址.
@@ -1241,6 +1468,38 @@ class AgentOSRouterClient(AgentServerClient):
             }
         )
         return f"{ws_scheme}://{parsed.netloc}/serverless/v1/ws?{query}"
+
+    def _agent_http_url(self, instance_id: str, agent_port: int) -> str:
+        """Frontend instance HTTP proxy URL.
+
+        ``http://<host>:8888/serverless/v1/http?instance=<id>&tenant_id=default&port=<port>``
+        """
+        frontend = str(self._yuanrong.frontend_endpoint or "").rstrip("/")
+        parsed = urllib.parse.urlsplit(frontend)
+        http_scheme = "https" if parsed.scheme == "https" else "http"
+        query = urllib.parse.urlencode(
+            {
+                "instance": instance_id,
+                "tenant_id": self._yuanrong.agent_namespace or "default",
+                "port": str(agent_port),
+            }
+        )
+        return f"{http_scheme}://{parsed.netloc}/serverless/v1/http?{query}"
+
+    def _agent_web_ws_url(self, instance_id: str, agent_port: int) -> str:
+        """Web-app WebSocket endpoint: the HTTP tunnel path with a ws scheme.
+
+        Reuses :meth:`_agent_http_url` so the browser's subpath (e.g.
+        ``/api/remote.mux``) survives ``_append_tail``. ``/serverless/v1/ws``
+        is the control channel and rejects such subpaths.
+        """
+        parsed = urllib.parse.urlsplit(
+            self._agent_http_url(instance_id, agent_port)
+        )
+        ws_scheme = "wss" if parsed.scheme == "https" else "ws"
+        return urllib.parse.urlunsplit(
+            (ws_scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)
+        )
 
     async def _connect_ws_until_ready(
         self,
@@ -1826,6 +2085,8 @@ class AgentOSRouterClient(AgentServerClient):
                 {
                     "agent_type": agent_type,
                     "cmd": cmd_for_access_mode(meta.get("access_mode"), mode),
+                    # Gateway northbound port (registry access_mode web_svc_port).
+                    "port": _web_svc_port(meta),
                 }
             )
         current = (
@@ -2258,6 +2519,61 @@ class AgentOSRouterClient(AgentServerClient):
 
     # ---------- idle sandbox reclamation ----------
 
+    def apply_remote_overrides(self, overrides: Mapping[str, Any]) -> None:
+        """Apply remotely-managed fields to the running process.
+
+        Narrow interface, no reconnect. Handles the data-plane
+        ``agent_sandbox.idle_timeout``, which is otherwise frozen at
+        construction -- this is its only runtime update path.
+
+        The management plane outranks env here: the remote value wins even when
+        ``SANDBOX_IDLE_TIMEOUT_SECONDS`` is set (env is only a startup fallback).
+        A remote document that omits the field leaves the current value untouched
+        -- it must not fall back to env/yaml, so deleting the field does not roll
+        anything back.
+
+        Starts/stops the reaper in both directions (0 disables reclamation).
+        """
+        agent_sandbox_section = read_mapping_path(overrides, "agent_sandbox")
+        new_timeout = read_optional_float(
+            agent_sandbox_section,
+            "idle_timeout",
+        )
+        if new_timeout is None:
+            # Field not pushed (or deleted): keep the current value.
+            return
+
+        previous = self._sandbox_idle_timeout_seconds
+        if new_timeout == previous:
+            return
+
+        self._sandbox_idle_timeout_seconds = new_timeout
+        log_agentos(
+            logger,
+            logging.INFO,
+            "config.sandbox_idle_timeout.update",
+            previous=previous,
+            current=new_timeout,
+        )
+
+        if new_timeout <= 0:
+            self._cancel_idle_reaper()
+        elif previous <= 0:
+            # Was disabled, now enabled: start the reaper. When both are
+            # positive the running loop already reads the new value, and
+            # ``create_task`` would need a running event loop we may not have.
+            self._ensure_idle_reaper_task()
+
+    def _cancel_idle_reaper(self) -> None:
+        """Cancel the reaper from a sync context (does not join the task).
+
+        Clears the handle first so a following enable can start a fresh task.
+        """
+        task = self._idle_reaper_task
+        self._idle_reaper_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
     def _idle_reaper_enabled(self) -> bool:
         return self._sandbox_idle_timeout_seconds > 0
 
@@ -2383,22 +2699,58 @@ class AgentOSRouterClient(AgentServerClient):
                 "cmds": [["sh", "-c", f"exec jiuwenswarm-agentserver --port {port}"]],
                 "probes": self._probe_settings.tcp_probes(port, with_liveness=True),
                 "cpu": int(os.environ.get("AGENTOS_BUILTIN_AGENT_CPU", "2000")),
-                "memory": int(os.environ.get("AGENTOS_BUILTIN_AGENT_MEMORY", "4096"))
+                "memory": int(os.environ.get("AGENTOS_BUILTIN_AGENT_MEMORY", "4096")),
             }
             # 不注入 AGENT_SERVER_HOST: 留空让沙箱内 agentserver 自行检测沙箱本地
             # 非 loopback IP(ISOLATED 模式 bind veth 地址,外部可达;见
             # app_agentserver._resolve_bind_host)。单机版默认仍 127.0.0.1。
             env_vars = {
                 USER_DIRECTORY_ENV_KEY: workspace,
+                "JIUWENSWARM_RUNTIME_PROFILE": "agentos",
             }
+            from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+            import json
+
+            endpoints = load_cron_store_settings(self._server_config).endpoints
+            if endpoints:
+                env_vars["JIUWENBOX_ETCD_ENDPOINTS"] = ",".join(endpoints)
+            graph_config = self._server_config.get("code_graph")
+            if isinstance(graph_config, dict):
+                env_vars["JIUWENSWARM_AGENTOS_CODE_GRAPH_CONFIG"] = json.dumps(graph_config)
+            sandbox_config = self._server_config.get("sandbox")
+            if isinstance(sandbox_config, dict):
+                # Deployment defaults only: do not broadcast local host paths,
+                # file lists, credentials or YuanRong resource knobs to users.
+                deployment = _pick_keys(sandbox_config, (
+                    "type", "enabled", "startup_mode", "url", "template_name",
+                    "user", "group",
+                ))
+                conch = sandbox_config.get("conch")
+                if isinstance(conch, dict):
+                    deployment["conch"] = _pick_keys(conch, (
+                        "vcpu_num", "vcpu_max", "ram_mb", "network",
+                    ))
+                env_vars["JIUWENSWARM_AGENTOS_SANDBOX_CONFIG"] = json.dumps(deployment)
+                sdk_config = str(sandbox_config.get("conch_sdk_config") or "").strip()
+                if sdk_config:
+                    env_vars["CONCH_SDK_CONFIG"] = sdk_config
             # create 后 Gateway 通过 frontend WS 代理直连该端口（不走 invoke）。
             extra_metadata: dict[str, Any] = {"agent_port": port}
         else:
             image_info = await self._registry.get_image_info(agent_info.agent_type)
-            runtime_spec = _with_default_third_agent_probes(
-                build_inline_runtime_spec(image_info),
-                ssh_port=_third_agent_ssh_probe_port(self._ssh_relay),
-                probe_settings=self._probe_settings,
+            runtime_spec = _with_web_access_cmds(
+                _with_default_third_agent_probes(
+                    build_inline_runtime_spec(image_info),
+                    ssh_port=_third_agent_probe_port(
+                        self._ssh_relay,
+                        image_metadata=image_info.metadata,
+                    ),
+                    probe_settings=self._probe_settings,
+                ),
+                image_metadata=image_info.metadata,
+            )
+            web_port = _resolve_agent_web_port(
+                image_metadata=image_info.metadata,
             )
             env_raw = image_info.metadata.get("env_vars")
             env_vars = (
@@ -2407,10 +2759,12 @@ class AgentOSRouterClient(AgentServerClient):
                 else None
             )
             extra_metadata = {"image_info": dict(image_info.metadata)}
-            # 3rdagent 走 SSH：registry 未带 probes 时补 startup+liveness
-            # TCP:2222（gateway.agentos.ssh.port）。未改探针配置时用
-            # delay=2/failure=8；gateway.agentos.probes / AGENTOS_PROBE_*
-            # 有改动时与 builtin 共用配置。已有 probes 原样透传。
+            if web_port is not None:
+                extra_metadata["web_port"] = web_port
+            # 3rdagent：registry 未带 probes 时补 startup+liveness TCP。
+            # 有 access_mode.web 用 web port，否则 SSH（gateway.agentos.ssh.port，
+            # 默认 2222）。未改探针配置时 delay=2/failure=8；yaml /
+            # AGENTOS_PROBE_* 有改动时与 builtin 共用配置。已有 probes 原样透传。
 
         started = time.monotonic()
 
@@ -2512,6 +2866,7 @@ class AgentOSRouterClient(AgentServerClient):
             resolved_key_values["session_id"] = agent_info.metadata.get(
                 "session_id"
             )
+        self._web_ready_sandboxes.discard(str(agent_info.sandbox_id or ""))
         await self._close_ws_client(agent_info.sandbox_id)
         if agent_info.sandbox_id:
             try:
@@ -2741,6 +3096,7 @@ class AgentOSRouterClient(AgentServerClient):
         best_effort: bool = False,
     ) -> None:
         """Delete YuanRong sandbox and unregister the registry instance."""
+        self._web_ready_sandboxes.discard(str(agent_info.sandbox_id or ""))
         await self._close_ws_client(agent_info.sandbox_id)
         if agent_info.sandbox_id:
             try:

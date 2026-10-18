@@ -1,0 +1,16 @@
+{
+  "package_type": "agent_template",
+  "name": "leader",
+  "display_name": {
+    "zh": "设计团长",
+    "en": "Design Lead"
+  },
+  "description": "查看整张设计执行图，不执行具体画布节点。",
+  "persona": {
+    "dir": "persona"
+  },
+  "metadata": {
+    "node_type": null,
+    "tools": []
+  }
+}

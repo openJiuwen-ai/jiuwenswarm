@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
+import aiohttp
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from jiuwenswarm.common.protocol_ids import (
@@ -44,6 +45,9 @@ from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
+)
+from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+    new_web_proxy_client_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,6 +125,8 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.notice",
         "chat.message_updated",
         "session.message.updated",
+        "a4p.authorization_request",
+        "a4p.authorization_terminated",
         "history.message",
         "chat.session_result",
         "chat.usage_metadata",
@@ -214,6 +220,17 @@ class WebChannel(BaseWsChannel):
         self.container_file_client: Any = None
         self._trajectory_pending_updates: dict[tuple[str, str], Any] = {}
         self._trajectory_send_task: asyncio.Task[None] | None = None
+        # 3rd-agent Web UI proxy: one northbound port per agent_type.
+        self.web_proxy_enabled: bool = False
+        self.web_proxy_auth_enabled: bool = True
+        self.web_proxy_config: Any = None
+        self.web_port_manager: Any = None
+        self.web_registry_watcher: Any = None
+        self.web_resolver: Any = None
+        self.web_runtime_release: Any = None
+        self.web_proxy_session: Any = None
+        self.web_proxy_http_session: Any = None
+        self._web_proxy_session_lock = asyncio.Lock()
 
     @staticmethod
     def _coalescible_stream_frame(
@@ -347,6 +364,19 @@ class WebChannel(BaseWsChannel):
 
         self._on_message_cb = wrapped
 
+    def _enqueue_send(self, ws: Any, data: Any) -> None:
+        # All unary, streamed and pushed frames converge here, after internal
+        # callbacks and busy-state tracking have consumed the canonical values.
+        from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
+
+        if is_agentos_routing_client(self.agent_client):
+            from jiuwenswarm.gateway.channel_manager.web.agentos_compat import (
+                project_agentos_web_frame,
+            )
+
+            data = project_agentos_web_frame(data)
+        super()._enqueue_send(ws, data)
+
     # ── 帧发送 API（公开给处理器使用）─────────────────────
 
     async def send_response(
@@ -434,11 +464,11 @@ class WebChannel(BaseWsChannel):
 
     @classmethod
     def _resolve_connection_user_id(cls, flat_query: dict[str, str], ws: Any) -> str | None:
-        authenticated_user_id = getattr(ws, "authenticated_user_id", None)
-        if authenticated_user_id is not None:
-            connection_user_id = str(authenticated_user_id).strip() or None
-        else:
-            connection_user_id = cls._extract_query_user_id(flat_query) or cls._extract_ws_header_user_id(ws)
+        # 会话身份以客户端声明为准（query user_id / X-User-Id 头，值为 username），
+        # 与 agent_os 稳定版一致。authenticated_user_id（IAM UUID）只作认证门禁，
+        # 不参与工作区/沙箱身份推导：现有部署的用户目录按 username 布局
+        # （/home/agentos/users/<username>），用 UUID 会导致建沙箱时目录校验失败。
+        connection_user_id = cls._extract_query_user_id(flat_query) or cls._extract_ws_header_user_id(ws)
         setattr(ws, _WEB_CONNECTION_USER_ID_ATTR, connection_user_id)
         return connection_user_id
 
@@ -666,6 +696,10 @@ class WebChannel(BaseWsChannel):
         import uvicorn
 
         from jiuwenswarm.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
+        from jiuwenswarm.gateway.channel_manager.web.transport_stall_guard import (
+            guarded_http_protocol,
+            guarded_websockets_protocol,
+        )
         from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
 
         app = build_web_channel_app(self)
@@ -678,6 +712,11 @@ class WebChannel(BaseWsChannel):
             ws_max_size=WEB_WS_MAX_MESSAGE_BYTES,
             ws_ping_interval=20.0,
             ws_ping_timeout=60.0,
+            # 停止读取的客户端会让 transport 写缓冲滞留，close() 永远等不到排空，
+            # socket 永久卡在 CLOSE-WAIT（issue #4946）；带看门狗的协议类在写停滞
+            # 超时后直接 abort，释放 fd 与缓冲。
+            http=guarded_http_protocol(),
+            ws=guarded_websockets_protocol(),
         )
         self._uvicorn_server = uvicorn.Server(uv_cfg)
         self._running = True
@@ -688,6 +727,42 @@ class WebChannel(BaseWsChannel):
             self.config.path,
         )
         await self._uvicorn_server.serve()
+
+    async def ensure_web_proxy_session(self) -> aiohttp.ClientSession:
+        """Return the shared aiohttp session, creating it once per channel.
+
+        Double-checked under ``_web_proxy_session_lock`` so a burst of HTTP/WS
+        proxy requests after start (or after the previous session closed) cannot
+        each construct a ClientSession and leak the overwritten ones.
+        """
+        session = self.web_proxy_session
+        if session is not None and not session.closed:
+            return session
+        async with self._web_proxy_session_lock:
+            session = self.web_proxy_session
+            if session is not None and not session.closed:
+                return session
+            session = new_web_proxy_client_session()
+            self.web_proxy_session = session
+            return session
+
+    async def ensure_web_proxy_http_session(self) -> aiohttp.ClientSession:
+        """HTTP-only session. Each request closes its socket.
+
+        YuanRong's frontend answers the second request on a keep-alive
+        connection with an empty 404, which shows up as a blank SPA and
+        failed module loads. WebSocket stays on ``ensure_web_proxy_session``.
+        """
+        session = self.web_proxy_http_session
+        if session is not None and not session.closed:
+            return session
+        async with self._web_proxy_session_lock:
+            session = self.web_proxy_http_session
+            if session is not None and not session.closed:
+                return session
+            session = new_web_proxy_client_session(force_close=True)
+            self.web_proxy_http_session = session
+            return session
 
     async def stop(self) -> None:
         """停止 WebSocket 服务并清理连接."""
@@ -700,6 +775,29 @@ class WebChannel(BaseWsChannel):
             await asyncio.gather(*close_tasks, return_exceptions=True)
         self._clients_by_key.clear()
 
+        watcher = getattr(self, "web_registry_watcher", None)
+        if watcher is not None:
+            try:
+                await watcher.stop()
+            except Exception:  # noqa: BLE001
+                logger.debug("[WebChannel] registry watcher shutdown ignored", exc_info=True)
+            self.web_registry_watcher = None
+        manager = getattr(self, "web_port_manager", None)
+        if manager is not None:
+            try:
+                await manager.close_all()
+            except Exception:  # noqa: BLE001
+                logger.debug("[WebChannel] web proxy port shutdown ignored", exc_info=True)
+        for attr in ("web_proxy_session", "web_proxy_http_session"):
+            session = getattr(self, attr, None)
+            if session is None:
+                continue
+            try:
+                if not session.closed:
+                    await session.close()
+            except Exception:  # noqa: BLE001
+                pass
+            setattr(self, attr, None)
         if self._uvicorn_server is not None:
             self._uvicorn_server.should_exit = True
             self._uvicorn_server = None
@@ -804,20 +902,30 @@ class WebChannel(BaseWsChannel):
 
     @staticmethod
     def _should_preserve_full_payload(event_name: str) -> bool:
+        """Keep structured Organization milestones available to the Web client."""
         return (
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
             or event_name in {"chat.input_received", "chat.output_phase"}
+            or event_name.startswith("a4p.")
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
             or event_name.startswith("personal_context.context.")
+            or event_name.startswith("org.")
+            # designer.* canvas frames carry the whole run/graph snapshot the
+            # design page binds to; the {session_id, content} reduction here
+            # would blank the canvas (empty canvas / no node progress).
+            or event_name.startswith("designer.")
         )
 
     @staticmethod
     def _attach_automation_metadata(
         payload: dict[str, Any], msg: Message
     ) -> dict[str, Any]:
-        """Expose only the public automation marker, not routing metadata."""
+        """Expose public replay and automation markers without routing metadata."""
         message_metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        runtime_event = message_metadata.get("runtime_event")
+        if isinstance(runtime_event, dict):
+            payload["runtime_event"] = dict(runtime_event)
         automation = message_metadata.get("automation")
         if not isinstance(automation, dict) or automation.get("kind") != "heartbeat":
             return payload
@@ -872,6 +980,7 @@ class WebChannel(BaseWsChannel):
                 "request_id", "turn_request_id", "execution_id", "final_mode", "segment_id",
                 "output_phase_id", "output_suppressed", "output_order", "timestamp",
                 "message_origin", "session_message_id", "cross_session",
+                "team_name", "team_id",
                 # 主动推荐标记需透传到所有 chunk 事件（chat.delta/chat.reasoning/…），
                 # 否则前端无法按 source 短路：proactive 的 chat.reasoning 会被当作
                 # 用户轮思考流追加进 reasoningSegments，污染上一条消息的思考状态。
@@ -1040,6 +1149,11 @@ class WebChannel(BaseWsChannel):
                 ws = self._ws_by_id.get(request_ws_id)
                 if ws is not None and not getattr(ws, "closed", False):
                     ws_set.add(ws)
+                elif routing_target is None:
+                    # res 与发起请求的连接一一对应（request_id 唯一）；发起连接
+                    # 断开后 session 桶里的其他连接不可能匹配该 id，改投只会串扰。
+                    self._log_orphan_request_drop(msg, request_ws_id)
+                    return
 
             if not ws_set and routing_target is not None:
                 delivery = routing_target.delivery
@@ -1125,6 +1239,14 @@ class WebChannel(BaseWsChannel):
             ws = self._ws_by_id.get(request_ws_id)
             if ws is not None and not getattr(ws, "closed", False):
                 ws_set.add(ws)
+            elif routing_target is None:
+                # 发起该请求的物理连接已断开（unregister_ws 已摘除 ws_id 映射，
+                # 重连必换新 ws_id）：这是在途流的迟到事件。落入 session 桶会投给
+                # 同 session 的新连接，被当作新请求的回复消费，造成跨请求串扰。
+                # 丢弃；重连方通过 history 拉取补齐。team fan_out（带
+                # routing_target）V2 未命中后的回退保留原语义。
+                self._log_orphan_request_drop(msg, request_ws_id)
+                return
 
         if not ws_set and not msg.session_id:
             logger.warning(
@@ -1140,7 +1262,7 @@ class WebChannel(BaseWsChannel):
                         if not getattr(w, "closed", False):
                             ws_set.add(w)
         if not ws_set:
-            logger.debug(
+            logger.info(
                 "[WebChannel] session_id=%s has no connected ws, dropping msg id=%s ws_id=%s",
                 msg.session_id, getattr(msg, "id", ""), request_ws_id,
             )
@@ -1215,6 +1337,22 @@ class WebChannel(BaseWsChannel):
                 if owner_matched:
                     clients.add(ws)
         return clients
+
+    @staticmethod
+    def _log_orphan_request_drop(msg: Message, request_ws_id: str) -> None:
+        """记录孤儿请求事件的丢弃（RC-3）：发起连接已断，事件不再改投 session 桶。"""
+        event_name = str(getattr(getattr(msg, "event_type", None), "value", "") or "")
+        if not event_name:
+            event_name = str(getattr(msg, "type", "") or "")
+        log = logger.info if event_name in ("chat.final", "chat.error") else logger.debug
+        log(
+            "[WebChannel] orphan request event dropped: originating ws gone"
+            " ws_id=%s session_id=%s event=%s id=%s",
+            request_ws_id,
+            getattr(msg, "session_id", None),
+            event_name,
+            getattr(msg, "id", ""),
+        )
 
     def _track_session_busy(self, msg: Message) -> None:
         """在所有路由分支之前维护 session busy 映射(供 /ws/git 写操作查询)。
@@ -1363,12 +1501,28 @@ class WebChannel(BaseWsChannel):
                     ),
                 )
 
+        def _on_message_task_done(task: asyncio.Task) -> None:
+            # Retrieve the exception so crashes are logged instead of silently
+            # dropped ("Task exception was never retrieved"); issue #4876's
+            # "no res and no event" symptom was exactly such a silent drop.
+            inflight.discard(task)
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.error(
+                    "WebChannel message handler crashed: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                    exc_info=exc,
+                )
+
         try:
             inflight: set[Any] = set()
             async for raw in ws:
                 task = asyncio.create_task(self._handle_raw_message(ws, raw, query))
                 inflight.add(task)
-                task.add_done_callback(inflight.discard)
+                task.add_done_callback(_on_message_task_done)
             # connection closing: let in-flight handlers finish (bounded) to avoid
             # truncating responses mid-flight; cancel if they exceed a grace period.
             if inflight:
@@ -1553,6 +1707,21 @@ class WebChannel(BaseWsChannel):
             return
         if not isinstance(params, dict):
             params = {}
+
+        # Issue #4876: non-string params.mode / params.agent_id (list / dict / ...)
+        # used to flow into AgentRef -> RoutingKey and blow up on hash() inside
+        # register_ws. The crash escaped the per-message task, so the client got
+        # no res and no event. Reject them up front so a response is guaranteed.
+        for _key in ("mode", "agent_id"):
+            if _key in params and not isinstance(params[_key], str):
+                await self.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error=f"params.{_key} must be a string",
+                    code="BAD_REQUEST",
+                )
+                return
 
         # ── V2: session_id 解析 ──
         # 请求自带 session_id（如 chat.send）→ 用它更新 ws 路由注册。

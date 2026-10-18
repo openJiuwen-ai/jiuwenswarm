@@ -445,6 +445,64 @@ class TestCronLastSessionId:
         assert stored.last_session_id == "cron_agentserver_allocated"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "chunks, completed, expected_text",
+        [
+            pytest.param(
+                [(None, True)], True, "[cron] 任务执行完成但未返回结果内容",
+                id="empty-terminal",
+            ),
+            pytest.param(
+                [({"event_type": "chat.final", "content": ""}, False), ({"is_complete": True}, True)],
+                True, "[cron] 任务执行完成但未返回结果内容", id="empty-final",
+            ),
+            pytest.param(
+                [], False, "[cron] 任务执行流提前结束，未收到完成信号", id="eof",
+            ),
+            pytest.param(
+                [({"event_type": "chat.delta", "content": "partial"}, False)],
+                False, "[cron] 任务执行流提前结束，未收到完成信号", id="partial-eof",
+            ),
+            pytest.param(
+                [({"event_type": "chat.error", "error": "boom"}, True)],
+                False, "boom", id="chat-error",
+            ),
+            pytest.param(
+                [({"error": "boom"}, True)], False, "boom", id="legacy-error",
+            ),
+            pytest.param(
+                [({"event_type": "runtime.error", "error": "boom"}, True)],
+                False, "boom", id="runtime-error",
+            ),
+        ],
+    )
+    async def test_stream_completion_controls_last_session_id(self, tmp_path, chunks, completed, expected_text):
+        """#4980: text-less completion records the session; failure keeps the previous one."""
+        class StreamAgentClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                for payload, is_complete in chunks:
+                    yield AgentResponseChunk(
+                        request_id=envelope.request_id or "",
+                        channel_id=envelope.channel or "",
+                        payload=payload,
+                        is_complete=is_complete,
+                    )
+
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        await store.update_job(job.id, {"last_session_id": "previous-success"})
+        svc = _make_scheduler(store, agent_client=StreamAgentClient())
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        await svc.run_tasks[run_id]
+
+        stored = await store.get_job(job.id)
+        assert stored is not None
+        assert stored.last_session_id == ("cron_agentserver_allocated" if completed else "previous-success")
+        assert svc.runs[run_id].status == "failed"
+        assert svc.runs[run_id].result_text == expected_text
+
+    @pytest.mark.asyncio
     async def test_run_now_info_returns_agentserver_execution_session_id(self, tmp_path):
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, user_id="run-now-owner")
@@ -568,7 +626,7 @@ class TestCronFailureDelivery:
     ):
         class EmptyFailedResultScheduler(_TestableScheduler):
             async def _run_stream_cron_job(self, **_kwargs):
-                return "", False
+                return "", False, False
 
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, targets="web")
@@ -2421,12 +2479,13 @@ class TestSingleAgentCronStream:
             chat_type=None, timezone=job.timezone,
         )
 
-        text, ok = await svc.run_stream_cron_job(
+        text, ok, completed = await svc.run_stream_cron_job(
             envelope=envelope, timeout_seconds=30.0, state=state
         )
 
         assert ok is True
         assert text == "请记得开会。"
+        assert completed is True
 
     @pytest.mark.parametrize(
         "event_type",
@@ -2488,11 +2547,12 @@ class TestSingleAgentCronStream:
         state.exec_session_id = "cron_agentserver_allocated"
         state.exec_channel_id = "__cron__"
 
-        text, ok = await svc.run_stream_cron_job(
+        text, ok, completed = await svc.run_stream_cron_job(
             envelope=envelope, timeout_seconds=0.5, state=state
         )
 
         assert ok is False
+        assert completed is False
         assert text == CRON_INTERRUPT_RESULT_TEXT
         assert len(agent_client.cancel_requests) == 1
         assert agent_client.cancel_requests[0].method == ReqMethod.CHAT_CANCEL.value
@@ -2527,11 +2587,12 @@ class TestSingleAgentCronStream:
             chat_type=None, timezone=job.timezone,
         )
 
-        text, ok = await svc.run_stream_cron_job(
+        text, ok, completed = await svc.run_stream_cron_job(
             envelope=envelope, timeout_seconds=30.0, state=state
         )
 
         assert ok is False
+        assert completed is True
         assert text == "[cron] 任务执行完成但未返回结果内容"
 
 

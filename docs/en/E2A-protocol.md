@@ -24,6 +24,14 @@
 - **`channel_context`**: optional; transitional or residual keys that do not fit normalized fields; `from_dict` may migrate legacy `metadata` for compatibility.
 - E2A **does not** specify the transport (WebSocket, HTTP, etc.).
 
+`config.moa_status` always runs on the target AgentServer through E2A, including
+single-user WebSocket deployments and AgentOS routing. The Gateway forwards
+`params.model_selection` and the authenticated user identity without reading local
+MoA configuration. A successful response contains `configured` and, when ready,
+`aggregator_model_name` and `aggregator_alias`; it contains no credentials. If the
+AgentServer client is absent or not ready, the Gateway returns
+`SERVICE_UNAVAILABLE` instead of evaluating configuration in its own directory.
+
 ---
 
 ## 2. Pitfall: two meanings of `method` (required reading)

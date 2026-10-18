@@ -790,7 +790,7 @@ test('session update includes Gateway-provided tools', async () => {
   assert.match(socket.sent[0].session.instructions, /acknowledgement describes work in progress only/);
   assert.match(
     socket.sent[0].session.instructions,
-    /Before the function result arrives, never say the task is complete/,
+    /Until the function result for that specific request arrives, do not provide facts/,
   );
   assert.match(socket.sent[0].session.instructions, /file access, document processing/);
 });

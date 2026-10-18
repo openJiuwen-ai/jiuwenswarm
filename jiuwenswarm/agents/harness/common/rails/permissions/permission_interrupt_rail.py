@@ -30,6 +30,17 @@ ExactPermissionPersistCallback = Callable[
 ]
 
 
+_PLAN_HARD_REJECT = object()
+
+
+def mark_plan_hard_reject(ctx: AgentCallbackContext) -> None:
+    setattr(ctx, "_jiuwenswarm_plan_hard_reject", _PLAN_HARD_REJECT)
+
+
+def plan_hard_rejected(ctx: Any) -> bool:
+    return getattr(ctx, "_jiuwenswarm_plan_hard_reject", None) is _PLAN_HARD_REJECT
+
+
 @dataclass
 class _ExactPersistAttempt:
     attempted: bool = False
@@ -254,7 +265,7 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         session.update_state({INTERRUPT_AUTO_CONFIRM_KEY: updated})
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
-        if root_nonpermission_resume_from_context(ctx) is not None:
+        if plan_hard_rejected(ctx) or root_nonpermission_resume_from_context(ctx) is not None:
             return
         self._sync_engine_workspace_root()
         try:

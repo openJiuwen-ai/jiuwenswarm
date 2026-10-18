@@ -21,12 +21,30 @@ from jiuwenswarm.runtime.cron.models import (
     normalize_cron_job_mcp,
     normalize_cron_job_mode,
     normalize_target_channel_id,
-    validate_cron_model,
 )
 from jiuwenswarm.common.utils import get_cron_jobs_path
 from jiuwenswarm.runtime.host_services import send_runtime_push
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_agent_cron_model(raw: Any) -> str | None:
+    """Validate a cron model in the AgentServer process.
+
+    Configured and login models use :func:`validate_cron_model`. A miss then
+    checks the Zen free-model cache that lives in this process.
+    """
+    from jiuwenswarm.runtime.cron.models import validate_cron_model
+
+    try:
+        return validate_cron_model(raw)
+    except ValueError:
+        from jiuwenswarm.server.runtime.opencode_zen import match_zen_free_model_name
+
+        matched = match_zen_free_model_name(raw)
+        if matched:
+            return matched
+        raise
 
 
 def _cron_next_push_dt(cron_expr: str, base_dt: datetime) -> datetime:
@@ -506,6 +524,25 @@ class CronTools:
             out.append(d)
         return out
 
+    async def get_authoritative_job(self, job_id: str) -> Any:
+        """Read the owner-scoped host store, never a snapshot or local projection."""
+        if not self._uses_gateway_command_ack():
+            raise RuntimeError("authoritative cron query requires acknowledged transport")
+        result = await self._send("get", {"job_id": job_id, "authoritative": True})
+        if result.get("status") != "ok" or "data" not in result:
+            raise RuntimeError("invalid authoritative cron query response")
+        data = result["data"]
+        if not isinstance(data, dict):
+            raise RuntimeError("invalid authoritative cron query response")
+        if data.get("status") == "missing":
+            return None
+        if data.get("status") != "found":
+            raise RuntimeError("authoritative cron query failed: " + str(data.get("status")))
+        job = data.get("job")
+        if not isinstance(job, dict) or job.get("id") != job_id:
+            raise RuntimeError("invalid authoritative cron job")
+        return job
+
     async def get_job(self, job_id: str) -> Any:
         if self._uses_gateway_command_ack():
             return (await self._send("get", {"job_id": job_id})).get("data")
@@ -548,7 +585,7 @@ class CronTools:
                 normalized["model_name"] = inherited_model
         model_name_raw = normalized.get("model_name")
         if model_name_raw is not None and str(model_name_raw).strip():
-            model_kw["model_name"] = validate_cron_model(model_name_raw)
+            model_kw["model_name"] = resolve_agent_cron_model(model_name_raw)
         # mcp：会话级 MCP 选择（backend 层已继承 chat-session 快照或显式传入），
         # 只做类型规范化（strip/去空/去重），不校验存在性——MCP 断连后 job 应降级运行。
         mcp_kw: dict[str, Any] = {}
@@ -637,7 +674,7 @@ class CronTools:
         if "mode" in normalized_patch:
             normalized_patch["mode"] = normalize_cron_job_mode(normalized_patch.get("mode"))
         if "model_name" in normalized_patch:
-            normalized_patch["model_name"] = validate_cron_model(normalized_patch.get("model_name"))
+            normalized_patch["model_name"] = resolve_agent_cron_model(normalized_patch.get("model_name"))
         if "mcp" in normalized_patch:
             # 显式传 null/[] 归 None（清除选择）；元素不规范的非列表值同样归 None。
             normalized_patch["mcp"] = normalize_cron_job_mcp(normalized_patch.get("mcp"))
@@ -693,7 +730,8 @@ class CronTools:
         if existing is None:
             if remote_gateway:
                 result = await self._send("delete", {"job_id": job_id})
-                return bool((result.get("data") or {}).get("deleted"))
+                deleted = bool((result.get("data") or {}).get("deleted"))
+                return deleted
             # Gateway's AgentOS snapshot is best-effort.  A restarted
             # AgentServer (or a failed pre-turn sync) must still be able to ask
             # the Gateway-owned store to delete a real job; Gateway performs

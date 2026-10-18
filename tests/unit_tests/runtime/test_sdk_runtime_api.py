@@ -496,9 +496,6 @@ async def test_process_client_delegates_typed_answer_and_owns_lifecycle() -> Non
             calls.append(("answer", answer))
             return expected
 
-        async def cancel_all_team_stream_tasks(self, *, reason: str) -> None:
-            calls.append(("cancel_team", reason))
-
         async def close(self) -> None:
             calls.append("close")
 
@@ -523,7 +520,6 @@ async def test_process_client_delegates_typed_answer_and_owns_lifecycle() -> Non
     assert calls == [
         "start",
         ("answer", answer),
-        ("cancel_team", "[process CLI close] "),
         "close",
     ]
 
@@ -625,7 +621,6 @@ async def test_process_client_catalogs_share_lifecycle_and_fix_channel_scope() -
         get_session=Mock(return_value=sentinel.session),
         list_sessions=Mock(return_value=sentinel.sessions),
         get_permission_snapshot=Mock(return_value=sentinel.permissions),
-        cancel_all_team_stream_tasks=AsyncMock(),
         close=AsyncMock(),
     )
     client = InProcessRuntimeClient(runtime=runtime)  # type: ignore[arg-type]
@@ -651,9 +646,6 @@ async def test_process_client_catalogs_share_lifecycle_and_fix_channel_scope() -
     runtime.get_session.assert_called_once_with(session_get)
     runtime.list_sessions.assert_called_once_with(session_list)
     runtime.get_permission_snapshot.assert_called_once_with(permissions)
-    runtime.cancel_all_team_stream_tasks.assert_awaited_once_with(
-        reason="[process CLI close] ",
-    )
     runtime.close.assert_awaited_once_with()
 
     for ambiguous_channel in ("PROCESS_CLI", " process_cli "):

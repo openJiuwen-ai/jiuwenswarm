@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from jiuwenswarm.common.version import __version__
+from jiuwenswarm.common.version import get_runtime_version
 
 
 def build_acp_initialize_result() -> dict[str, Any]:
@@ -11,7 +11,7 @@ def build_acp_initialize_result() -> dict[str, Any]:
         "agentInfo": {
             "name": "jiuwenswarm",
             "title": "JiuwenSwarm",
-            "version": __version__,
+            "version": get_runtime_version(),
         },
         "agentCapabilities": {
             "loadSession": False,

@@ -15,6 +15,9 @@ from openjiuwen.harness.tools.subagent.subagent_tools import (
     SubagentWaitTool,
 )
 
+from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import plan_hard_rejected
+from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.code_tool_bindings import trusted_code_route
+
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.artifact_authorization import (
     _send_file_execution_grant_for_allow,
     has_user_file_delivery_prohibition,
@@ -196,6 +199,8 @@ class AutoPermissionBeforeToolMixin:
         clear_send_file_execution_grant()
         clear_trusted_search_producer()
         invocation = _extract_invocation(args, kwargs)
+        if plan_hard_rejected(invocation.ctx):
+            return None
         wrapper_resume = consume_permission_wrapper_resume(invocation.ctx)
         context_extra = getattr(invocation.ctx, "extra", None)
         if invocation.ctx is not None and invocation.tool_name == "mcp_fetch_webpage":
@@ -865,6 +870,14 @@ class AutoPermissionBeforeToolMixin:
                 None,
                 decision_source="policy_evaluator",
             )
+
+        code_route = trusted_code_route(
+            invocation, facts, path_requires_approval=path_policy_requires_approval,
+            owner_agent=getattr(self, "_owner_agent", None),
+        )
+        if code_route is not None:
+            self._emit_audit(facts, decision="allow", reason=code_route, degraded=False)
+            return runtime_result(None, decision_source=code_route)
 
         reviewer_result: PermissionHandlingResult = await run_reviewer()
         if reviewer_result.handled:

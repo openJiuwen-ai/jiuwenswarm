@@ -47,7 +47,7 @@ function MemberToolbarControl({
       onClick={onClick}
     >
       <span className={`${css.statusDot} ${css[`status_${lane.status}`]}`} aria-hidden="true" />
-      <span className={css.memberName}>{lane.label}</span>
+      <span className={css.memberName} title={lane.label}>{lane.label}</span>
       <span className={css.chevron} aria-hidden="true">{expanded ? '▾' : '▸'}</span>
     </button>
   );

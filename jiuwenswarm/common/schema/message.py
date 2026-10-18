@@ -23,6 +23,13 @@ class ReqMethod(Enum):
     CHAT_SWARMFLOW_REPLY = "chat.swarmflow_reply"
     SSH_RELAY = "ssh.relay"
     HISTORY_GET = "history.get"
+    GROUP_CREATE = "group.create"
+    GROUP_DELETE = "group.delete"
+    GROUP_LIST = "group.list"
+    GROUP_GET = "group.get"
+    GROUP_UPDATE = "group.update"
+    GROUP_MEMBER_ADD = "group.member.add"
+    GROUP_HISTORY_GET = "group.history.get"
     COMMAND_BTW = "command.btw"
     COMMAND_ADD_DIR = "command.add_dir"
     COMMAND_CHROME = "command.chrome"
@@ -44,10 +51,13 @@ class ReqMethod(Enum):
     SWARMFLOW_STOP = "swarmflow.stop"
 
     CONFIG_GET = "config.get"
+    CONFIG_MOA_STATUS = "config.moa_status"
     CONFIG_SET = "config.set"
     CONFIG_SAVE_ALL = "config.save_all"
     CONFIG_VALIDATE_MODEL = "config.validate_model"
     MODELS_LIST = "models.list"
+    MODELS_ZEN_ENTRIES = "models.zen_entries"
+    MODELS_ZEN_WARM = "models.zen_warm"
     MODELS_GET = "models.get"
     MODELS_REPLACE_ALL = "models.replace_all"
     MODELS_VALIDATE = "models.validate"
@@ -147,6 +157,24 @@ class ReqMethod(Enum):
     PROJECT_GIT_DISCARD_TURN_CHANGES = "project.git.discard_turn_changes"
     PROJECT_GIT_REDO_TURN_CHANGES = "project.git.redo_turn_changes"
 
+    # Designer execution graph (canvas + subagent orchestration shell)
+    DESIGNER_WORKSPACE_CREATE = "designer.workspace.create"
+    DESIGNER_WORKSPACE_GET = "designer.workspace.get"
+    DESIGNER_WORKSPACE_SESSION_CREATE = "designer.workspace.session.create"
+    DESIGNER_WORKSPACE_SESSION_COMPOSE = "designer.workspace.session.compose"
+    DESIGNER_GRAPH_GET = "designer.graph.get"
+    DESIGNER_GRAPH_LIST = "designer.graph.list"
+    DESIGNER_GRAPH_SAVE = "designer.graph.save"
+    DESIGNER_GRAPH_BOOTSTRAP = "designer.graph.bootstrap"
+    DESIGNER_GRAPH_PATCH = "designer.graph.patch"
+    DESIGNER_GRAPH_CHAT = "designer.graph.chat"
+    DESIGNER_MEDIA_CAPABILITIES = "designer.media.capabilities"
+    DESIGNER_RUN_START = "designer.run.start"
+    DESIGNER_RUN_GET = "designer.run.get"
+    DESIGNER_RUN_PAUSE = "designer.run.pause"
+    DESIGNER_RUN_CANCEL = "designer.run.cancel"
+    DESIGNER_RUN_CHOOSE_OUTPUT = "designer.run.choose_output"
+
     PROACTIVE_TICK = "proactive.tick"  # Trigger proactive recommendation tick (from Cron)
     PROACTIVE_FEEDBACK = "proactive.feedback"  # User feedback on proactive recommendation (like/dislike)
     COMMAND_GOAL = "command.goal"
@@ -199,6 +227,7 @@ class ReqMethod(Enum):
     AGENTS_TOOLS_LIST = "agents.tools_list"
     AGENT_SWITCH = "3rdagent.switch"
     AGENT_LIST = "3rdagent.list"
+    AGENT_WEB = "3rdagent.web"
 
     # Unified asset publishing; dispatched by AgentServer independently of chats.
     ASSETS_PUBLISH_DESCRIBE = "assets.publish.describe"
@@ -282,6 +311,21 @@ class ReqMethod(Enum):
     SKILLS_GRAPH_CANCEL = "skills.graph.cancel"
     SKILLS_EXPERIENCE_LIST = "skills.experience.list"
     SKILLS_EXPERIENCE_REQUEST = "skills.experience.request"
+
+    # Task (session) assets: named files referenceable with @name in the chat box.
+    SESSION_ASSETS_LIST = "session.assets.list"
+    SESSION_ASSETS_REGISTER = "session.assets.register"
+    SESSION_ASSETS_RENAME = "session.assets.rename"
+
+    # 技能同步（Server / Client 分离部署）。外部入口为 HTTP /skill-sync/*
+    # （Bearer token 鉴权）。WS 侧仅保留 reload：web 进程 HTTP apply 落盘后的
+    # 进程间通知（参数仅 applied 名称列表，纯 JSON）；diff / package / apply
+    # 不注册 WS 路由（经 WS 调用会绕过 token 鉴权，且 package 泄漏临时目录、
+    # apply 的 zip_bytes 无法过 JSON 序列化，均不可用）。
+    SKILL_SYNC_DIFF = "skills.sync.diff"
+    SKILL_SYNC_PACKAGE = "skills.sync.package"
+    SKILL_SYNC_APPLY = "skills.sync.apply"
+    SKILL_SYNC_RELOAD = "skills.sync.reload"
 
     PERSONAL_CONTEXT_RUNTIME_STATUS = "personal_context.runtime.status"
     PERSONAL_CONTEXT_RUNTIME_START_COLLECTION = (
@@ -377,6 +421,7 @@ class ReqMethod(Enum):
     PERMISSIONS_TOOLS_GET = "permissions.tools.get"
     PERMISSIONS_TOOLS_SET = "permissions.tools.set"
     PERMISSIONS_TOOLS_UPDATE = "permissions.tools.update"
+    PERMISSIONS_TOOLS_UPDATE_USER = "permissions.tools.update_user"
     PERMISSIONS_TOOLS_DELETE = "permissions.tools.delete"
     PERMISSIONS_RULES_GET = "permissions.rules.get"
     PERMISSIONS_RULES_CREATE = "permissions.rules.create"
@@ -389,6 +434,14 @@ class ReqMethod(Enum):
 
     MEMORY_FORBIDDEN_GET = "memory.forbidden.get"
     MEMORY_FORBIDDEN_SET = "memory.forbidden.set"
+
+    # A4P 授权桥接（Web User Authorizer → AgentServer A4PServer）
+    A4P_AUTHORIZATION_REPREPARE = "a4p.authorization.reprepare"
+    A4P_AUTHORIZATION_COMPLETE = "a4p.authorization.complete"
+    A4P_AUTHORIZATION_REJECT = "a4p.authorization.reject"
+    A4P_AUTHORIZATION_PENDING = "a4p.authorization.pending"
+    A4P_CONFIG_GET = "a4p.config.get"
+    A4P_CONFIG_UPDATE = "a4p.config.update"
 
     CHANNEL_FEISHU_GET_CONF = "channel.feishu.get_conf"
     CHANNEL_FEISHU_SET_CONF = "channel.feishu.set_conf"
@@ -420,6 +473,8 @@ class ReqMethod(Enum):
     TEAM_HISTORY_GET = "team.history.get"
     TEAM_MEMBERS_GET = "team.members.get"
     TEAM_MQ_PUBLISH = "team.mq.publish"
+    TEAM_LIST = "team.list"
+    ORG_SNAPSHOT = "org.snapshot"
 
     # Harness package management
     HARNESS_PACKAGES_GET = "harness.packages.get"
@@ -510,6 +565,10 @@ class EventType(Enum):
     TEAM_TASK = "team.task"
     TEAM_MESSAGE = "team.message"
     WORKFLOW_UPDATED = "workflow.updated"
+    DESIGNER_RUN_UPDATED = "designer.run.updated"
+    DESIGNER_NODE_UPDATED = "designer.node.updated"
+    DESIGNER_GRAPH_UPDATED = "designer.graph.updated"
+    DESIGNER_LEADER_ACTIVITY = "designer.leader.activity"
     # 旧探活结果通过 health_check.relay 发送。
     # 新心跳任务(heartbeat.job.*)不使用 relay 事件,结果通过普通 chat.send 进入原会话。
     HEALTH_CHECK_RELAY = "health_check.relay"
@@ -517,6 +576,7 @@ class EventType(Enum):
     # _missing_ so every downstream channel sees HEALTH_CHECK_RELAY.
     HEARTBEAT_RELAY = "health_check.relay"
     HISTORY_GET = "history.message"
+    PROACTIVE_RECOMMENDATION = "proactive_recommendation"
 
     @classmethod
     def _missing_(cls, value):

@@ -274,6 +274,15 @@ def build_credentials_prompt(name: str, missing_tokens: list[str]) -> dict[str, 
         base["doc_url"] = schema["docUrl"]
     if schema.get("docLabel"):
         base["doc_label"] = schema["docLabel"]
+    # 隐式授权提示（如百度网盘官方授权，redirect_uri=oob 跳 login_success#access_token=...）。
+    # oauthDocUrl 指向厂商文档页而非固定授权直链——百度个人体验密钥（client_id）会不定期
+    # 变更，固定直链会失效（设计文档风险 #1）；桌面端（Electron）抓取该文档页 HTML 实时
+    # 提取当前授权链接后开窗截取 token（一键授权）；Web 端受同源策略限制读不到跨域跳转，
+    # 仍走手动粘贴，前端按是否具备 captureOAuthToken 桥能力自行降级。
+    if schema.get("oauthDocUrl"):
+        base["oauth_doc_url"] = schema["oauthDocUrl"]
+    if schema.get("oauthSuccessPrefix"):
+        base["oauth_success_prefix"] = schema["oauthSuccessPrefix"]
     # Per-field render hints for the missing tokens only (already-provisioned
     # fields don't need an input). Keyed by field key for frontend lookup.
     fields_by_key: dict[str, dict[str, Any]] = {}
@@ -459,3 +468,18 @@ __all__ = [
     "KIND_TOKEN",
     "KIND_CLI_OAUTH",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# common 注入点自注册：import 即注册，供 common 经
+# ``common.external_providers.provider("mcp_credential")`` 反向取用（分层规则 R1）。
+# --------------------------------------------------------------------------- #
+def _register_common_provider() -> None:
+    import sys
+
+    from jiuwenswarm.common.external_providers import register
+
+    register("mcp_credential", sys.modules[__name__])
+
+
+_register_common_provider()

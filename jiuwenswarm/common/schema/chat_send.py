@@ -1,11 +1,11 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """chat.send 参数契约。
 
 本文件定义 chat.send 的参数结构。
 """
 
-from typing import TypedDict, NotRequired
+from typing import Literal, NotRequired, TypedDict
 
 # ── ``plan_entry_source`` 字面量契约常量 ──
 # 这些字面量是前后端共享的硬契约：
@@ -48,6 +48,7 @@ class ChatSendParams(TypedDict, total=False):
     """
 
     content: str
+    group_members: list[dict]
     """用户消息正文（主字段）。保留 /skill 等标记原样，不剥离。"""
 
     message: NotRequired[str]
@@ -169,6 +170,9 @@ class ChatSendParams(TypedDict, total=False):
     team: NotRequired[bool]
     """团队模式布尔标志。"""
 
+    target_team_id: NotRequired[str]
+    """当前用户消息明确指定的 Team；Owner 走常规路径，组织 Expert 走定向执行。"""
+
     run: NotRequired[dict]
     """Run 上下文结构（cron / 定时任务场景由 Gateway 注入）。"""
 
@@ -200,4 +204,37 @@ class ChatSendParams(TypedDict, total=False):
 
     Only meaningful when ``enable_swarmflow`` is True. Absent means use the
     server default budget.
+    """
+
+    swarmflow_worktree: NotRequired[bool]
+    """Session-level worktree isolation switch for swarmflow workers.
+
+    When True the team is armed with a worktree manager so
+    ``agent(options={"isolation": "worktree"})`` succeeds; when False the
+    manager is withheld and isolation calls fail fast. Absent keeps the
+    session's persisted value (first request falls back to the team config's
+    ``worktree`` section). Requires a project directory to be usable.
+    """
+
+    team_dispatch_mode: NotRequired[Literal["autonomous", "scheduled"]]
+    """Session-level task dispatch mode of the Team (``TeamAgentSpec.dispatch_mode``).
+
+    ``"autonomous"`` puts tasks on the shared board for members to claim;
+    ``"scheduled"`` has the leader assign every task to a named member. The
+    mode is fixed once the session's team is built, so only the first request
+    of a session is expected to change it. Absent keeps the session's
+    persisted value (first request falls back to the team config's
+    ``dispatch_mode``).
+    """
+
+    team_bootstrap_mode: NotRequired[Literal["leader", "framework"]]
+    """Session-level team bootstrap mode (``TeamAgentSpec.bootstrap_mode``).
+
+    ``"leader"`` lets the leader build the team with its ``build_team`` tool;
+    ``"framework"`` has the runtime build a generic team on start, so the
+    leader starts from ``create_task`` with no ``build_team`` step. Only valid
+    together with ``team_dispatch_mode="scheduled"`` (the effective dispatch
+    mode must be scheduled). Fixed once the session's team is built, like
+    ``team_dispatch_mode``; absent keeps the session's persisted value (first
+    request falls back to the team config's ``bootstrap_mode``).
     """

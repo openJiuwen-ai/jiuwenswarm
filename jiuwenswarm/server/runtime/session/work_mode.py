@@ -18,6 +18,7 @@ from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_IDS,
     DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
+    DESIGN_WORK_MODE,
     SUPPORTED_WORK_MODES,
     is_default_project_id,
     normalize_work_mode,
@@ -138,6 +139,14 @@ def resolve_session_work_mode_params(
     project_dir = raw_project_dir.strip() if isinstance(raw_project_dir, str) else ""
 
     if not project_id or project_id in DEFAULT_PROJECT_IDS:
+        if work_mode == DESIGN_WORK_MODE:
+            return SessionWorkModeParams(
+                project_id="",
+                project_dir="",
+                work_mode="",
+                error="design sessions require a real Design project",
+                code="BAD_REQUEST",
+            )
         normalized_default_id = resolve_default_project_id(work_mode)
         if project_id == DEFAULT_PROJECT_ID_WORK:
             # project_id="default" 明确指向 work 模式;显式 work_mode 与之矛盾 → BAD_REQUEST

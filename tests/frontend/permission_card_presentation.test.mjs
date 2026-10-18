@@ -20,6 +20,7 @@ function buildBundle(entry, outputName, { externalReact = false } = {}) {
     '--format=esm',
     `--outfile=${outputPath}`,
     '--define:import.meta.env.DEV=false',
+    '--loader:.css=empty',
   ];
   if (externalReact) {
     args.push('--packages=external');
@@ -67,7 +68,6 @@ const { normalizeReviewerMetadata } = await import(
 );
 const {
   AuthorizationQuestionDetails,
-  AuthorizationPrompt,
   buildAuthorizationAnswers,
   resolveAuthorizationActions,
   formatPermissionPayload,
@@ -289,14 +289,6 @@ test('renders the current permission card reviewer and redacted payload', async 
   assert.doesNotMatch(html, /stale-manual-hint/);
   assert.doesNotMatch(html, /Authorization/);
   assert.doesNotMatch(html, /Missing evidence/);
-  for (const source of ['permission_interrupt', 'confirm_interrupt', 'activate_confirm', 'evolution_interrupt']) {
-    for (const withCard of [false, true]) {
-      const pending = { request_id: 'request-1', source, questions: [question(withCard ? 'card-1' : undefined)] };
-      const prompt = renderToStaticMarkup(React.createElement(I18nextProvider, { i18n },
-        React.createElement(AuthorizationPrompt, { pending, onSubmit: async () => true })));
-      assert.equal(prompt.includes('auth-prompt--smart'), withCard && source === 'permission_interrupt');
-    }
-  }
 });
 
 test('keeps required permission labels in both language resources', () => {

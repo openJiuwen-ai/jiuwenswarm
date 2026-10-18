@@ -762,6 +762,11 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+.thinkingPreview {
+  color: var(--dsw-alias-label-secondary);
+  font-style: italic;
+}
+
 .table tbody tr[data-collapsed-summary='turn'] td,
 .table tbody tr[data-collapsed-summary='assistant'] td {
   height: 20px;

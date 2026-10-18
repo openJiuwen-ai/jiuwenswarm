@@ -44,7 +44,7 @@
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Multi-Agent Collaboration       | The Leader decomposes a complex task and assembles teams, multi agents specialize and negotiate dynamically.                                              |
 | Distributed Agent Swarm         | Leader and Teammates deploy across processes and machines, coordinating at scale.                                                                         |
-| Swarmflow                       | Deterministic multi-stage workflows via Python scripts: the Leader hands off between stage agents; supports **HITL** (`human` / `human_session`), **team token budget**, and TUI **`/swarmflows`** run-tree monitoring. |
+| Swarmflow                       | Deterministic multi-stage workflows via Python scripts: the Leader hands off between stage agents; supports **HITL** (`human` / `human_session`), **team token budget**, TUI **`/swarmflows`** run-tree monitoring, opt-in **progressive tool exposure** for workers (`swarmflow_progressive_tool`), and **AgentGroup expert workers** (`agent_template`). |
 | Skill Self-Evolution            | Automatically detects error signals and user dissatisfaction, then optimizes Skill definitions                                                            |
 | Skill Hub Sharing               | Capability assets are built once and reused everywhere, search, install, remix, and publish Skills through the Swarm Skills Hub                           |
 | Auto Harness                    | Evaluation drive end-to-end optimization of the Harness itself, which learns and improves in practice with no model-weight training                       |
@@ -167,7 +167,7 @@ Full index: [Documentation](docs/README_EN.md)
 - The Web UI layout: [Page Overview](docs/en/Page-Overview.md)
 - Configure providers: [Configuration](docs/en/Configuration.md)
 - Build and evolve capabilities: [Skills](docs/en/Skills.md) · [Skill Self-Evolution](docs/en/SkillSelfEvolution.md)
-- Multi-agent and cluster: [Agent Team](docs/en/AgentTeam.md) · [Distributed Team](docs/en/DistributedTeam.md)
+- Multi-agent and cluster: [Agent Team](docs/en/AgentTeam.md) · [Team Organization](docs/en/TeamOrganization.md) · [Distributed Team](docs/en/DistributedTeam.md)
 - Memory: [Memory](docs/en/Memory.md) · [Task Memory](docs/en/TaskMemory.md) · [Coding Memory](docs/en/CodingMemory.md)
 - Automation: [Scheduled Tasks](docs/en/ScheduledTasks.md)
 - Terminal: [Quick Start (TUI)](docs/en/Quickstart_tui.md) · [Slash Commands](docs/en/SlashCommands.md) · [SwarmFlow (TUI)](docs/en/TUISwarmFlowGuide.md)

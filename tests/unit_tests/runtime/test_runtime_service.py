@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -28,9 +28,12 @@ from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.plan import PlanStateResult
 from jiuwenswarm.runtime.request import prepare_chat_turn
 from jiuwenswarm.runtime.session.model import (
+    TEAM_ATTACH_ONLY_PARAM,
     SessionCloseTimeoutError,
     SessionExecutionState,
     SessionWorkKind,
+    TeamExecutionDetails,
+    TeamWaiterKind,
 )
 from jiuwenswarm.runtime.session_provisioner import (
     SessionCreateResult,
@@ -45,6 +48,151 @@ from jiuwenswarm.runtime.session_provisioner import (
 
 async def _collect_events(stream) -> list[RuntimeEvent]:
     return [event async for event in stream]
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "team.work.normal",
+        "team.work.plan",
+        "team.code.normal",
+        "team.code.plan",
+    ],
+)
+def test_team_modes_use_unscheduled_runtime_work_kind(mode: str) -> None:
+    request = AgentRequest(
+        request_id="team-request",
+        channel_id="web",
+        session_id="session-a",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": mode},
+    )
+
+    work_kind = AgentRuntime.session_work_kind(request)
+
+    assert work_kind is SessionWorkKind.TEAM_REQUEST
+    assert work_kind.scheduled is False
+
+
+@pytest.mark.asyncio
+async def test_team_cross_session_steer_uses_team_request_path() -> None:
+    captured: dict[str, object] = {}
+
+    class TeamCoordinator:
+        def snapshot_session(self, session_id: str) -> None:
+            return None
+
+        def run_team_stream(
+            self,
+            session_id: str,
+            request_id: str,
+            work_kind: SessionWorkKind,
+            operation: Any,
+            **kwargs: Any,
+        ) -> AsyncIterator[RuntimeEvent]:
+            captured.update(
+                session_id=session_id,
+                request_id=request_id,
+                work_kind=work_kind,
+                details=kwargs["details"],
+            )
+
+            async def events() -> AsyncIterator[RuntimeEvent]:
+                yield RuntimeEvent(
+                    request_id=request_id,
+                    channel_id="web",
+                    session_id=session_id,
+                    payload={"event_type": "runtime.accepted"},
+                )
+
+            return events()
+
+    runtime = AgentRuntime(agent_manager=FakeAgentManager())
+    runtime._started = True
+    runtime._session_coordinator = cast(Any, TeamCoordinator())
+    runtime._ensure_session_registered = AsyncMock()
+    runtime._team_lifecycle = MagicMock(return_value=object())
+    request = AgentRequest(
+        request_id="team-cross-session",
+        channel_id="web",
+        session_id="team-session",
+        req_method=ReqMethod.CHAT_SEND,
+        is_stream=True,
+        params={
+            "query": "report status",
+            "mode": "team.work.normal",
+            "input_mode": "steer",
+            "_jiuwenswarm_cross_session": {"message_id": "sm-team"},
+        },
+    )
+
+    events = await _collect_events(runtime.stream(request))
+
+    assert events[0].event_type == "runtime.accepted"
+    assert captured["work_kind"] is SessionWorkKind.TEAM_REQUEST
+    details = cast(TeamExecutionDetails, captured["details"])
+    assert details.session_message_id == "sm-team"
+
+
+@pytest.mark.asyncio
+async def test_team_attach_only_registers_persistent_waiter_kind() -> None:
+    """Entering a Team Session as an observer owns a persistent waiter slot."""
+    captured: dict[str, object] = {}
+
+    class TeamCoordinator:
+        def snapshot_session(self, session_id: str) -> None:
+            return None
+
+        def run_team_stream(
+            self,
+            session_id: str,
+            request_id: str,
+            work_kind: SessionWorkKind,
+            operation: Any,
+            **kwargs: Any,
+        ) -> AsyncIterator[RuntimeEvent]:
+            captured.update(
+                session_id=session_id,
+                request_id=request_id,
+                work_kind=work_kind,
+                details=kwargs["details"],
+            )
+
+            async def events() -> AsyncIterator[RuntimeEvent]:
+                yield RuntimeEvent(
+                    request_id=request_id,
+                    channel_id="web",
+                    session_id=session_id,
+                    payload={"event_type": "runtime.accepted"},
+                )
+
+            return events()
+
+    runtime = AgentRuntime(agent_manager=FakeAgentManager())
+    runtime._started = True
+    runtime._session_coordinator = cast(Any, TeamCoordinator())
+    runtime._ensure_session_registered = AsyncMock()
+    runtime._team_lifecycle = MagicMock(return_value=object())
+    request = AgentRequest(
+        request_id="team-attach",
+        channel_id="web",
+        session_id="team-session",
+        req_method=ReqMethod.CHAT_SEND,
+        is_stream=True,
+        params={
+            "query": "",
+            "mode": "team.work.normal",
+            TEAM_ATTACH_ONLY_PARAM: True,
+        },
+    )
+
+    events = await _collect_events(runtime.stream(request))
+
+    assert events[0].event_type == "runtime.accepted"
+    assert captured["work_kind"] is SessionWorkKind.TEAM_REQUEST
+    details = cast(TeamExecutionDetails, captured["details"])
+    assert details.waiter_kind is TeamWaiterKind.PERSISTENT
+    assert details.session_message_id is None
 
 
 class FakeAgentManager:
@@ -957,139 +1105,6 @@ async def test_cancel_all_inflight_work_rejects_closed_runtime() -> None:
 
     assert manager.cancel_calls == []
     assert manager.cancel_exclusion_calls == []
-
-
-@pytest.mark.asyncio
-async def test_cancel_all_team_stream_tasks_delegates_without_starting_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness import team as team_module
-
-    helper = AsyncMock()
-    monkeypatch.setattr(
-        team_module,
-        "cancel_all_team_stream_tasks_across_managers",
-        helper,
-    )
-    initializer = AsyncMock()
-    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=initializer)
-
-    await runtime.cancel_all_team_stream_tasks(
-        reason="[gateway ws closed] ",
-        exclude_session_ids=("heartbeat-session",),
-    )
-
-    helper.assert_awaited_once_with(
-        reason="[gateway ws closed] ",
-        exclude_session_ids={"heartbeat-session"},
-    )
-    assert runtime.started is False
-    initializer.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_cancel_all_team_stream_tasks_preserves_none_exclusions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness import team as team_module
-
-    helper = AsyncMock()
-    monkeypatch.setattr(
-        team_module,
-        "cancel_all_team_stream_tasks_across_managers",
-        helper,
-    )
-    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
-
-    await runtime.cancel_all_team_stream_tasks(
-        reason="cancel all teams",
-        exclude_session_ids=None,
-    )
-
-    helper.assert_awaited_once_with(
-        reason="cancel all teams",
-        exclude_session_ids=None,
-    )
-
-
-@pytest.mark.asyncio
-async def test_cancel_all_team_stream_tasks_materializes_generator_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness import team as team_module
-
-    helper = AsyncMock()
-    monkeypatch.setattr(
-        team_module,
-        "cancel_all_team_stream_tasks_across_managers",
-        helper,
-    )
-    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
-    consumed: list[str] = []
-
-    def exclusions() -> Iterable[str]:
-        for session_id in ("heartbeat-1", "heartbeat-2"):
-            consumed.append(session_id)
-            yield session_id
-
-    excluded = exclusions()
-    await runtime.cancel_all_team_stream_tasks(
-        exclude_session_ids=excluded,
-    )
-
-    helper.assert_awaited_once_with(
-        reason="[runtime cancel all team streams] ",
-        exclude_session_ids={"heartbeat-1", "heartbeat-2"},
-    )
-    assert consumed == ["heartbeat-1", "heartbeat-2"]
-    assert list(excluded) == []
-
-
-@pytest.mark.asyncio
-async def test_cancel_all_team_stream_tasks_rejects_closed_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness import team as team_module
-
-    helper = AsyncMock()
-    monkeypatch.setattr(
-        team_module,
-        "cancel_all_team_stream_tasks_across_managers",
-        helper,
-    )
-    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
-    await runtime.close()
-
-    with pytest.raises(RuntimeStateError, match="runtime is already closed"):
-        await runtime.cancel_all_team_stream_tasks()
-
-    helper.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_cancel_all_team_stream_tasks_propagates_helper_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness import team as team_module
-
-    helper = AsyncMock(side_effect=RuntimeError("team cancel failed"))
-    monkeypatch.setattr(
-        team_module,
-        "cancel_all_team_stream_tasks_across_managers",
-        helper,
-    )
-    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
-
-    with pytest.raises(RuntimeError, match="team cancel failed"):
-        await runtime.cancel_all_team_stream_tasks(
-            reason="disconnect",
-            exclude_session_ids=("heartbeat-session",),
-        )
-
-    helper.assert_awaited_once_with(
-        reason="disconnect",
-        exclude_session_ids={"heartbeat-session"},
-    )
 
 
 @pytest.mark.asyncio
@@ -2574,7 +2589,7 @@ async def test_runtime_owned_extensions_are_reference_counted(monkeypatch) -> No
 
     from jiuwenswarm.extensions.manager import ExtensionManager
     from jiuwenswarm.extensions.registry import ExtensionRegistry
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     ExtensionRegistry.reset_instance()
     load_extensions = AsyncMock()
@@ -2587,7 +2602,7 @@ async def test_runtime_owned_extensions_are_reference_counted(monkeypatch) -> No
     monkeypatch.setattr(Runner, "start", AsyncMock(return_value=True))
     monkeypatch.setattr(Runner, "stop", AsyncMock(return_value=True))
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         AsyncMock(),
     )
@@ -2635,7 +2650,7 @@ async def test_runtime_does_not_close_externally_owned_extensions(monkeypatch) -
 
     from jiuwenswarm.extensions.manager import ExtensionManager
     from jiuwenswarm.extensions.registry import ExtensionRegistry
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     ExtensionRegistry.reset_instance()
     external_registry = ExtensionRegistry.create_instance(
@@ -2652,7 +2667,7 @@ async def test_runtime_does_not_close_externally_owned_extensions(monkeypatch) -
     monkeypatch.setattr(Runner, "start", AsyncMock(return_value=True))
     monkeypatch.setattr(Runner, "stop", AsyncMock(return_value=True))
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         AsyncMock(),
     )
@@ -2686,7 +2701,7 @@ async def test_runtime_does_not_close_externally_owned_extensions(monkeypatch) -
 @pytest.mark.asyncio
 async def test_process_dependencies_are_reference_counted(monkeypatch) -> None:
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     initialize = AsyncMock()
     runner_start = AsyncMock(return_value=True)
@@ -2701,7 +2716,7 @@ async def test_process_dependencies_are_reference_counted(monkeypatch) -> None:
     monkeypatch.setattr(Runner, "start", runner_start)
     monkeypatch.setattr(Runner, "stop", runner_stop)
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         close_checkpointer,
     )
@@ -2730,7 +2745,7 @@ async def test_process_dependency_lease_rolls_back_on_start_failure(
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     monkeypatch.setattr(
         runtime_service_module,
@@ -2742,7 +2757,7 @@ async def test_process_dependency_lease_rolls_back_on_start_failure(
     monkeypatch.setattr(Runner, "start", AsyncMock(return_value=True))
     monkeypatch.setattr(Runner, "stop", runner_stop)
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         close_checkpointer,
     )
@@ -2764,7 +2779,7 @@ async def test_checkpointer_init_error_survives_close_error_and_allows_retry(
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     initialize = AsyncMock(
         side_effect=[ValueError("checkpointer init failed"), None],
@@ -2782,7 +2797,7 @@ async def test_checkpointer_init_error_survives_close_error_and_allows_retry(
     monkeypatch.setattr(Runner, "start", runner_start)
     monkeypatch.setattr(Runner, "stop", runner_stop)
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         close_checkpointer,
     )
@@ -2817,7 +2832,7 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     tmp_path,
 ) -> None:
     from openjiuwen.core.session.checkpointer import CheckpointerFactory
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     dispose_error = RuntimeError("dispose failed")
     dispose = AsyncMock(side_effect=dispose_error)
@@ -2828,13 +2843,13 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     create_checkpointer = AsyncMock(return_value=replacement_checkpointer)
     installed: list[object | None] = []
 
-    monkeypatch.setattr(interface_deep, "_PERSISTENT_CHECKPOINTER_READY", True)
+    monkeypatch.setattr(checkpointer, "_PERSISTENT_CHECKPOINTER_READY", True)
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "PersistenceCheckpointerProvider",
         lambda: None,
     )
-    monkeypatch.setattr(interface_deep, "get_checkpoint_dir", lambda: tmp_path)
+    monkeypatch.setattr(checkpointer, "get_checkpoint_dir", lambda: tmp_path)
     monkeypatch.setattr(
         CheckpointerFactory,
         "get_checkpointer",
@@ -2848,18 +2863,18 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     )
 
     with pytest.raises(RuntimeError, match="dispose failed") as caught:
-        await interface_deep.close_persistent_checkpointer()
+        await checkpointer.close_persistent_checkpointer()
 
     assert caught.value is dispose_error
     dispose.assert_awaited_once()
     assert installed == [None]
-    assert interface_deep._PERSISTENT_CHECKPOINTER_READY is False
+    assert checkpointer._PERSISTENT_CHECKPOINTER_READY is False
 
-    await interface_deep.ensure_persistent_checkpointer()
+    await checkpointer.ensure_persistent_checkpointer()
 
     create_checkpointer.assert_awaited_once()
     assert installed == [None, replacement_checkpointer]
-    assert interface_deep._PERSISTENT_CHECKPOINTER_READY is True
+    assert checkpointer._PERSISTENT_CHECKPOINTER_READY is True
 
 
 @pytest.mark.asyncio
@@ -2867,7 +2882,7 @@ async def test_runner_start_error_survives_checkpointer_rollback_error_and_retri
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     initialize = AsyncMock()
     runner_start = AsyncMock(
@@ -2884,7 +2899,7 @@ async def test_runner_start_error_survives_checkpointer_rollback_error_and_retri
     monkeypatch.setattr(Runner, "start", runner_start)
     monkeypatch.setattr(Runner, "stop", AsyncMock(return_value=True))
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         close_checkpointer,
     )
@@ -2913,7 +2928,7 @@ async def test_runner_start_error_survives_checkpointer_rollback_error_and_retri
 @pytest.mark.asyncio
 async def test_runner_false_start_result_is_rolled_back(monkeypatch) -> None:
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     runner_stop = AsyncMock(return_value=True)
     close_checkpointer = AsyncMock()
@@ -2925,7 +2940,7 @@ async def test_runner_false_start_result_is_rolled_back(monkeypatch) -> None:
     monkeypatch.setattr(Runner, "start", AsyncMock(return_value=False))
     monkeypatch.setattr(Runner, "stop", runner_stop)
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         close_checkpointer,
     )
@@ -2947,7 +2962,7 @@ async def test_runner_false_stop_result_closes_runtime_and_allows_retry(
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     runner_start = AsyncMock(return_value=True)
     runner_stop = AsyncMock(side_effect=[False, True])
@@ -2960,7 +2975,7 @@ async def test_runner_false_stop_result_closes_runtime_and_allows_retry(
     monkeypatch.setattr(Runner, "start", runner_start)
     monkeypatch.setattr(Runner, "stop", runner_stop)
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         close_checkpointer,
     )

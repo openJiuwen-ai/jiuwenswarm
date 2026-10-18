@@ -601,6 +601,39 @@ async def test_member_spawned_event_omits_blank_display_name() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("target_status", ["shut_down", "dormant"])
+async def test_member_shutdown_event_carries_target_status(target_status: str) -> None:
+    """member_shutdown 事件透传退场终态，前端据此区分离队与休眠。"""
+    event = MonitorEvent(
+        event_type=MonitorEventType.MEMBER_SHUTDOWN,
+        team_name="team-1",
+        timestamp=123,
+        member_name="writer-1",
+        force=False,
+        target_status=target_status,
+    )
+    handler = TeamMonitorHandler(
+        _FakeMonitor(
+            members=[],
+            leader_member_name=None,
+            events=[event],
+        ),
+        "sess-monitor",
+    )
+
+    await handler.start()
+    try:
+        converted = await anext(handler.events())
+
+        assert converted["event"]["type"] == "team.member.shutdown"
+        assert converted["event"]["member_id"] == "writer-1"
+        assert converted["event"]["force"] is False
+        assert converted["event"]["target_status"] == target_status
+    finally:
+        await handler.stop()
+
+
+@pytest.mark.anyio
 async def test_member_spawned_event_includes_mode_for_ai_member() -> None:
     """验证 member_spawned 事件对 AI 成员返回 mode=role（teammate/leader 等）。"""
     event = MonitorEvent(
@@ -1111,3 +1144,40 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
     assert out["title"].startswith("T" * _TASK_TEXT_LIMIT)
     assert out["content"] == "body"
     assert "content_truncated" not in out
+
+
+class _EndingMonitor:
+    """Monitor whose event stream ends without the handler calling stop()."""
+
+    def __init__(self) -> None:
+        self.team_agent = object()
+        self.stopped = False
+        self.end_stream = asyncio.Event()
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    async def events(self):
+        await self.end_stream.wait()
+        if False:
+            yield None
+
+
+@pytest.mark.anyio
+async def test_handler_marks_stopped_when_monitor_stream_ends():
+    monitor = _EndingMonitor()
+    handler = TeamMonitorHandler(monitor, "sess-stream-ended")
+    await handler.start()
+    assert handler.is_running is True
+    assert handler.bound_team_agent is monitor.team_agent
+
+    monitor.end_stream.set()
+    await asyncio.wait_for(handler._collect_task, timeout=1.0)
+
+    assert handler.is_running is False
+    # stop() still releases the listener after the stream ended on its own.
+    await handler.stop()
+    assert monitor.stopped is True

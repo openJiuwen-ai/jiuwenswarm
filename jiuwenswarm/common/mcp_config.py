@@ -17,10 +17,7 @@ from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.tool import McpServerConfig
 
 from jiuwenswarm.common.config import get_mcp_server_config
-from jiuwenswarm.server.runtime.mcp.credential import (
-    CredentialStore,
-    resolve_placeholders,
-)
+from jiuwenswarm.common.external_providers import provider
 
 _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
 
@@ -33,6 +30,11 @@ _PREWARM_MAX_CONCURRENCY = 6
 _PREWARM_STALL_TIMEOUT_S = 120.0
 
 _PLACEHOLDER_RE = re.compile(r"\$\{(\w+)\}")
+
+
+def _credential_store():
+    """CredentialStore 经 common 注入点获取（分层规则 R1：不 import server）。"""
+    return provider("mcp_credential").CredentialStore()
 
 
 def _resolve_string(value: str, resolver) -> str:
@@ -56,7 +58,7 @@ def build_mcp_credential_resolver(name: str) -> Callable[[str], str | None] | No
     if not name:
         return None
     try:
-        store = CredentialStore()
+        store = _credential_store()
         stored = store.get_all(name)
     except Exception:  # noqa: BLE001 — no store / not an MCP → leave as-is
         return None
@@ -299,6 +301,29 @@ async def preflight_mcp_server_reachable(
 
     try:
         async with httpx.AsyncClient(timeout=http_timeout, follow_redirects=False) as http:
+            if transport == "sse":
+                # Legacy SSE MCP servers handshake with GET-only (e.g.
+                # mcp-pan.baidu.com/sse answers 405 to a POSTed initialize).
+                # Probe with a streamed GET and judge by status code only: a
+                # healthy SSE endpoint answers 2xx plus an endless event
+                # stream, so the body must never be fully read.
+                headers["Accept"] = "text/event-stream"
+                request = http.build_request("GET", url, headers=headers, params=query_params)
+                resp = await http.send(request, stream=True)
+                try:
+                    if resp.status_code in (401, 403):
+                        return False, f"auth rejected (HTTP {resp.status_code})"
+                    if resp.status_code >= 400:
+                        snippet = ""
+                        try:
+                            await resp.aread()
+                            snippet = (resp.text or "")[:120].replace("\n", " ")
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return False, f"http {resp.status_code} from server{(': ' + snippet) if snippet else ''}"
+                    return True, f"ok (http {resp.status_code})"
+                finally:
+                    await resp.aclose()
             resp = await http.post(url, headers=headers, params=query_params, content=body)
     except httpx.TimeoutException as exc:
         return False, f"http probe timed out after {read_t}s (server not responding): {type(exc).__name__}"
@@ -350,7 +375,9 @@ async def fetch_mcp_tools_via_temp_connection(entry: dict[str, Any]) -> list[dic
     # ``Bearer ${BAIDU_ACCESS_TOKEN}`` string. No-op for form-A entries
     # (no placeholders) and for non-MCP entries (empty store).
     try:
-        entry = resolve_placeholders(entry, CredentialStore(), name)
+        entry = provider("mcp_credential").resolve_placeholders(
+            entry, _credential_store(), name
+        )
     except Exception as resolve_exc:  # noqa: BLE001
         logger.debug("[mcp-config] placeholder resolve failed: %s", resolve_exc)
 
@@ -383,7 +410,7 @@ async def fetch_mcp_tools_via_temp_connection(entry: dict[str, Any]) -> list[dic
         # task-group teardown) on server errors like 403. That group is NOT
         # an Exception subclass, so it would escape `except Exception` and
         # hang the caller. Coerce it back into a catchable Exception.
-        from jiuwenswarm.server.runtime.mcp.exc_group import reraise_as_exception
+        from jiuwenswarm.common.mcp_exc_group import reraise_as_exception
         reraise_as_exception(exc)
     finally:
         try:
@@ -397,7 +424,7 @@ async def fetch_mcp_tools_via_temp_connection(entry: dict[str, Any]) -> list[dic
             if isinstance(exc, (Exception, asyncio.CancelledError)):
                 logger.warning("[mcp-config] fetch disconnect failed: %s", exc)
             else:
-                from jiuwenswarm.server.runtime.mcp.exc_group import (
+                from jiuwenswarm.common.mcp_exc_group import (
                     reraise_as_exception,
                 )
                 try:
@@ -475,7 +502,7 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
         return True, ""
     resolver = None
     try:
-        stored = CredentialStore().get_all(n)
+        stored = _credential_store().get_all(n)
         if stored:
             def resolver(key: str) -> str | None:  # noqa: B023
                 if key in stored:
@@ -547,12 +574,15 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
     return True, ""
 
 
-async def prewarm_connected_mcps() -> None:
+async def prewarm_connected_mcps(*, report_status: bool = False) -> bool | None:
     """Prewarm ``Runner.resource_mgr`` for every ``state==connected`` MCP.
 
     Probes each so a later ``chat.send`` reconcile hits the existing-entry
     branch (no re-spawn). Failure-isolated per MCP and never downgrades state.
     Safe to call at startup and again from the root adapter (idempotent).
+
+    ``report_status`` returns whether every probe succeeded for capability
+    readiness. The default retains the existing best-effort ``None`` result.
 
     Background fire-and-forget — the service never awaits this task, so a
     slow/cold MCP probe (npx first-install ~30s, HTTP connect) is allowed to
@@ -562,16 +592,13 @@ async def prewarm_connected_mcps() -> None:
     don't overwhelm the host during startup.
     """
     try:
-        from jiuwenswarm.server.runtime.mcp.state_store import (
-            list_truly_connected_mcps,
-        )
         names = [
             str(r.get("name", "")).strip()
-            for r in list_truly_connected_mcps()
+            for r in provider("mcp_state").list_truly_connected_mcps()
             if r.get("name")
         ]
         if not names:
-            return
+            return True if report_status else None
         logger.info(
             "[mcp-prewarm] prewarming %d connected MCP(s): %s",
             len(names), names,
@@ -579,7 +606,7 @@ async def prewarm_connected_mcps() -> None:
 
         sem = asyncio.Semaphore(_PREWARM_MAX_CONCURRENCY)
 
-        async def _probe_one(name: str) -> None:
+        async def _probe_one(name: str) -> bool:
             async with sem:
                 try:
                     # Only a genuine stall (>> probe's expected worst case)
@@ -595,6 +622,7 @@ async def prewarm_connected_mcps() -> None:
                             "[mcp-prewarm] '%s' prewarm failed: %s "
                             "(will lazy-connect on first chat)", name, reason,
                         )
+                    return bool(ok)
                 except asyncio.TimeoutError:
                     logger.warning(
                         "[mcp-prewarm] '%s' prewarm stalled >%.0fs "
@@ -605,13 +633,16 @@ async def prewarm_connected_mcps() -> None:
                     logger.warning(
                         "[mcp-prewarm] '%s' prewarm error: %s", name, exc,
                     )
+                return False
 
         # Concurrent probes bounded by semaphore — all MCPs start in parallel
         # but at most N execute add_mcp_server at any moment.  Total wall time
         # ≈ the slowest probe alone (not N×), with stall protection only.
-        await asyncio.gather(*[_probe_one(name) for name in names])
+        results = await asyncio.gather(*[_probe_one(name) for name in names])
+        return all(results) if report_status else None
     except Exception as exc:  # noqa: BLE001
         logger.warning("[mcp-prewarm] background prewarm failed: %s", exc)
+        return False if report_status else None
 
 
 def _stable_mcp_server_id(scope: str, name: str, payload: dict[str, Any]) -> str:

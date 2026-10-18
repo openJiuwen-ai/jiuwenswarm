@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.common.config import get_config
 from jiuwenswarm.extensions.sdk import AgentServerClientExtension
+
+from jiuwenswarm.common.config import get_config
 from jiuwenswarm.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
 
 

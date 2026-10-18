@@ -24,16 +24,22 @@ def test_run_permissions_preserve_installed_deny_and_config_snapshot() -> None:
         "allow_tools": ["write_file"],
         "file_guard": {"enabled": True},
     }
-    token = RUN_PERMISSIONS.set({
-        "locked": "allow", "read_file": "allow", "write_file": "ask",
-        "run_shell": "deny",
-    })
+    token = RUN_PERMISSIONS.set(
+        {
+            "locked": "allow",
+            "read_file": "allow",
+            "write_file": "ask",
+            "run_shell": "deny",
+        }
+    )
     try:
         effective = overlay_run_permissions(installed)
     finally:
         RUN_PERMISSIONS.reset(token)
     assert effective["tools"] == {
-        "locked": "deny", "read_file": "allow", "write_file": "ask",
+        "locked": "deny",
+        "read_file": "allow",
+        "write_file": "ask",
         "run_shell": "deny",
     }
     assert effective["file_guard"] == installed["file_guard"]
@@ -65,7 +71,44 @@ async def test_root_tool_allowlist_filters_discovery_and_blocks_execution() -> N
     with pytest.raises(ValueError, match="allowlist denied"):
         await manager.execute(None, SimpleNamespace(name="write_file"), None)
     assert manager.calls == []
-    assert await manager.execute(None, SimpleNamespace(name="read_file"), None) == "read_file"
+    assert (
+        await manager.execute(None, SimpleNamespace(name="read_file"), None)
+        == "read_file"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_empty_allowlist_blocks_late_registered_tools_and_batch_execution():
+    class Manager:
+        def __init__(self):
+            self.names = ["read_file"]
+            self.calls = []
+
+        def list(self):
+            return [SimpleNamespace(name=name) for name in self.names]
+
+        async def list_tool_info(self):
+            return self.list()
+
+        async def execute(self, _ctx, calls, _session):
+            self.calls.append(calls)
+            return calls
+
+    restricted = Manager()
+    ordinary = Manager()
+    install_tool_allowlist(restricted, [])
+    restricted.names.extend(["write_file", "host_lookup", "mcp_tool"])
+    assert restricted.list() == []
+    assert await restricted.list_tool_info() == []
+    for calls in (
+        SimpleNamespace(name="write_file"),
+        [SimpleNamespace(name="read_file"), SimpleNamespace(name="mcp_tool")],
+    ):
+        with pytest.raises(ValueError, match="allowlist denied"):
+            await restricted.execute(None, calls, None)
+    assert restricted.calls == []
+    assert ordinary.list()[0].name == "read_file"
 
 
 @pytest.mark.unit

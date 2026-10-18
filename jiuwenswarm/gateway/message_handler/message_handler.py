@@ -21,6 +21,7 @@ from jiuwenswarm.runtime.host_services import (
     install_runtime_wake_handler,
     restore_runtime_wake_handler,
 )
+from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
 from jiuwenswarm.gateway.im_pipeline.im_session_input import (
@@ -167,7 +168,7 @@ def apply_a2ui_text_fallback_to_gateway_payload(
     if not any(_A2UI_OPEN_TAG_MARKER in value for value in payload.values() if isinstance(value, str)):
         return payload
 
-    from jiuwenswarm.server.runtime.a2ui.integration import apply_non_web_text_fallback_to_payload
+    from jiuwenswarm.gateway.embedded.runtime.a2ui_text import apply_non_web_text_fallback_to_payload
 
     return apply_non_web_text_fallback_to_payload(payload, channel_id=channel_id)
 
@@ -353,6 +354,7 @@ class MessageHandler(ABC):
         self._disconnect_cancel_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._stream_app_ids: dict[str, str] = {}  # request_id -> app_id, 多应用流式精确路由
         self._fire_and_forget_tasks: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
+        self._server_push_lock = asyncio.Lock()
         self._evolution_approval = EvolutionApprovalCoordinator()
         # 配置仅在启动/成功热重载时解析；流式 chunk 热路径直接读取该内存值，
         # 避免每个审批事件重新读取磁盘配置。
@@ -388,6 +390,11 @@ class MessageHandler(ABC):
             "feishu_enterprise",
         })
         self._channel_states: Dict[str, ChannelControlState] = {}
+        # 入站 session_id 是平台侧「逻辑会话 id」的受控渠道（小艺 conversationId）：
+        # _apply_channel_state 清空 session_id 前记住其状态键，gateway 侧 session.create
+        # 分配出真实会话后写回同一状态，后续入站才能复用（见 _ensure_inbound_session）。
+        self._sticky_channel_state_types = frozenset({ChannelType.XIAOYI.value})
+        self._pending_alloc_state_key: Dict[str, str] = {}
         self._session_map = SessionMap()
         self._session_sharing = SessionSharingRegistry()
         # 组合：/join /exit 团队成员管理逻辑（独立文件维护，通过 self._h 访问宿主能力）
@@ -963,6 +970,38 @@ class MessageHandler(ABC):
         if identity_key and self._channel_id_matches_session_map_types(str(msg.channel_id or "")):
             self._session_map.set_session_id(*identity_key, sid)
         return sid
+
+    def _remember_alloc_state_key(self, msg: "Message", channel_id: str) -> None:
+        """受控通道无正式会话时，记录本次状态键供 session 分配写回复用。
+
+        小艺入站 session_id 是手机侧逻辑会话 id（conversationId），
+        ``_apply_channel_state`` 会把它清成 None，再由 gateway 侧 session.create
+        分配真实会话。若此时不记住原始键，_forward_loop 会以 None 重新
+        ``get_or_create_channel_state``（键退化成 channel_id），分配结果写进
+        「channel 级」状态；而下次入站仍按 ``channel:conversation`` 查状态，
+        永远命中不到 → 每条 query 都新建 session、丢上下文。
+        """
+        if str(channel_id or "") not in self._sticky_channel_state_types:
+            return
+        self._pending_alloc_state_key[msg.id] = self._get_channel_state_key(
+            str(channel_id or ""), msg.session_id
+        )
+
+    async def _ensure_inbound_session(self, msg: "Message") -> None:
+        """受控通道入站无 session 时为它分配一个，并写回入站所属的状态。"""
+        channel_type = self._resolve_control_channel_type(msg)
+        if channel_type not in self._control_channel_types:
+            return
+        if str(msg.session_id or "").strip():
+            return
+        key = self._pending_alloc_state_key.pop(msg.id, "")
+        state = self._channel_states.get(key) if key else None
+        if state is None:
+            state = self.get_or_create_channel_state(msg)
+        msg.session_id = await self._allocate_channel_session(msg, state)
+        # 兼容旧行为：同一次分配也留一份 channel 级状态（cancel/disconnect 的
+        # mode 兜底按 channel_id 键读取）。
+        self._channel_states.setdefault(channel_type, state)
 
     async def _resolve_external_channel_session(self, msg: "Message") -> None:
         """Map A2A protocol IDs onto AgentServer-owned product Sessions.
@@ -2416,13 +2455,12 @@ class MessageHandler(ABC):
     ) -> None:
         """受控通道 /rewind N：回退当前会话到指定轮次并通知。
 
-        优先转发到 AgentServer（原子性截断 history + context + checkpointer）；
-        E2A 不可达时仅对单用户共享目录 client 回退到本地截断 history.json，
-        远程/AgentOS client 返回可重试错误（方案 §8：禁止用部署侧目录代替用户目录）。
+        转发到 AgentServer（原子性截断 history + context + checkpointer）；
+        E2A 不可达时直接返回错误，不回退 Gateway 本地目录
+        （方案 §8：禁止用部署侧目录代替用户目录）。
         """
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
         state = self.get_or_create_channel_state(msg)
         target_sid = state.session_id
@@ -2468,41 +2506,20 @@ class MessageHandler(ABC):
                     )
                     return
                 # AgentServer 已返回业务错误，说明传输可用。远程/AgentOS 模式
-                # 不能以“不可达”覆盖真实错误，也不能回退到 Gateway 本地目录。
+                # 不能以“不可达”覆盖真实错误；也不回退到 Gateway 本地目录。
                 error_payload = resp.payload if isinstance(resp.payload, dict) else {}
                 logger.warning("[MessageHandler] /rewind E2A failed: %s", error_payload)
-                if not is_legacy_shared_directory_client(self.agent_client):
-                    await self.send_channel_notice(
-                        user_infos, channel_id, reply_session_id,
-                        error_payload or {"error": "回退失败"},
-                    )
-                    return
-            except Exception as e2a_exc:
-                logger.warning("[MessageHandler] /rewind E2A failed, fallback local: %s", e2a_exc)
-
-            # --- Fallback: 仅单用户共享目录 client 回退到本地截断 history.json ---
-            if not is_legacy_shared_directory_client(self.agent_client):
                 await self.send_channel_notice(
                     user_infos, channel_id, reply_session_id,
-                    {"error": "AgentServer 不可达，无法回退（远程模式不回退本地目录）"},
+                    error_payload or {"error": "回退失败"},
                 )
                 return
-            from jiuwenswarm.agents.harness.common.session_ops_service import rewind_session
-            result = rewind_session(session_id=target_sid, turn_index=turn_index)
-            preview = result.get("content_preview", "")
-            remaining = result.get("remaining_records", 0)
-            removed = result.get("removed_records", 0)
+            except Exception as e2a_exc:
+                logger.warning("[MessageHandler] /rewind E2A failed: %s", e2a_exc)
 
             await self.send_channel_notice(
                 user_infos, channel_id, reply_session_id,
-                f"[收到 /rewind 指令] 已回退到第 {turn_index} 轮"
-                f'（"{preview[:50]}"）'
-                f"，删除 {removed} 条记录，剩余 {remaining} 条。"
-                f"（注意：上下文未同步截断）",
-            )
-            logger.info(
-                "[MessageHandler] /rewind 完成: session=%s turn=%s remaining=%s removed=%s",
-                target_sid, turn_index, remaining, removed,
+                {"error": "AgentServer 不可达，无法回退"},
             )
         except ValueError as e:
             await self.send_channel_notice(
@@ -2547,6 +2564,9 @@ class MessageHandler(ABC):
         elif state.session_id:
             msg.session_id = state.session_id
         else:
+            # 受控通道且状态里没有正式会话：先记住本次状态键（此刻 msg.session_id 仍是
+            # 入站逻辑会话 id），_ensure_inbound_session 分配后写回同一状态复用。
+            self._remember_alloc_state_key(msg, cid)
             msg.session_id = None
 
         # 将 mode 写入 params，后续 E2A / Agent 侧从 params["mode"] 读取
@@ -2693,6 +2713,17 @@ class MessageHandler(ABC):
         故通过此方法在装配阶段回填引用。
         """
         self._channel_manager = channel_manager
+
+    async def _broadcast_models_updated(self) -> None:
+        """把 AgentServer 的 models.updated 推送给所有 Web 连接。"""
+        web_channel = self._resolve_web_channel()
+        if web_channel is None:
+            return
+        try:
+            await web_channel.broadcast_event("models.updated", {})
+            logger.info("[MessageHandler] broadcasted models.updated")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[MessageHandler] broadcast models.updated failed: %s", exc)
 
     def _resolve_web_channel(self) -> Any:
         """从 ChannelManager 取 web channel 实例（广播用）；取不到返回 None。"""
@@ -3232,6 +3263,15 @@ class MessageHandler(ABC):
         return bool(getattr(resp, "ok", False))
 
     async def _handle_agent_server_push(self, wire: dict[str, Any]) -> None:
+        """Serialize server-push handling so a final cannot overtake its deltas."""
+        lock = getattr(self, "_server_push_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._server_push_lock = lock
+        async with lock:
+            await self._handle_agent_server_push_ordered(wire)
+
+    async def _handle_agent_server_push_ordered(self, wire: dict[str, Any]) -> None:
         """AgentServer ``send_push`` 下行：与 RPC 共用连接但不得占用 unary/stream 等待队列。"""
         from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 
@@ -3251,6 +3291,9 @@ class MessageHandler(ABC):
 
         from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import EVENT, handle_checkpoint_push
 
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "models.updated":
+            await self._broadcast_models_updated()
+            return
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == EVENT:
             await handle_checkpoint_push(self.agent_client, chunk, session_id)
             return
@@ -3482,9 +3525,29 @@ class MessageHandler(ABC):
                         if str(job.get("user_id") or "").strip() == owner_user_id
                     ]
             elif action == "get":
-                data = await _get_owned_job(str(params.get("job_id") or ""))
-                if data is None:
-                    raise KeyError("job not found")
+                job_id = str(params.get("job_id") or "")
+                if params.get("authoritative") is True:
+                    if not isinstance(params.get("job_id"), str) or not job_id.strip():
+                        raise ValueError("authoritative cron query requires a nonempty job_id")
+                    data = await cc.get_job(job_id)
+                    if data is not None:
+                        if (
+                            not isinstance(data, dict)
+                            or data.get("id") != job_id.strip()
+                            or not isinstance(data.get("user_id", ""), str)
+                        ):
+                            raise ValueError("invalid authoritative cron job")
+                        job_owner = data.get("user_id", "")
+                        if str(job_owner or "").strip() != owner_user_id:
+                            data = {"status": "forbidden", "code": "FORBIDDEN"}
+                        else:
+                            data = {"status": "found", "job": data}
+                    else:
+                        data = {"status": "missing"}
+                else:
+                    data = await _get_owned_job(job_id)
+                    if data is None:
+                        raise KeyError("job not found")
             elif action == "create":
                 params = dict(params)
                 params.pop("_auth_session", None)
@@ -3554,6 +3617,9 @@ class MessageHandler(ABC):
                 data=data,
                 user_id=owner_user_id or None,
             )
+
+        if not channel_id:
+            return
 
         from jiuwenswarm.common.schema.message import EventType, Message
         out = Message(
@@ -3812,10 +3878,17 @@ class MessageHandler(ABC):
     def _should_emit_processing_status_for_stream(msg: "Message") -> bool:
         from jiuwenswarm.common.schema.message import ReqMethod
 
-        return msg.req_method == ReqMethod.CHAT_SEND
+        if msg.req_method != ReqMethod.CHAT_SEND:
+            return False
+        # An attach-only stream is a pure observation subscription: it must
+        # neither raise the Session's processing state on start nor block the
+        # authoritative is_processing=False of the streams that actually own
+        # the turn (a blocked terminal leaves the busy map stuck on True).
+        params = msg.params if isinstance(msg.params, dict) else {}
+        return params.get(TEAM_ATTACH_ONLY_PARAM) is not True
 
     def _session_has_streams_blocking_processing_false(
-        self, session_id: str | None
+        self, session_id: str | None, *, exclude_rid: str | None = None
     ) -> bool:
         """同 session 是否还有应挡住 ``is_processing=false`` 补发的流.
 
@@ -3831,6 +3904,8 @@ class MessageHandler(ABC):
         if any(msg.session_id == session_id for msg in self._non_stream_chat_messages.values()):
             return True
         for active_rid, sid in self._stream_sessions.items():
+            if active_rid == exclude_rid:
+                continue
             if sid != session_id:
                 continue
             if self._stream_emits_processing_status.get(active_rid, True):
@@ -4165,10 +4240,10 @@ class MessageHandler(ABC):
         if not is_legacy_shared_directory_client(self.agent_client):
             return ""
         try:
-            from jiuwenswarm.server.runtime.session.model_selection_store import (
+            from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import (
                 get_session_model_selection,
             )
-            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
 
             if get_session_model_selection(session_id) is not None:
                 return ""
@@ -4385,13 +4460,7 @@ class MessageHandler(ABC):
                 # 将当前 Channel 的控制状态应用到消息上
                 await self._resolve_external_channel_session(msg)
                 self._apply_channel_state(msg)
-                channel_type = self._resolve_control_channel_type(msg)
-                if (
-                    channel_type in self._control_channel_types
-                    and not str(msg.session_id or "").strip()
-                ):
-                    state = self.get_or_create_channel_state(msg)
-                    msg.session_id = await self._allocate_channel_session(msg, state)
+                await self._ensure_inbound_session(msg)
 
                 # IM chat.send has no steer control. A message that arrives
                 # while this Session is processing joins that turn instead of
@@ -4953,6 +5022,21 @@ class MessageHandler(ABC):
                     )
                 if self._is_terminal_stream_chunk(chunk):
                     continue
+                payload = chunk.payload or {}
+                is_processing_false = (
+                    isinstance(payload, dict)
+                    and payload.get("event_type") == "chat.processing_status"
+                    and payload.get("is_processing") is False
+                )
+                if (
+                    is_processing_false
+                    and self._session_has_streams_blocking_processing_false(
+                        session_id, exclude_rid=rid
+                    )
+                ):
+                    # 这是单个请求的结束；同 session 仍有其他对话流时不能向前端
+                    # 宣告整个会话空闲；保留自动收尾，让最后一个流退出时发送权威 false。
+                    continue
                 published = await self.publish_stream_chunk(
                     chunk,
                     session_id=session_id,
@@ -4960,7 +5044,6 @@ class MessageHandler(ABC):
                 )
                 if not published:
                     continue
-                payload = chunk.payload or {}
                 if isinstance(payload, dict):
                     event_type = payload.get("event_type")
                     if event_type == "chat.processing_status":

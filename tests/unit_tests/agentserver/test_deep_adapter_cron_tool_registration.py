@@ -50,6 +50,9 @@ class _FakeAbilityManager:
     def remove(self, name: str) -> None:
         self.cards = [card for card in self.cards if card.name != name]
 
+    def remove_ability(self, name: str) -> None:
+        self.remove(name)
+
 
 class _FakeInstance:
     def __init__(self) -> None:
@@ -88,14 +91,21 @@ def _make_adapter(language: str = "cn") -> tuple[JiuWenSwarmDeepAdapter, dict[st
 
 
 def _make_heartbeat_adapter(
-    session_id: str, *, is_cron_execution: bool = False
+    session_id: str,
+    *,
+    is_cron_execution: bool = False,
+    channel_id: str | None = None,
 ) -> JiuWenSwarmDeepAdapter:
     """Bare adapter with just enough state for the heartbeat rail gate."""
+    from types import SimpleNamespace
+
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._heartbeat_service = object()
     adapter._is_cron_execution = is_cron_execution
     adapter._parent_session_id = session_id
-    adapter._runtime_cron_tool_context = object()
+    adapter._runtime_cron_tool_context = (
+        object() if channel_id is None else SimpleNamespace(channel_id=channel_id)
+    )
     return adapter
 
 
@@ -255,3 +265,71 @@ def test_heartbeat_rail_mounted_for_non_cron_sessions(session_metadata) -> None:
         adapter = _make_heartbeat_adapter(session_id)
         rail = adapter._build_heartbeat_rail()
         assert isinstance(rail, HeartbeatRail), session_id
+
+
+def test_heartbeat_rail_skipped_for_xiaoyi_channel(session_metadata) -> None:
+    """小艺渠道不挂心跳工具：会话前缀与请求渠道两个来源都要命中。
+
+    小艺没有可用的主动投递路径，挂了工具模型只会回答"心跳已创建"，
+    结果永远送不到手机。
+    """
+    from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
+
+    # 网关分配的小艺会话形如 xiaoyi_<hex>_<hex>。
+    adapter = _make_heartbeat_adapter("xiaoyi_1a13511901d_32eb921d481b")
+    assert adapter._build_heartbeat_rail() is None
+
+    # 请求上下文已绑定渠道（会话 ID 本身不带渠道前缀时）。
+    adapter = _make_heartbeat_adapter("sess_a", channel_id="xiaoyi")
+    assert adapter._build_heartbeat_rail() is None
+
+    # 其它渠道不受影响。
+    adapter = _make_heartbeat_adapter("sess_a", channel_id="web")
+    assert isinstance(adapter._build_heartbeat_rail(), HeartbeatRail)
+
+
+def test_heartbeat_policy_keeps_unknown_channels_supported() -> None:
+    """只有明确列入不支持清单的渠道才关心跳，未知渠道保持原行为。"""
+    from jiuwenswarm.agents.harness.common.tools.heartbeat_policy import (
+        is_heartbeat_supported,
+    )
+
+    assert is_heartbeat_supported("web") is True
+    assert is_heartbeat_supported("feishu") is True
+    assert is_heartbeat_supported("") is True
+    assert is_heartbeat_supported(None) is True
+    assert is_heartbeat_supported("xiaoyi") is False
+    assert is_heartbeat_supported("xiaoyi:account") is False
+
+
+@pytest.mark.asyncio
+async def test_update_session_tools_drops_heartbeat_tools_for_xiaoyi(
+    session_metadata,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """首次构建时渠道未知导致工具已被注册的，请求期兜底摘掉。"""
+    # 本用例只关心心跳工具的下发判定，send_file 分支单独屏蔽（其开关读的是
+    # 进程级 config，与本断言无关）。
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.is_send_file_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+    adapter = _make_heartbeat_adapter("xiaoyi_1a13511901d_32eb921d481b")
+    adapter._instance = _FakeInstance()
+    adapter._ensure_cron_tools_registered = lambda session_id: None
+    adapter._ensure_session_messaging_tools_registered = (
+        lambda session_id, channel_id: None
+    )
+    adapter._tool_cards = None
+    adapter._heartbeat_rail = object()
+    for name in ("heartbeat_create_job", "heartbeat_list_jobs", "unrelated_tool"):
+        adapter._instance.ability_manager.add(_FakeCard(name))
+
+    await adapter._update_session_tools(
+        "xiaoyi_1a13511901d_32eb921d481b", "req-1", channel_id="xiaoyi"
+    )
+
+    assert [
+        card.name for card in adapter._instance.ability_manager.cards
+    ] == ["unrelated_tool"]
+    assert adapter._heartbeat_rail is None

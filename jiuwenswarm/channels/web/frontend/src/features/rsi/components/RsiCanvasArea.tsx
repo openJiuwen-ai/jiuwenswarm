@@ -427,6 +427,8 @@ const RsiNodeCard = memo(function RsiNodeCard({
               <div className="rsi-node__eval-text">{kind === 'evaluating' ? '正在处理' : '等待处理'}</div>
             )}
           </>
+        ) : presentation.lifecycle === 'skipped' ? (
+          <div className="rsi-node__reason">{presentation.reasonLabel ?? '其他候选已达到目标分数'}</div>
         ) : kind === 'failed' ? (
           <>
             <div className="rsi-node__reason">{presentation.reasonLabel ?? '生成失败'}</div>

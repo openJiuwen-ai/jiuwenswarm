@@ -64,6 +64,28 @@ class PermissionContext:
         )
 
 
+@dataclass(frozen=True)
+class AgentRef:
+    """后端智能体标识（纯数据结构）。
+
+    source of truth 在本模块（与 AgentRequest.agent_ref 同源）；gateway 树
+    （routing/keys）与 server 树（ipc/protocol）均从这里取用，避免
+    server → gateway 的跨树依赖（check_layering R2）。
+    mode: 'agent' | 'code' | 'team'
+    id:   mode='agent'/'code' 时为 agent_id；mode='team' 时为 team_name
+    """
+
+    mode: str
+    id: str
+
+    @classmethod
+    def default(cls) -> "AgentRef":
+        return cls(mode="agent", id="default")
+
+    def __repr__(self) -> str:
+        return f"AgentRef({self.mode}:{self.id})"
+
+
 @dataclass
 class AgentRequest:
     """Agent 请求（Gateway → AgentServer）."""
@@ -88,6 +110,14 @@ class AgentRequest:
     # this field; it carries mailbox lineage through an interrupt answer
     # without changing the answer's model-visible user origin.
     trusted_session_message_route: dict[str, Any] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    # AgentServer-only runtime dispatch result. The facade resolves it before
+    # MCP reconciliation so the root adapter and session child consume the
+    # same manifest-derived binding without resolving the package twice.
+    trusted_runtime_binding: dict[str, Any] | None = field(
         default=None,
         repr=False,
         compare=False,

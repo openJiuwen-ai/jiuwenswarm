@@ -75,10 +75,21 @@ def infer_work_mode_from_targets(job_item: dict[str, Any]) -> str:
     return DEFAULT_WEB_WORK_MODE
 
 
+_cron_project_lister: Any = None
+
+
+def set_cron_project_lister(list_projects: Any) -> None:
+    """Gateway 注入自己的项目表读取函数，避免 runtime 引用 gateway。"""
+    global _cron_project_lister
+    _cron_project_lister = list_projects
+
+
 def build_cron_project_lookup() -> dict[str, str]:
     """构建 project_id → work_mode 映射,供 cron job 惰性迁移推断 work_mode。"""
     try:
-        from jiuwenswarm.server.runtime.session.project_store import list_projects
+        list_projects = _cron_project_lister
+        if list_projects is None:
+            from jiuwenswarm.server.runtime.session.project_store import list_projects
 
         return {
             p.project_id: p.work_mode
@@ -247,6 +258,9 @@ def ensure_proactive_deletable(existing: CronJob | None, *, force: bool) -> None
 
 
 def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
+    if "_expected_legacy_model_name" in patch:
+        if existing.model_selection is not None or existing.model_name != patch["_expected_legacy_model_name"]:
+            return existing
     patch = filter_proactive_update_patch(existing, dict(patch or {}))
     updated = existing
     if "name" in patch:
@@ -333,7 +347,7 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
             else None
         )
         updated = replace(updated, model_name=new_model_name)
-        if "model_selection" not in patch:
+        if "model_selection" not in patch and new_model_name != existing.model_name:
             # 显式按名称选模型时，清除迁移留下的 ID 选择；否则调度请求
             # 同时带两个字段，执行侧会优先使用旧 model_selection。
             updated = replace(updated, model_selection=None)

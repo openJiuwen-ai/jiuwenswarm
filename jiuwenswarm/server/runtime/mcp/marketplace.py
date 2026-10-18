@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -28,6 +29,8 @@ from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
 )
 from jiuwenswarm.server.runtime.mcp import registry
 from jiuwenswarm.server.runtime.mcp.package_manifest import load_mcp_package
+
+logger = logging.getLogger(__name__)
 
 
 def _mcp_root() -> Path:
@@ -84,6 +87,44 @@ async def _all_remote(port: HubAssetPort, query: str = "") -> list[Any]:
         if len(items) >= result.total or not result.items:
             return items
     raise ValueError("Hub MCP pagination exceeded 100 pages")
+
+
+def installed_mcp_descriptions() -> dict[str, dict[str, str]]:
+    """Localized display metadata of installed MCP packages, by server name.
+
+    Reads the installed package manifests (builtins + hub) — the same
+    ``基本信息`` the web catalogue shows, available locally without a hub
+    round-trip. Keyed by both the manifest's MCP server name (the
+    ``mcp_{server}_`` tool-prefix segment) and the package id; values carry
+    ``zh``/``en`` display descriptions (empty when absent).
+    """
+
+    out: dict[str, dict[str, str]] = {}
+    for root in (_builtin_root(), _hub_root()):
+        if not root.is_dir():
+            continue
+        for package_dir in sorted(root.iterdir()):
+            if not package_dir.is_dir() or not (package_dir / "manifest.json").is_file():
+                continue
+            try:
+                manifest = load_mcp_package(package_dir)
+            except Exception:
+                logger.debug(
+                    "mcp manifest load failed: %s", package_dir, exc_info=True
+                )
+                continue
+            raw = manifest.raw
+            display_description = raw.get("display_description")
+            if not isinstance(display_description, dict):
+                display_description = {}
+            payload = {
+                "zh": str(display_description.get("zh") or "").strip(),
+                "en": str(display_description.get("en") or "").strip(),
+            }
+            for key in (manifest.server_name, manifest.package_id):
+                if key:
+                    out.setdefault(str(key), payload)
+    return out
 
 
 async def list_mcps_with_hub(

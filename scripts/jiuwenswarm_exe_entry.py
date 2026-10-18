@@ -65,9 +65,15 @@ if getattr(sys, "frozen", False):
     # 优先命中内置 Node 22，用户无需单独安装 Node。入口脚本是所有冻结进程（主进程 + --desktop-run-*
     # 子进程）的共同入口，PATH 在每个进程启动时都会被前置，幂等且随子进程继承。
     if sys.platform == "darwin":
+        # pywebview: Contents/MacOS/<exe>; Electron: Contents/Resources/backend/<exe>.
+        _bundle_contents = next(
+            (parent for parent in Path(sys.executable).resolve().parents
+             if parent.name == "Contents" and parent.parent.suffix == ".app"),
+            None,
+        )
         _node_bin = (
-            Path(sys.executable).resolve().parent.parent
-            / "Resources" / "node-runtime" / "bin"
+            _bundle_contents / "Resources" / "node-runtime" / "bin"
+            if _bundle_contents else _frozen_exe_dir / "runtime" / "node-runtime" / "bin"
         )
         if _node_bin.is_dir():
             _old_path = os.environ.get("PATH", "")
@@ -596,6 +602,10 @@ def _dispatch() -> int | None:
         from jiuwenswarm.channels.web.app_web import main as web_main
         web_main()
         return None
+    if _pop_flag("--desktop-run-worker-lifecycle"):
+        from jiuwenswarm.server.supervisor.shutdown import main as lifecycle_main
+        lifecycle_main()
+        return None
     if _pop_flag(_DESKTOP_RUN_AGENT):
         _activate_external_cli_runtime_paths()
         from jiuwenswarm.server.app_agentserver import main as agent_main
@@ -633,7 +643,16 @@ def _dispatch() -> int | None:
             if sys.argv[2] == "ruff":
                 return _forward_to_ruff_binary(sys.argv[3:])
             import runpy
-            runpy.run_module(sys.argv[2], run_name="__main__", alter_sys=True)
+            module_name = sys.argv[2]
+            original_argv = sys.argv
+            # Match ``python -m module args``: the module must receive only its
+            # own arguments. runpy temporarily replaces argv[0] with the module
+            # path, but it does not remove the -m/module tokens for us.
+            sys.argv = [module_name, *original_argv[3:]]
+            try:
+                runpy.run_module(module_name, run_name="__main__", alter_sys=True)
+            finally:
+                sys.argv = original_argv
             return 0
 
         # 其他有参数的情况：直接执行，不检查单实例锁

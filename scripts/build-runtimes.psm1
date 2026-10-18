@@ -15,9 +15,11 @@ function Test-Truthy {
 # BUNDLE_NODE / BUNDLE_UV / NODE_VERSION 的默认值只允许在这里出现一次，
 # 两个打包脚本通过 Get-RuntimeBundleSettings 读取，保证取值不会漂移。
 function Get-RuntimeBundleSettings {
+    param([string]$DefaultNodeVersion = "v22.11.0")
+
     $bundleNode = if ($env:BUNDLE_NODE) { $env:BUNDLE_NODE } else { "1" }
     $bundleUv = if ($env:BUNDLE_UV) { $env:BUNDLE_UV } else { "1" }
-    $nodeVersion = if ($env:NODE_VERSION) { $env:NODE_VERSION } else { "v22.11.0" }
+    $nodeVersion = if ($env:NODE_VERSION) { $env:NODE_VERSION } else { $DefaultNodeVersion }
     return @{
         BundleNode  = $bundleNode
         BundleUv    = $bundleUv
@@ -31,6 +33,51 @@ function Get-NodeArch {
         return "arm64"
     }
     return "x64"
+}
+
+function Test-NodeRuntimeReady {
+    param(
+        [string]$RuntimeDir,
+        [version]$MinimumVersion
+    )
+
+    if (-not $RuntimeDir) {
+        return $false
+    }
+    foreach ($file in @("node.exe", "npm.cmd", "npx.cmd")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $RuntimeDir $file) -PathType Leaf)) {
+            return $false
+        }
+    }
+    if ($null -ne $MinimumVersion) {
+        $actualVersion = Get-NodeRuntimeVersion -RuntimeDir $RuntimeDir
+        if ($null -eq $actualVersion -or $actualVersion -lt $MinimumVersion) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-NodeRuntimeVersion {
+    param([string]$RuntimeDir)
+
+    $nodeExe = Join-Path $RuntimeDir "node.exe"
+    if (-not (Test-Path -LiteralPath $nodeExe -PathType Leaf)) {
+        return $null
+    }
+    try {
+        $rawVersion = & $nodeExe --version 2>$null | Select-Object -First 1
+        if ([string]::IsNullOrWhiteSpace($rawVersion)) {
+            return $null
+        }
+        $parsedVersion = [version]"0.0"
+        if ([version]::TryParse($rawVersion.Trim().TrimStart("v"), [ref]$parsedVersion)) {
+            return $parsedVersion
+        }
+    } catch {
+        return $null
+    }
+    return $null
 }
 
 function Download-NodeRuntime {
@@ -79,36 +126,52 @@ function Resolve-NodeRuntimeDir {
     param(
         [string]$ProjectRoot,
         [string]$ExplicitNodeDir,
-        [string]$NodeVersion
+        [string]$NodeVersion,
+        [version]$MinimumVersion
     )
 
     if ($ExplicitNodeDir) {
         $resolved = (Resolve-Path -LiteralPath $ExplicitNodeDir -ErrorAction Stop).Path
-        if (-not (Test-Path -LiteralPath (Join-Path $resolved "node.exe"))) {
-            throw "NodeDir must contain node.exe: $resolved"
+        if (-not (Test-NodeRuntimeReady -RuntimeDir $resolved -MinimumVersion $MinimumVersion)) {
+            $actualVersion = Get-NodeRuntimeVersion -RuntimeDir $resolved
+            throw "NodeDir must contain node.exe, npm.cmd, and npx.cmd and provide Node >= $MinimumVersion (found $actualVersion): $resolved"
         }
         return $resolved
     }
 
     if ($env:NODE_DIR) {
         $resolved = (Resolve-Path -LiteralPath $env:NODE_DIR -ErrorAction Stop).Path
-        if (-not (Test-Path -LiteralPath (Join-Path $resolved "node.exe"))) {
-            throw "NODE_DIR must contain node.exe: $resolved"
+        if (-not (Test-NodeRuntimeReady -RuntimeDir $resolved -MinimumVersion $MinimumVersion)) {
+            $actualVersion = Get-NodeRuntimeVersion -RuntimeDir $resolved
+            throw "NODE_DIR must contain node.exe, npm.cmd, and npx.cmd and provide Node >= $MinimumVersion (found $actualVersion): $resolved"
         }
         return $resolved
     }
 
     $vendorNode = Join-Path $ProjectRoot "vendor\node"
-    if (Test-Path -LiteralPath (Join-Path $vendorNode "node.exe")) {
+    if (Test-NodeRuntimeReady -RuntimeDir $vendorNode -MinimumVersion $MinimumVersion) {
         return (Resolve-Path -LiteralPath $vendorNode).Path
     }
 
     $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
     if ($nodeCommand) {
-        return Split-Path -Parent $nodeCommand.Source
+        $systemNodeDir = Split-Path -Parent $nodeCommand.Source
+        if (Test-NodeRuntimeReady -RuntimeDir $systemNodeDir -MinimumVersion $MinimumVersion) {
+            return $systemNodeDir
+        }
     }
 
-    return Download-NodeRuntime -ProjectRoot $ProjectRoot -NodeVersion $NodeVersion
+    if ($null -ne $MinimumVersion) {
+        $requestedVersion = [version]$NodeVersion.Trim().TrimStart("v")
+        if ($requestedVersion -lt $MinimumVersion) {
+            throw "NODE_VERSION $NodeVersion is below the required minimum Node version $MinimumVersion"
+        }
+    }
+    $downloaded = Download-NodeRuntime -ProjectRoot $ProjectRoot -NodeVersion $NodeVersion
+    if (-not (Test-NodeRuntimeReady -RuntimeDir $downloaded -MinimumVersion $MinimumVersion)) {
+        throw "Downloaded Node runtime is incomplete or below the required minimum version $MinimumVersion`: $downloaded"
+    }
+    return $downloaded
 }
 
 function Use-NodeRuntime {
@@ -219,6 +282,8 @@ Export-ModuleMember -Function @(
     "Test-Truthy",
     "Get-RuntimeBundleSettings",
     "Get-NodeArch",
+    "Get-NodeRuntimeVersion",
+    "Test-NodeRuntimeReady",
     "Download-NodeRuntime",
     "Resolve-NodeRuntimeDir",
     "Use-NodeRuntime",

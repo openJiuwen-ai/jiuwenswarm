@@ -1,5 +1,13 @@
 # 桌面端打包：Electron 替换 Python（pywebview）方案
 
+## 本地文件与下载
+
+- 本地文件拖拽通过 preload 解析磁盘路径，再接入聊天附件、连接器包导入共用的文件消费链；目录和没有磁盘路径的虚拟文件仍不支持。
+- 切换聊天会话后丢弃旧会话尚未返回的拖拽结果；即使随后切回原会话，旧结果也不会进入当前附件草稿。
+- 桌面下载接口弹出保存对话框，允许选择位置和文件名；取消后不发起下载。先写入目标目录内的独立临时文件，成功后替换目标，失败时清理临时文件并保留已有文件。
+- 启动时仅清理数据目录 `.updates` 中超过 24 小时未更新的 `*.exe.part`、`*.dmg.part`、`*.tar.gz.part`。保留近期文件、完整安装包、目录和更新辅助脚本。
+- 回归检查：仓库根目录运行 `node --test tests/electron/file_transfer.test.cjs`；前端目录运行 `npm run test:desktop-file-drop`。
+
 > 交接文档：目标是**用 Electron 打包替换 Python 打包**作为桌面端发布形态，二者运行时逻辑已对齐。
 > 新会话阅读本文即可获得完整上下文，不需要翻聊天记录。
 
@@ -42,7 +50,7 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 
 ## 3. Electron 打包（Windows）
 
-入口：`scripts/build-electron-exe.ps1`（macOS 对应 `build-electron-exe.sh`，见 §9 遗留问题）。
+入口：`scripts/build-electron-exe.ps1`（macOS 对应 `build-electron-exe.sh`）。
 快捷方式：`jiuwenswarm/channels/desktop/electron/package.json` 的 `electron:build*` 脚本。
 
 三种构建模式：
@@ -298,7 +306,8 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 
 ## 9. 已知遗留（按优先级）
 
-1. **macOS 构建**（`build-electron-exe.sh`）：未签名/公证。DMG 版本号、`CFBundleIdentifier`、`uv sync` extras 已接 build_config（与 ps1 对齐，含 `--sync` 与 A2UI 自检）。应用内更新在 macOS 仍走 `shell.openPath` 手动安装（Python 桌面有完整的 DMG 自动换壳 helper 脚本，未移植）。
+1. **macOS 构建与更新**：沿用 `build-electron-exe.sh` 入口。本地构建使用 `NOSIGN=1 bash scripts/build-electron-exe.sh`，正式签名、公证使用 `NOTARIZE=1 bash scripts/build-electron-exe.sh`。构建前解析 Node ≥22.12.0 并统一工具链；`NODE_DIR` 可指定运行时，否则自动下载。正式产物沿用 `build_config.py` 定义的 `<显示名>-<版本>-macos.dmg`，测试模式使用 `electron-test` / `electron-frontend-test` 专用名称。正式 macOS Release 只发布一个 ARM64 Electron DMG；x86_64 仅用于本地验证，不上传至正式 Release。保留后端原有选包策略，不阻止 pywebview 客户端选择首版 Electron。Electron 安装 helper 校验新包架构、签名和 Gatekeeper，暂存后退出 Electron、等待后端及端口释放、替换并重启；替换或启动命令失败回滚旧包。挂载卷内启动或测试包不支持自动更新，应先安装至可写目录。日志位于 `<数据目录>/logs/electron-update.log`。公共打包不包含信息收集协议及日活接入。
+   旧 pywebview 的 macOS helper 整体替换 App，不依赖新 App 的 UI 框架。需分别用实际支持的旧客户端验收 pywebview → Electron，以及 Electron → Electron；签名、公证、ARM64、BrowserAgent 和完整升级仍需产物验收。
 2. **CDP 无认证**：已声明为已接受风险（§5）。
 3. **Windows 强杀关闭**：与 Python 桌面一致；gateway 单例锁需依赖 PID 存活检查自愈。
 4. **发布验证**：内置 MCP 运行时（exe 以 ELECTRON_RUN_AS_NODE 跑 wrapper）尚未在真实打包版上跑过端到端浏览器 Agent 任务，发布前务必实测；README（electron 目录）末尾有完整手工验证矩阵。同样需实测：应用内更新走 `--desktop-install-update` helper（§4）。已实测通过的新机制：`DevToolsActivePort` 端口回读（真实打包版多轮）、启动性能基线（§7）、启动失败页与主进程日志落盘（真实打包版验证）。
@@ -315,7 +324,7 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 | `jiuwenswarm/channels/desktop/electron/preload.cjs` | contextBridge：jiuwenDesktop + pywebview 兼容层 |
 | `jiuwenswarm/channels/desktop/electron/target_mcp_wrapper.cjs` | 精确 TargetID 的 Playwright MCP 适配器 |
 | `jiuwenswarm/channels/desktop/electron/README.md` | 英文版设计说明 + 验证矩阵 + 风险声明 |
-| `scripts/build-electron-exe.ps1` / `.sh` | Electron 打包（Win/macOS） |
+| `scripts/build-electron-exe.ps1` / `scripts/build-electron-exe.sh` | Electron 打包（Win/macOS） |
 | `scripts/installer-electron.iss` | Electron Inno 安装器 |
 | `scripts/build-exe.ps1` / `jiuwenswarm.spec` / `installer.iss` | Python 打包（被替换方） |
 | `scripts/build_config.py` | 版本/产物名单一来源（`--emit-json` / `--emit-shell`） |

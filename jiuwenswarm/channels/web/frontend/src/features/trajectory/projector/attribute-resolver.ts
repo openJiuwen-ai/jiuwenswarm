@@ -99,6 +99,7 @@ export interface NormalizedTrajectoryAttributes {
   stepId?: string
   stepNumber?: bigint
   inferenceId?: string
+  inferenceInputObserved?: boolean
   trajectoryKind?: string
   requestPurpose?: string
   requestNumber?: bigint
@@ -547,6 +548,9 @@ function normalizeAttributeEntries(
   ]))
   assign(target, 'inferenceId', resolveString(raw, [
     OPENJIUWEN_ATTRIBUTES.inferenceId,
+  ]))
+  assign(target, 'inferenceInputObserved', resolveBoolean(raw, [
+    OPENJIUWEN_ATTRIBUTES.inferenceInputObserved,
   ]))
   assign(target, 'agentMode', resolveString(raw, [
     OPENJIUWEN_ATTRIBUTES.agentMode,

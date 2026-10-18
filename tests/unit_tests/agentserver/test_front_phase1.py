@@ -343,6 +343,165 @@ async def test_stale_disconnect_does_not_clear_newer_gateway_socket(
     assert backend.disconnected == [ws_b]
 
 
+class _RecordingPushBackend:
+    def __init__(self) -> None:
+        self.attached: list[object] = []
+        self.disconnected: list[object] = []
+
+    def attach_gateway_connection(self, ws: object, send_lock: asyncio.Lock) -> None:
+        _ = send_lock
+        self.attached.append(ws)
+
+    async def dispatch_parsed_request(self, ws, request, send_lock) -> None:
+        _ = ws, request, send_lock
+
+    async def on_gateway_disconnect(self, ws: object, remote: object) -> None:
+        _ = remote
+        self.disconnected.append(ws)
+
+
+def _push_handler(monkeypatch: pytest.MonkeyPatch, backend: _RecordingPushBackend):
+    async def _send(ws, payload) -> bool:
+        _ = ws, payload
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.front.connection.send_wire_payload",
+        _send,
+    )
+    from jiuwenswarm.server.front.connection import ConnectionHandler
+    from jiuwenswarm.server.front.event_forwarder import EventForwarder
+
+    readiness = Readiness()
+    admission = ExecutionAdmission(readiness)
+    admission.attach_backend(backend)
+    forwarder = EventForwarder()
+    handler = ConnectionHandler(
+        readiness,
+        MethodRouter(readiness, admission),
+        admission,
+        forwarder=forwarder,
+    )
+    return handler, forwarder
+
+
+async def _settle() -> None:
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_rpc_connection_never_takes_or_clears_push_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.front.protocol import CONNECTION_ROLE_HEADER, CONNECTION_ROLE_RPC
+
+    backend = _RecordingPushBackend()
+    handler, forwarder = _push_handler(monkeypatch, backend)
+    close_gw = asyncio.Event()
+    close_rpc = asyncio.Event()
+    gateway = _HoldCloseWs("gateway", close_gw)
+    rpc = _HoldCloseWs("rpc", close_rpc)
+    rpc.request_headers = {CONNECTION_ROLE_HEADER: CONNECTION_ROLE_RPC}
+
+    task_gw = asyncio.create_task(handler(gateway))
+    await _settle()
+    task_rpc = asyncio.create_task(handler(rpc))
+    await _settle()
+    assert handler.current_ws is gateway
+    assert forwarder.current_ws is gateway
+
+    close_rpc.set()
+    await task_rpc
+    assert handler.current_ws is gateway
+    assert forwarder.current_ws is gateway
+    assert backend.attached == [gateway]
+    assert backend.disconnected == []
+
+    close_gw.set()
+    await task_gw
+    assert backend.disconnected == [gateway]
+
+
+@pytest.mark.asyncio
+async def test_short_connection_close_hands_push_slot_back_to_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _RecordingPushBackend()
+    handler, forwarder = _push_handler(monkeypatch, backend)
+    close_gw = asyncio.Event()
+    close_short = asyncio.Event()
+    gateway = _HoldCloseWs("gateway", close_gw)
+    short = _HoldCloseWs("short", close_short)
+
+    task_gw = asyncio.create_task(handler(gateway))
+    await _settle()
+    task_short = asyncio.create_task(handler(short))
+    await _settle()
+    assert handler.current_ws is short
+
+    close_short.set()
+    await task_short
+    assert handler.current_ws is gateway
+    assert forwarder.current_ws is gateway
+    assert backend.attached == [gateway, short, gateway]
+    assert backend.disconnected == []
+
+    close_gw.set()
+    await task_gw
+    assert handler.current_ws is None
+    assert forwarder.current_ws is None
+    assert backend.disconnected == [gateway]
+
+
+def test_connection_role_reads_legacy_and_new_handshake_headers() -> None:
+    from types import SimpleNamespace
+
+    from jiuwenswarm.server.front.connection import connection_role
+    from jiuwenswarm.server.front.protocol import CONNECTION_ROLE_HEADER
+
+    legacy = SimpleNamespace(request_headers={CONNECTION_ROLE_HEADER: " RPC "})
+    modern = SimpleNamespace(
+        request=SimpleNamespace(headers={CONNECTION_ROLE_HEADER: "rpc"}),
+    )
+    assert connection_role(legacy) == "rpc"
+    assert connection_role(modern) == "rpc"
+    assert connection_role(SimpleNamespace()) == ""
+
+
+@pytest.mark.asyncio
+async def test_skill_rpc_client_declares_rpc_connection_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    import websockets.legacy.client as legacy_client
+
+    from jiuwenswarm.server.front.protocol import CONNECTION_ROLE_HEADER, CONNECTION_ROLE_RPC
+    from jiuwenswarm.server.runtime.skill.skills_multipart_http import _AgentServerSkillWsClient
+
+    captured: dict[str, object] = {}
+
+    class _AckWs:
+        async def recv(self) -> str:
+            return json.dumps({"type": "event", "event": "connection.ack"})
+
+        async def close(self) -> None:
+            return None
+
+    async def _connect(uri: str, **kwargs: object) -> _AckWs:
+        captured["uri"] = uri
+        captured.update(kwargs)
+        return _AckWs()
+
+    monkeypatch.setattr(legacy_client, "connect", _connect)
+    client = _AgentServerSkillWsClient()
+    await client.connect("ws://127.0.0.1:18092")
+    await client.disconnect()
+
+    assert (CONNECTION_ROLE_HEADER, CONNECTION_ROLE_RPC) in list(captured["extra_headers"])
+
+
 def _history_stream_request(**params) -> AgentRequest:
     return AgentRequest(
         request_id="req-hist",
@@ -713,13 +872,42 @@ def test_runtime_start_defaults_to_no_transport_bind() -> None:
     assert "async def start(self, *, bind_transport: bool = False)" in text
 
 
-def test_runtime_construct_is_off_front_loop() -> None:
+@pytest.mark.asyncio
+async def test_runtime_construct_is_off_front_process(monkeypatch) -> None:
     from pathlib import Path
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    import threading
+
+    from jiuwenswarm.extensions.manager import ExtensionManager
+    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.worker import runtime_backend, runtime_bootstrap
+    from jiuwenswarm.server.worker.telemetry import StartupTelemetry
 
     root = Path(__file__).resolve().parents[3]
-    text = (root / "jiuwenswarm/server/app_agentserver.py").read_text(encoding="utf-8")
-    assert "server = await asyncio.to_thread(_construct_runtime_server)" in text
-    assert "AgentWebSocketServer.get_instance(host=host, port=port)" in text
+    front = (root / "jiuwenswarm/server/app_agentserver.py").read_text(encoding="utf-8")
+    assert "AgentWebSocketServer" not in front
+    event_loop_thread = threading.get_ident()
+    calls = []
+    server = SimpleNamespace()
+
+    def construct(**kwargs):
+        calls.append((threading.get_ident(), kwargs))
+        return server
+
+    monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
+    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
+    monkeypatch.setattr(ExtensionManager, "load_all_extensions", AsyncMock())
+    monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", lambda: None)
+    owned = AsyncMock()
+    result = await runtime_bootstrap.construct_runtime_server(
+        "127.0.0.1", 18000, on_constructed=owned, telemetry=StartupTelemetry(),
+    )
+    assert result is server
+    assert calls == [(calls[0][0], {"host": "127.0.0.1", "port": 18000})]
+    assert calls[0][0] != event_loop_thread
+    owned.assert_awaited_once_with(server)
 
 
 @pytest.mark.asyncio
@@ -806,3 +994,78 @@ async def test_queued_stream_emits_runtime_warming(
     await admission.dispatch(object(), cancel, asyncio.Lock())
     await asyncio.wait_for(waiter, 1.0)
     assert any("runtime.warming" in str(item) for item in sent)
+
+
+class _RecoveryBackend:
+    """Backend stub whose ``recover_from_failed`` mimics RuntimeSupervisor."""
+
+    def __init__(self, readiness: Readiness, recovered: bool) -> None:
+        self._readiness = readiness
+        self._recovered = recovered
+        self.recover_calls = 0
+        self.dispatched: list[ReqMethod] = []
+
+    async def recover_from_failed(self) -> bool:
+        self.recover_calls += 1
+        if not self._recovered:
+            return False
+        self._readiness.mark_recovering("reload requested after runtime failure")
+        self._readiness.mark_agent_ready()
+        return True
+
+    async def dispatch_parsed_request(self, ws, request, send_lock) -> None:
+        _ = ws, send_lock
+        self.dispatched.append(request.req_method)
+
+
+@pytest.mark.asyncio
+async def test_admission_reload_recovers_failed_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    readiness = Readiness()
+    admission = ExecutionAdmission(readiness, wait_seconds=0.05)
+    backend = _RecoveryBackend(readiness, recovered=True)
+    admission.attach_backend(backend)
+
+    async def _send(ws, payload) -> bool:
+        _ = ws
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.front.admission.send_wire_payload", _send
+    )
+    readiness.mark_failed("boot failed")
+    await admission.dispatch(
+        object(), _request(ReqMethod.AGENT_RELOAD_CONFIG), asyncio.Lock()
+    )
+    assert backend.recover_calls == 1
+    assert backend.dispatched == [ReqMethod.AGENT_RELOAD_CONFIG]
+    assert readiness.state is ReadinessState.AGENT_READY
+
+
+@pytest.mark.asyncio
+async def test_admission_reload_failed_recovery_still_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    readiness = Readiness()
+    admission = ExecutionAdmission(readiness, wait_seconds=0.05)
+    backend = _RecoveryBackend(readiness, recovered=False)
+    admission.attach_backend(backend)
+    sent: list[object] = []
+
+    async def _send(ws, payload) -> bool:
+        _ = ws
+        sent.append(payload)
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.front.admission.send_wire_payload", _send
+    )
+    readiness.mark_failed("boot failed")
+    await admission.dispatch(
+        object(), _request(ReqMethod.AGENT_RELOAD_CONFIG), asyncio.Lock()
+    )
+    assert backend.recover_calls == 1
+    assert sent
+    assert "RUNTIME_FAILED" in str(sent[0])
+    assert readiness.state is ReadinessState.FAILED
