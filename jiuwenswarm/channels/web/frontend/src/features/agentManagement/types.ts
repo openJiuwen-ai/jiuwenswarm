@@ -90,7 +90,9 @@ export type AgentGroupCatalogItem = {
  * Identity used by the chat surface. `name` is the session binding key; `id`
  * remains the catalog/asset identity used by avatar rendering.
  */
-export type AgentGroupIdentity = Pick<AgentGroupCatalogItem, 'id' | 'name' | 'displayName' | 'avatarUrl'>;
+export type AgentGroupIdentity = Pick<AgentGroupCatalogItem, 'id' | 'name' | 'displayName' | 'avatarUrl'> & {
+  displayNameI18n?: { zh: string; en: string };
+};
 
 export type AgentGroupDetail = AgentGroupCatalogItem & {
   version: string;

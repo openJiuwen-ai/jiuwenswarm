@@ -100,3 +100,42 @@ test('an AgentGroup display identity survives catalog removal for the session', 
     useSessionStore.getState().removeRuntime(sessionId);
   }
 });
+
+test('an AgentGroup display identity is restored from session metadata after restart', () => {
+  const sessionId = 'agent-group-persisted-display-identity';
+  const store = useSessionStore.getState();
+  const session = {
+    session_id: sessionId,
+    mode: 'team',
+    agent_group_name: 'group-a',
+    team_group_identity: {
+      id: 'hub-asset-123',
+      name: 'group-a',
+      display_name: '中文专家团',
+      display_name_i18n: { zh: '中文专家团', en: 'Expert Team' },
+      avatar: 'https://example.test/group.png',
+    },
+  };
+  try {
+    store.setCurrentSession(session);
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId)?.teamGroupIdentity, {
+      id: 'hub-asset-123',
+      name: 'group-a',
+      displayName: '中文专家团',
+      displayNameI18n: { zh: '中文专家团', en: 'Expert Team' },
+      avatarUrl: 'https://example.test/group.png',
+    });
+
+    // Simulate a browser/app restart: all frontend runtime state is gone, but
+    // the backend metadata snapshot remains after the package is uninstalled.
+    store.removeRuntime(sessionId);
+    store.setCurrentSession(session);
+    assert.equal(
+      useSessionStore.getState().getRuntime(sessionId)?.teamGroupIdentity?.displayName,
+      '中文专家团',
+    );
+  } finally {
+    useSessionStore.getState().setCurrentSession(null);
+    useSessionStore.getState().removeRuntime(sessionId);
+  }
+});

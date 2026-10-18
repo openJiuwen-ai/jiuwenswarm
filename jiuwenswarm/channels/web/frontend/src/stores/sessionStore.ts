@@ -57,6 +57,7 @@ import {
   normalizeTeamLeaderIdentity,
   type TeamLeaderIdentity,
 } from '../features/teamLeaderIdentity';
+import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
 
 const MODE_STORAGE_KEY = 'jiuwenclaw_mode';
 const MODEL_STORAGE_KEY = 'jiuwenclaw_selected_model';
@@ -968,6 +969,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const baseRuntime = existingRuntime || createEmptyRuntime(sessionId);
       const hasGroupBinding = Object.prototype.hasOwnProperty.call(normalizedSession, 'agent_group_name');
       const hasTeamLeaderIdentity = Object.prototype.hasOwnProperty.call(normalizedSession, 'team_leader_identity');
+      const hasTeamGroupIdentity = Object.prototype.hasOwnProperty.call(normalizedSession, 'team_group_identity');
       const sessionGroupBinding = typeof normalizedSession.agent_group_name === 'string' && normalizedSession.agent_group_name.trim()
         ? normalizedSession.agent_group_name.trim()
         : null;
@@ -987,6 +989,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         teamLeaderIdentity: hasTeamLeaderIdentity
           ? normalizeTeamLeaderIdentity(normalizedSession.team_leader_identity)
           : baseRuntime.teamLeaderIdentity,
+        teamGroupIdentity: hasTeamGroupIdentity
+          ? normalizeTeamGroupIdentity(normalizedSession.team_group_identity)
+          : baseRuntime.teamGroupIdentity,
       };
       return {
         currentSession: normalizedSession,

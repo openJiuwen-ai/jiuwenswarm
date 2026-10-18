@@ -13,7 +13,9 @@ export function resolveOrganizationTeamIdentity(
   const groupName = team?.agent_group_name?.trim();
   if (!groupName) return null;
   const group = groups.find((item) => item.name === groupName || item.id === groupName);
-  return group ? { id: group.id, displayName: group.displayName, avatarUrl: group.avatarUrl } : null;
+  return group
+    ? { id: group.id, name: group.name, displayName: group.displayName, avatarUrl: group.avatarUrl }
+    : null;
 }
 
 /** The organization panel loads the installed directory only while it is displaying an organization. */
