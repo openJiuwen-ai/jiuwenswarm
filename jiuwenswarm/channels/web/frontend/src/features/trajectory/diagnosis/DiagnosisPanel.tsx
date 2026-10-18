@@ -23,6 +23,7 @@ import {
   mergeTtseResults,
   msRangeToUnixNano,
   summaryOf,
+  ttseRootCauses,
   upsertSummary,
 } from './diagnosisState';
 import { formatElapsed } from './diagnosisTimeSelection';
@@ -284,16 +285,16 @@ export const DiagnosisPanel = memo(function DiagnosisPanel({
     setNotice({ kind: 'info', text: t('trajectory.diagnosis.filled') });
   }, [t]);
 
-  const triggerTtse = useCallback(async (signalId: string) => {
+  const triggerTtse = useCallback(async (causeId: string) => {
     const current = recordRef.current;
     if (current === null) return;
-    setTriggeringTtse(keys => new Set(keys).add(signalId));
+    setTriggeringTtse(keys => new Set(keys).add(causeId));
     try {
-      const results = await triggerDiagnosisTtse(sessionRef.current, current.diagnosis_id, [signalId]);
+      const results = await triggerDiagnosisTtse(sessionRef.current, current.diagnosis_id, [causeId]);
       setRecord(latest => (latest !== null && latest.diagnosis_id === current.diagnosis_id
         ? mergeTtseResults(latest, results)
         : latest));
-      const result = results[signalId];
+      const result = results[causeId];
       if (result !== undefined) {
         setNotice({
           kind: result.result === 'failed' ? 'error' : 'info',
@@ -305,7 +306,7 @@ export const DiagnosisPanel = memo(function DiagnosisPanel({
     } finally {
       setTriggeringTtse((keys) => {
         const next = new Set(keys);
-        next.delete(signalId);
+        next.delete(causeId);
         return next;
       });
     }
@@ -519,7 +520,7 @@ interface DiagnosisRecordViewProps {
   statusBadge: (status: DiagnosisSummary['status']) => ReactNode;
   onFocusCause: (causeId: string) => void;
   onFill: (text: string) => void;
-  onTriggerTtse: (signalId: string) => void;
+  onTriggerTtse: (causeId: string) => void;
 }
 
 function DiagnosisRecordView({
@@ -647,19 +648,21 @@ function DiagnosisRecordView({
               )}
             </div>
           ))}
-          {suggestions.ttse.map((signal) => {
-            const triggered = record.ttse_trigger[signal.id];
-            const triggering = triggeringTtse.has(signal.id);
+          {ttseRootCauses(record).map((cause) => {
+            const triggered = record.ttse_trigger[cause.id];
+            const triggering = triggeringTtse.has(cause.id);
             return (
-              <div className={css.suggestion} key={signal.id} data-testid="trajectory-diagnosis-ttse">
-                <strong>{t('trajectory.diagnosis.ttse')} · {t(`trajectory.diagnosis.ttseOutcome.${signal.outcome}`)}</strong>
-                {signal.reason === '' ? null : <p className={css.suggestionText}>{signal.reason}</p>}
+              <div className={css.suggestion} key={cause.id} data-testid="trajectory-diagnosis-ttse">
+                <strong>
+                  {t('trajectory.diagnosis.ttse')} · {t(`trajectory.diagnosis.ttseOutcome.${cause.category.slice('ttse_'.length)}`)}
+                </strong>
+                {cause.summary === '' ? null : <p className={css.suggestionText}>{cause.summary}</p>}
                 <div className={css.row}>
                   <button
                     type="button"
                     className={css.button}
                     disabled={triggering || (triggered !== undefined && triggered.result !== 'failed')}
-                    onClick={() => onTriggerTtse(signal.id)}
+                    onClick={() => onTriggerTtse(cause.id)}
                     data-testid="trajectory-diagnosis-ttse-trigger"
                   >
                     {triggering ? t('trajectory.diagnosis.triggeringTtse') : t('trajectory.diagnosis.triggerTtse')}

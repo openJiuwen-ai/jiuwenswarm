@@ -51,6 +51,9 @@ def test_explicit_score_keeps_the_outcome_authoritative() -> None:
     # Out-of-band scores are pulled into the partial band, never into success or fail.
     assert explicit_score("partial", 0.0, 0.7) == pytest.approx(0.35)
     assert explicit_score("partial", 0.9, 0.7) == pytest.approx(0.35)
+    # A success always lands at or above the threshold, whatever score came with it.
+    assert explicit_score("success", 1.0, 0.999) == 1.0
+    assert explicit_score("success", 0.5, 0.7) == pytest.approx(0.7)
 
 
 @pytest.mark.asyncio

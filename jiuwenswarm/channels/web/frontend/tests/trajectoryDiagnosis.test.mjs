@@ -9,11 +9,13 @@ import {
   canSubmitDiagnosis,
   msRangeToUnixNano,
   highlightKeysOf,
+  isTtseCategory,
   laneHighlightKeys,
   mergeTtseResults,
   resolveStepIds,
   stepRefKey,
   summaryOf,
+  ttseRootCauses,
   upsertSummary,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisState.mjs';
 import {
@@ -45,7 +47,6 @@ function record(overrides = {}) {
     session_id: 's1',
     seq: 0,
     stages: [],
-    focus_ranges: [],
     root_causes: [],
     ttse_trigger: {},
     ...overrides,
@@ -124,15 +125,14 @@ test('upsertSummary keeps newest ordinal first and replaces by id', () => {
   assert.equal(updated.find(item => item.ordinal === 1).status, 'completed');
 });
 
-test('highlightKeysOf collects root-cause and focus refs, or a chosen subset', () => {
+test('highlightKeysOf collects root-cause refs, or a chosen subset', () => {
   const current = record({
     root_causes: [
       { id: 'rc-1', category: 'other', subject_id: 'main', refs: [ref('1')], summary: '', evidence: '', confidence: 0.5 },
       { id: 'rc-2', category: 'other', subject_id: 'main', refs: [ref('2')], summary: '', evidence: '', confidence: 0.5 },
     ],
-    focus_ranges: [{ subject_id: 'main', refs: [ref('3')], start_unix_nano: '1', end_unix_nano: '2' }],
   });
-  assert.deepEqual([...highlightKeysOf(current)].sort(), [ref('1'), ref('2'), ref('3')].map(stepRefKey).sort());
+  assert.deepEqual([...highlightKeysOf(current)].sort(), [ref('1'), ref('2')].map(stepRefKey).sort());
   assert.deepEqual([...highlightKeysOf(current, ['rc-2'])], [stepRefKey(ref('2'))]);
   assert.equal(highlightKeysOf(null).size, 0);
 });
@@ -143,7 +143,6 @@ test('laneHighlightKeys stays empty until a root cause is focused', () => {
       { id: 'rc-1', category: 'other', subject_id: 'main', refs: [ref('1')], summary: '', evidence: '', confidence: 0.5 },
       { id: 'rc-2', category: 'other', subject_id: 'main', refs: [ref('2')], summary: '', evidence: '', confidence: 0.5 },
     ],
-    focus_ranges: [{ subject_id: 'main', refs: [ref('3')], start_unix_nano: '1', end_unix_nano: '2' }],
   });
   assert.equal(laneHighlightKeys(current, null).size, 0);
   assert.equal(laneHighlightKeys(current, []).size, 0);
@@ -162,6 +161,19 @@ test('mergeTtseResults only touches ttse_trigger', () => {
   const merged = mergeTtseResults(record(), { 'tt-1': { result: 'triggered', triggered_at: 'x' } });
   assert.equal(merged.ttse_trigger['tt-1'].result, 'triggered');
   assert.equal(merged.status, 'running');
+});
+
+test('ttseRootCauses keeps only the experience categories', () => {
+  const cause = (id, category) => ({ id, category, subject_id: 'main', refs: [], summary: id, evidence: '' });
+  const found = ttseRootCauses(
+    record({
+      root_causes: [cause('a', 'skill_defect'), cause('b', 'ttse_partial'), cause('c', 'tool_or_env')],
+    }),
+  );
+  assert.deepEqual(found.map(item => item.id), ['b']);
+  assert.equal(isTtseCategory('ttse_success'), true);
+  assert.equal(isTtseCategory('ttse_fail'), true);
+  assert.equal(isTtseCategory('other'), false);
 });
 
 test('msRangeToUnixNano widens the end to the whole last millisecond', () => {

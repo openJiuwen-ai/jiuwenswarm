@@ -20,6 +20,7 @@ from jiuwenswarm.diagnosis.engine import (
 )
 from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel
 from jiuwenswarm.diagnosis.models import (
+    TTSE_ROOT_CAUSE_CATEGORIES,
     ArtifactFix,
     DiagnosisHostError,
     DiagnosisRunRequest,
@@ -34,8 +35,6 @@ from jiuwenswarm.diagnosis.models import (
     SelectionScope,
     SkillSuggestion,
     StepRef,
-    TtseSignal,
-    TtseSignalOutcome,
 )
 from jiuwenswarm.diagnosis.snapshot import ScopeIndex, load_trajectory_snapshot, resolve_ranges
 from jiuwenswarm.diagnosis.service import (
@@ -218,43 +217,24 @@ def _ref(index: int, *, node: bool = True) -> StepRef:
     )
 
 
-def _signal(
-    signal_id: str,
-    cause_id: str,
-    *,
-    subject: str = "main",
-    start: str = "100",
-    end: str = "400",
-) -> TtseSignal:
-    return TtseSignal(
-        id=signal_id,
-        outcome=TtseSignalOutcome.FAIL,
-        reason="r",
-        subject_id=subject,
-        start_unix_nano=start,
-        end_unix_nano=end,
-        root_cause_ids=[cause_id],
-    )
-
-
 def _raw_result() -> EngineResult:
     in_scope = RootCause(id="rc-1", category=RootCauseCategory.TOOL_OR_ENV, subject_id="main", refs=[_ref(2)], summary="a")
     outside = RootCause(id="rc-2", category=RootCauseCategory.OTHER, subject_id="main", refs=[_ref(99)], summary="b")
-    ttse_gap = RootCause(id="rc-3", category=RootCauseCategory.TTSE_GAP, subject_id="main", refs=[_ref(1)], summary="c")
+    ttse_cause = RootCause(
+        id="rc-3",
+        category=RootCauseCategory.TTSE_FAIL,
+        subject_id="main",
+        refs=[_ref(1)],
+        summary="c",
+    )
     skill_gap = RootCause(id="rc-4", category=RootCauseCategory.SKILL_DEFECT, subject_id="main", refs=[_ref(3), _ref(99)], summary="d")
     return EngineResult(
-        root_causes=[in_scope, outside, ttse_gap, skill_gap],
+        root_causes=[in_scope, outside, ttse_cause, skill_gap],
         suggestions=DiagnosisSuggestions(
             artifact_fix=ArtifactFix(instruction="fix it", root_cause_ids=["rc-1", "rc-2"]),
             skills=[
                 SkillSuggestion(id="sk-1", skill_name="s", change_summary="c", message="m", root_cause_ids=["rc-4"]),
                 SkillSuggestion(id="sk-2", skill_name="s", change_summary="c", message="m", root_cause_ids=["rc-2"]),
-            ],
-            ttse=[
-                _signal("tt-1", "rc-1", start="50", end="9999"),
-                _signal("tt-2", "rc-2"),
-                _signal("tt-3", "rc-1", start="5000", end="6000"),
-                _signal("tt-4", "rc-1", subject="ghost"),
             ],
         ),
     )
@@ -270,10 +250,6 @@ async def test_filter_drops_out_of_scope_refs_and_unreferenced_root_causes() -> 
     assert filtered.suggestions.artifact_fix is not None
     assert filtered.suggestions.artifact_fix.root_cause_ids == ["rc-1"]
     assert [item.id for item in filtered.suggestions.skills] == ["sk-1"]
-    # tt-2 loses its root cause, tt-3 lies outside the range, tt-4 names a subject without a range.
-    assert [item.id for item in filtered.suggestions.ttse] == ["tt-1"]
-    # The stretch is clamped to the diagnosed range.
-    assert (filtered.suggestions.ttse[0].start_unix_nano, filtered.suggestions.ttse[0].end_unix_nano) == ("100", "400")
 
 
 @pytest.mark.asyncio
@@ -283,16 +259,14 @@ async def test_filter_agent_code_keeps_artifact_fix_only() -> None:
     assert {cause.category for cause in filtered.root_causes} == {RootCauseCategory.TOOL_OR_ENV}
     assert filtered.suggestions.artifact_fix is not None
     assert filtered.suggestions.skills == []
-    assert filtered.suggestions.ttse == []
 
 
 @pytest.mark.asyncio
 async def test_filter_team_keeps_skills_but_not_ttse() -> None:
     filtered = filter_engine_result(_raw_result(), index=await _index(), profile=ModeProfile.TEAM)
 
-    assert RootCauseCategory.TTSE_GAP not in {cause.category for cause in filtered.root_causes}
+    assert not {cause.category for cause in filtered.root_causes} & TTSE_ROOT_CAUSE_CATEGORIES
     assert [item.id for item in filtered.suggestions.skills] == ["sk-1"]
-    assert filtered.suggestions.ttse == []
 
 
 @pytest.mark.asyncio
@@ -341,7 +315,14 @@ async def test_start_runs_to_completion_with_ordered_events(tmp_path: Path) -> N
     assert [stage.stage_id for stage in finished.stages] == ["evidence", "attribution", "suggestions"]
     assert finished.root_causes and finished.root_causes[0].category is RootCauseCategory.TOOL_OR_ENV
     assert finished.suggestions.artifact_fix is not None
-    assert finished.suggestions.skills and finished.suggestions.ttse
+    assert finished.suggestions.skills
+    assert [cause.category for cause in finished.root_causes] == [
+        RootCauseCategory.TOOL_OR_ENV,
+        RootCauseCategory.TTSE_FAIL,
+    ]
+    assert finished.input.resolved_ranges == [
+        SelectionRange(subject_id="main", start_unix_nano="100", end_unix_nano="400"),
+    ]
     assert finished.root_causes[0].refs[0].node_id == "main:1"
     assert finished.evidence.artifact_eval is not None
 
@@ -363,7 +344,7 @@ async def test_agent_code_session_gets_no_skill_or_ttse_suggestions(tmp_path: Pa
     assert finished.input.mode_profile is ModeProfile.AGENT_CODE
     assert finished.suggestions.artifact_fix is not None
     assert finished.suggestions.skills == []
-    assert finished.suggestions.ttse == []
+    assert not {cause.category for cause in finished.root_causes} & TTSE_ROOT_CAUSE_CATEGORIES
 
 
 @pytest.mark.asyncio
@@ -644,7 +625,7 @@ async def test_team_skill_suggestions_are_blocked_when_the_leader_lacks_the_skil
     assert finished.suggestions.skills
     assert all(skill.selectable is False for skill in finished.suggestions.skills)
     assert finished.suggestions.skills[0].blocked_reason == "skill_not_installed_for_leader"
-    assert finished.suggestions.ttse == []
+    assert not {cause.category for cause in finished.root_causes} & TTSE_ROOT_CAUSE_CATEGORIES
 
 
 # ── TTSE ────────────────────────────────────────────────────────────────────
@@ -692,26 +673,15 @@ async def _completed(tmp_path: Path, forward: _Forward, **kwargs: Any) -> tuple[
 
 
 @pytest.mark.asyncio
-async def test_stub_ttse_signal_carries_no_experience_text(tmp_path: Path) -> None:
+async def test_stub_experience_root_cause_is_anchored_and_carries_no_score(tmp_path: Path) -> None:
     service, diagnosis_id = await _completed(tmp_path, _Forward())
 
-    signal = service.get_record(SESSION_ID, diagnosis_id).suggestions.ttse[0]
+    cause = next(item for item in service.get_record(SESSION_ID, diagnosis_id).root_causes if item.id == "tt-1")
 
-    assert signal.id == "tt-1"
-    assert signal.outcome.value == "fail"
-    assert signal.subject_id == "main"
-    assert (signal.start_unix_nano, signal.end_unix_nano) == ("100", "400")
-    assert set(signal.model_dump()) == {
-        "id",
-        "outcome",
-        "score",
-        "reason",
-        "subject_id",
-        "start_unix_nano",
-        "end_unix_nano",
-        "root_cause_ids",
-        "confidence",
-    }
+    assert cause.category is RootCauseCategory.TTSE_FAIL
+    assert cause.subject_id == "main"
+    assert cause.refs and all(ref.node_id for ref in cause.refs)
+    assert set(cause.model_dump()) == {"id", "category", "subject_id", "refs", "summary", "evidence", "confidence"}
 
 
 @pytest.mark.asyncio
@@ -737,7 +707,49 @@ async def test_trigger_ttse_hands_the_conversation_to_ttse_once(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_trigger_ttse_retries_a_failed_signal(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("category", "outcome", "score"),
+    [
+        (RootCauseCategory.TTSE_SUCCESS, "success", 1.0),
+        (RootCauseCategory.TTSE_PARTIAL, "partial", 0.5),
+        (RootCauseCategory.TTSE_FAIL, "fail", 0.0),
+    ],
+)
+@pytest.mark.asyncio
+async def test_trigger_ttse_maps_the_category_to_outcome_and_score(
+    tmp_path: Path,
+    category: RootCauseCategory,
+    outcome: str,
+    score: float,
+) -> None:
+    forward = _Forward()
+    service, diagnosis_id = await _completed(tmp_path, forward)
+    record = service.get_record(SESSION_ID, diagnosis_id)
+    next(item for item in record.root_causes if item.id == "tt-1").category = category
+    DiagnosisStore(tmp_path).save(record)
+
+    await service.trigger_ttse(SESSION_ID, diagnosis_id, ["tt-1"])
+
+    payload = forward.calls[0][1][0]
+    assert (payload["outcome"], payload["score"]) == (outcome, score)
+
+
+@pytest.mark.asyncio
+async def test_trigger_ttse_resolves_the_scope_for_records_without_stored_ranges(tmp_path: Path) -> None:
+    forward = _Forward()
+    service, diagnosis_id = await _completed(tmp_path, forward)
+    record = service.get_record(SESSION_ID, diagnosis_id)
+    record.input.resolved_ranges = []
+    DiagnosisStore(tmp_path).save(record)
+
+    results = await service.trigger_ttse(SESSION_ID, diagnosis_id, ["tt-1"])
+
+    assert results["tt-1"].result.value == "triggered"
+    assert forward.calls[0][1][0]["task_query"] == "fix the build"
+
+
+@pytest.mark.asyncio
+async def test_trigger_ttse_retries_a_failed_root_cause(tmp_path: Path) -> None:
     failing = _Forward((True, {"results": {"tt-1": {"result": "failed", "message": "disabled"}}}))
     service, diagnosis_id = await _completed(tmp_path, failing)
 
@@ -761,12 +773,11 @@ async def test_trigger_ttse_marks_missing_results_as_failed(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_trigger_ttse_fails_a_signal_whose_trajectory_has_no_conversation(tmp_path: Path) -> None:
+async def test_trigger_ttse_fails_a_root_cause_whose_trajectory_has_no_conversation(tmp_path: Path) -> None:
     forward = _Forward()
     service, diagnosis_id = await _completed(tmp_path, forward)
     record = service.get_record(SESSION_ID, diagnosis_id)
-    record.suggestions.ttse[0].start_unix_nano = "5000"
-    record.suggestions.ttse[0].end_unix_nano = "6000"
+    record.input.resolved_ranges = [SelectionRange(subject_id="main", start_unix_nano="5000", end_unix_nano="6000")]
     DiagnosisStore(tmp_path).save(record)
 
     results = await service.trigger_ttse(SESSION_ID, diagnosis_id, ["tt-1"])
@@ -800,12 +811,17 @@ async def test_trigger_ttse_keeps_the_worker_ttse_error_code(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_trigger_ttse_rejects_unknown_signals_and_other_modes(tmp_path: Path) -> None:
+async def test_trigger_ttse_rejects_unknown_root_causes_and_other_modes(tmp_path: Path) -> None:
     forward = _Forward()
     service, diagnosis_id = await _completed(tmp_path, forward)
     with pytest.raises(DiagnosisHostError) as unknown:
         await service.trigger_ttse(SESSION_ID, diagnosis_id, ["nope"])
     assert unknown.value.code == "BAD_REQUEST"
+    # A root cause that is not an experience category cannot be triggered either.
+    with pytest.raises(DiagnosisHostError) as not_experience:
+        await service.trigger_ttse(SESSION_ID, diagnosis_id, ["rc-1"])
+    assert not_experience.value.code == "BAD_REQUEST"
+    assert forward.calls == []
 
     code_service, code_id = await _completed(tmp_path / "code", _Forward(), mode="agent.code.normal")
     with pytest.raises(DiagnosisHostError) as unsupported:

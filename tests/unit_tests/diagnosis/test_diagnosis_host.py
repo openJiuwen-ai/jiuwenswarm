@@ -117,9 +117,9 @@ async def test_run_get_list_ttse_trigger_and_delete_found_trip(tmp_path: Path) -
     diagnosis_id = started.payload["diagnosis_id"]
     finished = await _wait_finished(host, diagnosis_id)
     listing = await host.handle(_request(ReqMethod.DIAGNOSIS_LIST))
-    signal_id = finished["suggestions"]["ttse"][0]["id"]
+    signal_id = next(item["id"] for item in finished["root_causes"] if item["category"].startswith("ttse_"))
     triggered = await host.handle(
-        _request(ReqMethod.DIAGNOSIS_TTSE_TRIGGER, diagnosis_id=diagnosis_id, request={"signal_ids": [signal_id]}),
+        _request(ReqMethod.DIAGNOSIS_TTSE_TRIGGER, diagnosis_id=diagnosis_id, request={"root_cause_ids": [signal_id]}),
     )
     deleted = await host.handle(_request(ReqMethod.DIAGNOSIS_DELETE, diagnosis_id=diagnosis_id))
     missing = await host.handle(_request(ReqMethod.DIAGNOSIS_GET, diagnosis_id=diagnosis_id))
@@ -138,7 +138,7 @@ async def test_errors_become_error_payloads(tmp_path: Path) -> None:
     not_object = await host.handle(_request(ReqMethod.DIAGNOSIS_RUN, request=["x"]))
     invalid = await host.handle(_request(ReqMethod.DIAGNOSIS_RUN, request={"scope": {"kind": "selection", "ranges": []}}))
     no_signals = await host.handle(
-        _request(ReqMethod.DIAGNOSIS_TTSE_TRIGGER, diagnosis_id="dg_0123456789abcdef", request={"signal_ids": []}),
+        _request(ReqMethod.DIAGNOSIS_TTSE_TRIGGER, diagnosis_id="dg_0123456789abcdef", request={"root_cause_ids": []}),
     )
     other_session = await host.handle(
         AgentRequest(
@@ -212,12 +212,12 @@ async def test_production_wiring_pushes_to_the_gateway_and_triggers_ttse(
 
     started = await host.handle(_request(ReqMethod.DIAGNOSIS_RUN, request=_FULL))
     finished = await _wait_finished(host, started.payload["diagnosis_id"])
-    signal_id = finished["suggestions"]["ttse"][0]["id"]
+    signal_id = next(item["id"] for item in finished["root_causes"] if item["category"].startswith("ttse_"))
     triggered = await host.handle(
         _request(
             ReqMethod.DIAGNOSIS_TTSE_TRIGGER,
             diagnosis_id=started.payload["diagnosis_id"],
-            request={"signal_ids": [signal_id]},
+            request={"root_cause_ids": [signal_id]},
         ),
     )
 

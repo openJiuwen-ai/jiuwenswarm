@@ -1097,7 +1097,9 @@
       "rewardRaw": "原始 JSON",
       "category": {
         "skill_defect": "Skill 缺陷",
-        "ttse_gap": "经验缺口",
+        "ttse_success": "经验（任务成功）",
+        "ttse_partial": "经验（部分完成）",
+        "ttse_fail": "经验（任务失败）",
         "tool_or_env": "工具或环境",
         "model_capability": "模型能力",
         "requirement_unclear": "需求不明确",
@@ -1108,12 +1110,13 @@
       "suggestions": "优化出口",
       "artifactFix": "产物修复建议",
       "skills": "Skill 进化建议",
-      "ttse": "TTSE 经验生成信号",
+      "ttse": "TTSE 经验生成",
       "fillInput": "填入输入框",
       "filled": "已填入对话输入框，请切换到“对话”页确认后发送。",
       "triggerTtse": "触发经验生成",
       "triggeringTtse": "触发中…",
       "ttseOutcome": {
+        "success": "任务成功",
         "fail": "任务失败",
         "partial": "部分完成"
       },

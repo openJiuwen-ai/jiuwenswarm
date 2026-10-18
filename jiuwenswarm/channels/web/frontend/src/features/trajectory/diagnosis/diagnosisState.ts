@@ -10,6 +10,8 @@ import type {
   DiagnosisStage,
   DiagnosisStatusEvent,
   DiagnosisSummary,
+  RootCause,
+  RootCauseCategory,
   StepRef,
   TtseTriggerResult,
 } from './diagnosisTypes';
@@ -29,8 +31,8 @@ export function stepRefKey(ref: Pick<StepRef, 'trace_id' | 'span_id'>): string {
 /**
  * Return the span keys named by a diagnosis.
  *
- * Without `rootCauseIds`, this is every root-cause ref plus the diagnosed
- * focus range. Lane emphasis does not use that set: see `laneHighlightKeys`.
+ * Without `rootCauseIds`, this is every root-cause ref. Lane emphasis does
+ * not use that set: see `laneHighlightKeys`.
  */
 export function highlightKeysOf(record: DiagnosisRecord | null, rootCauseIds?: readonly string[]): Set<string> {
   const keys = new Set<string>();
@@ -40,19 +42,14 @@ export function highlightKeysOf(record: DiagnosisRecord | null, rootCauseIds?: r
     if (wanted !== null && !wanted.has(cause.id)) continue;
     for (const ref of cause.refs) keys.add(stepRefKey(ref));
   }
-  if (wanted === null) {
-    for (const range of record.focus_ranges) {
-      for (const ref of range.refs) keys.add(stepRefKey(ref));
-    }
-  }
   return keys;
 }
 
 /**
  * Span keys to emphasise on the trajectory lanes.
  *
- * Empty until the user focuses root causes. Applying the diagnosis's own
- * focus range on run would fade every other bar.
+ * Empty until the user focuses root causes. Highlighting every diagnosed
+ * step as soon as a run finishes would fade the rest of the lane.
  */
 export function laneHighlightKeys(
   record: DiagnosisRecord | null,
@@ -145,6 +142,16 @@ export function summaryOf(record: DiagnosisRecord): DiagnosisSummary {
     artifact_eval_applied: record.artifact_eval_applied,
     headline: record.headline,
   };
+}
+
+/** Whether a root cause category reports the TTSE experience verdict. */
+export function isTtseCategory(category: RootCauseCategory): boolean {
+  return category === 'ttse_success' || category === 'ttse_partial' || category === 'ttse_fail';
+}
+
+/** The experience root causes of a record, the ones TTSE can be triggered with. */
+export function ttseRootCauses(record: DiagnosisRecord): RootCause[] {
+  return record.root_causes.filter(cause => isTtseCategory(cause.category));
 }
 
 /** Merge TTSE trigger results into a record without touching other fields. */

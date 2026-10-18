@@ -157,16 +157,16 @@ async def test_run_poll_trigger_ttse_and_delete(client: httpx.AsyncClient) -> No
     finished = await _wait_completed(client, record["diagnosis_id"])
     assert finished["status"] == "completed"
     assert finished["root_causes"]
-    assert finished["suggestions"]["ttse"]
+    assert "ttse" not in finished["suggestions"]
 
     listing = (await client.get(_BASE)).json()
     assert [item["diagnosis_id"] for item in listing["items"]] == [record["diagnosis_id"]]
     assert listing["items"][0]["status"] == "completed"
 
-    signal_id = finished["suggestions"]["ttse"][0]["id"]
-    triggered = await client.post(f"{_BASE}/{record['diagnosis_id']}/ttse", json={"signal_ids": [signal_id]})
+    cause_id = next(item["id"] for item in finished["root_causes"] if item["category"].startswith("ttse_"))
+    triggered = await client.post(f"{_BASE}/{record['diagnosis_id']}/ttse", json={"root_cause_ids": [cause_id]})
     assert triggered.status_code == 200
-    assert triggered.json()["results"][signal_id]["result"] == "triggered"
+    assert triggered.json()["results"][cause_id]["result"] == "triggered"
 
     deleted = await client.delete(f"{_BASE}/{record['diagnosis_id']}")
     assert deleted.status_code == 204
@@ -188,9 +188,9 @@ async def test_validation_errors_use_the_contract_body(client: httpx.AsyncClient
         },
     )
     too_long = await client.post(_BASE, json={**_FULL, "user_note": "x" * 2001})
-    no_signals = await client.post(f"{_BASE}/dg_0123456789abcdef/ttse", json={"signal_ids": []})
+    no_causes = await client.post(f"{_BASE}/dg_0123456789abcdef/ttse", json={"root_cause_ids": []})
 
-    for response in (not_json, bad_scope, bad_time, too_long, no_signals):
+    for response in (not_json, bad_scope, bad_time, too_long, no_causes):
         assert response.status_code == 400
         assert response.json()["code"] == "BAD_REQUEST"
         assert set(response.json()) == {"error", "code"}
@@ -272,10 +272,10 @@ async def test_ttse_before_completion_of_for_code_mode_answers_409(tmp_path: Pat
         finished = await _wait_completed(http, record["diagnosis_id"])
         response = await http.post(
             f"{_BASE}/{record['diagnosis_id']}/ttse",
-            json={"signal_ids": ["tt-1"]},
+            json={"root_cause_ids": ["tt-1"]},
         )
 
-    assert finished["suggestions"].get("ttse", []) == []
+    assert not [item for item in finished["root_causes"] if item["category"].startswith("ttse_")]
     assert (response.status_code, response.json()["code"]) == (409, "TTSE_NOT_SUPPORTED")
 
 
@@ -296,7 +296,7 @@ async def test_proxy_forwards_method_session_and_body() -> None:
         await http.get(f"{_BASE}/dg_1")
         await http.post(f"{_BASE}/dg_1/cancel")
         deleted = await http.delete(f"{_BASE}/dg_1")
-        await http.post(f"{_BASE}/dg_1/ttse", json={"signal_ids": ["a"]})
+        await http.post(f"{_BASE}/dg_1/ttse", json={"root_cause_ids": ["a"]})
 
     assert deleted.status_code == 204
     assert calls == [
@@ -305,7 +305,7 @@ async def test_proxy_forwards_method_session_and_body() -> None:
         (ReqMethod.DIAGNOSIS_GET, SESSION_ID, {"diagnosis_id": "dg_1"}),
         (ReqMethod.DIAGNOSIS_CANCEL, SESSION_ID, {"diagnosis_id": "dg_1"}),
         (ReqMethod.DIAGNOSIS_DELETE, SESSION_ID, {"diagnosis_id": "dg_1"}),
-        (ReqMethod.DIAGNOSIS_TTSE_TRIGGER, SESSION_ID, {"diagnosis_id": "dg_1", "request": {"signal_ids": ["a"]}}),
+        (ReqMethod.DIAGNOSIS_TTSE_TRIGGER, SESSION_ID, {"diagnosis_id": "dg_1", "request": {"root_cause_ids": ["a"]}}),
     ]
 
 

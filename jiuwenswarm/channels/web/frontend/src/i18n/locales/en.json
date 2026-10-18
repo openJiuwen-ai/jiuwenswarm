@@ -1113,7 +1113,9 @@
       "rewardRaw": "Raw JSON",
       "category": {
         "skill_defect": "Skill defect",
-        "ttse_gap": "Experience gap",
+        "ttse_success": "Experience (succeeded)",
+        "ttse_partial": "Experience (partly done)",
+        "ttse_fail": "Experience (failed)",
         "tool_or_env": "Tool or environment",
         "model_capability": "Model capability",
         "requirement_unclear": "Unclear requirement",
@@ -1124,12 +1126,13 @@
       "suggestions": "Outlets",
       "artifactFix": "Artifact fix",
       "skills": "Skill evolution",
-      "ttse": "TTSE learning signal",
+      "ttse": "TTSE experience generation",
       "fillInput": "Fill into composer",
       "filled": "Filled into the chat composer. Switch to the Chat tab to review and send.",
       "triggerTtse": "Trigger experience generation",
       "triggeringTtse": "Triggering…",
       "ttseOutcome": {
+        "success": "Task succeeded",
         "fail": "Task failed",
         "partial": "Partly done"
       },

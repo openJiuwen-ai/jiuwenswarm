@@ -491,3 +491,9 @@ def test_apply_result_stores_engine_error() -> None:
     assert record.error.code == "ATTRIBUTION_INCOMPLETE"
     assert record.evidence.artifact_eval is not None
     assert record.evidence.artifact_eval.applied is False
+
+
+def test_production_host_runs_diagnoses_with_the_attribution_core_engine() -> None:
+    from jiuwenswarm.server.diagnosis.host import build_diagnosis_engine
+
+    assert isinstance(build_diagnosis_engine(), AttributionCoreEngine)

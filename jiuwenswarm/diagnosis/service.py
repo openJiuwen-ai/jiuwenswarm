@@ -35,6 +35,8 @@ from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel, resolve
 from jiuwenswarm.diagnosis.models import (
     ALLOWED_ROOT_CAUSE_CATEGORIES,
     ERROR_STATUS_BY_CODE,
+    TTSE_OUTCOME_BY_CATEGORY,
+    TTSE_ROOT_CAUSE_CATEGORIES,
     ArtifactEval,
     DiagnosisError,
     DiagnosisEvidence,
@@ -48,13 +50,12 @@ from jiuwenswarm.diagnosis.models import (
     DiagnosisStatusEvent,
     DiagnosisSuggestions,
     DiagnosisSummary,
-    FocusRange,
     ModeProfile,
     RootCause,
     RootCauseCategory,
+    SelectionRange,
     StageStatus,
     StepRef,
-    TtseSignal,
     TtseTriggerOutcome,
     TtseTriggerResult,
 )
@@ -86,8 +87,8 @@ BusyFn = Callable[[str], bool]
 MetadataLoader = Callable[[str], Mapping[str, Any]]
 ReaderProvider = Callable[[], SubjectReader]
 ModelResolver = Callable[..., ResolvedDiagnosisModel]
-#: Hands signals to the TTSE experience pipeline. Each payload carries ``id``,
-#: ``outcome``, ``score``, ``task_query`` and ``messages``; the answer is
+#: Hands experience root causes to the TTSE pipeline. Each payload carries ``id``
+#: (the root cause id), ``outcome``, ``score``, ``task_query`` and ``messages``; the answer is
 #: ``(True, {"results": {id: {"result", "message"?}}})`` or ``(False, {"error"})``.
 #: TTSE failure codes the Worker may report that are shown to the user as they are.
 _TTSE_PASSTHROUGH_CODES = frozenset({"TTSE_NOT_SUPPORTED", "TTSE_UNAVAILABLE"})
@@ -196,13 +197,6 @@ def filter_engine_result(
         root_causes.append(cause.model_copy(update={"refs": refs, "subject_id": refs[0].subject_id}))
     surviving = {cause.id for cause in root_causes}
 
-    focus_ranges: list[FocusRange] = []
-    for focus in result.focus_ranges:
-        refs = scoped(focus.refs)
-        if focus.refs and not refs:
-            continue
-        focus_ranges.append(focus.model_copy(update={"refs": refs}))
-
     source = result.suggestions
     suggestions = DiagnosisSuggestions()
     if source.artifact_fix is not None and source.artifact_fix.instruction.strip():
@@ -213,25 +207,10 @@ def filter_engine_result(
             ids = [item for item in skill.root_cause_ids if item in surviving]
             if ids:
                 suggestions.skills.append(skill.model_copy(update={"root_cause_ids": ids}))
-    if profile is ModeProfile.AGENT_WORK:
-        for signal in source.ttse:
-            ids = [item for item in signal.root_cause_ids if item in surviving]
-            window = index.clamp(signal.subject_id, int(signal.start_unix_nano), int(signal.end_unix_nano))
-            if ids and window is not None:
-                suggestions.ttse.append(
-                    signal.model_copy(
-                        update={
-                            "root_cause_ids": ids,
-                            "start_unix_nano": str(window[0]),
-                            "end_unix_nano": str(window[1]),
-                        },
-                    ),
-                )
 
     return EngineResult(
         headline=result.headline,
         artifact_eval=result.artifact_eval,
-        focus_ranges=focus_ranges,
         root_causes=root_causes,
         suggestions=suggestions,
         error=result.error,
@@ -405,6 +384,14 @@ class DiagnosisService:
                 evaluate_artifact=True,
                 locale=request.locale,
                 resolved_span_count=span_count,
+                resolved_ranges=[
+                    SelectionRange(
+                        subject_id=item.subject_id,
+                        start_unix_nano=str(item.start_nano),
+                        end_unix_nano=str(item.end_nano),
+                    )
+                    for item in ranges
+                ],
                 excluded_running=excluded_running,
             ),
             evidence=DiagnosisEvidence(),
@@ -541,7 +528,6 @@ class DiagnosisService:
     @staticmethod
     def _apply_result(record: DiagnosisRecord, result: EngineResult) -> None:
         record.headline = result.headline
-        record.focus_ranges = result.focus_ranges
         record.root_causes = result.root_causes
         record.suggestions = result.suggestions
         evaluation = result.artifact_eval or ArtifactEval(applied=False, skipped_reason="not_produced")
@@ -617,13 +603,26 @@ class DiagnosisService:
         self,
         session_id: str,
         diagnosis_id: str,
-        signal_ids: list[str],
+        root_cause_ids: list[str],
     ) -> dict[str, TtseTriggerResult]:
-        """Hand TTSE signals to the experience pipeline and record the outcome.
+        """Hand experience root causes to TTSE and record the outcome.
 
-        The diagnosis only raises the signal; TTSE generates and saves the
-        experience itself. Signals that were triggered successfully are not
-        triggered again, failed ones may be retried.
+        The diagnosis only reports how the stretch went; TTSE generates and
+        saves the experience itself. Root causes that were triggered
+        successfully are not triggered again, failed ones may be retried.
+
+        Args:
+            session_id: Diagnosed session.
+            diagnosis_id: Completed diagnosis of the session.
+            root_cause_ids: Ids of root causes whose category is ``ttse_*``.
+
+        Returns:
+            The trigger result of every requested root cause.
+
+        Raises:
+            DiagnosisHostError: The session does not support TTSE, the
+                diagnosis has not completed, an id is not an experience root
+                cause, or TTSE is unavailable.
         """
         self.check_access(session_id)
         lock = self._ttse_locks.setdefault(f"{session_id}/{diagnosis_id}", asyncio.Lock())
@@ -633,11 +632,11 @@ class DiagnosisService:
                 raise DiagnosisHostError("TTSE_NOT_SUPPORTED", "this session mode does not support TTSE", 409)
             if record.status is not DiagnosisStatus.COMPLETED:
                 raise DiagnosisHostError("DIAGNOSIS_NOT_COMPLETED", "the diagnosis has not completed", 409)
-            known = {signal.id: signal for signal in record.suggestions.ttse}
-            unique_ids = list(dict.fromkeys(signal_ids))
+            known = {cause.id: cause for cause in record.root_causes if cause.category in TTSE_ROOT_CAUSE_CATEGORIES}
+            unique_ids = list(dict.fromkeys(root_cause_ids))
             unknown = [item for item in unique_ids if item not in known]
             if unknown:
-                raise DiagnosisHostError("BAD_REQUEST", f"unknown signal ids: {unknown}", 400)
+                raise DiagnosisHostError("BAD_REQUEST", f"unknown experience root cause ids: {unknown}", 400)
             pending = [
                 item
                 for item in unique_ids
@@ -645,12 +644,17 @@ class DiagnosisService:
                 or record.ttse_trigger[item].result is TtseTriggerOutcome.FAILED
             ]
             if pending:
-                results = await self._trigger(session_id, [known[item] for item in pending])
+                results = await self._trigger(session_id, record.input, [known[item] for item in pending])
                 record.ttse_trigger.update(results)
                 await asyncio.to_thread(self._store.save, record)
             return {item: record.ttse_trigger[item] for item in unique_ids}
 
-    async def _trigger(self, session_id: str, signals: list[TtseSignal]) -> dict[str, TtseTriggerResult]:
+    async def _trigger(
+        self,
+        session_id: str,
+        diagnosed: DiagnosisInput,
+        causes: list[RootCause],
+    ) -> dict[str, TtseTriggerResult]:
         if self._ttse_trigger is None:
             raise DiagnosisHostError("AGENT_UNAVAILABLE", "TTSE trigger is not configured", 502)
         try:
@@ -661,26 +665,26 @@ class DiagnosisService:
         now = utc_now_iso()
         results: dict[str, TtseTriggerResult] = {}
         payloads: list[dict[str, Any]] = []
-        for signal in signals:
-            task_query, messages = await asyncio.to_thread(
-                build_ttse_conversation,
-                snapshot,
-                signal.subject_id,
-                int(signal.start_unix_nano),
-                int(signal.end_unix_nano),
+        for cause in causes:
+            window = await asyncio.to_thread(_diagnosed_window, snapshot, diagnosed, cause.subject_id)
+            task_query, messages = (
+                await asyncio.to_thread(build_ttse_conversation, snapshot, cause.subject_id, window[0], window[1])
+                if window is not None
+                else ("", [])
             )
             if not messages:
-                results[signal.id] = TtseTriggerResult(
+                results[cause.id] = TtseTriggerResult(
                     result=TtseTriggerOutcome.FAILED,
-                    message="no trajectory evidence left for this signal",
+                    message="no trajectory evidence left for this root cause",
                     triggered_at=now,
                 )
                 continue
+            outcome, score = TTSE_OUTCOME_BY_CATEGORY[cause.category]
             payloads.append(
                 {
-                    "id": signal.id,
-                    "outcome": signal.outcome.value,
-                    "score": signal.score,
+                    "id": cause.id,
+                    "outcome": outcome,
+                    "score": score,
                     "task_query": task_query,
                     "messages": messages,
                 },
@@ -734,6 +738,34 @@ def _fix_ranges(
 ) -> tuple[list[SubjectRange], ScopeIndex, int]:
     ranges = resolve_ranges(snapshot, request.scope)
     return ranges, ScopeIndex.build(snapshot, ranges), count_records_in_ranges(snapshot, ranges)
+
+
+def _diagnosed_window(
+    snapshot: TrajectorySnapshot,
+    diagnosed: DiagnosisInput,
+    subject_id: str,
+) -> tuple[int, int] | None:
+    """Return the stretch of one subject that the diagnosis was fixed to.
+
+    Records written before the ranges were stored fall back to resolving the
+    scope against the current snapshot.
+
+    Returns:
+        The inclusive nanosecond window, or ``None`` when the subject has none.
+    """
+    if diagnosed.resolved_ranges:
+        stored = [
+            (int(item.start_unix_nano), int(item.end_unix_nano))
+            for item in diagnosed.resolved_ranges
+            if item.subject_id == subject_id
+        ]
+        return stored[0] if stored else None
+    try:
+        ranges = resolve_ranges(snapshot, diagnosed.scope)
+    except DiagnosisHostError:
+        return None
+    resolved = [(item.start_nano, item.end_nano) for item in ranges if item.subject_id == subject_id]
+    return resolved[0] if resolved else None
 
 
 def _default_enabled() -> bool:

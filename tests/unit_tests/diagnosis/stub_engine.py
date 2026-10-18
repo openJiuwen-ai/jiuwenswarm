@@ -12,16 +12,13 @@ from jiuwenswarm.diagnosis.models import (
     ArtifactEval,
     ArtifactFix,
     DiagnosisSuggestions,
-    FocusRange,
     ModeProfile,
     RootCause,
     RootCauseCategory,
     SkillSuggestion,
     StepRef,
-    TtseSignal,
-    TtseSignalOutcome,
 )
-from jiuwenswarm.diagnosis.spans import RuleFinding, SpanFact, scan_rules, span_interval, spans_from_record
+from jiuwenswarm.diagnosis.spans import RuleFinding, SpanFact, scan_rules, spans_from_record
 
 _TEXTS: dict[str, dict[str, str]] = {
     "zh": {
@@ -130,7 +127,8 @@ class StubDiagnosisEngine:
         await emit(EngineEvent("attribution", "stage_started", title=text["stage_attribution"]))
         root_cause = self._attribute(findings, spans, text)
         result.root_causes.append(root_cause)
-        result.focus_ranges.append(self._focus(root_cause, spans))
+        if inputs.mode_profile is ModeProfile.AGENT_WORK:
+            result.root_causes.append(self._experience(root_cause, text))
         message = (
             text["attribution_error"].format(message=root_cause.summary)
             if findings
@@ -147,11 +145,7 @@ class StubDiagnosisEngine:
 
         await emit(EngineEvent("suggestions", "stage_started", title=text["stage_suggestions"]))
         result.suggestions = self._suggest(inputs, root_cause, text)
-        count = (
-            (1 if result.suggestions.artifact_fix else 0)
-            + len(result.suggestions.skills)
-            + len(result.suggestions.ttse)
-        )
+        count = (1 if result.suggestions.artifact_fix else 0) + len(result.suggestions.skills)
         done = text["suggestions_summary"].format(count=count)
         await emit(EngineEvent("suggestions", "output_delta", text_delta=done))
         await self._pause()
@@ -187,22 +181,6 @@ class StubDiagnosisEngine:
         )
 
     @staticmethod
-    def _focus(
-        root_cause: RootCause,
-        spans: list[SpanFact],
-    ) -> FocusRange:
-        keys = {ref.key for ref in root_cause.refs}
-        focused = [span for span in spans if span.ref.key in keys] or spans[-1:]
-        start, end = span_interval(focused)
-        return FocusRange(
-            subject_id=root_cause.subject_id,
-            refs=list(root_cause.refs),
-            start_unix_nano=str(start),
-            end_unix_nano=str(end),
-            reason=root_cause.summary,
-        )
-
-    @staticmethod
     def _suggest(
         inputs: EngineInputs,
         root_cause: RootCause,
@@ -227,23 +205,18 @@ class StubDiagnosisEngine:
                     confidence=0.3,
                 ),
             )
-        window = next((item for item in inputs.ranges if item.subject_id == root_cause.subject_id), None)
-        if inputs.mode_profile is ModeProfile.AGENT_WORK and window is not None:
-            failed = root_cause.category is RootCauseCategory.TOOL_OR_ENV
-            suggestions.ttse.append(
-                TtseSignal(
-                    id="tt-1",
-                    outcome=TtseSignalOutcome.FAIL if failed else TtseSignalOutcome.PARTIAL,
-                    score=0.0 if failed else 0.5,
-                    reason=text["ttse_reason"].format(summary=summary),
-                    subject_id=window.subject_id,
-                    start_unix_nano=str(window.start_nano),
-                    end_unix_nano=str(window.end_nano),
-                    root_cause_ids=[root_cause.id],
-                    confidence=0.3,
-                ),
-            )
         return suggestions
+
+    @staticmethod
+    def _experience(root_cause: RootCause, text: dict[str, str]) -> RootCause:
+        failed = root_cause.category is RootCauseCategory.TOOL_OR_ENV
+        return RootCause(
+            id="tt-1",
+            category=RootCauseCategory.TTSE_FAIL if failed else RootCauseCategory.TTSE_PARTIAL,
+            subject_id=root_cause.subject_id,
+            refs=list(root_cause.refs),
+            summary=text["ttse_reason"].format(summary=root_cause.summary),
+        )
 
 
 __all__ = ["StubDiagnosisEngine"]

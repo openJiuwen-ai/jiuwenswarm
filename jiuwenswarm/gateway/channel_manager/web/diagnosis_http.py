@@ -194,7 +194,7 @@ def attach_diagnosis_routes(
 
     @app.post(f"{base}/{{diagnosis_id}}/ttse")
     async def trigger_ttse(session_id: str, diagnosis_id: str, request: Request) -> Response:
-        """Trigger TTSE experience generation with the selected signals."""
+        """Trigger TTSE experience generation with the selected experience root causes."""
         return await proxy(
             request,
             ReqMethod.DIAGNOSIS_TTSE_TRIGGER,

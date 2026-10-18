@@ -50,6 +50,7 @@ from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 
 from jiuwenswarm.diagnosis.engine import EmitFn, EngineError, EngineEvent, EngineInputs, EngineResult
 from jiuwenswarm.diagnosis.models import (
+    TTSE_ROOT_CAUSE_CATEGORIES,
     ArtifactEval,
     ArtifactFix,
     DiagnosisError,
@@ -473,7 +474,7 @@ class AttributionCoreEngine:
             task_parse,
             workspace,
         )
-        return await self._stage_attribute(
+        result = await self._stage_attribute(
             inputs,
             text,
             queue,
@@ -486,6 +487,44 @@ class AttributionCoreEngine:
             diagnosis,
             headline,
         )
+        await self._append_experience_cause(inputs, model, model_name, sliced, result)
+        return result
+
+    @staticmethod
+    async def _append_experience_cause(
+        inputs: EngineInputs,
+        model: Any,
+        model_name: str,
+        sliced: dict[str, list[Any]],
+        result: EngineResult,
+    ) -> None:
+        """Append the TTSE experience root cause of the main agent's stretch.
+
+        Only agent work is judged, at most one such cause is reported, and a
+        detection failure is logged without touching the rest of the result.
+        """
+        if inputs.mode_profile is not ModeProfile.AGENT_WORK:
+            return
+        if any(cause.category in TTSE_ROOT_CAUSE_CATEGORIES for cause in result.root_causes):
+            return
+        subject_id = next((item.subject_id for item in inputs.snapshot.subjects if item.kind == "main_agent"), None)
+        nodes = sliced.get(subject_id) if subject_id else None
+        if not nodes:
+            return
+        try:
+            from jiuwenswarm.diagnosis.ttse_detect import detect_experience_cause
+
+            cause = await detect_experience_cause(
+                nodes,
+                model=model,
+                model_name=model_name,
+                locale=inputs.locale,
+            )
+        except Exception:  # noqa: BLE001 - experience detection must not fail the diagnosis
+            logger.warning("[diagnosis] experience detection failed", exc_info=True)
+            return
+        if cause is not None:
+            result.root_causes.append(cause)
 
     async def _stage_task_parse(
         self,

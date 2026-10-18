@@ -36,9 +36,8 @@ PushSender = Callable[[dict[str, Any]], Awaitable[bool | None]]
 def build_diagnosis_engine() -> DiagnosisEngine:
     """Return the engine the production host runs diagnoses with.
 
-    This is the only place that picks the engine. The formal engine runs the
-    agent-core attribution pipeline; the placeholder ``LlmDiagnosisEngine`` and
-    its helpers stay in the tree until the formal engine has stabilised.
+    This is the only place that picks the engine. It runs the agent-core
+    attribution pipeline.
     """
     from jiuwenswarm.diagnosis.attribution_engine import AttributionCoreEngine
 
@@ -247,7 +246,7 @@ class DiagnosisHost:
         if method is ReqMethod.DIAGNOSIS_TTSE_TRIGGER:
             service.check_access(session_id)
             trigger_request = _validate(TtseTriggerRequest, body)
-            results = await service.trigger_ttse(session_id, diagnosis_id, trigger_request.signal_ids)
+            results = await service.trigger_ttse(session_id, diagnosis_id, trigger_request.root_cause_ids)
             return {
                 "results": {key: value.model_dump(mode="json", exclude_none=True) for key, value in results.items()},
             }

@@ -1,12 +1,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Hand diagnosis TTSE signals to the Worker's resident TTSE pipeline.
+"""Hand diagnosed experience root causes to the Worker's resident TTSE pipeline.
 
-A diagnosis only raises a signal ("this stretch of the task failed or went
-weakly"). Generating the FACT / TIP rules and saving them is TTSE's own job:
-the signal takes the place of TTSE's success detection, and the rail then runs
-its usual induction (blame, synthesize, induce, dedupe, save) on the supplied
-conversation. This module feeds that induction and never writes the bank.
+A diagnosis only reports how a stretch of the task went (success, partial or
+fail). Generating the FACT / TIP rules and saving them is TTSE's own job: the
+reported outcome takes the place of TTSE's success detection, and the rail then
+runs its usual induction (blame, synthesize, induce, dedupe, save) on the
+supplied conversation. This module feeds that induction and never writes the
+bank.
 """
 
 from __future__ import annotations
@@ -110,12 +111,12 @@ def explicit_score(outcome: str, score: float, threshold: float) -> float:
     """Map a signal onto the explicit task score TTSE classifies by threshold.
 
     TTSE reads ``0`` as fail, a value in ``(0, threshold)`` as partial and
-    anything at or above the threshold as success, so the signal's outcome is
+    anything at or above the threshold as success, so the diagnosed outcome is
     kept authoritative and the score is adjusted into the matching band.
 
     Args:
-        outcome: ``fail`` or ``partial``.
-        score: Score proposed by the diagnosis, in [0, 1].
+        outcome: ``success``, ``partial`` or ``fail``.
+        score: Score that belongs to the outcome, in [0, 1].
         threshold: TTSE success threshold.
 
     Returns:
@@ -123,6 +124,8 @@ def explicit_score(outcome: str, score: float, threshold: float) -> float:
     """
     if outcome == "fail":
         return 0.0
+    if outcome == "success":
+        return max(score, threshold)
     if 0.0 < score < threshold:
         return score
     return threshold / 2
@@ -145,7 +148,7 @@ async def trigger_ttse_induction(
     session_id: str,
     signals: Any,
 ) -> dict[str, Any]:
-    """Start TTSE induction for diagnosis signals through the resident rail.
+    """Start TTSE induction for diagnosed experience root causes through the resident rail.
 
     The induction itself (several LLM calls under the bank lock) runs in the
     background, so a result of ``triggered`` only means TTSE accepted the work.
@@ -155,7 +158,8 @@ async def trigger_ttse_induction(
         channel_id: Channel that owns the session runtime.
         session_id: Diagnosed session.
         signals: Payload list built by the diagnosis service; each item has
-            ``id``, ``outcome``, ``score``, ``task_query`` and ``messages``.
+            ``id`` (the root cause id), ``outcome``, ``score``, ``task_query``
+            and ``messages``.
 
     Returns:
         ``{"ok": True, "payload": {"results": ...}}`` or an error mapping

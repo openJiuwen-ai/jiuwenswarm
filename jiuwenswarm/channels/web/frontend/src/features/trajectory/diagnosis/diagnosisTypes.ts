@@ -18,7 +18,9 @@ export type StageStatus = 'running' | 'completed' | 'failed' | 'skipped';
 export type ModeProfile = 'agent.work' | 'agent.code' | 'team';
 export type RootCauseCategory =
   | 'skill_defect'
-  | 'ttse_gap'
+  | 'ttse_success'
+  | 'ttse_partial'
+  | 'ttse_fail'
   | 'tool_or_env'
   | 'model_capability'
   | 'requirement_unclear'
@@ -72,14 +74,6 @@ export interface DiagnosisEvidence {
   };
 }
 
-export interface FocusRange {
-  subject_id: string;
-  refs: StepRef[];
-  start_unix_nano: string;
-  end_unix_nano: string;
-  reason?: string;
-}
-
 export interface RootCause {
   id: string;
   category: RootCauseCategory;
@@ -103,19 +97,7 @@ export interface SkillSuggestion {
   blocked_reason?: string;
 }
 
-/** A trigger signal for TTSE; TTSE itself generates and saves the experience. */
-export interface TtseSignal {
-  id: string;
-  outcome: 'fail' | 'partial';
-  score: number;
-  reason: string;
-  subject_id: string;
-  start_unix_nano: string;
-  end_unix_nano: string;
-  root_cause_ids: string[];
-  confidence: number;
-}
-
+/** Result of triggering TTSE with one experience root cause (`ttse_*` category). */
 export interface TtseTriggerResult {
   result: 'triggered' | 'failed';
   message?: string;
@@ -125,7 +107,6 @@ export interface TtseTriggerResult {
 export interface DiagnosisSuggestions {
   artifact_fix?: { instruction: string; root_cause_ids: string[] };
   skills: SkillSuggestion[];
-  ttse: TtseSignal[];
 }
 
 export interface DiagnosisInput {
@@ -145,7 +126,6 @@ export interface DiagnosisRecord extends DiagnosisSummary {
   seq: number;
   stages: DiagnosisStage[];
   evidence: DiagnosisEvidence;
-  focus_ranges: FocusRange[];
   root_causes: RootCause[];
   suggestions: DiagnosisSuggestions;
   ttse_trigger: Record<string, TtseTriggerResult>;

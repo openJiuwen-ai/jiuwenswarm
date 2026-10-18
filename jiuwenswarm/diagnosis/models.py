@@ -64,12 +64,24 @@ class RootCauseCategory(StrEnum):
     """Attribution category of a root cause."""
 
     SKILL_DEFECT = "skill_defect"
-    TTSE_GAP = "ttse_gap"
+    TTSE_SUCCESS = "ttse_success"
+    TTSE_PARTIAL = "ttse_partial"
+    TTSE_FAIL = "ttse_fail"
     TOOL_OR_ENV = "tool_or_env"
     MODEL_CAPABILITY = "model_capability"
     REQUIREMENT_UNCLEAR = "requirement_unclear"
     OTHER = "other"
 
+
+#: Experience categories: the verdict of TTSE success detection on the diagnosed
+#: stretch. A diagnosis reports at most one of them.
+TTSE_ROOT_CAUSE_CATEGORIES: frozenset[RootCauseCategory] = frozenset(
+    {
+        RootCauseCategory.TTSE_SUCCESS,
+        RootCauseCategory.TTSE_PARTIAL,
+        RootCauseCategory.TTSE_FAIL,
+    },
+)
 
 #: Root-cause categories each mode profile may report; the host drops the rest.
 ALLOWED_ROOT_CAUSE_CATEGORIES: dict[ModeProfile, frozenset[RootCauseCategory]] = {
@@ -82,26 +94,29 @@ ALLOWED_ROOT_CAUSE_CATEGORIES: dict[ModeProfile, frozenset[RootCauseCategory]] =
             RootCauseCategory.OTHER,
         },
     ),
-    ModeProfile.TEAM: frozenset(RootCauseCategory) - {RootCauseCategory.TTSE_GAP},
+    ModeProfile.TEAM: frozenset(RootCauseCategory) - TTSE_ROOT_CAUSE_CATEGORIES,
+}
+
+
+#: TTSE outcome and fixed task score each experience category stands for, the
+#: values TTSE's own success detection assigns. Triggering hands them to TTSE
+#: as the explicit score, so the induction does not detect the outcome again.
+TTSE_OUTCOME_BY_CATEGORY: dict[RootCauseCategory, tuple[str, float]] = {
+    RootCauseCategory.TTSE_SUCCESS: ("success", 1.0),
+    RootCauseCategory.TTSE_PARTIAL: ("partial", 0.5),
+    RootCauseCategory.TTSE_FAIL: ("fail", 0.0),
 }
 
 
 class TtseTriggerOutcome(StrEnum):
-    """Result of handing one TTSE signal to the experience pipeline.
+    """Result of handing one TTSE root cause to the experience pipeline.
 
-    ``triggered`` only says that TTSE accepted the signal; what it generates
+    ``triggered`` only says that TTSE accepted the work; what it generates
     and saves afterwards is decided by TTSE itself and is not reported here.
     """
 
     TRIGGERED = "triggered"
     FAILED = "failed"
-
-
-class TtseSignalOutcome(StrEnum):
-    """Outcome a TTSE signal reports, the same vocabulary TTSE signal detection uses."""
-
-    FAIL = "fail"
-    PARTIAL = "partial"
 
 
 class _Model(BaseModel):
@@ -222,6 +237,7 @@ class DiagnosisInput(_Model):
     evaluate_artifact: bool = False
     locale: Literal["zh", "en"] = "zh"
     resolved_span_count: int = 0
+    resolved_ranges: list[SelectionRange] = Field(default_factory=list)
     excluded_running: list[StepRef] = Field(default_factory=list)
 
 
@@ -262,16 +278,6 @@ class DiagnosisEvidence(_Model):
     artifact_eval: ArtifactEval | None = None
 
 
-class FocusRange(_Model):
-    """Interval the engine considers worth attention."""
-
-    subject_id: str
-    refs: list[StepRef] = Field(default_factory=list)
-    start_unix_nano: str
-    end_unix_nano: str
-    reason: str | None = None
-
-
 class RootCause(_Model):
     """One attributed root cause."""
 
@@ -305,53 +311,15 @@ class SkillSuggestion(_Model):
     blocked_reason: str | None = None
 
 
-class TtseSignal(_Model):
-    """Signal that a stretch of the trajectory is worth learning an experience from.
-
-    It plays the role of TTSE's own signal detection: it tells TTSE how the
-    task went and where, and TTSE then generates and saves the experience. It
-    carries no experience text.
-
-    Attributes:
-        id: Signal identifier unique within the diagnosis.
-        outcome: ``fail`` or ``partial``, how the task went.
-        score: Task score in [0, 1]; lower means the run was weaker.
-        reason: Why the diagnosis raised the signal; shown to the user only.
-        subject_id: Execution subject whose trajectory TTSE learns from.
-        start_unix_nano: Start of the trajectory stretch (inclusive).
-        end_unix_nano: End of the trajectory stretch (inclusive).
-        root_cause_ids: Root causes the signal comes from.
-        confidence: Confidence in the signal, in [0, 1].
-    """
-
-    id: str
-    outcome: TtseSignalOutcome
-    score: float = Field(default=0.0, ge=0.0, le=1.0)
-    reason: str = ""
-    subject_id: str
-    start_unix_nano: str
-    end_unix_nano: str
-    root_cause_ids: list[str] = Field(default_factory=list)
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
-
-    @field_validator("start_unix_nano", "end_unix_nano")
-    @classmethod
-    def _check_nano(cls, value: str) -> str:
-        if not _NANO_PATTERN.match(value):
-            raise ValueError("time points must be Unix-nanosecond decimal strings")
-        return value
-
-
 class DiagnosisSuggestions(_Model):
     """Optimization outlets of one diagnosis."""
 
     artifact_fix: ArtifactFix | None = None
     skills: list[SkillSuggestion] = Field(default_factory=list)
-    ttse: list[TtseSignal] = Field(default_factory=list)
 
 
 class TtseTriggerResult(_Model):
-    """Outcome of triggering TTSE with one signal."""
+    """Outcome of triggering TTSE with one experience root cause."""
 
     result: TtseTriggerOutcome
     message: str | None = None
@@ -387,7 +355,6 @@ class DiagnosisRecord(DiagnosisSummary):
     seq: int = 0
     stages: list[DiagnosisStage] = Field(default_factory=list)
     evidence: DiagnosisEvidence = Field(default_factory=DiagnosisEvidence)
-    focus_ranges: list[FocusRange] = Field(default_factory=list)
     root_causes: list[RootCause] = Field(default_factory=list)
     suggestions: DiagnosisSuggestions = Field(default_factory=DiagnosisSuggestions)
     ttse_trigger: dict[str, TtseTriggerResult] = Field(default_factory=dict)
@@ -438,7 +405,7 @@ class DiagnosisStatusEvent(_Model):
 class TtseTriggerRequest(_Model):
     """Body of the TTSE trigger endpoint."""
 
-    signal_ids: list[str] = Field(min_length=1, max_length=50)
+    root_cause_ids: list[str] = Field(min_length=1, max_length=50)
 
 
 class DiagnosisHostError(Exception):
@@ -478,6 +445,8 @@ __all__ = [
     "MAX_SELECTION_RANGES",
     "MAX_USER_NOTE_CHARS",
     "TERMINAL_STATUSES",
+    "TTSE_OUTCOME_BY_CATEGORY",
+    "TTSE_ROOT_CAUSE_CATEGORIES",
     "ArtifactEval",
     "ArtifactFix",
     "ArtifactIssue",
@@ -494,7 +463,6 @@ __all__ = [
     "DiagnosisStatusEvent",
     "DiagnosisSuggestions",
     "DiagnosisSummary",
-    "FocusRange",
     "FullScope",
     "ModeProfile",
     "ModelInfo",
@@ -505,8 +473,6 @@ __all__ = [
     "SkillSuggestion",
     "StageStatus",
     "StepRef",
-    "TtseSignal",
-    "TtseSignalOutcome",
     "TtseTriggerOutcome",
     "TtseTriggerRequest",
     "TtseTriggerResult",
