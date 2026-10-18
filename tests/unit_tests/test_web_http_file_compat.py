@@ -66,14 +66,18 @@ def test_list_and_read_markdown(file_client):
     assert r.text.startswith("# hi")
 
 
-def test_legacy_agent_data_path_returns_generated_content(file_client):
+@pytest.mark.parametrize("file_path", [
+    "agent/workspace/agent-data.json",
+    "agent/jiuwenclaw_workspace/agent-data.json",
+])
+def test_legacy_agent_data_path_returns_generated_content(file_client, file_path):
     """Old pre-rename path ``agent/workspace/agent-data.json`` must serve generated data."""
     client, roots, _img, _bytes = file_client
     assert not (roots.project_root / "agent" / "workspace").exists()
 
     r = client.get(
         "/file-api/file-content",
-        params={"path": "agent/workspace/agent-data.json", "encoding": "utf-8"},
+        params={"path": file_path, "encoding": "utf-8"},
     )
     assert r.status_code == 200
     # generated at the new path and served from there

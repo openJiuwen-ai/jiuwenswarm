@@ -47,6 +47,32 @@ class WorkspaceService:
     max_delete_depth: int = _DEFAULT_MAX_DELETE_DEPTH
     max_delete_entries: int = _DEFAULT_MAX_DELETE_ENTRIES
     max_download_bytes: int = _DEFAULT_DOWNLOAD_MAX_BYTES
+    agent_workspace: Path | None = None
+
+    @classmethod
+    def for_tenant(
+        cls, tenant_root: Path, *, workspace_key: str | None = None,
+        service_id: str | None = None, agent_id: str | None = None,
+    ) -> WorkspaceService:
+        """保留租户根，按原逻辑前缀挂载 Provider 的实际工作区。"""
+        from jiuwenswarm.common.utils import get_agent_workspace_dir
+
+        root = Path(tenant_root)
+        default = get_agent_workspace_dir(agent_root=root / "agent", use_provider=False)
+        workspace = get_agent_workspace_dir(
+            agent_root=root / "agent", workspace_key=workspace_key,
+            service_id=service_id, agent_id=agent_id,
+        )
+        return cls(
+            tenant_root=root,
+            agent_workspace=workspace if workspace != default else None,
+        )
+
+    def _path_root(self, rel: str) -> tuple[Path, str]:
+        prefix = "agent/jiuwenclaw_workspace"
+        if self.agent_workspace is not None and (rel == prefix or rel.startswith(prefix + "/")):
+            return self.agent_workspace.resolve(), rel[len(prefix):].lstrip("/")
+        return self.tenant_root.resolve(), rel
 
     def resolve(self, relative_path: str | None) -> Path:
         """Resolve relative path under tenant root; raise on traversal / escape."""
@@ -54,10 +80,10 @@ class WorkspaceService:
             rel = normalize_relative_path(relative_path)
         except ValueError as exc:
             raise WorkspaceError("BAD_REQUEST", "invalid relative_path") from exc
-        root = self.tenant_root.resolve()
+        root, tail = self._path_root(rel)
         if not rel:
             return root
-        candidate = (root / rel).resolve()
+        candidate = (root / tail).resolve()
         try:
             if os.path.commonpath([str(root), str(candidate)]) != str(root):
                 raise WorkspaceError("FORBIDDEN", "path escapes tenant root")
@@ -71,25 +97,36 @@ class WorkspaceService:
         except ValueError as exc:
             raise WorkspaceError("BAD_REQUEST", "invalid relative_path") from exc
         target = self.resolve(rel)
-        if not target.exists():
+        virtual_parent = self.agent_workspace is not None and rel in {"", "agent"}
+        if not target.exists() and not virtual_parent:
             # 根目录尚未物化：返回空列表，避免前端整页失败；子路径仍 404。
             if not rel:
                 return {"relative_path": rel, "entries": []}
             raise WorkspaceError("NOT_FOUND", "path not found")
-        if not target.is_dir():
+        if target.exists() and not target.is_dir():
             raise WorkspaceError("BAD_REQUEST", "relative_path is not a directory")
 
         entries: list[dict[str, Any]] = []
         try:
-            children = sorted(
-                target.iterdir(),
-                key=lambda p: (not p.is_dir(), p.name.lower()),
-            )
+            children = [(child.name, child) for child in target.iterdir()] if target.exists() else []
+            if virtual_parent:
+                workspace = self.agent_workspace.resolve()
+                name = "agent" if not rel else "jiuwenclaw_workspace"
+                children = [
+                    (child_name, child) for child_name, child in children
+                    if child_name != name and (not rel or child.resolve() != workspace)
+                ]
+                virtual_path = self.tenant_root / "agent" if not rel else workspace
+                if not virtual_path.exists():
+                    virtual_path = workspace
+                if virtual_path.exists():
+                    children.append((name, virtual_path))
+            children.sort(key=lambda item: (not item[1].is_dir(), item[0].lower()))
         except OSError as exc:
             raise WorkspaceError("INTERNAL_ERROR", str(exc)) from exc
 
-        for child in children:
-            child_rel = f"{rel}/{child.name}" if rel else child.name
+        for child_name, child in children:
+            child_rel = f"{rel}/{child_name}" if rel else child_name
             child_rel = child_rel.replace("\\", "/")
             zone = classify_zone(child_rel)
             try:
@@ -108,7 +145,7 @@ class WorkspaceService:
                 mime_hint = guessed
             entries.append(
                 {
-                    "name": child.name,
+                    "name": child_name,
                     "relative_path": child_rel,
                     "is_dir": is_dir,
                     "size_bytes": size,
@@ -138,8 +175,8 @@ class WorkspaceService:
         if not is_deletable(rel):
             return {"relative_path": rel, "ok": False, "error": "forbidden_zone"}
 
-        root = self.tenant_root.resolve()
-        lexical = root.joinpath(*rel.split("/"))
+        root, tail = self._path_root(rel)
+        lexical = root.joinpath(*tail.split("/"))
         try:
             if os.path.commonpath([str(root), str(lexical.absolute())]) != str(root):
                 return {"relative_path": rel, "ok": False, "error": "bad_path"}
@@ -177,6 +214,8 @@ class WorkspaceService:
             except ValueError:
                 return {"relative_path": rel, "ok": False, "error": "bad_path"}
             resolved_rel = resolved.relative_to(root).as_posix()
+            if tail != rel:
+                resolved_rel = "agent/jiuwenclaw_workspace/" + resolved_rel
             if not is_deletable(resolved_rel):
                 return {"relative_path": rel, "ok": False, "error": "forbidden_zone"}
 
@@ -386,8 +425,8 @@ class WorkspaceService:
     def measure_used_bytes(self) -> int:
         """Full ``du -s -B1`` on tenant root; fallback to walk on non-Unix."""
         root = self.tenant_root.resolve()
-        if not root.exists():
-            return 0
+        if self.agent_workspace is not None:
+            return measure_used_bytes(root, workspace_root=self.agent_workspace)
         return measure_used_bytes(root)
 
 
@@ -404,9 +443,15 @@ def _looks_binary(sample: bytes) -> bool:
     return (textish / len(sample)) < 0.85
 
 
-def measure_used_bytes(tenant_root: Path) -> int:
+def measure_used_bytes(tenant_root: Path, *, workspace_root: Path | None = None) -> int:
     """Run ``du -s -B1`` when available; otherwise walk files."""
     root = Path(tenant_root).resolve()
+    if workspace_root is not None:
+        workspace = Path(workspace_root).resolve()
+        if not workspace.is_relative_to(root):
+            if root.is_relative_to(workspace):
+                return measure_used_bytes(workspace)
+            return measure_used_bytes(root) + measure_used_bytes(workspace)
     if not root.exists():
         return 0
     try:

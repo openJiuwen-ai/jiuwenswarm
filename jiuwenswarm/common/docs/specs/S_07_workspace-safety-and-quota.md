@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_07 / workspace-safety-and-quota |
 | 关联模块 | jiuwenswarm/common/workspace/（4 文件） |
-| 最近一次修订日期 | 2026-10-13 |
-| 关联 feature | 暂无 |
+| 最近一次修订日期 | 2026-10-18 |
+| 关联 feature | F_01_scoped-workspace-provider.md |
 
 ## 范围 / 边界
 
@@ -47,6 +47,12 @@ server 侧（本 spec 只管 common 内的判定与门禁核心）。
 - **N11 读取边界**：preview 截断 64 KiB + 二进制检测（不把二进制喂给文本通道）；
   download 上限 100 MiB + zip 跳过符号链接；`list_tree` 的目录 `size_bytes=None`
   懒加载（不递归统计）；`measure_used_bytes` 优先 `/usr/bin/du`（口径与系统一致）。
+- **N12 Provider 工作区映射**：`WorkspaceService.for_tenant` 保留原租户根，将协议前缀
+  `agent/jiuwenclaw_workspace` 映射到当前租户的 Provider 工作区。zone 判定和返回路径
+  仍使用逻辑前缀，不增加可删除 zone；映射后在对应物理根内再次校验路径。
+  删除 symlink 仍仅 unlink 本体，resolve 后的真实相对路径重新映射为逻辑路径再检查 zone。
+  外置工作区计入同一租户用量缓存和后台校准；根内工作区不重复计数。
+  无 Provider 或插件回退到默认目录时沿用原有租户树。
 
 ## 接口契约
 

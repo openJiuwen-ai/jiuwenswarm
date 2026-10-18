@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from jiuwenswarm.common.local_env_config import read_env
 from jiuwenswarm.common.utils import (
+    get_agent_workspace_dir,
     get_multi_tenant_user_workspace_dir,
     normalize_tenant_scope_id,
 )
@@ -190,7 +191,10 @@ def _resolve_tenant_agent_workspace_dir(*, workspace_key: str | None = None) -> 
     """``workspace_{key}/agent/jiuwenclaw_workspace`` (jiuwenswarm layout)."""
     wk = workspace_key if workspace_key is not None else get_bound_workspace_key()
     wk = normalize_tenant_scope_id(wk)
-    return get_multi_tenant_user_workspace_dir(wk) / "agent" / "jiuwenclaw_workspace"
+    return get_agent_workspace_dir(
+        agent_root=get_multi_tenant_user_workspace_dir(wk) / "agent",
+        workspace_key=wk,
+    )
 
 
 def _resolve_ltm_dir(*, workspace_key: str | None = None) -> Path:

@@ -93,7 +93,10 @@ class RailManager:
         import os
         if is_enterprise():
             workspace = get_multi_tenant_user_workspace_dir(self.workspace_key)
-            return workspace / "agent" / "jiuwenclaw_workspace" / "extensions"
+            return get_agent_workspace_dir(
+                agent_root=workspace / "agent", workspace_key=self.workspace_key,
+                service_id=self.service_id, agent_id=self.agent_id,
+            ) / "extensions"
         return get_agent_workspace_dir() / "extensions"
 
     @property

@@ -499,7 +499,10 @@ class TenantAgentPool:
 
                 # 租户目录懒创建时补种 AGENT/SOUL/IDENTITY/HEARTBEAT/USER/MEMORY.md
                 # 等模板（prepare_workspace 只初始化默认租户；幂等，已存在跳过）。
-                seed_tenant_agent_workspace(agent_dir_path)
+                seed_tenant_agent_workspace(
+                    agent_dir_path, workspace_key=request_workspace_key,
+                    service_id=request_service_id, agent_id=request_agent_id,
+                )
 
                 import os
                 # 企业版：stable string instance id (legacy "aid_sid" form).

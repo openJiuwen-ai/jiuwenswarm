@@ -61,9 +61,9 @@ from jiuwenswarm.extensions.hooks_context import MemoryHookContext
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import (
     get_agent_home_dir,
+    get_agent_root_dir,
     get_agent_sessions_relative_dir,
     get_agent_workspace_dir,
-    get_agent_workspace_relative_dir,
     collapse_nested_agent_workspace_dir,
     get_env_file,
     reset_free_search_runtime_flags,
@@ -1137,6 +1137,9 @@ class JiuWenSwarm:
         agent_id: str | None = None,
         service_id: str | None = None,
         skill_manager: SkillManager | None = None,
+        workspace_key: str | None = None,
+        env_service_id: str | None = None,
+        env_agent_id: str | None = None,
     ) -> None:
         self._adapter: AgentAdapter | None = None
         # PersonalContext Rail follows the Host runtime switch.  Keep the
@@ -1148,6 +1151,9 @@ class JiuWenSwarm:
         enterprise = is_enterprise()
         self._agent_id = agent_id if enterprise else None
         self._service_id = service_id if enterprise else None
+        self._env_service_id = env_service_id or self._service_id or "default"
+        self._env_agent_id = env_agent_id or self._agent_id or "default"
+        self._workspace_key = workspace_key
         tenant_root = user_workspace_dir or (workspace_dir if enterprise else None)
         if enterprise and not tenant_root:
             from jiuwenswarm.server.runtime.skill.workspace_provider import (
@@ -1159,9 +1165,13 @@ class JiuWenSwarm:
             )
         if tenant_root:
             user_ws = Path(tenant_root)
+            selected_workspace = get_agent_workspace_dir(
+                agent_root=user_ws / "agent", workspace_key=self._workspace_key,
+                service_id=self._env_service_id, agent_id=self._env_agent_id,
+            )
             self._workspace_dir = str(
                 collapse_nested_agent_workspace_dir(
-                    user_ws / get_agent_workspace_relative_dir()
+                    selected_workspace, workspace_dir=selected_workspace,
                 )
             )
             self._sessions_dir: Path | None = user_ws / get_agent_sessions_relative_dir()
@@ -1338,9 +1348,15 @@ class JiuWenSwarm:
     def _resolve_workspace_dir(self) -> str:
         user_ws = getattr(self, "_user_workspace_dir", None)
         if user_ws is not None:
+            selected_workspace = get_agent_workspace_dir(
+                agent_root=Path(user_ws) / "agent",
+                workspace_key=getattr(self, "_workspace_key", None),
+                service_id=getattr(self, "_env_service_id", None),
+                agent_id=getattr(self, "_env_agent_id", None),
+            )
             return str(
                 collapse_nested_agent_workspace_dir(
-                    Path(user_ws) / "agent" / "jiuwenclaw_workspace"
+                    selected_workspace, workspace_dir=selected_workspace,
                 )
             )
         return str(collapse_nested_agent_workspace_dir(get_agent_workspace_dir()))
@@ -1407,11 +1423,24 @@ class JiuWenSwarm:
         from jiuwenswarm.common.local_env_config import bind_agent_env_ns
         from jiuwenswarm.common.request_identity import web_routing_identity
         from jiuwenswarm.common.workspace.quota import bind_quota_identity
+        from jiuwenswarm.common.workspace.quota import mark_usage_active
         from jiuwenswarm.server.runtime.tenant_context import bind_workspace_key
 
         ws = Path(self._resolve_workspace_dir())
-        agent_root = ws.parent
-        tenant_root = agent_root.parent
+        user_root = getattr(self, "_user_workspace_dir", None)
+        if user_root is not None:
+            tenant_root = Path(user_root)
+            agent_root = get_agent_root_dir(
+                agent_root=tenant_root / "agent",
+                workspace_key=getattr(self, "_workspace_key", None),
+                service_id=getattr(self, "_env_service_id", None),
+                agent_id=getattr(self, "_env_agent_id", None),
+            )
+        else:
+            from jiuwenswarm.common.path_provider import get_path_provider
+
+            agent_root = get_agent_root_dir() if get_path_provider() is not None else ws.parent
+            tenant_root = agent_root.parent
         tenant_tokens = bind_tenant_workspace_dirs(
             jiuwenclaw_workspace=str(ws),
             agent_root=str(agent_root),
@@ -1441,6 +1470,13 @@ class JiuWenSwarm:
             group_id=identity.get("group_id", ""),
             bot_id=identity.get("bot_id", ""),
         )
+        default_workspace = get_agent_workspace_dir(agent_root=agent_root, use_provider=False)
+        if ws != default_workspace:
+            mark_usage_active(
+                tenant_root, user_id=identity.get("user_id", ""),
+                group_id=identity.get("group_id", ""), bot_id=identity.get("bot_id", ""),
+                workspace_root=ws,
+            )
         return tenant_tokens, (
             mem_ws_token,
             mem_aid_token,

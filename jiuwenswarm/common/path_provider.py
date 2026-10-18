@@ -55,7 +55,14 @@ def reset_path_session_id(token: Token) -> None:
     _session_id.reset(token)
 
 
-def current_path_context(*, session_id: str | None = None) -> PathContext:
+def current_path_context(
+    *,
+    session_id: str | None = None,
+    agent_root: Path | str | None = None,
+    workspace_key: str | None = None,
+    service_id: str | None = None,
+    agent_id: str | None = None,
+) -> PathContext:
     from jiuwenswarm.common.local_env_config import get_bound_agent_env_ns
     from jiuwenswarm.server.runtime.tenant_context import (
         get_bound_agent_root,
@@ -66,13 +73,25 @@ def current_path_context(*, session_id: str | None = None) -> PathContext:
     ns = get_bound_agent_env_ns()
     root = get_bound_agent_root()
     workspace = get_bound_jiuwenclaw_workspace()
+    bound_service_id = ns[0] if ns is not None else None
+    bound_agent_id = ns[1] if ns is not None else None
+    bound_key = get_bound_workspace_key()
+    # 显式解析另一个租户时，不能把当前请求的完整工作区带给 Provider。
+    changed_scope = (
+        (agent_root is not None and Path(agent_root) != root)
+        or (workspace_key is not None and workspace_key != bound_key)
+        or (service_id is not None and service_id != bound_service_id)
+        or (agent_id is not None and agent_id != bound_agent_id)
+    )
     return PathContext(
-        service_id=ns[0] if ns is not None else None,
-        agent_id=ns[1] if ns is not None else None,
-        workspace_key=get_bound_workspace_key(),
+        service_id=service_id if service_id is not None else bound_service_id,
+        agent_id=agent_id if agent_id is not None else bound_agent_id,
+        workspace_key=workspace_key if workspace_key is not None else bound_key,
         session_id=session_id if session_id is not None else _session_id.get(),
-        bound_agent_root=str(root) if root is not None else None,
-        bound_workspace=str(workspace) if workspace is not None else None,
+        bound_agent_root=str(agent_root) if agent_root is not None else (
+            str(root) if root is not None else None
+        ),
+        bound_workspace=str(workspace) if workspace is not None and not changed_scope else None,
     )
 
 

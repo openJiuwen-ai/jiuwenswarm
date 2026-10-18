@@ -51,7 +51,9 @@ def _get_config_file():
     return Path("/tmp/test_config.yaml")
 
 
-def _get_agent_workspace_dir():
+def _get_agent_workspace_dir(*, agent_root=None, **kwargs):
+    if agent_root is not None:
+        return _saved_get_agent_workspace_dir(agent_root=agent_root, **kwargs)
     return Path("/tmp/test_workspace")
 
 

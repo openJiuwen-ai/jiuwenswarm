@@ -262,7 +262,6 @@ class AgentManager:
             from jiuwenswarm.common.utils import (
                 collapse_nested_agent_workspace_dir,
                 get_agent_workspace_dir,
-                get_agent_workspace_relative_dir,
             )
             from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
             from jiuwenswarm.server.runtime.skill.workspace_provider import (
@@ -271,8 +270,14 @@ class AgentManager:
             )
 
             if self._user_workspace_dir is not None:
+                selected_workspace = get_agent_workspace_dir(
+                    agent_root=Path(self._user_workspace_dir) / "agent",
+                    workspace_key=self._workspace_key,
+                    service_id=self._env_service_id,
+                    agent_id=self._env_agent_id,
+                )
                 workspace_dir = collapse_nested_agent_workspace_dir(
-                    Path(self._user_workspace_dir) / get_agent_workspace_relative_dir()
+                    selected_workspace, workspace_dir=selected_workspace,
                 )
             elif is_enterprise():
                 raise SkillWorkspaceUnavailable(
@@ -588,6 +593,9 @@ class AgentManager:
                 agent_id=self.agent_id,
                 service_id=self.service_id,
                 skill_manager=await self._get_or_create_skill_manager(),
+                workspace_key=self._workspace_key,
+                env_service_id=self._env_service_id,
+                env_agent_id=self._env_agent_id,
             )
             setattr(agent, "_env_agent_id", self._env_agent_id)
             setattr(agent, "_env_service_id", self._env_service_id)
@@ -1589,6 +1597,9 @@ class AgentManager:
                 agent_id=self.agent_id,
                 service_id=self.service_id,
                 skill_manager=await self._get_or_create_skill_manager(),
+                workspace_key=self._workspace_key,
+                env_service_id=self._env_service_id,
+                env_agent_id=self._env_agent_id,
             )
             setattr(agent, "_env_agent_id", self._env_agent_id)
             setattr(agent, "_env_service_id", self._env_service_id)

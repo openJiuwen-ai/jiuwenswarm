@@ -56,7 +56,9 @@ def _stub_get_config_file() -> Path:
     return _STUB_CONFIG
 
 
-def _stub_get_agent_workspace_dir() -> Path:
+def _stub_get_agent_workspace_dir(*, agent_root: Path | str | None = None, **kwargs) -> Path:
+    if agent_root is not None:
+        return _REAL_GET_AGENT_WORKSPACE_DIR(agent_root=agent_root, **kwargs)
     return _STUB_WORKSPACE
 
 

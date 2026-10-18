@@ -590,7 +590,7 @@ def _remap_legacy_workspace_prefix(path: str) -> str:
             if old_dir.exists():
                 # 旧目录还在（迁移未执行/未完成），不干预
                 return raw
-            new_dir = old_dir.parent / "jiuwenclaw_workspace"
+            new_dir = get_agent_workspace_dir(agent_root=old_dir.parent, use_provider=False)
             if not new_dir.is_dir():
                 return raw
             tail = os.path.relpath(normalized, current)

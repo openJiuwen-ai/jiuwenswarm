@@ -28,6 +28,7 @@ parse_dotenv_early("jiuwenswarm-agentserver")
 
 
 from jiuwenswarm.common.utils import (
+    get_agent_workspace_dir,
     get_env_file,
     get_logs_dir,
     get_user_workspace_dir,
@@ -44,7 +45,9 @@ migrate_legacy_user_config_if_needed()
 # Ensure workspace initialized
 _workspace_dir = get_user_workspace_dir()
 _config_file = _workspace_dir / "config" / "config.yaml"
-_new_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
+_new_workspace = get_agent_workspace_dir(
+    agent_root=_workspace_dir / "agent", use_provider=False,
+)
 _old_workspace = _workspace_dir / "agent" / "workspace"
 if not _config_file.exists() or (_old_workspace.exists() and not _new_workspace.exists()):
     prepare_workspace(overwrite=False)
@@ -335,9 +338,10 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
     await extension_manager.load_all_extensions()
     from jiuwenswarm.common.config import clear_config_cache
     from jiuwenswarm.common.path_provider import PathCategory, get_path_provider
-    from jiuwenswarm.common.utils import _dispatch_path, setup_logger
+    from jiuwenswarm.common.utils import _dispatch_path, prepare_provider_workspace, setup_logger
 
     clear_config_cache()
+    prepare_provider_workspace()
     logs_override = _dispatch_path(PathCategory.LOGS)
     rebuild_logger = get_path_provider() is not None and logs_override is not None
     if rebuild_logger:
