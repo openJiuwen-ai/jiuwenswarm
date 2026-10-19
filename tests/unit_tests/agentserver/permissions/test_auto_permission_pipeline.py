@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock
 
 import jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool as before_tool_module
 import jiuwenswarm.agents.harness.common.rails.permissions.tool_binding as tool_binding_module
-import jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.reviewer_override_consume as override_module
 import pytest
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.foundation.tool import LocalFunction, ToolCard, ToolExposure
@@ -599,7 +598,7 @@ async def test_exact_session_deny_precedes_engine_allow_and_reviewer(tmp_path) -
     assert base.calls == []
 
 
-async def test_generic_mcp_keeps_manual_ceiling(tmp_path) -> None:
+async def test_generic_mcp_honors_complete_policy_allow(tmp_path) -> None:
     rail, policy, reviewer, base = _rail(
         tmp_path,
         PolicyEvaluation(level="allow", reason="engine_allow"),
@@ -611,7 +610,7 @@ async def test_generic_mcp_keeps_manual_ceiling(tmp_path) -> None:
         session_id="session-a",
     )
 
-    assert classify_permission_result(result) == "interrupt"
+    assert classify_permission_result(result) == "allow"
     assert len(policy.calls) == 1
     assert reviewer.requests == []
     assert base.calls == []
@@ -987,7 +986,7 @@ async def test_reviewer_cancellation_finishes_only_active_permission_card(
     assert queue.begin_cutover(root_session_id="session-a") is False
 
 
-async def test_auto_manual_session_choice_reuses_core_state_before_reviewer(
+async def test_existing_eligible_core_state_is_consumed_before_reviewer(
     tmp_path, monkeypatch
 ) -> None:
     rail, policy, reviewer, base = _rail(
@@ -998,28 +997,9 @@ async def test_auto_manual_session_choice_reuses_core_state_before_reviewer(
     session = _Session()
     args = {"file_path": str(tmp_path / "report.md")}
     ctx = _runtime_ctx(session, tool_name="edit_file", tool_args=args)
-    monkeypatch.setattr(
-        override_module,
-        "root_permission_resume_from_context",
-        lambda _ctx: SimpleNamespace(card=SimpleNamespace(auto_manual=True)),
-    )
-    invocation = before_tool_module._extract_invocation((ctx,), {})
-    facts = build_tool_decision_facts(
-        "edit_file",
-        args,
-        workspace_root=tmp_path,
-        original_args_were_valid_object=True,
-    )
-
-    first = await rail._consume_reviewer_override(
-        facts,
-        invocation=invocation,
-        user_input={"approved": True, "auto_confirm": True, "feedback": ""},
-        domain_route=None,
-    )
-
-    assert first.handled is True
-    assert session.get_state(INTERRUPT_AUTO_CONFIRM_KEY) == {"edit_file": True}
+    # Pre-existing Core markers keep their original eligibility; new remember
+    # choices are covered through real files in test_shared_remember_chain.
+    session.update_state({INTERRUPT_AUTO_CONFIRM_KEY: {"edit_file": True}})
 
     monkeypatch.setattr(
         before_tool_module,
@@ -1056,40 +1036,24 @@ async def test_session_auto_confirm_cannot_bypass_unknown_manual_ceiling(
     assert reviewer.requests == []
 
 
-async def test_resource_scoped_external_send_never_uses_tool_key_remember(
-    tmp_path,
-    monkeypatch,
-) -> None:
+async def test_resource_scoped_external_send_never_uses_tool_key_remember(tmp_path):
     rail, _policy, _reviewer, base = _rail(
-        tmp_path,
-        PolicyEvaluation(level="ask", reason="default_ask"),
+        tmp_path, PolicyEvaluation(level="ask", reason="default_ask"),
     )
     _install_core_auto_confirm_contract(base)
     session = _Session()
     args = {"file_path": str(tmp_path / "report.md")}
     ctx = _runtime_ctx(session, tool_name="upload_file", tool_args=args)
-    monkeypatch.setattr(
-        override_module,
-        "root_permission_resume_from_context",
-        lambda _ctx: SimpleNamespace(card=SimpleNamespace(auto_manual=True)),
-    )
+    session.update_state({INTERRUPT_AUTO_CONFIRM_KEY: {"upload_file": True}})
     invocation = before_tool_module._extract_invocation((ctx,), {})
     facts = build_tool_decision_facts(
-        "upload_file",
-        args,
-        workspace_root=tmp_path,
+        "upload_file", args, workspace_root=tmp_path,
         original_args_were_valid_object=True,
     )
-
-    result = await rail._consume_reviewer_override(
-        facts,
-        invocation=invocation,
-        user_input={"approved": True, "auto_confirm": True, "feedback": ""},
-        domain_route=None,
+    result = rail._consume_session_auto_confirm(
+        facts, invocation=invocation, user_input=None, domain_route=None,
     )
-
-    assert result.handled is True
-    assert session.get_state(INTERRUPT_AUTO_CONFIRM_KEY) in (None, {})
+    assert result.handled is False
 
 
 async def test_ineligible_auto_manual_never_reaches_core_session_remember(
