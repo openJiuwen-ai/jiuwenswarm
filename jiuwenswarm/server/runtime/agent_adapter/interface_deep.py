@@ -10967,7 +10967,7 @@ class JiuWenSwarmDeepAdapter:
         }
 
     def _capture_permission_version(self) -> tuple[str, dict[str, Any], dict[str, Any]]:
-        """Capture D from the storage owner, including overlay-only changes."""
+        """Capture graph authority; User/Session overlays refresh per tool call."""
         from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
             capture_permission_layers,
         )
@@ -10981,6 +10981,7 @@ class JiuWenSwarmDeepAdapter:
         effective = compose_host_effective_permissions(
             global_permissions=layers[0], user_permissions=layers[1],
             session_permissions=layers[2], session_id=sid,
+            auto_mode=is_auto_permission_enabled(layers[0]),
         )
         epoch = self._stable_reload_fingerprint({
             "session_id": sid,
@@ -10989,7 +10990,7 @@ class JiuWenSwarmDeepAdapter:
                 if is_auto_permission_enabled(layers[0]) and self._auto_permission_capability_enabled()
                 else self._permission_workspace_root
             ),
-            "layers": layers,
+            "global": layers[0],
         })
         return epoch, layers[0], effective
 
