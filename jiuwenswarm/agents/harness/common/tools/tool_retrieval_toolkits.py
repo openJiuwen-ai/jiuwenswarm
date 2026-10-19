@@ -1,7 +1,7 @@
 """Static in-code tool category catalogue for progressive ``tool_search``.
 
-The deferred-tool directory is a two-level category tree frozen into this
-module (``_TOOL_CATEGORIES``): category path → description + member tool
+The deferred-tool directory is a flat category table frozen into this
+module (``_TOOL_CATEGORIES``): category name → description + member tool
 names. ``tool_search`` serves ``list`` (category navigation, names + short
 descriptions) and ``get_schema`` (the ``{name, description, schema}`` record
 for one tool) by rendering that static table against the live deferred
@@ -17,7 +17,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 from collections.abc import Callable
 from typing import Any, NamedTuple
 
@@ -37,10 +36,10 @@ class ToolCategory(NamedTuple):
     tools: tuple[str, ...]
 
 
-# The static category tree. Category lines are description-only (tool names
-# are discovered through tool_search's list); two-level paths render as
-# ``scheduling > cron``. Membership lists the stable built-in deferred tools;
-# names not present in the live registry are skipped at render time.
+# The static category table — flat names, no hierarchy. Category lines are
+# description-only (tool names are discovered through tool_search's list).
+# Membership lists the stable built-in deferred tools; names not present in
+# the live registry are skipped at render time.
 _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
     ToolCategory(
         path="documents",
@@ -68,12 +67,41 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         tools=("get_current_goal", "submit_goal_report"),
     ),
     ToolCategory(
+        path="image-processing",
+        description="使用视觉模型处理图片：OCR 文字提取与图片问答。",
+        tools=("image_ocr", "visual_question_answering"),
+    ),
+    ToolCategory(
+        path="audio-processing",
+        description="使用音频模型处理音频：语音转写、音频问答与元数据提取。",
+        tools=(
+            "audio_metadata",
+            "audio_question_answering",
+            "audio_transcription",
+        ),
+    ),
+    ToolCategory(
+        path="video-understanding",
+        description="使用视频理解模型分析视频内容并回答相关问题。",
+        tools=("video_understanding",),
+    ),
+    ToolCategory(
+        path="image-generation",
+        description="文生图：按文字提示词生成图片并保存到工作区。",
+        tools=("generate_image", "generate_visual"),
+    ),
+    ToolCategory(
+        path="video-generation",
+        description="文生视频：提交视频生成任务，按任务号轮询进度并下载结果。",
+        tools=("generate_video", "check_video_status"),
+    ),
+    ToolCategory(
         path="modes",
         description="在 normal 与 plan 两种会话模式之间切换当前会话。",
         tools=("switch_mode",),
     ),
     ToolCategory(
-        path="scheduling > cron",
+        path="cron",
         description=(
             "cron 定时任务的创建、更新、删除、查询、启停、预览执行时间与手动触发。"
         ),
@@ -89,7 +117,7 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         ),
     ),
     ToolCategory(
-        path="scheduling > heartbeat",
+        path="heartbeat",
         description=(
             "绑定当前会话的心跳跟进任务的创建、更新、删除、查询、启停、预览触发时间、"
             "立即运行与取消运行。"
@@ -119,6 +147,21 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
             "session_message_resolve",
             "session_read",
             "session_send_message",
+        ),
+    ),
+    ToolCategory(
+        path="skill-evolution",
+        description=(
+            "本地技能与经验的演进：经用户确认创建演进评审、启动受限评审并接受"
+            "已审查的变更提案，以及演进经验的查询、读取与整理。"
+        ),
+        tools=(
+            "evolve_review_task",
+            "evolve_skill_experiences",
+            "list_skill_experiences",
+            "prepare_skill_evolution",
+            "read_skill_experiences",
+            "simplify_skill_experiences",
         ),
     ),
     ToolCategory(
@@ -167,9 +210,9 @@ def _tool_index_tool_id(session_scope: str) -> str:
 
 
 _TOOL_SEARCH_CARD_DESCRIPTION = (
-    "Deferred-tool catalogue, read-only. list: subcategories and tools "
-    "under [category]. get_schema: the {name, description, schema} of the "
-    "tool named in [tool]; results execute via the fixed tool_call tool. "
+    "Deferred-tool catalogue, read-only. list: tools under [category]. "
+    "get_schema: the {name, description, schema} of the tool named in "
+    "[tool]; results execute via the fixed tool_call tool. "
     "Never executes tools."
 )
 
@@ -228,7 +271,7 @@ def _compact_schema_description(description: str) -> str:
 
 
 def _tool_search_input_params() -> dict[str, Any]:
-    """``tool_search`` card schema: list / get_schema over the category tree.
+    """``tool_search`` card schema: list / get_schema over the category table.
 
     The discovery flow is two-phase to bound tokens: list returns names and
     short descriptions only; get_schema returns the full schema for the tool
@@ -242,14 +285,14 @@ def _tool_search_input_params() -> dict[str, Any]:
                 "type": "string",
                 "enum": ["list", "get_schema"],
                 "description": (
-                    "list: subcategories and tools under [category]. "
+                    "list: tools under [category]. "
                     "get_schema: the schema of the tool named in [tool]."
                 ),
             },
             "category": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Category name or A > B chain. Omit for root.",
+                "description": "Exact category name. Omit for root.",
             },
             "tool": {
                 "type": "string",
@@ -264,20 +307,15 @@ def _tool_search_input_params() -> dict[str, Any]:
 
 
 def _category_key(path: str) -> tuple[str, ...]:
-    """Normalize a category path to a casefolded segment tuple.
+    """Normalize a category name to a casefolded single-segment tuple."""
 
-    ``A > B`` chains, ``A.B`` cid spellings and bare names all normalize to
-    the same key, so the model can copy whichever spelling a line shows.
-    """
-
-    segments = re.split(r"\s*>\s*|\s*\.\s*", str(path or "").strip().casefold())
-    return tuple(segment for segment in segments if segment)
+    return (str(path or "").strip().casefold(),)
 
 
 class ToolRetrievalToolkit:
     """Expose one session-local ``tool_search`` structured tool for deferred tools.
 
-    The catalogue is the in-code ``_TOOL_CATEGORIES`` tree rendered against
+    The catalogue is the in-code ``_TOOL_CATEGORIES`` table rendered against
     the live deferred registry; MCP connector tools stay out of the static
     table and group under their ``mcp_{server}`` virtual branches instead.
     """
@@ -326,7 +364,7 @@ class ToolRetrievalToolkit:
         self._tool_by_name = {tool.name: tool for tool in tools}
 
     def _build_catalogue(self) -> ToolCatalogueSnapshot:
-        """Freeze the static tree against the live registry."""
+        """Freeze the static table against the live registry."""
 
         self._live_records()
         live = self._tool_by_name
@@ -453,7 +491,7 @@ class ToolRetrievalToolkit:
     # ─── tool_search ────────────────────────────────────────────────────
 
     async def tool_search(self, **kwargs: Any) -> str:
-        """Serve one catalogue operation from the static category tree.
+        """Serve one catalogue operation from the static category table.
 
         Token-bounding two-phase flow:
 
@@ -491,7 +529,7 @@ class ToolRetrievalToolkit:
 
         raise ValueError(
             f'tool_search supports {"list", "get_schema"}, not {operation!r}; '
-            'e.g. {"operation":"list","category":"scheduling > cron"} or '
+            'e.g. {"operation":"list","category":"cron"} or '
             '{"operation":"get_schema","tool":"cron_create_job"}'
         )
 
@@ -568,12 +606,10 @@ class ToolRetrievalToolkit:
         return "\n".join(lines)
 
     def _render_category_listing(self, category: str) -> str:
-        """Render one category's member tools, or its subcategory lines.
+        """Render one category's member tools.
 
-        A full-path match lists the category's tools; a parent path (e.g.
-        ``scheduling``) lists its subcategories, mirroring the root's
-        category lines. Anything else raises with the valid names so the
-        model can retry without probing.
+        A name match lists the category's tools; anything else raises with
+        the valid names so the model can retry without probing.
         """
 
         requested = _category_key(category)
@@ -589,19 +625,6 @@ class ToolRetrievalToolkit:
                 f"- [tool] {name}: "
                 f"{_compact_schema_description(self._tool_by_name[name].description)}"
                 for name in matched.tools
-            )
-            return "\n".join(lines)
-
-        children = []
-        for candidate in self._live_categories():
-            path_key = _category_key(candidate.path)
-            if path_key[: len(requested)] == requested and len(path_key) > len(requested):
-                children.append(candidate)
-        if children:
-            lines = [f"## Tool categories (under: {category})", ""]
-            lines.extend(
-                f"- [category] {child.path}: {child.description}"
-                for child in children
             )
             return "\n".join(lines)
 
