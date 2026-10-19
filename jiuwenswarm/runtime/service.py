@@ -1813,9 +1813,28 @@ class AgentRuntime:
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
-                events = await self._deliver_control(
-                    request, on_control_event=on_control_event,
-                )
+                if (
+                    request.params.get("source") in {"ask_user_interrupt", "confirm_interrupt"}
+                    and self._session_coordinator.control_target_work_kind(
+                        request.session_id or "default", self._control_request_id(request)
+                    ) is not SessionWorkKind.HEARTBEAT
+                ):
+                    async with aclosing(self._stream_with_runtime_context(
+                        self._stream_question_answer(request)
+                    )) as events:
+                        async for event in events:
+                            yield event
+                    return
+                # The resumed turn runs inside this await, before the loop
+                # below binds the Runtime. Bind it here as ``invoke`` does so
+                # the turn can reach host services such as Session messaging.
+                token = set_runtime_context(self, self._agent_manager)
+                try:
+                    events = await self._deliver_control(
+                        request, on_control_event=on_control_event,
+                    )
+                finally:
+                    reset_runtime_context(token)
                 for event in events:
                     yield event
                 return
@@ -2284,6 +2303,41 @@ class AgentRuntime:
                 )
                 await self._mark_pending_interaction(event)
                 yield event
+
+    async def _stream_question_answer(
+        self,
+        request: AgentRequest,
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Stream a compatibility question or confirmation under control admission.
+
+        The unary control API deliberately collects a complete turn. WebSocket
+        chat.send answers must instead expose each event while the turn runs.
+        Heartbeat controls retain their existing owner and completion policy.
+        """
+        session_id = request.session_id or "default"
+        request_id = self._control_request_id(request)
+        begin_control = getattr(self._admission_controller, "begin_control", None)
+        end_control = getattr(self._admission_controller, "end_control", None)
+        admitted = callable(begin_control) and callable(end_control)
+        if admitted:
+            await begin_control(session_id)
+        try:
+            stream = self._session_coordinator.deliver_control_stream(
+                session_id,
+                request_id,
+                lambda: self._stream_control_started(request),
+                suspension_key=self._waiting_control_id,
+            )
+            async with aclosing(stream):
+                async for event in stream:
+                    yield event
+        except BaseException:
+            if self._session_coordinator.has_control_target(session_id, request_id):
+                await self._mark_pending_interaction_id(session_id, request_id)
+            raise
+        finally:
+            if admitted:
+                await end_control(session_id)
 
     async def _deliver_control(
         self,
