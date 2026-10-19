@@ -234,3 +234,37 @@ async def test_transcribe_task_audio_websocket_surfaces_task_failed():
         server.close()
         await server.wait_closed()
     assert error.value.code == "ASR_UPSTREAM_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_task_audio_websocket_handshake_rejected():
+    from websockets.datastructures import Headers
+    from websockets.http11 import Response
+
+    def reject(_conn, _request):
+        return Response(401, "Unauthorized", Headers(), b"invalid api key")
+
+    server = await websockets.serve(
+        lambda conn: pytest.fail("handshake must be rejected"),
+        "127.0.0.1",
+        0,
+        process_request=reject,
+    )
+    port = server.sockets[0].getsockname()[1]
+    try:
+        with pytest.raises(TaskAsrError, match="401") as error:
+            await transcribe_task_audio(
+                {
+                    "audio_base64": base64.b64encode(_wav_bytes(b"\x00\x00" * 1600)).decode(),
+                    "mime_type": "audio/wav",
+                },
+                environ={
+                    "ASR_API_BASE": f"ws://127.0.0.1:{port}",
+                    "ASR_API_KEY": "wrong-key",
+                    "ASR_MODEL_NAME": "qwen-audio-3.0-asr-flash-streaming",
+                },
+            )
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert error.value.code == "ASR_UPSTREAM_ERROR"

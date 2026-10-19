@@ -23,8 +23,16 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-import websockets
-from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, WebSocketException
+
+try:  # websockets >= 13: asyncio client takes ``additional_headers``.
+    from websockets.asyncio.client import connect as _ws_connect
+
+    _WS_HEADERS_KWARG = "additional_headers"
+except ImportError:  # websockets 12 (pyproject allows >=12): legacy client.
+    from websockets.legacy.client import connect as _ws_connect
+
+    _WS_HEADERS_KWARG = "extra_headers"
 
 
 MAX_TASK_ASR_AUDIO_BYTES = 25 * 1024 * 1024
@@ -37,6 +45,7 @@ _DASHSCOPE_WS_PATH = "/api-ws/v1/inference"
 # run-task parameters: 16 kHz mono 16-bit PCM, sent in 100 ms chunks.
 _PCM_SAMPLE_RATE = 16000
 _PCM_CHUNK_BYTES = _PCM_SAMPLE_RATE * 2 // 10
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 _AUDIO_EXTENSIONS = {
     "audio/flac": ".flac",
@@ -160,6 +169,10 @@ def _to_pcm16k(audio: bytes, extension: str) -> bytes:
         source = os.path.join(tmp, f"recording{extension}")
         with open(source, "wb") as handle:
             handle.write(audio)
+        kwargs: dict[str, Any] = {}
+        # Frozen Windows builds are console=False; hide the ffmpeg console window.
+        if os.name == "nt":
+            kwargs["creationflags"] = _CREATE_NO_WINDOW
         try:
             result = subprocess.run(
                 [
@@ -169,9 +182,11 @@ def _to_pcm16k(audio: bytes, extension: str) -> bytes:
                     "-ac", "1", "-ar", str(_PCM_SAMPLE_RATE),
                     "pipe:1",
                 ],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=_TASK_ASR_TIMEOUT_SECONDS,
                 check=False,
+                **kwargs,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise TaskAsrError(f"录音格式转换失败: {exc}", "ASR_AUDIO_DECODE_FAILED") from exc
@@ -212,9 +227,9 @@ async def _run_dashscope_task(endpoint: str, api_key: str, model: str, pcm: byte
                 )
             return event, message
 
-    async with websockets.connect(
+    async with _ws_connect(
         endpoint,
-        additional_headers=headers,
+        **{_WS_HEADERS_KWARG: headers},
         open_timeout=_TASK_ASR_CONNECT_TIMEOUT_SECONDS,
         close_timeout=5,
         max_size=8 * 1024 * 1024,
@@ -266,10 +281,17 @@ async def _transcribe_via_dashscope_ws(
         )
     except asyncio.TimeoutError as exc:
         raise TaskAsrError("任务对话 ASR 请求超时", "ASR_TIMEOUT") from exc
-    except InvalidStatus as exc:
+    except InvalidHandshake as exc:
+        # InvalidStatus (asyncio client) / InvalidStatusCode (legacy client).
+        response = getattr(exc, "response", None)
+        status = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+        if status is not None:
+            raise TaskAsrError(
+                f"任务对话 ASR 请求失败 ({status}): 握手被拒绝，请检查 API Key 和地址",
+                "ASR_UPSTREAM_ERROR",
+            ) from exc
         raise TaskAsrError(
-            f"任务对话 ASR 请求失败 ({exc.response.status_code}): 握手被拒绝",
-            "ASR_UPSTREAM_ERROR",
+            f"无法连接任务对话 ASR 服务: {exc}", "ASR_CONNECTION_ERROR"
         ) from exc
     except ConnectionClosed as exc:
         raise TaskAsrError(
