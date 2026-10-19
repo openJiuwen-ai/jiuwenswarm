@@ -577,17 +577,21 @@ test('collaboration menu supports keyboard navigation and Escape restores focus'
   });
 });
 
-test('no groups guides to the existing models settings, with no MoA status request', async () => {
-  await withFixture(async ({ mount, click, byId, dom }) => {
-    useSessionStore.getState().setAvailableModelGroups([]);
-    setMultiModelCollaborationEnabled(true);
-    const events = [];
-    dom.window.addEventListener('jiuwen:settings-module', event => events.push(event.detail));
-    await mount(createElement(ChatModelSelector));
-    await click(byId('chat-panel-model-selector-create-group'));
-    assert.deepEqual(events, ['models']);
+for (const mode of ['agent', 'team']) {
+  test(`${mode}: no model groups leaves the ordinary model picker without an extra prompt`, async () => {
+    await withFixture(async ({ mount, click, byId }) => {
+      useSessionStore.getState().setAvailableModelGroups([]);
+      useSessionStore.getState().setMode(sessionId, mode);
+      setMultiModelCollaborationEnabled(true);
+      await mount(createElement(ChatModelSelector));
+      assert.equal(byId('chat-panel-model-selector-create-group'), null);
+      assert.equal(byId('chat-panel-model-selector-trigger').textContent, 'Configured A');
+      await click(byId('chat-panel-model-selector-trigger'));
+      assert.ok(byId('chat-panel-model-selector-menu').querySelector('[data-variant="configured-b"]'));
+      assert.equal(byId('chat-panel-model-selector-group-option'), null);
+    });
   });
-});
+}
 
 test('stable choices survive draft, creation, metadata restore and fork without enhancement state', async () => {
   await withFixture(async () => {

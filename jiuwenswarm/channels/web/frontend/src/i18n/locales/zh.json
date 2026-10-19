@@ -1404,8 +1404,7 @@
       "empty": "暂无可用模型，请先在设置中添加模型",
       "placeholder": "选择模型",
       "selectOrdinaryModel": "请选择普通模型",
-      "collaborationDisabled": "多模型协同已关闭，请选择普通模型后发送。",
-      "noModelGroups": "尚无模型组，前往设置创建模型组。"
+      "collaborationDisabled": "多模型协同已关闭，请选择普通模型后发送。"
     },
     "contextUsage": {
       "title": "上下文用量",

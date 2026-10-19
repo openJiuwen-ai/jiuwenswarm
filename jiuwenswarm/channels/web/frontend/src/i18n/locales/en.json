@@ -1420,8 +1420,7 @@
       "empty": "No models available. Add a model in Settings first.",
       "placeholder": "Select Model",
       "selectOrdinaryModel": "Select an individual model",
-      "collaborationDisabled": "Multi-model collaboration is off. Select an individual model before sending.",
-      "noModelGroups": "No model groups yet. Create one in Settings."
+      "collaborationDisabled": "Multi-model collaboration is off. Select an individual model before sending."
     },
     "contextUsage": {
       "title": "Context usage",

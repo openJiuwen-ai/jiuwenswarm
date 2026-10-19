@@ -99,16 +99,6 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
         disabled={disabled}
         onAddModel={openModelSettings}
       />
-      {singleAgent && collaborationEnabled && !hasSelectableGroup ? (
-        <button
-          type="button"
-          className="text-text-link text-xs"
-          onClick={openModelSettings}
-          data-testid="chat-panel-model-selector-create-group"
-        >
-          {t('chat.modelSelector.noModelGroups')}
-        </button>
-      ) : null}
       {selectionError ? (
         <div className="chat-model-selector__error" role="alert" data-testid="chat-panel-model-selector-error">
           {selectionError}
