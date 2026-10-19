@@ -311,18 +311,26 @@ class WebSocketAgentServerClient(AgentServerClient):
 
                     # 使用锁保护队列访问，避免竞态条件
                     async with self._queue_lock:
-                        # 检查是否是已取消的请求，静默丢弃消息。
-                        # 不放宽为"rid 已有新 queue 就放行"——_drain_and_remove_queue
-                        # 删 queue 后会保留 _cancelled_request_ids 标记 2s，若在此窗口内
-                        # 新请求复用同 rid 并建新 queue，放行旧请求的残余响应会串进新请求
-                        # 的 queue，导致新请求拿到错误响应（响应串线，比超时更危险）。
-                        # send_request 已有 "duplicate in-flight request_id" 防护（402行），
-                        # 正常路径下 queue 不被提前删；此处 2s 丢弃窗口仅针对已取消的残余。
+                        # 已取消请求的迟到帧：静默丢弃。
+                        # 不放宽为"rid 已有新 queue 就放行"——弃单（超时/取消）后旧请求
+                        # 的迟到响应可能晚于新请求注册到达，放行会串进新请求的 queue，
+                        # 导致新请求拿到错误响应（响应串线，比超时更危险）。
+                        # 该 2s 丢弃窗口只针对弃单残余；unary 正常完成后不再立此标记
+                        # （见 _drain_and_remove_queue），复用同 rid 的新请求不受影响。
                         if request_id in self._cancelled_request_ids:
-                            logger.debug(
-                                "[WebSocketAgentServerClient] 收到已取消请求的残余消息，已丢弃: request_id=%s",
-                                request_id
-                            )
+                            if request_id in self._message_queues:
+                                # 墓碑窗口内复用了同 rid：新等待者的响应正在被丢弃，
+                                # 它必将超时——提升为 warning，让这类吞没可观测。
+                                logger.warning(
+                                    "[WebSocketAgentServerClient] 已取消 request_id 被新请求复用，"
+                                    "新请求的响应被丢弃（等待方将超时）: request_id=%s",
+                                    request_id,
+                                )
+                            else:
+                                logger.debug(
+                                    "[WebSocketAgentServerClient] 收到已取消请求的残余消息，已丢弃: request_id=%s",
+                                    request_id
+                                )
                             continue
 
                         if request_id and request_id in self._message_queues:
@@ -560,6 +568,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         queue = asyncio.Queue()
         self._message_queues[rid] = queue
 
+        response_delivered = False
         try:
             # 发送请求
             async with self._lock:
@@ -579,10 +588,14 @@ class WebSocketAgentServerClient(AgentServerClient):
                 )
                 raise AgentServerUnaryTimeout(rid, effective_timeout) from e
             resp = parse_agent_server_wire_unary(data)
+            response_delivered = True
             return resp
         finally:
-            # 清理队列
-            await self._drain_and_remove_queue(rid)
+            # 清理队列。unary 正常送达后不再立"已取消"标记：协议上每个
+            # request_id 恰好一帧响应且已被消费，立标记只会让 2s 窗口内复用
+            # 同 rid 的新请求丢响应（#4940）。超时/取消/解析失败仍按弃单保留
+            # 标记，防止旧请求的迟到帧串进复用同 rid 的新等待者。
+            await self._drain_and_remove_queue(rid, mark_cancelled=not response_delivered)
 
     async def send_request_stream(
         self, envelope: E2AEnvelope
@@ -653,21 +666,31 @@ class WebSocketAgentServerClient(AgentServerClient):
             logger.info("[WebSocketAgentServerClient] 流式接收被取消: request_id=%s", rid)
             raise
         finally:
-            # 清理队列
+            # 清理队列；流式路径保留已取消标记：complete 之后仍可能有重复/迟到
+            # chunk（见 _STREAM_TRAILING_MESSAGE_GRACE_SECONDS），复用同 rid 时
+            # 需由接收循环丢弃，避免串进新等待者。
             await self._drain_and_remove_queue(rid)
 
-    async def _drain_and_remove_queue(self, rid: str) -> None:
-        """清空队列中的残余消息并移除队列，同时标记 request_id 为已取消状态.
+    async def _drain_and_remove_queue(self, rid: str, *, mark_cancelled: bool = True) -> None:
+        """清空队列中的残余消息并移除队列，弃单路径同时标记 request_id 为已取消.
 
-        标记为已取消后，后续到达的残余消息会被 _message_receiver_loop 静默丢弃。
+        Args:
+            mark_cancelled: 是否将 rid 加入 ``_cancelled_request_ids``。unary
+                请求正常送达时传 False——响应已被消费且协议上不会再有该 rid
+                的后续帧，立标记会让 2s 窗口内复用同 rid 的新请求丢响应
+                （#4940）。超时/取消/流式结束等仍可能收到迟到帧的路径保持
+                True，由接收循环丢弃残余，避免串进复用同 rid 的新等待者。
+
+        标记为已取消后，后续到达的残余消息会被 _message_receiver_loop 丢弃。
         使用锁保护，确保操作的原子性。
         """
         async with self._queue_lock:
             queue = self._message_queues.get(rid)
             if queue is None:
                 return
-            # 1. 先标记为已取消，阻止后续消息进入队列
-            self._cancelled_request_ids.add(rid)
+            # 1. 弃单路径：先标记为已取消，阻止迟到消息进入后续复用者的队列
+            if mark_cancelled:
+                self._cancelled_request_ids.add(rid)
             # 2. 删除队列注册
             del self._message_queues[rid]
             # 3. 清空队列中的残余消息（非阻塞）
@@ -684,7 +707,8 @@ class WebSocketAgentServerClient(AgentServerClient):
                 drained_count,
             )
             # 4. 异步延迟清理已取消标记（给 AgentServer 一点时间发送残余消息）
-            asyncio.create_task(self._delayed_cleanup_cancelled_request_id(rid))
+            if rid in self._cancelled_request_ids:
+                asyncio.create_task(self._delayed_cleanup_cancelled_request_id(rid))
 
     async def _delayed_cleanup_cancelled_request_id(self, rid: str) -> None:
         """延迟清理已取消的 request_id 标记.
