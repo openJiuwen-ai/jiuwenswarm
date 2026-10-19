@@ -50,7 +50,7 @@ def _package_file_spec(spec: Any, package: Path) -> dict[str, Any] | None:
     return dumped
 
 
-_KNOWLEDGE_NAME = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
+_KNOWLEDGE_NAME = re.compile(r"^[^\\\x00-\x1f]{1,200}$")
 _PLACEHOLDER = re.compile(r"\$\{(\w+)\}")
 
 
@@ -293,7 +293,7 @@ def _knowledge_relative(name: str):
     if not isinstance(name, str) or _KNOWLEDGE_NAME.fullmatch(name) is None:
         return None
     relative = Path(name)
-    if relative.is_absolute() or ".." in relative.parts or relative.suffix != ".md":
+    if relative.is_absolute() or relative.suffix != ".md" or any(part in {"", ".", ".."} for part in relative.parts):
         return None
     return relative
 

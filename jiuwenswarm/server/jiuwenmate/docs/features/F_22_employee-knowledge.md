@@ -25,6 +25,6 @@
 
 ## 3. 方案
 
-`jiuwenmate.knowledge.list` 返回 `~/.jiuwenswarm/.personal_context/workspace/context` 下的普通 `.md` 页面，名称是相对路径。发布时 `assemble_resources` 只复制所选页面到 `resources/knowledge/<内容摘要>/`。摘要变化才生成新目录，已发布版本仍指向原来的副本。修改副本不改原件。未发布名称、`..` 和符号链接拒绝发布。
+`jiuwenmate.knowledge.list` 返回 `~/.jiuwenswarm/.personal_context/workspace/context` 下的普通 `.md` 页面，名称是相对路径，可以包含中文。反斜杠、`..` 和越出根目录的名称不列出。发布时 `assemble_resources` 只复制所选页面到 `resources/knowledge/<内容摘要>/`。摘要变化才生成新目录，已发布版本仍指向原来的副本。修改副本不改原件。未发布名称、`..` 和符号链接拒绝发布。
 
 员工之后的新任务通过已有办公目录读取能力查看这些副本。已经开始的请求继续使用它接受时的配置版本。
