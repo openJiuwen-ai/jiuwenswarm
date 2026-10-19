@@ -32,6 +32,7 @@ import {
   errorMessage,
   selectableColleagueResources,
   selectableKnowledgePages,
+  selectablePluginPackages,
   withColleagueEdit,
   type ColleagueResourceOption,
   type JiuwenMateModelCatalog,
@@ -168,9 +169,10 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     let active = true;
     setResourceCatalog({ skills: [], connectors: [], plugins: [], knowledge: [], ready: false });
     void (async () => {
-      const [skillsResult, connectorsResult, knowledgeResult] = await Promise.allSettled([
+      const [skillsResult, connectorsResult, pluginsResult, knowledgeResult] = await Promise.allSettled([
         webRequest('skills.list', { with_installed: true }),
         webRequest('mcp.list', { filter: 'local' }),
+        webRequest('plugin_packages.list', { filter: 'mine' }),
         webRequest('jiuwenmate.knowledge.list', {}),
       ]);
       if (!active) return;
@@ -183,7 +185,10 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
       setResourceCatalog({
         skills: side(skillsResult, selected.skills),
         connectors: side(connectorsResult, selected.connectors),
-        plugins: side(skillsResult, selected.plugins),
+        plugins: side(
+          pluginsResult,
+          selectablePluginPackages(pluginsResult.status === 'fulfilled' ? pluginsResult.value : null),
+        ),
         knowledge: side(
           knowledgeResult,
           selectableKnowledgePages(knowledgeResult.status === 'fulfilled' ? knowledgeResult.value : null),

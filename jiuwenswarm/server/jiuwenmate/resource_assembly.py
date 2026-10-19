@@ -30,6 +30,26 @@ _SKILL_DIR = "skills"
 _CONNECTOR_SKILL_DIR = "connector-skills"
 _KNOWLEDGE_DIR = "knowledge"
 _NAME = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _package_file_spec(spec: Any, package: Path) -> dict[str, Any] | None:
+    dumped = spec.model_dump(mode="json")
+    params = dumped.get("params")
+    raw = params.get("file_path") if isinstance(params, dict) else None
+    path = Path(raw) if isinstance(raw, str) and raw else None
+    if path is None or path.is_symlink() or not path.is_file() or not _inside(path, package):
+        return None
+    return dumped
+
+
 _KNOWLEDGE_NAME = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
 _PLACEHOLDER = re.compile(r"\$\{(\w+)\}")
 
@@ -51,6 +71,16 @@ class KnowledgeSource:
 
 
 @dataclass(frozen=True, kw_only=True)
+class PluginSource:
+    """One installed plugin. Skills are copied; tools and rails stay files inside the package."""
+
+    name: str
+    skills: tuple[SkillSource, ...] = ()
+    tools: tuple[dict[str, Any], ...] = ()
+    rails: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True)
 class ConnectorSource:
     """One installed connector. ``entry`` is an MCP server record; skill-only connectors omit it."""
 
@@ -65,6 +95,9 @@ class ResourceCatalog(Protocol):
 
     def skill(self, name: str) -> SkillSource | None:
         """Return the installed skill, or None when that name is not installed."""
+
+    def plugin(self, name: str) -> PluginSource | None:
+        """Return the installed plugin, or None when that name is not installed."""
 
     def plugin_skills(self, name: str) -> tuple[SkillSource, ...] | None:
         """Return the plugin's skill directories, or None when the plugin is not installed."""
@@ -96,12 +129,15 @@ def assemble_resources(
     An empty selection adds nothing, so a colleague that has not chosen resources keeps
     the previous Spec shape. A name that is not installed refuses publication.
     """
-    skills = _selected_skills(capabilities, catalog)
+    plugins = _selected_plugins(capabilities, catalog)
+    skills = _selected_skills(capabilities, catalog, plugins)
     connectors = _selected_connectors(capabilities, catalog)
     manuals = _connector_manuals(connectors)
     pages = _selected_knowledge(capabilities, catalog)
     configs = _connector_configs(agent_id, connectors)
-    if not skills and not configs and not pages and not manuals:
+    plugin_tools = [tool for plugin in plugins for tool in plugin.tools]
+    plugin_rails = [rail for plugin in plugins for rail in plugin.rails]
+    if not skills and not configs and not pages and not manuals and not plugin_tools and not plugin_rails:
         return AssembledResources(spec_fields={}, prompt="")
 
     fields: dict[str, Any] = {}
@@ -119,13 +155,23 @@ def assemble_resources(
                     "include_tools": False,
                     "skill_mode": "all",
                 },
-            }
+            },
+            *plugin_rails,
         ]
         prompt += (
             "\n\n## 已装配技能\n\n"
             f"所选技能和插件的副本在办公目录的 `{relative}/` 下，用相对路径读取。"
             "这些副本只属于这个同事，修改它们不会改动技能库原件。"
             "不使用 bash、code 或其他需要人工确认的命令。"
+        )
+    elif plugin_rails:
+        fields["rails"] = list(plugin_rails)
+    if plugin_tools:
+        fields["tools"] = list(plugin_tools)
+    if plugin_tools or plugin_rails:
+        prompt += (
+            "\n\n## 已装配插件\n\n"
+            "所选插件的工具和护栏已经写入这个同事的当前发布版本，文件仍在已安装的插件包内。"
         )
     if configs:
         fields["mcps"] = configs
@@ -187,20 +233,31 @@ def _connector_configs(agent_id: str, connectors: tuple[ConnectorSource, ...]) -
     return configs
 
 
-def _selected_skills(capabilities: CapabilitySelection, catalog: ResourceCatalog) -> tuple[SkillSource, ...]:
+def _selected_plugins(capabilities: CapabilitySelection, catalog: ResourceCatalog) -> tuple[PluginSource, ...]:
+    found = []
+    for name in capabilities.plugins:
+        source = catalog.plugin(name)
+        if source is None:
+            raise PersistentAgentError(f"plugin is not installed: {name}", code="RESOURCE_NOT_INSTALLED")
+        if not source.skills and not source.tools and not source.rails:
+            raise PersistentAgentError(f"plugin has no capability: {name}", code="RESOURCE_NOT_INSTALLED")
+        found.append(source)
+    return tuple(found)
+
+
+def _selected_skills(
+    capabilities: CapabilitySelection,
+    catalog: ResourceCatalog,
+    plugins: tuple[PluginSource, ...],
+) -> tuple[SkillSource, ...]:
     chosen: dict[str, SkillSource] = {}
     for name in capabilities.skills:
         source = catalog.skill(name)
         if source is None:
             raise PersistentAgentError(f"skill is not installed: {name}", code="RESOURCE_NOT_INSTALLED")
         _accept(chosen, _checked(source))
-    for name in capabilities.plugins:
-        sources = catalog.plugin_skills(name)
-        if sources is None:
-            raise PersistentAgentError(f"plugin is not installed: {name}", code="RESOURCE_NOT_INSTALLED")
-        if not sources:
-            raise PersistentAgentError(f"plugin has no skill directory: {name}", code="RESOURCE_NOT_INSTALLED")
-        for source in sources:
+    for plugin in plugins:
+        for source in plugin.skills:
             _accept(chosen, _checked(source))
     return tuple(chosen[name] for name in sorted(chosen))
 
@@ -416,9 +473,20 @@ class InstalledResourceCatalog:
                 return SkillSource(name=name, directory=candidate)
         return None
 
+    def plugin(self, name: str) -> PluginSource | None:
+        if _NAME.fullmatch(name) is None:
+            return None
+        recorded = self._recorded_plugin_skills(name)
+        if recorded is not None:
+            return PluginSource(name=name, skills=recorded)
+        return self._package_plugin(name)
+
     def plugin_skills(self, name: str) -> tuple[SkillSource, ...] | None:
-        plugins = self._plugin_records()
-        match = next((item for item in plugins if item.get("name") == name), None)
+        source = self.plugin(name)
+        return None if source is None else source.skills
+
+    def _recorded_plugin_skills(self, name: str) -> tuple[SkillSource, ...] | None:
+        match = next((item for item in self._plugin_records() if item.get("name") == name), None)
         if match is None:
             return None
         raw_names = match.get("skills")
@@ -430,6 +498,81 @@ class InstalledResourceCatalog:
                 return None
             found.append(source)
         return tuple(found)
+
+    def _package_plugin(self, name: str) -> PluginSource | None:
+        package = self._plugin_package_dir(name)
+        if package is None:
+            return None
+        try:
+            from openjiuwen.harness.resources.extension_loader import load_plugin_package
+
+            loaded = load_plugin_package(package / "manifest.json")
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        skills = []
+        for item in loaded.skills:
+            directory = Path(item.dir)
+            skill_id = directory.name
+            if (
+                _NAME.fullmatch(skill_id) is None
+                or directory.is_symlink()
+                or not (directory / "SKILL.md").is_file()
+                or not _inside(directory, package)
+            ):
+                return None
+            skills.append(SkillSource(name=skill_id, directory=directory.resolve()))
+        tools = []
+        rails = []
+        for spec in loaded.tools:
+            dumped = _package_file_spec(spec, package)
+            if dumped is None:
+                return None
+            tools.append(dumped)
+        for spec in loaded.rails:
+            dumped = _package_file_spec(spec, package)
+            if dumped is None:
+                return None
+            rails.append(dumped)
+        return PluginSource(name=name, skills=tuple(skills), tools=tuple(tools), rails=tuple(rails))
+
+    def _plugin_package_dir(self, name: str) -> Path | None:
+        root = self._plugin_packages_root()
+        found = self._named_package_dir(root, name)
+        if found is not None:
+            return found
+        package_id = self._installed_hub_package_id(root, name)
+        if package_id is None:
+            return None
+        return self._named_package_dir(root, package_id)
+
+    def _plugin_packages_root(self) -> Path:
+        if self._skills_dir is not None:
+            workspace = self._skills_dir.parent
+        else:
+            from jiuwenswarm.common.utils import get_agent_workspace_dir
+
+            workspace = get_agent_workspace_dir()
+        return workspace / "plugins" / "plugin_packages"
+
+    @staticmethod
+    def _named_package_dir(root: Path, name: str) -> Path | None:
+        for kind in ("local", "built_in"):
+            candidate = root / kind / name
+            if (candidate / "manifest.json").is_file() and not candidate.is_symlink():
+                return candidate
+        return None
+
+    @staticmethod
+    def _installed_hub_package_id(root: Path, asset_id: str) -> str | None:
+        from jiuwenswarm.server.runtime.marketplace.hub_install_state import HubInstallStateStore
+
+        record = HubInstallStateStore(root).get(asset_id)
+        if record is None or record.kind != "plugin":
+            return None
+        package_id = record.package_id.strip()
+        if package_id == asset_id or _NAME.fullmatch(package_id) is None:
+            return None
+        return package_id
 
     def connector(self, name: str) -> ConnectorSource | None:
         from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
