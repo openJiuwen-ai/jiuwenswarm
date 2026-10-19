@@ -36,7 +36,7 @@ _results: dict[str, asyncio.Future] = {}
 def resolve_group_members(session_id: str, requested, *, is_first_request: bool):
     """Restore the saved roster; chat messages cannot silently replace it."""
     from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
-    from jiuwenswarm.server.runtime.group_service import read_group
+    from jiuwenswarm.server.runtime.group_service import normalize_group_member, read_group
 
     group = read_group(session_id)
     stored = (
@@ -46,9 +46,12 @@ def resolve_group_members(session_id: str, requested, *, is_first_request: bool)
             "group_members"
         )
     )
+    if stored is not None:
+        stored = [normalize_group_member(member) for member in stored]
     if requested is not None:
         if not isinstance(requested, list):
             raise ValueError("group_members must be an array")
+        requested = [normalize_group_member(member) for member in requested]
         if stored is not None and requested != stored:
             raise ValueError("group roster cannot be replaced by a chat message")
         if stored is None and not is_first_request:
@@ -90,13 +93,13 @@ def assemble_group_members(spec, members: list[dict]) -> None:
         ):
             raise ValueError("group member_name must be valid and unique")
         names.add(name)
-        kind, definition = item.get("kind"), item.get("definition_id")
-        if kind == "expert":
+        kind, definition = item.get("kind"), item.get("id")
+        if kind == "agent_template":
             template = load_agent_template_package(
                 resolve_agent_template_dir(definition) / "manifest.json"
             )
             child = None
-        elif kind == "expert_team":
+        elif kind == "agent_group":
             package = load_agent_group_package_bundle(
                 resolve_agent_group_dir(definition)
             )
@@ -112,7 +115,7 @@ def assemble_group_members(spec, members: list[dict]) -> None:
                 child.enable_organization = False
             _apply_agent_group(child, definition, package)
         else:
-            raise ValueError("group member kind must be expert or expert_team")
+            raise ValueError("group member kind must be agent_template or agent_group")
         base = spec.agents["teammate"]
         agent = _with_agent_template(base.model_copy(deep=True), template)
         prompt = _template_team_prompt(template, base)
@@ -149,6 +152,10 @@ def assemble_group_members(spec, members: list[dict]) -> None:
         )
         if external is not None:
             agent = base.model_copy(deep=True)
+        if external is None:
+            from jiuwenswarm.agents.swarm.group_execution import install_execution_policy
+
+            install_execution_policy(agent)
         prepared.append((name, agent, member))
     for name, agent, member in prepared:
         spec.agents[name] = agent
@@ -171,7 +178,10 @@ class SubmitTeamResult(_GroupTool):
                 description="Submit the final expert-team result to the group proxy. Only submit a final deliverable.",
                 input_params={
                     "type": "object",
-                    "properties": {"result": {"type": "string"}},
+                    "properties": {
+                        "result": {"type": "string"},
+                        "attachments": {"type": "array", "items": {"type": "object"}},
+                    },
                     "required": ["result"],
                 },
             )
@@ -187,7 +197,13 @@ class SubmitTeamResult(_GroupTool):
             return ToolOutput(
                 success=False, error="expert-team execution is not awaiting a result"
             )
-        future.set_result(result)
+        attachments = inputs.get("attachments", [])
+        if not isinstance(attachments, list):
+            return ToolOutput(success=False, error="attachments must be a list")
+        if any(not isinstance(item, dict) for item in attachments):
+            return ToolOutput(success=False, error="attachments must be JSON objects")
+        submission = {"result": result, "attachments": attachments} if attachments else result
+        future.set_result(submission)
         return ToolOutput(success=True, data={"submitted": True})
 
 
@@ -225,14 +241,49 @@ class RunTeam(_GroupTool):
                 [session, self.backend.team_name, self.backend.member_name, run_id]
             ).encode()
         ).hexdigest()
-        lock = _locks.setdefault(key, asyncio.Lock())
+        from jiuwenswarm.server.runtime.group_service import read_group
+
+        managed = read_group(session) is not None
+        lock_key = key
+        if managed:
+            lock_key = json.dumps([session, self.backend.team_name, self.backend.member_name])
+        lock = _locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
+            from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+            execution = None
+            store = GroupExecutions(session)
+            if managed:
+                await store.reconcile()
+                for record in store.read().values():
+                    if record.get("run_key") == key:
+                        execution = record
+                        break
+                if execution is None:
+                    execution = store.active(self.backend.member_name)
+                if execution is None:
+                    execution = (await store.create([self.backend.member_name], task, run_id))[0]
+                if execution["task"] != task:
+                    return ToolOutput(success=False, error="run_team task must match the assigned execution")
+                if execution["status"] in {"failed", "cancelled", "interrupted"}:
+                    return ToolOutput(success=False, error="execution ended; use a new run_id to start another task")
+                execution = await store.update(
+                    execution["execution_id"], run_key=key, execution_kind="team", presentation="card",
+                )
             try:
-                return await self._run(key, task)
+                return await self._run(key, task, execution=execution)
+            except asyncio.CancelledError:
+                if execution is not None:
+                    await store.update(execution["execution_id"], status="cancelled", phase="cancelled")
+                raise
             except (ValueError, OSError, RuntimeError) as exc:
+                if execution is not None:
+                    current = store.get(execution["execution_id"])
+                    if current["phase"] != "publishing":
+                        await store.update(execution["execution_id"], status="failed", phase="failed")
                 return ToolOutput(success=False, error=str(exc))
 
-    async def _run(self, key: str, task: str):
+    async def _run(self, key: str, task: str, *, execution=None):
         from openjiuwen.agent_teams.team_workspace.frontmatter import atomic_write
         from jiuwenswarm.agents.swarm.assembly import enrich_team_spec_for_swarm
 
@@ -290,31 +341,59 @@ class RunTeam(_GroupTool):
                 status="running",
             )
             save()
+            if execution is not None:
+                from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+                await GroupExecutions(self.context.session_id).update(
+                    execution["execution_id"], status="running", phase="executing", team_id=child.team_name,
+                )
             future = asyncio.get_running_loop().create_future()
             _results[key] = future
 
             async def consume():
-                async for chunk in Runner.run_agent_team_streaming(
-                    child, {"query": task}, session=child_session
-                ):
-                    payload = getattr(chunk, "payload", None)
-                    if isinstance(payload, dict) and payload.get("event_type") in {
-                        "team.interact.failed",
-                        "team.error",
-                    }:
-                        raise RuntimeError("expert-team execution failed")
-                    if (
-                        isinstance(payload, dict)
-                        and payload.get("event_type")
-                        in {
-                            "team.idle",
-                            "team.completed",
-                        }
-                        and not future.done()
+                from openjiuwen.agent_teams.context import set_session_id, reset_session_id
+                from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
+
+                handler = None
+                progress_worker = None
+
+                async def watch_progress():
+                    async for event in handler.events():
+                        if event.get("event_type") == "team.task":
+                            await GroupExecutions(self.context.session_id).task_event(execution["execution_id"], event)
+
+                try:
+                    async for chunk in Runner.run_agent_team_streaming(
+                        child, {"query": task}, session=child_session,
                     ):
-                        raise RuntimeError(
-                            "expert team became idle without submitting a result"
-                        )
+                        payload = getattr(chunk, "payload", None)
+                        if not isinstance(payload, dict):
+                            continue
+                        event_type = payload.get("event_type")
+                        if execution is not None:
+                            await GroupExecutions(self.context.session_id).task_event(execution["execution_id"], payload)
+                            if event_type == "team.runtime_ready" and handler is None:
+                                token = set_session_id(child_session)
+                                try:
+                                    monitor = await Runner.get_agent_team_monitor(
+                                        team_name=child.team_name, session_id=child_session, hide_dm=True,
+                                    )
+                                finally:
+                                    reset_session_id(token)
+                                if monitor is not None:
+                                    handler = TeamMonitorHandler(monitor, child_session)
+                                    await handler.start()
+                                    progress_worker = asyncio.create_task(watch_progress())
+                        if event_type in {"team.interact.failed", "team.error"}:
+                            raise RuntimeError("expert-team execution failed")
+                        if event_type in {"team.idle", "team.completed"} and not future.done():
+                            raise RuntimeError("expert team became idle without submitting a result")
+                finally:
+                    if progress_worker is not None:
+                        progress_worker.cancel()
+                        await asyncio.gather(progress_worker, return_exceptions=True)
+                    if handler is not None:
+                        await handler.stop()
 
             worker = asyncio.create_task(consume())
             try:
@@ -324,7 +403,12 @@ class RunTeam(_GroupTool):
                 if future not in done:
                     await worker
                     raise RuntimeError("expert team ended without submitting a result")
-                state.update(result=future.result(), status="completed")
+                submission = future.result()
+                if isinstance(submission, dict):
+                    state.update(submission)
+                else:
+                    state["result"] = submission
+                state["status"] = "completed"
                 save()
             finally:
                 try:
@@ -338,6 +422,18 @@ class RunTeam(_GroupTool):
                     if not state.get("result"):
                         state["status"] = "interrupted"
                         save()
+        if execution is not None:
+            from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+            record = await GroupExecutions(self.context.session_id).finish(
+                execution["execution_id"], self.backend, state["result"], state.get("attachments", []),
+            )
+            state.update(status="delivered", message_id=record["message_id"])
+            save()
+            return ToolOutput(success=True, data={
+                "execution_id": execution["execution_id"], "message_id": record["message_id"],
+                "result": state["result"], "posted_to_group": True,
+            })
         # Stable client ID repairs a crash between result storage and publication.
         posted = await self.backend.append_group_message(
             self.backend.member_name,

@@ -8623,3 +8623,16 @@ def test_wf_spawned_member_event_carries_expert_identity():
     plain = _wf_spawned_member_event("run-1", "team-1", {"id": "a2", "name": "free"}, status="busy")
     assert plain["name"] == "free"
     assert "agent_template" not in plain and "display_name" not in plain
+
+
+def test_group_input_restores_persisted_type_without_per_message_type(monkeypatch):
+    monkeypatch.setattr(team_helpers, "get_session_metadata", lambda *args, **kwargs: {"type": "group_chat"})
+    request = SimpleNamespace(
+        request_id="request", session_id="saved-group",
+        params={"query": "Hello", "mentions": ["advisor"]},
+    )
+    payload = team_helpers._group_chat_input(request, "Hello")
+    assert payload["type"] == "group_chat" and payload["mentions"] == ["advisor"]
+    request.params["type"] = "chat"
+    with pytest.raises(ValueError, match="requires group_chat"):
+        team_helpers._group_chat_input(request, "Hello")
