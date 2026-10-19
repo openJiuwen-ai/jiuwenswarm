@@ -21,10 +21,13 @@ Semantics (user-ruled):
   complete (the original designer executor's contract). Crash / cancel
   recovery is therefore Store-driven: the next trigger simply compiles with
   the completed nodes frozen. No resume bookkeeping, no trigger sequence;
-* a single-node trigger writes its result as the node's ``candidate_*``
-  fields; ``choose_output`` promotes or discards it (frontend revision
-  chooser contract). Full runs and cascade ("rerun from X") overwrite
-  directly — the explicit refresh the user asked for;
+* every trigger (single node / full / cascade) writes its result into the
+  node's current slots the same way: ``history`` is the old-version log (the
+  previous current output is archived before each overwrite, so
+  ``history[-1]`` is the true previous version) and ``text``/``output_ref``/
+  ``output_refs`` always hold the latest accepted output. The legacy
+  ``candidate_*`` fields are no longer written; ``choose_output`` stays only
+  to promote candidates left in pre-existing run records;
 * the run record's ``node_states`` is the cache/history store — per-node
   ``text`` snapshots feed compile-time inlining and ``history`` keeps one
   entry per trigger.
@@ -164,9 +167,10 @@ class RunCoordinator:
         """Execute one trigger.
 
         Full run when ``node_ids`` is None; single node when ``node_ids=[X]``
-        (fresh output lands in ``candidate_*``); "rerun from X" when
-        ``cascade=True`` (X plus its downstream closure re-execute, outputs
-        overwrite directly — the refresh the user explicitly asked for).
+        (fresh output lands in the node's current slots — same as every
+        other trigger type); "rerun from X" when ``cascade=True`` (X plus its
+        downstream closure re-execute, outputs overwrite directly — the
+        refresh the user explicitly asked for).
         """
         async with self._lock:
             self.heal_zombie_runs(graph)
@@ -222,7 +226,6 @@ class RunCoordinator:
     ) -> dict[str, Any]:
         run_id, minted = self._ensure_run_id(graph)
         run = self._load_run(run_id, graph)
-        single = node_ids is not None and not cascade
         journal_path = str(_journal_dir(run_id) / f"{run_id}.jsonl")
         # One eternal swarmflow run id (user-ruled): every trigger executes
         # under the graph's lifelong run id and appends into the same
@@ -272,7 +275,7 @@ class RunCoordinator:
             # the single writer — engine status events and node results both
             # flow through it.
             bridge = DesignEventBridge(
-                run, on_update, store=self._store, single=single, graph=graph
+                run, on_update, store=self._store, graph=graph
             )
 
             script = self._compiler.compile(
@@ -507,12 +510,10 @@ class RunCoordinator:
             bridge.on_node_result(node_id, {"text": text})
 
         # Successful nodes were persisted per node as they completed (the
-        # persist callback); only the canvas-facing output refs remain to
-        # stamp. Full runs and cascade overwrite directly — the explicit
-        # refresh the user asked for; single triggers already landed in
-        # candidate_* awaiting choose_output.
-        if not single:
-            self._write_outputs_to_graph(graph, run)
+        # persist callback); stamp the canvas-facing output refs for every
+        # trigger type — a single run's fresh output must reach the graph
+        # node too, or the canvas keeps showing the previous version.
+        self._write_outputs_to_graph(graph, run)
 
         run["status"] = "completed"
         run["current_node_ids"] = []
@@ -572,7 +573,12 @@ class RunCoordinator:
     # ------------------------------------------------------------------
 
     def choose_output(self, run_id: str, node_id: str, choice: str) -> dict[str, Any]:
-        """Resolve a single-node rerun candidate (``new`` promotes it)."""
+        """Resolve a single-node rerun candidate (``new`` promotes it).
+
+        Legacy compatibility only: triggers no longer write ``candidate_*``
+        fields, so this resolves candidates left in run records created
+        before that change. May later be re-pointed at ``history`` picks.
+        """
         run = self._store.get_run(run_id)
         if run is None:
             raise ValueError(f"designer run not found: {run_id!r}")

@@ -52,3 +52,58 @@ def test_node_failure_is_persisted_with_its_error():
     state = store.saved[-1]["node_states"]["n_brief"]
     assert state["status"] == "failed"
     assert state["error"] == "model timeout"
+
+
+def test_first_result_writes_current_slots_and_double_writes_refs():
+    bridge, store, _pushed = _bridge()
+    ref_a = {"uri": "file:///a.png"}
+
+    bridge.on_node_result("n_brief", {"text": "v1", "output_ref": dict(ref_a)})
+
+    state = store.saved[-1]["node_states"]["n_brief"]
+    assert state["text"] == "v1"
+    assert state["output_ref"] == ref_a
+    # A single-artifact submit also lands in output_refs: list-first
+    # downstream readers must never see a stale set from an earlier version.
+    assert state["output_refs"] == [ref_a]
+    # First version: nothing to archive yet.
+    assert state.get("history", []) == []
+
+
+def test_rerun_archives_previous_version_and_replaces_refs():
+    bridge, store, _pushed = _bridge()
+    ref_a = {"uri": "file:///a.png"}
+    ref_a2 = {"uri": "file:///a2.png"}
+    ref_b = {"uri": "file:///b.png"}
+
+    bridge.on_node_result(
+        "n_brief",
+        {"text": "v1", "output_ref": dict(ref_a), "output_refs": [dict(ref_a), dict(ref_a2)]},
+    )
+    bridge.on_node_result("n_brief", {"text": "v2", "output_ref": dict(ref_b)})
+
+    state = store.saved[-1]["node_states"]["n_brief"]
+    assert state["text"] == "v2"
+    assert state["output_ref"] == ref_b
+    # Full replacement: the v2 single artifact must be the only ref — the
+    # stale a2 from v1 is exactly the old scarf-video bug.
+    assert state["output_refs"] == [ref_b]
+    # Old-version log: history[-1] is the TRUE previous version.
+    assert len(state["history"]) == 1
+    assert state["history"][-1]["text"] == "v1"
+    assert state["history"][-1]["output_ref"] == ref_a
+
+
+def test_text_only_rerun_over_media_node_archives_old_ref():
+    bridge, store, _pushed = _bridge()
+    ref_a = {"uri": "file:///a.png"}
+
+    bridge.on_node_result("n_brief", {"text": "v1", "output_ref": dict(ref_a)})
+    bridge.on_node_result("n_brief", {"text": "v2"})
+
+    state = store.saved[-1]["node_states"]["n_brief"]
+    assert state["text"] == "v2"
+    # Per-field write: no new ref in the product, the current ref is kept.
+    assert state["output_ref"] == ref_a
+    assert state["history"][-1]["text"] == "v1"
+    assert state["history"][-1]["output_ref"] == ref_a
