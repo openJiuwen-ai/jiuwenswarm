@@ -2652,6 +2652,22 @@ class RequestScopedOfficeClawMcpTool(Tool):
             result_content: str | None = None
             if result.content:
                 result_content = getattr(result.content[-1], "text", None)
+            if getattr(result, "isError", False):
+                # T1 统一 schema：框架 extract_mcp_tool_result_content 只取文本
+                # 丢弃 isError，此处在上游包装层补齐失败标记（保留 result 键兼容）
+                failure_text = (
+                    result_content
+                    if isinstance(result_content, str) and result_content.strip()
+                    else "MCP tool reported failure without content"
+                )
+                return {
+                    "status": "error",
+                    "success": False,
+                    "error_code": "mcp_tool_error",
+                    "error_message": failure_text,
+                    "error": failure_text,
+                    "result": result_content,
+                }
             return {"result": result_content}
         except Exception as exc:
             raise build_error(
