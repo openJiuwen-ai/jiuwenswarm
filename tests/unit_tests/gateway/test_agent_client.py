@@ -12,19 +12,13 @@ from openjiuwen_protocol.e2a.wire_codec import (
     encode_agent_response_for_wire,
     parse_agent_server_wire_chunk,
 )
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from agent_gateway.routing import agent_client
-from agent_gateway.routing.agent_client import (
+from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from jiuwenswarm.gateway.routing import agent_client
+from jiuwenswarm.gateway.routing.agent_client import (
     AgentServerUnaryTimeout,
     WebSocketAgentServerClient,
 )
-
-# 复用 request_id 两个测试的外层安全超时。请求自身的超时（0.05s/0.2s）由
-# send_request 内部控制；外层只兜底防挂死。CI 以 xdist 并行跑全量 UT 时事件
-# 循环会被严重拖慢（曾观测到内层 0.2s 定时器延迟 >1s 才触发），1s 的旧值
-# 会把挂起保护误触发成 TimeoutError，故放宽到 5s（内部超时的 25 倍）。
-_OUTER_WAIT_TIMEOUT = 5.0
 
 
 class FakeWebSocket:
@@ -651,7 +645,7 @@ async def test_send_request_delivers_response_when_request_id_reused_after_compl
         task = asyncio.create_task(client.send_request(make_env("first"), timeout=2.0))
         await _wait_for_send(ws, 1)
         ws.respond_unary("rid-reuse-after-done", {"echo": "first"})
-        first = await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+        first = await asyncio.wait_for(task, timeout=1.0)
         assert first.ok is True
         assert first.payload == {"echo": "first"}
 
@@ -659,7 +653,7 @@ async def test_send_request_delivers_response_when_request_id_reused_after_compl
         task = asyncio.create_task(client.send_request(make_env("second"), timeout=2.0))
         await _wait_for_send(ws, 2)
         ws.respond_unary("rid-reuse-after-done", {"echo": "second"})
-        second = await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+        second = await asyncio.wait_for(task, timeout=1.0)
         assert second.ok is True
         assert second.payload == {"echo": "second"}
         assert client.has_message_queue_for_test("rid-reuse-after-done") is False
@@ -675,7 +669,7 @@ async def test_send_request_timeout_keeps_cancel_guard_for_reused_request_id(cap
     防串线的既定取舍：超时后旧请求的响应可能迟到，放行会串进复用同 rid 的
     新等待者。与正常完成路径（不立标记）相区分。
     """
-    target_logger = logging.getLogger("agent_gateway.routing.agent_client")
+    target_logger = logging.getLogger("jiuwenswarm.gateway.routing.agent_client")
     target_logger.addHandler(caplog.handler)
     caplog.set_level(logging.WARNING, logger=target_logger.name)
 
@@ -699,7 +693,7 @@ async def test_send_request_timeout_keeps_cancel_guard_for_reused_request_id(cap
         task = asyncio.create_task(client.send_request(make_env("first"), timeout=0.05))
         await _wait_for_send(ws, 1)
         with pytest.raises(AgentServerUnaryTimeout):
-            await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+            await asyncio.wait_for(task, timeout=1.0)
 
         # 超时后立即复用同 rid；此时回包（旧请求的迟到响应与新请求的响应
         # 在接收侧不可区分）——都应被已取消标记丢弃
@@ -707,7 +701,7 @@ async def test_send_request_timeout_keeps_cancel_guard_for_reused_request_id(cap
         await _wait_for_send(ws, 2)
         ws.respond_unary("rid-reuse-after-timeout", {"echo": "second"})
         with pytest.raises(AgentServerUnaryTimeout):
-            await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+            await asyncio.wait_for(task, timeout=1.0)
         assert "新请求的响应被丢弃" in caplog.text
         assert client.has_message_queue_for_test("rid-reuse-after-timeout") is False
     finally:
