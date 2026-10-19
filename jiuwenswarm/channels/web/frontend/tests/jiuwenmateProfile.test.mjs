@@ -33,10 +33,10 @@ const colleague = {
 const noop = () => undefined;
 
 const catalog = {
-  skills: [{ name: 'report-writer', label: '报告' }],
-  connectors: [{ name: 'feishu', label: '飞书' }],
+  skills: [{ name: 'report-writer', label: '报告', description: '整理周报' }],
+  connectors: [{ name: 'feishu', label: '飞书', description: '' }],
   plugins: [],
-  knowledge: [{ name: 'topics/description.md', label: 'topics/description.md' }],
+  knowledge: [{ name: 'topics/description.md', label: 'topics/description.md', description: '' }],
   ready: true,
 };
 
@@ -61,6 +61,10 @@ test('skills can be changed on the skills page without the pencil', () => {
   assert.match(markup, /data-testid="jiuwenmate-profile-detail"[^>]*data-variant="skills"/);
   assert.match(markup, /添加技能/);
   assert.match(markup, /old-skill/);
+  assert.match(markup, /class="card-grid-auto"/);
+  assert.match(markup, /data-testid="jiuwenmate-profile-resource-card"/);
+  assert.match(markup, /暂无描述/);
+  assert.doesNotMatch(markup, /jiuwenmate-profile__resource-picker/);
   assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-edit"/);
   assert.doesNotMatch(markup, /AI 员工名称/);
 });

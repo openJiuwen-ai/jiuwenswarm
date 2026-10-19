@@ -12,12 +12,13 @@ import {
   SquareArrowOutUpRight,
   Trash2,
   UsersRound,
-  X,
   type LucideIcon,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import feishuIcon from '../../../assets/jiuwenmate/icons/feishu.svg';
+import { ConnectorPickerDrawer } from '../../../components/ConnectorMarket/ConnectorPickerDrawer';
+import { PageCard } from '../../../components/ui';
 import { ActionMenu } from '../components/ActionMenu';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
@@ -592,7 +593,12 @@ function ProfileSectionDetail({
   onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
 }) {
   const { t } = useTranslation();
+  const [resourcePickerOpen, setResourcePickerOpen] = useState(false);
   const title = t(`jiuwenmate.profile.sections.${section}`);
+
+  useEffect(() => {
+    setResourcePickerOpen(false);
+  }, [section]);
 
   if (section === 'persona') {
     return editing ? (
@@ -733,39 +739,28 @@ function ProfileSectionDetail({
           : resourceSection === 'plugins'
             ? 'jiuwenmate.profile.catalogEmptyPlugins'
             : 'jiuwenmate.profile.catalogEmptyKnowledge';
-    const available = (catalog ?? []).filter((option) => !selected.includes(option.name));
-    const menuEmpty = !resourceCatalog?.ready
-      ? t('jiuwenmate.profile.catalogLoading')
-      : catalog === null
-        ? t('jiuwenmate.profile.catalogFailed')
-        : catalog.length === 0
-          ? t(emptyKey)
-          : undefined;
+    const selectedOptions = selected.map(
+      (name) => catalog?.find((option) => option.name === name) ?? { name, label: name, description: '' },
+    );
+    const pickerItems = (catalog ?? []).map((option) => ({
+      id: option.name,
+      name: option.label,
+      description: option.description,
+    }));
     return (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <header>
           <h2>{title}</h2>
-          <ActionMenu
-            label={t(`jiuwenmate.create.add.${resourceSection}`)}
-            className="jiuwenmate-collapsible__add"
-            testId="jiuwenmate-profile-resource-add"
-            trigger={
-              <>
-                <Plus aria-hidden />
-                <span>{t(`jiuwenmate.create.add.${resourceSection}`)}</span>
-              </>
-            }
-            emptyLabel={menuEmpty}
-            items={available.map((option) => ({
-              key: option.name,
-              label: option.label,
-              onSelect: () => changeSelected([...selected, option.name]),
-            }))}
-          />
+          <button
+            type="button"
+            className="jiuwenmate-profile__resource-add"
+            onClick={() => setResourcePickerOpen(true)}
+            data-testid="jiuwenmate-profile-resource-add"
+          >
+            <Plus size={14} aria-hidden />
+            <span>{t(`jiuwenmate.create.add.${resourceSection}`)}</span>
+          </button>
         </header>
-        <p className="jiuwenmate-capability-empty">
-          {t(resourceSection === 'knowledge' ? 'jiuwenmate.profile.knowledgeHint' : 'jiuwenmate.profile.resourcesHint')}
-        </p>
         {resourceSection === 'knowledge' && colleague.workspaceDir ? (
           <div data-testid="jiuwenmate-profile-workspace-dir">
             <dl className="jiuwenmate-profile__facts">
@@ -775,6 +770,9 @@ function ProfileSectionDetail({
               </dd>
             </dl>
           </div>
+        ) : null}
+        {resourceSection === 'knowledge' ? (
+          <p className="jiuwenmate-capability-empty">{t('jiuwenmate.profile.knowledgeHint')}</p>
         ) : null}
         {resourceCatalog && !resourceCatalog.ready ? (
           <p className="jiuwenmate-capability-empty">{t('jiuwenmate.profile.catalogLoading')}</p>
@@ -789,18 +787,22 @@ function ProfileSectionDetail({
           <p className="jiuwenmate-capability-empty">{t(`jiuwenmate.create.empty.${resourceSection}`)}</p>
         ) : null}
         {selected.length > 0 ? (
-          <div className="jiuwenmate-capability-grid">
-            {selected.map((item) => (
-              <span key={item} className="jiuwenmate-capability-chip" data-kind={resourceSection}>
-                <span>{catalog?.find((option) => option.name === item)?.label ?? item}</span>
-                <button
-                  type="button"
-                  aria-label={`${t('jiuwenmate.create.remove')} ${item}`}
-                  onClick={() => changeSelected(selected.filter((value) => value !== item))}
-                >
-                  <X aria-hidden />
-                </button>
-              </span>
+          <div className="card-grid-auto">
+            {selectedOptions.map((option) => (
+              <PageCard
+                key={option.name}
+                testId="jiuwenmate-profile-resource-card"
+                variant={option.name}
+                avatar={{ name: option.label }}
+                title={option.label}
+                description={option.description || t('connectorMarket.common.noDescription')}
+                actionsHover
+                action={{
+                  icon: <Trash2 size={15} aria-hidden />,
+                  tooltip: `${t('jiuwenmate.create.remove')} ${option.label}`,
+                  onClick: () => changeSelected(selected.filter((value) => value !== option.name)),
+                }}
+              />
             ))}
           </div>
         ) : null}
@@ -822,6 +824,31 @@ function ProfileSectionDetail({
             {savingResources ? t('jiuwenmate.profile.savingResources') : t('jiuwenmate.profile.saveResources')}
           </button>
         </div>
+        {resourcePickerOpen ? (
+          <ConnectorPickerDrawer
+            title={t(`jiuwenmate.create.add.${resourceSection}`)}
+            testId="jiuwenmate-profile-resource-picker"
+            status={!resourceCatalog?.ready ? 'loading' : 'success'}
+            items={pickerItems}
+            getItemKey={(item) => item.id}
+            initialSelectedIds={[...selected]}
+            onClose={() => setResourcePickerOpen(false)}
+            onConfirm={(ids) => {
+              changeSelected(ids);
+              setResourcePickerOpen(false);
+            }}
+            searchPlaceholder={t('connectorMarket.common.search')}
+            loadingMessage={t('jiuwenmate.profile.catalogLoading')}
+            emptyMessage={
+              catalog === null
+                ? t('jiuwenmate.profile.catalogFailed')
+                : catalog.length === 0
+                  ? t(emptyKey)
+                  : t('connectorMarket.common.noResult')
+            }
+            fallbackDescription={t('connectorMarket.common.noDescription')}
+          />
+        ) : null}
       </section>
     );
   }

@@ -215,14 +215,15 @@ function filled(values: readonly string[]): string[] {
 export interface ColleagueResourceOption {
   name: string;
   label: string;
+  description: string;
 }
 
 const SELECTABLE_SKILL_TYPES = new Set(['skill', 'swarm_skill', 'multimodal_skill']);
 
-function resourceOption(name: string, label: string): ColleagueResourceOption | null {
+function resourceOption(name: string, label: string, description = ''): ColleagueResourceOption | null {
   const trimmed = name.trim();
   if (!trimmed) return null;
-  return { name: trimmed, label: label.trim() || trimmed };
+  return { name: trimmed, label: label.trim() || trimmed, description: description.trim() };
 }
 
 function uniqueOptions(options: readonly ColleagueResourceOption[]): ColleagueResourceOption[] {
@@ -248,7 +249,7 @@ export function selectableColleagueResources(
       const skillType = text(row.skill_type);
       if (row.source === 'mcp' || row.installed === false || row.enabled === false) return [];
       if (skillType && !SELECTABLE_SKILL_TYPES.has(skillType)) return [];
-      const option = resourceOption(text(row.name), text(row.display_name));
+      const option = resourceOption(text(row.name), text(row.display_name), text(row.description));
       return option ? [option] : [];
     }),
   );
@@ -256,14 +257,18 @@ export function selectableColleagueResources(
     rows(record(connectorsPayload).items).flatMap((item: unknown) => {
       const row = record(item);
       if (text(row.connection_state) !== 'connected') return [];
-      const option = resourceOption(text(row.name), text(row.display_name));
+      const option = resourceOption(text(row.name), text(row.display_name), text(row.description));
       return option ? [option] : [];
     }),
   );
   const plugins = uniqueOptions(
     rows(record(skillsPayload).plugins).flatMap((item: unknown) => {
       const row = record(item);
-      const option = resourceOption(text(row.plugin_name) || text(row.name), text(row.display_name));
+      const option = resourceOption(
+        text(row.plugin_name) || text(row.name),
+        text(row.display_name),
+        text(row.description),
+      );
       return option ? [option] : [];
     }),
   );
@@ -275,7 +280,7 @@ export function selectableKnowledgePages(payload: unknown): ColleagueResourceOpt
   return uniqueOptions(
     rows(record(payload).pages).flatMap((item: unknown) => {
       const row = record(item);
-      const option = resourceOption(text(row.name), text(row.label));
+      const option = resourceOption(text(row.name), text(row.label), text(row.description));
       return option ? [option] : [];
     }),
   );

@@ -3366,6 +3366,23 @@
   justify-content: flex-end;
 }
 
+.jiuwenmate-profile__resource-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--jm-text);
+  background: transparent;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.jiuwenmate-profile__resource-add:hover {
+  color: var(--jm-blue);
+}
+
 .jiuwenmate-profile__block > header,
 .jiuwenmate-office__section-head {
   display: flex;
