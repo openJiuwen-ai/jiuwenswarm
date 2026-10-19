@@ -5,7 +5,7 @@ description: |
   Use when building or refactoring a multi-agent team, generating workflow (工作流/编排) orchestration code, or upgrading a single-agent skill into a collaborating team.
   Do NOT use for ordinary single-agent skills — use create-skill instead.
 description_cn: 创建、转换或修改多角色 Swarm Skill；普通单智能体技能使用 `skill-creator`。
-version: "0.6"
+version: "0.7"
 ---
 
 # Swarm Skill Creator
@@ -147,7 +147,7 @@ Author `workflow.md` using [templates/workflow.md.template](templates/workflow.m
 2. `## Detailed Steps` — numbered steps; each step contains: executor / input / output / serial-or-parallel / **quality gate** (what to do if this step's output fails). The last step contains the final report format template.
 3. `## Acceptance Criteria` — judgement of a successful single run.
 
-Quality gates are the contract surface between stages — design them per [reference/role-design.md](reference/role-design.md) § Gate Design.
+Quality gates are the contract surface between stages — design them per [reference/role-design.md](reference/role-design.md) § Gate Design. When generating an executable script, implement review gates with `verify()` and map both fail and undecided outcomes to the bounded rework/degraded branches in `bind.md`.
 
 ### Stage 3b: Generate `scripts/workflow.py` when requested
 
@@ -165,6 +165,11 @@ Generate `scripts/workflow.py` from [templates/scripts/workflow.py.template](tem
 `workflow_token_limit` in `META` is optional, and its value comes from the user rather than an estimate. Add it only when the user explicitly specifies this workflow's per-run token ceiling. When the user does not specify one, omit `workflow_token_limit`; never invent a default or derive one from another budget.
 
 Choose the interaction primitive from the requested participant and memory semantics: one-shot human input uses `human`, stateful multi-turn human or agent interaction uses the corresponding session primitive, and one-shot agent work continues to use `agent`. A parent may use `workflow(...)` to invoke an existing child workflow, but composition is limited to one level: the child must not call `workflow(...)` again. The final child script path must be absolute and portable across JiuwenClaw installations; derive it from the installed parent script's `__file__`, never from the current working directory, a bare Skill name, `~/.jiuwenswarm`, or a machine-specific user path. The template remains the canonical source for call, path, lifecycle, and resource rules.
+
+Choose capabilities by intent:
+- Quality gates, review rounds, and verdict-based adjudication use `verify()`; the script owns the bounded rework loop.
+- Branching the context of the same stateful agent uses `await session.fork(...)`; each child is an independent session.
+- Routing to an expert member uses `options={"agent_template": "member"}` only when the deployment context guarantees a bound AgentGroup (`agent_group_name`). Otherwise use a generic worker.
 
 For the full Markdown spec + SwarmFlow shape, the final script must match the topology in `workflow.md` and the executable constraints in `bind.md`: same phases, same parallel or sequential structure, same integration point, and no extra hidden workflow that the Markdown spec does not describe.
 
@@ -224,7 +229,7 @@ The validator checks two output shapes:
 **Script-only SwarmFlow**
 - **Structural**: exactly `SKILL.md` + `scripts/workflow.py`; no `roles/`, `workflow.md`, `bind.md`, `dependencies.yaml`, or `prompts/`
 - **SKILL.md**: valid frontmatter plus `## Workflow` and `## Files`; `roles:` omitted or empty
-- **SwarmFlow script safety envelope**: standalone script shape, inline prompts, safe imports, phase/agent consistency, human/session call discipline, portable child-workflow paths and one-level composition, budget guard discipline, schema permissiveness, and blocked runtime patterns
+- **SwarmFlow script safety envelope**: standalone script shape, inline prompts, safe imports, phase/agent consistency, human/session and verify/fork call discipline, literal options keys, portable child-workflow paths and one-level composition, budget guard discipline, schema permissiveness, and blocked runtime patterns
 
 **Exit code 0 = compliant**. Non-zero exit prints the failing checks with file:line references.
 
