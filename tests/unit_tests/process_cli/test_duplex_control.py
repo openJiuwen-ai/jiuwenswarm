@@ -27,25 +27,10 @@ from jiuwenswarm.channels.process_cli.protocol import (
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.interaction import InteractionAnswerInput
-from tests.unit_tests.process_cli.test_machine import FakeClient
-
-
-@pytest.fixture(autouse=True)
-def _isolate_persistent_session_guard(monkeypatch):
-    """Fake Runtime Sessions have no on-disk directory; guard has separate tests."""
-
-    class _Lease:
-        def __init__(self, session_id):
-            self.session_id = session_id
-
-        def acquire(self):
-            pass
-
-        def release(self):
-            pass
-
-    monkeypatch.setattr(machine, "SessionLease", _Lease)
-    monkeypatch.setattr(machine, "bind_agent", lambda *_args, **_kwargs: None)
+from tests.unit_tests.process_cli.test_machine import (
+    FakeClient,
+    _isolate_persistent_session_guard as _isolate_persistent_session_guard,
+)
 
 
 def _event(event_type: str, **payload: Any) -> RuntimeEvent:
@@ -488,6 +473,19 @@ async def test_answer_ack_or_null_completion_waits_for_original_continuation(
 
     assert result.status == "completed"
     assert result.output == "original continuation"
+
+
+@pytest.mark.asyncio
+async def test_fake_continuation_ignores_unrelated_persistence(monkeypatch, run_factory):
+    from jiuwenswarm.channels.process_cli import persistence
+
+    async def congested_real_writes(**_kwargs):
+        await asyncio.sleep(1.1)
+
+    monkeypatch.setattr(persistence, "flush_session_writes", congested_real_writes)
+    await test_answer_ack_or_null_completion_waits_for_original_continuation(
+        "chat.answer_accepted", run_factory,
+    )
 
 
 @pytest.mark.asyncio
