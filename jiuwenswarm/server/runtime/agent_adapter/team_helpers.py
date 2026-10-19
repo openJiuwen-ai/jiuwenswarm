@@ -4913,13 +4913,20 @@ def _wf_spawned_member_event(
     if agent.get("agent_template"):
         event["agent_template"] = agent["agent_template"]
         event["display_name"] = agent.get("display_name") or agent["agent_template"]
-    # Same identity fields the roster uses for real members, so the member
-    # list resolves the same avatar as the workflow tree.
+    # Identity fields the frontend uses to resolve the member's avatar, kept
+    # aligned with the roster so the member list and the workflow tree show
+    # the same face.
     if agent.get("agent_type"):
         event["cli_agent"] = agent["agent_type"]
     elif agent.get("kind") == "human":
+        # ``role`` only drives avatar rendering (the frontend maps
+        # role == "human_agent" to the human face). ``mode == "human"`` is the
+        # human-member flag that opens the "invite a human" share-command card
+        # (the frontend gates that card on mode alone), so it is deliberately
+        # omitted here: a workflow human node is an inline question to the
+        # current session user, not an invitable roster member — keep the
+        # avatar, never fire the invite card.
         event["role"] = TeamRole.HUMAN_AGENT.value
-        event["mode"] = "human"
     return event
 
 
