@@ -16,6 +16,8 @@ jiuwenswarm-process --list-sessions
 
 命令读取当前数据目录中的 Process CLI 会话，展示完整 ID、最近消息时间、模式、标题和项目目录，随后退出。它同时包含 Agent 和 Team 会话，按最近消息时间倒序排列；相同时间按完整 ID 排序。查询不启动 Agent/Runtime，不调用模型，也不写回会话元数据。
 
+列表按本页内容的终端显示宽度对齐，列间至少保留两个空格，首列表头为“会话ID”。完整 ID、标题和项目目录不截断；内容超过终端宽度时可能自然折行。
+
 查询范围是当前数据目录中的全部 Process CLI 会话，不按 CMD 的当前目录自动筛选。Web、TUI 等其他 channel 的会话不在列表中。已归档或标记为临时的会话沿用本地目录查询的过滤规则。
 
 默认数据目录是 `%USERPROFILE%\.jiuwenswarm`；已经设置 `JIUWENSWARM_DATA_DIR` 时使用该目录。查询与续接必须使用同一个数据目录。
