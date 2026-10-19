@@ -27,6 +27,7 @@ from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
 _SKILL_RAIL = "core.skill_use"
 _RESOURCE_DIR = "resources"
 _SKILL_DIR = "skills"
+_CONNECTOR_SKILL_DIR = "connector-skills"
 _KNOWLEDGE_DIR = "knowledge"
 _NAME = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _KNOWLEDGE_NAME = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
@@ -97,9 +98,10 @@ def assemble_resources(
     """
     skills = _selected_skills(capabilities, catalog)
     connectors = _selected_connectors(capabilities, catalog)
+    manuals = _connector_manuals(connectors)
     pages = _selected_knowledge(capabilities, catalog)
     configs = _connector_configs(agent_id, connectors)
-    if not skills and not configs and not pages:
+    if not skills and not configs and not pages and not manuals:
         return AssembledResources(spec_fields={}, prompt="")
 
     fields: dict[str, Any] = {}
@@ -130,6 +132,16 @@ def assemble_resources(
         prompt += (
             "\n\n## 已装配连接器\n\n"
             "所选连接器的配置和凭据只属于这个同事的当前发布版本，不写入进程环境变量，也不替换其他同事的连接。"
+        )
+    if manuals:
+        manual_root = _materialize_skills(office, manuals, directory_name=_CONNECTOR_SKILL_DIR)
+        relative = manual_root.relative_to(office).as_posix()
+        prompt += (
+            "\n\n## 连接器附带说明\n\n"
+            f"所选连接器附带的操作说明在办公目录的 `{relative}/` 下。"
+            "这些说明只在执行对应连接器的任务时按相对路径读取。"
+            "用户询问这个员工有哪些技能时，不要列举或清点这些说明，也不要把个人技能库里没有分配给这个员工的技能说成这个员工的技能。"
+            "只回答已装配技能；没有已装配技能时，直接说明当前没有分配技能。"
         )
     if pages:
         knowledge_root = _materialize_knowledge(office, pages)
@@ -190,10 +202,13 @@ def _selected_skills(capabilities: CapabilitySelection, catalog: ResourceCatalog
             raise PersistentAgentError(f"plugin has no skill directory: {name}", code="RESOURCE_NOT_INSTALLED")
         for source in sources:
             _accept(chosen, _checked(source))
-    for name in capabilities.connectors:
-        source = catalog.connector(name)
-        if source is None:
-            raise PersistentAgentError(f"connector is not installed: {name}", code="RESOURCE_NOT_INSTALLED")
+    return tuple(chosen[name] for name in sorted(chosen))
+
+
+def _connector_manuals(connectors: tuple[ConnectorSource, ...]) -> tuple[SkillSource, ...]:
+    """Skill documents shipped with a connector. They are not the employee's selected skills."""
+    chosen: dict[str, SkillSource] = {}
+    for source in connectors:
         for skill in source.skill_directories:
             _accept(chosen, _checked(skill))
     return tuple(chosen[name] for name in sorted(chosen))
@@ -263,8 +278,13 @@ def _secret_resolver(secrets: Mapping[str, str]):
     return resolve
 
 
-def _materialize_skills(office: Path, skills: tuple[SkillSource, ...]) -> Path:
-    parent = office / _RESOURCE_DIR / _SKILL_DIR
+def _materialize_skills(
+    office: Path,
+    skills: tuple[SkillSource, ...],
+    *,
+    directory_name: str = _SKILL_DIR,
+) -> Path:
+    parent = office / _RESOURCE_DIR / directory_name
     private_dir(parent)
     staging = parent / f".staging-{uuid.uuid4().hex}"
     try:
