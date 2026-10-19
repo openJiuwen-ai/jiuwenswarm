@@ -3592,7 +3592,7 @@ _DEFAULT_SANDBOX_STARTUP_MODE = "internal"
 _DEFAULT_SANDBOX_POLICY_FILE = "code-agent-policy.yaml"
 
 # YuanRong sandbox knobs under flat ``sandbox:`` (see get_sandbox_endpoint).
-_VALID_YUANRONG_EXECUTORS = ("default", "docker")
+_VALID_YUANRONG_EXECUTORS = ("default", "docker", "conch")
 _DEFAULT_YUANRONG_EXECUTOR = "docker"
 _DEFAULT_YUANRONG_URL = "http://yuanrong.local"
 _YUANRONG_ENDPOINT_OPTIONAL_KEYS: tuple[str, ...] = (
