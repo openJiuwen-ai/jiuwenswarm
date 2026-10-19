@@ -339,10 +339,21 @@ class RuntimeSessionCoordinator:
         on_execution: Callable[[SessionExecutionSnapshot], None] | None = None,
     ) -> T:
         """Deliver input to the running Session work without joining its lane."""
-        record, parent, request_id = await self._claim_control_parent(
-            session_id, answered, duplicate="control input is already being delivered"
-        )
-        claimed = parent.waiting_control_ids
+        record = self._require_open_session(session_id)
+        if (
+            self._is_control_claimed(record, request_id)
+            or request_id in record.stream_control_claims
+        ):
+            raise RuntimeError("control input is already being delivered")
+        parent = self._control_parent(record, request_id)
+        if parent is None:
+            raise RuntimeError(f"session has no active execution: {session_id}")
+        claim = (session_id, record.generation, parent.execution_id, request_id)
+        self._control_claims.add(claim)
+        # Everything below belongs to the finally: _new_execution can still
+        # fail, and a leaked claim would make every later answer for this
+        # request_id look already-in-flight. Resuming the parent is deferred
+        # until the child exists, so a failure leaves the parent resumable.
         try:
             handle = self._new_execution(
                 record,
@@ -540,38 +551,32 @@ class RuntimeSessionCoordinator:
             self._release_control_parent(record, parent)
             self._refresh_session_state(record)
 
-    async def _claim_control_parent(
-        self, session_id: str, answered: tuple[str, ...], *, duplicate: str
-    ) -> tuple[_SessionRecord, SessionExecutionHandle, str]:
-        """Claim the execution ``answered`` names once a delivery to it in flight settles, however long that takes."""
-        names = frozenset(answered)
-        while True:
-            record = self._require_open_session(session_id)
-            if any(names <= delivery.answered for delivery in record.deliveries.values()):
-                raise AnswerInFlightError(duplicate)
-            target = self._control_target(record, answered)
-            if target is None:
-                raise NoControlTargetError(f"session has no active execution: {session_id}")
-            parent, request_id = target
-            delivery = record.deliveries.get(parent.execution_id)
-            if delivery is None:
-                record.deliveries[parent.execution_id] = _Delivery(names)
-                return record, parent, request_id
-            await delivery.settled.wait()
-
-    @staticmethod
-    def _release_control_parent(record: _SessionRecord, parent: SessionExecutionHandle) -> None:
-        record.deliveries.pop(parent.execution_id).settled.set()
-
-    def _answered(
-        self, parent: SessionExecutionHandle, claimed: frozenset[str], *, was_waiting: bool
-    ) -> None:
-        parent.waiting_control_ids -= claimed
-        if was_waiting or (
-            parent.state is SessionExecutionState.WAITING_FOR_CONTROL
-            and not parent.waiting_control_ids
+    def _stream_control_parent(
+        self, record: _SessionRecord, request_id: str
+    ) -> SessionExecutionHandle:
+        """Claim only an existing matching interaction, never a fresh turn."""
+        if (
+            request_id in record.stream_control_claims
+            or self._is_control_claimed(record, request_id)
         ):
-            self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
+            raise RuntimeError("interaction answer is already in progress")
+        parents: list[SessionExecutionHandle] = []
+        active = self._registry.select(
+            session_id=record.session_id,
+            generation=record.generation,
+            active_only=True,
+        )
+        for handle in active:
+            if handle.waiting_control_id != request_id:
+                continue
+            if handle.state in {
+                SessionExecutionState.RUNNING,
+                SessionExecutionState.WAITING_FOR_CONTROL,
+            }:
+                parents.append(handle)
+        if not parents:
+            raise RuntimeError(f"session has no active execution: {record.session_id}")
+        return max(parents, key=lambda handle: handle.started_at or handle.created_at)
 
     async def stream_session_input(
         self,

@@ -2274,27 +2274,14 @@ class AgentRuntime:
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
-                # Stream Web answers while the resumed turn runs. Unary invoke
-                # still buffers via _deliver_control; Heartbeat keeps that path.
                 if (
-                    request.params.get("source") in {
-                        "ask_user_interrupt",
-                        "confirm_interrupt",
-                        "permission_interrupt",
-                        CLIENT_TOOL_INTERRUPT_SOURCE,
-                    }
-                    and all(
-                        self._session_coordinator.control_target_work_kind(
-                            request.session_id or "default", control_id
-                        ) is not SessionWorkKind.HEARTBEAT
-                        for control_id in self._control_ids(request)
-                    )
+                    request.params.get("source") in {"ask_user_interrupt", "confirm_interrupt"}
+                    and self._session_coordinator.control_target_work_kind(
+                        request.session_id or "default", self._control_request_id(request)
+                    ) is not SessionWorkKind.HEARTBEAT
                 ):
                     async with aclosing(self._stream_with_runtime_context(
-                        self._stream_question_answer(
-                            request, on_control_event=on_control_event,
-                        ),
-                        request=request,
+                        self._stream_question_answer(request)
                     )) as events:
                         async for event in events:
                             yield event
@@ -2302,9 +2289,7 @@ class AgentRuntime:
                 # The resumed turn runs inside this await, before the loop
                 # below binds the Runtime. Bind it here as ``invoke`` does so
                 # the turn can reach host services such as Session messaging.
-                # Use the tenant-scoped ``manager`` from the caller — AgentRuntime
-                # no longer keeps a parallel ``_agent_manager`` attribute.
-                token = set_runtime_context(self, manager)
+                token = set_runtime_context(self, self._agent_manager)
                 try:
                     events = await self._deliver_control(
                         request, on_control_event=on_control_event,
@@ -2813,45 +2798,34 @@ class AgentRuntime:
     async def _stream_question_answer(
         self,
         request: AgentRequest,
-        *,
-        on_control_event: Callable[[RuntimeEvent], Awaitable[None]] | None = None,
     ) -> AsyncIterator[RuntimeEvent]:
-        """Stream ask_user / confirm / permission / client tool answers under control admission.
+        """Stream a compatibility question or confirmation under control admission.
 
         The unary control API deliberately collects a complete turn. WebSocket
-        chat.send / chat.user_answer resumes must instead expose each event
-        while the turn runs (including permission_interrupt). Heartbeat
-        controls retain their existing owner and completion policy.
+        chat.send answers must instead expose each event while the turn runs.
+        Heartbeat controls retain their existing owner and completion policy.
         """
         session_id = request.session_id or "default"
+        request_id = self._control_request_id(request)
         begin_control = getattr(self._admission_controller, "begin_control", None)
         end_control = getattr(self._admission_controller, "end_control", None)
         admitted = callable(begin_control) and callable(end_control)
         if admitted:
             await begin_control(session_id)
-        execution_id = None
-
-        def remember_execution(execution: SessionExecutionSnapshot) -> None:
-            nonlocal execution_id
-            execution_id = execution.execution_id
-
         try:
-            stream = self._released_after(request, self._session_coordinator.deliver_control_stream(
+            stream = self._session_coordinator.deliver_control_stream(
                 session_id,
-                self._control_ids(request),
+                request_id,
                 lambda: self._stream_control_started(request),
-                interaction_ids=interaction_ids,
-                on_execution=remember_execution,
-            ))
-            with _client_tool_answer_mismatch(request):
-                async with aclosing(stream):
-                    async for event in stream:
-                        if execution_id is not None and isinstance(event.payload, dict):
-                            event.payload["execution_id"] = execution_id
-                        if on_control_event is not None and self._is_permission_control_ack(request, event):
-                            await on_control_event(event)
-                        else:
-                            yield event
+                suspension_key=self._waiting_control_id,
+            )
+            async with aclosing(stream):
+                async for event in stream:
+                    yield event
+        except BaseException:
+            if self._session_coordinator.has_control_target(session_id, request_id):
+                await self._mark_pending_interaction_id(session_id, request_id)
+            raise
         finally:
             if admitted:
                 await end_control(session_id)
