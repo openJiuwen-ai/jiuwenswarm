@@ -1556,14 +1556,19 @@ export function ShareImageExportRunner({
     let terminal = false;
     let disposed = false;
     let lastProgress = '';
+    let lastReportAt = 0;
     let reporting = false;
     const report = () => {
       if (!clientClaimedRef.current || reporting || terminal || disposed) return;
       const state = (window as ShareImageExportRunnerWindow).__SHARE_IMAGE_EXPORT_STATE;
       if (!state) return;
       const key = `${state.status}:${state.progress ?? ''}`;
-      if (key === lastProgress) return;
+      // Resend an unchanged state every 30s as a heartbeat: a slow render tile
+      // may not move progress for over an hour, and the server expires running
+      // jobs that stop reporting (a crashed tab cannot send a closing beacon).
+      if (key === lastProgress && Date.now() - lastReportAt < 30_000) return;
       reporting = true;
+      lastReportAt = Date.now();
       void (async () => {
         if (state.status === 'ready') {
           try {
@@ -1598,6 +1603,7 @@ export function ShareImageExportRunner({
         if ((state.status === 'loading_snapshot' || state.status === 'rendering')
           && (error instanceof TypeError || (error instanceof Error && error.message === 'share_export_status_timeout'))) {
           // Retry transient progress failures without rerendering.
+          lastReportAt = 0;
           console.error('Failed to report share image progress:', error);
           return;
         }
