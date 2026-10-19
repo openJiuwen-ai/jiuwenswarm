@@ -13,6 +13,7 @@ import {
   openColleagueCreation,
   openColleagueMessages,
   openCustomColleagueCreation,
+  officeActivityLoad,
   openOffice,
   replaceColleagues,
   selectColleagueTemplate,
@@ -99,6 +100,13 @@ test('disable and delete update the colleague collection', () => {
 test('colleague ids stay readable and unique', () => {
   assert.equal(createColleagueId('Brand Advisor', []), 'brand-advisor');
   assert.equal(createColleagueId('品牌顾问', ['colleague']), 'colleague-2');
+});
+
+test('office activity reloads when the dashboard is opened again', () => {
+  assert.equal(officeActivityLoad('office-dashboard', 'loading'), 'initial');
+  assert.equal(officeActivityLoad('colleague-workspace', 'failed'), 'initial');
+  assert.equal(officeActivityLoad('office-dashboard', 'ready'), 'refresh');
+  assert.equal(officeActivityLoad('colleague-workspace', 'ready'), 'idle');
 });
 
 test('server colleagues replace the list and keep page-local IM and disabled marks', () => {

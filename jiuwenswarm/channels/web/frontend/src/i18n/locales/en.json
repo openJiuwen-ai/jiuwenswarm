@@ -507,6 +507,8 @@
         "actions": "Actions"
       },
       "minutesAgo": "{{count}} min ago",
+      "hoursAgo": "{{count}} hr ago",
+      "daysAgo": "{{count}} day ago",
       "next": "Next",
       "workRecord": "Work record",
       "groupChats": "Group chats {{count}}",

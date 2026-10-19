@@ -322,6 +322,17 @@ export function minutesSince(iso: string | null, now: Date): number | null {
   return Math.max(0, Math.floor((now.getTime() - then.getTime()) / 60000));
 }
 
+const MINUTES_PER_HOUR = 60;
+const MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR;
+
+/** Carry elapsed minutes into whole hours at 60, and whole days at 24 hours. */
+export function responseAge(minutes: number): { unit: 'minutes' | 'hours' | 'days'; count: number } {
+  const whole = Math.max(0, Math.floor(minutes));
+  if (whole >= MINUTES_PER_DAY) return { unit: 'days', count: Math.floor(whole / MINUTES_PER_DAY) };
+  if (whole >= MINUTES_PER_HOUR) return { unit: 'hours', count: Math.floor(whole / MINUTES_PER_HOUR) };
+  return { unit: 'minutes', count: whole };
+}
+
 export function activeChannelCount(member: JiuwenMateActivityMember): number {
   return member.channels.filter((item) => item.tasks > 0 || item.calls > 0).length;
 }
