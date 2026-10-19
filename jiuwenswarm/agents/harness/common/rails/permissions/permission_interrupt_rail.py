@@ -183,51 +183,6 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
             raise ValueError("Installed permission snapshot unavailable")
         return snapshot
 
-    @contextmanager
-    def permission_check_context(self, session_id: str | None = None):
-        """Share one provider read across this invocation's existing checks."""
-        current = _PERMISSION_SNAPSHOT.get()
-        if current is not None and current[0] is self:
-            yield
-            return
-        hook = self._host.get_permissions_snapshot
-        snapshot = self._invoke_permissions_hook(hook, session_id=session_id) if hook else None
-        token = _PERMISSION_SNAPSHOT.set((self, snapshot))
-        try:
-            yield
-        finally:
-            _PERMISSION_SNAPSHOT.reset(token)
-
-    def _get_user_input(self, ctx: Any, subject_id: str) -> Any:
-        resume = root_permission_resume_from_context(ctx)
-        if resume is not None and resume.card.key.tool_call_id == subject_id:
-            return resume.user_input
-        return super()._get_user_input(ctx, subject_id)
-
-    @staticmethod
-    def _approval_arguments_digest(args: dict) -> str:
-        return hashlib.sha256(json.dumps(
-            args, sort_keys=True, ensure_ascii=True, allow_nan=False,
-        ).encode()).hexdigest()
-
-    def bind_approval_request(self, request: Any, tool_call: Any) -> None:
-        """Freeze approval scope on the existing pending request, not a store."""
-        if self._exact_persist_callback is None or tool_call is None:
-            return
-        name, args = self._normalize_tool_name(tool_call.name), self.parse_tool_args(tool_call)
-        hook = self._host.get_permissions_snapshot
-        permissions = self._invoke_permissions_hook(hook) if hook else self._engine.config
-        if not isinstance(permissions, dict):
-            raise ValueError("permission_snapshot_unavailable")
-        request.metadata = {
-            **(request.metadata or {}),
-            "permission_arguments_sha256": self._approval_arguments_digest(args),
-            "permission_ask_accesses": self._collect_file_guard_persist_accesses(
-                name, args, permissions,
-            ),
-        }
-        request.auto_confirm_key = ""
-
     def _invoke_permissions_hook(
         self, hook: Any, *args: Any, session_id: str | None = None,
     ) -> Any:

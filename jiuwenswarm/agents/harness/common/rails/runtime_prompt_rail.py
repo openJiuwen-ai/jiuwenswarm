@@ -42,26 +42,6 @@ from jiuwenswarm.common.utils import (
 
 
 A4P_PROMPT_VERSION = "2026-10-19.1"
-# The model name a Team model-group pool gives every member; the router picks
-# the real model per call (openjiuwen ``INTELLI_ROUTER_UNIFIED_MODEL``).
-_MODEL_GROUP_LOGICAL_MODEL = "*"
-
-
-def _routed_model_placeholder() -> str:
-    """Placeholder the model-group router fills with the model it routes to.
-
-    Empty when the installed openjiuwen does not fill it, so a prompt never
-    shows an unfilled placeholder to the model.
-    """
-    try:
-        from openjiuwen.core.foundation.llm.model_clients.intelli_router_model_client import (
-            ROUTED_MODEL_PLACEHOLDER,
-        )
-    except ImportError:
-        return ""
-    return ROUTED_MODEL_PLACEHOLDER
-
-
 
 
 class RuntimePromptRail(DeepAgentRail):
