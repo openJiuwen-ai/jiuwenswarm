@@ -1537,13 +1537,11 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
   ]);
   // Provider, model and credential are edited together with existing values prefilled.
   const jevSettings = source('src/features/settings/modules/browser/JevKeySettings.tsx');
-  const jevPanel = source('src/features/settings/modules/models/JevSettings.tsx');
-  const jevDialog = source('src/features/settings/modules/models/JevConfigDialog.tsx');
   assert.match(jevSettings, /useSettingsConfig\(\)/);
-  assert.match(jevSettings, /createJevDraft\(\{ decision_provider: provider \}, config\)/);
-  assert.match(jevDialog, /FormDialog/);
-  assert.match(jevDialog, /values\.provider === 'custom'/);
-  assert.match(jevPanel, /<JevKeySettings disabled=\{disabled\}/);
+  assert.match(jevSettings, /config=\{config\}/);
+  assert.match(jevSettings, /FormDialog/);
+  assert.match(jevSettings, /values\.provider === 'custom'/);
+  assert.match(browserDefinition, /component: 'custom', render: JevKeySettings/);
   assert.match(sourceProvider, /jev_key_configured: value\?\.jev_key_configured === true/);
   for (const mode of ['llm', 'shadow', 'hybrid']) {
     assert.match(browserDefinition, new RegExp(`\{ value: '${mode}', labelKey: 'settingsPanel\.browser\.decision`));
@@ -2016,7 +2014,7 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
 });
 
 test('Jev browser settings preserve mode, independent provider credentials and readback', () => {
-  const definition = source('src/features/settings/modules/models/JevSettings.tsx');
+  const definition = source('src/features/settings/modules/browser/definition.ts');
   const provider = source('src/features/settings/services/SettingsSourceProvider.tsx');
   const keySettings = source('src/features/settings/modules/browser/JevKeySettings.tsx');
   assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/browser/definition.ts')), [
@@ -2041,10 +2039,8 @@ test('Jev browser settings preserve mode, independent provider credentials and r
   assert.doesNotMatch(definition, /CollaborationJevSettings/);
   assert.match(source('src/features/settings/modules/models/definition.ts'), /id: 'jev'/);
   assert.match(provider, /jev_key_configured: value\?\.jev_key_configured === true/);
-  assert.match(keySettings, /createJevDraft\(\{ decision_provider: provider \}, config\)/);
+  assert.match(keySettings, /config=\{config\}/);
   assert.match(keySettings, /decision_mode: 'llm'/);
-  assert.match(keySettings, /decision_display_name: ''/);
-  assert.match(keySettings, /moa_jev_enabled: 'false'/);
   assert.match(keySettings, /await saveConfigFields\([\s\S]*await save\(/);
   assert.doesNotMatch(keySettings, /name: '(?:protocol|context_window_tokens|alias)'/);
   assert.match(keySettings, /patchLocal\(await request<Record<string, unknown>>\('path\.get'\)\)/);

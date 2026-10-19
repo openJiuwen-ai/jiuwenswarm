@@ -1338,7 +1338,6 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
             "jev_key_configured": False,
             "decision_model": "jev-1.13.0",
             "decision_api_base": "https://api.typesafe.ai/v1",
-            "decision_display_name": "",
         },
         "error": None,
         "code": None,
@@ -2181,8 +2180,8 @@ async def test_config_get_returns_jev_credentials_like_model_settings(monkeypatc
     payload = channel.responses[-1]["payload"]
     assert payload["jev_openrouter_api_key"] == "synthetic-openrouter-secret"
     assert payload["jev_typesafe_api_key"] == "synthetic-typesafe-secret"
-    assert config_set_handlers.CONFIG_SET_ENV_MAP["jev_openrouter_api_key"] == "OPENROUTER_API_KEY"
-    assert config_set_handlers.CONFIG_SET_ENV_MAP["jev_typesafe_api_key"] == "TYPESAFE_API_KEY"
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_openrouter_api_key"] == "OPENROUTER_API_KEY"
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_typesafe_api_key"] == "TYPESAFE_API_KEY"
 
 
 @pytest.mark.asyncio

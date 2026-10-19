@@ -30,6 +30,7 @@ export const browserModule: SettingsModuleDefinition = {
             { value: 'hybrid', labelKey: 'settingsPanel.browser.decisionHybrid' },
           ],
         },
+        { id: 'browser-jev-key', component: 'custom', render: JevKeySettings },
       ],
     },
   ],

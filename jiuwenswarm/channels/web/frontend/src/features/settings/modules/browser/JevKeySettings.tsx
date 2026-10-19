@@ -1,30 +1,152 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Loading } from '../../../../components/ui';
-import { settingsActionIcons, settingsEmptyBoxIllustration } from '../../../../assets/settings';
-import { getModelLogoUrl } from '../../../../assets/providers';
-import { SettingsSection, SettingsConfirmDialog } from '../../components';
+import { Button } from '../../../../components/ui';
+import { Form, FormDialog, useForm, useFormState, type FormItem } from '../../../../components/form';
+import { SettingRow, SettingsConfirmDialog } from '../../components';
 import type { SettingsCustomItemProps } from '../../registry/types';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { useSettingsSource } from '../../services/SettingsSourceProvider';
 import { useSettingsConfig } from '../../services/useSettingsConfig';
-import { SETTINGS_CONFIG_CHANGED_EVENT } from '../../services/settingsContract';
-import { JevConfigDialog } from '../models/JevConfigDialog';
-import { createEmptyJevDraft, createJevDraft, JEV_PRESETS, validateJevDraft, type JevDraft } from './jevSettings';
+import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
+import { createJevDraft, JEV_PRESETS, validateJevDraft, type JevDraft, type JevProvider } from './jevSettings';
+
+function JevConfigDialog({
+  initialValues,
+  config,
+  save,
+  onClose,
+}: {
+  initialValues: JevDraft;
+  config: Record<string, unknown>;
+  save: (draft: JevDraft) => Promise<void>;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const form = useForm<JevDraft>({ initialValues });
+  useFormState(form);
+  const values = form.getValues();
+  const drafts = useRef<Partial<Record<JevProvider, JevDraft>>>({});
+  const previousProvider = useRef(values.provider);
+  const [submitting, setSubmitting] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const { discardConfirmationOpen, requestClose, cancelDiscard, confirmDiscard } = useSettingsFormDialogClose({
+    id: 'browser-jev-config-dialog',
+    form,
+    closeBlocked: submitting,
+    onClose,
+  });
+  const items: FormItem<JevDraft>[] = [
+    {
+      name: 'provider',
+      label: t('settingsPanel.models.vendor'),
+      component: 'select',
+      required: true,
+      options: (Object.keys(JEV_PRESETS) as JevProvider[]).map((provider) => ({
+        value: provider,
+        label: provider === 'custom' ? t('settingsPanel.browser.providerCustom') : JEV_PRESETS[provider].label,
+      })),
+      onChange: (value) => {
+        const provider = value as JevProvider;
+        drafts.current[previousProvider.current] = { ...form.getValues(), provider: previousProvider.current };
+        form.setValues(drafts.current[provider] ?? createJevDraft({ decision_provider: provider }, config));
+        previousProvider.current = provider;
+        form.clearValidate();
+        setSaveError('');
+      },
+    },
+  ];
+  if (values.provider === 'custom') {
+    items.push({
+      name: 'api_base',
+      label: t('settingsPanel.fields.api_base.title'),
+      component: 'input',
+      required: true,
+      placeholder: 'https://example.com/v1',
+    });
+  }
+  items.push(
+    {
+      name: 'api_key',
+      label: t('settingsPanel.models.apiKeyLabel'),
+      component: 'input',
+      type: 'password',
+      required: true,
+      placeholder: t('settingsPanel.fields.api_key.placeholder'),
+      passwordVisibilityLabels: { show: t('settingsPanel.common.showValue'), hide: t('settingsPanel.common.hideValue') },
+    },
+    { name: 'model', label: t('settingsPanel.models.model'), component: 'input', required: true },
+  );
+  const confirm = async () => {
+    const result = form.validate();
+    if (!result.valid) return;
+    setSubmitting(true);
+    setSaveError('');
+    try {
+      await save(result.values);
+      onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  return (
+    <>
+      <FormDialog
+        open
+        title={t('settingsPanel.browser.jevConfig')}
+        submitting={submitting}
+        confirmDisabled={!isConnected}
+        confirmLabel={t('common.save')}
+        cancelLabel={t('common.cancel')}
+        testIdPrefix="settings-browser-jev-dialog"
+        onConfirm={() => void confirm()}
+        onCancel={requestClose}
+      >
+        <Form
+          form={form}
+          items={items}
+          disabled={submitting}
+          showOptional={false}
+          optionalText={t('common.optional')}
+          testIdPrefix="settings-browser-jev-dialog"
+          rules={Object.fromEntries(['api_base', 'api_key', 'model'].map((name) => [name, [{
+            validator: (_value: unknown, draft: JevDraft) => {
+              const key = validateJevDraft(draft)[name as keyof JevDraft];
+              return key ? t(key) : undefined;
+            },
+          }]]))}
+        />
+        {saveError ? (
+          <div className="settings-page__error" role="alert" data-testid="settings-browser-jev-dialog-error">
+            {saveError}
+          </div>
+        ) : null}
+      </FormDialog>
+      <SettingsConfirmDialog
+        open={discardConfirmationOpen}
+        title={t('settingsPanel.dialog.discardTitle')}
+        message={t('settingsPanel.dialog.discardConfirm')}
+        onConfirm={confirmDiscard}
+        onCancel={cancelDiscard}
+      />
+    </>
+  );
+}
 
 export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
   const { t } = useTranslation();
   const { isConnected, request } = useSettingsServices();
   const { values, save, patchLocal } = useSettingsSource();
   const { config, loading, error, save: saveConfigFields } = useSettingsConfig();
-  const [dialogMode, setDialogMode] = useState<'add' | 'edit' | null>(null);
+  const [configuring, setConfiguring] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [clearingBusy, setClearingBusy] = useState(false);
   const [clearError, setClearError] = useState('');
   const draft = createJevDraft(values, config);
   const refresh = async () => patchLocal(await request<Record<string, unknown>>('path.get'));
   const saveDraft = async (next: JevDraft) => {
-    if (!next.provider) throw new Error(t('settingsPanel.models.validation.vendorSelectionRequired'));
     // Persist the credential before activating a newly selected provider.
     const keyField = JEV_PRESETS[next.provider].keyField;
     if (next.api_key.trim() !== config[keyField]) {
@@ -33,7 +155,6 @@ export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
     await save({
       decision_provider: next.provider,
       decision_model: next.model.trim(),
-      decision_display_name: next.display_name.trim(),
       decision_api_base: next.api_base.trim(),
     }, 'settingsPanel.browser.jevConfig');
     await refresh();
@@ -42,16 +163,11 @@ export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
     setClearingBusy(true);
     setClearError('');
     try {
-      await save({
-        decision_mode: 'llm',
-        decision_display_name: '',
-      }, 'settingsPanel.browser.jevConfig');
-      await saveConfigFields({
-        [JEV_PRESETS[draft.provider].keyField]: '',
-        moa_jev_enabled: 'false',
-      }, 'settingsPanel.browser.jevConfig');
+      if (values.decision_mode !== 'llm') {
+        await save({ decision_mode: 'llm' }, 'settingsPanel.fields.decision_mode.title');
+      }
+      await saveConfigFields({ [JEV_PRESETS[draft.provider].keyField]: '' }, 'settingsPanel.browser.jevConfig');
       await refresh();
-      window.dispatchEvent(new window.Event(SETTINGS_CONFIG_CHANGED_EVENT));
       setClearing(false);
     } catch {
       setClearError(t('settingsPanel.models.jevDeleteFailed'));
@@ -62,90 +178,40 @@ export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
   const providerName = draft.provider === 'custom'
     ? t('settingsPanel.browser.providerCustom')
     : JEV_PRESETS[draft.provider].label;
-  const configured = values.jev_key_configured === true;
-  const actionsDisabled = disabled || !isConnected || loading || Boolean(error) || clearingBusy;
-  const metadata = `${providerName} · ${draft.model}`;
   return (
     <>
-      <SettingsSection
-        title={t('settingsPanel.models.jevModels')}
-        separatedRows
+      <SettingRow
+        title={t('settingsPanel.browser.jevConfig')}
+        description={loading ? t('common.loading') : draft.api_key
+          ? `${providerName} · ${draft.model}` : t('settingsPanel.common.notConfigured')}
       >
-        {loading ? (
-          <div className="settings-page__loading" data-testid="settings-models-jev-loading">
-            <Loading aria-label={t('common.loading')} />
-          </div>
+        <Button
+          disabled={disabled || !isConnected || loading || Boolean(error) || clearingBusy}
+          onClick={() => setConfiguring(true)}
+          data-testid="settings-browser-jev-configure-btn"
+        >
+          {t('settingsPanel.common.configure')}
+        </Button>
+        {draft.api_key ? (
+          <Button
+            disabled={disabled || !isConnected || loading || clearingBusy}
+            onClick={() => { setClearError(''); setClearing(true); }}
+            data-testid="settings-browser-jev-clear-btn"
+          >
+            {t('settingsPanel.common.clear')}
+          </Button>
         ) : null}
-        {error ? (
-          <div className="settings-page__error" role="alert" data-testid="settings-browser-jev-load-error">{error}</div>
-        ) : null}
-        {!loading && !error && !configured ? (
-          <div className="settings-models__empty" data-testid="settings-models-jev-empty">
-            <img src={settingsEmptyBoxIllustration} alt="" aria-hidden />
-            <strong data-testid="settings-models-jev-empty-title">{t('settingsPanel.models.jevEmpty')}</strong>
-            <p data-testid="settings-models-jev-empty-description">{t('settingsPanel.models.jevEmptyDescription')}</p>
-            <Button
-              variant="primary"
-              disabled={actionsDisabled}
-              onClick={() => setDialogMode('add')}
-              data-testid="settings-models-jev-empty-add-btn"
-            >
-              {t('settingsPanel.models.addModel')}
-            </Button>
-          </div>
-        ) : null}
-        {!loading && !error && configured ? (
-          <div className="settings-models__list" data-testid="settings-models-jev-list">
-            <article className="settings-model-card" data-testid="settings-models-jev-card">
-              <img
-                className="settings-model-card__logo"
-                src={getModelLogoUrl({ vendor_key: draft.provider })}
-                alt=""
-                aria-hidden
-              />
-              <div className="settings-model-card__copy">
-                <div className="settings-model-card__title-row">
-                  <h3 title={draft.display_name} data-testid="settings-models-jev-card-title">{draft.display_name}</h3>
-                </div>
-                <p title={metadata} data-testid="settings-models-jev-card-metadata">{metadata}</p>
-              </div>
-              <div className="settings-model-card__actions">
-                <Button
-                  icon={<settingsActionIcons.edit aria-hidden />}
-                  aria-label={t('common.modify')}
-                  title={t('common.modify')}
-                  disabled={actionsDisabled}
-                  onClick={() => setDialogMode('edit')}
-                  data-testid="settings-models-jev-edit-btn"
-                />
-                <Button
-                  variant="quiet"
-                  icon={<settingsActionIcons.delete aria-hidden />}
-                  aria-label={t('common.delete')}
-                  title={t('common.delete')}
-                  disabled={actionsDisabled}
-                  onClick={() => { setClearError(''); setClearing(true); }}
-                  data-testid="settings-models-jev-delete-btn"
-                />
-              </div>
-            </article>
-          </div>
-        ) : null}
-      </SettingsSection>
-      {dialogMode ? (
-        <JevConfigDialog
-          mode={dialogMode}
-          initialValues={dialogMode === 'add' ? createEmptyJevDraft() : draft}
-          createProviderDraft={(provider) => createJevDraft({ decision_provider: provider }, config)}
-          validate={validateJevDraft}
-          save={saveDraft}
-          onClose={() => setDialogMode(null)}
-        />
+      </SettingRow>
+      {error ? (
+        <div className="settings-page__error" role="alert" data-testid="settings-browser-jev-load-error">{error}</div>
+      ) : null}
+      {configuring ? (
+        <JevConfigDialog initialValues={draft} config={config} save={saveDraft} onClose={() => setConfiguring(false)} />
       ) : null}
       <SettingsConfirmDialog
         open={clearing}
-        title={t('settingsPanel.models.deleteConfirmTitle')}
-        message={t('settingsPanel.browser.clearSharedJevConfirm')}
+        title={t('settingsPanel.dialog.clearTitle', { name: t('settingsPanel.browser.jevConfig') })}
+        message={t('settingsPanel.dialog.clearConfirm', { name: t('settingsPanel.models.apiKeyLabel') })}
         confirming={clearingBusy}
         error={clearError || undefined}
         confirmLabel={t('common.delete')}

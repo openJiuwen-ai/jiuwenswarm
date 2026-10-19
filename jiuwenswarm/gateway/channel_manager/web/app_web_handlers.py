@@ -3563,7 +3563,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
         # Older clients omit the decision fields; the saved values are then left untouched.
         set_params = {"chrome_path": chrome_path, "headless": headless}
-        for decision_key in ("decision_mode", "decision_provider"):
+        for decision_key in ("decision_mode", "decision_provider", "decision_model", "decision_api_base"):
             if params.get(decision_key) is not None:
                 set_params[decision_key] = params[decision_key]
 
@@ -3646,7 +3646,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from jiuwenswarm.common.config import update_browser_decision_in_config
 
         decision_updates, error = browser_decision_updates(
-            set_params.get("decision_mode"), set_params.get("decision_provider"), get_config()
+            set_params.get("decision_mode"), set_params.get("decision_provider"), get_config(),
+            model=set_params.get("decision_model"), api_base=set_params.get("decision_api_base"),
         )
         if error:
             await channel.send_response(ws, req_id, ok=False, error=error, code="BAD_REQUEST")

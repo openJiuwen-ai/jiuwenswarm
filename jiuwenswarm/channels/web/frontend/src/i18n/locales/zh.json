@@ -786,8 +786,6 @@
       "providerTypesafe": "TypeSafe",
       "providerCustom": "自定义",
       "jevConfig": "Jev 模型配置",
-      "jevKeyMissing": "尚未配置 Jev 密钥，请先在「模型 > 决策模型」中添加 Jev 模型。",
-      "clearSharedJevConfirm": "清除当前 Jev 模型的密钥和展示名称？连接参数将保留，浏览器将切回仅 LLM，多模型协同将关闭 JEV 决策。",
       "jevBaseInvalid": "请填写 HTTPS API 基础地址，不含账号、查询参数或片段",
       "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
