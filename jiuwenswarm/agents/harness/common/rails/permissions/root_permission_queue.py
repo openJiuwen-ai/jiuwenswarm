@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
+from openjiuwen.core.single_agent.interrupt.response import InterruptKind, InterruptRequest
 
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import (
     ToolInvocationKeyV1,
@@ -324,6 +324,8 @@ class RootPermissionQueue:
                 self.quarantine(root_session_id)
                 raise RootPermissionQueueError("permission_queue_snapshot_mismatch")
             request = interaction["value"]
+            if getattr(request, "interrupt_kind", None) == InterruptKind.CLIENT_TOOL:
+                continue  # its client answers it apart from the cards
             wire_key = _request_key(request)
             if wire_key is None:
                 saw_other = True

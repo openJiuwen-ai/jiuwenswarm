@@ -19,7 +19,7 @@ from copy import deepcopy
 
 from openjiuwen.core.single_agent.interrupt.response import InterruptKind
 
-from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
+from gateway.common.interrupt_resume import answers_paused_calls
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     build_plan_approval_actions,
@@ -155,12 +155,11 @@ def has_interrupt_resume_payload(params: Any) -> bool:
 
 
 def is_interrupt_resume_payload(params: Any) -> bool:
+    if answers_paused_calls(params):
+        return True
     if not has_interrupt_resume_payload(params):
         return False
-    source = str(params.get("source") or "").strip()
-    if source in INTERRUPT_RESUME_SOURCES:
-        return True
-    if source != LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE:
+    if str(params.get("source") or "").strip() != LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE:
         return False
     evolution_meta = params.get("evolution_meta")
     return (
@@ -785,6 +784,23 @@ def build_permission_rail(
                 auto_mode=enable_auto_permission,
             )
 
+        def _get_written_permissions() -> dict[str, Any]:
+            """The composed rules before Smart normalization, for the calls its reviewer cannot judge."""
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                permission_storage_lock, read_permission_layers_locked,
+            )
+            sid = _effective_session_id()
+            with permission_storage_lock(sid):
+                _, user, session = read_permission_layers_locked(
+                    sid, global_permissions=installed_global_permissions[0],
+                )
+            return compose_host_effective_permissions(
+                global_permissions=installed_global_permissions[0],
+                user_permissions=user,
+                session_permissions=session,
+                session_id=sid,
+            )
+
         def _permission_scene_config() -> dict[str, Any]:
             if enable_auto_permission:
                 return deepcopy(installed_global_permissions[0])
@@ -910,6 +926,7 @@ def build_permission_rail(
                 persistent_audit_writer=persistent_audit_writer,
                 browser_runtime_security_profile=browser_runtime_security_profile,
                 trusted_search_urls=trusted_search_urls,
+                written_permissions=_get_written_permissions,
             )
             permission_rail.set_trusted_dirs(None)
 
@@ -1136,6 +1153,17 @@ def _interrupt_identity(value_obj: Any) -> dict[str, str]:
     return {"interrupt_id": _interrupt_id(value_obj), "kind": _interrupt_kind(value_obj)}
 
 
+def question_interactions(state_outputs: Any) -> list[Any]:
+    """The interactions of a pause that ask the user something.
+
+    A client tool call is not a question: it has its own chat.client_tool_request event.
+    """
+    return [
+        item for item in _iter_interactions(state_outputs or [])
+        if _interrupt_kind(_extract_interaction_parts(item)[1]) != InterruptKind.CLIENT_TOOL
+    ]
+
+
 def convert_interactions_to_ask_user_question(
     state_outputs: list,
     *,
@@ -1155,7 +1183,7 @@ def convert_interactions_to_ask_user_question(
     if not state_outputs:
         return None
 
-    interactions = list(_iter_interactions(state_outputs))
+    interactions = question_interactions(state_outputs)
     if not interactions:
         return None
     locator_rows = [

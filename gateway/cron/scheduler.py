@@ -90,10 +90,12 @@ def _execution_app_id(job: CronJob) -> str:
 # 明确 cron 运行"另一端没有操作者"），这类事件一旦出现就没有人能回答，本轮不可能
 # 再产出结果，必须立刻以失败收场，而不是让 job 挂到超时。取值与 CLI/前端判定
 # "需要用户输入"的事件集合对齐（``channels/cli/events.py:needs_user_input``，
-# 另含 harness 激活确认：它同样是等人 accept/reject 的挂起点）。
+# 另含 harness 激活确认：它同样是等人 accept/reject 的挂起点；以及客户端工具调用：
+# cron 会话没有连接的客户端去执行它）。
 CRON_INTERRUPT_EVENT_TYPES = frozenset(
     {
         "chat.ask_user_question",
+        "chat.client_tool_request",
         "plan.approval_required",
         "harness.activate_interaction",
     }
