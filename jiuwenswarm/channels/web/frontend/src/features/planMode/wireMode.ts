@@ -58,7 +58,9 @@ export function isPlanWireMode(wireMode: string | undefined): boolean {
   return (
     wireMode === 'agent.plan' ||
     wireMode === 'team.plan.normal' ||
-    wireMode === 'team.plan.code'
+    wireMode === 'team.plan.code' ||
+    // 后端 legacy 归一落盘的 canonical 形式，与 stripPlanSuffix 保持一致。
+    wireMode === 'team.plan'
   );
 }
 

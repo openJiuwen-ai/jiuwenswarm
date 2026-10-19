@@ -77,6 +77,11 @@ const ERROR_MESSAGES: Record<string, string> = {
   REQUEST_TIMEOUT: '操作超时，请检查文件状态后重试',
 };
 
+/** 撤销/重新应用部分成功（result.partial 为 true）时的提示文案。 */
+export function turnChangePartialMessage(action: GitTurnChangeAction): string {
+  return action === 'discard' ? ERROR_MESSAGES.PARTIAL_RESTORE_FAILED : ERROR_MESSAGES.PARTIAL_REDO_FAILED;
+}
+
 export function turnChangeErrorMessage(error: unknown, action: GitTurnChangeAction): string {
   const webError = error as WebError | null;
   if (webError?.code && ERROR_MESSAGES[webError.code]) return ERROR_MESSAGES[webError.code];

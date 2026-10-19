@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Message, ProjectInfo } from '../../types';
 import { gitClient } from './gitClient';
 import { gitWatchClient } from './gitWatchClient';
-import { latestTurnDiffKeyForMessages, turnChangeErrorMessage, turnDiffKey, updateTurnChangeStatus } from './turnChangeState';
+import { latestTurnDiffKeyForMessages, turnChangeErrorMessage, turnChangePartialMessage, turnDiffKey, updateTurnChangeStatus } from './turnChangeState';
 import type { GitDiscardTurnChangesResult, GitRedoTurnChangesResult, GitTurnChangeAction, GitTurnDiff } from './types';
 import { bindTurnDiffsToMessages } from './codeTurnDiffBinding';
 export { bindTurnDiffsToMessages } from './codeTurnDiffBinding';
@@ -107,7 +107,8 @@ export function useCodeTurnDiffHistory({ project, sessionId, isProcessing, messa
               });
         if (operationSequenceRef.current !== operationSequence) return;
         setTurns(previous => updateTurnChangeStatus(previous, result, action === 'discard' ? 'discarded' : 'completed'));
-        setTurnChangeNotice(action === 'discard' ? '已撤销修改' : '已重新应用修改');
+        // 部分成功不报全量成功，避免用户误以为所有文件已恢复而把残留变更提交掉。
+        setTurnChangeNotice(result.partial ? turnChangePartialMessage(action) : action === 'discard' ? '已撤销修改' : '已重新应用修改');
         void loadHistory();
       } catch (nextError) {
         if (operationSequenceRef.current !== operationSequence) return;

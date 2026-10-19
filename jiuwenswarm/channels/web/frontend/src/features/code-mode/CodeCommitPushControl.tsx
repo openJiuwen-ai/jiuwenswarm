@@ -164,6 +164,9 @@ export function CodeCommitPushControl({
         });
         committedHash = commitResult.commit_hash;
         pushBranch = commitResult.status.repo.branch || pushBranch;
+        // commit 成功但 push 失败时对话框保持打开，用最新仓库状态刷新
+        // 内部 status，避免基于过期的 is_dirty 误再提交（nothing to commit）。
+        setStatus(commitResult.status);
       }
       if (includesPush) {
         phase = 'push';

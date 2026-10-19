@@ -129,10 +129,23 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
     | null
   >(null);
 
+  // 表单值按 meta 最小间隔钳制：编辑器只钳显示值不回写 value，存量任务低于当前
+  // meta 最小值（或 meta 最小值高于默认 1800）时，不改间隔直接提交会低于下限。
+  const clampScheduleInterval = useCallback(
+    (form: HeartbeatTaskFormValue): HeartbeatTaskFormValue => {
+      if (!meta || form.schedule.kind !== 'interval') return form;
+      const min = meta.limits.min_interval_seconds;
+      return form.schedule.intervalSeconds >= min
+        ? form
+        : { ...form, schedule: { ...form.schedule, intervalSeconds: min } };
+    },
+    [meta]
+  );
+
   const openCreateDrawer = useCallback(() => {
     if (!meta) return;
-    setDrawer({ mode: 'create', form: emptyHeartbeatTaskForm(meta), submitting: false, error: null });
-  }, [meta]);
+    setDrawer({ mode: 'create', form: clampScheduleInterval(emptyHeartbeatTaskForm(meta)), submitting: false, error: null });
+  }, [meta, clampScheduleInterval]);
 
   // "通过聊天创建"：心跳任务只能绑定当前会话（见方案设计 §1），因此不像 Cron 那样导航去新会话，
   // 而是直接把预制提示词写回当前会话的聊天输入框，让用户在原会话里用 Agent Tool 创建。
@@ -151,9 +164,12 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
   const createMenuRef = useRef<HTMLDivElement>(null);
   useClickOutside(createMenuRef, createMenuOpen, () => setCreateMenuOpen(false));
 
-  const openEditDrawer = useCallback((job: HeartbeatTaskUI) => {
-    setDrawer({ mode: 'edit', jobId: job.id, form: jobToHeartbeatTaskForm(job), submitting: false, error: null });
-  }, []);
+  const openEditDrawer = useCallback(
+    (job: HeartbeatTaskUI) => {
+      setDrawer({ mode: 'edit', jobId: job.id, form: clampScheduleInterval(jobToHeartbeatTaskForm(job)), submitting: false, error: null });
+    },
+    [clampScheduleInterval]
+  );
 
   const [toast, setToast] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<HeartbeatTaskUI | null>(null);
