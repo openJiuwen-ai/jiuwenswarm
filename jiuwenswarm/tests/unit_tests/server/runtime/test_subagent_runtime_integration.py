@@ -5,6 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from openjiuwen.harness.subagent_runtime import (
     SUBAGENT_ACTIVITY_EVENT_TYPE,
     SUBAGENT_UPDATED_EVENT_TYPE,
@@ -15,7 +17,8 @@ from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
     BrowserTaskPromptRail,
 )
 from jiuwenswarm.common.config import is_subagent_runtime_enabled
-from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
+from jiuwenswarm.server.runtime.session import session_history
+from jiuwenswarm.server.runtime.session.history_io import run_stream_parser
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -219,8 +222,8 @@ class TestSubagentStreamMapping:
             {"subagent_updated": "bad"},
         ) is None
 
-    @staticmethod
-    def test_subagent_activity_is_persisted_for_subagent_history() -> None:
+    @pytest.mark.asyncio
+    async def test_subagent_activity_is_persisted_for_subagent_history(self) -> None:
         projection = {
             "subagent_id": "sub-a",
             "task_id": "turn-1",
@@ -233,8 +236,9 @@ class TestSubagentStreamMapping:
             "tool_call_id": "call-4",
         }
 
-        with patch.object(interface_deep_module, "append_history_record") as append_history:
-            parsed = JiuWenSwarmDeepAdapter.parse_stream_chunk(
+        with patch.object(session_history, "append_history_record") as append_history:
+            parsed = await run_stream_parser(
+                JiuWenSwarmDeepAdapter.decode_stream_chunk,
                 SimpleNamespace(
                     type=SUBAGENT_ACTIVITY_EVENT_TYPE,
                     payload={"subagent_activity": projection},
@@ -270,7 +274,7 @@ class TestSubagentStreamMapping:
             "status": "idle",
         }
 
-        with patch.object(interface_deep_module, "append_history_record") as append_history:
+        with patch.object(session_history, "append_history_record") as append_history:
             JiuWenSwarmDeepAdapter.persist_subagent_roster_history(projection, web_payload)
 
         assert append_history.call_args.kwargs["session_id"] == "parent-sess-roster"
@@ -287,7 +291,7 @@ class TestSubagentStreamMapping:
             "at_ms": 1787019579060,
         }
 
-        with patch.object(interface_deep_module, "append_history_record") as append_history:
+        with patch.object(session_history, "append_history_record") as append_history:
             JiuWenSwarmDeepAdapter.persist_subagent_activity({
                 **projection_without_seq,
                 "parent_session_id": "parent-sess-activity",
@@ -308,7 +312,7 @@ class TestSubagentStreamMapping:
             "at_ms": 1787019579059,
         }
 
-        with patch.object(interface_deep_module, "append_history_record") as append_history:
+        with patch.object(session_history, "append_history_record") as append_history:
             JiuWenSwarmDeepAdapter.persist_subagent_transcript_message(projection)
 
         append_history.assert_called_once()

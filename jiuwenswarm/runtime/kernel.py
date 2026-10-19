@@ -112,6 +112,7 @@ class ResourceLease:
 class ResourceKernel:
     def __init__(self, *, max_idle: int = 128) -> None:
         self._entries: OrderedDict[ResourceKey, _Entry] = OrderedDict()
+        self._lifetime_keys: set[ResourceKey] = set()
         self._lock = threading.RLock()
         self._max_idle = max_idle
         # The completion Future is loop-neutral: sync and async callers join
@@ -215,10 +216,10 @@ class ResourceKernel:
     def retire(self, predicate: Callable[[ResourceKey], bool]) -> None:
         with self._lock:
             for key in self._preparing:
-                if predicate(key):
+                if key not in self._lifetime_keys and predicate(key):
                     self._versions[key] = self._versions.get(key, 0) + 1
             for key, entry in list(self._entries.items()):
-                if predicate(key):
+                if key not in self._lifetime_keys and predicate(key):
                     entry.retired = True
                     if entry.references == 0:
                         del self._entries[key]
@@ -228,6 +229,27 @@ class ResourceKernel:
     def recipe(self, key: ResourceKey, factory: Callable[[], Any]) -> Any:
         """Share immutable definitions/factories, never their stateful instances."""
         lease = self.acquire(key, factory)
+        value = lease.value
+        lease.release_reference()
+        return value
+
+    def own_lifetime(self, key: ResourceKey, factory: Callable[[], Any], *,
+                     close: Callable[[Any], Any]) -> Any:
+        """Own a process service until close(), without an execution lease.
+
+        Lifetime services are excluded from profile retirement and idle
+        eviction. Factories share acquire's singleflight and failed factories
+        remain retryable. Only the application composition root should use
+        this for shared process services, never for session/model instances.
+        """
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Kernel is closed")
+            ordinary_inflight = any(flight.key == key for flight in self._inflight)
+            if key not in self._lifetime_keys and (key in self._entries or ordinary_inflight):
+                raise ValueError("an ordinary resource cannot become a lifetime service")
+            self._lifetime_keys.add(key)
+        lease = self.acquire(key, factory, close=close)
         value = lease.value
         lease.release_reference()
         return value
@@ -358,8 +380,12 @@ class ResourceKernel:
             await asyncio.gather(*(self._wait_preparation(item) for item in preparing),
                                  return_exceptions=True)
         with self._lock:
-            entries = list(self._entries.values()) + self._disposals
+            # Session/model entry cleanup precedes their shared process pools.
+            entries = [entry for key, entry in self._entries.items() if key not in self._lifetime_keys]
+            entries += self._disposals
+            entries += [entry for key, entry in self._entries.items() if key in self._lifetime_keys]
             self._entries.clear()
+            self._lifetime_keys.clear()
             self._disposals = []
         try:
             await self.close_entries(entries)
@@ -378,7 +404,8 @@ class ResourceKernel:
                 if self._entries.get(key) is entry:
                     del self._entries[key]
                 return entry if entry.close is not None else None
-            idle = [key for key, value in self._entries.items() if value.references == 0]
+            idle = [key for key, value in self._entries.items()
+                    if value.references == 0 and key not in self._lifetime_keys]
             for discard in idle[:-self._max_idle] if self._max_idle else idle:
                 discarded = self._entries.pop(discard)
                 if discarded.close is not None:

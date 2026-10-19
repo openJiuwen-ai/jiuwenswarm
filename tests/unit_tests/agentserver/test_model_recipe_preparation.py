@@ -3,6 +3,7 @@
 
 from copy import deepcopy
 from types import SimpleNamespace
+import asyncio
 
 import pytest
 
@@ -11,6 +12,11 @@ from jiuwenswarm.server.runtime.agent_adapter import interface_deep as module
 
 @pytest.fixture
 def adapter(monkeypatch):
+    from jiuwenswarm.runtime import kernel as kernel_module
+    from jiuwenswarm.server.runtime import model_compiler_adapter
+
+    kernel = kernel_module.ResourceKernel()
+    monkeypatch.setattr(kernel_module, "process_kernel", lambda: kernel)
     value = object.__new__(module.JiuWenSwarmDeepAdapter)
     value._model_cache = module._RecipeModelCache(value)
     value._model_name_to_keys = {}
@@ -25,25 +31,80 @@ def adapter(monkeypatch):
         built.append((resource_id, mcc["api_base"]))
         if mcc.get("invalid"):
             raise ValueError("invalid unused provider")
-        return SimpleNamespace(model_client_config=mcc, model_config=SimpleNamespace(**mco))
+        return SimpleNamespace(
+            model_client_config=mcc, model_config=SimpleNamespace(**mco)
+        )
 
     monkeypatch.setattr(value, "_build_kernel_model", build)
+
+    def build_compiled(resolved):
+        return build(
+            {
+                **resolved.client_options,
+                "model_name": resolved.model_name,
+                "api_base": resolved.api_base,
+            },
+            resolved.request_defaults,
+            resource_id=resolved.model_id,
+        )
+
+    monkeypatch.setattr(
+        model_compiler_adapter, "build_model_from_selection", build_compiled
+    )
     monkeypatch.setattr(value, "_inject_attribution_to_config", lambda _config: None)
-    monkeypatch.setattr(module, "get_available_models", lambda config: config["models"]["defaults"])
+    monkeypatch.setattr(
+        module, "get_available_models", lambda config: config["models"]["defaults"]
+    )
     monkeypatch.setattr(module, "is_placeholder_model_entry", lambda _entry: False)
     monkeypatch.setattr(module, "model_client_config_view", lambda config: config)
-    return value, built
+    yield value, built
+
+    async def cleanup():
+        for lease in value._get_model_factory().leases.values():
+            await lease.release()
+        await kernel.close()
+
+    asyncio.run(cleanup())
 
 
 def config():
-    return {"models": {"defaults": [
-        {"model_id": "first", "model_client_config": {"model_name": "shared", "api_base": "http://first.invalid"}},
-        {"model_id": "default", "is_default": True,
-         "model_client_config": {"model_name": "shared", "api_base": "http://default.invalid"}},
-        {"model_id": "third", "alias": "third-alias",
-         "model_client_config": {"model_name": "third", "api_base": "http://third.invalid"}},
-        {"model_id": "unused", "model_client_config": {"model_name": "unused", "api_base": "http://unused.invalid", "invalid": True}},
-    ]}}
+    return {
+        "models": {
+            "defaults": [
+                {
+                    "model_id": "first",
+                    "model_client_config": {
+                        "model_name": "shared",
+                        "api_base": "http://first.invalid",
+                    },
+                },
+                {
+                    "model_id": "default",
+                    "is_default": True,
+                    "model_client_config": {
+                        "model_name": "shared",
+                        "api_base": "http://default.invalid",
+                    },
+                },
+                {
+                    "model_id": "third",
+                    "alias": "third-alias",
+                    "model_client_config": {
+                        "model_name": "third",
+                        "api_base": "http://third.invalid",
+                    },
+                },
+                {
+                    "model_id": "unused",
+                    "model_client_config": {
+                        "model_name": "unused",
+                        "api_base": "http://unused.invalid",
+                        "invalid": True,
+                    },
+                },
+            ]
+        }
+    }
 
 
 def test_default_startup_avoids_unused_clients_and_alias_resolves_on_first_use(adapter):
@@ -54,7 +115,10 @@ def test_default_startup_avoids_unused_clients_and_alias_resolves_on_first_use(a
     selected = value._resolve_model_by_name("third-alias")
     assert selected.model_client_config["api_base"] == "http://third.invalid"
     assert value._resolve_model_by_name("third-alias") is selected
-    assert built == [("default", "http://default.invalid"), ("third", "http://third.invalid")]
+    assert built == [
+        ("default", "http://default.invalid"),
+        ("third", "http://third.invalid"),
+    ]
 
 
 def test_lazy_same_name_entries_preserve_global_positions_and_stable_id(adapter):
@@ -63,7 +127,12 @@ def test_lazy_same_name_entries_preserve_global_positions_and_stable_id(adapter)
     assert value._resolve_model_by_name("shared#1") is default
     first = value._resolve_model_by_name("shared#0")
     assert first.model_client_config["api_base"] == "http://first.invalid"
-    assert value._model_id_to_key == {"first": "shared#0", "default": "shared#1", "third": "third#0", "unused": "unused#0"}
+    assert value._model_id_to_key == {
+        "first": "shared#0",
+        "default": "shared#1",
+        "third": "third#0",
+        "unused": "unused#0",
+    }
     assert value._materialize_model_recipe(value._model_id_to_key["first"]) is first
     assert len(built) == 2
 
@@ -83,7 +152,9 @@ def test_hot_reload_discards_stale_lazy_recipes(adapter):
     initial = config()
     value._create_model(initial)
     changed = deepcopy(initial)
-    changed["models"]["defaults"][2]["model_client_config"]["api_base"] = "http://updated.invalid"
+    changed["models"]["defaults"][2]["model_client_config"]["api_base"] = (
+        "http://updated.invalid"
+    )
     value._create_model(changed)
     selected = value._resolve_model_by_name("third-alias")
     assert selected.model_client_config["api_base"] == "http://updated.invalid"
@@ -126,12 +197,12 @@ def test_default_group_does_not_construct_unused_single_model(adapter, monkeypat
 
     value, built = adapter
     group = SimpleNamespace(model_client_config={}, model_config=SimpleNamespace())
-    resolved = object()
+    resolved = SimpleNamespace(model_dump=lambda: {"group": "default-group"})
     monkeypatch.setattr(
         model_routing_registry,
         "ModelSelectionResolver",
-        lambda: SimpleNamespace(
-            resolve=lambda selection: (
+        lambda *_args: SimpleNamespace(
+            resolve=lambda selection, _context: (
                 resolved if selection.id == "default-group" else None
             ),
         ),
@@ -195,7 +266,9 @@ def test_cold_typed_selection_rejects_access_before_any_provider_construction(
     assert built == []
 
 
-def test_duplicate_name_and_alias_skip_invalid_recipes_without_changing_index_identity(adapter):
+def test_duplicate_name_and_alias_skip_invalid_recipes_without_changing_index_identity(
+    adapter,
+):
     value, _built = adapter
     initial = config()
     entries = initial["models"]["defaults"]

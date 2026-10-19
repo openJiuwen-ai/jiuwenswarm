@@ -30,7 +30,7 @@ async def construct_runtime_server(
     from openjiuwen.core.runner import Runner
     from jiuwenswarm.extensions.manager import ExtensionManager
     from jiuwenswarm.extensions.registry import ExtensionRegistry
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.worker.execution_host import WorkerExecutionHost
 
     extension_registry = ExtensionRegistry.create_instance(
         callback_framework=Runner.callback_framework,
@@ -41,7 +41,7 @@ async def construct_runtime_server(
     telemetry.stage("extension_manager_created")
 
     def construct_server() -> Any:
-        return AgentWebSocketServer.get_instance(host=host, port=port)
+        return WorkerExecutionHost(host=host, port=port)
 
     async def load_extensions() -> None:
         # Shared adapter definitions install SDK compatibility patches. User

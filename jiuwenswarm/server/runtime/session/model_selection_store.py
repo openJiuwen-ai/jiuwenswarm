@@ -23,11 +23,23 @@ def _metadata_path(session_id: str) -> Path:
 
 
 def get_session_model_selection(session_id: str) -> ModelSelection | None:
+    from jiuwenswarm.server.runtime.session.lifecycle import resource_lock
+
+    session_id = str(session_id or "").strip()
     path = _metadata_path(session_id)
-    if not path.is_file():
-        return None
     try:
-        raw = json.loads(path.read_text(encoding="utf-8")).get("model_selection")
+        # Match the metadata writer's cross-process lock: Windows can deny an
+        # unlocked read while the writer atomically replaces metadata.json.
+        # Only the byte snapshot needs the lock, never validation/model setup.
+        with resource_lock("session", session_id):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                return None
+        metadata = json.loads(text)
+        if not isinstance(metadata, dict):
+            raise ValueError("session metadata must be a JSON object")
+        raw = metadata.get("model_selection")
         return ModelSelection.model_validate(raw) if isinstance(raw, dict) else None
     except (OSError, ValueError) as exc:
         raise ModelSelectionError(MODEL_GROUP_INVALID, "cannot read the session's model selection") from exc
@@ -36,5 +48,6 @@ def get_session_model_selection(session_id: str) -> ModelSelection | None:
 def set_session_model_selection(session_id: str, selection: ModelSelection) -> None:
     from jiuwenswarm.server.runtime.session.session_metadata import update_session_model_selection
 
+    session_id = str(session_id or "").strip()
     _metadata_path(session_id)  # Validate before entering the shared writer.
     update_session_model_selection(session_id, selection.model_dump())

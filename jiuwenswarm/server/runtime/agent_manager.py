@@ -2221,6 +2221,7 @@ class AgentManager:
 
     async def cleanup(self) -> None:
         """清理所有 agent 实例."""
+        self._cleanup_pending = True
         self._permissions_reload_closing = True
         reload_tasks = [
             task for task in self._permissions_reload_tasks
@@ -2243,14 +2244,26 @@ class AgentManager:
         ]
         if retirement_tasks:
             await asyncio.gather(*retirement_tasks, return_exceptions=True)
+        failures: list[BaseException] = []
         for key, agents in list(self.agents.items()):
-            for agent in agents.values():
+            for cache_key, agent in list(agents.items()):
                 if hasattr(agent, "cleanup"):
                     try:
                         await agent.cleanup()
-                    except Exception as e:
+                    except BaseException as e:
                         logger.warning("[AgentManager] Agent cleanup failed: %s", e)
-            del self.agents[key]
+                        failures.append(e)
+                        continue
+                if agents.get(cache_key) is agent:
+                    agents.pop(cache_key, None)
+                    self._agent_create_params.get(key, {}).pop(cache_key, None)
+            if not agents and self.agents.get(key) is agents:
+                self.agents.pop(key, None)
+        if failures:
+            # Failed facades still own their adapters, SDK tasks and leases.
+            # Keep them reachable for the same Runtime's next close attempt.
+            raise failures[0]
+        self._cleanup_pending = False
         self._agent_create_params.clear()
         self._client_capabilities_by_channel.clear()
         self._session_create_tokens.clear()

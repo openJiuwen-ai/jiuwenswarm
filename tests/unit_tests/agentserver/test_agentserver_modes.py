@@ -2420,14 +2420,15 @@ async def test_handle_stream_accepts_team_mode_without_sub_mode(monkeypatch):
     ]
     assert fake_manager.agent.seen_request is request
     assert request.params["mode"] == "team"
-    assert fake_ws.sent == [
-        {
-            "response_id": "req-team",
-            "sequence": 0,
-            "payload": {"event_type": "chat.done"},
-            "is_complete": True,
-        }
-    ]
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+
+    assert len(fake_ws.sent) == 1
+    wire = fake_ws.sent[0]
+    assert wire["response_id"] == "req-team"
+    chunk = parse_agent_server_wire_chunk(wire)
+    assert chunk.request_id == "req-team"
+    assert chunk.payload == {"event_type": "chat.done"}
+    assert chunk.is_complete is True
 
 
 @pytest.mark.asyncio
@@ -2497,14 +2498,15 @@ async def test_handle_stream_accepts_code_team_sub_mode(monkeypatch):
     ]
     assert fake_manager.agent.seen_request is request
     assert request.params["mode"] == "code.team"
-    assert fake_ws.sent == [
-        {
-            "response_id": "req-code-team",
-            "sequence": 0,
-            "payload": {"event_type": "chat.done"},
-            "is_complete": True,
-        }
-    ]
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+
+    assert len(fake_ws.sent) == 1
+    wire = fake_ws.sent[0]
+    assert wire["response_id"] == "req-code-team"
+    chunk = parse_agent_server_wire_chunk(wire)
+    assert chunk.request_id == "req-code-team"
+    assert chunk.payload == {"event_type": "chat.done"}
+    assert chunk.is_complete is True
 
 
 @pytest.mark.asyncio

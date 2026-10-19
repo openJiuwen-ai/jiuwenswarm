@@ -15,6 +15,7 @@ import inspect
 import logging
 import time
 import weakref
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -186,6 +187,18 @@ class PreparationRegistry:
     def resume_background(self, token: object) -> None:
         self._foreground_tokens.discard(token)
         self._admission_changed.set()
+
+    @asynccontextmanager
+    async def background_slot(self):
+        """Admit one finite optional operation behind foreground preparation."""
+        capability = _Capability(lambda: None, True, False, "pending")
+        await self.wait_minimum_ready()
+        await self._admit(capability)
+        try:
+            yield
+        finally:
+            self._active_background -= 1
+            self._admission_changed.set()
 
     async def _admit(self, capability: _Capability) -> bool:
         while True:

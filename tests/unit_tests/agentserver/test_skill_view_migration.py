@@ -20,6 +20,9 @@ import json
 import logging
 import os
 import shutil
+from pathlib import Path
+import subprocess
+from unittest.mock import Mock
 
 import pytest
 from openjiuwen.agent_teams.paths import (
@@ -47,6 +50,273 @@ test_logger = logging.getLogger("tests.skill_view_migration")
 
 TEAM_NAME = "demo_team"
 MEMBER_NAME = "reviewer"
+
+
+@pytest.mark.parametrize("change", ["script", "added-file", "removed-file", "empty-directory"])
+def test_migration_retains_modified_skill_copy_beyond_its_readme(
+    openjiuwen_home, tmp_path, change,
+):
+    library = _make_library(tmp_path, ["skill-a", "skill-b"])
+    script = library / "skill-a" / "scripts" / "run.py"
+    script.parent.mkdir()
+    script.write_text("print('original')", encoding="utf-8")
+    view = _member_view_dir()
+    _make_legacy_view(view, library, ["skill-a"])
+    copy = view / "skill-a"
+    if change == "script":
+        (copy / "scripts" / "run.py").write_text("print('user modified')", encoding="utf-8")
+    elif change == "added-file":
+        (copy / "notes.txt").write_text("user notes", encoding="utf-8")
+    elif change == "removed-file":
+        (copy / "scripts" / "run.py").unlink()
+    else:
+        (copy / "user-directory").mkdir()
+    before = {str(p.relative_to(copy)): p.read_bytes() for p in copy.rglob("*") if p.is_file()}
+
+    migrate_team_skill_views(library_dir=library, strict=True)
+
+    assert copy.is_dir()
+    assert {str(p.relative_to(copy)): p.read_bytes() for p in copy.rglob("*") if p.is_file()} == before
+    if change == "empty-directory":
+        assert (copy / "user-directory").is_dir()
+
+
+def test_migration_removes_complete_unchanged_copy(openjiuwen_home, tmp_path):
+    library = _make_library(tmp_path, ["skill-a"])
+    script = library / "skill-a" / "scripts" / "run.py"
+    script.parent.mkdir()
+    script.write_bytes(b"original script")
+    (library / "skill-a" / "empty-directory").mkdir()
+    view = _member_view_dir()
+    _make_legacy_view(view, library, ["skill-a"])
+
+    migrate_team_skill_views(library_dir=library, strict=True)
+
+    assert not view.exists()
+    assert script.read_bytes() == b"original script"
+
+
+@pytest.mark.parametrize("with_skill", [False, True])
+def test_migration_preserves_user_files_alongside_scaffolding(openjiuwen_home, tmp_path, with_skill):
+    library = _make_library(tmp_path, ["skill-a"])
+    view = _member_view_dir()
+    _make_legacy_view(view, library, ["skill-a"] if with_skill else [])
+    (view / "notes.txt").write_text("must survive", encoding="utf-8")
+    (view / ".workspace").write_text("", encoding="utf-8")
+
+    migrate_team_skill_views(library_dir=library, strict=True)
+
+    assert (view / "notes.txt").read_text(encoding="utf-8") == "must survive"
+
+
+def test_migration_preserves_nonempty_workspace_marker(openjiuwen_home, tmp_path):
+    library = _make_library(tmp_path, ["skill-a"])
+    view = _member_view_dir()
+    view.mkdir(parents=True)
+    marker = view / ".workspace"
+    marker.write_text("user-owned marker content", encoding="utf-8")
+
+    migrate_team_skill_views(library_dir=library, strict=True)
+
+    assert marker.read_text(encoding="utf-8") == "user-owned marker content"
+
+
+def _make_directory_link(link, target):
+    """Use real junctions on Windows; no symlink privilege is required."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            check=True, capture_output=True,
+        )
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+@pytest.mark.parametrize("level", ["home", "team", "workspaces", "member", "view", "team-workspace"])
+def test_migration_never_traverses_linked_team_paths(openjiuwen_home, tmp_path, level):
+    library = _make_library(tmp_path, ["skill-a"])
+    teams_home = get_agent_teams_home()
+    member = teams_home / TEAM_NAME / "workspaces" / f"{MEMBER_NAME}_workspace"
+    links = {
+        "home": teams_home,
+        "team": teams_home / TEAM_NAME,
+        "workspaces": teams_home / TEAM_NAME / "workspaces",
+        "member": member,
+        "view": member / "skills",
+        "team-workspace": teams_home / TEAM_NAME / "team-workspace",
+    }
+    view = _team_view_dir() if level == "team-workspace" else _member_view_dir()
+    outside = tmp_path / "outside"
+    external_view = outside / view.relative_to(links[level])
+    _make_legacy_view(external_view, library, ["skill-a"])
+    sentinel = outside / "notes.txt"
+    sentinel.write_text("outside user content", encoding="utf-8")
+    _make_directory_link(links[level], outside)
+
+    with pytest.raises(ValueError, match="linked Team migration path"):
+        migrate_team_skill_views(library_dir=library, strict=True)
+    assert migrate_team_skill_views(library_dir=library) == 0
+
+    assert sentinel.read_text(encoding="utf-8") == "outside user content"
+    assert (external_view / "skill-a" / "SKILL.md").is_file()
+    assert not list(outside.rglob("skills-visibility.json"))
+
+
+def test_migration_retains_copies_containing_nested_directory_links(openjiuwen_home, tmp_path):
+    library = _make_library(tmp_path, ["skill-a"])
+    view = _member_view_dir()
+    _make_legacy_view(view, library, ["skill-a"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "notes.txt").write_text("outside content", encoding="utf-8")
+    _make_directory_link(view / "skill-a" / "nested", outside)
+
+    migrate_team_skill_views(library_dir=library, strict=True)
+
+    assert (view / "skill-a" / "SKILL.md").is_file()
+    assert (outside / "notes.txt").read_text(encoding="utf-8") == "outside content"
+
+
+@pytest.mark.parametrize("parent_reference", [False, True])
+def test_migration_rejects_visibility_paths_outside_team_home(
+    openjiuwen_home, tmp_path, monkeypatch, parent_reference,
+):
+    from openjiuwen.agent_teams import paths
+
+    library = _make_library(tmp_path, ["skill-a"])
+    view = _member_view_dir()
+    _make_legacy_view(view, library, ["skill-a"])
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"authority": 100}', encoding="utf-8")
+    target = (
+        get_agent_teams_home() / "missing" / ".." / ".." / "outside.json"
+        if parent_reference else outside
+    )
+    monkeypatch.setattr(paths, "member_skill_visibility_path", lambda *_args: target)
+
+    with pytest.raises(ValueError):
+        migrate_team_skill_views(library_dir=library, strict=True)
+
+    assert (view / "skill-a" / "SKILL.md").is_file()
+    assert outside.read_text(encoding="utf-8") == '{"authority": 100}'
+
+
+@pytest.mark.parametrize("failure", ["invalid-json", "non-object", "unreadable", "invalid-utf8"])
+def test_strict_preparation_retries_unreadable_or_corrupt_visibility_without_deleting_views(
+    openjiuwen_home, tmp_path, monkeypatch, failure,
+):
+    from openjiuwen.agent_teams.skill import visibility
+    from jiuwenswarm.agents.harness.team import bootstrap
+    from jiuwenswarm.common import utils
+
+    library = _make_library(tmp_path, ["skill-a", "skill-b"])
+    view = _member_view_dir()
+    _make_legacy_view(view, library, ["skill-a"])
+    metadata = member_skill_visibility_path(TEAM_NAME, MEMBER_NAME)
+    set_skill_visibility(metadata, scope=SCOPE_MEMBER, entity_id=MEMBER_NAME, allow=["skill-b"], deny=[])
+    original_bytes = metadata.read_bytes()
+    original_read = Path.read_text
+
+    def deny_read(path, *args, **kwargs):
+        if path == metadata:
+            raise PermissionError("existing authorization unreadable")
+        return original_read(path, *args, **kwargs)
+
+    if failure == "unreadable":
+        monkeypatch.setattr(Path, "read_text", deny_read)
+    else:
+        metadata.write_bytes({"invalid-json": b"{", "non-object": b"[]", "invalid-utf8": b"\xff"}[failure])
+    damaged_bytes = metadata.read_bytes()
+    seed = Mock(wraps=visibility.bootstrap_skill_visibility)
+    monkeypatch.setattr(visibility, "bootstrap_skill_visibility", seed)
+    monkeypatch.setattr(bootstrap, "get_user_workspace_dir", lambda: openjiuwen_home)
+    monkeypatch.setattr(utils, "get_agent_skills_dir", lambda: library)
+    preparation = bootstrap.TeamStoragePreparation()
+
+    with pytest.raises((OSError, ValueError)):
+        preparation.prepare()
+    seed.assert_not_called()
+    assert metadata.read_bytes() == damaged_bytes
+    assert (view / "skill-a" / "SKILL.md").is_file()
+
+    monkeypatch.setattr(Path, "read_text", original_read)
+    metadata.write_bytes(original_bytes)
+    preparation.prepare()
+    preparation.prepare()
+    assert seed.call_count == 1
+    assert not view.exists()
+    assert metadata.read_bytes() == original_bytes
+
+
+def test_strict_migration_preserves_legacy_view_when_visibility_write_fails(
+    openjiuwen_home, tmp_path, monkeypatch,
+):
+    from openjiuwen.agent_teams.skill import visibility
+
+    library = _make_library(tmp_path, ["skill-a", "skill-b"])
+    view = _member_view_dir()
+    _make_legacy_view(view, library, ["skill-a"])
+    original = visibility.bootstrap_skill_visibility
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(visibility, "bootstrap_skill_visibility", fail_write)
+    with pytest.raises(OSError, match="disk unavailable"):
+        migrate_team_skill_views(library_dir=library, strict=True)
+    assert (view / "skill-a" / "SKILL.md").is_file()
+
+    monkeypatch.setattr(visibility, "bootstrap_skill_visibility", original)
+    assert migrate_team_skill_views(library_dir=library, strict=True) == 1
+    assert not view.exists()
+    document = read_skill_visibility(
+        member_skill_visibility_path(TEAM_NAME, MEMBER_NAME),
+        scope=SCOPE_MEMBER, entity_id=MEMBER_NAME,
+    )
+    assert document.allow == ["skill-a"]
+
+
+def test_strict_migration_reports_scan_failure_without_caching_empty_view(
+    openjiuwen_home, tmp_path, monkeypatch,
+):
+    library = _make_library(tmp_path, ["skill-a"])
+    view = _member_view_dir()
+    _make_legacy_view(view, library, ["skill-a"])
+    original = Path.iterdir
+
+    def fail_scan(path):
+        if path == view:
+            raise PermissionError("view unavailable")
+        return original(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_scan)
+    with pytest.raises(PermissionError, match="view unavailable"):
+        migrate_team_skill_views(library_dir=library, strict=True)
+    assert view.exists()
+
+
+def test_strict_migration_retains_user_directories_and_explicit_authority(
+    openjiuwen_home, tmp_path,
+):
+    library = _make_library(tmp_path, ["skill-a", "skill-b"])
+    view = _member_view_dir()
+    _make_legacy_view(view, library, ["skill-a"])
+    owned = view / "user-skill"
+    owned.mkdir()
+    (owned / "SKILL.md").write_text("User-authored content", encoding="utf-8")
+    metadata = member_skill_visibility_path(TEAM_NAME, MEMBER_NAME)
+    set_skill_visibility(
+        metadata, scope=SCOPE_MEMBER, entity_id=MEMBER_NAME, allow=["skill-b"], deny=[],
+    )
+
+    migrate_team_skill_views(library_dir=library, strict=True)
+
+    assert owned.is_dir()
+    assert (owned / "SKILL.md").read_text(encoding="utf-8") == "User-authored content"
+    document = read_skill_visibility(metadata, scope=SCOPE_MEMBER, entity_id=MEMBER_NAME)
+    assert document.allow == ["skill-b"]
+    assert document.authority == AUTHORITY_EXPLICIT
 
 
 @pytest.fixture

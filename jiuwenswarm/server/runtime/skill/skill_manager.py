@@ -863,6 +863,9 @@ class SkillManager:
     """Skill 管理器，对应 skills.* 请求方法."""
 
     def __init__(self, workspace_dir: str | None = None) -> None:
+        from jiuwenswarm.agents.harness.team.bootstrap import TeamStoragePreparation
+
+        self._team_storage_preparation = TeamStoragePreparation()
         # 若传入 workspace_dir（harness adapter 使用），优先通过 Workspace/WorkspaceNode
         # 解析 skills 路径；否则使用全局默认路径（react adapter 或无参数时）。
         if workspace_dir is not None:
@@ -1411,8 +1414,7 @@ class SkillManager:
             return f"技能包包含已禁用的技能{suffix}，请先在「包含技能」中启用后再启用技能包"
         return f"技能包包含未安装的技能{suffix}，请先在「包含技能」中安装，或重新下载完整技能包后再启用"
 
-    @staticmethod
-    def _resolve_skill_visibility_target(params: dict) -> tuple[str, str, Path] | dict:
+    def _resolve_skill_visibility_target(self, params: dict) -> tuple[str, str, Path] | dict:
         """Resolve the visibility document addressed by an RPC request.
 
         Args:
@@ -1428,7 +1430,6 @@ class SkillManager:
             team_skill_visibility_path,
         )
         from openjiuwen.agent_teams.skill.visibility import SCOPE_MEMBER, SCOPE_TEAM
-        from jiuwenswarm.agents.harness.team.bootstrap import prepare_team_storage
 
         scope = str(params.get("scope") or SCOPE_MEMBER).strip()
         if scope not in (SCOPE_MEMBER, SCOPE_TEAM):
@@ -1440,19 +1441,24 @@ class SkillManager:
             return {"success": False, "detail": str(exc)}
 
         if scope == SCOPE_TEAM:
-            prepare_team_storage()
-            return SCOPE_TEAM, team_name, team_skill_visibility_path(team_name)
+            with self._team_storage_preparation.activate():
+                return SCOPE_TEAM, team_name, team_skill_visibility_path(team_name)
 
         try:
             member_name = _safe_path_name(params.get("member_name"), "member")
         except ValueError as exc:
             _log_rejected_name("skills.visibility", "member", params.get("member_name"), exc)
             return {"success": False, "detail": str(exc)}
-        prepare_team_storage()
-        return SCOPE_MEMBER, member_name, member_skill_visibility_path(team_name, member_name)
+        with self._team_storage_preparation.activate():
+            return SCOPE_MEMBER, member_name, member_skill_visibility_path(team_name, member_name)
+
+    def _compose_skill_visibility_for_params(self, params: dict, scope: str) -> tuple[set[str], set[str]]:
+        """Compose against this request's prepared SDK directory bindings."""
+        with self._team_storage_preparation.activate():
+            return self._compose_prepared_skill_visibility(params, scope)
 
     @staticmethod
-    def _compose_skill_visibility_for_params(params: dict, scope: str) -> tuple[set[str], set[str]]:
+    def _compose_prepared_skill_visibility(params: dict, scope: str) -> tuple[set[str], set[str]]:
         """Compose the effective allow / deny sets addressed by an RPC request.
 
         Args:

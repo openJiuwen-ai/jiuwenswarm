@@ -247,8 +247,8 @@ def preload_runtime_backend() -> None:
     import jiuwenswarm.extensions.registry  # noqa: F401
     _log_preparation_stage("extension_imports", began)
     began = time.monotonic()
-    import jiuwenswarm.server.agent_ws_server  # noqa: F401
-    _log_preparation_stage("server_import", began)
+    import jiuwenswarm.server.worker.execution_host  # noqa: F401
+    _log_preparation_stage("execution_host_import", began)
     # Core persistence is independent of agent mode and optional Rail imports.
     began = time.monotonic()
     import jiuwenswarm.runtime.checkpointer  # noqa: F401

@@ -51,7 +51,8 @@ from jiuwenswarm.runtime.session import (
 from jiuwenswarm.runtime.session.model import SessionExecutionState
 from jiuwenswarm.runtime.session.execution_registry import SessionExecutionRegistry
 from jiuwenswarm.runtime.context import reset_runtime_context, set_runtime_context
-from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
+from jiuwenswarm.server.worker import execution_requests as execution_requests_module
+from jiuwenswarm.server.worker.execution_services import TransportClosed
 from jiuwenswarm.server.agent_ws_server import (
     AgentWebSocketServer,
     _strip_untrusted_session_message_context,
@@ -268,7 +269,7 @@ async def test_session_message_status_content_is_web_only(monkeypatch, channel_i
         last_error="",
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "build_server_push_message",
         lambda **kwargs: {
             **kwargs,
@@ -303,11 +304,11 @@ async def test_session_message_status_distinguishes_anonymous_local_owner(monkey
         started_at=None, finished_at=None, last_error_code="", last_error="",
     )
     monkeypatch.setattr(
-        agent_ws_server_module, "get_session_metadata",
+        execution_requests_module, "get_session_metadata",
         lambda *args, **kwargs: {"user_id": target_user_id},
     )
     monkeypatch.setattr(
-        agent_ws_server_module, "build_server_push_message",
+        execution_requests_module, "build_server_push_message",
         lambda **kwargs: {**kwargs, "channel_id": "web"},
     )
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
@@ -1395,7 +1396,7 @@ async def test_agentserver_rechecks_anonymous_owner_before_execution(
     record = store.claim(queued.message_id, "execution-1", "run-1")
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "get_session_metadata",
         lambda *args, **kwargs: {**_metadata("target-1"), "user_id": "user-2"},
     )
@@ -2084,7 +2085,7 @@ async def test_agentserver_executes_claimed_message_in_target_runtime(
 
     server.send_push = send_push
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "get_session_metadata",
         lambda *args, **kwargs: {
             "session_id": "target-1",
@@ -2098,12 +2099,12 @@ async def test_agentserver_executes_claimed_message_in_target_runtime(
         },
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "build_server_push_message",
         lambda **kwargs: dict(kwargs),
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
@@ -2182,17 +2183,17 @@ async def test_agentserver_persists_question_correlation_before_push(
 
     server.send_push = send_push
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "get_session_metadata",
         lambda *a, **k: _metadata("target-1"),
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "build_server_push_message",
         lambda **kwargs: dict(kwargs),
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "enqueue_history_request_completion",
         lambda *a, **k: None,
     )
@@ -2253,11 +2254,11 @@ async def test_failed_session_question_releases_runtime_wait(
     )
     server.send_push = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        agent_ws_server_module, "get_session_metadata",
+        execution_requests_module, "get_session_metadata",
         lambda *a, **k: _metadata("target-1"),
     )
     monkeypatch.setattr(
-        agent_ws_server_module, "build_server_push_message",
+        execution_requests_module, "build_server_push_message",
         lambda **kwargs: dict(kwargs),
     )
     def complete_history(*args, **kwargs):
@@ -2266,7 +2267,7 @@ async def test_failed_session_question_releases_runtime_wait(
         return None
 
     monkeypatch.setattr(
-        agent_ws_server_module, "enqueue_history_request_completion", complete_history
+        execution_requests_module, "enqueue_history_request_completion", complete_history
     )
 
     if history_failure:
@@ -2329,7 +2330,7 @@ async def test_agentserver_failure_after_repeated_question_closes_message(
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._session_message_service = service
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "enqueue_history_request_completion",
         lambda *a, **k: None,
     )
@@ -2405,7 +2406,7 @@ async def test_resume_turn_persists_each_repeated_question_correlation(
         0, result=True
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
@@ -2461,7 +2462,7 @@ async def test_stream_delivery_abort_marks_resumed_message_unknown(
         0, result=False
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
@@ -2506,19 +2507,19 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
             ]
 
     async def disconnect(*args, **kwargs):
-        raise agent_ws_server_module.WebSocketConnectionClosed(None, None)
+        raise TransportClosed("sink closed")
 
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._session_message_service = service
     server._execution_runtime = lambda: _Runtime()
     server._send_runtime_event = disconnect
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
 
-    with pytest.raises(agent_ws_server_module.WebSocketConnectionClosed):
+    with pytest.raises(TransportClosed):
         await server._handle_unary_impl(object(), request, asyncio.Lock())
 
     failed_delivery = store.get(waiting.message_id)
@@ -2568,7 +2569,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
         0, result=True
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
@@ -2611,12 +2612,12 @@ async def test_history_barrier_timeout_marks_resumed_message_unknown(
         raise TimeoutError("history writer timed out")
 
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: object(),
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "wait_for_history_receipt",
         timeout_receipt,
     )
@@ -2667,9 +2668,9 @@ async def test_agentserver_treats_error_events_as_failed(
     server._runtime = _Runtime()
     server._agent_manager = server._runtime.agent_manager
     server.send_push = lambda message: asyncio.sleep(0, result=True)
-    monkeypatch.setattr(agent_ws_server_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
-    monkeypatch.setattr(agent_ws_server_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
-    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+    monkeypatch.setattr(execution_requests_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
+    monkeypatch.setattr(execution_requests_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(execution_requests_module, "enqueue_history_request_completion", lambda *a, **k: None)
 
     result = await server.execute_internal_session_message(record)
 
@@ -2710,9 +2711,9 @@ async def test_agentserver_does_not_treat_runtime_accepted_as_completion(
     server._runtime = _Runtime()
     server._agent_manager = server._runtime.agent_manager
     server.send_push = lambda message: asyncio.sleep(0, result=True)
-    monkeypatch.setattr(agent_ws_server_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
-    monkeypatch.setattr(agent_ws_server_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
-    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+    monkeypatch.setattr(execution_requests_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
+    monkeypatch.setattr(execution_requests_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(execution_requests_module, "enqueue_history_request_completion", lambda *a, **k: None)
 
     result = await server.execute_internal_session_message(record)
 
@@ -2754,17 +2755,17 @@ async def test_agentserver_acceptance_followed_by_final_is_success(
     server._agent_manager = server._runtime.agent_manager
     server.send_push = lambda message: asyncio.sleep(0, result=True)
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "get_session_metadata",
         lambda *a, **k: _metadata("target-1"),
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "build_server_push_message",
         lambda **kwargs: dict(kwargs),
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "enqueue_history_request_completion",
         lambda *a, **k: None,
     )
@@ -2826,7 +2827,7 @@ async def test_team_input_acceptance_delivers_without_closing_team_processing(
     server.send_push = AsyncMock(return_value=True)
     completion = Mock(return_value=None)
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "get_session_metadata",
         lambda *args, **kwargs: {
             **_metadata("target-1"),
@@ -2834,12 +2835,12 @@ async def test_team_input_acceptance_delivers_without_closing_team_processing(
         },
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "build_server_push_message",
         lambda **kwargs: dict(kwargs),
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "enqueue_history_request_completion",
         completion,
     )
@@ -2910,7 +2911,7 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
         0, result=True
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
@@ -3881,9 +3882,9 @@ async def test_cross_session_steer_runtime_receipt_is_not_task_completion(tmp_pa
     server._execution_runtime = lambda: Runtime()
     server.send_push = AsyncMock()
     completion = Mock(return_value=None)
-    monkeypatch.setattr(agent_ws_server_module, 'get_session_metadata', lambda *a, **k: _metadata('target-1'))
-    monkeypatch.setattr(agent_ws_server_module, 'build_server_push_message', lambda **kwargs: dict(kwargs))
-    monkeypatch.setattr(agent_ws_server_module, 'enqueue_history_request_completion', completion)
+    monkeypatch.setattr(execution_requests_module, 'get_session_metadata', lambda *a, **k: _metadata('target-1'))
+    monkeypatch.setattr(execution_requests_module, 'build_server_push_message', lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(execution_requests_module, 'enqueue_history_request_completion', completion)
     result = await server.execute_internal_session_message(record)
     assert result.status == expected
     if disposition != 'chat':
@@ -3977,9 +3978,9 @@ async def test_mailbox_task_does_not_overwrite_incoming_steer_author(tmp_path, m
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._execution_runtime = lambda: Runtime()
     server.send_push = AsyncMock()
-    monkeypatch.setattr(agent_ws_server_module, 'get_session_metadata', lambda *a, **k: _metadata('target-1'))
-    monkeypatch.setattr(agent_ws_server_module, 'build_server_push_message', lambda **kwargs: dict(kwargs))
-    monkeypatch.setattr(agent_ws_server_module, 'enqueue_history_request_completion', lambda *a, **k: None)
+    monkeypatch.setattr(execution_requests_module, 'get_session_metadata', lambda *a, **k: _metadata('target-1'))
+    monkeypatch.setattr(execution_requests_module, 'build_server_push_message', lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(execution_requests_module, 'enqueue_history_request_completion', lambda *a, **k: None)
     result = await server.execute_internal_session_message(record)
     assert result.status == 'succeeded'
     pushed = [call.args[0]['payload'] for call in server.send_push.call_args_list]

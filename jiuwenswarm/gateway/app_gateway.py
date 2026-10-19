@@ -2621,8 +2621,6 @@ async def _run(
             if not apps:
                 logger.info("[App] channels.feishu.apps empty, FeishuChannel disabled")
             else:
-                from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import \
-                    FeishuChannel, FeishuConfig
                 for app in apps:
                     if not app.get("enabled", True):
                         continue
@@ -2630,6 +2628,9 @@ async def _run(
                     if not enabled:
                         logger.info("[App] channels.feishu.apps[].%s, skipping", reason)
                         continue
+
+                    from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import \
+                        FeishuChannel, FeishuConfig
 
                     app_id = str(app.get("app_id") or "").strip()
                     channel_id = "feishu"
@@ -2693,8 +2694,6 @@ async def _run(
                     "FeishuEnterpriseChannel disabled"
                 )
             else:
-                from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import \
-                    FeishuChannel, FeishuConfig
                 for bot_key, bot_conf_raw in enterprise_conf.items():
                     if not isinstance(bot_key, str) or not bot_key.strip():
                         continue
@@ -2710,6 +2709,9 @@ async def _run(
                             reason,
                         )
                         continue
+
+                    from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import \
+                        FeishuChannel, FeishuConfig
 
                     bot_key = bot_key.strip()
                     app_id = str(bot_conf.get("app_id") or "").strip()
@@ -2770,9 +2772,6 @@ async def _run(
             if not apps:
                 logger.info("[App] channels.xiaoyi.apps empty, XiaoyiChannel disabled")
             else:
-                from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
-                    XiaoyiChannel, XiaoyiChannelConfig,
-                )
                 for app in apps:
                     if not app.get("enabled", True):
                         continue
@@ -2788,6 +2787,10 @@ async def _run(
                             "[App] channels.xiaoyi.apps[].api_id required for non-default, skipping"
                         )
                         continue
+
+                    from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
+                        XiaoyiChannel, XiaoyiChannelConfig,
+                    )
 
                     channel_id = "xiaoyi"
                     config = XiaoyiChannelConfig(

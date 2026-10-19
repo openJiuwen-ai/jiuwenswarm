@@ -26,6 +26,7 @@ class WorkerRuntime:
     proactive_task: asyncio.Task | None = None
     image_task: asyncio.Task | None = None
     background_tasks: set[asyncio.Task] = field(default_factory=set)
+    profile_prewarmer: Any = None
 
     def spawn(self, coroutine: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task:
         """Keep finite background notifications attached to this owner."""
@@ -48,6 +49,8 @@ class WorkerRuntime:
     async def shutdown(self) -> None:
         """Drain resources within the enclosing Worker service's deadline."""
         self.stop_event.set()
+        if self.profile_prewarmer is not None:
+            await self.profile_prewarmer.close()
         owned = (self.image_task, self.proactive_task, self.teammate_task, self.zen_task, *self.background_tasks)
         tasks = list(dict.fromkeys(task for task in owned if task is not None))
         for task in tasks:

@@ -258,12 +258,6 @@ gateway_adapter_submodules = collect_submodules(
 runtime_worker_submodules = collect_submodules(
     "jiuwenswarm.server.worker"
 )
-# TeamManager imports this lifecycle hook while its parent package is being
-# initialized.  Keep it explicit because PyInstaller cannot reliably infer
-# this package-attribute import from the frozen entry point.
-team_kv_cache_hiddenimports = [
-    "jiuwenswarm.agents.harness.team.kv_cache_team_delete_guard",
-]
 dispatch_submodules = collect_tree_python_modules(symphony_root, DISPATCH_PACKAGE_ROOTS)
 http2_submodules = [
     *collect_submodules("h2"),
@@ -278,11 +272,17 @@ for lazy_package in (
     "jiuwenswarm.agents.harness.common.tools",
     "jiuwenswarm.agents.harness.common.rails",
     "jiuwenswarm.common.auth",
+    # Management providers are selected by an explicit import_module registry.
+    "jiuwenswarm.server.management",
     "jiuwenswarm.agents.swarm",
 ):
     lazy_runtime_submodules += collect_submodules(lazy_package)
 
 hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
+    # Compatibility and optional voice providers are intentionally absent from
+    # the cold Worker import graph. Include their supported lazy entrypoints.
+    "jiuwenswarm.server.agent_ws_server",
+    "jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter",
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.
@@ -314,7 +314,7 @@ hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_s
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
-] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + team_kv_cache_hiddenimports + dispatch_submodules
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + dispatch_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [
@@ -381,11 +381,20 @@ _exe_dir = os.path.dirname(sys.executable) if sys.executable else None
 if _exe_dir:
     _scripts_subdir = "Scripts" if sys.platform == "win32" else "bin"
     _ruff_candidates.append(os.path.join(_exe_dir, _scripts_subdir, "ruff" + _ruff_suffix))
+# Inherited site-packages can provide ruff while its executable lives in the
+# base environment's Scripts/bin. Resolve that installed package's own binary.
+try:
+    from ruff import find_ruff_bin as _find_ruff_bin
+    _ruff_candidates.append(_find_ruff_bin())
+except (ImportError, FileNotFoundError):
+    pass
+_ruff_bundled = False
 for _c in _ruff_candidates:
     if _c and os.path.isfile(_c):
         _bundled_binaries.append((_c, "."))
+        _ruff_bundled = True
         break
-if not _bundled_binaries:
+if not _ruff_bundled:
     print("WARNING: ruff binary not found in venv; auto-harness lint will be "
           "unavailable in the frozen exe (install ruff in the build venv)")
 
