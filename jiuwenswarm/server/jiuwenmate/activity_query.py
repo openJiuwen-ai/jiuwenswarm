@@ -73,6 +73,8 @@ def assemble_activity(
         day_calls: dict[str, int] = defaultdict(int)
         day_tokens: dict[str, int] = defaultdict(int)
         hour_minutes: dict[tuple[str, int], int] = defaultdict(int)
+        hour_tasks: dict[tuple[str, int], int] = defaultdict(int)
+        hour_tokens: dict[tuple[str, int], int] = defaultdict(int)
         channels: dict[str, dict[str, int]] = {}
         group_rows: dict[str, dict[str, object]] = {}
 
@@ -120,6 +122,7 @@ def assemble_activity(
             day_tasks[day] += 1
             day_minutes[day] += spent
             hour_minutes[(day, started.hour)] += spent
+            hour_tasks[(day, started.hour)] += 1
             if channel_name:
                 bucket = channel_bucket(channel_name)
                 bucket["tasks"] += 1
@@ -159,6 +162,7 @@ def assemble_activity(
             day = started.date().isoformat()
             day_calls[day] += 1
             day_tokens[day] += amount
+            hour_tokens[(day, started.hour)] += amount
             session = by_session.get(str(request["session_id"]))
             if session is not None:
                 bucket = channel_bucket(session["channel"])
@@ -191,9 +195,15 @@ def assemble_activity(
             for day in sorted(set(day_tasks) | set(day_calls))
         ]
         hours = [
-            {"date": day, "hour": hour, "minutes": hour_minutes[(day, hour)]}
-            for day, hour in sorted(hour_minutes)
-            if hour_minutes[(day, hour)]
+            {
+                "date": day,
+                "hour": hour,
+                "minutes": hour_minutes[(day, hour)],
+                "tasks": hour_tasks[(day, hour)],
+                "tokens": hour_tokens[(day, hour)],
+            }
+            for day, hour in sorted(set(hour_minutes) | set(hour_tasks) | set(hour_tokens))
+            if hour_tasks[(day, hour)] or hour_tokens[(day, hour)]
         ]
         members.append(
             {

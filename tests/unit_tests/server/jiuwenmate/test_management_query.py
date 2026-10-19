@@ -146,11 +146,39 @@ def test_ignored_request_is_not_a_task_reply_or_failure(tmp_path):
     assert member["tokens"] == 65
     assert member["companion_days"] == 16
     assert member["days"] == [{"date": "2026-10-16", "tasks": 2, "minutes": 90, "calls": 2, "tokens": 65}]
+    assert member["hours"] == [
+        {"date": "2026-10-16", "hour": 9, "minutes": 60, "tasks": 1, "tokens": 25},
+        {"date": "2026-10-16", "hour": 11, "minutes": 30, "tasks": 1, "tokens": 40},
+    ]
     assert member["channels"] == [
         {"channel": "web", "calls": 2, "tokens": 65, "tasks": 2, "replies": 1, "failures": 1}
     ]
     assert "settings" not in member
     assert "persona" not in json.dumps(report)
+
+
+def test_subminute_execution_keeps_its_hourly_activity_and_tokens():
+    report = assemble_activity(
+        colleagues=[{"agent_id": "mate_a", "created_at": "2026-10-16T00:00:00+00:00"}],
+        requests=[
+            {
+                "request_id": "req_a",
+                "agent_id": "mate_a",
+                "session_id": "sess_a",
+                "status": "ended",
+                "outcome": "completed",
+                "updated_at": "2026-10-16T10:00:30+00:00",
+            }
+        ],
+        executions=[{"execution_id": "exe_a", "request_id": "req_a", "started_at": "2026-10-16T10:00:00+00:00"}],
+        sessions=[{"session_id": "sess_a", "agent_id": "mate_a", "kind": "web_direct", "channel": "web", "conversation_key": "c"}],
+        calls=[{"status": "settled", "charged_tokens": 42, "ref": {"execution_id": "exe_a"}}],
+        deliveries=[],
+        groups=[],
+        now=NOW,
+    )
+
+    assert report["members"][0]["hours"] == [{"date": "2026-10-16", "hour": 10, "minutes": 0, "tasks": 1, "tokens": 42}]
 
 
 def test_group_file_delivery_is_an_artifact_and_other_namespace_is_hidden(tmp_path):

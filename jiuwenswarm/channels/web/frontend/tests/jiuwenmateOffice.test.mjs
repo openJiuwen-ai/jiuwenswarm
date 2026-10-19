@@ -8,6 +8,7 @@ import {
   formatTableTokens,
   halfYearHeatmap,
   hoverHeatmapCell,
+  hourlyActivity,
   periodHeatmap,
   selectOfficeMember,
   selectOfficeTab,
@@ -75,6 +76,14 @@ test('period heatmap lists recent days with relative labels and is capped at 31 
 
   const clamped = setActivityPeriod(createOfficeState(null, today), '2026-01-01', '2026-10-12');
   assert.equal(clamped.periodStart, '2026-09-12');
+});
+
+test('period heatmap keeps subminute work visible by using hourly task counts', () => {
+  const hourly = hourlyActivity([{ date: '2026-10-12', hour: 10, minutes: 0, tasks: 1, tokens: 42 }], '2026-10-12', today);
+  const row = periodHeatmap('2026-10-12', '2026-10-12', today, hourly)[0];
+
+  assert.equal(row.entries, 1);
+  assert.equal(row.cells[10].level, 1);
 });
 
 test('summary and token formatting follow the design', () => {
