@@ -123,10 +123,14 @@ class AutoPermissionLifecycleMixin:
                         continue
             setter(tuple(dict.fromkeys(roots)))
 
-    def update_config(self, config: dict[str, Any]) -> None:
-        """Install a complete same-rail runtime configuration update."""
-        permission_config = deepcopy(config)
+    def replace_installed_global_permissions(self, config: dict[str, Any]) -> dict[str, Any] | None:
+        """Forward the existing Host setter without owning another Global layer."""
         replace_global = getattr(self.base_rail, "replace_installed_global_permissions", None)
+        return replace_global(config) if callable(replace_global) else None
+
+    def update_config(self, config: dict[str, Any]) -> None:
+        """Apply effective permissions through the standard base rail."""
+        permission_config = deepcopy(config)
         auto_options = normalize_auto_permission_options(permission_config.get("auto"))
         timeout_ms = int(auto_options.get("reviewer_timeout_ms", 60000))
         min_confidence = float(auto_options.get("reviewer_min_confidence", 0.7))
@@ -144,16 +148,8 @@ class AutoPermissionLifecycleMixin:
                 persistent_audit_writer = PersistentAuditWriter(data_root=audit_root)
 
         update_config = getattr(self.base_rail, "update_config", None)
-        previous_global = replace_global(config) if callable(replace_global) else None
-        try:
-            if callable(replace_global):
-                permission_config = self.base_rail._host.get_permissions_snapshot()
-            if callable(update_config):
-                update_config(permission_config)
-        except BaseException:
-            if callable(replace_global):
-                replace_global(previous_global)
-            raise
+        if callable(update_config):
+            update_config(permission_config)
 
         if self.auto_reviewer is not None:
             self.auto_reviewer.update_runtime_options(

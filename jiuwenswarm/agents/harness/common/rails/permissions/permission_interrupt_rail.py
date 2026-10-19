@@ -79,7 +79,9 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
             async def preserve_confirmation(scene_input: Any) -> Any:
                 outcome = await scene_hook(scene_input)
                 attempt = _EXACT_PERSIST_ATTEMPT.get()
-                if attempt is not None and attempt.approved and outcome and outcome[0] == "approve":
+                if attempt is None or not attempt.approved:
+                    return outcome
+                if outcome and outcome[0] == "approve":
                     return None
                 return outcome
             self._host.permission_scene_hook = preserve_confirmation
@@ -143,7 +145,9 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
                 SendFilePathGuardEvaluator,
             )
             result = SendFilePathGuardEvaluator().evaluate(
-                permissions=permissions_cfg, workspace_root=self._engine._workspace_root,
+                permissions=permissions_cfg, workspace_root=(
+                    self._host.resolve_workspace_dir() if self._host.resolve_workspace_dir else None
+                ),
                 trusted_dirs=(), raw_paths=tool_args.get("abs_file_path_list"),
             )
             if result.status == "unevaluable" or result.level == "deny":

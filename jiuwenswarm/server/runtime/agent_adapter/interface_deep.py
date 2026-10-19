@@ -10709,8 +10709,7 @@ class JiuWenSwarmDeepAdapter:
             compose_host_effective_permissions,
         )
         from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
-            load_session_permissions,
-            load_user_permissions,
+            permission_storage_lock, read_permission_layers_locked,
         )
 
         permission_config = config_base.get("permissions", {}) if config_base else {}
@@ -10726,15 +10725,27 @@ class JiuWenSwarmDeepAdapter:
             return
         if self._permission_rail is not None:
             replacer = getattr(self._permission_rail, "replace_installed_global_permissions", None)
-            if callable(replacer):
-                replacer(copy.deepcopy(permission_config))
-            effective = compose_host_effective_permissions(
-                global_permissions=permission_config,
-                user_permissions=load_user_permissions(),
-                session_permissions=load_session_permissions(session_id),
-                session_id=session_id,
+            previous_global = replacer(copy.deepcopy(permission_config)) if callable(replacer) else None
+            from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import (
+                AutoPermissionInterruptRail,
             )
-            self._permission_rail.update_config(effective)
+            try:
+                with permission_storage_lock(session_id):
+                    _, user, session = read_permission_layers_locked(
+                        session_id, global_permissions=permission_config,
+                    )
+                    effective = compose_host_effective_permissions(
+                        global_permissions=permission_config,
+                        user_permissions=user,
+                        session_permissions=session,
+                        session_id=session_id,
+                        auto_mode=isinstance(self._permission_rail, AutoPermissionInterruptRail),
+                    )
+                self._permission_rail.update_config(effective)
+            except BaseException:
+                if callable(replacer):
+                    replacer(previous_global)
+                raise
             logger.info("[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated")
         elif enabled:
             self._permission_rail = build_permission_rail(
