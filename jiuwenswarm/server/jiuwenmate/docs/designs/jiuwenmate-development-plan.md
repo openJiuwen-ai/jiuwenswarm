@@ -247,7 +247,7 @@
   - “结果投递失败导致业务任务重跑” → JM-09-V-03 → 主责 JM-09 → S2a。
   - 架构第 11.5 节“阶段完成与未知结果” → JM-09-V-03 → 主责 JM-09，协同 JM-13 → S2a、S2c。
 - **前端独立验证：** 不适用。
-- **联合交付与开放条件：** 文本 Web 投递参与 S1，文本飞书投递参与 S2a。真实 Agent 执行需对应 core 执行链集成；群内 Agent 响应另需 PA-07 的 AgentServer 联调。文件子范围依赖 PA-08；中途协作发送只有在明确其触发契约后才接入，若为有副作用工具则与 PA-15 联合验收。详见 [F_09](../features/F_09_web-and-feishu-result-delivery.md) 的剩余闭环条件。
+- **联合交付与开放条件：** 文本 Web 投递参与 S1，文本飞书投递参与 S2a。终态飞书消息会把来源群消息中除作者外的提及写成真实 `<at>`。真实 Agent 执行需对应 core 执行链集成；群内 Agent 响应另需 PA-07 的 AgentServer 联调。文件子范围依赖 PA-08；中途协作发送只有在明确其触发契约后才接入，若为有副作用工具则与 PA-15 联合验收。详见 [F_09](../features/F_09_web-and-feishu-result-delivery.md) 的剩余闭环条件。
 - **设计索引：** [F_09 Web 与飞书结果投递](../features/F_09_web-and-feishu-result-delivery.md)；架构第 6.3、8.2 节。
 
 ### JM-10 Web 接入与同事页面

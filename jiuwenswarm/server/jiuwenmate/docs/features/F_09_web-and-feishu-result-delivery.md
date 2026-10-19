@@ -234,8 +234,8 @@ JM-04 同一 `agents.sqlite3` 已新增 `result_deliveries` 表，不复制候�
 2. Agent Core 提交 `output.proposed`；JM-04 保存候选。随后提交 `execution.final` 时验证每个 output ref，并在同一事务中写 final 与 delivery rows。非终态事件不建终态投递。
 3. Web delivery row 标记 `available`；`RequestView.deliveries` 随 `request.get` / `chat.history` 返回状态。WebSocket 可通知页面，但页面断线后通过历史查询补齐。
 4. `AgentManager` 在 final 事务成功后观察事件并唤醒 `ResultDeliveryService`。服务按路由快照领取 Feishu pending，经 E2A server-push 交给 Gateway；Gateway 只匹配唯一 `app_id` 的 FeishuChannel。
-5. 当前文本使用 Feishu reply API 回复本 Request 的 `source_message_id`；缺少该 ID 时才按 `chat_id` 新建消息。来源的 `reply_to` 只作为上下文保存，不替代目标会话或来源消息 ID。结构化 mention 与 PA-15 协作发送未实现。
-6. 文件通过 PA-08 授权 resolver 上传、返回 `file_key` 并发送可见文件消息的流程仍是设计，不在当前代码启用。
+5. 当前文本使用 Feishu reply API 回复本 Request 的 `source_message_id`；缺少该 ID 时才按 `chat_id` 新建消息。来源的 `reply_to` 只作为上下文保存，不替代目标会话或来源消息 ID。群消息来源上、除作者以外的 `mention_ids` 会写成飞书 `<at user_id>`，使被提及员工收到真实提及事件并走自己的 JM-08 入站；发送方不代为执行对方。执行中途的协作发送仍没有触发契约，不在终态投递之外另发消息。PA-15 不提供发送接口。
+6. 文件结果沿同一发送路径上传并发送可见文件消息；回执里的 `file_key` 使重试不再重复上传。
 7. Gateway 返回 `message_id` ACK 后，AgentServer 先持久化 receipt 再结束发送等待；迟到 ACK 可更新 unknown；Request final 状态不回滚、不重新执行。
 
 ```mermaid
