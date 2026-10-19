@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import functools
+import http.client
 import io
 import json
 import logging
 import shutil
+import socket
 import struct
 import sys
 import threading
@@ -14,6 +17,7 @@ import types
 import zipfile
 import zlib
 from dataclasses import dataclass
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
@@ -33,13 +37,16 @@ def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", zlib.crc32(chunk_type + data))
 
 
-def _test_png(*, height: int = 1) -> bytes:
+def _test_png(*, height: int = 1, text_padding: int = 0) -> bytes:
     ihdr = struct.pack(">IIBBBBB", 2250, height, 8, 6, 0, 0, 0)
     pixels = b"\x00" + b"\x00\x00\x00\xff" * 2250
+    idat = zlib.compress(pixels)
+    padding = _png_chunk(b"tEXt", b"Padding\0" + b"x" * text_padding) if text_padding else b""
     return (
         b"\x89PNG\r\n\x1a\n"
         + _png_chunk(b"IHDR", ihdr)
-        + _png_chunk(b"IDAT", zlib.compress(pixels))
+        + padding
+        + _png_chunk(b"IDAT", idat)
         + _png_chunk(b"IEND", b"")
     )
 
@@ -1131,20 +1138,273 @@ def test_queued_tab_cancellation_cannot_cancel_a_claimed_or_published_job(state)
         shutil.rmtree(manager.get_snapshot_path(job_id).parent)
 
 
-def test_running_browser_job_has_no_generation_deadline_or_ttl(monkeypatch) -> None:
+def test_running_browser_job_survives_while_heartbeat_reports_continue(monkeypatch) -> None:
     manager, created = _browser_job()
-    job_id = created['job_id']
+    job_id, token = created['job_id'], created['client_token']
     now = share_image_export.time.time()
     manager.update_browser_job(job_id, {
-        'client_token': created['client_token'], 'state': 'running', 'phase': 'loading_snapshot', 'claim': True,
+        'client_token': token, 'state': 'running', 'phase': 'loading_snapshot', 'claim': True,
     })
     try:
-        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 86_400)
+        # A single render tile may hold the same progress for over a day; the
+        # 30s heartbeat reports keep refreshing updated_at so the job survives.
+        for elapsed in (43_200, 86_400):
+            monkeypatch.setattr(share_image_export.time, 'time', lambda elapsed=elapsed: now + elapsed)
+            manager.update_browser_job(job_id, {'client_token': token, 'state': 'running', 'phase': 'rendering', 'progress': 50})
+            assert manager.get_status(job_id)['state'] == 'running'
+            assert manager.get_status(job_id)['error'] is None
         assert manager.get_active_status('remote')['job_id'] == job_id
-        assert manager.get_status(job_id)['state'] == 'running'
-        assert manager.get_status(job_id)['error'] is None
     finally:
         shutil.rmtree(manager.get_snapshot_path(job_id).parent)
+
+
+def test_running_browser_job_without_heartbeat_expires_and_unlocks_session(monkeypatch) -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    directory = manager.get_snapshot_path(job_id).parent
+    now = share_image_export.time.time()
+    manager.update_browser_job(job_id, {
+        'client_token': token, 'state': 'running', 'phase': 'loading_snapshot', 'claim': True,
+    })
+    try:
+        # A renderer that crashed without a closing beacon stops reporting;
+        # after the TTL the stalled job is dropped and a new export can start.
+        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 3_601)
+        assert manager.get_status(job_id) is None
+        assert not directory.exists()
+        assert manager.get_active_status('remote') is None
+        restarted = manager.create_job(
+            session_id='remote', snapshot={'session_id': 'remote', 'records': []},
+            filename='share.png', locale='zh', base_url='http://localhost', renderer='browser',
+        )
+        assert restarted['reused'] is False
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.fixture
+def browser_upload_http(monkeypatch, tmp_path):
+    manager, created = _browser_job()
+    directory = manager.get_snapshot_path(created['job_id']).parent
+    _patch_share_dependencies(monkeypatch, manager)
+    finished = threading.Event()
+    request_threads = []
+
+    class UploadHandler(app_web._SpaStaticHandler):
+        _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 0.3
+
+        def log_message(self, format, *args):
+            pass
+
+        def finish(self):
+            try:
+                super().finish()
+            finally:
+                request_threads.append(threading.current_thread())
+                finished.set()
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(UploadHandler, directory=str(tmp_path)))
+    server_thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
+    server_thread.start()
+    try:
+        yield SimpleNamespace(
+            manager=manager, created=created, directory=directory, address=server.server_address,
+            finished=finished, threads=request_threads,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=3)
+        for job in list(manager._jobs.values()):
+            shutil.rmtree(job.directory, ignore_errors=True)
+
+
+def _start_http_upload(harness, size: int) -> socket.socket:
+    connection = socket.create_connection(harness.address, timeout=3)
+    created = harness.created
+    headers = (
+        f"POST /share-api/jobs/{created['job_id']}/browser-result?filename=share.png HTTP/1.1\r\n"
+        f"Host: localhost\r\nContent-Length: {size}\r\n"
+        f"X-Share-Export-Token: {created['client_token']}\r\nConnection: close\r\n\r\n"
+    )
+    connection.sendall(headers.encode('ascii'))
+    return connection
+
+
+def _read_http_upload(connection: socket.socket) -> tuple[int, dict]:
+    response = http.client.HTTPResponse(connection)
+    try:
+        response.begin()
+        return response.status, json.loads(response.read())
+    finally:
+        response.close()
+
+
+def _wait_until(predicate: Callable[[], bool]) -> None:
+    deadline = time.monotonic() + 3
+    while not predicate():
+        assert time.monotonic() < deadline, 'condition did not become true'
+        time.sleep(0.005)
+
+
+def test_browser_upload_reads_and_renews_each_network_chunk(browser_upload_http, monkeypatch) -> None:
+    harness = browser_upload_http
+    manager, job_id = harness.manager, harness.created['job_id']
+    data = _test_png(text_padding=2 * 1024 * 1024)
+    clock = {'now': share_image_export.time.time()}
+    monkeypatch.setattr(share_image_export.time, 'time', lambda: clock['now'])
+    with _start_http_upload(harness, len(data)) as connection:
+        _wait_until(lambda: manager._get_job(job_id).upload_in_progress)
+        for offset in range(0, len(data), 65536):
+            clock['now'] += 1800
+            chunk = data[offset:offset + 65536]
+            connection.sendall(chunk)
+            if offset + len(chunk) < len(data):
+                # Observe receipt, not file size: output buffering may defer
+                # disk writes after read1 has already returned a small packet.
+                _wait_until(lambda: manager._get_job(job_id).updated_at == clock['now'])
+                assert manager._get_job(job_id).upload_in_progress
+                assert manager.get_status(job_id) is not None
+                time.sleep(0.03)
+        status, result = _read_http_upload(connection)
+        assert status == 200
+        assert result['state'] == 'completed'
+    assert manager.get_result(job_id)[0].read_bytes() == data
+    assert not manager._get_job(job_id).upload_in_progress
+    assert not list(harness.directory.glob('*.partial'))
+
+
+@pytest.mark.parametrize('initial_bytes', [b'', b'partial upload'])
+def test_idle_http_upload_exits_and_releases_files_without_peer_close(browser_upload_http, initial_bytes) -> None:
+    harness = browser_upload_http
+    manager, job_id = harness.manager, harness.created['job_id']
+    with _start_http_upload(harness, 1024 * 1024) as connection:
+        if initial_bytes:
+            connection.sendall(initial_bytes)
+        _wait_until(lambda: manager._get_job(job_id).upload_in_progress)
+        with manager._lock:
+            manager._jobs[job_id].updated_at = 0
+        assert manager.get_status(job_id) is not None
+        status, result = _read_http_upload(connection)
+        assert status == 408
+        assert result['error'] == 'share_export_upload_failed'
+        assert harness.finished.wait(timeout=3)
+        for worker in harness.threads:
+            worker.join(timeout=3)
+            assert not worker.is_alive()
+        # The peer is still open here; the server released it on its own.
+        assert connection.recv(1) == b''
+        assert not manager._get_job(job_id).upload_in_progress
+        assert manager.get_status(job_id)['state'] == 'failed'
+        assert manager.get_active_status('remote') is None
+        assert not list(harness.directory.glob('*.partial'))
+        restarted = manager.create_job(
+            session_id='remote', snapshot={'records': []}, filename='share.png', locale='zh',
+            base_url='http://localhost', renderer='browser',
+        )
+        assert restarted['reused'] is False
+        assert restarted['job_id'] != job_id
+        # Expiry removes the old snapshot only, preserving the replacement.
+        with manager._lock:
+            manager._jobs[job_id].updated_at = 0
+        assert manager.get_status(job_id) is None
+        assert not harness.directory.exists()
+        assert manager.get_active_status('remote')['job_id'] == restarted['job_id']
+
+
+def test_disconnected_upload_removes_partial_and_unlocks_session(browser_upload_http) -> None:
+    harness = browser_upload_http
+    connection = _start_http_upload(harness, 1024 * 1024)
+    connection.sendall(b'partial upload')
+    connection.shutdown(socket.SHUT_WR)
+    try:
+        assert _read_http_upload(connection)[0] == 400
+        assert harness.finished.wait(timeout=3)
+        assert not list(harness.directory.glob('*.partial'))
+        assert harness.manager.get_status(harness.created['job_id'])['state'] == 'failed'
+        assert harness.manager.get_active_status('remote') is None
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize('cancel', [False, True])
+def test_upload_validation_owns_files_until_it_finishes(browser_upload_http, monkeypatch, cancel) -> None:
+    harness = browser_upload_http
+    manager, created = harness.manager, harness.created
+    job_id, token = created['job_id'], created['client_token']
+    entered, release = threading.Event(), threading.Event()
+    real_validate = share_image_export._validate_png
+
+    def validate(path: Path) -> None:
+        entered.set()
+        assert release.wait(timeout=3)
+        real_validate(path)
+
+    monkeypatch.setattr(share_image_export, '_validate_png', validate)
+    data = _test_png()
+    with _start_http_upload(harness, len(data)) as connection:
+        connection.sendall(data)
+        try:
+            assert entered.wait(timeout=3)
+            if cancel:
+                manager.update_browser_job(job_id, {
+                    'client_token': token, 'state': 'failed', 'phase': 'failed', 'error': 'share_export_tab_closed',
+                })
+            with manager._lock:
+                manager._jobs[job_id].updated_at = 0
+            assert manager.get_status(job_id) is not None
+            assert list(harness.directory.glob('*.partial'))
+            with pytest.raises(ValueError, match='already_finished' if cancel else 'upload_in_progress'):
+                manager.store_browser_result(job_id, token, 'share.png', io.BytesIO(data), len(data))
+        finally:
+            release.set()
+        status, _ = _read_http_upload(connection)
+        assert status == (400 if cancel else 200)
+    assert not list(harness.directory.glob('*.partial'))
+    assert not manager._get_job(job_id).upload_in_progress
+    if cancel:
+        assert manager.get_status(job_id)['error'] == 'share_export_tab_closed'
+        assert manager.get_result(job_id) is None
+    else:
+        assert manager.get_result(job_id)[0].read_bytes() == data
+
+
+def test_server_save_phase_survives_past_the_browser_ttl(monkeypatch, tmp_path: Path) -> None:
+    release = threading.Event()
+    clock = {'now': share_image_export.time.time()}
+    monkeypatch.setattr(share_image_export.time, 'time', lambda: clock['now'])
+
+    def slow_writer(path: Path) -> None:
+        assert release.wait(timeout=5)
+        _write_test_zip(path)
+
+    page = _FakePage(states=_READY_ZIP_STATE, download_writer=slow_writer)
+    _make_render_harness(monkeypatch, page, tmp_path)
+    manager = ShareImageExportManager()
+    created = manager.create_job(
+        session_id='remote', snapshot={'session_id': 'remote', 'records': []},
+        filename='share.png', locale='zh', base_url='http://localhost',
+    )
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = manager.get_status(job_id)
+            if status is not None and status['phase'] == 'saving':
+                break
+            time.sleep(0.01)
+        assert manager.get_status(job_id)['phase'] == 'saving'
+        # save_as stays blocked far past the TTL; status queries must not
+        # reclaim a server renderer that still owns its files.
+        clock['now'] += 2 * share_image_export._JOB_TTL_SECONDS
+        time.sleep(0.1)
+        assert manager.get_status(job_id) is not None
+        release.set()
+        assert _wait_for_terminal_state(manager, job_id)['state'] == 'completed'
+    finally:
+        release.set()
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 @pytest.mark.parametrize('state', ['completed', 'failed'])
