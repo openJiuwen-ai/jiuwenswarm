@@ -75,9 +75,31 @@ def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
     adapter._is_session_scoped_adapter = True  # pylint: disable=protected-access
     adapter._parent_session_id = None  # pylint: disable=protected-access
     adapter._session_adapter_last_used = {}  # pylint: disable=protected-access
+    adapter._dynamic_expert_rounds = {}  # pylint: disable=protected-access
     for name, value in state.items():
         setattr(adapter, name, value)
     return adapter
+
+
+@pytest.mark.asyncio
+async def test_close_dynamic_expert_round_only_releases_matching_round() -> None:
+    """A delayed stream cleanup must not unbind a newer expert round."""
+    old_round = SimpleNamespace(close=AsyncMock())
+    current_round = SimpleNamespace(close=AsyncMock())
+    prompt_builder = SimpleNamespace(remove_section=MagicMock())
+    adapter = _make_adapter(
+        _instance=SimpleNamespace(system_prompt_builder=prompt_builder),
+        _dynamic_expert_rounds={"session-1": current_round},
+    )
+
+    await adapter._close_dynamic_expert_round("session-1", expected=old_round)
+    assert adapter._dynamic_expert_rounds["session-1"] is current_round
+    current_round.close.assert_not_awaited()
+
+    await adapter._close_dynamic_expert_round("session-1", expected=current_round)
+    assert "session-1" not in adapter._dynamic_expert_rounds
+    current_round.close.assert_awaited_once_with()
+    prompt_builder.remove_section.assert_called_once_with("symphony_expert_turn")
 
 
 @pytest.mark.asyncio

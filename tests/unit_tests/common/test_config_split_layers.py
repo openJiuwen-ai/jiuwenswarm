@@ -463,6 +463,27 @@ def test_missing_stamp_with_existing_yaml_is_upgrade(tmp_path: Path) -> None:
     ) == compute_template_stamp(pkg, None)
 
 
+def test_dynamic_experts_explicit_enable_survives_template_upgrade(tmp_path: Path) -> None:
+    from jiuwenswarm.common.config_split import sync_system_files_from_package
+
+    pkg = tmp_path / "pkg.yaml"
+    user = tmp_path / "config.yaml"
+    overlay = tmp_path / "config.user.yaml"
+    pkg.write_text("symphony:\n  dynamic_experts:\n    enabled: null\n", encoding="utf-8")
+    user.write_text("agents:\n  dynamic_experts:\n    enabled: true\n", encoding="utf-8")
+
+    assert sync_system_files_from_package(
+        user_yaml=user, overlay_yaml=overlay, package_yaml=pkg
+    ) is True
+    assert yaml.safe_load(user.read_text(encoding="utf-8"))["symphony"]["dynamic_experts"]["enabled"] is True
+
+    user.unlink()
+    assert sync_system_files_from_package(
+        user_yaml=user, overlay_yaml=overlay, package_yaml=pkg
+    ) is True
+    assert yaml.safe_load(user.read_text(encoding="utf-8"))["symphony"]["dynamic_experts"]["enabled"] is None
+
+
 def test_removed_from_allowlist_follows_template_on_upgrade(tmp_path: Path) -> None:
     """名单外键（含昨日 overlay 管道）升级后跟模板，不写回。"""
     from jiuwenswarm.common.config_split import sync_system_files_from_package

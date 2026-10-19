@@ -54,6 +54,9 @@ a2ui:
 
 symphony:
   enabled: null  # null = 跟随程序默认；用户切换后保存 true/false
+  # 动态专家团独立于上面的技能图开关；修改后重启 AgentServer 生效。
+  dynamic_experts:
+    enabled: null  # null = 跟随程序默认（当前开启）；用户切换后保存 true/false
   paths:
     skills_root: ""
     graph_dir: ""

@@ -1607,6 +1607,7 @@ def test_production_uses_only_stable_openjiuwen_symphony_imports():
     allowed_symbols = {
         "FINGERPRINT_ARTIFACT_FILENAME",
         "CapabilityDescriptor",
+        "ExpertCandidate",
         "CapabilityFingerprint",
         "FingerprintArtifact",
         "FingerprintService",
@@ -1617,6 +1618,7 @@ def test_production_uses_only_stable_openjiuwen_symphony_imports():
         "SourceSnapshot",
         "SymphonyRuntime",
         "normalize_name_key",
+        "plan_experts",
     }
     allowed_modules = {
         "openjiuwen.symphony.agent",

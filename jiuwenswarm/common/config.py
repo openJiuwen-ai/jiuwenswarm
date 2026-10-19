@@ -52,6 +52,7 @@ _CONFIG_MODULE_DIR = Path(__file__).parent
 CONFIG_YAML_PATH = get_config_file()
 SWARMFLOW_ENABLED_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 DEFAULT_SWARMFLOW_ENABLED = False
+DEFAULT_DYNAMIC_EXPERTS_ENABLED = True
 # Check if user workspace exists and use it if configured via env
 _user_config = os.getenv("JIUWENSWARM_CONFIG_DIR")
 if _user_config:
@@ -263,6 +264,24 @@ def get_config():
     _normalize_config(config_base)
 
     return config_base
+
+
+def is_dynamic_experts_enabled(config: Any) -> bool:
+    """Null or missing follows the code default; malformed values stay disabled."""
+    if not isinstance(config, dict):
+        return DEFAULT_DYNAMIC_EXPERTS_ENABLED
+    symphony = config.get("symphony")
+    if symphony is None:
+        return DEFAULT_DYNAMIC_EXPERTS_ENABLED
+    if not isinstance(symphony, dict):
+        return False
+    dynamic_experts = symphony.get("dynamic_experts")
+    if dynamic_experts is None:
+        return DEFAULT_DYNAMIC_EXPERTS_ENABLED
+    if not isinstance(dynamic_experts, dict):
+        return False
+    enabled = dynamic_experts.get("enabled")
+    return DEFAULT_DYNAMIC_EXPERTS_ENABLED if enabled is None else enabled is True
 
 
 def is_file_operation_history_enabled(config: dict[str, Any] | None) -> bool:

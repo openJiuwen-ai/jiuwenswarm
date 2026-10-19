@@ -43,6 +43,7 @@ _VERB_BY_TOOL: dict[str, str] = {
     "todo_create": "创建待办", "todo_insert": "插入待办", "todo_complete": "完成待办",
     "todo_remove": "移除待办", "todo_modify": "更新待办", "todo_list": "查看待办", "todo_get": "读取待办",
     "skill_tool": "查看技能",
+    "symphony_plan_experts": "规划本轮专家协作",
     # team tools often omit call_goal
     "spawn_member": "创建成员", "spawn_teammate": "创建成员",
     "send_message": "发送消息",

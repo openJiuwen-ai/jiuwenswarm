@@ -48,9 +48,13 @@ _EXTRACT_LOCK = threading.Lock()
 # 新增：键与点击一一对应，写入 config.yaml，不要预写模板默认。
 # 删减：从本表拿掉，下次升级跟模板锁定。不要抽 tools 整段。
 # xiaoyi / GaussPD / auto_memory / 权限档 knobs 不要加本表（桌面打回 / 跟模板）。
+# 动态专家由用户在 YAML 显式启用，升级时保留新路径的该叶。
+_DYNAMIC_EXPERTS_ENABLED_PATH = ("symphony", "dynamic_experts", "enabled")
+_LEGACY_DYNAMIC_EXPERTS_ENABLED_PATH = ("agents", "dynamic_experts", "enabled")
 _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (
     ("sandbox", "enabled"),
     ("permissions", "shell_guard", "builtin_rules_enabled"),
+    _DYNAMIC_EXPERTS_ENABLED_PATH,
     # soft_delete.enabled 不保留。升级跟模板走。
 )
 
@@ -296,6 +300,11 @@ def extract_user_keep_from_legacy(user: Any, package: Any) -> dict[str, Any]:
         if _eq(user_val, pkg_val):
             continue
         _set(keep, path, user_val)
+    # 旧模板默认是 false；只迁移明确开启的旧路径，其余情况交给新代码默认值。
+    if not _has(user, _DYNAMIC_EXPERTS_ENABLED_PATH) and _get(
+        user, _LEGACY_DYNAMIC_EXPERTS_ENABLED_PATH
+    ) is True:
+        _set(keep, _DYNAMIC_EXPERTS_ENABLED_PATH, True)
     for path in LIST_PATHS:
         extra = _user_only_list_items(_get(user, path), _get(package, path), path)
         if extra:
@@ -315,6 +324,10 @@ def project_user_keep(data: Any) -> dict[str, Any]:
     for path in _SCALAR_PATHS:
         if _has(data, path):
             _set(projected, path, _get(data, path))
+    if not _has(data, _DYNAMIC_EXPERTS_ENABLED_PATH) and _get(
+        data, _LEGACY_DYNAMIC_EXPERTS_ENABLED_PATH
+    ) is True:
+        _set(projected, _DYNAMIC_EXPERTS_ENABLED_PATH, True)
     for path in (*LIST_PATHS, *MAP_PATHS):
         if not _has(data, path):
             continue
