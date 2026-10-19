@@ -1038,7 +1038,10 @@ def build_member_deep_agent_spec(
 
     Appends the rails/tools (and, for code modes, sub-agents + the code system
     prompt) after the base spec's existing entries and returns a new
-    ``DeepAgentSpec`` (the input is left unmodified).
+    ``DeepAgentSpec`` (the input is left unmodified). Leaders never carry
+    sub-agents: their spec's subagent list is pinned empty so agent-core
+    mounts no SubagentRail and the leader has no ``task_tool`` surface —
+    delegation goes through the team-native runner tools instead.
 
     Args:
         config: The resolved ``config.yaml`` mapping.
@@ -1080,10 +1083,20 @@ def build_member_deep_agent_spec(
         # Force off agent-core's enable_task_planning auto-inject path so a YAML
         # base spec cannot re-mount harness todo rails via resolve_deep_agent_parts.
         update["enable_task_planning"] = False
+        # Leaders dispatch through the team-native runner tools (build_team /
+        # spawn_teammate) and carry no sub-agents: agent-core mounts SubagentRail
+        # — and with it the task_tool surface — only for a non-empty subagent
+        # list, so pinning the list empty keeps task_tool off the leader even
+        # when a YAML base spec configures one.
+        update["subagents"] = []
     if not _is_code_mode(mode):
         update["enable_skill_discovery"] = not retrieval_enabled
 
-    subagent_specs = build_member_subagent_specs(config, mode, role)
+    # Teammates build their member sub-agent set here; the leader branch above
+    # already pinned subagents empty, so the leader skips the build entirely.
+    subagent_specs: list[SubAgentSpec] = []
+    if role != "leader":
+        subagent_specs = build_member_subagent_specs(config, mode, role)
 
     # In team mode, base_spec includes a browser_agent with hardcoded
     # server_id="playwright_official_stdio". All members share that single
@@ -1093,7 +1106,7 @@ def build_member_deep_agent_spec(
     # In code mode build_member_subagent_specs already returns SWARM_BROWSER_AGENT,
     # so this branch only runs for non-code modes.
     team_browser_spec: SubAgentSpec | None = None
-    if not _is_code_mode(mode):
+    if role != "leader" and not _is_code_mode(mode):
         react_cfg = (config or {}).get("react", {})
         react_cfg = react_cfg if isinstance(react_cfg, dict) else {}
         subagents_cfg = (

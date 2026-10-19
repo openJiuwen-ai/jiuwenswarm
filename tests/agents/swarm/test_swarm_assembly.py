@@ -2641,6 +2641,54 @@ def test_leader_deep_agent_spec_forces_enable_task_planning_off(mode: str) -> No
     assert teammate_spec.enable_task_planning is True
 
 
+@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.normal", "team.plan.code"])
+def test_leader_deep_agent_spec_pins_subagents_empty(mode: str) -> None:
+    """Leaders carry no sub-agents: an empty list keeps SubagentRail (task_tool) unmounted."""
+    register_swarm_providers()
+    from openjiuwen.agent_teams.schema.deep_agent_spec import SubAgentSpec
+    from openjiuwen.core.single_agent import AgentCard
+
+    # Every subagent source is enabled at once: the member set (statusline /
+    # explore / plan / code), the per-member browser_agent, and a browser_agent
+    # declared directly on the YAML base spec.
+    config = {
+        "react": {
+            "subagents": {
+                "browser_agent": {"enabled": True},
+                "code_agent": {"enabled": True},
+            }
+        }
+    }
+    base = DeepAgentSpec(
+        subagents=[
+            SubAgentSpec(
+                agent_card=AgentCard(name="browser_agent"),
+                system_prompt="",
+                subagent_type="browser_agent",
+            )
+        ]
+    )
+
+    leader_spec = build_member_deep_agent_spec(config, mode, "leader", base)
+
+    assert leader_spec.subagents == []
+
+
+@pytest.mark.parametrize("mode", ["team", "code.team"])
+def test_teammate_deep_agent_spec_keeps_member_subagents(mode: str) -> None:
+    """Teammates keep the member sub-agent set that the leader is pinned without."""
+    register_swarm_providers()
+    config = {"react": {"subagents": {"browser_agent": {"enabled": True}}}}
+
+    teammate_spec = build_member_deep_agent_spec(config, mode, "teammate", DeepAgentSpec())
+
+    teammate_factories = {sub.factory_name for sub in teammate_spec.subagents or []}
+    assert SWARM_BROWSER_AGENT in teammate_factories
+    if mode == "code.team":
+        assert registry.EXPLORE_AGENT in teammate_factories
+        assert registry.PLAN_AGENT in teammate_factories
+
+
 def test_code_subagent_specs_use_factory_names() -> None:
     """Code modes declare explore/plan (+ gated code) sub-agents via factory_name."""
     register_swarm_providers()
@@ -2672,7 +2720,7 @@ def test_code_member_deep_spec_dedupes_base_explore_agent() -> None:
         ]
     )
 
-    spec = build_member_deep_agent_spec({}, "code.team", "leader", base)
+    spec = build_member_deep_agent_spec({}, "code.team", "teammate", base)
     names = [sub.agent_card.name for sub in spec.subagents or []]
 
     assert names == ["statusline-setup", "explore_agent", "plan_agent"]
@@ -3424,11 +3472,13 @@ def test_rebuilt_member_spec_keeps_provider_declarations() -> None:
     assert registry.CODE_RUNTIME_PROMPT in rail_types
     assert registry.RUNTIME_PROMPT not in rail_types
     # Sub-agents are declared by ``factory_name`` and survive serialization.
-    leader_factory_names = {
-        sub.factory_name for sub in rebuilt.agents["leader"].subagents
+    # The leader is pinned subagent-free; the teammate keeps the code profile set.
+    assert rebuilt.agents["leader"].subagents == []
+    teammate_factory_names = {
+        sub.factory_name for sub in teammate.subagents or []
     }
-    assert registry.EXPLORE_AGENT in leader_factory_names
-    assert registry.PLAN_AGENT in leader_factory_names
+    assert registry.EXPLORE_AGENT in teammate_factory_names
+    assert registry.PLAN_AGENT in teammate_factory_names
     # The code system prompt is carried declaratively on the spec.
     assert teammate.system_prompt
 
@@ -3647,7 +3697,7 @@ def test_browser_subagent_teammates_get_distinct_keys(
 
 
 def test_team_mode_deep_spec_replaces_shared_browser_agent() -> None:
-    """shared browser_agent is replaced by SWARM_BROWSER_AGENT for each member."""
+    """shared browser_agent is replaced by SWARM_BROWSER_AGENT for each teammate."""
     register_swarm_providers()
     from openjiuwen.agent_teams.schema.deep_agent_spec import SubAgentSpec
     from openjiuwen.core.single_agent import AgentCard
@@ -3662,7 +3712,7 @@ def test_team_mode_deep_spec_replaces_shared_browser_agent() -> None:
         workspace=WorkspaceSpec(root_path="/tmp/ws"),
     )
     config = {"react": {"subagents": {"browser_agent": {"enabled": True}}}}
-    spec = build_member_deep_agent_spec(config, "team", "leader", base)
+    spec = build_member_deep_agent_spec(config, "team", "teammate", base)
 
     # The shared entry must be gone and exactly one SWARM_BROWSER_AGENT present.
     subagent_factories = [
