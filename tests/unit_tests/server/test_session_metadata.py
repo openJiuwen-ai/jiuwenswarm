@@ -3297,3 +3297,66 @@ class TestGetAllSessionsMetadataLifecycleVisibility:
         sessions, total = get_all_sessions_metadata()
         assert total == 1
         assert [item["session_id"] for item in sessions] == ["live"]
+
+
+def test_group_conversation_type_is_persistent_and_independent_of_mode(sessions_dir):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        init_session_metadata, update_session_metadata, get_session_metadata,
+    )
+    from jiuwenswarm.server.runtime.session.session_info import to_session_info
+
+    init_session_metadata(session_id="group-type", mode="team.work.normal")
+    assert get_session_metadata("group-type")["type"] == "chat"
+    update_session_metadata(
+        session_id="group-type", conversation_type="group_chat", group_members=[], sync_write=True,
+    )
+    update_session_metadata(session_id="group-type", user_content="hello", sync_write=True)
+    raw = _read_json(sessions_dir / "group-type" / "metadata.json")
+    assert raw["type"] == "group_chat" and raw["mode"] == "team.work.normal"
+    assert to_session_info(raw)["type"] == "group_chat"
+    with pytest.raises(ValueError, match="cannot be changed"):
+        update_session_metadata(session_id="group-type", conversation_type="chat", sync_write=True)
+
+
+@pytest.mark.parametrize("marker", ["roster", "manifest"])
+def test_legacy_group_type_is_inferred_for_single_and_list_reads(sessions_dir, marker):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        init_session_metadata, get_session_metadata, get_all_sessions_metadata, remove_session_metadata_cache,
+    )
+
+    session_id = f"legacy-group-{marker}"
+    init_session_metadata(session_id=session_id, channel_id="web", mode="team.work.normal")
+    directory = sessions_dir / session_id
+    path = directory / "metadata.json"
+    raw = _read_json(path)
+    raw.pop("type", None)
+    if marker == "roster":
+        raw["group_members"] = []
+    else:
+        (directory / "group.json").write_text("{}", encoding="utf-8")
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    remove_session_metadata_cache(session_id)
+    assert get_session_metadata(session_id, enable_writeback=False)["type"] == "group_chat"
+    assert "type" not in _read_json(path)
+    listed, _ = get_all_sessions_metadata(limit=50, offset=0)
+    assert next(item for item in listed if item["session_id"] == session_id)["type"] == "group_chat"
+
+
+def test_stale_ordinary_metadata_write_cannot_downgrade_group(sessions_dir, monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_metadata as metadata
+
+    metadata.init_session_metadata(session_id="stale-group")
+    stale = _read_json(sessions_dir / "stale-group" / "metadata.json")
+    metadata.update_session_metadata(session_id="stale-group", conversation_type="group_chat", sync_write=True)
+    monkeypatch.setattr(metadata, "_read_metadata", lambda *args, **kwargs: dict(stale))
+    metadata.update_session_metadata(session_id="stale-group", title="New title", sync_write=True)
+    raw = _read_json(sessions_dir / "stale-group" / "metadata.json")
+    assert raw["type"] == "group_chat" and raw["title"] == "New title"
+
+
+def test_session_info_does_not_confuse_team_mode_with_group_type():
+    from jiuwenswarm.server.runtime.session.session_info import to_session_info
+
+    assert to_session_info({"mode": "team.work.normal"})["type"] == "chat"
+    assert to_session_info({"mode": "agent.work.normal"})["type"] == "chat"
+    assert to_session_info({"group_members": []})["type"] == "group_chat"

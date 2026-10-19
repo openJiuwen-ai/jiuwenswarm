@@ -38,6 +38,8 @@ GROUP_METHODS = frozenset(
         "group.update",
         "group.member.add",
         "group.history.get",
+        "group.execution.list",
+        "group.execution.get",
     }
 )
 _locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
@@ -74,6 +76,19 @@ def group_path(group_id: str) -> Path:
     return get_agent_sessions_dir() / validate_session_id(group_id) / "group.json"
 
 
+def normalize_group_member(member: dict) -> dict:
+    """Read legacy roster fields without changing the stored or requested object."""
+    if not isinstance(member, dict):
+        raise GroupError("BAD_REQUEST", "invalid group member fields")
+    result = copy.deepcopy(member)
+    result["kind"] = {"expert": "agent_template", "expert_team": "agent_group"}.get(
+        result.get("kind"), result.get("kind")
+    )
+    if "definition_id" in result:
+        result.setdefault("id", result.pop("definition_id"))
+    return result
+
+
 def read_group(group_id: str) -> dict | None:
     path = group_path(group_id)
     if not path.is_file():
@@ -104,6 +119,12 @@ def read_group(group_id: str) -> dict | None:
         or not required <= state.keys()
     ):
         raise GroupError("GROUP_CORRUPT", "invalid persisted group")
+    state.setdefault("configs", {})
+    state.setdefault("avatar", "")
+    state["members"] = [normalize_group_member(member) for member in state["members"]]
+    state["receipts"] = {
+        key: normalize_group_member(member) for key, member in state["receipts"].items()
+    }
     return state
 
 
@@ -146,6 +167,8 @@ def _public(state: dict) -> dict:
         "name",
         "description",
         "members",
+        "configs",
+        "avatar",
         "created_at",
         "updated_at",
         "status",
@@ -203,7 +226,7 @@ class GroupService:
         for member in members:
             if not isinstance(member, dict) or set(member) - {
                 "kind",
-                "definition_id",
+                "id",
                 "member_name",
                 "display_name",
             }:
@@ -218,6 +241,7 @@ class GroupService:
             request_metadata={"mode": state["mode"], "group_members": members},
         )
         from jiuwenswarm.agents.swarm.group_chat import RUN_TEAM
+        from jiuwenswarm.agents.swarm.group_execution import START_TASK, SUBMIT_TASK
 
         compiled = {}
         for member in spec.predefined_members:
@@ -231,7 +255,7 @@ class GroupService:
                     *[
                         tool.model_dump(mode="json")
                         for tool in (agent.tools or [])
-                        if getattr(tool, "type", None) == RUN_TEAM
+                        if getattr(tool, "type", None) in {RUN_TEAM, START_TASK, SUBMIT_TASK}
                     ],
                 ]
             compiled[member.member_name] = {
@@ -248,6 +272,11 @@ class GroupService:
         create_token = _text(
             params.get("create_token") or request_id, "create_token", maximum=256
         )
+        avatar = _text(params.get("avatar", ""), "avatar", maximum=4096, empty=True)
+        configs = params.get("configs", {})
+        if not isinstance(configs, dict):
+            raise GroupError("BAD_REQUEST", "configs must be an object")
+        configs = copy.deepcopy(configs)
         members = params.get("members", [])
         if not isinstance(members, list) or len(members) > 100:
             raise GroupError(
@@ -264,9 +293,6 @@ class GroupService:
                 team_hint=True,
                 title=name,
                 user_id=user_id,
-                project_id=params.get("project_id", ""),
-                project_dir=params.get("project_dir", ""),
-                model_name=params.get("model_name", ""),
             )
         )
         group_id = prepared.result.session_id
@@ -274,10 +300,19 @@ class GroupService:
             existing = read_group(group_id)
             if existing is not None:
                 self.owned(group_id, user_id, channel_id)
-                if (existing["name"], existing["description"], existing["members"]) != (
+                existing_config = (
+                    existing["name"],
+                    existing["description"],
+                    existing["members"],
+                    existing["configs"],
+                    existing["avatar"],
+                )
+                if existing_config != (
                     name,
                     description,
                     members,
+                    configs,
+                    avatar,
                 ):
                     raise GroupError(
                         "CONFLICT", "create_token was used for a different group"
@@ -291,6 +326,8 @@ class GroupService:
                 name=name,
                 description=description,
                 members=members,
+                configs=configs,
+                avatar=avatar,
                 user_id=user_id,
                 channel_id=channel_id,
                 mode=prepared.result.canonical_mode,
@@ -309,6 +346,7 @@ class GroupService:
             update_session_metadata(
                 session_id=group_id,
                 group_members=members,
+                conversation_type="group_chat",
                 team_name=spec.team_name,
                 touch_last_message_at=False,
                 sync_write=True,
@@ -345,9 +383,9 @@ class GroupService:
     async def update(self, group_id, params, *, user_id, channel_id):
         async with group_lock(group_id):
             state = self.owned(group_id, user_id, channel_id)
-            if set(params) - {"group_id", "session_id", "name", "description"}:
+            if set(params) - {"group_id", "session_id", "name", "description", "avatar"}:
                 raise GroupError(
-                    "BAD_REQUEST", "group.update only accepts name and description"
+                    "BAD_REQUEST", "group.update only accepts name, description and avatar"
                 )
             if "name" in params:
                 state["name"] = _text(params["name"], "name", maximum=200)
@@ -355,6 +393,8 @@ class GroupService:
                 state["description"] = _text(
                     params["description"], "description", empty=True
                 )
+            if "avatar" in params:
+                state["avatar"] = _text(params["avatar"], "avatar", maximum=4096, empty=True)
             state["updated_at"] = time.time()
             _save(state)
             update_session_metadata(
@@ -483,6 +523,53 @@ class GroupService:
             offset=offset,
             next_offset=page_end if page_end < len(messages) else None,
         )
+
+    async def prepare_task(self, group_id, params, *, user_id, channel_id, request_id):
+        from jiuwenswarm.agents.swarm.group_execution import TASK_POLICY
+        from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+        group = self.owned(group_id, user_id, channel_id)
+        members = params.get("mentions", [])
+        if not isinstance(members, list):
+            raise GroupError("BAD_REQUEST", "task mentions must be an array")
+        backend = await self.backend_resolver(group)
+        if backend is not None:
+            agents = backend.group_chat_spec.agents
+            for name in members:
+                if not isinstance(name, str):
+                    raise GroupError("BAD_REQUEST", "task members must be strings")
+                agent = agents.get(name) or agents.get("teammate")
+                rails = agent.rails if agent is not None else []
+                if not any(getattr(rail, "type", None) == TASK_POLICY for rail in (rails or [])):
+                    raise GroupError("GROUP_RESTART_REQUIRED", "task lifecycle policy requires cold recovery")
+        return await GroupExecutions(group_id).create(
+            params.get("mentions", []), params.get("query"), params.get("client_message_id") or request_id,
+        )
+
+    async def execution_list(self, group_id, params, *, user_id, channel_id):
+        from jiuwenswarm.server.runtime.group_execution import GroupExecutions, public_execution
+
+        self.owned(group_id, user_id, channel_id)
+        limit, offset = _page(params)
+        store = GroupExecutions(group_id)
+        await store.reconcile()
+        records = list(store.read().values())
+        records.sort(key=lambda item: (item["created_at"], item["execution_id"]))
+        page_end = offset + limit
+        return {
+            "group_id": group_id,
+            "executions": [public_execution(item) for item in records[offset:page_end]],
+            "total": len(records), "limit": limit, "offset": offset,
+        }
+
+    async def execution_get(self, group_id, params, *, user_id, channel_id):
+        from jiuwenswarm.server.runtime.group_execution import GroupExecutions, public_execution
+
+        self.owned(group_id, user_id, channel_id)
+        execution_id = _text(params.get("execution_id"), "execution_id", maximum=256)
+        store = GroupExecutions(group_id)
+        await store.reconcile()
+        return {"group_id": group_id, **public_execution(store.get(execution_id))}
 
     async def delete(self, group_id, *, user_id, channel_id):
         async with group_lock(group_id):

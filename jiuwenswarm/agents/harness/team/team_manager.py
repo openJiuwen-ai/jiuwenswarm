@@ -728,6 +728,12 @@ class TeamManager:
             }:
                 current_round.continued_after_flow = True
 
+        from jiuwenswarm.server.runtime.group_execution import project_group_stream_event
+
+        projected = await project_group_stream_event(session_id, event)
+        if projected is None:
+            return
+        event = projected
         waiters = self._select_broadcast_waiters(session_id)
 
         if not waiters:

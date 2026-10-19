@@ -1,8 +1,8 @@
 import { webRequest } from '../../services/webClient';
 
 export interface GroupMember {
-  kind: 'expert' | 'expert_team';
-  definition_id: string;
+  kind: 'agent_template' | 'agent_group';
+  id: string;
   member_name: string;
   display_name?: string;
 }
@@ -13,7 +13,9 @@ export interface GroupInfo {
   team_name: string;
   name: string;
   description: string;
+  avatar: string;
   members: GroupMember[];
+  configs: Record<string, unknown>;
   created_at: number;
   updated_at: number;
   status: 'ready' | 'deleting';
@@ -22,11 +24,10 @@ export interface GroupInfo {
 export interface GroupCreateInput {
   name: string;
   description?: string;
+  avatar?: string;
   members?: GroupMember[];
+  configs?: Record<string, unknown>;
   create_token: string;
-  project_id?: string;
-  project_dir?: string;
-  model_name?: string;
 }
 
 export interface GroupMessage {
@@ -50,7 +51,7 @@ export const groupChatClient = {
   get: (groupId: string) => webRequest<GroupInfo>('group.get', { group_id: groupId }),
   list: (page: PageInput = {}) =>
     webRequest<{ groups: GroupInfo[]; total: number; limit: number; offset: number }>('group.list', { ...page }),
-  update: (groupId: string, patch: { name?: string; description?: string }) =>
+  update: (groupId: string, patch: { name?: string; description?: string; avatar?: string }) =>
     webRequest<GroupInfo>('group.update', { group_id: groupId, ...patch }),
   addMember: (groupId: string, member: GroupMember, clientRequestId: string) =>
     webRequest<{ group_id: string; member: GroupMember; status: 'registered'; event_type: 'group.member.added' }>(

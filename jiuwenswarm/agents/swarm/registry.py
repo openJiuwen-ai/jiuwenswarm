@@ -46,6 +46,7 @@ from openjiuwen.agent_teams.schema.build_context import register_build_context_f
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.agents.swarm import group_chat as _group_chat  # noqa: F401 -- registers tool providers
+from jiuwenswarm.agents.swarm import group_execution as _group_execution  # noqa: F401 -- registers task providers
 from jiuwenswarm.agents.swarm.providers import (
     builtin_rails as _builtin_rails,
     code_rails as _code_rails,

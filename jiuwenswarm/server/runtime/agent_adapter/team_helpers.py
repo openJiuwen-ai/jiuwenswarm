@@ -1439,7 +1439,14 @@ def _group_chat_input(request: Any, text: Any) -> dict | None:
     raw = params.get("query")
     if not isinstance(raw, dict) or raw.get("type") != "group_chat":
         if params.get("type") != "group_chat":
-            return None
+            session_id = getattr(request, "session_id", None)
+            if not session_id:
+                return None
+            metadata = get_session_metadata(session_id, enable_writeback=False) or {}
+            if metadata.get("type") != "group_chat":
+                return None
+            if params.get("type") is not None:
+                raise ValueError("a group session requires group_chat input")
         raw = params
     mentions = raw.get("mentions", [])
     if not isinstance(mentions, list):
@@ -2921,10 +2928,24 @@ async def _process_team_message_stream_locked(
     end_request = getattr(team_manager, "end_request", None)
     if callable(begin_request):
         begin_request(session_id, request_id, generation=generation)
+    execution_ids = []
+    submitted = False
+    delivery_error = False
     try:
         startup_lock = team_manager.get_startup_lock(session_id)
         async with AsyncExitStack() as startup:
             await startup.enter_async_context(startup_lock)
+            params = request.params if isinstance(request.params, dict) else {}
+            if params.get("intent") == "task":
+                from jiuwenswarm.server.runtime.group_service import GroupService, read_group
+
+                if read_group(session_id) is not None:
+                    # Creation belongs to the admitted runtime path, not the WebSocket preflight.
+                    records = await GroupService(None).prepare_task(
+                        session_id, params, user_id=str(getattr(request, "user_id", "") or ""),
+                        channel_id=request.channel_id or "default", request_id=request_id,
+                    )
+                    execution_ids = [record["execution_id"] for record in records]
             async with aclosing(_process_team_message_stream(
                 request,
                 inputs,
@@ -2937,11 +2958,36 @@ async def _process_team_message_stream_locked(
                     # Early replies (validation errors, slash commands) also end
                     # startup ownership before handing control to the caller.
                     await startup.aclose()
+                    payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+                    event_type = payload.get("event_type")
+                    accepted_events = {
+                        "team.group_message.accepted", "team.input.accepted", "chat.processing_status_deferred",
+                    }
+                    if event_type in accepted_events:
+                        submitted = True
+                    if execution_ids and event_type == "team.group_message.accepted":
+                        from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+                        await GroupExecutions(session_id).accept_delivery(params.get("client_message_id") or request_id)
+                    if event_type in {"chat.error", "team.error", "team.interact.failed"}:
+                        delivery_error = True
                     yield chunk
+    except Exception:
+        delivery_error = True
+        raise
     finally:
-        # 兜底：提前返回（校验失败/斜杠命令）也要解除运行中标记。
-        if callable(end_request):
-            end_request(session_id, request_id, generation=generation)
+        try:
+            background_owned = False
+            if execution_ids and not delivery_error and not submitted:
+                background_owned = _has_team_stream_task(team_manager, session_id, generation=generation)
+            if execution_ids and (delivery_error or not (submitted or background_owned)):
+                from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+                await GroupExecutions(session_id).fail_pending(execution_ids, "delivery_failed")
+        finally:
+            # Always release request ownership, including failed delivery cleanup.
+            if callable(end_request):
+                end_request(session_id, request_id, generation=generation)
 
 
 async def _process_team_message_stream(
@@ -3450,9 +3496,10 @@ async def _process_team_message_stream(
             dispatch_mode=team_dispatch_mode,
             model_selection=runtime_model_selection,
         )
-        if group_input is not None and request_metadata.get("group_members") is not None:
+        if group_input is not None:
             update_session_metadata(session_id=session_id,
-                group_members=request_metadata["group_members"],
+                conversation_type="group_chat",
+                group_members=request_metadata.get("group_members"),
                 touch_last_message_at=False, sync_write=True)
         if isinstance(model_selection, dict) and model_selection.get("type") and model_selection.get("id"):
             from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection

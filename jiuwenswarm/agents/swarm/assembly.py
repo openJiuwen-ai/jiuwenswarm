@@ -619,6 +619,10 @@ def enrich_team_spec_for_swarm(
         assemble_group_members(spec, group_members)
         # Future members use the shared role without rewriting a running spec.
         teammate = spec.agents["teammate"]
+        from jiuwenswarm.agents.swarm.group_execution import install_execution_policy
+
+        install_execution_policy(teammate)
+        install_execution_policy(spec.agents["leader"], include_tools=False)
         teammate.rails = [*(teammate.rails or []), RailSpec(type=GROUP_MEMBER_TEMPLATE,
             params={"initial_names": [member["member_name"] for member in group_members]})]
     logger.info(

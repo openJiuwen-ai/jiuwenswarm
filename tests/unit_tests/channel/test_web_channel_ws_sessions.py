@@ -131,3 +131,58 @@ async def test_ws_sessions_ignores_empty_string_session_id():
     )
 
     assert id(ws) not in channel._ws_sessions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["chat.send", "chat.resume"])
+async def test_group_id_selects_real_session_before_files_and_routing(method, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    ws = _FakeWebSocket()
+    seen = []
+    channel.on_message(lambda msg: seen.append(msg) or True)
+    process_files = AsyncMock(side_effect=lambda params, **kwargs: params)
+    register_ws = AsyncMock()
+    monkeypatch.setattr(channel, "_process_files", process_files)
+    monkeypatch.setattr(channel, "register_ws", register_ws)
+    await channel._handle_raw_message(
+        ws,
+        _req(req_id="group-send", method=method, params={
+            "group_id": "group-one", "content": "hello", "mode": "team.work.normal",
+        }),
+        {},
+    )
+    assert seen[0].session_id == "group-one"
+    assert process_files.await_args.kwargs["session_id"] == "group-one"
+    assert register_ws.await_args.args[1].session_id == "group-one"
+    assert channel._ws_sessions[id(ws)] == {"group-one"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group_id", [None, "", [], "../outside", "group-one"])
+async def test_group_id_validation_precedes_files_and_routing(group_id, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    ws = _FakeWebSocket()
+    callback = AsyncMock(return_value=True)
+    channel.on_message(callback)
+    response = AsyncMock()
+    monkeypatch.setattr(channel, "send_response", response)
+    process_files = AsyncMock()
+    register_ws = AsyncMock()
+    monkeypatch.setattr(channel, "_process_files", process_files)
+    monkeypatch.setattr(channel, "register_ws", register_ws)
+    await channel._handle_raw_message(
+        ws,
+        _req(req_id="bad-group", method="chat.send", params={
+            "group_id": group_id, "session_id": "another-session", "content": "hello",
+        }),
+        {},
+    )
+    response.assert_awaited_once()
+    assert response.await_args.kwargs["code"] == "BAD_REQUEST"
+    process_files.assert_not_awaited()
+    register_ws.assert_not_awaited()
+    callback.assert_not_awaited()

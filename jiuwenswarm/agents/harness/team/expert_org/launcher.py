@@ -626,7 +626,11 @@ class JiuwenExpertTeamLauncher:
             _tag_team_output_origin,
         )
 
-        parsed = dict(payload)
+        from jiuwenswarm.server.runtime.group_execution import project_group_stream_event
+
+        parsed = await project_group_stream_event(session_id, dict(payload))
+        if parsed is None:
+            return True
         parsed["rid"] = round_id
         # WebGateway preserves request_id, not rid. Keep the browser turn
         # stable while the outer push ID remains unique for each frame.
