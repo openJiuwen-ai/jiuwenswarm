@@ -87,7 +87,7 @@ class ExpertCapabilityMixin:
         全程持 _expert_apply_lock：卸装跨多个 await 点，无锁时并发
         expert.load 会泄漏装载并污染快照还原链。
         package_dir：服务层已 fetch + 校验过的包目录（避免二次下载）；为 None 时
-        本方法自行 fetch + 校验（入口 _replay_expert_from_metadata 重放路径）。
+        本方法优先解析本地包并校验，缺失时才下载（会话重放路径）。
         notify：切换成功后在系统提示词写一条身份变更说明；重放路径传 False
         （重建不等于用户切换，不该冒出"此前回复由默认助手给出"的错误提示）。
         无论 notify 取值，成功后都会把当前身份同步到每轮尾部注入的
@@ -127,7 +127,7 @@ class ExpertCapabilityMixin:
             if expert_id is not None:  # 2) 再装
                 try:
                     if package_dir is None:
-                        package_dir = await _expert_store.get_expert_source().fetch(expert_id)
+                        package_dir = await _expert_store.resolve_expert_package_dir(expert_id)
                     warnings = _expert_store.validate_expert_package(package_dir)
                     record = await self._instance.load_agent_template(str(package_dir))
                     self._expert_load_record = record
@@ -393,12 +393,10 @@ class ExpertCapabilityMixin:
         """prompt_builder 重建后按当前专家重挂（旧 LoadRecord 的 refs 已随旧 builder 失效）。
 
         失败降级为无专家、不抛穿（reload 路径不能因仓库暂不可达而崩）。
-        缓存优先：有本地缓存包就直接重挂，不重新 fetch——避免高频
+        本地包优先：有本地目录或缓存包就直接重挂，不重新 fetch——避免高频
         reload / 懒 reload 在 chat 装配点被网络下载阻塞；包更新走用户主动的
-        expert.load（fetch 会刷新缓存）。
+        expert.install（fetch 会刷新缓存）。
         """
-        from jiuwenswarm.server.runtime.expert import expert_store as _expert_store
-
         expert_id = self._current_expert_id
         if not expert_id:
             return
@@ -407,7 +405,6 @@ class ExpertCapabilityMixin:
         try:
             await self._apply_expert(
                 expert_id,
-                package_dir=_expert_store.get_cached_expert_package_dir(expert_id),
                 notify=False,
             )
         except Exception as exc:
@@ -424,10 +421,9 @@ class ExpertCapabilityMixin:
         """驱逐重建/首次装配后，从 session metadata 重放专家。
 
         失败降级为无专家、不中断会话；不清 metadata（瞬时故障下次重建可自愈，
-        持续性损坏由 experts.list 的 available=false 呈现）。缓存优先：
-        有本地缓存包就直接重挂， rebuild 不被网络下载阻塞。
+        持续性损坏由 experts.list 的 available=false 呈现）。本地包优先：
+        有本地目录或缓存包就直接重挂，rebuild 不被网络下载阻塞。
         """
-        from jiuwenswarm.server.runtime.expert import expert_store as _expert_store
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_session_metadata,
         )
@@ -461,7 +457,6 @@ class ExpertCapabilityMixin:
         try:
             await self._apply_expert(
                 expert_id,
-                package_dir=_expert_store.get_cached_expert_package_dir(expert_id),
                 notify=False,
             )
             logger.info(

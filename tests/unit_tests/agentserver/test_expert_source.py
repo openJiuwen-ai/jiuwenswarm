@@ -443,9 +443,8 @@ async def test_resolve_package_dir_cache_hit_skips_fetch(
         cache_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """缓存命中时直接返回缓存目录，不触 source（重建路径不被网络阻塞）。"""
-    cached = cache_dir / "security-reviewer"
-    cached.mkdir(parents=True)
-    (cached / "manifest.json").write_text("{}", encoding="utf-8")
+    cached = _make_package(cache_dir, "security-reviewer")
+    monkeypatch.setattr(es, "get_agent_experts_dir", lambda: cache_dir.parent / "experts")
 
     class _BoomSource:
         async def fetch(self, expert_id: str) -> Path:
@@ -471,6 +470,78 @@ async def test_resolve_package_dir_miss_falls_back_to_fetch(
     monkeypatch.setattr(es, "get_expert_source", lambda: _LocalLikeSource())
     assert await es.resolve_expert_package_dir("sample-group") == local_pkg
     assert fetch_calls == ["sample-group"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("local_enabled", [True, False])
+async def test_resolve_package_dir_respects_local_override_and_cache(
+        tmp_path: Path, cache_dir: Path, monkeypatch: pytest.MonkeyPatch, local_enabled: bool
+) -> None:
+    local = _make_package(tmp_path / "experts", "shared")
+    cached = _make_package(cache_dir, "shared")
+    monkeypatch.setattr(es, "get_agent_experts_dir", lambda: local.parent)
+    monkeypatch.setenv("JIUWEN_EXPERT_LOCAL_DIRS", "1" if local_enabled else "0")
+
+    def unexpected_source():
+        pytest.fail("已有包装载不应访问仓库")
+
+    monkeypatch.setattr(es, "get_expert_source", unexpected_source)
+    assert await es.resolve_expert_package_dir("shared") == (local if local_enabled else cached)
+
+
+@pytest.mark.asyncio
+async def test_load_downloads_once_and_explicit_install_refreshes(
+        tmp_path: Path, cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.server.runtime.expert.expert_service import ExpertService, fetch_and_classify_expert
+
+    package = _make_package(tmp_path / "remote", "downloaded")
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        return httpx.Response(200, content=_zip_bytes({
+            str(path.relative_to(package)): path.read_text(encoding="utf-8")
+            for path in package.rglob("*") if path.is_file()
+        }))
+
+    repo = es.HttpRepoExpertPackageSource(client=_mock_client(handler))
+    source = es.ChainExpertPackageSource([repo, es.CachedExpertPackageSource()])
+    monkeypatch.setattr(es, "get_agent_experts_dir", lambda: tmp_path / "experts")
+    monkeypatch.setattr(es, "get_expert_source", lambda: source)
+    expected = ("agent", cache_dir / "downloaded", [])
+
+    assert await fetch_and_classify_expert("downloaded") == expected
+    assert await fetch_and_classify_expert("downloaded") == expected
+    assert requests == ["/api/v1/packages/downloaded"]
+
+    (package / "agents" / "00-identity.md").write_text("# 更新后人设", encoding="utf-8")
+    service = ExpertService(agent_manager=None, adapter_resolver=lambda _agent: None)
+    assert (await service.install_expert(expert_id="downloaded")).ok is True
+    assert requests == ["/api/v1/packages/downloaded"] * 2
+    assert (cache_dir / "downloaded" / "agents" / "00-identity.md").read_text(encoding="utf-8") == "# 更新后人设"
+    assert await fetch_and_classify_expert("downloaded") == expected
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["local", "cache"])
+async def test_resolve_rejects_invalid_installed_package_without_downloading(
+        tmp_path: Path, cache_dir: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    local_root = tmp_path / "experts"
+    root = local_root if source == "local" else cache_dir
+    package = _make_package(root, "invalid")
+    (package / "manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(es, "get_agent_experts_dir", lambda: local_root)
+    monkeypatch.setenv("JIUWEN_EXPERT_LOCAL_DIRS", "1")
+
+    def unexpected_source():
+        pytest.fail("已有包损坏应报告校验错误，不能静默下载替换")
+
+    monkeypatch.setattr(es, "get_expert_source", unexpected_source)
+    with pytest.raises(es.InvalidExpertPackage):
+        await es.resolve_expert_package_dir("invalid")
 
 
 def test_validate_ok_with_tools_warning_free(tmp_path: Path) -> None:
@@ -883,3 +954,18 @@ def test_get_expert_source_local_dir_enabled_by_env_one(monkeypatch: pytest.Monk
 def test_get_expert_source_local_dir_disabled_by_env_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     """env 显式设 0 时关闭本地源（保留可关性）。"""
     assert es.LocalDirExpertPackageSource not in _source_chain_types(monkeypatch, "0")
+
+
+def test_get_expert_source_ignores_removed_local_only_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """旧环境变量不再禁用云端目录及安装来源。"""
+    monkeypatch.setenv("JIUWEN_EXPERT_LOCAL_ONLY", "1")
+    types = _source_chain_types(monkeypatch, None)
+    assert es.LocalDirExpertPackageSource in types
+    assert es.CachedExpertPackageSource in types
+    assert es.HttpRepoExpertPackageSource in types
+
+
+def test_get_expert_source_keeps_remote_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JIUWEN_EXPERT_LOCAL_ONLY", raising=False)
+    types = _source_chain_types(monkeypatch, None)
+    assert es.HttpRepoExpertPackageSource in types
