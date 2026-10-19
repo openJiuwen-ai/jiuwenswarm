@@ -315,3 +315,202 @@ async def test_run_scoped_policy_cannot_be_remembered(storage, tmp_path, permane
         assert not layers.session_permissions_path("session-a").exists()
     finally:
         RUN_PERMISSIONS.reset(token)
+
+
+@pytest.mark.parametrize("permanent", [False, True])
+async def test_remember_restores_in_a_fresh_process(storage, tmp_path, permanent):
+    policy, global_path = storage
+    rail = build(policy, tmp_path, "session-a", True)
+    await approve(rail, context("session-a", "unknown_lookup", {}), permanent)
+    program = textwrap.dedent("""
+        import asyncio, sys
+        from pathlib import Path
+        from jiuwenswarm.common import config
+        from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
+        from tests.unit_tests.agentserver.permissions.test_shared_remember_chain import build, context
+        global_path, user_path, session_path, root = map(Path, sys.argv[1:])
+        config.CONFIG_YAML_PATH = config._CONFIG_YAML_PATH = global_path
+        layers.user_permissions_path = lambda: user_path
+        layers.session_permissions_path = lambda _: session_path
+        policy = config.load_yaml_round_trip(global_path)["permissions"]
+        rail = build(policy, root, "session-a", True)
+        ctx = context("session-a", "unknown_lookup", {}, "fresh-process")
+        asyncio.run(rail.before_tool_call(ctx))
+        assert not ctx.extra.get("_skip_tool")
+        print("restored_from_shared_files")
+    """)
+    result = subprocess.run([
+        sys.executable, "-c", program, str(global_path),
+        str(layers.user_permissions_path()), str(layers.session_permissions_path("session-a")),
+        str(tmp_path),
+    ], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "restored_from_shared_files" in result.stdout
+
+
+@pytest.mark.parametrize("change", ["remove", "ask", "deny"])
+async def test_user_rule_changes_apply_on_next_call(storage, tmp_path, change):
+    policy, _ = storage
+    rail = build(policy, tmp_path, "session-a", True)
+    await approve(rail, context("session-a", "unknown_lookup", {}), True)
+    if change == "remove":
+        layers.user_permissions_path().unlink()
+    else:
+        config.dump_yaml_round_trip(layers.user_permissions_path(), {
+            f"{change}_tools": ["unknown_lookup"],
+        })
+    following = context("session-a", "unknown_lookup", {}, "next")
+    if change == "deny":
+        await rail.before_tool_call(following)
+        assert following.extra["_skip_tool"] is True
+    else:
+        with pytest.raises(AbortError):
+            await rail.before_tool_call(following)
+
+
+async def test_each_callback_loads_shared_layers_once_including_owner_scene(storage, tmp_path, monkeypatch):
+    policy, _ = storage
+    config.dump_yaml_round_trip(layers.user_permissions_path(), {"allow_tools": ["unknown_lookup"]})
+    counts = {"user": 0, "session": 0}
+    reader = layers.read_permission_layers_locked
+    def read_layers(sid=None, **kwargs):
+        counts["user"] += 1
+        counts["session"] += 1
+        return reader(sid, **kwargs)
+    monkeypatch.setattr(layers, "read_permission_layers_locked", read_layers)
+    rail = build(policy, tmp_path, "session-a", True)
+    counts.update(user=0, session=0)
+    owner = TOOL_PERMISSION_CONTEXT.set(PermissionContext(channel_id="web", principal_user_id="owner"))
+    try:
+        await rail.before_tool_call(context("session-a", "unknown_lookup", {}))
+        assert counts == {"user": 1, "session": 1}
+        config.dump_yaml_round_trip(layers.user_permissions_path(), {"deny_tools": ["unknown_lookup"]})
+        following = context("session-a", "unknown_lookup", {}, "next")
+        await rail.before_tool_call(following)
+        assert following.extra["_skip_tool"] is True
+        assert counts == {"user": 2, "session": 2}
+    finally:
+        TOOL_PERMISSION_CONTEXT.reset(owner)
+
+
+@pytest.mark.parametrize("permanent", [False, True])
+async def test_native_read_remember_reloads_exact_file_axis(storage, native, permanent):
+    _, global_path = storage
+    config.dump_yaml_round_trip(global_path, {"permissions": native.permissions})
+    external = native.root.parent / "approved.txt"
+    external.write_text("approved")
+    first = context("native-session", "read_file", {"file_path": str(external)})
+    first.agent = SimpleNamespace(ability_manager=native.manager)
+    resumed = await approve(native.rail, first, permanent)
+    assert not resumed.extra.get("_skip_tool")
+    saved = layers.load_user_permissions() if permanent else layers.load_session_permissions("native-session")
+    assert saved["file_guard"]["paths"] == [{
+        "path": str(external), "read": "allow", "write": "ask", "exec": "ask",
+        "match": "prefix",
+    }]
+    first.session.update_state({INTERRUPT_AUTO_CONFIRM_KEY: {}})
+    following = context("native-session", "read_file", {"file_path": str(external)}, "next")
+    following.agent, following.session = first.agent, first.session
+    await native.rail.before_tool_call(following)
+    assert not following.extra.get("_skip_tool")
+    other = native.root.parent / "other.txt"
+    other.write_text("other")
+    changed = context("native-session", "read_file", {"file_path": str(other)}, "other")
+    changed.agent = first.agent
+    with pytest.raises(AbortError):
+        await native.rail.before_tool_call(changed)
+
+
+@pytest.mark.parametrize("failure", ["malformed", "read_error"])
+async def test_damaged_user_deny_never_falls_through_to_session_allow(storage, tmp_path, monkeypatch, failure):
+    policy, _ = storage
+    layers.session_permissions_path("session-a").parent.mkdir(parents=True, exist_ok=True)
+    config.dump_yaml_round_trip(layers.user_permissions_path(), {"deny_tools": ["unknown_lookup"]})
+    layers.session_permissions_path("session-a").parent.mkdir(parents=True, exist_ok=True)
+    config.dump_yaml_round_trip(layers.session_permissions_path("session-a"), {"allow_tools": ["unknown_lookup"]})
+    rail = build(policy, tmp_path, "session-a", True)
+    first = context("session-a", "unknown_lookup", {})
+    await rail.before_tool_call(first)
+    assert first.extra["_skip_tool"] is True
+    if failure == "malformed":
+        layers.user_permissions_path().write_text("broken: [")
+    else:
+        original = layers._load_yaml_dict
+        def fail_read(path, **kwargs):
+            if path == layers.user_permissions_path():
+                raise OSError("cannot read User policy")
+            return original(path, **kwargs)
+        monkeypatch.setattr(layers, "_load_yaml_dict", fail_read)
+    following = context("session-a", "unknown_lookup", {}, "next")
+    await rail.before_tool_call(following)
+    assert following.extra["_skip_tool"] is True
+
+
+@pytest.mark.parametrize("permanent", [False, True])
+@pytest.mark.parametrize("change", ["mode", "global_allow"])
+async def test_pending_global_change_cannot_report_empty_persist_success(storage, tmp_path, permanent, change):
+    policy, global_path = storage
+    rail = build(policy, tmp_path, "session-a", True)
+    def modify_global():
+        latest = deepcopy(policy)
+        if change == "mode":
+            latest["mode"] = "manual"
+        else:
+            latest["approval_overrides"] = [{
+                "id": "new-rule", "tools": ["bash"],
+                "match_type": "command", "pattern": "git status *", "action": "allow",
+            }]
+        config.dump_yaml_round_trip(global_path, {"permissions": latest})
+    first = context("session-a", "bash", {"command": "git status"}) if change == "global_allow" else context("session-a", "unknown_lookup", {})
+    resumed = await approve(rail, first, permanent, modify_global)
+    assert resumed.extra["_skip_tool"] is True
+    assert not layers.user_permissions_path().exists()
+    assert not layers.session_permissions_path("session-a").exists()
+
+
+async def test_pending_card_uses_captured_asks_after_reviewer_await(storage, native, monkeypatch):
+    from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models import PermissionHandlingResult
+    from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract import build_manual_approval_required_response
+    _, global_path = storage
+    config.dump_yaml_round_trip(global_path, {"permissions": native.permissions})
+    path = native.root.parent / "pending.txt"
+    path.write_text("pending")
+    first = context("native-session", "read_file", {"file_path": str(path)})
+    first.agent = SimpleNamespace(ability_manager=native.manager)
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def review(*_args, **_kwargs):
+        entered.set()
+        await release.wait()
+        return PermissionHandlingResult(True, build_manual_approval_required_response("reviewer_wait"), "reviewer")
+    monkeypatch.setattr(native.rail, "_maybe_run_reviewer", review)
+    queue = RootPermissionQueue()
+    token = bind_root_permission_request(root_session_id="native-session", request_id="pending", enabled=True, queue=queue)
+    try:
+        await RootPermissionQueueRail(queue).before_tool_call(first)
+        pending = asyncio.create_task(native.rail.before_tool_call(first))
+        await asyncio.wait_for(entered.wait(), 5)
+        different = deepcopy(native.permissions)
+        different["file_guard"]["defaults"]["read"] = "allow"
+        native.rail.base_rail.update_config(different)
+        release.set()
+        with pytest.raises(AbortError) as interrupted:
+            await pending
+        assert interrupted.value.cause.request.metadata["permission_ask_accesses"] == [(str(path), "read")]
+    finally:
+        release.set()
+        reset_root_permission_request(token)
+
+
+@pytest.mark.parametrize("permanent", [False, True])
+def test_real_handler_sqlite_and_restart_chain(tmp_path, permanent):
+    root = tmp_path / "checkpoint-chain"
+    for phase in ("approve", "restart"):
+        result = subprocess.run([
+            sys.executable, "-m", "tests.unit_tests.agentserver.permissions.shared_remember_checkpoint_probe",
+            str(root), str(int(permanent)), phase,
+        ], capture_output=True, text=True, timeout=40)
+        assert result.returncode == 0, result.stdout + result.stderr
+    approved = json.loads((root / "approve.json").read_text())
+    restored = json.loads((root / "restart.json").read_text())
+    assert approved["handler_calls"] == 1 and approved["persisted"] is True
+    assert restored["sqlite_restored"] is True and restored["file_rule_allowed_without_marker"] is True
