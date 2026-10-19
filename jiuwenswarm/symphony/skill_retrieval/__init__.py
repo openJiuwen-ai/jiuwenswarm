@@ -1,5 +1,17 @@
-"""JiuwenSwarm adapter for Symphony's optional Skill taxonomy index."""
+"""JiuwenSwarm adapters for dispatch-based installed-skill retrieval."""
 
-from .runtime import SkillTaxonomyRuntime
+from .api import (
+    build_skill_index,
+    cancel_skill_index_build,
+    get_skill_retrieval_status,
+    get_skill_retrieval_tree,
+    retrieve_skills,
+)
 
-__all__ = ["SkillTaxonomyRuntime"]
+__all__ = [
+    "build_skill_index",
+    "cancel_skill_index_build",
+    "get_skill_retrieval_status",
+    "get_skill_retrieval_tree",
+    "retrieve_skills",
+]

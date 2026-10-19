@@ -48,7 +48,7 @@ _EXTRACT_LOCK = threading.Lock()
 # 新增：键与点击一一对应，写入 config.yaml，不要预写模板默认。
 # 删减：从本表拿掉，下次升级跟模板锁定。不要抽 tools 整段。
 # xiaoyi / GaussPD / auto_memory / 权限档 knobs 不要加本表（桌面打回 / 跟模板）。
-# 动态专家由用户在 YAML 显式启用，升级时保留新路径的该叶。
+# 动态专家由用户在 YAML 显式设置，升级时保留新路径的该叶。
 _DYNAMIC_EXPERTS_ENABLED_PATH = ("symphony", "dynamic_experts", "enabled")
 _LEGACY_DYNAMIC_EXPERTS_ENABLED_PATH = ("agents", "dynamic_experts", "enabled")
 _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (

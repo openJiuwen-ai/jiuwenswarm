@@ -20,7 +20,7 @@ from __future__ import annotations
 from functools import wraps
 from typing import Any
 
-from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
+from openjiuwen.agent_evolving.trajectory import InMemoryTrajectoryRegistry
 from openjiuwen.agent_teams.harness.manifest import register_from_catalog
 from openjiuwen.agent_teams.rails.builtin_elements import (
     AUDIO as _OJ_AUDIO,
@@ -102,7 +102,6 @@ TEAM_SKILL_EVOLUTION = _evolution_rails.TEAM_SKILL_EVOLUTION
 TEAM_SKILL_CREATE = _evolution_rails.TEAM_SKILL_CREATE
 MEMBER_SKILL_EVOLUTION = _evolution_rails.MEMBER_SKILL_EVOLUTION
 EVOLUTION_INTERRUPT = _evolution_rails.EVOLUTION_INTERRUPT
-SYMPHONY_GRAPH_EVOLUTION = _evolution_rails.SYMPHONY_GRAPH_EVOLUTION
 
 # Code-mode (code.team / team.plan) swarm-owned rail provider names.
 CODE_EXTRA_TOOLS = _tools.CODE_EXTRA_TOOLS
@@ -156,7 +155,7 @@ def _trajectory_registry_for(seed: dict[str, Any]) -> Any:
     key = (str(seed.get("session_id") or ""), str(seed.get("team_id") or ""))
     registry = _TRAJECTORY_REGISTRIES.get(key)
     if registry is None:
-        registry = get_trajectory_span_processor()
+        registry = InMemoryTrajectoryRegistry()
         _TRAJECTORY_REGISTRIES[key] = registry
     return registry
 
@@ -173,7 +172,6 @@ def _build_swarm_context_from_seed(seed: dict[str, Any]) -> SwarmBuildContext:
         seed,
         config=get_config(),
         trajectory_registry=_trajectory_registry_for(seed),
-        trajectory_span_processor=get_trajectory_span_processor(),
     )
 
 

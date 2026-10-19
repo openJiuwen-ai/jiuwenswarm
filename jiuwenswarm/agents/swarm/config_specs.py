@@ -50,8 +50,6 @@ from jiuwenswarm.common.config import (
     get_evolution_review_trigger_enabled,
     get_evolution_signal_trigger_enabled,
     get_skill_create_enabled,
-    get_skill_evolution_enabled,
-    get_symphony_evolution_enabled,
 )
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
@@ -478,14 +476,8 @@ def _code_base_rail_names(role: str) -> tuple[str, ...]:
 
 def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
     """Return the role-specific skill-evolution rails (shared by both profiles)."""
-    symphony_rails: list[RailSpec] = []
-    if role == "leader" and get_symphony_evolution_enabled(config):
-        symphony_rails.append(RailSpec(type=registry.SYMPHONY_GRAPH_EVOLUTION, params={}))
-    if not get_skill_evolution_enabled(config):
-        return symphony_rails
     if role == "leader":
         return [
-            *symphony_rails,
             RailSpec(
                 type=registry.TEAM_SKILL_EVOLUTION,
                 params=_team_evolution_rail_params(config),

@@ -15,9 +15,7 @@ import { OnlineSkillSearchPanel } from "../../features/OnlineSkillSearchPanel";
 import { SkillEvolutionModal } from "../../features/SkillEvolutionModal";
 import { normalizeSkillNetUrl } from "../../utils/skillNetUrl";
 import { getSkillAvatar } from "../../utils/skillAvatar";
-import { type SkillGraphPanelHandle } from "../SkillGraphPanel";
-import { SkillGraphTab } from './SkillGraphTab';
-import { coordinateSymphonyEnabledChange } from './symphonyGraphAction';
+import { SkillGraphPanel, type SkillGraphPanelHandle } from "../SkillGraphPanel";
 import { MarkdownRenderer } from "../MarkdownRenderer";
 import { Switch } from "../Switch";
 
@@ -49,20 +47,6 @@ type SkillItem = {
   has_evolutions?: boolean;
   /** 是否启用 */
   enabled?: boolean;
-  skill_type?: string;
-  member_count?: number;
-  blocked_members?: Array<{ name: string; reason: string }>;
-  skillpack?: {
-    workflow_graph?: Record<string, unknown> | null;
-    members?: Array<{
-      name: string;
-      display_name?: string;
-      description?: string;
-      available?: boolean;
-      enabled?: boolean;
-      blocking_reason?: string | null;
-    }>;
-  };
 };
 
 type InstalledPluginItem = {
@@ -148,9 +132,6 @@ type SkillIndexTreeNode = SkillIndexNode & {
 
 interface SkillPanelProps {
   sessionId: string;
-  isConnected: boolean;
-  symphonyEnabled: boolean;
-  onSymphonyEnabledChange: (enabled: boolean) => Promise<boolean>;
   onNavigateToConfig?: () => void;
   /** 当前是否处于激活状态（左边栏选中技能） */
   isActive?: boolean;
@@ -590,14 +571,7 @@ function SkillIndexTreeView({
   return <div className="space-y-1" role="tree">{roots.map((node) => renderNode(node, 0))}</div>;
 }
 
-export function SkillPanel({
-  sessionId,
-  isConnected,
-  symphonyEnabled,
-  onSymphonyEnabledChange,
-  onNavigateToConfig,
-  isActive = false,
-}: SkillPanelProps) {
+export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: SkillPanelProps) {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<"my" | "marketplace" | "index" | "graph">("my");
   const [mySkillsSubTab, setMySkillsSubTab] = useState<"all" | "enabled" | "disabled">("all");
@@ -624,10 +598,6 @@ export function SkillPanel({
   const graphReadingStartedAtRef = useRef<number | null>(null);
   const graphReadingTimerRef = useRef<number | null>(null);
   const [graphReading, setGraphReading] = useState(false);
-  const [symphonyEnabledDraft, setSymphonyEnabledDraft] = useState(symphonyEnabled);
-  const [symphonySaving, setSymphonySaving] = useState(false);
-  const [symphonySaveError, setSymphonySaveError] = useState<string | null>(null);
-  const [graphActionError, setGraphActionError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [retrievalStatus, setRetrievalStatus] = useState<SkillRetrievalStatus | null>(null);
   const [retrievalTree, setRetrievalTree] = useState("");
@@ -680,33 +650,6 @@ export function SkillPanel({
       setGraphReading(false);
     }, delay);
   }, []);
-
-  useEffect(() => {
-    if (!symphonySaving) setSymphonyEnabledDraft(symphonyEnabled);
-  }, [symphonyEnabled, symphonySaving]);
-
-  const updateSymphonyEnabled = useCallback(async (enabled: boolean) => {
-    if (!isConnected || symphonySaving || enabled === symphonyEnabledDraft) return;
-    setSymphonyEnabledDraft(enabled);
-    setSymphonySaving(true);
-    setSymphonySaveError(null);
-    const result = await coordinateSymphonyEnabledChange({
-      enabled,
-      save: onSymphonyEnabledChange,
-      getGraphPanel: () => skillGraphPanelRef.current,
-      request: webRequest,
-      refreshFailedMessage: t('skills.graph.errors.refreshFailed'),
-      cancelFailedMessage: t('skills.graph.errors.cancelFailed'),
-      onGraphActionStart: () => setGraphActionError(null),
-    });
-    if (result.configSaveFailed) {
-      setSymphonyEnabledDraft(symphonyEnabled);
-      setSymphonySaveError(t('skills.graph.orchestration.saveFailed'));
-    } else if (result.graphActionError) {
-      setGraphActionError(result.graphActionError);
-    }
-    setSymphonySaving(false);
-  }, [isConnected, onSymphonyEnabledChange, symphonyEnabled, symphonyEnabledDraft, symphonySaving, t]);
 
   useEffect(() => {
     if (searchDebounceRef.current !== null) {
@@ -1051,22 +994,19 @@ export function SkillPanel({
     setRetrievalShowExistingIndexFailureNotice(false);
     setRetrievalLoading("build");
     try {
-      const result = await webRequest<{ success: boolean; result?: string; detail?: string }>(
+      await webRequest<{ success: boolean; result?: string }>(
         "skills.retrieval.index_build",
         withSession({ force, source: "web" }),
         { timeoutMs: 30_000 }
       );
-      if (!result.success) throw new Error(result.detail || t('skills.retrieval.buildFailed'));
       await fetchRetrievalStatus();
       await fetchRetrievalTree();
-      return true;
     } catch (error) {
       console.error(error);
-      return false;
     } finally {
       setRetrievalLoading("idle");
     }
-  }, [fetchRetrievalStatus, fetchRetrievalTree, t, withSession]);
+  }, [fetchRetrievalStatus, fetchRetrievalTree, withSession]);
 
   const handleCancelRetrievalBuild = useCallback(async () => {
     setRetrievalLoading("cancel");
@@ -1933,18 +1873,9 @@ export function SkillPanel({
           ) : null}
 
         {activeTab === "graph" ? (
-          <SkillGraphTab
-            isConnected={isConnected}
-            symphonySaveError={symphonySaveError}
-            symphonySaving={symphonySaving}
-            symphonyEnabledDraft={symphonyEnabledDraft}
-            onUpdateSymphonyEnabled={(enabled) => void updateSymphonyEnabled(enabled)}
-            skillGraphPanelRef={skillGraphPanelRef}
-            onGraphReadingChange={updateGraphReading}
-            onStartRetrievalIndexBuild={handleBuildRetrievalIndex}
-            graphActionError={graphActionError}
-            onExternalErrorClear={() => setGraphActionError(null)}
-          />
+          <div className="mt-4 flex-1 min-h-0">
+            <SkillGraphPanel ref={skillGraphPanelRef} onReadingChange={updateGraphReading} />
+          </div>
         ) : null}
 
         {activeTab === "marketplace" ? (
@@ -2202,7 +2133,7 @@ export function SkillPanel({
                           <Switch
                             checked={selectedSkill.enabled !== false}
                             onChange={() => toggleSkillDisabled(selectedSkill.name)}
-                            disabled={actionTarget === `toggle:${selectedSkill.name}` || (selectedSkill.skill_type === 'skillpack' && Boolean(selectedSkill.blocked_members?.length))}
+                            disabled={actionTarget === `toggle:${selectedSkill.name}`}
                           />
                         </div>
                         {renderActionButton(selectedSkill)}
@@ -2210,33 +2141,6 @@ export function SkillPanel({
                       {renderEvolutionButton(selectedSkill)}
                     </div>
                   </div>
-
-                  {selectedSkill.skill_type === 'skillpack' ? (
-                    <div className="mt-4 rounded-md border border-border bg-secondary p-3">
-                      <div className="text-sm font-medium text-text">
-                        {t('skills.skillPack.members', { count: selectedSkill.member_count ?? selectedSkill.skillpack?.members?.length ?? 0 })}
-                      </div>
-                      {selectedSkill.blocked_members?.length ? (
-                        <p className="mt-2 text-xs text-danger" role="alert">
-                          {t('skills.skillPack.blocked')}: {selectedSkill.blocked_members.map((member) => member.name).join(', ')}
-                        </p>
-                      ) : null}
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {selectedSkill.skillpack?.members?.map((member) => (
-                          <button
-                            key={member.name}
-                            type="button"
-                            data-testid={`skill-pack-member-${member.name}`}
-                            onClick={() => void handleOpenSkill(member.name)}
-                            className="rounded border border-border bg-panel px-2 py-1 text-xs text-text hover:bg-secondary"
-                          >
-                            {member.display_name || member.name}
-                            {member.blocking_reason ? ` · ${member.blocking_reason}` : ''}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
 
                   <div className="mt-4">
                     <div className="text-sm font-medium text-text mb-2">

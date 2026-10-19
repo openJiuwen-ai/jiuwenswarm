@@ -1627,11 +1627,11 @@ wheels = [
 
 [[package]]
 name = "idna"
-version = "3.20"
+version = "3.13"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
-sdist = { url = "https://mirrors.aliyun.com/pypi/packages/f5/08/8eea9d4b8302028f3abb2c0813953f7aec26d33b7a8960ed760e65ff29fa/idna-3.20.tar.gz", hash = "sha256:a7db850025b95ded1eae8a46181a1a6c56c92c96f0e2b005d9ff8dc0210cab44" }
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/ce/cc/762dfb036166873f0059f3b7de4565e1b5bc3d6f28a414c13da27e442f99/idna-3.13.tar.gz", hash = "sha256:585ea8fe5d69b9181ec1afba340451fba6ba764af97026f92a91d4eef164a242" }
 wheels = [
-    { url = "https://mirrors.aliyun.com/pypi/packages/58/a2/bb081bab032533a855d44de1d56f8e8426114ff1ba5d1f07a438a0a654f8/idna-3.20-py3-none-any.whl", hash = "sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c" },
+    { url = "https://mirrors.aliyun.com/pypi/packages/5d/13/ad7d7ca3808a898b4612b6fe93cde56b53f3034dcde235acb1f0e1df24c6/idna-3.13-py3-none-any.whl", hash = "sha256:892ea0cde124a99ce773decba204c5552b69c3c67ffd5f232eb7696135bc8bb3" },
 ]
 
 [[package]]
@@ -1991,9 +1991,9 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0" },
-    { name = "openjiuwen", git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git?rev=cda37a772c774edb358004592520e43649bd1e31" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git?rev=cda37a772c774edb358004592520e43649bd1e31" },
-    { name = "openjiuwen", extras = ["claude", "codex"], marker = "extra == 'cli-agents'", git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git?rev=cda37a772c774edb358004592520e43649bd1e31" },
+    { name = "openjiuwen", git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git?rev=aaa582eaf8044afb4e4ad9a2a6665213a8747fff" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git?rev=aaa582eaf8044afb4e4ad9a2a6665213a8747fff" },
+    { name = "openjiuwen", extras = ["claude", "codex"], marker = "extra == 'cli-agents'", git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git?rev=aaa582eaf8044afb4e4ad9a2a6665213a8747fff" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
     { name = "opentelemetry-api", specifier = ">=1.28.0" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
@@ -2934,7 +2934,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.16"
-source = { git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git?rev=cda37a772c774edb358004592520e43649bd1e31#cda37a772c774edb358004592520e43649bd1e31" }
+source = { git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git?rev=aaa582eaf8044afb4e4ad9a2a6665213a8747fff#aaa582eaf8044afb4e4ad9a2a6665213a8747fff" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
@@ -2965,7 +2965,6 @@ dependencies = [
     { name = "python-dateutil" },
     { name = "python-docx" },
     { name = "python-dotenv" },
-    { name = "pyyaml" },
     { name = "requests" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "sqlmodel" },

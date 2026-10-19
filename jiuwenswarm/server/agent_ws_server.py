@@ -1506,7 +1506,6 @@ class AgentWebSocketServer:
                 logger.warning(
                     "[AgentWebSocketServer] checkpointer 预热失败 (首请求将兜底重试): %s", exc
                 )
-            await self._start_symphony_recovery()
 
         self._checkpointer_warmup_task = asyncio.create_task(
             _warmup_checkpointer(), name="checkpointer-warmup"
@@ -1517,16 +1516,6 @@ class AgentWebSocketServer:
             await self._bootstrap_internal_jiuwenbox()
         elif self._startup_complete is not None:
             self._startup_complete.set()
-
-    @staticmethod
-    async def _start_symphony_recovery() -> None:
-        """Recover Flow candidates without affecting AgentServer availability."""
-        try:
-            from jiuwenswarm.symphony.service import get_swarm_symphony_service
-
-            await get_swarm_symphony_service().start()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[AgentWebSocketServer] Symphony Flow recovery failed: %s", exc)
 
     async def _bootstrap_internal_jiuwenbox(self) -> None:
         """启动时按 ``config.yaml::sandbox`` 自动拉起 jiuwenbox 子进程。

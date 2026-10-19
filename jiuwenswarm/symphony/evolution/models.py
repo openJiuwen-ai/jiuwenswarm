@@ -38,9 +38,7 @@ def edge_key(source: Any, target: Any, relation_type: str = CAN_FEED) -> str:
 
 def skill_id(node_id: Any) -> str:
     text = str(node_id or "")
-    text = text.removeprefix("skill:").removeprefix("capability:")
-    # Normalize underscores to hyphens so "general_writing" and "general-writing" match
-    return text.replace("_", "-")
+    return text.removeprefix("skill:")
 
 
 def normalize_edge(item: Any) -> dict[str, Any] | None:

@@ -15,6 +15,13 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
     [
         (None, True),
         ({}, True),
+        ({"symphony": None}, True),
+        ({"symphony": {}}, True),
+        ({"symphony": {"dynamic_experts": None}}, True),
+        ({"symphony": {"dynamic_experts": {}}}, True),
+        ({"symphony": {"dynamic_experts": {"enabled": None}}}, True),
+        ({"symphony": "true"}, False),
+        ({"symphony": {"dynamic_experts": True}}, False),
         ({"symphony": {"dynamic_experts": {"enabled": False}}}, False),
         ({"symphony": {"dynamic_experts": {"enabled": "true"}}}, False),
         ({"symphony": {"dynamic_experts": {"enabled": 1}}}, False),

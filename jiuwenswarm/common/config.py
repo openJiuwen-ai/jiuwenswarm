@@ -468,52 +468,6 @@ def get_skill_create_enabled(config: dict[str, Any] | None) -> bool:
     return _get_evolution_config(config).get("skill_create", False)
 
 
-def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
-    """Return the canonical react.evolution.skill_evolution switch."""
-    return _get_evolution_config(config).get("skill_evolution") is True
-
-
-def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
-    """Return whether Symphony execution graph evolution is enabled."""
-
-    from jiuwenswarm.symphony.config import (
-        resolve_symphony_enabled,
-        resolve_symphony_evolution_enabled,
-    )
-
-    if not isinstance(config, dict):
-        return False
-    symphony = config.get("symphony")
-    if not isinstance(symphony, dict):
-        symphony = {}
-    evolution = symphony.get("evolution")
-    if not isinstance(evolution, dict):
-        evolution = {}
-    flow = evolution.get("flow")
-    flow_enabled = flow.get("enabled") if isinstance(flow, dict) else None
-    if flow_enabled is None:
-        flow_enabled = evolution.get("enabled")
-    return (
-        resolve_symphony_enabled(symphony.get("enabled"))
-        and resolve_symphony_evolution_enabled(flow_enabled)
-    )
-
-
-def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict[str, str]:
-    """Return the configured gateway-host to endpoint-profile mapping."""
-    cfg = config if isinstance(config, dict) else get_config()
-    raw = cfg.get("endpoint_profile_overrides")
-    if not isinstance(raw, dict):
-        return {}
-    overrides: dict[str, str] = {}
-    for host, profile in raw.items():
-        host_key = str(host or "").strip().lower()
-        profile_value = str(profile or "").strip()
-        if host_key and profile_value:
-            overrides[host_key] = profile_value
-    return overrides
-
-
 def get_evolution_auto_save_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether evolution approvals may auto-save without user action."""
     try:

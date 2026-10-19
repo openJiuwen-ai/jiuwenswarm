@@ -1,0 +1,11 @@
+id: symphony
+name: symphony
+version: 0.1.0
+description: Build Symphony scores and plan explicit skill execution paths.
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.0"
+dependencies:
+  json-repair: ">=0.30.0"
+  rich: ">=13.7.0"
+config_schema:
+  type: object

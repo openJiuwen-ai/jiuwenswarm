@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,7 +10,6 @@ from uuid import uuid4
 from jiuwenswarm.symphony.evolution.aggregate import build_overlay_from_events
 from jiuwenswarm.symphony.evolution.models import (
     EVENT_SCHEMA_VERSION,
-    OVERLAY_SCHEMA_VERSION,
     OUTCOME_NEEDS_INPUT,
     OUTCOME_FAILURE,
     PLAN_OUTCOME,
@@ -32,112 +29,43 @@ from jiuwenswarm.symphony.evolution.store import (
     read_overlay,
     write_overlay,
 )
-from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
 
 
-_EVOLUTION_FILES = (
-    "events.jsonl",
-    "dynamic_graph_overlay.json",
-)
-
-
-def load_dynamic_overlay(graph_dir: str | Path) -> dict[str, Any] | None:
+def load_dynamic_overlay(score_dir: str | Path) -> dict[str, Any] | None:
     """Load the current dynamic overlay if it exists."""
 
-    graph_root = prepare_evolution_store(graph_dir)
-    with evolution_store_transaction():
-        overlay = read_overlay(graph_root)
-        events = read_events(graph_root)
-        current_version = _current_graph_version(graph_root)
-        if _overlay_requires_rebuild(overlay, events, current_version):
-            return rebuild_dynamic_overlay(
-                graph_root,
-                base_graph_version=current_version,
-            )
-        return overlay
-
-
-def _overlay_requires_rebuild(
-    overlay: dict[str, Any] | None,
-    events: list[dict[str, Any]],
-    current_version: str,
-) -> bool:
-    """Return whether persisted events and overlay metadata are inconsistent."""
-
-    if not events:
-        return False
-    if overlay is None or overlay.get("schema_version") != OVERLAY_SCHEMA_VERSION:
-        return True
-    overlay_events = overlay.get("events")
-    if not isinstance(overlay_events, dict):
-        return True
-    event_metadata_matches = (
-        overlay_events.get("count") == len(events)
-        and str(overlay_events.get("last_event_at") or "")
-        == _last_event_ts(events)
-    )
-    graph_version_matches = (
-        not current_version
-        or str(overlay.get("base_graph_version") or "") == current_version
-    )
-    return not event_metadata_matches or not graph_version_matches
-
-
-def prepare_evolution_store(graph_dir: str | Path) -> Path:
-    """Use the graph root as the stable store and import legacy version data."""
-
-    graph_root = Path(graph_dir).resolve()
-    artifact_dir = resolve_graph_artifact_dir(graph_root)
-    legacy_dir = artifact_dir / "evolution"
-    if artifact_dir == graph_root or not legacy_dir.is_dir():
-        return graph_root
-
-    target_dir = graph_root / "evolution"
-    with evolution_store_transaction():
-        target_dir.mkdir(parents=True, exist_ok=True)
-        for filename in _EVOLUTION_FILES:
-            source = legacy_dir / filename
-            target = target_dir / filename
-            if source.is_file() and not target.exists():
-                temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
-                shutil.copy2(source, temporary)
-                temporary.replace(target)
-    return graph_root
+    return read_overlay(score_dir)
 
 
 def rebuild_dynamic_overlay(
-    graph_dir: str | Path,
+    score_dir: str | Path,
     *,
-    base_graph_version: str | None = None,
+    base_score_version: str | None = None,
 ) -> dict[str, Any]:
     """Rebuild and persist the dynamic overlay from event logs."""
 
-    graph_dir = prepare_evolution_store(graph_dir)
-    if base_graph_version is None:
-        base_graph_version = _current_graph_version(graph_dir)
     with evolution_store_transaction():
-        events = read_events(graph_dir)
+        events = read_events(score_dir)
         overlay = build_overlay_from_events(
             events,
-            base_graph_version=base_graph_version,
+            base_score_version=base_score_version,
         )
-        write_overlay(graph_dir, overlay)
+        write_overlay(score_dir, overlay)
     return overlay
 
 
-def evolution_status(graph_dir: str | Path) -> dict[str, Any]:
+def evolution_status(score_dir: str | Path) -> dict[str, Any]:
     """Return a compact runtime-evolution status payload."""
 
-    graph_dir = prepare_evolution_store(graph_dir)
-    events = read_events(graph_dir)
-    overlay = load_dynamic_overlay(graph_dir)
-    overlay_mtime = overlay_file_mtime(graph_dir)
+    events = read_events(score_dir)
+    overlay = read_overlay(score_dir)
+    overlay_mtime = overlay_file_mtime(score_dir)
     stats = overlay.get("stats") if isinstance(overlay, dict) else {}
     payload = {
         "success": True,
-        "graph_dir": str(graph_dir),
-        "event_log": str(events_path(graph_dir)),
-        "overlay_path": str(overlay_path(graph_dir)),
+        "score_dir": str(score_dir),
+        "event_log": str(events_path(score_dir)),
+        "overlay_path": str(overlay_path(score_dir)),
         "event_count": len(events),
         "last_event_at": _last_event_ts(events),
         "overlay_exists": overlay is not None,
@@ -149,11 +77,22 @@ def evolution_status(graph_dir: str | Path) -> dict[str, Any]:
         ),
         "top_edges": _top_overlay_edges(overlay),
     }
+    try:
+        from jiuwenswarm.symphony.evolution.session_consumer import (
+            session_feedback_status,
+        )
+
+        payload["session_feedback"] = session_feedback_status(score_dir)
+    except Exception:  # noqa: BLE001
+        payload["session_feedback"] = {
+            "source": "session_history",
+            "available": False,
+        }
     return payload
 
 
 def record_plan_outcome(
-    graph_dir: str | Path,
+    score_dir: str | Path,
     *,
     plan_id: str,
     outcome: str,
@@ -174,7 +113,6 @@ def record_plan_outcome(
 ) -> dict[str, Any]:
     """Append a plan outcome event and optionally refresh the overlay."""
 
-    graph_dir = prepare_evolution_store(graph_dir)
     normalized_outcome = normalize_outcome(outcome)
     normalized_edges = _annotate_failed_edges(
         normalize_edges(selected_edges or []),
@@ -217,31 +155,17 @@ def record_plan_outcome(
             existing = next(
                 (
                     item
-                    for item in read_events(graph_dir)
+                    for item in read_events(score_dir)
                     if str(item.get("evidence_id") or "") == clean_evidence_id
                 ),
                 None,
             )
             if existing is not None:
                 return {**existing, "deduplicated": True}
-        append_event(graph_dir, event)
+        append_event(score_dir, event)
         if rebuild_overlay:
-            rebuild_dynamic_overlay(graph_dir)
-
+            rebuild_dynamic_overlay(score_dir)
     return event
-
-
-def _current_graph_version(graph_dir: str | Path) -> str:
-    pointer_path = Path(graph_dir) / "current.json"
-    try:
-        payload = json.loads(pointer_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ""
-    return (
-        str(payload.get("version") or "").strip()
-        if isinstance(payload, dict)
-        else ""
-    )
 
 
 def _base_event(event_type: str, *, plan_id: str, query: str) -> dict[str, Any]:

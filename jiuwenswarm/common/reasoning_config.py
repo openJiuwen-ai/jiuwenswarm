@@ -42,37 +42,6 @@ def _parse_api_base(api_base: str | None):
     return urlparse(value)
 
 
-def resolve_endpoint_profile_override(api_base: str | None) -> str | None:
-    """Return the endpoint profile configured for a gateway host."""
-    host = (_parse_api_base(api_base).hostname or "").lower()
-    if not host:
-        return None
-    try:
-        from jiuwenswarm.common.config import get_endpoint_profile_overrides
-
-        return get_endpoint_profile_overrides().get(host)
-    except Exception:
-        return None
-
-
-SAMPLING_OVERRIDE_RULES: dict[str, dict[str, float]] = {
-    "api.moonshot.cn": {"temperature": 1.0, "top_p": 0.95},
-    "api.kimi.com": {"temperature": 1.0, "top_p": 0.95},
-}
-
-
-def resolve_sampling_override(
-    api_base: str | None,
-    model_name: str | None = None,
-) -> dict[str, float] | None:
-    """Return required Kimi sampling values, including aggregator routes."""
-    host = (_parse_api_base(api_base).hostname or "").lower()
-    model = str(model_name or "").strip().lower().rsplit("/", 1)[-1]
-    if host in SAMPLING_OVERRIDE_RULES or model.startswith("kimi-"):
-        return {"temperature": 1.0, "top_p": 0.95}
-    return None
-
-
 def resolve_reasoning_provider_kind(
     api_base: str | None,
 ) -> ReasoningProviderKind | None:

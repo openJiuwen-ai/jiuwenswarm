@@ -63,6 +63,7 @@ from openjiuwen.harness import (
 from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.prompts import PromptSection, resolve_language
 from openjiuwen.harness.rails import (
+    LLMRetryRail,
     SkillUseRail,
     TaskPlanningRail,
     SecurityRail,
@@ -76,7 +77,6 @@ from openjiuwen.harness.rails import (
     configure_skill_evolution_runtime,
     unconfigure_skill_evolution,
 )
-from jiuwenswarm.agents.harness.common.rails.llm_retry_rail import LLMRetryRail
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
@@ -418,33 +418,6 @@ def get_runtime_tool_session_id() -> str | None:
     return _CRON_TOOL_SESSION_ID.get()
 
 logger = logging.getLogger(__name__)
-
-_SYMPHONY_FORBIDDEN_ARTIFACT_FIELDS = frozenset(
-    {
-        "path", "file_path", "artifact_dir", "artifact_path", "artifact_root",
-        "target_dir", "target_path", "output_dir", "output_path", "output_root",
-        "package_dir", "package_path",
-    }
-)
-
-
-def _contains_client_artifact_field(params: dict[str, Any]) -> bool:
-    """Reject client-selected install paths while allowing transport context."""
-    transport_context = {"project_dir", "cwd", "trusted_dirs"}
-
-    def contains(value: Any, *, top_level: bool = False) -> bool:
-        if isinstance(value, dict):
-            for raw_key, item in value.items():
-                key = str(raw_key).strip().lower().replace("-", "_")
-                if top_level and key in transport_context:
-                    continue
-                if key in _SYMPHONY_FORBIDDEN_ARTIFACT_FIELDS or contains(item):
-                    return True
-        elif isinstance(value, (list, tuple)):
-            return any(contains(item) for item in value)
-        return False
-
-    return contains(params, top_level=True)
 
 # xiaoyi 渠道计费上报（common/billing_client.py）：NEW 在一轮 query 实际开跑前
 # 派发（team/auto_harness/goal/slash 早退分支不触发），终态在流式/非流式 finally
@@ -1388,7 +1361,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         self._dynamic_experts_enabled: bool = False
         self._dynamic_expert_rounds: dict[str, Any] = {}
         self._symphony_orchestration_rail = None
-        self._symphony_graph_evolution_rail = None
         self._skill_retrieval_tools_registered: bool = False
         self._skill_retrieval_tools: list[Any] = []
         self._skill_retrieval_prompt_rail: SkillRetrievalPromptRail | None = None
@@ -5419,28 +5391,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             )
             return None
 
-    def _build_symphony_graph_evolution_rail(self) -> Any | None:
-        """Build the single-Agent execution-graph producer."""
-
-        config = load_symphony_config(self._config_base_cache)
-        if not config.enabled or not config.evolution.flow.enabled:
-            return None
-        try:
-            from jiuwenswarm.symphony.experience import _build_graph_evolution_rail
-
-            return _build_graph_evolution_rail(
-                config.paths.graph_dir,
-                capture_mode="agent",
-                model=self._model,
-                channel_id=lambda: getattr(self, "_channel_id", None),
-            )
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] SymphonyGraphEvolutionRail create failed: %s",
-                exc,
-            )
-            return None
-
     @staticmethod
     def _build_invocation_context_rail() -> InvocationContextRail:
         """Build the always-on explicit invocation context rail."""
@@ -5702,13 +5652,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             _RailBuildInfo(
                 "_symphony_orchestration_rail",
                 self._build_symphony_orchestration_rail,
-            ),
-        )
-        rail_infos.insert(
-            5 if self._filesystem_rail_enabled_for_profile() else 4,
-            _RailBuildInfo(
-                "_symphony_graph_evolution_rail",
-                self._build_symphony_graph_evolution_rail,
             ),
         )
         if isinstance(mode, str) and mode.startswith("agent"):
@@ -9190,13 +9133,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         answers = request.params.get("answers", []) if isinstance(request.params, dict) else []
         session_id = request.session_id
         resolved = False
-        response_payload: dict[str, Any] | None = None
-        if request_id.startswith("symphony_experience_"):
-            response_payload = await self._handle_symphony_experience_answer(
-                request_id, answers, request.params,
-            )
-            resolved = bool(response_payload.get("resolved"))
-        elif request_id.startswith("team_skill_evolve_"):
+        if request_id.startswith("team_skill_evolve_"):
             resolved = await self.handle_team_skill_evolve_approval(
                 request_id,
                 answers,
@@ -9226,68 +9163,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload=response_payload or {"accepted": True, "resolved": resolved},
+            payload={"accepted": True, "resolved": resolved},
             metadata=request.metadata,
         )
-
-    async def _handle_symphony_experience_answer(
-        self, request_id: str, answers: list[Any], params: Any,
-    ) -> dict[str, Any]:
-        """Resolve a Symphony candidate without accepting a client install path."""
-        if not isinstance(params, dict) or _contains_client_artifact_field(params):
-            return {"accepted": False, "resolved": False, "reason": "client_path_rejected"}
-        meta = evolution_meta_from_params(params)
-        from jiuwenswarm.symphony.experience import _parse_recipe_reference
-
-        try:
-            recipe_id, recipe_version = _parse_recipe_reference(
-                meta.get("recipe_id") or params.get("recipe_id"),
-                meta.get("recipe_version", params.get("recipe_version")),
-            )
-        except ValueError as exc:
-            return {"accepted": False, "resolved": False, "reason": str(exc)}
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
-
-        service = get_swarm_symphony_service()
-        if not answers_select_option(answers, ("安装", "install")):
-            service.defer_candidate(recipe_id, recipe_version)
-            return {
-                "accepted": True, "resolved": True, "installed": False,
-                "deferred": True, "recipe_id": recipe_id,
-                "recipe_version": recipe_version, "request_id": request_id,
-            }
-        receipt = await service.install_candidate(
-            request_id=request_id,
-            recipe_id=recipe_id,
-            recipe_version=recipe_version,
-            package_id=(str(params.get("package_id") or "").strip() or None),
-            integrity=(str(params.get("integrity") or "").strip() or None),
-            skill_manager=self._skill_manager,
-        )
-        if receipt.get("installed") and receipt.get("newly_installed"):
-            refresh_warnings: list[str] = []
-            try:
-                await self.refresh_skill_rails()
-            except Exception as exc:  # noqa: BLE001
-                refresh_warnings.append("agent_skill_rails")
-                logger.warning("[JiuWenSwarmDeepAdapter] Agent Skill rail refresh failed: %s", exc)
-            from jiuwenswarm.agents.harness.team.team_manager import (
-                reload_team_skill_views_across_managers,
-            )
-
-            try:
-                await reload_team_skill_views_across_managers()
-            except Exception as exc:  # noqa: BLE001
-                refresh_warnings.append("team_skill_views")
-                logger.warning("[JiuWenSwarmDeepAdapter] Team Skill view refresh failed: %s", exc)
-            try:
-                await service.start_refresh_graph(force=False)
-            except Exception as exc:  # noqa: BLE001
-                refresh_warnings.append("static_skill_graph")
-                logger.warning("[JiuWenSwarmDeepAdapter] Skill Graph refresh failed: %s", exc)
-            if refresh_warnings:
-                receipt = {**receipt, "refresh_warnings": refresh_warnings}
-        return {"accepted": True, "resolved": True, **receipt}
 
     async def handle_swarmflow_reply(self, request: AgentRequest) -> AgentResponse:
         """Handle chat.swarmflow_reply — deliver a person's reply to a human turn.
@@ -12315,9 +12193,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                                 "is_error",
                                 "error",
                                 "summary",
-                                "reviewer_metadata",
-                                "graph_status",
-                                "graph_build",
+                                "score_status",
+                                "score_build",
                                 "direct_display",
                                 "display_format",
                                 "mermaid",

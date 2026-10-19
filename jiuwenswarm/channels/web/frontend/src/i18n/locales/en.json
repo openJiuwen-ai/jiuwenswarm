@@ -930,14 +930,8 @@
       "teamMemberPromptHint": "Prompt Hint",
       "teamMemberAgentKey": "Agent Key",
       "symphonyEnabled": "Enable skill orchestration",
-      "symphonyDynamicGraphEnabled": "Enable execution graph evolution",
+      "symphonyDynamicGraphEnabled": "Enable dynamic graph",
       "skillRetrievalEnabled": "Enable skill retrieval",
-
-      "skillRetrievalIndexEnabled": "Enable Skill index",
-      "skillRetrievalMaxResults": "Maximum retrieval results",
-      "skillRetrievalMaxOutputChars": "Maximum output characters",
-      "skillRetrievalMaxListEntries": "Maximum listed Skills",
-      "skillRetrievalIncrementalNoticeMaxChars": "Maximum incremental notice characters",
       "skillRetrievalBuildBranchingFactor": "Split threshold base",
       "skillRetrievalBuildMaxDepth": "Max tree depth",
       "skillRetrievalBuildRootCategories": "Root taxonomy config",
@@ -985,7 +979,7 @@
       "evolutionAutoScan": "Automatically detect signals that a skill can be evolved and suggest creating/updating skills.",
       "skillCreate": "Install `skill-creator` and `teamskill-creator` before enabling automatic skill-creation suggestions.",
       "memoryForbiddenDescription": "Describe sensitive types or rules that must not be written to memory, e.g. passwords, ID numbers, secrets.",
-      "symphonyDynamicGraphEnabled": "Capture execution experience into the graph when enabled.",
+      "symphonyDynamicGraphEnabled": "When disabled, planning uses only the static graph. Existing runtime data is retained.",
       "skillRetrievalBuildRootCategories": "Edit YAML/JSON containing tree_root_categories or root_categories directly. The page shows the default taxonomy as a reference; saving writes the config content itself, not an external file path.",
       "skillRetrievalBuildMaxDepth": "Maximum depth of the skill taxonomy tree. Deeper trees take longer to build.",
       "skillRetrievalBuildMaxWorkers": "Number of concurrent workers when building the skill tree.",
@@ -1590,7 +1584,6 @@
     }
   },
   "skills": {
-    "skillPack": { "members": "Includes {{count}} Skills", "blocked": "Unavailable members" },
     "title": "Skill Management",
     "subtitle": "Manage and install skills available to the agent.",
     "tabs": {
@@ -1774,29 +1767,17 @@
       }
     },
     "graph": {
-      "orchestration": {
-        "description": "When enabled, JiuwenSwarm builds a skill graph for installed skills (consuming tokens) and uses the graph during task execution to automatically select, combine, and orchestrate skills, improving task execution efficiency. Disabling it stops skill orchestration but does not delete the existing skill graph.",
-        "graphDefinition": "A skill graph is like a map of skill relationships: each dot represents a skill, and lines between dots show which skills can work together.",
-        "saving": "Saving…",
-        "saveFailed": "Failed to save the skill orchestration setting. Please try again.",
-        "toggleLabel": "Enable skill orchestration",
-        "connectionRequired": "Connect to the server to change skill orchestration"
-      },
       "stats": {
         "skillsSuffix": " skills",
-        "edgesSuffix": " links"
+        "edgesSuffix": " edges"
       },
-      "searchPlaceholder": "Search skills and filter graph",
-      "minConfidence": "Minimum link strength {{percent}}%",
-      "minConfidenceHelp": "Drag the slider to set the minimum link strength; higher values show fewer links.",
-      "linkStrength": "Link strength {{percent}}%",
+      "searchPlaceholder": "Search skills",
+      "minConfidence": "Minimum confidence {{percent}}%",
       "buildLogFallback": "Build log",
       "tokenUsage": "{{prompt}} in / {{completion}} out / {{total}} total",
       "required": "Required",
       "skillList": "Skill List",
       "noVisibleSkills": "No skills to display.",
-      "emptyGraph": "No skill graph yet. Start with an incremental build.",
-      "noFilteredGraph": "No skill graph matches the current filters.",
       "degreeSummary": "In {{inDegree}} · Out {{outDegree}}",
       "updatedAt": "Updated {{time}}",
       "inDegree": "In",
@@ -1805,62 +1786,44 @@
       "noInputs": "No inputs",
       "outputs": "Outputs",
       "noOutputs": "No outputs",
-      "description": "Description",
       "tasks": "Tasks",
-      "relatedEdges": "Linked skills",
-      "noRelatedEdges": "No linked skills.",
-      "selectSkillHint": "Select a skill from the list or graph to view its description and links.",
-      "detailDrawerLabel": "Skill details",
-      "closeDetail": "Close details",
-      "zoomIn": "Zoom in",
-      "zoomOut": "Zoom out",
-      "zoomLevel": "Current zoom {{percent}}%",
-      "fullscreen": "Fullscreen",
-      "exitFullscreen": "Exit fullscreen",
+      "relatedEdges": "Related Edges",
+      "noRelatedEdges": "No related edges.",
+      "selectSkillHint": "Select a skill to view its fingerprint",
       "actions": {
-        "read": "Read graph",
+        "read": "Read score",
         "incrementalBuild": "Incremental build",
-        "cancelBuild": "Cancel build",
-        "fullRebuild": "Full build",
-        "fitView": "Adjust view"
-      },
-      "actionHelp": {
-        "incrementalBuild": "Incremental build: Update new or changed skills.",
-        "cancelBuild": "Cancel build: Stop the current incremental or full build.",
-        "fullRebuild": "Full build: Scan all installed skills for first use or rebuilding the graph.",
-        "fitView": "Adjust view: Center and fit the graph within the right panel."
+        "pauseBuild": "Pause build",
+        "fullRebuild": "Full rebuild",
+        "fitView": "Fit view"
       },
       "status": {
-        "refreshing": "Refreshing skill graph",
-        "cancelled": "Skill graph build cancelled",
-        "reading": "Reading skill graph",
+        "refreshing": "Refreshing skill score",
+        "paused": "Skill score build paused",
+        "reading": "Reading skill score",
         "noBuildLogs": "No build logs",
         "waitingBuildLogs": "Waiting for build logs...",
-        "prepareFull": "Preparing full skill graph rebuild",
-        "prepareIncremental": "Preparing incremental skill graph build"
+        "prepareFull": "Preparing full skill score rebuild",
+        "prepareIncremental": "Preparing incremental skill score build"
       },
       "errors": {
-        "readFailed": "Unable to read the skill graph. Refresh the graph first.",
-        "refreshFailed": "Failed to refresh the skill graph",
-        "cancelFailed": "Failed to cancel the skill graph build",
-        "primaryModelProbeFailed": "Primary model connection test failed: {{detail}}",
-        "buildFailedWithDetail": "Symphony graph build failed: {{detail}}"
+        "readFailed": "Unable to read the skill score. Refresh the score first.",
+        "refreshFailed": "Failed to refresh the skill score",
+        "pauseFailed": "Failed to pause the skill score build",
+        "buildFailedWithDetail": "Symphony score build failed: {{detail}}"
       },
       "serverDetails": {
-        "noRunningBuild": "No skill graph build is currently running.",
-        "buildStarted": "Skill graph background build started.",
-        "cancelRequested": "Skill graph build cancelled. Completed cache and checkpoints will be kept.",
-        "buildRunning": "A skill graph build is already running in the background.",
-        "buildCancelled": "Skill graph build cancelled. Run an incremental build again to continue.",
-        "graphMissing": "The skill graph is missing or incomplete. Build the graph first."
+        "noRunningBuild": "No skill score build is currently running.",
+        "pauseRequested": "Skill score build pause requested. Completed cache and checkpoints will be kept.",
+        "buildRunning": "A skill score build is already running. Wait for it to finish or pause the current build first.",
+        "buildPaused": "Skill score build paused. Run an incremental build again to continue.",
+        "scoreMissing": "The skill score is missing or incomplete. Build the score first."
       },
       "buildStages": {
         "idle": "No build logs",
-        "updateStart": "Starting skill graph build",
-        "modelProbeStart": "Testing primary model connection",
-        "modelProbeDone": "Primary model connection test passed",
-        "updateCancelRequested": "Cancelling skill graph build",
-        "updateCancelled": "Skill graph build cancelled",
+        "updateStart": "Starting skill score build",
+        "updatePauseRequested": "Pausing skill score build",
+        "updatePaused": "Skill score build paused",
         "scanStart": "Scanning skill directories",
         "scanDone": "Skill directory scan complete",
         "diffDone": "Checking skill changes",
@@ -1879,17 +1842,17 @@
         "graphResolveStart": "Resolving candidate relations",
         "graphResolveProgress": "Resolving candidate relations",
         "graphResolveDone": "Candidate relation resolution complete",
-        "graphMaterializeStart": "Generating graph structure",
-        "graphMaterializeDone": "Graph structure generated",
-        "graphLookupStart": "Building graph lookup structure",
-        "graphLookupDone": "Graph lookup structure built",
+        "graphMaterializeStart": "Generating score structure",
+        "graphMaterializeDone": "Score structure generated",
+        "graphScoreStart": "Building score retrieval structure",
+        "graphScoreDone": "Score retrieval structure built",
         "graphBuildDone": "Skill relation graph built",
-        "artifactGraphWriteStart": "Writing graph files",
-        "artifactGraphWriteDone": "Graph files written",
-        "stateWriteStart": "Writing graph state",
-        "stateWriteDone": "Graph state written",
-        "updateFailed": "Graph build failed",
-        "updateDone": "Graph build complete"
+        "artifactGraphWriteStart": "Writing score files",
+        "artifactGraphWriteDone": "Score files written",
+        "stateWriteStart": "Writing score state",
+        "stateWriteDone": "Score state written",
+        "updateFailed": "Score build failed",
+        "updateDone": "Score build complete"
       }
     },
     "evolution": {

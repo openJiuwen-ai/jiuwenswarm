@@ -284,13 +284,12 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
                 if raw_output is not None:
                     result_payload["raw_output"] = raw_output
                 for key in (
-                    "rendered_result",
                     "success",
                     "status",
                     "is_error",
                     "summary",
-                    "graph_status",
-                    "graph_build",
+                    "score_status",
+                    "score_build",
                     "direct_display",
                     "display_format",
                     "mermaid",

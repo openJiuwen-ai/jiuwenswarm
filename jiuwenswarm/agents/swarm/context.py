@@ -62,7 +62,6 @@ class SwarmBuildContext(BuildContext):
     team_skills_dir: str | None = None
     global_skills_dir: str | None = None
     trajectory_registry: Any = None
-    trajectory_span_processor: Any = None
     config: dict[str, Any] | None = None
 
     def derive(self, **overrides: Any) -> "SwarmBuildContext":
@@ -111,7 +110,6 @@ class SwarmBuildContext(BuildContext):
         *,
         config: dict[str, Any] | None,
         trajectory_registry: Any,
-        trajectory_span_processor: Any = None,
     ) -> "SwarmBuildContext":
         """Rebuild a context from a :meth:`to_seed` mapping plus local handles.
 
@@ -138,7 +136,6 @@ class SwarmBuildContext(BuildContext):
             team_skills_dir=seed.get("team_skills_dir"),
             global_skills_dir=seed.get("global_skills_dir"),
             trajectory_registry=trajectory_registry,
-            trajectory_span_processor=trajectory_span_processor,
             config=config,
         )
 

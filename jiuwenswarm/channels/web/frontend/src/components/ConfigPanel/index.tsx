@@ -365,21 +365,16 @@ const A2UI_KEYS = new Set(["a2ui_enabled"]);
 const SWARMFLOW_KEYS = new Set(["swarmflow_enabled"]);
 const SYMPHONY_BOOLEAN_KEYS = new Set([
   "symphony_enabled",
-  "symphony_evolution_enabled",
+  "symphony_dynamic_graph_enabled",
 ]);
 const SKILL_RETRIEVAL_BOOLEAN_KEYS = new Set([
   "skill_retrieval_enabled",
-  "skill_retrieval_index_enabled",
 ]);
 const MULTILINE_CONFIG_KEYS = new Set([
   "skill_retrieval_build_root_categories",
 ]);
 const SKILL_RETRIEVAL_KEYS = new Set([
   ...SKILL_RETRIEVAL_BOOLEAN_KEYS,
-  "skill_retrieval_max_results",
-  "skill_retrieval_max_output_chars",
-  "skill_retrieval_max_list_entries",
-  "skill_retrieval_incremental_notice_max_chars",
   "skill_retrieval_build_max_depth",
   "skill_retrieval_build_max_workers",
   "skill_retrieval_build_max_retries",
@@ -668,9 +663,8 @@ function getBooleanKeyLabel(key: string, t: (key: string) => string): string {
     a2ui_enabled: t('config.booleanLabels.enabled'),
     swarmflow_enabled: t('config.booleanLabels.enabled'),
     symphony_enabled: t('config.booleanLabels.enabled'),
-    symphony_evolution_enabled: t('config.booleanLabels.dynamicGraph'),
+    symphony_dynamic_graph_enabled: t('config.booleanLabels.dynamicGraph'),
     skill_retrieval_enabled: t('config.booleanLabels.enabled'),
-    skill_retrieval_index_enabled: t('config.booleanLabels.enabled'),
     proactive_recommendation_enabled: t('config.booleanLabels.enabled'),
   };
   return labels[key] ?? key;
@@ -749,13 +743,8 @@ const KEY_DISPLAY_I18N: Record<string, string> = {
   model: "config.keys.agentModel",
   skills: "config.keys.agentSkills",
   symphony_enabled: "config.keys.symphonyEnabled",
-  symphony_evolution_enabled: "config.keys.symphonyDynamicGraphEnabled",
+  symphony_dynamic_graph_enabled: "config.keys.symphonyDynamicGraphEnabled",
   skill_retrieval_enabled: "config.keys.skillRetrievalEnabled",
-  skill_retrieval_index_enabled: "config.keys.skillRetrievalIndexEnabled",
-  skill_retrieval_max_results: "config.keys.skillRetrievalMaxResults",
-  skill_retrieval_max_output_chars: "config.keys.skillRetrievalMaxOutputChars",
-  skill_retrieval_max_list_entries: "config.keys.skillRetrievalMaxListEntries",
-  skill_retrieval_incremental_notice_max_chars: "config.keys.skillRetrievalIncrementalNoticeMaxChars",
   skill_retrieval_build_branching_factor: "config.keys.skillRetrievalBuildBranchingFactor",
   skill_retrieval_build_max_depth: "config.keys.skillRetrievalBuildMaxDepth",
   skill_retrieval_build_root_categories: "config.keys.skillRetrievalBuildRootCategories",
@@ -798,7 +787,7 @@ const KEY_LABEL_HINT_I18N: Record<string, string> = {
   skill_create: "config.keyHelp.skillCreate",
   // 含义需补充（「启用」等不加）
   memory_forbidden_description: "config.keyHelp.memoryForbiddenDescription",
-  symphony_evolution_enabled: "config.keyHelp.symphonyDynamicGraphEnabled",
+  symphony_dynamic_graph_enabled: "config.keyHelp.symphonyDynamicGraphEnabled",
   skill_retrieval_build_root_categories: "config.keyHelp.skillRetrievalBuildRootCategories",
   skill_retrieval_build_max_depth: "config.keyHelp.skillRetrievalBuildMaxDepth",
   skill_retrieval_build_max_workers: "config.keyHelp.skillRetrievalBuildMaxWorkers",
@@ -827,9 +816,8 @@ const KEY_SORT_PRIORITY: Record<string, number> = {
   free_search_ddg_enabled: 0,
   free_search_bing_enabled: 1,
   symphony_enabled: 0,
-  symphony_evolution_enabled: 1,
+  symphony_dynamic_graph_enabled: 1,
   skill_retrieval_enabled: 2,
-  skill_retrieval_index_enabled: 3,
   proactive_recommendation_enabled: 0,
   proactive_recommendation_max_recommend_per_day: 2,
   proactive_recommendation_max_rounds_per_tick: 3,

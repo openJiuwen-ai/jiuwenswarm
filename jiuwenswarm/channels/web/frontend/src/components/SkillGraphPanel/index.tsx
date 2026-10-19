@@ -3,30 +3,22 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
 import {
   AlertTriangle,
-  CircleStop,
+  Focus,
+  GitBranch,
   Loader2,
-  Maximize2,
-  Minimize2,
-  Minus,
-  Plus,
-  X,
+  Pause,
+  RefreshCw,
+  RotateCcw,
+  Search,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { webRequest } from '../../services/webClient';
-import { useFullscreenPanel } from '../../hooks';
-import {
-  COMPONENT_CENTER_ATTRACTION_STRENGTH,
-  computeConnectedComponents,
-  seedPositions,
-  stepSkillGraphLayout,
-} from './skillGraphLayout';
 import './SkillGraphPanel.css';
 
 type RawRecord = Record<string, unknown>;
@@ -52,31 +44,26 @@ type BuildProgress = {
   stage?: string;
   label?: string;
   percent?: number;
-  status?: 'idle' | 'running' | 'success' | 'error' | 'cancelled';
+  status?: 'idle' | 'running' | 'success' | 'error' | 'paused';
   current?: number;
   total?: number;
   ts?: string;
   llm_token_usage?: LLMTokenUsageSummary;
-  detail?: string;
-  error?: string;
 };
 
 type SkillGraphPayload = {
   success?: boolean;
   detail?: string;
-  graph_dir?: string;
+  score_dir?: string;
   build_log?: BuildLogEntry[];
   build_progress?: BuildProgress;
   llm_token_usage?: LLMTokenUsageSummary;
-  build_error?: string;
   manifest?: RawRecord;
-  graph_manifest?: RawRecord;
+  score_manifest?: RawRecord;
   orchestration_min_edge_confidence?: number;
   graph?: {
     nodes?: RawRecord[];
     edges?: RawRecord[];
-    pack_nodes?: RawRecord[];
-    pack_edges?: RawRecord[];
     skills?: RawRecord[];
   };
   skills?: {
@@ -90,44 +77,28 @@ type SkillGraphPayload = {
 type SkillGraphUpdate = {
   success?: boolean;
   detail?: string;
-  background?: boolean;
-  cancelled?: boolean;
-  build_status?: 'idle' | 'running' | 'success' | 'error' | 'cancelled';
-  graph_dir?: string;
+  paused?: boolean;
+  score_dir?: string;
   build_log?: BuildLogEntry[];
   build_progress?: BuildProgress;
   llm_token_usage?: LLMTokenUsageSummary;
-  build_error?: string;
 };
 
 type SkillGraphStatus = {
   success?: boolean;
   detail?: string;
-  graph_dir?: string;
+  score_dir?: string;
   build_log?: BuildLogEntry[];
   build_progress?: BuildProgress;
   llm_token_usage?: LLMTokenUsageSummary;
-  build_error?: string;
-};
-
-type TerminalBuildPayload = {
-  detail?: string;
-  build_error?: string;
-  cancelled?: boolean;
-  build_progress?: BuildProgress;
 };
 
 export type SkillGraphPanelHandle = {
   refresh: () => boolean;
-  startIncrementalBuild: () => Promise<void>;
-  cancelActiveBuild: () => Promise<void>;
 };
 
 type SkillGraphPanelProps = {
   onReadingChange?: (reading: boolean) => void;
-  onBuildAccepted?: (mode: SymphonyBuildMode) => void;
-  externalError?: string | null;
-  onExternalErrorClear?: () => void;
 };
 
 type GraphNode = {
@@ -171,52 +142,28 @@ type DetailListItem = {
   meta: string;
 };
 
-const GRAPH_NODE_DEFAULT = '#3f8ff3';
-const GRAPH_NODE_HIGHLIGHT = '#0868f7';
-const GRAPH_NODE_DIMMED = '#b2d1fb';
-const GRAPH_NODE_PACK = '#f59e0b'; // 琥珀色
-const GRAPH_NODE_PACK_HIGHLIGHT = '#d97706';
-const GRAPH_NODE_PACK_DIMMED = '#fcd34d';
-const GRAPH_EDGE_DEFAULT = '#c2c7ce';
-const GRAPH_EDGE_HIGHLIGHT = '#1677ff';
-const GRAPH_EDGE_CONTAINS = '#f59e0b'; // pack 连接边用琥珀色
-const GRAPH_LABEL_DEFAULT = '#6b7280';
-const GRAPH_LABEL_DIMMED = '#adb3bc';
-const GRAPH_LABEL_ACTIVE = '#111827';
+const NODE_COLORS: Record<string, string> = {
+  skill: '#4db6ac',
+  input: '#6aa9ff',
+  output: '#d6a35d',
+  artifact: '#b985f4',
+  task: '#f26d7d',
+  slot: '#8bd17c',
+  type: '#9aa4b2',
+  unknown: '#7f8a99',
+};
 
+const INDEX_UPDATE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MIN_CONFIDENCE = 0.7;
-const LAYOUT_SETTLE_TICKS = 360;
 
 type SymphonyBuildMode = 'incremental' | 'full';
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
-function FullBuildIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 2.5 20 7v10l-8 4.5L4 17V7l8-4.5Z" />
-      <path d="M12 16v-6m0 0L9 8m3 2 3-2" />
-    </svg>
-  );
-}
-
-function ArrangeGraphIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="4" r="2" />
-      <circle cx="5" cy="17" r="2" />
-      <circle cx="19" cy="17" r="2" />
-      <path d="M9.5 5.2a8.5 8.5 0 0 0-5.8 8.7M7.6 19.2a8.5 8.5 0 0 0 8.8 0m3.9-5.3a8.5 8.5 0 0 0-5.8-8.7" />
-    </svg>
-  );
-}
-
 const BUILD_STAGE_TRANSLATION_KEYS: Record<string, string> = {
   idle: 'idle',
   'update.start': 'updateStart',
-  'model.probe.start': 'modelProbeStart',
-  'model.probe.done': 'modelProbeDone',
-  'update.cancel_requested': 'updateCancelRequested',
-  'update.cancelled': 'updateCancelled',
+  'update.pause_requested': 'updatePauseRequested',
+  'update.paused': 'updatePaused',
   'scan.start': 'scanStart',
   'scan.done': 'scanDone',
   'diff.done': 'diffDone',
@@ -237,8 +184,8 @@ const BUILD_STAGE_TRANSLATION_KEYS: Record<string, string> = {
   'graph.resolve.done': 'graphResolveDone',
   'graph.materialize.start': 'graphMaterializeStart',
   'graph.materialize.done': 'graphMaterializeDone',
-  'graph.lookup.start': 'graphLookupStart',
-  'graph.lookup.done': 'graphLookupDone',
+  'graph.score.start': 'graphScoreStart',
+  'graph.score.done': 'graphScoreDone',
   'graph.build.done': 'graphBuildDone',
   'artifact.graph.write.start': 'artifactGraphWriteStart',
   'artifact.graph.write.done': 'artifactGraphWriteDone',
@@ -250,16 +197,13 @@ const BUILD_STAGE_TRANSLATION_KEYS: Record<string, string> = {
 
 const SERVER_DETAIL_TRANSLATION_KEYS: Record<string, string> = {
   '当前没有正在运行的技能总谱构建。': 'skills.graph.serverDetails.noRunningBuild',
-  '技能总谱后台构建已启动。': 'skills.graph.serverDetails.buildStarted',
-  '技能总谱已在后台构建中。': 'skills.graph.serverDetails.buildRunning',
-  '已取消技能总谱构建，已完成的缓存和 checkpoint 会保留。': 'skills.graph.serverDetails.cancelRequested',
-  '已有技能总谱构建正在运行，请等待完成或先取消当前构建。': 'skills.graph.serverDetails.buildRunning',
-  '技能总谱构建已取消，可再次执行增量构建继续。': 'skills.graph.serverDetails.buildCancelled',
-  '技能总谱不存在或不完整，请先构建总谱。': 'skills.graph.serverDetails.graphMissing',
+  '已请求暂停技能总谱构建，已完成的缓存和 checkpoint 会保留。': 'skills.graph.serverDetails.pauseRequested',
+  '已有技能总谱构建正在运行，请等待完成或先暂停当前构建。': 'skills.graph.serverDetails.buildRunning',
+  '技能总谱构建已暂停，可再次执行增量构建继续。': 'skills.graph.serverDetails.buildPaused',
+  '技能总谱不存在或不完整，请先构建总谱。': 'skills.graph.serverDetails.scoreMissing',
 };
 
 const SERVER_DETAIL_PREFIX_TRANSLATION_KEYS: Array<{ prefix: string; key: string }> = [
-  { prefix: '主模型连接测试未通过：', key: 'skills.graph.errors.primaryModelProbeFailed' },
   { prefix: 'Symphony 总谱构建失败:', key: 'skills.graph.errors.buildFailedWithDetail' },
 ];
 
@@ -281,7 +225,7 @@ function confidenceValue(value: unknown, fallback: number): number {
 }
 
 function payloadManifest(payload: SkillGraphPayload | null | undefined): RawRecord {
-  return asRecord(payload?.graph_manifest ?? payload?.manifest);
+  return asRecord(payload?.score_manifest ?? payload?.manifest);
 }
 
 function graphConfidenceFloor(payload: SkillGraphPayload | null | undefined): number {
@@ -338,7 +282,7 @@ function labelFromId(id: string): string {
 function normalizeNode(raw: RawRecord, index: number, skillsById: Map<string, RawRecord>): GraphNode {
   const rawId = asString(raw.id ?? raw.node_id ?? raw.skill_id, `node:${index}`);
   const id = rawId.includes(':') ? rawId : `skill:${rawId}`;
-  const skillId = id.replace(/^(?:skill|capability):/, '');
+  const skillId = id.replace(/^skill:/, '');
   const skill = skillsById.get(skillId);
   const properties = {
     ...asRecord(skill),
@@ -400,12 +344,6 @@ function normalizeGraph(payload: SkillGraphPayload): NormalizedGraph {
     }
   });
 
-  // Add pack nodes
-  asArray(payload.graph?.pack_nodes).forEach((node, index) => {
-    const normalized = normalizeNode(node, nodeMap.size + index, skillsById);
-    nodeMap.set(normalized.id, normalized);
-  });
-
   const edges = asArray(payload.graph?.edges)
     .map(normalizeEdge)
     .filter((edge): edge is GraphEdge => {
@@ -413,18 +351,9 @@ function normalizeGraph(payload: SkillGraphPayload): NormalizedGraph {
       return nodeMap.has(edge.source) && nodeMap.has(edge.target);
     });
 
-  // Add pack edges (contains edges)
-  const packEdges = asArray(payload.graph?.pack_edges)
-    .map(normalizeEdge)
-    .filter((edge): edge is GraphEdge => {
-      if (!edge) return false;
-      return nodeMap.has(edge.source) && nodeMap.has(edge.target);
-    });
-
-  const allEdges = [...edges, ...packEdges];
   const nodes = [...nodeMap.values()];
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  allEdges.forEach((edge) => {
+  edges.forEach((edge) => {
     const source = byId.get(edge.source);
     const target = byId.get(edge.target);
     if (source) {
@@ -437,7 +366,19 @@ function normalizeGraph(payload: SkillGraphPayload): NormalizedGraph {
     }
   });
   seedPositions(nodes, 920, 620);
-  return { nodes, edges: allEdges };
+  return { nodes, edges };
+}
+
+function seedPositions(nodes: GraphNode[], width: number, height: number): void {
+  const radius = Math.min(width, height) * 0.36;
+  nodes.forEach((node, index) => {
+    const angle = (index / Math.max(1, nodes.length)) * Math.PI * 2;
+    const jitter = ((index * 97) % 31) / 31;
+    node.x = Math.cos(angle) * radius * (0.55 + jitter * 0.55);
+    node.y = Math.sin(angle) * radius * (0.55 + jitter * 0.55);
+    node.vx = 0;
+    node.vy = 0;
+  });
 }
 
 function nodeSearchText(node: GraphNode): string {
@@ -459,8 +400,8 @@ function isSkillNode(node: GraphNode): boolean {
 }
 
 function nodeRadius(node: GraphNode): number {
-  const base = node.type === 'skill' ? 9 : 7;
-  return Math.min(24, base + Math.sqrt(Math.max(0, node.degree)) * 2.1);
+  const base = node.type === 'skill' ? 7 : 5;
+  return Math.min(22, base + Math.sqrt(Math.max(0, node.degree)) * 2.1);
 }
 
 function truncate(value: string, limit: number): string {
@@ -477,20 +418,7 @@ function isBuildRunningPayload(data: { build_progress?: BuildProgress }): boolea
 }
 
 function isTerminalBuildStatus(status: BuildProgress['status'] | undefined): boolean {
-  return status === 'success' || status === 'error' || status === 'cancelled';
-}
-
-function terminalBuildSignature(data: TerminalBuildPayload): string {
-  const status = data.build_progress?.status ?? (data.cancelled ? 'cancelled' : undefined);
-  const errorDetail = status === 'error'
-    ? data.build_error
-      || data.build_progress?.detail
-      || data.build_progress?.error
-      || data.detail
-    : '';
-  return [status, data.build_progress?.ts, errorDetail]
-    .map((item) => asString(item))
-    .join('|');
+  return status === 'success' || status === 'error' || status === 'paused';
 }
 
 function buildStageLabel(stage: string, fallback: string, t: Translate): string {
@@ -518,24 +446,14 @@ function buildLogSummary(entry: BuildLogEntry, t: Translate): string {
     asString(entry.label || entry.stage, t('skills.graph.buildLogFallback')),
     t,
   );
-  if (entry.stage === 'update.done') return label;
-  if (entry.stage === 'update.failed') {
-    const detail = asString(entry.detail || entry.error).trim();
-    return detail ? `${label}: ${localizedServerDetail(detail, 'skills.graph.errors.refreshFailed', t)}` : label;
-  }
-  const hasGlobalCandidateProgress = entry.stage === 'graph.resolve.progress'
-    && entry.completed_candidate_count !== undefined
-    && entry.total_candidate_count !== undefined;
-  const countKeys: Array<[string, string?]> = hasGlobalCandidateProgress
-    ? [['completed_candidate_count', 'total_candidate_count']]
-    : [
-      ['current', 'total'],
-      ['skill_count', undefined],
-      ['changed_count', undefined],
-      ['removed_count', undefined],
-      ['edge_count', undefined],
-      ['diagnostics_count', undefined],
-    ];
+  const countKeys: Array<[string, string?]> = [
+    ['current', 'total'],
+    ['skill_count', undefined],
+    ['changed_count', undefined],
+    ['removed_count', undefined],
+    ['edge_count', undefined],
+    ['diagnostics_count', undefined],
+  ];
   const counts = countKeys
     .map(([key, totalKey]) => {
       const value = entry[key];
@@ -691,7 +609,7 @@ function isCompletedBuildLogEntry(entry: BuildLogEntry): boolean {
     || stage === 'graph.candidates.done'
     || stage === 'graph.resolve.done'
     || stage === 'graph.materialize.done'
-    || stage === 'graph.lookup.done'
+    || stage === 'graph.score.done'
     || stage === 'graph.build.done'
     || stage === 'artifact.fingerprints.write.done'
     || stage === 'artifact.graph.write.done'
@@ -710,7 +628,7 @@ function isSupersededBuildStart(entry: BuildLogEntry, index: number, entries: Bu
     'graph.candidates.start': 'graph.candidates.done',
     'graph.resolve.start': 'graph.resolve.done',
     'graph.materialize.start': 'graph.materialize.done',
-    'graph.lookup.start': 'graph.lookup.done',
+    'graph.score.start': 'graph.score.done',
     'graph.build.start': 'graph.build.done',
     'artifact.graph.write.start': 'artifact.graph.write.done',
     'state.write.start': 'state.write.done',
@@ -721,7 +639,7 @@ function isSupersededBuildStart(entry: BuildLogEntry, index: number, entries: Bu
 
 function isTerminalBuildLogEntry(entry: BuildLogEntry): boolean {
   const stage = asString(entry.stage);
-  return stage === 'update.done' || stage === 'update.failed' || stage === 'update.cancelled';
+  return stage === 'update.done' || stage === 'update.failed' || stage === 'update.paused';
 }
 
 function buildLogTime(entry: BuildLogEntry): string {
@@ -745,28 +663,21 @@ function buildLogSignature(entries?: BuildLogEntry[]): string {
 }
 
 export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanelProps>(function SkillGraphPanel(
-  { onReadingChange, onBuildAccepted, externalError, onExternalErrorClear },
+  { onReadingChange },
   ref,
 ) {
   const { t } = useTranslation();
-  const { ref: panelRef, isFullscreen: isGraphFullscreen, toggle: toggleGraphFullscreen } = useFullscreenPanel<HTMLDivElement>();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const graphRef = useRef<NormalizedGraph>({ nodes: [], edges: [] });
   const visibleRef = useRef<NormalizedGraph>({ nodes: [], edges: [] });
-  const layoutComponentsRef = useRef<ReturnType<typeof computeConnectedComponents>>([]);
   const transformRef = useRef<Transform>({ x: 0, y: 0, scale: 1 });
   const selectedRef = useRef<GraphNode | null>(null);
   const hoveredRef = useRef<GraphNode | null>(null);
   const externalBuildRunningRef = useRef(false);
   const observedBuildLogSignatureRef = useRef<string | null>(null);
-  const observedTerminalBuildSignatureRef = useRef<string | null>(null);
   const autoFitRequestRef = useRef(0);
-  const autoFitCancelledRef = useRef(false);
   const canvasSizeRef = useRef({ width: 0, height: 0 });
-  const layoutTicksRemainingRef = useRef(0);
   const minConfidenceTouchedRef = useRef(false);
-  const detailCloseButtonRef = useRef<HTMLButtonElement | null>(null);
-  const detailTriggerRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<{ active: boolean; moved: boolean; x: number; y: number }>({
     active: false,
     moved: false,
@@ -777,15 +688,12 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   const [graph, setGraph] = useState<NormalizedGraph>({ nodes: [], edges: [] });
   const [payload, setPayload] = useState<SkillGraphPayload | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
-  const [detailDrawerBounds, setDetailDrawerBounds] = useState({ top: 0, right: 0, height: 0 });
-  const isCompactDetail = !isGraphFullscreen;
   const [query, setQuery] = useState('');
   const [minConfidence, setMinConfidence] = useState(DEFAULT_MIN_CONFIDENCE);
   const [loading, setLoading] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [buildMode, setBuildMode] = useState<SymphonyBuildMode | null>(null);
-  const [cancellingBuild, setCancellingBuild] = useState(false);
+  const [pausingBuild, setPausingBuild] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [buildLog, setBuildLog] = useState<BuildLogEntry[]>([]);
   const [buildProgress, setBuildProgress] = useState<BuildProgress | null>(null);
@@ -795,42 +703,9 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   const [buildElapsedStart, setBuildElapsedStart] = useState<number | null>(null);
   const buildProgressStatusRef = useRef<BuildProgress['status'] | undefined>(undefined);
   const [autoFitRequest, setAutoFitRequest] = useState(0);
-  const [zoomScale, setZoomScale] = useState(1);
-
-  useLayoutEffect(() => {
-    if (!isCompactDetail) return undefined;
-    const panel = panelRef.current;
-    if (!panel) return undefined;
-
-    const updateDrawerBounds = () => {
-      const rect = panel.getBoundingClientRect();
-      const next = {
-        top: rect.top,
-        right: Math.max(0, window.innerWidth - rect.right),
-        height: rect.height,
-      };
-      setDetailDrawerBounds((current) => (
-        Math.abs(current.top - next.top) < 1
-        && Math.abs(current.right - next.right) < 1
-        && Math.abs(current.height - next.height) < 1
-          ? current
-          : next
-      ));
-    };
-
-    updateDrawerBounds();
-    const observer = new ResizeObserver(updateDrawerBounds);
-    observer.observe(panel);
-    window.addEventListener('resize', updateDrawerBounds);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', updateDrawerBounds);
-    };
-  }, [isCompactDetail]);
 
   const applyBuildLog = useCallback((data: { build_log?: BuildLogEntry[]; build_progress?: BuildProgress; llm_token_usage?: LLMTokenUsageSummary }) => {
     const nextStatus = data.build_progress?.status;
-    if (nextStatus === 'error') setShowBuildLogPanel(true);
     const resetElapsedStart = nextStatus === 'running' && buildProgressStatusRef.current !== 'running';
     if (Array.isArray(data.build_log)) {
       const nextBuildLog = data.build_log;
@@ -854,30 +729,18 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     }
   }, []);
 
-  const resetBuildUiOnTerminalStatus = useCallback((data: TerminalBuildPayload): boolean => {
-    const status = data.build_progress?.status ?? (data.cancelled ? 'cancelled' : undefined);
+  const resetBuildUiOnTerminalStatus = useCallback((data: { detail?: string; paused?: boolean; build_progress?: BuildProgress }): boolean => {
+    const status = data.build_progress?.status ?? (data.paused ? 'paused' : undefined);
     if (!isTerminalBuildStatus(status)) return false;
     externalBuildRunningRef.current = false;
     setUpdating(false);
     setBuildMode(null);
     setLoading(false);
-    observedTerminalBuildSignatureRef.current = terminalBuildSignature(data);
     if (status === 'error') {
-      setError(
-        localizedServerDetail(
-          data.build_error
-          || data.build_progress?.detail
-          || data.build_progress?.error
-          || data.detail,
-          'skills.graph.errors.refreshFailed',
-          t,
-        ),
-      );
-    } else {
-      setError(null);
+      setError(data.detail || data.build_progress?.label || '技能总谱刷新失败');
     }
     return true;
-  }, [t]);
+  }, []);
 
   useEffect(() => {
     graphRef.current = graph;
@@ -954,8 +817,6 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
 
   useEffect(() => {
     visibleRef.current = visible;
-    layoutComponentsRef.current = computeConnectedComponents(visible.nodes, visible.edges);
-    layoutTicksRemainingRef.current = visible.nodes.length > 0 ? LAYOUT_SETTLE_TICKS : 0;
     if (selectedRef.current) {
       const visibleSelected = visible.nodes.find((node) => node.id === selectedRef.current?.id);
       if (visibleSelected) {
@@ -964,7 +825,6 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       } else {
         selectedRef.current = null;
         setSelectedNode(null);
-        setDetailDrawerOpen(false);
       }
     }
   }, [visible]);
@@ -997,12 +857,9 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       x: rect.width / 2 - ((minX + maxX) / 2) * scale,
       y: rect.height / 2 - ((minY + maxY) / 2) * scale,
     };
-    setZoomScale(scale);
   }, []);
 
   const requestAutoFit = useCallback(() => {
-    if (selectedRef.current) return;
-    autoFitCancelledRef.current = false;
     autoFitRequestRef.current += 1;
     setAutoFitRequest(autoFitRequestRef.current);
   }, []);
@@ -1015,14 +872,14 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     let finalTimer = 0;
     firstFrame = window.requestAnimationFrame(() => {
       secondFrame = window.requestAnimationFrame(() => {
-        if (!autoFitCancelledRef.current) fitView();
+        fitView();
       });
     });
     settleTimer = window.setTimeout(() => {
-      if (!autoFitCancelledRef.current) fitView();
+      fitView();
     }, 320);
     finalTimer = window.setTimeout(() => {
-      if (!autoFitCancelledRef.current) fitView();
+      fitView();
     }, 900);
     return () => {
       window.cancelAnimationFrame(firstFrame);
@@ -1032,29 +889,21 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     };
   }, [autoFitRequest, fitView, visible.nodes.length, visible.edges.length]);
 
-  const loadGraph = useCallback(async (clearExternalError = false) => {
-    if (clearExternalError) {
-      onExternalErrorClear?.();
-    }
+  const loadGraph = useCallback(async () => {
     setLoading(true);
+    setError(null);
     let keepLoading = false;
     try {
-      const data = await webRequest<SkillGraphPayload>('skills.graph.get', {}, { timeoutMs: 60_000 });
+      const data = await webRequest<SkillGraphPayload>('symphony.graph', {}, { timeoutMs: 60_000 });
       applyBuildLog(data);
-      if (isTerminalBuildStatus(data.build_progress?.status)) {
-        observedTerminalBuildSignatureRef.current = terminalBuildSignature(data);
-      }
       if (!data.success) {
         if (isBuildRunningPayload(data)) {
           setShowBuildLogPanel(true);
+          setError(null);
           keepLoading = true;
           return;
         }
-        throw new Error(localizedServerDetail(
-          data.build_error || data.build_progress?.detail || data.detail,
-          'skills.graph.errors.readFailed',
-          t,
-        ));
+        throw new Error(localizedServerDetail(data.detail, 'skills.graph.errors.readFailed', t));
       }
       const normalized = normalizeGraph(data);
       setPayload(data);
@@ -1067,17 +916,6 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       });
       selectedRef.current = null;
       setSelectedNode(null);
-      setDetailDrawerOpen(false);
-      const hasLatestBuildFailure = data.build_progress?.status === 'error' || Boolean(data.build_error);
-      if (hasLatestBuildFailure) {
-        setError(localizedServerDetail(
-          data.build_error || data.build_progress?.detail || data.build_progress?.error,
-          'skills.graph.errors.refreshFailed',
-          t,
-        ));
-      } else {
-        setError(null);
-      }
       requestAutoFit();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1088,11 +926,11 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         setLoading(false);
       }
     }
-  }, [applyBuildLog, onExternalErrorClear, requestAutoFit, t]);
+  }, [applyBuildLog, requestAutoFit, t]);
 
   const restoreBuildStatus = useCallback(async (): Promise<boolean> => {
     const data = await webRequest<SkillGraphStatus>(
-      'skills.graph.status',
+      'symphony.score_status',
       {},
       { timeoutMs: 60_000 },
     );
@@ -1101,6 +939,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     externalBuildRunningRef.current = isRunning;
     if (isRunning) {
       setShowBuildLogPanel(true);
+      setError(null);
       setLoading(true);
       return true;
     }
@@ -1109,13 +948,11 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
 
   const rebuildGraph = useCallback(async (mode: SymphonyBuildMode) => {
     const force = mode === 'full';
-    observedTerminalBuildSignatureRef.current = null;
     setBuildElapsedStart(null);
     setUpdating(true);
     setBuildMode(mode);
     setShowBuildLogPanel(true);
     setError(null);
-    onExternalErrorClear?.();
     setTokenUsage(null);
     setBuildProgress({
       stage: 'update.start',
@@ -1125,85 +962,50 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     });
     try {
       const data = await webRequest<SkillGraphUpdate>(
-        'skills.graph.build',
+        'symphony.build_score',
         { force },
-        { timeoutMs: 60_000 },
+        { timeoutMs: INDEX_UPDATE_TIMEOUT_MS },
       );
       applyBuildLog(data);
-      if (!data.success) {
-        throw new Error(localizedServerDetail(
-          data.build_error || data.build_progress?.detail || data.build_progress?.error || data.detail,
-          'skills.graph.errors.refreshFailed',
-          t,
-        ));
+      const isPaused = data.paused || data.build_progress?.status === 'paused';
+      if (isPaused) {
+        resetBuildUiOnTerminalStatus(data);
+        return;
       }
-      externalBuildRunningRef.current = true;
-      onBuildAccepted?.(mode);
+      if (!data.success) {
+        throw new Error(localizedServerDetail(data.detail, 'skills.graph.errors.refreshFailed', t));
+      }
+      await loadGraph();
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      externalBuildRunningRef.current = false;
-      setError(error.message);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
       setUpdating(false);
       setBuildMode(null);
-      setBuildProgress((current) => ({
-        ...current,
-        label: error.message,
-        status: 'error',
-      }));
-      throw error;
     }
-  }, [applyBuildLog, onBuildAccepted, onExternalErrorClear, t]);
+  }, [applyBuildLog, loadGraph, resetBuildUiOnTerminalStatus, t]);
 
-  const cancelBuild = useCallback(async () => {
-    setCancellingBuild(true);
+  const pauseBuild = useCallback(async () => {
+    setPausingBuild(true);
     setShowBuildLogPanel(true);
     setError(null);
-    onExternalErrorClear?.();
     try {
       const data = await webRequest<SkillGraphUpdate>(
-        'skills.graph.cancel',
+        'symphony.pause_build',
         {},
         { timeoutMs: 60_000 },
       );
       applyBuildLog(data);
+      const isPaused = data.paused || data.build_progress?.status === 'paused';
       if (resetBuildUiOnTerminalStatus(data)) {
         return;
       }
-      if (!data.success && data.build_status !== 'idle') {
-        throw new Error(localizedServerDetail(data.detail, 'skills.graph.errors.cancelFailed', t));
+      if (!data.success && !isPaused) {
+        throw new Error(localizedServerDetail(data.detail, 'skills.graph.errors.pauseFailed', t));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setCancellingBuild(false);
-    }
-  }, [applyBuildLog, onExternalErrorClear, resetBuildUiOnTerminalStatus, t]);
-
-  const cancelActiveBuild = useCallback(async () => {
-    setCancellingBuild(true);
-    setError(null);
-    try {
-      const data = await webRequest<SkillGraphUpdate>(
-        'skills.graph.cancel',
-        {},
-        { timeoutMs: 60_000 },
-      );
-      if (data.build_status === 'idle') {
-        return;
-      }
-      applyBuildLog(data);
-      if (resetBuildUiOnTerminalStatus(data)) {
-        return;
-      }
-      if (!data.success) {
-        throw new Error(localizedServerDetail(data.detail, 'skills.graph.errors.cancelFailed', t));
-      }
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      setError(error.message);
-      throw error;
-    } finally {
-      setCancellingBuild(false);
+      setPausingBuild(false);
     }
   }, [applyBuildLog, resetBuildUiOnTerminalStatus, t]);
 
@@ -1236,7 +1038,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     const poll = async () => {
       try {
         const data = await webRequest<SkillGraphStatus>(
-          'skills.graph.status',
+          'symphony.score_status',
           {},
           { timeoutMs: 60_000 },
         );
@@ -1279,7 +1081,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       let nextDelay = 3000;
       try {
         const data = await webRequest<SkillGraphStatus>(
-          'skills.graph.status',
+          'symphony.score_status',
           {},
           { timeoutMs: 60_000 },
         );
@@ -1287,27 +1089,22 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
           const status = data.build_progress?.status;
           const wasRunning = externalBuildRunningRef.current;
           if (status === 'running') {
-            if (!wasRunning) setError(null);
-            observedTerminalBuildSignatureRef.current = null;
             setShowBuildLogPanel(true);
+            setError(null);
             setLoading(true);
             nextDelay = 1000;
           }
           applyBuildLog(data);
           externalBuildRunningRef.current = status === 'running';
-          const terminalSignature = terminalBuildSignature(data);
-          if (
-            isTerminalBuildStatus(status)
-            && observedTerminalBuildSignatureRef.current !== terminalSignature
-          ) {
-            resetBuildUiOnTerminalStatus(data);
-            if (status === 'success') void loadGraph();
+          if (wasRunning && status === 'success') {
+            setLoading(false);
+            void loadGraph();
           } else if (status !== 'running') {
             setLoading(false);
           }
         }
       } catch {
-        // 被动轮询只用于同步对话侧触发的图谱进度，不影响当前图谱交互。
+        // 被动轮询只用于同步对话侧触发的总谱进度，不影响当前总谱交互。
       }
       if (!stopped) {
         timer = window.setTimeout(() => {
@@ -1323,7 +1120,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         window.clearTimeout(timer);
       }
     };
-  }, [applyBuildLog, loadGraph, resetBuildUiOnTerminalStatus, updating]);
+  }, [applyBuildLog, loadGraph, updating]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1362,18 +1159,51 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       const nodes = visibleRef.current.nodes;
       const edges = visibleRef.current.edges;
       const canvas = canvasRef.current;
-      if (!canvas || nodes.length === 0 || layoutTicksRemainingRef.current <= 0) return;
+      if (!canvas || nodes.length === 0) return;
       const width = canvas.clientWidth || 900;
       const height = canvas.clientHeight || 620;
-      stepSkillGraphLayout(
-        nodes,
-        edges,
-        width,
-        height,
-        layoutComponentsRef.current,
-        COMPONENT_CENTER_ATTRACTION_STRENGTH,
-      );
-      layoutTicksRemainingRef.current -= 1;
+      const nodeById = new Map(nodes.map((node) => [node.id, node]));
+      const linkDistance = 105;
+
+      for (let i = 0; i < nodes.length; i += 1) {
+        for (let j = i + 1; j < nodes.length; j += 1) {
+          const a = nodes[i];
+          const b = nodes[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const dist2 = Math.max(80, dx * dx + dy * dy);
+          const force = Math.min(460 / dist2, 0.07);
+          a.vx -= dx * force;
+          a.vy -= dy * force;
+          b.vx += dx * force;
+          b.vy += dy * force;
+        }
+      }
+
+      edges.forEach((edge) => {
+        const source = nodeById.get(edge.source);
+        const target = nodeById.get(edge.target);
+        if (!source || !target) return;
+        const dx = target.x - source.x;
+        const dy = target.y - source.y;
+        const dist = Math.max(1, Math.hypot(dx, dy));
+        const force = (dist - linkDistance) * (edge.type === 'can_feed' ? 0.025 : 0.014);
+        source.vx += (dx / dist) * force;
+        source.vy += (dy / dist) * force;
+        target.vx -= (dx / dist) * force;
+        target.vy -= (dy / dist) * force;
+      });
+
+      nodes.forEach((node) => {
+        node.vx += -node.x * 0.002;
+        node.vy += -node.y * 0.002;
+        node.vx *= 0.82;
+        node.vy *= 0.82;
+        node.x += node.vx;
+        node.y += node.vy;
+        node.x = Math.max(-width, Math.min(width, node.x));
+        node.y = Math.max(-height, Math.min(height, node.y));
+      });
     };
 
     const draw = () => {
@@ -1384,21 +1214,20 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       const height = canvas.clientHeight;
       const pixelRatioX = canvas.width / Math.max(1, width);
       const pixelRatioY = canvas.height / Math.max(1, height);
-      const transform = { ...transformRef.current };
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.setTransform(pixelRatioX, 0, 0, pixelRatioY, 0, 0);
       ctx.save();
-      ctx.translate(transform.x, transform.y);
-      ctx.scale(transform.scale, transform.scale);
+      ctx.translate(transformRef.current.x, transformRef.current.y);
+      ctx.scale(transformRef.current.scale, transformRef.current.scale);
 
       const nodeById = new Map(visibleRef.current.nodes.map((node) => [node.id, node]));
       const drawableNodeIds = new Set(
         visibleRef.current.nodes
           .filter((node) => {
-            const radius = nodeRadius(node) * transform.scale + 2;
-            const screenX = transform.x + node.x * transform.scale;
-            const screenY = transform.y + node.y * transform.scale;
+            const radius = nodeRadius(node) * transformRef.current.scale + 2;
+            const screenX = transformRef.current.x + node.x * transformRef.current.scale;
+            const screenY = transformRef.current.y + node.y * transformRef.current.scale;
             return screenX - radius >= 0
               && screenX + radius <= width
               && screenY - radius >= 0
@@ -1406,44 +1235,16 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
           })
           .map((node) => node.id),
       );
-      const selectedId = selectedRef.current?.id;
-      const focusId = selectedId || hoveredRef.current?.id;
-      const relatedNodeIds = new Set<string>();
-      if (focusId) {
-        visibleRef.current.edges.forEach((edge) => {
-          if (edge.source === focusId) relatedNodeIds.add(edge.target);
-          if (edge.target === focusId) relatedNodeIds.add(edge.source);
-        });
-      }
-      const labels: Array<{
-        text: string;
-        x: number;
-        y: number;
-        font: string;
-        fillStyle: string;
-      }> = [];
+      const focusId = selectedRef.current?.id || hoveredRef.current?.id;
       visibleRef.current.edges.forEach((edge) => {
         if (!drawableNodeIds.has(edge.source) || !drawableNodeIds.has(edge.target)) return;
         const source = nodeById.get(edge.source);
         const target = nodeById.get(edge.target);
         if (!source || !target) return;
         const active = Boolean(focusId && (edge.source === focusId || edge.target === focusId));
-        const isContains = edge.type === 'contains';
-        ctx.strokeStyle = isContains
-          ? GRAPH_EDGE_CONTAINS
-          : active
-          ? GRAPH_EDGE_HIGHLIGHT
-          : GRAPH_EDGE_DEFAULT;
-        ctx.globalAlpha = active ? 0.9 : focusId ? 0.5 : 0.72;
-        ctx.lineWidth = active ? 1.8 : isContains ? 1.5 : 1;
-
-        // 对 contains 边使用虚线
-        if (isContains) {
-          ctx.setLineDash([5, 5]);
-        } else {
-          ctx.setLineDash([]);
-        }
-
+        ctx.strokeStyle = active ? '#111827' : edge.type === 'can_feed' ? '#4b5563' : '#9ca3af';
+        ctx.globalAlpha = active ? 0.82 : 0.38;
+        ctx.lineWidth = active ? 2.2 : 1.1;
         ctx.beginPath();
         ctx.moveTo(source.x, source.y);
         ctx.lineTo(target.x, target.y);
@@ -1454,7 +1255,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         const radius = nodeRadius(target);
         const x = target.x - Math.cos(angle) * radius;
         const y = target.y - Math.sin(angle) * radius;
-        ctx.globalAlpha = active ? 0.92 : focusId ? 0.48 : 0.68;
+        ctx.globalAlpha = active ? 0.85 : 0.35;
         ctx.fillStyle = ctx.strokeStyle;
         ctx.beginPath();
         ctx.moveTo(x, y);
@@ -1463,90 +1264,31 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         ctx.closePath();
         ctx.fill();
         ctx.globalAlpha = 1;
-        ctx.setLineDash([]); // 重置虚线样式
       });
 
       visibleRef.current.nodes.forEach((node) => {
         if (!drawableNodeIds.has(node.id)) return;
-        const selected = selectedId === node.id;
+        const selected = selectedRef.current?.id === node.id;
         const hovered = hoveredRef.current?.id === node.id;
         const radius = nodeRadius(node);
-        const focused = focusId === node.id;
-        const highlighted = Boolean(focusId && (focused || relatedNodeIds.has(node.id)) && !selected);
-        const dimmed = Boolean(focusId && !focused && !relatedNodeIds.has(node.id));
-        const displayRadius = selected ? radius + 2 : radius;
-        const isPack = node.type === 'skill_pack';
-        ctx.save();
-        if (selected) {
-          const fill = ctx.createRadialGradient(
-            node.x - displayRadius * 0.35,
-            node.y - displayRadius * 0.4,
-            displayRadius * 0.08,
-            node.x,
-            node.y,
-            displayRadius * 1.15,
-          );
-          if (isPack) {
-            fill.addColorStop(0, '#fcd34d');
-            fill.addColorStop(0.52, '#fbbf24');
-            fill.addColorStop(1, '#d97706');
-            ctx.shadowColor = 'rgba(245, 158, 11, 0.32)';
-          } else {
-            fill.addColorStop(0, '#78b5ff');
-            fill.addColorStop(0.52, '#2b8cff');
-            fill.addColorStop(1, '#0668f7');
-            ctx.shadowColor = 'rgba(22, 119, 255, 0.32)';
-          }
-          ctx.fillStyle = fill;
-          ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = 2.6;
-          ctx.shadowBlur = 16;
-        } else {
-          if (isPack) {
-            ctx.fillStyle = dimmed
-              ? GRAPH_NODE_PACK_DIMMED
-              : highlighted || hovered
-                ? GRAPH_NODE_PACK_HIGHLIGHT
-                : GRAPH_NODE_PACK;
-          } else {
-            ctx.fillStyle = dimmed
-              ? GRAPH_NODE_DIMMED
-              : highlighted || hovered
-                ? GRAPH_NODE_HIGHLIGHT
-                : GRAPH_NODE_DEFAULT;
-          }
-          ctx.strokeStyle = isPack ? '#92400e' : 'rgba(255, 255, 255, 0.72)';
-          ctx.lineWidth = isPack ? 2 : 1;
-        }
+        ctx.fillStyle = NODE_COLORS[node.type] || NODE_COLORS.unknown;
+        ctx.strokeStyle = selected ? '#111827' : hovered ? '#374151' : 'rgba(17, 24, 39, .22)';
+        ctx.lineWidth = selected ? 3 : hovered ? 2.4 : 1.2;
         ctx.beginPath();
-        ctx.arc(node.x, node.y, displayRadius, 0, Math.PI * 2);
+        ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
-        ctx.restore();
 
-        if (transform.scale > 0.42 || selected || hovered) {
-          labels.push({
-            text: truncate(node.label, 26),
-            x: transform.x + node.x * transform.scale,
-            y: transform.y + (node.y + displayRadius) * transform.scale + 5,
-            font: `${selected ? 700 : highlighted || hovered ? 600 : 400} ${selected ? 13 : 12}px Inter, system-ui, sans-serif`,
-            fillStyle: dimmed
-              ? GRAPH_LABEL_DIMMED
-              : selected || highlighted || hovered
-                ? GRAPH_LABEL_ACTIVE
-                : GRAPH_LABEL_DEFAULT,
-          });
+        if (transformRef.current.scale > 0.42 || selected || hovered) {
+          ctx.font = `${selected ? 13 : 11}px Inter, system-ui, sans-serif`;
+          ctx.fillStyle = selected || hovered ? '#111827' : '#4b5563';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          ctx.fillText(truncate(node.label, 26), node.x, node.y + radius + 5);
         }
       });
 
       ctx.restore();
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      labels.forEach((label) => {
-        ctx.font = label.font;
-        ctx.fillStyle = label.fillStyle;
-        ctx.fillText(label.text, label.x, label.y);
-      });
     };
 
     const tick = () => {
@@ -1580,34 +1322,10 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     return null;
   }, [screenToWorld]);
 
-  const selectNode = useCallback((node: GraphNode | null, trigger?: HTMLElement) => {
-    if (node && trigger) {
-      detailTriggerRef.current = trigger;
-    }
-    if (node) {
-      layoutTicksRemainingRef.current = 0;
-      autoFitCancelledRef.current = true;
-    }
+  const selectNode = useCallback((node: GraphNode | null) => {
     selectedRef.current = node;
     setSelectedNode(node);
-    setDetailDrawerOpen(Boolean(node));
   }, []);
-
-  const closeDetail = useCallback(() => {
-    const trigger = detailTriggerRef.current;
-    selectNode(null);
-    window.requestAnimationFrame(() => {
-      trigger?.focus();
-    });
-  }, [selectNode]);
-
-  useEffect(() => {
-    if (!isCompactDetail || !detailDrawerOpen || !selectedNode) return undefined;
-    const frame = window.requestAnimationFrame(() => {
-      detailCloseButtonRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [detailDrawerOpen, isCompactDetail, selectedNode]);
 
   const zoomAt = useCallback((factor: number, clientX?: number, clientY?: number) => {
     const canvas = canvasRef.current;
@@ -1622,7 +1340,6 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       x: cx - before.x * scale,
       y: cy - before.y * scale,
     };
-    setZoomScale(scale);
   }, [screenToWorld]);
 
   const relatedEdges = useMemo(() => {
@@ -1638,10 +1355,9 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   );
 
   const isGraphBuildRunning = buildProgress?.status === 'running';
-  const isGraphBuildError = buildProgress?.status === 'error';
-  const isGraphBuildCancelled = buildProgress?.status === 'cancelled';
+  const isGraphBuildPaused = buildProgress?.status === 'paused';
   const isBusy = loading || updating;
-  const canCancelBuild = (updating || isGraphBuildRunning) && !cancellingBuild;
+  const canPauseBuild = (updating || isGraphBuildRunning) && !pausingBuild;
   const isIncrementalBuild = updating && buildMode === 'incremental';
   const isFullBuild = updating && buildMode === 'full';
   const manifest = payloadManifest(payload);
@@ -1649,43 +1365,30 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   const createdAt = asString(manifest.created_at);
   const graphUpdatedAt = createdAt ? new Date(createdAt).toLocaleString() : '';
   const currentProgressPercent = progressPercent(buildProgress);
-  const showBuildProgress = !isGraphBuildError && !isGraphBuildCancelled;
   const progressLabel = buildProgressLabel(buildProgress, updating, t);
   const progressTitle = isGraphBuildRunning
     ? t('skills.graph.status.refreshing')
-    : isGraphBuildCancelled
-    ? t('skills.graph.status.cancelled')
+    : isGraphBuildPaused
+    ? t('skills.graph.status.paused')
     : progressLabel;
   const recentBuildLog = compactBuildLog(buildLog).slice(-8);
   const tokenUsageText = formatTokenUsage(tokenUsage, t);
   const elapsedText = buildElapsedText(buildLog, buildProgress, buildElapsedNow, buildElapsedStart);
   const buildMetricsText = [tokenUsageText, elapsedText].filter(Boolean).join(' · ');
 
+  const detailInputs = selectedNode ? asDetailItems(selectedNode.properties.inputs, t('skills.graph.required')) : [];
+  const detailOutputs = selectedNode ? asDetailItems(selectedNode.properties.outputs, t('skills.graph.required')) : [];
   const detailTasks = selectedNode ? asDetailItems(selectedNode.properties.tasks, t('skills.graph.required')) : [];
-  const visibleError = externalError || error;
-  const graphIsEmpty = graph.nodes.length === 0;
-  const filteredGraphIsEmpty = graph.nodes.length > 0 && visible.nodes.length === 0;
-  const showCanvasEmptyState = !isBusy && !visibleError;
-  const zoomPercent = Math.round(zoomScale * 100);
-  const detailDrawerStyle = isCompactDetail
-    ? {
-      top: detailDrawerBounds.top,
-      right: detailDrawerBounds.right,
-      height: detailDrawerBounds.height,
-    }
-    : undefined;
 
   useImperativeHandle(ref, () => ({
     refresh: () => {
       if (isBusy) {
         return false;
       }
-      void loadGraph(true);
+      void loadGraph();
       return true;
     },
-    startIncrementalBuild: () => rebuildGraph('incremental'),
-    cancelActiveBuild,
-  }), [cancelActiveBuild, isBusy, loadGraph, rebuildGraph]);
+  }), [isBusy, loadGraph]);
 
   useEffect(() => {
     onReadingChange?.(loading);
@@ -1696,82 +1399,92 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   }, [onReadingChange]);
 
   return (
-    <div ref={panelRef} data-testid="skill-graph-panel" className={`skill-graph-panel${isGraphFullscreen ? ' skill-graph-panel--fullscreen' : ''}`}>
-      <aside data-testid="skill-graph-panel-sidebar" className="skill-graph-panel__sidebar">
-        <div data-testid="skill-graph-panel-stats" className="skill-graph-panel__stats skill-graph-panel__stats--compact">
-          <span data-testid="skill-graph-panel-stats-skill-count"><strong>{visibleSkillNodes.length}</strong>{t('skills.graph.stats.skillsSuffix')}</span>
-          <span data-testid="skill-graph-panel-stats-edge-count"><strong>{visible.edges.length}</strong>{t('skills.graph.stats.edgesSuffix')}</span>
+    <div className="skill-graph-panel">
+      <aside className="skill-graph-panel__sidebar">
+        <div className="skill-graph-panel__stats skill-graph-panel__stats--compact">
+          <span><strong>{visibleSkillNodes.length}</strong>{t('skills.graph.stats.skillsSuffix')}</span>
+          <span><strong>{visible.edges.length}</strong>{t('skills.graph.stats.edgesSuffix')}</span>
         </div>
 
-        <div data-testid="skill-graph-panel-actions" className="skill-graph-panel__actions">
+        <label className="skill-graph-panel__search">
+          <Search size={16} aria-hidden="true" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={t('skills.graph.searchPlaceholder')}
+          />
+        </label>
+
+        <div className="skill-graph-panel__filters">
+          <label>
+            <span>{t('skills.graph.minConfidence', { percent: Math.round(minConfidence * 100) })}</span>
+            <input
+              type="range"
+              min={graphMinConfidence}
+              max={1}
+              step={0.05}
+              value={minConfidence}
+              onChange={(event) => {
+                minConfidenceTouchedRef.current = true;
+                setMinConfidence(Number(event.target.value));
+              }}
+            />
+          </label>
+        </div>
+
+        <div className="skill-graph-panel__actions">
+          <button type="button" onClick={loadGraph} disabled={isBusy} title={t('skills.graph.actions.read')}>
+            {loading ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+          </button>
           <button
             type="button"
-            onClick={() => void rebuildGraph('incremental').catch(() => undefined)}
+            onClick={() => void rebuildGraph('incremental')}
             disabled={isBusy}
-            data-testid="skill-graph-panel-action-incremental-build"
             title={t('skills.graph.actions.incrementalBuild')}
           >
-            {isIncrementalBuild ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <Plus size={16} aria-hidden="true" />}
-            <span>{t('skills.graph.actions.incrementalBuild')}</span>
+            {isIncrementalBuild ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <GitBranch size={16} aria-hidden="true" />}
           </button>
           <button
             type="button"
-            onClick={cancelBuild}
-            disabled={!canCancelBuild}
-            data-testid="skill-graph-panel-action-cancel-build"
-            title={t('skills.graph.actions.cancelBuild')}
+            onClick={pauseBuild}
+            disabled={!canPauseBuild}
+            title={t('skills.graph.actions.pauseBuild')}
           >
-            {cancellingBuild ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <CircleStop size={16} aria-hidden="true" />}
-            <span>{t('skills.graph.actions.cancelBuild')}</span>
+            {pausingBuild ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}
           </button>
           <button
             type="button"
-            onClick={() => void rebuildGraph('full').catch(() => undefined)}
+            onClick={() => void rebuildGraph('full')}
             disabled={isBusy}
-            data-testid="skill-graph-panel-action-full-rebuild"
             title={t('skills.graph.actions.fullRebuild')}
           >
-            {isFullBuild ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <FullBuildIcon />}
-            <span>{t('skills.graph.actions.fullRebuild')}</span>
+            {isFullBuild ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <RotateCcw size={16} aria-hidden="true" />}
           </button>
-          <button type="button" onClick={fitView} disabled={!visible.nodes.length} data-testid="skill-graph-panel-action-fit-view" title={t('skills.graph.actions.fitView')}>
-            <ArrangeGraphIcon />
-            <span>{t('skills.graph.actions.fitView')}</span>
+          <button type="button" onClick={fitView} disabled={!visible.nodes.length} title={t('skills.graph.actions.fitView')}>
+            <Focus size={16} aria-hidden="true" />
           </button>
         </div>
-        <section data-testid="skill-graph-panel-actions-help" className="skill-graph-panel__actions-help">
-          <ul>
-            <li data-testid="skill-graph-panel-actions-help-item-incremental">{t('skills.graph.actionHelp.incrementalBuild')}</li>
-            <li data-testid="skill-graph-panel-actions-help-item-cancel">{t('skills.graph.actionHelp.cancelBuild')}</li>
-            <li data-testid="skill-graph-panel-actions-help-item-full">{t('skills.graph.actionHelp.fullRebuild')}</li>
-            <li data-testid="skill-graph-panel-actions-help-item-fit">{t('skills.graph.actionHelp.fitView')}</li>
-          </ul>
-        </section>
 
         {(updating || showBuildLogPanel) ? (
-          <div data-testid="skill-graph-panel-build-log" className="skill-graph-panel__build-log">
-            <div data-testid="skill-graph-panel-progress-head" className="skill-graph-panel__progress-head">
-              <span data-testid="skill-graph-panel-progress-title">{progressTitle}</span>
-              {showBuildProgress ? (
-                <strong data-testid="skill-graph-panel-progress-percent">{currentProgressPercent}%</strong>
-              ) : null}
+          <div className="skill-graph-panel__build-log">
+            <div className="skill-graph-panel__progress-head">
+              <span>{progressTitle}</span>
+              <strong>{currentProgressPercent}%</strong>
             </div>
-            {showBuildProgress ? (
-              <div data-testid="skill-graph-panel-progress-track" className="skill-graph-panel__progress-track" aria-hidden="true">
-                <span style={{ width: `${currentProgressPercent}%` }} />
-              </div>
-            ) : null}
+            <div className="skill-graph-panel__progress-track" aria-hidden="true">
+              <span style={{ width: `${currentProgressPercent}%` }} />
+            </div>
             {buildMetricsText ? (
-              <div data-testid="skill-graph-panel-build-metrics" className="skill-graph-panel__build-metrics">
+              <div className="skill-graph-panel__build-metrics">
                 <span>{buildMetricsText}</span>
               </div>
             ) : null}
-            <div data-testid="skill-graph-panel-log-list" className="skill-graph-panel__log-list">
+            <div className="skill-graph-panel__log-list">
               {recentBuildLog.length === 0 ? (
-                <div data-testid="skill-graph-panel-log-list-empty" className="skill-graph-panel__empty skill-graph-panel__empty--compact">{t('skills.graph.status.waitingBuildLogs')}</div>
+                <div className="skill-graph-panel__empty skill-graph-panel__empty--compact">{t('skills.graph.status.waitingBuildLogs')}</div>
               ) : (
                 recentBuildLog.map((entry, index) => (
-                  <div data-testid="skill-graph-panel-log-row" data-variant={entry.ts} className="skill-graph-panel__log-row" key={`${entry.ts || 'log'}-${entry.stage || index}-${index}`}>
+                  <div className="skill-graph-panel__log-row" key={`${entry.ts || 'log'}-${entry.stage || index}-${index}`}>
                     <span>{buildLogTime(entry)}</span>
                     <strong>{buildLogSummary(entry, t)}</strong>
                   </div>
@@ -1781,113 +1494,44 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
           </div>
         ) : null}
 
-        {visibleError ? (
-          <div data-testid="skill-graph-panel-error" className="skill-graph-panel__error">
+        {error && !isGraphBuildRunning ? (
+          <div className="skill-graph-panel__error">
             <AlertTriangle size={16} aria-hidden="true" />
-            <span data-testid="skill-graph-panel-error-text">{visibleError}</span>
+            <span>{error}</span>
           </div>
         ) : null}
 
-        <div data-testid="skill-graph-panel-filters" className="skill-graph-panel__filters">
-          <label>
-            <span>{t('skills.graph.minConfidence', { percent: Math.round(minConfidence * 100) })}</span>
-            <input
-              type="range"
-              min={graphMinConfidence}
-              max={1}
-              step={0.05}
-              value={minConfidence}
-              data-testid="skill-graph-panel-min-confidence-slider"
-              onChange={(event) => {
-                minConfidenceTouchedRef.current = true;
-                setMinConfidence(Number(event.target.value));
-              }}
-            />
-            <small data-testid="skill-graph-panel-min-confidence-help" className="skill-graph-panel__filter-help">
-              {t('skills.graph.minConfidenceHelp')}
-            </small>
-          </label>
-        </div>
-
-        <section data-testid="skill-graph-panel-node-list" className="skill-graph-panel__node-list">
-          <h3 data-testid="skill-graph-panel-node-list-title">{t('skills.graph.skillList')}</h3>
-          <label data-testid="skill-graph-panel-search" className="skill-graph-panel__search">
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              data-testid="skill-graph-panel-search-input"
-              placeholder={t('skills.graph.searchPlaceholder')}
-              className="w-full px-3 py-2 rounded-md bg-panel border border-border text-sm text-text placeholder:text-text-muted"
-            />
-          </label>
-          <div data-testid="skill-graph-panel-node-list-items" className="skill-graph-panel__node-list-items">
-            {visibleSkillNodes.length === 0 ? (
-              <div data-testid="skill-graph-panel-node-list-empty" className="skill-graph-panel__empty">{t('skills.graph.noVisibleSkills')}</div>
-            ) : (
-              [...visibleSkillNodes]
-                .sort((a, b) => b.degree - a.degree)
-                .slice(0, 80)
-                .map((node) => (
-                  <button
-                    type="button"
-                    key={node.id}
-                    data-testid="skill-graph-panel-node" data-variant={node.id}
-                    className={selectedNode?.id === node.id ? 'is-active' : ''}
-                    onClick={(event) => selectNode(node, event.currentTarget)}
-                  >
-                    <span>{node.label}</span>
-                  </button>
-                ))
-            )}
-          </div>
+        <section className="skill-graph-panel__node-list">
+          <h3>{t('skills.graph.skillList')}</h3>
+          {visibleSkillNodes.length === 0 ? (
+            <div className="skill-graph-panel__empty">{t('skills.graph.noVisibleSkills')}</div>
+          ) : (
+            [...visibleSkillNodes]
+              .sort((a, b) => b.degree - a.degree)
+              .slice(0, 80)
+              .map((node) => (
+                <button
+                  type="button"
+                  key={node.id}
+                  className={selectedNode?.id === node.id ? 'is-active' : ''}
+                  onClick={() => selectNode(node)}
+                >
+                  <span>{node.label}</span>
+                  <small>{t('skills.graph.degreeSummary', { inDegree: node.inDegree, outDegree: node.outDegree })}</small>
+                </button>
+              ))
+          )}
         </section>
       </aside>
 
-      <section data-testid="skill-graph-panel-canvas-wrap" className="skill-graph-panel__canvas-wrap">
+      <section className="skill-graph-panel__canvas-wrap">
         {graphUpdatedAt ? (
-          <div data-testid="skill-graph-panel-graph-meta" className="skill-graph-panel__graph-meta">
+          <div className="skill-graph-panel__graph-meta">
             {t('skills.graph.updatedAt', { time: graphUpdatedAt })}
           </div>
         ) : null}
-        <div data-testid="skill-graph-panel-zoom-controls" className="skill-graph-panel__zoom-controls">
-          <button
-            type="button"
-            onClick={() => zoomAt(0.9)}
-            disabled={!visible.nodes.length}
-            title={t('skills.graph.zoomOut')}
-            aria-label={t('skills.graph.zoomOut')}
-            data-testid="skill-graph-panel-zoom-out"
-          >
-            <Minus size={14} aria-hidden="true" />
-          </button>
-          <span data-testid="skill-graph-panel-zoom-level" aria-label={t('skills.graph.zoomLevel', { percent: zoomPercent })}>
-            {zoomPercent}%
-          </span>
-          <button
-            type="button"
-            onClick={() => zoomAt(1.1)}
-            disabled={!visible.nodes.length}
-            title={t('skills.graph.zoomIn')}
-            aria-label={t('skills.graph.zoomIn')}
-            data-testid="skill-graph-panel-zoom-in"
-          >
-            <Plus size={14} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            onClick={toggleGraphFullscreen}
-            title={isGraphFullscreen ? t('skills.graph.exitFullscreen') : t('skills.graph.fullscreen')}
-            aria-label={isGraphFullscreen ? t('skills.graph.exitFullscreen') : t('skills.graph.fullscreen')}
-            data-testid="skill-graph-panel-fullscreen"
-            className="skill-graph-panel__zoom-fullscreen"
-          >
-            {isGraphFullscreen ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
-          </button>
-        </div>
         <canvas
           ref={canvasRef}
-          data-testid="skill-graph-panel-canvas"
-          tabIndex={-1}
           onPointerDown={(event) => {
             dragRef.current = { active: true, moved: false, x: event.clientX, y: event.clientY };
             event.currentTarget.setPointerCapture(event.pointerId);
@@ -1908,8 +1552,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
           onPointerUp={(event) => {
             const drag = dragRef.current;
             if (!drag.moved) {
-              const node = findNodeAt(event.clientX, event.clientY);
-              selectNode(node, node ? event.currentTarget : undefined);
+              selectNode(findNodeAt(event.clientX, event.clientY));
             }
             dragRef.current = { active: false, moved: false, x: 0, y: 0 };
             event.currentTarget.releasePointerCapture(event.pointerId);
@@ -1923,106 +1566,67 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
             zoomAt(event.deltaY > 0 ? 0.9 : 1.1, event.clientX, event.clientY);
           }}
         />
-        {showCanvasEmptyState && graphIsEmpty ? (
-          <div data-testid="skill-graph-panel-empty-graph" className="skill-graph-panel__canvas-empty">
-            {t('skills.graph.emptyGraph')}
-          </div>
-        ) : showCanvasEmptyState && filteredGraphIsEmpty ? (
-          <div data-testid="skill-graph-panel-empty-filtered" className="skill-graph-panel__canvas-empty">
-            {t('skills.graph.noFilteredGraph')}
-          </div>
-        ) : null}
         {isBusy ? (
-          <div data-testid="skill-graph-panel-loading" className={`skill-graph-panel__loading${graphUpdatedAt ? ' skill-graph-panel__loading--below-meta' : ''}`}>
+          <div className={`skill-graph-panel__loading${graphUpdatedAt ? ' skill-graph-panel__loading--below-meta' : ''}`}>
             <Loader2 size={18} className="skill-graph-panel__spin" aria-hidden="true" />
-            <span data-testid="skill-graph-panel-loading-text">{isGraphBuildRunning ? `${progressTitle} · ${currentProgressPercent}%` : t('skills.graph.status.reading')}</span>
+            <span>{isGraphBuildRunning ? `${progressTitle} · ${currentProgressPercent}%` : t('skills.graph.status.reading')}</span>
           </div>
         ) : null}
       </section>
 
-      <aside
-        data-testid="skill-graph-panel-detail"
-        className={`skill-graph-panel__detail${detailDrawerOpen ? ' is-drawer-open' : ''}`}
-        role={isCompactDetail ? 'complementary' : undefined}
-        aria-label={isCompactDetail ? t('skills.graph.detailDrawerLabel') : undefined}
-        aria-hidden={isCompactDetail ? !detailDrawerOpen : undefined}
-        style={detailDrawerStyle}
-      >
+      <aside className="skill-graph-panel__detail">
         {selectedNode ? (
           <>
-            <div data-testid="skill-graph-panel-detail-head" className="skill-graph-panel__detail-head">
-              <div className="skill-graph-panel__detail-head-content">
-                <h3 data-testid="skill-graph-panel-detail-title">{selectedNode.label}</h3>
-                <p data-testid="skill-graph-panel-detail-id">{selectedNode.id}</p>
-              </div>
-              <button
-                type="button"
-                className="skill-graph-panel__detail-close"
-                onClick={closeDetail}
-                ref={detailCloseButtonRef}
-                title={t('skills.graph.closeDetail')}
-                aria-label={t('skills.graph.closeDetail')}
-                data-testid="skill-graph-panel-detail-close"
-              >
-                <X size={16} aria-hidden="true" />
-              </button>
+            <div>
+              <h3>{selectedNode.label}</h3>
+              <p>{selectedNode.id}</p>
             </div>
-            <div data-testid="skill-graph-panel-detail-grid" className="skill-graph-panel__detail-grid">
-              <span data-testid="skill-graph-panel-detail-in-degree">{t('skills.graph.inDegree')}<strong>{selectedNode.inDegree}</strong></span>
-              <span data-testid="skill-graph-panel-detail-out-degree">{t('skills.graph.outDegree')}<strong>{selectedNode.outDegree}</strong></span>
+            <div className="skill-graph-panel__detail-grid">
+              <span>{t('skills.graph.inDegree')}<strong>{selectedNode.inDegree}</strong></span>
+              <span>{t('skills.graph.outDegree')}<strong>{selectedNode.outDegree}</strong></span>
             </div>
-            {selectedNode.type === 'skill_pack' && Array.isArray(selectedNode.properties.member_ids) && selectedNode.properties.member_ids.length > 0 && (
-              <section data-testid="skill-graph-panel-pack-members" className="skill-graph-panel__pack-members">
-                <h4 className="skill-graph-panel__detail-section-title">Pack Members</h4>
-                <div className="skill-graph-panel__tags">
-                  {selectedNode.properties.member_ids.map((memberId: string) => {
-                    const memberNode = graph.nodes.find(n => n.id === `skill:${memberId}` || n.id === memberId);
-                    return (
-                      <button
-                        key={memberId}
-                        type="button"
-                        className="skill-graph-panel__tag"
-                        onClick={() => memberNode && selectNode(memberNode)}
-                        title={`View ${memberId}`}
-                      >
-                        {memberNode?.label || memberId}
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
-            {selectedNode.type === 'skill_pack' && (asString(selectedNode.properties.task_description) || asString(selectedNode.properties.query)) ? (
-              <section data-testid="skill-graph-panel-pack-query" className="skill-graph-panel__description">
-                <h4 className="skill-graph-panel__detail-section-title">任务描述</h4>
-                <p data-testid="skill-graph-panel-pack-query-content" className="skill-graph-panel__description-content">
-                  {asString(selectedNode.properties.task_description) || asString(selectedNode.properties.query)}
-                </p>
-              </section>
-            ) : null}
-            {selectedNode.type === 'skill_pack' && asString(selectedNode.properties.execution_narrative) ? (
-              <section data-testid="skill-graph-panel-pack-traces" className="skill-graph-panel__description">
-                <h4 className="skill-graph-panel__detail-section-title">流程</h4>
-                <p data-testid="skill-graph-panel-pack-traces-content" className="skill-graph-panel__description-content skill-graph-panel__trace-content">
-                  {asString(selectedNode.properties.execution_narrative)}
-                </p>
-              </section>
-            ) : null}
             {asString(selectedNode.properties.description) ? (
-              <section data-testid="skill-graph-panel-detail-description" className="skill-graph-panel__description">
-                <h4 className="skill-graph-panel__detail-section-title">{t('skills.graph.description')}</h4>
-                <p data-testid="skill-graph-panel-detail-description-content" className="skill-graph-panel__description-content">
-                  {asString(selectedNode.properties.description)}
-                </p>
-              </section>
+              <p className="skill-graph-panel__description">
+                {asString(selectedNode.properties.description)}
+              </p>
             ) : null}
-            <div data-testid="skill-graph-panel-io-sections" className="skill-graph-panel__io-sections">
+            <div className="skill-graph-panel__io-sections">
+              <section className="skill-graph-panel__io-section skill-graph-panel__io-section--input">
+                <h4>{t('skills.graph.inputs')}</h4>
+                {detailInputs.length === 0 ? (
+                  <div className="skill-graph-panel__empty skill-graph-panel__empty--compact">{t('skills.graph.noInputs')}</div>
+                ) : (
+                  <div className="skill-graph-panel__tags">
+                    {detailInputs.slice(0, 18).map((item) => (
+                      <span key={item.key} title={item.meta || item.label}>
+                        {item.label}
+                        {item.meta ? <small>{item.meta}</small> : null}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </section>
+              <section className="skill-graph-panel__io-section skill-graph-panel__io-section--output">
+                <h4>{t('skills.graph.outputs')}</h4>
+                {detailOutputs.length === 0 ? (
+                  <div className="skill-graph-panel__empty skill-graph-panel__empty--compact">{t('skills.graph.noOutputs')}</div>
+                ) : (
+                  <div className="skill-graph-panel__tags">
+                    {detailOutputs.slice(0, 18).map((item) => (
+                      <span key={item.key} title={item.meta || item.label}>
+                        {item.label}
+                        {item.meta ? <small>{item.meta}</small> : null}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </section>
               {detailTasks.length > 0 ? (
-                <section data-testid="skill-graph-panel-io-section-task" className="skill-graph-panel__io-section skill-graph-panel__io-section--task">
-                  <h4 data-testid="skill-graph-panel-io-section-task-title">{t('skills.graph.tasks')}</h4>
-                  <div data-testid="skill-graph-panel-io-section-task-tags" className="skill-graph-panel__tags">
+                <section className="skill-graph-panel__io-section skill-graph-panel__io-section--task">
+                  <h4>{t('skills.graph.tasks')}</h4>
+                  <div className="skill-graph-panel__tags">
                     {detailTasks.slice(0, 18).map((item) => (
-                      <span key={item.key} data-testid="skill-graph-panel-io-section-task-tag" data-variant={item.key} title={item.meta || item.label}>
+                      <span key={item.key} title={item.meta || item.label}>
                         {item.label}
                         {item.meta ? <small>{item.meta}</small> : null}
                       </span>
@@ -2031,12 +1635,10 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
                 </section>
               ) : null}
             </div>
-            <div data-testid="skill-graph-panel-related" className="skill-graph-panel__related">
-              <h4 data-testid="skill-graph-panel-related-title" className="skill-graph-panel__detail-section-title">
-                {t('skills.graph.relatedEdges')}
-              </h4>
+            <div className="skill-graph-panel__related">
+              <h4>{t('skills.graph.relatedEdges')}</h4>
               {relatedEdges.length === 0 ? (
-                <div data-testid="skill-graph-panel-related-empty" className="skill-graph-panel__empty">{t('skills.graph.noRelatedEdges')}</div>
+                <div className="skill-graph-panel__empty">{t('skills.graph.noRelatedEdges')}</div>
               ) : (
                 relatedEdges.slice(0, 80).map((edge, index) => {
                   const otherId = edge.source === selectedNode.id ? edge.target : edge.source;
@@ -2045,21 +1647,18 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
                     <button
                       type="button"
                       key={`${edge.source}-${edge.target}-${index}`}
-                      data-testid="skill-graph-panel-related-edge" data-variant={`${edge.source}-${edge.target}`}
                       onClick={() => {
                         if (other) selectNode(other);
                       }}
                     >
                       <span>{edge.source === selectedNode.id ? '→' : '←'} {other?.label || labelFromId(otherId)}</span>
-                      {/* 技能包的 contains 边没有真实置信度，不展示关联强度 */}
-                      {selectedNode.type !== 'skill_pack' ? (
-                        <small>
-                          {t('skills.graph.linkStrength', { percent: Math.round(edge.confidence * 100) })}
-                          {edge.runtimeWeight === undefined
-                            ? ''
-                            : ` · runtime_weight ${edge.runtimeWeight.toFixed(2)}`}
-                        </small>
-                      ) : null}
+                      <small>
+                        {edge.type}
+                        {edge.runtimeWeight === undefined
+                          ? ''
+                          : ` · runtime_weight ${edge.runtimeWeight.toFixed(2)}`}
+                        {' · '}{Math.round(edge.confidence * 100)}%
+                      </small>
                     </button>
                   );
                 })
@@ -2067,7 +1666,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
             </div>
           </>
         ) : (
-          <div data-testid="skill-graph-panel-detail-empty" className="skill-graph-panel__empty skill-graph-panel__detail-empty">{t('skills.graph.selectSkillHint')}</div>
+          <div className="skill-graph-panel__empty skill-graph-panel__detail-empty">{t('skills.graph.selectSkillHint')}</div>
         )}
       </aside>
     </div>

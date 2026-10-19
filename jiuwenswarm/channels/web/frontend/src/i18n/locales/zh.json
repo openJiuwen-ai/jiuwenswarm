@@ -930,14 +930,8 @@
       "teamMemberPromptHint": "提示词",
       "teamMemberAgentKey": "Agent Key",
       "symphonyEnabled": "启用技能编排",
-      "symphonyDynamicGraphEnabled": "启用执行图谱演化",
+      "symphonyDynamicGraphEnabled": "启用动态图谱",
       "skillRetrievalEnabled": "启用技能检索",
-
-      "skillRetrievalIndexEnabled": "启用技能索引",
-      "skillRetrievalMaxResults": "最大检索结果数",
-      "skillRetrievalMaxOutputChars": "最大输出字符数",
-      "skillRetrievalMaxListEntries": "最多列出技能数",
-      "skillRetrievalIncrementalNoticeMaxChars": "增量提示最大字符数",
       "skillRetrievalBuildBranchingFactor": "拆分阈值基数",
       "skillRetrievalBuildMaxDepth": "最大树深",
       "skillRetrievalBuildRootCategories": "树根分层配置",
@@ -985,7 +979,7 @@
       "evolutionAutoScan": "自动检测对话中可演进为技能的信号，并提示创建/更新技能。",
       "skillCreate": "建议先安装 `skill-creator` 和 `teamskill-creator`，再开启自动建议创建新技能。",
       "memoryForbiddenDescription": "描述禁止写入记忆的敏感信息类型或规则，例如密码、证件号、密钥等。",
-      "symphonyDynamicGraphEnabled": "开启后可将实际执行经验沉淀到图谱。",
+      "symphonyDynamicGraphEnabled": "关闭后仅使用静态图谱，已有运行时数据会保留。",
       "skillRetrievalBuildRootCategories": "直接编辑包含 tree_root_categories 或 root_categories 的 YAML/JSON；页面会展示默认分层供参考。保存后会写入配置内容本身，而不是外部文件路径。",
       "skillRetrievalBuildMaxDepth": "技能分类树的最大深度，过深会增加构建耗时。",
       "skillRetrievalBuildMaxWorkers": "构建技能树时的并发工作线程数。",
@@ -1591,7 +1585,6 @@
     }
   },
   "skills": {
-    "skillPack": { "members": "包含 {{count}} 个技能", "blocked": "不可用成员" },
     "title": "技能管理",
     "subtitle": "管理并安装智能体可用的技能。",
     "tabs": {
@@ -1775,29 +1768,17 @@
       }
     },
     "graph": {
-      "orchestration": {
-        "description": "开启后，会为已安装的技能构建技能图谱（消耗Token），并在执行任务时基于图谱自动选择、组合和编排技能，提高任务执行效率；关闭后将不再进行技能编排，已构建的技能图谱不会删除。",
-        "graphDefinition": "技能图谱就像一张技能关系地图：每个点代表一个技能，点之间的线表示它们可以配合使用。",
-        "saving": "正在保存…",
-        "saveFailed": "技能编排开关保存失败，请稍后重试。",
-        "toggleLabel": "启用技能编排",
-        "connectionRequired": "连接服务器后可修改技能编排开关"
-      },
       "stats": {
         "skillsSuffix": "技能",
-        "edgesSuffix": "关联"
+        "edgesSuffix": "边"
       },
-      "searchPlaceholder": "搜索技能并筛选图谱",
-      "minConfidence": "最小关联强度 {{percent}}%",
-      "minConfidenceHelp": "拖动滑块设置最小关联强度；数值越高，显示的关联越少。",
-      "linkStrength": "关联强度 {{percent}}%",
+      "searchPlaceholder": "搜索技能",
+      "minConfidence": "最小置信度 {{percent}}%",
       "buildLogFallback": "构建日志",
-      "tokenUsage": "{{prompt}} in / {{completion}} out / {{total}} total",
+      "tokenUsage": "{{prompt}} 输入 / {{completion}} 输出 / {{total}} 总计",
       "required": "必需",
       "skillList": "技能列表",
       "noVisibleSkills": "没有可显示的技能。",
-      "emptyGraph": "暂无技能图谱，点击增量构建开始。",
-      "noFilteredGraph": "当前筛选条件下没有可展示的技能图谱。",
       "degreeSummary": "入度 {{inDegree}} · 出度 {{outDegree}}",
       "updatedAt": "更新时间 {{time}}",
       "inDegree": "入度",
@@ -1806,62 +1787,44 @@
       "noInputs": "暂无输入",
       "outputs": "输出",
       "noOutputs": "暂无输出",
-      "description": "描述",
       "tasks": "任务",
-      "relatedEdges": "关联技能",
-      "noRelatedEdges": "暂无关联技能。",
-      "selectSkillHint": "从技能列表或画布中选择一个技能，查看详情",
-      "detailDrawerLabel": "技能详情",
-      "closeDetail": "关闭详情",
-      "zoomIn": "放大",
-      "zoomOut": "缩小",
-      "zoomLevel": "当前缩放 {{percent}}%",
-      "fullscreen": "全屏",
-      "exitFullscreen": "退出全屏",
+      "relatedEdges": "相关边",
+      "noRelatedEdges": "暂无相关边。",
+      "selectSkillHint": "选择一个技能查看指纹",
       "actions": {
-        "read": "读取图谱",
+        "read": "读谱",
         "incrementalBuild": "增量构建",
-        "cancelBuild": "取消构建",
-        "fullRebuild": "全量构建",
-        "fitView": "调整视图"
-      },
-      "actionHelp": {
-        "incrementalBuild": "增量构建：更新新增或变更的技能，适合日常维护。",
-        "cancelBuild": "取消构建：停止当前增量或全量构建。",
-        "fullRebuild": "全量构建：扫描全部已安装技能，首次使用或重建图谱时使用。",
-        "fitView": "调整视图：自动调整右侧视图，使图谱居中并完整显示。"
+        "pauseBuild": "暂停构建",
+        "fullRebuild": "全量重新构建",
+        "fitView": "适配视图"
       },
       "status": {
-        "refreshing": "正在刷新技能图谱",
-        "cancelled": "技能图谱构建已取消",
-        "reading": "正在读取技能图谱",
+        "refreshing": "正在刷新技能总谱",
+        "paused": "技能总谱构建已暂停",
+        "reading": "正在读取技能总谱",
         "noBuildLogs": "暂无构建日志",
         "waitingBuildLogs": "等待构建日志...",
-        "prepareFull": "准备全量重新构建技能图谱",
-        "prepareIncremental": "准备增量构建技能图谱"
+        "prepareFull": "准备全量重新构建技能总谱",
+        "prepareIncremental": "准备增量构建技能总谱"
       },
       "errors": {
-        "readFailed": "无法读取技能图谱，请先刷新图谱。",
-        "refreshFailed": "技能图谱刷新失败",
-        "cancelFailed": "技能图谱取消失败",
-        "primaryModelProbeFailed": "主模型连接测试未通过：{{detail}}",
-        "buildFailedWithDetail": "Symphony 图谱构建失败: {{detail}}"
+        "readFailed": "无法读取技能总谱，请先刷新总谱。",
+        "refreshFailed": "技能总谱刷新失败",
+        "pauseFailed": "技能总谱暂停失败",
+        "buildFailedWithDetail": "Symphony 总谱构建失败: {{detail}}"
       },
       "serverDetails": {
-        "noRunningBuild": "当前没有正在运行的技能图谱构建。",
-        "buildStarted": "技能图谱后台构建已启动。",
-        "cancelRequested": "技能图谱构建已取消，已完成的缓存和 checkpoint 会保留。",
-        "buildRunning": "技能图谱已在后台构建中。",
-        "buildCancelled": "技能图谱构建已取消，可再次执行增量构建继续。",
-        "graphMissing": "技能图谱不存在或不完整，请先构建图谱。"
+        "noRunningBuild": "当前没有正在运行的技能总谱构建。",
+        "pauseRequested": "已请求暂停技能总谱构建，已完成的缓存和 checkpoint 会保留。",
+        "buildRunning": "已有技能总谱构建正在运行，请等待完成或先暂停当前构建。",
+        "buildPaused": "技能总谱构建已暂停，可再次执行增量构建继续。",
+        "scoreMissing": "技能总谱不存在或不完整，请先构建总谱。"
       },
       "buildStages": {
         "idle": "暂无构建日志",
-        "updateStart": "开始构建技能图谱",
-        "modelProbeStart": "测试主模型连接",
-        "modelProbeDone": "主模型连接测试通过",
-        "updateCancelRequested": "正在取消技能图谱构建",
-        "updateCancelled": "技能图谱构建已取消",
+        "updateStart": "开始构建技能总谱",
+        "updatePauseRequested": "正在暂停技能总谱构建",
+        "updatePaused": "技能总谱构建已暂停",
         "scanStart": "扫描技能目录",
         "scanDone": "技能目录扫描完成",
         "diffDone": "计算技能变更",
@@ -1880,17 +1843,17 @@
         "graphResolveStart": "解析候选关系",
         "graphResolveProgress": "解析候选关系",
         "graphResolveDone": "候选关系解析完成",
-        "graphMaterializeStart": "生成图谱结构",
-        "graphMaterializeDone": "图谱结构生成完成",
-        "graphLookupStart": "构建图谱检索结构",
-        "graphLookupDone": "图谱检索结构构建完成",
+        "graphMaterializeStart": "生成总谱结构",
+        "graphMaterializeDone": "总谱结构生成完成",
+        "graphScoreStart": "构建乐谱检索结构",
+        "graphScoreDone": "乐谱检索结构构建完成",
         "graphBuildDone": "技能关系图构建完成",
-        "artifactGraphWriteStart": "写入图谱文件",
-        "artifactGraphWriteDone": "图谱文件写入完成",
-        "stateWriteStart": "写入图谱状态",
-        "stateWriteDone": "图谱状态写入完成",
-        "updateFailed": "图谱构建失败",
-        "updateDone": "图谱构建完成"
+        "artifactGraphWriteStart": "写入总谱文件",
+        "artifactGraphWriteDone": "总谱文件写入完成",
+        "stateWriteStart": "写入总谱状态",
+        "stateWriteDone": "总谱状态写入完成",
+        "updateFailed": "总谱构建失败",
+        "updateDone": "总谱构建完成"
       }
     },
     "evolution": {

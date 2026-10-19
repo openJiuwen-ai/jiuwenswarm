@@ -1,0 +1,349 @@
+version: data-type-v1
+
+# This file is the single source of truth for DataType normalization.
+#
+# Field guide:
+# - types: Canonical DataType names accepted by fingerprints and graph matching.
+# - aliases: Raw spellings that should normalize to the canonical type. MIME types
+#   such as "application/json" are intentionally kept here for human readability;
+#   the Python loader also registers their normalize_token form, e.g.
+#   "application_json".
+# - parents: Direct supertypes. The loader derives TYPE_HIERARCHY from these
+#   parent links, so maintainers do not need to update a second structure.
+# - traits: Behavioral tags used by compatibility rules. They are not user-facing
+#   taxonomy labels.
+#   - content_carrier: text-like content that can satisfy a generic text input.
+#   - markup_text: lightweight markup formats such as HTML and Markdown.
+#   - structured_text: parseable structured text such as JSON, XML, and YAML.
+# - hints: Optional generic scoring hints used only when the extracted raw type
+#   is unknown or unsupported. Hints do not define a type-specific algorithm;
+#   they only add evidence to the shared semantic scorer.
+#   - name_terms: Terms in an I/O name that support this type.
+#   - description_terms: Terms in a description that support this type.
+#   - suffixes: I/O name suffixes that support this type, such as "_url".
+#   - requires_any: Optional guard; at least one listed term must appear in the
+#     I/O name or description before this type can be inferred.
+
+types:
+  text:
+    aliases:
+      - natural_language
+      - natural_language_query
+      - plain_text
+      - txt
+      - text/plain
+    traits:
+      - content_carrier
+
+  markdown:
+    aliases:
+      - md
+      - text/markdown
+    parents:
+      - text
+    traits:
+      - content_carrier
+      - markup_text
+
+  json:
+    aliases:
+      - json_object
+      - application/json
+      - text/json
+    parents:
+      - file
+      - text
+    traits:
+      - content_carrier
+      - structured_text
+
+  csv:
+    aliases:
+      - text/csv
+      - application/csv
+    parents:
+      - file
+      - table
+      - text
+    traits:
+      - content_carrier
+
+  table:
+    aliases:
+      - tabular_data
+      - table_data
+      - data_table
+      - dataframe
+      - rows
+      - records
+    parents:
+      - text
+    traits:
+      - content_carrier
+
+  yaml:
+    aliases:
+      - yml
+      - application/yaml
+      - application/x-yaml
+      - text/yaml
+    parents:
+      - file
+      - text
+    traits:
+      - content_carrier
+      - structured_text
+
+  xml:
+    aliases:
+      - xml_document
+      - application/xml
+      - text/xml
+    parents:
+      - file
+      - text
+    traits:
+      - content_carrier
+      - structured_text
+
+  pdf:
+    aliases:
+      - application/pdf
+    parents:
+      - file
+
+  html:
+    aliases:
+      - text/html
+      - application/xhtml+xml
+    parents:
+      - file
+      - text
+    traits:
+      - content_carrier
+      - markup_text
+
+  docx:
+    aliases:
+      - word
+      - word_document
+      - msword
+      - doc
+    parents:
+      - file
+
+  pptx:
+    aliases:
+      - slides
+      - deck
+      - presentation
+      - powerpoint
+      - ppt
+    parents:
+      - file
+
+  xlsx:
+    aliases:
+      - excel
+      - workbook
+      - xls
+    parents:
+      - file
+      - table
+
+  image:
+    aliases:
+      - photo
+      - picture
+      - screenshot
+      - scan
+      - scanned_image
+      - images
+    parents:
+      - file
+    hints:
+      name_terms:
+        - image
+        - photo
+        - picture
+        - screenshot
+        - scan
+      description_terms:
+        - image
+        - images
+        - photo
+        - picture
+        - screenshot
+        - scan
+        - base64
+        - bmp
+        - gif
+        - jpeg
+        - jpg
+        - png
+        - svg
+        - tiff
+        - wbmp
+        - webp
+      suffixes:
+        - _image
+        - _photo
+        - _picture
+        - _screenshot
+        - _scan
+      requires_any:
+        - image
+        - images
+        - photo
+        - picture
+        - screenshot
+        - scan
+        - base64
+        - bmp
+        - gif
+        - jpeg
+        - jpg
+        - png
+        - svg
+        - tiff
+        - wbmp
+        - webp
+
+  png:
+    aliases:
+      - image/png
+    parents:
+      - image
+
+  jpg:
+    aliases:
+      - image/jpg
+      - image/jpeg
+      - jpeg
+    parents:
+      - image
+
+  svg:
+    aliases:
+      - image/svg+xml
+    parents:
+      - image
+
+  webp:
+    aliases:
+      - image/webp
+    parents:
+      - image
+
+  gif:
+    aliases:
+      - image/gif
+    parents:
+      - image
+
+  url:
+    aliases:
+      - link
+      - uri
+      - webpage
+      - http_url
+      - https_url
+      - image_url
+      - remote_url
+      - download_url
+      - source_url
+      - file_url
+    hints:
+      name_terms:
+        - url
+        - uri
+        - link
+        - remote_url
+        - download_url
+        - source_url
+        - file_url
+      description_terms:
+        - http
+        - https
+        - link
+        - url
+        - uri
+        - webpage
+        - remote_url
+        - download_url
+        - source_url
+        - file_url
+      suffixes:
+        - _url
+        - _uri
+        - _link
+      requires_any:
+        - http
+        - https
+        - link
+        - url
+        - uri
+        - webpage
+        - remote_url
+        - download_url
+        - source_url
+        - file_url
+  file: {}
+
+  path:
+    aliases:
+      - file_path
+      - filepath
+      - folder_path
+      - directory_path
+    parents:
+      - file
+
+  audio:
+    aliases:
+      - mp3
+      - wav
+      - m4a
+      - audio/mpeg
+      - audio/wav
+    parents:
+      - file
+
+  video:
+    aliases:
+      - mp4
+      - mov
+      - webm
+      - video/mp4
+      - video/webm
+    parents:
+      - file
+
+  code:
+    aliases:
+      - source_code
+      - code_file
+      - kernel_code
+      - operator_code
+      - cpp_code
+      - python_code
+      - javascript_code
+      - program
+      - shell_script
+    parents:
+      - file
+      - text
+    traits:
+      - content_carrier
+
+  archive:
+    aliases:
+      - zip
+      - tar
+      - tar_gz
+      - tgz
+      - application/zip
+    parents:
+      - file
+
+  unknown: {}

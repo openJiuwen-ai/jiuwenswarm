@@ -1,5 +1,3 @@
-import json
-
 from jiuwenswarm.symphony.evolution.aggregate import (
     RUNTIME_WEIGHT_POLICY,
     _runtime_weight,
@@ -8,8 +6,6 @@ from jiuwenswarm.symphony.evolution.aggregate import (
 from jiuwenswarm.symphony.evolution.models import PLAN_CREATED, PLAN_OUTCOME
 from jiuwenswarm.symphony.evolution.service import (
     evolution_status,
-    load_dynamic_overlay,
-    prepare_evolution_store,
     record_plan_outcome,
 )
 
@@ -167,75 +163,6 @@ def test_evolution_status_reads_recorded_outcomes_and_overlay(tmp_path):
     assert status["overlay_exists"] is True
     assert status["overlay_stats"]["no_plan_count"] == 2
     assert status["weight_policy"]["name"] == RUNTIME_WEIGHT_POLICY
-
-
-def test_evolution_store_migrates_known_files_and_keeps_learning_across_versions(
-    tmp_path,
-):
-    graph_root = tmp_path / "graph"
-    artifact_dir = graph_root / "versions" / "v1"
-    artifact_dir.mkdir(parents=True)
-    record_plan_outcome(
-        artifact_dir,
-        plan_id="legacy-plan",
-        outcome="success",
-        selected_skill_ids=["writer", "reviewer"],
-        selected_edges=[{"source_id": "writer", "target_id": "reviewer"}],
-    )
-    legacy_evolution = artifact_dir / "evolution"
-    (legacy_evolution / "session_feedback_state.json").write_text(
-        '{"source":"legacy"}\n', encoding="utf-8"
-    )
-    (legacy_evolution / "unrelated.json").write_text("{}\n", encoding="utf-8")
-    (graph_root / "current.json").write_text(
-        '{"schema_version":"1.0","version":"v1","path":"versions/v1"}',
-        encoding="utf-8",
-    )
-
-    assert prepare_evolution_store(graph_root) == graph_root.resolve()
-    root_evolution = graph_root / "evolution"
-    assert (root_evolution / "events.jsonl").is_file()
-    assert (root_evolution / "dynamic_graph_overlay.json").is_file()
-    state_path = root_evolution / "session_feedback_state.json"
-    legacy_state_path = legacy_evolution / "session_feedback_state.json"
-    assert not state_path.exists()
-    assert legacy_state_path.read_text(encoding="utf-8") == '{"source":"legacy"}\n'
-    assert not (root_evolution / "unrelated.json").exists()
-
-    overlay = load_dynamic_overlay(graph_root)
-    assert overlay is not None
-    edge = overlay["edges"]["writer->reviewer:can_feed"]
-    assert edge["success_count"] == 1
-    assert edge["runtime_weight"] == 1.05
-    assert overlay["base_graph_version"] == "v1"
-
-    record_plan_outcome(
-        graph_root,
-        plan_id="root-plan",
-        outcome="success",
-        selected_skill_ids=["writer", "reviewer"],
-        selected_edges=[{"source_id": "writer", "target_id": "reviewer"}],
-    )
-    assert len((legacy_evolution / "events.jsonl").read_text().splitlines()) == 1
-    assert len((root_evolution / "events.jsonl").read_text().splitlines()) == 2
-
-    stale_overlay_path = root_evolution / "dynamic_graph_overlay.json"
-    stale_overlay = json.loads(stale_overlay_path.read_text(encoding="utf-8"))
-    stale_overlay["events"]["count"] = 1
-    stale_overlay_path.write_text(json.dumps(stale_overlay), encoding="utf-8")
-    assert load_dynamic_overlay(graph_root)["events"]["count"] == 2
-
-    (graph_root / "versions" / "v2").mkdir()
-    (graph_root / "current.json").write_text(
-        '{"schema_version":"1.0","version":"v2","path":"versions/v2"}',
-        encoding="utf-8",
-    )
-    overlay = load_dynamic_overlay(graph_root)
-    assert overlay is not None
-    edge = overlay["edges"]["writer->reviewer:can_feed"]
-    assert edge["success_count"] == 2
-    assert edge["runtime_weight"] == 1.1
-    assert overlay["base_graph_version"] == "v2"
 
 
 def test_evolution_failure_attribution_defaults_to_terminal_edge():

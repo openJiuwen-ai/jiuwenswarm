@@ -24,7 +24,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
+from openjiuwen.agent_evolving.trajectory import InMemoryTrajectoryRegistry
 from openjiuwen.agent_teams.paths import team_home
 from openjiuwen.agent_teams.schema.team import TeamMemberSpec, TeamRole
 from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
@@ -433,8 +433,7 @@ def enrich_team_spec_for_swarm(
         team_ws_root=team_ws_root,
         team_skills_dir=team_skills_dir,
         global_skills_dir=global_skills_dir,
-        trajectory_registry=get_trajectory_span_processor(),
-        trajectory_span_processor=get_trajectory_span_processor(),
+        trajectory_registry=InMemoryTrajectoryRegistry(),
         config=config,
     )
     mcp_configs = build_enabled_mcp_server_configs(
