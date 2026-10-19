@@ -34,20 +34,38 @@ async def _connect_pipe(path: str) -> IpcConnection:
     from multiprocessing.connection import Client
 
     address = endpoint_address(path)
-    raw = await asyncio.get_running_loop().run_in_executor(
+    connecting = asyncio.get_running_loop().run_in_executor(
         _PIPE_CONNECT_POOL, partial(Client, address, "AF_PIPE", _PIPE_AUTHKEY)
     )
+    try:
+        raw = await asyncio.shield(connecting)
+    except asyncio.CancelledError:
+        def close_late(task):
+            if not task.cancelled() and task.exception() is None:
+                task.result().close()
+        connecting.add_done_callback(close_late)
+        raise
     return PipeConnection(raw)
 
 
 def endpoint_is_listening(path: str) -> bool:
     """Return True when a Worker has already bound this endpoint.
 
-    POSIX checks the socket file. Windows named pipes are not files, so this
+    POSIX checks the lifetime owner lease. Windows named pipes are not files, so this
     waits briefly for a pipe instance without connecting to it.
     """
+    if os.path.exists(path + ".owner.lock"):
+        # The lifetime lease also detects a busy Windows pipe instance, for
+        # which WaitNamedPipeW returns false while its Front is disconnecting.
+        from filelock import FileLock, Timeout
+        lease = FileLock(path + ".owner.lock", timeout=0)
+        try:
+            with lease:
+                return False
+        except Timeout:
+            return True
     if os.name != "nt":
-        return os.path.exists(path)
+        return False
     return _windows_pipe_is_listening(endpoint_address(path))
 
 
@@ -76,8 +94,8 @@ async def connect_with_retry(path: str, *, timeout: float) -> IpcConnection:
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            return await connect(path)
-        except OSError as exc:
+            return await asyncio.wait_for(connect(path), timeout=max(.001, deadline - time.monotonic()))
+        except (OSError, asyncio.TimeoutError) as exc:
             last_error = exc
             await asyncio.sleep(0.05)
     raise TimeoutError(f"runtime worker ipc not ready: {path}") from last_error

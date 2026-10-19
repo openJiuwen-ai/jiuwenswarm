@@ -231,6 +231,7 @@ test('loaded capabilities normalize only the draft and never mutate the saved mo
 
 let createRoot;
 let ModelDialog;
+let parseModelResource;
 let SettingsServicesProvider;
 let I18nextProvider;
 let dom;
@@ -262,6 +263,7 @@ before(async () => {
     stdin: {
       contents: `
         export { ModelDialog } from './src/features/settings/modules/models/ModelDialog';
+        export { parseModelResource } from './src/features/settings/modules/models/ModelsSettings';
         export { SettingsServicesProvider } from './src/features/settings/services/SettingsServicesProvider';
       `,
       resolveDir: fileURLToPath(new URL('../', import.meta.url)),
@@ -273,14 +275,14 @@ before(async () => {
     format: 'cjs',
     packages: 'external',
     loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
-    // Only Vite's static icon discovery is stubbed; model logic and controls are real.
-    define: { 'import.meta.glob': 'testAssetGlob' },
+    // Vite's build-time globals are stubbed; model logic and controls are real.
+    define: { 'import.meta.glob': 'testAssetGlob', 'import.meta.env': '{}' },
     banner: { js: 'const testAssetGlob = () => ({});' },
   });
   const compiled = { exports: {} };
   const require = createRequire(import.meta.url);
   new Function('require', 'module', 'exports', result.outputFiles[0].text)(require, compiled, compiled.exports);
-  ({ ModelDialog, SettingsServicesProvider } = compiled.exports);
+  ({ ModelDialog, parseModelResource, SettingsServicesProvider } = compiled.exports);
   ({ I18nextProvider } = require('react-i18next'));
   await i18n.init({
     lng: 'en',
@@ -332,6 +334,7 @@ async function mountDialog(t, modelOverrides = {}, propOverrides = {}) {
   const request = async (method, params) => {
     requests.push({ method, params });
     if (method === 'config.validate_model') return {};
+    if (method === 'vendors.fetch_models') return { source: 'remote', models: ['glm-5.2', 'glm-new'] };
     if (method === 'openai_account.auth.pending_login') return { status: 'none', auth: { authenticated: true } };
     if (method === 'openai_account.models.list') return { models: ['glm-5.2'], auth: { authenticated: true } };
     throw new Error(`Unexpected request: ${method}`);
@@ -384,6 +387,30 @@ async function selectValue(element, value) {
     element.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   });
 }
+
+test('reopening model details retains the API key and fetches remote models without re-entry', async (t) => {
+  const model = parseModelResource({ model: {
+    model_id: 'mdl_saved',
+    model_client_config: {
+      model_name: 'glm-5.2', client_provider: 'OpenAI', api_base: vendor.api_base,
+      api_key: 'test-saved-key', vendor_key: vendor.vendor_key, plan: vendor.plan,
+    },
+    write_only_fields: ['model_client_config.custom_headers'],
+  } });
+  assert.equal(model.has_api_key, true);
+  const ui = await mountDialog(t, model, { catalog: {
+    ...catalog,
+    custom_api: [{ ...preset, models_endpoint: `${vendor.api_base}/models`, models_needs_key: true }],
+  } });
+  assert.equal(document.querySelector('input[type="password"]').value, 'test-saved-key');
+  const refresh = document.querySelector('[data-testid="settings-model-name-field-refresh-btn"]');
+  assert.equal(refresh.disabled, false);
+  await click(refresh);
+  assert.deepEqual(ui.requests.find(({ method }) => method === 'vendors.fetch_models').params, {
+    vendor_key: vendor.vendor_key, plan: vendor.plan, api_key: 'test-saved-key',
+  });
+  assert.ok([...document.querySelectorAll('[role="option"]')].some((node) => node.textContent.trim() === 'glm-new'));
+});
 
 test('opening an unsupported saved value displays and submits default without changing the saved configuration', async (t) => {
   const ui = await mountDialog(t);

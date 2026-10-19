@@ -190,7 +190,7 @@ test('chat and scheduled tasks share the ordinary model catalog', async () => {
       );
       assert.deepEqual(
         [...menu.querySelectorAll('[role="menuitemradio"]')].map((node) => node.textContent),
-        ['Free Alias', 'Configured A', 'Configured B'],
+        ['Free Alias', 'Configured A', 'Secondary connection', 'Configured B'],
       );
       assert.equal(menu.querySelector('[aria-checked="true"]').dataset.variant, 'configured-a');
       await click(document.body);
@@ -221,7 +221,7 @@ test('限时免费模型：没登录拿到之前，这一栏只放一个「获�
     assert.equal(cta.getAttribute('role'), null);
     assert.deepEqual(
       [...menu.querySelectorAll('[role="menuitemradio"]')].map((node) => node.textContent),
-      ['Configured A', 'Configured B'],
+      ['Configured A', 'Secondary connection', 'Configured B'],
     );
 
     // 点它派发登录事件（LoginDialog 监听），并收起下拉
@@ -660,6 +660,36 @@ test('same-name connections display and send the selected stable model identity'
     assert.deepEqual(useSessionStore.getState().getOutgoingModelParams(sessionId), { model_selection: { type: 'model', id: 'mdl-b' } });
   });
 });
+
+for (const aliases of [true, false]) {
+  test(`same-name non-default connections remain selectable (${aliases ? 'with aliases' : 'without aliases'})`, async (t) => {
+    const persisted = [];
+    t.mock.method(webClient, 'request', async (method, params) => {
+      assert.equal(method, 'session.selection.set');
+      persisted.push(params);
+      return { success: true };
+    });
+    await withFixture(async ({ mount, click, byId }) => {
+      setupStableCatalog();
+      const models = stableCatalog.map((model) => ({ ...model, alias: aliases ? model.alias : '' }));
+      useSessionStore.getState().setAvailableModels(models, 'same-model');
+      await mount(createElement(ChatModelSelector));
+      await click(byId('chat-panel-model-selector-trigger'));
+      const option = byId('chat-panel-model-selector-menu').querySelector('[data-variant="mdl-b"]');
+      assert.ok(option, 'the non-default connection is present');
+      const label = aliases ? 'Secondary connection' : 'same-model';
+      assert.equal(option.textContent, label);
+      await click(option);
+      assert.equal(byId('chat-panel-model-selector-label').textContent, label);
+      assert.deepEqual(useSessionStore.getState().getOutgoingModelParams(sessionId), {
+        model_selection: { type: 'model', id: 'mdl-b' },
+      });
+      assert.equal(persisted.at(-1).model_selection.id, 'mdl-b');
+      await act(async () => useSessionStore.getState().setAvailableModels(models, 'same-model'));
+      assert.equal(byId('chat-panel-model-selector-label').textContent, label);
+    });
+  });
+}
 
 test('single-agent collaboration displays the group default while retaining a legacy pinned DTO', async () => {
   await withFixture(async ({ mount, click, byId }) => {

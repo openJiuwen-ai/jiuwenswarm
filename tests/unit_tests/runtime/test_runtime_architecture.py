@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 RUNTIME_DIR = Path(__file__).parents[3] / "jiuwenswarm" / "runtime"
@@ -170,28 +174,29 @@ def test_runtime_does_not_reintroduce_alternate_agent_implementations() -> None:
     assert declared.isdisjoint(FORBIDDEN_RUNTIME_TYPES)
 
 
-def test_agentserver_injects_runtime_manager_into_teammate_daemon() -> None:
+@pytest.mark.asyncio
+async def test_agentserver_injects_runtime_manager_into_teammate_daemon(monkeypatch) -> None:
     """The control-plane daemon runs outside a request ContextVar."""
-    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "worker" / "lifecycle.py"
-    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-    daemon_calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "run_teammate_bootstrap_daemon"
-    ]
+    from jiuwenswarm.server.worker.capabilities import _spawn_teammate_bootstrap
 
-    assert len(daemon_calls) == 1
-    keywords = {keyword.arg: keyword.value for keyword in daemon_calls[0].keywords}
-    manager = keywords.get("agent_manager")
-    call = manager.body if isinstance(manager, ast.IfExp) else manager
-    assert isinstance(call, ast.Call)
-    if isinstance(call.func, ast.Attribute):
-        assert call.func.attr == "get_agent_manager"
-        return
-    assert isinstance(call.func, ast.Name)
-    assert call.func.id == "get_agent_manager"
+    manager = object()
+    observed = []
+    stop = asyncio.Event()
+
+    async def daemon(*, stop_event, agent_manager):
+        observed.append(agent_manager)
+        assert stop_event is stop
+        await stop_event.wait()
+
+    monkeypatch.setitem(sys.modules, "jiuwenswarm.agents.harness.team.remote_member_bootstrap",
+                        SimpleNamespace(run_teammate_bootstrap_daemon=daemon))
+    task = _spawn_teammate_bootstrap(stop, SimpleNamespace(get_agent_manager=lambda: manager))
+    try:
+        await asyncio.sleep(0)
+        assert observed == [manager]
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 1)
 
 
 def test_agentserver_session_lifecycle_uses_runtime_public_api() -> None:

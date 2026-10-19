@@ -574,12 +574,15 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
     return True, ""
 
 
-async def prewarm_connected_mcps() -> None:
+async def prewarm_connected_mcps(*, report_status: bool = False) -> bool | None:
     """Prewarm ``Runner.resource_mgr`` for every ``state==connected`` MCP.
 
     Probes each so a later ``chat.send`` reconcile hits the existing-entry
     branch (no re-spawn). Failure-isolated per MCP and never downgrades state.
     Safe to call at startup and again from the root adapter (idempotent).
+
+    ``report_status`` returns whether every probe succeeded for capability
+    readiness. The default retains the existing best-effort ``None`` result.
 
     Background fire-and-forget — the service never awaits this task, so a
     slow/cold MCP probe (npx first-install ~30s, HTTP connect) is allowed to
@@ -595,7 +598,7 @@ async def prewarm_connected_mcps() -> None:
             if r.get("name")
         ]
         if not names:
-            return
+            return True if report_status else None
         logger.info(
             "[mcp-prewarm] prewarming %d connected MCP(s): %s",
             len(names), names,
@@ -603,7 +606,7 @@ async def prewarm_connected_mcps() -> None:
 
         sem = asyncio.Semaphore(_PREWARM_MAX_CONCURRENCY)
 
-        async def _probe_one(name: str) -> None:
+        async def _probe_one(name: str) -> bool:
             async with sem:
                 try:
                     # Only a genuine stall (>> probe's expected worst case)
@@ -619,6 +622,7 @@ async def prewarm_connected_mcps() -> None:
                             "[mcp-prewarm] '%s' prewarm failed: %s "
                             "(will lazy-connect on first chat)", name, reason,
                         )
+                    return bool(ok)
                 except asyncio.TimeoutError:
                     logger.warning(
                         "[mcp-prewarm] '%s' prewarm stalled >%.0fs "
@@ -629,13 +633,16 @@ async def prewarm_connected_mcps() -> None:
                     logger.warning(
                         "[mcp-prewarm] '%s' prewarm error: %s", name, exc,
                     )
+                return False
 
         # Concurrent probes bounded by semaphore — all MCPs start in parallel
         # but at most N execute add_mcp_server at any moment.  Total wall time
         # ≈ the slowest probe alone (not N×), with stall protection only.
-        await asyncio.gather(*[_probe_one(name) for name in names])
+        results = await asyncio.gather(*[_probe_one(name) for name in names])
+        return all(results) if report_status else None
     except Exception as exc:  # noqa: BLE001
         logger.warning("[mcp-prewarm] background prewarm failed: %s", exc)
+        return False if report_status else None
 
 
 def _stable_mcp_server_id(scope: str, name: str, payload: dict[str, Any]) -> str:

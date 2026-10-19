@@ -541,14 +541,14 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
             return list(b.keys()) == ["result"]
 
         if _empty_complete_marker(body, res):
-            return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+            return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
                 request_id=rid,
                 channel_id=ch,
                 payload={"is_complete": True},
                 is_complete=True,
             )
         pl = dict(res) if isinstance(res, dict) else {}
-        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload=pl,
@@ -558,7 +558,7 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
     if kind == E2A_RESPONSE_KIND_E2A_ERROR and e2a.is_final:
         det = body.get("details")
         pl = dict(det) if isinstance(det, dict) else dict(body)
-        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload=pl,
@@ -603,7 +603,7 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
                 pl2["content"] = delta
         if et is not None and "event_type" not in pl2:
             pl2["event_type"] = et
-        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload=pl2,
@@ -622,7 +622,7 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
             "data": body.get("data"),
             "message": body.get("message"),
         }
-        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload=body_payload,
@@ -630,7 +630,7 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
         )
 
     if kind == E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST:
-        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload={
@@ -641,7 +641,7 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
         )
 
     if kind == E2A_RESPONSE_KIND_PLAN_APPROVAL_REQUIRED:
-        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+        return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload={

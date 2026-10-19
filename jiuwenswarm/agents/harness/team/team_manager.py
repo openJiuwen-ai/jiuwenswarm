@@ -1348,6 +1348,23 @@ class TeamManager:
         return compiled
 
     @staticmethod
+    def _default_if_deleted(
+        selection: SwarmModelSelection | dict[str, Any],
+    ) -> SwarmModelSelection | dict[str, Any]:
+        """Replace a persisted reference only when its resource was deleted."""
+        from jiuwenswarm.common.model_catalog import ModelCatalog
+        from jiuwenswarm.server.runtime.model_routing_registry import (
+            ModelExecutionContext, ModelSelectionResolver,
+        )
+
+        selected = SwarmModelSelection.model_validate(selection)
+        catalog = ModelCatalog()
+        if catalog.has_selection(selected):
+            return selection
+        logger.info("saved Team selection %s:%s was deleted; using current default", selected.type, selected.id)
+        return ModelSelectionResolver(catalog).choose(None, ModelExecutionContext())
+
+    @staticmethod
     def _selected_model_name(
         selection: SwarmModelSelection,
         compiled: CompiledModelSelection,
@@ -1681,7 +1698,8 @@ class TeamManager:
         # A persisted selection is a business reference, not a runtime
         # snapshot.  Re-resolve it on every cold build so config/credentials
         # and permissions are current.
-        if model_selection is None:
+        restored_selection = model_selection is None
+        if restored_selection:
             metadata = get_session_metadata(session_id, cache_bust=True)
             # Team bindings own the long-lived business selection.  Keep the
             # session field as a read-only compatibility fallback for legacy
@@ -1708,6 +1726,8 @@ class TeamManager:
                     model_selection = stored.model_dump(exclude_none=True)
 
         if model_selection is not None:
+            if restored_selection:
+                model_selection = self._default_if_deleted(model_selection)
             load_kwargs["model_selection"] = model_selection
         spec = self._load_team_spec(session_id, **load_kwargs)
         if team_name:

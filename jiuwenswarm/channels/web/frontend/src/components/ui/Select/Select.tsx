@@ -32,6 +32,11 @@ export type SelectProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onChang
   panelHeader?: ReactNode;
   /** 选中项行尾渲染对勾图标；默认关闭，供沿用旧版下拉观感的调用方开启 */
   showSelectedCheck?: boolean;
+  /** 覆盖触发器的显示内容（面板仍用 option.label）：调用方可让触发器截断、
+   * 面板完整显示同一段长文本 */
+  triggerLabel?: ReactNode;
+  /** 面板最大宽度（px）；不传则随内容自适应。限宽后超长 label 需由调用方截断 */
+  maxPanelWidth?: number;
 };
 
 const TRIGGER_GAP = 6;
@@ -41,7 +46,7 @@ const EXIT_DURATION_MS = 120;
 
 /** 自定义下拉：面板挂到所属 dialog 或 body，样式复用 ui-dropdown-menu。 */
 export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select(
-  { options, invalid = false, className, onChange, value, defaultValue, disabled, onBlur, id, placeholder, panelHeader, showSelectedCheck = false, ...props },
+  { options, invalid = false, className, onChange, value, defaultValue, disabled, onBlur, id, placeholder, panelHeader, showSelectedCheck = false, triggerLabel, maxPanelWidth, ...props },
   forwardedRef,
 ) {
   const isControlled = value !== undefined;
@@ -208,6 +213,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
     left: position?.left ?? 0,
     top: position?.top ?? 0,
     minWidth: position ? `${Math.max(position.minWidth, 154)}px` : undefined,
+    maxWidth: maxPanelWidth ? `${maxPanelWidth}px` : undefined,
     visibility: position ? 'visible' : 'hidden',
   };
 
@@ -230,7 +236,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
         onKeyDown={handleTriggerKeyDown}
         onBlur={onBlur}
       >
-        {selectedOption?.label ?? placeholder ?? ''}
+        {triggerLabel ?? selectedOption?.label ?? placeholder ?? ''}
       </button>
       {phase !== null && portalHost
         ? createPortal(

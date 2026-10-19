@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 import pytest
+from prompt_toolkit.utils import get_cwidth
 
 from jiuwenswarm.channels.process_cli import main as cli_main
 from jiuwenswarm.channels.process_cli import session_entry
@@ -120,6 +121,69 @@ def test_list_keeps_full_ids_and_sanitizes_multiline_metadata(monkeypatch, capsy
     assert item.session_id in output and "team.work.normal" in output
     assert "two lines " in output and "C:/a b" in output
     assert "\x1b" not in output and len(output.splitlines()) == 3
+
+
+@pytest.mark.parametrize(
+    "title,project_dir",
+    [("中文任务", "D:/项目"), ("Cafe\u0301", "D:/work"), ("", "")],
+)
+def test_list_aligns_headers_and_values_by_terminal_cells(
+    title, project_dir, monkeypatch, capsys
+):
+    headers = ("会话ID", "最近消息时间", "模式", "标题", "项目目录")
+    values = [
+        (
+            "process_cli_1234567890abcdef_9876543210abcdef",
+            "-",
+            "team.work.normal",
+            title,
+            project_dir,
+        ),
+        ("process_cli_short", "-", "agent.code.normal", "OK", "C:/x"),
+    ]
+    items = [
+        SessionSummary(
+            session_id=row[0],
+            channel_id="process_cli",
+            mode=row[2],
+            work_mode="code",
+            title=row[3],
+            project_dir=row[4],
+            last_message_at=0,
+        )
+        for row in values
+    ]
+    monkeypatch.setattr(
+        session_catalog, "list_sessions", lambda *a, **kw: _result(*items)
+    )
+    assert _execute(["--list-sessions"]) == 0
+    output = capsys.readouterr().out
+    lines = output.splitlines()[:-1]
+    assert len(lines) == 3 and lines[0].startswith("会话ID  ")
+    assert "\t" not in output
+    rows = [headers, *values]
+    for column in range(len(headers)):
+        starts = {
+            get_cwidth(line[: line.index(row[column])])
+            for line, row in zip(lines, rows)
+            if row[column]
+        }
+        assert len(starts) == 1
+    for line, row in zip(lines, rows):
+        for left, right in zip(row, row[1:]):
+            if left and right:
+                gap = line[line.index(left) + len(left) : line.index(right)]
+                assert len(gap) >= 2 and gap.isspace()
+
+
+def test_list_past_last_page_still_renders_headers(monkeypatch, capsys):
+    result = SessionListResult(sessions=(), total=1, limit=20, offset=2)
+    monkeypatch.setattr(session_catalog, "list_sessions", lambda *a, **kw: result)
+    assert _execute(["--list-sessions", "--offset", "2"]) == 0
+    output = capsys.readouterr().out
+    assert output.startswith("会话ID  ")
+    assert "本页 0 条；匹配共 1 条；offset=2；limit=20" in output
+    assert len(output.splitlines()) == 2
 
 
 @pytest.mark.parametrize(

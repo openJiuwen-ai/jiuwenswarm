@@ -19,6 +19,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -58,8 +59,22 @@ if sys.platform == "win32":
     import msvcrt
 
     def _acquire(fd: int) -> None:
-        # LK_LOCK 自带 ~10s 重试,超时抛 OSError
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        # LK_LOCK retries once a second: a millisecond metadata write in
+        # another process can otherwise delay admission by a full second.
+        deadline = time.monotonic() + _LOCK_TIMEOUT_SEC
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                return
+            except OSError as exc:
+                import errno
+
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise OSError("timeout acquiring resource file lock") from exc
+                time.sleep(min(0.005, remaining))
 
     def _release(fd: int) -> None:
         try:
@@ -69,7 +84,6 @@ if sys.platform == "win32":
 
 else:
     import fcntl
-    import time
 
     def _acquire(fd: int) -> None:
         deadline = time.monotonic() + _LOCK_TIMEOUT_SEC

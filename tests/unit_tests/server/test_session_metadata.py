@@ -2901,7 +2901,8 @@ class TestRebindSessionProjectConcurrency:
         item_sid, _meta, options = captured[0]
         assert item_sid == sid
         assert options.rebind_gen_at_enqueue == 0
-        assert options.merge_fields is None
+        # A no-op update owns no fields; it must not replace a cross-process snapshot.
+        assert options.merge_fields == frozenset()
 
         # rebind: bump gen
         _bump_rebind_gen(sid)

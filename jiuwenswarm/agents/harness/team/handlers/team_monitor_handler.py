@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from openjiuwen.agent_teams.monitor import TeamMonitor
@@ -131,6 +132,29 @@ def _task_text_field(name: str, value: str | None) -> dict[str, Any]:
         field[f"{name}_truncated"] = True
         field[f"{name}_original_size"] = original_size
     return field
+
+
+# 框架模板消息（SDK ``message_template``）的模板 key → 前端交接类型。
+# 模板 key 是 SDK ``prompts/<lang>/<key>.md`` 的文件名；未登记的模板退化为 ``other``，
+# 前端显示通用的「调度消息」文案，SDK 新增模板时在这里补一行即可。
+_HANDOFF_KIND_BY_TEMPLATE: dict[str, str] = {
+    "scheduler_task_start": "task_start",
+    "scheduler_task_start_plan": "task_start_plan",
+    "scheduler_review_request": "review_request",
+    "scheduler_review_renudge": "review_renudge",
+    "scheduler_rework": "rework",
+    "scheduler_rework_summary": "rework_summary",
+    "passive_task_assigned": "task_assigned",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _MessageDisplay:
+    """一条邮箱消息在前端事件上的展示字段."""
+
+    content: str = ""
+    protocol: str = "plain"
+    handoff: dict[str, Any] | None = None
 
 
 class TeamMonitorHandler(BaseMonitorHandler):
@@ -295,29 +319,33 @@ class TeamMonitorHandler(BaseMonitorHandler):
         return base
 
     async def _handle_message(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
-        message_content, message_protocol = await self._get_message_display(event.message_id)
+        display = await self._get_message_display(event.message_id)
         base.update({
             "message_id": event.message_id,
             "from_member": event.from_member_name,
             "to_member": event.to_member_name,
-            "content": message_content,
-            "protocol": message_protocol,
+            "content": display.content,
+            "protocol": display.protocol,
         })
+        if display.handoff is not None:
+            base["handoff"] = display.handoff
         return base
 
     async def _handle_broadcast(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
-        message_content, message_protocol = await self._get_message_display(event.message_id)
+        display = await self._get_message_display(event.message_id)
         base.update({
             "message_id": event.message_id,
             "from_member": event.from_member_name,
-            "content": message_content,
-            "protocol": message_protocol,
+            "content": display.content,
+            "protocol": display.protocol,
         })
+        if display.handoff is not None:
+            base["handoff"] = display.handoff
         return base
 
-    async def _get_message_display(self, message_id: str | None) -> tuple[str, str]:
+    async def _get_message_display(self, message_id: str | None) -> _MessageDisplay:
         if not message_id or not self._monitor:
-            return "", "plain"
+            return _MessageDisplay()
         try:
             from openjiuwen.agent_teams.context import set_session_id, reset_session_id
             token = set_session_id(self._session_id)
@@ -327,8 +355,9 @@ class TeamMonitorHandler(BaseMonitorHandler):
                     if message.message_id == message_id:
                         protocol = self._normalize_message_protocol(message.protocol)
                         content = self._normalize_message_content(message.content or "", protocol)
-                        return content, protocol
-                return "", "plain"
+                        handoff = await self._build_handoff(getattr(message, "meta", None))
+                        return _MessageDisplay(content=content, protocol=protocol, handoff=handoff)
+                return _MessageDisplay()
             finally:
                 reset_session_id(token)
         except Exception as e:
@@ -337,7 +366,42 @@ class TeamMonitorHandler(BaseMonitorHandler):
                 message_id,
                 e,
             )
-            return "", "plain"
+            return _MessageDisplay()
+
+    async def _build_handoff(self, meta: Any) -> dict[str, Any] | None:
+        """把框架模板消息的 meta 转成前端展示用的交接描述.
+
+        模板消息（调度器开工 / 送审 / 返工 / 催办、被动成员派活）的 ``content`` 恒空，
+        正文要等收件人投递时才渲染，且是写给执行成员的完整任务简报，不适合放进群聊。
+        这里只给出交接类型与所绑定任务的标题，前端据此渲染一行调度系统消息。
+
+        Args:
+            meta: ``MessageInfo.meta``，即 ``{template, refs, params}``；非模板消息为 None。
+
+        Returns:
+            ``{kind, template, task_id?, task_title?, max_rounds?}``；非模板消息返回 None。
+        """
+        if not isinstance(meta, dict):
+            return None
+        template = meta.get("template")
+        if not isinstance(template, str) or not template:
+            return None
+        handoff: dict[str, Any] = {
+            "kind": _HANDOFF_KIND_BY_TEMPLATE.get(template, "other"),
+            "template": template,
+        }
+        refs = meta.get("refs") if isinstance(meta.get("refs"), dict) else {}
+        task_id = refs.get("task")
+        if isinstance(task_id, str) and task_id:
+            handoff["task_id"] = task_id
+            body = await self._lookup_task_body(task_id)
+            if body is not None and body[0]:
+                handoff.update(_task_text_field("task_title", body[0]))
+        params = meta.get("params") if isinstance(meta.get("params"), dict) else {}
+        max_rounds = params.get("max_rounds")
+        if isinstance(max_rounds, str) and max_rounds:
+            handoff["max_rounds"] = max_rounds
+        return handoff
 
     @staticmethod
     def _normalize_message_protocol(protocol: Any) -> str:

@@ -92,6 +92,92 @@ def test_upsert_preserves_omitted_secret_and_encrypts_rotation(catalog_state, mo
     assert saved["model_client_config"]["api_key"] == "enc:new"
 
 
+@pytest.mark.parametrize("level", ["on", "off", "high", ""])
+def test_reasoning_resource_round_trip_and_reset(catalog_state, level):
+    import io
+
+    import yaml
+    from ruamel.yaml import YAML
+
+    catalog_state["models"]["defaults"][0]["model_config_obj"] = {"reasoning_level": "high"}
+    saved = config_module.upsert_model_resource({
+        "model_id": "mdl_a", "model_config_obj": {"reasoning_level": level},
+    })
+    stream = io.StringIO()
+    YAML().dump(saved, stream)
+    loaded = yaml.safe_load(stream.getvalue())
+    assert loaded["model_config_obj"]["reasoning_level"] == level
+    catalog_state["models"]["defaults"][0] = loaded
+    detail = ModelCatalog(catalog_state).get_public_model_detail("mdl_a")
+    assert detail["model_config_obj"]["reasoning_level"] == level
+
+
+@pytest.mark.parametrize("level, expected", [(True, "on"), (False, "off")])
+def test_reasoning_resource_detail_recovers_legacy_yaml_booleans(catalog_state, level, expected):
+    catalog_state["models"]["defaults"][0]["model_config_obj"] = {"reasoning_level": level}
+    detail = ModelCatalog(catalog_state).get_public_model_detail("mdl_a")
+    assert detail["model_config_obj"]["reasoning_level"] == expected
+    assert catalog_state["models"]["defaults"][0]["model_config_obj"]["reasoning_level"] is level
+
+
+@pytest.mark.parametrize("runtime", ["server", "gateway.embedded"])
+@pytest.mark.parametrize("level, mode", [("on", "enabled"), ("off", "disabled"), (True, "enabled"), (False, "disabled")])
+def test_stable_selection_translates_reasoning_before_core_compilation(catalog_state, runtime, level, mode):
+    from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
+
+    entry = catalog_state["models"]["defaults"][0]
+    entry["model_client_config"].update({"model_name": "Qwen3.8-Flash", "api_base": "https://example.com/v1"})
+    entry["model_config_obj"] = {"reasoning_level": level, "temperature": 0.3}
+    catalog_state["models"]["groups"] = [{
+        "model_group_id": "mgp_reasoning", "enabled": True,
+        "routes": [{"route_id": "rte_reasoning", "model_id": "mdl_a", "enabled": True}],
+    }]
+    resolver_type = import_module(f"jiuwenswarm.{runtime}.runtime.model_routing_registry").ModelSelectionResolver
+    resolver = resolver_type(ModelCatalog(catalog_state))
+    for selection in (
+        ModelSelection(type="model", id="mdl_a"),
+        ModelSelection(type="model_group", id="mgp_reasoning"),
+    ):
+        resolved = resolver.resolve(selection)
+        model = resolved if selection.type == "model" else resolved.routes[0].model
+        assert "reasoning_level" not in model.request_defaults
+        assert model.request_defaults["reasoning"] == {"mode": mode}
+        assert model.request_defaults["temperature"] == 0.3
+        assert "reasoning_level" not in str(compile_model_selection(resolved).model_request_config.model_dump())
+    assert entry["model_config_obj"]["reasoning_level"] == level
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["defaults", "agentos", "source", "model_source"])
+async def test_model_get_returns_plaintext_key_only_for_user_configured_models(catalog_state, monkeypatch, source):
+    from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SOURCE
+    from jiuwenswarm.common.config_panel.model_resource_handlers import _resource_payload
+
+    crypto = SimpleNamespace(decrypt=lambda value: value.removeprefix("enc:"))
+    monkeypatch.setattr(config_module, "get_crypto_provider", lambda: crypto)
+    entry = catalog_state["models"]["defaults"][0]
+    entry["model_client_config"]["custom_headers"] = {"Authorization": "test-private-header"}
+    if source == "agentos":
+        catalog_state["models"]["agentos"].append(catalog_state["models"]["defaults"].pop(0))
+    elif source != "defaults":
+        entry[source] = LOGIN_MODEL_SOURCE
+    before = deepcopy(catalog_state)
+
+    payload = await _resource_payload("models.get", {"model_id": "mdl_a"})
+
+    detail = payload["model"]
+    client = detail["model_client_config"]
+    if source == "defaults":
+        assert client["api_key"] == "old"
+        assert "model_client_config.api_key" not in detail["write_only_fields"]
+    else:
+        assert "api_key" not in client
+        assert "model_client_config.api_key" in detail["write_only_fields"]
+    assert "custom_headers" not in client
+    assert "model_client_config.custom_headers" in detail["write_only_fields"]
+    assert catalog_state == before
+
+
 @pytest.mark.parametrize("operation", ["upsert", "delete"])
 def test_agentos_resource_is_read_only(catalog_state, operation):
     with pytest.raises(ModelSelectionError) as caught:
@@ -147,7 +233,7 @@ def test_group_without_routes_returns_validation_error(catalog_state, fields):
 
 @pytest.mark.parametrize("content", ['{"model_selection":', "null", "[]"])
 @pytest.mark.asyncio
-async def test_corrupt_session_blocks_delete_with_explicit_error(tmp_path, monkeypatch, content):
+async def test_corrupt_session_does_not_block_delete(tmp_path, monkeypatch, content):
     from jiuwenswarm.common.config_panel import model_resource_handlers as handlers
 
     directory = tmp_path / "broken-session"
@@ -158,7 +244,7 @@ async def test_corrupt_session_blocks_delete_with_explicit_error(tmp_path, monke
         "defaults": [{"model_id": "mdl_a", "model_client_config": {"model_name": "a"}}],
     }})
     deleted = []
-    monkeypatch.setattr(handlers, "delete_model_resource", lambda *args, **kwargs: deleted.append(args))
+    monkeypatch.setattr(handlers, "delete_model_resource", lambda *args, **kwargs: deleted.append(args) or True)
     channel = SimpleNamespace(send_response=AsyncMock())
 
     await handlers.model_resource_handler(
@@ -166,10 +252,8 @@ async def test_corrupt_session_blocks_delete_with_explicit_error(tmp_path, monke
     )
 
     response = channel.send_response.call_args.kwargs
-    assert response["ok"] is False
-    assert response["code"] == "MODEL_RUNTIME_UNAVAILABLE"
-    assert "session metadata" in response["error"]
-    assert deleted == []
+    assert response["ok"] is True
+    assert deleted == [("model", "mdl_a")]
 
 
 def test_corrupt_cron_reference_file_returns_explicit_error(tmp_path, monkeypatch):
@@ -295,15 +379,74 @@ async def test_reference_check_fails_closed_on_store_error(catalog_state, monkey
     store.aclose.assert_awaited_once()
 
 
-def test_legacy_replace_cannot_remove_referenced_model(catalog_state, monkeypatch):
+def test_legacy_replace_removes_referenced_model(catalog_state, monkeypatch):
     from jiuwenswarm.common.model_catalog import SelectionReference
 
     monkeypatch.setattr(ModelCatalog, "find_references", lambda *args, **kwargs: [SelectionReference("session", "s")])
-    before = deepcopy(catalog_state)
-    with pytest.raises(ModelSelectionError) as caught:
-        config_module.update_default_models_in_config([catalog_state["models"]["defaults"][1]])
-    assert caught.value.code == "MODEL_SELECTION_REFERENCED"
-    assert catalog_state == before
+    config_module.update_default_models_in_config([catalog_state["models"]["defaults"][1]])
+    assert [entry["model_id"] for entry in catalog_state["models"]["defaults"]] == ["mdl_b"]
+
+
+def test_resource_delete_ignores_session_references(catalog_state, monkeypatch):
+    monkeypatch.setattr(ModelCatalog, "find_references", lambda *args, **kwargs: pytest.fail("reference scan ran"))
+    assert config_module.delete_model_resource("model", "mdl_a")
+    assert [entry["model_id"] for entry in catalog_state["models"]["defaults"]] == ["mdl_b"]
+
+
+def test_delete_keeps_model_group_routes_valid(catalog_state):
+    catalog_state["models"]["groups"] = [{
+        "model_group_id": "mgp_a", "routes": [{"route_id": "rte_a", "model_id": "mdl_a"}],
+    }]
+    with pytest.raises(ModelSelectionError, match="references missing model_id"):
+        config_module.delete_model_resource("model", "mdl_a")
+    assert len(catalog_state["models"]["defaults"]) == 2
+
+
+def test_deleted_session_selection_uses_current_default(catalog_state, monkeypatch):
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    catalog_state["models"]["defaults"] = [catalog_state["models"]["defaults"][1]]
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._session_instance_agent_definition = None
+    monkeypatch.setattr(adapter, "_session_stored_model_name", lambda _sid: "")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection",
+        lambda _sid: ModelSelection(type="model", id="mdl_a"),
+    )
+    request = AgentRequest(request_id="r", session_id="s", params={})
+    assert adapter._requested_model_name(request) == "model:mdl_b"
+
+
+@pytest.mark.parametrize("cron", [True, False])
+def test_deleted_explicit_selection_only_falls_back_for_cron(catalog_state, cron):
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._is_cron_execution = cron
+    request = AgentRequest(request_id="r", session_id="", params={
+        "model_selection": {"type": "model", "id": "deleted"},
+    })
+    assert adapter._requested_model_name(request) == ("model:mdl_a" if cron else "model:deleted")
+
+
+def test_deleted_session_route_uses_current_default(catalog_state, monkeypatch):
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    catalog_state["models"]["groups"] = [{
+        "model_group_id": "mgp_a", "routes": [{"route_id": "current", "model_id": "mdl_a"}],
+        "is_default": True,
+    }]
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    monkeypatch.setattr(adapter, "_session_stored_model_name", lambda _sid: "")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection",
+        lambda _sid: ModelSelection(type="model_group", id="mgp_a", route_id="deleted"),
+    )
+    request = AgentRequest(request_id="r", session_id="s", params={})
+    assert adapter._requested_model_name(request) == "model_group:mgp_a"
 
 
 def test_session_then_spec_then_default_group_priority(catalog_state, monkeypatch):

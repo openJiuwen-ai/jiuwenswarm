@@ -5,28 +5,41 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import json
 import logging
+import os
+import uuid
+from dataclasses import asdict
+from enum import Enum
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.ipc.protocol import (
     KIND_CANCEL,
+    KIND_DELIVERY_ACK,
     KIND_GATEWAY_ATTACH,
     KIND_GATEWAY_DETACH,
     KIND_HEARTBEAT,
     KIND_REQUEST,
     KIND_REQUEST_DONE,
     KIND_SHUTDOWN,
+    KIND_SUBSCRIBE,
+    KIND_SNAPSHOT,
     cancel_request,
     load_agent_request,
+    request_scope,
 )
 from jiuwenswarm.server.ipc.stream import IpcConnection
 from jiuwenswarm.server.worker.diagnostics import LoopBeat, heartbeat_reply
 from jiuwenswarm.server.worker.gateway_bridge import (
     WorkerGatewayBridge,
     begin_delivery_tracking,
+    begin_request_dispatch,
     begin_request_generation,
     end_delivery_tracking,
+    end_request_dispatch,
     end_request_generation,
 )
 
@@ -44,32 +57,87 @@ class WorkerDispatcher:
         self._beat = beat
         self._lock = asyncio.Lock()
         self._runtime: Any = None
+        self._ready = False
         self._attached = False
-        self._queued: list[tuple[int, AgentRequest]] = []
+        self._queued: list[tuple[int, AgentRequest, str]] = []
         self._tasks: dict[asyncio.Task[None], int] = {}
         self._state_lock = asyncio.Lock()
         self.shutdown_requested = False
         self._draining = False
+        self._failure = ""
+        self._startup_priorities: dict[str, tuple[Any, Any, object]] = {}
 
     async def bind_runtime(self, runtime: Any) -> None:
         """Publish the Runtime before it reports ``AGENT_READY``."""
         async with self._state_lock:
             self._runtime = runtime
-            attached = self._attached
+        # This is a Worker-owned event sink even while Gateway is offline.
+        await self._bind_runtime_gateway(runtime)
+
+    async def _bind_runtime_gateway(self, runtime: Any) -> None:
+        bind = getattr(runtime, "bind_gateway_transport", None)
+        if not callable(bind):
+            bind = getattr(runtime, "attach_gateway_connection", None)
+        if callable(bind):
+            result = bind(self._bridge, self._lock)
+            if inspect.isawaitable(result):
+                await result
+
+    async def mark_ready(self) -> None:
+        # This callback runs before optional tasks released by minimum_ready.
+        # Claim priority before set_available can suspend and before spawning
+        # queued dispatch; pausing inside Runtime dispatch alone is too late.
+        runtime = self._runtime
+        preparation = getattr(runtime, "_preparation_registry", None)
+        if preparation is not None and not getattr(runtime, "_execution_minimum_observed", False):
+            for _generation, request, dispatch_id in self._queued:
+                if (request.req_method not in {ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME, ReqMethod.CHAT_ANSWER}
+                        or dispatch_id in self._startup_priorities):
+                    continue
+                token = preparation.pause_background()
+                tokens = getattr(runtime, "_startup_preparation_tokens", None)
+                if tokens is None:
+                    tokens = runtime._startup_preparation_tokens = set()
+                tokens.add(token)
+                self._startup_priorities[dispatch_id] = (runtime, preparation, token)
+        # Mailbox execution is owned by the resident Runtime. It must not wait
+        # for the legacy in-process WebSocket connection handler to run.
+        service = getattr(self._runtime, "_session_message_service", None)
+        if service is not None:
+            try:
+                await service.set_available(True)
+            except BaseException:
+                for dispatch_id in list(self._startup_priorities):
+                    self._release_startup_priority(dispatch_id)
+                raise
+        async with self._state_lock:
+            self._ready = True
             queued = self._queued
             self._queued = []
-            live = self._bridge.holder.generation
-        if attached:
-            await runtime.attach_gateway_connection(self._bridge, self._lock)
-        for generation, request in queued:
-            if self._draining or generation != live:
-                logger.info(
-                    "[Worker] dropped queued request_id=%s generation=%s",
-                    request.request_id,
-                    generation,
-                )
+        for generation, request, dispatch_id in queued:
+            if self._draining:
+                self._release_startup_priority(dispatch_id)
+                self._bridge.events.finish(dispatch_id)
                 continue
-            self._spawn(self._run_request(request, generation), generation)
+            self._spawn(self._run_request(request, generation, dispatch_id), generation)
+
+    def _release_startup_priority(self, dispatch_id: str) -> None:
+        owner = self._startup_priorities.pop(dispatch_id, None)
+        if owner is None:
+            return
+        runtime, preparation, token = owner
+        preparation.resume_background(token)
+        getattr(runtime, "_startup_preparation_tokens", set()).discard(token)
+
+    async def mark_failed(self, reason: str) -> None:
+        async with self._state_lock:
+            self._failure = reason
+            queued, self._queued = self._queued, []
+        for generation, request, dispatch_id in queued:
+            self._release_startup_priority(dispatch_id)
+            self._bridge.events.complete(dispatch_id, state="failed", error=reason)
+            await self._finish(generation, request.request_id, ok=False, error=reason,
+                               delivered=False, dispatch_id=dispatch_id)
 
     async def handle(self, message: dict[str, Any], conn: IpcConnection) -> bool:
         """Handle one frame. Return False when the session should close."""
@@ -89,6 +157,12 @@ class WorkerDispatcher:
             beat_age = self._beat.age if self._beat is not None else None
             await conn.send(heartbeat_reply(beat_age))
             return True
+        if kind == KIND_DELIVERY_ACK:
+            self._bridge.acknowledge(message)
+            return True
+        if kind == KIND_SUBSCRIBE:
+            self._spawn(self._subscribe(message, conn, generation), generation)
+            return True
         if kind == KIND_SHUTDOWN:
             self.shutdown_requested = True
             return False
@@ -97,7 +171,7 @@ class WorkerDispatcher:
                 self._attached = True
                 runtime = self._runtime
             if runtime is not None:
-                await runtime.attach_gateway_connection(self._bridge, self._lock)
+                await self._bind_runtime_gateway(runtime)
             return True
         if kind == KIND_GATEWAY_DETACH:
             await self.detach_gateway(message.get("remote"))
@@ -113,7 +187,7 @@ class WorkerDispatcher:
                     delivered=False,
                 )
                 return True
-            self._spawn(self._run_request(request, generation), generation)
+            self._spawn(self._run_request(request, generation, str(message.get("dispatch_id") or "")), generation)
             return True
         if kind == KIND_REQUEST:
             payload = message.get("payload")
@@ -126,37 +200,69 @@ class WorkerDispatcher:
                     error="missing payload",
                 )
                 return True
-            self._spawn(self._run_request(load_agent_request(payload), generation), generation)
+            request = load_agent_request(payload)
+            dispatch_id = str(message.get("dispatch_id") or uuid.uuid4().hex)
+            self._reconcile_execution_state(request)
+            try:
+                self._bridge.events.register(request, dispatch_id)
+            except ValueError as exc:
+                await self._done(conn, str(request.request_id or ""), generation=generation,
+                                 dispatch_id=dispatch_id, ok=False, error=str(exc))
+                return True
+            if request.req_method == ReqMethod.CHAT_CANCEL and not self._ready:
+                await self._drop_queued_cancel(request)
+                # The reader must remain available to receive delivery ACKs.
+                self._spawn(self._cancel_response(request, generation, dispatch_id), generation)
+            else:
+                self._spawn(self._run_request(request, generation, dispatch_id), generation)
             return True
         logger.info("[Worker] ignored ipc kind=%s", kind)
         return True
 
+    def _reconcile_execution_state(self, request: AgentRequest):
+        """Distinguish a returned output segment from a terminal execution."""
+        if self._runtime is None:
+            return None
+        getter = getattr(self._runtime, "_execution_runtime", None)
+        runtime = getter() if callable(getter) else self._runtime
+        snapshot_getter = getattr(runtime, "get_session_snapshot", None)
+        if not callable(snapshot_getter):
+            return None
+        state = snapshot_getter(request.params.get("session_id") or request.session_id or "")
+        if state is None:
+            return None
+        for record in list(self._bridge.events.records.values()):
+            if record.scope != request_scope(request):
+                continue
+            if record.last_execution_id:
+                executions = [item for item in state.executions if item.execution_id == record.last_execution_id]
+            else:
+                executions = [item for item in state.executions
+                              if record.request.request_id in {item.request_id, item.root_request_id}]
+            if not executions:
+                continue
+            ongoing = [item for item in executions if not item.state.terminal]
+            waiting = {item.waiting_control_id for item in ongoing if item.waiting_control_id}
+            record.interactions = {key: value for key, value in record.interactions.items() if key in waiting}
+            record.is_processing = bool(ongoing)
+            if ongoing:
+                record.terminal = None
+            elif not record.active:
+                record.terminal = {"event_type": "runtime.completed", "state": executions[-1].state.value}
+                self._bridge.events.finish(record.dispatch_id)
+        return state
+
     async def detach_gateway(self, remote: object = None) -> None:
-        """Run Runtime disconnect cleanup once per attached Gateway session."""
+        """Detach delivery only. Execution and scheduled work remain Worker-owned."""
         async with self._state_lock:
             if not self._attached:
                 return
             self._attached = False
-            runtime = self._runtime
-        if runtime is None:
-            return
-        disconnect = getattr(runtime, "on_gateway_disconnect", None)
-        if not callable(disconnect):
-            return
-        try:
-            await disconnect(self._bridge, remote)
-        except Exception:  # noqa: BLE001
-            logger.exception("[Worker] gateway disconnect cleanup failed")
+        self._bridge.detach(self._bridge.holder.generation)
 
     async def retire_generation(self, generation: int) -> None:
-        """Cancel work owned by a supervisor connection that has gone away."""
-        async with self._state_lock:
-            self._queued = [item for item in self._queued if item[0] != generation]
-            tasks = [task for task, owner in self._tasks.items() if owner == generation]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.wait(set(tasks), timeout=_DRAIN_TIMEOUT)
+        """Invalidate transport delivery waiters, retaining accepted execution."""
+        self._bridge.detach(generation)
 
     async def drain(self, *, timeout: float = _DRAIN_TIMEOUT) -> bool:
         """Stop new work and cancel active dispatch.
@@ -167,6 +273,10 @@ class WorkerDispatcher:
         async with self._state_lock:
             self._draining = True
             self.shutdown_requested = True
+            for dispatch_id in list(self._startup_priorities):
+                self._release_startup_priority(dispatch_id)
+            for _generation, _request, dispatch_id in self._queued:
+                self._bridge.events.complete(dispatch_id, state="cancelled", error="worker shutting down")
             self._queued.clear()
             tasks = list(self._tasks)
         for task in tasks:
@@ -191,25 +301,30 @@ class WorkerDispatcher:
 
     def _forget_task(self, task: asyncio.Task) -> None:
         self._tasks.pop(task, None)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("[Worker] background dispatch failed", exc_info=task.exception())
 
     async def _drop_queued_cancel(self, request: AgentRequest) -> bool:
         """Drop a cancel that arrived before Runtime exists. Return True when handled."""
         target = str((request.params or {}).get("request_id") or "")
         session_id = request.session_id or ""
         async with self._state_lock:
-            if self._runtime is not None or self._draining:
+            if self._ready or self._draining:
                 return self._draining
-            kept: list[tuple[int, AgentRequest]] = []
-            dropped: list[tuple[int, AgentRequest]] = []
-            for generation, queued in self._queued:
+            kept: list[tuple[int, AgentRequest, str]] = []
+            dropped: list[tuple[int, AgentRequest, str]] = []
+            for generation, queued, dispatch_id in self._queued:
                 same_request = bool(target) and str(queued.request_id or "") == target
                 same_session = bool(session_id) and (queued.session_id or "") == session_id
-                if same_request or same_session:
-                    dropped.append((generation, queued))
+                same_owner = request_scope(queued)[:4] == request_scope(request)[:4]
+                if same_owner and ((same_request and (not session_id or same_session))
+                                   if target else same_session):
+                    dropped.append((generation, queued, dispatch_id))
                     continue
-                kept.append((generation, queued))
+                kept.append((generation, queued, dispatch_id))
             self._queued = kept
-        for generation, queued in dropped:
+        for generation, queued, dispatch_id in dropped:
+            self._release_startup_priority(dispatch_id)
             logger.info(
                 "[Worker] cancelled queued request_id=%s generation=%s",
                 queued.request_id,
@@ -221,38 +336,54 @@ class WorkerDispatcher:
                 ok=False,
                 error="cancelled before runtime ready",
                 delivered=False,
+                dispatch_id=dispatch_id,
             )
+            self._bridge.events.complete(dispatch_id, state="cancelled", error="cancelled before runtime ready")
         return True
 
-    async def _run_request(self, request: AgentRequest, generation: int) -> None:
+    async def _run_request(self, request: AgentRequest, generation: int, dispatch_id: str = "") -> None:
+        if not dispatch_id:
+            dispatch_id = uuid.uuid4().hex
+            self._bridge.events.register(request, dispatch_id)
         async with self._state_lock:
-            if self._draining or generation != self._bridge.holder.generation:
+            if self._draining:
+                self._release_startup_priority(dispatch_id)
                 logger.info(
                     "[Worker] dropped request_id=%s generation=%s draining=%s",
                     request.request_id,
                     generation,
                     self._draining,
                 )
+                self._bridge.events.complete(dispatch_id, state="cancelled", error="worker shutting down")
                 return
             runtime = self._runtime
-            if runtime is None:
+            if self._failure:
+                overflow = True
+            elif runtime is None or not self._ready:
                 if len(self._queued) >= _MAX_QUEUED_REQUESTS:
                     overflow = True
                 else:
-                    self._queued.append((generation, request))
+                    self._queued.append((generation, request, dispatch_id))
                     return
             else:
                 overflow = False
         if overflow:
+            self._release_startup_priority(dispatch_id)
             await self._finish(
                 generation,
                 str(request.request_id or ""),
                 ok=False,
-                error="worker queue is full",
+                error=self._failure or "worker queue is full",
                 delivered=False,
+                dispatch_id=dispatch_id,
             )
+            self._bridge.events.complete(dispatch_id, state="failed", error=self._failure or "worker queue is full")
             return
         gen_token = begin_request_generation(generation)
+        dispatch_token = begin_request_dispatch(dispatch_id)
+        from jiuwenswarm.runtime.execution_telemetry import execution_entry_sink, sdk_entry_sink
+        entry_token = execution_entry_sink.set(self._bridge.observe_execution_entry)
+        minimum_token = sdk_entry_sink.set(getattr(runtime, "observe_execution_minimum_ready", None))
         token, box = begin_delivery_tracking()
         error = ""
         ok = True
@@ -265,14 +396,20 @@ class WorkerDispatcher:
                 "[Worker] dispatch failed: request_id=%s", request.request_id
             )
         finally:
+            self._release_startup_priority(dispatch_id)
+            execution_entry_sink.reset(entry_token)
+            sdk_entry_sink.reset(minimum_token)
             end_delivery_tracking(token)
             end_request_generation(gen_token)
+            end_request_dispatch(dispatch_token)
+            self._bridge.events.finish(dispatch_id)
         await self._finish(
             generation,
             str(request.request_id or ""),
             ok=ok,
             error=error,
             delivered=bool(box),
+            dispatch_id=dispatch_id,
         )
 
     async def _finish(
@@ -283,6 +420,7 @@ class WorkerDispatcher:
         ok: bool,
         error: str,
         delivered: bool,
+        dispatch_id: str = "",
     ) -> None:
         if generation != self._bridge.holder.generation:
             logger.info(
@@ -303,6 +441,7 @@ class WorkerDispatcher:
                 ok=ok,
                 error=error,
                 delivered=delivered,
+                dispatch_id=dispatch_id,
             )
         except (OSError, RuntimeError):
             logger.info("[Worker] request.done dropped; supervisor disconnected")
@@ -316,6 +455,7 @@ class WorkerDispatcher:
         ok: bool,
         error: str = "",
         delivered: bool = False,
+        dispatch_id: str = "",
     ) -> None:
         await conn.send(
             {
@@ -325,8 +465,83 @@ class WorkerDispatcher:
                 "ok": ok,
                 "error": error,
                 "delivered": delivered,
+                "dispatch_id": dispatch_id,
             }
         )
+
+    async def _cancel_response(self, request: AgentRequest, generation: int, dispatch_id: str) -> None:
+        from jiuwenswarm.common.schema.agent import AgentResponse
+        from jiuwenswarm.server.front.protocol import encode_response
+        token = begin_request_dispatch(dispatch_id)
+        gen_token = begin_request_generation(generation)
+        try:
+            response = AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
+                                     ok=True, payload={"event_type": "chat.interrupt_result",
+                                                       "success": True, "queued": True},
+                                     metadata=request.metadata)
+            await self._bridge.send(json.dumps(encode_response(response, response_id=request.request_id)))
+            await self._finish(generation, request.request_id, ok=True, error="", delivered=True,
+                               dispatch_id=dispatch_id)
+        except Exception as exc:
+            await self._finish(generation, request.request_id, ok=False, error=str(exc), delivered=False,
+                               dispatch_id=dispatch_id)
+        finally:
+            end_request_dispatch(token)
+            end_request_generation(gen_token)
+            self._bridge.events.finish(dispatch_id)
+
+    async def _subscribe(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
+        # Publish replay before later live events. IPC reads continue in the
+        # service task, so acknowledgements and cancel cannot deadlock replay.
+        request = load_agent_request(message.get("payload") or {})
+        async with self._bridge.publication_lock(request_scope(request)):
+            if self._bridge.holder.generation != generation:
+                return
+            await self._subscribe_locked(message, conn, generation)
+
+    async def _subscribe_locked(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
+        request = load_agent_request(message.get("payload") or {})
+        after = max(0, int(message.get("after") or 0))
+        self._reconcile_execution_state(request)
+        snapshot = self._bridge.events.snapshot(request, after=after)
+        if message.get("worker_instance") not in {None, "", self._bridge.events.instance}:
+            snapshot["history_required"] = True
+            snapshot["interrupted"] = True
+            after = 0
+        if self._runtime is not None:
+            runtime_getter = getattr(self._runtime, "_execution_runtime", None)
+            runtime = runtime_getter() if callable(runtime_getter) else self._runtime
+            getter = getattr(runtime, "get_session_snapshot", None)
+            if callable(getter):
+                state = getter(request.params.get("session_id") or request.session_id or "")
+                if state is not None:
+                    allowed = {item["request_id"] for item in snapshot["dispatches"]}
+                    executions = [asdict(item) for item in state.executions
+                                  if item.request_id in allowed or item.root_request_id in allowed]
+                    snapshot["executions"] = json.loads(
+                        json.dumps(
+                            executions, default=lambda value: value.value if isinstance(value, Enum) else str(value)
+                        )
+                    )
+                    # Accepted warming/queued dispatches have no Coordinator
+                    # execution yet. An empty execution list must not clear them.
+                    snapshot["is_processing"] = snapshot["is_processing"] or any(
+                        not item.state.terminal for item in state.executions
+                        if item.request_id in allowed or item.root_request_id in allowed)
+                    waiting = {item.waiting_control_id for item in state.executions
+                               if not item.state.terminal and item.waiting_control_id}
+                    for record in self._bridge.events.records.values():
+                        if record.scope != request_scope(request):
+                            continue
+                        record.interactions = {key: value for key, value in record.interactions.items()
+                                               if key in waiting}
+                    snapshot["dispatches"] = self._bridge.events.snapshot(request, after=after)["dispatches"]
+        # Copy the replay before the first await: other scopes can publish and
+        # evict journal frames while this scope's snapshot is being delivered.
+        frames = self._bridge.events.replay(request, after=after) if message.get("subscribe") else []
+        await conn.send({"kind": KIND_SNAPSHOT, "query_id": message.get("query_id"),
+                         "generation": generation, "payload": snapshot})
+        await self._bridge.replay(frames, generation)
 
 
 def _frame_matches_session(message: dict[str, Any], generation: int) -> bool:

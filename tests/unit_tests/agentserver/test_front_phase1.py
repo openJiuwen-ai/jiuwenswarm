@@ -872,15 +872,42 @@ def test_runtime_start_defaults_to_no_transport_bind() -> None:
     assert "async def start(self, *, bind_transport: bool = False)" in text
 
 
-def test_runtime_construct_is_off_front_process() -> None:
+@pytest.mark.asyncio
+async def test_runtime_construct_is_off_front_process(monkeypatch) -> None:
     from pathlib import Path
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    import threading
+
+    from jiuwenswarm.extensions.manager import ExtensionManager
+    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.worker import runtime_backend, runtime_bootstrap
+    from jiuwenswarm.server.worker.telemetry import StartupTelemetry
 
     root = Path(__file__).resolve().parents[3]
     front = (root / "jiuwenswarm/server/app_agentserver.py").read_text(encoding="utf-8")
-    worker = (root / "jiuwenswarm/server/worker/lifecycle.py").read_text(encoding="utf-8")
     assert "AgentWebSocketServer" not in front
-    assert "await asyncio.to_thread(_construct_runtime_server)" in worker
-    assert "AgentWebSocketServer.get_instance(host=host, port=port)" in worker
+    event_loop_thread = threading.get_ident()
+    calls = []
+    server = SimpleNamespace()
+
+    def construct(**kwargs):
+        calls.append((threading.get_ident(), kwargs))
+        return server
+
+    monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
+    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
+    monkeypatch.setattr(ExtensionManager, "load_all_extensions", AsyncMock())
+    monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", lambda: None)
+    owned = AsyncMock()
+    result = await runtime_bootstrap.construct_runtime_server(
+        "127.0.0.1", 18000, on_constructed=owned, telemetry=StartupTelemetry(),
+    )
+    assert result is server
+    assert calls == [(calls[0][0], {"host": "127.0.0.1", "port": 18000})]
+    assert calls[0][0] != event_loop_thread
+    owned.assert_awaited_once_with(server)
 
 
 @pytest.mark.asyncio

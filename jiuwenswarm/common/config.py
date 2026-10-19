@@ -1763,6 +1763,16 @@ def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict
 
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
+    model_config = saved.get("model_config_obj")
+    if isinstance(model_config, dict) and "reasoning_level" in model_config:
+        from jiuwenswarm.common.reasoning_config import normalize_reasoning_level
+
+        raw_level = model_config["reasoning_level"]
+        level = normalize_reasoning_level(raw_level)
+        if raw_level is not None and str(raw_level).strip() and level is None:
+            raise ValueError("Invalid reasoning_level")
+        # PyYAML reads unquoted on/off as booleans; keep the editable DTO stable.
+        model_config["reasoning_level"] = DoubleQuotedScalarString(level or "")
     saved.setdefault("model_id", _new_business_id("mdl"))
 
     def _mutate(data):
@@ -1822,29 +1832,6 @@ def _validate_model_candidate(candidate: dict[str, Any]) -> None:
     raise_if_invalid(candidate)
 
 
-def _require_unreferenced_model(
-    data: dict[str, Any], resource_type: str, resource_id: str, *, cron_references_checked: bool = False,
-) -> None:
-    from jiuwenswarm.common.model_catalog import ModelCatalog
-    from jiuwenswarm.common.model_errors import MODEL_SELECTION_REFERENCED, ModelSelectionError
-    from jiuwenswarm.common.model_selection import ModelSelection
-    from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
-
-    is_etcd = load_cron_store_settings(data).backend == "etcd"
-    if is_etcd and not cron_references_checked:
-        raise ModelSelectionError(
-            MODEL_SELECTION_REFERENCED, "use the resource API to check etcd references before deletion",
-        )
-    refs = ModelCatalog(data).find_references(
-        ModelSelection(type=resource_type, id=resource_id), include_cron=not is_etcd,
-    )
-    if refs:
-        raise ModelSelectionError(
-            MODEL_SELECTION_REFERENCED, "resource is still referenced",
-            references=[ref.__dict__ for ref in refs],
-        )
-
-
 def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
     from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
 
@@ -1891,7 +1878,6 @@ def delete_model_resource(resource_type: str, resource_id: str, *, cron_referenc
         filtered = [entry for entry in entries if entry.get(id_key) != resource_id]
         if len(filtered) == len(entries):
             return None
-        _require_unreferenced_model(data, resource_type, resource_id, cron_references_checked=cron_references_checked)
         candidate[key] = filtered
         _validate_model_candidate(candidate)
         deleted = True
@@ -2004,11 +1990,6 @@ def update_default_models_in_config(
     def _mutate(data):
         if "models" not in data:
             data["models"] = {}
-        retained_ids = {entry.get("model_id") for entry in models_list}
-        for previous in data["models"].get("defaults") or []:
-            model_id = previous.get("model_id")
-            if model_id and model_id not in retained_ids:
-                _require_unreferenced_model(data, "model", model_id, cron_references_checked=cron_references_checked)
         for entry in models_list:
             if isinstance(entry, dict) and isinstance(entry.get("alias"), str):
                 entry["alias"] = DoubleQuotedScalarString(entry["alias"])

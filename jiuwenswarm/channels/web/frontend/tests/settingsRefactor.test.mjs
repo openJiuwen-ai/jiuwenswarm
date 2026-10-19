@@ -38,6 +38,32 @@ import {
 const root = new URL('../', import.meta.url);
 const source = (path) => readFileSync(new URL(path, root), 'utf8');
 
+test('model resource payload explicitly clears reasoning when returning to the provider default', () => {
+  const page = ts.createSourceFile(
+    'ModelsSettings.tsx',
+    source('src/features/settings/modules/models/ModelsSettings.tsx'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  const declaration = page.statements.find(
+    (node) => ts.isFunctionDeclaration(node) && node.name?.text === 'buildModelResourcePayload',
+  );
+  assert.ok(declaration);
+  const javascript = ts.transpileModule(declaration.getText(page).replace(/^export\s+/, ''), {
+    compilerOptions: { target: ts.ScriptTarget.ES2020 },
+  }).outputText;
+  const buildPayload = new Function(`${javascript}; return buildModelResourcePayload;`)();
+  for (const level of ['on', 'off', '']) {
+    const payload = buildPayload({
+      model_id: 'mdl-reasoning', model_name: 'Qwen3.8-Flash', model_provider: 'OpenAI',
+      api_base: 'https://example.test/v1', api_key: '', reasoning_level: level,
+    });
+    assert.equal(payload.model_config_obj.reasoning_level, level);
+    assert.equal('api_key' in payload.model_client_config, false);
+  }
+});
+
 function sourceFilesUnder(path) {
   const walk = (directory) =>
     readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

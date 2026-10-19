@@ -5,6 +5,7 @@ description: Camera, screen, microphone, realtime model, search, ASR and TTS wor
 author: JiuwenSwarm
 min_jiuwenswarm_version: "0.2.5"
 package_type: application
+requires_transport: true
 dependencies: {}
 permissions:
   - camera

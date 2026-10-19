@@ -2,6 +2,11 @@
 
 """Tests for opencode_zen default free-model fallback helpers."""
 
+import asyncio
+from unittest.mock import Mock
+
+import pytest
+
 from jiuwenswarm.server.runtime import opencode_zen
 from jiuwenswarm.server.runtime.opencode_zen import get_zen_default_free_model_entry
 
@@ -85,3 +90,39 @@ def test_append_zen_free_models_adds_selectable_entry(monkeypatch):
         "alias": "DeepSeek V4 Flash",
         "context_window_tokens": 200000,
     }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("report_status", [False, True])
+async def test_disabled_zen_warm_preserves_default_and_skips_fetch_and_retry(monkeypatch, report_status):
+    fetch = Mock(side_effect=AssertionError("disabled capability must not fetch"))
+    retry = Mock()
+    monkeypatch.setattr(opencode_zen, "_zen_free_models_enabled", lambda: False)
+    monkeypatch.setattr(opencode_zen, "_populate_zen_free_entries", fetch)
+    monkeypatch.setattr(opencode_zen, "_start_background_retry", retry)
+    result = await opencode_zen.warm_zen_free_models(reason="unit-disabled", report_status=report_status)
+    assert result is (True if report_status else None)
+    fetch.assert_not_called()
+    retry.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("report_status", [False, True])
+@pytest.mark.parametrize("outcome", ["cached", "empty", "timeout", "error"])
+async def test_zen_warm_reports_actual_cache_availability_and_preserves_retry(monkeypatch, report_status, outcome):
+    entries = [_entry("available-free-model")] if outcome == "cached" else []
+    error = {"timeout": asyncio.TimeoutError("provider timed out"),
+             "error": RuntimeError("provider unavailable")}.get(outcome)
+    fetch = Mock(side_effect=error, return_value=len(entries))
+    retry = Mock()
+    monkeypatch.setattr(opencode_zen, "_zen_free_models_enabled", lambda: True)
+    monkeypatch.setattr(opencode_zen, "_populate_zen_free_entries", fetch)
+    monkeypatch.setattr(opencode_zen, "get_zen_free_model_entries", lambda: entries)
+    monkeypatch.setattr(opencode_zen, "_start_background_retry", retry)
+    result = await opencode_zen.warm_zen_free_models(reason=f"unit-{outcome}", report_status=report_status)
+    assert result is (bool(entries) if report_status else None)
+    fetch.assert_called_once_with()
+    if entries:
+        retry.assert_not_called()
+    else:
+        retry.assert_called_once_with()

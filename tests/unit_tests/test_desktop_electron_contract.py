@@ -406,10 +406,12 @@ def test_port_scan_range_matches() -> None:
 def test_shutdown_budget_is_the_documented_divergence() -> None:
     """已知且接受的分歧(评审结论 E: 强杀=崩溃等价, 系统按崩溃容忍设计)。
 
-    Python 统一 8s 预算; Electron SIGTERM 等待 5s + 强杀等待 1.5s。
+    Python 和 Electron 的应用最终退出使用 30s Runtime 预算。
+    Electron 单个传输进程 SIGTERM 等待 5s + 强杀等待 1.5s。
     钉住当前值: 任一侧改动都会红灯, 迫使重新评审该分歧。
     """
-    assert _python_shutdown_budget_seconds() == 8.0
+    assert _python_shutdown_budget_seconds() == 30.0
+    assert _js_number_const(_read(MAIN_CJS), "RUNTIME_SHUTDOWN_TIMEOUT_MS") == 30_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_SHUTDOWN_TIMEOUT_MS") == 5_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_KILL_TIMEOUT_MS") == 1_500
 

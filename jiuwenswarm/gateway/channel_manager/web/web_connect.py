@@ -921,8 +921,11 @@ class WebChannel(BaseWsChannel):
     def _attach_automation_metadata(
         payload: dict[str, Any], msg: Message
     ) -> dict[str, Any]:
-        """Expose only the public automation marker, not routing metadata."""
+        """Expose public replay and automation markers without routing metadata."""
         message_metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        runtime_event = message_metadata.get("runtime_event")
+        if isinstance(runtime_event, dict):
+            payload["runtime_event"] = dict(runtime_event)
         automation = message_metadata.get("automation")
         if not isinstance(automation, dict) or automation.get("kind") != "heartbeat":
             return payload

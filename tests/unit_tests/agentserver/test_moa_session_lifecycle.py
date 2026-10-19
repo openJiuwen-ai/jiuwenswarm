@@ -6,7 +6,7 @@ from __future__ import annotations
 from copy import deepcopy
 from importlib import import_module
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -26,6 +26,13 @@ def router(monkeypatch):
     from jiuwenswarm.server.runtime.session import session_metadata
 
     config = {"version": 1, "experimental": {"multi_model_collaboration_enabled": True}}
+    config["models"] = {
+        "defaults": [{"model_id": "model-a", "is_default": True,
+                      "model_client_config": {"model_name": "current"}}],
+        "groups": [{"model_group_id": identifier,
+                    "routes": [{"route_id": "primary", "model_id": "model-a"}]}
+                   for identifier in ("group-a", "group-b")],
+    }
     metadata, built = {}, []
     warmup = AsyncMock()
     monkeypatch.setattr(interface_deep, "get_config", lambda: deepcopy(config))
@@ -53,6 +60,7 @@ def router(monkeypatch):
             _session_mcp_reconcile_started=True, _initial_skill_scan_mcp_names=frozenset(),
             _skill_retrieval_session_enabled=False, _moa_enabled=False, _moa_fingerprint=None,
             busy=False, build_overrides=None, cleanup=AsyncMock(), start_interaction=AsyncMock(),
+            configure_initial_execution=Mock(), create_count=0,
             restore_skill_retrieval_session=lambda *_: None,
             persist_skill_retrieval_session_profile=lambda: None,
             mark_session_mcp_reconcile_started=lambda: None,
@@ -64,6 +72,7 @@ def router(monkeypatch):
             assert parent._session_adapter_locks[sid].locked()
             assert kwargs["mode"] == parent._session_instance_mode
             child.build_overrides = overrides
+            child.create_count += 1
             child._instance_overrides = overrides
             child._moa_enabled = overrides["moa_enabled"]
             if child._moa_enabled:
@@ -80,6 +89,7 @@ async def test_first_turn_group_precedes_build_and_restores_history(router):
     parent, config, metadata, built, warmup = router
     child = await parent._get_or_create_session_adapter("chat-a", model_selection=GROUP, history_before_request_id="current")
     assert child is built[0] and child.build_overrides["moa_enabled"] is True
+    assert child.create_count == 1
     assert child.build_overrides["moa_config_snapshot"] == config
     assert metadata["chat-a"]["moa_enabled"] is True
     assert metadata["chat-a"]["model_selection"]["id"] == GROUP["id"]
@@ -178,6 +188,31 @@ async def test_restored_selection_drives_moa_independently_of_archival_bool(rout
     assert (await parent._get_or_create_session_adapter("restored"))._moa_enabled is True
     metadata["old-session"] = {"moa_enabled": True}
     assert (await parent._get_or_create_session_adapter("old-session", moa_enabled=True))._moa_enabled is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_deleted_group_cold_restore_falls_back_before_moa_initialization(router, enabled):
+    parent, config, metadata, _, _ = router
+    config["experimental"]["multi_model_collaboration_enabled"] = enabled
+    metadata["restored"] = {"model_selection": {"type": "model_group", "id": "deleted"}}
+    child = await parent._get_or_create_session_adapter("restored")
+    assert child._moa_enabled is False
+    assert child.build_overrides["moa_model_selection"]["id"] == "model-a"
+
+
+@pytest.mark.asyncio
+async def test_deleted_group_keeps_running_snapshot_until_idle(router):
+    parent, config, _, _, _ = router
+    installed = await parent._get_or_create_session_adapter("chat-a", model_selection=GROUP)
+    installed.busy = True
+    config["models"]["groups"] = []
+    assert await parent._get_or_create_session_adapter("chat-a") is installed
+    assert installed._moa_enabled is True
+    installed.busy = False
+    restored = await parent._get_or_create_session_adapter("chat-a")
+    assert restored is not installed
+    assert restored.build_overrides["moa_model_selection"]["id"] == "model-a"
 
 
 @pytest.mark.asyncio
