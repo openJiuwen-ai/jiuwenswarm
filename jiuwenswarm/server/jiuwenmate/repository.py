@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS colleagues (
     settings_json TEXT NOT NULL,
     source_template_id TEXT,
     is_default INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
     revision INTEGER NOT NULL,
     published_revision INTEGER,
     current_version TEXT,
@@ -65,6 +66,13 @@ class PersistentAgentRepository(SQLiteStore):
 
     _schema = _SCHEMA
 
+    def __init__(self, db_path: Path) -> None:
+        super().__init__(db_path)
+        with closing(self._connect()) as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(colleagues)")}
+            if "enabled" not in columns:
+                conn.execute("ALTER TABLE colleagues ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+
     @staticmethod
     def _definition(row: sqlite3.Row) -> ColleagueDefinition:
         return ColleagueDefinition(
@@ -73,6 +81,7 @@ class PersistentAgentRepository(SQLiteStore):
             settings=ColleagueSettings.from_dict(json.loads(row["settings_json"])),
             source_template_id=row["source_template_id"],
             is_default=bool(row["is_default"]),
+            enabled=bool(row["enabled"]),
             revision=row["revision"],
             published_revision=row["published_revision"],
             current_version=row["current_version"],
@@ -93,15 +102,16 @@ class PersistentAgentRepository(SQLiteStore):
                     (definition.namespace_id, definition.agent_id, definition.created_at.isoformat()),
                 )
             conn.execute(
-                "INSERT INTO colleagues (namespace_id, agent_id, settings_json, source_template_id, is_default,"
+                "INSERT INTO colleagues (namespace_id, agent_id, settings_json, source_template_id, is_default, enabled,"
                 " revision, published_revision, current_version, next_version, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)",
+                " VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)",
                 (
                     definition.namespace_id,
                     definition.agent_id,
                     json.dumps(definition.settings.to_dict(), ensure_ascii=False),
                     definition.source_template_id,
                     int(definition.is_default),
+                    int(definition.enabled),
                     definition.revision,
                     definition.created_at.isoformat(),
                     definition.updated_at.isoformat(),
@@ -155,6 +165,19 @@ class PersistentAgentRepository(SQLiteStore):
             ).rowcount
             if not changed:
                 raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
+            row = conn.execute(
+                "SELECT * FROM colleagues WHERE namespace_id = ? AND agent_id = ?", (namespace_id, agent_id)
+            ).fetchone()
+        return self._definition(row)
+
+    def set_enabled(self, namespace_id: str, agent_id: str, *, enabled: bool, updated_at: datetime) -> ColleagueDefinition:
+        with self._transaction() as conn:
+            changed = conn.execute(
+                "UPDATE colleagues SET enabled = ?, updated_at = ? WHERE namespace_id = ? AND agent_id = ?",
+                (int(enabled), updated_at.isoformat(), namespace_id, agent_id),
+            ).rowcount
+            if not changed:
+                raise PersistentAgentError("colleague not found", code="NOT_FOUND")
             row = conn.execute(
                 "SELECT * FROM colleagues WHERE namespace_id = ? AND agent_id = ?", (namespace_id, agent_id)
             ).fetchone()

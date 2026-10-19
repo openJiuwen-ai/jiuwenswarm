@@ -41,6 +41,7 @@ const wireColleague = {
   is_default: true,
   current_version: 'v1',
   has_unpublished_changes: false,
+  enabled: true,
   workspace_dir: '/data/jiuwenmate/workspaces/local/agent-1',
   created_at: '2026-10-14T08:00:00+00:00',
   updated_at: '2026-10-14T08:00:00+00:00',
@@ -83,7 +84,7 @@ function recorder(responses) {
   return { calls, api: createJiuwenMateApi(request) };
 }
 
-test('server colleagues map to page colleagues with local-only marks off', () => {
+test('server colleagues map to page colleagues with the persisted enabled state', () => {
   const colleague = toColleague(wireColleague);
   assert.equal(colleague.id, 'agent-1');
   assert.equal(colleague.capabilities.model, '');
@@ -96,6 +97,7 @@ test('server colleagues map to page colleagues with local-only marks off', () =>
   assert.equal(toColleague({ ...wireColleague, workspace_dir: undefined }).workspaceDir, null);
   assert.equal(colleague.imConfigured, false);
   assert.equal(colleague.disabled, false);
+  assert.equal(toColleague({ ...wireColleague, enabled: false }).disabled, true);
   assert.equal(toColleague({ ...wireColleague, category: 'unknown' }).category, 'custom');
 });
 
@@ -140,10 +142,11 @@ test('loading colleagues ensures the default colleague before listing', async ()
   );
 });
 
-test('create, delete and publish send agent ids and settings without a namespace', async () => {
+test('create, enable, delete and publish send agent ids and settings without a namespace', async () => {
   const { calls, api } = recorder({
     [JIUWENMATE_METHODS.create]: { colleague: { ...wireColleague, agent_id: 'agent-2', is_default: false } },
     [JIUWENMATE_METHODS.delete]: { deleted: true },
+    [JIUWENMATE_METHODS.setEnabled]: { colleague: { ...wireColleague, enabled: false } },
     [JIUWENMATE_METHODS.publish]: {
       version: { agent_id: 'agent-2', config_version: 'v2', published_at: '2026-10-14T09:00:00+00:00' },
     },
@@ -153,9 +156,11 @@ test('create, delete and publish send agent ids and settings without a namespace
   assert.equal(calls[0][1].settings.capabilities.model, 'kimi#1');
 
   assert.equal((await api.publish('agent-2')).configVersion, 'v2');
+  assert.equal((await api.setColleagueEnabled('agent-2', false)).disabled, true);
   await api.deleteColleague('agent-2');
   assert.deepEqual(calls.slice(1), [
     [JIUWENMATE_METHODS.publish, { agent_id: 'agent-2' }],
+    [JIUWENMATE_METHODS.setEnabled, { agent_id: 'agent-2', enabled: false }],
     [JIUWENMATE_METHODS.delete, { agent_id: 'agent-2' }],
   ]);
   assert.equal(

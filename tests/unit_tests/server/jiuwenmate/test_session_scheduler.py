@@ -35,6 +35,7 @@ class FakeService:
         self.workspaces = workspaces
         self.deleted: list[tuple[str, int]] = []
         self.refuse_snapshot = False
+        self.disabled_agents: set[str] = set()
 
     def snapshot(self, namespace_id: str, agent_id: str, config_version: str):
         return publish_spec(
@@ -46,7 +47,9 @@ class FakeService:
             raise PersistentAgentError("colleague has no published configuration", code="NOT_PUBLISHED")
         return self.snapshot(namespace_id, agent_id, "v1")
 
-    def get_colleague(self, namespace_id: str, agent_id: str) -> None:
+    def get_colleague(self, namespace_id: str, agent_id: str):
+        if agent_id in self.disabled_agents:
+            return type("DisabledColleague", (), {"enabled": False})()
         return None
 
     def delete_colleague(self, namespace_id: str, agent_id: str) -> None:

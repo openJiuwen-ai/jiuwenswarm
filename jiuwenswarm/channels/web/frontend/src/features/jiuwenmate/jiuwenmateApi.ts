@@ -24,6 +24,7 @@ export const JIUWENMATE_METHODS = {
   settingsGet: 'jiuwenmate.colleague.settings.get',
   settingsUpdate: 'jiuwenmate.colleague.settings.update',
   publish: 'jiuwenmate.colleague.publish',
+  setEnabled: 'jiuwenmate.colleague.set_enabled',
   delete: 'jiuwenmate.colleague.delete',
   modelsList: 'jiuwenmate.models.list',
   chatSend: 'jiuwenmate.chat.send',
@@ -345,7 +346,7 @@ export function toColleague(value: unknown): JiuwenMateColleague {
       starterPrompts: texts(capabilities.starter_prompts),
     },
     imConfigured: false,
-    disabled: false,
+    disabled: wire.enabled === false,
     joinedAt: text(wire.created_at),
     isDefault: wire.is_default === true,
     currentVersion: typeof wire.current_version === 'string' ? wire.current_version : null,
@@ -759,6 +760,8 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
         publishedAt: text(version.published_at),
       };
     },
+    setColleagueEnabled: (agentId: string, enabled: boolean) =>
+      colleague(JIUWENMATE_METHODS.setEnabled, { agent_id: agentId, enabled }),
     async deleteColleague(agentId: string): Promise<void> {
       await request(JIUWENMATE_METHODS.delete, { agent_id: agentId });
     },

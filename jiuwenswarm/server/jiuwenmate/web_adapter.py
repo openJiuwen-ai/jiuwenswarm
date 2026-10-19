@@ -74,6 +74,7 @@ _COLLEAGUE_METHODS = frozenset(
         ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_GET.value,
         ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_UPDATE.value,
         ReqMethod.JIUWENMATE_COLLEAGUE_PUBLISH.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_SET_ENABLED.value,
     }
 )
 _RUNTIME_METHODS = frozenset(
@@ -468,4 +469,9 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             return {"colleague": service.update_settings(WEB_NAMESPACE, agent_id, _settings(params)).to_dict()}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_PUBLISH.value:
             return {"version": service.publish(WEB_NAMESPACE, agent_id).to_dict()}
+        if method == ReqMethod.JIUWENMATE_COLLEAGUE_SET_ENABLED.value:
+            enabled = params.get("enabled")
+            if not isinstance(enabled, bool):
+                raise PersistentAgentError("enabled must be a boolean")
+            return {"colleague": service.set_enabled(WEB_NAMESPACE, agent_id, enabled=enabled).to_dict()}
         raise PersistentAgentError(f"unsupported method {method!r}")

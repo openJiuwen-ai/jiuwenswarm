@@ -157,6 +157,7 @@ class ColleagueDefinition:
     settings: ColleagueSettings
     source_template_id: str | None
     is_default: bool
+    enabled: bool
     revision: int
     published_revision: int | None
     current_version: str | None
@@ -201,6 +202,7 @@ class ColleagueView:
     capabilities: CapabilitySelection
     source_template_id: str | None
     is_default: bool
+    enabled: bool
     current_version: str | None
     has_unpublished_changes: bool
     created_at: datetime
@@ -220,6 +222,7 @@ class ColleagueView:
             capabilities=settings.capabilities,
             source_template_id=definition.source_template_id,
             is_default=definition.is_default,
+            enabled=definition.enabled,
             current_version=definition.current_version,
             has_unpublished_changes=definition.has_unpublished_changes,
             created_at=definition.created_at,
@@ -237,6 +240,7 @@ class ColleagueView:
             "capabilities": self.capabilities.to_dict(),
             "source_template_id": self.source_template_id,
             "is_default": self.is_default,
+            "enabled": self.enabled,
             "current_version": self.current_version,
             "has_unpublished_changes": self.has_unpublished_changes,
             "created_at": self.created_at.isoformat(),

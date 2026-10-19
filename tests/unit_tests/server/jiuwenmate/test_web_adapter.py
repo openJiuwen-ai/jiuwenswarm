@@ -147,6 +147,22 @@ async def test_settings_change_waits_for_publication(host):
     assert not refreshed.payload["colleague"]["has_unpublished_changes"]
 
 
+async def test_colleague_enabled_state_is_persisted_by_the_web_rpc(host):
+    agent_id = (await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())).payload["colleague"][
+        "agent_id"
+    ]
+
+    disabled = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_SET_ENABLED, agent_id=agent_id, enabled=False)
+    fetched = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_GET, agent_id=agent_id)
+    listed = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_LIST)
+    enabled = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_SET_ENABLED, agent_id=agent_id, enabled=True)
+
+    assert disabled.ok and disabled.payload["colleague"]["enabled"] is False
+    assert fetched.payload["colleague"]["enabled"] is False
+    assert listed.payload["colleagues"][0]["enabled"] is False
+    assert enabled.payload["colleague"]["enabled"] is True
+
+
 async def test_deleted_colleague_is_gone(host):
     agent_id = (await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())).payload["colleague"][
         "agent_id"

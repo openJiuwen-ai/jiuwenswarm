@@ -333,6 +333,7 @@ class PersistentAgentService:
             settings=settings.with_persona(""),
             source_template_id=source_template_id,
             is_default=is_default,
+            enabled=True,
             revision=1,
             published_revision=None,
             current_version=None,
@@ -434,6 +435,12 @@ class PersistentAgentService:
                 expected_revision=definition.revision,
                 updated_at=self._clock(),
             )
+        return self._view(updated)
+
+    def set_enabled(self, namespace_id: str, agent_id: str, *, enabled: bool) -> ColleagueView:
+        """Persist office availability. Private sessions stay open; IM and schedules stop while disabled."""
+        self._require(namespace_id, agent_id)
+        updated = self._repository.set_enabled(namespace_id, agent_id, enabled=enabled, updated_at=self._clock())
         return self._view(updated)
 
     def publish(self, namespace_id: str, agent_id: str) -> ConfigVersionView:

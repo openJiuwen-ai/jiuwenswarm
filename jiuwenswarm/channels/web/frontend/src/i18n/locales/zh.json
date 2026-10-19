@@ -87,7 +87,8 @@
       "failed": "员工列表加载失败：{{reason}}",
       "retry": "重新加载",
       "createFailed": "创建员工失败：{{reason}}",
-      "deleteFailed": "删除员工失败：{{reason}}"
+      "deleteFailed": "删除员工失败：{{reason}}",
+      "toggleFailed": "更新员工状态失败：{{reason}}"
     },
     "chat": {
       "title": "私聊",

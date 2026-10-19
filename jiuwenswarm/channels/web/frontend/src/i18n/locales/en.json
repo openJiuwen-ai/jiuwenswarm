@@ -87,7 +87,8 @@
       "failed": "Failed to load employees: {{reason}}",
       "retry": "Reload",
       "createFailed": "Failed to create the employee: {{reason}}",
-      "deleteFailed": "Failed to delete the employee: {{reason}}"
+      "deleteFailed": "Failed to delete the employee: {{reason}}",
+      "toggleFailed": "Failed to update the employee status: {{reason}}"
     },
     "chat": {
       "title": "Private chat",
