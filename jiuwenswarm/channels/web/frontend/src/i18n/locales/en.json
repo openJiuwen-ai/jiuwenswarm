@@ -937,7 +937,7 @@
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
-        "description": "Show the Diagnosis and Attribution view on the Trajectory page to find why a run failed and get optimization suggestions. Requires the trajectory UI."
+        "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically, with no need to enable the trajectory UI; only data recorded after it is turned on can be diagnosed."
       },
       "team_organization_ui_enabled": {
         "title": "Enable Team Organization",

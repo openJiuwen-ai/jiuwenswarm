@@ -75,6 +75,8 @@ make check-genai-semconv
 
 挂载点在 `src/App.tsx`（`lazy(() => import('./features/trajectory/TrajectoryPanel'))`）；`featureConfig.ts` 是通过 `useSyncExternalStore` 暴露的开关，由实验设置写入。
 
+「启用轨迹界面」（`trajectory_ui.enabled`）与「启用轨迹诊断」（`trajectory_ui.diagnosis_enabled`）是两个独立开关：前者控制「对话 / 轨迹」tab 与轨迹页，后者控制聊天头部的诊断入口与诊断页，二者在前端互不依赖。后端“是否记录轨迹数据”取两者的或（`load_trajectory_store_settings`），所以只开诊断也会录制并允许 Gateway 读取，但只能诊断开启之后产生的记录；诊断开关的变更与轨迹界面开关一样会触发 `agent_runtime` 范围的热更新。
+
 ### 输入框停靠
 
 轨迹视图下 `.chat-panel-shell` 并非 `display:none`，而是绝对定位铺满后由 `App.css` 的 `.single-agent-surface--trajectory .chat-panel-shell > :not(.chat-panel-header)` 隐藏。`.chat-compose`（输入框、审批卡片、目标栏）对这条规则开了例外，浮在轨迹之上，使读者不必切回对话即可回应审批或发消息。

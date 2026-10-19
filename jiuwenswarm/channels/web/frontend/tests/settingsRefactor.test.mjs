@@ -1172,6 +1172,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'team_organization_ui_enabled',
     'team_scheduled_dispatch_enabled',
     'team_task_verification_enabled',
+    'trajectory_ui_diagnosis_enabled',
     'trajectory_ui_enabled',
   ]);
 

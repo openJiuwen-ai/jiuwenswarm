@@ -111,7 +111,7 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.match(chatPanelSource, /export const ChatPanel = React\.memo/);
   assert.match(
     appStyles,
-    /\.single-agent-surface--trajectory \.chat-panel-shell > :not\(\.chat-panel-header\) \{[\s\S]*?visibility: hidden;/,
+    /\.single-agent-surface--trajectory \.chat-panel-shell\s*> :not\(\.chat-panel-header\)(?:,[^{]*)?\s*\{[\s\S]*?visibility: hidden;/,
   );
   assert.match(explorerSource, /if \(!active \|\| !hasRunningCells\) return undefined/);
   assert.match(tableSource, /\{ id: 'raw', label: 'Raw Output' \}/);
@@ -545,6 +545,89 @@ test('diagnosis view falls back to chat when the entry is unavailable', async ()
     root.unmount();
   });
   container.remove();
+});
+
+test('diagnosis view works without the trajectory view and the two switches stay independent', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+
+  // Diagnosis on, trajectory view off: no tab bar and no navigation layout, but the diagnosis view opens.
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'diagnosis',
+      trajectoryEnabled: false,
+      diagnosisEnabled: true,
+      diagnosisRequested: true,
+    }));
+  });
+  assert.ok(container.querySelector('[data-testid="single-agent-diagnosis-view"]'));
+  assert.ok(container.querySelector('.single-agent-surface--diagnosis'));
+  assert.equal(container.querySelector('.single-agent-surface--navigation'), null);
+  assert.equal(container.querySelectorAll('[role="tab"]').length, 0);
+  assert.equal(container.querySelector('[data-testid="single-agent-trajectory-view"]'), null);
+
+  // The chat stays reachable and shows no tab bar while the trajectory view is off.
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'chat',
+      trajectoryEnabled: false,
+      diagnosisEnabled: true,
+      diagnosisRequested: true,
+    }));
+  });
+  assert.equal(container.querySelectorAll('[role="tab"]').length, 0);
+  assert.equal(
+    container.querySelector('[data-testid="single-agent-chat-view"]').getAttribute('aria-hidden'),
+    'false',
+  );
+
+  // A stale trajectory request falls back to chat when only diagnosis is on.
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'trajectory',
+      trajectoryEnabled: false,
+      trajectoryRequested: true,
+      diagnosisEnabled: true,
+      diagnosisRequested: true,
+    }));
+  });
+  assert.ok(container.querySelector('.single-agent-surface--chat'));
+  assert.equal(container.querySelector('[data-testid="single-agent-trajectory-view"]'), null);
+
+  // Trajectory view on, diagnosis off: the tab bar stays and the diagnosis view stays unavailable.
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'diagnosis',
+      trajectoryEnabled: true,
+      diagnosisEnabled: false,
+      diagnosisRequested: true,
+    }));
+  });
+  assert.equal(container.querySelector('[data-testid="single-agent-diagnosis-view"]'), null);
+  assert.equal(container.querySelectorAll('[role="tab"]').length, 2);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test('diagnosis availability and its settings switch do not depend on the trajectory UI switch', () => {
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const settingsSource = readFileSync(
+    new URL('../src/features/settings/modules/experimental/ExperimentalSettings.tsx', import.meta.url),
+    'utf8',
+  );
+  const entry = appSource.match(/const diagnosisEntryAvailable = ([\s\S]*?);\r?\n/);
+  assert.ok(entry);
+  assert.doesNotMatch(entry[1], /trajectoryUiEnabled/);
+  assert.match(entry[1], /trajectoryDiagnosisEnabled/);
+  const diagnosisSetting = settingsSource.match(
+    /export function TrajectoryDiagnosisSetting[\s\S]*?\r?\n\}\r?\n/,
+  );
+  assert.ok(diagnosisSetting);
+  assert.doesNotMatch(diagnosisSetting[0], /trajectory_ui_enabled/);
 });
 
 test('diagnosis entry lives in the chat header and no longer in the trajectory panel', () => {

@@ -225,10 +225,10 @@ class ConfigChangeSet:
                 scopes.add("proactive")
             elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
                 scopes.add("agent_runtime")
-            elif key_text == "trajectory_ui_enabled":
+            elif key_text in {"trajectory_ui_enabled", "trajectory_ui_diagnosis_enabled"}:
+                # Diagnosis switches the trajectory data plane on as well, so
+                # it needs the same runtime sync as the trajectory view switch.
                 scopes.update({"agent_runtime", "web_ui"})
-            elif key_text == "trajectory_ui_diagnosis_enabled":
-                scopes.add("web_ui")
             elif key_text in {"task_full_duplex_enabled", "team_organization_ui_enabled"}:
                 scopes.add("web_ui")
             elif key_text.startswith("a2ui_") or key_text == "setup_guide_enabled":

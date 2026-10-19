@@ -43,10 +43,12 @@ export function SingleAgentSurface({
   diagnosisEnabled = false,
   diagnosisRequested = false,
 }: SingleAgentSurfaceProps) {
-  const trajectoryMode = trajectoryEnabled && (mode === 'agent' || mode === 'team');
-  const navigationVisible = trajectoryMode && showNavigation;
-  const diagnosisVisible = navigationVisible && diagnosisEnabled;
-  const resolvedView: ChatSurfaceView = !navigationVisible || (activeView === 'diagnosis' && !diagnosisVisible)
+  const modeSupported = mode === 'agent' || mode === 'team';
+  // The trajectory tab bar and the diagnosis view are switched independently.
+  const navigationVisible = trajectoryEnabled && modeSupported && showNavigation;
+  const diagnosisVisible = diagnosisEnabled && modeSupported && showNavigation;
+  const resolvedView: ChatSurfaceView = (activeView === 'trajectory' && !navigationVisible)
+    || (activeView === 'diagnosis' && !diagnosisVisible)
     ? 'chat'
     : activeView;
 

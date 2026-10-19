@@ -921,7 +921,7 @@
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
-        "description": "在轨迹页中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。需先启用轨迹界面。"
+        "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据，无需同时启用轨迹界面；仅能诊断开启之后产生的记录。"
       },
       "team_organization_ui_enabled": {
         "title": "启用 Team Organization",

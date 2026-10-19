@@ -816,17 +816,16 @@ function AppContent({
     )) ?? null;
   }, [currentSession, projects, sessions, sessionId]);
   const mode = useSessionStore((s) => s.runtimes[sessionId]?.mode ?? 'agent');
-  // The diagnosis view needs both switches, an Agent or Team session, and a session that exists.
-  const diagnosisEntryAvailable = trajectoryUiEnabled
-    && trajectoryDiagnosisEnabled
-    && (mode === 'agent' || mode === 'team')
+  const surfaceModeSupported = mode === 'agent' || mode === 'team';
+  // The diagnosis view has its own switch: it needs an Agent or Team session that exists, but not the trajectory UI.
+  const diagnosisEntryAvailable = trajectoryDiagnosisEnabled
+    && surfaceModeSupported
     && sessionId !== NEW_CONVERSATION_ID;
-  const requestedChatSurfaceView: ChatSurfaceView = trajectoryUiEnabled
-    && (mode === 'agent' || mode === 'team')
+  const requestedChatSurfaceView: ChatSurfaceView = surfaceModeSupported
     ? (chatSurfaceViews[sessionId] ?? 'chat')
     : 'chat';
-  const chatSurfaceView: ChatSurfaceView = requestedChatSurfaceView === 'diagnosis'
-    && !diagnosisEntryAvailable
+  const chatSurfaceView: ChatSurfaceView = (requestedChatSurfaceView === 'trajectory' && !trajectoryUiEnabled)
+    || (requestedChatSurfaceView === 'diagnosis' && !diagnosisEntryAvailable)
     ? 'chat'
     : requestedChatSurfaceView;
   const selectChatSurfaceView = useCallback((nextView: ChatSurfaceView) => {

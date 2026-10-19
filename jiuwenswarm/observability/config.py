@@ -61,6 +61,11 @@ def _as_bool(value: Any, default: bool) -> bool:
     return default
 
 
+def _diagnosis_switch(section: Mapping[str, Any]) -> bool:
+    """Return the raw ``trajectory_ui.diagnosis_enabled`` switch."""
+    return _as_bool(section.get("diagnosis_enabled"), False)
+
+
 def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     try:
         parsed = int(value)
@@ -130,7 +135,9 @@ def load_trajectory_store_settings(
     return TrajectoryStoreSettings(
         # The packaged config opts in explicitly. A caller supplying an older
         # config without this section keeps the additive data plane disabled.
-        enabled=_as_bool(section.get("enabled"), False),
+        # Diagnosis analyses recorded trajectories, so turning it on also turns
+        # the data plane on even when the trajectory view itself is off.
+        enabled=_as_bool(section.get("enabled"), False) or _diagnosis_switch(section),
         database_path=_resolve_database_path(section.get("db_path"), resolved_workspace),
         retention_days=_positive_int(
             section.get("retention_days"),
@@ -157,24 +164,23 @@ def load_trajectory_store_settings(
 def is_trajectory_diagnosis_enabled(config: Mapping[str, Any] | None = None) -> bool:
     """Return whether the trajectory diagnosis feature is switched on.
 
-    The switch lives next to ``trajectory_ui.enabled`` but is deliberately not
-    part of :class:`TrajectoryStoreSettings`: that dataclass is compared to
-    decide whether the AgentServer sink must restart, and toggling diagnosis
-    must never restart the trajectory writer.
+    The switch lives next to ``trajectory_ui.enabled`` and is independent of
+    the trajectory view: it only feeds ``TrajectoryStoreSettings.enabled`` so
+    the trajectory data plane records the data diagnosis reads. Toggling it
+    while the trajectory view is on leaves the resolved store settings
+    unchanged, so the writer is not restarted.
 
     Args:
         config: Optional complete JiuwenSwarm configuration mapping.
 
     Returns:
-        ``True`` only when both the trajectory UI and diagnosis switches are on.
+        ``True`` when the diagnosis switch is on, whatever the trajectory view
+        switch says.
     """
     source = config if config is not None else get_config()
     raw_section = source.get("trajectory_ui", {}) if isinstance(source, Mapping) else {}
     section = raw_section if isinstance(raw_section, Mapping) else {}
-    return _as_bool(section.get("enabled"), False) and _as_bool(
-        section.get("diagnosis_enabled"),
-        False,
-    )
+    return _diagnosis_switch(section)
 
 
 __all__ = [

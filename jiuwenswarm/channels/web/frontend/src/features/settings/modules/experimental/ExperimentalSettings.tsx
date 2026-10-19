@@ -218,7 +218,6 @@ export function TrajectoryDiagnosisSetting({ disabled }: SettingsCustomItemProps
   const { t } = useTranslation();
   const { isConnected } = useSettingsServices();
   const source = useSettingsSource();
-  const trajectoryEnabled = parseConfigBoolean(source.values.trajectory_ui_enabled);
   const enabled = parseConfigBoolean(source.values.trajectory_ui_diagnosis_enabled);
 
   async function updateDiagnosis(next: boolean): Promise<void> {
@@ -234,9 +233,7 @@ export function TrajectoryDiagnosisSetting({ disabled }: SettingsCustomItemProps
       <Switch
         aria-label={t('settingsPanel.fields.trajectory_ui_diagnosis_enabled.title')}
         checked={enabled}
-        disabled={
-          disabled || !isConnected || !trajectoryEnabled || source.savingKeys.has('trajectory_ui_diagnosis_enabled')
-        }
+        disabled={disabled || !isConnected || source.savingKeys.has('trajectory_ui_diagnosis_enabled')}
         onChange={(next) => void updateDiagnosis(next).catch(() => undefined)}
         data-testid="settings-trajectory-diagnosis-switch"
       />
