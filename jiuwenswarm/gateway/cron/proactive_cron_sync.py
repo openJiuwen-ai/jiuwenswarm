@@ -31,6 +31,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from jiuwenswarm.common.timezone import get_default_timezone
+
 logger = logging.getLogger(__name__)
 
 PROACTIVE_JOB_ID = "proactive-tick-auto"
@@ -90,7 +92,7 @@ async def _ensure_present(cron_controller: Any) -> None:
             "id": PROACTIVE_JOB_ID,
             "name": PROACTIVE_JOB_NAME,
             "cron_expr": DEFAULT_CRON_EXPR,
-            "timezone": "Asia/Shanghai",
+            "timezone": get_default_timezone().key,
             "enabled": True,
             "description": "由主动推荐开关自动创建/删除；调度表达式可在定时任务面板编辑",
             "targets": DEFAULT_TARGET_CHANNEL,
