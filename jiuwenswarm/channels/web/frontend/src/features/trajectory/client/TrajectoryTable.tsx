@@ -1949,6 +1949,7 @@ export function TrajectoryTable({
   const detailsResizeDrag = useRef<DetailsResizeDrag | null>(null)
   const appliedRecordSelection = useRef<TrajectoryTableProps['recordSelection']>(null)
   const appliedRecordFocus = useRef<TrajectoryTableProps['recordFocus']>(null)
+  const [scrollGeneration, setScrollGeneration] = useState(0)
   const tabHistory = useRef<Set<DetailTab>>(new Set(['overview']))
   const rootRef = useRef<HTMLDivElement>(null)
   const tablePaneRef = useRef<HTMLDivElement>(null)
@@ -2215,6 +2216,31 @@ export function TrajectoryTable({
     const recent = [...tabHistory.current].reverse().find(tab => available.has(tab))
     setActiveTab(recent ?? tabs[0]?.id ?? 'overview')
   }, [allRecords, onRecordSelect])
+  // Unfold the turn and assistant that own this record, then remember it so the
+  // scroll effect can bring that row into view once it is actually rendered.
+  const queueRecordScroll = useCallback((index: number) => {
+    const record = allRecords.find(candidate => candidate.cell.index === index)
+    if (record === undefined) {
+      pendingScrollRecordId.current = null
+      return
+    }
+    if (record.turn !== null && collapsedTurns.has(record.turn)) onToggleTurn(record.turn)
+    if (record.cell.kind === 'tool' || record.cell.kind === 'subtool') {
+      const targetAt = allRecords.findIndex(candidate => candidate.cell.index === index)
+      for (let i = targetAt - 1; i >= 0; i--) {
+        const candidate = allRecords[i]
+        if (candidate === undefined || candidate.turn !== record.turn) break
+        if (candidate.cell.kind !== 'message') continue
+        const assistantId = trajectoryRecordId(candidate.cell)
+        if (collapsedAssistants.has(assistantId)) onToggleAssistant(assistantId)
+        break
+      }
+    }
+    pendingScrollRecordId.current = trajectoryRecordId(record.cell)
+    // A ref alone does not re-run the scroll effect, so a later click on an
+    // already-open ledger would leave the previous row in view.
+    setScrollGeneration(value => value + 1)
+  }, [allRecords, collapsedAssistants, collapsedTurns, onToggleAssistant, onToggleTurn])
   useEffect(() => {
     if (
       recordSelection === null
@@ -2222,19 +2248,13 @@ export function TrajectoryTable({
     ) return
     appliedRecordSelection.current = recordSelection
     selectRecord(recordSelection.index)
-    const record = allRecords.find(candidate => candidate.cell.index === recordSelection.index)
-    pendingScrollRecordId.current = record === undefined
-      ? null
-      : trajectoryRecordId(record.cell)
-  }, [allRecords, recordSelection, selectRecord])
+    queueRecordScroll(recordSelection.index)
+  }, [queueRecordScroll, recordSelection, selectRecord])
   useEffect(() => {
     if (recordFocus === null || appliedRecordFocus.current === recordFocus) return
     appliedRecordFocus.current = recordFocus
-    const record = allRecords.find(candidate => candidate.cell.index === recordFocus.index)
-    pendingScrollRecordId.current = record === undefined
-      ? null
-      : trajectoryRecordId(record.cell)
-  }, [allRecords, recordFocus])
+    queueRecordScroll(recordFocus.index)
+  }, [queueRecordScroll, recordFocus])
 
   const selectRequest = (
     request: SelectedRequest,
@@ -2274,25 +2294,25 @@ export function TrajectoryTable({
     const position = records.findIndex(record =>
       trajectoryRecordId(record.cell) === id && record.collapsedSummary === undefined)
     if (position === -1) return
+    followsTableTail.current = false
     if (virtualizationEnabled) {
       const virtualIndex = virtualIndexByRecordId.get(id)
       if (virtualIndex === undefined) return
       pendingScrollRecordId.current = null
-      followsTableTail.current = false
       rowVirtualizer.scrollToIndex(virtualIndex, { behavior: 'smooth', align: 'center' })
       return
     }
-    pendingScrollRecordId.current = null
-    followsTableTail.current = false
     const recordIndex = records[position]?.cell.index
-    const row = recordIndex === undefined
+    const pane = tablePaneRef.current
+    const row = recordIndex === undefined || pane === null
       ? null
-      : rootRef.current?.querySelector<HTMLElement>(`tr[data-record-index="${recordIndex}"]`)
-    /* v8 ignore next -- jsdom lacks scrollIntoView; browsers always have it. */
-    if (row !== undefined && row !== null && typeof row.scrollIntoView === 'function') {
-      row.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    }
-  }, [records, rowVirtualizer, virtualIndexByRecordId, virtualizationEnabled])
+      : pane.querySelector<HTMLElement>(`tr[data-record-index="${recordIndex}"]`)
+    if (row === null || pane === null) return
+    pendingScrollRecordId.current = null
+    const paneRect = pane.getBoundingClientRect()
+    const rowRect = row.getBoundingClientRect()
+    pane.scrollTop += rowRect.top - paneRect.top - (pane.clientHeight - rowRect.height) / 2
+  }, [records, rowVirtualizer, scrollGeneration, virtualIndexByRecordId, virtualizationEnabled])
   useEffect(() => {
     if (timelineFocusIndexes === null || timelineFocusIndexes.size === 0) return
     const focusedPositions = records.flatMap((record, position) =>
@@ -2366,9 +2386,12 @@ export function TrajectoryTable({
     if (!tableScrollInitialized.current) {
       if (historyLoading) return
       tableScrollInitialized.current = true
-      followsTableTail.current = true
-      if (virtualizationEnabled) rowVirtualizer.scrollToEnd({ behavior: 'auto' })
-      else pane.scrollTop = pane.scrollHeight
+      const pinnedToRecord = recordSelection !== null || recordFocus !== null
+      followsTableTail.current = !pinnedToRecord
+      if (!pinnedToRecord) {
+        if (virtualizationEnabled) rowVirtualizer.scrollToEnd({ behavior: 'auto' })
+        else pane.scrollTop = pane.scrollHeight
+      }
       setTableScrollReady(true)
       return
     }

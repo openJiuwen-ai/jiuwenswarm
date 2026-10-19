@@ -1037,13 +1037,30 @@
       "diagnose": "诊断轨迹",
       "selection": {
         "fullScope": "全部轨迹",
-        "notePlaceholder": "请输入诊断说明（可选），如“评估一下为什么搜索结果不够精确”",
+        "notePlaceholder": "请输入用户反馈（可选）",
         "cancel": "取消",
         "start": "开始执行",
         "starting": "启动中…",
         "summary": "已选择 {{count}} 个 Agent",
         "running": "已有诊断正在进行",
         "noData": "当前没有可诊断的轨迹"
+      },
+      "summary": "{{traces}} 条轨迹 · {{spans}} 个 OTel Span",
+      "toolbar": {
+        "scale": "轨迹比例",
+        "duration": "时长",
+        "tokens": "Tokens",
+        "equal": "等比例",
+        "turns": "轮次",
+        "tools": "工具",
+        "expandTurns": "展开所有轮次",
+        "collapseTurns": "折叠所有轮次",
+        "expandTools": "展开所有工具调用",
+        "collapseTools": "折叠所有工具调用",
+        "text": "文本",
+        "download": "下载轨迹",
+        "search": "搜索轨迹",
+        "searchPlaceholder": "请输入关键字搜索"
       },
       "tabs": {
         "aria": "轨迹分析子页面",
@@ -1114,6 +1131,7 @@
       },
       "recordSelect": {
         "aria": "诊断记录",
+        "history": "历史诊断列表",
         "placeholder": "选择诊断记录",
         "search": "搜索时间或关键词",
         "noMatch": "没有匹配的诊断记录",

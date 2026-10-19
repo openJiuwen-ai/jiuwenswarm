@@ -219,6 +219,11 @@ export interface TrajectoryTimelineProps {
   selectedIndex?: number | null
   /** Record indexes matching the active ledger search, or null without a query. */
   searchMatchIndexes?: ReadonlySet<number> | null
+  /**
+   * Record indexes a diagnosis asked to emphasise. Drawn as pins so a short
+   * span stays visible after the rest of the lane is dimmed.
+   */
+  pinnedIndexes?: ReadonlySet<number> | null
   onRangeChange: (range: TrajectoryTimeRange | null) => void
   /** Select a directly clicked timeline block. */
   onRecordSelect?: (index: number) => void
@@ -373,6 +378,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   range,
   selectedIndex = null,
   searchMatchIndexes = null,
+  pinnedIndexes = null,
   onRangeChange,
   onRecordSelect,
   onRecordFocus,
@@ -977,6 +983,9 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
                       data-search-match={searchMatchIndexes === null
                         ? undefined
                         : searchMatchIndexes.has(span.index) ? 'true' : 'false'}
+                      data-highlight={pinnedIndexes !== null && pinnedIndexes.has(span.index)
+                        ? 'true'
+                        : undefined}
                       data-selected={activeRange === null
                         ? undefined
                         : span.start <= activeRange.end && span.end >= activeRange.start

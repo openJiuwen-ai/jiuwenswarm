@@ -1,6 +1,6 @@
 /** Trajectory analysis page: the trajectory and its diagnosis as two sub-pages of one session view. */
 
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores/chatStore';
@@ -16,7 +16,13 @@ import type { RootCause } from './diagnosis/diagnosisTypes';
 import { DiagnosisSelectionBar } from './diagnosis/DiagnosisSelectionBar';
 import { DiagnosisSubpage } from './diagnosis/DiagnosisSubpage';
 import { useDiagnosisSession } from './diagnosis/useDiagnosisSession';
-import { TrajectoryPanel, type TrajectoryPanelSubject } from './TrajectoryPanel';
+import { TrajectoryAnalysisToolbar } from './TrajectoryAnalysisToolbar';
+import {
+  TrajectoryPanel,
+  type TrajectoryLaneScale,
+  type TrajectoryPanelSubject,
+  type TrajectoryPanelSummary,
+} from './TrajectoryPanel';
 import css from './TrajectoryAnalysisPage.module.css';
 
 export type TrajectoryAnalysisSubpage = 'trajectory' | 'diagnosis';
@@ -51,12 +57,21 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
   const [selectionState, setSelectionState] = useState<DiagnosisSelectionState>(EMPTY_DIAGNOSIS_SELECTION);
   const [fullScope, setFullScope] = useState(false);
   const [note, setNote] = useState('');
+  const [scale, setScale] = useState<TrajectoryLaneScale>('duration');
+  const [turnsCollapsed, setTurnsCollapsed] = useState(false);
+  const [callsCollapsed, setCallsCollapsed] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [summary, setSummary] = useState<TrajectoryPanelSummary | null>(null);
+  const exportTrajectoryRef = useRef<(() => void) | null>(null);
   const [pageSessionId, setPageSessionId] = useState(sessionId);
   if (pageSessionId !== sessionId) {
     setPageSessionId(sessionId);
     setSubpage('trajectory');
     setFocused(null);
     setSelecting(false);
+    setScale('duration');
+    setSearchQuery('');
+    setSummary(null);
   }
   const session = useDiagnosisSession(sessionId);
   const { record, start, dismissNotice } = session;
@@ -110,9 +125,13 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
     setSelectionState(EMPTY_DIAGNOSIS_SELECTION);
     setFullScope(false);
     setNote('');
+    setScale('duration');
     setSubpage('trajectory');
     setSelecting(true);
   }, [dismissNotice]);
+  const registerExport = useCallback((exportArchive: () => void) => {
+    exportTrajectoryRef.current = exportArchive;
+  }, []);
 
   const pickedAgents = useMemo(
     () => selectionRanges(selectionState, subjectChoices).length,
@@ -174,6 +193,11 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
           <ChevronLeft size={16} strokeWidth={2} aria-hidden />
         </button>
         <h2 className={css.title}>{t('trajectory.diagnosis.entry')}</h2>
+        {summary === null ? null : (
+          <span className={css.summary} data-testid="trajectory-analysis-summary">
+            {t('trajectory.analysis.summary', { traces: summary.traces, spans: summary.spans })}
+          </span>
+        )}
         <span className={css.spacer} />
         <button
           type="button"
@@ -186,26 +210,42 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
           {t('trajectory.analysis.diagnose')}
         </button>
       </header>
-      <div
-        className={css.tabs}
-        role="tablist"
-        aria-label={t('trajectory.analysis.tabs.aria')}
-        data-testid="trajectory-analysis-tabs"
-      >
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            aria-selected={subpage === tab.id}
-            className={`${css.tab} ${subpage === tab.id ? css.tabActive : ''}`}
-            disabled={selecting}
-            onClick={() => setSubpage(tab.id)}
-            data-testid={`trajectory-analysis-tab-${tab.id}`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className={css.tabBar}>
+        <div
+          className={css.tabs}
+          role="tablist"
+          aria-label={t('trajectory.analysis.tabs.aria')}
+          data-testid="trajectory-analysis-tabs"
+        >
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={subpage === tab.id}
+              className={`${css.tab} ${subpage === tab.id ? css.tabActive : ''}`}
+              disabled={selecting}
+              onClick={() => setSubpage(tab.id)}
+              data-testid={`trajectory-analysis-tab-${tab.id}`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        {subpage === 'trajectory' ? (
+          <TrajectoryAnalysisToolbar
+            scale={scale}
+            scaleLocked={selecting}
+            onScaleChange={setScale}
+            turnsCollapsed={turnsCollapsed}
+            onToggleTurns={() => setTurnsCollapsed(value => !value)}
+            callsCollapsed={callsCollapsed}
+            onToggleCalls={() => setCallsCollapsed(value => !value)}
+            searchQuery={searchQuery}
+            onSearchQueryChange={setSearchQuery}
+            onDownload={() => { exportTrajectoryRef.current?.(); }}
+          />
+        ) : null}
       </div>
       <div
         className={css.panel}
@@ -218,6 +258,12 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
           mode={mode}
           sessionId={sessionId}
           sharedTimeAxis
+          laneScale={scale}
+          turnsCollapsed={turnsCollapsed}
+          callsCollapsed={callsCollapsed}
+          searchQuery={searchQuery}
+          onSummaryChange={setSummary}
+          onExportReady={registerExport}
           onSubjectsChange={setSubjects}
           onTimelineAvailableChange={setTimelineAvailable}
           {...(focused === null ? {} : { highlightStepKeys: focused.keys })}
@@ -241,7 +287,15 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
         <DiagnosisSelectionBar
           fullScope={fullScope}
           fullScopeBlocked={busy}
-          onFullScopeChange={setFullScope}
+          onFullScopeChange={(value) => {
+            setFullScope(value);
+            if (value) {
+              setSelectionState(current => ({
+                ...EMPTY_DIAGNOSIS_SELECTION,
+                excluded: current.excluded,
+              }));
+            }
+          }}
           note={note}
           onNoteChange={setNote}
           pickedAgents={pickedAgents}

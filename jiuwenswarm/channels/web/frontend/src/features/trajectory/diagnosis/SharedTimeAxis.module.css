@@ -1,63 +1,102 @@
 .row {
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
+  align-items: end;
   height: 36px;
+  padding: 4px 0 6px;
   border-bottom: 1px solid var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-layer-1);
   scrollbar-gutter: stable;
   user-select: none;
 }
 
-.gutter {
-  border-right: 1px solid var(--dsw-alias-border-l1);
+.label {
+  grid-column: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  height: 22px;
+  padding-right: 4px;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+  font-size: 12px;
+  line-height: 12px;
+  white-space: nowrap;
+}
+
+.plot {
+  grid-column: 2;
+  position: relative;
+  height: 22px;
+}
+
+.boundStart,
+.boundEnd {
+  position: absolute;
+  top: 0;
+  color: var(--dsw-alias-label-caption);
+  font: var(--dsw-font-xxxs-11);
+  font-size: 10px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.boundStart {
+  left: 0;
+}
+
+.boundEnd {
+  right: 0;
 }
 
 .track {
-  position: relative;
-  overflow: hidden;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--dsw-alias-border-l2);
   cursor: crosshair;
   touch-action: none;
 }
 
-.track[data-selectable='false'] {
+.track[data-selectable='false'],
+.track[data-disabled='true'] {
   cursor: default;
 }
 
 .track:focus-visible {
   outline: 1px solid var(--dsw-alias-state-business-primary);
-  outline-offset: -1px;
-}
-
-.tick {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  pointer-events: none;
-}
-
-.tickMark {
-  width: 1px;
-  height: 8px;
-  background: var(--dsw-alias-border-l2);
-}
-
-.tickLabel {
-  margin-top: 1px;
-  color: var(--dsw-alias-label-caption);
-  font: var(--dsw-font-xxxs-11);
-  font-size: 10px;
-  line-height: 1;
-  white-space: nowrap;
+  outline-offset: 2px;
 }
 
 .selection {
   position: absolute;
   top: 0;
   bottom: 0;
-  background: var(--dsw-alias-state-business-tertiary);
-  box-shadow: inset 0 0 0 1px var(--dsw-alias-state-business-primary);
+  border-radius: 999px;
+  background: var(--dsw-alias-state-business-primary);
   pointer-events: none;
+}
+
+.selectionStart,
+.selectionEnd {
+  position: absolute;
+  bottom: 8px;
+  color: var(--dsw-alias-state-business-primary);
+  font: var(--dsw-font-xxxs-11);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.selectionStart {
+  left: 0;
+  transform: translateX(-50%);
+}
+
+.selectionEnd {
+  right: 0;
+  transform: translateX(50%);
 }

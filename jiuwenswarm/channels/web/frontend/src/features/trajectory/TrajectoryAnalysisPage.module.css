@@ -47,12 +47,26 @@
   line-height: 1.5rem;
 }
 
+.summary {
+  margin-left: 0.75rem;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+}
+
+.tabBar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 1rem;
+  border-bottom: 1px solid var(--color-border-default);
+  padding: 0 1rem 0 2.25rem;
+}
+
 .tabs {
   display: flex;
   flex: 0 0 auto;
   gap: 1.5rem;
-  border-bottom: 1px solid var(--color-border-default);
-  padding: 0 1rem 0 2.25rem;
 }
 
 .tab {

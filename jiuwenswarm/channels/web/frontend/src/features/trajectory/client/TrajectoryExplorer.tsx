@@ -70,6 +70,13 @@ export interface TrajectoryExplorerProps {
   showToolbar?: boolean
   /** Hide only the local view controls while preserving member search. */
   showToolbarViewControls?: boolean
+  /** Hide the local search field. A host can still filter through `searchQuery`. */
+  showSearch?: boolean
+  /**
+   * JiuwenSwarm extension: host-owned ledger query. When set, it replaces this
+   * explorer's own field so several lanes can share one search.
+   */
+  searchQuery?: string
   /** Host-owned member control placed before the local search field. */
   toolbarAddon?: ReactNode
   /** Optional host-controlled view state shared across multiple explorers. */
@@ -123,6 +130,19 @@ function stepKeyOfRecordId(recordId: string): string | null {
   if (first <= 0) return null
   const second = recordId.indexOf(':', first + 1)
   return second < 0 ? recordId : recordId.slice(0, second)
+}
+
+/** Whether a projected cell is one of the spans a diagnosis asked to emphasise. */
+export function cellMatchesHighlightKeys(
+  recordId: string,
+  traceDetail: unknown,
+  keys: ReadonlySet<string>,
+): boolean {
+  const key = stepKeyOfRecordId(recordId)
+  if (key !== null && keys.has(key)) return true
+  if (!recordId.startsWith('v2:')) return false
+  const detailKeys = stepKeysOfTraceDetail(traceDetail)
+  return detailKeys !== null && [...detailKeys].some(item => keys.has(item))
 }
 
 /**
@@ -196,6 +216,8 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   displayMode = 'full',
   showToolbar = true,
   showToolbarViewControls = true,
+  showSearch = true,
+  searchQuery: controlledSearchQuery,
   toolbarAddon,
   viewState,
   onOverviewActivate,
@@ -239,7 +261,8 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<number>>(EMPTY_TURN_IDS)
   const [collapsedAssistants, setCollapsedAssistants] =
     useState<ReadonlySet<string>>(EMPTY_RECORD_IDS)
-  const [searchQuery, setSearchQuery] = useState('')
+  const [localSearchQuery, setLocalSearchQuery] = useState('')
+  const searchQuery = controlledSearchQuery ?? localSearchQuery
   const [searchIndex] = useState(() => new TrajectorySearchIndex())
   const searchLayouts = useMemo(() => [turns], [turns])
   const [uncontrolledTimelineRange, setUncontrolledTimelineRange] = useState<TrajectoryTimeRange | null>(null)
@@ -251,6 +274,9 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   const [recordFocus, setRecordFocus] = useState<{ readonly index: number } | null>(null)
   const [scrollToEndSignal, setScrollToEndSignal] = useState(0)
   const wasActiveRef = useRef(false)
+  // A click on a timeline block already names the ledger row to show. Expanding
+  // the lane for that click must not then jump the ledger to its newest record.
+  const preferRecordScrollRef = useRef(false)
   // Whenever the explorer becomes visible (first mount while active, a chat ->
   // trajectory tab switch, or a subject tab change), ask the ledger to jump to
   // the newest record. The ref starts false so an initially-active explorer
@@ -259,7 +285,8 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
     const ledgerActive = active && displayMode !== 'overview'
     const becameActive = ledgerActive && !wasActiveRef.current
     wasActiveRef.current = ledgerActive
-    if (becameActive) setScrollToEndSignal(value => value + 1)
+    if (becameActive && !preferRecordScrollRef.current) setScrollToEndSignal(value => value + 1)
+    preferRecordScrollRef.current = false
   }, [active, displayMode])
   const resolvedActualDuration = viewState?.actualDuration ?? actualDuration
   const resolvedActualTime = viewState?.actualTime ?? actualTime
@@ -298,20 +325,8 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
     for (const turn of turns) {
       for (const group of turn.groups) {
         for (const cell of group.cells) {
-          const recordId = trajectoryRecordId(cell)
-          const key = stepKeyOfRecordId(recordId)
-          if (key !== null && highlightStepKeys.has(key)) {
+          if (cellMatchesHighlightKeys(trajectoryRecordId(cell), cell.traceDetail, highlightStepKeys)) {
             matches.add(cell.index)
-            continue
-          }
-          // JiuwenSwarm extension: v2 event cells expose the raw OTLP export
-          // record; match its span anchors so diagnosis evidence can light
-          // message rows up as well.
-          if (recordId.startsWith('v2:')) {
-            const detailKeys = stepKeysOfTraceDetail(cell.traceDetail)
-            if (detailKeys !== null && [...detailKeys].some(item => highlightStepKeys.has(item))) {
-              matches.add(cell.index)
-            }
           }
         }
       }
@@ -461,8 +476,9 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             onToggleAllTurns={toggleAllTurns}
             allAssistantsCollapsed={allAssistantsCollapsed}
             onToggleAllAssistants={toggleAllAssistants}
+            showSearch={showSearch}
             searchQuery={searchQuery}
-            onSearchQueryChange={setSearchQuery}
+            onSearchQueryChange={controlledSearchQuery === undefined ? setLocalSearchQuery : () => {}}
             afterActions={toolbarAddon}
             t={t}
           /> : null}
@@ -472,6 +488,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             range={timelineRange}
             selectedIndex={selectedTimelineIndex}
             searchMatchIndexes={timelineEmphasis}
+            pinnedIndexes={highlightIndexes}
             onRangeChange={setTimelineRange}
             sharedDomain={sharedTimeDomain}
             {...(mapSharedTime === undefined ? {} : { mapTime: mapSharedTime })}
@@ -481,12 +498,14 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             {...(onSharedViewportChange === undefined ? {} : { onViewportChange: onSharedViewportChange })}
             {...(sharedViewportRef === undefined ? {} : { sharedViewportRef })}
             onRecordSelect={(index) => {
+              preferRecordScrollRef.current = true
               if (!lockTimelineViewport) setTimelineRange(null)
               setRecordSelection({ index })
               setSelectedTimelineIndex(index)
               onOverviewActivate?.()
             }}
             onRecordFocus={(index) => {
+              preferRecordScrollRef.current = true
               setRecordFocus({ index })
               onOverviewActivate?.()
             }}

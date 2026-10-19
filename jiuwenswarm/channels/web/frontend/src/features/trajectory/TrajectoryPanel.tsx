@@ -15,7 +15,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { webClient } from '../../services/webClient';
 import { saveBlobWithResult } from '../../utils/desktopSave';
-import { TrajectoryExplorer } from './client/TrajectoryExplorer';
+import { TrajectoryExplorer, type TrajectoryViewState } from './client/TrajectoryExplorer';
 import { IconQuestionOutline14 } from './primitives/icons';
 import { JsonTree } from './primitives/JsonTree';
 import { projectOtelTrajectory } from './projector/otel-trajectory-projector';
@@ -164,6 +164,21 @@ export interface TrajectoryPanelProps {
   onSubjectsChange?: (subjects: ReadonlyArray<TrajectoryPanelSubject>) => void;
   /** Steps to emphasise on every lane, as `stepRefKey` values. */
   highlightStepKeys?: ReadonlySet<string>;
+  /**
+   * Analysis-page scale. `duration` shares one wall clock and shows the axis.
+   * `tokens` and `equal` size each lane on its own and hide the axis.
+   */
+  laneScale?: TrajectoryLaneScale;
+  /** Fold every turn in an expanded lane. Analysis page only. */
+  turnsCollapsed?: boolean;
+  /** Fold every tool call in an expanded lane. Analysis page only. */
+  callsCollapsed?: boolean;
+  /** One query applied to every analysis-page lane. */
+  searchQuery?: string;
+  /** Trace and span totals for the analysis-page header. */
+  onSummaryChange?: (summary: TrajectoryPanelSummary) => void;
+  /** Hands the analysis page the same export used by the raw trajectory header. */
+  onExportReady?: (exportArchive: () => void) => void;
 }
 
 export interface TrajectoryPanelSelection {
@@ -175,6 +190,14 @@ export interface TrajectoryPanelSelection {
 export interface TrajectoryPanelSubject {
   id: string;
   label: string;
+}
+
+/** How analysis-page lanes size their blocks. Duration is the shared wall clock. */
+export type TrajectoryLaneScale = 'duration' | 'tokens' | 'equal';
+
+export interface TrajectoryPanelSummary {
+  traces: number;
+  spans: number;
 }
 
 function ignoreTimelineRange(): void {}
@@ -259,6 +282,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   highlightStepKeys,
   selection,
   onTimelineAvailableChange,
+  laneScale = 'duration',
+  turnsCollapsed = false,
+  callsCollapsed = false,
+  searchQuery = '',
+  onSummaryChange,
+  onExportReady,
 }: TrajectoryPanelProps) {
   const { i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
@@ -1105,6 +1134,18 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const displayedTraceCount = selectedSubjectGroup?.traceCount ?? 0;
   const subjectSnapshots = subjectView.snapshots;
   const timeAxis = useSharedTimeAxis(sharedTimeAxis, sessionId, subjectSnapshots);
+  const shareClock = sharedTimeAxis && laneScale === 'duration';
+  const analysisViewState = useMemo<TrajectoryViewState | undefined>(() => (
+    sharedTimeAxis
+      ? {
+        actualDuration: laneScale === 'duration',
+        actualTime: laneScale === 'duration',
+        tokenView: laneScale === 'tokens',
+        turnsCollapsed,
+        callsCollapsed,
+      }
+      : undefined
+  ), [callsCollapsed, laneScale, sharedTimeAxis, turnsCollapsed]);
   const onSubjectsChangeRef = useRef(onSubjectsChange);
   onSubjectsChangeRef.current = onSubjectsChange;
   const subjectsSignature = JSON.stringify(subjectGroups.groups.map(group => [group.subject.id, group.label]));
@@ -1118,6 +1159,21 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   useEffect(() => {
     onTimelineAvailableChangeRef.current?.(timelineAvailable);
   }, [timelineAvailable]);
+  const summaryTraces = subjectGroups.groups.reduce((sum, group) => sum + group.traceCount, 0);
+  const summarySpans = allDisplayedRawRecords.length || allDisplayedRecords.length;
+  const onSummaryChangeRef = useRef(onSummaryChange);
+  onSummaryChangeRef.current = onSummaryChange;
+  useEffect(() => {
+    if (!sharedTimeAxis) return;
+    onSummaryChangeRef.current?.({ traces: summaryTraces, spans: summarySpans });
+  }, [sharedTimeAxis, summarySpans, summaryTraces]);
+  const exportArchiveRef = useRef<() => void>(() => {});
+  const onExportReadyRef = useRef(onExportReady);
+  onExportReadyRef.current = onExportReady;
+  useEffect(() => {
+    if (!sharedTimeAxis) return;
+    onExportReadyRef.current?.(() => { void exportArchiveRef.current(); });
+  }, [sharedTimeAxis]);
   const selectedSubjectSnapshot = selectedSubjectGroup === undefined
     ? undefined
     : subjectSnapshots.get(selectedSubjectGroup.subject.id);
@@ -1316,6 +1372,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       setExporting(false);
     }
   }, [chinese, copy, exporting, replayArchive, sessionId]);
+  exportArchiveRef.current = exportArchive;
 
   const importArchive = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
@@ -1551,18 +1608,24 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         messages={copy.toolbar}
         selectedSubjectId={laneSelectedId}
         onSelectSubject={selectLane}
+        hideToolbar={sharedTimeAxis}
+        {...(analysisViewState === undefined ? {} : { externalViewState: analysisViewState })}
         {...(sharedTimeAxis
           ? {
             showScaleControls: false,
-            toolbarTrailing: (
-              <SharedTimeAxis
-                domain={timeAxis.domain}
-                viewport={timeAxis.viewport}
-                range={axisVisualRange}
-                onRangeChange={selectOnAxisRange}
-                selectable={selecting}
-              />
-            ),
+            ...(shareClock
+              ? {
+                toolbarTrailing: (
+                  <SharedTimeAxis
+                    domain={timeAxis.domain}
+                    viewport={timeAxis.viewport}
+                    range={axisVisualRange}
+                    onRangeChange={selectOnAxisRange}
+                    selectable={selecting}
+                  />
+                ),
+              }
+              : {}),
             ...(selection === undefined
               ? {}
               : {
@@ -1579,10 +1642,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
           toolbarAddon,
           onOverviewActivate,
         }) => {
-          // The shared axis is always wall-clock, whatever the member's own scale.
-          const viewState = sharedTimeAxis
-            ? { ...memberViewState, actualDuration: true, actualTime: true, tokenView: false }
-            : memberViewState;
+          const viewState = memberViewState;
           const group = subjectGroups.byId.get(subjectId);
           const groupSnapshot = group === undefined
             ? undefined
@@ -1614,12 +1674,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                 colorMode="light"
                 displayMode={expanded ? 'full' : 'overview'}
                 showToolbarViewControls={false}
+                showSearch={!sharedTimeAxis}
+                {...(sharedTimeAxis ? { searchQuery } : {})}
                 toolbarAddon={toolbarAddon}
                 viewState={viewState}
                 onOverviewActivate={onOverviewActivate}
                 {...(highlightStepKeys === undefined ? {} : { highlightStepKeys })}
                 className={expanded ? css.explorer : undefined}
-                {...(sharedTimeAxis
+                {...(shareClock
                   ? {
                     sharedTimeDomain: timeAxis.sharedTimeDomain,
                     ...(timeAxis.mapSharedTime === undefined ? {} : { mapSharedTime: timeAxis.mapSharedTime }),
@@ -1738,7 +1800,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       aria-label={chinese ? '轨迹' : 'Trajectory'}
       data-active={active ? 'true' : 'false'}
     >
-      <header className={css.header}>
+      {sharedTimeAxis ? null : <header className={css.header}>
         <div className={css.summary}>
           {replayArchive === null
             ? copy.summary(displayedTraceCount, displayedRawRecords.length || displayedRecords.length)
@@ -1794,7 +1856,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
             <IconQuestionOutline14 />
           </button>
         </div>
-      </header>
+      </header>}
       {archiveError === null ? null : (
         <p className={`${css.archiveError} ${css.errorText}`} role="alert">{archiveError}</p>
       )}

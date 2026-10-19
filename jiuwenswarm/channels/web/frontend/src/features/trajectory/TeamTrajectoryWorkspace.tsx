@@ -27,6 +27,10 @@ export interface TeamTrajectoryWorkspaceProps {
   memberView: (subjectId: string, context: TeamMemberViewContext) => ReactNode;
   /** Hide the duration and token switches. Diagnosis locks every lane to wall-clock time. */
   showScaleControls?: boolean;
+  /** Drop the workspace toolbar when the host draws its own. */
+  hideToolbar?: boolean;
+  /** Host-owned scale and fold state. Replaces the toolbar's own switches. */
+  externalViewState?: TrajectoryViewState;
   /** Full-width control under the toolbar, used by the diagnosis time axis. */
   toolbarTrailing?: ReactNode;
   /** Per-agent inclusion checkboxes. Absent on the raw team trajectory. */
@@ -95,6 +99,8 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   onSelectSubject,
   memberView,
   showScaleControls = true,
+  hideToolbar = false,
+  externalViewState,
   toolbarTrailing,
   agentSelection,
 }: TeamTrajectoryWorkspaceProps) {
@@ -108,7 +114,8 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   const [callsCollapsed, setCallsCollapsed] = useState(false);
   const lanesRef = useRef<HTMLDivElement>(null);
   const laneRowsRef = useRef(new Map<string, HTMLDivElement>());
-  const viewState = useMemo<TrajectoryViewState>(() => ({
+  const [pinToken, setPinToken] = useState(0);
+  const localViewState = useMemo<TrajectoryViewState>(() => ({
     actualDuration,
     actualTime,
     tokenView,
@@ -121,6 +128,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     tokenView,
     turnsCollapsed,
   ]);
+  const viewState = externalViewState ?? localViewState;
   useLayoutEffect(() => {
     if (selectedSubjectId === null) return;
     const lanesElement = lanesRef.current;
@@ -129,7 +137,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     const lanesBounds = lanesElement.getBoundingClientRect();
     const rowBounds = rowElement.getBoundingClientRect();
     lanesElement.scrollTop += rowBounds.top - lanesBounds.top;
-  }, [selectedSubjectId]);
+  }, [pinToken, selectedSubjectId]);
 
   return (
     <div
@@ -138,7 +146,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
       data-trajectory-theme="light"
       data-testid="team-trajectory-workspace"
     >
-      <TrajectoryToolbar
+      {hideToolbar ? null : <TrajectoryToolbar
         showSearch={false}
         showScaleControls={showScaleControls}
         actualDuration={actualDuration}
@@ -157,7 +165,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
         searchQuery=""
         onSearchQueryChange={() => {}}
         t={translate}
-      />
+      />}
       {toolbarTrailing}
       <div
         ref={lanesRef}
@@ -171,6 +179,8 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
           const select = () => onSelectSubject(expanded ? null : lane.subjectId);
           const expand = () => {
             if (!expanded) onSelectSubject(lane.subjectId);
+            // Keep this agent's name on screen each time one of its bars is opened.
+            setPinToken(value => value + 1);
           };
           return (
             <div

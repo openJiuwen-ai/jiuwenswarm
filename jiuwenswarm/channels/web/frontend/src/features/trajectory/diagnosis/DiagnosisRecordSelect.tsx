@@ -103,9 +103,14 @@ export const DiagnosisRecordSelect = memo(function DiagnosisRecordSelect({
   const currentText = current === null ? null : rowText(current);
   const empty = items.length === 0;
   const activeItem = filtered[Math.min(activeIndex, filtered.length - 1)];
+  const captionId = `${listboxId}-caption`;
 
   return (
     <div className={css.root} ref={rootRef} data-testid="trajectory-diagnosis-record-select">
+      <span className={css.caption} id={captionId} data-testid="trajectory-diagnosis-record-history">
+        {t('trajectory.diagnosis.recordSelect.history')}
+      </span>
+      <div className={css.field}>
       <button
         ref={triggerRef}
         type="button"
@@ -113,7 +118,7 @@ export const DiagnosisRecordSelect = memo(function DiagnosisRecordSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
-        aria-label={t('trajectory.diagnosis.recordSelect.aria')}
+        aria-labelledby={captionId}
         disabled={empty}
         onClick={() => (open ? close(false) : openPanel())}
         data-testid="trajectory-diagnosis-record-trigger"
@@ -236,6 +241,7 @@ export const DiagnosisRecordSelect = memo(function DiagnosisRecordSelect({
           )}
         </div>
       ) : null}
+      </div>
     </div>
   );
 });

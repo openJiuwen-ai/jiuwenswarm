@@ -1053,13 +1053,30 @@
       "diagnose": "Diagnose trajectory",
       "selection": {
         "fullScope": "Entire trajectory",
-        "notePlaceholder": "Describe what to look into (optional), e.g. \"why were the search results imprecise\"",
+        "notePlaceholder": "Enter user feedback (optional)",
         "cancel": "Cancel",
         "start": "Start",
         "starting": "Starting…",
         "summary": "{{count}} agent(s) selected",
         "running": "A diagnosis is already in progress",
         "noData": "There is no trajectory to diagnose yet"
+      },
+      "summary": "{{traces}} traces · {{spans}} OTel spans",
+      "toolbar": {
+        "scale": "Trajectory scale",
+        "duration": "Duration",
+        "tokens": "Tokens",
+        "equal": "Equal",
+        "turns": "Turns",
+        "tools": "Tools",
+        "expandTurns": "Expand all turns",
+        "collapseTurns": "Collapse all turns",
+        "expandTools": "Expand all tool calls",
+        "collapseTools": "Collapse all tool calls",
+        "text": "Text",
+        "download": "Download trajectory",
+        "search": "Search trajectory",
+        "searchPlaceholder": "Search by keyword"
       },
       "tabs": {
         "aria": "Trajectory analysis sub-pages",
@@ -1130,6 +1147,7 @@
       },
       "recordSelect": {
         "aria": "Diagnosis records",
+        "history": "Diagnosis history",
         "placeholder": "Select a diagnosis",
         "search": "Search by time or keyword",
         "noMatch": "No matching diagnosis",
