@@ -87,7 +87,7 @@ flowchart LR
 | `failures` | `outcome = failed` |
 | `companion_days` | 自创建日到 `now` 的 UTC 日历天数，含首尾 |
 | `last_response_at` | 最近一次 `completed` 的 `updated_at`；没有则为空 |
-| `days` / `hours` | 按最早 Execution 的 UTC 日期和小时累计任务数与分钟 |
+| `days` / `hours` | 按最早 Execution 的 UTC 日期和小时累计任务数、分钟和 Token；时段热力格按任务数显示，因此不足一分钟的任务也会显示活动颜色 |
 | `channels` | 按 Session 的 `channel` 汇总调用、Token、任务、回复和失败 |
 | `groups` | `kind = group` 的会话；产物是该会话上状态为 `delivered` 或 `available` 的文件投递 |
 
@@ -113,3 +113,11 @@ flowchart LR
 - 任务中心仍是样例页面。
 - 未结束任务的时长记为 0，不把排队时间算成工作时长。
 - 群没有单独的显示名称，表中使用平台会话标识。
+
+## 9. 设计演进与修订
+
+### 2026-10-19 时段热力图保留短任务活动
+
+- 发现：时段格原先只使用向下取整后的执行分钟数。短于一分钟的已完成任务因此变为 0，页面没有活动颜色。
+- 变化：小时汇总新增任务数和 Token；页面以任务数生成时段热力格，时长仍用于展示累计小时。
+- 兼容：旧响应没有 `tasks` 时继续使用已有分钟字段。

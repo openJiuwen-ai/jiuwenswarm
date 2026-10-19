@@ -309,7 +309,7 @@ export function hourlyActivity(
   for (const item of hours) {
     const offset = daysBetween(parseIsoDate(item.date), todayDate);
     if (offset >= 0 && offset < rows.length && item.hour >= 0 && item.hour < 24) {
-      rows[offset][item.hour] += item.minutes;
+      rows[offset][item.hour] += item.tasks || item.minutes;
     }
   }
   return rows;
