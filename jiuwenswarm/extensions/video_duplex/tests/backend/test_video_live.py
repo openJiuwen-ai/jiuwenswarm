@@ -1238,6 +1238,108 @@ async def test_transcribe_audio_keeps_chat_endpoint_for_omni(monkeypatch) -> Non
     assert calls[0]["messages"][0]["content"][0]["type"] == "audio_url"
 
 
+def _pcm16_wav_data_url(pcm: bytes) -> str:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(pcm)
+    return "data:audio/wav;base64," + base64.b64encode(buffer.getvalue()).decode()
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_uses_dashscope_run_task_for_wss_fallback(monkeypatch) -> None:
+    pcm = b"\x01\x00\xff\xff" * 1600
+    seen: dict = {}
+
+    async def handler(conn):
+        seen["path"] = conn.request.path
+        seen["auth"] = conn.request.headers.get("Authorization")
+        run_task = json.loads(await conn.recv())
+        seen["model"] = run_task["payload"]["model"]
+        task_id = run_task["header"]["task_id"]
+        await conn.send(json.dumps({"header": {"event": "task-started", "task_id": task_id}}))
+        audio = b""
+        while isinstance(message := await conn.recv(), bytes):
+            audio += message
+        seen["audio"] = audio
+        for text in ("<think>x</think>你好，", "世界。"):
+            await conn.send(json.dumps({
+                "header": {"event": "result-generated", "task_id": task_id},
+                "payload": {"output": {"sentence": {"text": text, "sentence_end": True}}},
+            }))
+        await conn.send(json.dumps({"header": {"event": "task-finished", "task_id": task_id}}))
+
+    monkeypatch.setattr(
+        openai,
+        "AsyncOpenAI",
+        lambda **_kwargs: pytest.fail("wss ASR must not use the OpenAI client"),
+    )
+    for name in ("VOICE_ASR_ENDPOINT", "VOICE_API_KEY", "VOICE_ASR_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    server = await websockets.serve(handler, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    monkeypatch.setenv("ASR_API_BASE", f"ws://127.0.0.1:{port}")
+    monkeypatch.setenv("ASR_API_KEY", "task-key")
+    monkeypatch.setenv("ASR_MODEL_NAME", "qwen-audio-3.0-asr-flash-streaming")
+    try:
+        transcript = await video_voice.transcribe_audio(
+            [(_pcm16_wav_data_url(pcm), "用户麦克风")],
+            use_joyai_voice=False,
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert transcript == "你好，世界。"
+    assert seen["path"] == "/api-ws/v1/inference"
+    assert seen["auth"] == "Bearer task-key"
+    assert seen["model"] == "qwen-audio-3.0-asr-flash-streaming"
+    assert seen["audio"] == pcm
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_keeps_http_transcription_for_https_endpoint(monkeypatch) -> None:
+    calls = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            calls.append(("init", kwargs))
+            self.audio = SimpleNamespace(transcriptions=SimpleNamespace(create=self.create))
+
+        async def create(self, **kwargs):
+            calls.append(("create", kwargs))
+            return SimpleNamespace(text="一段")
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", FakeClient)
+    monkeypatch.setattr(
+        video_voice,
+        "asr_model_config",
+        lambda: ("https://asr.example/v1/audio/transcriptions", "key", "custom-asr"),
+    )
+
+    transcript = await video_voice.transcribe_audio(
+        [
+            ("data:audio/wav;base64,ZmFrZQ==", "用户麦克风"),
+            ("data:audio/webm;base64,ZmFrZTI=", "用户麦克风"),
+        ],
+        use_joyai_voice=False,
+    )
+
+    assert transcript == "一段。一段"
+    init_kwargs = calls[0][1]
+    assert init_kwargs["base_url"] == "https://asr.example/v1"
+    assert init_kwargs["timeout"] == 45.0
+    assert [kwargs["file"] for name, kwargs in calls if name == "create"] == [
+        ("microphone-1.wav", b"fake", "audio/wav"),
+        ("microphone-2.webm", b"fake2", "audio/webm"),
+    ]
+
+
 def test_registers_only_realtime_support_methods() -> None:
     channel = _video_channel()
 
