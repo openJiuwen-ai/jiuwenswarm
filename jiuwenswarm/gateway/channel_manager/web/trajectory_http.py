@@ -784,9 +784,9 @@ def attach_trajectory_routes(
 
 
 def _load_session_metadata(session_id: str) -> Mapping[str, Any]:
-    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
+    from jiuwenswarm.common.external_providers import provider
 
-    return get_session_metadata(
+    return provider("session_metadata").get_session_metadata(
         session_id,
         cache_bust=True,
         enable_writeback=False,

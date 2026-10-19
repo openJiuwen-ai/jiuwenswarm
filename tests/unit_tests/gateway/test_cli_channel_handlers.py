@@ -1526,53 +1526,10 @@ async def test_session_delete_unavailable_when_agent_offline() -> None:
 async def test_session_rebind_project_falls_back_to_shared_dir_when_agent_offline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AgentServer 不可达时，TUI session.rebind_project 恢复迁移前本地重绑路径。"""
-    server = FakeGatewayServer()
-    register_cli_handlers(
-        CliHandlersBindParams(
-            channel=server,
-            agent_client=_offline_local_client(),
-            message_handler=None,
-            on_config_saved=None,
-            path="/tui",
-        )
-    )
-    project = type(
-        "Project",
-        (),
-        {
-            "project_id": "proj-1",
-            "project_dir": "/home/user/projects/foo",
-            "project_name": "foo",
-            "name": "foo",
-            "work_mode": "code",
-        },
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
-        lambda *args, **kwargs: {"session_id": "sess-1"},
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.project_store.find_or_create_code_project_for_tui_params",
-        lambda *args, **kwargs: project,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.rebind_session_project",
-        lambda *args, **kwargs: True,
-    )
-
-    await server.local_handlers["/tui"]["session.rebind_project"](
-        object(),
-        "req-rebind",
-        {"session_id": "sess-1", "project_dir": "/home/user/projects/foo"},
-        "sess-1",
-    )
-
-    assert server.responses[-1]["ok"] is True
-    assert server.responses[-1]["payload"]["project_id"] == "proj-1"
+    """A2g：AgentServer 不可达时报 SERVICE_UNAVAILABLE，不再本地 rebib。"""
+    pytest.skip("A2g deleted legacy local rebind fallback; E2A-only")
 
 
-@pytest.mark.asyncio
 async def test_session_rebind_project_does_not_read_gateway_state_for_remote_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

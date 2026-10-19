@@ -2310,8 +2310,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _session_selection_set(ws, req_id, params, session_id):
         from jiuwenswarm.common.model_selection import ModelSelection
-        from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver
-        from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import set_session_model_selection
+        from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
+        from jiuwenswarm.common.model_selection_store import set_session_model_selection
         try:
             target = str((params or {}).get("session_id") or session_id or "")
             selection = ModelSelection.model_validate((params or {}).get("model_selection"))
@@ -2752,34 +2752,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
         real_client = _resolve(agent_client)
-        # Only the default local WebSocket client shares Gateway's directory.
-        # Other extension clients may be remote; never substitute deployment
-        # state for their user state when they are unavailable.
-        if (
-            is_legacy_shared_directory_client(real_client)
-            and not getattr(real_client, "server_ready", True)
-        ):
-            from jiuwenswarm.gateway.embedded.runtime.parse_int import parse_int_param
-            from jiuwenswarm.gateway.embedded.runtime.session.session_info import to_session_info
-            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_all_sessions_metadata
-
-            raw_params = params if isinstance(params, dict) else {}
-            limit = parse_int_param(raw_params, "limit", 20, minimum=1, maximum=200)
-            offset = parse_int_param(raw_params, "offset", 0, minimum=0, maximum=10**9)
-            sessions, total = get_all_sessions_metadata(limit=limit, offset=offset)
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=True,
-                payload={
-                    "sessions": [to_session_info(item) for item in sessions],
-                    "total": total,
-                    "limit": limit,
-                    "offset": offset,
-                },
-            )
-            return
-
+        # A2g：legacy 本地列表删除，统一走 E2A（SESSION_LIST 由
+        # session_adapter 处理；不可达即报错，与 PR-1R 已接受语义一致）。
         await proxy_unary_request(
             channel=channel,
             agent_client=real_client,
@@ -2906,25 +2880,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
 
         real_client = _resolve(agent_client)
-        # Only the default local WebSocket client shares the Gateway directory.
-        if (
-            is_legacy_shared_directory_client(real_client)
-            and not getattr(real_client, "server_ready", True)
-        ):
-            from jiuwenswarm.gateway.embedded.runtime.session.session_rename import apply_session_rename
-
-            ok, payload, error, code = apply_session_rename(
-                params if isinstance(params, dict) else {},
-                session_id,
-                init_channel_id=channel.channel_id,
-            )
-            await channel.send_response(
-                ws, req_id, ok=ok, payload=payload or {},
-                error=None if ok else error or "session.rename failed",
-                code=None if ok else code,
-            )
-            return
-
+        # A2g：legacy 本地 rename 删除，统一走 E2A。
         await proxy_unary_request(
             channel=channel,
             agent_client=real_client,
@@ -2950,29 +2906,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
         real_client = _resolve(agent_client)
-        if (
-            is_legacy_shared_directory_client(real_client)
-            and not getattr(real_client, "server_ready", True)
-        ):
-            raw_params = params if isinstance(params, dict) else {}
-            sid = raw_params.get("session_id")
-            pinned = raw_params.get("pinned")
-            if not isinstance(sid, str) or not sid.strip():
-                await channel.send_response(ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST")
-                return
-            if not isinstance(pinned, bool):
-                await channel.send_response(ws, req_id, ok=False, error="pinned must be boolean", code="BAD_REQUEST")
-                return
-            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import set_session_pinned
-
-            result = await asyncio.to_thread(set_session_pinned, sid.strip(), pinned)
-            if result is None:
-                await channel.send_response(ws, req_id, ok=False, error="session not found", code="NOT_FOUND")
-                return
-            new_pinned, new_order = result
-            await channel.send_response(ws, req_id, ok=True, payload={"pinned": new_pinned, "pin_order": new_order})
-            return
-
+        # A2g：legacy 本地 pin 删除，统一走 E2A。
         await proxy_unary_request(
             channel=channel,
             agent_client=real_client,
@@ -4849,14 +4783,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # AgentOS 下 metadata 在目标 AgentServer 用户目录，Gateway 读部署目录会
             # 误把任务归到默认项目；缺省时让目标 AgentServer / 显式 project_id 决定。
             # 注意：显式传空串 "" 等价于归默认项目，不可覆盖——用 key presence 区分。
-            if (
-                is_legacy_shared_directory_client(_resolve(agent_client))
-                and "project_dir" not in params
-                and session_id
-            ):
+            if "project_dir" not in params and session_id:
+                # A2g：经注入点读 metadata（AgentServer 侧写入），不再
+                # 直读 gateway 本地文件
                 try:
-                    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
-                    meta = get_session_metadata(session_id, cache_bust=True)
+                    from jiuwenswarm.common.external_providers import provider
+
+                    meta = provider("session_metadata").get_session_metadata(
+                        session_id, cache_bust=True
+                    )
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")
                         if isinstance(pd, str) and pd.strip():
@@ -5019,7 +4954,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             deleted = await cc.delete_job(job_id)
         except Exception as exc:
-            from jiuwenswarm.gateway.embedded.runtime.session.lifecycle import LifecycleError
+            from jiuwenswarm.common.lifecycle_errors import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
             await channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code=code
