@@ -118,6 +118,81 @@ test('organization chunks group by gateway request ID and leave Owner messages u
   }
 });
 
+test('organization turn completion closes trailing Summary reasoning without ending Owner work', async () => {
+  seed();
+  const chat = useChatStore.getState();
+  chat.ensureTeamRuntime('session', 'summary');
+  chat.replaceHistoryMessages('session::summary', []);
+  chat.setProcessing('session', true);
+  chat.setThinking('session', true);
+  chat.appendReasoning('session', 'Owner is still working');
+  chat.setProcessing('session::summary', true);
+  chat.setThinking('session::summary', true);
+  const owner = chat.getRuntime('session');
+  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const listeners = new Map();
+  const original = webClient.on;
+  webClient.on = (name, handler) => {
+    listeners.set(name, handler);
+    return () => listeners.delete(name);
+  };
+  function Probe() { useOrganizationEvents(); return null; }
+  const root = createRoot(document.getElementById('root'));
+  const emit = (event, content = '', member = 'team_leader', requestId = 'summary-round') =>
+    listeners.get(event)({ payload: {
+      session_id: 'session', team_id: 'summary', source: 'org_summary_background',
+      member_name: member, request_id: requestId, content,
+    } });
+  try {
+    await act(async () => {
+      setTeamOrganizationUiEnabled(true);
+      root.render(React.createElement(Probe));
+    });
+    await act(async () => {
+      emit('chat.final', 'report');
+      emit('chat.delta', 'member draft', 'drafter');
+      emit('chat.reasoning', 'retry submission without result_uri');
+    });
+    assert.equal(chat.getRuntime('session::summary').reasoningSegments.at(-1).closed, false);
+    await act(async () => emit('org.turn_completed'));
+    const summary = chat.getRuntime('session::summary');
+    assert.equal(summary.reasoningSegments.at(-1).closed, true);
+    assert.equal(summary.isProcessing, false);
+    assert.equal(summary.isThinking, false);
+    assert.deepEqual(summary.messages.map((message) => message.content), ['report', 'member draft']);
+    assert.ok(summary.messages.every((message) => message.isStreaming === false));
+    assert.deepEqual(chat.getRuntime('session'), owner);
+    // A subsequent turn must still produce its own output normally.
+    await act(async () => {
+      emit('chat.reasoning', 'new turn');
+      emit('chat.delta', 'new report', 'team_leader', 'next-round');
+      emit('org.turn_completed', '', 'team_leader', 'next-round');
+    });
+    assert.equal(chat.getRuntime('session::summary').messages.at(-1).content, 'new report');
+    assert.equal(chat.getRuntime('session::summary').messages.at(-1).isStreaming, false);
+    await act(async () => {
+      emit('chat.reasoning', 'failed turn');
+      emit('chat.delta', 'partial report', 'team_leader', 'failed-round');
+      emit('chat.error', '', 'team_leader', 'failed-round');
+    });
+    assert.equal(chat.getRuntime('session::summary').reasoningSegments.at(-1).closed, true);
+    assert.ok(chat.getRuntime('session::summary').messages.every((message) => message.isStreaming !== true));
+    assert.deepEqual(chat.getRuntime('session'), owner);
+    await act(async () => setTeamOrganizationUiEnabled(false));
+    assert.equal(listeners.size, 0);
+  } finally {
+    await act(async () => root.unmount());
+    setTeamOrganizationUiEnabled(false);
+    webClient.on = original;
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});
+
 async function withOrganizationPanel(request, run, { enabled = true } = {}) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost', pretendToBeVisual: true });
   globalThis.window = dom.window;
@@ -552,7 +627,8 @@ test('disabled UI has no organization event subscriptions; disabling unsubscribe
     await act(async () => root.render(React.createElement(Probe)));
     assert.equal(subscriptions.length, 0);
     await act(async () => setTeamOrganizationUiEnabled(true));
-    assert.equal(subscriptions.length, 9);
+    assert.equal(subscriptions.length, 10);
+    assert.ok(subscriptions.some((entry) => entry.name === 'org.turn_completed'));
     await act(async () => setTeamOrganizationUiEnabled(false));
     assert.equal(subscriptions.length, 0);
   } finally {

@@ -17,8 +17,10 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY
+from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 from jiuwenswarm.server.ipc.protocol import request_scope
 
 
@@ -34,6 +36,14 @@ class DispatchRecord:
     entered_at_ns: int | None = None
     interactions: dict[str, dict[str, Any]] = field(default_factory=dict)
     terminal: dict[str, Any] | None = None
+
+    @property
+    def is_passive_subscription(self) -> bool:
+        """A Team observer receives output but does not submit execution work."""
+        return (
+            self.request.req_method == ReqMethod.CHAT_SEND
+            and self.request.params.get(TEAM_ATTACH_ONLY_PARAM) is True
+        )
 
 
 class WorkerEventStore:
@@ -202,7 +212,9 @@ class WorkerEventStore:
             "worker_instance": self.instance,
             "cursor": self._sequence,
             "history_required": after < self._expired_sequence,
-            "is_processing": any(record.active or record.is_processing for record in records),
+            "is_processing": any(
+                record.active or record.is_processing for record in records if not record.is_passive_subscription
+            ),
             "dispatches": [{
                 "dispatch_id": record.dispatch_id,
                 "request_id": record.request.request_id,

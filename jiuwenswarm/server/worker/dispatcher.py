@@ -234,6 +234,9 @@ class WorkerDispatcher:
         for record in list(self._bridge.events.records.values()):
             if record.scope != request_scope(request):
                 continue
+            if record.is_passive_subscription:
+                record.is_processing = False
+                continue
             if record.last_execution_id:
                 executions = [item for item in state.executions if item.execution_id == record.last_execution_id]
             else:
@@ -525,9 +528,13 @@ class WorkerDispatcher:
                     )
                     # Accepted warming/queued dispatches have no Coordinator
                     # execution yet. An empty execution list must not clear them.
+                    work_requests = {
+                        record.request.request_id for record in self._bridge.events.records.values()
+                        if record.scope == request_scope(request) and not record.is_passive_subscription
+                    }
                     snapshot["is_processing"] = snapshot["is_processing"] or any(
                         not item.state.terminal for item in state.executions
-                        if item.request_id in allowed or item.root_request_id in allowed)
+                        if item.request_id in work_requests or item.root_request_id in work_requests)
                     waiting = {item.waiting_control_id for item in state.executions
                                if not item.state.terminal and item.waiting_control_id}
                     for record in self._bridge.events.records.values():
