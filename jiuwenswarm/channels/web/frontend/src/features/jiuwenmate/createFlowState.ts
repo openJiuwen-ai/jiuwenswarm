@@ -68,6 +68,15 @@ export function openOffice(state: JiuwenMateState): JiuwenMateState {
   return { ...state, ...RESET_CREATION, view: officeView(state) };
 }
 
+/** Load activity on first ready, and again whenever the office dashboard is opened. */
+export function officeActivityLoad(
+  view: JiuwenMateView,
+  status: 'loading' | 'ready' | 'failed',
+): 'initial' | 'refresh' | 'idle' {
+  if (status !== 'ready') return 'initial';
+  return view === 'office-dashboard' ? 'refresh' : 'idle';
+}
+
 export function openColleagueMessages(state: JiuwenMateState): JiuwenMateState {
   const selected = state.colleagues.find((item) => item.id === state.selectedColleagueId) ?? state.colleagues[0];
   return {

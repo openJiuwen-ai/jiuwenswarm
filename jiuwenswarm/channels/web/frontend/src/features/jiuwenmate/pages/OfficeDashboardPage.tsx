@@ -37,6 +37,7 @@ import {
   hoverHeatmapCell,
   mergeDailyActivity,
   minutesSince,
+  responseAge,
   periodHeatmap,
   selectOfficeMember,
   selectOfficeTab,
@@ -264,6 +265,12 @@ function ColleagueSelect({
   );
 }
 
+function lastResponseText(t: (key: string, options?: Record<string, unknown>) => string, minutes: number | null): string {
+  if (minutes === null) return t('jiuwenmate.office.noResponse');
+  const age = responseAge(minutes);
+  return t(`jiuwenmate.office.${age.unit}Ago`, { count: age.count });
+}
+
 function MetricBand({ items }: { items: { key: string; value: ReactNode; label: string; icon: LucideIcon; extra?: ReactNode }[] }) {
   return (
     <div className="jiuwenmate-metric-band" data-testid="jiuwenmate-metric-band">
@@ -477,9 +484,7 @@ function ActivityAllTab({
                 <td>{stats.companionDays}</td>
                 <td>{stats.chats}</td>
                 <td>
-                  {stats.lastResponseMinutes === null
-                    ? t('jiuwenmate.office.noResponse')
-                    : t('jiuwenmate.office.minutesAgo', { count: stats.lastResponseMinutes })}
+                  {lastResponseText(t, stats.lastResponseMinutes)}
                 </td>
                 <td>
                   <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={() => onManage(colleague.id)}>
@@ -627,7 +632,7 @@ function ActivityIndividualTab({
               <td>{group.artifacts}</td>
               <td>{formatTableTokens(group.tokens)}</td>
               <td>
-                {responded === null ? t('jiuwenmate.office.noResponse') : t('jiuwenmate.office.minutesAgo', { count: responded })}
+                {lastResponseText(t, responded)}
               </td>
               <td>
                 <button

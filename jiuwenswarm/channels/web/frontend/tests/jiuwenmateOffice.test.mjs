@@ -15,6 +15,7 @@ import {
   setActivityRange,
   setActivityScope,
   taskColumns,
+  responseAge,
   usageChange,
   yearHeatmap,
 } from '../node_modules/.cache/jiuwenmate-office/officeState.js';
@@ -92,6 +93,16 @@ test('usage change compares the selected window with the previous one', () => {
   assert.deepEqual(usageChange(days, '7d', today), { tokens: 50, percent: -50 });
   assert.deepEqual(usageChange(days, 'all', today), { tokens: 150, percent: null });
   assert.equal(usageChange([], '7d', today).percent, null);
+});
+
+test('last response carries minutes into hours and days', () => {
+  assert.deepEqual(responseAge(0), { unit: 'minutes', count: 0 });
+  assert.deepEqual(responseAge(59), { unit: 'minutes', count: 59 });
+  assert.deepEqual(responseAge(60), { unit: 'hours', count: 1 });
+  assert.deepEqual(responseAge(119), { unit: 'hours', count: 1 });
+  assert.deepEqual(responseAge(23 * 60), { unit: 'hours', count: 23 });
+  assert.deepEqual(responseAge(24 * 60), { unit: 'days', count: 1 });
+  assert.deepEqual(responseAge(24 * 60 + 90), { unit: 'days', count: 1 });
 });
 
 test('task columns follow the four statuses and filter by keyword', () => {

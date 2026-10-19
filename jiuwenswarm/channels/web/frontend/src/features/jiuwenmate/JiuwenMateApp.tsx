@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { webClient, webRequest } from '../../services/webClient';
 import { ImAuthorizeDialog } from './components/ImAuthorizeDialog';
@@ -18,6 +18,7 @@ import {
   openColleagueProfile,
   openColleagueWorkspace,
   openCustomColleagueCreation,
+  officeActivityLoad,
   openOffice,
   replaceColleagues,
   selectColleagueTemplate,
@@ -118,13 +119,24 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     }
   }, [api]);
 
-  const loadActivity = useCallback(async () => {
-    setActivityStatus('loading');
-    setActivityError('');
+  const activityStatusRef = useRef(activityStatus);
+  activityStatusRef.current = activityStatus;
+  const activityRequest = useRef(0);
+  const loadActivity = useCallback(async (silent = false) => {
+    const requestId = activityRequest.current + 1;
+    activityRequest.current = requestId;
+    if (!silent) {
+      setActivityStatus('loading');
+      setActivityError('');
+    }
     try {
-      setActivity(await api.loadActivity());
+      const next = await api.loadActivity();
+      if (requestId !== activityRequest.current) return;
+      setActivity(next);
       setActivityStatus('ready');
+      setActivityError('');
     } catch (error) {
+      if (requestId !== activityRequest.current || silent) return;
       setActivity(null);
       setActivityError(errorMessage(error));
       setActivityStatus('failed');
@@ -137,8 +149,10 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
 
   useEffect(() => {
     if (loadStatus !== 'ready') return;
-    void loadActivity();
-  }, [loadActivity, loadStatus, connectionEpoch]);
+    const plan = officeActivityLoad(state.view, activityStatusRef.current);
+    if (plan === 'idle') return;
+    void loadActivity(plan === 'refresh');
+  }, [loadActivity, loadStatus, connectionEpoch, state.view]);
 
   useEffect(() => {
     let last = webClient.getState();
