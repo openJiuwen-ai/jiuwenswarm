@@ -151,4 +151,5 @@ test('private chat composer shows the colleague model instead of Auto', () => {
   assert.match(markup, /data-testid="jiuwenmate-composer-model"/);
   assert.match(markup, /DeepSeek Flash/);
   assert.doesNotMatch(markup, />Auto</);
+  assert.doesNotMatch(markup, /jiuwenmate-composer__usage/);
 });

@@ -57,7 +57,6 @@ export function ConversationComposer({
           </button>
         </span>
         <span className="jiuwenmate-composer__right">
-          <span className="jiuwenmate-composer__usage" aria-hidden />
           <span className="jiuwenmate-composer__model" data-testid="jiuwenmate-composer-model">
             <ModelLabel catalog={modelCatalog} modelId={modelId} />
           </span>
