@@ -237,6 +237,7 @@ uv run --no-sync jiuwenswarm-start dev
 
 | 现象 | 检查项 |
 |------|--------|
+| 同一专家团在新会话创建组织报 `organization already belongs to team` | 组织 ID 在共享 `team.db` 中全局唯一，旧会话遗留组织未解散会占用同名 ID。升级 agent-core 后框架会自动为冲突 ID 追加 `-N` 后缀，以 `org_create_organization` 返回的实际 `organization_id` 为准；旧数据也可先回原会话调用 `org_dissolve_organization` 清理 |
 | `org_list_expert_groups` 返回空 | AgentGroup manifest、安装状态以及同名冲突；按能力过滤时还需检查 capabilities |
 | 前端看不到已安装的专家团 | 手动创建是否成功、是否已安装、当前是否为 Team 模式；刷新模板列表并检查实际工作区 |
 | 输入区不能选择专家团模板 | 是否已在当前会话构建 Team；新建未发送消息的会话再选模板 |
