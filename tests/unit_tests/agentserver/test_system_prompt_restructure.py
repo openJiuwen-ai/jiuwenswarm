@@ -1055,94 +1055,41 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     ("language", "heading", "required", "forbidden"),
     [
         (
-            "en",
-            "# A4P Intent Authorization",
+            "en", "# A4P Intent Authorization",
             (
+                "FIRST: before reading, listing, searching, writing",
                 "call `request_a4p_intent_authorization`",
-                "including read-only operations",
-                "Unprotected tools may be used first",
-                "may include multiple `actions`",
-                "ordinary parameters not used for authorization matching need not be known in advance",
-                "authorize each complete exact command by default",
-                "cannot absorb whitespace, Shell operators, redirections, or extra arguments",
-                "a filename glob under a fixed directory",
-                "Never use a bare `*`",
-                "Use dedicated file tools for file writes",
-                "Once these checks pass, immediately make the next tool call",
-                "Without new information, do not reconsider",
-                "Revise only affected steps and their dependencies",
-                "Plans may describe variables and substitution rules",
-                "actual tool calls must use resolved values",
-                "do not guess parameters or broaden authorization to compensate",
-                "request another authorization only if the later stage is not covered by an approved scope",
-                "Cron authorization cannot be staged",
-                "otherwise, do not enable the job",
-                "put task execution and necessary preparation in the future plan",
-                "Generate the job `description` and authorization `actions` from the same execution plan",
-                "Use the system-designated default Cron creation tool",
-                "create disabled",
-                "authorize the complete future scope using the returned `cronJobId`",
-                "enable after `ok=true`",
-                "keep the job disabled",
-                "do not repeatedly submit the same request",
+                "Read-only operations also require this preparation",
+                "Do not read or explore first",
+                "A user-supplied path is not permission",
+                "Inspect permittedActions, unapprovedActions and deniedActions",
+                "Execute only permittedActions", "authorizationRequired=false",
+                "policy-allowed and valid-token-covered", "Session authorization may be staged",
+                "complete exact commands", "must not absorb whitespace",
+                "a filename glob under a fixed directory", "explicit absolute paths without '..'",
+                "Filename discovery does not authorize read_file",
+                "Choose a feasible plan once and proceed", "never placeholders",
+                "create disabled", "complete future scope using the returned cronJobId",
+                "every planned action is permitted", "Cron authorization cannot be staged",
+                "do not trial-run now",
             ),
-            (
-                "determine and freeze the most direct future call list",
-                "use only one clearly defined read-only source for the same dynamic value",
-                "Never guess or use placeholders",
-                "ad hoc protected operation may use normal permission approval",
-                "estimate the total calls",
-                "maxExecutions",
-                "uptime",
-                "df -h",
-                "mkdir -p",
-                "系统巡检报告",
-            ),
+            ("## Planning and convergence", "may use normal permission approval"),
         ),
         (
-            "cn",
-            "# A4P 意图授权",
+            "cn", "# A4P 意图授权",
             (
-                "调用 `request_a4p_intent_authorization`",
-                "只读操作也不例外",
-                "受保护列表外的工具",
-                "可通过多个 `actions` 覆盖当前已确定的范围",
-                "无需提前确定不参与授权匹配的普通参数",
-                "默认分别授权完整精确命令",
-                "通配不会覆盖空白、Shell 运算符、重定向或额外参数",
-                "固定目录下的文件名 glob",
-                "不得使用裸 *",
-                "使用专用文件工具完成文件写入",
-                "三项检查通过后，立即进入下一步工具调用",
-                "没有新增信息时，不重新比较",
-                "才修改受影响的步骤及其依赖",
-                "计划可以描述变量和替换关系",
-                "实际调用时必须使用已解析的真实参数",
-                "不得以扩大授权或猜测参数代替解决问题",
-                "仅当后续阶段不在已批准范围内时再申请授权",
-                "Cron 授权不能分阶段",
-                "无法表达时，不启用任务",
-                "将任务执行及其必要准备操作纳入未来执行计划",
-                "从同一份执行计划生成任务 description 和授权 actions",
-                "使用系统指定的默认 Cron 创建工具",
-                "create disabled",
-                "使用返回的 cronJobId 一次性授权完整未来范围",
-                "ok=true 后 enable",
-                "保持任务禁用",
-                "不反复提交相同请求",
+                "第一步", "必须先调用", "`request_a4p_intent_authorization`",
+                "只读操作也必须先提交", "不得先读取或搜索文件来准备授权",
+                "用户提供路径不等于已授权", "只有列表外的工具可先用于获取必要信息",
+                "检查 permittedActions、unapprovedActions 和 deniedActions",
+                "只能执行 permittedActions 中的操作", "authorizationRequired=false",
+                "后端过滤规则允许", "会话允许分阶段授权", "默认授权完整精确命令",
+                "固定目录下的文件名 glob", "不得使用裸 *", "显式使用绝对路径且不含 '..'",
+                "文件名搜索不包含 read_file 权限", "选定可行计划后执行",
+                "真实值而非占位符", "create disabled", "一次性授权完整未来范围",
+                "计划内全部操作获准后 enable", "Cron 不能分阶段授权", "不额外试运行",
             ),
-            (
-                "确定并冻结一份最直接的未来调用清单",
-                "同一动态值只使用一个明确的只读来源",
-                "不得猜测或使用占位符",
-                "临时、非工作流型的受保护操作可使用普通权限审批",
-                "调用工具前先估计",
-                "maxExecutions",
-                "uptime",
-                "df -h",
-                "mkdir -p",
-                "系统巡检报告",
-            ),
+            ("## 规划与收敛", "可使用普通权限审批"),
         ),
     ],
 )
@@ -2479,3 +2426,76 @@ def test_deep_adapter_subagents_omits_research_without_explicit_enable():
         language="cn",
         max_iterations=DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "reason", "injected"),
+    [
+        ("success", "attachment_registered", True),
+        ("non_web", "non_web_channel", False),
+        ("no_authorizer", "authorizer_unavailable", False),
+        ("disabled", "a4p_disabled", False),
+        ("config_error", "config_error", False),
+        ("no_manager", "attachment_unavailable", False),
+        ("write_error", "attachment_unavailable", False),
+        ("unexpected_error", "attachment_error", False),
+    ],
+)
+async def test_a4p_prompt_injection_observation(monkeypatch, case, reason, injected):
+    import hashlib
+    import json
+
+    from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import A4P_PROMPT_VERSION
+
+    def config():
+        if case == "config_error":
+            raise RuntimeError("configuration unavailable")
+        return {"a4p": {"enabled": case != "disabled"}}
+
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", config)
+    log_info = Mock()
+    monkeypatch.setattr(_utils_mod.logger, "info", log_info)
+    agent = _FakeAgent(SystemPromptBuilder(language="en"))
+    rail = RuntimePromptRail(language="en", channel="cli" if case == "non_web" else "web")
+    rail.init(agent)
+    rail.set_a4p_authorizer_available(case != "no_authorizer")
+    rail.set_model_name("test-model")
+    if case == "no_manager":
+        rail.attachment_manager = None
+    elif case in {"write_error", "unexpected_error"}:
+        rail.attachment_manager = SimpleNamespace(
+            bind_context=Mock(side_effect=(
+                ValueError("invalid attachment context") if case == "write_error"
+                else RuntimeError("attachment storage failed")
+            )),
+        )
+    ctx = AgentCallbackContext(
+        agent=agent, inputs=None, session=_FakeSession(), extra={"request_id": "observation-request"},
+    )
+
+    if case == "unexpected_error":
+        with pytest.raises(RuntimeError, match="attachment storage failed"):
+            await rail._sync_a4p_intent_authorization_attachment(ctx)
+    else:
+        await rail._sync_a4p_intent_authorization_attachment(ctx)
+
+    records = [call for call in log_info.call_args_list if call.args[0] == "[RuntimePromptRail] %s"]
+    assert len(records) == 1
+    event = json.loads(records[0].args[1])
+    assert event["version"] == A4P_PROMPT_VERSION
+    assert event["session_id"] == "sess1"
+    assert event["request_id"] == "observation-request"
+    assert event["model"] == "test-model"
+    assert event["language"] == "en"
+    assert event["injected"] is injected
+    assert event["reason"] == reason
+    assert "content" not in event
+    items = await agent.prompt_attachment_manager.collect_for_session("sess1")
+    if injected:
+        attachment = next(item for item in items if item.id.endswith("a4p.intent_authorization"))
+        assert event["content_chars"] == len(attachment.content)
+        assert event["content_sha256"] == hashlib.sha256(attachment.content.encode("utf-8")).hexdigest()
+        assert len(attachment.content) < 4000
+    else:
+        assert not items

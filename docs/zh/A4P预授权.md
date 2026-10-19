@@ -41,7 +41,16 @@ a4p:
 
 #### 阶段一：申请并确认授权
 
-Agent 集中申请当前已明确的操作范围。用户在 Web 卡片中确认后，A4P Server 签发凭证，由 Runtime 保存到当前会话；拒绝或超时则返回失败原因。主动申请与执行时的权限判断是两个环节：当前提示词及申请接口不会按权限规则排除 `allow` 工具，因此这类工具仍可能被 Agent 纳入授权申请，但实际执行时无需 A4P token 即可放行。
+Agent 集中申请当前已明确的操作范围。用户在 Web 卡片中确认后，A4P Server 签发凭证，由 Runtime 保存到当前会话；拒绝或超时则返回失败原因。会话申请会先复用当前会话权限护栏预检具体操作：当前规则允许或已有有效会话 token 覆盖的操作不进入新授权卡片。明确禁止的操作返回 `A4P_ACTION_POLICY_DENIED`，Agent 需调整计划。通配范围、缺少可用护栏或预检失败时保守保留授权申请，不会将通配表达式当作具体调用检查。
+
+接口向 Agent 返回三个操作列表：
+
+- `permittedActions`：规则允许、已有有效 token 覆盖及本次新批准的操作的并集。
+- `unapprovedActions`：仍缺少授权的操作，包括用户未选中、拒绝、授权失败，或因存在禁止项而尚未申请的操作。
+- `deniedActions`：当前权限规则明确禁止的操作，不能通过 A4P 授权放行。
+
+Agent 只能尝试执行 `permittedActions` 中的操作；定时计划中仍有未批准或禁止的操作时保持任务禁用。全部操作均已满足权限时返回 `ok=true`、`authorizationRequired=false`、`approved=false`，不签发新 token。预检结果只反映检查时的状态，实际执行仍使用真实参数重新检查规则和 token。定时任务申请保持完整未来范围，不根据当前会话临时权限或会话 token 过滤。SDK、Runtime 与 Web 卡片的授权协议字段保持不变。
+
 
 ```mermaid
 sequenceDiagram
