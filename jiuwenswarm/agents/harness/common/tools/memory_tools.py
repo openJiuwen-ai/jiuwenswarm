@@ -228,6 +228,7 @@ async def memory_search(
     """
     if not await _ensure_global_manager():
         return {
+            "success": False,
             "results": [],
             "disabled": True,
             "error": "Memory manager not available"
@@ -235,6 +236,7 @@ async def memory_search(
     
     if not _global_manager:
         return {
+            "success": False,
             "results": [],
             "disabled": True,
             "error": "Memory manager not initialized"
@@ -260,6 +262,7 @@ async def memory_search(
         status = _global_manager.status()
         
         return {
+            "success": True,
             "results": results,
             "provider": status.get("provider"),
             "model": status.get("model"),
@@ -269,6 +272,7 @@ async def memory_search(
     except Exception as e:
         logger.error(f"Memory search failed: {e}")
         return {
+            "success": False,
             "results": [],
             "disabled": True,
             "error": str(e)
@@ -293,6 +297,7 @@ async def memory_get(
     """
     if not await _ensure_global_manager():
         return {
+            "success": False,
             "path": path,
             "text": "",
             "disabled": True,
@@ -301,6 +306,7 @@ async def memory_get(
     
     if not _global_manager:
         return {
+            "success": False,
             "path": path,
             "text": "",
             "disabled": True,
@@ -314,6 +320,7 @@ async def memory_get(
             lines=lines
         )
         return {
+            "success": True,
             **result,
             "disabled": False
         }
@@ -321,6 +328,7 @@ async def memory_get(
     except Exception as e:
         logger.error(f"Memory get failed: {e}")
         return {
+            "success": False,
             "path": path,
             "text": "",
             "disabled": True,

@@ -330,6 +330,7 @@ async def experience_retrieve(
         logger.info("[Experience] experience_retrieve: service disabled — returning persisted only")
         memory_string = "\n\n".join(persisted_lines)
         return {
+            "success": True,
             "status": "persisted_only",
             "memory_string": memory_string,
             "retrieved_memory": persisted_memories,
@@ -352,7 +353,7 @@ async def experience_retrieve(
     except Exception as exc:
         logger.error("[Experience] experience_retrieve failed: %s", exc)
         logger.info("[Experience] experience_retrieve error: %s", exc)
-        return {"status": "error", "error": str(exc), "memory_string": "", "retrieved_memory": []}
+        return {"success": False, "status": "error", "error": str(exc), "memory_string": "", "retrieved_memory": []}
 
 
 def _format_trajectory_feedback(entry: Dict[str, Any]) -> str:
@@ -483,7 +484,7 @@ async def experience_learn(params: TaskAddParams, matts: str = "none") -> Dict[s
 
     if svc is None:
         logger.info("[Experience] experience_learn: service disabled — entry persisted only")
-        return {"status": "persisted_only", "memory_id": None}
+        return {"success": True, "status": "persisted_only", "memory_id": None}
 
     # Step 3: summarize all entries in task-data.json
     raw_entries: List[Dict[str, Any]] = []
@@ -495,7 +496,7 @@ async def experience_learn(params: TaskAddParams, matts: str = "none") -> Dict[s
         logger.warning("[Experience] experience_learn: failed to reload task-data.json: %s", load_exc)
 
     if not raw_entries:
-        return {"status": "ok", "memory_id": memory_id, "memory": [], "summary": ""}
+        return {"success": True, "status": "ok", "memory_id": memory_id, "memory": [], "summary": ""}
 
     query = params.query or params.content
     trajectories = [
@@ -558,6 +559,7 @@ async def experience_learn(params: TaskAddParams, matts: str = "none") -> Dict[s
     except Exception as exc:
         logger.error("[Experience] experience_learn: summarize failed: %s", exc)
         return {
+            "success": True,
             "status": "persisted_only",
             "memory_id": memory_id,
             "memory": raw_entries,
@@ -582,10 +584,10 @@ async def experience_clear() -> Dict[str, Any]:
     try:
         _connector.save_to_file(_get_task_data_path(), {"entries": []})
         logger.info("[Experience] experience_clear: task-data.json wiped")
-        return {"status": "success", "message": "task-data.json cleared"}
+        return {"success": True, "status": "success", "message": "task-data.json cleared"}
     except Exception as exc:
         logger.error("[Experience] experience_clear failed: %s", exc)
-        return {"status": "error", "error": str(exc)}
+        return {"success": False, "status": "error", "error": str(exc)}
 
 
 def get_task_tools() -> List:
