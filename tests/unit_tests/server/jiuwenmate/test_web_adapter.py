@@ -117,6 +117,18 @@ async def test_opening_the_page_shows_the_default_colleague(host):
     assert [item["agent_id"] for item in listed.payload["colleagues"]] == [colleague["agent_id"]]
 
 
+async def test_colleague_list_restores_im_binding_status_from_owner_config(host, monkeypatch):
+    created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
+    agent_id = created.payload["colleague"]["agent_id"]
+    monkeypatch.setattr(web_adapter, "_configured_feishu_agent_ids", lambda: {agent_id}, raising=False)
+
+    listed = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_LIST)
+    fetched = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_GET, agent_id=agent_id)
+
+    assert listed.payload["colleagues"][0]["im_configured"] is True
+    assert fetched.payload["colleague"]["im_configured"] is True
+
+
 async def test_created_colleague_is_published_with_the_default_model(host):
     created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
 

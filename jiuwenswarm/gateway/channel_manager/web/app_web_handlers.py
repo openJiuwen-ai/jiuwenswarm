@@ -4312,6 +4312,86 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             logger.exception("[channel.feishu.get_conf] 异常, req_id=%s: %s", req_id, e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
+    async def _channel_feishu_bind_agent(ws, req_id, params, session_id):
+        """Persist the one-to-one Feishu app and JiuwenMate colleague binding."""
+        cm = _resolve(channel_manager)
+        if cm is None:
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="channel manager not available",
+                code="SERVICE_UNAVAILABLE",
+            )
+            return
+        if not isinstance(params, dict):
+            await channel.send_response(
+                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
+            )
+            return
+
+        app_id = str(params.get("app_id") or "").strip()
+        app_secret = str(params.get("app_secret") or "").strip()
+        persistent_agent_id = str(params.get("persistent_agent_id") or "").strip()
+        if not app_id or not app_secret or not persistent_agent_id:
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="app_id, app_secret and persistent_agent_id are required",
+                code="BAD_REQUEST",
+            )
+            return
+
+        try:
+            current = cm.get_conf("feishu")
+            apps = [dict(app) for app in _normalize_feishu_conf(current).get("apps", [])]
+            # A colleague has one Feishu app. Rebinding it replaces its previous app entry.
+            apps = [
+                app for app in apps
+                if app.get("persistent_agent_id") != persistent_agent_id or app.get("app_id") == app_id
+            ]
+            matched = next((app for app in apps if app.get("app_id") == app_id), None)
+            if matched is None:
+                matched = {
+                    **_FEISHU_APP_DEFAULTS,
+                    "is_default": not any(app.get("is_default") for app in apps),
+                    "app_id": app_id,
+                    "app_secret": app_secret,
+                    "persistent_agent_id": persistent_agent_id,
+                }
+                apps.append(matched)
+            else:
+                matched.update(
+                    app_id=app_id,
+                    app_secret=app_secret,
+                    persistent_agent_id=persistent_agent_id,
+                    enabled=True,
+                )
+                # This field was previously used as the JM binding key. Keep a single source of truth.
+                matched.pop("agent_id", None)
+
+            merged_apps = _normalize_feishu_conf({"apps": apps})["apps"]
+            new_conf = {"apps": merged_apps}
+            if isinstance(current, dict) and "send_file_allowed" in current:
+                new_conf["send_file_allowed"] = current["send_file_allowed"]
+
+            # Save first: confirmation must never claim a binding that disappears on restart.
+            replace_channel_subsection_with_cleanup(
+                "feishu", "apps", merged_apps, {"apps", "send_file_allowed"}
+            )
+            await cm.set_conf("feishu", new_conf)
+            _schedule_clear_agent_config_cache("channel.feishu.bind_agent")
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=True,
+                payload={"binding": {"app_id": app_id, "persistent_agent_id": persistent_agent_id}},
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("[channel.feishu.bind_agent] 保存绑定失败, req_id=%s: %s", req_id, e)
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
     async def _channel_feishu_set_conf(ws, req_id, params, session_id):
         """更新 FeishuChannel 的配置，并按新配置重新实例化通道。
 
@@ -5492,6 +5572,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("heartbeat.set_conf", _health_check_set_conf)
     channel.register_method("channel.feishu.get_conf", _channel_feishu_get_conf)
     channel.register_method("channel.feishu.set_conf", _channel_feishu_set_conf)
+    channel.register_method("channel.feishu.bind_agent", _channel_feishu_bind_agent)
     channel.register_method("channel.xiaoyi.get_conf", _channel_xiaoyi_get_conf)
     channel.register_method("channel.xiaoyi.set_conf", _channel_xiaoyi_set_conf)
     channel.register_method("channel.telegram.get_conf", _channel_telegram_get_conf)

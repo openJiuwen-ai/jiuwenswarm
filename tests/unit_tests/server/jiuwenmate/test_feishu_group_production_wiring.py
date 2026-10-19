@@ -166,30 +166,30 @@ def _agent_websocket_server_type():
     return AgentWebSocketServer
 
 
-def test_configured_feishu_bindings_resolve_both_config_shapes_and_reject_ambiguity():
+def test_configured_feishu_bindings_use_one_to_one_persistent_agent_id():
     bindings = configured_feishu_bindings(
         {
             "channels": {
                 "feishu": {
                     "apps": [
-                        {"app_id": "cli_a", "agent_id": "mate_a"},
-                        {"app_id": "cli_personal", "agent_id": ""},
+                        {"app_id": "cli_a", "persistent_agent_id": "mate_a"},
+                        {"app_id": "cli_personal", "agent_id": "mate_personal"},
+                        {"app_id": "cli_legacy", "persistent_agent_id": "mate_legacy"},
+                        {"app_id": "cli_old_key", "agent_id": "mate_old_key"},
+                        {"app_id": "cli_duplicate_agent", "persistent_agent_id": "mate_a"},
                     ]
                 },
                 "feishu_enterprise": {
-                    "engineering": {"app_id": "cli_b", "agent_id": "mate_b"},
-                    "duplicate": {"app_id": "cli_a", "agent_id": "mate_other"},
+                    "engineering": {"app_id": "cli_b", "persistent_agent_id": "mate_b"},
                 },
             }
         }
     )
 
     assert [(item.app_id, item.agent_id, item.namespace_id) for item in bindings] == [
-        ("cli_a", "mate_a", "local"),
-        ("cli_a", "mate_other", "local"),
         ("cli_b", "mate_b", "local"),
+        ("cli_legacy", "mate_legacy", "local"),
     ]
-    assert len([item for item in bindings if item.app_id == "cli_a"]) == 2
 
 
 def test_production_binding_resolver_uses_owner_config_and_receiver_app_id(monkeypatch):
@@ -200,7 +200,7 @@ def test_production_binding_resolver_uses_owner_config_and_receiver_app_id(monke
         "get_config",
         lambda: {
             "channels": {
-                "feishu": {"apps": [{"app_id": "cli_bound", "agent_id": "mate_1"}]}
+                "feishu": {"apps": [{"app_id": "cli_bound", "persistent_agent_id": "mate_1"}]}
             }
         },
     )
