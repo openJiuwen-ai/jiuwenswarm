@@ -449,7 +449,7 @@ test('installed skill and connected MCP names are the only selectable colleague 
   const selected = selectableColleagueResources(
     {
       skills: [
-        { name: 'report-writer', display_name: '报告', installed: true, enabled: true, skill_type: 'skill' },
+        { name: 'report-writer', display_name: '报告', description: '整理周报', installed: true, enabled: true, skill_type: 'skill' },
         { name: 'disabled-skill', installed: true, enabled: false, skill_type: 'skill' },
         { name: 'mcp-skill', source: 'mcp', installed: true, skill_type: 'skill' },
         { name: 'workflow-pack', installed: true, skill_type: 'skillpack' },
@@ -464,8 +464,8 @@ test('installed skill and connected MCP names are the only selectable colleague 
       ],
     },
   );
-  assert.deepEqual(selected.skills, [{ name: 'report-writer', label: '报告' }]);
-  assert.deepEqual(selected.connectors, [{ name: 'feishu', label: '飞书' }]);
+  assert.deepEqual(selected.skills, [{ name: 'report-writer', label: '报告', description: '整理周报' }]);
+  assert.deepEqual(selected.connectors, [{ name: 'feishu', label: '飞书', description: '' }]);
   assert.deepEqual(selected.plugins, []);
 });
 
@@ -478,7 +478,7 @@ test('published personal-context pages are the selectable employee knowledge', (
         { name: 'topics/description.md', label: '重复' },
       ],
     }),
-    [{ name: 'topics/description.md', label: 'topics/description.md' }],
+    [{ name: 'topics/description.md', label: 'topics/description.md', description: '' }],
   );
 });
 

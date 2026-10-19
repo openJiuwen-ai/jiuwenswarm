@@ -213,6 +213,44 @@ def test_a_plugin_copies_only_its_own_skill(tmp_path):
     assert not (root / "other-skill").exists()
 
 
+def test_connector_manuals_stay_out_of_the_employee_skill_list(tmp_path):
+    library = tmp_path / "library"
+    chosen = write_skill(library / "weekend-getaway", "weekend-getaway", "周末去哪玩")
+    bundled = write_skill(library / "lark-doc", "lark-doc", "飞书文档")
+    catalog = MapCatalog(
+        skills={"weekend-getaway": SkillSource(name="weekend-getaway", directory=chosen)},
+        connectors={
+            "feishu": ConnectorSource(
+                name="feishu",
+                skill_directories=(SkillSource(name="lark-doc", directory=bundled),),
+            )
+        },
+    )
+    host = service(tmp_path, catalog, iter(["mate_feishu"]))
+
+    view = host.create_colleague(
+        NS,
+        settings(
+            capabilities=CapabilitySelection(
+                model="deepseek#0",
+                skills=("weekend-getaway",),
+                connectors=("feishu",),
+            )
+        ),
+    )
+    spec = host.current_snapshot(NS, view.agent_id).load_spec()
+    office = host.workspaces.path(NS, view.agent_id)
+    skill_root = Path(spec.rails[0].params["skills_dir"])
+
+    assert spec.skills == ["weekend-getaway"]
+    assert (skill_root / "weekend-getaway" / "SKILL.md").is_file()
+    assert not (skill_root / "lark-doc").exists()
+    manuals = list((office / "resources" / "connector-skills").glob("*/lark-doc/SKILL.md"))
+    assert len(manuals) == 1
+    assert "连接器附带说明" in spec.system_prompt
+    assert "lark-doc" not in spec.system_prompt
+
+
 def test_connectors_keep_separate_credentials_and_do_not_touch_the_process_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("TOKEN", "from-process")
     before = dict(os.environ)
