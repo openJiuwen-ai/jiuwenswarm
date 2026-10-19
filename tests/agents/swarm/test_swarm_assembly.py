@@ -192,6 +192,8 @@ def test_team_a2a_live_session_does_not_borrow_build_identity():
 # Sourced from the registry symbols so the test tracks renames automatically.
 _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
     {
+        registry.MODEL_ROUTING,
+        registry.WORKSPACE_QUOTA,
         registry.RUNTIME_PROMPT,
         registry.TEAM_SKILL_STORAGE_POLICY,
         registry.TEAM_SHARED_SKILL_LINK_REFRESH,
@@ -525,7 +527,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 19
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 21
     assert rail_names == expected
     disabled_tools = next(
         spec for spec in rails_specs if spec.type == registry.DISABLED_TOOLS
