@@ -1179,7 +1179,12 @@ async def test_a4p_guidance_is_a_runtime_attachment_not_cached_system_prompt(
 
 
 @pytest.mark.asyncio
-async def test_a4p_guidance_is_cleared_without_interactive_authorizer(monkeypatch):
+@pytest.mark.parametrize("permissions", [
+    None,
+    {"enabled": True, "mode": "auto"},
+    {"enabled": False, "mode": "manual"},
+])
+async def test_a4p_guidance_is_cleared_without_interactive_authorizer(monkeypatch, permissions):
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_config",
         lambda: {"a4p": {"enabled": True}},
@@ -1192,7 +1197,13 @@ async def test_a4p_guidance_is_cleared_without_interactive_authorizer(monkeypatc
     ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
     await rail._sync_a4p_intent_authorization_attachment(ctx)
 
-    rail.set_a4p_authorizer_available(False)
+    if permissions is None:
+        rail.set_a4p_authorizer_available(False)
+    else:
+        monkeypatch.setattr(
+            "jiuwenswarm.common.config.get_config",
+            lambda: {"a4p": {"enabled": True}, "permissions": permissions},
+        )
     await rail._sync_a4p_intent_authorization_attachment(ctx)
 
     rendered = agent.prompt_attachment_manager.render(
@@ -1201,7 +1212,12 @@ async def test_a4p_guidance_is_cleared_without_interactive_authorizer(monkeypatc
     assert "A4P Intent Authorization" not in rendered
 
 
-def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch):
+@pytest.mark.parametrize("channel,permissions", [
+    ("tui", {}),
+    ("web", {"enabled": True, "mode": "auto"}),
+    ("web", {"enabled": False, "mode": "manual"}),
+])
+def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch, channel, permissions):
     fake_resource = _FakeResourceManager()
     fake_instance = _FakeRuntimeInstance()
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
@@ -1240,8 +1256,8 @@ def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch):
         ]
 
         adapter._sync_a4p_tools_for_runtime(
-            {"a4p": {"enabled": True}},
-            "tui",
+            {"a4p": {"enabled": True}, "permissions": permissions},
+            channel,
             "session-1",
         )
         assert adapter._a4p_tools == []

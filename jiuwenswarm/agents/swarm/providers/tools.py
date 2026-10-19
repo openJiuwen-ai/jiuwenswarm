@@ -41,7 +41,7 @@ from openjiuwen.agent_teams.harness.manifest import (
 from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
 )
-from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_enabled
+from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_preauthorization_active
 from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
     get_tools as get_a4p_tools,
 )
@@ -491,7 +491,7 @@ def _build_symphony_tools(ctx: SwarmBuildContext) -> list[Any]:
 
 def _build_a4p_intent_authorization_tools(ctx: SwarmBuildContext) -> list[Any]:
     """Build the A4P request tool only for an interactive Web team leader."""
-    if getattr(ctx, "role", "") != "leader" or not is_a4p_enabled(ctx.config or {}):
+    if getattr(ctx, "role", "") != "leader" or not is_a4p_preauthorization_active(ctx.config or {}):
         return []
     execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(ctx.session_id)
     if execution_context is None or not execution_context.is_interactive_web:

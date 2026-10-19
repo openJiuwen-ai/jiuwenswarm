@@ -9,7 +9,7 @@ from typing import Any
 from jiuwenswarm.agents.harness.common.a4p.file_scope import normalize_read_path_params
 from jiuwenswarm.agents.harness.common.a4p.runtime import (
     get_a4p_runtime,
-    is_a4p_enabled,
+    is_a4p_preauthorization_active,
     normalize_a4p_action_params,
     resolve_a4p_identity,
 )
@@ -243,10 +243,10 @@ async def request_a4p_intent_authorization(
     _session_id: str | None = None,
 ) -> dict[str, Any]:
     """Request a user-authorized A4P intent token for future tool calls."""
-    if not is_a4p_enabled(get_config()):
+    if not is_a4p_preauthorization_active(get_config()):
         return {
             "ok": False,
-            "error": "A4P is disabled",
+            "error": "A4P preauthorization is available only in default permission mode with A4P enabled",
             "code": "A4P_DISABLED",
         }
     session_id = str(_session_id or "").strip()

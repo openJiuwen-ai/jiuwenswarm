@@ -451,12 +451,15 @@ def build_permission_rail(
                 try:
                     from jiuwenswarm.agents.harness.common.a4p.runtime import (
                         get_a4p_runtime,
-                        is_a4p_enabled,
+                        is_a4p_preauthorization_active,
                         resolve_a4p_identity,
                     )
 
-                    config = get_config()
-                    if is_a4p_enabled(config):
+                    config = {
+                        **get_config(),
+                        "permissions": _get_installed_permissions(session_id),
+                    }
+                    if is_a4p_preauthorization_active(config):
                         agent_name = (
                             execution_context.agent_id
                             if execution_context is not None
