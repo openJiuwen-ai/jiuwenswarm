@@ -190,16 +190,20 @@ def test_installed_catalog_lists_only_regular_pages_inside_the_context_root(tmp_
     context = tmp_path / "context"
     page = context / "handbook.md"
     page.parent.mkdir()
+    article = context / "AI软件工程" / "需求到代码可追溯.md"
+    article.parent.mkdir()
     page.write_text("手册", encoding="utf-8")
+    article.write_text("专栏", encoding="utf-8")
     outside = tmp_path / "secret.md"
     outside.write_text("secret", encoding="utf-8")
     os.symlink(outside, context / "linked.md")
     (context / "notes.txt").write_text("不是页面", encoding="utf-8")
     catalog = InstalledResourceCatalog(knowledge_root=context)
 
-    assert [item.name for item in catalog.list_knowledge()] == ["handbook.md"]
+    assert [item.name for item in catalog.list_knowledge()] == ["AI软件工程/需求到代码可追溯.md", "handbook.md"]
     assert catalog.knowledge("../secret.md") is None
     assert catalog.knowledge("linked.md") is None
+    assert catalog.knowledge("AI软件工程\\需求到代码可追溯.md") is None
 
 
 def test_a_plugin_copies_only_its_own_skill(tmp_path):
