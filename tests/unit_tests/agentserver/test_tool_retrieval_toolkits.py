@@ -66,12 +66,6 @@ def test_static_category_table_shape() -> None:
     # agent_evolving family: six deferred tools that previously landed in the
     # uncategorized fallback block.
     assert "skill-evolution" in paths
-    # Code-mode rails/registrations: coding memory, LSP, worktree, user todos
-    # also previously landed in the uncategorized fallback block.
-    assert "coding-memory" in paths
-    assert "lsp" in paths
-    assert "worktree" in paths
-    assert "user-todos" in paths
     by_path = {category.path: category for category in _TOOL_CATEGORIES}
     assert "powershell" in by_path["terminal"].tools
     assert "cron_create_job" in by_path["cron"].tools
@@ -80,9 +74,6 @@ def test_static_category_table_shape() -> None:
     assert "audio_metadata" in by_path["audio-processing"].tools
     assert "generate_visual" in by_path["image-generation"].tools
     assert "check_video_status" in by_path["video-generation"].tools
-    assert "coding_memory_write" in by_path["coding-memory"].tools
-    assert "enter_worktree" in by_path["worktree"].tools
-    assert "user_todos" in by_path["user-todos"].tools
     assert "prepare_skill_evolution" in by_path["skill-evolution"].tools
     assert "simplify_skill_experiences" in by_path["skill-evolution"].tools
     # Descriptions are description-only routing text, never tool-name dumps.
@@ -127,10 +118,15 @@ def test_bare_list_errors_with_call_shapes() -> None:
     toolkit = _build_toolkit()
     tool = toolkit.get_tools()[0]
 
-    with pytest.raises(
-        ValueError, match='list needs "category" or "keyword"'
-    ):
-        asyncio.run(tool.invoke({"operation": "list"}))
+    listing = asyncio.run(tool.invoke({"operation": "list"}))
+
+    assert "[category] cron:" in listing
+    assert "[category] heartbeat:" in listing
+    # Categorized tools are NOT listed at the root: their names are
+    # discovered through the category listing, not a flat dump.
+    assert "cron_create_job" not in listing
+    # No pagination footer — listings are served whole.
+    assert "[next]" not in listing
 
 
 def test_category_list_serves_tools_schema_free() -> None:
@@ -181,6 +177,26 @@ def test_unknown_category_error_lists_valid_names() -> None:
     except ValueError as exc:
         # The error carries the valid names so the model can retry directly.
         assert "cron, heartbeat" in str(exc)
+
+
+def test_uncategorized_and_connector_tools_at_root() -> None:
+    """Static-table misses surface at the root; MCP tools group by connector."""
+
+    tools = _deferred_tools() + [
+        ToolInfo(name="pdf_read", description="Read text from a PDF file"),
+        ToolInfo(name="mcp_amap_maps_geo", description="将地址转换为经纬度坐标"),
+        ToolInfo(name="mcp_amap_maps_text_search", description="关键词搜POI"),
+    ]
+    toolkit = _build_toolkit(
+        tools,
+        mcp_servers_provider=lambda: {"amap": {"zh": "高德地图位置服务。", "en": ""}},
+    )
+    listing = asyncio.run(toolkit.tool_search(operation="list"))
+
+    assert "- [tool] pdf_read: Read text from a PDF file" in listing
+    assert "[category] mcp_amap: 高德地图位置服务。" in listing
+    # Connector tools ride their virtual branch, not [tool] lines.
+    assert "mcp_amap_maps_geo: " not in listing
 
 
 def test_list_get_schema_roundtrip() -> None:
@@ -240,10 +256,10 @@ def test_retired_fields_degrade_instead_of_erroring() -> None:
 
     toolkit = _build_toolkit()
 
-    with pytest.raises(
-        ValueError, match='list needs "category" or "keyword"'
-    ):
-        asyncio.run(toolkit.tool_search(operation="search", query=["cron"]))
+    legacy = asyncio.run(
+        toolkit.tool_search(operation="search", query=["cron"])
+    )
+    assert "[category] cron:" in legacy
 
     degraded = asyncio.run(
         toolkit.tool_search(
@@ -509,10 +525,11 @@ def test_frozen_catalogue_intersects_live_registry() -> None:
     toolkit = _build_toolkit(tools)
     snapshot = toolkit.frozen_catalogue
 
-    # cron keeps two live members → stays a category; documents has only
-    # read_pdf live → collapses out of the category list.
-    assert [category.path for category in snapshot.categories] == ["cron"]
-    assert snapshot.categories[0].tools == ("cron_create_job", "cron_list_jobs")
+    assert [category.path for category in snapshot.categories] == [
+        "documents",
+        "cron",
+    ]
+    assert snapshot.categories[1].tools == ("cron_create_job",)
     assert {entry.name for entry in snapshot.flat_entries} == {
         "cron_create_job",
         "cron_list_jobs",

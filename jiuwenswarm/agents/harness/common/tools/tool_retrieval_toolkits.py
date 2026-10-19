@@ -138,6 +138,35 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         description_en="Use language servers for code definitions, references and diagnostics.",
     ),
     ToolCategory(
+        path="image-processing",
+        description="使用视觉模型处理图片：OCR 文字提取与图片问答。",
+        tools=("image_ocr", "visual_question_answering"),
+    ),
+    ToolCategory(
+        path="audio-processing",
+        description="使用音频模型处理音频：语音转写、音频问答与元数据提取。",
+        tools=(
+            "audio_metadata",
+            "audio_question_answering",
+            "audio_transcription",
+        ),
+    ),
+    ToolCategory(
+        path="video-understanding",
+        description="使用视频理解模型分析视频内容并回答相关问题。",
+        tools=("video_understanding",),
+    ),
+    ToolCategory(
+        path="image-generation",
+        description="文生图：按文字提示词生成图片并保存到工作区。",
+        tools=("generate_image", "generate_visual"),
+    ),
+    ToolCategory(
+        path="video-generation",
+        description="文生视频：提交视频生成任务，按任务号轮询进度并下载结果。",
+        tools=("generate_video", "check_video_status"),
+    ),
+    ToolCategory(
         path="modes",
         description="在 normal 与 plan 两种会话模式之间切换当前会话。",
         tools=("switch_mode",),
@@ -215,6 +244,21 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         description_en="Review and apply local skill evolution proposals, and manage recorded skill experiences.",
     ),
     ToolCategory(
+        path="skill-evolution",
+        description=(
+            "本地技能与经验的演进：经用户确认创建演进评审、启动受限评审并接受"
+            "已审查的变更提案，以及演进经验的查询、读取与整理。"
+        ),
+        tools=(
+            "evolve_review_task",
+            "evolve_skill_experiences",
+            "list_skill_experiences",
+            "prepare_skill_evolution",
+            "read_skill_experiences",
+            "simplify_skill_experiences",
+        ),
+    ),
+    ToolCategory(
         path="skill-management",
         description="网络上技能搜索、安装与本地技能卸载。",
         tools=("install_skill", "search_skill", "uninstall_skill"),
@@ -280,9 +324,7 @@ def _tool_index_tool_id(session_scope: str) -> str:
 
 
 _TOOL_SEARCH_CARD_DESCRIPTION = (
-    "Deferred-tool catalogue, read-only. list: tools under [category]; "
-    "add [keyword] to BM25-search within the category or, with no "
-    "category, across all tools. "
+    "Deferred-tool catalogue, read-only. list: tools under [category]. "
     "get_schema: the {name, description, schema} of the tool named in "
     "[tool]; results execute via the fixed tool_call tool. "
     "Never executes tools."
@@ -348,7 +390,7 @@ def _compact_schema_description(description: str) -> str:
     return compact[: _SCHEMA_DESC_CHARS - 1].rstrip() + "…"
 
 
-def _tool_search_input_params(language: str = "en") -> dict[str, Any]:
+def _tool_search_input_params() -> dict[str, Any]:
     """``tool_search`` card schema: list / get_schema over the category table.
 
     The discovery flow is two-phase to bound tokens: list returns names and
@@ -363,29 +405,14 @@ def _tool_search_input_params(language: str = "en") -> dict[str, Any]:
                 "type": "string",
                 "enum": ["list", "get_schema"],
                 "description": (
-                    "list: tools under [category], optionally filtered by "
-                    "[keyword]. get_schema: the schema of the tool named "
-                    "in [tool]."
+                    "list: tools under [category]. "
+                    "get_schema: the schema of the tool named in [tool]."
                 ),
             },
             "category": {
                 "type": "string",
                 "minLength": 1,
-                "description": (
-                    "Exact category name. Omit only for a keyword-only "
-                    "global search."
-                ),
-            },
-            "keyword": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128,
-                "description": (
-                    "list only. BM25 keyword search: within [category], or "
-                    "across all tools when category is omitted. Built-in tools "
-                    "accept Chinese or English capability terms. "
-                    "Provider descriptions may use another language."
-                ),
+                "description": "Exact category name. Omit for root.",
             },
             "tool": {
                 "type": "string",
@@ -470,15 +497,7 @@ class ToolRetrievalToolkit:
         self._tool_by_name = {tool.name: tool for tool in tools}
 
     def _build_catalogue(self) -> ToolCatalogueSnapshot:
-        """Freeze the static table against the live registry.
-
-        A category line is a routing signal: it pays for itself only when
-        there is a membership to route to. Categories with exactly one live
-        member collapse — the category line is dropped and the member falls
-        through to the flat ``[tool]`` block (name + short description,
-        get_schema directly), saving a list round trip that would reveal a
-        single name the prompt could have stated outright.
-        """
+        """Freeze the static table against the live registry."""
 
         self._live_records()
         live = self._tool_by_name
@@ -824,12 +843,11 @@ class ToolRetrievalToolkit:
         )
         return "\n".join(lines)
 
-    def _render_category_listing(self, category: str, keyword: str = "") -> str:
+    def _render_category_listing(self, category: str) -> str:
         """Render one category's member tools.
 
-        A name match lists the category's tools, BM25-ranked against
-        ``keyword`` when given; anything else raises with the valid names
-        so the model can retry without probing.
+        A name match lists the category's tools; anything else raises with
+        the valid names so the model can retry without probing.
         """
 
         requested = _category_key(category)
@@ -855,8 +873,8 @@ class ToolRetrievalToolkit:
             lines = [header, ""]
             lines.extend(
                 f"- [tool] {name}: "
-                f"{_compact_schema_description(discovery_description(self._tool_by_name[name], self._language))}"
-                for name in names
+                f"{_compact_schema_description(self._tool_by_name[name].description)}"
+                for name in matched.tools
             )
             return "\n".join(lines)
 
