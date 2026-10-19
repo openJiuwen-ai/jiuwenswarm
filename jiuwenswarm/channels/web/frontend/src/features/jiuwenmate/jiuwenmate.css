@@ -1862,13 +1862,6 @@
   height: 15px;
 }
 
-.jiuwenmate-composer__usage {
-  width: 14px;
-  height: 14px;
-  border: 2px solid var(--jm-border-strong);
-  border-radius: 50%;
-}
-
 .jiuwenmate-composer__toolbar .jiuwenmate-composer__send {
   width: 28px;
   height: 28px;
