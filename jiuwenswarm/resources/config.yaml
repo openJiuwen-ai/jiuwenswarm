@@ -53,10 +53,10 @@ a2ui:
   dev_smoke_tools_enabled: false
 
 symphony:
-  enabled: false
+  enabled: null  # null = 跟随程序默认；用户切换后保存 true/false
   paths:
     skills_root: ""
-    score_dir: ""
+    graph_dir: ""
 
   fingerprint:
     scan:
@@ -65,11 +65,6 @@ symphony:
       workers: 4
       batch_size: 2
       body_limit:
-    normalization:
-      workers: 4
-      batch_size: 2
-      duplicate_name_similarity_threshold: 0.8
-      max_vocab_size:
 
   build:
     workers: 4
@@ -79,7 +74,12 @@ symphony:
     min_edge_confidence: 0.5
 
   evolution:
-    enabled: false  # true = 消费 Session 轨迹并使用动态 overlay
+    # Core Flow 沉淀：分组签名 = 轨迹全部成功边（确定性、不漂移），
+    # 一条新轨迹最多触发一个技能包的完整蒸馏；达标（成功次数 + 成功率）即 verified。
+    flow:
+      enabled: null              # null = 跟随程序默认；true = 由 Core Graph-Evolution Rail 学习动态图并沉淀经验
+      min_successes: 3           # 同一结构至少成功几次且成功率达标后才可安装
+      min_pack_success_rate: 0.8  # pack 成功率阈值
 
   orchestration:
     # fast is the default one-shot path; beam enables bidirectional search.
@@ -92,23 +92,49 @@ symphony:
   skill_retrieval:
     enabled: false
     artifact_root: ${SYMPHONY_SKILL_RETRIEVAL_ROOT:-}
+    discovery:
+      # Strictly below the fixed 1% context threshold, a new session receives
+      # a complete metadata snapshot; larger inventories use skill_index.
+      max_output_chars: 12000
+      incremental_notice_max_chars: 4000
+      prompt_preferred_skills:
+        - skill-creator
+        - swarmskill-creator
+        - symphony-assistant
     build:
-      branching_factor: 12
+      # A failed refresh keeps the last usable taxonomy available to discovery.
+      preserve_previous_index_on_failure: true
+      # Everything below is forwarded to SkillIndexBuildConfig, which accepts
+      # only the field names it declares and silently drops the rest. The
+      # values here are that dataclass's own defaults, so listing them changes
+      # nothing on its own; they are listed because a key this template omits
+      # is deleted from an operator's config on the next start, and these were
+      # being deleted while the builder was still reading them.
+      # Taxonomy shape: how deep the tree may go and how wide one node may get.
       max_depth: 6
-      root_categories: ""
+      branching_factor: 128
+      # Classification concurrency, retries and per-request budget.
       max_workers: 2
       max_retries: 2
-      request_timeout_seconds: 420
+      request_timeout_seconds: 420.0
+      # Skills classified per model call.
       classification_batch_limit: 32
+      # Fixed root categories. Empty lets the builder discover its own.
+      root_categories:
+      # Seed for the discovery pass, so a rebuild reproduces its predecessor.
       discovery_seed: 42
+      # Post-processing pass that merges thin branches back together.
       postprocess_enabled: true
       postprocess_max_passes: 1
       postprocess_min_skills: 6
+      # Group skills that do the same job under one equivalence node.
       equivalence_enabled: false
-    retrieve:
-      compact_codes_enabled: false
-      flatten_tree: false
-      max_exposure_depth: 1
+    # Index construction uses the default configured model. An optional llm
+    # mapping can override model, api_key, base_url and seed for this builder.
+    # Left empty rather than {} on purpose: a mapping here would be treated as
+    # the complete set of allowed sub-keys when a config is upgraded against
+    # this template, and every override an operator added would be dropped.
+    llm:
 
 # Auto Memory：对话结束后自动提取记忆，按项目隔离存储
 # 存储路径：~/.jiuwenswarm/projects/{sanitized-project-path}/memory/

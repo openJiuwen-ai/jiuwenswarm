@@ -9,7 +9,6 @@ import re
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.rails.subagent import SubagentRail
-from openjiuwen.harness.subagent_types import listed_subagent_types
 
 from jiuwenswarm.agents.harness.common.prompt.browser_task_prompt import (
     build_browser_task_prompt,
@@ -71,9 +70,11 @@ class BrowserTaskPromptRail(SubagentRail):
     @staticmethod
     def _has_browser_agent(agent) -> bool:
         config = getattr(agent, "deep_config", None)
-        return "browser_agent" in listed_subagent_types(
-            getattr(config, "subagents", None)
-        )
+        for spec in getattr(config, "subagents", None) or []:
+            for card in (getattr(spec, "agent_card", None), getattr(spec, "card", None)):
+                if getattr(card, "name", None) == "browser_agent":
+                    return True
+        return False
 
     def _sanitize_browser_metadata(self) -> None:
         """Remove browser-only task-tool metadata when no browser agent exists."""

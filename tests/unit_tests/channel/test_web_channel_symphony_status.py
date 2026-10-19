@@ -129,7 +129,7 @@ async def test_web_channel_preserves_symphony_status_payload():
         timestamp=0.0,
         ok=True,
         payload={
-            "source": "symphony_compose_score",
+            "source": "symphony_compose_graph",
             "operation_id": "call-1",
             "phase": "checking_score",
             "content": "Symphony status",
@@ -159,7 +159,7 @@ async def test_web_channel_preserves_symphony_status_payload():
                 "type": "event",
                 "event": "chat.symphony_status",
                 "payload": {
-                    "source": "symphony_compose_score",
+                    "source": "symphony_compose_graph",
                     "operation_id": "call-1",
                     "phase": "checking_score",
                     "content": "Symphony status",

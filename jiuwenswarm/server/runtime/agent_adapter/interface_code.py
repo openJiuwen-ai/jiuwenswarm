@@ -358,6 +358,11 @@ _CODE_PLAN_ALLOWED_TOOLS: list[str] = [
     "bash",
     "write_file",
     "edit_file",
+    "tool_search",
+    "tool_call",
+    "symphony_read_graph",
+    "symphony_refresh_graph",
+    "symphony_compose_graph",
     # 委派子 agent 做只读调研。与 office WORK_PLAN_ALLOWED_TOOLS 及 team 路径
     # code_rails.build_code_agent_mode 对齐；无子 agent 时 AgentModeRail 不会注册
     # task_tool，放进白名单不会凭空多出工具。
@@ -388,6 +393,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         "MemoryForbiddenRail",
         "AgentModeRail", "StructuredAskUserRail", "ConfirmInterruptRail",
         "FileSystemRail",  # 别名
+        "SymphonyOrchestrationRail",
     })
 
     def __init__(self) -> None:
@@ -520,6 +526,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
         tool_cards = await self._get_tool_cards(self._tool_owner_id())
         self._tool_cards = tool_cards
+        self._sync_symphony_tools_for_runtime(config_base)
+        for tool in self._symphony_tools:
+            self._append_tool_card(tool.card)
 
         # 权限护栏由 openjiuwen PermissionInterruptRail + ToolPermissionHost 接管；
         # 无需初始化 jiuwenswarm 内置 PermissionEngine（已弃用）。
@@ -555,7 +564,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 if mode == "design"
                 else build_code_system_prompt()
             ),
-            tools=tool_cards if tool_cards else [],
+            tools=self._tool_cards if self._tool_cards else [],
             subagents=configured_subagents,
             rails=rails_list if rails_list else [],
             enable_task_loop=config.get("enable_task_loop", True),
@@ -663,6 +672,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_identity_rail", self._build_identity_rail),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
             _RailBuildInfo("_skill_retrieval_prompt_rail", self._build_skill_retrieval_prompt_rail),
+            _RailBuildInfo("_symphony_orchestration_rail", self._build_symphony_orchestration_rail),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
             _RailBuildInfo("_tool_usage_prompt_rail", self._build_tool_usage_prompt_rail),

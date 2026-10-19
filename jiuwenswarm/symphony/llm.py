@@ -2,16 +2,43 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import defaultdict
+from collections.abc import Mapping
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from copy import deepcopy
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Dict, Iterator, List, Optional
 
+from jiuwenswarm.common.model_config_validation import (
+    probe_model_connection as probe_configured_model_connection,
+)
 from jiuwenswarm.common.reasoning_injector import inject_reasoning_params
+
+LLM_IDENTITY_SCHEMA_VERSION = "JiuwenSwarm-llm-identity-v1"
+_MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS = 25
+_MODEL_CONNECTION_PROBE_MAX_TOKENS = 16
+SYMPHONY_LLM_CONFIG_REF_KEY = "_symphony_llm_config_ref"
+
+
+def _enum_value(value: Any) -> str:
+    return str(getattr(value, "value", value) or "").strip().lower()
+
+
+def _requires_api_key(client_config: Dict[str, Any]) -> bool:
+    """Mirror the native model stack's no-key authentication contracts."""
+
+    auth_mode = _enum_value(client_config.get("auth_mode"))
+    api_mode = _enum_value(client_config.get("api_mode"))
+    provider = _enum_value(client_config.get("client_provider")).replace("-", "_")
+    return not (
+        auth_mode in {"none", "custom_headers", "openai_account_oauth"}
+        or api_mode == "responses"
+        or provider in {"openaiaccount", "openai_account"}
+    )
 
 
 @dataclass(frozen=True)
@@ -21,8 +48,8 @@ class LLMConfig:
     model: str = ""
     model_client_config: Dict[str, Any] | None = None
     model_config_obj: Dict[str, Any] | None = None
-    temperature: float = 0.0
-    top_p: float = 1.0
+    temperature: float | None = None
+    top_p: float | None = None
 
     @classmethod
     def from_default_model(cls) -> "LLMConfig":
@@ -36,16 +63,21 @@ class LLMConfig:
             models = {}
         default_models = models.get("defaults")
         has_default_model = (
-            isinstance(default_models, list)
-            and bool(default_models)
+            isinstance(default_models, list) and bool(default_models)
         ) or isinstance(models.get("default"), dict)
         if not has_default_model:
-            raise RuntimeError("No JiuwenSwarm default model is configured in config.yaml.")
+            raise RuntimeError(
+                "No JiuwenSwarm default model is configured in config.yaml."
+            )
 
         defaults = get_default_models(config)
         if not defaults:
-            raise RuntimeError("No JiuwenSwarm default model is configured in config.yaml.")
-        entry = next((item for item in defaults if item.get("is_default") is True), defaults[0])
+            raise RuntimeError(
+                "No JiuwenSwarm default model is configured in config.yaml."
+            )
+        entry = next(
+            (item for item in defaults if item.get("is_default") is True), defaults[0]
+        )
         return cls.from_model_entry(entry or {})
 
     @classmethod
@@ -62,6 +94,7 @@ class LLMConfig:
         request_config = deepcopy(request_config)
         model = str(
             request_config.get("model")
+            or request_config.get("model_name")
             or client_config.get("model_name")
             or client_config.get("model")
             or ""
@@ -70,7 +103,9 @@ class LLMConfig:
             raise RuntimeError("JiuwenSwarm default model is missing model_name.")
         if not str(client_config.get("api_base") or "").strip():
             raise RuntimeError("JiuwenSwarm default model is missing api_base.")
-        if not str(client_config.get("api_key") or "").strip():
+        if _requires_api_key(client_config) and not str(
+            client_config.get("api_key") or ""
+        ).strip():
             raise RuntimeError("JiuwenSwarm default model is missing api_key.")
         if not str(client_config.get("client_provider") or "").strip():
             raise RuntimeError("JiuwenSwarm default model is missing client_provider.")
@@ -78,18 +113,69 @@ class LLMConfig:
             model_client_config=client_config,
             model_config_obj=request_config,
         )
-        request_config.pop("reasoning_effort", None)
+        for key in (
+            "reasoning",
+            "reasoning_effort",
+            "thinking",
+            "enable_thinking",
+            "thinking_budget",
+            "thinking_strategy",
+            "chat_template_kwargs",
+        ):
+            request_config.pop(key, None)
         extra_body = request_config.get("extra_body")
         if not isinstance(extra_body, dict):
             extra_body = {}
-        extra_body = deepcopy(extra_body)
+        else:
+            extra_body = deepcopy(extra_body)
+            for key in (
+                "reasoning",
+                "reasoning_effort",
+                "thinking",
+                "enable_thinking",
+                "thinking_budget",
+                "thinking_strategy",
+                "chat_template_kwargs",
+            ):
+                extra_body.pop(key, None)
         extra_body.update(thinking_disabled_request_overrides()["extra_body"])
         request_config["extra_body"] = extra_body
+        request_config.pop("model_name", None)
         request_config["model"] = model
         return cls(
             model=model,
             model_client_config=client_config,
             model_config_obj=request_config,
+        )
+
+    @classmethod
+    def from_model(cls, model: Any) -> "LLMConfig":
+        """Build orchestration config from the model selected for a chat request."""
+
+        def as_dict(value: Any) -> Dict[str, Any]:
+            if isinstance(value, Mapping):
+                return dict(value)
+            model_dump = getattr(value, "model_dump", None)
+            if callable(model_dump):
+                return dict(model_dump(exclude_none=True))
+            return {
+                key: item
+                for key, item in vars(value).items()
+                if not key.startswith("_")
+            }
+
+        if model is None:
+            raise ValueError("LLMConfig.from_model requires a model instance.")
+        client_config = as_dict(model.model_client_config)
+        # ``client_id`` is an instance-registration UUID generated by core,
+        # not part of the endpoint's effective model identity. Reusing it for
+        # a second Model can also collide with the live chat client.
+        client_config.pop("client_id", None)
+        return cls.from_model_entry(
+            {
+                "model_client_config": client_config,
+                "model_config_obj": as_dict(model.model_config),
+            }
         )
 
     @property
@@ -105,14 +191,136 @@ class LLMConfig:
         client_config = deepcopy(self.model_client_config or {})
         if self.base_url:
             client_config["api_base"] = self.base_url
+        # 已知自建网关按 host 补全 endpoint_profile（与主路径
+        # build_model_from_entry 同源规则）。symphony 强制关闭思考，
+        # 方言错了会发官方 thinking.type 而被 vLLM 类网关忽略。
+        if not client_config.get("endpoint_profile"):
+            from jiuwenswarm.common.reasoning_config import (
+                resolve_endpoint_profile_override,
+            )
+
+            inferred_profile = resolve_endpoint_profile_override(
+                client_config.get("api_base") or client_config.get("base_url")
+            )
+            if inferred_profile:
+                client_config["endpoint_profile"] = inferred_profile
         return client_config
 
     def model_request_kwargs(self) -> Dict[str, Any]:
         request_config = deepcopy(self.model_config_obj or {})
         request_config["model"] = self.model
-        request_config["temperature"] = self.temperature
-        request_config["top_p"] = self.top_p
+        if self.temperature is not None:
+            request_config["temperature"] = self.temperature
+        if self.top_p is not None:
+            request_config["top_p"] = self.top_p
+        from jiuwenswarm.common.reasoning_config import resolve_sampling_override
+
+        override = resolve_sampling_override(self.base_url, self.model)
+        if override:
+            request_config.update(override)
         return request_config
+
+    def create_model(self):
+        """Create the native openJiuwen model used by orchestration."""
+
+        from openjiuwen.core.foundation.llm import (
+            Model,
+            ModelClientConfig,
+            ModelRequestConfig,
+        )
+
+        return Model(
+            model_client_config=ModelClientConfig(**self.model_client_kwargs()),
+            model_config=ModelRequestConfig(**self.model_request_kwargs()),
+        )
+
+    def identity_digest(self) -> str:
+        """Hash every effective client/request setting without exposing values."""
+
+        return _stable_identity_sha256(
+            {
+                "schema_version": LLM_IDENTITY_SCHEMA_VERSION,
+                "backend": self.backend,
+                "client_config": self.model_client_kwargs(),
+                "request_config": self.model_request_kwargs(),
+            }
+        )
+
+
+@dataclass(frozen=True)
+class _RegisteredRequestModel:
+    config: LLMConfig | None = None
+    error_type: str = ""
+
+
+_REGISTERED_REQUEST_MODELS: Dict[str, _RegisteredRequestModel] = {}
+_REGISTERED_REQUEST_MODELS_LOCK = Lock()
+_CURRENT_REQUEST_LLM_CONFIG_REF: ContextVar[str | None] = ContextVar(
+    "symphony_request_llm_config_ref",
+    default=None,
+)
+
+
+def register_request_model(model: Any) -> str:
+    """Register a request-selected model and return a non-secret reference.
+
+    Only the opaque reference travels through DeepAgent's round metadata. The
+    credentials remain process-local. Valid configurations use a stable
+    identity so queued follow-up rounds can resolve them after the submitting
+    request has returned; conversion failures are retained in sanitized form
+    so the tool never silently falls back to a different default model.
+    """
+
+    try:
+        config = LLMConfig.from_model(model)
+        reference = config.identity_digest()
+        entry = _RegisteredRequestModel(config=config)
+    except Exception as exc:  # noqa: BLE001 - converted to a tool result later
+        reference = hashlib.sha256(
+            f"invalid:{id(model)}:{type(exc).__name__}".encode("utf-8")
+        ).hexdigest()
+        entry = _RegisteredRequestModel(error_type=type(exc).__name__)
+
+    with _REGISTERED_REQUEST_MODELS_LOCK:
+        _REGISTERED_REQUEST_MODELS[reference] = entry
+    return reference
+
+
+def resolve_request_llm_config(reference: str) -> LLMConfig:
+    """Resolve an opaque request-model reference without a default fallback."""
+
+    with _REGISTERED_REQUEST_MODELS_LOCK:
+        entry = _REGISTERED_REQUEST_MODELS.get(str(reference or ""))
+    if entry is None:
+        raise RuntimeError("request-selected model configuration expired")
+    if entry.config is None:
+        suffix = f" ({entry.error_type})" if entry.error_type else ""
+        raise RuntimeError(
+            f"request-selected model configuration is unavailable{suffix}"
+        )
+    return entry.config
+
+
+def bind_request_llm_config(reference: str) -> Token:
+    """Bind one request-selected model reference to the current tool task."""
+
+    return _CURRENT_REQUEST_LLM_CONFIG_REF.set(str(reference or ""))
+
+
+def current_request_llm_config() -> LLMConfig | None:
+    """Return the request-selected config active in the current tool task."""
+
+    reference = _CURRENT_REQUEST_LLM_CONFIG_REF.get()
+    if not reference:
+        return None
+    return resolve_request_llm_config(reference)
+
+
+def reset_request_llm_config(token: Token | None) -> None:
+    """Restore the previous orchestration config binding, if any."""
+
+    if token is not None:
+        _CURRENT_REQUEST_LLM_CONFIG_REF.reset(token)
 
 
 @dataclass(frozen=True)
@@ -230,6 +438,54 @@ def create_llm_client(config: LLMConfig) -> "JiuwenSwarmChatClient":
     return JiuwenSwarmChatClient(config)
 
 
+async def probe_model_connection(config: LLMConfig) -> None:
+    """Verify Symphony's configured model and preserve its error contract."""
+
+    from openjiuwen.core.common.exception.codes import StatusCode
+    from openjiuwen.core.common.exception.errors import BaseError, build_error
+
+    try:
+        await probe_configured_model_connection(
+            config.create_model(),
+            token_limits=(_MODEL_CONNECTION_PROBE_MAX_TOKENS,),
+            invoke_kwargs={"timeout": _MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS},
+            timeout_seconds=_MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS,
+            log_context="symphony model connection probe",
+        )
+    except BaseError:
+        raise
+    except TimeoutError as exc:
+        raise build_error(
+            StatusCode.MODEL_CALL_FAILED,
+            error_msg=(
+                "model connection test timed out after "
+                f"{_MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS}s"
+            ),
+            cause=exc,
+        ) from exc
+    except Exception as exc:
+        reason = str(exc).strip() or type(exc).__name__
+        raise build_error(
+            StatusCode.MODEL_CALL_FAILED,
+            error_msg=reason,
+            cause=exc,
+        ) from exc
+
+
+def create_model_response_observer(config: LLMConfig):
+    """Bridge native orchestration model responses to the existing usage tracker."""
+
+    def observe(response: Any, stage: str, operation: str | None) -> None:
+        with llm_usage_context(stage, operation):
+            _record_usage_from_response(
+                config=config,
+                response=response,
+                operation=operation or "orchestration",
+            )
+
+    return observe
+
+
 def thinking_disabled_request_overrides() -> Dict[str, Any]:
     """Return isolated provider-compatible controls that disable thinking."""
     return {
@@ -309,19 +565,8 @@ class JiuwenSwarmChatClient:
         timeout: Optional[int],
         request_overrides: Optional[Dict[str, Any]],
     ) -> Any:
-        from openjiuwen.core.foundation.llm import (
-            Model,
-            ModelClientConfig,
-            ModelRequestConfig,
-        )
-
         if self._model is None:
-            self._model = Model(
-                model_client_config=ModelClientConfig(
-                    **self.config.model_client_kwargs()
-                ),
-                model_config=ModelRequestConfig(**self.config.model_request_kwargs()),
-            )
+            self._model = self.config.create_model()
 
         invoke_kwargs: Dict[str, Any] = {}
         if timeout is not None:
@@ -338,6 +583,41 @@ class JiuwenSwarmChatClient:
             ],
             **invoke_kwargs,
         )
+
+
+def _stable_identity_sha256(value: Any) -> str:
+    canonical = _canonical_identity_value(value)
+    serialized = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _canonical_identity_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonical_identity_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical_identity_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        normalized = [_canonical_identity_value(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(
+                item,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 def _record_usage_from_response(

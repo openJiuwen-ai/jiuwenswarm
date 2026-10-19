@@ -2960,6 +2960,14 @@ def refresh_team_shared_skill_links_across_managers(session_id: str | None = Non
     return tm.refresh_team_shared_skill_links(session_id)
 
 
+async def reload_team_skill_views_across_managers(session_id: str | None = None) -> int:
+    """Update beta3 team Skill links after a Symphony package is installed."""
+    tm = get_team_manager()
+    if session_id is None:
+        return tm.refresh_all_team_shared_skill_links()
+    return int(tm.refresh_team_shared_skill_links(session_id))
+
+
 async def cancel_all_team_stream_tasks_across_managers(reason: str = "") -> None:
     """Cancel all team stream tasks on the singleton manager."""
     await get_team_manager().cancel_all_stream_tasks(reason=reason)

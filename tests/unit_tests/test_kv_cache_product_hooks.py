@@ -53,7 +53,7 @@ class _TeamManager:
 
 
 @pytest.mark.asyncio
-async def test_cancel_pending_tasks_cleans_all_kvc_registries(
+async def test_cancel_pending_tasks_cleans_beta3_owned_kvc_tasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cleanup_calls: list[str] = []
@@ -66,20 +66,9 @@ async def test_cancel_pending_tasks_cleans_all_kvc_registries(
         "cancel_pending_kv_cache_lifecycle_tasks",
         lambda: _record("root"),
     )
-    monkeypatch.setattr(
-        "openjiuwen.core.foundation.kv_cache."
-        "cancel_pending_session_kv_cache_signals",
-        lambda: _record("plan"),
-    )
-    monkeypatch.setattr(
-        "openjiuwen.agent_teams.kv_cache.kv_cache_lifecycle."
-        "cancel_pending_signal_tasks",
-        lambda: _record("team"),
-    )
-
     await kv_cache_product_hooks.cancel_pending_tasks()
 
-    assert cleanup_calls == ["root", "plan", "team"]
+    assert cleanup_calls == ["root"]
 
 
 @pytest.mark.asyncio

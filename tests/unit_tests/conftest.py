@@ -19,6 +19,7 @@ functions, hence this hook.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,29 @@ _EXTERNAL_MEMORY_BASENAMES = frozenset(
         "test_external_memory_config.py",
     }
 )
+
+
+@pytest.fixture
+def allow_macos_pytest_temp_sources(monkeypatch):
+    """Allow test-owned macOS temporary SkillPack sources."""
+    if sys.platform != "darwin":
+        return
+
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+
+    if not hasattr(SkillManager, "_get_import_local_forbidden_roots"):
+        return
+
+    get_roots = SkillManager._get_import_local_forbidden_roots
+
+    def _get_test_forbidden_roots() -> list[Path]:
+        return [root for root in get_roots() if root != Path("/var")]
+
+    monkeypatch.setattr(
+        SkillManager,
+        "_get_import_local_forbidden_roots",
+        staticmethod(_get_test_forbidden_roots),
+    )
 
 
 def _stub_get_config_file() -> Path:

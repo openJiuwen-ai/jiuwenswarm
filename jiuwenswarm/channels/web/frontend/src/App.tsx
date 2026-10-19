@@ -1103,6 +1103,19 @@ function AppContent() {
     }
   }, [clearRestartAutoCloseTimer, closeRestartModal, request]);
 
+  const saveSymphonyEnabled = useCallback(async (enabled: boolean): Promise<boolean> => {
+    const updates = { symphony_enabled: enabled ? 'true' : 'false' };
+    const result = await request<{ applied_without_restart?: boolean }>('config.set', updates);
+    setServerConfig((previous) => ({ ...(previous ?? {}), ...updates }));
+    setConfigError(null);
+    if (result?.applied_without_restart !== true) {
+      setRestartModalOpen(true);
+      setRestartSuccess(false);
+      setRestartSeenDisconnect(false);
+    }
+    return result?.applied_without_restart === true;
+  }, [request]);
+
   const savePermissionSilent = useCallback(async (updates: Record<string, string>) => {
     try {
       await request<{ updated?: string[]; applied_without_restart?: boolean }>('config.set', updates);
@@ -2488,6 +2501,9 @@ function AppContent() {
           <div className={`app-section ${activeNav === 'skills' ? '' : 'is-hidden'}`}>
             <SkillPanel
               sessionId={sessionId}
+              isConnected={isConnected}
+              symphonyEnabled={serverConfig?.symphony_enabled === true || serverConfig?.symphony_enabled === 'true'}
+              onSymphonyEnabledChange={saveSymphonyEnabled}
               isActive={activeNav === 'skills'}
               onNavigateToConfig={() => {
                 setConfigInitialExpandGroup('third_party_api');

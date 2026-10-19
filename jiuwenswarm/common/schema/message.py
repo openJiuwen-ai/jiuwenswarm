@@ -155,11 +155,12 @@ class ReqMethod(Enum):
     SKILLS_EVOLUTION_GET = "skills.evolution.get"
     SKILLS_EVOLUTION_SAVE = "skills.evolution.save"
 
-    SYMPHONY_BUILD_SCORE = "symphony.build_score"
-    SYMPHONY_PAUSE_BUILD = "symphony.pause_build"
-    SYMPHONY_SCORE_STATUS = "symphony.score_status"
-    SYMPHONY_GRAPH = "symphony.graph"
-    SYMPHONY_PLAN = "symphony.plan"
+    SKILLS_GRAPH_BUILD = "skills.graph.build"
+    SKILLS_GRAPH_STATUS = "skills.graph.status"
+    SKILLS_GRAPH_GET = "skills.graph.get"
+    SKILLS_GRAPH_CANCEL = "skills.graph.cancel"
+    SKILLS_EXPERIENCE_LIST = "skills.experience.list"
+    SKILLS_EXPERIENCE_REQUEST = "skills.experience.request"
 
     # Plugin management (reuses skills marketplace infrastructure)
     PLUGINS_LIST = "plugins.list"

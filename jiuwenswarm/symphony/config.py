@@ -14,11 +14,6 @@ DEFAULT_FINGERPRINT_EXTRACTION_BATCH_SIZE = 1
 DEFAULT_FINGERPRINT_EXTRACTION_BODY_LIMIT = None
 DEFAULT_FINGERPRINT_SCAN_MAX_DEPTH = None
 
-DEFAULT_FINGERPRINT_NORMALIZATION_WORKERS = 1
-DEFAULT_FINGERPRINT_NORMALIZATION_BATCH_SIZE = 1
-DEFAULT_FINGERPRINT_NORMALIZATION_DUPLICATE_THRESHOLD = 0.86
-DEFAULT_FINGERPRINT_NORMALIZATION_MAX_VOCAB_SIZE = None
-
 DEFAULT_BUILD_WORKERS = 1
 DEFAULT_BUILD_MATCHER_BATCH_SIZE = 12
 DEFAULT_BUILD_MAX_CANDIDATES_PER_SKILL_RELATION = 32
@@ -27,6 +22,9 @@ DEFAULT_BUILD_MIN_EDGE_CONFIDENCE = 0.5
 
 DEFAULT_SYMPHONY_ENABLED = False
 DEFAULT_EVOLUTION_ENABLED = False
+
+DEFAULT_FLOW_MIN_SUCCESSES = 3
+DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE = 0.8
 
 DEFAULT_ORCHESTRATION_MODE = "fast"
 DEFAULT_ORCHESTRATION_TOP_K = 3
@@ -37,7 +35,7 @@ DEFAULT_ORCHESTRATION_MIN_EDGE_CONFIDENCE = 0.5
 @dataclass(frozen=True)
 class SymphonyPathsConfig:
     skills_root: Path
-    score_dir: Path
+    graph_dir: Path
 
 
 @dataclass(frozen=True)
@@ -53,20 +51,9 @@ class FingerprintExtractionConfig:
 
 
 @dataclass(frozen=True)
-class FingerprintNormalizationConfig:
-    workers: int = DEFAULT_FINGERPRINT_NORMALIZATION_WORKERS
-    batch_size: int = DEFAULT_FINGERPRINT_NORMALIZATION_BATCH_SIZE
-    duplicate_name_similarity_threshold: float = (
-        DEFAULT_FINGERPRINT_NORMALIZATION_DUPLICATE_THRESHOLD
-    )
-    max_vocab_size: int | None = DEFAULT_FINGERPRINT_NORMALIZATION_MAX_VOCAB_SIZE
-
-
-@dataclass(frozen=True)
 class SymphonyFingerprintConfig:
     scan: FingerprintScanConfig
     extraction: FingerprintExtractionConfig
-    normalization: FingerprintNormalizationConfig
 
 
 @dataclass(frozen=True)
@@ -81,8 +68,27 @@ class SymphonyBuildConfig:
 
 
 @dataclass(frozen=True)
-class SymphonyEvolutionConfig:
+class SymphonyFlowDistillConfig:
+    """Flow 沉淀开关与阈值；成功次数同时约束 Core 的两个判级阶段。"""
+
     enabled: bool = DEFAULT_EVOLUTION_ENABLED
+    min_successes: int = DEFAULT_FLOW_MIN_SUCCESSES
+    min_pack_success_rate: float = DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE
+
+
+@dataclass(frozen=True)
+class SymphonyEvolutionConfig:
+    flow: SymphonyFlowDistillConfig = SymphonyFlowDistillConfig()
+
+
+def evolution_flow_enabled(config: Any) -> bool:
+    """Read the Flow switch, including test doubles that only set ``evolution.enabled``."""
+
+    evolution = getattr(config, "evolution", None)
+    flow = getattr(evolution, "flow", None)
+    if flow is not None and hasattr(flow, "enabled"):
+        return bool(flow.enabled)
+    return bool(getattr(evolution, "enabled", False))
 
 
 @dataclass(frozen=True)
@@ -119,40 +125,29 @@ def default_symphony_config() -> SymphonyConfig:
 
 
 def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
-    data = raw if isinstance(raw, dict) else {}
-    paths = data.get("paths") if isinstance(data.get("paths"), dict) else {}
-    fingerprint = (
-        data.get("fingerprint") if isinstance(data.get("fingerprint"), dict) else {}
-    )
-    scan = fingerprint.get("scan") if isinstance(fingerprint.get("scan"), dict) else {}
-    extraction = (
-        fingerprint.get("extraction")
-        if isinstance(fingerprint.get("extraction"), dict)
-        else {}
-    )
-    normalization = (
-        fingerprint.get("normalization")
-        if isinstance(fingerprint.get("normalization"), dict)
-        else {}
-    )
-    build = data.get("build") if isinstance(data.get("build"), dict) else {}
-    evolution = (
-        data.get("evolution") if isinstance(data.get("evolution"), dict) else {}
-    )
-    orchestration = (
-        data.get("orchestration") if isinstance(data.get("orchestration"), dict) else {}
-    )
+    data = _mapping(raw)
+    paths = _mapping(data.get("paths"))
+    fingerprint = _mapping(data.get("fingerprint"))
+    scan = _mapping(fingerprint.get("scan"))
+    extraction = _mapping(fingerprint.get("extraction"))
+    build = _mapping(data.get("build"))
+    evolution = _mapping(data.get("evolution"))
+    flow_cfg = _mapping(evolution.get("flow"))
+    flow_enabled = flow_cfg.get("enabled")
+    if flow_enabled is None:
+        flow_enabled = evolution.get("enabled")
+    orchestration = _mapping(data.get("orchestration"))
 
     return SymphonyConfig(
-        enabled=_bool(data.get("enabled"), DEFAULT_SYMPHONY_ENABLED),
+        enabled=resolve_symphony_enabled(data.get("enabled")),
         paths=SymphonyPathsConfig(
             skills_root=_resolve_path(
                 paths.get("skills_root"),
                 get_agent_workspace_dir() / "skills",
             ),
-            score_dir=_resolve_path(
-                paths.get("score_dir"),
-                get_agent_workspace_dir() / "symphony" / "score",
+            graph_dir=_resolve_path(
+                paths.get("graph_dir"),
+                get_agent_workspace_dir() / "symphony" / "graph",
             ),
         ),
         fingerprint=SymphonyFingerprintConfig(
@@ -176,24 +171,6 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
                     DEFAULT_FINGERPRINT_EXTRACTION_BODY_LIMIT,
                 ),
             ),
-            normalization=FingerprintNormalizationConfig(
-                workers=_positive_int(
-                    normalization.get("workers"),
-                    DEFAULT_FINGERPRINT_NORMALIZATION_WORKERS,
-                ),
-                batch_size=_positive_int(
-                    normalization.get("batch_size"),
-                    DEFAULT_FINGERPRINT_NORMALIZATION_BATCH_SIZE,
-                ),
-                duplicate_name_similarity_threshold=_clamped_float(
-                    normalization.get("duplicate_name_similarity_threshold"),
-                    DEFAULT_FINGERPRINT_NORMALIZATION_DUPLICATE_THRESHOLD,
-                ),
-                max_vocab_size=_optional_positive_int(
-                    normalization.get("max_vocab_size"),
-                    DEFAULT_FINGERPRINT_NORMALIZATION_MAX_VOCAB_SIZE,
-                ),
-            ),
         ),
         build=SymphonyBuildConfig(
             workers=_positive_int(build.get("workers"), DEFAULT_BUILD_WORKERS),
@@ -215,9 +192,17 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
             ),
         ),
         evolution=SymphonyEvolutionConfig(
-            enabled=_bool(
-                evolution.get("enabled"),
-                DEFAULT_EVOLUTION_ENABLED,
+            flow=SymphonyFlowDistillConfig(
+                # enabled 移到 flow 下；旧配置（enabled 在 evolution 层）向后兼容
+                enabled=resolve_symphony_evolution_enabled(flow_enabled),
+                min_successes=_positive_int(
+                    flow_cfg.get("min_successes"),
+                    DEFAULT_FLOW_MIN_SUCCESSES,
+                ),
+                min_pack_success_rate=_clamped_float(
+                    flow_cfg.get("min_pack_success_rate"),
+                    DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE,
+                ),
             ),
         ),
         orchestration=SymphonyOrchestrationConfig(
@@ -241,6 +226,10 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
     )
 
 
+def _mapping(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _resolve_path(value: Any, default: Path) -> Path:
     text = str(value or "").strip()
     if not text:
@@ -254,12 +243,6 @@ def _positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(1, parsed)
-
-
-def _optional_positive_int(value: Any, default: int | None) -> int | None:
-    if value is None or str(value).strip() == "":
-        return default
-    return _positive_int(value, default or 1)
 
 
 def _optional_non_negative_int(value: Any, default: int | None) -> int | None:
@@ -301,6 +284,18 @@ def _bool(value: Any, default: bool) -> bool:
     if text in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def resolve_symphony_enabled(value: Any) -> bool:
+    """Resolve an explicit switch or inherit the code default for ``null``."""
+
+    return _bool(value, DEFAULT_SYMPHONY_ENABLED)
+
+
+def resolve_symphony_evolution_enabled(value: Any) -> bool:
+    """Resolve an explicit evolution switch or inherit the code default."""
+
+    return _bool(value, DEFAULT_EVOLUTION_ENABLED)
 
 
 def _orchestration_mode(value: Any, default: str) -> str:

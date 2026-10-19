@@ -29,27 +29,21 @@ Skill Retrieval builds a local **installed-skill tree index** and exposes direct
 
 If Skill Retrieval answers "which skills should participate", Skill Orchestration answers "how should they work together". For example, a task such as "recognize text from an image, translate it, write copy, and send an email" usually cannot be completed by one skill alone. Candidate skills need to be arranged into a stable route based on input/output dependencies.
 
-Skill Orchestration builds an executable route from the task goal, current inputs, candidate skills, and connectable relationships in the skill score. When an input is missing, the system can look backward through the graph for an upstream skill that may provide it. After the route is confirmed, JiuwenSwarm continues with the actual skill execution.
+Skill Orchestration builds an executable route from the task goal, current inputs, candidate skills, and connectable relationships in the skill graph. When an input is missing, the system can look backward through the graph for an upstream skill that may provide it. After the route is confirmed, JiuwenSwarm continues with the actual skill execution.
 
 The important part is not listing skills in order. Skill Orchestration checks whether upstream results can actually feed downstream skills. Connectable relationships, input/output structures, and task semantics all affect the final route. The result is not just a set of "related" skills, but a skill chain whose dependencies can be explained, confirmed, and executed.
 
-The skill score is the graph used by orchestration. Each node represents a skill. Each edge means one skill's output can be used as another skill's input, in other words, a connectable relationship. It helps users understand possible skill combinations and gives orchestration candidate relationships to work from.
+The skill graph is the relationship graph used by orchestration. Each node represents a skill. Each edge means one skill's output can be used as another skill's input, in other words, a connectable relationship. It helps users understand possible skill combinations and gives orchestration candidate relationships to work from.
 
-![Skill score](../assets/images/symphony_score.png)
+#### Improve orchestration from actual usage
 
-The skill score shows statically built connectable candidate relationships, and it does not guarantee every visible connection can be chained directly for every task. Always check the skill details, required inputs, and current task goal.
-
-#### Improve orchestration from Session execution traces
-
-When **Dynamic Graph** is enabled, Symphony asynchronously reads JiuwenSwarm's existing Session JSON history after each conversation completes. It correlates the orchestration result with observed Skill calls and results. Repeated successful edges receive bounded reinforcement for later relevant tasks, while explicitly failed edges are downranked. A displayed orchestration graph without an observed Skill call is not counted as success evidence.
-
-Dynamic data is a replayable overlay on top of the static graph; it never overwrites the permanent static graph. Turning the switch off immediately returns planning to static-only behavior while retaining existing dynamic data.
+When **Dynamic Graph** is enabled, Symphony uses the outcomes of completed tasks to improve skill-combination suggestions for later related tasks. Turning it off returns orchestration to the static graph without deleting accumulated data.
 
 #### What problem does it solve?
 
 - **Too many skills to inspect directly**: Skill Retrieval avoids putting every skill description into context and lets the agent find candidates step by step.
 - **Knowing which skills are relevant is not enough**: orchestration checks whether upstream outputs can actually feed downstream inputs.
-- **Multi-skill workflows need stable chaining**: the skill score's connectable relationships help form confirmable, executable skill chains instead of ad hoc runtime stitching.
+- **Multi-skill workflows need stable chaining**: the skill graph's connectable relationships help form confirmable, executable skill chains instead of ad hoc runtime stitching.
 - **Complex tasks need explanation and dispatch**: users or Leaders can see why each skill was selected, how results flow, and how follow-up work can be dispatched.
 
 ### End-to-end workflow
@@ -59,7 +53,7 @@ Install skills
   v
 Build the local skill tree index
   v
-Build or read the skill score
+Build or read the skill graph
   v
 User sends a task
   v
@@ -71,22 +65,20 @@ skill_branch_peek checks branch summaries when needed
   v
 Candidate skills are found
   v
-Skill Orchestration builds a skill chain from the task goal, candidate skills, and skill score
+Skill Orchestration builds a skill chain from the task goal, candidate skills, and skill graph
   v
 User confirms
   v
 JiuwenSwarm continues with concrete skill execution
   v
-Asynchronously consume Session JSON after the conversation (dynamic graph only)
-  v
-Update runtime events and the dynamic overlay for later orchestration
+Use actual outcomes to improve later orchestration (dynamic graph only)
 ```
 
-Skill Retrieval mainly finds skills. Skill Orchestration organizes candidate skills into a task-oriented execution route. The skill score records and displays whether skills can connect, giving orchestration the graph relationships it needs. Skill Retrieval and Skill Orchestration are Symphony's two core capabilities.
+Skill Retrieval mainly finds skills. Skill Orchestration organizes candidate skills into a task-oriented execution route. The skill graph records and displays whether skills can connect, giving orchestration the relationships it needs. Skill Retrieval and Skill Orchestration are Symphony's two core capabilities.
 
 ### Runtime tools
 
-When Skill Retrieval is enabled, the agent receives skill-directory browsing tools. When Skill Symphony is enabled, the agent receives score and orchestration tools. Users usually do not need to call these tools manually; the system chooses them based on the task.
+When Skill Retrieval is enabled, the agent receives skill-directory browsing tools. When Skill Symphony is enabled, the agent receives graph and orchestration tools. Users usually do not need to call these tools manually; the system chooses them based on the task.
 
 #### Skill Retrieval tools
 
@@ -96,17 +88,17 @@ When Skill Retrieval is enabled, the agent receives skill-directory browsing too
 | `skill_branch_peek` | Shows a lightweight branch summary without expanding the full tree | Use when it is unclear whether a branch is worth expanding |
 | `skill_index_build` | Builds or refreshes the local installed-skill tree index | Use only when retrieval tools explicitly report a missing or stale index |
 
-When `skill_branch_explore` returns a `skills` section, those entries are installed skills, not branch IDs. The agent narrows candidates by skill name, description, and returned `worker_id`. If orchestration is needed later, those `worker_id` values can be passed to `symphony_compose_score` as `candidate_skill_ids`.
+After Skill Retrieval finds relevant skills, the agent narrows the candidate set by skill name and description. If orchestration is needed later, those candidates help guide skill-chain generation.
 
 #### Skill Orchestration tools
 
 | Tool | What it does | When to use |
 |------|--------------|-------------|
-| `symphony_read_score` | Checks whether the skill score exists and whether it is stale | Before orchestration, when the current score state needs to be known |
-| `symphony_refresh_score` | Extracts installed-skill features and refreshes the skill score | When the score is missing, stale, or skills were newly installed or changed |
-| `symphony_compose_score` | Main orchestration entry. Builds an execution graph from the task goal, candidate skills, and skill score | When the user asks to use skills, or the task needs a skill chain, skill ordering, or a specialized tool chain |
+| `symphony_read_graph` | Checks whether the skill graph exists and whether it is stale | Before orchestration, when the current graph state needs to be known |
+| `symphony_refresh_graph` | Extracts installed-skill features and refreshes the skill graph | When the graph is missing, stale, or skills were newly installed or changed |
+| `symphony_compose_graph` | Main orchestration entry. Builds an execution graph from the task goal, candidate skills, and skill graph | When the user asks to use skills, or the task needs a skill chain, skill ordering, or a specialized tool chain |
 
-The core parameter of `symphony_compose_score` is `query`, the original user task. The current orchestration mode is `fast`. If Skill Retrieval has already narrowed the candidate set, pass the `worker_id` list from `skill_branch_explore` into `candidate_skill_ids`; Symphony will compose a skill chain from those candidates and their connectable neighbors. If the result says no suitable skill is available, install the required skill from the **Skills** page, call `symphony_refresh_score` to refresh the score, and then compose again with the original task.
+Skill Orchestration builds a skill chain from the original task, retrieved candidate skills, and their connectable relationships. If the result says no suitable skill is available, install the required skill from the **Skills** page, refresh the skill graph, and compose again.
 
 ---
 
@@ -146,7 +138,7 @@ Rebuild when:
 - The UI reports that the index is missing, stale, or failed.
 - Build settings such as root categories or max tree depth changed.
 
-### 4. Build the skill score
+### 4. Build the skill graph
 
 Open:
 
@@ -161,7 +153,7 @@ Left sidebar -> Skills -> Skill Graph
 | **Node** | An installed skill. The node label usually matches the skill name or skill ID |
 | **Edge** | A connectable relationship between two skills, meaning the upstream skill output can be used by the downstream skill |
 | **Direction** | `A -> B` means skill A can feed its output into skill B |
-| **Confidence** | How confident the system is that this edge is usable; higher confidence is a stronger orchestration candidate |
+| **Link strength** | The percentage indicating how strongly two skills can connect; higher link strength makes an edge a stronger orchestration candidate |
 | **In-degree** | How many upstream skills can feed into this skill under the current filters |
 | **Out-degree** | How many downstream skills this skill can feed under the current filters |
 
@@ -169,31 +161,30 @@ Left sidebar -> Skills -> Skill Graph
 
 | Area | Purpose |
 |------|---------|
-| **Left panel** | Shows visible skill/edge counts, search, minimum confidence, and the skill list |
-| **Canvas** | Shows the relationship graph. Drag to pan, scroll to zoom, and click a node to inspect it |
-| **Right details** | Shows the selected skill's ID, in-degree, out-degree, description, inputs, outputs, tasks, and related edges |
+| **Left panel** | Shows visible skill/link counts, graph build controls, minimum link strength, search, and the skill list. Build progress and logs appear here while a build is running |
+| **Canvas** | Shows the relationship graph. Drag to pan, scroll to zoom, or use the top-right zoom-out, zoom percentage, and zoom-in controls; click a node to inspect it |
+| **Right details** | Shows the selected skill's ID, in-degree, out-degree, description, tasks, and linked skills. On narrower pages, it opens as a right-side overlay drawer without shrinking the canvas |
 
-In **Related edges**:
+In **Linked skills**:
 
 - `->` means the selected skill can provide output to the target skill.
 - `<-` means the selected skill can receive output from an upstream skill.
-- `Connectable - 85%` shows the edge type and confidence.
+- `Link strength 85%` shows how strongly the selected skill can connect with the linked skill.
 
 #### Common actions
 
 | Action | Description |
 |--------|-------------|
-| **Search skills** | Enter keywords in the left search box to show matching skills and related relationships |
-| **Adjust minimum confidence** | Hide lower-confidence edges so you can focus on stronger skill handoffs |
-| **Read score** | Reload the existing built skill score |
-| **Incremental build** | Update the score after adding, removing, or changing skills |
-| **Pause build** | Pause a long-running score build while keeping completed cache and checkpoints |
-| **Full rebuild** | Recompute everything when the score looks stale or incorrect |
-| **Fit view** | Re-center and scale the visible graph |
+| **Search skills** | Enter keywords in the left search box to filter both the list and graph while keeping linked nodes for matches |
+| **Adjust minimum link strength** | Hide edges below the current link-strength threshold; higher values show fewer links |
+| **Incremental build** | Update the graph after adding, removing, or changing skills |
+| **Cancel build** | Cancel a long-running graph build while keeping completed work so the build can continue later |
+| **Full build** | Recompute everything when the graph looks stale or incorrect |
+| **Adjust view** | Re-center and scale the visible graph |
 
-#### Minimum confidence
+#### Minimum link strength
 
-The minimum confidence slider only filters the already loaded graph locally. It can hide edges below the current threshold, but it does not recompute relationships and cannot reveal edges below the build-time acceptance threshold. To regenerate candidate relationships, run an incremental build or full rebuild.
+The minimum link strength slider only changes which relationships are currently shown; it does not recompute skill relationships. To regenerate candidate relationships, run an incremental build or full build.
 
 ### 5. Use Skill Retrieval in chat
 
@@ -222,13 +213,11 @@ When a skill looks relevant, the agent may read its `SKILL.md` before executing 
 
 #### Before you use it
 
-1. Open left sidebar -> **Configuration** -> **Other configuration**.
-2. Expand **Skill Symphony** and turn on **Enable skill orchestration**. To learn from real execution traces, also turn on **Enable dynamic graph**, then click **Save** in the top-right corner.
-3. Confirm the required skills are installed. If you recently added, removed, or changed skills, open **Skills** -> **Skill Graph** and run **Incremental build**. If you only need to confirm the current score state, use **Read score**.
+1. Open left sidebar -> **Skills** -> **Skill Graph**.
+2. Turn on **Enable skill orchestration** at the top of the page. The setting is saved and takes effect as soon as you toggle it.
+3. Confirm the required skills are installed. If you recently added, removed, or changed skills, open **Skills** -> **Skill Graph** and run **Incremental build**. The page reads the current graph automatically when opened.
 
-**Enable skill orchestration** is the Symphony master switch. **Enable dynamic graph** takes effect only while orchestration is enabled. Skill Retrieval is still controlled by the separate **Skill Retrieval** switch.
-
-![Skill Symphony configuration](../assets/images/symphony_config.png)
+**Enable skill orchestration** is the Symphony master switch. Skill Retrieval is still controlled by the separate **Skill Retrieval** switch on the configuration page.
 
 #### Recommended prompt style
 
@@ -268,13 +257,13 @@ After seeing the route, you can respond in one of these ways:
 - **Missing information**: provide the missing file, link, email address, account, or parameter.
 - **Plan only**: stop after the orchestration result and use it as a skill-combination suggestion.
 
-> **Tip:** Skill Orchestration only uses currently installed skills and available configuration. If the result says no suitable skill is available, install the required skill first, then refresh or rebuild the skill score and try again.
+> **Tip:** Skill Orchestration only uses currently installed skills and available configuration. If the result says no suitable skill is available, install the required skill first, then refresh or rebuild the skill graph and try again.
 
 ---
 
 ## Configuration
 
-The Web configuration page exposes three related switches: **Enable Skill Retrieval** controls skill-tree retrieval tools, **Enable skill orchestration** controls skill score and orchestration tools, and **Enable dynamic graph** controls whether Session execution traces are learned from and used by later orchestration. The Skill Index page provides index build, rebuild, cancel, status, and tree viewing operations. The Skill Graph page provides score reading, incremental build, pause build, and full rebuild operations.
+In the Web UI, **Enable skill orchestration** is on the Skill Graph page and controls skill-graph and orchestration tools. The separate **Enable Skill Retrieval** switch remains on the configuration page and controls skill-tree retrieval tools. The Skill Index page provides index build, rebuild, cancel, status, and tree viewing operations. The Skill Graph page reads the current graph automatically and provides incremental build, cancel build, full build, and adjust-view operations.
 
 Advanced build, retrieval, and orchestration settings are configured in the user runtime config file:
 
@@ -288,19 +277,17 @@ Advanced build, retrieval, and orchestration settings are configured in the user
 
 Whether to enable Symphony orchestration. The default template value is `false`.
 
-When enabled, new sessions register orchestration tools such as `symphony_read_score`, `symphony_refresh_score`, and `symphony_compose_score`. The agent can read or refresh the skill score and build a skill chain from candidate skills. When disabled, these tools are not registered and the agent does not use the skill score for orchestration.
+When enabled, the agent can read or refresh the skill graph and build a skill chain from candidate skills. When disabled, the agent no longer uses the skill graph for orchestration.
 
-This switch controls Symphony orchestration tools. Skill Retrieval is still controlled separately by `symphony.skill_retrieval.enabled`: retrieval finds candidate skills, and orchestration builds an execution route from the task goal, candidate skills, and the skill score.
+This switch controls Symphony orchestration tools. Skill Retrieval is still controlled separately by `symphony.skill_retrieval.enabled`: retrieval finds candidate skills, and orchestration builds an execution route from the task goal, candidate skills, and the skill graph.
 
-#### `symphony.paths.skills_root` / `symphony.paths.score_dir`
+#### `symphony.paths.skills_root` / `symphony.paths.graph_dir`
 
-The skill source directory and skill score artifact directory. Both default template values are empty strings, which means the runtime default directories are used.
-
-`symphony_refresh_score` reads skills from `skills_root` and refreshes the skill score. `symphony_read_score` and `symphony_compose_score` read score artifacts from `score_dir`. Configure these paths explicitly when the score needs to be cached in a fixed location or reused across runtime environments.
+The skill source directory and skill graph storage directory. Leave both empty to use the default locations; set them only when you need a custom skill source or graph storage location.
 
 #### `symphony.build`
 
-Graph construction keeps up to `32` candidates per Skill/relation and uses `0.5` as the edge acceptance threshold by default. Tune the cap with `max_candidates_per_skill_relation`; the effective value is recorded in the build manifest for reproducibility and diagnosis.
+The default graph-build settings are suitable for most users. When many skills make builds take too long, use `max_candidates_per_skill_relation` to limit the candidates considered for each skill relationship.
 
 #### `symphony.orchestration`
 
@@ -310,9 +297,9 @@ Runtime parameters for Skill Orchestration. The current template is:
 |---------|---------|-------------|
 | `mode` | `fast` | Orchestration mode. The current runtime tools use the fast orchestration path and prioritize an executable skill chain |
 | `max_depth` | `4` | Maximum skill-chain search depth, limiting how many skills can be chained in one task |
-| `min_edge_confidence` | `0.5` | Minimum confidence threshold for skill-score edges. Edges below this value are not preferred for orchestration |
+| `min_edge_confidence` | `0.5` | Minimum link strength used by orchestration; relationships below it are not preferred |
 
-These settings tune how candidate skills are connected into a route. If routes are too short or often miss intermediate steps, consider increasing `max_depth`. If routes often use low-confidence connections, consider increasing `min_edge_confidence`.
+These settings tune how candidate skills are connected into a route. If routes are too short or often miss intermediate steps, consider increasing `max_depth`. If routes often use low-link-strength connections, consider increasing `min_edge_confidence`.
 
 #### `symphony.skill_retrieval.enabled`
 
@@ -418,7 +405,7 @@ symphony:
   enabled: true
   paths:
     skills_root: ""
-    score_dir: ""
+    graph_dir: ""
 
   build:
     max_candidates_per_skill_relation: 32
@@ -494,17 +481,17 @@ Alternatively, let the model call `skill_index_build` after a retrieval tool exp
 
 The build reads all installed skills and calls the model to generate branches and classifications. More skills and deeper trees take longer. After the index is built, it is reused and does not need to be rebuilt for every conversation.
 
-### Why does the skill score build take time?
+### Why does the skill graph build take time?
 
-The build reads installed skills and analyzes input/output and semantic handoff relationships between them. More skills and more possible connections take longer. After the score is built, you can read it directly instead of rebuilding it for every conversation.
+The build reads installed skills and analyzes input/output and semantic handoff relationships between them. More skills and more possible connections take longer. After the graph is built, you can read it directly instead of rebuilding it for every conversation.
 
-### What is the difference between Skill Retrieval and the skill score?
+### What is the difference between Skill Retrieval and the skill graph?
 
-Skill Retrieval finds candidate skills from a large installed-skill set. The skill score describes whether those skills can connect. The former is like browsing a directory; the latter is like inspecting a connection map.
+Skill Retrieval finds candidate skills from a large installed-skill set. The skill graph describes whether those skills can connect. The former is like browsing a directory; the latter is like inspecting a connection map.
 
 ### What is the relationship between Skill Retrieval and Skill Orchestration?
 
-Both are part of Symphony. Skill Retrieval narrows the candidate skill set; Skill Orchestration builds an execution route from the task goal, candidate skills, and the skill score.
+Both are part of Symphony. Skill Retrieval narrows the candidate skill set; Skill Orchestration builds an execution route from the task goal, candidate skills, and the skill graph.
 
 ### Does it install new skills automatically?
 
@@ -514,9 +501,9 @@ No. Symphony only uses installed skills. Install new skills from the **Skills** 
 
 No. Symphony helps the Leader or agent find relevant skills and form a skill chain. Task decomposition, skill reading, tool execution, and team coordination still use JiuwenSwarm's existing runtime.
 
-### Is building the skill score the same as composing an execution score?
+### Is building the skill graph the same as composing an execution graph?
 
-This is an easy distinction to miss: building the skill score is not composing an execution score. Building the skill score usually happens before a task arrives and focuses on which skills in the whole installed skill set may have stable connectable relationships. Composing an execution score happens after a task arrives and focuses on this specific request: which skills should be selected from the score, in what order they should run, and where additional inputs are needed.
+This is an easy distinction to miss: building the skill graph is not composing an execution graph. Building the skill graph usually happens before a task arrives and focuses on which skills in the whole installed skill set may have stable connectable relationships. Composing an execution graph happens after a task arrives and focuses on this specific request: which skills should be selected from the skill graph, in what order they should run, and where additional inputs are needed.
 
 ---
 
@@ -525,4 +512,4 @@ This is an easy distinction to miss: building the skill score is not composing a
 - [Skills](Skills.md)
 - [Configuration](Configuration.md)
 - [Agent Team](AgentTeam.md)
-- [Chinese: Symphony](../zh/symphony-技能编排与分发.md)
+- [Chinese: Symphony](../zh/Symphony-技能编排与分发.md)
