@@ -175,7 +175,7 @@ def test_live_native_callback_requires_ability_manager(native):
 
 
 @pytest.mark.parametrize("failure", ["raises", "non_dict"])
-async def test_sdk_snapshot_fallback_retains_projected_search_base(native, monkeypatch, failure):
+async def test_sdk_snapshot_failure_denies_and_retains_native_projection(native, monkeypatch, failure):
     frozen, error = _freeze(native, "glob", {"pattern": "*.txt", "path": str(native.root.parent)})
     assert not error
     def broken_snapshot():
@@ -185,7 +185,7 @@ async def test_sdk_snapshot_fallback_retains_projected_search_base(native, monke
     base = native.rail.base_rail
     monkeypatch.setattr(base._host, "get_permissions_snapshot", broken_snapshot)
     result = await base.resolve_interrupt(frozen.ctx, frozen.tool_call, None)
-    assert isinstance(result, InterruptResult)
+    assert "permission_snapshot_unavailable" in str(result)
     assert base._engine._file_guard.checker is not None
 
 
@@ -228,7 +228,7 @@ async def test_auto_answer_reenters_native_projection_after_cwd_changes(native, 
     result = await native.rail.before_tool_call(invocation.ctx)
     assert result is None
     assert collected == [[(str(native.root.parent), "read")]]
-    assert bool(persisted) is permanent
+    assert bool(persisted) is True
     assert inv.normalize_invocation_tool_args(name, pending.tool_args) == frozen_args
     assert NATIVE_PATH_ACCESS.get() is None
 

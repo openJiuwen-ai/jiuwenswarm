@@ -916,7 +916,6 @@ def build_permission_rail(
                 sys_operation=sys_operation,
                 auto_reviewer=auto_reviewer,
                 persistent_audit_writer=persistent_audit_writer,
-                exact_permission_persist_callback=_persist_exact_allow_rule,
                 browser_runtime_security_profile=browser_runtime_security_profile,
                 trusted_search_urls=trusted_search_urls,
             )

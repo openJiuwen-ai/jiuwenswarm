@@ -231,7 +231,14 @@ def test_f01_request_and_profile_allowlist(mode, work, expected):
     assert supports_phase_auto_root({"mode": mode, "work_mode": work}) is expected
 
 
-async def test_plan_guard_precedes_permission_and_executes_once(monkeypatch):
+async def test_plan_guard_precedes_permission_and_executes_once(monkeypatch, tmp_path):
+    from jiuwenswarm.agents.harness.common.rails.permissions.generated_artifact_delivery import (
+        create_send_file_execution_grant, current_send_file_execution_grant,
+        publish_send_file_execution_grant,
+    )
+    from jiuwenswarm.server.runtime.sandbox_no_host_fallback import (
+        no_host_fallback_required, require_no_host_fallback,
+    )
     mode = CodeAgentModeRail(allowed_tools=["bash"])
     mode._agent = SimpleNamespace(load_state=lambda _: SimpleNamespace(plan_mode=SimpleNamespace(mode="plan")))
     parent = AsyncMock()
@@ -245,9 +252,15 @@ async def test_plan_guard_precedes_permission_and_executes_once(monkeypatch):
     parent.assert_awaited_once()
     permission = JiuwenSwarmPermissionInterruptRail.__new__(JiuwenSwarmPermissionInterruptRail)
     await permission.before_tool_call(ctx)  # No engine access: hard rejection is terminal.
+    previous_file = tmp_path / "previous.txt"
+    previous_file.write_text("previous call")
+    publish_send_file_execution_grant(create_send_file_execution_grant((previous_file,)))
+    require_no_host_fallback()
     auto = AutoPermissionInterruptRail.__new__(AutoPermissionInterruptRail)
     await auto.before_tool_call(ctx)
     assert ctx.extra["_skip_tool"] is True
+    assert current_send_file_execution_grant() is None
+    assert not no_host_fallback_required()
 
 
 async def test_trusted_code_controls_require_actual_executable_and_owner(code_cold):
