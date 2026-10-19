@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,7 @@ from jiuwenswarm.common.config import (
     get_config,
     get_config_raw,
     resolve_env_vars,
+    set_auto_memory_enabled,
     replace_teams_in_config,
     update_a2ui_in_config,
     update_context_engine_enabled_in_config,
@@ -81,6 +83,10 @@ from jiuwenswarm.common.config import (
     update_default_models_in_config,
     update_login_model_settings_in_config,
     validate_persisted_kv_cache_affinity,
+)
+from jiuwenswarm.common.recommendation_switches import (
+    flatten_recommendation_for_config_panel,
+    save_recommendation_switches,
 )
 from jiuwenswarm.common.config_panel.external_cli_read import (
     EXTERNAL_CLI_AGENT_KEY_SUFFIXES,
@@ -232,9 +238,7 @@ class ConfigChangeSet:
                 # Diagnosis switches the trajectory data plane on as well, so
                 # it needs the same runtime sync as the trajectory view switch.
                 scopes.update({"agent_runtime", "web_ui"})
-            elif key_text in {"task_full_duplex_enabled", "team_organization_ui_enabled"}:
-                scopes.add("web_ui")
-            elif key_text.startswith("a2ui_") or key_text == "setup_guide_enabled":
+            elif key_text in WEB_UI_YAML_KEYS or key_text.startswith("a2ui_"):
                 scopes.add("web_ui")
             else:
                 scopes.add("agent_runtime")
@@ -387,6 +391,8 @@ CONFIG_YAML_KEYS = frozenset({
     "task_full_duplex_enabled",
     "team_organization_ui_enabled",
     "task_asr_enabled",
+    "topic_recommendation_enabled",
+    "prompt_suggestion_enabled",
     "proactive_recommendation_enabled",
     "proactive_recommendation_max_recommend_per_day",
     "proactive_recommendation_max_rounds_per_tick",
@@ -404,6 +410,7 @@ CONFIG_YAML_KEYS = frozenset({
     "setup_guide_enabled",
     "skill_evolution",
     "ttse_enabled",
+    "auto_memory_enabled",
     "enable_free_models",
 })
 # 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification /
@@ -413,6 +420,37 @@ TEAM_DISPATCH_CONFIG_KEYS = frozenset({
     "team_task_verification_enabled",
     "team_member_messaging_enabled",
 })
+# Settings toggles that only change YAML; AgentServer reads the file next turn.
+RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
+    "topic_recommendation_enabled",
+    "prompt_suggestion_enabled",
+})
+WEB_UI_YAML_KEYS = frozenset({
+    "task_full_duplex_enabled",
+    "team_organization_ui_enabled",
+    "setup_guide_enabled",
+    *RECOMMENDATION_UI_CONFIG_KEYS,
+})
+# Scopes that must reach AgentServer before config.save_all returns.
+AGENT_RELOAD_SCOPES = frozenset({
+    "model",
+    "multimodal",
+    "search",
+    "team",
+    "permissions",
+    "agent_runtime",
+    "proactive",
+})
+
+
+def needs_agent_reload(scopes: set[str] | None) -> bool:
+    """True when this save must wait for AgentServer to apply it."""
+
+    if not scopes:
+        return True
+    return bool(scopes & AGENT_RELOAD_SCOPES)
+
+
 EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
@@ -1450,6 +1488,8 @@ def apply_config_payload(
                 update_skill_evolution_enabled_in_config(parsed)
             elif param_key == "ttse_enabled":
                 update_ttse_enabled_in_config(parsed)
+            elif param_key == "auto_memory_enabled":
+                set_auto_memory_enabled(parsed)
             elif param_key.startswith("a2ui_"):
                 a2ui = provider("a2ui")
                 ok, update, error = a2ui.validate_a2ui_config_update(param_key, val)
@@ -1466,6 +1506,10 @@ def apply_config_payload(
                 update_team_organization_ui_in_config(parsed)
             elif param_key == "task_asr_enabled":
                 update_task_asr_in_config(parsed)
+            elif param_key == "topic_recommendation_enabled":
+                save_recommendation_switches(topic_enabled=parsed, now=time.time())
+            elif param_key == "prompt_suggestion_enabled":
+                save_recommendation_switches(prompt_enabled=parsed, now=time.time())
             elif param_key == "proactive_recommendation_enabled":
                 update_proactive_recommendation_in_config({"enabled": parsed})
             elif param_key == "proactive_recommendation_max_recommend_per_day":
@@ -1666,6 +1710,7 @@ async def config_get_handler(
         payload["skill_evolution"] = "true" if evolution_cfg.get("skill_evolution", False) else "false"
         ttse_cfg = (raw.get("react") or {}).get("ttse") or {}
         payload["ttse_enabled"] = "true" if ttse_cfg.get("enabled", False) else "false"
+        payload["auto_memory_enabled"] = "true" if raw.get("auto_memory_enabled", False) else "false"
         memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
         payload["memory_forbidden_enabled"] = "true" if memory_cfg.get("enabled", False) else "false"
         memory_desc = memory_cfg.get("description") or {}
@@ -1693,6 +1738,7 @@ async def config_get_handler(
         payload.update(flatten_external_cli_agents_for_config_panel(raw))
         payload[EXTERNAL_CLI_CUSTOM_AGENTS_KEY] = custom_agents_config_value()
         payload.update(flatten_symphony_for_config_panel(raw))
+        payload.update(flatten_recommendation_for_config_panel(raw))
         if not payload.get("free_search_ddg_enabled"):
             payload["free_search_ddg_enabled"] = "false"
         if not payload.get("free_search_bing_enabled"):
@@ -1719,6 +1765,7 @@ async def config_get_handler(
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
         payload.setdefault("ttse_enabled", "false")
+        payload.setdefault("auto_memory_enabled", "false")
         payload.setdefault("memory_forbidden_enabled", "false")
         payload.setdefault("memory_forbidden_description", "")
         payload.setdefault("swarmflow_enabled", "true" if DEFAULT_SWARMFLOW_ENABLED else "false")
@@ -1750,6 +1797,8 @@ async def config_get_handler(
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
         payload.setdefault("proactive_recommendation_enabled", "false")
+        payload.setdefault("topic_recommendation_enabled", "false")
+        payload.setdefault("prompt_suggestion_enabled", "false")
         payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
         payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "false")

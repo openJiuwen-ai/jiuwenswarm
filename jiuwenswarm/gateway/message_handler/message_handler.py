@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Dict, Literal
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Literal
 
 from jiuwenswarm.common.host_services import (
     install_runtime_wake_handler,
@@ -35,6 +35,7 @@ from jiuwenswarm.common.e2a.constants import (
 )
 from jiuwenswarm.common.config import get_evolution_auto_save_enabled
 from jiuwenswarm.gateway.routing.session_map import SessionMap
+from jiuwenswarm.server.runtime.session.session_history import SESSION_REQUEST_COMPLETED_EVENT
 from jiuwenswarm.gateway.routing.agent_request_timeout import (
     send_agent_request_with_timeout,
 )
@@ -330,6 +331,11 @@ class MessageHandler(ABC):
         self.agent_client = agent_client
         self._runtime_wake_handler = None
         self._previous_runtime_wake_handler = None
+        self.on_chat_completed: Callable[[str, str], None] | None = None
+        # (session_id, request_id, payload) of a next-input suggestion AgentServer generated.
+        self.on_prompt_suggestion: Callable[[str, str, dict[str, Any]], Awaitable[None]] | None = None
+        # Chat requests that ended here before AgentServer answered: request_id -> session_id.
+        self._awaiting_host_completion: dict[str, str] = {}
         self._user_messages: asyncio.Queue["Message"] = asyncio.Queue()
         self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue()
         self._running = False
@@ -2651,6 +2657,13 @@ class MessageHandler(ABC):
             for mode in self._iter_active_stream_modes()
         )
 
+    def active_chat_request_ids(self) -> frozenset[str]:
+        """Request ids of the user chat tasks this gateway is still running (read-only)."""
+        return frozenset(
+            [rid for rid in self._stream_modes if self._is_chat_stream(rid)]
+            + [*self._active_chat_tasks]
+        )
+
     def active_non_team_modes(self) -> list[tuple[str, str]]:
         """非 team 活跃对话任务的 (request_id, mode) 明细（只读，调试/日志用）。
 
@@ -3294,6 +3307,7 @@ class MessageHandler(ABC):
             session_id = self._stream_sessions.get(rid)
 
         from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import EVENT, handle_checkpoint_push
+        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import READY_EVENT
 
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "models.updated":
             await self._broadcast_models_updated()
@@ -3325,6 +3339,15 @@ class MessageHandler(ABC):
 
         if chunk.channel_id == _ACP_CHANNEL_ID:
             session_id = self._resolve_acp_external_session_id(session_id, bus_metadata)
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == SESSION_REQUEST_COMPLETED_EVENT:
+            pending_session_id = self._awaiting_host_completion.pop(rid, None)
+            if pending_session_id is not None:
+                self._call_chat_completed(pending_session_id, rid)
+            return
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == READY_EVENT:
+            if session_id and self.on_prompt_suggestion is not None:
+                await self.on_prompt_suggestion(session_id, rid, dict(chunk.payload))
+            return
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "cron.response":
             # Cron tool mutations are server-push frames.  They may be handled
             # after the chat stream finalizer has removed ``_stream_user_ids``.
@@ -4345,6 +4368,35 @@ class MessageHandler(ABC):
             label="MessageHandler",
         )
 
+    def _notify_chat_completed(
+        self,
+        env: "E2AEnvelope",
+        session_id: str | None,
+        *,
+        before_host_answer: bool = False,
+    ) -> None:
+        """Tell the completion hook a chat request reached its terminal row.
+
+        Cancelled and failed requests end with a terminal history row as well,
+        so they are completion boundaries for pool replenishment. A request that
+        ended here before AgentServer answered may still be unwinding there; it
+        is announced once more when AgentServer reports its terminal row durable.
+        """
+        method = getattr(env, "method", None)
+        if getattr(method, "value", method) != "chat.send" or not session_id:
+            return
+        if before_host_answer:
+            self._awaiting_host_completion[env.request_id or ""] = session_id
+        self._call_chat_completed(session_id, env.request_id or "")
+
+    def _call_chat_completed(self, session_id: str, request_id: str) -> None:
+        if not self.on_chat_completed:
+            return
+        try:
+            self.on_chat_completed(session_id, request_id)
+        except Exception:
+            logger.warning("Chat completion callback failed: session_id=%s", session_id, exc_info=True)
+
     async def _process_non_stream_request(self, msg: "Message", env: "E2AEnvelope") -> Any:
         """执行单次非流式 Agent 请求并将结果写入 robot_messages（供串行或后台任务复用）。"""
         try:
@@ -4373,6 +4425,7 @@ class MessageHandler(ABC):
                     msg,
                     str(answer_request_id or ""),
                 )
+            self._notify_chat_completed(env, msg.session_id)
             return resp
         except Exception as e:
             logger.exception("AgentServer send_request failed for %s: %s", msg.id, e)
@@ -4383,6 +4436,7 @@ class MessageHandler(ABC):
                 msg.id,
                 msg.channel_id,
             )
+            self._notify_chat_completed(env, msg.session_id, before_host_answer=True)
             return None
         finally:
             # A non-stream AgentServer call can still emit cron server_push
@@ -5022,6 +5076,7 @@ class MessageHandler(ABC):
         channel_id = env.channel or ""
         stream_app_id = self._stream_app_ids.get(rid, "")  # 提前捕获，_pop_stream_tracking 后会清除
         cancelled = False
+        completion_notified = False
         has_processing_status_false = False
         _proc_count = 0
         logger.info(
@@ -5089,6 +5144,8 @@ class MessageHandler(ABC):
                     payload.get("event_type") if isinstance(payload, dict) else None,
                     _has_fanout,
                 )
+            self._notify_chat_completed(env, session_id)
+            completion_notified = True
             logger.info(
                 "[MessageHandler] Stream 正常完成: request_id=%s total_chunks=%s",
                 rid, _proc_count,
@@ -5141,6 +5198,10 @@ class MessageHandler(ABC):
                     str((env.params or {}).get("request_id") or ""),
                 )
                 has_processing_status_false = True
+            # 完成边界在 pop 之前通知，与正常结束路径一致：补货守卫要看到 rid 仍在
+            # 活跃集里，才分得清这次请求是已经写完成行，还是被取消后宿主仍在收尾。
+            if not completion_notified:
+                self._notify_chat_completed(env, session_id, before_host_answer=True)
             # 清理状态：pop tracking 后必须广播 task.global_running 最新快照。
             # 若只裸 pop（不广播），非 chat.send 流（history.get / chat.error 等
             # emit=False 路径）退出时会让 has_active_streams() 计数悬空，前端保存锁

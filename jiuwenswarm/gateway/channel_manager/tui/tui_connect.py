@@ -381,6 +381,9 @@ class CliHandlersBindParams:
     # inside the target user directory.  It must not proxy command.model back
     # to Gateway a second time.
     force_local_config: bool = False
+    # (project_id, session_id) -> awaitable, after a session is deleted or moved to another project;
+    # see app_web_handlers.session_left_project_follow_up.
+    on_session_left_project: Any = None
 
 
 @dataclass
@@ -398,6 +401,7 @@ class CliRouteBindParams:
     # 但把 ws + RoutingKey 委托注册进 TuiChannel 的五维索引，出站由 ChannelManager
     # 派发到 TuiChannel.send（按 delivery.ws_id 物理寻址）。
     ws_channel: Any = None
+    on_session_left_project: Any = None
 
 
 @dataclass
@@ -508,6 +512,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     cron_controller_ref = bind.cron_controller
     heartbeat_controller_ref = bind.heartbeat_controller
     force_local_config = bind.force_local_config
+    on_session_left_project = bind.on_session_left_project
     from jiuwenswarm.gateway.routing.third_agent import get_unsupported_third_agent
 
     third_agent = bind.third_agent if bind.third_agent is not None else get_unsupported_third_agent()
@@ -687,12 +692,15 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         目录时，Gateway 本地写不会落到正确会话目录）。AgentOS 下 AgentServer
         不可达时返回可重试错误；单用户 WebSocket 客户端与 AgentServer 共享目录，
         恢复迁移前的本地重绑路径以保持离线可用性。
+
+        重绑到另一个项目后，原项目撤回该会话的要求并重算最新来源，新项目也重算最新来源。
         """
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
         )
+        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
         if not isinstance(params, dict):
             await channel.send_response(
@@ -722,6 +730,16 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         # isolated user directory.  Only the stock local WebSocket client may
         # use the historical shared-directory fallback.
         # A2g：legacy 本地 rebib 删除，统一走 E2A。
+        legacy_shared_dir = is_legacy_shared_directory_client(real_client)
+        # AgentServer may have written an earlier rebind, so the project is read from disk;
+        # only a client that shares this directory has the session here.
+        left_project_id = str(
+            get_session_metadata(target, cache_bust=True, enable_writeback=False).get("project_id") or ""
+        ) if legacy_shared_dir else ""
+
+        async def _left_project(joined_project_id: str) -> None:
+            if on_session_left_project is not None and left_project_id and left_project_id != joined_project_id:
+                await on_session_left_project(left_project_id, target)
 
         # 与 e2a_proxy 的判定语义对齐：兼容/扩展 client 可能不暴露
         # ``server_ready``，缺省视为可达，只有显式 False 才视为不可达。
@@ -755,6 +773,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return
         pl = resp.payload if isinstance(resp.payload, dict) else {}
         if resp.ok:
+            await _left_project(str(pl.get("project_id") or ""))
             await channel.send_response(ws, req_id, ok=True, payload=pl)
             return
         err = pl.get("error", "session.rebind_project failed")
@@ -786,6 +805,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST"
             )
             return
+
+        async def _left_project(ok: bool, payload: dict[str, Any]) -> None:
+            if ok and on_session_left_project is not None:
+                await on_session_left_project(str(payload.get("project_id") or ""), target)
+
         await proxy_unary_request(
             channel=channel,
             agent_client=_resolve_agent_client(agent_client),
@@ -796,6 +820,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.SESSION_DELETE,
             label="session.delete",
+            on_done=_left_project,
         )
 
     async def _forward_rewind_e2a(params: ForwardRewindE2AParams) -> bool:
@@ -2486,6 +2511,7 @@ def build_cli_route_binding(bind: CliRouteBindParams) -> GatewayRouteBinding:
                 path=bind.path,
                 cron_controller=bind.cron_controller,
                 heartbeat_controller=bind.heartbeat_controller,
+                on_session_left_project=bind.on_session_left_project,
             )
         )
 

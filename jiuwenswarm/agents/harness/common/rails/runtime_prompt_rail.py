@@ -17,15 +17,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.core.sys_operation.cwd import init_cwd
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
     PromptAttachmentKind,
 )
-
 from openjiuwen.harness.rails.base import DeepAgentRail
+
 from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
     SystemPromptPriority,
 )
@@ -39,7 +38,6 @@ from jiuwenswarm.common.utils import (
     get_user_workspace_dir,
     logger,
 )
-
 
 A4P_PROMPT_VERSION = "2026-10-19.1"
 
@@ -226,11 +224,11 @@ class RuntimePromptRail(DeepAgentRail):
 
     def _bind_execution_paths(self) -> None:
         """Bind request paths in the asyncio task that runs the current round."""
-        if (
-            self._execution_cwd is None
-            or self._execution_project_root is None
-            or self._execution_workspace is None
-        ):
+        if self._execution_cwd is None:
+            return
+        if self._execution_project_root is None:
+            return
+        if self._execution_workspace is None:
             return
         if (
             self._bound_execution_paths_revision.get()
@@ -782,7 +780,9 @@ class RuntimePromptRail(DeepAgentRail):
             return
         resolution_error = False
         try:
-            from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_preauthorization_active
+            from jiuwenswarm.agents.harness.common.a4p.runtime import (
+                is_a4p_preauthorization_active,
+            )
             from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
                 get_a4p_supported_action_names,
             )

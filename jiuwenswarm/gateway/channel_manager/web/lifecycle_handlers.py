@@ -10,7 +10,7 @@ from jiuwenswarm.gateway.routing.agent_client import DuplicateRequestIdError
 from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
 
 
-def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
+def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_session_deleted=None):
     watchers = {}
 
     async def call(method, params, session_id, user_id):
@@ -117,6 +117,19 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                 }:
                     public[k] = v
             ok, payload = await call(method, public, session_id, user_id)
+            if ok and on_session_deleted is not None and method in {
+                "session.delete",
+                "project.sessions.delete_archived",
+            }:
+                # (project_id, session_id) of each deleted conversation, before the caller hears back.
+                for item in payload.get("results", [payload]):
+                    if item.get("ok", True) and item.get("session_id"):
+                        try:
+                            await on_session_deleted(str(item.get("project_id") or ""), item["session_id"])
+                        except Exception:
+                            logging.getLogger(__name__).warning(
+                                "session deletion follow-up failed", exc_info=True
+                            )
             await channel.send_response(
                 ws,
                 req_id,

@@ -10,6 +10,9 @@ from typing import Generator
 
 import pytest
 
+# Runtime evidence can contain copied third-party skill tests, not repository tests.
+collect_ignore = ["ui_e2e/artifacts"]
+
 
 @pytest.fixture
 def temp_workspace() -> Generator[Path, None, None]:

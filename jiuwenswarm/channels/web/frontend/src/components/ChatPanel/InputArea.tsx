@@ -1,4 +1,4 @@
-﻿import {
+import {
   useState,
   useRef,
   useCallback,
@@ -344,6 +344,10 @@ interface InputAreaProps {
   onForkSession: (sourceSessionId: string) => Promise<void>;
   /** Signals that the user is editing an existing real Session. */
   onInputIntent?: (sessionId: string) => void;
+  /** Tab or → in the empty composer; returns true when it filled the composer, which then keeps focus. */
+  onEmptyComposerTab?: () => boolean;
+  /** The next-input suggestion, shown in the empty composer while its chip after the reply is out of view. */
+  suggestionPlaceholder?: string | null;
   onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   onPersistDocuments: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   /** Delete an unsent image copy under the session uploads directory. */
@@ -760,6 +764,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onEnsureSession,
     onForkSession,
     onInputIntent,
+    onEmptyComposerTab,
+    suggestionPlaceholder,
     onPersistMedia,
     onPersistDocuments,
     onDiscardMedia,
@@ -1539,7 +1545,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       const separator = current && !/\s$/.test(current) ? ' ' : '';
       editor.appendChild(document.createTextNode(`${separator}${text}`));
       useChatStore.getState().setInputValue(sid, `${current}${separator}${text}`);
-      if (sid !== NEW_CONVERSATION_ID) onInputIntent?.(sid);
+      onInputIntent?.(sid);
 
       editor.focus();
       const range = document.createRange();
@@ -3056,7 +3062,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
 
   const notifyKVCInputIntent = useCallback(() => {
-    if (!activeSessionId || activeSessionId === NEW_CONVERSATION_ID) return;
+    if (!activeSessionId) return;
     onInputIntent?.(activeSessionId);
   }, [activeSessionId, onInputIntent]);
 
@@ -3116,6 +3122,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         }
       }
 
+      if ((e.key === 'Tab' || e.key === 'ArrowRight') && !e.shiftKey && !isImeCompositionKey(e.nativeEvent, isComposingRef.current)
+          && !extractPlainText().trim() && onEmptyComposerTab?.()) {
+        e.preventDefault();
+        return;
+      }
+
       if (e.key !== 'Enter' || e.shiftKey) return;
       if (isImeCompositionKey(e.nativeEvent, isComposingRef.current)) return;
       e.preventDefault();
@@ -3131,18 +3143,22 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       mode,
       moveComposerSuggestionHighlight,
       notifyKVCInputIntent,
+      onEmptyComposerTab,
     ],
   );
 
   /**
    * Start KVC preparation on the leading edge of a real editor insertion.
+   * React builds onBeforeInput from textInput / keypress / compositionend, so
+   * the inserted text is on the synthetic event and the native event has no
+   * inputType. An IME commit reaches the editor only this way: its keydown is
+   * "Process", not a printable key.
    * `onInput` remains below as a compatibility fallback for WebViews that do
    * not expose a useful beforeinput event.
    */
   const handleEditorBeforeInput = useCallback(
-    (event: FormEvent<HTMLDivElement>) => {
-      const nativeEvent = event.nativeEvent as InputEvent;
-      if (String(nativeEvent.inputType || '').startsWith('insert')) {
+    (event: FormEvent<HTMLDivElement> & { data?: string | null }) => {
+      if (event.data) {
         notifyKVCInputIntent();
       }
     },
@@ -4010,6 +4026,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               onKeyDown={handleKeyDown}
               onCompositionStart={() => {
                 isComposingRef.current = true;
+                notifyKVCInputIntent();
               }}
               onCompositionEnd={() => {
                 isComposingRef.current = false;
@@ -4037,7 +4054,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             ? t('chat.placeholderProcessingQueue')
                             : isInterruptible
                               ? t('chat.placeholderProcessing')
-                              : t('chat.placeholder')
+                              : suggestionPlaceholder || t('chat.placeholder')
               }
               className={cx('chat-input-editor', composerDisabled && 'chat-input-editor--disabled')}
               data-testid="chat-panel-input"
@@ -4809,6 +4826,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     type="button"
                     className="chat-mode-select__trigger"
                     data-testid="chat-panel-mode-select-trigger"
+                    aria-label={t(currentMode.i18nKey)}
                     data-variant={currentMode.value}
                     onClick={() => {
                       if (hasHistory || isProcessing) return;
@@ -6091,6 +6109,7 @@ function PermissionSelector({
           )}
           disabled={disabled}
           data-testid="chat-panel-permission-selector-trigger"
+          aria-label={t(currentPerm.i18nKey)}
           data-variant={permission}
           title={disabled ? t('chat.configLockedHistory') : undefined}
           onClick={() => {

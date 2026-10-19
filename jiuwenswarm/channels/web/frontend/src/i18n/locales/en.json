@@ -430,6 +430,7 @@
       "browser": "Browser",
       "channels": "Channels",
       "personalContext": "Knowledge",
+      "recommendation": "Recommendations",
       "archivedTasks": "Archived Tasks",
       "experimental": "Experimental"
     },
@@ -698,6 +699,7 @@
       "test": "Test"
     },
     "agent": {
+      "memory": "Memory",
       "skills": "Skills",
       "webSearch": "Web search",
       "mediaTools": "Tools",
@@ -725,6 +727,43 @@
       "deleteModelTitle": "Delete model configuration",
       "deleteModelConfirm": "This deletes the saved model configuration for {{name}} and turns the capability off if it is currently enabled.",
       "team": "Agent team"
+    },
+    "recommendation": {
+      "title": "Personalized recommendations",
+      "description": "Suggests topics and next prompts from your conversations.",
+      "model": "Topic recommendation model",
+      "modelDescription": "Recommendations are prepared again after a switch.",
+      "followMainModel": "Follow the chat model",
+      "modelIncompatible": "incompatible API",
+      "modelLoginRequired": "sign-in required",
+      "modelFree": "free model",
+      "unusableModelOption": "{{name}} ({{reason}})",
+      "modelUnusable": "The topic model cannot be used: choose another model, or complete its API address and key in Settings → Models.",
+      "data": "Recommendation data",
+      "dataDescription": "Your profile and recommendation records stay on this machine.",
+      "view": "View",
+      "hide": "Hide",
+      "enableTitle": "Turn on personalized recommendations",
+      "enableMessage": "Once on, related conversations are sent to the model provider to prepare topic recommendations and next-step suggestions; web searches use only public topic terms. Calls are billed to your own API account, and recommendation data stays on this machine.",
+      "includeHistory": "Also read existing chat history",
+      "enable": "Turn on",
+      "deleteTitle": "Delete recommendation data",
+      "deleteMessage": "Deletes the profile, summaries, card pools and related recommendation records, and turns recommendations off. Your chats are kept; turning recommendations back on does not rebuild the old profile by default. Personal backups and data held by the provider are outside this local deletion.",
+      "blockedDirections": "Directions no longer recommended",
+      "blockedSince": "Not recommended since {{date}}",
+      "restore": "Restore",
+      "profileEmpty": "No recommendation profile with verifiable sources yet.",
+      "correctionLabel": "Correct the profile in your own words",
+      "correctionPlaceholder": "Say which preferences to correct, pause or keep",
+      "correct": "Correct in a new chat",
+      "correctionNote": "After you send and finish that chat, the next recommendation reads your correction; the profile is not updated while recommendations are off.",
+      "unreachable": "Cannot read the recommendation settings. Check the app connection.",
+      "invalidKey": "The model provider rejected the API key. Replace the key, then prepare topics again.",
+      "accessDenied": "The model provider denied access. Check the account's permissions, then prepare topics again.",
+      "accountOverdue": "The model provider account is overdue. Top it up in the provider console, then prepare topics again.",
+      "modelUnavailable": "The topic recommendation model is unavailable. Check the model name and access.",
+      "lastFailure": "The latest topic preparation did not finish.",
+      "retry": "Prepare topics again"
     },
     "browser": {
       "runtime": "Browser runtime",
@@ -879,6 +918,18 @@
       "skill_retrieval_enabled": {
         "title": "Automatic Skill Retrieval",
         "description": "Dynamically select the agent's skill discovery strategy based on the number of installed Skills."
+      },
+      "topic_recommendation_enabled": {
+        "title": "Topic recommendations",
+        "description": "Prepare home-screen topic cards from conversation interests. Unset follows the code default."
+      },
+      "prompt_suggestion_enabled": {
+        "title": "Prompt suggestions",
+        "description": "Show tappable next-input chips after a reply. Unset follows the code default."
+      },
+      "auto_memory_enabled": {
+        "title": "Automatic memory",
+        "description": "Remember lasting preferences and project requirements for later answers. Enabling this adds memory update calls."
       },
       "ttse_enabled": {
         "title": "Local environment facts and task experience auto-evolution",
@@ -1588,7 +1639,42 @@
     },
     "welcomeSuggestions": {
       "journey": "Let's begin a brand-new journey!",
-      "skills": "Can you tell me what skills you have?"
+      "skills": "Can you tell me what skills you have?",
+      "explore": "What would be useful to explore today?",
+      "nextStep": "Help me turn an idea into a practical next step."
+    },
+    "topicStarter": {
+      "heading": "What would you like to explore today?",
+      "recommendations": "Start with one of these",
+      "notInterested": "Skip for now",
+      "cardRemoved": "Skipped for now",
+      "pauseInterest": "Show this less for a week",
+      "interestPaused": "Okay, showing this less",
+      "undoDismissal": "Undo",
+      "dateAndVersion": "See this day",
+      "openDateAndVersion": "Open the background for this day",
+      "weiboHotList": "Weibo hot searches",
+      "baiduHotList": "Baidu hot searches",
+      "hotListRank": "No. {{rank}}",
+      "hotListListedAt": "Listed {{time}}",
+      "viewHotListEntry": "See this trending item: {{source}}",
+      "hotListEntry": "Trending",
+      "openNewsSearch": "Open related news",
+      "searchRelatedNews": "See related news",
+      "statusPreparing": "Getting a few topics ready. You can start chatting now.",
+      "statusPreparingWithCards": "Finding topics that fit you better. These are still good to tap.",
+      "statusUpdateIncomplete": "New topics are not ready yet. These still work.",
+      "statusNeedsSettings": "Want topics that fit you better? You can turn that on in Settings.",
+      "statusNoCards": "Nothing to show right now. You can just start typing.",
+      "providerRefusal": "Personalized topics are unavailable right now. Details are in Settings.",
+      "openSettings": "Check settings",
+      "retryPreparation": "Try again"
+    },
+    "promptSuggestionBox": {
+      "label": "Next: ",
+      "sendHint": "Click to send this suggestion",
+      "dismiss": "Dismiss suggestion “{{text}}”",
+      "placeholder": "{{label}}{{text}} (Tab to fill)"
     },
     "newSession": "New Session",
     "sessionCreated": "Session created",

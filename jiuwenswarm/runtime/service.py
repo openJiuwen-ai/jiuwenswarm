@@ -2826,6 +2826,9 @@ class AgentRuntime:
         channel_id: str,
         session_id: str,
     ) -> None:
+        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import forks
+
+        forks.session_deleted(session_id)
         await self._agent_manager.release_subagent_runtime_for_session(
             channel_id=channel_id or None,
             session_id=session_id,

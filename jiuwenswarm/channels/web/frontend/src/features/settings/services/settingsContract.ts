@@ -73,6 +73,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   yamlField('skill_retrieval_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.enabled'),
   yamlField('skill_retrieval_index_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.index.enabled'),
   yamlField('ttse_enabled', 'agent', 'boolean', 'react.ttse.enabled'),
+  yamlField('auto_memory_enabled', 'agent', 'boolean', 'auto_memory_enabled'),
   envField('free_search_ddg_enabled', 'agent', 'boolean', 'FREE_SEARCH_DDG_ENABLED'),
   envField('free_search_bing_enabled', 'agent', 'boolean', 'FREE_SEARCH_BING_ENABLED'),
   envField('jina_api_key', 'agent', 'text', 'JINA_API_KEY'),
@@ -208,6 +209,8 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
     'modes.team.jiuwen_team.external_cli_agents',
   ),
   yamlField('external_cli_agent_codex_cli_path', 'experimental', 'text', 'modes.team.jiuwen_team.external_cli_agents'),
+  yamlField('topic_recommendation_enabled', 'agent', 'boolean', 'recommendation.topic_enabled'),
+  yamlField('prompt_suggestion_enabled', 'agent', 'boolean', 'recommendation.prompt_enabled'),
   yamlField('proactive_recommendation_enabled', 'experimental', 'boolean', 'proactive_recommendation.enabled'),
   yamlField(
     'proactive_recommendation_max_recommend_per_day',

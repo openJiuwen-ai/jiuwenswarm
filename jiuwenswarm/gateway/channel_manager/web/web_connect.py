@@ -16,6 +16,7 @@ import secrets
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
@@ -28,27 +29,31 @@ from jiuwenswarm.common.protocol_ids import (
     validate_session_id,
     validate_workflow_run_id,
 )
-from jiuwenswarm.common.utils import get_logs_dir
-from jiuwenswarm.gateway.channel_manager.base import ChannelMetadata, RobotMessageRouter, ConnectHook
-from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
-from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
-from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
 from jiuwenswarm.common.security.ws_origin import (
     get_header_value,
 )
-from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
 from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )
+from jiuwenswarm.common.utils import get_logs_dir
 from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
 )
+from jiuwenswarm.gateway.channel_manager.base import (
+    ChannelMetadata,
+    ConnectHook,
+    RobotMessageRouter,
+)
 from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
+from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
+from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
+from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +153,8 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "rsi.training.status.changed",
         "rsi.training.progress",
         "rsi.training.tree.delta",
+        # The suggestion names the request it follows and its own id for the page's outcome events.
+        "prompt_suggestion.ready",
     }
 )
 
@@ -703,7 +710,9 @@ class WebChannel(BaseWsChannel):
             guarded_http_protocol,
             guarded_websockets_protocol,
         )
-        from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
+        from jiuwenswarm.gateway.channel_manager.web.web_channel_app import (
+            build_web_channel_app,
+        )
 
         app = build_web_channel_app(self)
         uv_cfg = uvicorn.Config(
@@ -721,7 +730,17 @@ class WebChannel(BaseWsChannel):
             http=guarded_http_protocol(),
             ws=guarded_websockets_protocol(),
         )
-        self._uvicorn_server = uvicorn.Server(uv_cfg)
+
+        class EmbeddedUvicornServer(uvicorn.Server):
+            @contextmanager
+            def capture_signals(self):
+                # The Gateway owns process signals and coordinates all of its
+                # component shutdowns. Re-raising a captured signal from this
+                # nested server would interrupt that cleanup and leave its task
+                # with an unobserved KeyboardInterrupt.
+                yield
+
+        self._uvicorn_server = EmbeddedUvicornServer(uv_cfg)
         self._running = True
         logger.info(
             "WebChannel 已启动: ws://%s:%s%s (HTTP+WS same port)",
@@ -1725,7 +1744,12 @@ class WebChannel(BaseWsChannel):
         method = data.get("method")
         params = data.get("params")
 
-        if req_type != "req" or not isinstance(req_id, str) or not isinstance(method, str):
+        _rejected = (
+            req_type != "req"
+            or not isinstance(req_id, str)
+            or not isinstance(method, str)
+        )
+        if _rejected:
             await self.send_response(
                 ws,
                 req_id if isinstance(req_id, str) else "",

@@ -12,7 +12,6 @@ import json
 import logging
 import re
 import time
-
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -117,7 +116,8 @@ Output JSON:
 {{
   "operations": [
     {{"action": "add", "rule": "new rule", "category": "target|relation|tone|structure"}},
-    {{"action": "revise", "gradient_id": "g_xxx", "rule": "revised rule", "category": "target|relation|tone|structure"}},
+    {{"action": "revise", "gradient_id": "g_xxx", "rule": "revised rule", \
+"category": "target|relation|tone|structure"}},
     {{"action": "drop", "gradient_id": "g_yyy"}}
   ]
 }}
@@ -130,12 +130,6 @@ Field notes:
 
 If nothing needs updating, return {{"operations": []}}.
 """
-
-
-def gradient_update_prompt(language: str) -> str:
-    """按语言返回统一梯度更新 prompt 模板（未 format）。"""
-    lang = str(language or "zh").strip().lower()
-    return GRADIENT_UPDATE_PROMPT_EN if lang == "en" else GRADIENT_UPDATE_PROMPT_ZH
 
 
 # ── Helper functions ────────────────────────────────────────────────
@@ -521,7 +515,8 @@ Output JSON:
 {{
   "operations": [
     {{"action": "add", "rule": "new rule", "category": "target|relation|tone|structure"}},
-    {{"action": "revise", "gradient_id": "g_xxx", "rule": "revised rule", "category": "target|relation|tone|structure"}},
+    {{"action": "revise", "gradient_id": "g_xxx", "rule": "revised rule", \
+"category": "target|relation|tone|structure"}},
     {{"action": "drop", "gradient_id": "g_yyy"}}
   ]
 }}

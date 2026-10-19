@@ -423,6 +423,7 @@
       "browser": "浏览器",
       "channels": "频道",
       "personalContext": "知识",
+      "recommendation": "推荐",
       "archivedTasks": "已归档的任务",
       "experimental": "实验功能"
     },
@@ -691,6 +692,7 @@
       "test": "测试"
     },
     "agent": {
+      "memory": "记忆",
       "skills": "技能",
       "webSearch": "网页搜索",
       "mediaTools": "工具",
@@ -718,6 +720,43 @@
       "deleteModelTitle": "删除模型配置",
       "deleteModelConfirm": "将删除{{name}}已保存的模型配置；如果该能力当前已启用，将同步关闭。",
       "team": "智能体团队"
+    },
+    "recommendation": {
+      "title": "个性化推荐",
+      "description": "根据你的对话推荐话题和下一步提示词。",
+      "model": "话题推荐模型",
+      "modelDescription": "切换后会重新准备推荐。",
+      "followMainModel": "跟随主对话模型",
+      "modelIncompatible": "接口不兼容",
+      "modelLoginRequired": "需要登录",
+      "modelFree": "免费模型",
+      "unusableModelOption": "{{name}}（{{reason}}）",
+      "modelUnusable": "话题推荐模型无法使用：请换一个模型，或在「设置 → 模型」补全它的接口地址与密钥。",
+      "data": "推荐数据",
+      "dataDescription": "画像和推荐记录只保存在本机。",
+      "view": "查看",
+      "hide": "收起",
+      "enableTitle": "开启个性化推荐",
+      "enableMessage": "开启后，相关对话会发给模型服务商，用来准备话题推荐和下一步建议；联网检索只使用公开主题词。调用费用由你自己的 API 账户承担，推荐数据存放在本机。",
+      "includeHistory": "同时读取已有聊天历史",
+      "enable": "开启",
+      "deleteTitle": "删除推荐数据",
+      "deleteMessage": "删除画像、摘要、卡池和相关推荐记录，并关闭推荐。原始聊天保留；重新开启默认不会重建旧画像。个人备份及服务端数据不在本地删除范围内。",
+      "blockedDirections": "已不再推荐的方向",
+      "blockedSince": "{{date}} 起不再推荐",
+      "restore": "恢复",
+      "profileEmpty": "尚无可核对来源的推荐画像。",
+      "correctionLabel": "用自然语言纠正画像",
+      "correctionPlaceholder": "说明哪些偏好需要纠正、暂停或保留",
+      "correct": "在新对话中纠正",
+      "correctionNote": "发送并完成这条对话后，下一次推荐会读取你的纠正；关闭推荐期间不整理画像。",
+      "unreachable": "无法读取推荐设置，请检查应用连接。",
+      "invalidKey": "模型服务商拒绝了密钥，请更换密钥后重新准备话题。",
+      "accessDenied": "模型服务商拒绝访问，请核对账号权限后重新准备话题。",
+      "accountOverdue": "模型服务账号欠费，请在服务商控制台充值后重新准备话题。",
+      "modelUnavailable": "话题推荐模型不可用，请核对模型名称和访问权限。",
+      "lastFailure": "最近一次准备话题没有完成。",
+      "retry": "重新准备话题"
     },
     "browser": {
       "runtime": "浏览器运行配置",
@@ -869,6 +908,18 @@
       "skill_retrieval_enabled": {
         "title": "技能自动检索",
         "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
+      },
+      "topic_recommendation_enabled": {
+        "title": "话题推荐",
+        "description": "根据对话兴趣准备首页话题卡片。未设置时跟随程序默认。"
+      },
+      "prompt_suggestion_enabled": {
+        "title": "提示词推荐",
+        "description": "在回复结束后给出下一步可点的输入建议。未设置时跟随程序默认。"
+      },
+      "auto_memory_enabled": {
+        "title": "自动记忆",
+        "description": "记住对话中的长期偏好与本项目要求，后续回答会参考这些记忆。开启后会产生整理调用。"
       },
       "ttse_enabled": {
         "title": "本地环境事实与任务经验自动演进",
@@ -1572,7 +1623,42 @@
     },
     "welcomeSuggestions": {
       "journey": "让我们开启一段新的旅程吧！",
-      "skills": "能告诉我你有哪些技能吗？"
+      "skills": "能告诉我你有哪些技能吗？",
+      "explore": "今天有什么值得一起探索的话题？",
+      "nextStep": "帮我把一个想法变成可执行的下一步。"
+    },
+    "topicStarter": {
+      "heading": "今天想干点什么？",
+      "recommendations": "先从这些聊聊",
+      "notInterested": "先跳过",
+      "cardRemoved": "这条先不看了",
+      "pauseInterest": "这类先藏一周",
+      "interestPaused": "好，这类先少出现",
+      "undoDismissal": "撤销",
+      "dateAndVersion": "看看这一天",
+      "openDateAndVersion": "打开这一天的背景",
+      "weiboHotList": "微博热搜",
+      "baiduHotList": "百度热搜",
+      "hotListRank": "第 {{rank}}",
+      "hotListListedAt": "上榜 {{time}}",
+      "viewHotListEntry": "看看这条热搜：{{source}}",
+      "hotListEntry": "热搜",
+      "openNewsSearch": "打开相关新闻",
+      "searchRelatedNews": "看看相关新闻",
+      "statusPreparing": "正在准备话题，你也可以直接开始聊。",
+      "statusPreparingWithCards": "正在换一批更贴你的话题，这些还可以先点。",
+      "statusUpdateIncomplete": "新话题还没就绪，先用这些也行。",
+      "statusNeedsSettings": "想让话题更贴你，可以去设置里打开。",
+      "statusNoCards": "这会儿没有合适的话题，直接打字开始也行。",
+      "providerRefusal": "个性化这边暂时接不上，细节在设置里。",
+      "openSettings": "去设置看看",
+      "retryPreparation": "再试试"
+    },
+    "promptSuggestionBox": {
+      "label": "下一步：",
+      "sendHint": "点击发送这条建议",
+      "dismiss": "关闭建议「{{text}}」",
+      "placeholder": "{{label}}{{text}}（Tab 填入）"
     },
     "newSession": "新建会话",
     "sessionCreated": "已新建会话",

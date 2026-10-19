@@ -1837,3 +1837,9 @@ modes:
         # 控制记忆内容如何注入到每个成员的 system prompt 中：
         #   "proactive" — 每轮对话开始时主动注入最新记忆摘要
         member_memory_prompt_mode: "proactive"
+recommendation:
+  # null = 跟随程序默认；用户切换后保存 true/false
+  topic_enabled: null
+  prompt_enabled: null
+  # 话题推荐模型：follow_main 跟随新建对话的默认模型，或 models 中某个模型的 model_id。
+  model: follow_main

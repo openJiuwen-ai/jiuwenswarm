@@ -70,6 +70,7 @@ dependencies = [
     "tree-sitter>=0.25.0,<0.26.0",
     "tree-sitter-bash>=0.25.0,<0.26.0",
     "playwright>=1.40,<2",
+    "tiktoken>=0.12.0,<0.13",
     "uv>=0.4.0,<0.13",
     "gitcode-cli==0.12.0",
     "imageio-ffmpeg>=0.5.1,<1",
