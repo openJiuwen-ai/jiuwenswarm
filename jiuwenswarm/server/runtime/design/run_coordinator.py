@@ -239,7 +239,6 @@ class RunCoordinator:
     ) -> dict[str, Any]:
         run_id, minted = self._ensure_run_id(graph)
         run = self._load_run(run_id, graph)
-        journal_path = str(_journal_dir(run_id) / f"{run_id}.jsonl")
         # One eternal swarmflow run id (user-ruled): every trigger executes
         # under the graph's lifelong run id and appends into the same
         # journal + WAL pair. Cross-trigger cache behaviour is carried by
@@ -297,7 +296,6 @@ class RunCoordinator:
                 cascade=cascade,
                 run_id=run_id,
             )
-            script_path = _write_script(run_id, script)
             # Compile observability (user request 2026-10-11): one line per
             # scheduled agent() call so the run log answers "did the edited
             # upstream reach this node's compiled prompt" without opening the
@@ -341,6 +339,23 @@ class RunCoordinator:
                     "the bridge) and the graph's metadata.session_id are both "
                     f"required, got team_name={team_name!r} session_id={session_id!r}"
                 )
+            # Native swarmflow layout (user ruling 2026-10-19): journal / WAL /
+            # compiled scripts live under the owning team session exactly like
+            # the leader's swarmflow tool —
+            # {team_home}/sessions/{sid}/workflows/{graph_id}/. The workflow
+            # name is the compiled script's META.name, which the compiler sets
+            # to the graph id.
+            workflow_name = str(graph.get("graph_id") or self._graph_id)
+            run_dir = workflow_run_dir(team_name, session_id, workflow_name)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "wal").mkdir(exist_ok=True)
+            journal_path = str(
+                workflow_run_journal_path(team_name, session_id, workflow_name, run_id)
+            )
+            wal_path = str(
+                workflow_run_wal_path(team_name, session_id, workflow_name, run_id)
+            )
+            script_path = _write_script(run_dir, trigger_scope, script)
             backend = _build_team_worker(
                 team_name=team_name,
                 worker_base_spec=context.worker_base_spec,
@@ -402,6 +417,8 @@ class RunCoordinator:
                 log_sink=lambda message: logger.info("[design-run] %s", message),
                 run_id=run_id,
                 journal_path=journal_path,
+                resume=journal_path,
+                wal_path=wal_path,
                 abort_event=abort_signal,
             )
         except _WorkflowAborted:
@@ -592,8 +609,10 @@ class RunCoordinator:
         return run
 
 
-def _write_script(run_id: str, source: str) -> Path:
-    path = Path(tempfile.gettempdir()) / f"design_{run_id}_{secrets.token_hex(4)}.py"
+def _write_script(run_dir: Path, trigger_scope: str, source: str) -> Path:
+    """Archive one trigger's compiled script next to its journal (native layout)."""
+    path = run_dir / "scripts" / f"{trigger_scope}.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8")
     logger.info("[design-run] compiled script: %s", path)
     return path
