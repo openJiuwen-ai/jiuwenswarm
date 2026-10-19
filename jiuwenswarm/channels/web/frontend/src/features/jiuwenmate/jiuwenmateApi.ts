@@ -219,6 +219,8 @@ export interface ColleagueResourceOption {
   name: string;
   label: string;
   description: string;
+  /** Marketplace asset id, when the saved name must stay the package directory. */
+  alias?: string;
 }
 
 const SELECTABLE_SKILL_TYPES = new Set(['skill', 'swarm_skill', 'multimodal_skill']);
@@ -276,6 +278,31 @@ export function selectableColleagueResources(
     }),
   );
   return { skills, connectors, plugins };
+}
+
+function localizedLabel(value: unknown, fallback: string): string {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  const row = record(value);
+  return text(row.zh) || text(row.en) || fallback;
+}
+
+/** Installed plugin packages. Skill-marketplace records are not plugins. */
+export function selectablePluginPackages(payload: unknown): ColleagueResourceOption[] {
+  return uniqueOptions(
+    rows(record(payload).packages).flatMap((item: unknown) => {
+      const row = record(item);
+      if (row.installed !== true) return [];
+      const directory = text(row.packageName) || text(row.id);
+      const option = resourceOption(
+        directory,
+        localizedLabel(row.displayName, directory),
+        localizedLabel(row.displayDescription, ''),
+      );
+      if (!option) return [];
+      const assetId = text(row.id);
+      return [assetId && assetId !== option.name ? { ...option, alias: assetId } : option];
+    }),
+  );
 }
 
 /** Published personal-context pages an employee can be assigned. */
