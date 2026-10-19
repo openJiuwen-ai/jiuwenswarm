@@ -900,6 +900,8 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
             "decision_mode": "llm",
             "decision_provider": "typesafe",
             "jev_key_configured": False,
+            "decision_model": "jev-1.13.0",
+            "decision_api_base": "https://api.typesafe.ai/v1",
         },
         "error": None,
         "code": None,

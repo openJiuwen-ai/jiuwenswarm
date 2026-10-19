@@ -98,19 +98,21 @@ function ConfigSourceProvider({ children }: { children: ReactNode }) {
 }
 
 type BrowserDecisionMode = 'llm' | 'shadow' | 'hybrid';
-type BrowserDecisionProvider = 'openrouter' | 'typesafe';
+type BrowserDecisionProvider = 'openrouter' | 'typesafe' | 'custom';
 
 type BrowserSettingsState = {
   chrome_path: string;
   headless: boolean;
   decision_mode: BrowserDecisionMode;
   decision_provider: BrowserDecisionProvider;
+  decision_model: string;
+  decision_api_base: string;
   // Read-only: path.get reports whether the provider's key is set, never the key.
   jev_key_configured: boolean;
 };
 
 const BROWSER_DECISION_MODES: readonly unknown[] = ['llm', 'shadow', 'hybrid'];
-const BROWSER_DECISION_PROVIDERS: readonly unknown[] = ['openrouter', 'typesafe'];
+const BROWSER_DECISION_PROVIDERS: readonly unknown[] = ['openrouter', 'typesafe', 'custom'];
 
 function normalizeBrowserState(value: Record<string, unknown> | undefined): BrowserSettingsState {
   return {
@@ -123,6 +125,8 @@ function normalizeBrowserState(value: Record<string, unknown> | undefined): Brow
       ? (value?.decision_provider as BrowserDecisionProvider)
       : 'typesafe',
     jev_key_configured: value?.jev_key_configured === true,
+    decision_model: typeof value?.decision_model === 'string' ? value.decision_model : '',
+    decision_api_base: typeof value?.decision_api_base === 'string' ? value.decision_api_base : '',
   };
 }
 
@@ -169,7 +173,12 @@ function BrowserSourceProvider({ children }: { children: ReactNode }) {
       setSavingKeys((current) => addSavingKeys(current, keys));
       try {
         const result = await saveQueue.enqueue(operation, () =>
-          request<Record<string, unknown>>('path.set', next, { timeoutMs: 600_000 }),
+          request<Record<string, unknown>>('path.set', {
+            ...next,
+            // Only the Jev dialog edits these fields; unrelated saves must not reset them.
+            decision_model: updates.decision_model,
+            decision_api_base: updates.decision_api_base,
+          }, { timeoutMs: 600_000 }),
         );
         setValues((current) => normalizeBrowserState({ ...current, ...result }));
         return result;

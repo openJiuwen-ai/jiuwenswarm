@@ -69,6 +69,33 @@ def test_defaults_keep_existing_settings_identity(settings, config):
     assert spec.factory_kwargs["settings"] is settings
 
 
+@requires_jev
+def test_custom_jev_uses_typesafe_wire_format_without_changing_browser_runtime(settings, monkeypatch):
+    monkeypatch.setenv("JEV_CUSTOM_API_KEY", "synthetic-custom-key")
+    config = {"browser": {"decision": {"mode": "hybrid", "provider": "openrouter", "min_confidence": 0.55}}}
+    updates, error = browser_decision_updates(
+        "hybrid", "custom", config, model="jev-preview", api_base="https://jev.example.test/v1",
+    )
+    assert error is None
+    config["browser"]["decision"].update(updates)
+    spec = SimpleNamespace(factory_kwargs={"settings": settings})
+    apply_browser_decision_config(spec, config)
+    decision = spec.factory_kwargs["settings"].decision
+    assert decision.provider == "typesafe"
+    assert decision.api_base == "https://jev.example.test/v1"
+    assert decision.model == "jev-preview"
+    assert decision.api_key_env == "JEV_CUSTOM_API_KEY"
+    assert decision.min_confidence == 0.55
+    assert spec.factory_kwargs["settings"].mcp_cfg is settings.mcp_cfg
+    assert spec.factory_kwargs["settings"].guardrails is settings.guardrails
+    assert browser_decision_state(config)["decision_provider"] == "custom"
+
+
+def test_disabling_invalid_custom_endpoint_remains_possible():
+    config = {"browser": {"decision": {"mode": "hybrid", "provider": "custom", "api_base": ""}}}
+    assert browser_decision_updates("llm", None, config) == ({"mode": "llm"}, None)
+
+
 @pytest.mark.parametrize("mode", ["LLM", " llm ", "typo", "HYBRID", "", None, 1, ["hybrid"]])
 def test_unrecognized_mode_matches_llm_settings_view(settings, mode, monkeypatch):
     warning = Mock()

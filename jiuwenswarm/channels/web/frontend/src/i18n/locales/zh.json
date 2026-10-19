@@ -722,7 +722,11 @@
       "decisionShadow": "Jev 影子模式（仅观察）",
       "decisionHybrid": "Jev 混合模式",
       "providerOpenrouter": "OpenRouter",
-      "providerTypesafe": "TypeSafe"
+      "providerTypesafe": "TypeSafe",
+      "providerCustom": "自定义",
+      "jevConfig": "Jev 模型配置",
+      "jevBaseInvalid": "请填写 HTTPS API 基础地址，不含账号、查询参数或片段",
+      "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
     "experimental": {
       "taskAsr": "语音转写",
@@ -812,6 +816,9 @@
       },
       "jev_typesafe_api_key": {
         "title": "TypeSafe API 密钥"
+      },
+      "jev_custom_api_key": {
+        "title": "自定义 Jev API 密钥"
       },
       "model_name": { "title": "模型名称", "placeholder": "例如：glm-4.7" },
       "alias": { "title": "自定义别名", "placeholder": "例如：GLM-4.7 生产环境" },

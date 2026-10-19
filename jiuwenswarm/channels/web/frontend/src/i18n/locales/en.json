@@ -729,7 +729,11 @@
       "decisionShadow": "Jev shadow (observe only)",
       "decisionHybrid": "Jev hybrid",
       "providerOpenrouter": "OpenRouter",
-      "providerTypesafe": "TypeSafe"
+      "providerTypesafe": "TypeSafe",
+      "providerCustom": "Custom",
+      "jevConfig": "Jev Model Configuration",
+      "jevBaseInvalid": "Enter an HTTPS API base URL without credentials, query parameters or fragments",
+      "jevModelInvalid": "Enter a valid OpenRouter Jev model, such as typesafe/jev-1.13"
     },
     "experimental": {
       "taskAsr": "Speech transcription",
@@ -819,6 +823,9 @@
       },
       "jev_typesafe_api_key": {
         "title": "TypeSafe API key"
+      },
+      "jev_custom_api_key": {
+        "title": "Custom Jev API key"
       },
       "model_name": { "title": "Model name", "placeholder": "e.g. glm-4.7" },
       "alias": { "title": "Custom alias", "placeholder": "e.g. GLM-4.7 Production" },

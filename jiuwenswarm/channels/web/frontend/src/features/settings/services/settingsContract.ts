@@ -81,6 +81,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('serper_api_key', 'agent', 'text', 'SERPER_API_KEY'),
   envField('jev_openrouter_api_key', 'browser', 'text', 'OPENROUTER_API_KEY'),
   envField('jev_typesafe_api_key', 'browser', 'text', 'TYPESAFE_API_KEY'),
+  envField('jev_custom_api_key', 'browser', 'text', 'JEV_CUSTOM_API_KEY'),
   envField('github_token', 'agent', 'text', 'GITHUB_TOKEN'),
   envField('vision_api_base', 'agent', 'text', 'VISION_API_BASE'),
   envField('vision_api_key', 'agent', 'text', 'VISION_API_KEY'),

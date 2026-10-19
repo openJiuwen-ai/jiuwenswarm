@@ -8,29 +8,16 @@ import os
 import sys
 from dataclasses import replace
 from typing import Any
+from urllib.parse import urlsplit
 
+from jiuwenswarm.common.browser_settings import (
+    BROWSER_DECISION_MODES,
+    JEV_PROVIDER_DEFAULTS,
+    project_browser_decision,
+)
 from jiuwenswarm.common.config import resolve_env_vars
 
 logger = logging.getLogger(__name__)
-
-BROWSER_DECISION_MODES = ("llm", "shadow", "hybrid")
-# Mirrors openjiuwen's BrowserDecisionConfig provider defaults. They are written out in
-# full on a provider switch: dropping them would let the template migration restore
-# OpenRouter's model and endpoint under a TypeSafe provider.
-JEV_PROVIDER_DEFAULTS = {
-    "openrouter": {
-        "model": "typesafe/jev-1.13",
-        "api_base": "https://openrouter.ai/api/alpha",
-        "api_key_env": "OPENROUTER_API_KEY",
-    },
-    "typesafe": {
-        "model": "jev-1.13.0",
-        "api_base": "https://api.typesafe.ai/v1",
-        "api_key_env": "TYPESAFE_API_KEY",
-    },
-}
-# openjiuwen's default when browser.decision names no provider.
-_DEFAULT_JEV_PROVIDER = "typesafe"
 
 
 def _decision_section(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -46,24 +33,27 @@ def browser_decision_mode(config: dict[str, Any] | None) -> str:
 
 
 def browser_decision_provider(config: dict[str, Any] | None) -> str:
-    provider = _decision_section(config).get("provider", _DEFAULT_JEV_PROVIDER)
-    return provider if provider in JEV_PROVIDER_DEFAULTS else _DEFAULT_JEV_PROVIDER
+    return browser_decision_state(config)["decision_provider"]
 
 
 def browser_decision_state(config: dict[str, Any] | None) -> dict[str, Any]:
     """What the Browser settings page shows; the key itself is never returned."""
-    section = _decision_section(config)
-    provider = browser_decision_provider(config)
-    key_env = section.get("api_key_env") or JEV_PROVIDER_DEFAULTS[provider]["api_key_env"]
-    return {
-        "decision_mode": browser_decision_mode(config),
-        "decision_provider": provider,
-        "jev_key_configured": bool(str(os.environ.get(key_env, "")).strip()),
-    }
+    return project_browser_decision(_decision_section(config))
+
+
+def _sdk_decision_section(section: dict[str, Any]) -> dict[str, Any]:
+    # Custom endpoints use the TypeSafe Jev wire format, not chat completions.
+    if section.get("provider") != "custom":
+        return section
+    resolved = {**JEV_PROVIDER_DEFAULTS["custom"], **section, "provider": "typesafe"}
+    if not str(resolved.get("api_base") or "").strip():
+        raise ValueError("custom Jev provider requires an API base URL")
+    return resolved
 
 
 def browser_decision_updates(
-    mode: Any, provider: Any, config: dict[str, Any] | None
+    mode: Any, provider: Any, config: dict[str, Any] | None,
+    *, model: Any = None, api_base: Any = None,
 ) -> tuple[dict[str, Any], str | None]:
     """The browser.decision fields to write, or an error when the result could not run.
 
@@ -73,8 +63,10 @@ def browser_decision_updates(
     """
     if mode is not None and mode not in BROWSER_DECISION_MODES:
         return {}, "decision_mode must be llm, shadow or hybrid"
-    if provider is not None and provider not in JEV_PROVIDER_DEFAULTS:
-        return {}, "decision_provider must be openrouter or typesafe"
+    if provider is not None and (
+        not isinstance(provider, str) or provider not in JEV_PROVIDER_DEFAULTS
+    ):
+        return {}, "decision_provider must be openrouter, typesafe or custom"
     # The page sends its whole state on every save; only real changes are checked, so an
     # unrelated save (e.g. the Chrome path) still works while a Jev key is missing.
     section = _decision_section(config)
@@ -84,15 +76,37 @@ def browser_decision_updates(
         updates["mode"] = mode
     if provider is not None and provider != browser_decision_provider(config):
         updates.update({"provider": provider, **JEV_PROVIDER_DEFAULTS[provider]})
+    for name, value in (("model", model), ("api_base", api_base)):
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            return {}, f"decision_{name} must be a non-empty string"
+        value = value.strip()
+        if value != updates.get(name, section.get(name)):
+            updates[name] = value
     section = {**section, **updates}
-    if not updates or section.get("mode", "llm") == "llm":
+    if not updates:
+        return updates, None
+    if updates == {"mode": "llm"}:
+        return updates, None
+    try:
+        resolved = _sdk_decision_section(section)
+        if api_base is not None or section.get("provider") == "custom":
+            url = urlsplit(str(section.get("api_base") or ""))
+            if url.scheme != "https" or not url.hostname:
+                return {}, "decision_api_base must be an HTTPS base URL"
+            if any((url.username, url.password, url.query, url.fragment)):
+                return {}, "decision_api_base must not contain credentials, query or fragment"
+    except ValueError as exc:
+        return {}, f"browser.decision is invalid: {exc}"
+    if section.get("mode", "llm") == "llm":
         return updates, None
     try:
         from openjiuwen.harness.tools.browser_move.decision import BrowserDecisionConfig
     except ModuleNotFoundError:
         return {}, "installed openjiuwen has no Jev support"
     try:
-        decision = BrowserDecisionConfig(**section)
+        decision = BrowserDecisionConfig(**resolved)
     except (TypeError, ValueError) as exc:
         return {}, f"browser.decision is invalid: {exc}"
     if not os.environ.get(decision.api_key_env, "").strip():
@@ -138,7 +152,7 @@ def apply_browser_decision_config(spec: Any, config: dict[str, Any] | None) -> A
         return spec
 
     try:
-        decision = BrowserDecisionConfig(**resolved)
+        decision = BrowserDecisionConfig(**_sdk_decision_section(resolved))
     except (TypeError, ValueError) as exc:
         raise ValueError(f"browser.decision is invalid: {exc}") from exc
     kwargs = dict(spec.factory_kwargs or {})
