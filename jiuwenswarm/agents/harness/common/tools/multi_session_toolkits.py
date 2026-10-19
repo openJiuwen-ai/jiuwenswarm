@@ -16,7 +16,7 @@ Agent 可以通过以下工具操控协程
 协程管理原则：
 1. 协程创建后，任务信息保存在self.sessions中
 2. 协程取消后，对应信息需要同步在self.sessions中
-3. 某一协程结束后，会调用notify方法，通过AgentWebSocketServer将消息推送出去
+3. 某一协程结束后，会调用notify方法，通过 Runtime Host ``send_runtime_push`` 推送
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import logging
 import secrets
 import time
 from enum import Enum
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent import ReActAgent, ReActAgentConfig, AgentCard
@@ -36,6 +36,7 @@ from pydantic import BaseModel
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
 from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import get_mcp_tools
+from jiuwenswarm.runtime.host_services import send_runtime_push
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ class MultiSessionToolkit:
         sub_agent_config: ReActAgentConfig,
         max_concurrent_tasks: int = 10,
         task_timeout: float = 300.0,
+        agent_manager: Any = None,
     ) -> None:
         """Initialize MultiSessionToolkit for a session.
 
@@ -75,6 +77,8 @@ class MultiSessionToolkit:
             sub_agent_config: Configuration for sub-agents.
             max_concurrent_tasks: Maximum number of concurrent tasks (default: 10).
             task_timeout: Timeout for each task in seconds (default: 300.0).
+            agent_manager: Optional explicit AgentManager. When omitted, notify
+                uses the live AgentServer singleton if one already exists.
         """
         self.session_id = session_id
         self.channel_id = channel_id
@@ -85,6 +89,7 @@ class MultiSessionToolkit:
         self._max_concurrent_tasks = max_concurrent_tasks
         self._task_timeout = task_timeout
         self._semaphore = asyncio.Semaphore(max_concurrent_tasks)
+        self._agent_manager = agent_manager
         logger.info(
             "[MultiSessionToolkit] 初始化 parent_session_id=%s channel_id=%s request_id=%s "
             "max_concurrent=%d timeout=%.1fs",
@@ -243,9 +248,37 @@ class MultiSessionToolkit:
             index + 1,
             total,
         )
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-        server = AgentWebSocketServer.get_instance()
-        await server.send_push(msg)
+        await self._push_or_keep_local(msg, session_id=session_id, kind="task notification")
+
+    def _resolve_summary_agent_wrapper(self) -> Any:
+        """Prefer an injected manager; otherwise use the live AgentServer."""
+        manager = self._agent_manager
+        server = None
+        if manager is None:
+            from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+            server = AgentWebSocketServer.current_instance()
+            if server is not None:
+                manager = server.get_agent_manager()
+        wrapper = manager.get_agent_nowait(self.channel_id) if manager is not None else None
+        if wrapper is None and server is not None:
+            wrapper = server.get_agent()
+        return wrapper
+
+    async def _push_or_keep_local(
+        self,
+        msg: dict[str, Any],
+        *,
+        session_id: str,
+        kind: str,
+    ) -> None:
+        if await send_runtime_push(msg):
+            return
+        logger.info(
+            "[MultiSessionToolkit] Runtime push host unavailable; "
+            "%s kept local session_id=%s",
+            kind,
+            session_id,
+        )
 
     async def notify(
             self,
@@ -254,23 +287,18 @@ class MultiSessionToolkit:
             result: str = "",
             error: str = "",
     ) -> None:
-        """Send subtask update via AgentWebSocketServer. Called on completion (success/cancel/error/timeout)."""
+        """Send a subtask update through the active Runtime host."""
         # 发送单个任务的状态更新
         await self._send_task_notification(session_id, status, result, error)
 
         # 检查是否所有任务都已完成，如果是则发送最终汇总
         if self.all_tasks_done():
-            from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-            server = AgentWebSocketServer.get_instance()
-
             session_result_summary = "后台会话任务均已完成：\n"
             for st in self.sessions:
                 session_result_summary += (f"\nsession_id: {st.session_id}\n"
                                            f"description: {st.description}\nresult: {st.result}\n")
 
-            agent_wrapper = server.get_agent_manager().get_agent_nowait(self.channel_id)
-            if agent_wrapper is None:
-                agent_wrapper = server.get_agent()
+            agent_wrapper = self._resolve_summary_agent_wrapper()
             agent_instance = (
                 await agent_wrapper.ensure_instance() if agent_wrapper is not None else None
             )
@@ -337,7 +365,9 @@ class MultiSessionToolkit:
                 "payload": payload,
                 "is_complete": True,
             }
-            await server.send_push(msg)
+            await self._push_or_keep_local(
+                msg, session_id=self.session_id, kind="final summary"
+            )
 
     async def create_new_sessions(self, task_descriptions: List[str]) -> str:
         """Create sub-agent sessions for each task description."""

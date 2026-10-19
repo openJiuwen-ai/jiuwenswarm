@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Tuple
 
-from jiuwenswarm.common.utils import get_agent_sessions_dir
+from jiuwenswarm.common.utils import get_agent_sessions_dir, is_valid_session_id
 
 
 logger = logging.getLogger(__name__)
@@ -23,13 +23,16 @@ _FILE_LOCK = threading.Lock()
 _WRITE_QUEUE: queue.Queue[tuple[str, list[dict[str, Any]], str | None]] = queue.Queue(maxsize=20000)
 _WORKER_STARTED = False
 _WORKER_LOCK = threading.Lock()
+_SUBAGENT_WRITE_QUEUE: queue.Queue[
+    tuple[str, str, list[dict[str, Any]], str | None]
+] = queue.Queue(maxsize=20000)
+_SUBAGENT_WORKER_STARTED = False
+_SUBAGENT_WORKER_LOCK = threading.Lock()
+_SUBAGENT_SHUTDOWN_FLUSH_TIMEOUT_S = 5.0
 _LEGACY_HISTORY_FILENAME = "history.json"
 _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
 _HEARTBEAT_OK = "HEARTBEAT_OK"
-_VALID_SESSION_ID = re.compile(
-    r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9])?$"
-)
 # Gateway may inline @path as <file-content>...</file-content> before chat.send.
 # History should keep the short @path form so jsonl rows stay one physical line
 # and refresh UI does not load megabytes of file body.
@@ -96,11 +99,6 @@ def collapse_file_content_blocks(content: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", collapsed).strip()
 
 
-def is_valid_session_id(session_id: str) -> bool:
-    """Return whether a session id is safe to use as one path component."""
-
-    return _VALID_SESSION_ID.fullmatch(session_id) is not None
-
 # 缓冲层分两组：普通缓冲层（_session_buffer，合并后批量写）与暂留层（_session_pending，
 # tool_calls.delta 等对应 chat.tool_call 命中后再决定丢弃/落盘）。
 BUFFERABLE_EVENT_TYPES = {
@@ -134,6 +132,15 @@ _SHUTDOWN_DONE: bool = False
 def _is_ephemeral_heartbeat_session(session_id: str) -> bool:
     """Heartbeat sessions are one-shot and should not pollute history.json(l)."""
     return (session_id or "").startswith("heartbeat")
+
+
+def _has_subtask_update_payload(payload: dict[str, Any]) -> bool:
+    """True when a blank chat.subtask_update still has persistable extras."""
+    return bool(
+        payload.get("task_id")
+        or payload.get("subagent_id")
+        or payload.get("description")
+    )
 
 
 def _has_persistable_assistant_payload(
@@ -178,6 +185,10 @@ def _has_persistable_assistant_payload(
             or payload.get("usage_metadata")
         )
     # HITL cards have empty content; questions / expiry live in extras.
+    if et == "chat.subagent_activity" and isinstance(payload.get("subagent_activity"), dict):
+        return True
+    if et == "chat.subtask_update" and _has_subtask_update_payload(payload):
+        return True
     if et == "chat.ask_user_question":
         questions = payload.get("questions")
         return isinstance(questions, list) and bool(questions)
@@ -347,6 +358,43 @@ _MERGE = {
 }
 
 
+def subagent_history_dir_name(subagent_id: str) -> str:
+    """Return a single path component for a child subagent history directory."""
+    normalized = (subagent_id or "").strip()
+    if is_valid_session_id(normalized):
+        return normalized
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", normalized).strip("._-")
+    if len(slug) > 80:
+        slug = slug[:80]
+    return slug
+
+
+def resolve_subagent_history_path(
+    session_id: str,
+    subagent_id: str,
+    *,
+    create: bool = False,
+    sessions_root: str | Path | None = None,
+) -> tuple[Path | None, str | None]:
+    """Resolve ``<parent>/subagents/<id>/history.json(l)`` inside the parent session."""
+    root = Path(sessions_root) if sessions_root is not None else None
+    parent, error = resolve_session_dir(session_id, create=create, sessions_root=root)
+    if error or parent is None:
+        return None, error or "invalid session_id"
+    name = subagent_history_dir_name(subagent_id)
+    if not name:
+        return None, "invalid subagent_id"
+    sub_dir = (parent / "subagents" / name).resolve()
+    try:
+        sub_dir.relative_to(parent.resolve())
+    except ValueError:
+        return None, "invalid subagent_id"
+    if create:
+        sub_dir.mkdir(parents=True, exist_ok=True)
+    filename = _LEGACY_HISTORY_FILENAME if use_legacy_history_json() else _JSONL_HISTORY_FILENAME
+    return sub_dir / filename, None
+
+
 def _session_dir(
     session_id: str, *, create: bool = True, sessions_root: str | None = None
 ) -> Path:
@@ -366,9 +414,7 @@ def resolve_session_dir(
 ) -> tuple[Path | None, str | None]:
     """安全解析 session 目录路径（防路径遍历）。
 
-    采用白名单判据：``sanitize_session_id(session_id) == session_id`` 才认为合法，
-    原样使用；否则直接拒绝，根本不拼路径。这样删除类破坏性操作不会因 sanitize 后的
-    字符串（如 ``../config`` -> ``config``）误伤同名合法 session。
+    采用共享的严格白名单校验，合法值原样使用；否则直接拒绝，根本不拼路径。
 
     再用 ``resolve()`` + ``relative_to`` 做纵深防御，兜底白名单逻辑被绕过的极端情况。
 
@@ -426,8 +472,23 @@ def get_write_history_path(session_id: str, sessions_root: str | None = None) ->
     return _history_jsonl_file(session_id, sessions_root=sessions_root)
 
 
-def get_read_history_path(session_id: str, sessions_root: str | None = None) -> Path:
+def get_read_history_path(
+    session_id: str,
+    sessions_root: str | None = None,
+    *,
+    subagent_id: str | None = None,
+) -> Path:
     """Return the preferred history source, falling back to legacy json."""
+    if subagent_id:
+        path, error = resolve_subagent_history_path(
+            session_id,
+            subagent_id,
+            create=False,
+            sessions_root=sessions_root,
+        )
+        if path is not None and error is None:
+            return path
+        return Path("__missing_subagent_history__")
     if use_legacy_history_json():
         legacy_path = _history_file(session_id, create=False, sessions_root=sessions_root)
         if legacy_path.exists():
@@ -446,8 +507,17 @@ def get_read_history_path(session_id: str, sessions_root: str | None = None) -> 
     return jsonl_path
 
 
-def history_exists(session_id: str, sessions_root: str | None = None) -> bool:
-    return get_read_history_path(session_id, sessions_root=sessions_root).exists()
+def history_exists(
+    session_id: str,
+    sessions_root: str | None = None,
+    *,
+    subagent_id: str | None = None,
+) -> bool:
+    return get_read_history_path(
+        session_id,
+        sessions_root=sessions_root,
+        subagent_id=subagent_id,
+    ).exists()
 
 
 def get_history_mtime(session_id: str) -> float | None:
@@ -538,8 +608,23 @@ def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def load_history_records(session_id: str, sessions_root: str | None = None) -> list[dict[str, Any]]:
-    return _read_history(get_read_history_path(session_id, sessions_root=sessions_root))
+def load_history_records(
+    session_id: str,
+    sessions_root: str | None = None,
+    *,
+    subagent_id: str | None = None,
+) -> list[dict[str, Any]]:
+    # Parent reads must not join the child writer. truncate holds _FILE_LOCK
+    # around the parent read, and that writer needs the same lock.
+    if subagent_id:
+        _flush_subagent_history_writes()
+    return _read_history(
+        get_read_history_path(
+            session_id,
+            sessions_root=sessions_root,
+            subagent_id=subagent_id,
+        )
+    )
 
 
 def _write_records_to_path(path: Path, records: list[dict[str, Any]]) -> None:
@@ -785,6 +870,93 @@ def _batch_write_items(session_id: str, items: list[dict], sessions_root: str | 
             for item in items:
                 fh.write(json.dumps(item, ensure_ascii=False))
                 fh.write("\n")
+
+
+def _batch_write_subagent_items(
+    session_id: str,
+    subagent_id: str,
+    items: list[dict],
+    sessions_root: str | None,
+) -> None:
+    """Queue JSONL rows for the child subagent file; dest parent buffer is untouched."""
+    if not items:
+        return
+    _ensure_subagent_history_worker_started()
+    try:
+        _SUBAGENT_WRITE_QUEUE.put_nowait(
+            (session_id, subagent_id, list(items), sessions_root)
+        )
+    except queue.Full:
+        _write_subagent_items_sync(session_id, subagent_id, items, sessions_root)
+
+
+def _write_subagent_items_sync(
+    session_id: str,
+    subagent_id: str,
+    items: list[dict],
+    sessions_root: str | None,
+) -> None:
+    path, error = resolve_subagent_history_path(
+        session_id,
+        subagent_id,
+        create=True,
+        sessions_root=sessions_root,
+    )
+    if error or path is None:
+        logger.warning(
+            "skip subagent history write: session_id=%s subagent_id=%s error=%s",
+            session_id,
+            subagent_id,
+            error,
+        )
+        return
+    with _FILE_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as fh:
+            for item in items:
+                fh.write(json.dumps(item, ensure_ascii=False))
+                fh.write("\n")
+
+
+def _ensure_subagent_history_worker_started() -> None:
+    global _SUBAGENT_WORKER_STARTED
+    if _SUBAGENT_WORKER_STARTED:
+        return
+    with _SUBAGENT_WORKER_LOCK:
+        if _SUBAGENT_WORKER_STARTED:
+            return
+
+        def _worker() -> None:
+            while True:
+                sid, child_id, items, sessions_root = _SUBAGENT_WRITE_QUEUE.get()
+                try:
+                    _write_subagent_items_sync(sid, child_id, items, sessions_root)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("subagent history 异步写入失败: %s", exc)
+                finally:
+                    _SUBAGENT_WRITE_QUEUE.task_done()
+
+        t = threading.Thread(
+            target=_worker, name="subagent-history-writer", daemon=True
+        )
+        t.start()
+        _SUBAGENT_WORKER_STARTED = True
+
+
+def _flush_subagent_history_writes(*, timeout: float | None = None) -> None:
+    """Wait for queued child-history writes.
+
+    A full wait is for child reads, and it must run outside ``_FILE_LOCK``.
+    Shutdown passes ``timeout`` so a stuck writer cannot hold process exit.
+    """
+    if not _SUBAGENT_WORKER_STARTED:
+        return
+    if timeout is None:
+        _SUBAGENT_WRITE_QUEUE.join()
+        return
+    deadline = time.monotonic() + timeout
+    while _SUBAGENT_WRITE_QUEUE.unfinished_tasks > 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
 
 
 def _ensure_worker_started() -> None:
@@ -1041,6 +1213,7 @@ def shutdown() -> None:
         logger.warning("history shutdown flush 失败: %s", exc)
     try:
         _force_flush_all_pending()
+        _flush_subagent_history_writes(timeout=_SUBAGENT_SHUTDOWN_FLUSH_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001
         logger.warning("history shutdown 强制暂留落盘失败: %s", exc)
     deadline = time.monotonic() + 5.0
@@ -1176,11 +1349,18 @@ def append_history_record(
     if mode:
         item["mode"] = str(mode)
     item["session_id"] = sid
+    child_id = (subagent_id or "").strip() or None
+    if child_id:
+        item["subagent_id"] = child_id
     # skill_envs injected into bash tool_args.env must not be persisted.
     _strip_skill_env_from_history_item(item)
 
     sessions_root_s = str(sessions_root) if sessions_root else None
     et = event_type if (role_norm == "assistant" and event_type) else None
+
+    if child_id:
+        _batch_write_subagent_items(sid, child_id, [item], sessions_root_s)
+        return
 
     _ensure_flush_thread_started()
     try:
@@ -1287,7 +1467,8 @@ def append_compact_history_records(
 def truncate_history_records(*, session_id: str, cut_index: int) -> dict[str, Any]:
     """截断会话历史到指定位置（线程安全）。
 
-    先等待异步写入队列刷盘，再持锁截断当前激活的历史文件。
+    先等父会话写队列落盘，再持锁读取并重写父历史。
+    持锁期间不 join 子会话写队列，避免和子 writer 抢 ``_FILE_LOCK``。
     返回截断结果 dict，包含 remaining / removed 计数。
     """
     sid = (session_id or "default").strip() or "default"
@@ -1297,7 +1478,7 @@ def truncate_history_records(*, session_id: str, cut_index: int) -> dict[str, An
     with _FILE_LOCK:
         if not fpath.exists():
             return {"remaining_records": 0, "removed_records": 0}
-        history = load_history_records(sid)
+        history = _read_history(fpath)
         if not isinstance(history, list):
             return {"remaining_records": 0, "removed_records": 0}
         total = len(history)

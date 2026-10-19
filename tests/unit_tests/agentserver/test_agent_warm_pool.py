@@ -83,14 +83,14 @@ def isolated_pool(monkeypatch, tmp_path: Path):
     )
 
     def factory(agent: _FakeRootAgent) -> AgentWarmPool:
-        # Prewarming is on by default; stay explicit so a developer environment
-        # that opts out cannot silently turn these cases into no-ops.
+        # Prewarming is off by default; stay explicit so a developer environment
+        # that opts in cannot silently turn these cases into no-ops.
         return AgentWarmPool(_FakeManager(agent), max_concurrency=4, enabled=True)
 
     yield factory
 
 
-def test_prewarm_is_enabled_unless_the_environment_opts_out(
+def test_prewarm_is_disabled_unless_the_environment_opts_in(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
@@ -103,13 +103,32 @@ def test_prewarm_is_enabled_unless_the_environment_opts_out(
         return AgentWarmPool(_FakeManager(_FakeRootAgent()))
 
     monkeypatch.delenv("JIUWENSWARM_AGENT_PREWARM", raising=False)
-    assert build()._enabled is True
+    assert build()._enabled is False
 
     monkeypatch.setenv("JIUWENSWARM_AGENT_PREWARM", " OFF ")
     assert build()._enabled is False
 
     monkeypatch.setenv("JIUWENSWARM_AGENT_PREWARM", "1")
     assert build()._enabled is True
+
+
+@pytest.mark.asyncio
+async def test_disabled_pool_skips_foreground_bookkeeping(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_warm_pool.get_agent_sessions_dir",
+        lambda: tmp_path,
+    )
+    pool = AgentWarmPool(_FakeManager(_FakeRootAgent()), enabled=False)
+
+    await pool.begin_foreground()
+    await pool.end_foreground()
+
+    assert pool._foreground_count == 0
+    assert pool._foreground_idle.is_set()
+    assert pool._background_pump_task is None
+    await pool.close()
 
 
 def test_prewarm_disabled_on_enterprise_even_if_env_opts_in(

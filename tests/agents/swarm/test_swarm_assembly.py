@@ -1955,8 +1955,9 @@ def test_code_subagent_specs_use_factory_names() -> None:
     assert registry.EXPLORE_AGENT in factory_names
     assert registry.PLAN_AGENT in factory_names
     assert registry.CODE_AGENT in factory_names
-    # Team mode has no code sub-agents.
-    assert build_member_subagent_specs({}, "team", "leader") == []
+    team_specs = build_member_subagent_specs({}, "team", "leader")
+    assert [spec.agent_card.name for spec in team_specs] == ["statusline-setup"]
+    assert team_specs[0].factory_name == registry.STATUSLINE_SETUP_AGENT
 
 
 def test_code_runtime_language_by_mode_and_role() -> None:
@@ -2758,3 +2759,64 @@ def test_team_mode_deep_spec_replaces_shared_browser_agent() -> None:
             shared_entries.append(s)
     assert not shared_entries, "shared playwright_official_stdio entry must be removed"
     assert subagent_factories.count(SWARM_BROWSER_AGENT) == 1
+
+
+def _member_base_spec() -> DeepAgentSpec:
+    return DeepAgentSpec(workspace=WorkspaceSpec(root_path="/tmp/ws"))
+
+
+def test_team_task_tool_enables_general_purpose_when_configured() -> None:
+    """general_agent.enabled exposes general-purpose on the member task_tool."""
+    spec = build_member_deep_agent_spec(
+        {"react": {"subagents": {"general_agent": {"enabled": True}}}},
+        "team",
+        "teammate",
+        _member_base_spec(),
+    )
+    assert spec.add_general_purpose_agent is True
+
+
+def test_team_general_purpose_stays_off_unless_explicitly_enabled() -> None:
+    spec = build_member_deep_agent_spec({}, "team", "leader", _member_base_spec())
+    assert spec.add_general_purpose_agent is False
+    preset = _member_base_spec().model_copy(update={"add_general_purpose_agent": True})
+    disabled = build_member_deep_agent_spec(
+        {"react": {"subagents": {"general_agent": {"enabled": False}}}},
+        "code.team",
+        "leader",
+        preset,
+    )
+    assert disabled.add_general_purpose_agent is False
+
+
+def test_swarm_browser_agent_materializes_driver_before_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Team browser build publishes tip driver settings before agent-core reads them."""
+    from jiuwenswarm.agents.swarm.providers import code_subagents as _cs
+
+    seen: list[object] = []
+
+    def _fake_sync(config_base=None):
+        seen.append(config_base)
+        return "managed"
+
+    def _fake_build(*args, **kwargs):
+        spec = MagicMock()
+        spec.factory_kwargs = {}
+        return spec
+
+    monkeypatch.setattr(_cs, "sync_browser_runtime_environment", _fake_sync)
+    monkeypatch.setattr(_cs, "build_browser_agent_config", _fake_build)
+    config = {"browser": {"headless": True}}
+    ctx = SwarmBuildContext(
+        mode="team",
+        role="leader",
+        member_name="leader",
+        session_id="sess",
+        config=config,
+    )
+    ctx.extras[_PARENT_MODEL_EXTRAS_KEY] = object()
+
+    assert build_swarm_browser_agent({}, ctx) is not None
+    assert seen == [config]

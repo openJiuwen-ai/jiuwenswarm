@@ -816,6 +816,14 @@ def load_team_spec_dict(
     spec_dict["max_debate_rounds"] = (
         _DEFAULT_MAX_DEBATE_ROUNDS if configured_debate_rounds is None else configured_debate_rounds
     )
+    # Session-level budget ceilings are opt-in only. Product defaults used to
+    # force 30 / 300 / 2M and cut long autonomous delivery runs in ~15 min;
+    # leave unset/null so agent-core skips SessionBudgetRail. Templates may
+    # still set any of the three explicitly. Debate peer-cap stays on via
+    # max_debate_rounds above.
+    spec_dict["max_total_rounds"] = team_raw.get("max_total_rounds")
+    spec_dict["max_total_messages"] = team_raw.get("max_total_messages")
+    spec_dict["token_budget"] = team_raw.get("token_budget")
     language = _normalize_prompt_language(config_base.get("preferred_language"))
     spec_dict["leader"] = _build_leader_spec(team_raw, language=language)
     spec_dict["agents"] = agents

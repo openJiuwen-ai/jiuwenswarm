@@ -11,6 +11,8 @@ import {
 } from '../../auth/manager/authSession';
 import { webRequest } from '../../services/webClient';
 import { buildRuntimeIdentityHeaders } from '../../services/runtimeScope';
+import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
+import { useChatStore } from '../../stores/chatStore';
 import { getGatewayHttpBase } from '../../utils/env';
 import { unwrapHttpUnary } from '../../services/webHttpClient';
 import type {
@@ -20,6 +22,25 @@ import type {
   WorkspaceTreeData,
   WorkspaceUsageData,
 } from './workspaceTypes';
+
+/**
+ * Skill 式会话绑定：始终带 ``session_id``，避免 Gateway 每次发明 ``webhttp_*``。
+ * 优先显式参数 → chatStore → 稳定占位 ``new``（与 SkillPanel / App 一致）。
+ */
+export function resolveWorkspaceSessionId(explicit?: string | null): string {
+  const fromArg = explicit?.trim();
+  if (fromArg) return fromArg;
+  const fromStore = useChatStore.getState().activeSessionId?.trim();
+  if (fromStore) return fromStore;
+  return NEW_CONVERSATION_ID;
+}
+
+function withWorkspaceSession(
+  params: Record<string, unknown> = {},
+  sessionId?: string | null,
+): Record<string, unknown> {
+  return { ...params, session_id: resolveWorkspaceSessionId(sessionId) };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -52,17 +73,36 @@ function asEntryList(raw: unknown): WorkspaceTreeData {
   };
 }
 
-export async function fetchWorkspaceTree(relativePath = ''): Promise<WorkspaceTreeData> {
+export async function fetchWorkspaceTree(
+  relativePath = '',
+  sessionId?: string | null,
+): Promise<WorkspaceTreeData> {
   const params: Record<string, unknown> = {};
   if (relativePath) {
     params.relative_path = relativePath;
   }
-  const payload = await webRequest<unknown>('workspace.tree', params, { timeoutMs: 60000 });
+  const payload = await webRequest<unknown>(
+    'workspace.tree',
+    withWorkspaceSession(params, sessionId),
+    { timeoutMs: 60000 },
+  );
   return asEntryList(payload);
 }
 
-export async function fetchWorkspaceUsage(): Promise<WorkspaceUsageData> {
-  const payload = await webRequest<WorkspaceUsageData>('workspace.usage', {}, { timeoutMs: 60000 });
+export async function fetchWorkspaceUsage(
+  sessionId?: string | null,
+  options?: { forceRefresh?: boolean },
+): Promise<WorkspaceUsageData> {
+  const params: Record<string, unknown> = {};
+  if (options?.forceRefresh) {
+    params.force_refresh = true;
+  }
+  const payload = await webRequest<WorkspaceUsageData>(
+    'workspace.usage',
+    withWorkspaceSession(params, sessionId),
+    // 强制刷新会跑 du，放宽超时。
+    { timeoutMs: options?.forceRefresh ? 120000 : 60000 },
+  );
   return {
     used_bytes: Number(payload?.used_bytes ?? 0),
     limit_bytes: Number(payload?.limit_bytes ?? 0),
@@ -72,15 +112,17 @@ export async function fetchWorkspaceUsage(): Promise<WorkspaceUsageData> {
     group_id: payload?.group_id,
     bot_id: payload?.bot_id,
     source_policy_id: payload?.source_policy_id,
+    unlimited: payload?.unlimited,
   };
 }
 
 export async function deleteWorkspaceEntries(
   relativePaths: string[],
+  sessionId?: string | null,
 ): Promise<WorkspaceDeleteData> {
   const payload = await webRequest<WorkspaceDeleteData>(
     'workspace.entries.delete',
-    { relative_paths: relativePaths },
+    withWorkspaceSession({ relative_paths: relativePaths }, sessionId),
     { timeoutMs: 120000 },
   );
   return {
@@ -91,14 +133,17 @@ export async function deleteWorkspaceEntries(
 export async function previewWorkspaceFile(
   relativePath: string,
   maxBytes?: number,
+  sessionId?: string | null,
 ): Promise<WorkspacePreviewData> {
   const params: Record<string, unknown> = { relative_path: relativePath };
   if (maxBytes != null) {
     params.max_bytes = maxBytes;
   }
-  const payload = await webRequest<WorkspacePreviewData>('workspace.preview', params, {
-    timeoutMs: 60000,
-  });
+  const payload = await webRequest<WorkspacePreviewData>(
+    'workspace.preview',
+    withWorkspaceSession(params, sessionId),
+    { timeoutMs: 60000 },
+  );
   return {
     relative_path: String(payload?.relative_path || relativePath),
     truncated: Boolean(payload?.truncated),
@@ -206,14 +251,17 @@ async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit): 
 }
 
 /** 触发浏览器下载；失败时抛出带 message 的 Error。 */
-export async function downloadWorkspaceEntry(relativePath: string): Promise<void> {
+export async function downloadWorkspaceEntry(
+  relativePath: string,
+  sessionId?: string | null,
+): Promise<void> {
   const requestId = nextRequestId();
   const base = getGatewayHttpBase().replace(/\/+$/, '');
   const url = `${base}/workspace/download?relative_path=${encodeURIComponent(relativePath)}`;
   const response = await authenticatedFetch(url, {
     method: 'GET',
     headers: {
-      ...buildRuntimeIdentityHeaders(requestId, {}),
+      ...buildRuntimeIdentityHeaders(requestId, withWorkspaceSession({}, sessionId)),
       Accept: '*/*',
     },
   });

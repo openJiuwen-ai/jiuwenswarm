@@ -318,15 +318,42 @@ class _ComponentNameFilter(logging.Filter):
         return _log_component_from_logger_name(record.name) == self.component
 
 
-class _CompositeFilter(logging.Filter):
-    """组合多个过滤器，任一通过即放行"""
+def _is_diagnosis_record(record: logging.LogRecord) -> bool:
+    """诊断日志判定：request_id 前缀（Gateway/AgentServer 跨进程一致）或
+    诊断模块 logger 名（覆盖落盘/配置类无 request_id 的日志）。"""
+    rid = getattr(record, "request_id", "")
+    if isinstance(rid, str) and rid.startswith("diagnosis-"):
+        return True
+    return record.name.startswith("jiuwenswarm.observability.diagnosis")
 
-    def __init__(self, filters: list[logging.Filter]) -> None:
+
+class _DiagnosisLogFilter(logging.Filter):
+    """按 include 参数放行或排除诊断日志（用于 diagnosis.log 与主日志隔离）。"""
+
+    def __init__(self, *, include: bool) -> None:
         super().__init__()
-        self.filters = filters
+        self.include = include
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return any(f.filter(record) for f in self.filters)
+        return _is_diagnosis_record(record) == self.include
+
+
+class _CompositeFilter(logging.Filter):
+    """组合过滤器：filters 任一通过 + excludes 全部通过才放行"""
+
+    def __init__(
+        self,
+        filters: list[logging.Filter],
+        *excludes: logging.Filter,
+    ) -> None:
+        super().__init__()
+        self.filters = filters
+        self.excludes = excludes
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not any(f.filter(record) for f in self.filters):
+            return False
+        return all(f.filter(record) for f in self.excludes)
 
 
 # ---------------------------------------------------------------------------
@@ -405,11 +432,20 @@ def fill_template_defaults(
 
 
 def load_yaml_dict(path: Path) -> dict[str, Any]:
-    """用 yaml.safe_load 读取 YAML 文件为 dict；不存在或无效时返回空 dict。"""
+    """安全读取 YAML 字典；缺失或非映射返回空字典，解析错误仍抛出。"""
+    # 直接使用安全 C 解析器，避免通用反序列化入口；无 C 扩展时回退安全接口。
+    loader_class = getattr(yaml, "CSafeLoader", None)
     if not path.exists():
         return {}
     with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+        if loader_class is None:
+            data = yaml.safe_load(f)
+        else:
+            loader = loader_class(f)
+            try:
+                data = loader.get_single_data()
+            finally:
+                loader.dispose()
     return data if isinstance(data, dict) else {}
 
 
@@ -1995,8 +2031,19 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
     return workspace
 
 
+_VALID_SESSION_ID_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9])?$"
+)
+
+
+def is_valid_session_id(session_id: str) -> bool:
+    """Return whether a session id is safe to use as one path component."""
+
+    return _VALID_SESSION_ID_RE.fullmatch(session_id) is not None
+
+
 def get_prompt_attachment_dir() -> Path:
-    """Get the jiuwenswarm prompt attachment directory path."""
+    """Return the legacy prompt-attachment path without creating it."""
 
     overridden = _dispatch_path(PathCategory.PROMPT_ATTACHMENT)
     if overridden is not None:
@@ -2828,6 +2875,20 @@ def install_source_record_masking() -> None:
     def _sanitizing_record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
         record = old_factory(*args, **kwargs)
         try:
+            # request_id 注入（与 agent-core ContextFilter 同源 ContextVar），
+            # 供诊断证据按 request_id 精确过滤日志。失败时留空，不阻断日志。
+            try:
+                from openjiuwen.extensions.observability.span_context import (
+                    get_current_request_id,
+                )
+
+                record.request_id = get_current_request_id()
+            except Exception:
+                record.request_id = ""
+            # request_id 展示片段：空时不留 [req=]（避免每行带空标签噪音），
+            # 非空时为 "[req=xxx] "。原始 record.request_id 保留供
+            # _is_diagnosis_record 精确匹配（diagnosis- 前缀）。
+            record.req_tag = f"[req={record.request_id}] " if record.request_id else ""
             # message 脱敏（含 %s/format 格式化后的最终文本）。
             msg = record.getMessage()
             record.msg = _sanitize_log_text(msg)
@@ -3172,6 +3233,9 @@ class IdentityTextFormatter(logging.Formatter):
             record.identity = build_log_identity(record)
         if not isinstance(getattr(record, "session_id", None), str):
             record.session_id = current_log_session_id()
+        if not isinstance(getattr(record, "req_tag", None), str):
+            rid = getattr(record, "request_id", "") or ""
+            record.req_tag = f"[req={rid}] " if rid else ""
         return super().format(record)
 
 
@@ -3288,10 +3352,11 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
         root.removeHandler(handler)
 
     json_config = _resolve_json_config() if log_format in ("json", "dual") else {}
-    # 文本格式串（含 process/identity/user_tag/lineno）
+    # 文本格式串（含 process/identity/user_tag/req_tag/lineno）。
+    # req_tag 由 record factory 预拼为 "[req=xxx] " 或 ""（空 request_id 不留噪音）。
     text_fmt = (
         "%(asctime)s.%(msecs)03d [%(process)d] [%(session_id)s] %(levelname)s "
-        "%(identity)s%(user_tag)s%(name)s:%(lineno)d: %(message)s"
+        "%(identity)s%(user_tag)s%(req_tag)s%(name)s:%(lineno)d: %(message)s"
     )
 
     if log_format in ("json", "dual"):
@@ -3341,12 +3406,18 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
         listener_targets.append(h)
 
     def _component_files(ext: str, use_json: bool) -> None:
-        _add_rotating(f"gateway.{ext}", levels.gateway, _ComponentNameFilter("gateway"), use_json=use_json)
-        _add_rotating(f"channel.{ext}", levels.channel, _ComponentNameFilter("channel"), use_json=use_json)
+        # 主日志文件排除诊断日志（隔离：诊断只落 diagnosis.log）
+        _exclude_diagnosis = _DiagnosisLogFilter(include=False)
+        _add_rotating(f"gateway.{ext}", levels.gateway,
+                      _CompositeFilter([_ComponentNameFilter("gateway")], _exclude_diagnosis), use_json=use_json)
+        _add_rotating(f"channel.{ext}", levels.channel,
+                      _CompositeFilter([_ComponentNameFilter("channel")], _exclude_diagnosis), use_json=use_json)
         _add_rotating(f"agent_server.{ext}", levels.agent_server,
-                      _CompositeFilter([_ComponentNameFilter("agent_server"), _ComponentNameFilter("permissions")]),
+                      _CompositeFilter([_ComponentNameFilter("agent_server"),
+                                        _ComponentNameFilter("permissions")], _exclude_diagnosis),
                       use_json=use_json)
-        _add_rotating(f"full.{ext}", levels.full, None, use_json=use_json)
+        _add_rotating(f"full.{ext}", levels.full, _exclude_diagnosis, use_json=use_json)
+        _add_rotating(f"diagnosis.{ext}", levels.full, _DiagnosisLogFilter(include=True), use_json=use_json)
 
     if log_format == "text":
         _component_files("log", use_json=False)
@@ -3499,6 +3570,8 @@ _FILE_HANDLER_LEVEL_MAP: dict[str, str] = {
     "agent_server.json": "agent_server",
     "full.log": "full",
     "full.json": "full",
+    "diagnosis.log": "full",
+    "diagnosis.json": "full",
     "permissions.log": "agent_server",
 }
 

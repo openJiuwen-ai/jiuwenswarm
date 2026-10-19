@@ -11,8 +11,10 @@ export const isEnterprise = (): boolean => readEdition() === "enterprise";
 
 export const ENTERPRISE_HIDDEN_NAV_ITEMS = [
   "channels",
+  "digitalavatar",
   "teams",
   "personalContext",
+  "settings",
   "extensions",
   "configpanel",
   "browserpanel",

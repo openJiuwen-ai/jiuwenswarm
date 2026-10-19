@@ -79,7 +79,7 @@ function keepUnderDeletableFilter(entry: WorkspaceEntry): boolean {
   );
 }
 
-export function WorkspacePanel({ sessionId: _sessionId }: WorkspacePanelProps) {
+export function WorkspacePanel({ sessionId }: WorkspacePanelProps) {
   const { t } = useTranslation();
   const enterprise = useEnterpriseContext();
   const [usage, setUsage] = useState<WorkspaceUsageData | null>(null);
@@ -112,10 +112,12 @@ export function WorkspacePanel({ sessionId: _sessionId }: WorkspacePanelProps) {
     childrenCacheRef.current = childrenCache;
   }, [childrenCache]);
 
-  const loadUsage = useCallback(async () => {
+  const loadUsage = useCallback(async (opts?: { forceRefresh?: boolean }) => {
     setUsageLoading(true);
     try {
-      const next = await fetchWorkspaceUsage();
+      const next = await fetchWorkspaceUsage(sessionId, {
+        forceRefresh: opts?.forceRefresh,
+      });
       setUsage(next);
     } catch (err) {
       console.error('[WorkspacePanel] usage failed', err);
@@ -123,7 +125,7 @@ export function WorkspacePanel({ sessionId: _sessionId }: WorkspacePanelProps) {
     } finally {
       setUsageLoading(false);
     }
-  }, []);
+  }, [sessionId]);
 
   const loadDir = useCallback(async (relativePath: string, force = false) => {
     if (!force && childrenCacheRef.current[relativePath] !== undefined) {
@@ -131,7 +133,7 @@ export function WorkspacePanel({ sessionId: _sessionId }: WorkspacePanelProps) {
     }
     setLoadingDirs((prev) => new Set(prev).add(relativePath));
     try {
-      const data = await fetchWorkspaceTree(relativePath);
+      const data = await fetchWorkspaceTree(relativePath, sessionId);
       setChildrenCache((prev) => ({ ...prev, [relativePath]: data.entries }));
       setLoadError(null);
     } catch (err) {
@@ -151,7 +153,7 @@ export function WorkspacePanel({ sessionId: _sessionId }: WorkspacePanelProps) {
         return next;
       });
     }
-  }, [t]);
+  }, [sessionId, t]);
 
   useEffect(() => {
     void loadUsage();
@@ -161,19 +163,20 @@ export function WorkspacePanel({ sessionId: _sessionId }: WorkspacePanelProps) {
   const refreshAll = useCallback(async () => {
     setActionError(null);
     const openPaths = Array.from(expanded);
-    await loadUsage();
+    // 用户点击刷新：强制 du 校准用量缓存。
+    await loadUsage({ forceRefresh: true });
     await Promise.all(openPaths.map((path) => loadDir(path, true)));
     if (selected) {
       const parent = selected.is_dir ? selected.relative_path : parentPath(selected.relative_path);
       try {
-        const entries = (await fetchWorkspaceTree(parent)).entries;
+        const entries = (await fetchWorkspaceTree(parent, sessionId)).entries;
         setChildrenCache((prev) => ({ ...prev, [parent]: entries }));
         setSelected(entries.find((e) => e.relative_path === selected.relative_path) || null);
       } catch {
         setSelected(null);
       }
     }
-  }, [expanded, loadDir, loadUsage, selected]);
+  }, [expanded, loadDir, loadUsage, selected, sessionId]);
   const visibleEntries = useCallback(
     (path: string): WorkspaceEntry[] => {
       let entries = childrenCache[path] || [];
@@ -241,7 +244,7 @@ export function WorkspacePanel({ sessionId: _sessionId }: WorkspacePanelProps) {
     setPreviewLoading(true);
     setPreviewContent(null);
     setPreviewBinary(false);
-    void previewWorkspaceFile(selected.relative_path)
+    void previewWorkspaceFile(selected.relative_path, undefined, sessionId)
       .then((data) => {
         if (cancelled) return;
         setPreviewTruncated(data.truncated);
@@ -265,7 +268,7 @@ export function WorkspacePanel({ sessionId: _sessionId }: WorkspacePanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [selected, t]);
+  }, [selected, sessionId, t]);
 
   const requestDelete = () => {
     if (!selected?.deletable || actionBusy) return;
@@ -280,7 +283,7 @@ export function WorkspacePanel({ sessionId: _sessionId }: WorkspacePanelProps) {
     setActionBusy(true);
     setActionError(null);
     try {
-      const result = await deleteWorkspaceEntries([selected.relative_path]);
+      const result = await deleteWorkspaceEntries([selected.relative_path], sessionId);
       const item = result.results[0];
       if (item && !item.ok) {
         setActionError(item.error || t('agent.errors.deleteFailed'));
@@ -303,7 +306,7 @@ export function WorkspacePanel({ sessionId: _sessionId }: WorkspacePanelProps) {
     setActionBusy(true);
     setActionError(null);
     try {
-      await downloadWorkspaceEntry(selected.relative_path);
+      await downloadWorkspaceEntry(selected.relative_path, sessionId);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : t('agent.errors.downloadFailed'));
     } finally {

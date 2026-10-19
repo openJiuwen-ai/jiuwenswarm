@@ -605,6 +605,34 @@ def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
     return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
 
 
+def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:
+    """Return ``react.subagent_runtime.enabled`` for persistent subagent tools.
+
+    Missing or non-dict ``react.subagent_runtime`` is False. The shipped
+    template defaults to true; partial overrides without this key stay off.
+    """
+    cfg = config if config is not None else get_config()
+    react = cfg.get("react") if isinstance(cfg, dict) else None
+    runtime_cfg = react.get("subagent_runtime") if isinstance(react, dict) else None
+    return bool(runtime_cfg.get("enabled")) if isinstance(runtime_cfg, dict) else False
+
+
+def is_subagent_mirror_child_stream_enabled(config: dict[str, Any] | None = None) -> bool:
+    """Return ``react.subagent_runtime.mirror_child_stream``.
+
+    When true, raw child stream chunks (reasoning and tool frames) are
+    replayed onto the parent session stream with ``stream_source_id`` set to
+    the subagent id, so hosts that route by source render them like any other
+    stream. Missing key is False: Swarm Web keeps its roster projection.
+    """
+    cfg = config if config is not None else get_config()
+    react = cfg.get("react") if isinstance(cfg, dict) else None
+    runtime_cfg = react.get("subagent_runtime") if isinstance(react, dict) else None
+    if not isinstance(runtime_cfg, dict):
+        return False
+    return bool(runtime_cfg.get("mirror_child_stream"))
+
+
 def get_ttse_embedding_config(config: dict[str, Any] | None) -> dict[str, str]:
     """Return normalized ``react.ttse.embedding`` fields for TTSE retrieval.
 
@@ -1267,6 +1295,15 @@ def update_trajectory_ui_in_config(enabled: bool) -> None:
     if "trajectory_ui" not in data or data["trajectory_ui"] is None:
         data["trajectory_ui"] = {}
     data["trajectory_ui"]["enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def update_diagnosis_in_config(enabled: bool) -> None:
+    """Update the trace auto-diagnosis feature switch and persist config.yaml."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "diagnosis" not in data or data["diagnosis"] is None:
+        data["diagnosis"] = {}
+    data["diagnosis"]["enabled"] = bool(enabled)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 

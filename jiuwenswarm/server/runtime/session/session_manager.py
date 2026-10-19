@@ -53,13 +53,13 @@ class SessionManager:
 
     @staticmethod
     def _is_oneshot_session(session_id: str) -> bool:
-        """判断是否为一次性 session（心跳/定时任务），其 session_id 永不复用.
+        """判断是否为一次性 session（心跳/定时任务/诊断），其 session_id 永不复用.
 
         这类 session 每次都用全新 session_id，任务执行完后 processor 不会再有
         新任务进来，必须主动回收，否则 processor 协程永久阻塞在 queue.get()，
         连同队列/字典条目泄漏。判定口径与 interface_deep 中一致.
         """
-        return session_id.startswith("heartbeat") or session_id.startswith("cron")
+        return session_id.startswith(("heartbeat", "cron", "diagnosis"))
 
     async def cancel_session_task(
         self,

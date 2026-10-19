@@ -22,6 +22,7 @@ from openjiuwen.core.foundation.llm import (
 )
 from openjiuwen.core.foundation.llm.schema.message_chunk import AssistantMessageChunk
 from openjiuwen.core.foundation.tool import Tool, ToolCard
+from openjiuwen.core.context_engine.token.base import TokenCounter
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.agent import Session
 from openjiuwen.harness import create_deep_agent
@@ -43,6 +44,27 @@ _CORE_HAS_STEERING = find_spec("openjiuwen.core.single_agent.schema.steering") i
 
 # CI 全量并行下真实 Core 启动偏慢；超时过紧会偶发 TimeoutError。
 _WAIT_S = 60
+
+
+class _FastTokenCounter(TokenCounter):
+    """Deterministic counter for a test that does not exercise tokenization."""
+
+    def count(self, text, *, model="", **kwargs):
+        return len(text)
+
+    def count_messages(self, messages, *, model="", **kwargs):
+        return sum(self.count(str(message.content)) for message in messages)
+
+    def count_tools(self, tools, *, model="", **kwargs):
+        return len(tools)
+
+
+@pytest.fixture(autouse=True)
+def _use_fast_token_counter(monkeypatch):
+    """Keep Core integration tests independent of tiktoken cache warm-up."""
+    from openjiuwen.core.context_engine.token import tiktoken_counter
+
+    monkeypatch.setattr(tiktoken_counter, "TiktokenCounter", _FastTokenCounter)
 
 
 class _BlockingTool(Tool):
@@ -114,7 +136,6 @@ def _isolate_configuration(monkeypatch, adapter, model):
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", lambda *_: None)
     monkeypatch.setattr(adapter, "_handle_slash_command", AsyncMock(return_value=None))
     monkeypatch.setattr(adapter, "_update_runtime_config", AsyncMock())
-    monkeypatch.setattr(adapter, "_sync_prompt_attachments_for_request", AsyncMock())
     monkeypatch.setattr(
         adapter, "_try_skill_turbo_resume", AsyncMock(return_value=None)
     )
@@ -173,6 +194,7 @@ async def test_chat_pipeline_steers_real_core_during_tool_without_replacing_orig
     )
     sid = "jiuwen-steer-" + uuid.uuid4().hex
     main_task = None
+    tool_entered_task = None
     try:
         await core.start(session=Session(session_id=sid))
         adapter = JiuWenSwarmDeepAdapter()
@@ -239,7 +261,17 @@ async def test_chat_pipeline_steers_real_core_during_tool_without_replacing_orig
         main_task = asyncio.create_task(
             pipeline.dispatch_parsed_request(original_context, original)
         )
-        await asyncio.wait_for(tool.entered.wait(), _WAIT_S)
+        tool_entered_task = asyncio.create_task(tool.entered.wait())
+        done, _ = await asyncio.wait(
+            {main_task, tool_entered_task},
+            timeout=_WAIT_S,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if main_task in done:
+            await main_task
+        assert tool_entered_task in done, (
+            f"Core did not enter the tool within {_WAIT_S} seconds"
+        )
         active_task = core.active_round.task_id
         owner = core._interaction_output.current_lease()
 
@@ -358,6 +390,9 @@ async def test_chat_pipeline_steers_real_core_during_tool_without_replacing_orig
         assert late.payload["reason"] == "RUN_NOT_ACTIVE"
     finally:
         tool.release.set()
+        if tool_entered_task is not None and not tool_entered_task.done():
+            tool_entered_task.cancel()
+            await asyncio.gather(tool_entered_task, return_exceptions=True)
         if main_task is not None and not main_task.done():
             main_task.cancel()
             await asyncio.gather(main_task, return_exceptions=True)

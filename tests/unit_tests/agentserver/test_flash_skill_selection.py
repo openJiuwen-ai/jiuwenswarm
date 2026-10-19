@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import yaml
+from pydantic import ValidationError
 from openjiuwen.core.single_agent.skills.skill_manager import Skill
 from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
 from openjiuwen.harness.prompts.sections.skills import build_skills_section
@@ -873,12 +874,90 @@ def test_flash_reload_keeps_optional_rail_and_uses_new_snapshot(monkeypatch):
     adapter = object.__new__(interface_flash.JiuwenSwarmFlashAdapter)
     adapter._config_base_cache = {"flash": {"skill_selection": {"enabled": True}}}
     adapter._skill_rail = None
-    rail = adapter._build_flash_skill_selection_rail(adapter._config_base_cache)
+    monkeypatch.setattr(interface_deep.JiuWenSwarmDeepAdapter, "_instantiate_rails", lambda *args: [])
+    initial = adapter._instantiate_rails([], adapter._config_base_cache)
+    rail = adapter._flash_skill_selection_rail
+    assert initial == [rail.load_rail, rail]
     monkeypatch.setattr(interface_deep.JiuWenSwarmDeepAdapter, "_get_current_agent_rails", lambda *args: ([], []))
-    adapter._config_base_cache = {"flash": {"skill_selection": {"enabled": False}}}
-    rails, _ = adapter._get_current_agent_rails({}, adapter._config_base_cache)
+    for enabled in (True, False, True):
+        adapter._config_base_cache = {"flash": {"skill_selection": {"enabled": enabled}}}
+        rails, removed = adapter._get_current_agent_rails({}, adapter._config_base_cache)
+        assert rails == [] and removed == []
+        assert adapter._flash_skill_selection_rail is rail
+        assert SelectionSettings.from_config(rail._config_provider()).enabled is enabled
+
+
+def test_flash_reload_registers_new_optional_rail_once(monkeypatch):
+    adapter = object.__new__(interface_flash.JiuwenSwarmFlashAdapter)
+    monkeypatch.setattr(interface_deep.JiuWenSwarmDeepAdapter, "_get_current_agent_rails", lambda *args: ([], []))
+    rails, removed = adapter._get_current_agent_rails({}, {})
+    rail = adapter._flash_skill_selection_rail
     assert rails == [rail.load_rail, rail]
-    assert not SelectionSettings.from_config(rail._config_provider()).enabled
+    assert removed == []
+    assert adapter._get_current_agent_rails({}, {}) == ([], [])
+
+
+async def test_flash_reload_does_not_duplicate_sdk_selection_callbacks(harness, monkeypatch):
+    """Exercise real SDK configure/registration without calling an LLM or server."""
+    from uuid import uuid4
+    from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent
+    from openjiuwen.harness.deep_agent import DeepAgent
+    from openjiuwen.harness.schema.config import DeepAgentConfig
+
+    h = harness
+    adapter = object.__new__(interface_flash.JiuwenSwarmFlashAdapter)
+    adapter._config_base_cache = h.config
+    adapter._skill_rail = h.native
+    monkeypatch.setattr(interface_deep.JiuWenSwarmDeepAdapter, "_instantiate_rails", lambda *args: [])
+    monkeypatch.setattr(interface_deep.JiuWenSwarmDeepAdapter, "_get_current_agent_rails", lambda *args: ([], []))
+    rails = adapter._instantiate_rails([], h.config)
+    rail = adapter._flash_skill_selection_rail
+    model_calls, load_calls = [], []
+    model_hook, load_hook = rail.before_model_call, rail.load_rail.before_tool_call
+
+    async def before_model(ctx):
+        model_calls.append(ctx)
+        await model_hook(ctx)
+
+    async def before_load(ctx):
+        load_calls.append(ctx)
+        await load_hook(ctx)
+
+    monkeypatch.setattr(rail, "before_model_call", before_model)
+    monkeypatch.setattr(rail.load_rail, "before_tool_call", before_load)
+    agent = DeepAgent(AgentCard(id="flash-reload-" + uuid4().hex, name="flash-reload"))
+    agent.configure(DeepAgentConfig(rails=rails, enable_read_image_multimodal=False))
+    try:
+        await agent.ensure_initialized()
+        callbacks = agent._react_agent.agent_callback_manager
+        for enabled in (True, True, False, True):
+            adapter._config_base_cache = {"flash": {"skill_selection": {"enabled": enabled}}}
+            rails, removed = adapter._get_current_agent_rails({}, adapter._config_base_cache)
+            assert removed == []
+            agent.configure(DeepAgentConfig(rails=rails, enable_read_image_multimodal=False))
+            await agent.ensure_initialized()
+            agent.system_prompt_builder.add_section(
+                build_skills_section(skill_lines="0. slides: presentation slides"))
+            ctx = context()
+            model_calls.clear()
+            await callbacks.execute(AgentCallbackEvent.BEFORE_MODEL_CALL, ctx)
+            assert model_calls == [ctx]
+            assert not ctx.extra.get(rail.FALLBACK)
+            assert (SkillSearchTool.TOOL_NAME in {tool.name for tool in ctx.inputs.tools}) is enabled
+            catalog = agent.system_prompt_builder.get_section("skills").render()
+            assert ("0. slides: presentation slides" in catalog) is not enabled
+            await callbacks.execute(AgentCallbackEvent.AFTER_MODEL_CALL, ctx)
+            tool_ctx = SimpleNamespace(inputs=SimpleNamespace(tool_name="bash"), extra={}, session=ctx.session)
+            load_calls.clear()
+            await callbacks.execute(AgentCallbackEvent.BEFORE_TOOL_CALL, tool_ctx)
+            assert load_calls == [tool_ctx]
+            await rail.after_invoke(ctx)
+    finally:
+        for registered in list(agent._registered_rails):
+            await agent.unregister_rail(registered)
+        await agent.agent_callback_manager.clear()
+        await agent._react_agent.agent_callback_manager.clear()
 
 
 def test_other_adapters_have_no_retrieval_extension_hook():
@@ -1069,12 +1148,14 @@ async def test_direct_answers_do_not_trigger_automatic_search(harness, text, mon
 async def test_stale_candidate_file_change_is_rejected(harness):
     h = harness
     await warm_catalog(h)
-    write_skill(h.root, 'slides', 'changed body after snapshot')
     ctx = context()
     await h.rail.before_model_call(ctx)
     await h.rail.after_model_call(ctx)
     result = await h.rail.handle_action(
         SkillSearchInput(action='search', query='制作幻灯片', keywords=['slides']), ctx)
+    # Search now refreshes stale ranking before issuing a ticket. A change
+    # after that ticket must still be rejected before native execution.
+    write_skill(h.root, 'slides', 'changed body after candidate was issued')
     assert (await load(h, result['search_id'], 'slides', ctx))['status'] == 'changed'
     h.abilities.execute.assert_not_awaited()
 
@@ -1165,7 +1246,8 @@ async def test_snapshot_handles_failed_build_with_pending_refresh(tmp_path, monk
             await asyncio.gather(pending, return_exceptions=True)
 
 
-async def test_live_mixed_load_arguments_succeed_without_another_model_turn(harness):
+@pytest.mark.parametrize('goal_key', [None, 'call_goal', 'callGoal'])
+async def test_live_mixed_load_arguments_succeed_without_another_model_turn(harness, goal_key):
     """Replay the exact extra-field pattern observed in all three live tasks."""
     from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
     from jiuwenswarm.agents.harness.flash.skill_selection.tool import SkillSearchInput
@@ -1177,13 +1259,153 @@ async def test_live_mixed_load_arguments_succeed_without_another_model_turn(harn
     assert schema['properties']['action']['enum'] == ['search', 'load', 'fallback']
     args = dict(action='load', search_id=result['search_id'], skill_name='slides',
                 query='制作幻灯片', keywords=['presentation'])
+    if goal_key:
+        args[goal_key] = '加载演示文稿技能'
     assert SkillSearchInput.model_validate(args).query is None
     call = ToolCall(id='live-replay', type='function', name=SkillSearchTool.TOOL_NAME, arguments=json.dumps(args))
     tool_ctx = SimpleNamespace(inputs=SimpleNamespace(tool_call=call, tool_name=call.name, tool_args=call.arguments),
                                extra=ctx.extra, session=ctx.session)
     await h.rail.load_rail.before_tool_call(tool_ctx)
     assert tool_ctx.inputs.tool_name == 'skill_tool'
-    assert json.loads(call.arguments) == {'skill_name': 'slides', 'relative_file_path': 'SKILL.md'}
+    from jiuwenswarm.common.tool_display import extract_call_goal
+    display, native_args = extract_call_goal(json.loads(call.arguments))
+    assert display == ('加载演示文稿技能' if goal_key else '')
+    assert native_args == {'skill_name': 'slides', 'relative_file_path': 'SKILL.md'}
+
+
+@pytest.mark.parametrize('keywords', [['Excel', 'Word'], '["Excel", "Word"]'])
+@pytest.mark.parametrize('goal_key', [None, 'call_goal', 'callGoal'])
+def test_search_normalizes_keywords_without_mutating_call(keywords, goal_key):
+    args = dict(action='search', query='生成 Excel 和 Word', keywords=keywords)
+    if goal_key:
+        args[goal_key] = '检索 Office 技能'
+    original = json.dumps(args)
+    parsed = SkillSearchInput.model_validate(args)
+    assert parsed.keywords == ['Excel', 'Word']
+    assert json.dumps(args) == original
+
+
+@pytest.mark.parametrize('keywords', [
+    'Excel, Word', '["Excel",', '{"keyword":"Excel"}', '"Excel"',
+    'null', '42', '[]', '["Excel", 1]', '[["Excel"]]', '[" "]',
+    json.dumps(json.dumps(['Excel'])), json.dumps(['x'] * 25),
+    json.dumps(['x' * 129]),
+])
+def test_search_rejects_invalid_keyword_encodings(keywords):
+    with pytest.raises(ValidationError):
+        SkillSearchInput(action='search', query='生成 Excel', keywords=keywords)
+
+
+@pytest.mark.parametrize('args, field', [
+    (dict(action='search', query='制作幻灯片', keywords='slides, presentation'), 'keywords'),
+    (dict(action='search', keywords=['slides']), 'action'),
+    (dict(action='search', query='制作幻灯片', keywords=['slides'], unexpected=True), 'unexpected'),
+    (dict(action='load', search_id='candidate'), 'action'),
+    (dict(action='load', search_id=42, skill_name='slides'), 'search_id'),
+])
+async def test_invalid_arguments_preserve_candidates_and_allow_retry(harness, args, field):
+    from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
+
+    h = harness
+    source = context()
+    first = await search(h, source)
+    state = source.extra[h.rail.REUSE]
+    call = ToolCall(id='invalid-input', type='function', name=SkillSearchTool.TOOL_NAME,
+                    arguments=json.dumps(args))
+    tool_ctx = SimpleNamespace(inputs=SimpleNamespace(tool_call=call, tool_name=call.name,
+                                                    tool_args=call.arguments),
+                               extra=source.extra, session=source.session)
+    await h.rail.load_rail.before_tool_call(tool_ctx)
+    assert tool_ctx.inputs.tool_name == SkillSearchTool.TOOL_NAME
+    await h.rail.before_tool_call(tool_ctx)
+    output = await h.rail._tool.invoke(args, session=source.session)
+    tool_ctx.inputs.tool_result = output
+    await h.rail.after_tool_call(tool_ctx)
+    assert not output.success and output.data['status'] == 'invalid_arguments'
+    assert not source.extra.get(h.rail.FALLBACK)
+    assert field in output.data['message'] and '重试' in output.data['message']
+    assert first['search_id'] in state.tickets and state.searches == 1
+    assert not state.loaded
+    h.abilities.execute.assert_not_awaited()
+    await h.rail.before_model_call(source)
+    assert SkillSearchTool.TOOL_NAME in {tool.name for tool in source.inputs.tools}
+    assert 'slides' not in h.agent.system_prompt_builder.get_section('skills').render()
+    await h.rail.after_model_call(source)
+    # The same request can still load its valid candidate after correcting input.
+    assert (await load(h, first['search_id'], 'slides', source))['loaded']
+
+
+@pytest.mark.parametrize('encoded', [False, True])
+async def test_sdk_office_search_then_loads_both_candidates(harness, monkeypatch, encoded):
+    """Replay the live Office call through SDK callbacks and the native loader."""
+    from uuid import uuid4
+    from openjiuwen.core.foundation.llm.schema.message import ToolMessage
+    from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
+    from openjiuwen.core.single_agent.ability_manager import AbilityManager
+    from openjiuwen.core.single_agent.agent_callback_manager import AgentCallbackManager
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentCallbackEvent
+    from jiuwenswarm.common.tool_display import extract_call_goal
+
+    h = harness
+    write_skill(h.root, 'xlsx-craft', 'Excel 预算 公式 图表 spreadsheet')
+    write_skill(h.root, 'docx-craft', 'Word 预算 复盘 报告 document')
+    h.rail.refresh(force=True)
+    await h.rail.service.current_snapshot()
+    h.native.scan()
+    source = context('生成 Excel 预算表与 Word 复盘报告', session=skill_session())
+    await h.rail.before_model_call(source)
+    await h.rail.after_model_call(source)
+    callbacks = AgentCallbackManager('office-search-' + uuid4().hex)
+    agent = SimpleNamespace(agent_callback_manager=callbacks)
+    manager = AbilityManager()
+    native = native_loader(h)
+    displays, native_calls = [], []
+
+    async def display_hook(ctx):
+        # StreamEventRail extracts display metadata at priority 80, after loading.
+        display, arguments = extract_call_goal(ctx.inputs.tool_call.arguments)
+        displays.append(display)
+        ctx.inputs.tool_call.arguments = arguments
+        ctx.inputs.tool_args = arguments
+
+    async def execute(tool_call, session, tag=None):
+        tool = h.rail._tool
+        if tool_call.name == 'skill_tool':
+            tool = native
+            native_calls.append(json.loads(tool_call.arguments)['skill_name'])
+        output = await tool.invoke(json.loads(tool_call.arguments), session=session)
+        return output, ToolMessage(content=str(output), tool_call_id=tool_call.id)
+
+    async def invoke(args):
+        call = ToolCall(id=uuid4().hex, type='function', name=SkillSearchTool.TOOL_NAME,
+                        arguments=json.dumps(args))
+        ctx = AgentCallbackContext(agent=agent, extra=source.extra, session=source.session)
+        result, _ = (await manager.execute(ctx, call, source.session, parallel_tool_calls=False))[0]
+        return result
+
+    monkeypatch.setattr(manager, '_execute_single_tool_call', execute)
+    await callbacks.register_rail(h.rail.load_rail, agent)
+    await callbacks.register_rail(h.rail, agent)
+    await callbacks.register_callback(AgentCallbackEvent.BEFORE_TOOL_CALL, display_hook, priority=80)
+    try:
+        keywords = ['Excel', 'Word', '图表', '预算', '报告']
+        result = await invoke(dict(action='search', query='生成 Excel 预算表与 Word 复盘报告',
+                                   keywords=json.dumps(keywords) if encoded else keywords,
+                                   call_goal='检索 Office 技能'))
+        assert result.success and result.data['status'] == 'candidates'
+        assert {'xlsx-craft', 'docx-craft'} <= {c['name'] for c in result.data['candidates']}
+        for name in ('xlsx-craft', 'docx-craft'):
+            loaded = await invoke(dict(action='load', search_id=result.data['search_id'],
+                                       skill_name=name, call_goal='加载 ' + name))
+            assert loaded.success and loaded.data['loaded']
+            assert loaded.data['selected'] == name
+        assert native_calls == ['xlsx-craft', 'docx-craft']
+        assert displays == ['检索 Office 技能', '加载 xlsx-craft', '加载 docx-craft']
+        assert not source.extra.get(h.rail.FALLBACK)
+        assert source.extra[h.rail.REUSE].searches == 1
+    finally:
+        await callbacks.clear()
+        await h.rail.after_invoke(source)
 
 
 async def test_candidate_rejection_restores_native_catalog_and_invalidates_tickets(harness):
@@ -1324,6 +1546,55 @@ async def test_two_round_warm_query_does_not_rescan_and_revocation_is_live(harne
     h.native.disabled_skills = {'slides'}
     assert (await load(h, result['search_id'], 'slides', ctx))['status'] == 'changed'
     h.abilities.execute.assert_not_awaited()
+
+
+async def test_repeated_query_revalidates_details_without_reranking(harness, monkeypatch):
+    h = harness
+    path = h.root / 'slides' / 'SKILL.md'
+    path.write_text(path.read_text(encoding='utf-8') + '\n[Limits](limits.md)\n', encoding='utf-8')
+    reference = path.parent / 'limits.md'
+    reference.write_text('Supports creating PPTX presentations.', encoding='utf-8')
+    await warm_catalog(h)
+    pipeline = h.rail.service._pipeline
+    original_search = pipeline.search
+    calls = 0
+
+    def count_search(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_search(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, 'search', count_search)
+    ctx = context()
+    await h.rail.before_model_call(ctx)
+    first = await h.rail._search_from_model('制作幻灯片', ['slides'], ctx)
+    state = ctx.extra[h.rail.REUSE]
+    first_document = state.tickets[first['search_id']]['result'].candidates[0][0]
+    reference.write_text('Cannot create PPTX. Only supports creating PDF.', encoding='utf-8')
+    second = await h.rail._search_from_model('制作幻灯片', ['slides'], ctx)
+    second_document = state.tickets[second['search_id']]['result'].candidates[0][0]
+    assert calls == 1
+    assert first_document.fingerprint != second_document.fingerprint
+    assert first_document.capability_record != second_document.capability_record
+    assert (await load(h, first['search_id'], 'slides', ctx))['status'] == 'changed'
+    h.abilities.execute.assert_not_awaited()
+
+
+async def test_search_refreshes_root_changed_after_ranking_snapshot(harness):
+    h = harness
+    await warm_catalog(h)
+    old_generation = h.rail.service.generation
+    write_skill(h.root, 'slides', 'Only supports creating PDF presentation slides.')
+    ctx = context()
+    await h.rail.before_model_call(ctx)
+    result = await h.rail._search_from_model('presentation', ['slides'], ctx)
+    assert result['status'] == 'candidates'
+    ticket = ctx.extra[h.rail.REUSE].tickets[result['search_id']]
+    document = ticket['result'].candidates[0][0]
+    assert document.description == 'Only supports creating PDF presentation slides.'
+    assert ticket['result'].generation > old_generation
+    assert document.fingerprint and document.capability_record
+    assert not ctx.extra.get(h.rail.FALLBACK)
 
 
 async def test_two_round_timeout_restores_all_tools_and_catalog(harness, monkeypatch):

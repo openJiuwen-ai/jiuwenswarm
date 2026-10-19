@@ -75,10 +75,17 @@ from __future__ import annotations
 import copy
 import logging
 import os
+from contextlib import contextmanager
 from typing import Any
 
 from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.harness.rails import SkillUseRail
+
+try:
+    from jiuwenswarm.agents.harness.flash.skill_selection import startup_lifecycle
+except ImportError:
+    # Skill selection remains an optional, removable Flash extension.
+    startup_lifecycle = None
 
 from jiuwenswarm.agents.harness.common.memory.config import (
     get_embed_config,
@@ -115,6 +122,7 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
 )
 from jiuwenswarm.agents.harness.flash import (
     FlashMemoryRail,
+    FlashSubagentRail,
     FlashTodoRail,
     SlimSkillToolkit,
     SlimSysOperationRail,
@@ -284,6 +292,51 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         service_id: str | None = None,
     ) -> None:
         super().__init__(workspace_dir=workspace_dir, agent_id=agent_id, service_id=service_id)
+        self._flash_startup_preparations = {}
+
+    @contextmanager
+    def _prepare_flash_startup(self, request=None):
+        if startup_lifecycle is None:
+            yield
+            return
+        request_id = getattr(request, "request_id", "")
+        preparations = getattr(self, "_flash_startup_preparations", None)
+        if preparations is None:
+            preparations = self._flash_startup_preparations = {}
+        with startup_lifecycle.preparing(request_id) as preparation:
+            previous = preparations.get(request_id)
+            if request_id:
+                preparations[request_id] = preparation
+            try:
+                yield
+            finally:
+                if request_id:
+                    if previous is None:
+                        preparations.pop(request_id, None)
+                    else:
+                        preparations[request_id] = previous
+
+    async def process_message_stream_impl(self, request, inputs):
+        with self._prepare_flash_startup(request):
+            stream = super().process_message_stream_impl(request, inputs)
+            try:
+                async for chunk in stream:
+                    yield chunk
+            finally:
+                await stream.aclose()
+
+    async def process_message_impl(self, request, inputs):
+        with self._prepare_flash_startup(request):
+            return await super().process_message_impl(request, inputs)
+
+    def _bind_subagent_model_resolver(self):
+        instance = self._instance
+        if instance is not None and startup_lifecycle is not None:
+            preparations = getattr(self, "_flash_startup_preparations", None)
+            if preparations is None:
+                preparations = self._flash_startup_preparations = {}
+            startup_lifecycle.bind_instance(instance, preparations)
+        return super()._bind_subagent_model_resolver()
 
     def _build_web_tools(self, agent_id: str, cache: Any | None = None) -> list[Any]:
         """Expose the single ``web_flash`` card only for the Flash profile."""
@@ -593,7 +646,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         ``cron_flash`` 名集合才能正确注册/移除/指纹缓存自己的 cron_flash 卡——
         super(). 走的是 Deep 名集合，后处理无法干净纠正。
         """
-        if session_id is not None and session_id.startswith(("heartbeat", "cron")):
+        if session_id is not None and session_id.startswith(("heartbeat", "cron", "diagnosis")):
             return
         if os.getenv("JIUWENCLAW_DISABLE_CRON_TOOLS") == "1":
             for existing in list(self._instance.ability_manager.list() or []):
@@ -679,11 +732,13 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         自己的字段，故 flash 的 ``enable_task_loop=false`` 等配置一路传到
         ``_resolve_enable_task_loop`` 与 ``_build_agent_rails``。
         """
-        resolved = _resolve_instance_config_base(config_base)
-        resolved = self._apply_flash_react_override(resolved)
-        await super().create_instance(
-            config=config, mode=mode, sub_mode=sub_mode, config_base=resolved
-        )
+        request = config.get("request") if isinstance(config, dict) else None
+        with self._prepare_flash_startup(request):
+            resolved = _resolve_instance_config_base(config_base)
+            resolved = self._apply_flash_react_override(resolved)
+            await super().create_instance(
+                config=config, mode=mode, sub_mode=sub_mode, config_base=resolved
+            )
 
     async def _apply_reload_config_snapshot(
         self,
@@ -742,14 +797,17 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
 
     def _get_current_agent_rails(self, config, config_base):
         rails, removed = super()._get_current_agent_rails(config, config_base)
+        old = getattr(self, "_flash_skill_selection_rail", None)
         selection = self._build_flash_skill_selection_rail(config_base)
         if selection is not None:
-            rails.extend((selection.load_rail, selection))
-        else:
-            old = getattr(self, "_flash_skill_selection_rail", None)
-            if old is not None:
-                removed.extend((old.load_rail, old))
-                self._flash_skill_selection_rail = None
+            # Existing rails read the latest config/native rail through providers.
+            # Passing the same instances to configure() registers their callbacks
+            # again in the SDK, so only newly created rails belong in this list.
+            if selection is not old:
+                rails.extend((selection.load_rail, selection))
+        elif old is not None:
+            removed.extend((old.load_rail, old))
+            self._flash_skill_selection_rail = None
         return rails, removed
 
     async def _update_rails_for_mode(self, mode: str) -> None:
@@ -799,6 +857,49 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         return
 
     # ── 工具面覆盖（rail 构建 / 工具卡注册） ──────────────────────
+
+    def _flash_general_agent_enabled(self) -> bool:
+        """react.subagents.general_agent.enabled 显式 true 才注入（对齐 stock 门控语义）。
+
+        flash 冷启动门控（interface_deep 的 mode 检查）不含 flash，工厂不注入
+        general-purpose 子代理；此开关交由 FlashSubagentRail 自注入 spec。
+        """
+        react_cfg = getattr(self, "_config_cache", None)
+        if not isinstance(react_cfg, dict):
+            try:
+                react_cfg = (get_config() or {}).get("react") or {}
+            except Exception:
+                react_cfg = {}
+        subagents_cfg = (
+            react_cfg.get("subagents") if isinstance(react_cfg, dict) else None
+        )
+        general_cfg = (
+            subagents_cfg.get("general_agent")
+            if isinstance(subagents_cfg, dict)
+            else None
+        )
+        return isinstance(general_cfg, dict) and bool(general_cfg.get("enabled", False))
+
+    def _build_subagent_rail(
+        self, config_base: dict[str, Any] | None = None
+    ) -> FlashSubagentRail | None:
+        """flash 用调优版 subagent rail 替换 stock SubagentRail.
+
+        spec 自注入 + 提示段/工具卡描述替换（见 FlashSubagentRail docstring）；
+        注册机制（task_tool / available_agents / 授权绑定）全部复用 stock。
+        兼容两处调用：冷启动 rail 表传 ``config_base`` 关键字参数（与
+        ``_build_task_planning_rail`` 同理），当前实现未用到，接收并忽略。
+        """
+        _ = config_base
+        try:
+            rail = FlashSubagentRail(
+                inject_general_purpose=self._flash_general_agent_enabled(),
+            )
+            logger.info("[JiuwenSwarmFlashAdapter] FlashSubagentRail create success")
+        except Exception as exc:
+            logger.warning("[JiuwenSwarmFlashAdapter] FlashSubagentRail create failed: %s", exc)
+            rail = None
+        return rail
 
     def _build_task_planning_rail(
         self, config: dict[str, Any] | None = None

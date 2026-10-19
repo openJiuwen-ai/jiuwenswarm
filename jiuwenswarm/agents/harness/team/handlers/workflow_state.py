@@ -78,6 +78,7 @@ class WorkflowProgress(BaseModel):
     node_type: Optional[str] = None
     agent_id: Optional[str] = None
     answer: Optional[str] = None
+    budget: Optional[dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +192,7 @@ class WorkflowRunState(BaseModel):
     token_count: Optional[int] = None
     duration_ms: Optional[int] = None
     estimated_token_count: Optional[int] = None
+    budget: Optional[dict[str, Any]] = None
 
     # Private mutable state for ID generation sequencing (not serialized)
     _phase_counter: int = 0  # Global phase counter (1-based)
@@ -288,6 +290,8 @@ class WorkflowRunState(BaseModel):
         handler = self._KIND_HANDLERS.get(kind)
         if handler is None:
             return None
+        if progress.budget is not None:
+            self.budget = progress.budget
         method = getattr(self, handler)
         return method(progress)
 
@@ -783,6 +787,7 @@ class WorkflowRunState(BaseModel):
             "agent_count": self.agent_count,
             "completed_agent_count": self.completed_agent_count,
             "started_at": self.started_at,
+            "budget": self.budget,
             "logs": [log_text],
         }
 
@@ -796,6 +801,7 @@ class WorkflowRunState(BaseModel):
             "agent_count": self.agent_count,
             "completed_agent_count": self.completed_agent_count,
             "started_at": self.started_at,
+            "budget": self.budget,
             "phases": [p.to_dict() for p in self.phases],
             "logs": list(self.logs),
         }
@@ -813,6 +819,7 @@ class WorkflowRunState(BaseModel):
             "agent_count": self.agent_count,
             "completed_agent_count": self.completed_agent_count,
             "started_at": self.started_at,
+            "budget": self.budget,
             "phases": [p.to_dict() for p in phases],
         }
 
@@ -828,6 +835,7 @@ class WorkflowRunState(BaseModel):
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "duration_ms": self.duration_ms,
+            "budget": self.budget,
         }
         if self.error:
             result["error"] = self.error
@@ -866,4 +874,5 @@ class WorkflowRunState(BaseModel):
         # reserved fields — pending upstream token accounting
         result["token_count"] = self.token_count
         result["estimated_token_count"] = self.estimated_token_count
+        result["budget"] = self.budget
         return result

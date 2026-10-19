@@ -40,6 +40,13 @@ UNCONFIGURED_PROJECTION = {
     "model_index": None,
     "model_id": None,
     "fetch_services": [],
+    "im_learning": {
+        "enabled": False,
+        "targets": [],
+        "since_ms": None,
+        "fetch_interval_seconds": 600.0,
+        "fetch_top_n": 50,
+    },
 }
 
 
@@ -202,6 +209,14 @@ class FakeCore:
         self.authorization_status_error: BaseException | None = None
         self.authorization_status_started: asyncio.Event | None = None
         self.authorization_status_release: asyncio.Event | None = None
+        self._distill_corpus: object | None = None
+        self._distill_runner: object | None = None
+
+    def set_distill_corpus(self, corpus: object | None) -> None:
+        self._distill_corpus = corpus
+
+    def set_distill_runner(self, runner: object | None) -> None:
+        self._distill_runner = runner
 
     def _set_embedding_configuration(
         self,
@@ -1357,6 +1372,11 @@ async def test_repository_pat_first_authorization_creates_minimal_stopped_config
     assert validations == [("github", "first-token")]
     assert [name for name, _value in core.calls] == ["set_configuration"]
     saved = yaml.safe_load(host._config_path.read_text(encoding="utf-8"))
+    # hwlLab/avatar 的 Core Config 比 dev-stable 多 distill / im_learning 字段
+    # （AS-10 学习链与蒸馏调度），model_dump 会带出默认值；宿主行为不受影响，
+    # 这里仅对齐本配对下的持久化快照。
+    for avatar_only in ("distill", "im_learning"):
+        saved.pop(avatar_only, None)
     assert saved == {
         "collection_enabled": False,
         "agent_use_enabled": False,

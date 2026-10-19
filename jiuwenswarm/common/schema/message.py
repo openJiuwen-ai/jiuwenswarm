@@ -206,6 +206,18 @@ class ReqMethod(Enum):
     PERSONAL_CONTEXT_CONTEXT_SEARCH_PAGES = "personal_context.context.search_pages"
     PERSONAL_CONTEXT_CONTEXT_GET_NODE = "personal_context.context.get_node"
     PERSONAL_CONTEXT_CONTEXT_GET_SOURCE = "personal_context.context.get_source"
+    PERSONAL_CONTEXT_IM_LEARNING_GET_STATUS = (
+        "personal_context.im_learning.get_status"
+    )
+    PERSONAL_CONTEXT_IM_LEARNING_RUN_NOW = "personal_context.im_learning.run_now"
+    PERSONAL_CONTEXT_DISTILL_GET_CONFIG = "personal_context.distill.get_config"
+    PERSONAL_CONTEXT_DISTILL_PATCH_CONFIG = "personal_context.distill.patch_config"
+    PERSONAL_CONTEXT_DISTILL_GET_STATUS = "personal_context.distill.get_status"
+    PERSONAL_CONTEXT_DISTILL_RUN_NOW = "personal_context.distill.run_now"
+    PERSONAL_CONTEXT_PROFILES_LIST = "personal_context.profiles.list"
+    PERSONAL_CONTEXT_PROFILES_GET_CURRENT = "personal_context.profiles.get_current"
+    PERSONAL_CONTEXT_PROFILES_GET_VERSION = "personal_context.profiles.get_version"
+    PERSONAL_CONTEXT_PROFILES_ACTIVATE = "personal_context.profiles.activate"
 
     # Plugin management (reuses skills marketplace infrastructure)
     PLUGINS_LIST = "plugins.list"
@@ -315,6 +327,20 @@ class ReqMethod(Enum):
     WORKSPACE_PREVIEW = "workspace.preview"
     WORKSPACE_DOWNLOAD = "workspace.download"
 
+    # User-state IM hosting (数字分身)
+    IM_HOSTING_STATUS = "im.hosting.status"
+    IM_HOSTING_DISCOVER = "im.hosting.discover"
+    IM_HOSTING_TARGETS_LIST = "im.hosting.targets.list"
+    IM_HOSTING_TARGETS_ADD = "im.hosting.targets.add"
+    IM_HOSTING_TARGETS_PATCH = "im.hosting.targets.patch"
+    IM_HOSTING_TARGETS_DELETE = "im.hosting.targets.delete"
+    IM_HOSTING_POLICY_GET = "im.hosting.policy.get"
+    IM_HOSTING_POLICY_PATCH = "im.hosting.policy.patch"
+    IM_HOSTING_POLL_NOW = "im.hosting.poll_now"
+    IM_HOSTING_HISTORY = "im.hosting.history"
+    IM_HOSTING_LOGIN_START = "im.hosting.login.start"
+    IM_HOSTING_LOGIN_STATUS = "im.hosting.login.status"
+
 
 class EventType(Enum):
     CONNECTION_ACK = "connection.ack"
@@ -343,6 +369,7 @@ class EventType(Enum):
     CHAT_EVOLUTION_GENERATED = "chat.evolution_generated"
     CHAT_EVOLUTION_PUBLISHED = "chat.evolution_published"
     CHAT_SUBTASK_UPDATE = "chat.subtask_update"
+    CHAT_SUBAGENT_ACTIVITY = "chat.subagent_activity"
     CHAT_ASK_USER_QUESTION = "chat.ask_user_question"
     PLAN_APPROVAL_REQUIRED = "plan.approval_required"
     CHAT_SESSION_RESULT = "chat.session_result"

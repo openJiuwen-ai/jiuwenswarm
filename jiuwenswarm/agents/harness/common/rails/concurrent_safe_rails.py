@@ -16,6 +16,7 @@ the agent can use them.
 from __future__ import annotations
 
 import logging
+import time
 import hashlib
 import json
 from copy import copy
@@ -42,6 +43,8 @@ from openjiuwen.harness.tools.todo import (
     TodoStatus,
 )
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
+
+from jiuwenswarm.agents.harness.common.tools.todo_resume import is_persistent_todo
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +104,21 @@ class ConcurrentSafeSysOperationRail(SysOperationRail):
 
 # Alias for FileSystemRail naming in configs / legacy docs.
 ConcurrentSafeFileSystemRail = ConcurrentSafeSysOperationRail
+
+
+def _tp_light_skip_refresh(ctx) -> bool:
+    """[PERF] 轻量开关下,内存无 task_plan 时跳过磁盘 todo 刷新。"""
+    import os as _os
+    raw = (_os.getenv("JIUWENCLAW_ADAPTER_CKPT_LIGHT") or "").strip().lower()
+    if raw not in {"1", "true", "yes", "on"}:
+        return False
+    try:
+        if ctx.session is None or ctx.agent is None:
+            return False
+        state = ctx.agent.load_state(ctx.session)
+        return getattr(state, "task_plan", None) is None
+    except Exception:  # noqa: BLE001 - 判定失败走原路径
+        return False
 
 
 class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
@@ -237,6 +255,12 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
             return
 
         await super().after_task_iteration(ctx)
+        # [PERF] 轻量模式:内存中无 task_plan 时跳过磁盘 todo.json 刷新
+        # (实测 _refresh 每迭代 62ms 均值/739ms 峰值,PVC 文件读)。
+        # 语义:todo 流(有 plan)不受影响;仅"无 plan 且高并发"场景跳过
+        # 一次本会返回空的磁盘读。env JIUWENCLAW_ADAPTER_CKPT_LIGHT=1 开。
+        if _tp_light_skip_refresh(ctx):
+            return
         await self._refresh_task_plan_from_todos(ctx)
 
     async def _sync_todos_from_plan(self, ctx: AgentCallbackContext) -> None:
@@ -272,6 +296,8 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
         skipped_terminal_overwrite = 0
 
         for todo in todos:
+            if is_persistent_todo(todo):
+                continue
             desired = status_by_task_id.get(todo.id)
             if desired is None or todo.status == desired:
                 continue
@@ -320,8 +346,12 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
 
         if not todos:
             return
+        execution_todos = [todo for todo in todos if not is_persistent_todo(todo)]
+        if not execution_todos:
+            await self._clear_task_plan(ctx)
+            return
 
-        plan_tasks = [self._todo_to_task_item(todo) for todo in todos]
+        plan_tasks = [self._todo_to_task_item(todo) for todo in execution_todos]
         in_progress = next(
             (task for task in plan_tasks if task.status == TodoStatus.IN_PROGRESS),
             None,

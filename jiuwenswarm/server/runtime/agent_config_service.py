@@ -21,6 +21,12 @@ from typing import Literal
 import yaml
 
 from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
+    DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+    STATUSLINE_SETUP_AGENT_DESCRIPTION,
+    STATUSLINE_SETUP_AGENT_TYPE,
+    STATUSLINE_SETUP_SYSTEM_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +129,15 @@ class UpdateAgentParams:
 # ---------------------------------------------------------------------------
 
 BUILTIN_AGENTS: list[AgentDefinition] = [
+    AgentDefinition(
+        name=STATUSLINE_SETUP_AGENT_TYPE,
+        description=STATUSLINE_SETUP_AGENT_DESCRIPTION,
+        prompt=STATUSLINE_SETUP_SYSTEM_PROMPT,
+        source="builtin",
+        tools=["Read", "Write", "Edit", "Bash"],
+        enabled=True,
+        max_iterations=DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+    ),
     AgentDefinition(
         name="general-purpose",
         description="通用多步任务 agent，适用于没有专用 agent 的各类任务",
@@ -259,6 +274,7 @@ class AgentConfigService:
 
         返回活跃版本（未被 shadow 的），与 list_agents 保持一致的优先级语义。
         """
+        name = (name or "").strip()
         agents = self.list_agents()
         for a in agents:
             if a.name == name and a.shadowed_by is None:
@@ -278,21 +294,22 @@ class AgentConfigService:
                 f"Agent 名称格式无效: '{name}'。要求 3-50 字符，仅允许字母、数字、连字符、下划线"
             )
 
-        existing = self.get_agent(params.name)
+        existing = self.get_agent(name)
         if existing is not None and existing.source == "builtin":
-            raise ValueError(f"不能覆盖内置 agent: {params.name}")
+            raise ValueError(f"不能覆盖内置 agent: {name}")
 
         target_dir = self._resolve_location_dir(params.location)
         target_dir.mkdir(parents=True, exist_ok=True)
-        file_path = target_dir / f"{params.name}.md"
+        file_path = target_dir / f"{name}.md"
 
+        params.name = name
         content = _format_agent_file(params)
         file_path.write_text(content, encoding="utf-8")
 
-        logger.info("Created agent '%s' at %s", params.name, file_path)
+        logger.info("Created agent '%s' at %s", name, file_path)
 
         return AgentDefinition(
-            name=params.name,
+            name=name,
             description=params.description,
             prompt=params.prompt,
             source=params.location,
@@ -312,6 +329,7 @@ class AgentConfigService:
         Raises:
             ValueError: agent 不存在或为内置 agent
         """
+        name = name.strip()
         agent = self.get_agent(name)
         if agent is None:
             raise ValueError(f"Agent 不存在: {name}")
@@ -334,6 +352,7 @@ class AgentConfigService:
         Raises:
             ValueError: agent 为内置 agent
         """
+        name = name.strip()
         agent = self.get_agent(name)
         if agent is None:
             return False

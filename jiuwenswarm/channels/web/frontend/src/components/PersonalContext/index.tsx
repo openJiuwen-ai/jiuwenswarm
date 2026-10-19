@@ -10,6 +10,7 @@
 import { useEffect } from 'react';
 import { usePersonalContextStore } from '../../stores';
 import { PersonalContextGraphPanel } from './GraphPanel';
+import { PersonalContextImLearningPanel } from './ImLearningPanel';
 import { PersonalContextServicesPanel } from './ServicesPanel';
 import { PersonalContextSettingsPanel } from './SettingsPanel';
 import { PersonalContextIntro } from './Intro';
@@ -62,6 +63,19 @@ export function PersonalContextPanel({ isConnected, isActive }: PersonalContextP
     );
   }
 
+  // IM 学习视图（数字分身学习配置面）：白名单/周期/阶段状态，与 services/settings 平级。
+  if (infoTab === 'imLearning') {
+    return (
+      <div className="pc-panel" data-testid="personal-context-panel">
+        <PersonalContextImLearningPanel
+          isConnected={isConnected}
+          isActive={isActive}
+          onBackToGraph={() => setInfoTab('graph')}
+        />
+      </div>
+    );
+  }
+
   if (showIntro) {
     return (
       <PersonalContextIntro
@@ -80,6 +94,7 @@ export function PersonalContextPanel({ isConnected, isActive }: PersonalContextP
         isActive={isActive}
         onNavigateServices={() => setInfoTab('services')}
         onNavigateSettings={() => setInfoTab('settings')}
+        onNavigateImLearning={() => setInfoTab('imLearning')}
       />
     </div>
   );

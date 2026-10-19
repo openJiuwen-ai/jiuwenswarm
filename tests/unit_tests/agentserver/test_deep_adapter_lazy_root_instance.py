@@ -321,7 +321,6 @@ async def test_root_create_instance_skips_multimodal_skill_and_prompt(
     config_base = {"react": {"agent_name": "main_agent"}}
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: config_base)
     refresh = MagicMock()
-    loader_cls = MagicMock()
     sync_cls = MagicMock()
     adapter._enterprise_config = SimpleNamespace(skill_prebuilt=[{"name": "x"}])
     monkeypatch.setattr(adapter, "_merge_enterprise_models_into_config", lambda cfg: cfg)
@@ -337,14 +336,12 @@ async def test_root_create_instance_skips_multimodal_skill_and_prompt(
             "_refresh_multimodal_configs",
             refresh,
         ),
-        patch.object(interface_deep_module, "PromptAttachmentLoader", loader_cls),
         patch.object(interface_deep_module, "SkillPrebuiltSynchronizer", sync_cls),
         patch.object(interface_deep_module, "is_skill_prebuilt_tenant", return_value=True),
     ):
         await adapter.create_instance(config_base=config_base)
 
     refresh.assert_not_called()
-    loader_cls.assert_not_called()
     sync_cls.assert_not_called()
     assert adapter._instance is None
     assert adapter._config_base_cache["react"]["agent_name"] == "main_agent"
@@ -365,7 +362,6 @@ async def test_root_create_instance_skip_applies_project_and_workspace_overrides
     config_base = {"react": {"agent_name": "main_agent"}}
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: config_base)
     refresh = MagicMock()
-    loader_cls = MagicMock()
     sync_cls = MagicMock()
     adapter._enterprise_config = SimpleNamespace(skill_prebuilt=[{"name": "x"}])
     monkeypatch.setattr(adapter, "_merge_enterprise_models_into_config", lambda cfg: cfg)
@@ -381,7 +377,6 @@ async def test_root_create_instance_skip_applies_project_and_workspace_overrides
             "_refresh_multimodal_configs",
             refresh,
         ),
-        patch.object(interface_deep_module, "PromptAttachmentLoader", loader_cls),
         patch.object(interface_deep_module, "SkillPrebuiltSynchronizer", sync_cls),
         patch.object(interface_deep_module, "is_skill_prebuilt_tenant", return_value=True),
     ):
@@ -391,7 +386,6 @@ async def test_root_create_instance_skip_applies_project_and_workspace_overrides
         )
 
     refresh.assert_not_called()
-    loader_cls.assert_not_called()
     sync_cls.assert_not_called()
     assert adapter._instance is None
     assert adapter._project_dir == project_dir
@@ -402,16 +396,12 @@ async def test_root_create_instance_skip_applies_project_and_workspace_overrides
 async def test_session_create_instance_still_refreshes_multimodal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Session adapters still run multimodal / prompt layout before DeepAgent."""
+    """Session adapters still refresh multimodal config before DeepAgent."""
     adapter = JiuWenSwarmDeepAdapter()
     adapter.mark_as_session_scoped("sess_preamble")
     config_base = {"react": {"agent_name": "main_agent"}}
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: config_base)
     refresh = MagicMock()
-    loader = MagicMock()
-    loader.ensure_layout = MagicMock()
-    loader_cls = MagicMock(return_value=loader)
-
     with (
         _stub_create_instance_build(),
         patch.object(
@@ -419,13 +409,10 @@ async def test_session_create_instance_still_refreshes_multimodal(
             "_refresh_multimodal_configs",
             refresh,
         ),
-        patch.object(interface_deep_module, "PromptAttachmentLoader", loader_cls),
     ):
         await adapter.create_instance(config_base=config_base)
 
     refresh.assert_called_once()
-    loader_cls.assert_called_once()
-    loader.ensure_layout.assert_called_once()
     assert adapter._instance is not None
 
 
@@ -446,11 +433,6 @@ async def test_ensure_instance_after_root_skip_runs_preamble(
             interface_deep_module.JiuWenSwarmDeepAdapter,
             "_refresh_multimodal_configs",
             refresh,
-        ),
-        patch.object(
-            interface_deep_module,
-            "PromptAttachmentLoader",
-            return_value=MagicMock(ensure_layout=MagicMock()),
         ),
     ):
         await adapter.create_instance(
@@ -517,11 +499,6 @@ async def test_session_skill_prebuilt_sync_uses_create_instance_workspace_dir(
             interface_deep_module.JiuWenSwarmDeepAdapter,
             "_refresh_multimodal_configs",
             MagicMock(),
-        ),
-        patch.object(
-            interface_deep_module,
-            "PromptAttachmentLoader",
-            return_value=MagicMock(ensure_layout=MagicMock()),
         ),
         patch.object(interface_deep_module, "SkillPrebuiltSynchronizer", sync_cls),
         patch.object(interface_deep_module, "is_skill_prebuilt_tenant", return_value=True),

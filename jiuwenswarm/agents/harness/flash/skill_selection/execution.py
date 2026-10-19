@@ -34,10 +34,93 @@ budget: ContextVar[WorkBudget | None] = ContextVar(
     "flash_selection_budget", default=None
 )
 background: ContextVar[bool] = ContextVar("flash_selection_background", default=False)
+build_gate: ContextVar[StartupGate | None] = ContextVar(
+    "flash_selection_build_gate", default=None
+)
+
+
+class StartupLease:
+    """An idempotent lease; the model boundary and finally may both close it."""
+
+    def __init__(self, gate):
+        self._gate = gate
+        self._closed = False
+        self._close_lock = threading.Lock()
+
+    def close(self):
+        with self._close_lock:
+            if not self._closed:
+                self._gate.release_startup()
+                self._closed = True
+
+
+class StartupGate:
+    """Let speculative builds yield to Flash preparation, without starvation.
+
+    This is cooperative scheduling, not thread cancellation or an I/O barrier.
+    A worker already reading/parsing one item finishes that item before yielding.
+    Every checkpoint has a bounded wait; an actual search waiting for an index
+    bypasses the gate so another session cannot indefinitely block that search.
+    """
+
+    def __init__(self, *, max_pause_s=1.0):
+        if max_pause_s < 0:
+            raise ValueError("max_pause_s must be non-negative")
+        self.max_pause_s = max_pause_s
+        self._condition = threading.Condition()
+        self._startups = self._demands = 0
+        self._closed = False
+
+    def startup(self):
+        with self._condition:
+            self._startups += 1
+        return StartupLease(self)
+
+    def release_startup(self):
+        """Release one lease and wake builders under the gate's own lock."""
+        with self._condition:
+            self._startups -= 1
+            self._condition.notify_all()
+
+    @contextmanager
+    def demand(self):
+        with self._condition:
+            self._demands += 1
+            self._condition.notify_all()
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._demands -= 1
+                self._condition.notify_all()
+
+    def checkpoint(self):
+        deadline = time.monotonic() + self.max_pause_s
+        with self._condition:
+            while self._startups and not self._demands and not self._closed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(remaining)
+
+    def close(self):
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+
+    def stats(self):
+        with self._condition:
+            return {"startups": self._startups, "demands": self._demands,
+                    "closed": self._closed}
 
 
 def checkpoint():
     current = budget.get()
+    if current is not None:
+        current.check()
+    gate = build_gate.get()
+    if gate is not None:
+        gate.checkpoint()
     if current is not None:
         current.check()
 
@@ -160,7 +243,9 @@ class SelectionRuntime:
         build_queue=8,
         max_requests=64,
         max_catalogs=16,
+        gate=None,
     ):
+        self.gate = gate if gate is not None else StartupGate()
         self.queries = BoundedExecutor(
             query_workers, query_queue, "flash-skill-query"
         )
@@ -200,12 +285,20 @@ class SelectionRuntime:
             }
 
     def shutdown(self):
+        # A build can be paused at a checkpoint while shutdown joins workers.
+        self.gate.close()
         self.queries.shutdown()
         self.builds.shutdown()
 
 
 _runtime = None
 _runtime_lock = threading.Lock()
+_startup_gate = StartupGate()
+
+
+def get_startup_gate():
+    """The Flash entry needs no executor/runtime when selection is disabled."""
+    return _runtime.gate if _runtime is not None else _startup_gate
 
 
 def get_runtime() -> SelectionRuntime:
@@ -213,6 +306,7 @@ def get_runtime() -> SelectionRuntime:
     with _runtime_lock:
         if _runtime is None:
             _runtime = SelectionRuntime(
+                gate=_startup_gate,
                 query_workers=_limit("QUERY_WORKERS", 2, 32),
                 query_queue=_limit("QUERY_QUEUE", 16, 1024),
                 build_workers=_limit("BUILD_WORKERS", 1, 4),

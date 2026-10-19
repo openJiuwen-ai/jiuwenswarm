@@ -1,6 +1,7 @@
 """Static, unverified capability metadata for the main LLM; never a selection gate."""
 from dataclasses import dataclass
 import re
+from .execution import checkpoint
 
 _FORMAT_QUANTITY = r"(?=[0-9０-９]+\s*(?:页|张|份|pages?\b|slides?\b|sheets?\b))"
 
@@ -128,14 +129,17 @@ def declared_contract(description, sources=()):
     # Sources are separate: a format in an unrelated reference never supplies
     # an object for an action in the description or another reference.
     for raw in (description, *sources):
+        checkpoint()
         text = _clean(raw)
         clauses = []
         for sentence in _SPLIT.split(text):
+            checkpoint()
             # "Generate DOCX, cannot read DOC" has two different assertions.
             boundaries = [m.start() for m in _CAPABILITY_NEGATIVE.finditer(sentence) if m.start()]
             starts = [0, *boundaries, len(sentence)]
             clauses.extend(sentence[a:b].strip(' ,，') for a, b in zip(starts, starts[1:]))
         for clause in clauses:
+            checkpoint()
             # Workflow prohibitions ("do not bypass this Skill using openpyxl")
             # are not statements that the Skill lacks workbook creation.
             if _NEGATIVE.search(clause) and not _CAPABILITY_NEGATIVE.search(clause):
@@ -171,6 +175,7 @@ def declared_contract(description, sources=()):
             continuation = text[scope.end():scope.end() + 650]
             if fs and re.search(r'This includes|——|—', continuation, re.I):
                 for clause in _SPLIT.split(continuation):
+                    checkpoint()
                     if _NEGATIVE.search(clause):
                         continue
                     # Only broad objects from the declared file family.

@@ -356,7 +356,9 @@ def test_visible_finish_text_failure_omits_artifact_dump() -> None:
 async def test_resume_stream_emits_skeleton_not_artifact_dump(monkeypatch: pytest.MonkeyPatch) -> None:
     from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     skeleton = f"{_STUB_DELIVERY_SUMMARY_START}\n\n✅ 已完成：PPT 生成\n"
 
@@ -398,6 +400,7 @@ async def test_resume_stream_emits_skeleton_not_artifact_dump(monkeypatch: pytes
     )
 
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = None
     adapter._model = None
     adapter.build_skill_turbo_config = lambda: {}  # type: ignore[method-assign]
     adapter._log_and_make_usage_summary_chunk = lambda **_k: None  # type: ignore[method-assign]
@@ -439,3 +442,98 @@ async def test_resume_stream_emits_skeleton_not_artifact_dump(monkeypatch: pytes
     assert finals
     assert str(finals[-1]).strip() == ""
     assert chunks[-1].is_complete is True
+
+
+@pytest.mark.asyncio
+async def test_resume_stream_delivery_failure_does_not_complete_outer_todo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    class _FakeTurbo:
+        def __init__(self, _config: Any) -> None:
+            self.artifact_holder = {
+                "p10_delivery": {
+                    "info": {"delivery_status": "failed"},
+                }
+            }
+
+        async def resume_stream(self, **_kwargs: Any):
+            if False:
+                yield None
+
+    async def _async_none(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def _async_false(*_args: Any, **_kwargs: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo",
+        _FakeTurbo,
+    )
+    monkeypatch.setattr(
+        JiuWenSwarmDeepAdapter,
+        "_clear_pending_skill_turbo_hitl",
+        _async_false,
+    )
+    monkeypatch.setattr(
+        JiuWenSwarmDeepAdapter,
+        "_clear_skill_turbo_resume_ctx_via_isolated_session",
+        _async_none,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._skill_turbo_clear_resume_in_flight",
+        _async_none,
+    )
+
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = None
+    adapter._model = None
+    adapter.build_skill_turbo_config = lambda: {}  # type: ignore[method-assign]
+    adapter._log_and_make_usage_summary_chunk = lambda **_k: None  # type: ignore[method-assign]
+    adapter._rewrite_skill_turbo_usage_chunk = lambda chunk, **_k: (chunk, None)  # type: ignore[method-assign]
+
+    async def _must_not_complete(**_kwargs: Any) -> list[Any]:
+        raise AssertionError("delivery failure must not complete outer todo")
+
+    adapter._complete_skill_turbo_outer_todo = _must_not_complete  # type: ignore[method-assign]
+
+    class _Session:
+        async def post_run(self) -> None:
+            return None
+
+    request = AgentRequest(
+        request_id="req-resume-failed",
+        channel_id="web",
+        session_id="sess-resume-failed",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"source": "ask_user_interrupt", "answers": [{"question": "风格"}]},
+    )
+    stream = adapter._make_skill_turbo_resume_stream(
+        request=request,
+        inputs={},
+        session=_Session(),
+        resume_ctx={"plan_code": "x", "pending_tool_call_id": "tc-1", "inputs": {}},
+        answers=[{"question": "风格", "selected_options": ["商务经典"]}],
+    )
+    assert stream is not None
+    chunks = [chunk async for chunk in stream]
+    deltas = [
+        chunk.payload.get("content", "")
+        for chunk in chunks
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.delta"
+    ]
+    assert deltas
+    assert deltas[-1].startswith("PPT 生成失败：")
+    assert "任务已完成" not in deltas[-1]
+    assert all(
+        not (
+            isinstance(chunk.payload, dict)
+            and chunk.payload.get("event_type") == "task.complete"
+            and chunk.payload.get("status") == "succeeded"
+        )
+        for chunk in chunks
+    )

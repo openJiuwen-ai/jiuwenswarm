@@ -564,7 +564,7 @@ sandbox:
 | `sandbox.policy_file` | 文件名 / 路径 | `code-agent-policy.yaml` | 仅给文件名 → 自动定位到 `jiuwenbox/configs/<name>`；包含 `/` `\` 或 `~` 时按整路径解析。**仅在 `startup_mode=internal` 下生效**——`external` 模式下 policy 由用户自启动时的 `JIUWENBOX_DEFAULT_POLICY_PATH` 决定 |
 | `sandbox.preserve_file_sharing_mode` | `mount` | `mount` | intrinsic 文件（`AGENT.md` 等）与 `project_dir` 通过 bind mount 注入沙箱，`project_dir/config/config.yaml` 自动加进 `deny_write`。 写入其它值会被服务端拒绝 |
 | `sandbox.enabled` | bool | `false` | 启用后 agent 在重建时会切到 sandbox provider；可用 `/sandbox enable` 触发 |
-| `sandbox.excluded_commands` | list[str] | `[]` | shell glob 列表；按**整条命令字符串**匹配，命中后该次调用穿透到本地 |
+| `sandbox.excluded_commands` | list[str] | `[]` | shell glob 列表；按 **simple-command 叶子**匹配。全命中→整条本地；全未命中→整条沙箱；混合→本地 bash 编排并用 `jiuwenbox sandbox exec` 包装远端段（需安装 CLI）。不安全的混合形态不改写，整条进沙箱 |
 | `sandbox.fallback_on_failure` | bool | `false` | jiuwenbox exec 异常（连接失败、daemon 不可用等）时回退宿主机本地执行；沙箱内命令非零 exit 不回退 |
 | `sandbox.files.allow` / `sandbox.files.deny` | list | `[]` | 用户额外配置的写入策略；最终生效集合是 `auto_managed ∪ user_configured`，详见 [`/sandbox` 命令说明](../docs/zh/Slash命令表.md) |
 

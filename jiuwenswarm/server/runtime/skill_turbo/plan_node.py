@@ -608,8 +608,9 @@ class PlanNode(ABC):
 class DisableThinkingMixin:
     """窄 seam：挂载节点的 call_llm / stream_llm 强制 thinking=\"off\"。
 
-    仅 opt-in：业务节点显式多重继承本 Mixin 才会注入；默认 PlanNode 仍
-    thinking=None（零注入）。stream_llm_collect 经 stream_llm 透传，无需另覆盖。
+    仅 opt-in：业务节点显式多重继承本 Mixin 才会强制 ``thinking=\"off\"``；
+    默认 PlanNode 传 ``thinking=None``，由 Executor 按模型族处理（GLM-5.3 → low）。
+    stream_llm_collect 经 stream_llm 透传，无需另覆盖。
     不改 ThinkingInjectRail / config；注入失败由 Executor 跳过或裸重试。
     """
 

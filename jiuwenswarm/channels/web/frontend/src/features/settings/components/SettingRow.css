@@ -1,0 +1,103 @@
+.setting-row {
+  container: setting-row / inline-size;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-settings-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+}
+
+.setting-row__main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 80px;
+  gap: 24px;
+  padding: 16px;
+}
+
+.setting-row__main--control-top {
+  align-items: flex-start;
+}
+
+.setting-row__copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.setting-row__title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.setting-row__title {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.setting-row__description {
+  color: var(--color-settings-text-secondary);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+}
+
+.setting-row__control {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.setting-row__sub-settings {
+  position: relative;
+}
+
+.setting-row__sub-settings::before,
+.setting-row__sub-settings > .setting-row + .setting-row::before {
+  position: absolute;
+  top: 0;
+  right: 16px;
+  left: 16px;
+  height: 1px;
+  background: var(--color-settings-border);
+  content: '';
+}
+
+.setting-row__sub-settings > .setting-row {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.setting-row__sub-settings > .setting-row > .setting-row__main {
+  padding-inline-start: 40px;
+}
+
+.setting-row__sub-settings > .setting-row > .setting-row__main .setting-row__title {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.setting-row__sub-settings > .setting-row + .setting-row {
+  position: relative;
+}
+
+@container setting-row (max-width: 30rem) {
+  .setting-row__main {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .setting-row__control {
+    align-self: stretch;
+    justify-content: flex-end;
+  }
+}

@@ -45,10 +45,11 @@ _CN_PROTOCOL = """## 技能执行规范（强制）
    - **更新时搭便车（强制）**：`todo_modify` **必须**和下一个任务的工作工具在同一轮发出，禁止 `todo_modify` 独占一轮。系统会在工作工具被调用时自动将 pending 推进为 in_progress，你只需要用 `todo_modify` 标记 completed/cancelled。
    - ✅ 正确：`[write_file(...), todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]`
    - ❌ 禁止：`[todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]` ← 独占一轮，浪费 LLM 调用
-   - 唯一例外：所有工作完成后、即将给出最终回复的最后一轮，可以单独调 `todo_modify`。
+   - 唯一例外：纯文本最终回复的前一轮。若仍有 `in_progress`，这一轮必须单独调 `todo_modify`，不要在这一轮写给用户的正文。
+   - 判定粒度是**这一条步骤**是否做完，不是整个任务是否交付。已做完的标 `completed`；还没开始的保持 `pending`；只有整件事确定不再继续（含第 9 条的用户打断）才标 `cancelled`。缺文件、跳过问答、等待用户补输入，都不是把已做完步骤留在 `in_progress` 的理由。
    - 可在连续推进多个任务后用一次 `todo_modify` 统一批量更新状态。
    放弃、跳过或决定不再执行某步骤时（如用户说「不生成 PPT 了」），**必须**立即 `todo_modify` 将该条标为 `cancelled`；
-   禁止仅用口头回复收尾而仍保留 `in_progress`/`pending` 项。
+   禁止仅用口头回复收尾而仍保留已开始的 `in_progress` 项。还没开始的 `pending` 在等待用户补输入时保持 `pending`。
 3. **严格顺序**：按 SKILL.md 定义的顺序逐步执行，**禁止跳过、合并或重排步骤**，除非 SKILL.md 或用户明确允许。
 4. **闸门等待**：遇到需要用户确认/审批的步骤时，**必须等待用户回复，禁止自行假设用户同意**。
 5. **不确定时重读**：只能再次调用 `skill_tool`，**不得**用其它工具获取 SKILL.md。
@@ -85,11 +86,12 @@ Then execute the workflow; the rules below govern execution.
    - **Piggyback on updates (MANDATORY)**: `todo_modify` **MUST** be called alongside the next task's work tool in the same response — never alone. The system auto-advances pending tasks to in_progress when work tools are called, so you only need `todo_modify` to mark tasks completed/cancelled.
    - ✅ CORRECT: `[write_file(...), todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]`
    - ❌ PROHIBITED: `[todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]` ← wastes an entire LLM round
-   - The ONLY exception: the very final round when all work is done and you are about to give the final answer.
+   - The ONLY exception: the turn immediately before the plain-text final reply. If any item is still `in_progress`, that turn MUST call `todo_modify` alone and must not contain the user-facing answer.
+   - Judge each step on its own, not on whether the whole task is delivered. Mark a finished step `completed`; leave steps that have not started `pending`; mark `cancelled` only when the whole task will not continue, including the user-interruption cases in rule 9. Missing files, a skipped question, or waiting for input are not reasons to leave a finished step `in_progress`.
    - You may run several tasks back-to-back and update statuses in a single batched `todo_modify`.
    When abandoning or skipping a step (e.g. the user says not to generate the PPT), you **must** call
-   `todo_modify` to mark it `cancelled` immediately; never end with text only while items stay
-   `in_progress` or `pending`.
+   `todo_modify` to mark it `cancelled` immediately; never end with text only while a started item
+   stays `in_progress`. Leave not-yet-started `pending` items `pending` while waiting for the user.
 3. **Strict order**: Execute steps in the order defined by SKILL.md. **Do not skip, merge, or reorder steps** unless SKILL.md or the user explicitly allows it.
 4. **Gate enforcement**: When a step requires user confirmation/approval, **you MUST wait for the user's response. Never assume approval.**
 5. **Re-read when unsure**: Refresh the SKILL.md body **only** by calling `skill_tool` again — **never** use any other tool to obtain SKILL.md.

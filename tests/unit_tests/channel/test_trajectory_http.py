@@ -185,6 +185,9 @@ def _serve_web_proxy(api_port: int, directory: Path) -> Iterator[int]:
 
     _TestProxyHandler.api_target = f"http://127.0.0.1:{api_port}"
     _TestProxyHandler.ws_target = f"ws://127.0.0.1:{api_port}"
+    # 与生产的 _ConfiguredHandler.web_http_target 对齐：/api/trajectory 等 Web HTTP
+    # 路由由 _proxy_web_http 转发，依赖 web_http_target；漏设会直接 502。
+    _TestProxyHandler.web_http_target = f"http://127.0.0.1:{api_port}"
     handler = partial(_TestProxyHandler, directory=str(directory))
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     server.daemon_threads = True

@@ -6,12 +6,16 @@ import asyncio
 
 import pytest
 
-from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    JiuWenSwarmDeepAdapter,
+    _session_adapter_idle_ttl_default,
+)
 
 
 def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
     """Create a bare adapter with internal state set via setattr."""
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    state.setdefault("_sessions_awaiting_tool_permission", set())
     for name, value in state.items():
         setattr(adapter, name, value)
     return adapter
@@ -20,6 +24,8 @@ def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
 class _IdleChildAdapter:
     def __init__(self) -> None:
         self.cleaned = False
+        self.released: list[tuple[str, str]] = []
+        self._instance = None
 
     @staticmethod
     def is_session_active(_session_id: str) -> bool:
@@ -28,6 +34,17 @@ class _IdleChildAdapter:
     @staticmethod
     def is_deep_agent_executing_for_session(_session_id: str) -> bool:
         return False
+
+    async def stop_interaction(self) -> None:
+        return None
+
+    async def release_subagent_runtime_for_session(
+        self,
+        session_id: str,
+        *,
+        reason: str = "",
+    ) -> None:
+        self.released.append((session_id, reason))
 
     async def cleanup(self) -> None:
         self.cleaned = True
@@ -43,6 +60,22 @@ class _BlockingCleanupChildAdapter(_IdleChildAdapter):
         self.cleanup_started.set()
         await self.cleanup_can_finish.wait()
         await super().cleanup()
+
+
+def test_idle_ttl_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC", "60")
+    assert _session_adapter_idle_ttl_default() == 60
+
+
+def test_idle_ttl_env_invalid_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    for bad in ("abc", "-1", "0", "   "):
+        monkeypatch.setenv("JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC", bad)
+        assert _session_adapter_idle_ttl_default() == 2 * 60 * 60
+
+
+def test_idle_ttl_env_absent_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC", raising=False)
+    assert _session_adapter_idle_ttl_default() == 2 * 60 * 60
 
 
 def test_other_active_sessions_treats_subagent_as_related() -> None:

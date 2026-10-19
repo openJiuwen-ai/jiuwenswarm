@@ -544,6 +544,25 @@ trajectory_ui:
   detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
 
 # ============================================================
+# Trace 问题自动分析定位（Diagnosis）配置
+# ============================================================
+# 用户在 Web 上一键触发自动分析定位，产出结构化诊断报告（根因假设/可疑环节/
+# 代码定位/建议下一步）。证据主来自 trajectory store（raw_json），日志为辅。
+# 编排放 Gateway 进程，独立于会话 agent 配额。
+# 依赖：enabled=true 隐含 trajectory_ui.enabled=true（证据主来源）；
+#       建议同时调大 agent_observability.attribute_value_max_length（10240→51200），
+#       否则超长 prompt/工具结果在 span 采集端就被截断，诊断时看不全。
+# 报告/证据包落在 ~/.jiuwenswarm/.trace/diagnosis/<session>/，随 keep_evidence_days 清理。
+# ============================================================
+diagnosis:
+  enabled: false                    # 一键分析总开关
+  include_logs: true                # 是否纳入日志辅助证据（ERROR/Traceback 行）
+  history_summary_records: 20       # 被诊断会话 history 尾部摘要条数（辅助证据）
+  keep_evidence_days: 7             # 证据包/报告保留天数
+  allow_log_upload: true            # 是否允许上传日志文件（G5）
+  max_upload_log_mb: 50             # 单个上传日志文件大小上限（G5）
+
+# ============================================================
 # Agent / Code 调试链路追踪（Debug Trace）配置
 # ============================================================
 # 控制非 team 模式（agent.* / code.*）的人类可读本地 dump。
@@ -604,6 +623,14 @@ react:
   task_planning:
     enable_progress_repeat: ${TODO_PROGRESS_REPEAT:-true}
     list_tool_call_interval: 20
+  # 常驻 subagent 运行时。开启后 task_tool 由 subagent_spawn/wait/list/
+  # send_input/close/resume 六个工具替换（两者互斥）。默认开启。
+  subagent_runtime:
+    enabled: true
+    # 把子代理的思考/工具帧原样镜像到父会话流，并带 stream_source_id=子代理 id，
+    # 供按 source 路由的宿主（RelayClaw）渲染成嵌套子代理行。进程级开关：
+    # 打开后同一进程服务的所有 channel 都会收到这些帧，默认开启。
+    mirror_child_stream: true
   # ProgressiveToolRail: 工具延迟加载，固定 eager_tools schema，deferred 工具通过
   # tools_search → invoke_tool 间接调用，最大化 prefix cache 命中率。
   tool_lazy_load:
@@ -630,6 +657,12 @@ react:
       - todo_list
       - todo_modify
       - task_tool                   # 常驻可见，否则 ProgressiveToolRail 会滤掉，主 agent 无法委派 subagent
+      - subagent_spawn              # 运行时六个工具常驻，否则主 agent 每次都要先 tools_search 再 invoke_tool
+      - subagent_wait
+      - subagent_list
+      - subagent_send_input
+      - subagent_close
+      - subagent_resume
       - memory_search               # 记忆五件套常驻：被动记忆提示词要求"涉及历史/偏好先 memory_search"，
       - memory_get                  # 若被滤进 deferred 池，模型面对偏好类问题时不会想到经 tools_search
       - read_memory                 # 间接调用（尤其中小模型），长期记忆功能形同虚设
@@ -645,7 +678,8 @@ react:
       #   - invoke_tool
       #   - web_search
   # code_agent / research_agent 默认不启用；只有显式配置 enabled: true 才会显示并可被 task_tool 调用
-  # browser_agent: code.team 路径通过此 key 门控（单 agent 路径仍由 browser runtime 开关决定）
+  # general_agent: 单 agent 与专家团共用。专家团未开 subagent_runtime，开启后由 task_tool 派发 general-purpose
+  # browser_agent: team / code.team 通过此 key 门控（单 agent 路径仍由 browser runtime 开关决定）
   subagents:
     general_agent:
       enabled: true
@@ -656,6 +690,9 @@ react:
       enabled: false
       # max_iterations: 15
     browser_agent:
+      enabled: true
+      # max_iterations: 100
+    statusline-setup:
       enabled: true
       # max_iterations: 15
   # ============ SkillTurbo 配置 ============
@@ -826,6 +863,11 @@ embed:
   embed_base_url: ${EMBED_API_BASE}
   embed_model: ${EMBED_MODEL}
 
+# 定时任务面板限制。只作用于 Web 界面上「运行中」任务的新建和启动；
+# 会话、Cron 表达式、TUI 不读这项。企业版由 Manager 下发的 cron_policy 覆盖。
+cron:
+  max_jobs_per_user: 5
+
 task_memory:
   # Set enabled: true to activate TaskMemoryService skill tools
   # (experience_retrieve, experience_learn, experience_clear)
@@ -924,6 +966,10 @@ gateway:
       user_template: "yr:instance:{instance}"
       connect_timeout_s: 30
       client_keys_dir: "/root/.ssh"
+    auth_service_url: ${AGENTOS_AUTH_SERVICE_URL:-http://iam-agentos:8080}
+    timeout: ${AGENTOS_AUTH_TIMEOUT:-10}
+    # Web/TUI token 鉴权总开关；默认关闭。true 时创建 AgentOSAuthenticator 校验连接。
+    auth_enabled: false
 
 heartbeat:
   # 心跳间隔（秒），默认 3600
@@ -960,6 +1006,15 @@ execution_guard:
     repeat_window_chars: 1024
     # 单字符连续重复阈值，用于检测分隔线等场景，默认较高以减少误判
     single_char_repeat_count: 90
+  # develop 防死循环 rail：重复调用 / ping-pong / 未知工具打断（force-finish）。
+  # 默认关闭，避免和 dest-stable 已开启的 agent_ras.repeat_tool 双挂。
+  # 不是 issue 的 OPEN/HALF_OPEN 恢复型熔断。
+  circuit_breaker:
+    enabled: false
+    warning_threshold: 10
+    critical_threshold: 20
+    global_breaker_threshold: 30
+    unknown_tool_threshold: 10
 
 # Agent RAS 整体配置
 agent_ras:
@@ -1001,7 +1056,8 @@ agent_ras:
   # 恢复侧通用配置
   recovery:
     # LOW 警告时是否向用户推送可见 notice（steering 始终按 policy 执行）
-    notify_user_on_warning: true
+    # 默认 false：[工具调用异常] 等告警不再写入前台回复流，仅向模型注入 steering 自纠偏
+    notify_user_on_warning: false
 
 # web_enterprise 聊天附件上传（自部署 MinIO / S3 兼容对象存储）
 # 环境变量：OBS_URL / OBS_ACCESS_KEY / OBS_SECRET_KEY / OBS_BUCKET / OBS_SECURE / OBS_PUBLIC_BASE_URL / OBS_REGION
@@ -1173,12 +1229,21 @@ channels:
     listen_port: 2222
     host_key_path: ~/.jiuwenswarm/config/ssh_host_key
     relay_timeout_sec: 3600
+    auth:
+      # 公钥认证开关。true 时校验客户端公钥并签发临时密钥；false 为宽松认证。
+      enabled: true
+      # TUI 场景: 临时密钥有效期（秒）
+      ephemeral_key_ttl_sec: 300
+      # 临时密钥类型
+      ephemeral_key_type: "ssh-ed25519"
+      # 过期清理间隔（秒）
+      cleanup_interval_sec: 60
 
 # ========== 细粒度权限管控（tiered_policy）==========
 #
 # schema: tiered_policy（或兼容 v_cc / v4.2）时由 tiered_policy.evaluate_tiered_policy 求值；
 # permission_mode: normal|strict 决定 severity 映射，见 agentserver/permissions/tiered_policy.py。
-# severity（normal）：LOW/MEDIUM→allow，HIGH/CRITICAL→ask；strict 下 MEDIUM→ask、CRITICAL→deny。
+# severity（normal）：LOW/MEDIUM→allow，HIGH/CRITICAL→ask；strict：LOW→allow，MEDIUM/HIGH→ask，CRITICAL→deny。
 # rules[*].action: 可选显式动作 allow|ask|deny；配置后优先于 severity 映射，适合敏感文件读取、
 # 系统控制等不希望随 permission_mode 漂移的规则。
 # 内置参数规则 > 用户 rules；整工具存在则不用 defaults；详见 tiered_policy 模块说明。
@@ -1470,7 +1535,6 @@ extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：
   # EXTENSION_DIRS="E:/a;D:/b"
   extension_dirs: ${EXTENSION_DIRS:-jiuwenswarm/extensions}
-
 
 # ============================================================
 # Hooks 配置

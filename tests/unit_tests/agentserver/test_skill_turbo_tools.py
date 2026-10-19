@@ -8,6 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
+    SKILL_TURBO_MODEL_IDENTITY_KEY,
+)
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
     _prepare_parent_stream_output,
@@ -201,6 +204,94 @@ async def test_clear_resume_ctx_failure_does_not_mask_resume_success(_skill_turb
     turbo_session.post_run.assert_awaited_once()
     assert result.get("success") is True
     assert "执行失败" not in str(result.get("error") or "")
+
+
+@pytest.mark.asyncio
+async def test_tool_resume_restores_model_before_building_skill_turbo(
+    _skill_turbo_runtime,
+) -> None:
+    adapter, turbo_session = _skill_turbo_runtime
+    adapter.current_model = "answer-model"
+    resume_ctx = {
+        "plan_code": "plan()",
+        "inputs": {
+            "query": _QUERY,
+            "metadata": {
+                SKILL_TURBO_MODEL_IDENTITY_KEY: {
+                    "model_name": "saved-model",
+                    "model_ref": "saved-model-ref",
+                }
+            },
+        },
+        "pending_tool_call_id": "tc-1",
+        "task_states": [],
+    }
+
+    def restore_model(_ctx):
+        adapter.current_model = "saved-model"
+
+    adapter.restore_skill_turbo_model_from_resume_ctx.side_effect = restore_model
+    adapter.build_skill_turbo_config.side_effect = lambda: {
+        "model_client": adapter.current_model
+    }
+    fake_turbo = _fake_turbo()
+    with (
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_skill_turbo_adapter",
+            return_value=adapter,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_task_id",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_skill_turbo_resume_answers",
+            return_value={"audience": "高管"},
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_request_metadata",
+            return_value={
+                "session_id": "resume-sid",
+                "request_id": "req-resume",
+                "channel_id": "web",
+            },
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.get_subagent_parent_session",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars.get_effective_request_workspace_dir",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo",
+            return_value=fake_turbo,
+        ) as skill_turbo_cls,
+        patch(
+            "openjiuwen.core.session.agent.create_agent_session",
+            return_value=turbo_session,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.load_resume_ctx",
+            AsyncMock(return_value=resume_ctx),
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.clear_resume_ctx",
+            AsyncMock(),
+        ),
+    ):
+        result = await skill_turbo.invoke({"query": _QUERY})
+
+    assert result.get("success") is True
+    adapter.restore_skill_turbo_model_from_resume_ctx.assert_called_once_with(
+        resume_ctx
+    )
+    adapter.build_skill_turbo_config.assert_called_once_with()
+    skill_turbo_cls.assert_called_once_with({"model_client": "saved-model"})
 
 
 def _raise_on_resume(exc: BaseException):

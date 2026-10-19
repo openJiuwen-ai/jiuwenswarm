@@ -446,6 +446,26 @@ class StructuredAskUserRail(AskUserRail):
                 "treating as skipped",
                 exc,
             )
+            # 修复点2：解析失败时用户原始输入不能凭空丢弃。用户回了纯文本
+            # （如"继续"）时把原文随 reject 文案注入 LLM 历史，模型得以
+            # 知晓用户实际说了什么并据此推进，而不是当作"未答"处理。
+            # 优先取 decode 后的文本（去掉意外 JSON 引号层），非 str 时
+            # 回退到原始输入的字符串形式（覆盖 JSON 标量/数组/畸形对象）。
+            if isinstance(decoded, str):
+                raw_text = decoded.strip()
+            elif isinstance(user_input, str):
+                raw_text = user_input.strip()
+            else:
+                raw_text = ""
+            if raw_text:
+                return self.reject(
+                    tool_result=(
+                        "用户的回复未符合结构化问答格式，未提取到结构化答案。"
+                        f"用户回复原文：{raw_text}。"
+                        "请基于用户原话理解其意图并继续推进任务，"
+                        "不要重复发起相同提问。"
+                    )
+                )
             return self.reject(tool_result=self._build_skipped_tool_result())
 
         machine_payload = response.to_dict(include_original_request=False)

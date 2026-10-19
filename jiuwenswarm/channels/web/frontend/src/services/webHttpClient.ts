@@ -10,6 +10,7 @@ import {
   WsEvent,
 } from '../types';
 import { getGatewayHttpBase } from '../utils/env';
+import { getDefaultRequestTimeoutMs } from '../utils/requestTimeout';
 import { isEnterprise } from '../edition';
 import {
   getManagerAccessToken,
@@ -25,7 +26,6 @@ type TypedEventHandler<TPayload> = (event: WsEvent & { payload: TPayload }) => v
 type StateHandler = (state: WebConnectionState) => void;
 
 const MAX_RECONNECT_ATTEMPTS = 5;
-const DEFAULT_TIMEOUT_MS = 15000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -143,6 +143,18 @@ const ROUTES: Record<string, RouteRow> = {
   'workspace.usage': { verb: 'GET', path: '/workspace/usage', kind: 'unary' },
   'workspace.entries.delete': { verb: 'DELETE', path: '/workspace/entries', kind: 'unary' },
   'workspace.preview': { verb: 'GET', path: '/workspace/preview', kind: 'unary' },
+  'im.hosting.status': { verb: 'GET', path: '/im/hosting/status', kind: 'unary' },
+  'im.hosting.discover': { verb: 'GET', path: '/im/hosting/discover', kind: 'unary' },
+  'im.hosting.targets.list': { verb: 'GET', path: '/im/hosting/targets', kind: 'unary' },
+  'im.hosting.targets.add': { verb: 'POST', path: '/im/hosting/targets', kind: 'unary' },
+  'im.hosting.targets.patch': { verb: 'PATCH', path: '/im/hosting/targets/{id}', kind: 'unary' },
+  'im.hosting.targets.delete': { verb: 'DELETE', path: '/im/hosting/targets/{id}', kind: 'unary' },
+  'im.hosting.policy.get': { verb: 'GET', path: '/im/hosting/policy', kind: 'unary' },
+  'im.hosting.policy.patch': { verb: 'PATCH', path: '/im/hosting/policy', kind: 'unary' },
+  'im.hosting.poll_now': { verb: 'POST', path: '/im/hosting/actions/poll-now', kind: 'unary' },
+  'im.hosting.history': { verb: 'GET', path: '/im/hosting/targets/{id}/history', kind: 'unary' },
+  'im.hosting.login.start': { verb: 'POST', path: '/im/hosting/login/start', kind: 'unary' },
+  'im.hosting.login.status': { verb: 'GET', path: '/im/hosting/login/status', kind: 'unary' },
 };
 
 const PATH_PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
@@ -644,7 +656,7 @@ export class WebHttpClient {
 
     const controller = new AbortController();
     this.inflight.set(requestId, controller);
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timeoutMs = options.timeoutMs ?? getDefaultRequestTimeoutMs();
     const timeoutId = window.setTimeout(() => {
       controller.abort();
     }, timeoutMs);
@@ -1033,6 +1045,11 @@ export class WebHttpClient {
       return managerAuthenticatedFetch(input, init);
     }
     return fetch(input, init);
+  }
+
+  /** 把定时任务监听流上的帧送进现有 chat.* 处理。 */
+  injectEvent(event: WsEvent): void {
+    this.dispatchEvent(event);
   }
 
   private dispatchEvent(event: WsEvent): void {

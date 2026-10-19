@@ -1,3 +1,4 @@
+import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
@@ -17,6 +18,8 @@ from jiuwenswarm.gateway.routing.third_agent import ThirdAgent
 if TYPE_CHECKING:
     from jiuwenswarm.extensions.sdk.config_provider import ConfigProviderExtension
     from jiuwenswarm.extensions.sdk.path_provider import PathProviderExtension
+
+_logger = logging.getLogger(__name__)
 
 
 class ExtensionRegistry:
@@ -67,6 +70,28 @@ class ExtensionRegistry:
     @classmethod
     def reset_instance(cls) -> None:
         cls._instance = None
+
+    @classmethod
+    async def trigger_if_initialized(
+        cls,
+        event: str,
+        context: Any | None = None,
+        **kwargs: Any,
+    ) -> bool:
+        """已初始化时触发事件并返回 True；未初始化时记 debug 日志跳过并返回 False。
+
+        仅兜 ``get_instance()`` 的 RuntimeError（registry 未初始化）；
+        ``trigger()`` 自身的异常按原语义向上传播——扩展的 abort 不应被吞。
+        """
+        try:
+            instance = cls.get_instance()
+        except RuntimeError:
+            _logger.debug(
+                "[ExtensionRegistry] not initialized, skip hook %s", event
+            )
+            return False
+        await instance.trigger(event, context, **kwargs)
+        return True
 
     def register_agent_server_client(self, extension: AgentServerClientExtension) -> None:
         self._agent_server_client = extension

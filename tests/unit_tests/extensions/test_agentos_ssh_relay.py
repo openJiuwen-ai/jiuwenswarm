@@ -23,6 +23,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
     DEFAULT_SSH_USER_TEMPLATE,
     YuanrongSshRelay,
     YuanrongSshSettings,
+    _is_ssh_connect_retryable,
     list_client_key_paths,
     load_yuanrong_ssh_settings,
     resolve_client_keys_dir,
@@ -101,6 +102,9 @@ class StubSshRelay:
         self.failed.append((session.session_id, reason))
         session.exit_code = 1
         session.done.set()
+
+    async def wait_until_ready(self, instance_id: str, *, user_id: str = "") -> None:
+        del instance_id, user_id
 
 
 # ---------- settings / username ----------
@@ -185,6 +189,115 @@ def test_resolve_client_keys_requires_private_key(tmp_path: Path) -> None:
     key_dir.mkdir()
     (key_dir / "id_ed25519").write_text("k", encoding="utf-8")
     assert relay._resolve_client_keys("alice") == [str(key_dir / "id_ed25519")]
+
+
+def test_is_ssh_connect_retryable_for_cold_start_errors() -> None:
+    assert _is_ssh_connect_retryable(ConnectionRefusedError())
+    assert _is_ssh_connect_retryable(TimeoutError("timeout"))
+    assert _is_ssh_connect_retryable(RuntimeError("SSH connection closed"))
+    assert not _is_ssh_connect_retryable(ValueError("no SSH private keys found"))
+
+
+@pytest.mark.asyncio
+async def test_wait_until_ready_retries_closed_then_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import jiuwenswarm.extensions.agentos.agentos_router.ssh_relay as relay_mod
+
+    monkeypatch.setattr(relay_mod, "_SSH_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(relay_mod, "_SSH_CONNECT_READY_TIMEOUT_SECONDS", 2.0)
+
+    key_dir = tmp_path / "alice"
+    key_dir.mkdir()
+    (key_dir / "id_ed25519").write_text("k", encoding="utf-8")
+
+    class _Conn:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def wait_closed(self) -> None:
+            return None
+
+    attempts = {"n": 0}
+
+    class _FakeAsyncssh:
+        async def connect(self, *args: Any, **kwargs: Any) -> _Conn:
+            del args, kwargs
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise ConnectionRefusedError("SSH connection closed")
+            return _Conn()
+
+    monkeypatch.setattr(relay_mod, "_import_asyncssh", lambda: _FakeAsyncssh())
+    relay = YuanrongSshRelay(
+        YuanrongSshSettings(client_keys_dir=str(tmp_path / "{user_id}")),
+        frontend_endpoint="http://frontend.test:8888",
+    )
+    await relay.wait_until_ready("inst-1", user_id="alice")
+    assert attempts["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_thirdagent_switch_waits_for_sshd_after_create() -> None:
+    class _WaitRelay(StubSshRelay):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ready_calls: list[tuple[str, str]] = []
+
+        async def wait_until_ready(self, instance_id: str, *, user_id: str = "") -> None:
+            self.ready_calls.append((instance_id, user_id))
+
+    relay = _WaitRelay()
+    yuanrong = FakeYuanRongClient()
+    client = AgentOSRouterClient(
+        yuanrong,
+        FakeRegistryClient(),
+        AgentManager(),
+        ssh_relay=relay,
+        ssh_channel_endpoint=SshChannelEndpoint(ip="0.0.0.0", port=2222),
+    )
+    try:
+        response = await client.thirdagent_switch(
+            user_id="alice",
+            agent_type="opencode",
+            session_id="sess-1",
+        )
+    finally:
+        await client.shutdown()
+
+    assert response["ok"] is True
+    assert yuanrong.create_calls == 1
+    assert relay.ready_calls == [("sbx-1", "alice")]
+
+
+@pytest.mark.asyncio
+async def test_thirdagent_switch_sshd_not_ready_fails() -> None:
+    class _WaitRelay(StubSshRelay):
+        async def wait_until_ready(self, instance_id: str, *, user_id: str = "") -> None:
+            raise ConnectionRefusedError("SSH connection closed")
+
+    client = AgentOSRouterClient(
+        FakeYuanRongClient(),
+        FakeRegistryClient(),
+        AgentManager(),
+        ssh_relay=_WaitRelay(),
+        ssh_channel_endpoint=SshChannelEndpoint(ip="0.0.0.0", port=2222),
+    )
+    try:
+        response = await client.thirdagent_switch(
+            user_id="alice",
+            agent_type="opencode",
+            session_id="sess-1",
+        )
+    finally:
+        await client.shutdown()
+
+    assert response["ok"] is False
+    assert response["code"] == "SSH_NOT_READY"
+    assert "sshd not ready" in response["error"]
 
 
 def test_import_asyncssh_raises_actionable_hint(monkeypatch: pytest.MonkeyPatch) -> None:

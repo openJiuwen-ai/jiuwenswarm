@@ -29,6 +29,7 @@ from jiuwenswarm.server.handlers import session as session_handlers
 from jiuwenswarm.server.handlers import team as team_handlers
 from jiuwenswarm.server.handlers import steering as steering_handlers
 from jiuwenswarm.server.handlers import workspace as workspace_handlers
+from jiuwenswarm.server.handlers import im_hosting as im_hosting_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,19 @@ HANDLERS: dict[ReqMethod, HandlerSpec] = {
     ReqMethod.WORKSPACE_ENTRIES_DELETE: HandlerSpec(fn=workspace_handlers.handle_workspace),
     ReqMethod.WORKSPACE_PREVIEW: HandlerSpec(fn=workspace_handlers.handle_workspace),
     ReqMethod.WORKSPACE_DOWNLOAD: HandlerSpec(fn=workspace_handlers.handle_workspace),
+    # --- 数字分身 / 用户态 IM 托管 ---
+    ReqMethod.IM_HOSTING_STATUS: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_DISCOVER: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_TARGETS_LIST: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_TARGETS_ADD: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_TARGETS_PATCH: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_TARGETS_DELETE: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_POLICY_GET: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_POLICY_PATCH: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_POLL_NOW: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_HISTORY: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_LOGIN_START: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
+    ReqMethod.IM_HOSTING_LOGIN_STATUS: HandlerSpec(fn=im_hosting_handlers.handle_im_hosting),
 }
 
 

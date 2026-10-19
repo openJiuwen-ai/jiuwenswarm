@@ -7,6 +7,7 @@
     "predev": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
     "prebuild": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
     "dev": "vite",
+    "test:request-timeout": "node --test tests/requestTimeout.test.mjs",
     "build": "tsc && vite build",
     "build:prod": "tsc && vite build --mode production",
     "build:customer": "tsc && VITE_LOGIN_AUTH_SIMULATE=false vite build",
@@ -18,13 +19,17 @@
     "test:team-panel-state": "tsc src/features/teamPanelStateNormalize.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/team-panel-state --skipLibCheck --noEmitOnError && node --test tests/teamPanelState.test.mjs",
     "test:skill-panel-state": "tsc src/features/mainNavigationState.ts src/components/SkillPanel/skillListRequest.ts src/features/EnterpriseSkillSourcePanel/installMetadata.ts src/features/EnterpriseSkillSourcePanel/sourceAvailability.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/skill-panel-state --skipLibCheck --noEmitOnError && node --test tests/skillPanelState.test.mjs",
     "test:create-conversation-session": "tsc src/multi-session/state/createConversationSession.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/create-conversation-session --skipLibCheck --noEmitOnError && node --test tests/createConversationSession.test.mjs",
-    "test:cron-wake-offset": "tsc src/components/CronPanel/cronWakeOffset.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/cron-wake-offset --skipLibCheck --noEmitOnError && node --test tests/cronWakeOffset.test.mjs",
+    "test:cron-wake-offset": "tsc src/components/CronPanel/cronWakeOffset.ts src/components/CronPanel/cronIntegerInput.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/cron-wake-offset --skipLibCheck --noEmitOnError && node --test tests/cronWakeOffset.test.mjs",
+    "test:cron-integer-input": "tsc src/components/CronPanel/cronIntegerInput.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/cron-integer-input --skipLibCheck --noEmitOnError && node --test tests/cronIntegerInput.test.mjs",
+    "test:cron-expr-validation": "tsc src/components/CronPanel/cronExprValidation.ts src/components/CronPanel/cronWeekAlpha.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/cron-expr-validation --skipLibCheck --noEmitOnError && node --test tests/cronExprValidation.test.mjs",
     "test:cron-project-display": "tsc src/components/CronPanel/cronProjectDisplay.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/cron-project-display --skipLibCheck --noEmitOnError && node --test tests/cronProjectDisplay.test.mjs",
     "test:cron-job-sync": "esbuild src/features/cron/cronJobSync.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/cron-job-sync/cronJobSync.mjs && node --test tests/cronJobSync.test.mjs",
+    "test:cron-live-skip-replay": "node --test tests/cronLiveSkipReplayUpgrade.test.mjs",
     "test:xiaoyi-cron-target": "tsc src/components/CronPanel/xiaoyiCronTarget.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/xiaoyi-cron-target --skipLibCheck --noEmitOnError && node --test tests/xiaoyiCronTarget.test.mjs",
     "test:stream-delta-batcher": "tsc src/services/streamDeltaBatcher.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/stream-delta-batcher --skipLibCheck --noEmitOnError && node --test tests/streamDeltaBatcher.test.mjs",
     "test:file-download-dedup": "tsc src/utils/fileDownloadDedup.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/file-download-dedup --skipLibCheck --noEmitOnError && node --test tests/fileDownloadDedup.test.mjs",
     "test:web-http-client": "tsc src/services/webHttpClient.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/web-http-client --skipLibCheck --noEmitOnError && node --test tests/webHttpClient.test.mjs",
+    "test:im-learning-config": "esbuild src/components/PersonalContext/imLearningConfig.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/im-learning-config/imLearningConfig.mjs && node --test tests/imLearningConfig.test.mjs",
     "test:runtime-scope": "tsc src/services/runtimeScope.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/runtime-scope --skipLibCheck --noEmitOnError && node --test tests/runtimeScope.test.mjs",
     "test:auth-session": "tsc src/auth/manager/authSession.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/auth-session --skipLibCheck --noEmitOnError && node --test tests/authSession.test.mjs",
     "test:user-web-entry": "esbuild src/EnterpriseEntry.tsx --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/user-web-entry/EnterpriseEntry.mjs --alias:virtual:login-auth-simulate-provider=./src/auth/simulate/available.ts --define:import.meta.env.VITE_JIUWENSWARM_EDITION='\"personal\"' --define:import.meta.env.VITE_LOGIN_AUTH_SIMULATE='\"false\"' && esbuild src/auth/config.ts src/auth/simulate/SimulatedAuthProvider.ts --bundle --packages=external --platform=node --format=esm --outdir=node_modules/.cache/user-web-entry/auth && node --test tests/userWebEntry.test.mjs",
@@ -37,6 +42,9 @@
     "test:settle-historical-tool-executions": "esbuild src/stores/chatStore.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/chat-store-streaming/chatStore.mjs --define:import.meta.env.DEV=false && node --test tests/settleHistoricalToolExecutions.test.mjs",
     "test:history-pagination": "tsc src/features/historyPagination.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/history-pagination --skipLibCheck --noEmitOnError && node --test tests/historyPagination.test.mjs",
     "test:history-restore-source-skill": "esbuild src/features/historyRestore.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/history-restore/historyRestore.mjs --define:import.meta.env.DEV=false --define:import.meta.env.VITE_API_BASE='\"\"' --define:import.meta.env.VITE_WS_BASE='\"\"' --define:import.meta.env.VITE_JIUWENSWARM_EDITION='\"personal\"' --define:window.__JIUWEN_WEB_TRANSPORT__='\"websocket\"' --define:window.__JIUWENSWARM_EDITION__='\"personal\"' && node --test tests/historyRestoreSourceSkill.test.mjs",
+    "test:subagent-store": "esbuild src/stores/subagentStore.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/subagent-store/subagentStore.mjs && esbuild src/features/subagent/subagentNormalizer.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/subagent-store/subagentNormalizer.mjs && node --test tests/subagentStore.test.mjs",
+    "test:subagent-status-presentation": "esbuild src/features/subagent/subagentStatusPresentation.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/subagent-status/subagentStatusPresentation.mjs && node --test tests/subagentStatusPresentation.test.mjs",
+    "test:subagent-activity-presentation": "esbuild src/features/subagent/subagentActivityPresentation.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/subagent-activity/subagentActivityPresentation.mjs && node --test tests/subagentActivityPresentation.test.mjs",
     "test:artifact-collection": "esbuild src/components/ArtifactsPanel/artifactCollection.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/artifact-collection/artifactCollection.mjs && node --test tests/artifactCollection.test.mjs",
     "test:desktop-save": "esbuild src/utils/desktopSave.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/desktop-save/desktopSave.mjs && node --test tests/desktopSave.test.mjs",
     "test:ask-user-submission": "tsc src/components/InteractionSlot/interactionSubmission.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/ask-user-submission --skipLibCheck --noEmitOnError && node --test tests/askUserSubmission.test.mjs",
@@ -126,5 +134,8 @@
     "typescript": "^5.3.0",
     "vite": "^5.0.0",
     "vite-plugin-svgr": "^4.5.0"
+  },
+  "allowScripts": {
+    "esbuild@0.21.5": true
   }
 }

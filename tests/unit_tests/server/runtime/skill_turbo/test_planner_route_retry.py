@@ -111,3 +111,39 @@ class TestMatchSkillRouteRetry:
 
         assert skill is not None and skill.name == "ppt"
         assert len(calls) == 2
+
+
+class TestPlannerPrechecks:
+    """plan 前置检查三分支（S_02 边界 15/16）：不发起 LLM 调用直接降级 None。
+
+    防护意图：model_client 缺失曾表现为"无匹配 skill"静默降级，难定位
+    （契约接线类根因）；前置分支零 LLM 调用是可精确断言的成本契约。
+    """
+
+    @pytest.mark.asyncio
+    async def test_empty_task_returns_none_without_llm_call(self):
+        client, calls = _client_with_outputs([[_ROUTE_OK]])
+        planner = SkillTurboPlanner(_env(client))
+
+        assert await planner.plan("   ") is None
+        assert calls == [], "空 task 必须在前置检查返回，不得消耗 LLM 调用"
+
+    @pytest.mark.asyncio
+    async def test_no_registered_skills_returns_none_without_llm_call(self):
+        client, calls = _client_with_outputs([[_ROUTE_OK]])
+        env = _env(client)
+        env.skills = {}
+        planner = SkillTurboPlanner(env)
+
+        assert await planner.plan("生成一份PPT") is None
+        assert calls == [], "无注册技能必须直接降级，不得发起路由 LLM 调用"
+
+    @pytest.mark.asyncio
+    async def test_missing_model_client_returns_none_without_llm_call(self):
+        client, calls = _client_with_outputs([[_ROUTE_OK]])
+        env = _env(client)
+        env.model_client = None
+        planner = SkillTurboPlanner(env)
+
+        assert await planner.plan("生成一份PPT") is None
+        assert calls == [], "model_client 缺失必须直接降级（S_02 边界 15）"

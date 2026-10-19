@@ -39,6 +39,8 @@ from jiuwenswarm.server.runtime.skill_turbo.resume_context import (  # noqa: F40
     set_skill_turbo_id,
 )
 
+SKILL_TURBO_MODEL_IDENTITY_KEY = "__skill_turbo_model_identity__"
+
 logger = logging.getLogger(__name__)
 
 
@@ -197,6 +199,7 @@ async def save_resume_ctx(
     inputs: dict[str, Any],
     pending_tool_call_id: str,
     task_states: list[dict[str, Any]] | None = None,
+    outer_task_id: str | None = None,
 ) -> None:
     """中断时保存断点上下文到 session state（checkpointer 持久化）。
 
@@ -210,6 +213,7 @@ async def save_resume_ctx(
         inputs=inputs,
         pending_tool_call_id=pending_tool_call_id,
         task_states=task_states,
+        outer_task_id=outer_task_id,
     )
 
 

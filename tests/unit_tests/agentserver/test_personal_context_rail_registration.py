@@ -55,6 +55,8 @@ async def test_agent_fast_and_plan_share_one_rail(
     adapter._personal_context_rail = None  # pylint: disable=protected-access
     adapter._personal_context_rail_lock = asyncio.Lock()  # pylint: disable=protected-access
     adapter._personal_context_runtime_enabled = True  # pylint: disable=protected-access
+    adapter._im_search_tools = []  # pylint: disable=protected-access
+    adapter._im_search_tools_registered = False  # pylint: disable=protected-access
 
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep.PersonalContextRail",
@@ -86,6 +88,11 @@ def _adapter(
     adapter._personal_context_rail = None  # pylint: disable=protected-access
     adapter._personal_context_rail_lock = asyncio.Lock()  # pylint: disable=protected-access
     adapter._personal_context_runtime_enabled = runtime_enabled  # pylint: disable=protected-access
+    # im_search tool sync state.  Owner-scoped attrs (_parent_session_id,
+    # _tool_cards) stay unset so enable-path tool creation fails open without
+    # touching the process-global resource manager.
+    adapter._im_search_tools = []  # pylint: disable=protected-access
+    adapter._im_search_tools_registered = False  # pylint: disable=protected-access
     adapter._last_mode = "agent"  # pylint: disable=protected-access
     adapter._is_session_scoped_adapter = True  # pylint: disable=protected-access
     adapter._session_adapters = {}  # pylint: disable=protected-access
@@ -255,6 +262,117 @@ async def test_personal_context_rail_cancellation_still_propagates(
         await adapter._sync_personal_context_rail("agent.fast")  # pylint: disable=protected-access
 
 
+def _im_search_tool_test_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    adapter: JiuWenSwarmDeepAdapter,
+) -> tuple[list[object], list[object]]:
+    """Patch the im_search creation path and record global tool registrations."""
+
+    monkeypatch.setattr(interface_deep, "ImSearchTool", _FakeImSearchTool)
+    monkeypatch.setattr(interface_deep, "SqliteImSearchStore", _FakeSqliteImSearchStore)
+    monkeypatch.setattr(
+        interface_deep, "get_user_workspace_dir", lambda: Path("ws-root")
+    )
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
+    registered: list[object] = []
+    unregistered: list[object] = []
+    monkeypatch.setattr(
+        interface_deep,
+        "register_tool",
+        lambda tool, owner: (registered.append(tool), tool)[1],
+    )
+    monkeypatch.setattr(
+        interface_deep, "unregister_tool", lambda tool: unregistered.append(tool)
+    )
+    return registered, unregistered
+
+
+@pytest.mark.asyncio
+async def test_im_search_tool_mounts_with_rail_and_unmounts_on_off_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _FakeAgent()
+    adapter = _adapter(agent, runtime_enabled=False)
+    adapter._parent_session_id = "session-1"  # pylint: disable=protected-access
+    adapter._tool_cards = []  # pylint: disable=protected-access
+    monkeypatch.setattr(interface_deep, "PersonalContextRail", _FakeRail)
+    registered, unregistered = _im_search_tool_test_setup(monkeypatch, adapter)
+
+    adapter.set_personal_context_runtime_enabled(True)
+    await adapter.refresh_personal_context_rail()
+
+    assert adapter._im_search_tools_registered is True  # pylint: disable=protected-access
+    (tool,) = adapter._im_search_tools  # pylint: disable=protected-access
+    assert tool.card.name == "im_search"
+    assert registered == [tool]
+    assert agent.ability_manager.cards["im_search"] is tool.card
+    assert tool.store.home == Path("ws-root") / ".personal_context"
+    assert tool.language == "cn"
+    assert any(
+        getattr(item, "name", None) == "im_search" for item in adapter._tool_cards
+    )
+
+    # Turning the switch off detaches the tool together with the rail.
+    adapter.set_personal_context_runtime_enabled(False)
+    await adapter.refresh_personal_context_rail()
+    assert adapter._im_search_tools == []  # pylint: disable=protected-access
+    assert adapter._im_search_tools_registered is False  # pylint: disable=protected-access
+    assert unregistered == [tool]
+    assert "im_search" not in agent.ability_manager.cards
+    assert not any(
+        getattr(item, "name", None) == "im_search" for item in adapter._tool_cards
+    )
+
+    # Teardown ("cleanup" mode) detaches a re-mounted tool as well.
+    adapter.set_personal_context_runtime_enabled(True)
+    await adapter.refresh_personal_context_rail()
+    (tool2,) = adapter._im_search_tools  # pylint: disable=protected-access
+    await adapter._sync_personal_context_rail("cleanup")  # pylint: disable=protected-access
+    assert adapter._im_search_tools == []  # pylint: disable=protected-access
+    assert adapter._im_search_tools_registered is False  # pylint: disable=protected-access
+    assert unregistered == [tool, tool2]
+
+
+@pytest.mark.asyncio
+async def test_im_search_tool_creation_failure_is_fail_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _FakeAgent()
+    adapter = _adapter(agent)
+    adapter._parent_session_id = "session-1"  # pylint: disable=protected-access
+    adapter._tool_cards = []  # pylint: disable=protected-access
+    monkeypatch.setattr(interface_deep, "PersonalContextRail", _FakeRail)
+    monkeypatch.setattr(interface_deep, "SqliteImSearchStore", _FakeSqliteImSearchStore)
+    monkeypatch.setattr(
+        interface_deep, "get_user_workspace_dir", lambda: Path("ws-root")
+    )
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
+
+    def _failed_constructor(store: object, language: str = "cn") -> object:
+        raise RuntimeError("construction failed")
+
+    monkeypatch.setattr(interface_deep, "ImSearchTool", _failed_constructor)
+
+    await adapter._sync_personal_context_rail("agent")  # pylint: disable=protected-access
+
+    assert adapter._personal_context_rail is not None  # pylint: disable=protected-access
+    assert adapter._im_search_tools == []  # pylint: disable=protected-access
+    assert adapter._im_search_tools_registered is False  # pylint: disable=protected-access
+    assert "im_search" not in agent.ability_manager.cards
+    assert await agent.normal_request() == "ok"
+
+
+class _FakeAbilityManager:
+    def __init__(self) -> None:
+        self.cards: dict[str, object] = {}
+
+    def add(self, card: object) -> None:
+        self.cards[card.name] = card  # type: ignore[attr-defined]
+
+    def remove(self, name: str) -> None:
+        self.cards.pop(name, None)
+
+
 class _FakeAgent:
     def __init__(
         self,
@@ -269,6 +387,7 @@ class _FakeAgent:
         self.fail_register = fail_register
         self.fail_unregister = fail_unregister
         self.cancel_register = cancel_register
+        self.ability_manager = _FakeAbilityManager()
 
     async def register_rail(self, rail: object) -> None:
         self.register_attempts.append(rail)
@@ -295,6 +414,23 @@ class _FakeRail:
 
     def set_language(self, language: str) -> None:
         del language
+
+
+class _FakeImSearchTool:
+    def __init__(self, store: object, language: str = "cn") -> None:
+        self.store = store
+        self.language = language
+        self.card = _FakeToolCard()
+
+
+class _FakeToolCard:
+    name = "im_search"
+    id = "ImSearchTool_fake"
+
+
+class _FakeSqliteImSearchStore:
+    def __init__(self, home: str | Path) -> None:
+        self.home = Path(home)
 
 
 class _FakeManagedAgent:

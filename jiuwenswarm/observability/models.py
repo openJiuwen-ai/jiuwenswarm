@@ -27,7 +27,13 @@ class OtlpSpanRecordLike(Protocol):
 
 
 class OtlpSpanSnapshotRecordLike(Protocol):
-    """Structural contract implemented by the Agent Core live snapshot record."""
+    """Structural contract implemented by the Agent Core live snapshot record.
+
+    ``raw_json`` is the OTLP JSON payload. Agent Core may hand over a deferred
+    snapshot whose payload is encoded on first access, so consumers must read it
+    only on the thread that owns the record and only when the bytes are really
+    needed; never probe it just to validate the record shape.
+    """
 
     raw_json: bytes
     trace_id: str

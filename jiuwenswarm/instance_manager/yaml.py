@@ -271,7 +271,7 @@ def create_instances_yaml_template() -> Path:
 #       agent_server: 28092
 #       web: 29000
 #       gateway: 29001
-#       frontend: 29173
+#       frontend: 15173
 #   bob:  # minimal declaration, all auto-allocated
 #
 # Instance name rules:

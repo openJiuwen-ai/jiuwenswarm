@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
@@ -65,6 +66,19 @@ def should_cancel_stale_active_todos(request: Any, params: dict[str, Any]) -> bo
     return True
 
 
+def adapter_ckpt_light_enabled() -> bool:
+    """[PERF] adapter 层 checkpoint 轻量化开关(默认关,保持既有语义)。
+
+    开启后 stale_todo / plan_pause 的每轮预处理不再为读写标志位做
+    全量 checkpoint restore/save:读走运行时 session 内存与文件标志,
+    写只落运行时 session 内存、由轮末 _persist_session_checkpoint 统一
+    落盘。语义代价:bump/清标志后、轮末落盘前进程崩溃,该次变更丢失
+    (旧实现为每次变更立即全量落盘)。
+    """
+    raw = (os.getenv("JIUWENCLAW_ADAPTER_CKPT_LIGHT") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 async def prepare_stale_todo_cleanup_for_request(
     request: Any,
     *,
@@ -108,6 +122,25 @@ async def prepare_stale_todo_cleanup_for_request(
             session_id,
         )
         return False
+
+    # [PERF] 轻量路径:运行时 session 在内存,标志操作只改内存态,由轮末
+    # _persist_session_checkpoint 统一落盘——免临时 session 的全量
+    # restore(pre_run)与立即 save(post_agent_execute + post_run)。
+    if adapter_ckpt_light_enabled() and runtime_session is not None:
+        try:
+            flag_proxy = build_flag_proxy(runtime_session)
+            set_todo_resume_snapshot_pending(flag_proxy, pending=False)
+            bump_todo_generation_token(flag_proxy)
+            logger.info(
+                "[JiuWenClaw] 切换新 todo 代际(轻量); session_id=%s request_id=%s",
+                session_id,
+                getattr(request, "request_id", ""),
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - 轻量失败退回全量路径
+            logger.warning(
+                "[JiuWenClaw] stale todo cleanup light path failed, fallback: %s", exc
+            )
 
     session = create_agent_session(session_id=session_id, card=agent_card)
     await session.pre_run(inputs=None)

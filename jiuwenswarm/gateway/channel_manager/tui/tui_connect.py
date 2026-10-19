@@ -3134,7 +3134,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             logger.warning("[cron.job.get] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
 
-    async def _cron_job_create(ws, req_id, params, session_id):
+    async def _cron_job_create(ws, req_id, params, session_id, user_id=None):
         cc = _get_cron()
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
@@ -3145,6 +3145,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         try:
             if session_id:
                 params["session_id"] = session_id
+            # 与 Web _cron_job_create 对齐：写入创建者，执行时透传 AgentOS X-Session-Context。
+            uid = str(user_id or getattr(ws, "_gateway_user_id", None) or "").strip()
+            if uid:
+                params["user_id"] = uid
             # project_dir 默认值：TUI 前端已自动注入；仅当「未传」时从当前会话 metadata 兜底
             # 注意：显式传空串 "" 等价于归默认项目，不可覆盖——用 key presence 区分
             if "project_dir" not in params and session_id:

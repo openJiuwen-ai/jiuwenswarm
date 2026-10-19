@@ -10,6 +10,11 @@ import { normalizeWeekAlphas } from './cronWeekAlpha';
 // 语法）严格得多，导致"按间隔"选分钟填 9、选小时填 5 这类合法值被前端误判非法、"确定"按钮
 // 置灰且没有对得上号的提示（见 2026-07-24 bugfix，bug001）。去掉这条限制，前端和后端的真实
 // 约束就一致了。
+/** 要求整段为十进制整数，避免 parseInt("12abc")/parseInt("1e2") 误判合法 */
+function isPureIntToken(value: string): boolean {
+  return /^\d+$/.test(value);
+}
+
 function isValidCronField(value: string, min: number, max: number, allowQuestion: boolean = false, allowLast: boolean = false): { valid: boolean; error?: string } {
   if (value === '*') return { valid: true };
   if (allowQuestion && value === '?') return { valid: true };
@@ -17,17 +22,24 @@ function isValidCronField(value: string, min: number, max: number, allowQuestion
   const parts = value.split(',');
   for (const part of parts) {
     if (part.includes('/')) {
-      const [range, stepStr] = part.split('/');
-      const step = parseInt(stepStr, 10);
-      if (isNaN(step) || step <= 0) return { valid: false, error: getFieldError(min, max) };
+      const slash = part.indexOf('/');
+      const range = part.slice(0, slash);
+      const stepStr = part.slice(slash + 1);
+      // 只允许一段 `/`；步长必须是纯正整数（拒绝 1.5、1e+21、1abc）
+      if (!range || stepStr.includes('/') || !isPureIntToken(stepStr)) {
+        return { valid: false, error: getFieldError(min, max) };
+      }
+      const step = Number(stepStr);
+      if (!Number.isSafeInteger(step) || step <= 0) return { valid: false, error: getFieldError(min, max) };
       if (range === '*') continue;
       const rangeValid = isValidCronRange(range, min, max);
       if (!rangeValid) return { valid: false, error: getFieldError(min, max) };
     } else if (part.includes('-')) {
       if (!isValidCronRange(part, min, max)) return { valid: false, error: getFieldError(min, max) };
     } else {
-      const num = parseInt(part, 10);
-      if (isNaN(num) || num < min || num > max) return { valid: false, error: getFieldError(min, max) };
+      if (!isPureIntToken(part)) return { valid: false, error: getFieldError(min, max) };
+      const num = Number(part);
+      if (!Number.isSafeInteger(num) || num < min || num > max) return { valid: false, error: getFieldError(min, max) };
     }
   }
   return { valid: true };
@@ -43,11 +55,15 @@ function getFieldError(min: number, max: number): string {
 }
 
 function isValidCronRange(range: string, min: number, max: number): boolean {
-  const [startStr, endStr] = range.split('-');
-  if (!startStr || !endStr) return false;
-  const start = parseInt(startStr, 10);
-  const end = parseInt(endStr, 10);
-  if (isNaN(start) || isNaN(end)) return false;
+  const dash = range.indexOf('-');
+  if (dash <= 0) return false;
+  const startStr = range.slice(0, dash);
+  const endStr = range.slice(dash + 1);
+  if (!startStr || !endStr || endStr.includes('-')) return false;
+  if (!isPureIntToken(startStr) || !isPureIntToken(endStr)) return false;
+  const start = Number(startStr);
+  const end = Number(endStr);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return false;
   if (start < min || end > max || start > end) return false;
   return true;
 }
@@ -105,8 +121,11 @@ export function validateCronExpr(expr: string): { valid: boolean; error?: string
   const weekResult = isValidWeekField(week);
   if (!weekResult.valid) return { valid: false, error: weekResult.error };
   if (year !== '*') {
-    const yearNum = parseInt(year, 10);
-    if (isNaN(yearNum) || yearNum < 1970 || yearNum > 2099) {
+    if (!isPureIntToken(year)) {
+      return { valid: false, error: 'cron.errors.cronYear' };
+    }
+    const yearNum = Number(year);
+    if (!Number.isSafeInteger(yearNum) || yearNum < 1970 || yearNum > 2099) {
       return { valid: false, error: 'cron.errors.cronYear' };
     }
   }

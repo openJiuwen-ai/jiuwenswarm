@@ -475,6 +475,49 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                     "[RuntimeRouted] session.create rebind failed: %s", exc,
                 )
 
+    async def release_session(self, session_id: str) -> str | None:
+        """立刻释放一条已结束的 Runtime 路由槽位（``rebind`` 的 ``to`` 为空）。
+
+        定时任务跑完或审批续跑真正结束后调用。失败、超时、旧 Runtime 没有
+        rebind 端点时只打日志并返回 ``None``，槽位退回按 ``session_ttl`` 过期，
+        不把这次任务标成失败。会话已不在时 Runtime 返回 ``noop``。
+        """
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        try:
+            action = await asyncio.wait_for(
+                self._route.rebind(
+                    from_session_id=sid,
+                    to_session_id=None,
+                    request_id=uuid.uuid4().hex,
+                ),
+                timeout=_rebind_timeout(),
+            )
+            logger.info(
+                "[RuntimeRouted] release session: session=%s action=%s",
+                sid,
+                action,
+            )
+            return action
+        except Exception as exc:  # noqa: BLE001 - 降级=按 session_ttl 自然过期
+            now = time.monotonic()
+            if now - self._last_rebind_warn >= 60.0:
+                self._last_rebind_warn = now
+                logger.warning(
+                    "[RuntimeRouted] release session failed (degraded, "
+                    "slot expires via session_ttl): session=%s err=%s",
+                    sid,
+                    exc,
+                )
+            else:
+                logger.debug(
+                    "[RuntimeRouted] release session failed: session=%s err=%s",
+                    sid,
+                    exc,
+                )
+            return None
+
     async def send_request_stream(
         self, envelope: E2AEnvelope
     ) -> AsyncIterator[AgentResponseChunk]:

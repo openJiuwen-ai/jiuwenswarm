@@ -3984,6 +3984,13 @@ class SkillManager:
         origin = str(params.get("origin") or "").strip()
         installation = self._find_web_uninstall_installation(name=name, origin=origin)
         if installation is None:
+            logger.warning(
+                "[SkillManager] web uninstall not found: service_id=%s agent_id=%s name=%s origin=%s",
+                service_id,
+                agent_id,
+                name,
+                origin,
+            )
             return {
                 "success": False,
                 "error_code": "not_found",
@@ -6197,6 +6204,8 @@ class SkillManager:
         ``installed_plugins.origin`` 精确命中优先。旧 skillhub 记录把 origin
         只写在 ``local_skills`` 上，插件行没有 origin；这时仅当本地记录的 name
         与请求一致、且插件行 origin 为空时才认领，并带上本地 origin 供后续按身份删除。
+        半安装脏数据可能只有 ``local_skills``、没有 ``installed_plugins``：在
+        name+origin 已唯一命中本地记录时，合成一条 user 安装记录继续卸载。
         插件行已有别的 origin，或 origin 在两本账里都不存在时，不按 name 回退。
         """
         if not origin:
@@ -6224,6 +6233,21 @@ class SkillManager:
             record_origin = str(record.get("origin") or "").strip()
             if record_name == name and not record_origin:
                 candidates.append(record)
+        # 兼容 installed_plugins 无该 origin（甚至无同名空 origin 行）时，按 local_skills 兜底
+        if not candidates:
+            local = local_matches[0]
+            resolved_name = str(local.get("name") or name).strip()
+            resolved_origin = str(local.get("origin") or origin).strip()
+            logger.warning(
+                "only local_skills has skill: name=%s origin=%s",
+                resolved_name,
+                resolved_origin,
+            )
+            return {
+                "name": resolved_name,
+                "origin": resolved_origin,
+                "source_type": "user",
+            }
         if len(candidates) != 1:
             return None
         resolved = dict(candidates[0])

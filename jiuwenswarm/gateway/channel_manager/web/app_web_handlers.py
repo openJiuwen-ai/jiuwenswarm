@@ -65,6 +65,7 @@ from jiuwenswarm.common.config import (
     update_updater_in_config,
     update_proactive_recommendation_in_config,
     update_trajectory_ui_in_config,
+    update_diagnosis_in_config,
 )
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.request_identity import (
@@ -726,6 +727,16 @@ _FORWARD_REQ_METHODS = frozenset({
     "personal_context.context.search_pages",
     "personal_context.context.get_node",
     "personal_context.context.get_source",
+    "personal_context.im_learning.get_status",
+    "personal_context.im_learning.run_now",
+    "personal_context.distill.get_config",
+    "personal_context.distill.patch_config",
+    "personal_context.distill.get_status",
+    "personal_context.distill.run_now",
+    "personal_context.profiles.list",
+    "personal_context.profiles.get_current",
+    "personal_context.profiles.get_version",
+    "personal_context.profiles.activate",
     "plugins.list",
     "plugins.install",
     "plugins.uninstall",
@@ -772,6 +783,18 @@ _FORWARD_REQ_METHODS = frozenset({
     "issue.state.list",
     "issue.matrix",
     "issue.delete",
+    "im.hosting.status",
+    "im.hosting.discover",
+    "im.hosting.targets.list",
+    "im.hosting.targets.add",
+    "im.hosting.targets.patch",
+    "im.hosting.targets.delete",
+    "im.hosting.policy.get",
+    "im.hosting.policy.patch",
+    "im.hosting.poll_now",
+    "im.hosting.history",
+    "im.hosting.login.start",
+    "im.hosting.login.status",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
@@ -870,6 +893,16 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "personal_context.context.search_pages",
     "personal_context.context.get_node",
     "personal_context.context.get_source",
+    "personal_context.im_learning.get_status",
+    "personal_context.im_learning.run_now",
+    "personal_context.distill.get_config",
+    "personal_context.distill.patch_config",
+    "personal_context.distill.get_status",
+    "personal_context.distill.run_now",
+    "personal_context.profiles.list",
+    "personal_context.profiles.get_current",
+    "personal_context.profiles.get_version",
+    "personal_context.profiles.activate",
     "plugins.list",
     "plugins.install",
     "plugins.uninstall",
@@ -894,6 +927,18 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "mcp.server.update",
     "mcp.server.list",
     "mcp.server.get",
+    "im.hosting.status",
+    "im.hosting.discover",
+    "im.hosting.targets.list",
+    "im.hosting.targets.add",
+    "im.hosting.targets.patch",
+    "im.hosting.targets.delete",
+    "im.hosting.policy.get",
+    "im.hosting.policy.patch",
+    "im.hosting.poll_now",
+    "im.hosting.history",
+    "im.hosting.login.start",
+    "im.hosting.login.status",
 })
 
 # 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）
@@ -969,6 +1014,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_description",
     "a2ui_enabled",
     "trajectory_ui_enabled",
+    "diagnosis_enabled",
     "proactive_recommendation_enabled",
     "proactive_recommendation_max_recommend_per_day",
     "proactive_recommendation_max_rounds_per_tick",
@@ -2203,6 +2249,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """Reconcile project-derived warm keys without delaying the Web RPC."""
         if is_enterprise():
             return
+        from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+
+        if not prewarm_enabled_by_env():
+            return
 
         async def _sync() -> None:
             try:
@@ -2313,6 +2363,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["trajectory_ui_enabled"] = (
                 "true" if trajectory_ui_cfg.get("enabled", False) else "false"
             )
+            diagnosis_cfg = raw.get("diagnosis") or {}
+            payload["diagnosis_enabled"] = (
+                "true" if diagnosis_cfg.get("enabled", False) else "false"
+            )
             for key, val in payload.items():
                 payload[key] = decrypt(key, val)
             react_cfg = raw.get("react") or {}
@@ -2367,6 +2421,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("permissions_enabled", "false")
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("trajectory_ui_enabled", "false")
+            payload.setdefault("diagnosis_enabled", "false")
             payload.setdefault("evolution_enabled", "true")
             payload.setdefault("ttse_enabled", "true")
             payload.setdefault("skill_create", "false")
@@ -2570,6 +2625,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_setup_guide_enabled_in_config(parsed)
                 elif param_key == "trajectory_ui_enabled":
                     update_trajectory_ui_in_config(parsed)
+                elif param_key == "diagnosis_enabled":
+                    update_diagnosis_in_config(parsed)
                 elif param_key == "memory_forbidden_enabled":
                     await update_memory_forbidden_enabled_in_config(parsed)
                 elif param_key == "memory_forbidden_description":
@@ -4005,6 +4062,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         session_id_to_delete = session_id_to_delete.strip()
+        # Match chat/session.list tenant identity when removing shared session
+        # files. Params supplied by the caller must not override connection scope.
+        delete_group, delete_bot = _ws_identity_scope(ws)
+        delete_routing = {
+            key: value for key, value in (("group_id", delete_group), ("bot_id", delete_bot))
+            if value
+        }
+        delete_metadata = {"routing": delete_routing} if delete_routing else None
 
         from jiuwenswarm.gateway.routing.session_index import is_remote_storage
 
@@ -4027,6 +4092,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         req_method=ReqMethod.SESSION_DELETE,
                         params=params,
                         user_id=user_id,
+                        metadata=delete_metadata,
                     )
                     resp = await ac.send_request(env)
                     if not resp.ok:
@@ -4137,6 +4203,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     req_method=ReqMethod.SESSION_DELETE,
                     params=params,
                     user_id=user_id,
+                    metadata=delete_metadata,
                 )
                 resp = await ac.send_request(env)
                 if resp.ok:
@@ -5379,7 +5446,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _project_git_switch_branch(ws, req_id, params, session_id):
         """切换 Git 分支(设计文档 §4.1.14)。
 
-        ``require_clean=true`` 时工作区不干净返回 ``WORKTREE_DIRTY``。成功后
+        ``require_clean=true`` 时已跟踪文件存在未提交修改返回
+        ``WORKTREE_DIRTY``；未跟踪文件不阻止切换。成功后
         调 ``mark_dirty`` 触发 /ws/git 立即重算。中间状态返回
         ``GIT_TRANSIENT_STATE``。
         """
@@ -7147,7 +7215,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
-        await channel.send_response(ws, req_id, ok=True, payload=cc.job_metadata())
+        payload = dict(cc.job_metadata())
+        from jiuwenswarm.gateway.cron.policy import resolve_max_jobs_per_user
+
+        payload["max_jobs_per_user"] = await resolve_max_jobs_per_user()
+        await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _cron_job_get(ws, req_id, params, session_id):
         reg, cc, sid, aid = await _cron_context(params)
@@ -7377,13 +7449,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             run_info = await cc.run_now_with_session(
                 job_id, group_id=g, bot_id=b, user_id=u
             )
+            payload = {
+                "accepted": True,
+                "run_id": run_info.get("run_id", ""),
+                "session_id": run_info.get("session_id", ""),
+            }
+            if run_info.get("reused_pending_session") or run_info.get("awaiting_approval"):
+                payload["awaiting_approval"] = True
+                payload["reused_pending_session"] = True
             await channel.send_response(
                 ws, req_id, ok=True,
-                payload={
-                    "accepted": True,
-                    "run_id": run_info.get("run_id", ""),
-                    "session_id": run_info.get("session_id", ""),
-                },
+                payload=payload,
             )
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")

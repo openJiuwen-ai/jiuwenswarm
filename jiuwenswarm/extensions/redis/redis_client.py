@@ -234,6 +234,38 @@ class RedisClient:
         r = self._connection()
         return bool(await r.expire(self._cfg.effective_key(key), int(ttl_seconds)))
 
+    async def rpush(self, key: str, *values: Any) -> int:
+        r = self._connection()
+        if not values:
+            return 0
+        encoded = [v if isinstance(v, str) else str(v) for v in values]
+        return int(await r.rpush(self._cfg.effective_key(key), *encoded))
+
+    @staticmethod
+    def _as_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value).decode("utf-8", errors="replace")
+        return str(value)
+
+    async def lrange(self, key: str, start: int, stop: int) -> list[str]:
+        r = self._connection()
+        raw = await r.lrange(self._cfg.effective_key(key), int(start), int(stop))
+        out: list[str] = []
+        for item in raw or []:
+            if item is None:
+                continue
+            out.append(self._as_text(item))
+        return out
+
+    async def ltrim(self, key: str, start: int, stop: int) -> bool:
+        r = self._connection()
+        await r.ltrim(self._cfg.effective_key(key), int(start), int(stop))
+        return True
+
     async def delete(self, key: str) -> bool:
         r = self._connection()
         n = int(await r.delete(self._cfg.effective_key(key)))
@@ -332,8 +364,9 @@ class RedisClient:
                     continue
                 if msg.get("type") != "message":
                     continue
-                data = msg.get("data")
-                yield data if isinstance(data, str) else str(data)
+                text = self._as_text(msg.get("data"))
+                if text:
+                    yield text
         finally:
             try:
                 await pubsub.unsubscribe(ch)

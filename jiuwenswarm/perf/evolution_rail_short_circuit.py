@@ -4,11 +4,13 @@
 实测(py-spy, N=1 连续轮次): EvolutionRail.after_model_call 占回合时间 ~40%
 (drain/enrich/merge 轨迹管道),而 symphony.enabled=false 时这些数据无处可去。
 本补丁仅在企业版生效;个人版不短路,保证自演进轨迹路径完整。
-企业版在 symphony 主开关关闭时将 after_model_call / after_tool_call /
-after_task_iteration 短路为 no-op;生产化修复应在核心侧"未启用即不订阅"。
+企业版在 symphony 主开关关闭时将 before_invoke / after_model_call /
+after_tool_call / after_task_iteration 短路为 no-op;生产化修复应在核心侧
+"未启用即不订阅"。
 
-注意: 不可短路 before_invoke —— SkillEvolutionRail 依赖其订阅轨迹,
-短路会导致 after_invoke 时 trajectory=None、自演进无法触发。
+注意: before_invoke 现已加入短路列表。symphony 关闭时短路 before_invoke
+会导致 self._builder 为 None, 但 after_invoke 有 None 守卫会安全返回,
+自演进不触发是预期行为（symphony 关闭时轨迹数据无处可去）。
 """
 
 import logging
@@ -51,9 +53,9 @@ def apply_evolution_rail_short_circuit() -> None:
         _short_circuited.__name__ = name
         return _short_circuited
 
-    # 不短路 before_invoke：技能自演进依赖其订阅轨迹；
     # symphony 关闭时仍短路 drain 路径以省回合时延。
     for _name in (
+        "before_invoke",
         "after_model_call",
         "after_tool_call",
         "after_task_iteration",

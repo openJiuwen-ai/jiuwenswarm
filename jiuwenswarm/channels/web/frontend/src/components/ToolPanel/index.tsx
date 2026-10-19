@@ -6,6 +6,8 @@
 
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
+import { useSubagentStore } from '../../stores';
+import { SubagentExpandedPanel } from '../subagent/SubagentExpandedPanel';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { FileCheck2, FileText, Minimize2 } from 'lucide-react';
 import { webRequest } from '../../services/webClient';
@@ -211,6 +213,10 @@ export function ToolPanel({
   const enterpriseMode = isEnterprise();
   const { isConnected, memoryUsage, setMemoryUsage } = useSessionStore();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const resolvedSessionId = sessionId || activeSessionId || '';
+  const subagentCount = useSubagentStore((state) => Object.keys(state.runtimes[resolvedSessionId]?.subagentsById ?? {}).length);
+  const selectedSubagentId = useSubagentStore((state) => state.runtimes[resolvedSessionId]?.selectedSubagentId ?? null);
+  const setSelectedSubagent = useSubagentStore((state) => state.setSelectedSubagent);
   const contextCompressionRate = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRate ?? 0);
   const contextCompressionBefore = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionBefore ?? null);
   const contextCompressionAfter = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionAfter ?? null);
@@ -441,6 +447,15 @@ export function ToolPanel({
           className="bg-panel h-full overflow-hidden flex-1 flex flex-col"
         >
           <div className="h-full bg-panel flex flex-col overflow-hidden">
+            {resolvedSessionId && subagentCount > 0 ? (
+              <div className="min-h-0 flex-1 overflow-hidden border-b border-border">
+                <SubagentExpandedPanel
+                  sessionId={resolvedSessionId}
+                  selectedSubagentId={selectedSubagentId}
+                  onSelectSubagent={(subagentId) => setSelectedSubagent(resolvedSessionId, subagentId)}
+                />
+              </div>
+            ) : null}
             <ExpandedSingleAgentArea
               activeTab={teamAreaActiveTab}
               tasks={todoTeamTasks}

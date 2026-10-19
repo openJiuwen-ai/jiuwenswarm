@@ -180,3 +180,29 @@ async def test_deferred_in_progress_completed_emits_start_then_complete(monkeypa
     await rail._sync_todo_and_emit_transitions(ctx)
 
     assert _event_types(session)[:2] == ["task.start", "task.complete"]
+
+
+def test_external_todo_completion_events_build_complete_and_update(monkeypatch) -> None:
+    rail = TaskExecutionRail()
+    todo_items = [
+        {
+            "id": "create_ppt",
+            "content": "生成华为风格 PPT",
+            "status": "completed",
+        },
+    ]
+    monkeypatch.setattr(rail, "_load_todo_from_json", lambda _sid: todo_items)
+
+    events = rail.external_todo_completion_events(
+        "sess-todo-defer",
+        "todo:create_ppt",
+        parent_request_id="resume-request",
+    )
+
+    assert [event.type for event in events] == ["task.complete", "task.update"]
+    assert events[0].payload["task_id"] == "todo:create_ppt"
+    assert events[0].payload["status"] == "succeeded"
+    assert events[0].payload["parent_request_id"] == "resume-request"
+    assert events[1].payload["completed_tasks"] == 1
+    assert events[1].payload["in_progress_tasks"] == 0
+    assert events[1].payload["tasks"][0]["status"] == "completed"

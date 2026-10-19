@@ -9,15 +9,38 @@ import { create } from 'zustand';
 import {
   type AuthorizationResult,
   type ContextGraph,
+  type DistillConfig,
+  type DistillStatus,
   type FetchServiceConfig,
   type FetchServicePatch,
   type FetchProvider,
+  type ImLearningConfig,
+  type ImLearningStatus,
   type PersonalContextConfig,
   type PersonalContextStatus,
+  type ProfileVersionItem,
   pcApi,
 } from '../services/personalContextApi';
 
-export type InfoTab = 'graph' | 'services' | 'settings';
+export type InfoTab = 'graph' | 'services' | 'settings' | 'imLearning';
+
+/** Distill 未拉取到配置前的默认投影（对齐 Core DistillScheduleSettings）。 */
+const DEFAULT_DISTILL_CONFIG: DistillConfig = {
+  enabled: false,
+  interval_seconds: 86400,
+  message_threshold: 50,
+  max_messages: 800,
+  learning_since_ms: null,
+};
+
+/** IM 学习未配置时的默认形态（与后端 _unconfigured_projection 的 im_learning 节对齐）。 */
+const UNCONFIGURED_IM_LEARNING: ImLearningConfig = {
+  enabled: false,
+  targets: [],
+  since_ms: null,
+  fetch_interval_seconds: 600,
+  fetch_top_n: 50,
+};
 
 /** 未配置时的统一投影（与后端 _unconfigured_projection 字段对齐）。 */
 const UNCONFIGURED: PersonalContextConfig = {
@@ -28,6 +51,7 @@ const UNCONFIGURED: PersonalContextConfig = {
   model_index: null,
   model_id: null,
   fetch_services: [],
+  im_learning: UNCONFIGURED_IM_LEARNING,
 };
 
 interface PersonalContextState {
@@ -36,6 +60,10 @@ interface PersonalContextState {
   status: PersonalContextStatus | null;
   graph: ContextGraph | null;
   authByProvider: Record<string, AuthorizationResult>;
+  imLearningStatus: ImLearningStatus | null;
+  distillConfig: DistillConfig;
+  distillStatus: DistillStatus | null;
+  profileVersions: ProfileVersionItem[];
 
   // UI
   infoTab: InfoTab;
@@ -61,6 +89,19 @@ interface PersonalContextState {
   setStrategyProfile: (profile: PersonalContextConfig['strategy_profile']) => Promise<void>;
   selectModel: (modelIndex: number) => Promise<void>;
 
+  /** IM 学习：阶段状态快照（轮询由面板负责启停）。 */
+  loadImLearningStatus: () => Promise<void>;
+  /** 保存学习配置：patch_config {im_learning} 整节提交 + 乐观更新 + 失败回滚。 */
+  saveImLearning: (imLearning: ImLearningConfig) => Promise<void>;
+
+  loadDistillConfig: () => Promise<void>;
+  loadDistillStatus: () => Promise<void>;
+  saveDistillConfig: (
+    patch: Partial<Pick<DistillConfig, 'enabled' | 'interval_seconds' | 'message_threshold'>>,
+  ) => Promise<void>;
+  loadProfiles: () => Promise<void>;
+  activateProfile: (jobId: string) => Promise<void>;
+
   createService: (service: FetchServiceConfig) => Promise<void>;
   /** 保存（编辑）已有采集任务：只更新参数，名称/来源不可改。 */
   updateService: (serviceId: string, patch: FetchServicePatch) => Promise<void>;
@@ -85,6 +126,10 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   status: null,
   graph: null,
   authByProvider: {},
+  imLearningStatus: null,
+  distillConfig: DEFAULT_DISTILL_CONFIG,
+  distillStatus: null,
+  profileVersions: [],
 
   infoTab: 'graph',
   loadingConfig: false,
@@ -212,6 +257,70 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
       throw e;
     } finally {
       set({ pendingWrites: { ...get().pendingWrites, model_index: false } });
+    }
+  },
+
+  loadImLearningStatus: async () => {
+    const imLearningStatus = await pcApi.getImLearningStatus();
+    set({ imLearningStatus });
+  },
+
+  saveImLearning: async (imLearning) => {
+    set({ pendingWrites: { ...get().pendingWrites, im_learning: true } });
+    const prev = get().config;
+    set({ config: { ...prev, im_learning: imLearning } });
+    try {
+      const next = await pcApi.patchConfig({ im_learning: imLearning });
+      set({ config: next });
+      // 保存可能触发运行时重建（scheduler 重启），立刻刷一次阶段状态。
+      await get().loadImLearningStatus().catch(() => {});
+    } catch (e) {
+      set({ config: prev });
+      throw e;
+    } finally {
+      set({ pendingWrites: { ...get().pendingWrites, im_learning: false } });
+    }
+  },
+
+  loadDistillConfig: async () => {
+    const distillConfig = await pcApi.getDistillConfig();
+    set({ distillConfig });
+  },
+
+  loadDistillStatus: async () => {
+    const distillStatus = await pcApi.getDistillStatus();
+    set({ distillStatus });
+  },
+
+  saveDistillConfig: async (patch) => {
+    set({ pendingWrites: { ...get().pendingWrites, distill: true } });
+    const prev = get().distillConfig;
+    set({ distillConfig: { ...prev, ...patch } });
+    try {
+      const next = await pcApi.patchDistillConfig(patch);
+      set({ distillConfig: next });
+      await get().loadDistillStatus().catch(() => {});
+    } catch (e) {
+      set({ distillConfig: prev });
+      throw e;
+    } finally {
+      set({ pendingWrites: { ...get().pendingWrites, distill: false } });
+    }
+  },
+
+  loadProfiles: async () => {
+    const { versions } = await pcApi.listProfiles();
+    set({ profileVersions: versions });
+  },
+
+  activateProfile: async (jobId) => {
+    set({ pendingWrites: { ...get().pendingWrites, profile_activate: true } });
+    try {
+      const result = await pcApi.activateProfile(jobId);
+      set({ profileVersions: result.versions });
+      await get().loadDistillStatus().catch(() => {});
+    } finally {
+      set({ pendingWrites: { ...get().pendingWrites, profile_activate: false } });
     }
   },
 

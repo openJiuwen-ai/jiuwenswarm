@@ -80,19 +80,25 @@ def main() -> int:
     parser.preserve_quotes = True
     data = parser.load(SRC_FILE)
 
-    # ---- 企业版域修改（与原 yq 版等价；宏改为 ${ENV:-default} 插值占位）----
-    setpath(data, "gateway.agent_client.type", "jiuwen")
+    # 企业版恒为 http
+    # 动态模式：extension 客户端优先、type 无读者；
+    # 静态模式：无 agent-runtime，回退分支需要 http 走 HttpSse 客户端
+    setpath(data, "gateway.agent_client.type", "http")
     setpath(data, "gateway.edition", "enterprise")
     setpath(data, "config.source", "enterprise")
     setpath(data, "gateway.session_map_scope", "${GATEWAY_SESSION_MAP_SCOPE:-per_chat_bot}")
     setpath(data, "react.max_iterations", "${AGENT_SERVER_REACT_MAX_ITER:-100}")
     setpath(data, "react.evolution.enabled", False)
-    setpath(data, "sandbox.enabled", True)
-    setpath(data, "sandbox.startup_mode", "external")
-    setpath(data, "sandbox.idle_ttl_seconds", 600)
-    setpath(data, "sandbox.idle_check_interval", 180)
-    setpath(data, "sandbox.url", "${JIUWENBOX_URL:-http://127.0.0.1:8321}")
-    setpath(data, "sandbox.type", "jiuwenbox")
+    # 沙箱可插拔：由部署工具 JIUWENBOX_ENABLED 控制
+    # 关闭时整个 sandbox 域不写入，业务路由走 LOCAL 直跑
+    sandbox_enabled = os.getenv("JIUWENBOX_ENABLED", "true").strip().lower() == "true"
+    if sandbox_enabled:
+        setpath(data, "sandbox.enabled", True)
+        setpath(data, "sandbox.startup_mode", "external")
+        setpath(data, "sandbox.idle_ttl_seconds", 600)
+        setpath(data, "sandbox.idle_check_interval", 180)
+        setpath(data, "sandbox.url", "${JIUWENBOX_URL:-http://127.0.0.1:8321}")
+        setpath(data, "sandbox.type", "jiuwenbox")
     setpath(data, "channels.ssh.host_key_path", "${JIUWENSWARM_CONFIG_DIR:-}/ssh_host_key")
 
     inject_feishu_bots(data)

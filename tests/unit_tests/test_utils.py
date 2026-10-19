@@ -143,7 +143,8 @@ class TestLoggerSetup:
         assert root_types == ["QueueHandler"]
         output_types = [type(h).__name__ for h in utils._iter_log_output_handlers()]
         assert "StreamHandler" in output_types
-        assert output_types.count("SafeRotatingFileHandler") == 5
+        # gateway / channel / agent_server / full / diagnosis / permissions
+        assert output_types.count("SafeRotatingFileHandler") == 6
 
 
 class TestSourceRecordMasking:

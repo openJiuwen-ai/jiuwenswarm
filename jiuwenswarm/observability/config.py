@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,8 @@ from typing import Any
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_QUEUE_SIZE = 4096
 DEFAULT_BATCH_SIZE = 64
 DEFAULT_FLUSH_INTERVAL_MS = 200
@@ -20,6 +23,10 @@ DEFAULT_RETENTION_DAYS = 7
 DEFAULT_POLL_INTERVAL_MS = 2000
 DEFAULT_DETAIL_MAX_BYTES = 4 * 1024 * 1024
 DEFAULT_SESSION_DATABASE_DIRECTORY = "sessions"
+
+DEFAULT_DIAGNOSIS_KEEP_DAYS = 7
+DEFAULT_DIAGNOSIS_UPLOAD_MB = 50
+DEFAULT_DIAGNOSIS_HISTORY_RECORDS = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +41,18 @@ class TrajectoryStoreSettings:
     flush_interval_ms: int
     poll_interval_ms: int
     detail_max_bytes: int = DEFAULT_DETAIL_MAX_BYTES
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosisSettings:
+    """Resolved settings for the trace auto-diagnosis feature (设计 §4.6)."""
+
+    enabled: bool
+    include_logs: bool
+    history_summary_records: int
+    keep_evidence_days: int
+    allow_log_upload: bool
+    max_upload_log_mb: int
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -134,10 +153,59 @@ def load_trajectory_store_settings(
     )
 
 
+def load_diagnosis_settings(
+    config: Mapping[str, Any] | None = None,
+) -> DiagnosisSettings:
+    """Resolve the ``diagnosis`` block.
+
+    离线模式（offline=true）纯日志诊断不依赖 trajectory store；在线模式由
+    诊断端点按 trace 查询结果自行 404。故此处不强制 trajectory_ui.enabled，
+    仅当 trajectory_ui 未开时记录提示（在线诊断会无 trace 可分析）。
+    """
+    source = config if config is not None else get_config()
+    raw_section = source.get("diagnosis", {}) if isinstance(source, Mapping) else {}
+    section = raw_section if isinstance(raw_section, Mapping) else {}
+
+    enabled = _as_bool(section.get("enabled"), False)
+    if enabled:
+        trajectory = source.get("trajectory_ui", {}) if isinstance(source, Mapping) else {}
+        trajectory_enabled = _as_bool(
+            trajectory.get("enabled") if isinstance(trajectory, Mapping) else None,
+            False,
+        )
+        if not trajectory_enabled:
+            # 离线纯日志诊断不依赖 trajectory store，不阻断启动；
+            # 在线诊断端点查 trace 时会自行 404，前端引导用户走离线模式。
+            logger.info(
+                "diagnosis.enabled=true but trajectory_ui.enabled=false; "
+                "在线诊断无 trace 可分析，仅离线模式（纯日志）可用"
+            )
+
+    return DiagnosisSettings(
+        enabled=enabled,
+        include_logs=_as_bool(section.get("include_logs"), True),
+        history_summary_records=_positive_int(
+            section.get("history_summary_records"),
+            DEFAULT_DIAGNOSIS_HISTORY_RECORDS,
+        ),
+        keep_evidence_days=_positive_int(
+            section.get("keep_evidence_days"),
+            DEFAULT_DIAGNOSIS_KEEP_DAYS,
+        ),
+        allow_log_upload=_as_bool(section.get("allow_log_upload"), True),
+        max_upload_log_mb=_positive_int(
+            section.get("max_upload_log_mb"),
+            DEFAULT_DIAGNOSIS_UPLOAD_MB,
+        ),
+    )
+
+
 __all__ = [
     "DEFAULT_DETAIL_MAX_BYTES",
     "DEFAULT_SESSION_DATABASE_DIRECTORY",
+    "DiagnosisSettings",
     "TrajectoryStoreSettings",
+    "load_diagnosis_settings",
     "load_trajectory_store_settings",
     "session_database_path",
 ]

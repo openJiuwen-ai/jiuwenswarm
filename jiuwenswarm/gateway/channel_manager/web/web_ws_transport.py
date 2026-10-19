@@ -89,6 +89,7 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.ask_user_question",
         "chat.ask_user_question_expired",
         "chat.subtask_update",
+        "chat.subagent_activity",
         "chat.symphony_status",
         "chat.notice",
         "history.message",
@@ -100,6 +101,9 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "security.alert",
         "goal.snapshot",
         "goal.updated",
+        # Web 的 Plan 开关靠该事件在计划执行后自动复位，需要完整 payload
+        # 才能拿到退出后应回到的 mode。
+        "plan.mode_exited",
         "runtime.accepted",
         "execution.error",
         "proactive_recommendation",
@@ -534,6 +538,10 @@ class WebWsTransport(BaseWsChannel):
             return None
         text = str(uid).strip()
         return text or None
+
+    def _extract_ws_user_id(self, ws: Any) -> str:
+        """WebWsTransport: 从 ws 提取连接级 user_id。"""
+        return self.connection_user_id(ws) or ""
 
     @staticmethod
     def _routing_key_user_id(connection_user_id: str | None, remote: Any) -> str:
@@ -1135,6 +1143,9 @@ class WebWsTransport(BaseWsChannel):
         # 注：此 sid 仅为传输层占位，首条 chat.send 携带真实 session_id 时会 re-register 覆盖。
         setattr(ws, "_jiuwen_initial_sid", _initial_sid)
 
+        # 上报连接事件
+        self.report_connect(ws)
+
         # 触发连接钩子（如发送 connection.ack）
         for hook in self._owner.rpc.connect_hooks:
             try:
@@ -1174,6 +1185,9 @@ class WebWsTransport(BaseWsChannel):
             )
         finally:
             await self.unregister_ws(ws)
+
+            # 上报断连事件
+            self.report_disconnect(ws)
 
             logger.info(
                 "WebChannel 连接清理完成: %s",

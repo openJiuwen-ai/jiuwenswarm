@@ -498,6 +498,12 @@ gateway:
       port: 2222
       user_template: "yr:instance:{instance}"
       connect_timeout_s: 30
+    # agentos_router.load_router_config 不会解析 ${VAR}，部署时用 <<>> 替换进 yaml。
+    auth_service_url: <<AGENTOS_AUTH_SERVICE_URL>>
+    timeout: <<AGENTOS_AUTH_TIMEOUT>>
+    # TUI token 鉴权；本 template 默认开启。true 时创建 AgentOSAuthenticator 校验 TUI 连接。
+    # Web 不挂鉴权 hook（浏览器 WS 无法带 Authorization）。
+    auth_enabled: true
 
 heartbeat:
   # 心跳间隔（秒），默认 3600
@@ -669,12 +675,21 @@ channels:
     listen_port: <<SSH_PORT>>
     host_key_path: ~/.jiuwenswarm/config/ssh_host_key
     relay_timeout_sec: 3600
+    auth:
+      # 公钥认证开关。true 时校验客户端公钥并签发临时密钥；false 为宽松认证。
+      enabled: true
+      # TUI 场景: 临时密钥有效期（秒）
+      ephemeral_key_ttl_sec: 300
+      # 临时密钥类型
+      ephemeral_key_type: "ssh-ed25519"
+      # 过期清理间隔（秒）
+      cleanup_interval_sec: 60
 
 # ========== 细粒度权限管控（tiered_policy）==========
 #
 # schema: tiered_policy（或兼容 v_cc / v4.2）时由 tiered_policy.evaluate_tiered_policy 求值；
 # permission_mode: normal|strict 决定 severity 映射，见 agentserver/permissions/tiered_policy.py。
-# severity（normal）：LOW/MEDIUM→allow，HIGH/CRITICAL→ask；strict 下 MEDIUM→ask、CRITICAL→deny。
+# severity（normal）：LOW/MEDIUM→allow，HIGH/CRITICAL→ask；strict：LOW→allow，MEDIUM/HIGH→ask，CRITICAL→deny。
 # rules[*].action: 可选显式动作 allow|ask|deny；配置后优先于 severity 映射，适合敏感文件读取、
 # 系统控制等不希望随 permission_mode 漂移的规则。
 # 内置参数规则 > 用户 rules；整工具存在则不用 defaults；详见 tiered_policy 模块说明。

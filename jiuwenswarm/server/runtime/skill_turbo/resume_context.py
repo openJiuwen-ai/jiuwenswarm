@@ -110,6 +110,7 @@ class ResumeContextManager:
         inputs: dict[str, Any],
         pending_tool_call_id: str,
         task_states: list[dict[str, Any]] | None = None,
+        outer_task_id: str | None = None,
     ) -> None:
         """中断时保存断点上下文（checkpointer 持久化）。
 
@@ -126,6 +127,8 @@ class ResumeContextManager:
         }
         if task_states:
             entry["task_states"] = copy.deepcopy(task_states)
+        if outer_task_id:
+            entry["outer_task_id"] = str(outer_task_id).removeprefix("todo:")
         try:
             await self._session.pre_run(inputs=None)
         except Exception as e:

@@ -25,6 +25,62 @@ def _rail_plan_adapter() -> JiuWenSwarmDeepAdapter:
     return adapter
 
 
+@pytest.mark.parametrize("custom_sessions", [False, True])
+def test_skill_active_state_initial_root_follows_tenant_paths(
+    tmp_path, monkeypatch, custom_sessions
+):
+    from jiuwenswarm.common import path_provider
+    from jiuwenswarm.server.runtime.tenant_context import (
+        bind_tenant_workspace_dirs,
+        reset_tenant_workspace_dirs,
+    )
+
+    workspace = tmp_path / "projects" / "workspace"
+    agent_root = tmp_path / "tenant" / "agent"
+    expected = tmp_path / "shared-sessions" if custom_sessions else agent_root / "sessions"
+    adapter = JiuWenSwarmDeepAdapter(workspace_dir=str(workspace))
+
+    def resolve_path(category, ctx, **_kwargs):
+        assert ctx.bound_agent_root == str(agent_root)
+        return expected if category == path_provider.PathCategory.SESSIONS else None
+
+    provider = SimpleNamespace(resolve_path=resolve_path) if custom_sessions else None
+    monkeypatch.setattr(path_provider, "_provider", provider)
+    tokens = bind_tenant_workspace_dirs(
+        jiuwenclaw_workspace=str(workspace),
+        agent_root=str(agent_root),
+        tenant_root=str(agent_root.parent),
+    )
+    try:
+        rail = adapter._build_skill_active_state_rail()
+        assert rail is not None
+        assert rail.sessions_root == expected
+        assert rail.sessions_root != workspace.parent / "sessions"
+        assert not expected.exists()
+    finally:
+        reset_tenant_workspace_dirs(tokens)
+
+
+@pytest.mark.parametrize("workspace_key", [None, "prewarm-tenant"])
+def test_skill_active_state_unbound_workspace_keeps_initial_root(
+    tmp_path, monkeypatch, workspace_key
+):
+    from jiuwenswarm.common import path_provider
+    from jiuwenswarm.server.runtime import tenant_context
+
+    workspace = tmp_path / "standalone" / "workspace"
+    adapter = JiuWenSwarmDeepAdapter(workspace_dir=str(workspace))
+    monkeypatch.setattr(path_provider, "_provider", None)
+    monkeypatch.setattr(tenant_context, "get_bound_agent_root", lambda: None)
+    token = tenant_context.bind_workspace_key(workspace_key)
+    try:
+        rail = adapter._build_skill_active_state_rail()
+        assert rail is not None
+        assert rail.sessions_root == workspace.parent / "sessions"
+    finally:
+        tenant_context.reset_workspace_key(token)
+
+
 def test_reload_plan_preserves_progressive_rail_when_config_omits_tool_lazy_load():
     adapter = _rail_plan_adapter()
     old_rail = MagicMock(name="old-progressive-tool-rail")

@@ -945,10 +945,7 @@ async def _wait_for_cron_team_round_events(
             continue
         if not isinstance(event, dict):
             continue
-        evt_type = str(event.get("event_type") or "").strip()
         yield event
-        if evt_type == "team.error":
-            break
         apply_cron_team_round_event(round_state, event)
         if cron_team_round_should_end(round_state):
             if _cron_solo_harness_end_pending(round_state):
@@ -1094,8 +1091,16 @@ _TEAM_BUILDING_EVENT_TYPES = frozenset({
 def _broadcast_event(
     channel_id: str | None, session_id: str, event: dict[str, Any]
 ) -> None:
-    """Broadcast an event to all request queues waiting on the same session."""
+    """Broadcast an event to all request queues waiting on the same session.
+
+    ``team.error`` is remapped to ``chat.error`` here so the frontend receives a
+    single unified error event type.  This is the **only** write path into the
+    request queues (``TeamManager.broadcast_event`` is called nowhere else), so
+    consumers never observe ``team.error`` — do not add checks for it downstream.
+    """
     tm = get_team_manager(channel_id)
+    if event and event.get("event_type") == 'team.error':
+        event.update({"event_type": "chat.error"})
     tm.broadcast_event(session_id, event)
     # Track team-building events so chat.final can be gated correctly.
     if (not tm.has_seen_team_events(session_id)) and event.get("event_type") in _TEAM_BUILDING_EVENT_TYPES:
@@ -1305,6 +1310,51 @@ def _enrich_leader_event(parsed: dict[str, Any], chunk: Any) -> dict[str, Any]:
 _TEAM_TOOL_RESULT_TEXT_LIMIT = 512
 
 
+def _clip_tool_result_value(value: Any) -> tuple[Any, int, bool]:
+    """Clip long strings inside a tool-result field.
+
+    Returns the clipped value, the total length of strings visited, and whether
+    any string was clipped. Dict and list values are walked so a nested
+    ``raw_output`` string cannot bypass the limit. Containers are copied only
+    when a child changes.
+    """
+    if isinstance(value, str):
+        if len(value) <= _TEAM_TOOL_RESULT_TEXT_LIMIT:
+            return value, len(value), False
+        return value[:_TEAM_TOOL_RESULT_TEXT_LIMIT], len(value), True
+    if isinstance(value, dict):
+        original_size = 0
+        truncated = False
+        rebuilt: dict[Any, Any] | None = None
+        for key, item in value.items():
+            new_item, item_size, item_truncated = _clip_tool_result_value(item)
+            original_size += item_size
+            truncated = truncated or item_truncated
+            if new_item is not item:
+                if rebuilt is None:
+                    rebuilt = dict(value)
+                rebuilt[key] = new_item
+        return (value if rebuilt is None else rebuilt), original_size, truncated
+    if isinstance(value, (list, tuple)):
+        original_size = 0
+        truncated = False
+        rebuilt_items: list[Any] | None = None
+        for index, item in enumerate(value):
+            new_item, item_size, item_truncated = _clip_tool_result_value(item)
+            original_size += item_size
+            truncated = truncated or item_truncated
+            if new_item is not item:
+                if rebuilt_items is None:
+                    rebuilt_items = list(value)
+                rebuilt_items[index] = new_item
+        if rebuilt_items is None:
+            return value, original_size, truncated
+        if isinstance(value, tuple):
+            return tuple(rebuilt_items), original_size, truncated
+        return rebuilt_items, original_size, truncated
+    return value, 0, False
+
+
 def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
     """Trim large team tool result fields before forwarding them to clients."""
     if parsed.get("event_type") != "chat.tool_result":
@@ -1314,14 +1364,12 @@ def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
     truncated = False
     original_size = 0
     for key in ("result", "raw_output"):
-        value = next_event.get(key)
-        if not isinstance(value, str):
+        if key not in next_event:
             continue
-        original_size += len(value)
-        if len(value) <= _TEAM_TOOL_RESULT_TEXT_LIMIT:
-            continue
-        next_event[key] = value[:_TEAM_TOOL_RESULT_TEXT_LIMIT]
-        truncated = True
+        new_value, value_size, value_truncated = _clip_tool_result_value(next_event[key])
+        original_size += value_size
+        truncated = truncated or value_truncated
+        next_event[key] = new_value
 
     if truncated:
         next_event["truncated"] = True
@@ -2104,6 +2152,11 @@ async def process_team_message_stream(
                 "supports_user_interaction",
                 request.params.get("supports_user_interaction") is not False,
             )
+            # auto 档开关：成员 rail 拿不到 run_context，改从自身
+            # BuildContext.request_metadata 读；这里让它随 build_context_seed 带到成员侧。
+            request_metadata.setdefault(
+                "enable_routing", request.params.get("enable_routing") is True
+            )
         resolved_mode = str(request_metadata.get("mode") or "").strip()
         # Relay-provided model_ref is authoritative for a uniform selection or
         # a member-level auto assignment. A name-only request remains a
@@ -2517,10 +2570,6 @@ async def process_team_message_stream(
                         if event.get("event_type") == "team.completed":
                             saw_team_completed = True
                             break
-                        # team.error 同样退出 waiter（ee 分支行为保留），但不标记完成：
-                        # 退出后按终态记录分流，中断则如实报错，其余保持原收尾。
-                        if event.get("event_type") == "team.error":
-                            break
                 finally:
                     team_manager.remove_waiter(session_id, rid)
                 if not saw_team_completed:
@@ -2609,8 +2658,6 @@ async def process_team_message_stream(
                             metadata=_metadata,
                             is_complete=False,
                         )
-                        if isinstance(event, dict) and event.get("event_type") == "team.error":
-                            break
                     except asyncio.TimeoutError:
                         if not team_manager.has_stream_task(session_id):
                             break
@@ -2639,9 +2686,6 @@ async def process_team_message_stream(
                             payload=event,
                             is_complete=False,
                         )
-                        if isinstance(event, dict):
-                            if event.get("event_type") == "team.error":
-                                break
                     if drained:
                         logger.info(
                             "[TeamHelpers] drained remaining events after has_stream_task loop: "
@@ -3051,7 +3095,8 @@ async def _consume_stream_with_query(
                 channel_id,
                 session_id,
                 {
-                    "event_type": "team.error",
+                    "event_type": "chat.error",
+                    "code": "team_stream_error",
                     "error": "Team stream ended with no output (possible pool/DB inconsistency or internal error)",
                     "session_id": session_id,
                 },
@@ -3084,7 +3129,8 @@ async def _consume_stream_with_query(
             channel_id,
             session_id,
             {
-                "event_type": "team.error",
+                "event_type": "chat.error",
+                "code": "team_stream_error",
                 "error": str(exc),
                 "session_id": session_id,
             },

@@ -1,0 +1,1 @@
+export { personalContextSettingsModule } from './definition';

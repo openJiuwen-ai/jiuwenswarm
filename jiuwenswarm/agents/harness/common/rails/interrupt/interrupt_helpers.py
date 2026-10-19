@@ -11,8 +11,11 @@ import copy
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
+from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
+    build_plan_approval_actions,
+)
 from jiuwenswarm.agents.harness.code.rails.code_plan_approval_interrupt_rail import (
     build_plan_approval_options_from_message,
     extract_plan_approval_content,
@@ -83,7 +86,10 @@ def has_interrupt_resume_payload(params: Any) -> bool:
     return isinstance(answers, list) and bool(answers)
 
 
-def _has_active_skill_overlay() -> bool:
+def _has_active_skill_overlay(
+    ctx: Any = None,
+    scope_resolver: Callable[[Any], tuple[str, str] | None] | None = None,
+) -> bool:
     """当前 Skill 授权上下文是否存在 ACTIVE Grant（owner_scopes allow 回落判定）。
 
     判定失败按存在处理（返回 True，强制回落 engine），不放宽权限。
@@ -95,12 +101,13 @@ def _has_active_skill_overlay() -> bool:
         )
 
         authz = get_skill_authorization_context()
-        if authz is None or not authz.session_id or not authz.agent_scope_id:
+        if authz is not None and authz.session_id and authz.agent_scope_id:
+            scope = authz.session_id, authz.agent_scope_id
+        else:
+            scope = scope_resolver(ctx) if scope_resolver is not None and ctx is not None else None
+        if scope is None:
             return False
-        return (
-            get_skill_grant_store().get_active(authz.session_id, authz.agent_scope_id)
-            is not None
-        )
+        return get_skill_grant_store().get_active(*scope) is not None
     except Exception:  # noqa: BLE001 — 不确定时不允许绕过引擎
         logger.warning(
             "[InterruptHelpers] active Skill lookup failed; owner allow falls through to engine",
@@ -777,7 +784,9 @@ def build_permission_rail(
                 return None
             if owner_level == "allow":
                 # 有 ACTIVE Skill overlay 时强制走 engine，避免 owner allow 绕过 overlay 收紧。
-                if _has_active_skill_overlay():
+                if _has_active_skill_overlay(
+                    inp.ctx, getattr(permission_rail, "_skill_scope_resolver", None),
+                ):
                     return None
                 return ("approve",)
             return ("reject", f"[PERMISSION_DENIED] 该工具未被授权 (owner_scopes: {owner_level})")
@@ -1070,9 +1079,13 @@ def convert_interactions_to_ask_user_question(state_outputs: list) -> dict | Non
             and is_plan_approval_message(message)
         ):
             plan_content, plan_language = extract_plan_approval_content(message)
+            resolved_plan_language = "en" if plan_language == "en" else "cn"
             payload["plan_content"] = plan_content
-            payload["plan_language"] = "en" if plan_language == "en" else "cn"
+            payload["plan_language"] = resolved_plan_language
             payload["plan_approval_kind"] = "plan_approval"
+            # Web 用的动作说明。TUI 忽略该字段，继续使用 questions[].options 的
+            # approve / reject，因此两端行为互不影响。
+            payload["plan_actions"] = build_plan_approval_actions(resolved_plan_language)
         plan_path = str(question_data.get("plan_path") or "").strip()
         plan_slug = str(question_data.get("plan_slug") or "").strip()
         if plan_path:

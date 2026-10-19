@@ -1455,6 +1455,7 @@ async def test_parent_evicts_uncertain_child_without_waiting_for_idle_ttl():
     parent._session_adapter_last_used = {"session-1": interface_module.time.time()}
     parent._session_adapter_versions = {"session-1": 0}
     parent._session_adapter_reload_failures = {}
+    parent._sessions_awaiting_tool_permission = set()
 
     await parent._evict_idle_session_adapters()
 
@@ -1544,7 +1545,7 @@ def _entry_adapter(monkeypatch):
     monkeypatch.setattr(adapter, "_inject_extension_config_into_inputs", Mock())
     monkeypatch.setattr(adapter, "_has_valid_model_config", Mock(return_value=True))
     monkeypatch.setattr(adapter, "_handle_slash_command", AsyncMock(return_value=None))
-    monkeypatch.setattr(adapter, "_resolve_model_for_request", Mock(return_value=None))
+    monkeypatch.setattr(adapter, "_resolve_model_for_request", Mock(return_value=adapter._model))
     monkeypatch.setattr(adapter, "_resolve_model_name", Mock(return_value="test"))
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", Mock())
     monkeypatch.setattr(adapter, "_maybe_apply_pending_reload", AsyncMock())

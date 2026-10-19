@@ -9,8 +9,11 @@ from typing import Any
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
-from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import EventType
+from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
+from jiuwenswarm.extensions.hooks_context import AgentReloadConfigHookContext
+from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
@@ -140,6 +143,33 @@ async def handle_config_cache_clear(ctx: RequestContext) -> None:
     await ctx.sink.send_wire(wire)
 
 
+async def _trigger_agent_reload_config_hook(
+    request: AgentRequest,
+    config_payload: Any,
+    env_overrides: Any,
+) -> tuple[Any, Any]:
+    """reload 生效前触发 AGENT_RELOAD_CONFIG hook，返回扩展改写后的 config/env。
+
+    扩展整体替换 ``hook_ctx.config`` / ``hook_ctx.env`` 即可生效（原地修改仅在
+    原值为 dict 时可用；``config`` 原值可为 ``None``，表示未下发、按本地配置
+    reload）。ExtensionRegistry 未初始化时静默跳过并返回原值；``trigger()``
+    抛出的异常（如扩展 abort 重抛的 cause）按原语义向上传播，交由调用方
+    统一失败处理——不允许改写被静默丢弃后 reload 依旧 ok=True。
+    """
+    hook_ctx = AgentReloadConfigHookContext(
+        request_id=request.request_id,
+        channel_id=request.channel_id,
+        config=config_payload,
+        env=env_overrides,
+    )
+    fired = await ExtensionRegistry.trigger_if_initialized(
+        AgentServerHookEvents.AGENT_RELOAD_CONFIG, hook_ctx
+    )
+    if fired:
+        return hook_ctx.config, hook_ctx.env
+    return config_payload, env_overrides
+
+
 async def handle_agent_reload_config(ctx: RequestContext) -> None:
     request = ctx.request
     try:
@@ -174,6 +204,13 @@ async def handle_agent_reload_config(ctx: RequestContext) -> None:
                     await ctx.sink.send_wire(wire)
                     return
 
+            # AGENT_RELOAD_CONFIG hook：仅在确认会执行 agent 侧 reload 且租户
+            # 守卫通过后触发，扩展改写的 config/env 随后才真正生效——scope 不
+            # 命中或守卫拒绝的请求不跑扩展链，改写值不会被静默丢弃。
+            config_payload, env_overrides = await _trigger_agent_reload_config_hook(
+                request, config_payload, env_overrides
+            )
+
             raw_agent = getattr(request, "agent_id", None)
             agent_id, service_id, _workspace_key = TenantAgentPool.extract_ids(request)
             if (
@@ -192,6 +229,22 @@ async def handle_agent_reload_config(ctx: RequestContext) -> None:
                     env_overrides,
                     **reload_kwargs,
                 )
+                # 数字分身走 TenantAgentPool 里独立的 AgentManager（channel=im_hosting），
+                # 不在上面的 web AgentManager 中。只热更新 web 时，已创建的托管会话
+                # 会继续用创建时的占位模型（.env 的 your-model-name）。
+                # 这块对接专家之后需要修改channel
+                await ctx.services.tenant_pool().reload_agents_config(
+                    config_payload,
+                    env_overrides if isinstance(env_overrides, dict) else {},
+                )
+
+        # ``xiaoyi_claw`` can be enabled without restarting agent server.
+        # Re-evaluate the gate after every config reload; the patch is idempotent.
+        from jiuwenswarm.server.app_agentserver import (
+            refresh_openai_response_assembly_patch,
+        )
+
+        refresh_openai_response_assembly_patch()
 
         # Hot-reload ProactiveEngine config if available
         should_reload_proactive = not reload_scopes or bool(reload_scopes & {"model", "proactive", "agent_runtime"})

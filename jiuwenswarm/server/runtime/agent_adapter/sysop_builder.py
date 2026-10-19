@@ -355,6 +355,35 @@ def _merge_yuanrong_mounts(
     return merged
 
 
+def _skill_state_paths(shared_root: Path | None) -> list[Path]:
+    from jiuwenswarm.common.utils import get_agent_sessions_dir, get_user_workspace_dir
+
+    paths = [get_agent_sessions_dir(), get_user_workspace_dir() / ".skill_authorization"]
+    if shared_root is not None:
+        paths.extend([shared_root / "sessions", shared_root / "agent" / "sessions"])
+    return paths
+
+
+def _protect_yuanrong_skill_state(mounts: list[dict[str, Any]], agent_root: Path) -> list[dict[str, Any]]:
+    """Keep service state read-only beneath writable workspace mounts."""
+    protected = _skill_state_paths(agent_root)
+    for mount in mounts:
+        if mount.get("readonly"):
+            continue
+        source = Path(mount["source"]).expanduser().resolve()
+        target = Path(mount["target"]).expanduser()
+        if any(source == path.resolve() or path.resolve() in source.parents for path in protected):
+            raise ValueError("yuanrong mount cannot override service-owned session state")
+        if source != target and any(source in path.resolve().parents for path in protected):
+            raise ValueError("yuanrong mount cannot alias service-owned session state")
+    result = list(mounts)
+    for path in protected:
+        path.mkdir(parents=True, exist_ok=True)
+        resolved = str(path.resolve())
+        result.append({"source": resolved, "target": resolved, "readonly": True})
+    return result
+
+
 def _build_yuanrong_extra_params() -> dict[str, Any]:
     """Assemble yuanrong provider extra_params; always identity-mount agent_root."""
     endpoint = get_sandbox_endpoint()
@@ -375,7 +404,9 @@ def _build_yuanrong_extra_params() -> dict[str, Any]:
 
     extra_params: dict[str, Any] = {
         "executor": executor,
-        "mounts": _merge_yuanrong_mounts(agent_root_mount, config_mounts),
+        "mounts": _protect_yuanrong_skill_state(
+            _merge_yuanrong_mounts(agent_root_mount, config_mounts), agent_root
+        ),
     }
 
     workdir = endpoint.get("workdir")
@@ -392,9 +423,12 @@ def _build_yuanrong_extra_params() -> dict[str, Any]:
             if isinstance(value, dict):
                 rootfs = dict(value)
                 existing = rootfs.get("mounts")
-                rootfs["mounts"] = _merge_yuanrong_mounts(
-                    agent_root_mount,
-                    existing if isinstance(existing, list) else None,
+                rootfs["mounts"] = _protect_yuanrong_skill_state(
+                    _merge_yuanrong_mounts(
+                        agent_root_mount,
+                        existing if isinstance(existing, list) else None,
+                    ),
+                    agent_root,
                 )
                 if "workdir" not in rootfs or not str(rootfs.get("workdir") or "").strip():
                     rootfs["workdir"] = extra_params["workdir"]
@@ -565,6 +599,20 @@ def build_filesystem_policy(
             config_str = str(config_path)
             _record_ro_resource_bind(config_str, config_str)
 
+    # Session metadata is service-owned. A writable tenant/project parent must
+    # never let a tool edit, rename or remove Skill authorization files.
+    # Cover both default agent roots and explicit enterprise tenant roots.
+    protected_paths = _skill_state_paths(resolved_workspace)
+    if resolved_project is not None and any(
+        resolved_project == path.resolve() or path.resolve() in resolved_project.parents
+        for path in protected_paths
+    ):
+        raise ValueError("project_dir cannot be a service-owned session directory")
+    for protected in protected_paths:
+        protected.mkdir(parents=True, exist_ok=True)
+        protected_str = str(protected.resolve())
+        _record_ro_resource_bind(protected_str, protected_str)
+
     for entry in files_runtime.get("allow") or []:
         normalized = _normalize_fs_entry(entry)
         if normalized is None:
@@ -576,6 +624,15 @@ def build_filesystem_policy(
             raise FileNotFoundError(
                 f"sandbox files.allow path does not exist on host: {path!r}"
             )
+        resolved_host = host.resolve()
+        if resolved_host != host and any(
+            resolved_host == protected.resolve() or resolved_host in protected.resolve().parents
+            for protected in protected_paths
+        ):
+            raise ValueError("sandbox files.allow cannot alias service-owned session state")
+        if any(resolved_host == protected.resolve() or protected.resolve() in resolved_host.parents
+               for protected in protected_paths):
+            raise ValueError("sandbox files.allow cannot override service-owned session state")
         _record_rw_bind(
             path,
             path,

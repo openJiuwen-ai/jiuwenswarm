@@ -24,8 +24,22 @@ class _ThinkingProbeNode(DisableThinkingMixin, PlanNode):
 
 
 class TestResolveSkillTurboThinkingKwargs:
-    def test_none_is_zero_inject(self):
-        assert resolve_skill_turbo_thinking_kwargs(None, MagicMock()) == {}
+    def test_none_uses_default_low_for_glm53(self):
+        client = MagicMock()
+        client.model_config = MagicMock(model_name="glm-5.3")
+        kwargs = resolve_skill_turbo_thinking_kwargs(None, client)
+        assert kwargs["extra_body"]["thinking"]["type"] == "enabled"
+        assert kwargs["reasoning_effort"] == "low"
+
+    def test_none_no_inject_for_non_glm53_allowlisted(self):
+        client = MagicMock()
+        client.model_config = MagicMock(model_name="glm-5.2")
+        assert resolve_skill_turbo_thinking_kwargs(None, client) == {}
+
+    def test_none_unsupported_empty(self):
+        client = MagicMock()
+        client.model_config = MagicMock(model_name="qwen3-plus")
+        assert resolve_skill_turbo_thinking_kwargs(None, client) == {}
 
     def test_off_glm_uses_allowlist(self):
         client = MagicMock()

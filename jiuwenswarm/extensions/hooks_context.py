@@ -105,3 +105,29 @@ class ArtifactPostProcessHookContext:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class AgentReloadConfigHookContext:
+    """Agent 配置重载事件的 hook context。
+
+    在 AgentServer 确认执行 agent 侧 reload（reload_scopes 命中且 officeclaw
+    租户守卫通过）后、reload 生效前触发；宿主在 hook 返回后使用 ``config`` /
+    ``env`` 的当前值执行 reload。
+
+    改写契约：``config`` / ``env`` 为请求载荷原值——``config`` 可能为
+    ``None``（未下发，表示按本地配置 reload）。扩展应整体替换赋值
+    （``ctx.config = {...}``）；原地修改仅在原值为 dict 时可用，对 ``None``
+    做原地修改会抛 TypeError 且改写不生效。``channel_id`` 为请求通道标识，
+    Gateway 转发的部分路径可能为空串。
+    """
+
+    request_id: str
+    channel_id: str
+    config: dict[str, Any] | None = None
+    env: dict[str, str] | None = None
+    # 输出扩展
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

@@ -12,6 +12,7 @@ import PluginIcon from '../../assets/sidebar/plugin.svg?react';
 import ConfigIcon from '../../assets/sidebar/config.svg?react';
 import A2AIcon from '../../assets/sidebar/a2a.svg?react';
 import WebIcon from '../../assets/sidebar/web.svg?react';
+import DiagnosisIcon from '../../assets/sidebar/logs.svg?react';
 import PlusIcon from '../../assets/sidebar/plus.svg?react';
 import logoIcon from '/logo.svg';
 import AdvancedConfigIcon from '../../assets/sidebar/advanced-config-new.svg?react';
@@ -100,10 +101,21 @@ const approvalsNavIcon = (
   </svg>
 );
 
+const digitalAvatarNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M15.75 7.5a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.5 19.5a7.5 7.5 0 0115 0"
+    />
+  </svg>
+);
+
 const mainNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
   { key: 'channels', labelKey: 'nav.channels', icon: <ChannelIcon aria-hidden /> },
+  { key: 'digitalavatar', labelKey: 'nav.digitalAvatar', icon: digitalAvatarNavIcon },
   { key: 'agents', labelKey: 'nav.workspace', icon: workspaceNavIcon },
   { key: 'teams', labelKey: 'nav.teams', icon: teamNavIcon },
   { key: 'personalContext', labelKey: 'nav.personalContext', icon: personalContextNavIcon },
@@ -115,6 +127,7 @@ const moreNavItems: NavItem[] = [
   { key: 'browserpanel', labelKey: 'nav.browser', icon: <WebIcon aria-hidden /> },
   { key: 'a2aingress', labelKey: 'nav.a2aIngress', icon: <A2AIcon aria-hidden /> },
   { key: 'updatepanel', labelKey: 'nav.update', icon: <UpdateIcon aria-hidden /> },
+  { key: 'diagnosis', labelKey: 'nav.diagnosis', icon: <DiagnosisIcon aria-hidden /> },
 ];
 
 // Advanced Config Panel Component

@@ -34,6 +34,7 @@ from openjiuwen.core.single_agent.rail.base import (
 
 from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import NotifyingLLMRetryRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+from jiuwenswarm.agents.harness.common.rails.task_execution_rail import get_current_task_id
 from jiuwenswarm.server.runtime.agent_adapter.llm_io_trace import (
     begin_tool_trace_event,
     end_tool_trace_event,
@@ -50,6 +51,7 @@ from jiuwenswarm.server.runtime.skill_turbo.node_artifact_store import (
     save_node_artifacts,
 )
 from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
+    SKILL_TURBO_MODEL_IDENTITY_KEY,
     SKILL_TURBO_RESUME_CTX_KEY,
     build_tool_ctx,
     clear_resume_ctx,
@@ -140,11 +142,11 @@ def resolve_skill_turbo_thinking_kwargs(
 ) -> dict[str, Any]:
     """Optional thinking inject for SkillTurbo LLM calls.
 
-    ``thinking is None`` → empty dict (no adapt, identical to legacy invoke/stream).
-    Unsupported / degraded → empty dict (never abort).
+    ``thinking is None`` → ``default`` (GLM-5.3 family → product depth low;
+    other models → no inject). Unsupported / degraded → empty dict (never abort).
     """
     if thinking is None:
-        return {}
+        thinking = "default"
     from jiuwenswarm.common.thinking.adapter import adapt_thinking
     from jiuwenswarm.common.thinking.types import kwargs_digest, thaw_llm_call_kwargs
 
@@ -1870,17 +1872,42 @@ class SkillTurboExecutor:
             # （plan_code/inputs/pending_tool_call_id），供 resume 时重放执行并命中
             # 同一 tool_call_id 恢复。透传给上层发 HITL 三件套。
             trace_status = "interrupted"
+            metadata = (
+                self._execution_inputs.get("metadata")
+                if isinstance(self._execution_inputs, dict)
+                else None
+            )
+            model_identity = (
+                metadata.get(SKILL_TURBO_MODEL_IDENTITY_KEY)
+                if isinstance(metadata, dict)
+                else None
+            )
+            if not isinstance(model_identity, dict) or not str(
+                model_identity.get("model_ref") or ""
+            ).strip():
+                logger.error(
+                    "[SkillTurboExecutor] selected model identity is unavailable; "
+                    "rejecting HITL pause without saving resume_ctx tcid=%s",
+                    tool_call_id,
+                )
+                raise RuntimeError(
+                    "SkillTurbo cannot pause for user input because the selected "
+                    "model identity is unavailable"
+                ) from None
             try:
+                outer_task_id = get_current_task_id()
                 await save_resume_ctx(
                     _session_var.get(),
                     plan_code=self._current_plan_code,
                     inputs=self._execution_inputs,
                     pending_tool_call_id=tool_call_id,
                     task_states=self._snapshot_task_states(),
+                    outer_task_id=outer_task_id,
                 )
                 logger.info(
-                    "[SkillTurboExecutor] HITL interrupt resume_ctx saved tcid=%s",
+                    "[SkillTurboExecutor] HITL interrupt resume_ctx saved tcid=%s outer_task_id=%s",
                     tool_call_id,
+                    outer_task_id,
                 )
             except Exception as save_exc:
                 logger.warning(

@@ -11,7 +11,8 @@ from pathlib import Path
 import threading
 import time
 
-from .catalog import read_catalog
+from .catalog import CatalogChanged, hydrate_document, read_catalog
+from .catalog_cache import CatalogCache
 from .config import SelectionSettings
 from .freshness import catalog_signature, sources_unchanged
 from .diagnostics import configuration_metadata, emit
@@ -21,6 +22,7 @@ from .execution import (
     SelectionTimedOut,
     WorkBudget,
     background,
+    build_gate,
     budget,
     checkpoint,
     get_runtime,
@@ -40,6 +42,15 @@ class _PreparedCatalog:
     changed: bool
 
 
+@dataclass(frozen=True)
+class _QueryWork:
+    query: str
+    keywords: tuple[str, ...]
+    allowed_ids: frozenset[str]
+    submitted_at: float
+    cached_result: SelectionResult | None = None
+
+
 class SelectionService:
     def __init__(
         self,
@@ -50,6 +61,7 @@ class SelectionService:
     ):
         self.roots, self.settings = roots, settings
         self.runtime = runtime or get_runtime()
+        self._catalog_cache = CatalogCache()
         self._lock = threading.RLock()
         self._build: Future | None = None
         self._pipeline: SelectionPipeline | None = None
@@ -86,6 +98,7 @@ class SelectionService:
     def _submit_build(self):
         background_token = background.set(True)
         budget_token = budget.set(None)
+        gate_token = build_gate.set(self.runtime.gate)
         try:
             self._building_forced = self._force_refresh
             self._build = self.runtime.builds.submit(
@@ -97,6 +110,7 @@ class SelectionService:
             self._retry_at = time.monotonic() + 1
             raise
         finally:
+            build_gate.reset(gate_token)
             budget.reset(budget_token)
             background.reset(background_token)
         # The callback may run synchronously for an already completed Future.
@@ -150,6 +164,7 @@ class SelectionService:
             self._pipeline = None
             self._signature = None
             self._source_files = {}
+            self._catalog_cache.clear()
             self._ready = False
             return True
 
@@ -161,7 +176,11 @@ class SelectionService:
         # A continuously changing directory fails boundedly; a later search retries.
         for _ in range(3):
             observed = {}
-            pipeline = self._prepare(observed)
+            try:
+                pipeline = self._prepare(observed)
+            except CatalogChanged:
+                current = catalog_signature(self.roots)
+                continue
             after = catalog_signature(self.roots)
             if current == after and sources_unchanged(observed):
                 return _PreparedCatalog(pipeline, after, observed, True)
@@ -172,7 +191,7 @@ class SelectionService:
         started = time.perf_counter()
         documents = read_catalog(
             self.roots, text_max_chars=self.settings.text_max_chars, text_mode="capability",
-            observed_files=observed_files,
+            observed_files=observed_files, lightweight=True, cache=self._catalog_cache,
         )
         catalogued = time.perf_counter()
         if not documents:
@@ -264,8 +283,9 @@ class SelectionService:
             try:
                 # A hot change may need the same full build as startup. Keep
                 # the shorter query deadline for BM25 execution, not indexing.
-                async with asyncio.timeout(self.settings.startup_timeout_s):
-                    return await self._snapshot(allow_stale=allow_stale)
+                with self.runtime.gate.demand():
+                    async with asyncio.timeout(self.settings.startup_timeout_s):
+                        return await self._snapshot(allow_stale=allow_stale)
             except TimeoutError as exc:
                 self.runtime.timeout()
                 raise SelectionTimedOut('Skill catalog refresh timed out') from exc
@@ -275,6 +295,7 @@ class SelectionService:
 
     async def search(
         self, query: str, keywords=(), *, allowed_ids: frozenset[str], snapshot=None,
+        cached_result: SelectionResult | None = None,
     ) -> SelectionResult:
         if len(query) > self.settings.max_query_chars:
             raise ValueError("Skill query exceeds max_query_chars")
@@ -303,8 +324,11 @@ class SelectionService:
                     snapshot_started = time.perf_counter()
                     # The rail may already have validated a snapshot before
                     # refreshing native permissions and checking its result cache.
-                    pipeline, generation = snapshot if snapshot is not None else await self._snapshot()
+                    with self.runtime.gate.demand():
+                        pipeline, generation = snapshot if snapshot is not None else await self._snapshot()
                     snapshot_ms = (time.perf_counter() - snapshot_started) * 1000
+                    if cached_result is not None and cached_result.generation != generation:
+                        cached_result = None
                     if pipeline is None:
                         return SelectionResult(
                             generation=generation,
@@ -320,13 +344,17 @@ class SelectionService:
                     )
                     token = budget.set(request_budget)
                     try:
+                        query_work = _QueryWork(
+                            query=query,
+                            keywords=tuple(keywords),
+                            allowed_ids=allowed_ids,
+                            submitted_at=time.perf_counter(),
+                            cached_result=cached_result,
+                        )
                         work = self.runtime.queries.submit(
                             self._query,
                             pipeline,
-                            query,
-                            keywords,
-                            allowed_ids,
-                            time.perf_counter(),
+                            query_work,
                         )
                     finally:
                         budget.reset(token)
@@ -351,14 +379,25 @@ class SelectionService:
                 with self._lock:
                     self._active_requests -= 1
 
-    @staticmethod
-    def _query(pipeline, query, keywords, allowed_ids, submitted_at):
-        queue_ms = (time.perf_counter() - submitted_at) * 1000
+    def _query(self, pipeline, work: _QueryWork):
+        queue_ms = (time.perf_counter() - work.submitted_at) * 1000
         checkpoint()
-        result = pipeline.search(query, keywords, allowed_ids=allowed_ids)
+        result = work.cached_result or pipeline.search(
+            work.query, work.keywords, allowed_ids=work.allowed_ids,
+        )
+        # Ranking can be reused, but file-backed details must be revalidated
+        # before every response/ticket, including repeated queries in one turn.
+        candidates = []
+        for document, score in result.candidates:
+            checkpoint()
+            if document.id in work.allowed_ids:
+                document = hydrate_document(document, cache=self._catalog_cache)
+                candidates.append((document, score))
         checkpoint()
         return replace(
-            result, diagnostics={**result.diagnostics, "queue_wait_ms": queue_ms}
+            result,
+            candidates=tuple(candidates),
+            diagnostics={**result.diagnostics, "queue_wait_ms": queue_ms},
         )
 
 

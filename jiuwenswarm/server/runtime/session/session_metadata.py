@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
 
-from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
+from jiuwenswarm.common.utils import (
+    get_agent_sessions_dir,
+    get_agent_workspace_dir,
+    is_valid_session_id,
+)
 from jiuwenswarm.common.mode_matrix import NEW_AGENT_CODE_NORMAL, NEW_AGENT_WORK_NORMAL
 from jiuwenswarm.server.runtime.session.work_mode import (
     DEFAULT_WEB_WORK_MODE,
@@ -43,7 +47,24 @@ _CACHE_LOCK = threading.Lock()
 _TITLE_MAX_LEN = 50
 # 心跳任务会话目录前缀，不参与 session.list 等列表展示
 _HEARTBEAT_SESSION_PREFIX = "heartbeat_"
+# 预热产生的内部会话/目录前缀与标记目录，不参与 session.list 等列表展示
+_PREWARM_SESSION_PREFIX = "__prewarm__"
+_PREWARM_MARKER_DIR = ".prewarm"
+# 诊断 Agent 的一次性会话前缀，不参与 session.list 等列表展示
+_DIAGNOSIS_SESSION_PREFIX = "diagnosis_"
 _DELIVERY_KIND_SERVER_PUSH = "server_push"
+_CHANNEL_ID_LOCK_VERSION = 1
+_CHANNEL_ID_LOCK_VERSION_KEY = "channel_id_lock_version"
+
+
+def _is_internal_session_dir(session_id: str) -> bool:
+    """是否为系统内部会话目录（心跳/预热/诊断），不参与用户可见的会话列表。"""
+    return (
+        session_id.startswith(_HEARTBEAT_SESSION_PREFIX)
+        or session_id.startswith(_PREWARM_SESSION_PREFIX)
+        or session_id.startswith(_DIAGNOSIS_SESSION_PREFIX)
+        or session_id == _PREWARM_MARKER_DIR
+    )
 
 
 def resolve_session_runtime_team_name(metadata: dict[str, Any] | None) -> str:
@@ -64,6 +85,63 @@ _INJECTED_TAG_START_RE = re.compile(
 
 def _has_valid_work_mode(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in SUPPORTED_WORK_MODES
+
+
+def _is_first_lock_available(metadata: dict[str, Any], key: str) -> bool:
+    """Return whether a string metadata field has not been locked yet."""
+    value = metadata.get(key)
+    return not (isinstance(value, str) and value.strip())
+
+
+def _migrate_legacy_channel_id_lock(
+    session_id: str,
+    metadata: dict[str, Any],
+    *,
+    sessions_root: str | Path | None = None,
+) -> bool:
+    """Repair pre-lock channel ownership from the first persisted user turn.
+
+    Before channel ownership became first-write-wins, a later request from a
+    linked channel could overwrite ``metadata.channel_id``.  New sessions carry
+    a lock-version marker.  For an unmarked legacy session, use the earliest
+    user history record as the authoritative creation channel, then mark the
+    migration so later cross-channel traffic cannot change it again.
+
+    Returns ``True`` only when metadata changed.  An empty history is left
+    unmarked so a later read can retry after the asynchronous history writer
+    has flushed the first turn.  A non-empty history with no usable creation
+    channel is marked as checked to avoid repeatedly parsing it on session
+    list requests.
+    """
+    if metadata.get(_CHANNEL_ID_LOCK_VERSION_KEY) == _CHANNEL_ID_LOCK_VERSION:
+        return False
+
+    try:
+        from jiuwenswarm.server.runtime.session.session_history import (
+            load_history_records,
+        )
+
+        records = load_history_records(
+            session_id,
+            sessions_root=str(sessions_root) if sessions_root is not None else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("迁移会话 %s 的 channel_id 失败: %s", session_id, exc)
+        return False
+
+    for record in records:
+        if record.get("role") not in {"user", "human"}:
+            continue
+        first_channel_id = record.get("channel_id")
+        if not isinstance(first_channel_id, str) or not first_channel_id.strip():
+            break
+        metadata["channel_id"] = first_channel_id.strip()
+        metadata[_CHANNEL_ID_LOCK_VERSION_KEY] = _CHANNEL_ID_LOCK_VERSION
+        return True
+    if records:
+        metadata[_CHANNEL_ID_LOCK_VERSION_KEY] = _CHANNEL_ID_LOCK_VERSION
+        return True
+    return False
 
 
 # ── 惰性迁移:读取时推断缺失字段并回写磁盘 ──────────────────────────────────
@@ -117,6 +195,7 @@ def _apply_metadata_defaults_with_inference(
     dir_to_projects: dict[str, list[tuple[str, str]]] | None = None,
     id_to_work_mode: dict[str, str] | None = None,
     enable_writeback: bool = True,
+    enable_channel_lock_migration: bool = True,
     sessions_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """统一兜底 + 推断缺失字段,并在确定性推断时异步写盘。
@@ -145,8 +224,10 @@ def _apply_metadata_defaults_with_inference(
             ``None`` 时本函数自行构建(单条读取场景)。
         id_to_work_mode: 批量入口预构建的 project_id → work_mode 映射;
             ``None`` 时与 ``dir_to_projects`` 一起自行构建。
-        enable_writeback: 是否允许写盘。批量入口在循环中调用时传 ``True``,
-            但写盘走异步队列,不会阻塞读路径。
+        enable_writeback: 是否允许写盘。传 ``False`` 时仍会在本次返回值中完成
+            确定性推断和旧会话通道修复，但不会产生任何持久化副作用。
+        enable_channel_lock_migration: 是否允许修复旧会话归属通道。无
+            ``metadata.json`` 的异常残留会话应传 ``False``,避免迁移新建元数据。
 
     Returns:
         原地修改后的 ``metadata`` dict(保证所有字段齐全且 ``work_mode`` 合法)。
@@ -169,7 +250,15 @@ def _apply_metadata_defaults_with_inference(
     metadata.setdefault("pin_order", 0)
     metadata.setdefault("status", "idle")
 
-    changed = False  # 是否有需要写盘的确定性推断
+    # 修复旧版本中被后续跨通道请求覆写的会话归属。
+    # 只读调用只修复本次返回值；是否持久化必须统一服从 enable_writeback，
+    # 避免 session.list 等读路径意外改写 metadata.json。
+    channel_lock_migrated = enable_channel_lock_migration and (
+        _migrate_legacy_channel_id_lock(
+            session_id, metadata, sessions_root=sessions_root
+        )
+    )
+    changed = channel_lock_migrated  # 是否有需要写盘的确定性推断
 
     # 惰性迁移:历史 .../agent/workspace 前缀重映射到 jiuwenclaw_workspace。
     # 与 project_dir 的"首次锁定不可改"语义不冲突:重映射前后指向同一逻辑目录,
@@ -331,9 +420,7 @@ def _safe_session_subdir(
     stripped = (session_id or "").strip()
     if not stripped or "\x00" in stripped:
         return None
-    from jiuwenswarm.server.runtime.prompt_attachment_loader import sanitize_session_id
-
-    if sanitize_session_id(stripped) != stripped:
+    if not is_valid_session_id(stripped):
         return None
     root = Path(sessions_root) if sessions_root else get_agent_sessions_dir()
     try:
@@ -914,6 +1001,7 @@ def init_session_metadata(
     metadata = {
         "session_id": session_id,
         "channel_id": channel_id,
+        _CHANNEL_ID_LOCK_VERSION_KEY: _CHANNEL_ID_LOCK_VERSION,
         "user_id": user_id,
         "created_at": _current_timestamp(),
         "last_message_at": _current_timestamp(),
@@ -1042,6 +1130,7 @@ def update_session_metadata(
         metadata = {
             "session_id": session_id,
             "channel_id": channel_id or "",
+            _CHANNEL_ID_LOCK_VERSION_KEY: _CHANNEL_ID_LOCK_VERSION,
             "user_id": user_id or "",
             "created_at": _current_timestamp(),
             "last_message_at": _current_timestamp(),
@@ -1067,8 +1156,15 @@ def update_session_metadata(
             metadata["channel_metadata"] = channel_metadata
     else:
         # 更新现有元数据
-        if channel_id is not None:
+        _migrate_legacy_channel_id_lock(
+            session_id, metadata, sessions_root=root_s
+        )
+        # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
+        # （与 project_dir/project_id/cron_id/work_mode 一致语义，
+        # 避免联机共享会话被其他通道消息覆写归属通道）
+        if channel_id and _is_first_lock_available(metadata, "channel_id"):
             metadata["channel_id"] = channel_id
+            metadata[_CHANNEL_ID_LOCK_VERSION_KEY] = _CHANNEL_ID_LOCK_VERSION
         if user_id is not None:
             metadata["user_id"] = user_id
         if mode is not None and mode != "unknown":
@@ -1217,6 +1313,7 @@ def sync_session_request_metadata(
         metadata = {
             "session_id": session_id,
             "channel_id": channel_id or "",
+            _CHANNEL_ID_LOCK_VERSION_KEY: _CHANNEL_ID_LOCK_VERSION,
             "user_id": "",
             "created_at": now,
             "last_message_at": now,
@@ -1238,6 +1335,9 @@ def sync_session_request_metadata(
         }
         effective_project_dir = project_dir or None
     else:
+        _migrate_legacy_channel_id_lock(
+            session_id, metadata, sessions_root=root_s
+        )
         # 校验 project_dir：首次锁定 / 不一致告警不覆盖
         locked_project = metadata.get("project_dir")
         if isinstance(locked_project, str) and locked_project.strip():
@@ -1281,8 +1381,11 @@ def sync_session_request_metadata(
         # 未显式携带（如只读 RPC 默认推断）则保持磁盘原值，不腐蚀已锁定的会话 mode
         if mode is not None and explicit_mode_provided:
             metadata["mode"] = mode
-        if channel_id is not None:
+        # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
+        # （与 project_dir/project_id/cron_id/work_mode 一致语义）
+        if channel_id and _is_first_lock_available(metadata, "channel_id"):
             metadata["channel_id"] = channel_id
+            metadata[_CHANNEL_ID_LOCK_VERSION_KEY] = _CHANNEL_ID_LOCK_VERSION
         # last_message_at：仅 chat 轮次刷新。语义为「agent 最后输出时间」，
         # 只读 RPC 无 agent 输出，不应刷新——否则只读查询会把历史会话的排序时间
         # 刷新成「现在」，导致旧会话被置顶。
@@ -1396,7 +1499,7 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
                 if not session_dir.is_dir():
                     continue
                 sid = session_dir.name
-                if sid.startswith(_HEARTBEAT_SESSION_PREFIX):
+                if _is_internal_session_dir(sid):
                     continue
                 m = _read_metadata(sid)
                 if not m:
@@ -1488,6 +1591,7 @@ def set_session_delivery_context(
         metadata = {
             "session_id": session_id,
             "channel_id": normalized_channel_id,
+            _CHANNEL_ID_LOCK_VERSION_KEY: _CHANNEL_ID_LOCK_VERSION,
             "user_id": "",
             "created_at": _current_timestamp(),
             "last_message_at": _current_timestamp(),
@@ -1504,8 +1608,18 @@ def set_session_delivery_context(
             "status": "idle",
         }
     else:
-        if normalized_channel_id:
+        _migrate_legacy_channel_id_lock(
+            session_id, metadata, sessions_root=root_s
+        )
+        # channel_id：首次锁定——会话归属通道稳定，不被联机场景下其他通道的
+        # server_push 覆写；delivery_context.channel_id 仍保持动态更新，
+        # 供 build_server_push_message 路由异步推送（evolution watcher 等）到
+        # 用户最近活动的通道。
+        if normalized_channel_id and _is_first_lock_available(
+            metadata, "channel_id"
+        ):
             metadata["channel_id"] = normalized_channel_id
+            metadata[_CHANNEL_ID_LOCK_VERSION_KEY] = _CHANNEL_ID_LOCK_VERSION
         metadata["last_message_at"] = _current_timestamp()
 
     delivery_context: dict[str, Any] = {
@@ -1708,7 +1822,7 @@ def get_all_sessions_metadata(
             continue
 
         session_id = session_dir.name
-        if session_id.startswith(_HEARTBEAT_SESSION_PREFIX):
+        if _is_internal_session_dir(session_id):
             continue
         metadata = _read_metadata(session_id, sessions_root=sessions_root)
 
@@ -1738,6 +1852,8 @@ def get_all_sessions_metadata(
                 dir_to_projects=dir_to_projects,
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
+                enable_channel_lock_migration=False,
+                sessions_root=sessions_root,
             )
         else:
             # 批量入口不写盘:避免首次 session.list 触发大量异步写入导致队列满退化为同步写。
@@ -1749,6 +1865,7 @@ def get_all_sessions_metadata(
                 dir_to_projects=dir_to_projects,
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
+                sessions_root=sessions_root,
             )
 
         sessions.append(metadata)
@@ -1763,7 +1880,7 @@ def get_all_sessions_metadata(
 def collect_all_sessions_metadata() -> list[dict[str, Any]]:
     """收集全部会话元数据(不分页、不排序),供项目统计与置顶会话聚合使用。
 
-    跳过 heartbeat 会话;强制读盘(``cache_bust=True``)以跨进程拿最新数据。
+    跳过内部会话(heartbeat/预热);强制读盘(``cache_bust=True``)以跨进程拿最新数据。
     无 ``metadata.json`` 的旧会话以目录时间戳构造最小兜底信息
     (``project_id=""``、``project_dir=""``、``pinned=False``),归入默认项目统计。
     返回的每个 dict 已对新增字段应用默认值兜底。
@@ -1778,7 +1895,7 @@ def collect_all_sessions_metadata() -> list[dict[str, Any]]:
         if not session_dir.is_dir():
             continue
         sid = session_dir.name
-        if sid.startswith(_HEARTBEAT_SESSION_PREFIX):
+        if _is_internal_session_dir(sid):
             continue
         meta = _read_metadata(sid, cache_bust=True)
         if not meta:
@@ -1809,6 +1926,8 @@ def collect_all_sessions_metadata() -> list[dict[str, Any]]:
                 dir_to_projects=dir_to_projects,
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
+                enable_channel_lock_migration=False,
+                sessions_root=str(sessions_dir),
             )
         else:
             # 批量入口不写盘:避免首次 collect 触发大量异步写入导致队列满退化为同步写。
@@ -1820,6 +1939,7 @@ def collect_all_sessions_metadata() -> list[dict[str, Any]]:
                 dir_to_projects=dir_to_projects,
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
+                sessions_root=str(sessions_dir),
             )
         result.append(meta)
     return result

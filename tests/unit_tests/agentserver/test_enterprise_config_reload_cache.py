@@ -104,8 +104,10 @@ async def test_refresh_enterprise_config_restores_cache_when_load_fails(
     assert len(adapter._enterprise_config.mcp) == 1
 
 
+@pytest.mark.parametrize("with_permission_rail", [False, True])
 def test_skill_authorization_rail_uses_agent_template_without_request_context(
     monkeypatch: pytest.MonkeyPatch,
+    with_permission_rail: bool,
 ) -> None:
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
@@ -128,12 +130,73 @@ def test_skill_authorization_rail_uses_agent_template_without_request_context(
     adapter._enterprise_config = None
     adapter._permission_rail = None
     adapter._skill_rail = None
+    adapter._instance = object()
+    if with_permission_rail:
+        from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
+            SkillAuthorizationPermissionRail,
+        )
+        adapter._permission_rail = SkillAuthorizationPermissionRail(
+            config=adapter._agent_permissions_body,
+        )
 
     rail = adapter._build_skill_authorization_rail()
 
     assert rail is not None
     assert rail._feature_enabled() is True
     assert rail._base_effective_config("session-1")["defaults"] == {"*": "ask"}
+    if with_permission_rail:
+        ctx = SimpleNamespace(agent=adapter._instance, session=SimpleNamespace(session_id="session-1"))
+        assert adapter._permission_rail._skill_scope_resolver(ctx) == ("session-1", "main")
+
+
+def test_skill_permission_fallback_is_bound_to_owning_agent() -> None:
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
+        SkillAuthorizationPermissionRail,
+    )
+
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = SimpleNamespace(react_agent=object())
+    permission_rail = SkillAuthorizationPermissionRail(config={"enabled": True})
+    gate = SimpleNamespace(resolve_scope=MagicMock(return_value=("session-1", "main")))
+    adapter._bind_skill_permission_scope_resolver(permission_rail, gate)
+
+    main_ctx = SimpleNamespace(agent=adapter._instance)
+    assert permission_rail._skill_scope_resolver(main_ctx) == ("session-1", "main")
+    gate.resolve_scope.assert_called_once_with(main_ctx)
+    assert permission_rail._skill_scope_resolver(
+        SimpleNamespace(agent=adapter._instance.react_agent)
+    ) == ("session-1", "main")
+    # The same rail may be inherited by a child that shares the approval session.
+    assert permission_rail._skill_scope_resolver(SimpleNamespace(agent=object())) is None
+    assert permission_rail._skill_scope_resolver(SimpleNamespace(agent=None)) is None
+    assert gate.resolve_scope.call_count == 2
+
+
+def test_hot_reload_binds_new_permission_rail_to_existing_skill_gate(monkeypatch) -> None:
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
+        SkillAuthorizationPermissionRail,
+    )
+
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = object()
+    adapter._permission_rail = None
+    adapter._agent_permissions_body = {"enabled": True}
+    adapter._skill_authorization_rail = SimpleNamespace(
+        _engine=None, resolve_scope=lambda _ctx: ("session-1", "main"),
+    )
+    adapter._resolve_permission_config_for_agent = lambda **_kwargs: {"enabled": True}
+    adapter._model = None
+    permission_rail = SkillAuthorizationPermissionRail(config={"enabled": True})
+    monkeypatch.setattr(interface_deep, "build_permission_rail", lambda **_kwargs: permission_rail)
+
+    adapter._update_permission_rail({})
+
+    assert adapter._permission_rail is permission_rail
+    assert adapter._skill_authorization_rail._engine is permission_rail._engine
+    assert permission_rail._skill_scope_resolver(SimpleNamespace(agent=adapter._instance)) == (
+        "session-1", "main",
+    )
 
 
 @pytest.mark.asyncio

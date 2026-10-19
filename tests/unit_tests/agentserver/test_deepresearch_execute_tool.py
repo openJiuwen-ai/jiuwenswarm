@@ -5,15 +5,21 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import pickle
 import sqlite3
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 
+from jiuwenswarm.agents.harness.common.rails import (
+    deepresearch_execution_rail as dr,
+)
 from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
     DEEPRESEARCH_EXECUTION_ALIAS_KEY,
     DEEPRESEARCH_EXECUTION_STATE_KEY,
@@ -40,6 +46,25 @@ class _Session:
 class _Model:
     def __init__(self, content: str):
         self.invoke = AsyncMock(return_value=SimpleNamespace(content=content))
+
+
+@pytest.fixture(autouse=True)
+def _disable_query_scan_by_default(monkeypatch):
+    """修复9'：默认把扫库认领打桩为未命中。
+
+    真实扫库会经 _resolve_skill_root 读开发机共享技能目录下的
+    checkpointer.db，可能命中与本文件默认 query 相同的真实会话，
+    使既有认领失败用例变得机器相关。扫库专项用例在用例内显式
+    覆盖本桩（patch.object 后应用即覆盖）。stream action='start'
+    的认领兜底入口（_claim_start_snapshot）同理打桩——未打桩的
+    用例若放行到真实 stream 实现会真实读库。
+    """
+    monkeypatch.setattr(
+        de, "_scan_resumable_checkpoint_by_query", Mock(return_value=None)
+    )
+    monkeypatch.setattr(
+        dt, "_claim_start_snapshot", AsyncMock(return_value=None)
+    )
 
 
 def test_execution_rail_converts_before_stream_event_rail():
@@ -176,8 +201,13 @@ async def test_new_query_persists_request_report_type_before_sdk_start():
 
 
 @pytest.mark.asyncio
-async def test_execute_claims_interrupted_conversation_with_cached_outline():
-    """传入 conversation_id 且缓存有大纲 → 跳过 start 重跑，直接呈现大纲审阅卡片。"""
+async def test_execute_rejects_cached_outline_claim_without_checkpoint():
+    """修复5：probe 未命中（无可恢复快照）时不得用残留缓存大纲假认领。
+
+    事故场景：图正常完结清快照后，内存大纲缓存残留，旧逻辑仍弹大纲卡，
+    用户确认后 resume 无快照可恢复而全新起跑并崩溃。新契约：probe=None
+    一律走认领失败 → 全新 id 从头执行。
+    """
     outline = {
         "title": "智能家电竞争格局研究",
         "sections": [
@@ -185,11 +215,65 @@ async def test_execute_claims_interrupted_conversation_with_cached_outline():
             {"id": "2", "title": "主要玩家"},
         ],
     }
+    outcome = {
+        "status": "error",
+        "error_code": "runner_failed",
+        "error": "boom",
+    }
     route_token = dt.push_deepresearch_route("R1", "CH1", "S1")
     try:
         dt._cache_outline_json(dt._get_route(), "C-OLD", outline)
-        with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream:
+        with (
+            patch.object(
+                de, "_probe_resumable_checkpoint", new=Mock(return_value=None)
+            ),
+            patch.object(
+                de,
+                "salvage_deepresearch_report",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                de,
+                "_call_deepresearch_stream_impl",
+                new=AsyncMock(return_value=json.dumps(outcome, ensure_ascii=False)),
+            ) as stream,
+        ):
             result, saved = await _invoke(conversation_id="C-OLD")
+    finally:
+        dt.reset_deepresearch_route(route_token)
+        with dt._OUTLINE_JSON_CACHES_GUARD:
+            dt._OUTLINE_JSON_CACHES.clear()
+        with dt._OUTLINE_TITLE_CACHES_GUARD:
+            dt._OUTLINE_TITLE_CACHES.clear()
+
+    # 不得弹大纲卡：缓存大纲被拒绝，走全新起跑
+    assert result["kind"] == "error"
+    stream.assert_awaited_once()
+    assert stream.await_args.kwargs["action"] == "start"
+    new_cid = stream.await_args.kwargs["conversation_id"]
+    assert new_cid and new_cid != "C-OLD"
+    assert saved[-1]["phase"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_execute_claims_outline_with_db_confirmed_cache_fallback():
+    """修复5边界：db 确认 outline_interaction 可恢复中断但快照缺大纲 JSON
+    → 允许缓存兜底补大纲（claim source=cache）。"""
+    outline = {
+        "title": "智能家电竞争格局研究",
+        "sections": [
+            {"id": "1", "title": "市场规模", "is_core_section": True, "description": "整体规模"},
+        ],
+    }
+    probe = {"node": "outline_interaction"}
+    route_token = dt.push_deepresearch_route("R1", "CH1", "S1")
+    try:
+        dt._cache_outline_json(dt._get_route(), "C-OLC", outline)
+        with (
+            patch.object(de, "_probe_resumable_checkpoint", new=Mock(return_value=probe)),
+            patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+        ):
+            result, saved = await _invoke(conversation_id="C-OLC")
     finally:
         dt.reset_deepresearch_route(route_token)
         with dt._OUTLINE_JSON_CACHES_GUARD:
@@ -201,15 +285,76 @@ async def test_execute_claims_interrupted_conversation_with_cached_outline():
     stream.assert_not_awaited()
     final = saved[-1]
     assert final["phase"] == "wait_outline"
-    assert final["conversation_id"] == "C-OLD"
-    assert final["outline_presented"] is True
+    assert final["conversation_id"] == "C-OLC"
     question = result["interaction"]["questions"][0]
-    assert [option["label"] for option in question["options"]] == [
-        "确认大纲，继续研究",
-        "需要修改",
-    ]
     assert "### P1: 市场规模（重点）" in question["preview"]["text"]
-    assert "### P2: 主要玩家" in question["preview"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_execute_claim_failure_salvages_existing_report():
+    """修复7：认领失败（无可恢复快照）但报告已落盘且主题一致 → 止损交付，
+    不重跑研究。"""
+    salvage_outcome = {
+        "status": "completed",
+        "conversation_id": "C-SAL",
+        "report_delivered": True,
+        "salvaged_report": True,
+    }
+    with (
+        patch.object(
+            de, "_probe_resumable_checkpoint", new=Mock(return_value=None)
+        ),
+        patch.object(
+            de,
+            "salvage_deepresearch_report",
+            new=AsyncMock(return_value=salvage_outcome),
+        ) as salvage,
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(conversation_id="C-SAL")
+
+    salvage.assert_awaited_once()
+    stream.assert_not_awaited()
+    assert result["kind"] == "completed"
+    assert "已成功生成并交付" in result["content"]
+    assert saved[-1]["phase"] == "completed"
+    assert saved[-1]["conversation_id"] == "C-SAL"
+
+
+@pytest.mark.asyncio
+async def test_execute_error_phase_salvages_existing_report():
+    """修复7：error 相位死路（无可恢复快照）且主题一致 → 先止损交付报告。"""
+    salvage_outcome = {
+        "status": "completed",
+        "conversation_id": "C-ERRS",
+        "report_delivered": True,
+        "salvaged_report": True,
+    }
+    state = {
+        "schema_version": 1,
+        "phase": "error",
+        "revision": 1,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "C-ERRS",
+    }
+    with (
+        patch.object(
+            de, "_probe_resumable_checkpoint", new=Mock(return_value=None)
+        ),
+        patch.object(
+            de,
+            "salvage_deepresearch_report",
+            new=AsyncMock(return_value=salvage_outcome),
+        ) as salvage,
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(state=state, conversation_id="C-ERRS")
+
+    salvage.assert_awaited_once()
+    stream.assert_not_awaited()
+    assert result["kind"] == "completed"
+    assert saved[-1]["phase"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -243,6 +388,19 @@ def _encode_checkpoint_blob(value):
     return "__BYTES__:" + base64.b64encode(pickle.dumps(value)).decode("ascii")
 
 
+_HOST_SESSION = "S-HOST"
+
+
+@contextmanager
+def _host_route(session_id: str = _HOST_SESSION):
+    """绑定与快照归属字段配套的宿主 route(probe/scan 认领校验依赖)。"""
+    token = dt.push_deepresearch_route("R-OWN", "CH-OWN", session_id)
+    try:
+        yield
+    finally:
+        dt.reset_deepresearch_route(token)
+
+
 def _write_checkpoint_db(
     root,
     conversation_id,
@@ -251,23 +409,43 @@ def _write_checkpoint_db(
     node_status="__interrupt__",
     questions="",
     outline=None,
+    exceptions=None,
+    extra_pending=None,
+    original_query="",
+    host_session_id="",
 ):
     data_dir = root / "data"
     data_dir.mkdir(exist_ok=True)
     connection = sqlite3.connect(str(data_dir / "checkpointer.db"))
     try:
         connection.execute(
-            "CREATE TABLE kv_store (key VARCHAR(255), value VARCHAR(4096))"
+            "CREATE TABLE IF NOT EXISTS kv_store"
+            " (key VARCHAR(255), value VARCHAR(4096))"
         )
-        graph_state = SimpleNamespace(
-            pending_node={node: SimpleNamespace(status=node_status)}
-        )
+        pending_node = {
+            node: SimpleNamespace(
+                status=node_status,
+                exception=list(exceptions or []),
+            )
+        }
+        for entry in extra_pending or ():
+            pending_node[str(entry["node"])] = SimpleNamespace(
+                status=str(entry.get("status") or "__interrupt__"),
+                exception=list(entry.get("exceptions") or []),
+            )
+        graph_state = SimpleNamespace(pending_node=pending_node)
         search_context = {}
+        if original_query:
+            search_context["original_query"] = original_query
         if questions:
             search_context["questions"] = questions
         if outline is not None:
             search_context["current_outline"] = outline
-        workflow_state = {"global_state": {"search_context": search_context}}
+        global_state: dict = {"search_context": search_context}
+        if host_session_id:
+            # SDK StartNode 白名单写入的会话 config(归属字段随快照落盘)
+            global_state["config"] = {"host_session_id": host_session_id}
+        workflow_state = {"global_state": global_state}
         connection.executemany(
             "INSERT INTO kv_store (key, value) VALUES (?, ?)",
             [
@@ -293,9 +471,13 @@ def test_probe_resumable_checkpoint_reads_feedback_stage(tmp_path):
         "C-FB",
         node="feedback_handler",
         questions="1. 重点研究哪些品类？\n第一问的补充限定\n\n2. 覆盖哪些市场？",
+        host_session_id=_HOST_SESSION,
     )
 
-    with patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)):
+    with (
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        _host_route(),
+    ):
         probe = dt._probe_resumable_checkpoint("C-FB")
 
     assert probe == {
@@ -320,9 +502,13 @@ def test_probe_resumable_checkpoint_reads_outline_stage(tmp_path):
         node="outline_interaction",
         questions="1. 问题",
         outline=outline,
+        host_session_id=_HOST_SESSION,
     )
 
-    with patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)):
+    with (
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        _host_route(),
+    ):
         probe = dt._probe_resumable_checkpoint("C-OL")
 
     assert probe == {
@@ -357,6 +543,43 @@ def test_probe_resumable_checkpoint_returns_none_without_resumable_interrupt(tmp
         assert dt._probe_resumable_checkpoint("C-ERR") is None
     with patch.object(dt, "_resolve_skill_root", return_value=""):
         assert dt._probe_resumable_checkpoint("C-ERR") is None
+
+
+def test_probe_resumable_checkpoint_prefers_stop_snapshot_over_stale_interrupt(tmp_path):
+    """停止快照优先于残留 interrupt：认领停止会话不再被拉回早期交互重弹卡。"""
+    outline = SimpleNamespace(
+        title="智能家电竞争格局研究",
+        thought="先规模后玩家",
+        sections=[
+            SimpleNamespace(title="市场规模", is_core_section=True),
+        ],
+    )
+    # 停止前的早期交互残留（stale interrupt）排在 pending_node 前部；
+    # 若 interrupt 优先，会把已停止会话错认成大纲中断认领。
+    _write_checkpoint_db(
+        tmp_path,
+        "C-STP",
+        node="outline_interaction",
+        node_status="__interrupt__",
+        questions="1. 重点研究哪些品类？",
+        outline=outline,
+        host_session_id=_HOST_SESSION,
+        extra_pending=[
+            {
+                "node": "report_writing",
+                "status": "__error__",
+                "exceptions": [RuntimeError("deepresearch task stopped by user")],
+            }
+        ],
+    )
+
+    with (
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        _host_route(),
+    ):
+        probe = dt._probe_resumable_checkpoint("C-STP")
+
+    assert probe == {"node": "report_writing", "stopped": True}
 
 
 @pytest.mark.asyncio
@@ -455,6 +678,638 @@ async def test_execute_restarts_fresh_when_checkpoint_lacks_questions():
     assert stream.await_args.kwargs["action"] == "start"
     new_cid = stream.await_args.kwargs["conversation_id"]
     assert new_cid and new_cid != "C-FB2"
+
+
+@pytest.mark.asyncio
+async def test_execute_claims_stopped_snapshot_and_resumes_stopped_node():
+    """probe 报告停止快照且主题一致 → 不弹交互卡直通 resume node='stopped'。"""
+    probe = {"node": "report_writing", "stopped": True}
+    completed = {
+        "status": "completed",
+        "conversation_id": "C-STP",
+        "report_delivered": True,
+    }
+    state = {
+        "schema_version": 1,
+        "phase": "new",
+        "revision": 0,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "C-STP",
+        "requested_report_type": "brief",
+    }
+    with (
+        patch.object(
+            de, "_probe_resumable_checkpoint", new=Mock(return_value=probe)
+        ) as probe_mock,
+        patch.object(
+            de,
+            "_call_deepresearch_stream_impl",
+            new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+        ) as stream,
+    ):
+        result, saved = await _invoke(
+            state=state, query="研究智能家电竞争格局"
+        )
+
+    probe_mock.assert_called_once_with("C-STP")
+    stream.assert_awaited_once()
+    assert stream.await_args.kwargs["action"] == "resume"
+    assert stream.await_args.kwargs["node"] == "stopped"
+    assert stream.await_args.kwargs["conversation_id"] == "C-STP"
+    assert result["kind"] == "completed"
+    assert saved[0]["phase"] == "resuming_stopped"
+    assert saved[-1]["phase"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_execute_stopped_snapshot_with_new_topic_restarts_fresh():
+    """停止快照 + 用户换主题 → 不认领旧会话、不复活旧大纲缓存，全新 id 研究新主题。"""
+    probe = {"node": "report_writing", "stopped": True}
+    outline = {
+        "title": "智能家电竞争格局研究",
+        "sections": [
+            {"id": "1", "title": "市场规模", "is_core_section": True},
+        ],
+    }
+    outcome = {
+        "status": "error",
+        "error_code": "runner_failed",
+        "error": "boom",
+    }
+    state = {
+        "schema_version": 1,
+        "phase": "new",
+        "revision": 0,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "C-STP",
+        "requested_report_type": "brief",
+    }
+    route_token = dt.push_deepresearch_route("R1", "CH1", "S4")
+    try:
+        dt._cache_outline_json(dt._get_route(), "C-STP", outline)
+        with (
+            patch.object(
+                de,
+                "_probe_resumable_checkpoint",
+                new=Mock(return_value=probe),
+            ),
+            patch.object(
+                de,
+                "_call_deepresearch_stream_impl",
+                new=AsyncMock(return_value=json.dumps(outcome, ensure_ascii=False)),
+            ) as stream,
+        ):
+            result, saved = await _invoke(
+                state=state, query="研究新能源车市场竞争格局"
+            )
+    finally:
+        dt.reset_deepresearch_route(route_token)
+        with dt._OUTLINE_JSON_CACHES_GUARD:
+            dt._OUTLINE_JSON_CACHES.clear()
+        with dt._OUTLINE_TITLE_CACHES_GUARD:
+            dt._OUTLINE_TITLE_CACHES.clear()
+
+    # 不弹旧主题的任何交互卡；换全新 id 且以新主题 start。
+    assert result["kind"] == "error"
+    stream.assert_awaited_once()
+    assert stream.await_args.kwargs["action"] == "start"
+    assert stream.await_args.kwargs["query"] == "研究新能源车市场竞争格局"
+    new_cid = stream.await_args.kwargs["conversation_id"]
+    assert new_cid and new_cid != "C-STP"
+
+
+def test_is_stop_requested_exception_recognizes_cancelled_error():
+    """SDK 取消路径写入的 __error__+CancelledError 快照按可续跑停止快照识别。"""
+    assert dt._is_stop_requested_exception(asyncio.CancelledError()) is True
+    assert dt._is_stop_requested_exception(RuntimeError("普通失败")) is False
+    assert dt._is_stop_requested_exception("not an exception") is False
+
+
+def test_probe_resumable_checkpoint_recognizes_cancelled_snapshot(tmp_path):
+    """取消落盘的 __error__+CancelledError 快照 → stopped=True，认领后可直通续跑。"""
+    _write_checkpoint_db(
+        tmp_path,
+        "C-CXL",
+        node="report_writing",
+        node_status="__error__",
+        exceptions=[asyncio.CancelledError()],
+        host_session_id=_HOST_SESSION,
+    )
+
+    with (
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        _host_route(),
+    ):
+        probe = dt._probe_resumable_checkpoint("C-CXL")
+
+    assert probe == {"node": "report_writing", "stopped": True}
+
+
+def test_scan_resumable_checkpoint_by_query_claims_stopped_snapshot(tmp_path):
+    """修复9'：LLM 幻觉 cid 时按 query 扫库 → 认领到同主题的停止快照。"""
+    _write_checkpoint_db(
+        tmp_path,
+        "C-REAL",
+        node="report_writing",
+        node_status="__error__",
+        exceptions=[RuntimeError("deepresearch task stopped by user")],
+        original_query="研究智能家电竞争格局",
+        host_session_id=_HOST_SESSION,
+    )
+
+    with (
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        _host_route(),
+    ):
+        scan = dt._scan_resumable_checkpoint_by_query("研究智能家电竞争格局")
+
+    assert scan == {
+        "conversation_id": "C-REAL",
+        "node": "report_writing",
+        "stopped": True,
+    }
+
+
+def test_scan_resumable_checkpoint_by_query_claims_interrupt_with_cards(tmp_path):
+    """修复9'：扫库命中 interrupt → 附带回弹卡字段（questions/outline_json）。"""
+    outline = SimpleNamespace(
+        title="智能家电竞争格局研究",
+        thought="先规模后玩家",
+        sections=[SimpleNamespace(title="市场规模", is_core_section=True)],
+    )
+    _write_checkpoint_db(
+        tmp_path,
+        "C-INT",
+        node="outline_interaction",
+        questions="1. 重点研究哪些品类？",
+        outline=outline,
+        original_query="研究智能家电竞争格局",
+        host_session_id=_HOST_SESSION,
+    )
+
+    with (
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        _host_route(),
+    ):
+        scan = dt._scan_resumable_checkpoint_by_query("研究智能家电竞争格局")
+
+    assert scan is not None
+    assert scan["conversation_id"] == "C-INT"
+    assert scan["node"] == "outline_interaction"
+    assert scan.get("stopped") is not True
+    assert scan["questions"] == ["1. 重点研究哪些品类？"]
+    assert scan["outline_json"]["sections"] == [
+        {"title": "市场规模", "is_core_section": True}
+    ]
+
+
+def test_scan_resumable_checkpoint_by_query_rejects_topic_change(tmp_path):
+    """修复9'：换主题不认领旧会话；original_query 缺失同样不认领。"""
+    _write_checkpoint_db(
+        tmp_path,
+        "C-REAL",
+        node="report_writing",
+        node_status="__error__",
+        exceptions=[asyncio.CancelledError()],
+        original_query="研究智能家电竞争格局",
+    )
+    # 第二个会话快照缺失 original_query（更早版本落盘）
+    _write_checkpoint_db(
+        tmp_path,
+        "C-NOQ",
+        node="feedback_handler",
+        questions="1. 问题",
+    )
+
+    with patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)):
+        assert (
+            dt._scan_resumable_checkpoint_by_query("研究新能源车市场竞争格局")
+            is None
+        )
+        assert dt._scan_resumable_checkpoint_by_query("") is None
+
+
+def test_scan_resumable_checkpoint_by_query_prefers_latest_match(tmp_path):
+    """修复9'：rowid 倒序，同主题多快照时认领最新落盘的会话。"""
+    for cid in ("C-OLD", "C-NEW"):
+        _write_checkpoint_db(
+            tmp_path,
+            cid,
+            node="report_writing",
+            node_status="__error__",
+            exceptions=[asyncio.CancelledError()],
+            original_query="研究智能家电竞争格局",
+            host_session_id=_HOST_SESSION,
+        )
+
+    with (
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        _host_route(),
+    ):
+        scan = dt._scan_resumable_checkpoint_by_query("研究智能家电竞争格局")
+
+    assert scan == {
+        "conversation_id": "C-NEW",
+        "node": "report_writing",
+        "stopped": True,
+    }
+
+
+def test_scan_resumable_checkpoint_by_query_ignores_unresumable(tmp_path):
+    """修复9'：无可续跑状态的快照（正常完结残留）不参与认领。"""
+    _write_checkpoint_db(
+        tmp_path,
+        "C-DONE",
+        node="report_writing",
+        node_status="__success__",
+        original_query="研究智能家电竞争格局",
+    )
+
+    with patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)):
+        assert (
+            dt._scan_resumable_checkpoint_by_query("研究智能家电竞争格局") is None
+        )
+
+
+def test_probe_rejects_cross_session_snapshot(tmp_path, caplog):
+    """归属校验：快照归属别家宿主会话 → 拒绝认领并记观察哨日志。"""
+    _write_checkpoint_db(
+        tmp_path,
+        "C-FOREIGN",
+        node="feedback_handler",
+        questions="1. 问题",
+        host_session_id="S-OTHER",
+    )
+
+    with (
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        _host_route(),
+        caplog.at_level(logging.WARNING),
+    ):
+        assert dt._probe_resumable_checkpoint("C-FOREIGN") is None
+
+    assert any(
+        "ownership rejected" in record.message
+        and "reason=ownership_mismatch" in record.message
+        and "C-FOREIGN" in record.message
+        for record in caplog.records
+    )
+
+
+def test_probe_rejects_legacy_snapshot_without_owner(tmp_path, caplog):
+    """归属校验：升级前落盘的旧快照无归属字段 → 一律拒绝（拍板）。"""
+    _write_checkpoint_db(
+        tmp_path,
+        "C-LEGACY",
+        node="feedback_handler",
+        questions="1. 问题",
+    )
+
+    with (
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        _host_route(),
+        caplog.at_level(logging.WARNING),
+    ):
+        assert dt._probe_resumable_checkpoint("C-LEGACY") is None
+
+    assert any(
+        "reason=missing_owner" in record.message for record in caplog.records
+    )
+
+
+def test_probe_rejects_when_requester_unverifiable(tmp_path):
+    """归属校验：请求未绑定宿主会话（无 session_id）→ 严格拒绝认领。"""
+    _write_checkpoint_db(
+        tmp_path,
+        "C-ANY",
+        node="feedback_handler",
+        questions="1. 问题",
+        host_session_id=_HOST_SESSION,
+    )
+
+    with patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)):
+        assert dt._probe_resumable_checkpoint("C-ANY") is None
+
+
+def test_scan_skips_foreign_snapshot_and_claims_own(tmp_path, caplog):
+    """归属校验：同 query 命中别家会话快照 → 跳过并继续认领本会话快照。
+
+    复现实机事故形态:新会话跑同主题,扫库先撞上别家(或陈旧)快照,
+    必须跳过它继续扫,而不是误认领。
+    """
+    # 先落本会话快照(rowid 较小),再落别家快照(rowid 较大 → 扫库先命中)
+    _write_checkpoint_db(
+        tmp_path,
+        "C-OWN",
+        node="report_writing",
+        node_status="__error__",
+        exceptions=[asyncio.CancelledError()],
+        original_query="研究智能家电竞争格局",
+        host_session_id=_HOST_SESSION,
+    )
+    _write_checkpoint_db(
+        tmp_path,
+        "C-FOREIGN",
+        node="report_writing",
+        node_status="__error__",
+        exceptions=[asyncio.CancelledError()],
+        original_query="研究智能家电竞争格局",
+        host_session_id="S-OTHER",
+    )
+
+    with (
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        _host_route(),
+        caplog.at_level(logging.WARNING),
+    ):
+        scan = dt._scan_resumable_checkpoint_by_query("研究智能家电竞争格局")
+
+    assert scan is not None
+    assert scan["conversation_id"] == "C-OWN"
+    assert any(
+        "reason=ownership_mismatch" in record.message
+        and "C-FOREIGN" in record.message
+        for record in caplog.records
+    )
+
+
+def test_scan_returns_none_when_no_candidate_owned(tmp_path, caplog):
+    """归属校验：候选全为别家/旧快照 → 不认领任何对象,退回全新起跑。"""
+    _write_checkpoint_db(
+        tmp_path,
+        "C-FOREIGN",
+        node="report_writing",
+        node_status="__error__",
+        exceptions=[asyncio.CancelledError()],
+        original_query="研究智能家电竞争格局",
+        host_session_id="S-OTHER",
+    )
+    _write_checkpoint_db(
+        tmp_path,
+        "C-LEGACY",
+        node="report_writing",
+        node_status="__error__",
+        exceptions=[asyncio.CancelledError()],
+        original_query="研究智能家电竞争格局",
+    )
+
+    with (
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        _host_route(),
+        caplog.at_level(logging.WARNING),
+    ):
+        assert dt._scan_resumable_checkpoint_by_query("研究智能家电竞争格局") is None
+
+    reasons = {
+        "reason=ownership_mismatch",
+        "reason=missing_owner",
+    }
+    logged = {record.message for record in caplog.records}
+    assert any(reason in message for message in logged for reason in reasons)
+
+
+def test_build_request_config_injects_host_session_id_from_route():
+    """供给侧:config frame 随 route 携带宿主会话归属标识。"""
+    with (
+        patch.object(dt, "get_task_env_overlay", return_value=None),
+        patch.object(dt, "build_effective_env_overlay", return_value={}),
+        patch.object(dt, "_build_deepresearch_config", return_value={}),
+        _host_route("S-CFG"),
+    ):
+        config = dt._build_deepresearch_request_config(interactive_ask=True)
+
+    assert config["DEEPSEARCH_HOST_SESSION_ID"] == "S-CFG"
+    assert config["DEEPSEARCH_HITL"] == "true"
+
+
+def test_build_request_config_omits_host_session_id_without_route():
+    """供给侧:未绑定 route 时不注入归属键(行为与旧版 config frame 兼容)。"""
+    with (
+        patch.object(dt, "get_task_env_overlay", return_value=None),
+        patch.object(dt, "build_effective_env_overlay", return_value={}),
+        patch.object(dt, "_build_deepresearch_config", return_value={}),
+    ):
+        config = dt._build_deepresearch_request_config(interactive_ask=False)
+
+    assert "DEEPSEARCH_HOST_SESSION_ID" not in config
+    assert config["DEEPSEARCH_HITL"] == "false"
+
+
+@pytest.mark.asyncio
+async def test_execute_hallucinated_cid_claims_stopped_conversation_by_scan(tmp_path):
+    """修复9'：LLM 幻觉 cid → probe 落空但扫库按主题命中停止快照，认领直通续跑。"""
+    _write_checkpoint_db(
+        tmp_path,
+        "C-REAL",
+        node="report_writing",
+        node_status="__error__",
+        exceptions=[RuntimeError("deepresearch task stopped by user")],
+        original_query="研究智能家电竞争格局",
+        host_session_id=_HOST_SESSION,
+    )
+    completed = {
+        "status": "completed",
+        "conversation_id": "C-REAL",
+        "report_delivered": True,
+    }
+    state = {
+        "schema_version": 1,
+        "phase": "new",
+        "revision": 0,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "C-HALLUCINATED",
+        "requested_report_type": "brief",
+    }
+    with (
+        _host_route(),
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        patch.object(
+            de,
+            "_scan_resumable_checkpoint_by_query",
+            new=dt._scan_resumable_checkpoint_by_query,
+        ),
+        patch.object(de, "_call_deepresearch_stream_impl",
+                     new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False))) as stream,
+    ):
+        result, saved = await _invoke(
+            state=state, query="研究智能家电竞争格局"
+        )
+
+    stream.assert_awaited_once()
+    assert stream.await_args.kwargs["action"] == "resume"
+    assert stream.await_args.kwargs["node"] == "stopped"
+    assert stream.await_args.kwargs["conversation_id"] == "C-REAL"
+    assert result["kind"] == "completed"
+    assert saved[0]["phase"] == "resuming_stopped"
+    assert saved[0]["conversation_id"] == "C-REAL"
+
+
+@pytest.mark.asyncio
+async def test_execute_hallucinated_cid_scan_miss_starts_fresh(tmp_path):
+    """修复9'：扫库也无同主题快照 → 换全新 id 从头执行（不复用幻觉 cid）。"""
+    _write_checkpoint_db(
+        tmp_path,
+        "C-OTHER",
+        node="report_writing",
+        node_status="__error__",
+        exceptions=[asyncio.CancelledError()],
+        original_query="研究智能家电竞争格局",
+    )
+    outcome = {
+        "status": "error",
+        "error_code": "runner_failed",
+        "error": "boom",
+    }
+    route_token = dt.push_deepresearch_route("R1", "CH1", "S9")
+    try:
+        with (
+            patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+            patch.object(de, "_call_deepresearch_stream_impl",
+                         new=AsyncMock(return_value=json.dumps(outcome, ensure_ascii=False))) as stream,
+        ):
+            result, saved = await _invoke(
+                query="研究新能源车市场竞争格局",
+                conversation_id="C-HALLUCINATED",
+            )
+    finally:
+        dt.reset_deepresearch_route(route_token)
+
+    assert result["kind"] == "error"
+    assert saved[-1]["phase"] == "error"
+    stream.assert_awaited_once()
+    assert stream.await_args.kwargs["action"] == "start"
+    new_cid = stream.await_args.kwargs["conversation_id"]
+    assert new_cid and new_cid != "C-HALLUCINATED"
+
+
+@pytest.mark.asyncio
+async def test_execute_hallucinated_cid_scan_claims_outline_interaction(tmp_path):
+    """修复9'：扫库命中 outline_interaction → 主题一致即回弹大纲审阅卡。"""
+    outline = SimpleNamespace(
+        title="智能家电竞争格局研究",
+        thought="先规模后玩家",
+        sections=[SimpleNamespace(title="市场规模", is_core_section=True)],
+    )
+    _write_checkpoint_db(
+        tmp_path,
+        "C-REAL",
+        node="outline_interaction",
+        questions="1. 重点研究哪些品类？",
+        outline=outline,
+        original_query="研究智能家电竞争格局",
+        host_session_id=_HOST_SESSION,
+    )
+    state = {
+        "schema_version": 1,
+        "phase": "new",
+        "revision": 0,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "C-HALLUCINATED",
+        "requested_report_type": "brief",
+    }
+    with (
+        _host_route(),
+        patch.object(dt, "_resolve_skill_root", return_value=str(tmp_path)),
+        patch.object(
+            de,
+            "_scan_resumable_checkpoint_by_query",
+            new=dt._scan_resumable_checkpoint_by_query,
+        ),
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(
+            state=state, query="研究智能家电竞争格局"
+        )
+
+    stream.assert_not_awaited()
+    assert result["kind"] == "interaction"
+    final = saved[-1]
+    assert final["phase"] == "wait_outline"
+    assert final["conversation_id"] == "C-REAL"
+    assert final["outline_presented"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_hallucinated_cid_scan_salvages_report(tmp_path):
+    """修复9'：扫库未命中可续跑快照，但同主题报告已落盘 → 以扫出的 cid 止损交付。
+
+    扫库要求 original_query 严格一致才认领；报告止损场景中快照已被清理，
+    无从扫出 cid，salvage 仍以入参 cid 定位（修复7 语义不变）。
+    """
+    salvage_outcome = {
+        "status": "completed",
+        "conversation_id": "C-SAL",
+        "report_delivered": True,
+        "salvaged_report": True,
+    }
+    with (
+        patch.object(dt, "_resolve_skill_root", return_value=""),
+        patch.object(
+            de,
+            "salvage_deepresearch_report",
+            new=AsyncMock(return_value=salvage_outcome),
+        ) as salvage,
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(conversation_id="C-SAL")
+
+    salvage.assert_awaited_once()
+    assert salvage.await_args.kwargs["conversation_id"] == "C-SAL"
+    stream.assert_not_awaited()
+    assert result["kind"] == "completed"
+    assert saved[-1]["phase"] == "completed"
+    assert saved[-1]["conversation_id"] == "C-SAL"
+
+
+@pytest.mark.asyncio
+async def test_execute_claim_failure_logs_warning_and_starts_fresh(caplog):
+    """历史会话 checkpoint 探测失败 → 记 warning 且换全新 id 从头执行。"""
+    outcome = {
+        "status": "error",
+        "error_code": "runner_failed",
+        "error": "boom",
+    }
+    state = {
+        "schema_version": 1,
+        "phase": "new",
+        "revision": 0,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "C-GONE",
+        "requested_report_type": "brief",
+    }
+    with (
+        patch.object(
+            de, "_probe_resumable_checkpoint", new=Mock(return_value=None)
+        ) as probe_mock,
+        patch.object(
+            de,
+            "_call_deepresearch_stream_impl",
+            new=AsyncMock(return_value=json.dumps(outcome, ensure_ascii=False)),
+        ) as stream,
+    ):
+        with caplog.at_level("WARNING", logger=de.logger.name):
+            result, _saved = await _invoke(
+                state=state, query="研究智能家电竞争格局"
+            )
+
+    probe_mock.assert_called_once_with("C-GONE")
+    stream.assert_awaited_once()
+    assert stream.await_args.kwargs["action"] == "start"
+    new_cid = stream.await_args.kwargs["conversation_id"]
+    assert new_cid and new_cid != "C-GONE"
+    assert result["kind"] == "error"
+    warnings = [
+        record
+        for record in caplog.records
+        if record.levelno == 30 and "claim failed" in record.getMessage()
+    ]
+    assert warnings, "认领失败应记录可观测的 warning 日志"
+    assert "C-GONE" in warnings[0].getMessage()
 
 
 @pytest.mark.asyncio
@@ -1042,12 +1897,208 @@ async def test_cancelled_feedback_stops_without_resuming_sdk():
     stream.assert_not_awaited()
 
 
-def _rail_ctx(*, result, session=None, resume_input=None, tool_call_id="call-1"):
+@pytest.mark.asyncio
+async def test_cancelled_during_sdk_window_translates_to_stopped_without_error_overwrite():
+    """修复点3.1回归：取消落在 SDK 窗口时只落 stopped 终态。
+
+    旧的双守卫串联结构中，守卫#1 的转译结果（无 status 字段）会被
+    守卫#2 内的 _handle_outcome 误判为无效 outcome，在同一 revision
+    上追加 error 覆盖写（生产日志 phase=new rev=4 与 phase=error rev=4
+    同毫秒双写的根因）。单守卫重构后 saved 序列为 resuming_feedback →
+    new，绝无 error 帧。
+    """
+    state = {
+        "schema_version": 1,
+        "phase": "wait_feedback",
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "conversation-1",
+        "questions": ["继续吗？"],
+        "revision": 3,
+    }
+    answer = {"status": "answered", "answers": [{"selected_options": ["是"]}]}
+
+    async def _raise_cancelled(**kwargs):
+        raise asyncio.CancelledError()
+
+    with patch.object(de, "_call_deepresearch_stream_impl", new=_raise_cancelled):
+        result, saved = await _invoke(state=state, user_input=answer)
+
+    assert result["kind"] == "stopped"
+    assert [frame["phase"] for frame in saved] == ["resuming_feedback", "new"]
+    assert saved[-1]["conversation_id"] == "conversation-1"
+    # 修复11：stopped 文案为条件式恢复口径——禁止模型在用户停止后
+    # 自主重启（旧邀请式"如需继续，请再次调用"是生产事故诱因）。
+    # content 不含 conversation_id（与 rail 改写口径对齐，cid 不泄露
+    # 给模型；认领靠 query + 归属守卫，cid 功能载体是 state）。
+    assert "请勿" in result["content"]
+    assert "明确要求继续" in result["content"]
+    assert "如需继续，请再次调用" not in result["content"]
+    assert "conversation-1" not in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_during_option_generation_translates_to_stopped():
+    """修复点3.1：取消落在 _handle_outcome 内的选项生成段也被同一守卫覆盖。"""
+    state = {
+        "schema_version": 1,
+        "phase": "wait_feedback",
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "conversation-1",
+        "questions": ["继续吗？"],
+        "revision": 3,
+    }
+    answer = {"status": "answered", "answers": [{"selected_options": ["是"]}]}
+    interrupted = {
+        "status": "interrupted",
+        "conversation_id": "conversation-1",
+        "node_id": "feedback_handler",
+        "marker": {"questions": "1. 继续吗？"},
+    }
+    model = _Model(_option_payload("继续吗？"))
+    model.invoke = AsyncMock(side_effect=asyncio.CancelledError())
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(interrupted, ensure_ascii=False)),
+    ):
+        result, saved = await _invoke(state=state, user_input=answer, model=model)
+
+    assert result["kind"] == "stopped"
+    assert [frame["phase"] for frame in saved] == ["resuming_feedback", "new"]
+
+
+@pytest.mark.asyncio
+async def test_sdk_cancelled_outcome_translates_to_stopped_terminal():
+    """修复点3.2：SDK 竞态 cancelled outcome（取消晚于子进程优雅退出）统一 stopped 口径。"""
+    state = {
+        "schema_version": 1,
+        "phase": "wait_feedback",
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "conversation-1",
+        "questions": ["继续吗？"],
+        "revision": 3,
+    }
+    answer = {"status": "answered", "answers": [{"selected_options": ["是"]}]}
+    cancelled_outcome = {
+        "status": "cancelled",
+        "conversation_id": "conversation-1",
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(cancelled_outcome, ensure_ascii=False)),
+    ):
+        result, saved = await _invoke(state=state, user_input=answer)
+
+    assert result["kind"] == "stopped"
+    # content 不含 conversation_id（修复11 口径对齐，cid 不泄露给模型）
+    assert "conversation-1" not in result["content"]
+    assert saved[-1]["phase"] == "new"
+    assert saved[-1]["conversation_id"] == "conversation-1"
+
+
+@pytest.mark.asyncio
+async def test_error_phase_with_stopped_snapshot_claims_and_resumes():
+    """修复点3.2：error 相位下存有停止快照时认领续跑而非判死。"""
+    state = {
+        "schema_version": 1,
+        "phase": "error",
+        "revision": 4,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "conversation-1",
+        "requested_report_type": "brief",
+    }
+    probe = {"node": "report_writing", "stopped": True}
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+    }
+    with (
+        patch.object(de, "_probe_resumable_checkpoint", new=Mock(return_value=probe)),
+        patch.object(
+            de,
+            "_call_deepresearch_stream_impl",
+            new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+        ) as stream,
+    ):
+        result, saved = await _invoke(state=state)
+
+    stream.assert_awaited_once()
+    assert stream.await_args.kwargs["action"] == "resume"
+    assert stream.await_args.kwargs["node"] == "stopped"
+    assert stream.await_args.kwargs["conversation_id"] == "conversation-1"
+    assert result["kind"] == "completed"
+    assert saved[0]["phase"] == "resuming_stopped"
+    assert saved[-1]["phase"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_error_phase_without_stopped_snapshot_reports_finished():
+    """修复点3.2：error 相位无停止快照（真实失败）→ 判死并引导重新发起。"""
+    state = {
+        "schema_version": 1,
+        "phase": "error",
+        "revision": 4,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "conversation-1",
+    }
+    with (
+        patch.object(de, "_probe_resumable_checkpoint", new=Mock(return_value=None)),
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, _ = await _invoke(state=state)
+
+    assert result["kind"] == "error"
+    assert "请重新发起" in result["content"]
+    stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_phase_stays_terminal_even_with_stopped_snapshot():
+    """修复点3.2（选1）：cancelled 是显式放弃的死终态，有停止快照也不认领。"""
+    state = {
+        "schema_version": 1,
+        "phase": "cancelled",
+        "revision": 4,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "conversation-1",
+    }
+    probe = {"node": "report_writing", "stopped": True}
+    with (
+        patch.object(de, "_probe_resumable_checkpoint", new=Mock(return_value=probe)),
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(state=state)
+
+    assert result["kind"] == "cancelled"
+    assert "已经结束" in result["content"]
+    stream.assert_not_awaited()
+    assert saved == []
+
+
+def _rail_ctx(
+    *,
+    result,
+    session=None,
+    resume_input=None,
+    resume_key=None,
+    tool_call_id="call-1",
+    arguments=None,
+):
     session = session or _Session()
     tool_call = SimpleNamespace(
         id=tool_call_id,
         name="deepresearch_execute",
-        arguments={"query": "q", "file_name": "r"},
+        arguments=arguments
+        if arguments is not None
+        else {"query": "q", "file_name": "r"},
     )
     forced: list[dict] = []
     extra = {}
@@ -1056,7 +2107,7 @@ def _rail_ctx(*, result, session=None, resume_input=None, tool_call_id="call-1")
         from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
         interactive_input = InteractiveInput()
-        interactive_input.update(tool_call_id, resume_input)
+        interactive_input.update(resume_key or tool_call_id, resume_input)
         extra[RESUME_USER_INPUT_KEY] = interactive_input
     return SimpleNamespace(
         session=session,
@@ -1103,7 +2154,14 @@ async def test_execution_rail_turns_interaction_result_into_native_interrupt():
     assert isinstance(ctx.inputs.tool_result, ToolInterruptException)
     assert ctx.inputs.tool_result.request.questions == result["interaction"]["questions"]
     assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY]["call-1"] == state
-    assert ctx.inputs.tool_msg is None
+    # 修复点1a：占位 JSON 不再裸入 LLM 历史，改为面向模型的 ToolMessage；
+    # tool_call_id 保持原始调用 id（与 assistant 消息中的 tool_calls 对齐，
+    # 而非 interaction 别名 id），内部 phase/占位结构不泄露。
+    assert isinstance(ctx.inputs.tool_msg, ToolMessage)
+    assert ctx.inputs.tool_msg.tool_call_id == "call-1"
+    assert "结构化问答" in ctx.inputs.tool_msg.content
+    assert "wait_feedback" not in ctx.inputs.tool_msg.content
+    assert "schema_version" not in ctx.inputs.tool_msg.content
 
 
 @pytest.mark.asyncio
@@ -1125,6 +2183,57 @@ async def test_execution_rail_force_finishes_terminal_result_without_next_llm():
         {"output": "研究报告已生成并交付。", "result_type": "answer"}
     ]
     assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY] == {}
+
+
+@pytest.mark.asyncio
+async def test_execution_rail_rewrites_stopped_result_to_block_auto_restart():
+    """修复11：stopped 结果 JSON 不再裸入 LLM 历史，改写为禁止自动重启口径。
+
+    旧实现 stopped 分支直接 return，完整 JSON（含内部 state/revision 与
+    "请再次调用本工具"邀请文案）裸入 LLM 历史，模型自主重启了已被用户
+    停止的研究。改写后：tool_msg 为禁止口径且不含 conversation_id（切断
+    模型拿 cid 直通重启的最短路径）；tool_result 保持原 dict（stopped 非
+    interaction，不转 TIE）；不 force finish；states 保留停止快照供下一
+    次调用凭 probe/扫库认领。
+    """
+    state = {
+        "schema_version": 1,
+        "phase": "new",
+        "query": "研究智能家电竞争格局",
+        "conversation_id": "conversation-1",
+        "revision": 4,
+    }
+    result = {
+        "schema_version": de.EXECUTION_SCHEMA,
+        "kind": "stopped",
+        "content": (
+            "DeepResearch 任务已被用户停止（conversation_id=conversation-1）。"
+            "如需继续，请再次调用 deepresearch_execute 并传入"
+            " conversation_id=conversation-1，将从停止处恢复。"
+        ),
+        "state": state,
+    }
+    session = _Session()
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(result=result, session=session)
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    assert isinstance(ctx.inputs.tool_msg, ToolMessage)
+    assert ctx.inputs.tool_msg.tool_call_id == "call-1"
+    assert "已被用户停止" in ctx.inputs.tool_msg.content
+    assert "请勿" in ctx.inputs.tool_msg.content
+    # conversation_id 与内部 state 字段不泄露进 LLM 历史
+    assert "conversation-1" not in ctx.inputs.tool_msg.content
+    assert "schema_version" not in ctx.inputs.tool_msg.content
+    assert "revision" not in ctx.inputs.tool_msg.content
+    # tool_result 保持原始 dict，不转 ToolInterruptException
+    assert ctx.inputs.tool_result is result
+    # 不 force finish——外层请求正被用户停止，无需再产出回答
+    assert ctx.force_finish_requests == []
+    # 停止快照 state 保留，供下一次调用认领直通续跑
+    assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY]["call-1"] == state
 
 
 @pytest.mark.asyncio
@@ -1228,3 +2337,349 @@ async def test_same_outer_tool_call_survives_multiple_native_interrupts():
     assert "✅ **深度研究已完成！**" in second.force_finish_requests[0]["output"]
     assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY] == {}
     assert session.state[DEEPRESEARCH_EXECUTION_ALIAS_KEY] == {}
+
+
+def _stale_session(**state_overrides):
+    """硬中断现场：in-flight state 遗留在旧 tool_call_id 下。"""
+    state = {
+        "schema_version": 1,
+        "phase": "starting",
+        "query": "q",
+        "file_name": "r",
+        "conversation_id": "conversation-1",
+        "requested_report_type": "brief",
+        "revision": 0,
+    }
+    state.update(state_overrides)
+    session = _Session()
+    session.update_state({DEEPRESEARCH_EXECUTION_STATE_KEY: {"call-old": state}})
+    return session
+
+
+_STOPPED_PROBE = {"node": "researcher", "stopped": True}
+
+
+@pytest.mark.asyncio
+async def test_bridge_recovers_stale_inflight_state_and_resumes():
+    """场景①：state miss + 同 query + 探针停止快照 → 桥接并直通续跑。"""
+    session = _stale_session()
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(
+        result=None,
+        session=session,
+        tool_call_id="call-new",
+        arguments={"query": "q", "file_name": "r"},
+    )
+    stopped_probe = {"node": "researcher", "stopped": True}
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+    }
+    with (
+        patch.object(dr, "_probe_resumable_checkpoint", return_value=stopped_probe),
+        patch.object(de, "_probe_resumable_checkpoint", return_value=stopped_probe),
+    ):
+        await rail.before_tool_call(ctx)
+        assert session.state[DEEPRESEARCH_EXECUTION_ALIAS_KEY] == {
+            "call-new": "call-old"
+        }
+        with patch.object(
+            de,
+            "_call_deepresearch_stream_impl",
+            new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+        ) as stream:
+            ctx.inputs.tool_result = await de.deepresearch_execute._func(
+                query="q",
+                file_name="r",
+            )
+        await rail.after_tool_call(ctx)
+
+    assert stream.await_count == 1
+    assert stream.await_args.kwargs["action"] == "resume"
+    assert stream.await_args.kwargs["node"] == "stopped"
+    assert stream.await_args.kwargs["conversation_id"] == "conversation-1"
+
+
+@pytest.mark.asyncio
+async def test_bridge_rejects_when_query_switches_topic():
+    """场景②：用户换研究主题 → 不桥，全新会话重跑。"""
+    session = _stale_session()
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(
+        result=None,
+        session=session,
+        tool_call_id="call-new",
+        arguments={"query": "完全不同的新主题", "file_name": "r"},
+    )
+    with (
+        patch.object(dr, "_probe_resumable_checkpoint", return_value=_STOPPED_PROBE),
+        patch.object(de, "_probe_resumable_checkpoint", return_value=None),
+    ):
+        await rail.before_tool_call(ctx)
+
+    assert session.state.get(DEEPRESEARCH_EXECUTION_ALIAS_KEY, {}) == {}
+    completed = {"status": "completed", "report_delivered": True}
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ) as stream:
+        await de.deepresearch_execute._func(query="完全不同的新主题", file_name="r")
+
+    assert stream.await_args.kwargs["action"] == "start"
+    assert stream.await_args.kwargs["conversation_id"] != "conversation-1"
+
+
+@pytest.mark.asyncio
+async def test_bridge_rejects_multiple_candidate_states():
+    """场景③：两条同主题候选 → 唯一性守卫拒绝，不桥。"""
+    state = {
+        "schema_version": 1,
+        "phase": "starting",
+        "query": "q",
+        "file_name": "r",
+        "conversation_id": "conversation-1",
+        "revision": 0,
+    }
+    other = dict(state, conversation_id="conversation-2")
+    session = _Session()
+    session.update_state(
+        {
+            DEEPRESEARCH_EXECUTION_STATE_KEY: {
+                "call-old-a": state,
+                "call-old-b": other,
+            }
+        }
+    )
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(
+        result=None,
+        session=session,
+        tool_call_id="call-new",
+        arguments={"query": "q", "file_name": "r"},
+    )
+    with patch.object(dr, "_probe_resumable_checkpoint", return_value=_STOPPED_PROBE):
+        await rail.before_tool_call(ctx)
+
+    assert session.state.get(DEEPRESEARCH_EXECUTION_ALIAS_KEY, {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_bridge_rejects_when_explicit_cid_points_elsewhere():
+    """场景④：显式传入不同的 conversation_id → 不抢别人的会话。"""
+    session = _stale_session()
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(
+        result=None,
+        session=session,
+        tool_call_id="call-new",
+        arguments={
+            "query": "q",
+            "file_name": "r",
+            "conversation_id": "conversation-other",
+        },
+    )
+    with patch.object(dr, "_probe_resumable_checkpoint", return_value=_STOPPED_PROBE):
+        await rail.before_tool_call(ctx)
+
+    assert session.state.get(DEEPRESEARCH_EXECUTION_ALIAS_KEY, {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_bridge_rejects_live_inflight_state_without_stopped_snapshot():
+    """场景⑤（探针门）：in-flight state 无停止快照（子进程还活着）→ 不桥。"""
+    session = _stale_session()
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(
+        result=None,
+        session=session,
+        tool_call_id="call-new",
+        arguments={"query": "q", "file_name": "r"},
+    )
+    live_probe = {"node": "feedback_handler", "questions": ["继续吗？"]}
+    with patch.object(dr, "_probe_resumable_checkpoint", return_value=live_probe):
+        await rail.before_tool_call(ctx)
+
+    assert session.state.get(DEEPRESEARCH_EXECUTION_ALIAS_KEY, {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_bridge_from_new_phase_state_cleans_alias_on_terminal():
+    """场景⑥：new 相位（免探针门）桥接，终态后 state 与 alias 清理干净。"""
+    session = _stale_session(phase="new")
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(
+        result=None,
+        session=session,
+        tool_call_id="call-new",
+        arguments={"query": "q", "file_name": "r"},
+    )
+    await rail.before_tool_call(ctx)
+    assert session.state[DEEPRESEARCH_EXECUTION_ALIAS_KEY] == {"call-new": "call-old"}
+
+    result = {
+        "schema_version": de.EXECUTION_SCHEMA,
+        "kind": "completed",
+        "content": "研究报告已生成并交付。",
+        "state": {"schema_version": 1, "phase": "completed", "revision": 5},
+    }
+    ctx.inputs.tool_result = result
+    await rail.after_tool_call(ctx)
+
+    assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY] == {}
+    assert session.state[DEEPRESEARCH_EXECUTION_ALIAS_KEY] == {}
+
+
+@pytest.mark.asyncio
+async def test_bridge_from_error_phase_state_resumes_stopped():
+    """场景⑦（修复点3.2）：error 相位 + 停止快照 → 桥接并直通续跑。"""
+    session = _stale_session(phase="error", revision=4)
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(
+        result=None,
+        session=session,
+        tool_call_id="call-new",
+        arguments={"query": "q", "file_name": "r"},
+    )
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+    }
+    with (
+        patch.object(dr, "_probe_resumable_checkpoint", return_value=_STOPPED_PROBE),
+        patch.object(de, "_probe_resumable_checkpoint", return_value=_STOPPED_PROBE),
+    ):
+        await rail.before_tool_call(ctx)
+        assert session.state[DEEPRESEARCH_EXECUTION_ALIAS_KEY] == {
+            "call-new": "call-old"
+        }
+        with patch.object(
+            de,
+            "_call_deepresearch_stream_impl",
+            new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+        ) as stream:
+            ctx.inputs.tool_result = await de.deepresearch_execute._func(
+                query="q",
+                file_name="r",
+            )
+        await rail.after_tool_call(ctx)
+
+    assert stream.await_count == 1
+    assert stream.await_args.kwargs["action"] == "resume"
+    assert stream.await_args.kwargs["node"] == "stopped"
+    assert stream.await_args.kwargs["conversation_id"] == "conversation-1"
+
+
+@pytest.mark.asyncio
+async def test_bridge_rejects_error_phase_state_without_stopped_snapshot():
+    """场景⑧（探针门）：error 相位无停止快照（子进程失败退出）→ 不桥。"""
+    session = _stale_session(phase="error", revision=4)
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(
+        result=None,
+        session=session,
+        tool_call_id="call-new",
+        arguments={"query": "q", "file_name": "r"},
+    )
+    with patch.object(dr, "_probe_resumable_checkpoint", return_value=None):
+        await rail.before_tool_call(ctx)
+
+    assert session.state.get(DEEPRESEARCH_EXECUTION_ALIAS_KEY, {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_bridge_rejects_cancelled_phase_state():
+    """场景⑨（选1）：cancelled 是显式放弃的死终态，不入桥候选。"""
+    session = _stale_session(phase="cancelled", revision=4)
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(
+        result=None,
+        session=session,
+        tool_call_id="call-new",
+        arguments={"query": "q", "file_name": "r"},
+    )
+    with patch.object(dr, "_probe_resumable_checkpoint", return_value=_STOPPED_PROBE):
+        await rail.before_tool_call(ctx)
+
+    assert session.state.get(DEEPRESEARCH_EXECUTION_ALIAS_KEY, {}) == {}
+
+
+def test_resume_input_falls_back_to_only_entry_on_key_mismatch():
+    """作答键与恢复键不一致但作答唯一 → 兜底取之；多条目时仍按键取。"""
+    from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    answer = {"status": "answered"}
+    interactive_input = InteractiveInput()
+    interactive_input.update("call_a02da078", answer)
+    ctx = SimpleNamespace(extra={RESUME_USER_INPUT_KEY: interactive_input})
+
+    # 键断裂（作答挂在历史卡片 id 下）：唯一条目兜底取值。
+    assert (
+        dr._resume_input(ctx, "call_6f57dea2_interaction_1") == answer
+    )
+    # 键匹配：正常取值。
+    assert dr._resume_input(ctx, "call_a02da078") == answer
+
+    # 多条目时无法安全兜底：仍返回 None，不得张冠李戴。
+    interactive_input.update("call_other_card", {"status": "answered"})
+    assert dr._resume_input(ctx, "call_6f57dea2_interaction_1") is None
+
+
+@pytest.mark.asyncio
+async def test_rail_resumes_outline_with_answer_keyed_by_stale_card_id():
+    """作答挂在历史卡片 id 下（键断裂）→ rail 兜底取唯一作答续跑大纲确认。"""
+    outline_confirmed = {
+        "status": "answered",
+        "answers": [
+            {
+                "question": "研究大纲是否确认？",
+                "selected_options": ["确认大纲，继续研究"],
+            }
+        ],
+    }
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+    }
+    session = _Session()
+    session.state[DEEPRESEARCH_EXECUTION_STATE_KEY] = {
+        "call-1": {
+            "schema_version": 1,
+            "phase": "wait_outline",
+            "revision": 1,
+            "query": "研究智能家电竞争格局",
+            "file_name": "智能家电报告",
+            "conversation_id": "conversation-1",
+            "requested_report_type": "brief",
+            "outline_presented": True,
+        }
+    }
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(
+        result=None,
+        session=session,
+        resume_input=outline_confirmed,
+        resume_key="call_a02da078",
+        tool_call_id="call-1",
+    )
+    await rail.before_tool_call(ctx)
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ) as stream:
+        ctx.inputs.tool_result = await de.deepresearch_execute._func(
+            query="研究智能家电竞争格局",
+            file_name="智能家电报告",
+        )
+    await rail.after_tool_call(ctx)
+
+    # 兜底取到作答 → 大纲确认通过，resume outline_interaction 并完成。
+    stream.assert_awaited_once()
+    assert stream.await_args.kwargs["action"] == "resume"
+    assert stream.await_args.kwargs["node"] == "outline_interaction"
+    assert ctx.force_finish_requests[0]["result_type"] == "answer"

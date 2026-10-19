@@ -55,6 +55,9 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
 )
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.providers import tools as _tools
+from jiuwenswarm.agents.harness.common.browser_defaults import (
+    DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+)
 
 # Modes that route to the code adapter and get the code member profile.
 _CODE_MODES: frozenset[str] = frozenset({"code.team", "team.plan"})
@@ -86,6 +89,10 @@ def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
 # provider name re-exported from the registry (no hard-coded strings).
 _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.RUNTIME_PROMPT,
+    # auto 档（relay 下发 enable_routing）成员级路由：每个成员各自跑分类器。
+    # 自身按 config.yaml::model_routing.enabled + JIUWENSWARM_MODEL_ROUTING_ENABLED
+    # 门控，关闭时 provider 返回 None（不挂载）。
+    registry.MODEL_ROUTING,
     registry.REQUEST_SCOPED_MCP_TOOLS,
     registry.TEAM_SKILL_STORAGE_POLICY,
     registry.TEAM_SHARED_SKILL_LINK_REFRESH,
@@ -137,6 +144,8 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
 # carry params and are appended separately.
 _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_RUNTIME_PROMPT,
+    # 同 _COMMON_RAIL_NAMES：code.team / team.plan 成员也要能 auto 档路由。
+    registry.MODEL_ROUTING,
     registry.REQUEST_SCOPED_MCP_TOOLS,
     registry.RESPONSE_PROMPT,
     registry.STREAM_EVENT,
@@ -681,6 +690,22 @@ def _is_subagent_enabled(sub_cfg: Any) -> bool:
     return isinstance(sub_cfg, dict) and bool(sub_cfg.get("enabled", False))
 
 
+def _is_subagent_default_enabled(sub_cfg: Any) -> bool:
+    """Return True unless the entry is an explicit ``enabled: false``."""
+    if not isinstance(sub_cfg, dict):
+        return True
+    return sub_cfg.get("enabled", True) is not False
+
+
+def _subagent_default_max_iterations(name: str, react_cfg: dict[str, Any]) -> int:
+    """Resolve the default iteration budget for a named swarm sub-agent."""
+    if name == "browser_agent":
+        return DEFAULT_BROWSER_AGENT_MAX_ITERATIONS
+    if name == "statusline-setup":
+        return registry.DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS
+    return react_cfg.get("max_iterations", _DEFAULT_SUBAGENT_MAX_ITERATIONS)
+
+
 def _subagent_language(mode: str, role: str, config: dict[str, Any]) -> str:
     """Resolve the code sub-agent runtime language (mirrors ``code_runtime_language``).
 
@@ -709,11 +734,14 @@ def _code_subagent_spec(
         react_cfg.get("subagents", {}) if isinstance(react_cfg, dict) else {}
     )
     sub_cfg = subagents_cfg.get(name) if isinstance(subagents_cfg, dict) else None
-    max_iterations = react_cfg.get("max_iterations", _DEFAULT_SUBAGENT_MAX_ITERATIONS)
+    max_iterations = _subagent_default_max_iterations(name, react_cfg)
     if isinstance(sub_cfg, dict) and sub_cfg.get("max_iterations"):
         max_iterations = sub_cfg["max_iterations"]
+    card_kwargs: dict[str, Any] = {"name": name}
+    if name == "statusline-setup":
+        card_kwargs["id"] = "jiuwenswarm.statusline-setup"
     return SubAgentSpec(
-        agent_card=AgentCard(name=name),
+        agent_card=AgentCard(**card_kwargs),
         system_prompt="",
         factory_name=factory_name,
         factory_kwargs={
@@ -728,9 +756,10 @@ def build_member_subagent_specs(
     mode: str,
     role: str,
 ) -> list[SubAgentSpec]:
-    """Build the declarative code sub-agent specs (empty for non-code modes).
+    """Build the declarative sub-agent specs for a swarm member.
 
-    explore / plan are always present, while code / browser are config-gated via
+    Status-line setup is default-on for every mode. Code modes additionally
+    include explore / plan. code / browser are config-gated via
     ``react.subagents.<name>.enabled``.
 
     Args:
@@ -739,19 +768,36 @@ def build_member_subagent_specs(
         role: The member role (reserved, both roles get the same sub-agents).
 
     Returns:
-        The ``SubAgentSpec`` list (empty when not a code mode).
+        The ``SubAgentSpec`` list.
     """
-    if not _is_code_mode(mode):
-        return []
     react = (config or {}).get("react", {})
     react = react if isinstance(react, dict) else {}
     subagents_cfg = react.get("subagents", {}) if isinstance(react, dict) else {}
     language = _subagent_language(mode, role, config)
 
-    specs: list[SubAgentSpec] = [
-        _code_subagent_spec("explore_agent", registry.EXPLORE_AGENT, react, language),
-        _code_subagent_spec("plan_agent", registry.PLAN_AGENT, react, language),
-    ]
+    specs: list[SubAgentSpec] = []
+    statusline_cfg = (
+        subagents_cfg.get("statusline-setup")
+        if isinstance(subagents_cfg, dict)
+        else None
+    )
+    if _is_subagent_default_enabled(statusline_cfg):
+        specs.append(
+            _code_subagent_spec(
+                "statusline-setup",
+                registry.STATUSLINE_SETUP_AGENT,
+                react,
+                language,
+            )
+        )
+    if not _is_code_mode(mode):
+        return specs
+    specs.extend(
+        [
+            _code_subagent_spec("explore_agent", registry.EXPLORE_AGENT, react, language),
+            _code_subagent_spec("plan_agent", registry.PLAN_AGENT, react, language),
+        ]
+    )
     if isinstance(subagents_cfg, dict):
         if _is_subagent_enabled(subagents_cfg.get("code_agent")):
             specs.append(
@@ -829,6 +875,18 @@ def build_member_deep_agent_spec(
         update["enable_skill_discovery"] = not retrieval_enabled
 
     subagent_specs = build_member_subagent_specs(config, mode, role)
+
+    react_for_gp = (config or {}).get("react", {})
+    react_for_gp = react_for_gp if isinstance(react_for_gp, dict) else {}
+    gp_cfg = (
+        react_for_gp.get("subagents", {}).get("general_agent")
+        if isinstance(react_for_gp.get("subagents"), dict)
+        else None
+    )
+    # Team stays on synchronous task_tool (subagent runtime is not wired here),
+    # so this flag is the task_tool gate. An explicit false must clear a base
+    # spec that already turned general-purpose on.
+    update["add_general_purpose_agent"] = _is_subagent_enabled(gp_cfg)
 
     # In team mode, base_spec includes a browser_agent with hardcoded
     # server_id="playwright_official_stdio". All members share that single
