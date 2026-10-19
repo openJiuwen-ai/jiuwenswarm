@@ -64,6 +64,7 @@ type PendingConfirm = { kind: 'delete' | 'disable'; colleague: JiuwenMateColleag
 type LoadStatus = 'loading' | 'ready' | 'failed';
 
 const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
+const SCHEDULE_REFRESH_INTERVAL_MS = 5_000;
 
 export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettings }: JiuwenMateAppProps) {
   const { t } = useTranslation();
@@ -338,15 +339,26 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
       return;
     }
     let cancelled = false;
-    Promise.all(agentIds.map((agentId) => api.listSchedules(agentId)))
-      .then((groups) => {
-        if (!cancelled) setSchedules(groups.flat());
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setActionError(errorMessage(error));
-      });
+    let refreshing = false;
+    const refreshSchedules = () => {
+      if (refreshing) return;
+      refreshing = true;
+      Promise.all(agentIds.map((agentId) => api.listSchedules(agentId)))
+        .then((groups) => {
+          if (!cancelled) setSchedules(groups.flat());
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) setActionError(errorMessage(error));
+        })
+        .finally(() => {
+          refreshing = false;
+        });
+    };
+    refreshSchedules();
+    const refreshTimer = window.setInterval(refreshSchedules, SCHEDULE_REFRESH_INTERVAL_MS);
     return () => {
       cancelled = true;
+      window.clearInterval(refreshTimer);
     };
   }, [api, state.view, state.colleagues, connectionEpoch]);
 

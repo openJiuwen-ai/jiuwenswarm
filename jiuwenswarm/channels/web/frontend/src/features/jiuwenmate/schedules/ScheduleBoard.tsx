@@ -15,7 +15,9 @@ type BoardColleague = {
   id: string;
   name: string;
   avatarUrl?: string;
+  avatarHue?: number;
   category?: JiuwenMateCategory;
+  isDefault?: boolean;
 };
 
 export function ScheduleBoard({
@@ -125,6 +127,8 @@ export function ScheduleBoard({
                           name: colleague?.name ?? plan.agentId,
                           category: colleague?.category ?? 'custom',
                           avatarUrl: colleague?.avatarUrl,
+                          avatarHue: colleague?.avatarHue,
+                          isDefault: colleague?.isDefault,
                         }}
                       />
                       {nameOf(plan.agentId)}

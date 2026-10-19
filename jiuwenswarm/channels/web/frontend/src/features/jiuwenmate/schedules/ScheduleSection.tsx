@@ -56,7 +56,7 @@ export function ScheduleSection({
       ) : (
         <ul className="jiuwenmate-schedule-cards">
           {schedules.map((plan) => (
-            <li key={plan.id} data-testid="jiuwenmate-schedule-card">
+            <li key={plan.id} className="jiuwenmate-schedule-card" data-testid="jiuwenmate-schedule-card">
               <div>
                 <strong>{plan.name}</strong>
                 <small>
@@ -64,23 +64,27 @@ export function ScheduleSection({
                   {scheduleSummary(plan)}
                 </small>
               </div>
-              <ActionMenu
-                label={t('jiuwenmate.workspace.more')}
-                items={[
-                  { key: 'run', label: t('jiuwenmate.schedule.runNow'), icon: Play, onSelect: () => void onRun?.(plan.id) },
-                  { key: 'history', label: t('jiuwenmate.schedule.history'), icon: History, onSelect: () => openHistory(plan.id) },
-                  { key: 'edit', label: t('jiuwenmate.schedule.edit'), icon: PencilLine, onSelect: () => setEditing(plan) },
-                  { key: 'delete', label: t('jiuwenmate.schedule.delete'), icon: Trash2, onSelect: () => void onDelete?.(plan.id) },
-                ]}
-              />
-              <button
-                type="button"
-                className="jiuwenmate-switch"
-                role="switch"
-                aria-checked={plan.enabled}
-                aria-label={plan.enabled ? t('jiuwenmate.schedule.pause') : t('jiuwenmate.schedule.resume')}
-                onClick={() => void onSetEnabled?.(plan.id, !plan.enabled)}
-              />
+              <div className="jiuwenmate-schedule-card__actions">
+                <ActionMenu
+                  label={t('jiuwenmate.workspace.more')}
+                  items={[
+                    { key: 'run', label: t('jiuwenmate.schedule.runNow'), icon: Play, onSelect: () => void onRun?.(plan.id) },
+                    { key: 'history', label: t('jiuwenmate.schedule.history'), icon: History, onSelect: () => openHistory(plan.id) },
+                    { key: 'edit', label: t('jiuwenmate.schedule.edit'), icon: PencilLine, onSelect: () => setEditing(plan) },
+                    { key: 'delete', label: t('jiuwenmate.schedule.delete'), icon: Trash2, onSelect: () => void onDelete?.(plan.id) },
+                  ]}
+                />
+                <button
+                  type="button"
+                  className="jiuwenmate-switch"
+                  role="switch"
+                  aria-checked={plan.enabled}
+                  aria-label={plan.enabled ? t('jiuwenmate.schedule.pause') : t('jiuwenmate.schedule.resume')}
+                  onClick={() => void onSetEnabled?.(plan.id, !plan.enabled)}
+                >
+                  <span className="jiuwenmate-switch__thumb" aria-hidden />
+                </button>
+              </div>
             </li>
           ))}
         </ul>
