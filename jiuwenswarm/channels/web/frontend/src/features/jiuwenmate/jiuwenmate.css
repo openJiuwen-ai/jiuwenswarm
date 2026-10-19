@@ -1833,7 +1833,8 @@
   justify-content: space-between;
 }
 
-.jiuwenmate-composer__toolbar button {
+.jiuwenmate-composer__toolbar button,
+.jiuwenmate-composer__model {
   display: inline-flex;
   height: 26px;
   align-items: center;
@@ -1845,6 +1846,10 @@
   background: transparent;
   font-size: 12px;
   cursor: pointer;
+}
+
+.jiuwenmate-composer__model {
+  cursor: default;
 }
 
 .jiuwenmate-composer__toolbar button:hover:not(:disabled) {

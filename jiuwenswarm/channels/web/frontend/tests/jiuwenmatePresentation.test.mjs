@@ -16,6 +16,7 @@ import {
 import { CUSTOM_AVATAR_HUES, pickAvatarHue } from '../node_modules/.cache/jiuwenmate-presentation/avatarHue.js';
 import { ColleagueAvatar } from '../node_modules/.cache/jiuwenmate-presentation/components/ColleagueAvatar.js';
 import { ColleagueCard } from '../node_modules/.cache/jiuwenmate-presentation/components/ColleagueCard.js';
+import { ConversationComposer } from '../node_modules/.cache/jiuwenmate-presentation/components/ConversationComposer.js';
 import { ActivityHeatmap, HeatmapLegend } from '../node_modules/.cache/jiuwenmate-presentation/components/ActivityHeatmap.js';
 import { yearHeatmap } from '../node_modules/.cache/jiuwenmate-presentation/officeState.js';
 
@@ -131,4 +132,23 @@ test('year heatmap renders weekday labels, month labels and the design legend', 
   assert.match(markup, /2026\/01\/16/);
   assert.match(markup, /任务数：112/);
   assert.match(markup, /工作时长：3.1h/);
+});
+
+test('private chat composer shows the colleague model instead of Auto', () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(ConversationComposer, {
+      value: '',
+      onChange() {},
+      modelCatalog: {
+        models: [{ id: 'deepseek-flash#0', label: 'DeepSeek Flash', provider: 'deepseek' }],
+        defaultModelId: 'other',
+        defaultModelLabel: '其他模型',
+      },
+      modelId: 'deepseek-flash#0',
+    }),
+  );
+
+  assert.match(markup, /data-testid="jiuwenmate-composer-model"/);
+  assert.match(markup, /DeepSeek Flash/);
+  assert.doesNotMatch(markup, />Auto</);
 });
