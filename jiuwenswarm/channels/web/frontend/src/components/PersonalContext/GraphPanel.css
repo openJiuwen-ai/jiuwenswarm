@@ -929,7 +929,7 @@
   color: #1476ff;
 }
 
-/* 左侧图标容器：尺寸随内容（文件 16 / 文件夹 12），对齐 FilePreviewPanel */
+/* 左侧图标容器：文件/文件夹图标统一 12px，对齐 FilePreviewPanel */
 .pc-graph__tree-icon {
   display: inline-flex;
   align-items: center;
@@ -938,6 +938,8 @@
 
 .pc-graph__tree-icon>svg {
   flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
 }
 
 .pc-graph__tree-name {

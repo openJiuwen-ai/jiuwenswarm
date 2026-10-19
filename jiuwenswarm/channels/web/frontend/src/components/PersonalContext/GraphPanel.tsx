@@ -1582,7 +1582,7 @@ function FileTreeInner({
                 onClick={() => nodeId && onSelect(nodeId)}
               >
                 <span className="pc-graph__tree-icon">
-                  <FilePreviewIcon fileName={n.name} size={16} />
+                  <FilePreviewIcon fileName={n.name} size={12} />
                 </span>
                 <span className="pc-graph__tree-name">{n.name}</span>
               </button>
