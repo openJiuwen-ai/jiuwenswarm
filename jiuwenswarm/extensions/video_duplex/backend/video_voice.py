@@ -12,8 +12,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from jiuwenswarm.common.asr_client import AsrClient, decrypt_api_key
-from jiuwenswarm.common.asr_client import resolve_asr_endpoint as resolve_asr_endpoint  # re-export
+from jiuwenswarm.common import asr_client
+from jiuwenswarm.common.asr_client import AUDIO_SUFFIXES, AsrClient, decrypt_api_key
 from jiuwenswarm.extensions.video_duplex.backend import joyai_provider
 
 
@@ -68,6 +68,16 @@ def asr_model_config() -> tuple[str, str, str]:
     )
 
 
+def asr_transcription_mode() -> str:
+    """Optional override (transcription/chat) for a base ASR URL."""
+    return (os.environ.get("VOICE_ASR_MODE") or os.environ.get("ASR_API_MODE") or "").strip()
+
+
+def resolve_asr_endpoint(endpoint: str, model: str) -> tuple[str, str]:
+    """Resolve a full ASR endpoint to its request kind and SDK base URL."""
+    return asr_client.resolve_asr_endpoint(endpoint, model, asr_transcription_mode())
+
+
 def clean_model_text(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
@@ -91,13 +101,7 @@ def _decode_audio_data_url(data_url: str, index: int) -> tuple[str, bytes, str]:
     if not separator or not is_allowed_audio_data_url(data_url):
         raise ValueError("audio data URL is invalid")
     mime_type = header[5:].partition(";")[0].casefold()
-    suffix = {
-        "audio/mpeg": ".mp3",
-        "audio/mp4": ".m4a",
-        "audio/ogg": ".ogg",
-        "audio/webm": ".webm",
-        "audio/wav": ".wav",
-    }.get(mime_type, ".audio")
+    suffix = AUDIO_SUFFIXES.get(mime_type, ".audio")
     try:
         audio = base64.b64decode(encoded, validate=True)
     except (ValueError, base64.binascii.Error) as exc:
@@ -126,7 +130,14 @@ async def transcribe_audio(
     if not audio_inputs or not all((endpoint, api_key, model)):
         return ""
     # 来源: 沿用原 AsyncOpenAI(timeout=45.0) 与 openai SDK 默认 max_retries=2
-    client = AsrClient(endpoint, api_key, model, timeout=45.0, max_retries=2)
+    client = AsrClient(
+        endpoint,
+        api_key,
+        model,
+        timeout=45.0,
+        max_retries=2,
+        transcription_mode=asr_transcription_mode(),
+    )
     transcripts: list[str] = []
     for index, (data_url, _) in enumerate(audio_inputs, start=1):
         filename, audio, mime_type = _decode_audio_data_url(data_url, index)

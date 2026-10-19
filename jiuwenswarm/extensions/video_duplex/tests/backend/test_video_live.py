@@ -24,6 +24,7 @@ from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support impor
     empty_task_file_query,  # noqa: F401 -- pytest fixture
 )
 
+from jiuwenswarm.common.asr_client import AsrError
 from jiuwenswarm.extensions.video_duplex.backend import (
     joyai_provider,
     settings,
@@ -1236,6 +1237,33 @@ async def test_transcribe_audio_keeps_chat_endpoint_for_omni(monkeypatch) -> Non
     assert transcript == "测试语音"
     assert calls[0]["model"] == "Qwen/Qwen3-Omni-30B-A3B-Instruct"
     assert calls[0]["messages"][0]["content"][0]["type"] == "audio_url"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_reports_empty_chat_choices_as_invalid(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        async def create(self, **kwargs):
+            return SimpleNamespace(choices=[])
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", FakeClient)
+    monkeypatch.setattr(
+        video_voice,
+        "asr_model_config",
+        lambda: ("https://asr.example/v1/chat/completions", "key", "omni"),
+    )
+
+    with pytest.raises(AsrError) as error:
+        await video_voice.transcribe_audio(
+            [("data:audio/wav;base64,ZmFrZQ==", "用户麦克风")],
+            use_joyai_voice=False,
+        )
+    assert error.value.code == "ASR_INVALID_RESPONSE"
 
 
 def _pcm16_wav_data_url(pcm: bytes) -> str:

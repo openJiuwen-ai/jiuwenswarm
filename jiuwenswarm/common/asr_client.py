@@ -29,7 +29,7 @@ import tempfile
 import uuid
 from collections.abc import Mapping
 from typing import Any, Protocol
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import httpx
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, WebSocketException
@@ -60,7 +60,8 @@ _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 # Prompt and token budget of the original video-duplex chat ASR request.
 _CHAT_ASR_PROMPT = "只转写清晰可辨的用户中文，不要解释；静音、噪声或听不清时返回空字符串，不得补写。"
 _CHAT_ASR_MAX_TOKENS = 160
-_AUDIO_SUFFIXES = {
+# MIME type -> file suffix for every recording format the callers accept.
+AUDIO_SUFFIXES = {
     "audio/flac": ".flac",
     "audio/m4a": ".m4a",
     "audio/mp4": ".m4a",
@@ -105,10 +106,15 @@ def decrypt_api_key(value: str) -> str:
         return value
 
 
-def _asr_uses_transcription_endpoint(model: str) -> bool:
-    mode = (
-        os.environ.get("VOICE_ASR_MODE") or os.environ.get("ASR_API_MODE") or ""
-    ).strip().casefold()
+def normalize_ws_endpoint(endpoint: str) -> str:
+    """Add the DashScope inference path to a ws(s) address that has none."""
+    parts = urlsplit(endpoint)
+    path = parts.path.rstrip("/") or DASHSCOPE_WS_PATH
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
+
+
+def _asr_uses_transcription_endpoint(model: str, mode: str | None) -> bool:
+    mode = str(mode or "").strip().casefold()
     if mode in {"transcription", "transcriptions", "audio"}:
         return True
     if mode in {"chat", "chat_completion", "chat_completions"}:
@@ -126,8 +132,14 @@ def _openai_endpoint_base(endpoint: str, route: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, base_path, "", ""))
 
 
-def resolve_asr_endpoint(endpoint: str, model: str) -> tuple[str, str]:
-    """Resolve an HTTP ASR endpoint to its request kind and SDK base URL."""
+def resolve_asr_endpoint(
+    endpoint: str, model: str, mode: str | None = None
+) -> tuple[str, str]:
+    """Resolve an HTTP ASR endpoint to its request kind and SDK base URL.
+
+    ``mode`` forces ``transcription``/``chat`` for a base URL; without it the
+    model name decides.
+    """
     path = urlsplit(endpoint).path.rstrip("/").casefold()
     transcription_route = "/audio/transcriptions"
     chat_route = "/chat/completions"
@@ -135,7 +147,7 @@ def resolve_asr_endpoint(endpoint: str, model: str) -> tuple[str, str]:
         return "transcription", _openai_endpoint_base(endpoint, transcription_route)
     if path.endswith(chat_route):
         return "chat", _openai_endpoint_base(endpoint, chat_route)
-    kind = "transcription" if _asr_uses_transcription_endpoint(model) else "chat"
+    kind = "transcription" if _asr_uses_transcription_endpoint(model, mode) else "chat"
     return kind, endpoint.rstrip("/")
 
 
@@ -175,8 +187,10 @@ class _OpenAICompatibleAdapter:
         timeout: float | httpx.Timeout,
         max_retries: int,
         http_client: httpx.AsyncClient | None,
+        default_query: Mapping[str, str] | None = None,
     ) -> None:
         self._base_url = base_url
+        self._default_query = dict(default_query or {})
         self._api_key = api_key
         self._model = model
         self._timeout = timeout
@@ -194,9 +208,13 @@ class _OpenAICompatibleAdapter:
         }
         if self._http_client is not None:
             client_kwargs["http_client"] = self._http_client
+        if self._default_query:
+            client_kwargs["default_query"] = self._default_query
         client = openai.AsyncOpenAI(**client_kwargs)
         try:
             return await self._request(client, audio, mime_type, filename)
+        except openai.APIResponseValidationError as exc:
+            raise AsrError("ASR_INVALID_RESPONSE", f"返回内容无法解析: {exc}") from exc
         except openai.APITimeoutError as exc:
             raise AsrError("ASR_TIMEOUT", "请求超时") from exc
         except openai.APIConnectionError as exc:
@@ -207,12 +225,21 @@ class _OpenAICompatibleAdapter:
                 _response_error(exc.response),
                 status_code=exc.status_code,
             ) from exc
+        except (ValueError, IndexError, AttributeError, TypeError) as exc:
+            # Broken JSON body, or a JSON body without the expected fields.
+            raise AsrError("ASR_INVALID_RESPONSE", f"返回内容无法解析: {exc}") from exc
         finally:
             if self._http_client is None:
                 await client.close()
 
     async def _request(self, client: Any, audio: bytes, mime_type: str, filename: str) -> str:
         raise NotImplementedError
+
+
+def _reject_raw_text(response: Any) -> None:
+    # The SDK returns the raw body as ``str`` when it is not JSON (e.g. an HTML login page).
+    if isinstance(response, str):
+        raise AsrError("ASR_INVALID_RESPONSE", f"返回的不是 JSON: {response.strip()[:200]}")
 
 
 class OpenAITranscriptionAdapter(_OpenAICompatibleAdapter):
@@ -223,8 +250,8 @@ class OpenAITranscriptionAdapter(_OpenAICompatibleAdapter):
             model=self._model,
             file=(filename, audio, mime_type),
         )
-        text = response if isinstance(response, str) else getattr(response, "text", "")
-        return str(text or "").strip()
+        _reject_raw_text(response)
+        return str(getattr(response, "text", "") or "").strip()
 
 
 class OpenAIChatAudioAdapter(_OpenAICompatibleAdapter):
@@ -245,6 +272,7 @@ class OpenAIChatAudioAdapter(_OpenAICompatibleAdapter):
             max_tokens=_CHAT_ASR_MAX_TOKENS,
             temperature=0,
         )
+        _reject_raw_text(response)
         return str(response.choices[0].message.content or "").strip()
 
 
@@ -314,7 +342,7 @@ class DashScopeRunTaskAdapter:
         self._timeout = timeout
 
     async def transcribe(self, audio: bytes, mime_type: str, filename: str) -> str:
-        suffix = os.path.splitext(filename)[1] or _AUDIO_SUFFIXES.get(mime_type, ".audio")
+        suffix = os.path.splitext(filename)[1] or AUDIO_SUFFIXES.get(mime_type, ".audio")
         pcm = await asyncio.to_thread(to_pcm16k, audio, suffix, self._timeout)
         try:
             return await asyncio.wait_for(self._run_task(pcm), timeout=self._timeout)
@@ -421,7 +449,10 @@ class AsrClient:
         timeout: float | httpx.Timeout,
         max_retries: int,
         http_client: httpx.AsyncClient | None = None,
+        transcription_mode: str | None = None,
     ) -> None:
+        """``transcription_mode`` (``transcription``/``chat``) overrides the
+        model-name guess for an HTTP base URL; ws(s) ignores it."""
         self._adapter = self._select_adapter(
             str(endpoint or "").strip(),
             str(api_key or ""),
@@ -429,6 +460,7 @@ class AsrClient:
             timeout=timeout,
             max_retries=max_retries,
             http_client=http_client,
+            transcription_mode=transcription_mode,
         )
 
     @staticmethod
@@ -440,14 +472,19 @@ class AsrClient:
         timeout: float | httpx.Timeout,
         max_retries: int,
         http_client: httpx.AsyncClient | None,
+        transcription_mode: str | None,
     ) -> AsrAdapter:
         parts = urlsplit(endpoint)
         if parts.scheme in {"ws", "wss"} and parts.netloc:
-            path = parts.path.rstrip("/") or DASHSCOPE_WS_PATH
-            url = urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
-            return DashScopeRunTaskAdapter(url, api_key, model, timeout=_total_seconds(timeout))
+            return DashScopeRunTaskAdapter(
+                normalize_ws_endpoint(endpoint), api_key, model, timeout=_total_seconds(timeout)
+            )
         if parts.scheme in {"http", "https"} and parts.netloc:
-            kind, base_url = resolve_asr_endpoint(endpoint, model)
+            kind, base_url = resolve_asr_endpoint(
+                urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")),
+                model,
+                transcription_mode,
+            )
             adapter_cls = (
                 OpenAITranscriptionAdapter if kind == "transcription" else OpenAIChatAudioAdapter
             )
@@ -458,6 +495,8 @@ class AsrClient:
                 timeout=timeout,
                 max_retries=max_retries,
                 http_client=http_client,
+                # Keep query parameters such as Azure's api-version on every request.
+                default_query=dict(parse_qsl(parts.query, keep_blank_values=True)),
             )
         raise AsrError("ASR_BAD_CONFIG", "ASR 地址必须是有效的 HTTP(S) 或 WS(S) 地址")
 
@@ -467,5 +506,5 @@ class AsrClient:
         """Return the stripped transcript; an empty string when nothing was heard."""
 
         mime = str(mime_type or "").split(";", 1)[0].strip().lower()
-        name = filename or f"recording{_AUDIO_SUFFIXES.get(mime, '.audio')}"
+        name = filename or f"recording{AUDIO_SUFFIXES.get(mime, '.audio')}"
         return await self._adapter.transcribe(audio, mime, name)

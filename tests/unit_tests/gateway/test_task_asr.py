@@ -268,3 +268,55 @@ async def test_transcribe_task_audio_websocket_handshake_rejected():
         server.close()
         await server.wait_closed()
     assert error.value.code == "ASR_UPSTREAM_ERROR"
+
+
+_HTTP_ENV = {"ASR_API_BASE": "https://example.com/v1", "ASR_MODEL_NAME": "task-asr-model"}
+_WEBM_PARAMS = {"audio_base64": base64.b64encode(b"audio").decode(), "mime_type": "audio/webm"}
+
+
+@pytest.mark.asyncio
+async def test_transcribe_task_audio_rejects_non_json_success_body():
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200, text="<html>login</html>", headers={"content-type": "text/html"}
+        )
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(TaskAsrError, match="无效 JSON") as error:
+            await transcribe_task_audio(_WEBM_PARAMS, environ=_HTTP_ENV, client=client)
+    assert error.value.code == "ASR_INVALID_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_task_audio_rejects_broken_json_body():
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200, text="{bad", headers={"content-type": "application/json"}
+        )
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(TaskAsrError, match="无效 JSON") as error:
+            await transcribe_task_audio(_WEBM_PARAMS, environ=_HTTP_ENV, client=client)
+    assert error.value.code == "ASR_INVALID_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_task_audio_keeps_endpoint_query():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        return httpx.Response(200, json={"text": "ok"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await transcribe_task_audio(
+            _WEBM_PARAMS,
+            environ={
+                **_HTTP_ENV,
+                "ASR_API_BASE": "https://example.com/openai/deployments/asr?api-version=2024-06-01",
+            },
+            client=client,
+        )
+    assert result == "ok"
+    assert seen[0].path == "/openai/deployments/asr/audio/transcriptions"
+    assert seen[0].params["api-version"] == "2024-06-01"

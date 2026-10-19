@@ -20,27 +20,15 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from jiuwenswarm.common.asr_client import (
-    DASHSCOPE_WS_PATH,
+    AUDIO_SUFFIXES,
     AsrClient,
     AsrError,
     decrypt_api_key,
+    normalize_ws_endpoint,
 )
 
 
 MAX_TASK_ASR_AUDIO_BYTES = 25 * 1024 * 1024
-
-_AUDIO_EXTENSIONS = {
-    "audio/flac": ".flac",
-    "audio/m4a": ".m4a",
-    "audio/mp4": ".m4a",
-    "audio/mpeg": ".mp3",
-    "audio/mp3": ".mp3",
-    "audio/ogg": ".ogg",
-    "audio/wav": ".wav",
-    "audio/wave": ".wav",
-    "audio/webm": ".webm",
-    "audio/x-m4a": ".m4a",
-}
 
 
 class TaskAsrError(RuntimeError):
@@ -71,8 +59,7 @@ def task_asr_endpoint(api_base: str) -> str:
         )
 
     if parts.scheme in {"ws", "wss"}:
-        path = parts.path.rstrip("/") or DASHSCOPE_WS_PATH
-        return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
+        return normalize_ws_endpoint(value)
 
     path = parts.path.rstrip("/")
     if not path.endswith("/audio/transcriptions"):
@@ -102,6 +89,8 @@ def _task_asr_error(exc: AsrError) -> TaskAsrError:
         return TaskAsrError("任务对话 ASR 请求超时", exc.code)
     if exc.code == "ASR_CONNECTION_ERROR":
         return TaskAsrError(f"无法连接任务对话 ASR 服务: {exc.detail}", exc.code)
+    if exc.code == "ASR_INVALID_RESPONSE":
+        return TaskAsrError("任务对话 ASR 返回了无效 JSON", exc.code)
     if exc.code == "ASR_AUDIO_DECODE_FAILED":
         return TaskAsrError(exc.detail, exc.code)
     status = f" ({exc.status_code})" if exc.status_code else ""
@@ -128,7 +117,7 @@ async def transcribe_task_audio(
     mime_type = (
         str(params.get("mime_type") or "audio/webm").split(";", 1)[0].strip().lower()
     )
-    extension = _AUDIO_EXTENSIONS.get(mime_type)
+    extension = AUDIO_SUFFIXES.get(mime_type)
     if extension is None:
         raise TaskAsrError(f"不支持的录音格式: {mime_type}", "ASR_UNSUPPORTED_FORMAT")
     audio = _decode_audio(params.get("audio_base64"))
