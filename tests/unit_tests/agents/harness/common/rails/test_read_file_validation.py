@@ -7,6 +7,9 @@ from __future__ import annotations
 import pytest
 from openjiuwen.harness.tools.base_tool import ToolOutput
 
+from jiuwenswarm.agents.harness.common.tool_result_schema import (
+    normalize_tool_result,
+)
 from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     _looks_like_binary_payload,
     build_native_image_tool_error,
@@ -276,3 +279,49 @@ def test_vision_tool_targets_all_provided_blocks_only_provided_local_path(tmp_pa
         {"question": "no image arg"},
         [str(provided)],
     ) is False
+
+
+# ── CR-8：归一 rail 先于 read_file 校验执行（结果已是 _ResultDict）────────────
+
+
+def test_normalized_empty_file_still_rejected() -> None:
+    # 归一 rail(82) 先于本 rail(80)：空文件归一后是 {"data":{"content":""},...}，
+    # 不能被 str(dict) repr 判成“非空”，端到端必须仍报 [READ_FILE_ERROR]。
+    normalized = normalize_tool_result("")
+    ok, error = validate_read_file_result("a.txt", normalized)
+
+    assert ok is False
+    assert error is not None
+    assert error.startswith("[READ_FILE_ERROR]")
+    assert "为空" in error
+
+
+def test_normalized_text_passes() -> None:
+    assert validate_read_file_result("a.txt", normalize_tool_result("hello")) == (True, None)
+
+
+def test_normalized_null_bytes_still_rejected() -> None:
+    # 归一后若退回 str(dict)，NUL 会被 repr 转义成 \x00，二进制启发式失效。
+    normalized = normalize_tool_result("a\x00b" + "x" * 600)
+    ok, error = validate_read_file_result("a.txt", normalized)
+
+    assert ok is False
+    assert error is not None
+    assert error.startswith("[READ_FILE_ERROR]")
+
+
+@pytest.mark.parametrize(
+    "warning",
+    [
+        "Warning: the file exists but the contents are empty.",
+        "Warning: the document exists but the contents are empty.",
+    ],
+)
+def test_empty_file_warning_text_is_rejected(warning: str) -> None:
+    # openjiuwen read_file 对空文件返回 warning 文本（success=True），归一后
+    # 必须仍判 [READ_FILE_ERROR]，否则模型会把空文件当成功并反复重试（CR-8）。
+    ok, error = validate_read_file_result("a.txt", normalize_tool_result(warning))
+
+    assert ok is False
+    assert error is not None
+    assert "为空" in error

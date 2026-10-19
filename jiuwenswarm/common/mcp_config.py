@@ -2723,10 +2723,29 @@ class RequestScopedOfficeClawMcpTool(Tool):
                 # 池化进程可能在请求中途死掉（崩溃/stdin 关闭）：丢弃重建一次再重试。
                 session = await self._acquire_mcp_session(force_rebuild=True)
                 result = await session.call_tool(remote_name, arguments=arguments)
+            result_content = _extract_mcp_result_text(result)
+            is_error = getattr(result, "isError", False) is True
             text = annotate_connector_catalog_result(
-                remote_name, arguments, _extract_mcp_result_text(result),
-                self._unavailable_connectors, is_error=getattr(result, "isError", False) is True,
+                remote_name, arguments, result_content,
+                self._unavailable_connectors, is_error=is_error,
             )
+            if is_error:
+                # T1 统一 schema：框架 extract_mcp_tool_result_content 只取文本
+                # 丢弃 isError，此处在上游包装层补齐失败标记（保留 result 键兼容）。
+                # 失败文本使用上游注解后的 text，保留 connector catalog 提示。
+                failure_text = (
+                    text
+                    if isinstance(text, str) and text.strip()
+                    else "MCP tool reported failure without content"
+                )
+                return {
+                    "status": "error",
+                    "success": False,
+                    "error_code": "mcp_tool_error",
+                    "error_message": failure_text,
+                    "error": failure_text,
+                    "result": text,
+                }
             return {"result": text}
         except Exception as exc:
             raise build_error(

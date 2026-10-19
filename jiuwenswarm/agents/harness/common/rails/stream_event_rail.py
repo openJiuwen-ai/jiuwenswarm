@@ -73,6 +73,9 @@ from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY,
     is_todo_close_nudge,
 )
+from jiuwenswarm.agents.harness.common.rails.tool_result_normalize_rail import (
+    PRE_NORMALIZE_RESULT_KEY,
+)
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     filter_todos_for_display,
     filter_todos_for_execution,
@@ -172,12 +175,50 @@ def _format_tool_result_for_stream(result: Any) -> str:
     if result is None:
         return ""
     text = _deepresearch_completed_content(result)
+    if text is None and isinstance(result, dict):
+        text = _tool_result_dict_text(result)
     if text is None:
         text = str(result)
     limit = _resolve_tool_result_display_max_chars()
     if limit == 0 or len(text) <= limit:
         return text
     return text[:limit]
+
+
+def _tool_result_dict_text(result: dict) -> str | None:
+    """dict 结果的帧展示文本（CR-6）。
+
+    relay-claw 前端直接把 ``payload.result`` 作为工具卡片 detail，因此归一后的
+    dict 不能退化为 ``str(dict)`` repr（单引号、display 与 data.content 重复、
+    截断在半截 dict 处）。取值顺序与 ``render_tool_result_for_llm`` 同语义：
+    display → error_message（失败态）→ data.content → 紧凑 JSON。
+    """
+    display = result.get("display")
+    if isinstance(display, str) and display.strip():
+        return display
+    status = result.get("status")
+    if isinstance(status, str) and status != "success":
+        message = result.get("error_message")
+        if isinstance(message, str) and message.strip():
+            return message
+    data = result.get("data")
+    if isinstance(data, dict):
+        content = data.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+    view = result
+    if isinstance(data, dict):
+        # _flatten_data 把 data 业务键平铺到顶层且复用同一对象引用；整份 dump 会让
+        # 大载荷出现两份。这里剔除与 data 同引用的平铺键（仅 JSON 兜底路径）。
+        view = {
+            key: value
+            for key, value in result.items()
+            if not (key in data and value is data[key])
+        }
+    try:
+        return json.dumps(view, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return None
 
 
 def _structured_tool_result_payload(result: Any) -> Any | None:
@@ -314,8 +355,16 @@ def _infer_tool_result_error(value: Any) -> bool | None:
                 return False
         if _boolish_true(value.get("is_error")) or _boolish_true(value.get("isError")):
             return True
+        if _boolish_false(value.get("ok")):
+            return True
         status = value.get("status")
         if isinstance(status, str) and status.strip().lower() in {"error", "failed", "failure"}:
+            return True
+        result_type = value.get("result_type")
+        if isinstance(result_type, str) and result_type.strip().lower() == "error":
+            return True
+        kind = value.get("kind")
+        if isinstance(kind, str) and kind.strip().lower() == "error":
             return True
         for key in ("exit_code", "exitCode", "returncode", "return_code"):
             exit_failed = _nonzero_exit(value.get(key))
@@ -1068,7 +1117,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "tool_name": getattr(tc, "name", ""),
                 "tool_call_id": tc_id,
                 "result": "[Interrupted] Tool execution cancelled by user.",
-                "status": "error",
+                # T1 统一 schema：取消是 cancelled 而非 error（工具失败才用 error）
+                "status": "cancelled",
+                "success": False,
+                "error_code": "tool_cancelled",
             })
             self._inflight_tool_calls.pop(tc_id, None)
         logger.info(
@@ -1566,6 +1618,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # 复位全部 skill_turbo ContextVar 绑定（幂等；不依赖 session 状态，
         # 消除 session-is-None 路径漏 reset adapter/metadata 的隐患）
         reset_skill_turbo_context(ctx)
+        # 提前 return 路径（todo nudge / 中断 / HITL）也要清理归一 rail 写入的
+        # 透传引用，避免污染同 invoke 内后续工具帧的 raw_output。
+        extra = ctx.extra if isinstance(getattr(ctx, "extra", None), dict) else {}
+        pre_normalized = extra.pop(PRE_NORMALIZE_RESULT_KEY, None)
 
         session = ctx.session
         if session is None or not isinstance(ctx.inputs, ToolCallInputs):
@@ -1705,7 +1761,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # failed before the user has answered; the resumed call emits the
         # real result.
         if _extract_tool_interrupt(ctx.exception) is None:
-            await self._emit_tool_result(session, tc, ctx.inputs.tool_result)
+            await self._emit_tool_result(
+                session,
+                tc,
+                ctx.inputs.tool_result,
+                raw_result=pre_normalized,
+            )
             self._symphony_stream_handler.request_force_finish(
                 ctx,
                 tc,
@@ -1793,9 +1854,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         session: Session,
         tool_call: Any,
         result: Any,
+        *,
+        raw_result: Any = None,
     ) -> None:
         try:
-            raw_output = _structured_tool_result_payload(result)
+            # raw_output 用归一前原对象：归一产物把 data 业务键平铺到顶层，
+            # 整份塞进帧会让大载荷出现两份且绕过 result 的 60000 字符截断。
+            raw_source = raw_result if raw_result is not None else result
+            raw_output = _structured_tool_result_payload(raw_source)
             tool_result_payload = {
                 "tool_name": getattr(tool_call, "name", "") if tool_call else "",
                 "tool_call_id": getattr(tool_call, "id", "") if tool_call else "",
@@ -1808,12 +1874,18 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     tool_result_payload,
                     raw_output,
                 )
-            error_state = _infer_tool_result_error(raw_output if raw_output is not None else result)
+            error_state = _infer_tool_result_error(result)
             if error_state is not None:
                 tool_result_payload["success"] = not error_state
                 if error_state:
                     tool_result_payload["status"] = "error"
                     tool_result_payload["is_error"] = True
+            if isinstance(result, dict):
+                # T1 统一 schema：成败明细键提升到帧顶层（前端白名单已含
+                # error_code/error_message/display），原始形状保留在 raw_output
+                for key in ("error_code", "error_message", "display"):
+                    if key in result and key not in tool_result_payload:
+                        tool_result_payload[key] = result[key]
             source_skill = _resolve_source_skill(session)
             if source_skill:
                 tool_result_payload["source_skill"] = source_skill

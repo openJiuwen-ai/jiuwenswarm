@@ -258,11 +258,16 @@ class ToolResultErrorDetector:
             or ToolResultErrorDetector._boolish_true(payload.get("isError"))
         ):
             return True
+        if ToolResultErrorDetector._boolish_false(payload.get("ok")):
+            return True
         status = payload.get("status")
         if isinstance(status, str) and status.strip().lower() in ToolResultErrorDetector._ERROR_STATUSES:
             return True
         result_type = payload.get("result_type")
         if isinstance(result_type, str) and result_type.strip().lower() == "error":
+            return True
+        kind = payload.get("kind")
+        if isinstance(kind, str) and kind.strip().lower() == "error":
             return True
         err = payload.get("error")
         if err is not None and str(err).strip() and str(err).strip().lower() != "none":
