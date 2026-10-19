@@ -495,9 +495,9 @@ def get_tools(session_id: str | None = None) -> list[Any]:
             "scope of an existing disabled cron job; cron authorization cannot be staged or rely on interactive "
             "approval during execution.\n\n"
             "Inspect permittedActions, unapprovedActions and deniedActions: permittedActions combines policy-allowed, "
-            "token-covered and newly approved actions; unapprovedActions still lack approval, including user-unselected "
-            "actions; deniedActions are prohibited by policy. Execute only permittedActions. Keep a cron job disabled "
-            "until every planned action is permitted.\n\n"
+            "token-covered and newly approved actions; unapprovedActions still lack approval, "
+            "including user-unselected actions; deniedActions are prohibited by policy. Execute only permittedActions. "
+            "Keep a cron job disabled until every planned action is permitted.\n\n"
             "This tool prepares authorization and does not execute actions. ok=true with authorizationRequired=false "
             "means no new approval or token was needed; approved may be false. Actual calls still check permissions. "
             "Requires A4P enabled and an interactive Web session."
@@ -507,7 +507,9 @@ def get_tools(session_id: str | None = None) -> list[Any]:
             "properties": {
                 "actions": {
                     "type": "array",
-                    "description": "Non-empty list of candidate tool action scopes; the backend filters session requests.",
+                    "description": (
+                        "Non-empty list of candidate tool action scopes; the backend filters session requests."
+                    ),
                     "items": {
                         "type": "object",
                         "properties": {

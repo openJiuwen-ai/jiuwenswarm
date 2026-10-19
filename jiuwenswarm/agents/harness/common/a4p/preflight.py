@@ -57,16 +57,7 @@ async def evaluate_action(session_id: str, action: dict[str, Any]) -> str:
             OpenJiuwenPolicyEvaluator,
         )
 
-        def installed_permissions() -> dict[str, Any]:
-            snapshot = rail._invoke_permissions_hook(
-                rail._host.get_permissions_snapshot,
-                session_id=session_id,
-            )
-            if not isinstance(snapshot, dict):
-                raise ValueError("Installed permission snapshot unavailable")
-            return snapshot
-
-        snapshot = installed_permissions()
+        snapshot = rail.get_permission_snapshot(session_id=session_id)
         evaluator = OpenJiuwenPolicyEvaluator(
             rail,
             permission_config_getter=lambda: snapshot,
