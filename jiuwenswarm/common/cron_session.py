@@ -6,12 +6,20 @@ from __future__ import annotations
 
 
 def is_cron_execution_session(session_id: str | None) -> bool:
-    """Return True for scheduled-job execution sessions (``cron_*``).
+    """Return True for scheduled-job execution sessions.
+
+    Covers both id shapes a cron run can hold: the ``cron_*`` convention
+    (proactive tick sessions ``cron_<job_id>`` and legacy team per-run
+    sessions ``cron_<ts>_<job_id>``) and the ``__cron___<ts>_<rand>`` ids
+    assigned by ``CronScheduler._allocate_execution_session`` through
+    ``AgentManager.create_session`` on the internal ``__cron__`` channel.
+    Aligned with the single-agent adapter's ``_is_cron_execution_session``
+    prefix union so team members and single agents agree on the same signal.
 
     Cron runs have no operator on the other end, so interactive permission
     interrupts cannot be answered and must not be attached.
     """
-    return str(session_id or "").strip().startswith("cron")
+    return str(session_id or "").strip().startswith(("cron", "__cron__"))
 
 
 def cron_session_matches_job(session_id: str | None, cron_id: str) -> bool:

@@ -590,13 +590,18 @@ def parse_remote_bootstrap_ack_json(content: str) -> dict[str, Any] | None:
     return data
 
 
-def _swarm_assembly_hint(team_agent: Any) -> dict[str, str]:
-    """Extract provider-assembly hints (mode / project_dir) from a leader spec.
+def _swarm_assembly_hint(team_agent: Any) -> dict[str, Any]:
+    """Extract provider-assembly hints (mode / project_dir / cron) from a leader spec.
 
     Reads the serializable ``build_context_seed`` the swarm enrichment leaves on
     the spec, falling back to the live ``build_context``. Returns an empty dict
     when the team was built via the legacy customizer path, so the teammate
     keeps the legacy rebuild.
+
+    The ``cron`` marker must ride along for cluster-mode team cron runs: the
+    remote teammate rebuilds its spec from these hints alone, and without the
+    marker the rebuilt members would re-expose cron tools inside a cron
+    execution session (nested cron creation, issue #5116).
     """
     spec = getattr(team_agent, "spec", None)
     if spec is None:
@@ -605,15 +610,22 @@ def _swarm_assembly_hint(team_agent: Any) -> dict[str, str]:
     if isinstance(seed, dict) and seed:
         mode = str(seed.get("mode") or "").strip()
         project_dir = str(seed.get("project_dir") or "").strip()
+        request_metadata = seed.get("request_metadata")
     else:
         build_context = getattr(spec, "build_context", None)
         mode = str(getattr(build_context, "mode", "") or "").strip()
         project_dir = str(getattr(build_context, "project_dir", "") or "").strip()
-    hint: dict[str, str] = {}
+        request_metadata = getattr(build_context, "request_metadata", None)
+    hint: dict[str, Any] = {}
     if mode:
         hint["mode"] = mode
     if project_dir:
         hint["project_dir"] = project_dir
+    cron_meta = (
+        request_metadata.get("cron") if isinstance(request_metadata, dict) else None
+    )
+    if isinstance(cron_meta, dict) and cron_meta:
+        hint["cron"] = dict(cron_meta)
     return hint
 
 
@@ -652,7 +664,8 @@ def build_bootstrap_envelope(
         "prompt": prompt or "",
     }
     # Carry provider-assembly hints so the remote teammate rebuilds with the
-    # same request mode / project dir (empty dict for the legacy path).
+    # same request mode / project dir, and keeps the cron execution marker for
+    # team cron runs (empty dict for the legacy path).
     envelope.update(_swarm_assembly_hint(team_agent))
     return envelope
 
@@ -2386,6 +2399,7 @@ async def _ensure_dynamic_member_execution_loop(
     card_replaced: bool = False,
     assembly_mode: str = "",
     assembly_project_dir: str = "",
+    assembly_cron_meta: dict[str, Any] | None = None,
     agent_manager: Any | None = None,
 ) -> tuple[bool, bool]:
     """Best-effort bootstrap for teammate runtime loop after dynamic member takeover.
@@ -2394,6 +2408,8 @@ async def _ensure_dynamic_member_execution_loop(
     is rebuilt provider-style so the serialized spec carries provider declarations
     plus the ``build_context_seed`` that the teammate uses to reconstruct its
     build context — no customizer closure crosses the process boundary.
+    ``assembly_cron_meta`` restores the scheduler's cron execution marker into
+    that seed so members of a team cron run stay cron-gated (issue #5116).
     """
     sid = str(session_id or "").strip()
     member = str(target_member or "").strip()
@@ -2458,6 +2474,12 @@ async def _ensure_dynamic_member_execution_loop(
             request_metadata = {"mode": assembly_mode}
             if assembly_project_dir:
                 request_metadata["project_dir"] = assembly_project_dir
+        if isinstance(assembly_cron_meta, dict) and assembly_cron_meta:
+            # Cluster team cron runs: the cron marker must survive the bootstrap
+            # boundary, otherwise the rebuilt remote members re-expose cron
+            # tools inside a cron execution session (nested cron, issue #5116).
+            request_metadata = dict(request_metadata or {})
+            request_metadata["cron"] = dict(assembly_cron_meta)
         leader_team_agent = await team_manager.get_or_create_team(
             sid,
             deep_agent,
@@ -2723,8 +2745,11 @@ async def apply_bootstrap_envelope_from_control_plane(
     leader_direct_addr = str(envelope.get("leader_direct_addr", "")).strip()
     # Provider-assembly hints (empty for the legacy customizer path) so the
     # teammate's auxiliary leader is rebuilt provider-style with the same mode.
+    # ``cron`` is the scheduler's cron execution marker: it must reach the
+    # kickoff loop so a remote member of a team cron run stays cron-gated.
     assembly_mode = str(envelope.get("mode", "")).strip()
     assembly_project_dir = str(envelope.get("project_dir", "")).strip()
+    assembly_cron_meta = envelope.get("cron")
 
     logger.info(
         "[RemoteMemberBootstrap] teammate received direct bootstrap team=%s session_id=%s "
@@ -2773,6 +2798,7 @@ async def apply_bootstrap_envelope_from_control_plane(
                 card_replaced=card_replaced,
                 assembly_mode=assembly_mode,
                 assembly_project_dir=assembly_project_dir,
+                assembly_cron_meta=assembly_cron_meta,
                 **manager_kwargs,
             )
             if kicked:
