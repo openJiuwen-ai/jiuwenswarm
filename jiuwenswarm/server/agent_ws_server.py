@@ -2228,6 +2228,7 @@ class AgentWebSocketServer:
                 "source_reply_to": job.get("source_reply_to"),
                 "idempotency_key": job.get("idempotency_key"),
                 "text": job.get("text"),
+                "mention_ids": list(job.get("mention_ids") or ()),
             },
         }
         if isinstance(job.get("file"), dict):

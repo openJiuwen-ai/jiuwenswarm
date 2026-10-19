@@ -498,7 +498,32 @@ async def test_jm09_feishu_result_replies_to_source_with_stable_uuid_and_receipt
     assert request.message_id == "om_source"
     assert request.request_body.uuid == "delivery-key"
     assert request.request_body.msg_type == "text"
+    assert json.loads(request.request_body.content) == {"text": "已完成"}
     assert result == {"outcome": "delivered", "external_message_id": "om_sent"}
+
+
+@pytest.mark.asyncio
+async def test_jm09_feishu_result_renders_source_mentions_as_at_tags():
+    channel = _feishu_channel()
+    response = SimpleNamespace(
+        success=lambda: True,
+        data=SimpleNamespace(message=SimpleNamespace(message_id="om_sent")),
+    )
+    api_method = MagicMock(return_value=response)
+    channel._api_client = SimpleNamespace(
+        im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(reply=api_method)))
+    )
+
+    await channel.send_persistent_result(
+        chat_id="oc_project",
+        text="请核对这个数字",
+        source_message_id="om_source",
+        idempotency_key="delivery-key",
+        mention_ids=("ou_b", "bad id", "ou_b"),
+    )
+
+    content = json.loads(api_method.call_args.args[0].request_body.content)
+    assert content == {"text": '<at user_id="ou_b"></at> 请核对这个数字'}
 
 
 @pytest.mark.asyncio

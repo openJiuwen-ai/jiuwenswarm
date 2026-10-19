@@ -331,6 +331,7 @@ async def test_claimed_feishu_delivery_carries_the_accepted_route_and_can_be_ack
     assert jobs[0]["app_id"] == "cli_bound" and jobs[0]["target_id"] == "oc_group"
     assert jobs[0]["source_message_id"] == "om_source" and jobs[0]["source_reply_to"] == "om_parent"
     assert jobs[0]["text"] == "进展如下" and jobs[0]["attempt_count"] == 1
+    assert jobs[0]["mention_ids"] == []
     delivery_id = jobs[0]["delivery_id"]
     repository.update_result_delivery(
         NS,
@@ -351,6 +352,42 @@ async def test_claimed_feishu_delivery_carries_the_accepted_route_and_can_be_ack
 
     row = repository.result_deliveries(NS, execution.request_id)[0]
     assert row["status"] == "delivered" and row["external_message_id"] == "om_reply"
+
+
+async def test_claimed_group_delivery_keeps_mentions_other_than_the_author(host):
+    repository, _, port = host
+    route = RequestRouteSnapshot(channel="feishu", app_id="cli_a", target_id="oc_group", source_message_id="om_1")
+    session = repository.resolve_session(NS, AGENT, ConversationRef.group("group-1"), now=NOW)
+    state, _ = repository.accept_request(
+        session,
+        snapshot=SNAPSHOT,
+        source_ref="feishu:message:om_1",
+        access=ACCESS,
+        request_input=core.RequestInput(
+            kind="group_message",
+            text="请交给同事",
+            reply_target="oc_group",
+            source=core.GroupMessage(
+                message_id="om_1",
+                sender_id="ou_author",
+                sender_name="发起人",
+                sender_kind="human",
+                received_at=NOW,
+                text="请交给同事",
+                mention_ids=("ou_author", "ou_b", "ou_b", "ou.b"),
+            ),
+        ),
+        received_at=NOW,
+        route_snapshot=route,
+    )
+    record = repository.start_execution(NS, state.record.request_id, now=NOW)
+    execution = build_execution_context(state.record, record, capability_snapshot=SNAPSHOT.enabled_features)
+    await port.record(execution, candidate(execution, 1))
+    await port.record(execution, final(execution, 2))
+
+    job = repository.claim_pending_result_deliveries(NS, limit=10, now=NOW)[0]
+
+    assert job["mention_ids"] == ["ou_b"]
 
 
 async def test_sending_delivery_after_restart_becomes_unknown_not_retriable(host):

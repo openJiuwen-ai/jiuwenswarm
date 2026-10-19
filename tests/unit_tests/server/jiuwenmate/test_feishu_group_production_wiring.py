@@ -496,6 +496,7 @@ async def test_channel_manager_routes_jm09_delivery_only_to_exact_feishu_app():
         text="final answer",
         source_message_id="om_source",
         idempotency_key="stable-key",
+        mention_ids=(),
     )
     wrong_app.send_persistent_result.assert_not_awaited()
     assert result["outcome"] == "delivered"

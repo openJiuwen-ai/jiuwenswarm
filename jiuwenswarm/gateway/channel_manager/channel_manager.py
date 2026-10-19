@@ -143,6 +143,7 @@ class ChannelManager(ABC):
                 text=text,
                 source_message_id=payload.get("source_message_id"),
                 idempotency_key=idempotency_key,
+                mention_ids=payload.get("mention_ids") or (),
                 **file_args,
             )
         except Exception as exc:
