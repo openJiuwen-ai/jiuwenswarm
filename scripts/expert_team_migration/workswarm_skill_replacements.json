@@ -1,0 +1,710 @@
+{
+  "schema_version": "1.0.0",
+  "purpose": "Deterministic Skill and tool-call migration plan for the ten XiaoYi Work Expert Team source packages.",
+  "source_archives": [
+    {
+      "id": "xiaoyi-six",
+      "file_name": "xiaoyi-work-six-expert-teams-persona-aligned-20260928.zip",
+      "sha256": "535672e3d36dcb7712052937074c7cf1ef6a9a37b8df03b000847d21109d9d7a",
+      "groups": [
+        "family-weekend-trip",
+        "healthy-habit-companion",
+        "rental-move-decision",
+        "family-learning-companion",
+        "family-party-planner",
+        "home-storage-makeover"
+      ]
+    },
+    {
+      "id": "reference-four",
+      "file_name": "专家团(1).zip",
+      "sha256": "bfbae7e755b1e97ff652b1938e6186d092d3a28bb3f552cdb32a7c43037109f5",
+      "groups": [
+        "travel",
+        "home-cook",
+        "personal-styling",
+        "home-design"
+      ]
+    }
+  ],
+  "inventory": {
+    "total_groups": 10,
+    "affected_group_ids": [
+      "family-weekend-trip",
+      "family-party-planner",
+      "home-storage-makeover",
+      "travel",
+      "home-cook",
+      "personal-styling",
+      "home-design"
+    ],
+    "unaffected_group_ids": [
+      "healthy-habit-companion",
+      "rental-move-decision",
+      "family-learning-companion"
+    ],
+    "legacy_skill_ids": [
+      "xiaoyi-web-search-win",
+      "xiaoyi-image-understanding",
+      "seedream-image_gen",
+      "seedream-image-gen",
+      "seedream-image-gen-win",
+      "seedance-video-gen-win"
+    ],
+    "legacy_concept_aliases": [
+      "xiaoyi-image-gen",
+      "xiaoyi-video-gen"
+    ],
+    "shared_skill_ids": [
+      "xiaoyi-web-search-win",
+      "flyai-travel",
+      "wendao-skill"
+    ],
+    "direct_skill_binding_members": [
+      {
+        "group_id": "family-weekend-trip",
+        "member_id": "visual-generator",
+        "display_name": "景映川",
+        "profession": "旅途视觉素材师",
+        "capabilities": ["image_generation"]
+      },
+      {
+        "group_id": "family-party-planner",
+        "member_id": "invitation-visual-designer",
+        "display_name": "姚映真",
+        "profession": "聚会邀请视觉师",
+        "capabilities": ["image_generation"]
+      },
+      {
+        "group_id": "home-storage-makeover",
+        "member_id": "space-photo-reviewer",
+        "display_name": "顾见微",
+        "profession": "空间照片观察师",
+        "capabilities": ["image_understanding"]
+      },
+      {
+        "group_id": "home-storage-makeover",
+        "member_id": "storage-visual-page-designer",
+        "display_name": "林映居",
+        "profession": "收纳效果图与页面设计师",
+        "capabilities": ["image_generation"]
+      },
+      {
+        "group_id": "home-cook",
+        "member_id": "visualization_director",
+        "display_name": "盛悦目",
+        "profession": "美食视觉设计师",
+        "capabilities": ["image_generation", "video_generation"]
+      },
+      {
+        "group_id": "home-design",
+        "member_id": "visual",
+        "display_name": "景呈真",
+        "profession": "空间视觉表现师",
+        "capabilities": ["image_generation", "video_generation"]
+      },
+      {
+        "group_id": "personal-styling",
+        "member_id": "occasion",
+        "display_name": "应合宜",
+        "profession": "场合穿搭顾问",
+        "capabilities": ["web_research"]
+      },
+      {
+        "group_id": "personal-styling",
+        "member_id": "visual",
+        "display_name": "顾映真",
+        "profession": "穿搭视觉设计师",
+        "capabilities": ["image_generation", "video_generation"]
+      }
+    ],
+    "indirect_native_search_reference_members": [
+      {
+        "group_id": "travel",
+        "member_id": "leader",
+        "display_name": "程致远",
+        "profession": "旅行规划主理人"
+      },
+      {
+        "group_id": "travel",
+        "member_id": "route",
+        "display_name": "路知行",
+        "profession": "行程设计专家"
+      },
+      {
+        "group_id": "travel",
+        "member_id": "budget",
+        "display_name": "费有方",
+        "profession": "旅行预算规划师"
+      },
+      {
+        "group_id": "travel",
+        "member_id": "visa",
+        "display_name": "关境明",
+        "profession": "签证与目的地规定专家"
+      },
+      {
+        "group_id": "travel",
+        "member_id": "safety",
+        "display_name": "安无虞",
+        "profession": "旅行安全专家"
+      },
+      {
+        "group_id": "travel",
+        "member_id": "weather",
+        "display_name": "季知时",
+        "profession": "旅行天气顾问"
+      },
+      {
+        "group_id": "travel",
+        "member_id": "insurance",
+        "display_name": "鲍周全",
+        "profession": "旅行保险专家"
+      }
+    ]
+  },
+  "capability_replacements": {
+    "web_research": {
+      "portable_skill_id": "workswarm-web-research",
+      "legacy_skill_ids": ["xiaoyi-web-search-win"],
+      "strategy": "native_tools",
+      "native_tools": ["mcp_free_search", "mcp_fetch_webpage"],
+      "runtime_prerequisites": [
+        "Enable FREE_SEARCH_DDG_ENABLED or FREE_SEARCH_BING_ENABLED so mcp_free_search is registered.",
+        "Allow outbound HTTPS for result discovery and authoritative-page fetching.",
+        "Treat search snippets only as discovery hints; call mcp_fetch_webpage for claims that require source verification."
+      ],
+      "call_rewrites": [
+        {
+          "legacy": "Run xiaoyi-web-search-win/scripts/search.js through CLAW_NODE_EXE and the np://claw-skill proxy.",
+          "replacement": "Call mcp_free_search(query, max_results, timeout_seconds), then call mcp_fetch_webpage(url, max_chars, timeout_seconds) for selected primary sources."
+        }
+      ],
+      "persona_instruction": "Use mcp_free_search only when current external facts can change the answer. Treat its snippets as discovery evidence, fetch the selected authoritative page with mcp_fetch_webpage, retain source date and scope, and return a clearly marked partial result when search or fetch is unavailable.",
+      "known_gaps": []
+    },
+    "image_understanding": {
+      "portable_skill_id": "workswarm-image-understanding",
+      "legacy_skill_ids": ["xiaoyi-image-understanding"],
+      "strategy": "native_tools",
+      "native_tools": ["visual_question_answering"],
+      "runtime_prerequisites": [
+        "Configure VISION_API_KEY, VISION_API_BASE and VISION_MODEL_NAME, or their models.vision equivalents.",
+        "Ensure uploaded image paths or URLs remain readable from the member runtime."
+      ],
+      "call_rewrites": [
+        {
+          "legacy": "Run scripts/image_understanding.py --image ... --prompt ... with ~/.openclaw/.xiaoyienv credentials.",
+          "replacement": "Call visual_question_answering(image_path_or_url, question). For multiple images, call once per image and consolidate only explicit observations."
+        }
+      ],
+      "persona_instruction": "Call visual_question_answering with the actual uploaded image path and a question limited to observable objects, zones, clutter and circulation. Separate confirmed observations from uncertainty; never infer private facts or unmeasured dimensions.",
+      "known_gaps": [
+        "The native tool accepts one image per call; the converter must preserve multi-image semantics by repeated calls and explicit consolidation."
+      ]
+    },
+    "image_generation": {
+      "portable_skill_id": "workswarm-image-generation",
+      "legacy_skill_ids": [
+        "seedream-image_gen",
+        "seedream-image-gen",
+        "seedream-image-gen-win"
+      ],
+      "legacy_aliases": ["xiaoyi-image-gen"],
+      "strategy": "native_tools",
+      "native_tools": ["generate_image"],
+      "runtime_prerequisites": [
+        "Configure IMAGE_GEN_API_KEY, IMAGE_GEN_API_BASE and IMAGE_GEN_MODEL_NAME, or their models.image_gen equivalents.",
+        "Use a writable save_dir inside the task workspace and pass the returned path to the team leader as an internal artifact."
+      ],
+      "call_rewrites": [
+        {
+          "legacy": "Run generate_seedream.py using ~/.openclaw/.xiaoyienv, or call Huawei invoke with Seedream functionName and bundleName.",
+          "replacement": "Call generate_image(prompt, size, quality, save_dir) and consume the returned local image path."
+        }
+      ],
+      "persona_instruction": "Compile a concrete visual brief first, then call generate_image with the final prompt and a task-workspace save_dir. Treat the returned local file as an internal team artifact; the leader decides whether it is embedded in the final HTML or sent as a final deliverable.",
+      "known_gaps": [
+        "The current native generate_image signature is text-to-image only and does not accept reference images. Photo-guided editing from the XiaoYi Seedream Skills is not equivalent; use visual_question_answering to derive a text brief and label the result as a concept image until a verified reference-image generator exists.",
+        "Seedream-specific Lite/Pro routing, max_images and XiaoYi point accounting must not be copied into the converted persona."
+      ]
+    },
+    "video_generation": {
+      "portable_skill_id": "workswarm-video-generation",
+      "legacy_skill_ids": ["seedance-video-gen-win"],
+      "legacy_aliases": ["xiaoyi-video-gen"],
+      "strategy": "native_tools",
+      "native_tools": ["generate_video", "check_video_status"],
+      "runtime_prerequisites": [
+        "Configure VIDEO_API_KEY, VIDEO_API_BASE and VIDEO_MODEL_NAME, or their models.video_gen equivalents.",
+        "Use a configured backend that supports the requested text, first-frame or reference-image mode.",
+        "Persist the returned job_id and poll it with check_video_status instead of resubmitting the generation request."
+      ],
+      "call_rewrites": [
+        {
+          "legacy": "Call Huawei invoke with seedanceMiniTask, then repeatedly invoke seedanceMiniTaskQuery using bundleName.",
+          "replacement": "Call generate_video(prompt, aspect_ratio, resolution, duration_seconds, first_frame_path, generate_audio, save_dir, reference_image_paths, reference_mode). If it returns a job_id, call check_video_status(job_id, save_dir) until terminal status."
+        }
+      ],
+      "persona_instruction": "After the existing user-confirmation gate, submit exactly one generate_video call. If the result contains a running job_id, retain it and poll with check_video_status; never resubmit merely because generation is still running. Return the downloaded local file as an internal artifact to the leader.",
+      "known_gaps": [
+        "Available reference modes and duration limits depend on the configured WorkSwarm video backend and must be checked at runtime."
+      ]
+    }
+  },
+  "shared_skill_policies": [
+    {
+      "skill_id": "xiaoyi-web-search-win",
+      "action": "replace_with_native_tools",
+      "groups": ["home-cook", "home-design"],
+      "also_referenced_by": ["travel", "personal-styling"],
+      "native_tools": ["mcp_free_search", "mcp_fetch_webpage"],
+      "remove_bundled_skill_directory": true
+    },
+    {
+      "skill_id": "flyai-travel",
+      "action": "retain_conditionally",
+      "groups": ["travel"],
+      "runtime_prerequisites": [
+        "Node.js is available to the member runtime.",
+        "Outbound access to the FlyAI/Fliggy service is allowed.",
+        "Run the documented keyless trial smoke, or configure FLYAI_API_KEY when required."
+      ],
+      "required_smoke": "Run one transport or attraction lookup and verify structured JSON plus a usable jumpUrl."
+    },
+    {
+      "skill_id": "wendao-skill",
+      "action": "retain_with_text_patch",
+      "groups": ["travel"],
+      "runtime_prerequisites": [
+        "curl and jq are available.",
+        "Outbound HTTPS access to wendao-skill-prod.ctrip.com is allowed.",
+        "TRIPAI_API_KEY is optional unless the remote service requires it."
+      ],
+      "required_patches": [
+        {
+          "path": "skills/wendao-skill/SKILL.md",
+          "old": "source: \"xiaoyi\"",
+          "new": "source: \"workswarm\""
+        },
+        {
+          "path": "skills/wendao-skill/SKILL.md",
+          "old": "[https://wendao-skill-prod.ctrip.com/skill/query](https://wendao-skill-prod.ctrip.com/skill/query)",
+          "new": "https://wendao-skill-prod.ctrip.com/skill/query"
+        }
+      ],
+      "required_smoke": "Run one generic travel query in a clean process and verify a successful JSON response or a truthful partial-result fallback."
+    }
+  ],
+  "delivery_tool_rewrite": {
+    "legacy_tool": "send_html_card",
+    "strategy": "html_file_delivery",
+    "native_tools": ["write_file", "send_file_to_user"],
+    "positive_instruction": "Write the complete self-contained HTML to a real .html file, validate that it exists, then call send_file_to_user with its absolute path. Do not call send_html_card.",
+    "non_leader_instruction": "Non-leader members keep files as internal artifacts and do not call send_file_to_user; remove send_html_card references without granting a replacement delivery permission."
+  },
+  "groups": {
+    "family-weekend-trip": {
+      "source_archive": "xiaoyi-six",
+      "status": "affected",
+      "affected_members": ["visual-generator"],
+      "file_changes": [
+        {
+          "op": "remove_skill_reference",
+          "path": "manifest.json",
+          "member_id": "visual-generator",
+          "legacy_skill_id": "seedream-image_gen"
+        },
+        {
+          "op": "remove_skill_reference",
+          "path": "agents/visual-generator/manifest.json",
+          "legacy_skill_dir": "skills/seedream-image_gen"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/visual-generator/persona/ROLE.md",
+          "capability": "image_generation"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/visual-generator/skills/seedream-image_gen"
+        }
+      ]
+    },
+    "healthy-habit-companion": {
+      "source_archive": "xiaoyi-six",
+      "status": "unchanged",
+      "affected_members": [],
+      "file_changes": []
+    },
+    "rental-move-decision": {
+      "source_archive": "xiaoyi-six",
+      "status": "unchanged",
+      "affected_members": [],
+      "file_changes": []
+    },
+    "family-learning-companion": {
+      "source_archive": "xiaoyi-six",
+      "status": "unchanged",
+      "affected_members": [],
+      "file_changes": []
+    },
+    "family-party-planner": {
+      "source_archive": "xiaoyi-six",
+      "status": "affected",
+      "affected_members": ["invitation-visual-designer"],
+      "file_changes": [
+        {
+          "op": "remove_skill_reference",
+          "path": "manifest.json",
+          "member_id": "invitation-visual-designer",
+          "legacy_skill_id": "seedream-image_gen"
+        },
+        {
+          "op": "remove_skill_reference",
+          "path": "agents/invitation-visual-designer/manifest.json",
+          "legacy_skill_dir": "skills/seedream-image_gen"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/invitation-visual-designer/persona/ROLE.md",
+          "capability": "image_generation"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/invitation-visual-designer/skills/seedream-image_gen"
+        }
+      ]
+    },
+    "home-storage-makeover": {
+      "source_archive": "xiaoyi-six",
+      "status": "affected",
+      "affected_members": ["space-photo-reviewer", "storage-visual-page-designer"],
+      "file_changes": [
+        {
+          "op": "remove_skill_reference",
+          "path": "manifest.json",
+          "member_id": "space-photo-reviewer",
+          "legacy_skill_id": "xiaoyi-image-understanding"
+        },
+        {
+          "op": "remove_skill_reference",
+          "path": "manifest.json",
+          "member_id": "storage-visual-page-designer",
+          "legacy_skill_id": "seedream-image_gen"
+        },
+        {
+          "op": "remove_skill_reference",
+          "path": "agents/space-photo-reviewer/manifest.json",
+          "legacy_skill_dir": "skills/xiaoyi-image-understanding"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/space-photo-reviewer/persona/ROLE.md",
+          "capability": "image_understanding"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/space-photo-reviewer/skills/xiaoyi-image-understanding"
+        },
+        {
+          "op": "remove_skill_reference",
+          "path": "agents/storage-visual-page-designer/manifest.json",
+          "legacy_skill_dir": "skills/seedream-image_gen"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/storage-visual-page-designer/persona/ROLE.md",
+          "capability": "image_generation"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/storage-visual-page-designer/skills/seedream-image_gen"
+        }
+      ]
+    },
+    "travel": {
+      "source_archive": "reference-four",
+      "status": "affected",
+      "affected_members": ["leader", "route", "budget", "visa", "safety", "weather", "insurance"],
+      "file_changes": [
+        {
+          "op": "replace_capability_reference",
+          "path": "manifest.json",
+          "capability": "web_research"
+        },
+        {
+          "op": "rewrite_delivery_contract",
+          "path": "manifest.json",
+          "mode": "non_leader_guard"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/leader/AGENT.md",
+          "capability": "web_research"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/route/persona/route.md",
+          "capability": "web_research"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/budget/persona/budget.md",
+          "capability": "web_research"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/visa/skills/visa-research/SKILL.md",
+          "capability": "web_research"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/safety/persona/safety.md",
+          "capability": "web_research"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/weather/skills/weather-planner/SKILL.md",
+          "capability": "web_research"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/insurance/persona/insurance.md",
+          "capability": "web_research"
+        },
+        {
+          "op": "rewrite_delivery_contract",
+          "path": "agents/leader/skills/html-renderer/SKILL.md",
+          "mode": "leader_html_file"
+        },
+        {
+          "op": "rewrite_delivery_contract",
+          "path": "agents/leader/skills/html-review/SKILL.md",
+          "mode": "non_leader_guard"
+        },
+        {
+          "op": "apply_shared_skill_patch",
+          "path": "skills/wendao-skill/SKILL.md",
+          "skill_id": "wendao-skill"
+        }
+      ]
+    },
+    "home-cook": {
+      "source_archive": "reference-four",
+      "status": "affected",
+      "affected_members": ["visualization_director"],
+      "file_changes": [
+        {
+          "op": "remove_skill_reference",
+          "path": "manifest.json",
+          "legacy_skill_id": "xiaoyi-web-search-win"
+        },
+        {
+          "op": "rewrite_delivery_contract",
+          "path": "manifest.json",
+          "mode": "non_leader_guard"
+        },
+        {
+          "op": "delete_tree",
+          "path": "skills/xiaoyi-web-search-win"
+        },
+        {
+          "op": "remove_skill_reference",
+          "path": "agents/visualization_director/manifest.json",
+          "legacy_skill_dir": "skills/seedream-image-gen-win"
+        },
+        {
+          "op": "remove_skill_reference",
+          "path": "agents/visualization_director/manifest.json",
+          "legacy_skill_dir": "skills/seedance-video-gen-win"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/visualization_director/persona/visualization_director.md",
+          "capability": "image_generation"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/visualization_director/persona/visualization_director.md",
+          "capability": "video_generation"
+        },
+        {
+          "op": "rewrite_delivery_contract",
+          "path": "agents/visualization_director/persona/visualization_director.md",
+          "mode": "non_leader_guard"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/visualization_director/skills/visual-brief/SKILL.md",
+          "capability": "image_generation"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/visualization_director/skills/visual-brief/SKILL.md",
+          "capability": "video_generation"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/visualization_director/skills/seedream-image-gen-win"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/visualization_director/skills/seedance-video-gen-win"
+        },
+        {
+          "op": "replace_provenance_note",
+          "path": "knowledge/source-provenance.md",
+          "capabilities": ["image_generation", "video_generation"]
+        }
+      ]
+    },
+    "personal-styling": {
+      "source_archive": "reference-four",
+      "status": "affected",
+      "affected_members": ["occasion", "visual"],
+      "file_changes": [
+        {
+          "op": "remove_skill_reference",
+          "path": "agents/occasion/manifest.json",
+          "legacy_skill_dir": "skills/xiaoyi-web-search-win"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/occasion/persona/occasion.md",
+          "capability": "web_research"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/occasion/skills/dress-code/SKILL.md",
+          "capability": "web_research"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/occasion/skills/xiaoyi-web-search-win"
+        },
+        {
+          "op": "remove_skill_reference",
+          "path": "agents/visual/manifest.json",
+          "legacy_skill_dir": "skills/seedream-image-gen-win"
+        },
+        {
+          "op": "remove_skill_reference",
+          "path": "agents/visual/manifest.json",
+          "legacy_skill_dir": "skills/seedance-video-gen-win"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/visual/skills/image-production/SKILL.md",
+          "capability": "image_generation"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "agents/visual/skills/video-production/SKILL.md",
+          "capability": "video_generation"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/visual/persona/visual.md",
+          "capability": "image_generation"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/visual/persona/visual.md",
+          "capability": "video_generation"
+        },
+        {
+          "op": "rewrite_delivery_contract",
+          "path": "agents/visual/persona/visual.md",
+          "mode": "non_leader_guard"
+        },
+        {
+          "op": "rewrite_delivery_contract",
+          "path": "manifest.json",
+          "mode": "non_leader_guard"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/visual/skills/seedream-image-gen-win"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/visual/skills/seedance-video-gen-win"
+        }
+      ]
+    },
+    "home-design": {
+      "source_archive": "reference-four",
+      "status": "affected",
+      "affected_members": ["visual"],
+      "file_changes": [
+        {
+          "op": "remove_skill_reference",
+          "path": "manifest.json",
+          "legacy_skill_id": "xiaoyi-web-search-win"
+        },
+        {
+          "op": "rewrite_delivery_contract",
+          "path": "manifest.json",
+          "mode": "non_leader_guard"
+        },
+        {
+          "op": "delete_tree",
+          "path": "skills/xiaoyi-web-search-win"
+        },
+        {
+          "op": "replace_capability_reference",
+          "path": "skills/source-research/SKILL.md",
+          "capability": "web_research"
+        },
+        {
+          "op": "remove_skill_reference",
+          "path": "agents/visual/manifest.json",
+          "legacy_skill_dir": "skills/seedream-image-gen-win"
+        },
+        {
+          "op": "remove_skill_reference",
+          "path": "agents/visual/manifest.json",
+          "legacy_skill_dir": "skills/seedance-video-gen-win"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/visual/persona/visual.md",
+          "capability": "image_generation"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/visual/persona/visual.md",
+          "capability": "video_generation"
+        },
+        {
+          "op": "rewrite_delivery_contract",
+          "path": "agents/visual/persona/visual.md",
+          "mode": "non_leader_guard"
+        },
+        {
+          "op": "rewrite_delivery_contract",
+          "path": "agents/leader/skills/design-book/SKILL.md",
+          "mode": "leader_html_file"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/visual/skills/seedream-image-gen-win"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/visual/skills/seedance-video-gen-win"
+        },
+        {
+          "op": "remove_obsolete_notice_entries",
+          "path": "NOTICE.md",
+          "legacy_skill_ids": [
+            "xiaoyi-web-search-win",
+            "seedream-image-gen-win",
+            "seedance-video-gen-win"
+          ]
+        }
+      ]
+    }
+  }
+}
