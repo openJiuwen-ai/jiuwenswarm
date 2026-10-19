@@ -122,6 +122,8 @@ export interface JiuwenMateActivityHour {
   date: string;
   hour: number;
   minutes: number;
+  tasks: number;
+  tokens: number;
 }
 
 export interface JiuwenMateActivityChannel {

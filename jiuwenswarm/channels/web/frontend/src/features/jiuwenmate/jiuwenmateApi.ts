@@ -569,7 +569,7 @@ function toActivityHour(value: unknown): JiuwenMateActivityHour | null {
   const row = record(value);
   const date = text(row.date);
   if (!date) return null;
-  return { date, hour: count(row.hour), minutes: count(row.minutes) };
+  return { date, hour: count(row.hour), minutes: count(row.minutes), tasks: count(row.tasks), tokens: count(row.tokens) };
 }
 
 function toActivityChannel(value: unknown): JiuwenMateActivityChannel | null {
