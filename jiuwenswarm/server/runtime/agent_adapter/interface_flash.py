@@ -130,6 +130,7 @@ from jiuwenswarm.agents.harness.flash import (
 from jiuwenswarm.common.config import (
     get_evolution_review_trigger_enabled,
     get_skill_create_enabled,
+    resolve_string_or_list_config,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
@@ -154,6 +155,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
 )
 
 logger = logging.getLogger(__name__)
+_FLASH_TURBO_TOOL_NAME = "skill_acceleration_exec"
 
 
 class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
@@ -229,6 +231,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_runtime_prompt_rail",
         "_response_prompt_rail",
         "_stream_event_rail",
+        # 普通工具导出也需触发产物扩展（水印等），独立于 todo / TaskPlan。
+        "_flash_artifact_post_process_rail",
+        # Turbo 工具会缓存交付总结；保留发送组件，启用仍由父类 Turbo 开关控制。
+        "_skill_turbo_delivery_summary_rail",
         "_task_planning_rail",
         "_security_rail",
         "_heartbeat_rail",
@@ -688,7 +694,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             logger.error("[JiuWenSwarmDeepAdapter] 定时工具注册失败: %s", exc)
 
     def _build_progressive_tool_rail(self, config: dict[str, Any]) -> Any:
-        """Keep the two merged Flash tools visible to the model."""
+        """Keep merged Flash tools and enabled Turbo visible to the model."""
         flash_config = copy.deepcopy(config) if isinstance(config, dict) else {}
         lazy_config = flash_config.setdefault("tool_lazy_load", {})
         if not isinstance(lazy_config, dict):
@@ -710,6 +716,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         for name in ("web_flash", "cron_flash"):
             if name not in eager_tools:
                 eager_tools.append(name)
+        eager_tools = [name for name in eager_tools if name != _FLASH_TURBO_TOOL_NAME]
+        if self._flash_turbo_enabled(flash_config):
+            eager_tools.append(_FLASH_TURBO_TOOL_NAME)
         lazy_config["eager_tools"] = eager_tools
         return super()._build_progressive_tool_rail(flash_config)
 
@@ -767,14 +776,45 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """按 flash 白名单过滤后再实例化 rails.
 
         父类 ``_build_agent_rails`` 末尾调用本方法；先按 ``_FLASH_RAIL_KEEP`` 白名单
-        裁剪 rail_infos，再委托父类 ``_instantiate_rails`` 逐个构建并挂载 standing rails。
+        裁剪 rail_infos，补充独立产物后处理，再委托父类逐个构建并挂载 standing rails。
         """
         rail_infos = self._filter_rail_infos_by_keep(rail_infos)
+        rail_infos.append(_RailBuildInfo(
+            "_flash_artifact_post_process_rail",
+            self._build_flash_artifact_post_process_rail,
+        ))
         rails = super()._instantiate_rails(rail_infos, config_base)
         selection = self._build_flash_skill_selection_rail(config_base)
         if selection is not None:
             rails.extend((selection.load_rail, selection))
         return rails
+
+    @staticmethod
+    def _build_flash_artifact_post_process_rail():
+        """复用独立产物后处理组件；Flash 不注入 Code 署名或任务生命周期。"""
+        from jiuwenswarm.agents.harness.code.rails.coding_artifact_post_process_rail import (
+            CodingArtifactPostProcessRail,
+        )
+
+        return CodingArtifactPostProcessRail(coauthor_header_enabled=False)
+
+    def _build_skill_turbo_delivery_summary_rail(self) -> Any | None:
+        """仅在 Turbo 开启时装配 Flash 专用的总结与收尾组件。"""
+        try:
+            config_base = get_config()
+            react_config = config_base.get("react", {}) if isinstance(config_base, dict) else {}
+            turbo_config = react_config.get("skill_turbo", {}) if isinstance(react_config, dict) else {}
+            if not isinstance(turbo_config, dict) or not turbo_config.get("enabled", False):
+                return None
+
+            from jiuwenswarm.agents.harness.flash.rails.flash_delivery_summary_rail import (
+                FlashDeliverySummaryRail,
+            )
+
+            return FlashDeliverySummaryRail()
+        except Exception:
+            logger.warning("[FlashAdapter] 创建 Turbo 总结组件失败", exc_info=True)
+            return None
 
     def _build_flash_skill_selection_rail(self, config_base: dict[str, Any]):
         """Optional Flash-only extension; removing its package restores native skills."""
@@ -1003,7 +1043,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         )
 
     async def _update_runtime_config(self, runtime_config: Any) -> None:
-        """每回合 super() 后修正统一 memory 卡的可见性。
+        """每回合 super() 后刷新 Turbo 描述并修正统一 memory 卡的可见性。
 
         super() 的群聊块只认 stock 五件套（对 flash 全是 no-op），且其恢复分支
         会把 stock write_memory/edit_memory 加回 flash 会话（统一卡才是 flash 的
@@ -1012,6 +1052,39 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """
         await super()._update_runtime_config(runtime_config)
         self._sync_unified_memory_tool_visibility()
+        self._refresh_flash_turbo_description()
+
+    @staticmethod
+    def _flash_turbo_enabled(config: dict[str, Any]) -> bool:
+        turbo = config.get("skill_turbo", {})
+        return (
+            isinstance(turbo, dict)
+            and bool(turbo.get("enabled", False))
+            and _FLASH_TURBO_TOOL_NAME not in resolve_string_or_list_config(
+                config.get("disabled_tools")
+            )
+        )
+
+    def _refresh_flash_turbo_description(self) -> None:
+        """Reuse Turbo discovery after request env binding, before SDK snapshots.
+
+        The shared helper caches scans by skill roots with a TTL. Calling it
+        here once per request also precedes progressive-tool navigation caching.
+        """
+        if self._instance is None or not self._flash_turbo_enabled(self._config_cache):
+            return
+        card = self._instance.ability_manager.get(_FLASH_TURBO_TOOL_NAME)
+        if card is None:
+            return
+
+        from jiuwenswarm.server.runtime.skill_turbo import skill_turbo_tools
+
+        old_description = card.description
+        names = skill_turbo_tools.refresh_skill_acceleration_description()
+        # Update the live SDK card too, in case it was copied during registration.
+        card.description = skill_turbo_tools.skill_turbo.card.description
+        if card.description != old_description:
+            logger.info("[FlashTurboDiscovery] supported_skills=%s", names)
 
     def _sync_unified_memory_tool_visibility(self) -> None:
         """按 TOOL_PERMISSION_CONTEXT 调整统一 memory 工具的可见性/只读。
@@ -1085,6 +1158,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         )
         for k, v in self._FLASH_REACT_OVERRIDE.items():
             base_react[k] = self._deep_merge_react_value(base_react.get(k), v)
+        if self._flash_turbo_enabled(base_react):
+            base_react["tool_lazy_load"]["eager_tools"].append(_FLASH_TURBO_TOOL_NAME)
         # eager_tools 是整表替换（设计上 flash 须写全最终名单）：部署配置过的
         # 自定义常驻工具会退到 deferred，这里把差异打出来，避免工具呈现变化
         # 不可观测。
