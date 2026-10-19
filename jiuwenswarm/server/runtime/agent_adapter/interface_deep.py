@@ -10480,6 +10480,7 @@ class JiuWenSwarmDeepAdapter:
                     "permissions_changed_notifier": self._permissions_changed_notifier,
                     "browser_runtime_security_profile": self._browser_runtime_security_profile,
                     "trusted_search_urls": None,
+                    "channel_id": getattr(self, "_channel_id", ""),
                 },
             )
         ]
@@ -10720,6 +10721,7 @@ class JiuWenSwarmDeepAdapter:
                 .get("model_client_config", {})
                 .get("model_name", "gpt-4"),
                 session_id=session_id,
+                channel_id=getattr(self, "_channel_id", ""),
             )
             if self._permission_rail is not None:
                 logger.info("[JiuWenSwarmDeepAdapter] _permission_rail newly created on hot-reload")
@@ -10787,6 +10789,7 @@ class JiuWenSwarmDeepAdapter:
                 "permissions_changed_notifier": self._permissions_changed_notifier,
                 "browser_runtime_security_profile": self._browser_runtime_security_profile,
                 "trusted_search_urls": self._trusted_search_urls if smart else None,
+                "channel_id": getattr(self, "_channel_id", ""),
             },
             queue=self._root_permission_queue, answer_claimed=self._permission_dispatch.close_claimed,
             sandboxed=getattr(self._sys_operation_card, "mode", None) == OperationMode.SANDBOX,

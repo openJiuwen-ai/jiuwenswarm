@@ -329,6 +329,7 @@ def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -
             llm=None,
             model_name=inp.model_name,
             session_id=getattr(ctx, "session_id", None) or None,
+            channel_id=getattr(ctx, "channel_id", ""),
         )
         if rail is not None:
             apply_permission_trusted_dirs(

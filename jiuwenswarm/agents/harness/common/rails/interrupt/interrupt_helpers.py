@@ -188,6 +188,7 @@ def build_permission_rail(
     permissions_changed_notifier: Callable[[], None] | None = None,
     browser_runtime_security_profile: Any = None,
     trusted_search_urls: Any = None,
+    channel_id: str = "",
 ) -> Any | None:
     """Build openjiuwen PermissionInterruptRail for tool permission checks.
 
@@ -823,7 +824,11 @@ def build_permission_rail(
             permission_scene_hook=_permission_scene_hook,
         )
 
-        permission_rail = JiuwenSwarmPermissionInterruptRail(
+        permission_rail_class = JiuwenSwarmPermissionInterruptRail
+        if channel_id == "process_cli":
+            from jiuwenswarm.channels.process_cli.permissions import ProcessCliPermissionInterruptRail
+            permission_rail_class = ProcessCliPermissionInterruptRail
+        permission_rail = permission_rail_class(
             config=permission_config,
             tool_names=tool_names,
             llm=llm,
@@ -1545,6 +1550,8 @@ def _question_options_from_ui_options(
     tool_name: str,
     message: str,
 ) -> list[dict[str, Any]]:
+    if _extract_interrupt_metadata(value_obj).get("process_cli_allow_once_only") is True:
+        return [option for option in _default_interrupt_options() if option["value"] in {ALLOW_ONCE, REJECT}]
     options = []
     for option in _extract_ui_options(value_obj):
         normalized = _normalize_question_option(option)
