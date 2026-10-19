@@ -89,25 +89,29 @@ KNOWN_R4_EMBEDDED_FOREIGN: dict[str, set[str]] = {}
 BASELINE = {
     # hard 闭包 = 从 gateway 出发仅沿模块级 import 可达的外部（非 gateway/common）模块数。
     # 根包单文件（dotenv_early、llm_provider_compat_patch）计入其所属顶级名。
+    # 2026-10-19 rebase 8e0f173b4 实测（上游持续演进 + web_proxy_connect 修后）：
+    # hard 171（server 57：上游新提交再削 3；llm_provider_compat_patch 随 A5'-a
+    # 下沉 common 后从外部依赖消失）
     "closure_hard": {
-        "agents": 101, "server": 56, "runtime": 32, "extensions": 10,
-        "observability": 10, "symphony": 8,
-        "dotenv_early": 1, "llm_provider_compat_patch": 1,
+        "agents": 39, "server": 57, "runtime": 32, "extensions": 32,
+        "observability": 10, "symphony": 0,
+        "dotenv_early": 1, "llm_provider_compat_patch": 0,
     },
     # lazy 闭包 = 含函数内延迟 import 的可达模块数
     "closure_lazy": {
-        "agents": 333, "server": 162, "extensions": 47, "runtime": 36,
-        "symphony": 11, "observability": 11, "instance_manager": 6, "channels": 4,
-        "dotenv_early": 1, "llm_provider_compat_patch": 1,
+        # 2026-10-19 rebase 8e0f173b4：上游新功能 lazy 扩散 +104（非解耦退化）
+        "agents": 344, "server": 240, "extensions": 54, "runtime": 43,
+        "symphony": 11, "observability": 11, "instance_manager": 6, "channels": 6,
+        "dotenv_early": 1, "llm_provider_compat_patch": 0,
     },
     # common 反向引用（R1 存量）：B1' 已全部消除（注入化 + 纯模块下沉）
     "common_backref_modules": 0,
     "common_backref_imports": 0,
     # gateway/embedded/ 下 AgentServer 拷贝的规模（A1–A3/A5 迁移对象）
     "embedded_files": 27,
-    "embedded_loc": 8540,
+    "embedded_loc": 8702,
     # gateway 直接 import 的外部（非 gateway/common）模块数
-    "gateway_direct_foreign": 32,
+    "gateway_direct_foreign": 35,
 }
 
 
