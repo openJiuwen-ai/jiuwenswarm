@@ -25,10 +25,12 @@ from jiuwenswarm.server.jiuwenmate.spec_provider import (
 from pydantic import ValidationError
 
 from openjiuwen.core.common.exception.errors import BaseError
+from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.session.checkpointer import NoopCheckpointer
 from openjiuwen.core.single_agent import AgentCard, create_agent_session
 from openjiuwen.harness import persistent_agent as core
 from openjiuwen.harness.persistent_agent import ports as core_ports
+from openjiuwen.harness.schema.deep_agent_spec import TeamModelConfig
 
 AGENT_ID = "colleague-1"
 
@@ -188,6 +190,7 @@ def test_capabilities_not_opened_by_the_host_are_rejected(fields):
 
 def test_host_opens_only_features_core_advertises():
     assert {"workspace_read", "workspace_write"} <= core_features()
+    assert "window_management" in HOST_OPEN_FEATURES
     assert HOST_OPEN_FEATURES <= core_features()
 
 
@@ -306,7 +309,21 @@ async def test_core_entries_still_reject_values_the_host_cannot_publish(snapshot
             pass
 
 
-async def test_core_rejects_group_message_without_group_chat_port(snapshot, host_ports):
+async def test_core_rejects_group_message_without_group_chat_port(host_ports):
+    capacity_snapshot = publish_spec(
+        AGENT_ID,
+        "capacity-v1",
+        spec_fields(
+            model=TeamModelConfig(
+                model_client_config=ModelClientConfig(
+                    client_provider="OpenAI", api_key="test-key", api_base="https://example.invalid/v1"
+                ),
+                model_request_config=ModelRequestConfig(model="test-model", context_window=8192, max_tokens=1024),
+            ),
+            model_input_limit_tokens=7000,
+            capacity_safety_margin_tokens=100,
+        ),
+    )
     group_input = core.RequestInput(
         kind="group_message",
         text="@研发同事 看一下",
@@ -322,8 +339,8 @@ async def test_core_rejects_group_message_without_group_chat_port(snapshot, host
         reply_target="group-1",
     )
     spec, build = build_invocation(
-        snapshot,
-        request_for(snapshot, request_input=group_input),
+        capacity_snapshot,
+        request_for(capacity_snapshot, request_input=group_input),
         ExecutionRecord(request_id="request-1", execution_id="e-1"),
         ports=host_ports(),
     )

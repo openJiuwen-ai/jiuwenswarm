@@ -456,7 +456,12 @@ class PersistentAgentService:
             "model": model,
             "model_input_limit_tokens": input_limit,
             "capacity_safety_margin_tokens": margin,
-            "enabled_features": ["construction", WORKSPACE_READ, WORKSPACE_WRITE],
+            "enabled_features": [
+                "construction",
+                WORKSPACE_READ,
+                WORKSPACE_WRITE,
+                "window_management",
+            ],
             "share_file_max_bytes": SHARE_FILE_MAX_BYTES,
             # The guarded file tools need a filesystem operation; no shell tool is mounted.
             "enable_sys_operation": True,

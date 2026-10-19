@@ -212,7 +212,12 @@ def test_custom_colleague_gets_its_own_core_template_and_first_version(tmp_path)
     assert spec.card.id == view.agent_id
     assert spec.system_prompt.startswith("你是研发同事。\n\n负责整理研发进展。" + WORKSPACE_PROMPT)
     assert spec.skills == ["report-writer"] and "已装配技能" in spec.system_prompt
-    assert set(spec.enabled_features) == {"construction", "workspace_read", "workspace_write"}
+    assert set(spec.enabled_features) == {
+        "construction",
+        "workspace_read",
+        "workspace_write",
+        "window_management",
+    }
     assert spec.enable_task_loop is False
     assert spec.model.model_client_config.client_id == f"jiuwenmate:{view.agent_id}"
 
