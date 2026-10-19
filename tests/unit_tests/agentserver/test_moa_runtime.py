@@ -75,7 +75,7 @@ def test_single_enabled_member_uses_its_model_without_moa(moa_config, jev_enable
     group["routes"][2]["enabled"] = False
     moa_config["experimental"]["multi_model_collaboration"]["jev_enabled"] = jev_enabled
     if jev_enabled:
-        monkeypatch.setenv("TYPESAFE_API_KEY", "encrypted-jev-key")
+        moa_config["experimental"]["multi_model_collaboration"]["jev"] = {"api_key": "encrypted-jev-key"}
         monkeypatch.setattr(
             "jiuwenswarm.common.config.get_crypto_provider",
             lambda: SimpleNamespace(decrypt=lambda _: "test-jev-key"),
