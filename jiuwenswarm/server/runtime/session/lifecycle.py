@@ -72,10 +72,34 @@ def resource_path(kind: str, resource_id: str) -> Path:
     )
 
 
+# Same short-backoff budget the metadata writer's _atomic_replace grants itself:
+# enough to ride out any tmp+rename replacement window, bounded so a genuinely
+# unreadable file still fails fast enough for request admission.
+_SHARING_RETRY_ATTEMPTS = 100
+
+
+def _read_text_ride_out_sharing(path: Path) -> str:
+    """Read file content, retrying transient Windows sharing violations.
+
+    Atomic writers publish via tmp+rename; an unlocked reader that lands in
+    the replacement window receives Errno 13 even though the file is healthy
+    (issue #4923). Ride the window out instead of failing the whole request.
+    """
+    attempt = 0
+    while True:
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            attempt += 1
+            if attempt >= _SHARING_RETRY_ATTEMPTS:
+                raise
+            time.sleep(min(0.001 * attempt, 0.01))
+
+
 def read_json(path: Path) -> dict:
     if not path.exists():
         return {}
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(_read_text_ride_out_sharing(path))
     if not isinstance(value, dict):
         raise LifecycleError("CONFLICT", f"invalid lifecycle data: {path.name}")
     return value
