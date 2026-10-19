@@ -61,7 +61,13 @@ make check-genai-semconv
 
 `trajectoryArchive.ts` 是同一条流水线的离线入口：把 zip 内 `trajectory.jsonl`（v3，content-addressed JSONL）流式解开后喂给 `applyTrajectoryDetailRecords`，供回放已归档 session。
 
-### 三个宿主
+### 宿主
+
+- **`TrajectoryAnalysisPage.tsx`** — 「轨迹分析」页（对话头部剪贴板图标进入，`SingleAgentSurface` 的 `diagnosis` 视图）。两个子页：「轨迹」直接嵌 `TrajectoryPanel`，「诊断」是 `diagnosis/DiagnosisSubpage.tsx`（诊断对象 / 说明 / 详情 / 建议四张卡片，右上角 `DiagnosisRecordSelect` 记录下拉）。数据只有 `TrajectoryPanel` 一份读取逻辑。
+  - **共享时间轴与泳道。** 页面给 `TrajectoryPanel` 传 `sharedTimeAxis`：Team 和单 Agent 会话都画成泳道（单 Agent 为主 Agent 加各子 Agent），按 `diagnosis/useSharedTimeAxis.ts` 的压缩墙钟时间轴对齐，轴由 `diagnosis/SharedTimeAxis.tsx` 画。不传该参数时，对话页的轨迹页签保持原样（Team 泳道、单 Agent 页签栏）。
+  - **选择模式。** 页头「诊断轨迹」按钮进入，期间两个子页签禁用，Esc、「取消」、页面隐藏、切换会话都会退出。页面持有选区状态并只通过 `TrajectoryPanel` 的 `selection` 属性下发，有它泳道才可选取，没有它泳道只读。选区状态与换算在纯模块 `diagnosis/diagnosisSelection.ts`：时间轴上拖选作用于所有勾选的 Agent，在某条泳道上选取会清掉时间轴选区、改为各 Agent 各自的窗口，两种形态互斥；落到请求时都是 `selection.ranges`（每个 Agent 一段）。底部配置栏是 `diagnosis/DiagnosisSelectionBar.tsx`。
+  - **状态来源。** 诊断记录、实时进度、取消、删除、TTSE 的状态与事件订阅都在 `diagnosis/useDiagnosisSession.ts`，页面和「诊断」子页共用同一个实例。阶段占位、展开收起规则、记录下拉的时间与过滤等纯逻辑在 `diagnosis/diagnosisView.ts`。
+  - **`data-testid` 前缀。** 页面框架、选择模式与时间轴用 `trajectory-analysis-*`，诊断内容与记录下拉用 `trajectory-diagnosis-*`，对话头部入口用 `chat-panel-*`。
 
 - **`SingleAgentSurface.tsx`** — chat / trajectory 的 tab 边界。chat 子树常驻挂载，trajectory 子树在首次显式请求前不挂载；只有 `agent` 和 `team` 模式暴露它。
 - **`TrajectoryPanel.tsx`** — session 级 transport 宿主，唯一有副作用的大文件。它持有 window state、sequence cache、v2 reducer、subject view cache，订阅 `webClient` 的 `trace.updated` 提示与终态事件（`chat.final` / `chat.error` / `harness.session_finished` 等）触发补拉，管理归档回放模式与 raw OTel inspector。

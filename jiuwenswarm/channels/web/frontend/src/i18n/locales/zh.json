@@ -1032,42 +1032,37 @@
       "memberLanes": "成员轨迹泳道",
       "members": "成员"
     },
+    "analysis": {
+      "back": "返回对话",
+      "diagnose": "诊断轨迹",
+      "selection": {
+        "fullScope": "全部轨迹",
+        "notePlaceholder": "请输入诊断说明（可选），如“评估一下为什么搜索结果不够精确”",
+        "cancel": "取消",
+        "start": "开始执行",
+        "starting": "启动中…",
+        "summary": "已选择 {{count}} 个 Agent",
+        "running": "已有诊断正在进行",
+        "noData": "当前没有可诊断的轨迹"
+      },
+      "tabs": {
+        "aria": "轨迹分析子页面",
+        "trajectory": "轨迹",
+        "diagnosis": "诊断"
+      }
+    },
     "diagnosis": {
       "entry": "轨迹分析",
-      "page": {
-        "loading": "正在加载轨迹…",
-        "emptyTitle": "暂无可诊断的轨迹",
-        "emptyTeam": "当前团队会话还没有记录到轨迹，运行一段时间后再来查看。",
-        "emptyAgent": "当前会话还没有记录到轨迹，发送消息后再来查看。",
-        "retry": "重试",
-        "errors": {
-          "TRAJECTORY_DISABLED": "轨迹功能未启用，无法进行轨迹分析。",
-          "UNSUPPORTED_SESSION_MODE": "当前会话模式不支持轨迹分析。",
-          "RETENTION_RUNNING": "轨迹正在整理中，请稍后重试。",
-          "FAILED": "轨迹加载失败。"
-        }
-      },
-      "panelTitle": "诊断与归因",
       "noteLabel": "补充说明（可选）",
-      "notePlaceholder": "用户补充信息",
-      "fullScope": "基于全量轨迹",
       "fullScopeBusy": "会话运行中，无法诊断完整轨迹",
-      "evaluateArtifact": "是否评估产物质量",
-      "run": "执行",
-      "starting": "正在启动…",
       "cancel": "取消诊断",
       "selectionHint": "在时间轴或任一泳道上拖选一段时间，并勾选要诊断的成员。",
-      "selectionActive": "已选择 {{count}} 个成员 · {{start}}–{{end}}",
       "includeAgent": "诊断 {{name}}",
-      "timeAxis": "诊断时间轴",
-      "clearSelection": "清除选择",
+      "timeAxis": "时间轴",
       "records": "诊断记录",
       "noRecords": "还没有诊断记录",
-      "recordTitle": "诊断 #{{ordinal}}",
-      "view": "查看",
       "delete": "删除",
       "deleteConfirm": "确定删除该诊断记录吗？",
-      "backToList": "返回记录列表",
       "scopeKind": {
         "full": "完整轨迹",
         "selection": "选中范围"
@@ -1079,18 +1074,9 @@
         "cancelled": "已取消",
         "interrupted": "已中断"
       },
-      "evidence": {
-        "ruleScan": "规则扫描",
-        "artifacts": "产物",
-        "userNote": "用户说明",
-        "ruleScanCount": "{{count}} 项发现",
-        "artifactsCount": "{{replies}} 条回复 · {{files}} 个文件",
-        "none": "无"
-      },
-      "stages": "诊断进展",
-      "selectRecord": "从左侧选择一条诊断记录",
       "outletsPending": "诊断完成后在这里给出优化建议",
       "stageStatus": {
+        "pending": "等待中",
         "running": "进行中",
         "completed": "完成",
         "failed": "失败",
@@ -1098,14 +1084,6 @@
       },
       "rootCauses": "根因",
       "noRootCause": "未发现明确根因",
-      "rewardTitle": "Reward 评价",
-      "rewardTotal": "总分 {{score}}",
-      "rewardCategoryName": "分类",
-      "rewardScore": "得分",
-      "rewardComment": "评价",
-      "rewardRequirement": "要求",
-      "rewardRelatedSignals": "相关信号",
-      "rewardRaw": "原始 JSON",
       "category": {
         "skill_defect": "Skill 缺陷",
         "ttse_success": "经验（任务成功）",
@@ -1118,7 +1096,39 @@
       },
       "confidence": "置信度 {{value}}%",
       "highlight": "在轨迹中高亮",
-      "suggestions": "优化出口",
+      "suggestions": "诊断建议",
+      "noSuggestions": "本次诊断没有可执行的优化建议",
+      "details": "诊断详情",
+      "dismiss": "关闭提示",
+      "note": "诊断说明",
+      "object": "诊断对象",
+      "objectAgents": "Agent",
+      "objectFull": "全部轨迹",
+      "objectTime": "时间",
+      "emptyHint": "还没有诊断记录。点击右上角的“诊断轨迹”开始。",
+      "loadingRecord": "正在加载诊断记录…",
+      "plannedStage": {
+        "task_parse": "任务解析",
+        "diagnose": "诊断分析",
+        "attribute": "归因分析"
+      },
+      "recordSelect": {
+        "aria": "诊断记录",
+        "placeholder": "选择诊断记录",
+        "search": "搜索时间或关键词",
+        "noMatch": "没有匹配的诊断记录",
+        "confirmDelete": "确认删除",
+        "cancelDelete": "取消",
+        "deleteRunning": "诊断进行中，无法删除"
+      },
+      "rewardTitle": "Reward 评估",
+      "rewardTotal": "总分 {{score}}",
+      "rewardCategoryName": "类别",
+      "rewardScore": "得分",
+      "rewardComment": "评语",
+      "rewardRequirement": "要求",
+      "rewardRelatedSignals": "相关信号",
+      "rewardRaw": "查看原始数据",
       "artifactFix": "产物修复建议",
       "skills": "Skill 进化建议",
       "ttse": "TTSE 经验生成",

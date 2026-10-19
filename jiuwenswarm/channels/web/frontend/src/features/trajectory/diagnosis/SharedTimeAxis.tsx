@@ -1,19 +1,21 @@
-/** Shared diagnosis ruler. Dragging selects one window; idle gaps are already removed from this axis. */
+/** Shared time axis ruler. When selectable, dragging picks one window; idle gaps are already removed from this axis. */
 
 import { useRef, useState, type PointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TrajectoryTimeRange } from '../trajectory/timeline';
 import { visibleAxisTicks, type WallClockDomain } from './diagnosisTimeSelection';
-import css from './DiagnosisTimeAxis.module.css';
+import css from './SharedTimeAxis.module.css';
 
 const MINIMUM_DRAG_PX = 4;
 
-export interface DiagnosisTimeAxisProps {
+export interface SharedTimeAxisProps {
   domain: WallClockDomain | null;
   /** Visible slice of `domain`. `null` shows the whole axis. */
   viewport?: TrajectoryTimeRange | null;
   range: TrajectoryTimeRange | null;
   onRangeChange: (range: TrajectoryTimeRange | null) => void;
+  /** When false the axis is a plain ruler: dragging selects nothing. Defaults to true. */
+  selectable?: boolean;
 }
 
 function clampFraction(value: number): number {
@@ -25,12 +27,13 @@ function fractionAt(event: PointerEvent<HTMLDivElement>): number {
   return clampFraction((event.clientX - rect.left) / Math.max(1, rect.width));
 }
 
-export function DiagnosisTimeAxis({
+export function SharedTimeAxis({
   domain,
   viewport = null,
   range,
   onRangeChange,
-}: DiagnosisTimeAxisProps) {
+  selectable = true,
+}: SharedTimeAxisProps) {
   const { t } = useTranslation();
   const dragRef = useRef<{ pointerId: number; anchor: number; originX: number } | null>(null);
   const [draft, setDraft] = useState<TrajectoryTimeRange | null>(null);
@@ -61,18 +64,20 @@ export function DiagnosisTimeAxis({
   };
 
   return (
-    <div className={css.row} data-testid="trajectory-diagnosis-time-axis">
+    <div className={css.row} data-testid="trajectory-analysis-time-axis">
       <div className={css.gutter} aria-hidden="true" />
       <div
         className={css.track}
         aria-label={t('trajectory.diagnosis.timeAxis')}
         data-disabled={domain === null ? 'true' : 'false'}
+        data-selectable={selectable ? 'true' : 'false'}
         onDoubleClick={(event) => {
+          if (!selectable) return;
           event.preventDefault();
           onRangeChange(null);
         }}
         onPointerDown={(event) => {
-          if (domain === null || event.button !== 0) return;
+          if (!selectable || domain === null || event.button !== 0) return;
           const anchor = fractionAt(event);
           dragRef.current = { pointerId: event.pointerId, anchor, originX: event.clientX };
           setDraft({ start: timeAt(anchor), end: timeAt(anchor) });

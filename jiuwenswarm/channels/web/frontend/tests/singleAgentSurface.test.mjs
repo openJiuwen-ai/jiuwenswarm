@@ -561,5 +561,63 @@ test('diagnosis entry lives in the chat header and no longer in the trajectory p
   assert.match(chatSource, /t\('trajectory\.diagnosis\.entry'\)/);
   assert.match(appSource, /onToggleDiagnosis=\{toggleDiagnosisView\}/);
   assert.match(appSource, /selectChatSurfaceView\(chatSurfaceView === 'diagnosis' \? 'chat' : 'diagnosis'\)/);
-  assert.doesNotMatch(panelSource, /diagnosis/i);
+  // The raw trajectory page only draws the shared axis when the analysis page asks for it.
+  assert.doesNotMatch(panelSource, /DiagnosisPanel|diagnosisOpen|trajectory\.diagnosis\./);
+  assert.match(panelSource, /sharedTimeAxis = false/);
+});
+
+test('trajectory analysis page hosts the raw trajectory and diagnosis as sub-pages', () => {
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const pageSource = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryAnalysisPage.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(appSource, /TrajectoryAnalysisPage/);
+  assert.match(appSource, /onBack=\{leaveDiagnosisView\}/);
+  assert.match(pageSource, /data-testid="trajectory-analysis-back"/);
+  assert.match(pageSource, /data-testid=\{`trajectory-analysis-tab-\$\{tab\.id\}`\}/);
+  assert.match(pageSource, /<TrajectoryPanel[\s\S]*?sharedTimeAxis/);
+  assert.match(pageSource, /<DiagnosisSubpage/);
+  assert.doesNotMatch(pageSource, /DiagnosisPanel/);
+  // The trigger sits in the page header, outside both sub-pages.
+  assert.match(pageSource, /data-testid="trajectory-analysis-diagnose"/);
+  // The trajectory reports its lanes and receives the emphasised steps through additive props.
+  assert.match(pageSource, /onSubjectsChange=\{setSubjects\}/);
+  assert.match(pageSource, /highlightStepKeys: focused\.keys/);
+  // The header button enters selection mode instead of starting a run by itself.
+  assert.match(pageSource, /onClick=\{enterSelection\}/);
+  assert.match(pageSource, /\{\.\.\.\(selecting \? \{ selection: \{ state: selectionState, onChange: setSelectionState \} \} : \{\}\)\}/);
+  assert.match(pageSource, /<DiagnosisSelectionBar/);
+  // Sub-pages stay put while a pick is open, and Esc, hiding the page or a new session end it.
+  assert.match(pageSource, /disabled=\{selecting\}/);
+  assert.match(pageSource, /event\.key !== 'Escape' \|\| event\.defaultPrevented/);
+  assert.match(pageSource, /if \(!active\) exitSelection\(\)/);
+  assert.match(pageSource, /setPageSessionId\(sessionId\);[\s\S]*?setSelecting\(false\)/);
+  // A successful start leaves selection mode and jumps to the diagnosis sub-page; a failure keeps the pick.
+  assert.match(pageSource, /if \(!started\) return;\s*exitSelection\(\);\s*setSubpage\('diagnosis'\)/);
+});
+
+test('the analysis page draws single-Agent sessions as lanes on the shared axis', () => {
+  const panelSource = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryPanel.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(panelSource, /const laneLayout = teamMode \|\| sharedTimeAxis/);
+  assert.match(panelSource, /useSharedTimeAxis\(sharedTimeAxis, sessionId, subjectSnapshots\)/);
+  assert.match(panelSource, /const teamContent = laneLayout &&/);
+  // Without the selection prop the lanes stay read-only; with it they pick per agent.
+  assert.match(panelSource, /const selecting = sharedTimeAxis && selection !== undefined/);
+  assert.match(panelSource, /spanSelectsRange: selecting/);
+  assert.match(panelSource, /agentSelection: \{/);
+});
+
+test('diagnosis sub-page folds finished stages and offers record management', () => {
+  const dir = '../src/features/trajectory/diagnosis/';
+  const subpage = readFileSync(new URL(`${dir}DiagnosisSubpage.tsx`, import.meta.url), 'utf8');
+  const select = readFileSync(new URL(`${dir}DiagnosisRecordSelect.tsx`, import.meta.url), 'utf8');
+  assert.match(subpage, /isStageExpanded\(view\.status, userChoice\)|isStageExpanded\(view\.status/);
+  assert.match(subpage, /data-testid="trajectory-diagnosis-cancel"/);
+  assert.match(subpage, /<DiagnosisRecordSelect/);
+  assert.match(select, /trajectory-diagnosis-record-search/);
+  assert.match(select, /trajectory-diagnosis-record-delete-confirm/);
 });

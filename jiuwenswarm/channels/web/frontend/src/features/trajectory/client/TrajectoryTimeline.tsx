@@ -238,6 +238,8 @@ export interface TrajectoryTimelineProps {
    * Wheel zoom stays available when `onViewportChange` shares one window.
    */
   lockViewport?: boolean
+  /** A locked lane still selects the range of a clicked Input block. Off by default. */
+  spanSelectsRange?: boolean
   /** Shared visible window, in the same coordinates as `sharedDomain`. */
   sharedViewport?: TrajectoryTimeRange | null
   /** Reports a wheel zoom or pan of the shared window. Enables the wheel while locked. */
@@ -378,6 +380,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   sharedDomain = null,
   mapTime,
   lockViewport = false,
+  spanSelectsRange = false,
   sharedViewport = null,
   onViewportChange,
   sharedViewportRef,
@@ -792,8 +795,9 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     if (clickedSpan !== undefined) {
       // An Input block stands for the records its request consumed, so clicking it
       // focuses that whole stretch of the ledger instead of the request row itself.
-      // A locked diagnosis lane keeps the shared brush instead of replacing it.
-      if (!lockViewport && clickedSpan.segment === 'input') {
+      // A locked diagnosis lane keeps the shared brush instead of replacing it,
+      // unless the lane is selectable on its own.
+      if ((!lockViewport || spanSelectsRange) && clickedSpan.segment === 'input') {
         onRangeChange({ start: clickedSpan.start, end: clickedSpan.end })
         onRecordFocus?.(clickedSpan.coveredIndexes?.[0] ?? clickedSpan.index)
         return

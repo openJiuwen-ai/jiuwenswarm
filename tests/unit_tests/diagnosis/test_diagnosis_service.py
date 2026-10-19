@@ -335,6 +335,23 @@ async def test_start_runs_to_completion_with_ordered_events(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_output_deltas_are_kept_as_separate_lines(tmp_path: Path) -> None:
+    service, push = _service(tmp_path)
+
+    started = await service.start(SESSION_ID, _full_request())
+    finished = await _wait_finished(service, started.diagnosis_id)
+
+    deltas = [
+        payload["text_delta"]
+        for _sid, event, payload in push.events
+        if event == PROGRESS_EVENT and payload.get("kind") == "output_delta"
+    ]
+    assert deltas and all(delta.endswith("\n") for delta in deltas)
+    stored_output = "".join(stage.output for stage in finished.stages)
+    assert stored_output == "".join(deltas)
+
+
+@pytest.mark.asyncio
 async def test_agent_code_session_gets_no_skill_or_ttse_suggestions(tmp_path: Path) -> None:
     service, _push = _service(tmp_path, mode="agent.code.normal")
 

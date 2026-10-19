@@ -220,9 +220,9 @@ const LazyTrajectoryPanel = lazy(async () => {
   const module = await import('./features/trajectory/TrajectoryPanel');
   return { default: module.TrajectoryPanel };
 });
-const LazyDiagnosisPage = lazy(async () => {
-  const module = await import('./features/trajectory/diagnosis/DiagnosisPage');
-  return { default: module.DiagnosisPage };
+const LazyTrajectoryAnalysisPage = lazy(async () => {
+  const module = await import('./features/trajectory/TrajectoryAnalysisPage');
+  return { default: module.TrajectoryAnalysisPage };
 });
 const CHAT_PANEL_DEFAULT_WIDTH_PCT = 33.33;
 const CHAT_PANEL_MIN_WIDTH_PCT = 20;
@@ -842,6 +842,9 @@ function AppContent({
   const toggleDiagnosisView = useCallback(() => {
     selectChatSurfaceView(chatSurfaceView === 'diagnosis' ? 'chat' : 'diagnosis');
   }, [chatSurfaceView, selectChatSurfaceView]);
+  const leaveDiagnosisView = useCallback(() => {
+    selectChatSurfaceView('chat');
+  }, [selectChatSurfaceView]);
   const composerDocked = chatSurfaceView === 'trajectory' || chatSurfaceView === 'diagnosis';
   const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
   const toggleTrajectoryComposer = useCallback(() => {
@@ -4434,10 +4437,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                           </div>
                         )}
                       >
-                        <LazyDiagnosisPage
+                        <LazyTrajectoryAnalysisPage
                           active={chatSurfaceView === 'diagnosis'}
                           mode={mode}
                           sessionId={sessionId}
+                          onBack={leaveDiagnosisView}
                         />
                       </Suspense>
                     )}

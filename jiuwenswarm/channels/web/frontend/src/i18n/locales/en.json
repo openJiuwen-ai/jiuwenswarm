@@ -1048,42 +1048,37 @@
       "memberLanes": "Member trajectory lanes",
       "members": "Members"
     },
+    "analysis": {
+      "back": "Back to chat",
+      "diagnose": "Diagnose trajectory",
+      "selection": {
+        "fullScope": "Entire trajectory",
+        "notePlaceholder": "Describe what to look into (optional), e.g. \"why were the search results imprecise\"",
+        "cancel": "Cancel",
+        "start": "Start",
+        "starting": "Starting…",
+        "summary": "{{count}} agent(s) selected",
+        "running": "A diagnosis is already in progress",
+        "noData": "There is no trajectory to diagnose yet"
+      },
+      "tabs": {
+        "aria": "Trajectory analysis sub-pages",
+        "trajectory": "Trajectory",
+        "diagnosis": "Diagnosis"
+      }
+    },
     "diagnosis": {
       "entry": "Trajectory analysis",
-      "page": {
-        "loading": "Loading trajectory…",
-        "emptyTitle": "No trajectory to diagnose yet",
-        "emptyTeam": "This team session has no recorded trajectory yet. Check back after it has run for a while.",
-        "emptyAgent": "This session has no recorded trajectory yet. Check back after sending a message.",
-        "retry": "Retry",
-        "errors": {
-          "TRAJECTORY_DISABLED": "The trajectory feature is disabled, so trajectory analysis is unavailable.",
-          "UNSUPPORTED_SESSION_MODE": "This session mode does not support trajectory analysis.",
-          "RETENTION_RUNNING": "The trajectory is being organized. Please try again shortly.",
-          "FAILED": "Failed to load the trajectory."
-        }
-      },
-      "panelTitle": "Diagnosis & attribution",
       "noteLabel": "Note (optional)",
-      "notePlaceholder": "e.g. I think the wrong tool was chosen in step two",
-      "fullScope": "Diagnose the full trajectory",
       "fullScopeBusy": "The session is running; the full trajectory cannot be diagnosed",
-      "evaluateArtifact": "Evaluate artifact quality",
-      "run": "Run",
-      "starting": "Starting…",
       "cancel": "Cancel diagnosis",
       "selectionHint": "Drag a range on the time axis or any lane, and check the members to diagnose.",
-      "selectionActive": "{{count}} members selected · {{start}}–{{end}}",
       "includeAgent": "Diagnose {{name}}",
-      "timeAxis": "Diagnosis time axis",
-      "clearSelection": "Clear selection",
+      "timeAxis": "Time axis",
       "records": "Diagnosis records",
       "noRecords": "No diagnosis yet",
-      "recordTitle": "Diagnosis #{{ordinal}}",
-      "view": "View",
       "delete": "Delete",
       "deleteConfirm": "Delete this diagnosis record?",
-      "backToList": "Back to records",
       "scopeKind": {
         "full": "Full trajectory",
         "selection": "Selected range"
@@ -1095,18 +1090,9 @@
         "cancelled": "Cancelled",
         "interrupted": "Interrupted"
       },
-      "evidence": {
-        "ruleScan": "Rule scan",
-        "artifacts": "Artifacts",
-        "userNote": "User note",
-        "ruleScanCount": "{{count}} findings",
-        "artifactsCount": "{{replies}} replies · {{files}} files",
-        "none": "None"
-      },
-      "stages": "Progress",
-      "selectRecord": "Select a diagnosis record on the left",
       "outletsPending": "Suggestions appear here once the diagnosis finishes",
       "stageStatus": {
+        "pending": "Waiting",
         "running": "Running",
         "completed": "Done",
         "failed": "Failed",
@@ -1114,14 +1100,6 @@
       },
       "rootCauses": "Root causes",
       "noRootCause": "No clear root cause found",
-      "rewardTitle": "Reward evaluation",
-      "rewardTotal": "Total {{score}}",
-      "rewardCategoryName": "Category",
-      "rewardScore": "Score",
-      "rewardComment": "Comment",
-      "rewardRequirement": "Requirement",
-      "rewardRelatedSignals": "Related signals",
-      "rewardRaw": "Raw JSON",
       "category": {
         "skill_defect": "Skill defect",
         "ttse_success": "Experience (succeeded)",
@@ -1134,7 +1112,39 @@
       },
       "confidence": "Confidence {{value}}%",
       "highlight": "Highlight in trajectory",
-      "suggestions": "Outlets",
+      "suggestions": "Diagnosis suggestions",
+      "noSuggestions": "This diagnosis has no actionable suggestions",
+      "details": "Diagnosis details",
+      "dismiss": "Dismiss",
+      "note": "Diagnosis note",
+      "object": "Diagnosis target",
+      "objectAgents": "Agents",
+      "objectFull": "Entire trajectory",
+      "objectTime": "Time",
+      "emptyHint": "No diagnosis yet. Select \"Diagnose trajectory\" at the top right to start.",
+      "loadingRecord": "Loading diagnosis…",
+      "plannedStage": {
+        "task_parse": "Parse task",
+        "diagnose": "Diagnose",
+        "attribute": "Attribute causes"
+      },
+      "recordSelect": {
+        "aria": "Diagnosis records",
+        "placeholder": "Select a diagnosis",
+        "search": "Search by time or keyword",
+        "noMatch": "No matching diagnosis",
+        "confirmDelete": "Confirm delete",
+        "cancelDelete": "Cancel",
+        "deleteRunning": "A diagnosis in progress cannot be deleted"
+      },
+      "rewardTitle": "Reward evaluation",
+      "rewardTotal": "Total {{score}}",
+      "rewardCategoryName": "Category",
+      "rewardScore": "Score",
+      "rewardComment": "Comment",
+      "rewardRequirement": "Requirement",
+      "rewardRelatedSignals": "Related signals",
+      "rewardRaw": "View raw data",
       "artifactFix": "Artifact fix",
       "skills": "Skill evolution",
       "ttse": "TTSE experience generation",

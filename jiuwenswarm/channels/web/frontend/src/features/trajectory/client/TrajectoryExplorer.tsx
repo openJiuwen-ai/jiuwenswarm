@@ -101,6 +101,8 @@ export interface TrajectoryExplorerProps {
   mapSharedTime?: (time: number) => number
   /** Left-drag selects. The wheel still zooms when a shared viewport is controlled. */
   lockTimelineViewport?: boolean
+  /** With a locked viewport, clicking an Input block still selects its range. */
+  spanSelectsRange?: boolean
   /** Visible window shared with the diagnosis axis and the other lanes. */
   sharedViewport?: TrajectoryTimeRange | null
   onSharedViewportChange?: (viewport: TrajectoryTimeRange | null) => void
@@ -205,6 +207,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   sharedTimeDomain = null,
   mapSharedTime,
   lockTimelineViewport = false,
+  spanSelectsRange = false,
   sharedViewport = null,
   onSharedViewportChange,
   sharedViewportRef,
@@ -473,6 +476,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             sharedDomain={sharedTimeDomain}
             {...(mapSharedTime === undefined ? {} : { mapTime: mapSharedTime })}
             lockViewport={lockTimelineViewport}
+            spanSelectsRange={spanSelectsRange}
             sharedViewport={sharedViewport}
             {...(onSharedViewportChange === undefined ? {} : { onViewportChange: onSharedViewportChange })}
             {...(sharedViewportRef === undefined ? {} : { sharedViewportRef })}

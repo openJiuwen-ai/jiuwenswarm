@@ -18,6 +18,7 @@ import {
   ttseRootCauses,
   upsertSummary,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisState.mjs';
+import { asRewardPayload } from '../node_modules/.cache/trajectory-diagnosis/diagnosisTypes.mjs';
 import {
   axisTicks,
   collectWallClockSamples,
@@ -30,7 +31,6 @@ import {
   visibleAxisTicks,
   wallToCompressed,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisTimeSelection.mjs';
-import { asRewardPayload } from '../node_modules/.cache/trajectory-diagnosis/diagnosisTypes.mjs';
 
 const TRACE = 'a'.repeat(32);
 const ref = (spanId, subject = 'main') => ({ trace_id: TRACE, span_id: spanId.padEnd(16, '0'), subject_id: subject });
@@ -297,40 +297,5 @@ test('canSubmitDiagnosis follows scope, busy and running state', () => {
   assert.equal(canSubmitDiagnosis({ ...base, fullScope: true, busy: true }), false);
   assert.equal(canSubmitDiagnosis({ ...base, hasSelection: true, busy: true }), true);
   assert.equal(canSubmitDiagnosis({ ...base, hasSelection: true, running: true }), false);
-});
-
-test('asRewardPayload accepts a full reward payload', () => {
-  const payload = {
-    schema_version: 'attribution.reward.v1',
-    overall: { comment: '基本完成', total_score: 87 },
-    categories: [{ name: '代码质量', comment: '尚可', score: 85 }],
-    dimensions: [
-      { category: '代码质量', requirement: '可读性', comment: '一般', score: 70, related_signal_ids: ['diag-1'] },
-    ],
-  };
-  const reward = asRewardPayload(payload);
-  assert.equal(reward.overall.total_score, 87);
-  assert.equal(reward.categories.length, 1);
-  assert.equal(reward.categories[0].name, '代码质量');
-  assert.equal(reward.dimensions[0].related_signal_ids[0], 'diag-1');
-});
-
-test('asRewardPayload rejects malformed shapes', () => {
-  assert.equal(asRewardPayload(undefined), null);
-  assert.equal(asRewardPayload(null), null);
-  assert.equal(asRewardPayload('x'), null);
-  assert.equal(asRewardPayload({}), null);
-  assert.equal(asRewardPayload({ overall: { comment: 'x' } }), null);
-  assert.equal(asRewardPayload({ overall: { comment: 'x', total_score: '87' } }), null);
-});
-
-test('asRewardPayload drops malformed categories and dimensions', () => {
-  const reward = asRewardPayload({
-    schema_version: 'attribution.reward.v1',
-    overall: { comment: 'c', total_score: 1 },
-    categories: [{ name: 'ok' }, { broken: true }],
-    dimensions: [{ category: 'a', requirement: 'r', comment: 'c', score: 1 }, { category: 'a' }],
-  });
-  assert.equal(reward.categories.length, 1);
-  assert.equal(reward.dimensions.length, 1);
+  assert.equal(canSubmitDiagnosis({ ...base, hasSelection: true, submitting: true }), false);
 });

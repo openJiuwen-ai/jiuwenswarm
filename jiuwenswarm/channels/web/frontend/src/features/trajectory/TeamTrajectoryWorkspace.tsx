@@ -73,7 +73,7 @@ function MemberToolbarControl({
         className={css.memberCheck}
         checked={included === true}
         aria-label={t('trajectory.diagnosis.includeAgent', { name: lane.label })}
-        data-testid="trajectory-diagnosis-agent-checkbox"
+        data-testid="trajectory-analysis-agent-checkbox"
         data-variant={lane.subjectId}
         onChange={() => onToggleIncluded()}
       />

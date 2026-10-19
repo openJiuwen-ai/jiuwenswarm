@@ -14,7 +14,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from jiuwenswarm.common.mode_matrix import (
@@ -475,6 +475,10 @@ class DiagnosisService:
         elif stage is None:
             return
         elif event.kind == "output_delta":
+            # Engines emit one progress line per delta; keep lines apart so the
+            # accumulated output stays readable in the UI.
+            if event.text_delta and not event.text_delta.endswith("\n"):
+                event = replace(event, text_delta=event.text_delta + "\n")
             stage.output += event.text_delta or ""
         else:
             stage.status = StageStatus(event.status or "completed")
