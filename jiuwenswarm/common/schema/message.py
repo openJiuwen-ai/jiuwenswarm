@@ -132,6 +132,8 @@ _ensure_req_method("JIUWENMATE_CONVERSATION_LIST", "jiuwenmate.conversation.list
 _ensure_req_method("JIUWENMATE_CONVERSATION_RENAME", "jiuwenmate.conversation.rename")
 _ensure_req_method("JIUWENMATE_CONVERSATION_DELETE", "jiuwenmate.conversation.delete")
 _ensure_req_method("JIUWENMATE_REQUEST_ABORT", "jiuwenmate.request.abort")
+_ensure_req_method("GROUP_EXECUTION_LIST", "group.execution.list")
+_ensure_req_method("GROUP_EXECUTION_GET", "group.execution.get")
 _ensure_req_method("JIUWENMATE_DELIVERY_ACK", "jiuwenmate.delivery.ack")
 _ensure_req_method("JIUWENMATE_ACTIVITY_GET", "jiuwenmate.activity.get")
 _ensure_req_method("JIUWENMATE_GROUP_RESPONSE", "jiuwenmate.group.response")

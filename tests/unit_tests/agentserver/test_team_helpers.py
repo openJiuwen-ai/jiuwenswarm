@@ -9385,3 +9385,16 @@ async def test_voice_design_canvas_events_reach_web_session(monkeypatch, event, 
     assert frame["session_id"] == "design-chat"
     assert frame["request_id"] == "original-turn"
     assert frame["payload"] is payload
+
+
+def test_group_input_restores_persisted_type_without_per_message_type(monkeypatch):
+    monkeypatch.setattr(team_helpers, "get_session_metadata", lambda *args, **kwargs: {"type": "group_chat"})
+    request = SimpleNamespace(
+        request_id="request", session_id="saved-group",
+        params={"query": "Hello", "mentions": ["advisor"]},
+    )
+    payload = team_helpers._group_chat_input(request, "Hello")
+    assert payload["type"] == "group_chat" and payload["mentions"] == ["advisor"]
+    request.params["type"] = "chat"
+    with pytest.raises(ValueError, match="requires group_chat"):
+        team_helpers._group_chat_input(request, "Hello")
