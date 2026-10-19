@@ -28,6 +28,7 @@ parse_dotenv_early("jiuwenswarm-agentserver")
 
 
 from jiuwenswarm.common.utils import (
+    get_agent_root_relative_dir,
     get_agent_workspace_dir,
     get_env_file,
     get_logs_dir,
@@ -46,7 +47,7 @@ migrate_legacy_user_config_if_needed()
 _workspace_dir = get_user_workspace_dir()
 _config_file = _workspace_dir / "config" / "config.yaml"
 _new_workspace = get_agent_workspace_dir(
-    agent_root=_workspace_dir / "agent", use_provider=False,
+    agent_root=_workspace_dir / get_agent_root_relative_dir(), use_provider=False,
 )
 _old_workspace = _workspace_dir / "agent" / "workspace"
 if not _config_file.exists() or (_old_workspace.exists() and not _new_workspace.exists()):

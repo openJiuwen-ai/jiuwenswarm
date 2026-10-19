@@ -49,7 +49,7 @@ def resolve_cron_jobs_path(
     wk = normalize_tenant_scope_id(workspace_key)
     # Look up via module attribute so unit-test monkeypatch on utils applies.
     base = _jiuwenswarm_utils.get_multi_tenant_user_workspace_dir(wk)
-    return base / "agent" / "home" / "cron_jobs.json"
+    return base / _jiuwenswarm_utils.get_agent_root_relative_dir() / "home" / "cron_jobs.json"
 
 # 按 asyncio Task 隔离：多 session 并发时不能用单例字段存路由，否则后到的请求会覆盖先到的 session_id。
 _cron_route_ctx: contextvars.ContextVar[CronToolRoute | None] = contextvars.ContextVar(

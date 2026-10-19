@@ -700,6 +700,7 @@ from jiuwenswarm.common.utils import (
     fill_template_defaults,
     get_agent_evolution_trajectories_dir,
     get_agent_root_dir,
+    get_agent_root_relative_dir,
     get_agent_skills_dir,
     get_agent_workspace_dir,
     collapse_nested_agent_workspace_dir,
@@ -10579,7 +10580,7 @@ class JiuWenSwarmDeepAdapter:
         user_ws = getattr(self, "_user_workspace_dir", None)
         if user_ws is not None:
             selected_workspace = get_agent_workspace_dir(
-                agent_root=Path(user_ws) / "agent",
+                agent_root=Path(user_ws) / get_agent_root_relative_dir(),
                 workspace_key=getattr(self, "_workspace_key", None),
                 service_id=getattr(self, "_env_service_id", None),
                 agent_id=getattr(self, "_env_agent_id", None),

@@ -44,7 +44,7 @@ from jiuwenswarm.observability.diagnosis.upload import (
     UploadValidationError,
     save_uploaded_logs,
 )
-from jiuwenswarm.common.utils import is_valid_session_id
+from jiuwenswarm.common.utils import get_agent_root_relative_dir, is_valid_session_id
 
 from .trajectory_http import _validate_http_origin
 
@@ -181,7 +181,7 @@ def attach_diagnose_routes(
         # 诊断产物目录与日志目录（在线/离线共用）
         data_dir = _resolve_data_dir(channel)
         diagnosis_dir = data_dir / ".trace" / "diagnosis"
-        log_dir = data_dir / "agent" / ".logs"
+        log_dir = data_dir / get_agent_root_relative_dir() / ".logs"
 
         # 上传日志落盘（G5）。校验失败返回明确错误。
         uploaded_paths: list[Path] = []

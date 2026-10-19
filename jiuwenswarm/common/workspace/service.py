@@ -55,12 +55,14 @@ class WorkspaceService:
         service_id: str | None = None, agent_id: str | None = None,
     ) -> WorkspaceService:
         """保留租户根，按原逻辑前缀挂载 Provider 的实际工作区。"""
-        from jiuwenswarm.common.utils import get_agent_workspace_dir
+        from jiuwenswarm.common.utils import get_agent_root_relative_dir, get_agent_workspace_dir
 
         root = Path(tenant_root)
-        default = get_agent_workspace_dir(agent_root=root / "agent", use_provider=False)
+        default = get_agent_workspace_dir(
+            agent_root=root / get_agent_root_relative_dir(), use_provider=False,
+        )
         workspace = get_agent_workspace_dir(
-            agent_root=root / "agent", workspace_key=workspace_key,
+            agent_root=root / get_agent_root_relative_dir(), workspace_key=workspace_key,
             service_id=service_id, agent_id=agent_id,
         )
         return cls(

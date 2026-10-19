@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List
 
-from jiuwenswarm.common.utils import get_agent_workspace_dir, get_multi_tenant_user_workspace_dir
+from jiuwenswarm.common.utils import (
+    get_agent_root_relative_dir,
+    get_agent_workspace_dir,
+    get_multi_tenant_user_workspace_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +98,7 @@ class RailManager:
         if is_enterprise():
             workspace = get_multi_tenant_user_workspace_dir(self.workspace_key)
             return get_agent_workspace_dir(
-                agent_root=workspace / "agent", workspace_key=self.workspace_key,
+                agent_root=workspace / get_agent_root_relative_dir(), workspace_key=self.workspace_key,
                 service_id=self.service_id, agent_id=self.agent_id,
             ) / "extensions"
         return get_agent_workspace_dir() / "extensions"

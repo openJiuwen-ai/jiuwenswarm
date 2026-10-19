@@ -37,19 +37,26 @@ class FileHttpRoots:
 
 def _workspace_for_project(project_root: Path) -> Path:
     from jiuwenswarm.common.path_provider import current_path_context, get_path_provider
-    from jiuwenswarm.common.utils import get_agent_root_dir, get_agent_workspace_dir
+    from jiuwenswarm.common.utils import (
+        get_agent_root_dir,
+        get_agent_root_relative_dir,
+        get_agent_workspace_dir,
+    )
 
     context = None
     if get_path_provider() is not None:
         context = current_path_context(agent_root=get_agent_root_dir())
     # Provider 使用当前租户身份；无覆盖时继续使用文件接口原有的兼容根。
-    return get_agent_workspace_dir(agent_root=project_root / "agent", context=context).resolve()
+    return get_agent_workspace_dir(
+        agent_root=project_root / get_agent_root_relative_dir(), context=context,
+    ).resolve()
 
 
 def default_file_http_roots() -> FileHttpRoots:
     from openjiuwen.agent_teams.paths import get_agent_teams_home
 
     from jiuwenswarm.common.utils import (
+        get_agent_root_relative_dir,
         get_logs_dir,
         get_user_workspace_dir,
     )
@@ -57,7 +64,7 @@ def default_file_http_roots() -> FileHttpRoots:
     project_root = get_user_workspace_dir().resolve()
     # Legacy app_web sandbox: paths like ``agent/workspace`` live under
     # ``<user_workspace>/agent/``, not only multi-tenant ``get_agent_root_dir()``.
-    workspace_root = (project_root / "agent").resolve()
+    workspace_root = (project_root / get_agent_root_relative_dir()).resolve()
     return FileHttpRoots(
         project_root=project_root,
         workspace_root=workspace_root,
@@ -88,11 +95,13 @@ def is_path_under_directory(base: Path, target: Path) -> bool:
 
 
 def _is_under_file_roots(roots: FileHttpRoots, target: Path) -> bool:
+    from jiuwenswarm.common.utils import get_agent_root_relative_dir
+
     target_resolved = target.resolve()
     try:
         checks: list[Path] = [
             roots.workspace_root,
-            (roots.project_root / "agent").resolve(),
+            (roots.project_root / get_agent_root_relative_dir()).resolve(),
             roots.agent_teams_root,
             roots.logs_root,
             roots.auto_harness_root,
@@ -144,11 +153,11 @@ def is_download_path_allowed(target: Path, roots: FileHttpRoots | None = None) -
 
 
 def resolve_under_project(roots: FileHttpRoots, rel_or_abs: str) -> Path:
-    from jiuwenswarm.common.utils import get_agent_workspace_dir
+    from jiuwenswarm.common.utils import get_agent_root_relative_dir, get_agent_workspace_dir
 
     requested = (roots.project_root / rel_or_abs).resolve()
     default = get_agent_workspace_dir(
-        agent_root=roots.project_root / "agent", use_provider=False,
+        agent_root=roots.project_root / get_agent_root_relative_dir(), use_provider=False,
     ).resolve()
     # 逻辑路径保留原协议；只替换工作区前缀，随后仍走原有 allowed-roots 校验。
     if requested.is_relative_to(default):
@@ -178,9 +187,9 @@ def _normalize_lang_suffix(name: str) -> str:
 
 def generate_agent_data(project_root: Path) -> None:
     """Generate agent/jiuwenclaw_workspace/agent-data.json from agent tree."""
-    from jiuwenswarm.common.utils import get_agent_workspace_dir
+    from jiuwenswarm.common.utils import get_agent_root_relative_dir, get_agent_workspace_dir
 
-    agent_root = (project_root / "agent").resolve()
+    agent_root = (project_root / get_agent_root_relative_dir()).resolve()
     workspace_root = _workspace_for_project(project_root)
     output_path = (workspace_root / "agent-data.json").resolve()
     root_folder_key = "__root__"
@@ -406,11 +415,11 @@ def write_markdown_content(
             mark_usage_active,
             resolve_tenant_root,
         )
-        from jiuwenswarm.common.utils import get_agent_workspace_dir
+        from jiuwenswarm.common.utils import get_agent_root_relative_dir, get_agent_workspace_dir
 
         workspace = _workspace_for_project(roots.project_root)
         default = get_agent_workspace_dir(
-            agent_root=roots.project_root / "agent", use_provider=False,
+            agent_root=roots.project_root / get_agent_root_relative_dir(), use_provider=False,
         ).resolve()
         if workspace != default and full_path.is_relative_to(workspace):
             mark_usage_active(resolve_tenant_root(), workspace_root=workspace)

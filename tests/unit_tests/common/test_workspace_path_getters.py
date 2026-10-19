@@ -75,11 +75,108 @@ def test_explicit_root_keeps_default_layout_without_creating_directories(
 
 def test_relative_layout_keeps_relative_path_and_ignores_provider(path_provider):
     _, calls = path_provider
+    assert utils.get_agent_root_relative_dir() == Path("agent")
+    assert not utils.get_agent_root_relative_dir().is_absolute()
     assert utils.get_agent_workspace_relative_dir() == Path("agent/jiuwenclaw_workspace")
+    assert utils.get_agent_sessions_relative_dir() == Path("agent/sessions")
     assert utils.get_agent_workspace_dir(
         agent_root=Path("tenant") / ".." / "agent", use_provider=False,
     ) == Path("tenant/../agent/jiuwenclaw_workspace")
     assert calls == []
+
+
+@pytest.mark.parametrize("edition", ["personal", "enterprise"])
+def test_default_agent_root_keeps_explicit_and_bound_scope(
+    tmp_path, monkeypatch, no_path_provider, edition,
+):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
+    monkeypatch.setattr(utils, "get_user_workspace_dir", lambda: tmp_path)
+    env_token = bind_agent_env_ns("bound-service", "bound-agent")
+    key_token = bind_workspace_key("bound-key")
+    try:
+        default_tenant = (
+            tmp_path / "workspace_default"
+            if edition == "enterprise"
+            else tmp_path / "service_bound-service" / "agent_bound-agent"
+        )
+        explicit_tenant = (
+            tmp_path / "workspace_explicit"
+            if edition == "enterprise"
+            else tmp_path / "service_svc" / "agent_bot"
+        )
+        assert utils.get_agent_root_dir() == default_tenant / "agent"
+        assert utils.resolve_tenant_agent_root_dir(
+            "explicit", service_id="svc", agent_id="bot",
+        ) == explicit_tenant / "agent"
+        assert utils.get_agent_root_dir(
+            workspace_key="explicit", service_id="svc", agent_id="bot",
+        ) == explicit_tenant / "agent"
+        assert not (explicit_tenant / "agent").exists()
+    finally:
+        reset_workspace_key(key_token)
+        reset_agent_env_ns(env_token)
+
+
+@pytest.mark.parametrize("edition", ["personal", "enterprise"])
+@pytest.mark.parametrize("provider_mode", ["path", "none", "error"])
+def test_channel_workspace_preserves_provider_root_hint_and_fallback(
+    tmp_path, monkeypatch, no_path_provider, edition, provider_mode,
+):
+    from jiuwenswarm.gateway.tenant_paths import resolve_channel_agent_workspace
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
+    monkeypatch.setattr(utils, "get_user_workspace_dir", lambda: tmp_path)
+    seen = []
+    override = tmp_path / "external" / "workspace"
+
+    class Provider(providers.PathProvider):
+        name = "agent-root-scope-regression"
+
+        def resolve_path(self, category, ctx, **kwargs):
+            seen.append((category, ctx))
+            if provider_mode == "error":
+                raise RuntimeError("expected provider failure")
+            return override if provider_mode == "path" else None
+
+    providers.register_path_provider(Provider())
+    try:
+        tenant = (
+            tmp_path / "workspace_explicit"
+            if edition == "enterprise"
+            else tmp_path / "service_default" / "agent_default"
+        )
+        expected = override if provider_mode == "path" else tenant / "agent" / "jiuwenclaw_workspace"
+        assert resolve_channel_agent_workspace("explicit") == expected
+        assert len(seen) == 1
+        category, ctx = seen[0]
+        assert category == providers.PathCategory.WORKSPACE
+        assert ctx.bound_agent_root == str(tenant / "agent")
+        assert ctx.workspace_key == "explicit"
+        assert not expected.exists()
+    finally:
+        providers.reset_path_provider()
+
+
+def test_global_team_binding_root_is_not_replaced_by_bound_tenant_or_provider(
+    tmp_path, monkeypatch, path_provider,
+):
+    from jiuwenswarm.server.runtime import team_binding_store
+
+    monkeypatch.setattr(team_binding_store, "get_user_workspace_dir", lambda: tmp_path)
+    token = bind_tenant_workspace_dirs(
+        jiuwenclaw_workspace=str(tmp_path / "bound-workspace"),
+        agent_root=str(tmp_path / "bound-agent"),
+        tenant_root=str(tmp_path / "bound-tenant"),
+    )
+    try:
+        assert team_binding_store.TeamBindingStore().path == (
+            tmp_path / "agent" / "teams" / "bindings.json"
+        )
+        explicit = tmp_path / "custom-bindings.json"
+        assert team_binding_store.TeamBindingStore(explicit).path == explicit
+        assert path_provider[1] == []
+    finally:
+        reset_tenant_workspace_dirs(token)
 
 
 @pytest.mark.parametrize("edition", ["personal", "enterprise"])

@@ -1215,7 +1215,7 @@ def _migrate_legacy_workspace(
     old_memory = workspace_dir / "agent" / "memory"
 
     new_workspace = get_agent_workspace_dir(
-        agent_root=workspace_dir / "agent", use_provider=False,
+        agent_root=workspace_dir / get_agent_root_relative_dir(), use_provider=False,
     )
     new_workspace.mkdir(parents=True, exist_ok=True)
 
@@ -1573,7 +1573,7 @@ def prepare_workspace(
     agent_workspace = get_multi_tenant_user_workspace_dir("default")
     agent_workspace.mkdir(parents=True, exist_ok=True)
     (agent_workspace / ".checkpoint").mkdir(parents=True, exist_ok=True)
-    agent_root = agent_workspace / "agent"
+    agent_root = agent_workspace / get_agent_root_relative_dir()
     agent_root.mkdir(parents=True, exist_ok=True)
     agent_sessions = agent_root / "sessions"
 
@@ -1856,7 +1856,7 @@ def _resolve_paths(force=False) -> None:
     # 租户默认工作区：个人版 service_default/agent_default；企业版 workspace_default
     multi_tenant_workspace = get_multi_tenant_user_workspace_dir("default")
     user_workspace_dir = get_agent_workspace_dir(
-        agent_root=multi_tenant_workspace / "agent",
+        agent_root=multi_tenant_workspace / get_agent_root_relative_dir(),
         use_provider=False,
     )
     if user_config_dir.exists():
@@ -2135,7 +2135,7 @@ def get_agent_root_dir(
             return bound
     except ImportError:
         logger.debug("tenant_context unavailable for agent root bind", exc_info=True)
-    return get_multi_tenant_user_workspace_dir("default") / "agent"
+    return get_multi_tenant_user_workspace_dir("default") / get_agent_root_relative_dir()
 
 
 def get_agent_root_relative_dir() -> Path:
@@ -2266,7 +2266,7 @@ def get_tenant_agent_workspace_dir(workspace_key: str | None = None) -> Path:
     """
     wk = _effective_workspace_key(workspace_key)
     return get_agent_workspace_dir(
-        agent_root=get_multi_tenant_user_workspace_dir(wk) / "agent",
+        agent_root=get_multi_tenant_user_workspace_dir(wk) / get_agent_root_relative_dir(),
         workspace_key=wk,
     )
 
@@ -2288,7 +2288,7 @@ def seed_tenant_agent_workspace(
     使 write_memory/read_memory 等记忆工具有完整的工作区骨架。
     """
     workspace = Path(workspace_dir) if workspace_dir is not None else get_agent_workspace_dir(
-        agent_root=Path(tenant_root) / "agent",
+        agent_root=Path(tenant_root) / get_agent_root_relative_dir(),
         workspace_key=workspace_key,
         service_id=service_id,
         agent_id=agent_id,
@@ -2345,10 +2345,12 @@ def prepare_provider_workspace() -> None:
         "default", service_id="default", agent_id="default",
     )
     workspace = get_agent_workspace_dir(
-        agent_root=tenant_root / "agent", workspace_key="default",
+        agent_root=tenant_root / get_agent_root_relative_dir(), workspace_key="default",
         service_id="default", agent_id="default",
     )
-    default = get_agent_workspace_dir(agent_root=tenant_root / "agent", use_provider=False)
+    default = get_agent_workspace_dir(
+        agent_root=tenant_root / get_agent_root_relative_dir(), use_provider=False,
+    )
     if workspace != default:
         seed_tenant_agent_workspace(tenant_root, workspace_dir=workspace)
 
@@ -2574,7 +2576,7 @@ def resolve_tenant_agent_root_dir(
         wk,
         service_id=service_id,
         agent_id=agent_id,
-    ) / "agent"
+    ) / get_agent_root_relative_dir()
 
 
 def resolve_tenant_agent_workspace_dir(

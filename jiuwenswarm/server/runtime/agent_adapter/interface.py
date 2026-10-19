@@ -62,6 +62,7 @@ from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import (
     get_agent_home_dir,
     get_agent_root_dir,
+    get_agent_root_relative_dir,
     get_agent_sessions_relative_dir,
     get_agent_workspace_dir,
     collapse_nested_agent_workspace_dir,
@@ -1166,7 +1167,7 @@ class JiuWenSwarm:
         if tenant_root:
             user_ws = Path(tenant_root)
             selected_workspace = get_agent_workspace_dir(
-                agent_root=user_ws / "agent", workspace_key=self._workspace_key,
+                agent_root=user_ws / get_agent_root_relative_dir(), workspace_key=self._workspace_key,
                 service_id=self._env_service_id, agent_id=self._env_agent_id,
             )
             self._workspace_dir = str(
@@ -1349,7 +1350,7 @@ class JiuWenSwarm:
         user_ws = getattr(self, "_user_workspace_dir", None)
         if user_ws is not None:
             selected_workspace = get_agent_workspace_dir(
-                agent_root=Path(user_ws) / "agent",
+                agent_root=Path(user_ws) / get_agent_root_relative_dir(),
                 workspace_key=getattr(self, "_workspace_key", None),
                 service_id=getattr(self, "_env_service_id", None),
                 agent_id=getattr(self, "_env_agent_id", None),
@@ -1431,7 +1432,7 @@ class JiuWenSwarm:
         if user_root is not None:
             tenant_root = Path(user_root)
             agent_root = get_agent_root_dir(
-                agent_root=tenant_root / "agent",
+                agent_root=tenant_root / get_agent_root_relative_dir(),
                 workspace_key=getattr(self, "_workspace_key", None),
                 service_id=getattr(self, "_env_service_id", None),
                 agent_id=getattr(self, "_env_agent_id", None),

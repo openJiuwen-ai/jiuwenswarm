@@ -261,6 +261,7 @@ class AgentManager:
 
             from jiuwenswarm.common.utils import (
                 collapse_nested_agent_workspace_dir,
+                get_agent_root_relative_dir,
                 get_agent_workspace_dir,
             )
             from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
@@ -271,7 +272,7 @@ class AgentManager:
 
             if self._user_workspace_dir is not None:
                 selected_workspace = get_agent_workspace_dir(
-                    agent_root=Path(self._user_workspace_dir) / "agent",
+                    agent_root=Path(self._user_workspace_dir) / get_agent_root_relative_dir(),
                     workspace_key=self._workspace_key,
                     service_id=self._env_service_id,
                     agent_id=self._env_agent_id,

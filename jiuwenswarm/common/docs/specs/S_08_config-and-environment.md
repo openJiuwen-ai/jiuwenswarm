@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / config-and-environment |
 | 关联模块 | jiuwenswarm/common/{config, config_provider, path_provider, local_env_config, hooks_config, http_proxy_config, kv_cache_affinity_config, mode_matrix, work_mode, context_keys}.py |
-| 最近一次修订日期 | 2026-10-18 |
-| 关联 feature | F_01_scoped-workspace-provider.md |
+| 最近一次修订日期 | 2026-10-19 |
+| 关联 feature | F_01_scoped-workspace-provider.md、F_02_default-agent-root-relative-dir.md |
 
 ## 范围 / 边界
 
@@ -77,6 +77,11 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   `use_provider=False` 仅计算默认布局，用于历史迁移、bootstrap、相对路径和全局路径缓存；
   getter 不创建目录、不搬迁数据。扩展加载后对不同的默认插件工作区幂等补种模板，
   非默认租户在租户池创建时按完整身份补种。Gateway 与 AgentServer 必须加载一致的 Provider。
+- **N16 默认 Agent 相对层级收口**：当前默认物理 Agent 根目录中的 `agent` 段统一通过
+  `get_agent_root_relative_dir()` 获取；该函数固定返回相对 `Path("agent")`，不访问 Provider、
+  配置或请求上下文，不 resolve、不创建目录。调用方保留原父目录、身份参数和
+  `use_provider` 选择，不改为调用具有不同作用域语义的 `get_agent_root_dir()`。
+  历史路径识别、包内模板位置和接口逻辑前缀保持独立，不跟随当前物理布局变化。
 
 ## 接口契约
 
@@ -124,6 +129,8 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   （`test_http_proxy_config.py`）。
 - 改路径 Provider → 无插件/None/异常回退、显式最终路径优先、作用域上下文、并发租户隔离、
   历史迁移与 bootstrap 不重定向、补种幂等，以及 [[S_07]] 的逻辑路径映射与删除安全矩阵。
+- 收口默认 Agent 相对层级 → 原父目录和插件上下文不变；相对路径不变为绝对路径；
+  历史迁移源、模板源、接口逻辑前缀和安全规则保持不变，验证文件传输、会话和全局存储布局。
 
 ## 与其它 spec 的关系
 
