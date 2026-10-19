@@ -25,7 +25,9 @@ Semantics (user-ruled):
   node's current slots the same way: ``history`` is the old-version log (the
   previous current output is archived before each overwrite, so
   ``history[-1]`` is the true previous version) and ``text``/``output_ref``/
-  ``output_refs`` always hold the latest accepted output;
+  ``output_refs`` always hold the latest accepted output. The legacy
+  ``candidate_*`` fields are no longer written; ``choose_output`` stays only
+  to promote candidates left in pre-existing run records;
 * the run record's ``node_states`` is the cache/history store — per-node
   ``text`` snapshots feed compile-time inlining and ``history`` keeps one
   entry per trigger.
@@ -237,6 +239,7 @@ class RunCoordinator:
     ) -> dict[str, Any]:
         run_id, minted = self._ensure_run_id(graph)
         run = self._load_run(run_id, graph)
+        journal_path = str(_journal_dir(run_id) / f"{run_id}.jsonl")
         # One eternal swarmflow run id (user-ruled): every trigger executes
         # under the graph's lifelong run id and appends into the same
         # journal + WAL pair. Cross-trigger cache behaviour is carried by
@@ -285,7 +288,7 @@ class RunCoordinator:
             # the single writer — engine status events and node results both
             # flow through it.
             bridge = DesignEventBridge(
-                run, on_update, store=self._store, single=single, graph=graph
+                run, on_update, store=self._store, graph=graph
             )
 
             script = self._compiler.compile(
@@ -579,10 +582,40 @@ class RunCoordinator:
             self._store.save_graph(graph)
 
 
-def _write_script(run_dir: Path, trigger_scope: str, source: str) -> Path:
-    """Archive one trigger's compiled script next to its journal (native layout)."""
-    path = run_dir / "scripts" / f"{trigger_scope}.py"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    def choose_output(self, run_id: str, node_id: str, choice: str) -> dict[str, Any]:
+        """Resolve a single-node rerun candidate (``new`` promotes it).
+
+        Legacy compatibility only: triggers no longer write ``candidate_*``
+        fields, so this resolves candidates left in run records created
+        before that change. May later be re-pointed at ``history`` picks.
+        """
+        run = self._store.get_run(run_id)
+        if run is None:
+            raise ValueError(f"designer run not found: {run_id!r}")
+        states = run.setdefault("node_states", {})
+        state = states.get(node_id)
+        if state is None or not state.get("candidate_text"):
+            raise ValueError(
+                f"node '{node_id}' has no rerun candidate to choose from"
+            )
+        if choice == "new":
+            entry = {"ts": _now_ms(), "text": state["candidate_text"]}
+            if state.get("candidate_output_ref"):
+                entry["output_ref"] = state["candidate_output_ref"]
+                state["output_ref"] = state["candidate_output_ref"]
+            state["text"] = state["candidate_text"]
+            state.setdefault("history", []).append(entry)
+            graph = self._store.get_graph(str(run.get("graph_id") or ""))
+            if graph is not None:
+                self._write_outputs_to_graph(graph, run)
+        state.pop("candidate_output_ref", None)
+        state.pop("candidate_text", None)
+        self._store.save_run(run)
+        return run
+
+
+def _write_script(run_id: str, source: str) -> Path:
+    path = Path(tempfile.gettempdir()) / f"design_{run_id}_{secrets.token_hex(4)}.py"
     path.write_text(source, encoding="utf-8")
     logger.info("[design-run] compiled script: %s", path)
     return path
