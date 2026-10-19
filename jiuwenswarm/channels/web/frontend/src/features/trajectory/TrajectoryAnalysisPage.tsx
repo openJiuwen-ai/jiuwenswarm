@@ -13,6 +13,7 @@ import {
 } from './diagnosis/diagnosisSelection';
 import { canSubmitDiagnosis, highlightKeysOf } from './diagnosis/diagnosisState';
 import type { RootCause } from './diagnosis/diagnosisTypes';
+import { DiagnosisRecordSelect } from './diagnosis/DiagnosisRecordSelect';
 import { DiagnosisSelectionBar } from './diagnosis/DiagnosisSelectionBar';
 import { DiagnosisSubpage } from './diagnosis/DiagnosisSubpage';
 import { useDiagnosisSession } from './diagnosis/useDiagnosisSession';
@@ -245,7 +246,16 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
             onSearchQueryChange={setSearchQuery}
             onDownload={() => { exportTrajectoryRef.current?.(); }}
           />
-        ) : null}
+        ) : (
+          <div className={css.tabBarEnd}>
+            <DiagnosisRecordSelect
+              items={session.summaries}
+              currentId={recordId}
+              onSelect={(id) => { void session.open(id); }}
+              onDelete={(id) => { void session.remove(id); }}
+            />
+          </div>
+        )}
       </div>
       <div
         className={css.panel}

@@ -74,15 +74,35 @@ export interface DiagnosisEvidence {
   };
 }
 
+/** Where a signal came from: a rule hit in tool output or a user message, or a Reward dimension. */
+export type SignalSource = 'keyword_tool' | 'keyword_user' | 'reward';
+
+/** The diagnostic signal a root cause answers; absent on experience verdicts and on older records. */
+export interface SignalRef {
+  /** Root causes of one signal share the id. */
+  id: string;
+  source: SignalSource | string;
+  /** `perfect` / `fair` / `weak` for Reward signals, `uncertain` for rule signals. */
+  tier?: string;
+  /** Dimension score (0-100), Reward signals only. */
+  score?: number | null;
+  /** Reward dimension category. */
+  category?: string | null;
+  /** Nodes where the problem surfaced (a hint, not the cause). */
+  node_ids?: string[];
+}
+
 export interface RootCause {
   id: string;
   category: RootCauseCategory;
   subject_id: string;
   refs: StepRef[];
   summary: string;
+  /** Text of the signal; plain text (raw tool output in rule mode), not Markdown. */
   evidence: string;
   /** Nullable: engines without a confidence model leave it unset. */
   confidence?: number | null;
+  signal?: SignalRef | null;
 }
 
 export interface SkillSuggestion {
@@ -130,8 +150,10 @@ export interface DiagnosisRecord extends DiagnosisSummary {
   suggestions: DiagnosisSuggestions;
   ttse_trigger: Record<string, TtseTriggerResult>;
   error?: { code: string; message: string };
-  /** Full Reward evaluation payload (``attribution.reward.v1``); absent when skipped. */
-  reward?: RewardPayload;
+  /** Full Reward evaluation payload (``attribution.reward.v1``); absent in rule mode. */
+  reward?: RewardPayload | null;
+  /** The task as the engine understood it; absent on older records. */
+  task_description?: string | null;
 }
 
 /** One Reward evaluation dimension carried by the ``reward`` payload. */

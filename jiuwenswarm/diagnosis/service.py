@@ -214,6 +214,8 @@ def filter_engine_result(
         root_causes=root_causes,
         suggestions=suggestions,
         error=result.error,
+        reward=result.reward,
+        task_description=result.task_description,
     )
 
 
@@ -540,6 +542,8 @@ class DiagnosisService:
         # An engine may report a terminal attribution failure while keeping
         # its partial results; the record stays completed but carries the error.
         record.error = result.error
+        record.reward = result.reward
+        record.task_description = result.task_description
 
     async def _mark_selectable(self, record: DiagnosisRecord, context: SessionContext) -> None:
         if context.mode_profile is not ModeProfile.TEAM or self._skill_lookup is None:

@@ -698,7 +698,8 @@ async def test_stub_experience_root_cause_is_anchored_and_carries_no_score(tmp_p
     assert cause.category is RootCauseCategory.TTSE_FAIL
     assert cause.subject_id == "main"
     assert cause.refs and all(ref.node_id for ref in cause.refs)
-    assert set(cause.model_dump()) == {"id", "category", "subject_id", "refs", "summary", "evidence", "confidence"}
+    assert cause.confidence is None
+    assert cause.signal is None
 
 
 @pytest.mark.asyncio

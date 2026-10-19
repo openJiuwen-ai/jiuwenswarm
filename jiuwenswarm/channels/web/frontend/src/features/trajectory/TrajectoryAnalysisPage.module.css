@@ -69,6 +69,16 @@
   gap: 1.5rem;
 }
 
+/* Right side of the tab bar on the diagnosis tab, where the trajectory tab keeps its toolbar. */
+.tabBarEnd {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0.25rem 0;
+}
+
 .tab {
   margin-bottom: -1px;
   border: 0;

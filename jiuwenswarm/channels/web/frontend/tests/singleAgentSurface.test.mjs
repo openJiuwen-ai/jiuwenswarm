@@ -700,7 +700,9 @@ test('diagnosis sub-page folds finished stages and offers record management', ()
   const select = readFileSync(new URL(`${dir}DiagnosisRecordSelect.tsx`, import.meta.url), 'utf8');
   assert.match(subpage, /isStageExpanded\(view\.status, userChoice\)|isStageExpanded\(view\.status/);
   assert.match(subpage, /data-testid="trajectory-diagnosis-cancel"/);
-  assert.match(subpage, /<DiagnosisRecordSelect/);
+  // The record select sits in the page's tab bar, not inside the sub-page.
+  const page = readFileSync(new URL('../src/features/trajectory/TrajectoryAnalysisPage.tsx', import.meta.url), 'utf8');
+  assert.match(page, /<DiagnosisRecordSelect/);
   assert.match(select, /trajectory-diagnosis-record-search/);
   assert.match(select, /trajectory-diagnosis-record-delete-confirm/);
 });

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel
 from jiuwenswarm.diagnosis.models import (
@@ -95,6 +95,8 @@ class EngineResult:
     root_causes: list[RootCause] = field(default_factory=list)
     suggestions: DiagnosisSuggestions = field(default_factory=DiagnosisSuggestions)
     error: DiagnosisError | None = None
+    reward: dict[str, Any] | None = None
+    task_description: str | None = None
 
 
 class DiagnosisEngine(Protocol):

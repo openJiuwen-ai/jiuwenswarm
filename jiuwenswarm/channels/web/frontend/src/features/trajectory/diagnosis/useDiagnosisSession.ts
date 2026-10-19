@@ -58,23 +58,33 @@ export interface DiagnosisSession {
   open: (diagnosisId: string) => Promise<void>;
   remove: (diagnosisId: string) => Promise<void>;
   triggerTtse: (rootCauseId: string) => Promise<void>;
-  /** Put text into the chat composer of the session. */
-  fillComposer: (text: string) => void;
+  /** Put text into the chat composer of the session, replacing or appending to what is there. */
+  fillComposer: (text: string, mode?: 'replace' | 'append') => void;
+  /** Whether the composer of the session already holds text. */
+  composerHasText: () => boolean;
   dismissNotice: () => void;
 }
 
 const EMPTY_KEYS: ReadonlySet<string> = new Set();
 
+type RecordUpdate = DiagnosisRecord | null | ((current: DiagnosisRecord | null) => DiagnosisRecord | null);
+
 export function useDiagnosisSession(sessionId: string): DiagnosisSession {
   const { t, i18n } = useTranslation();
   const locale: 'zh' | 'en' = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh') ? 'zh' : 'en';
   const [summaries, setSummaries] = useState<DiagnosisSummary[]>([]);
-  const [record, setRecord] = useState<DiagnosisRecord | null>(null);
+  const [record, setRecordState] = useState<DiagnosisRecord | null>(null);
   const [notice, setNotice] = useState<DiagnosisNotice | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [triggeringTtse, setTriggeringTtse] = useState<ReadonlySet<string>>(EMPTY_KEYS);
   const recordRef = useRef<DiagnosisRecord | null>(null);
-  recordRef.current = record;
+  // The ref moves together with the state: push events arrive faster than React re-renders, and an event applied
+  // to a stale ref would be mistaken for a gap (or dropped when the record has just been created).
+  const setRecord = useCallback((next: RecordUpdate) => {
+    const resolved = typeof next === 'function' ? next(recordRef.current) : next;
+    recordRef.current = resolved;
+    setRecordState(resolved);
+  }, []);
   const sessionRef = useRef(sessionId);
   sessionRef.current = sessionId;
 
@@ -103,7 +113,7 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
     } catch (error) {
       if (sessionRef.current === requestedSession) fail(error);
     }
-  }, [fail]);
+  }, [fail, setRecord]);
 
   const reloadList = useCallback(async (signal?: AbortSignal) => {
     const requestedSession = sessionRef.current;
@@ -125,7 +135,7 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
     const controller = new AbortController();
     void reloadList(controller.signal);
     return () => controller.abort();
-  }, [reloadList, sessionId]);
+  }, [reloadList, sessionId, setRecord]);
 
   useEffect(() => {
     const onProgress = webClient.on<DiagnosisProgressEvent>(DIAGNOSIS_PROGRESS_EVENT, (event) => {
@@ -166,11 +176,15 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
   const open = useCallback(async (diagnosisId: string) => {
     setNotice(null);
     try {
-      setRecord(await getDiagnosis(sessionRef.current, diagnosisId));
+      const next = await getDiagnosis(sessionRef.current, diagnosisId);
+      // Live events may have advanced the same record while the request was in flight.
+      setRecord(current => (current !== null && current.diagnosis_id === next.diagnosis_id && current.seq > next.seq
+        ? current
+        : next));
     } catch (error) {
       fail(error);
     }
-  }, [fail]);
+  }, [fail, setRecord]);
 
   // Show the newest record until the user picks one.
   useEffect(() => {
@@ -190,6 +204,8 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
       });
       setRecord(started);
       setSummaries(list => upsertSummary(list, summaryOf(started)));
+      // The engine starts pushing before this response lands; those events found no record to apply to.
+      void refetchRecord(started.diagnosis_id);
       return true;
     } catch (error) {
       fail(error);
@@ -197,7 +213,7 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
     } finally {
       setSubmitting(false);
     }
-  }, [fail, locale]);
+  }, [fail, locale, refetchRecord, setRecord]);
 
   const cancel = useCallback(async () => {
     const current = recordRef.current;
@@ -225,12 +241,20 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
     }
   }, [fail]);
 
-  const fillComposer = useCallback((text: string) => {
+  const composerHasText = useCallback(
+    () => (useChatStore.getState().runtimes[sessionRef.current]?.inputValue ?? '').trim() !== '',
+    [],
+  );
+
+  const fillComposer = useCallback((text: string, mode: 'replace' | 'append' = 'replace') => {
     const sid = sessionRef.current;
-    useChatStore.getState().setInputValue(sid, text);
-    window.dispatchEvent(new CustomEvent('chat-input-sync', { detail: { sessionId: sid, value: text } }));
-    setNotice({ kind: 'info', text: t('trajectory.diagnosis.filled') });
-  }, [t]);
+    const current = useChatStore.getState().runtimes[sid]?.inputValue ?? '';
+    const value = mode === 'append' && current.trim() !== ''
+      ? `${current}${current.endsWith('\n') ? '' : '\n\n'}${text}`
+      : text;
+    useChatStore.getState().setInputValue(sid, value);
+    window.dispatchEvent(new CustomEvent('chat-input-sync', { detail: { sessionId: sid, value } }));
+  }, []);
 
   const triggerTtse = useCallback(async (causeId: string) => {
     const current = recordRef.current;
@@ -274,6 +298,7 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
     remove,
     triggerTtse,
     fillComposer,
+    composerHasText,
     dismissNotice,
   };
 }

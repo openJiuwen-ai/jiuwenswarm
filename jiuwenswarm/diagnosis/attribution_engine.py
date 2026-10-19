@@ -58,6 +58,7 @@ from jiuwenswarm.diagnosis.models import (
     ModeProfile,
     RootCause,
     RootCauseCategory,
+    SignalRef,
     SkillSuggestion,
     StepRef,
 )
@@ -101,22 +102,31 @@ _TEXTS: dict[str, dict[str, str]] = {
         "reward_skipped_no_model": "Reward 已跳过：未注入模型",
         "reward_failed": "Reward 失败：{reason}",
         "reward_no_signals": "Reward 未产出有效信号，使用规则信号继续",
-        "no_signals": "诊断后没有可归因的信号",
+        "headline_no_signals": "没有可归因的信号，无需归因",
+        "attribute_skipped_no_signals": "诊断分析没有产出可归因的信号，已跳过归因",
         "diagnose_summary_reward": "信号 {count} 条（Reward 模式）",
         "diagnose_summary_rule": "信号 {count} 条（规则模式）",
-        "headline_score": "总分 {score} · 待归因 {count} 项",
-        "headline_plain": "待归因 {count} 项",
+        "diagnose_summary_rule_reason": "信号 {count} 条（规则模式 · {reason}）",
+        "headline_score": "总分 {score} · 定位 {count} 处问题",
+        "headline_plain": "定位 {count} 处问题",
+        "headline_score_none": "总分 {score} · 未发现需要归因的问题",
+        "headline_plain_none": "未发现需要归因的问题",
+        "headline_score_only": "总分 {score}",
         "perfect_skipped": "已跳过 perfect 信号：{ids}",
         "attribute_entry": "[{attr_id}] {text}（{start} → {end}）",
         "attribute_entry_node": "[{attr_id}] {text}（{node_id}）",
         "attribute_invalid": "标记无效：{signal_id}",
+        "attribute_updated_prefix": "（更新）",
+        "attribute_artifact": "已提交产物改进意见",
+        "attribute_skill": "已提交 Skill 改进：{key}",
         "attribute_pending": "未收口信号：{ids}",
         "attribute_failed_timeout": "归因未完成：超时",
         "attribute_failed_tokens": "归因未完成：超出 token 预算",
         "attribute_failed_error": "归因未完成：运行出错",
         "attribute_failed_incomplete": "归因未完成：仍有信号未收口",
-        "attribute_summary": "归因 {attributed} 条 · 标无效 {invalid} 条 · 改进意见 1 条",
-        "attribute_summary_no_fix": "归因 {attributed} 条 · 标无效 {invalid} 条",
+        "attribute_summary": "定位 {entries} 处 · 来自 {attributed} 条信号 · 标无效 {invalid} 条 · 改进意见 1 条",
+        "attribute_summary_no_fix": "定位 {entries} 处 · 来自 {attributed} 条信号 · 标无效 {invalid} 条",
+        "attribute_summary_dropped": " · {dropped} 条无法定位已省略",
         "dropped_anchors": "有 {count} 条归因的锚点无法在轨迹中定位，其根因已从列表剔除",
         "llm_iter": "iter {iteration}",
         "llm_status_running": "请求中",
@@ -142,22 +152,31 @@ _TEXTS: dict[str, dict[str, str]] = {
         "reward_skipped_no_model": "Reward skipped: no model injected",
         "reward_failed": "Reward failed: {reason}",
         "reward_no_signals": "Reward produced no usable signals; rule signals are kept",
-        "no_signals": "No signals to attribute after diagnosis",
+        "headline_no_signals": "No signals to attribute, nothing to attribute",
+        "attribute_skipped_no_signals": "Diagnosis produced no signals to attribute; attribution was skipped",
         "diagnose_summary_reward": "{count} signals (reward mode)",
         "diagnose_summary_rule": "{count} signals (rule mode)",
-        "headline_score": "Score {score} · {count} to attribute",
-        "headline_plain": "{count} to attribute",
+        "diagnose_summary_rule_reason": "{count} signals (rule mode · {reason})",
+        "headline_score": "Score {score} · {count} issues located",
+        "headline_plain": "{count} issues located",
+        "headline_score_none": "Score {score} · no issues to attribute",
+        "headline_plain_none": "No issues to attribute",
+        "headline_score_only": "Score {score}",
         "perfect_skipped": "Perfect signals skipped: {ids}",
         "attribute_entry": "[{attr_id}] {text} ({start} → {end})",
         "attribute_entry_node": "[{attr_id}] {text} ({node_id})",
         "attribute_invalid": "Marked invalid: {signal_id}",
+        "attribute_updated_prefix": "(updated) ",
+        "attribute_artifact": "Artifact improvement submitted",
+        "attribute_skill": "Skill improvement submitted: {key}",
         "attribute_pending": "Signals not closed: {ids}",
         "attribute_failed_timeout": "Attribution did not finish: timed out",
         "attribute_failed_tokens": "Attribution did not finish: token budget exceeded",
         "attribute_failed_error": "Attribution did not finish: run failed",
         "attribute_failed_incomplete": "Attribution did not finish: signals remain open",
-        "attribute_summary": "Attributed {attributed} · invalid {invalid} · 1 improvement",
-        "attribute_summary_no_fix": "Attributed {attributed} · invalid {invalid}",
+        "attribute_summary": "{entries} located · from {attributed} signals · {invalid} invalid · 1 improvement",
+        "attribute_summary_no_fix": "{entries} located · from {attributed} signals · {invalid} invalid",
+        "attribute_summary_dropped": " · {dropped} omitted (cannot be located)",
         "dropped_anchors": (
             "{count} attribution entries have anchors that cannot be located in the trajectory; "
             "their root causes were dropped"
@@ -221,7 +240,12 @@ def _prepare_nodes(inputs: EngineInputs) -> dict[str, list[Any]]:
 
 
 def _render_llm_line(event: Any, text: dict[str, str]) -> str:
-    """Render one core LLM request event as a single output line."""
+    """Render one core LLM request event as a single output line.
+
+    The line always starts with ``<request_id> · `` where the core request id
+    looks like ``llm-<n>``; the frontend (``splitStageOutput``) folds the lines
+    with that prefix into a "model requests" group, so keep the prefix stable.
+    """
     parts = [str(getattr(event, "request_id", None) or "llm"), str(getattr(event, "stage", "") or "")]
     iteration = getattr(event, "iteration", None)
     if iteration is not None:
@@ -298,6 +322,135 @@ class _QueueStatusSink:
             logger.debug("[diagnosis] llm status line dropped", exc_info=True)
 
 
+#: Longest signal / artifact text written to a stage log line; the full text
+#: lives on the root cause card and in the Reward block.
+_LOG_SIGNAL_LIMIT = 200
+_LOG_ENTRY_LIMIT = 120
+
+
+def _clip(value: str, limit: int) -> str:
+    """Fold whitespace into single spaces and cut ``value`` to ``limit`` characters."""
+    folded = " ".join(str(value).split())
+    if len(folded) <= limit:
+        return folded
+    return folded[:limit].rstrip() + "…"
+
+
+def _compose_headline(
+    text: dict[str, str],
+    *,
+    score: Any,
+    located: int,
+    failed: bool,
+) -> str | None:
+    """Build the conclusion headline once attribution has finished.
+
+    Args:
+        text: Localized text table.
+        score: Reward total score, ``None`` in rule mode.
+        located: Number of root causes that can be anchored in the trajectory.
+        failed: Whether attribution did not finish.
+
+    Returns:
+        The headline, or ``None`` when nothing meaningful can be said (a failed
+        attribution without score and without any located cause).
+    """
+    if located > 0:
+        if score is not None:
+            return text["headline_score"].format(score=score, count=located)
+        return text["headline_plain"].format(count=located)
+    if failed:
+        # An unfinished attribution proves nothing about the absence of causes.
+        return text["headline_score_only"].format(score=score) if score is not None else None
+    if score is not None:
+        return text["headline_score_none"].format(score=score)
+    return text["headline_plain_none"]
+
+
+def _attribution_entry_line(entry: Mapping[str, Any], text: dict[str, str]) -> str:
+    """Render one attribution entry as a stage log line (long text clipped)."""
+    start = str(entry.get("start_node_id") or "")
+    end = str(entry.get("end_node_id") or "")
+    entry_text = _clip(str(entry.get("text_md") or ""), _LOG_ENTRY_LIMIT)
+    attr_id = str(entry.get("attr_id") or "-")
+    if end and end != start:
+        return text["attribute_entry"].format(attr_id=attr_id, text=entry_text, start=start, end=end)
+    return text["attribute_entry_node"].format(attr_id=attr_id, text=entry_text, node_id=start)
+
+
+class _StreamingRuntime(NodeBackedRuntime):
+    """Attribution runtime that logs every submission into the engine queue as it happens.
+
+    The core agent only hands over its results when the run ends; the tool
+    callbacks, however, run on the event loop while the agent works, so the
+    attribute stage can show each submission live. Stored state is unchanged:
+    the root causes are still built from the final ``attributions`` mapping.
+
+    Args:
+        nodes_by_subagent: Sliced trajectory nodes of the run.
+        language: Output language of the core tools.
+        queue: Engine event queue drained by the single writer.
+        text: Localized text table.
+    """
+
+    def __init__(
+        self,
+        nodes_by_subagent: dict[str, list[Any]],
+        language: str,
+        queue: asyncio.Queue[EngineEvent | None],
+        text: dict[str, str],
+    ) -> None:
+        super().__init__(nodes_by_subagent, language)
+        self._queue = queue
+        self._text = text
+
+    def _log(self, line: str) -> None:
+        try:
+            self._queue.put_nowait(EngineEvent("attribute", "output_delta", text_delta=line))
+        except Exception:  # noqa: BLE001 - a lost log line must not break the run
+            logger.debug("[diagnosis] attribution log line dropped", exc_info=True)
+
+    def _updated(self, status: str) -> str:
+        return self._text["attribute_updated_prefix"] if status == "updated" else ""
+
+    def record_attribution(self, signal_id: str, entries: list[dict[str, Any]]) -> str:
+        status = super().record_attribution(signal_id, entries)
+        prefix = self._updated(status)
+        for entry in self.attributions.get(signal_id, []):
+            self._log(prefix + _attribution_entry_line(entry, self._text))
+        return status
+
+    def mark_signal_invalid(self, signal_id: str) -> str:
+        status = super().mark_signal_invalid(signal_id)
+        self._log(self._text["attribute_invalid"].format(signal_id=signal_id))
+        return status
+
+    def record_artifact_improvement(self, md: str) -> str:
+        status = super().record_artifact_improvement(md)
+        self._log(self._updated(status) + self._text["attribute_artifact"])
+        return status
+
+    def record_skill_improvement(self, key: str, md: str) -> str:
+        status = super().record_skill_improvement(key, md)
+        self._log(self._updated(status) + self._text["attribute_skill"].format(key=key))
+        return status
+
+
+def _signal_ref(signal: Any) -> SignalRef:
+    """Project a core diagnostic signal onto the persisted signal reference."""
+    metadata = getattr(signal, "metadata", None) or {}
+    category = metadata.get("category")
+    score = getattr(signal, "score", None)
+    return SignalRef(
+        id=str(signal.signal_id),
+        source=str(getattr(signal.source, "value", signal.source)),
+        tier=str(getattr(signal, "tier", "") or ""),
+        score=float(score) if isinstance(score, (int, float)) else None,
+        category=str(category) if category else None,
+        node_ids=[str(item) for item in (getattr(signal, "node_ids", None) or [])],
+    )
+
+
 def _translate_attribution(
     nodes: dict[str, list[Any]],
     runtime: NodeBackedRuntime,
@@ -353,6 +506,7 @@ def _translate_attribution(
                     summary=str(entry.get("text_md") or ""),
                     evidence=evidence.text if evidence is not None else "",
                     confidence=None,
+                    signal=_signal_ref(evidence) if evidence is not None else None,
                 ),
             )
             if not refs:
@@ -369,7 +523,6 @@ def _translate_attribution(
                 id=f"skill-{uuid.uuid4().hex[:8]}",
                 skill_name=key,
                 change_summary=markdown,
-                rationale=markdown,
                 message=markdown,
                 root_cause_ids=[cause.id for cause in root_causes],
             ),
@@ -410,8 +563,9 @@ class AttributionCoreEngine:
         Raises:
             EngineError: ``EMPTY_SCOPE``, ``TASK_INCOMPLETE``,
                 ``MULTIPLE_UNRELATED_TASKS``, ``MODEL_CALL_FAILED``,
-                ``MODEL_OUTPUT_INVALID`` or ``NO_SIGNALS`` when the pipeline
-                cannot produce a diagnosis.
+                ``MODEL_OUTPUT_INVALID`` when the pipeline cannot produce a
+                diagnosis. A run without any signal is not an error: it ends
+                completed with the attribute stage skipped.
         """
         text = _TEXTS[inputs.locale]
         queue: asyncio.Queue[EngineEvent | None] = asyncio.Queue()
@@ -462,7 +616,7 @@ class AttributionCoreEngine:
             raise EngineError("EMPTY_SCOPE", text["empty_scope"])
 
         task_parse = await self._stage_task_parse(inputs, text, queue, model, model_name, counter, sink, sliced, workspace)
-        diagnosis, headline = await self._stage_diagnose(
+        diagnosis = await self._stage_diagnose(
             inputs,
             text,
             queue,
@@ -474,19 +628,22 @@ class AttributionCoreEngine:
             task_parse,
             workspace,
         )
-        result = await self._stage_attribute(
-            inputs,
-            text,
-            queue,
-            model,
-            model_name,
-            counter,
-            sink,
-            sliced,
-            task_parse,
-            diagnosis,
-            headline,
-        )
+        if diagnosis.signals:
+            result = await self._stage_attribute(
+                inputs,
+                text,
+                queue,
+                model,
+                model_name,
+                counter,
+                sink,
+                sliced,
+                task_parse,
+                diagnosis,
+            )
+        else:
+            # Nothing to attribute is a normal outcome, not a failure.
+            result = self._result_without_signals(text, queue, task_parse, diagnosis)
         await self._append_experience_cause(inputs, model, model_name, sliced, result)
         return result
 
@@ -576,7 +733,10 @@ class AttributionCoreEngine:
                 EngineEvent(
                     "task_parse",
                     "output_delta",
-                    text_delta=text["message_artifact"].format(node_id=node_id, text=message),
+                    text_delta=text["message_artifact"].format(
+                        node_id=node_id,
+                        text=_clip(message, _LOG_SIGNAL_LIMIT),
+                    ),
                 ),
             )
         for path in parsed.file_artifacts:
@@ -612,7 +772,7 @@ class AttributionCoreEngine:
         nodes: dict[str, list[Any]],
         task_parse: Any,
         workspace: str,
-    ) -> tuple[Any, str]:
+    ) -> Any:
         queue.put_nowait(EngineEvent("diagnose", "stage_started", title=text["stage_diagnose"]))
         diagnosis = await run_diagnosis(
             run_id=f"diag-{time.time_ns()}",
@@ -632,8 +792,6 @@ class AttributionCoreEngine:
             model_name=model_name,
             status_counter=counter,
         )
-        if not diagnosis.signals:
-            raise EngineError("NO_SIGNALS", text["no_signals"])
         for signal in diagnosis.signals:
             queue.put_nowait(
                 EngineEvent(
@@ -643,12 +801,13 @@ class AttributionCoreEngine:
                         signal_id=signal.signal_id,
                         tier=signal.tier,
                         source=signal.source.value,
-                        text=signal.text,
+                        text=_clip(signal.text, _LOG_SIGNAL_LIMIT),
                         node_ids=", ".join(signal.node_ids) or "-",
                     ),
                 ),
             )
         reward = diagnosis.run_meta.get("reward") or {}
+        reward_note: str | None = None
         if diagnosis.reward_overall is not None:
             queue.put_nowait(
                 EngineEvent(
@@ -660,32 +819,55 @@ class AttributionCoreEngine:
                     ),
                 ),
             )
-        elif reward.get("skipped") == "no artifacts":
-            queue.put_nowait(EngineEvent("diagnose", "output_delta", text_delta=text["reward_skipped_no_artifacts"]))
-        elif reward.get("skipped") == "no model injected":
-            queue.put_nowait(EngineEvent("diagnose", "output_delta", text_delta=text["reward_skipped_no_model"]))
-        elif reward.get("failed"):
-            queue.put_nowait(
-                EngineEvent(
-                    "diagnose",
-                    "output_delta",
-                    text_delta=text["reward_failed"].format(reason=reward.get("error") or reward.get("failed")),
-                ),
+        else:
+            # Rule mode: say why Reward did not produce the signals.
+            if reward.get("skipped") == "no artifacts":
+                reward_note = text["reward_skipped_no_artifacts"]
+            elif reward.get("skipped") == "no model injected":
+                reward_note = text["reward_skipped_no_model"]
+            elif reward.get("failed"):
+                reward_note = text["reward_failed"].format(reason=reward.get("error") or reward.get("failed"))
+            elif diagnosis.signals:
+                reward_note = text["reward_no_signals"]
+            if reward_note:
+                queue.put_nowait(EngineEvent("diagnose", "output_delta", text_delta=reward_note))
+        if diagnosis.signal_mode == "reward":
+            summary = text["diagnose_summary_reward"].format(count=len(diagnosis.signals))
+        elif reward_note:
+            summary = text["diagnose_summary_rule_reason"].format(
+                count=len(diagnosis.signals),
+                reason=_clip(reward_note, _LOG_ENTRY_LIMIT),
             )
         else:
-            queue.put_nowait(EngineEvent("diagnose", "output_delta", text_delta=text["reward_no_signals"]))
-        pending = sum(1 for signal in diagnosis.signals if signal.tier != "perfect")
-        if diagnosis.reward_overall is not None:
-            headline = text["headline_score"].format(score=diagnosis.reward_overall.total_score, count=pending)
-        else:
-            headline = text["headline_plain"].format(count=pending)
-        summary = (
-            text["diagnose_summary_reward"].format(count=len(diagnosis.signals))
-            if diagnosis.signal_mode == "reward"
-            else text["diagnose_summary_rule"].format(count=len(diagnosis.signals))
-        )
+            summary = text["diagnose_summary_rule"].format(count=len(diagnosis.signals))
         queue.put_nowait(EngineEvent("diagnose", "stage_finished", status="completed", summary=summary))
-        return diagnosis, headline
+        return diagnosis
+
+    @staticmethod
+    def _result_without_signals(
+        text: dict[str, str],
+        queue: asyncio.Queue[EngineEvent | None],
+        task_parse: Any,
+        diagnosis: Any,
+    ) -> EngineResult:
+        """Finish normally when diagnosis produced no signal: the attribute stage is skipped."""
+        queue.put_nowait(EngineEvent("attribute", "stage_started", title=text["stage_attribute"]))
+        queue.put_nowait(
+            EngineEvent(
+                "attribute",
+                "stage_finished",
+                status="skipped",
+                skip_reason=text["attribute_skipped_no_signals"],
+            ),
+        )
+        return EngineResult(
+            headline=text["headline_no_signals"],
+            artifact_eval=ArtifactEval(applied=False, skipped_reason="not_produced"),
+            root_causes=[],
+            suggestions=DiagnosisSuggestions(),
+            reward=diagnosis.reward_payload,
+            task_description=task_parse.task_description,
+        )
 
     async def _stage_attribute(
         self,
@@ -699,11 +881,11 @@ class AttributionCoreEngine:
         nodes: dict[str, list[Any]],
         task_parse: Any,
         diagnosis: Any,
-        headline: str,
     ) -> EngineResult:
         queue.put_nowait(EngineEvent("attribute", "stage_started", title=text["stage_attribute"]))
         language = inputs.locale
-        runtime = NodeBackedRuntime(nodes, language)
+        # Entries are logged as the agent submits them, not after the run.
+        runtime = _StreamingRuntime(nodes, language, queue, text)
         outcome = await run_attribution(
             model=model,
             nodes_by_subagent=nodes,
@@ -725,41 +907,6 @@ class AttributionCoreEngine:
                     text_delta=text["perfect_skipped"].format(ids=", ".join(outcome.skipped_signal_ids)),
                 ),
             )
-        for entries in runtime.attributions.values():
-            for entry in entries:
-                start = str(entry.get("start_node_id") or "")
-                end = str(entry.get("end_node_id") or "")
-                entry_text = str(entry.get("text_md") or "")
-                attr_id = str(entry.get("attr_id") or "-")
-                if end and end != start:
-                    queue.put_nowait(
-                        EngineEvent(
-                            "attribute",
-                            "output_delta",
-                            text_delta=text["attribute_entry"].format(
-                                attr_id=attr_id,
-                                text=entry_text,
-                                start=start,
-                                end=end,
-                            ),
-                        ),
-                    )
-                else:
-                    queue.put_nowait(
-                        EngineEvent(
-                            "attribute",
-                            "output_delta",
-                            text_delta=text["attribute_entry_node"].format(
-                                attr_id=attr_id,
-                                text=entry_text,
-                                node_id=start,
-                            ),
-                        ),
-                    )
-        for signal_id in sorted(runtime.invalid_signals):
-            queue.put_nowait(
-                EngineEvent("attribute", "output_delta", text_delta=text["attribute_invalid"].format(signal_id=signal_id)),
-            )
         if outcome.pending_signal_ids:
             queue.put_nowait(
                 EngineEvent(
@@ -777,11 +924,15 @@ class AttributionCoreEngine:
                     text_delta=text["dropped_anchors"].format(count=dropped),
                 ),
             )
+        failed = outcome.status == "failed"
+        score = diagnosis.reward_overall.total_score if diagnosis.reward_overall is not None else None
         result = EngineResult(
-            headline=headline,
+            headline=_compose_headline(text, score=score, located=len(root_causes) - dropped, failed=failed),
             artifact_eval=ArtifactEval(applied=False, skipped_reason="not_produced"),
             root_causes=root_causes,
             suggestions=suggestions,
+            reward=diagnosis.reward_payload,
+            task_description=task_parse.task_description,
         )
         status = "completed"
         if outcome.status == "failed":
@@ -792,12 +943,14 @@ class AttributionCoreEngine:
             result.error = DiagnosisError(code="ATTRIBUTION_INCOMPLETE", message=message)
             queue.put_nowait(EngineEvent("attribute", "output_delta", text_delta=message))
             status = "failed"
-        attributed = len(runtime.attributions)
-        invalid = len(runtime.invalid_signals)
-        if runtime.artifact_improvement:
-            summary = text["attribute_summary"].format(attributed=attributed, invalid=invalid)
-        else:
-            summary = text["attribute_summary_no_fix"].format(attributed=attributed, invalid=invalid)
+        key = "attribute_summary" if runtime.artifact_improvement else "attribute_summary_no_fix"
+        summary = text[key].format(
+            entries=len(root_causes) - dropped,
+            attributed=len(runtime.attributions),
+            invalid=len(runtime.invalid_signals),
+        )
+        if dropped:
+            summary += text["attribute_summary_dropped"].format(dropped=dropped)
         queue.put_nowait(EngineEvent("attribute", "stage_finished", status=status, summary=summary))
         return result
 

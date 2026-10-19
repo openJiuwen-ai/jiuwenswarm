@@ -7,19 +7,27 @@ import { isRunning, ttseRootCauses } from './diagnosisState';
 import {
   asRewardPayload,
   type DiagnosisRecord,
-  type RewardPayload,
   type RootCause,
 } from './diagnosisTypes';
 import {
   diagnosisTarget,
+  formatElapsed,
   formatTimeWindow,
   isStageExpanded,
+  looksLikePath,
+  processDefaultOpen,
+  processSummary,
+  splitStageOutput,
   stageViews,
+  suggestionsState,
   type StageView,
   type StageViewStatus,
 } from './diagnosisView';
-import { DiagnosisRecordSelect } from './DiagnosisRecordSelect';
+import { FillButton } from './DiagnosisFillButton';
+import { RewardDetails, RewardSummary } from './DiagnosisReward';
+import { RootCauses } from './DiagnosisRootCauses';
 import { DiagnosisStatusIcon } from './DiagnosisStatusIcon';
+import { FoldedMarkdown, PlainFold } from './DiagnosisText';
 import type { DiagnosisSession } from './useDiagnosisSession';
 import css from './DiagnosisSubpage.module.css';
 
@@ -44,14 +52,6 @@ export const DiagnosisSubpage = memo(function DiagnosisSubpage({
 
   return (
     <div className={css.root} data-testid="trajectory-diagnosis-subpage">
-      <div className={css.toolbar}>
-        <DiagnosisRecordSelect
-          items={summaries}
-          currentId={record?.diagnosis_id ?? null}
-          onSelect={(id) => { void session.open(id); }}
-          onDelete={(id) => { void session.remove(id); }}
-        />
-      </div>
       {notice === null ? null : (
         <p
           className={`${css.notice} ${notice.kind === 'error' ? css.noticeError : ''}`}
@@ -121,9 +121,11 @@ function RecordCards({ record, session, subjectLabels, focusedCauseId, onFocusCa
   const target = useMemo(() => diagnosisTarget(record), [record]);
   const labelOf = (subjectId: string) => subjectLabels.get(subjectId) ?? subjectId;
   const note = record.input.user_note?.trim() ?? '';
+  const taskDescription = record.task_description?.trim() ?? '';
   const { suggestions } = record;
   const reward = asRewardPayload(record.reward);
   const ttseCauses = ttseRootCauses(record);
+  const outlets = suggestionsState(record.status);
 
   return (
     <>
@@ -149,6 +151,23 @@ function RecordCards({ record, session, subjectLabels, focusedCauseId, onFocusCa
             </div>
           ))
         )}
+        {record.input.resolved_span_count > 0 ? (
+          <p className={css.line} data-testid="trajectory-diagnosis-object-spans">
+            <span className={css.lineLabel}>{t('trajectory.diagnosis.objectSteps')}</span>
+            {t('trajectory.diagnosis.objectStepsCount', { count: record.input.resolved_span_count })}
+          </p>
+        ) : null}
+        {record.input.excluded_running.length > 0 ? (
+          <p className={css.hint} data-testid="trajectory-diagnosis-object-excluded">
+            {t('trajectory.diagnosis.objectExcludedRunning', { count: record.input.excluded_running.length })}
+          </p>
+        ) : null}
+        {taskDescription === '' ? null : (
+          <div className={css.taskBox} data-testid="trajectory-diagnosis-task">
+            <span className={css.lineLabel}>{t('trajectory.diagnosis.objectTask')}</span>
+            <PlainFold text={taskDescription} />
+          </div>
+        )}
       </Card>
 
       {note === '' ? null : (
@@ -171,60 +190,64 @@ function RecordCards({ record, session, subjectLabels, focusedCauseId, onFocusCa
           </button>
         ) : null}
       >
-        {record.headline === undefined || record.headline === '' ? null : (
-          <p className={css.hint}>{record.headline}</p>
-        )}
         {record.error === undefined ? null : (
           <p className={`${css.hint} ${css.errorText}`} role="alert">{record.error.message}</p>
         )}
-        <StageList record={record} running={running} />
+        <ProcessSection record={record} running={running} />
+        {record.headline === undefined || record.headline === '' ? null : (
+          <p className={css.headline} data-testid="trajectory-diagnosis-headline">{record.headline}</p>
+        )}
+        {done && reward !== null ? <RewardSummary reward={reward} /> : null}
         {done ? (
           <RootCauses
             record={record}
+            subjectLabels={subjectLabels}
             focusedCauseId={focusedCauseId}
             onFocusCause={onFocusCause}
           />
         ) : null}
-        {done && reward !== null ? <RewardSection reward={reward} /> : null}
+        {done && reward !== null ? <RewardDetails reward={reward} /> : null}
       </Card>
 
       <Card title={t('trajectory.diagnosis.suggestions')} testId="trajectory-diagnosis-suggestions">
-        {!done ? (
+        {outlets === 'pending' ? (
           <p className={css.hint}>{t('trajectory.diagnosis.outletsPending')}</p>
+        ) : outlets === 'unfinished' ? (
+          <p className={css.hint} data-testid="trajectory-diagnosis-unfinished">
+            {t('trajectory.diagnosis.suggestionsUnfinished')}
+          </p>
         ) : (
           <>
             {suggestions.artifact_fix === undefined ? null : (
               <div className={css.suggestion} data-testid="trajectory-diagnosis-artifact-fix">
                 <strong>{t('trajectory.diagnosis.artifactFix')}</strong>
-                <p className={css.suggestionText}>{suggestions.artifact_fix.instruction}</p>
-                <div className={css.row}>
-                  <button
-                    type="button"
-                    className={css.button}
-                    onClick={() => session.fillComposer(suggestions.artifact_fix?.instruction ?? '')}
-                    data-testid="trajectory-diagnosis-artifact-fix-fill"
-                  >
-                    {t('trajectory.diagnosis.fillInput')}
-                  </button>
-                </div>
+                <FoldedMarkdown text={suggestions.artifact_fix.instruction} />
+                <FillButton
+                  text={suggestions.artifact_fix.instruction}
+                  composerHasText={session.composerHasText}
+                  onFill={session.fillComposer}
+                  testId="trajectory-diagnosis-artifact-fix-fill"
+                />
               </div>
             )}
             {suggestions.skills.map(skill => (
               <div className={css.suggestion} key={skill.id} data-testid="trajectory-diagnosis-skill">
-                <strong>{t('trajectory.diagnosis.skills')}: {skill.skill_name}</strong>
-                <p className={css.suggestionText}>{skill.change_summary}</p>
-                {skill.rationale === '' ? null : <p className={css.hint}>{skill.rationale}</p>}
+                <strong>
+                  {t('trajectory.diagnosis.skills')}
+                  {': '}
+                  <span className={looksLikePath(skill.skill_name) ? css.mono : undefined}>{skill.skill_name}</span>
+                </strong>
+                <FoldedMarkdown text={skill.change_summary} />
+                {skill.rationale === '' || skill.rationale === skill.change_summary ? null : (
+                  <p className={css.hint}>{skill.rationale}</p>
+                )}
                 {skill.selectable ? (
-                  <div className={css.row}>
-                    <button
-                      type="button"
-                      className={css.button}
-                      onClick={() => session.fillComposer(skill.message)}
-                      data-testid="trajectory-diagnosis-skill-fill"
-                    >
-                      {t('trajectory.diagnosis.fillInput')}
-                    </button>
-                  </div>
+                  <FillButton
+                    text={skill.message}
+                    composerHasText={session.composerHasText}
+                    onFill={session.fillComposer}
+                    testId="trajectory-diagnosis-skill-fill"
+                  />
                 ) : (
                   <p className={css.hint}>{t('trajectory.diagnosis.blocked', { reason: skill.blocked_reason ?? '' })}</p>
                 )}
@@ -238,7 +261,6 @@ function RecordCards({ record, session, subjectLabels, focusedCauseId, onFocusCa
                   <strong>
                     {t('trajectory.diagnosis.ttse')} · {t(`trajectory.diagnosis.ttseOutcome.${cause.category.slice('ttse_'.length)}`)}
                   </strong>
-                  {cause.summary === '' ? null : <p className={css.suggestionText}>{cause.summary}</p>}
                   <div className={css.row}>
                     <button
                       type="button"
@@ -282,6 +304,40 @@ function AgentLine({ labels }: { labels: readonly string[] }) {
   );
 }
 
+/**
+ * How the diagnosis ran. Open while it runs, when it did not finish, or when it is the only thing to
+ * read; otherwise one folded line above the conclusion, so the result is what the card is about.
+ */
+function ProcessSection({ record, running }: { record: DiagnosisRecord; running: boolean }) {
+  const { t } = useTranslation();
+  const [choice, setChoice] = useState<boolean | undefined>(undefined);
+  const summary = useMemo(() => processSummary(record.stages), [record.stages]);
+  // A starting run has no stage yet, but its waiting placeholders are worth showing.
+  if (record.stages.length === 0 && !running) return null;
+  const open = choice ?? processDefaultOpen(record);
+  const meta = running
+    ? ''
+    : [t('trajectory.diagnosis.processSteps', { count: summary.count }), summary.elapsed]
+      .filter(item => item !== '')
+      .join(' · ');
+  return (
+    <div className={css.process} data-testid="trajectory-diagnosis-process" data-expanded={open ? 'true' : 'false'}>
+      <button
+        type="button"
+        className={`${css.stageHead} ${css.stageToggle}`}
+        aria-expanded={open}
+        onClick={() => setChoice(!open)}
+        data-testid="trajectory-diagnosis-process-toggle"
+      >
+        <ChevronRight className={`${css.chevron} ${open ? css.chevronOpen : ''}`} size={14} strokeWidth={2} aria-hidden />
+        <span className={css.stageTitle}>{t('trajectory.diagnosis.process')}</span>
+        <span className={css.stageSummary}>{meta}</span>
+      </button>
+      {open ? <StageList record={record} running={running} /> : null}
+    </div>
+  );
+}
+
 function StageList({ record, running }: { record: DiagnosisRecord; running: boolean }) {
   const views = useMemo(() => stageViews(record.stages, running), [record.stages, running]);
   // A choice only holds for the status it was made in: a stage that moves on re-applies the default.
@@ -318,11 +374,24 @@ function StageItem({ view, expanded, onToggle }: {
   const title = stage !== null && stage.title !== ''
     ? stage.title
     : t(`trajectory.diagnosis.plannedStage.${view.stageId}`, { defaultValue: view.stageId });
-  const hasBody = stage !== null && (
-    (stage.summary ?? '') !== '' || (stage.skip_reason ?? '') !== '' || stage.output !== ''
-  );
+  // The summary lives in the head; the body holds what is only worth reading on demand.
+  const hasBody = stage !== null && ((stage.skip_reason ?? '') !== '' || stage.output !== '');
   const iconKind = view.status;
   const bodyId = `trajectory-diagnosis-stage-body-${view.stageId}`;
+  const output = useMemo(() => splitStageOutput(stage?.output ?? ''), [stage?.output]);
+  // The one-line conclusion and the time it took stay visible while the stage is folded.
+  const conclusion = stage === null || view.status === 'pending' ? '' : (stage.summary ?? '');
+  const elapsed = stage === null || view.status === 'running' ? '' : formatElapsed(stage.elapsed_ms);
+  const headMeta = (
+    <>
+      {conclusion === '' ? null : (
+        <span className={css.stageSummary} data-testid="trajectory-diagnosis-stage-summary">{conclusion}</span>
+      )}
+      {elapsed === '' ? null : (
+        <span className={css.stageElapsed} data-testid="trajectory-diagnosis-stage-elapsed">{elapsed}</span>
+      )}
+    </>
+  );
   return (
     <li
       className={`${css.stage} ${view.status === 'pending' ? css.stagePending : ''}`}
@@ -336,6 +405,7 @@ function StageItem({ view, expanded, onToggle }: {
           <DiagnosisStatusIcon kind={iconKind} />
           <span className={css.stageTitle}>{title}</span>
           <span className={css.srOnly}>{t(`trajectory.diagnosis.stageStatus.${view.status}`)}</span>
+          {headMeta}
         </div>
       ) : (
         <button
@@ -349,127 +419,24 @@ function StageItem({ view, expanded, onToggle }: {
           <DiagnosisStatusIcon kind={iconKind} />
           <span className={css.stageTitle}>{title}</span>
           <span className={css.srOnly}>{t(`trajectory.diagnosis.stageStatus.${view.status}`)}</span>
+          {headMeta}
           <ChevronRight className={`${css.chevron} ${expanded ? css.chevronOpen : ''}`} size={14} strokeWidth={2} aria-hidden />
         </button>
       )}
       {expanded && stage !== null && hasBody ? (
         <div className={css.stageBody} id={bodyId}>
-          {stage.summary === undefined || stage.summary === '' ? null : <p className={css.hint}>{stage.summary}</p>}
           {stage.skip_reason === undefined ? null : <p className={css.hint}>{stage.skip_reason}</p>}
-          {stage.output === '' ? null : <pre className={css.output}>{stage.output}</pre>}
+          {output.body === '' ? null : <pre className={css.output}>{output.body}</pre>}
+          {output.requestCount === 0 ? null : (
+            <details className={css.requestFold}>
+              <summary data-testid="trajectory-diagnosis-stage-requests">
+                {t('trajectory.diagnosis.requestCount', { count: output.requestCount })}
+              </summary>
+              <pre className={css.output}>{output.requestLines.join('\n')}</pre>
+            </details>
+          )}
         </div>
       ) : null}
     </li>
-  );
-}
-
-function RootCauses({ record, focusedCauseId, onFocusCause }: {
-  record: DiagnosisRecord;
-  focusedCauseId: string | null;
-  onFocusCause: (cause: RootCause | null) => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className={css.block} data-testid="trajectory-diagnosis-root-causes">
-      <h4 className={css.blockTitle}>{t('trajectory.diagnosis.rootCauses')}</h4>
-      {record.root_causes.length === 0 ? <p className={css.hint}>{t('trajectory.diagnosis.noRootCause')}</p> : null}
-      {record.root_causes.map((cause) => {
-        const focused = focusedCauseId === cause.id;
-        return (
-          <div className={css.cause} key={cause.id} data-testid="trajectory-diagnosis-root-cause">
-            <div className={css.causeHead}>
-              <span className={css.badge}>{t(`trajectory.diagnosis.category.${cause.category}`)}</span>
-              {cause.confidence === undefined || cause.confidence === null ? null : (
-                <span className={css.hint}>
-                  {t('trajectory.diagnosis.confidence', { value: Math.round(cause.confidence * 100) })}
-                </span>
-              )}
-              <span className={css.spacer} />
-              <button
-                type="button"
-                className={css.button}
-                aria-pressed={focused}
-                onClick={() => onFocusCause(focused ? null : cause)}
-                data-testid="trajectory-diagnosis-highlight"
-              >
-                {t('trajectory.diagnosis.highlight')}
-              </button>
-            </div>
-            <strong>{cause.summary}</strong>
-            {cause.evidence === '' ? null : <p className={css.hint}>{cause.evidence}</p>}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** Structured Reward evaluation (overall / categories / dimensions) plus the raw payload. */
-function RewardSection({ reward }: { reward: RewardPayload }) {
-  const { t } = useTranslation();
-  return (
-    <div className={css.block} data-testid="trajectory-diagnosis-reward">
-      <h4 className={css.blockTitle}>{t('trajectory.diagnosis.rewardTitle')}</h4>
-      <div className={css.rewardOverall} data-testid="trajectory-diagnosis-reward-overall">
-        <span className={css.badge}>
-          {t('trajectory.diagnosis.rewardTotal', { score: reward.overall.total_score })}
-        </span>
-        <span className={css.hint}>{reward.overall.comment}</span>
-      </div>
-      {reward.categories.length === 0 ? null : (
-        <table className={css.rewardTable} data-testid="trajectory-diagnosis-reward-categories">
-          <thead>
-            <tr>
-              <th>{t('trajectory.diagnosis.rewardCategoryName')}</th>
-              <th>{t('trajectory.diagnosis.rewardScore')}</th>
-              <th>{t('trajectory.diagnosis.rewardComment')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {reward.categories.map(category => (
-              <tr key={category.name} data-testid="trajectory-diagnosis-reward-category" data-variant={category.name}>
-                <td>{category.name}</td>
-                <td>{category.score === undefined ? '' : category.score}</td>
-                <td>{category.comment ?? ''}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {reward.dimensions.length === 0 ? null : (
-        <table className={css.rewardTable} data-testid="trajectory-diagnosis-reward-dimensions">
-          <thead>
-            <tr>
-              <th>{t('trajectory.diagnosis.rewardCategoryName')}</th>
-              <th>{t('trajectory.diagnosis.rewardRequirement')}</th>
-              <th>{t('trajectory.diagnosis.rewardScore')}</th>
-              <th>{t('trajectory.diagnosis.rewardComment')}</th>
-              <th>{t('trajectory.diagnosis.rewardRelatedSignals')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {reward.dimensions.map((dimension, index) => (
-              <tr
-                key={`${dimension.category}-${index}`}
-                data-testid="trajectory-diagnosis-reward-dimension"
-                data-variant={`${dimension.category}-${index}`}
-              >
-                <td>{dimension.category}</td>
-                <td>{dimension.requirement}</td>
-                <td>{dimension.score}</td>
-                <td>{dimension.comment}</td>
-                <td>{(dimension.related_signal_ids ?? []).join(', ')}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      <details className={css.rewardRaw}>
-        <summary data-testid="trajectory-diagnosis-reward-raw-toggle">{t('trajectory.diagnosis.rewardRaw')}</summary>
-        <pre className={css.output} data-testid="trajectory-diagnosis-reward-raw">
-          {JSON.stringify(reward, null, 2)}
-        </pre>
-      </details>
-    </div>
   );
 }

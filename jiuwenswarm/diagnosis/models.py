@@ -278,6 +278,32 @@ class DiagnosisEvidence(_Model):
     artifact_eval: ArtifactEval | None = None
 
 
+class SignalRef(_Model):
+    """The diagnostic signal an attributed root cause answers.
+
+    A root cause pairs a signal (what went wrong, how badly, where it surfaced)
+    with an attribution (where the cause lies and what it is). Reward signals
+    carry ``tier``, ``score`` and ``category``; rule signals only carry the
+    source and ``tier == "uncertain"``.
+
+    Attributes:
+        id: Signal id; root causes of one signal share it.
+        source: ``keyword_tool`` / ``keyword_user`` for rule hits, ``reward``
+            for a Reward dimension.
+        tier: ``perfect`` / ``fair`` / ``weak`` / ``uncertain``.
+        score: Dimension score (0-100) of a Reward signal.
+        category: Reward dimension category.
+        node_ids: Nodes where the problem surfaced (a hint, not the cause).
+    """
+
+    id: str
+    source: str
+    tier: str = ""
+    score: float | None = None
+    category: str | None = None
+    node_ids: list[str] = Field(default_factory=list)
+
+
 class RootCause(_Model):
     """One attributed root cause."""
 
@@ -288,6 +314,7 @@ class RootCause(_Model):
     summary: str
     evidence: str = ""
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    signal: SignalRef | None = None
 
 
 class ArtifactFix(_Model):
@@ -360,6 +387,7 @@ class DiagnosisRecord(DiagnosisSummary):
     ttse_trigger: dict[str, TtseTriggerResult] = Field(default_factory=dict)
     error: DiagnosisError | None = None
     reward: dict[str, Any] | None = None
+    task_description: str | None = None
 
     def to_summary(self) -> DiagnosisSummary:
         """Return the list-endpoint projection of this record."""
@@ -470,6 +498,7 @@ __all__ = [
     "RootCauseCategory",
     "SelectionRange",
     "SelectionScope",
+    "SignalRef",
     "SkillSuggestion",
     "StageStatus",
     "StepRef",
