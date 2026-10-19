@@ -11719,25 +11719,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 is_complete=False,
             )
         finally:
-            if dynamic_expert_round is not None:
-                # HITL ends this output stream, not the Core interaction. The
-                # approved tool call runs in the next chat.send stream.
-                keep_for_resume = (
-                    bool(emitted_ask_user_request_ids)
-                    and not stream_consumer_cancelled
-                    and not interaction_stream_abort
-                    and not _billing_failed
-                ) or (
-                    self._is_interrupt_resume_dispatch(request.params)
-                    and interaction_stream is None
-                    and not stream_consumer_cancelled
-                    and not interaction_stream_abort
-                    and not _billing_failed
-                )
-                if not keep_for_resume:
-                    await self._close_dynamic_expert_round(
-                        session_id, expected=dynamic_expert_round
-                    )
             # xiaoyi 渠道计费（common/billing_client.py）：一轮 query 收口，
             # 上报终态 FINISH/FAILED（经 np://claw-billing 管道由桌面主进程转发
             # fulfillment task/status/update）。
@@ -11765,17 +11746,40 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 )
 
                 reset_current_multimodal_image_files(image_files_token)
-            if interaction_stream is not None:
-                try:
-                    logger.info("[JiuWenSwarmDeepAdapter] output stream close begin: request_id=%s session=%s abort=%s",
-                                rid, session_id, interaction_stream_abort)
-                    await interaction_stream.close(
-                        abort_active_round=interaction_stream_abort,
+            try:
+                if interaction_stream is not None:
+                    try:
+                        logger.info("[JiuWenSwarmDeepAdapter] output stream close begin: request_id=%s session=%s abort=%s",
+                                    rid, session_id, interaction_stream_abort)
+                        await interaction_stream.close(
+                            abort_active_round=interaction_stream_abort,
+                        )
+                        logger.info("[JiuWenSwarmDeepAdapter] output stream close end: request_id=%s session=%s", rid, session_id)
+                    except Exception:
+                        logger.warning("[JiuWenSwarmDeepAdapter] output stream close failed: request_id=%s session=%s",
+                                       rid, session_id, exc_info=True)
+            finally:
+                # Closing the output stream aborts its independent producer.
+                # Do that before waiting for a planner holding the round lock.
+                if dynamic_expert_round is not None:
+                    # HITL ends this output stream, not the Core interaction. The
+                    # approved tool call runs in the next chat.send stream.
+                    keep_for_resume = (
+                        bool(emitted_ask_user_request_ids)
+                        and not stream_consumer_cancelled
+                        and not interaction_stream_abort
+                        and not _billing_failed
+                    ) or (
+                        self._is_interrupt_resume_dispatch(request.params)
+                        and interaction_stream is None
+                        and not stream_consumer_cancelled
+                        and not interaction_stream_abort
+                        and not _billing_failed
                     )
-                    logger.info("[JiuWenSwarmDeepAdapter] output stream close end: request_id=%s session=%s", rid, session_id)
-                except Exception:
-                    logger.warning("[JiuWenSwarmDeepAdapter] output stream close failed: request_id=%s session=%s",
-                                   rid, session_id, exc_info=True)
+                    if not keep_for_resume:
+                        await self._close_dynamic_expert_round(
+                            session_id, expected=dynamic_expert_round
+                        )
             self._unregister_session_agent_task(session_id)
             TOOL_PERMISSION_CHANNEL_ID.reset(token_perm_cid)
             CURRENT_CHANNEL_ID.reset(token_cid)
