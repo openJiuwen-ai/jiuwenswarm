@@ -159,8 +159,9 @@ def _check_approval_accesses(
     """Use Core's complete policy and the existing Host access projections."""
     from openjiuwen.harness.security import PermissionEngine
     from openjiuwen.harness.security.file_guard import build_file_guard_checker
+    from openjiuwen.harness.security.tiered_policy import strictest
     from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import (
-        NativePathGuardProjection, current_native_path_access,
+        current_native_path_access,
     )
     from jiuwenswarm.agents.harness.common.rails.permissions.send_file_path_guard import (
         SEND_FILE_TOOL_NAME, SendFilePathGuardEvaluator,
@@ -168,11 +169,15 @@ def _check_approval_accesses(
 
     engine = PermissionEngine(permissions, workspace_root=root, trusted_dirs=())
     access = current_native_path_access(name, args)
-    if access is not None and engine._file_guard is not None:
-        engine._file_guard = NativePathGuardProjection(engine._file_guard)
-    level, _ = engine.evaluate_global_policy_directly(name, args)
+    level, _ = engine.evaluate_global_policy_directly(
+        name, args, include_external_directory=access is None,
+    )
     checker = build_file_guard_checker(engine.config, workspace_root=root, trusted_dirs=())
     guard_name, guard_args = (access.guard_tool, access.guard_args) if access else (name, args)
+    if access is not None and checker is not None:
+        path_result = checker.evaluate(guard_name, guard_args)
+        if path_result is not None:
+            level = path_result.permission if level is None else strictest(level, path_result.permission)
     asks = set(checker.collect_ask_accesses(guard_name, guard_args) if checker else ())
     if name == SEND_FILE_TOOL_NAME:
         result = SendFilePathGuardEvaluator().evaluate(
@@ -214,7 +219,9 @@ def persist_exact_permission_allow_rule(
         name = str(tool_name or "").strip()
         args = _normalize_tool_args(tool_args)
         accesses = _normalize_exact_accesses(ask_accesses)
-        if not name or accesses is None or (session_only and not session_id):
+        if not name or accesses is None:
+            raise PermissionApprovalInvalidated("invalid_approval_scope")
+        if session_only and not session_id:
             raise PermissionApprovalInvalidated("invalid_approval_scope")
         root = workspace_root if workspace_root is not None else get_workspace_dir()
         with layers.permission_storage_lock(session_id):

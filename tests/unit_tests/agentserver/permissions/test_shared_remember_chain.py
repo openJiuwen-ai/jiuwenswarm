@@ -514,3 +514,117 @@ def test_real_handler_sqlite_and_restart_chain(tmp_path, permanent):
     restored = json.loads((root / "restart.json").read_text())
     assert approved["handler_calls"] == 1 and approved["persisted"] is True
     assert restored["sqlite_restored"] is True and restored["file_rule_allowed_without_marker"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("smart", [False, True])
+@pytest.mark.parametrize("permanent", [False, True])
+async def test_adapter_reload_keeps_global_separate_before_remember(storage, tmp_path, smart, permanent):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    policy, global_path = storage
+    policy["mode"] = "auto" if smart else "manual"
+    policy["tools"]["unknown_lookup"] = "ask"
+    config._dump_yaml_round_trip(global_path, {"permissions": policy})
+    original_global = global_path.read_bytes()
+    user_path = layers.user_permissions_path()
+    session_path = layers.session_permissions_path("session-a")
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    config._dump_yaml_round_trip(user_path, {"tools": {"previous_user": "allow"}})
+    config._dump_yaml_round_trip(session_path, {"tools": {"previous_session": "allow"}})
+    rail = build(policy, tmp_path, "session-a", smart)
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter.mark_as_session_scoped("session-a")
+    adapter._permission_rail = rail
+    adapter._update_permission_rail({"permissions": deepcopy(policy)})
+    resumed = await approve(rail, context("session-a", "unknown_lookup", {}), permanent)
+    assert not resumed.extra.get("_skip_tool")
+    saved = layers.load_user_permissions() if permanent else layers.load_session_permissions("session-a")
+    assert saved.get("approval_overrides") or "unknown_lookup" in saved.get("allow_tools", [])
+    next_call = context("session-a", "unknown_lookup", {}, "next-call")
+    await rail.before_tool_call(next_call)
+    assert not next_call.extra.get("_skip_tool")
+    assert global_path.read_bytes() == original_global
+    for path, overlay in (
+        (user_path, layers.load_user_permissions()),
+        (session_path, layers.load_session_permissions("session-a")),
+    ):
+        tools = overlay.get("tools", {})
+        tools.pop("previous_user", None)
+        tools.pop("previous_session", None)
+        if "allow_tools" in overlay:
+            overlay["allow_tools"] = [
+                name for name in overlay["allow_tools"]
+                if name not in {"previous_user", "previous_session"}
+            ]
+        config._dump_yaml_round_trip(path, overlay)
+    base = rail.base_rail if smart else rail
+    snapshot = base.get_permission_snapshot(session_id="session-a")
+    assert "previous_user" not in snapshot["tools"]
+    assert "previous_session" not in snapshot["tools"]
+
+
+@pytest.mark.parametrize("smart", [False, True])
+@pytest.mark.parametrize("failure", [
+    "user_invalid", "session_invalid", "user_unreadable", "session_unreadable",
+    "lock", "compose", "update",
+])
+def test_adapter_reload_failure_preserves_global_and_installed_denies(
+    storage, tmp_path, monkeypatch, smart, failure,
+):
+    from unittest.mock import Mock
+    from jiuwenswarm.agents.harness.common.rails.permissions import permission_compose
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    policy, _ = storage
+    policy["mode"] = "auto" if smart else "manual"
+    policy["tools"]["blocked_tool"] = "deny"
+    paths = (layers.user_permissions_path(), layers.session_permissions_path("session-a"))
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        config._dump_yaml_round_trip(path, {"tools": {"overlay_blocked": "deny"}})
+    originals = {path: path.read_bytes() for path in paths}
+    rail = build(policy, tmp_path, "session-a", smart)
+    base = rail.base_rail if smart else rail
+    installed = base.installed_permission_config()
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter.mark_as_session_scoped("session-a")
+    adapter._permission_rail = rail
+    desired = deepcopy(policy)
+    desired["tools"]["blocked_tool"] = "allow"
+    try:
+        with monkeypatch.context() as patch:
+            if failure.endswith("invalid"):
+                paths[int(failure.startswith("session"))].write_text("tools: [broken")
+            elif failure.endswith("unreadable"):
+                unreadable = paths[int(failure.startswith("session"))]
+                read = config._load_yaml_round_trip
+
+                def fail_read(path):
+                    if path == unreadable:
+                        raise PermissionError("unreadable_overlay")
+                    return read(path)
+
+                patch.setattr(config, "_load_yaml_round_trip", fail_read)
+            else:
+                target, attribute = {
+                    "lock": (layers, "permission_storage_lock"),
+                    "compose": (permission_compose, "compose_host_effective_permissions"),
+                    "update": (base, "update_config"),
+                }[failure]
+                patch.setattr(target, attribute, Mock(side_effect=RuntimeError(failure)))
+            with pytest.raises(Exception):
+                adapter._update_permission_rail({"permissions": desired})
+            assert base.installed_permission_config() == installed
+            if smart:
+                token = TOOL_PERMISSION_CONTEXT.set(PermissionContext(group_digital_avatar=True))
+                try:
+                    assert base.get_permission_snapshot()["tools"]["blocked_tool"] == "deny"
+                finally:
+                    TOOL_PERMISSION_CONTEXT.reset(token)
+    finally:
+        for path, content in originals.items():
+            path.write_bytes(content)
+    current = base.get_permission_snapshot(session_id="session-a")
+    assert current["tools"]["blocked_tool"] == "deny"
+    assert current["tools"]["overlay_blocked"] == "deny"
