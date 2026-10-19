@@ -1932,6 +1932,12 @@ class WebChannel(BaseWsChannel):
         _explicit_session_id = params.get("session_id")
         has_explicit_session = _explicit_session_id is not None and _explicit_session_id != ""
         try:
+            if method in {"chat.send", "chat.resume"} and "group_id" in params:
+                group_id = validate_session_id(params["group_id"])
+                if has_explicit_session and _explicit_session_id != group_id:
+                    raise InvalidProtocolId("group_id and session_id must match")
+                _explicit_session_id = group_id
+                has_explicit_session = True
             session_id = (
                 validate_session_id(_explicit_session_id)
                 if has_explicit_session

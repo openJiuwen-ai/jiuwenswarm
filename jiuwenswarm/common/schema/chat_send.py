@@ -48,8 +48,18 @@ class ChatSendParams(TypedDict, total=False):
     """
 
     content: str
-    group_members: list[dict]
     """用户消息正文（主字段）。保留 /skill 等标记原样，不剥离。"""
+
+    group_id: NotRequired[str]
+    """Managed group ID; the server resolves the session after checking ownership.
+
+    Group clients can omit session_id. If both IDs are supplied, they must match.
+    """
+
+    group_members: list[dict]
+
+    intent: NotRequired[Literal["chat", "task"]]
+    """Group input intent. Mentions alone do not create executions."""
 
     message: NotRequired[str]
     """创建/修改 Skill 等场景的约定字段，与 content 等价。"""

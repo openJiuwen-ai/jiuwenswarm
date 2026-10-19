@@ -140,10 +140,10 @@ async def test_create_retry_conflict_and_invalid_definition(service):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["expert", "expert_team"])
+@pytest.mark.parametrize("kind", ["agent_template", "agent_group"])
 async def test_add_offline_and_restore_compiled_capabilities(service, kind):
     group = await create(service)
-    member = dict(kind=kind, definition_id="group", member_name="research")
+    member = dict(kind=kind, id="group", member_name="research")
     args = dict(user_id="owner", channel_id="web", request_id="add-1")
     result = await service.add_member(group["group_id"], {"member": member}, **args)
     assert result["event_type"] == "group.member.added"
@@ -161,7 +161,7 @@ async def test_add_offline_and_restore_compiled_capabilities(service, kind):
             for t in compiled["template"]["tools"]
             if t["type"] == "swarm.group_run_team"
         ]
-    ) == (kind == "expert_team")
+    ) == (kind == "agent_group")
     rail = GroupMemberTemplateRail(
         SimpleNamespace(session_id=group["group_id"], member_name="research"), set()
     )
@@ -213,7 +213,7 @@ async def test_live_add_registers_and_notifies_once_without_mutating_spec(servic
     group = await create(service)
     backend = live_backend()
     service.backend_resolver.return_value = backend
-    member = dict(kind="expert_team", definition_id="group", member_name="research")
+    member = dict(kind="agent_group", id="group", member_name="research")
     original = backend.group_chat_spec
     for _ in range(2):
         await service.add_member(
@@ -245,7 +245,7 @@ async def test_proxy_template_binds_real_run_team_tool_before_first_model_call(s
         group["group_id"],
         {
             "member": dict(
-                kind="expert_team", definition_id="group", member_name="research"
+                kind="agent_group", id="group", member_name="research"
             )
         },
         user_id="owner",
@@ -273,7 +273,7 @@ async def test_failed_live_registration_can_be_repaired_with_same_request(servic
     ]
     service.backend_resolver.return_value = backend
     params = {
-        "member": dict(kind="expert", definition_id="one", member_name="research")
+        "member": dict(kind="agent_template", id="one", member_name="research")
     }
     with pytest.raises(gs.GroupError, match="transient"):
         await service.add_member(
@@ -302,7 +302,7 @@ async def test_parallel_additions_do_not_lose_roster_entries(service):
     async def add(name):
         return await service.add_member(
             group["group_id"],
-            {"member": dict(kind="expert", definition_id="one", member_name=name)},
+            {"member": dict(kind="agent_template", id="one", member_name=name)},
             user_id="owner",
             channel_id="web",
             request_id=name,
@@ -334,7 +334,7 @@ async def test_cli_expert_keeps_runtime_config_and_rejects_unsafe_live_upgrade(
         packages, "resolve_agent_template_dir", lambda _: manifest_path.parent
     )
     group = await create(service)
-    member = dict(kind="expert", definition_id="cli-expert", member_name="coding")
+    member = dict(kind="agent_template", id="cli-expert", member_name="coding")
     backend = live_backend()
     backend.external_cli_config = Mock(return_value=None)
     service.backend_resolver.return_value = backend
@@ -390,7 +390,7 @@ async def test_added_proxy_can_be_mentioned_in_real_group_database(service):
             group["group_id"],
             {
                 "member": dict(
-                    kind="expert_team", definition_id="group", member_name="research"
+                    kind="agent_group", id="group", member_name="research"
                 )
             },
             user_id="owner",
@@ -507,3 +507,104 @@ async def test_corrupt_group_does_not_break_group_list(service):
 async def test_invalid_group_ids_cannot_access_files(service, group_id):
     with pytest.raises(ValueError):
         service.get(group_id, user_id="owner", channel_id="web")
+
+
+@pytest.mark.asyncio
+async def test_group_creation_marks_persistent_session_type(service):
+    await create(service)
+    assert gs.update_session_metadata.call_args.kwargs["conversation_type"] == "group_chat"
+
+
+@pytest.mark.asyncio
+async def test_create_ignores_model_project_and_reads_legacy_member_id(service):
+    member = dict(kind="agent_template", id="one", member_name="advisor")
+    group = await create(
+        service,
+        members=[member],
+        model_name="ignored-model",
+        project_id="ignored-project",
+        project_dir="/ignored-project",
+    )
+    provision_input = service.runtime.prepare_session_create.await_args.args[0]
+    assert provision_input.model_name == ""
+    assert provision_input.project_id == ""
+    assert provision_input.project_dir == ""
+    assert group["members"] == [member]
+
+    path = gs.group_path(group["group_id"])
+    state = json.loads(path.read_text(encoding="utf-8"))
+    legacy_member = dict(kind="expert", definition_id="one", member_name="advisor")
+    state["members"] = [legacy_member]
+    state["receipts"] = {"add-one": legacy_member}
+    path.write_text(json.dumps(state), encoding="utf-8")
+    restored = gs.read_group(group["group_id"])
+    assert restored["members"] == [member]
+    assert restored["receipts"]["add-one"] == member
+    assert await create(service, members=[member]) == group
+
+
+@pytest.mark.asyncio
+async def test_create_configs_persist_and_participate_in_retry(service):
+    configs = {"feature": True, "options": {"labels": ["one"]}}
+    group = await create(service, configs=configs)
+    assert group["configs"] == configs
+    assert await create(service, configs=configs) == group
+    assert service.get(group["group_id"], user_id="owner", channel_id="web")["configs"] == configs
+    page = service.list({}, user_id="owner", channel_id="web")
+    assert page["groups"][0]["configs"] == configs
+    configs["options"]["labels"].append("two")
+    assert gs.read_group(group["group_id"])["configs"]["options"]["labels"] == ["one"]
+    with pytest.raises(gs.GroupError, match="different group"):
+        await create(service, configs=configs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configs", [None, [], "invalid", 1])
+async def test_create_rejects_non_object_configs(service, configs):
+    with pytest.raises(gs.GroupError, match="configs must be an object"):
+        await create(service, configs=configs)
+    service.runtime.prepare_session_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_group_defaults_configs_to_empty(service):
+    group = await create(service)
+    assert group["configs"] == {}
+    path = gs.group_path(group["group_id"])
+    state = json.loads(path.read_text(encoding="utf-8"))
+    del state["configs"]
+    del state["avatar"]
+    path.write_text(json.dumps(state), encoding="utf-8")
+    assert service.get(group["group_id"], user_id="owner", channel_id="web")["configs"] == {}
+    assert await create(service) == group
+
+
+@pytest.mark.asyncio
+async def test_group_avatar_create_update_clear_and_retry(service):
+    avatar = "https://example.com/avatar.png"
+    group = await create(service, avatar=avatar)
+    assert group["avatar"] == avatar
+    assert await create(service, avatar=avatar) == group
+    with pytest.raises(gs.GroupError, match="different group"):
+        await create(service, avatar="https://example.com/other.png")
+    assert service.list({}, user_id="owner", channel_id="web")["groups"][0]["avatar"] == avatar
+    updated = await service.update(
+        group["group_id"], {"avatar": "https://example.com/new.png"}, user_id="owner", channel_id="web"
+    )
+    assert updated["avatar"] == "https://example.com/new.png"
+    cleared = await service.update(
+        group["group_id"], {"avatar": ""}, user_id="owner", channel_id="web"
+    )
+    assert cleared["avatar"] == ""
+    assert service.get(group["group_id"], user_id="owner", channel_id="web")["avatar"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("avatar", [None, [], 42, "x" * 4097])
+async def test_group_rejects_invalid_avatar(service, avatar):
+    with pytest.raises(gs.GroupError, match="invalid avatar"):
+        await create(service, avatar=avatar)
+    group = await create(service)
+    with pytest.raises(gs.GroupError, match="invalid avatar"):
+        await service.update(group["group_id"], {"avatar": avatar}, user_id="owner", channel_id="web")
+    assert service.get(group["group_id"], user_id="owner", channel_id="web")["avatar"] == ""
