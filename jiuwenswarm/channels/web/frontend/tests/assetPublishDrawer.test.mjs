@@ -374,6 +374,15 @@ test('unconfirmed submissions keep their local variant and waiting icon', async 
   const status = find('asset-publish-record-status');
   assert.equal(status.textContent, 'Submission result unconfirmed');
   assert.equal(status.dataset.variant, 'unconfirmed');
+  // #4749: an unverified outcome must not lock the asset; the drawer keeps an exit.
+  const entry = find('asset-publish-new-version');
+  assert.ok(entry);
+  assert.equal(entry.disabled, false);
+  assert.equal(find('asset-publish-record').disabled, false);
+  await act(async () => entry.click());
+  await tick();
+  assert.equal(find('asset-publish-result'), null);
+  assert.ok(find('asset-publish-form'));
   await act(async () => find('asset-publish-close').click());
 });
 test('OAuth restore contains metadata and does not auto prepare or commit', async () => {
