@@ -10,7 +10,7 @@ end-to-end:
   failure semantics (branch failure → None → downstream gated off);
 * ``options.agent_template`` (F15 §13) — every agent() call carries the
   node's AgentGroup member template reference, the engine option whitelist
-  accepts it against ``DesignerWorkerBackend.KNOWN_OPTIONS`` and rejects it
+  accepts it against ``TeamWorkerBackend.KNOWN_OPTIONS`` and rejects it
   against a bare backend;
 * version-in-phase regression — the node version still rides ``phase="v{n}"``
   and frozen nodes contribute literals (no agent call).
@@ -24,8 +24,11 @@ from pathlib import Path
 
 import pytest
 
+from openjiuwen.agent_teams.workflow.backends.team_worker_backend import (
+    TeamWorkerBackend,
+)
+
 from jiuwenswarm.server.runtime.design.graph_compiler import GraphScriptCompiler
-from jiuwenswarm.server.runtime.design.worker_backend import DesignerWorkerBackend
 
 
 def _chain_graph():
@@ -171,7 +174,7 @@ def test_frozen_literal_falls_back_to_stored_text(tmp_path: Path):
 
 
 class _RT:
-    backend = DesignerWorkerBackend.__new__(DesignerWorkerBackend)
+    backend = TeamWorkerBackend.__new__(TeamWorkerBackend)
 
 
 class _BareRT:

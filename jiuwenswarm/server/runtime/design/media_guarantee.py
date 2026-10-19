@@ -46,10 +46,9 @@ class _MediaGuaranteeDeclined(Exception):
 class MediaGuaranteeBackend:
     """Delegating worker backend that re-arms the old host guarantees per node.
 
-    Wraps the engine-facing backend (``TeamWorkerBackend`` or the fallback
-    ``DesignerWorkerBackend``): every attribute forwards to the inner backend
-    except ``run``, which dispatches handler nodes directly and enforces the
-    guarantees after agent worker turns.
+    Wraps the engine-facing backend (``TeamWorkerBackend``): every attribute
+    forwards to the inner backend except ``run``, which dispatches handler
+    nodes directly and enforces the guarantees after agent worker turns.
     """
 
     def __init__(
