@@ -65,7 +65,7 @@ def test_group_parameters_and_member_overrides_survive_compilation(moa_config):
 
 
 @pytest.mark.parametrize("jev_enabled", [False, True])
-def test_single_enabled_member_uses_its_model_without_moa(moa_config, jev_enabled):
+def test_single_enabled_member_uses_its_model_without_moa(moa_config, jev_enabled, monkeypatch):
     from openjiuwen.core.single_agent import AgentCard
 
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
@@ -75,7 +75,11 @@ def test_single_enabled_member_uses_its_model_without_moa(moa_config, jev_enable
     group["routes"][2]["enabled"] = False
     moa_config["experimental"]["multi_model_collaboration"]["jev_enabled"] = jev_enabled
     if jev_enabled:
-        moa_config["experimental"]["multi_model_collaboration"]["jev"] = {"api_key": "test-jev-key"}
+        moa_config["experimental"]["multi_model_collaboration"]["jev"] = {"api_key": "encrypted-jev-key"}
+        monkeypatch.setattr(
+            "jiuwenswarm.common.config.get_crypto_provider",
+            lambda: SimpleNamespace(decrypt=lambda _: "test-jev-key"),
+        )
 
     runtime = build_moa_runtime(moa_config, SELECTION)
     assert runtime.model_name == "model-b"
