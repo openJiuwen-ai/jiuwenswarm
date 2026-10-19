@@ -42,8 +42,10 @@ class DesignEventBridge:
       layer's only write channel): the design layer listens and persists each
       node's output to the Store the moment it exists (the old executor's
       per-node writeback contract — a crash/cancel never loses a completed
-      node). Single-node triggers land in ``candidate_*``; full/cascade
-      triggers overwrite ``text``/``history``/refs directly.
+      node). Every trigger type (single / full / cascade) writes the same
+      slots: the previous current output is archived into ``history`` (the
+      old-version log) and then ``text``/``output_ref``/``output_refs`` are
+      overwritten atomically — there is no candidate stage anymore.
 
     Both mutations forward to the caller's ``on_update`` so the gateway
     adapter pushes ``DESIGNER_RUN_UPDATED`` / ``DESIGNER_NODE_UPDATED`` with
@@ -56,13 +58,11 @@ class DesignEventBridge:
         on_update: Callable[..., None] | None,
         *,
         store: Any = None,
-        single: bool = False,
         graph: dict[str, Any] | None = None,
     ) -> None:
         self._run = run
         self._on_update = on_update
         self._store = store
-        self._single = single
         # Node metadata (label/pipeline) for the node-opening activity pair.
         self._graph = graph if isinstance(graph, dict) else {}
         # This trigger's node results, keyed by node id (the media guarantee
@@ -72,16 +72,18 @@ class DesignEventBridge:
         # error only says no receipt arrived; this keeps the cause.
         self._member_errors: dict[str, str] = {}
 
-    @property
-    def single(self) -> bool:
-        """Whether this trigger parks submits in candidate_* (single node)."""
-        return self._single
-
     # ------------------------------------------------------------------
     # swarmflow-layer event: a node's result exists
     # ------------------------------------------------------------------
     def on_node_result(self, node_id: str, produced: dict[str, Any]) -> None:
-        """Persist one node's result (per-node Store writeback)."""
+        """Persist one node's result (per-node Store writeback).
+
+        Old-version log: the node's CURRENT output is archived into
+        ``history`` before the overwrite, so ``history[-1]`` is always the
+        true previous version. A single-artifact submit also lands in
+        ``output_refs`` — list-first downstream readers must never see a
+        stale set from an earlier version.
+        """
         state = (self._run.setdefault("node_states", {}).setdefault(
             node_id, {"status": "pending", "started_at": None, "completed_at": None}
         ))
@@ -89,26 +91,24 @@ class DesignEventBridge:
         state["completed_at"] = _now_ms()
         self._produced[node_id] = dict(produced)
         text = str(produced.get("text") or "")
-        if self._single:
-            # Revision candidate: the node's current output stays untouched
-            # until choose_output promotes it.
-            if text:
-                state["candidate_text"] = text
-            if produced.get("output_ref"):
-                state["candidate_output_ref"] = produced["output_ref"]
-            if produced.get("output_refs"):
-                state["candidate_output_refs"] = produced["output_refs"]
-        else:
-            if text:
-                entry: dict[str, Any] = {"ts": _now_ms(), "text": text}
-                if produced.get("output_ref"):
-                    entry["output_ref"] = produced["output_ref"]
+        ref = produced.get("output_ref")
+        refs = produced.get("output_refs")
+        if text or ref or refs:
+            old_text = state.get("text")
+            old_ref = state.get("output_ref")
+            if old_text or old_ref:
+                entry: dict[str, Any] = {"ts": _now_ms(), "text": str(old_text or "")}
+                if old_ref:
+                    entry["output_ref"] = old_ref
                 state.setdefault("history", []).append(entry)
+            if text:
                 state["text"] = text
-            if produced.get("output_ref"):
-                state["output_ref"] = produced["output_ref"]
-            if produced.get("output_refs"):
-                state["output_refs"] = produced["output_refs"]
+            if ref:
+                state["output_ref"] = ref
+                if not refs:
+                    refs = [ref]
+            if refs:
+                state["output_refs"] = list(refs)
         self._persist_run()
         self._push(node_id)
 

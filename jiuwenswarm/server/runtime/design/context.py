@@ -106,7 +106,7 @@ class StoreNodeSpawner:
         graph = self._store.get_graph(self._graph_id)
         result = await coordinator.start(graph, node_ids=[node_id])
         state = (result.get("node_states") or {}).get(node_id) or {}
-        return str(state.get("candidate_text") or state.get("text") or state.get("error") or "")
+        return str(state.get("text") or state.get("error") or "")
 
     async def run_graph(
         self,

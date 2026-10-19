@@ -144,12 +144,10 @@ class MediaGuaranteeBackend:
         if node is None:
             return
         state = (self._run.get("node_states") or {}).get(node_id) or {}
-        # Single-node triggers park the worker's submit in candidate_* fields
-        # (choose_output promotes later); reading output_ref there would look
-        # "media missing" and re-materialize over the worker's real
-        # submission.
-        ref_field = "candidate_output_ref" if self._bridge.single else "output_ref"
-        refs_field = "candidate_output_refs" if self._bridge.single else "output_refs"
+        # The node-result sink has already written this trigger's product
+        # into the node's current slots (single triggers write the same
+        # slots as full runs), so the state reads below see this trigger's
+        # fresh refs, not an earlier version's.
         if member_call:
             # Member nodes write their product through submit_node_output; only
             # THIS trigger's write counts (state may still hold an older
@@ -163,11 +161,9 @@ class MediaGuaranteeBackend:
             )
         else:
             agent_result = NodeResult(
-                output_ref=state.get(ref_field),
-                output_refs=state.get(refs_field),
-                message=str(
-                    result.text or state.get("text") or state.get("candidate_text") or ""
-                ),
+                output_ref=state.get("output_ref"),
+                output_refs=state.get("output_refs"),
+                message=str(result.text or state.get("text") or ""),
             )
         ctx = NodeExecutionContext(
             graph=self._graph,
@@ -198,7 +194,7 @@ class MediaGuaranteeBackend:
 
         # Text guarantee: text landed but no product ref → write it to the
         # workspace so the canvas cell has a uri (old node_complete contract).
-        if not state.get(ref_field) and str(agent_result.message or "").strip():
+        if not state.get("output_ref") and str(agent_result.message or "").strip():
             self._write_text_result(node_id, agent_result.message)
 
     async def _materialize_media(
