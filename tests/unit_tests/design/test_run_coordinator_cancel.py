@@ -103,7 +103,7 @@ async def test_refused_rerun_writes_failed_instead_of_staying_running():
     re-seeded the same zombie.
     """
     store = _Store(_failed_run())
-    coordinator = RunCoordinator(store, "g_refused", spawner=None)
+    coordinator = RunCoordinator(store, "g_refused")
     updates: list[dict[str, Any]] = []
 
     result = await coordinator.start(
