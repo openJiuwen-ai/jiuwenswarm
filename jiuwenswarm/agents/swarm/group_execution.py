@@ -129,7 +129,8 @@ class GroupTaskPolicyRail(DeepAgentRail):
         from openjiuwen.core.foundation.llm import ToolMessage
 
         error = (
-            "An execution is active. Use submit_group_task_result for the final result; progress stays in the execution card."
+            "An execution is active. Use submit_group_task_result for the final result; "
+            "progress stays in the execution card."
         )
         call = ctx.inputs.tool_call
         ctx.extra["_skip_tool"] = True

@@ -335,7 +335,12 @@ class GroupExecutions:
 
 
 def public_execution(record: dict) -> dict:
-    return {key: value for key, value in record.items() if key not in {"request_key", "request_members", "run_key", "owner"}}
+    internal_fields = {"request_key", "request_members", "run_key", "owner"}
+    result = {}
+    for key, value in record.items():
+        if key not in internal_fields:
+            result[key] = value
+    return result
 
 
 def hide_group_internal_event(session_id: str, event: dict) -> bool:
