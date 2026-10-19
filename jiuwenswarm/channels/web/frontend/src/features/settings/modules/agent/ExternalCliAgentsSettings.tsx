@@ -89,7 +89,6 @@ function ExternalCliSettings({
   );
   const [savedValues, setSavedValues] = useState(sourceValues);
   const [draftValues, setDraftValues] = useState(restoredDraftValues);
-  const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   // Latest CLI detect results, held at the App layer (via services) so they
   // survive unmounting the Settings page; the save flow pre-validates them to
@@ -117,7 +116,11 @@ function ExternalCliSettings({
   }, [autoSavedAgents]);
   // Installs are per-agent: only the installing agent's card is disabled (the
   // section disables it), so the other agent stays installable in parallel.
-  const disabled = inheritedDisabled || saving || !isConnected;
+  // Card-level saves do not lock the panel either: the saving card shows its
+  // own busy state, and concurrent saves only ever merge their own keys into
+  // savedValues functionally (persistUpdates), so they cannot clobber each
+  // other and no global lock is needed.
+  const disabled = inheritedDisabled || !isConnected;
   useUnsavedChanges('external-cli', changed);
 
   useEffect(() => {
@@ -185,13 +188,9 @@ function ExternalCliSettings({
       (agent) => externalCliInstallStatuses?.[agent]?.status === 'succeeded',
     );
     if (!succeeded.length) return;
-    // Saving is armed once and released only after every replay settles, so a
-    // fast first save cannot unlock the form while later ones are still running.
-    setSaving(true);
     setSaveError('');
     void (async () => {
-      try {
-        await Promise.allSettled(
+      await Promise.allSettled(
           succeeded.map(async (agent) => {
             const pending = consumed[agent];
             const clearPending = (choice: ExternalCliPendingChoice) => {
@@ -248,9 +247,6 @@ function ExternalCliSettings({
             }
           }),
         );
-      } finally {
-        setSaving(false);
-      }
     })();
   }, [externalCliInstallStatuses, onConfigPatch, onDetectExternalCli, onSave, pendingChoices, savedValues, setDetectResults, setPendingChoices, t]);
 
@@ -270,76 +266,73 @@ function ExternalCliSettings({
         const validation = externalCliSaveValidationMessage(agent, effectiveDrafts, detectResults[agent], t);
         if (validation) throw new Error(validation);
       }
-      setSaving(true);
-      try {
-        const result = await onSave(updates);
-        const installs = externalCliDependencyInstalls(result);
-        const deferredAgents = EXTERNAL_CLI_AGENT_KINDS.filter(
-          (agent) => installs[agent]?.status === 'running',
-        );
-        // The backend skips persisting agents whose dependency is still
-        // installing. Keep the user's choices in the form (so the cards stay as
-        // chosen) and remember them for an automatic re-save once it succeeds.
-        if (deferredAgents.length) {
-          setPendingChoices?.((current) => {
-            const next: typeof current = { ...current };
-            for (const agent of deferredAgents) {
-              next[agent] = {
-                enabled: effectiveDrafts[externalCliKey(agent, 'enabled')] === 'true' ? 'true' : 'false',
-                useBuiltin: effectiveDrafts[externalCliKey(agent, 'use_builtin')] === 'true' ? 'true' : 'false',
-                cliPath: (effectiveDrafts[externalCliKey(agent, 'cli_path')] ?? '').trim(),
-              };
-            }
-            return next;
-          });
-        }
-        if (Object.keys(installs).length) onTrackExternalCliDependencyInstalls?.(installs);
-        // Deferred agents are not persisted yet: align savedValues and the config
-        // store with what the backend actually stored (agent disabled), while
-        // draftValues keeps the user's selection visible until the automatic
-        // re-save completes.
-        const nextSaved = { ...savedValues };
-        const configPatch: Record<string, string> = {};
-        for (const agent of deferredAgents) {
-          nextSaved[externalCliKey(agent, 'enabled')] = 'false';
-          nextSaved[externalCliKey(agent, 'use_builtin')] = 'false';
-          nextSaved[externalCliKey(agent, 'cli_path')] = '';
-          configPatch[externalCliKey(agent, 'enabled')] = 'false';
-          configPatch[externalCliKey(agent, 'use_builtin')] = 'false';
-          configPatch[externalCliKey(agent, 'cli_path')] = '';
-        }
-        // Non-deferred updates were persisted verbatim: keep savedValues,
-        // draftValues, and the config store in lockstep so `changed` clears.
-        const isDeferredKey = (key: string) =>
-          deferredAgents.some((agent) => key.startsWith(`external_cli_agent_${agent}_`));
-        for (const [key, value] of Object.entries(updates)) {
-          if (isDeferredKey(key)) continue;
-          nextSaved[key] = value;
-          configPatch[key] = value;
-        }
-        setSavedValues(nextSaved);
-        // draftValues keeps deferred agents' user selections; everything else
-        // mirrors what was persisted (including the values the atomic updater
-        // produced, e.g. the preserved mode/path on disable).
-        setDraftValues((current) => {
-          const next = { ...current };
-          for (const [key, value] of Object.entries(updates)) {
-            if (isDeferredKey(key)) continue;
-            next[key] = value;
+      const result = await onSave(updates);
+      const installs = externalCliDependencyInstalls(result);
+      const deferredAgents = EXTERNAL_CLI_AGENT_KINDS.filter(
+        (agent) => installs[agent]?.status === 'running',
+      );
+      // The backend skips persisting agents whose dependency is still
+      // installing. Keep the user's choices in the form (so the cards stay as
+      // chosen) and remember them for an automatic re-save once it succeeds.
+      if (deferredAgents.length) {
+        setPendingChoices?.((current) => {
+          const next: typeof current = { ...current };
+          for (const agent of deferredAgents) {
+            next[agent] = {
+              enabled: effectiveDrafts[externalCliKey(agent, 'enabled')] === 'true' ? 'true' : 'false',
+              useBuiltin: effectiveDrafts[externalCliKey(agent, 'use_builtin')] === 'true' ? 'true' : 'false',
+              cliPath: (effectiveDrafts[externalCliKey(agent, 'cli_path')] ?? '').trim(),
+            };
           }
           return next;
         });
-        if (Object.keys(configPatch).length) onConfigPatch(configPatch);
-      } finally {
-        setSaving(false);
       }
+      if (Object.keys(installs).length) onTrackExternalCliDependencyInstalls?.(installs);
+      // Deferred agents are not persisted yet: align savedValues and the config
+      // store with what the backend actually stored (agent disabled), while
+      // draftValues keeps the user's selection visible until the automatic
+      // re-save completes.
+      const savedPatch: Record<string, string> = {};
+      const configPatch: Record<string, string> = {};
+      for (const agent of deferredAgents) {
+        savedPatch[externalCliKey(agent, 'enabled')] = 'false';
+        savedPatch[externalCliKey(agent, 'use_builtin')] = 'false';
+        savedPatch[externalCliKey(agent, 'cli_path')] = '';
+        configPatch[externalCliKey(agent, 'enabled')] = 'false';
+        configPatch[externalCliKey(agent, 'use_builtin')] = 'false';
+        configPatch[externalCliKey(agent, 'cli_path')] = '';
+      }
+      // Non-deferred updates were persisted verbatim: keep savedValues,
+      // draftValues, and the config store in lockstep so `changed` clears.
+      const isDeferredKey = (key: string) =>
+        deferredAgents.some((agent) => key.startsWith(`external_cli_agent_${agent}_`));
+      for (const [key, value] of Object.entries(updates)) {
+        if (isDeferredKey(key)) continue;
+        savedPatch[key] = value;
+        configPatch[key] = value;
+      }
+      // Merge functionally: card-level saves run per agent and can overlap, so
+      // each settled save only adds its own keys on top of the latest state —
+      // spreading a captured snapshot would clobber the other agent's merge.
+      setSavedValues((current) => ({ ...current, ...savedPatch }));
+      // draftValues keeps deferred agents' user selections; everything else
+      // mirrors what was persisted (including the values the atomic updater
+      // produced, e.g. the preserved mode/path on disable).
+      setDraftValues((current) => {
+        const next = { ...current };
+        for (const [key, value] of Object.entries(updates)) {
+          if (isDeferredKey(key)) continue;
+          next[key] = value;
+        }
+        return next;
+      });
+      if (Object.keys(configPatch).length) onConfigPatch(configPatch);
     },
     [
       detectResults,
       onConfigPatch,
       onSave,
       onTrackExternalCliDependencyInstalls,
-      savedValues,
       setPendingChoices,
       t,
     ],
