@@ -16,18 +16,12 @@ export function getAvatarTone(name: string): string {
   return ['variant-1', 'variant-2', 'variant-3', 'variant-4', 'variant-5', 'variant-6'][seed % 6];
 }
 
-function GroupAvatar({
-  item,
-  size = 'card',
-}: {
-  item: Pick<AgentGroupCatalogItem, 'displayName' | 'avatarUrl'>;
-  size?: 'card' | 'detail';
-}) {
+function GroupAvatar({ item }: { item: Pick<AgentGroupCatalogItem, 'displayName' | 'avatarUrl'> }) {
   const [imageFailed, setImageFailed] = useState(false);
   const avatarUrl = item.avatarUrl && !imageFailed ? item.avatarUrl : null;
   return (
     <span
-      className={`agent-management-avatar agent-group-avatar agent-group-avatar--${size} agent-group-avatar--${getAvatarTone(item.displayName)}`}
+      className={`agent-management-avatar agent-group-avatar agent-group-avatar--detail agent-group-avatar--${getAvatarTone(item.displayName)}`}
       aria-hidden="true"
     >
       {avatarUrl ? (
@@ -45,7 +39,7 @@ export function GroupCard({ item, busy, onOpen, onUse, onInstall }: GroupCardPro
   const canInstall = !item.installed && item.capabilities.canInstall;
   const description = item.description || t('agentManagement.unknownDescription');
   const label = item.tags.length > 0 ? item.tags.map((tag) => tag.label) : undefined;
-  const avatar = <GroupAvatar item={item} />;
+  const avatar = { name: item.displayName, iconUrl: item.avatarUrl, testId: 'agent-management-group-card-avatar' };
   const defaultButton: PageCardDefaultButton | undefined = canUse
     ? {
         text: t('agentManagement.group.actions.use'),

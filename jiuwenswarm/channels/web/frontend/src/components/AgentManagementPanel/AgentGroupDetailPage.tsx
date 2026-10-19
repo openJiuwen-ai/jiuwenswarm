@@ -79,7 +79,7 @@ export function AgentGroupDetailPage({
             <>
               <EntityHeader
                 testId="agent-management-detail-header"
-                avatar={<GroupAvatar item={loadingSummary} size="detail" />}
+                avatar={<GroupAvatar item={loadingSummary} />}
                 title={loadingSummary.displayName}
                 titleTestId="agent-management-detail-name"
                 tags={[
@@ -147,7 +147,7 @@ export function AgentGroupDetailPage({
       <div className="detail-body flex-1 min-h-0 overflow-y-auto">
         <EntityHeader
           testId="agent-management-detail-header"
-          avatar={<GroupAvatar item={detail} size="detail" />}
+          avatar={<GroupAvatar item={detail} />}
           title={detail.displayName}
           titleTestId="agent-management-detail-name"
           tags={[

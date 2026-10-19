@@ -654,6 +654,11 @@ test('Expert Team cards and details reuse the Expert visual primitives', () => {
   );
   assert.match(groupCardSource, /import \{ PageCard, type PageCardDefaultButton \} from '\.\.\/ui';/);
   assert.match(groupCardSource, /className="agent-management-page-card agent-group-card"/);
+  assert.match(
+    groupCardSource,
+    /const avatar = \{ name: item\.displayName, iconUrl: item\.avatarUrl, testId: 'agent-management-group-card-avatar' \}/,
+  );
+  assert.doesNotMatch(groupCardSource, /<GroupAvatar/);
   assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
   assert.match(groupCardSource, /<PageCard[\s\S]*interactive/);
   assert.match(groupCardSource, /variant: 'use'[\s\S]*variant: 'install'/);
@@ -708,6 +713,10 @@ test('installed Expert Team cards offer use while uninstall stays in detail', as
     }),
   );
   const card = new JSDOM(markup).window.document;
+  const avatar = card.querySelector('[data-testid="agent-management-group-card-avatar"]');
+  assert.ok(avatar);
+  assert.equal(avatar.getAttribute('data-variant'), 'letter');
+  assert.equal(card.querySelector('.agent-group-avatar'), null);
   assert.equal(card.querySelectorAll('[data-testid="agent-group-card-action"]').length, 1);
   assert.equal(card.querySelector('[data-testid="agent-group-card-action"]').getAttribute('data-variant'), 'use');
   assert.equal(card.querySelector('[data-variant="uninstall"]'), null);
