@@ -27,6 +27,8 @@ DEFAULT_VERSION = "1.0.0"
 _PACKAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _IGNORED_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini", "__MACOSX"}
 _FIXED_ZIP_TIMESTAMP = (2026, 1, 1, 0, 0, 0)
+_MAX_DISCOVERY_ARCHIVE_COUNT = 256
+_MAX_ARCHIVE_NESTING_DEPTH = 4
 _MAX_ARCHIVE_FILE_COUNT = 10_000
 _MAX_ARCHIVE_SINGLE_FILE_BYTES = 64 * 1024 * 1024
 _MAX_ARCHIVE_TOTAL_BYTES = 512 * 1024 * 1024
@@ -34,6 +36,7 @@ _MAX_ARCHIVE_PATH_DEPTH = 32
 _EXTRACT_CHUNK_BYTES = 1024 * 1024
 _AVATAR_MAX_EDGE = 256
 _AVATAR_MAX_PIXELS = 16 * 1024 * 1024
+_AVATAR_MAX_SVG_BYTES = 512 * 1024
 _AVATAR_WEBP_QUALITY = 82
 _PLATFORM_TEXT_REPLACEMENTS = {
     "小艺 Work": "WorkSwarm",
@@ -50,6 +53,16 @@ class SourceGroup:
 
     path: Path
     source: str
+
+
+@dataclass
+class _DiscoveryBudget:
+    """Cumulative limits shared by every archive reached in one discovery."""
+
+    archive_count: int = 0
+    file_count: int = 0
+    declared_bytes: int = 0
+    extracted_bytes: int = 0
 
 
 def _read_json(path: Path, *, label: str) -> dict[str, Any]:
@@ -73,8 +86,17 @@ def _is_ignored_relative(path: PurePosixPath) -> bool:
     return any(part in _IGNORED_NAMES or part.startswith("._") for part in path.parts)
 
 
-def _safe_extract_zip(source: Path, destination: Path) -> None:
+def _safe_extract_zip(
+    source: Path,
+    destination: Path,
+    *,
+    budget: _DiscoveryBudget | None = None,
+    nesting_depth: int = 1,
+) -> None:
     """Extract a bounded ZIP without links, traversal, or metadata junk."""
+    if nesting_depth < 1 or nesting_depth > _MAX_ARCHIVE_NESTING_DEPTH:
+        raise ConversionError("archive nesting depth exceeds limit")
+    active_budget = budget or _DiscoveryBudget()
     try:
         archive = zipfile.ZipFile(source)
     except (OSError, zipfile.BadZipFile) as exc:
@@ -82,11 +104,14 @@ def _safe_extract_zip(source: Path, destination: Path) -> None:
     try:
         with archive:
             infos = archive.infolist()
-            if len(infos) > _MAX_ARCHIVE_FILE_COUNT:
+            active_budget.archive_count += 1
+            if active_budget.archive_count > _MAX_DISCOVERY_ARCHIVE_COUNT:
+                raise ConversionError("discovery contains too many archives")
+            active_budget.file_count += len(infos)
+            if active_budget.file_count > _MAX_ARCHIVE_FILE_COUNT:
                 raise ConversionError("archive contains too many files")
 
             validated: list[tuple[zipfile.ZipInfo, PurePosixPath]] = []
-            declared_total = 0
             for info in infos:
                 raw_name = (info.filename or "").replace("\\", "/")
                 if not raw_name:
@@ -119,12 +144,11 @@ def _safe_extract_zip(source: Path, destination: Path) -> None:
                         raise ConversionError(
                             f"archive member is too large: {info.filename}"
                         )
-                    declared_total += info.file_size
-                    if declared_total > _MAX_ARCHIVE_TOTAL_BYTES:
+                    active_budget.declared_bytes += info.file_size
+                    if active_budget.declared_bytes > _MAX_ARCHIVE_TOTAL_BYTES:
                         raise ConversionError("archive uncompressed size is too large")
                 validated.append((info, relative))
 
-            extracted_total = 0
             for info, relative in validated:
                 if _is_ignored_relative(relative):
                     continue
@@ -143,12 +167,12 @@ def _safe_extract_zip(source: Path, destination: Path) -> None:
                         if not chunk:
                             break
                         extracted_file += len(chunk)
-                        extracted_total += len(chunk)
+                        active_budget.extracted_bytes += len(chunk)
                         if extracted_file > _MAX_ARCHIVE_SINGLE_FILE_BYTES:
                             raise ConversionError(
                                 f"archive member is too large: {info.filename}"
                             )
-                        if extracted_total > _MAX_ARCHIVE_TOTAL_BYTES:
+                        if active_budget.extracted_bytes > _MAX_ARCHIVE_TOTAL_BYTES:
                             raise ConversionError(
                                 "archive uncompressed size is too large"
                             )
@@ -176,6 +200,8 @@ def _discover_path(
     workspace: Path,
     source_label: str,
     counter: list[int],
+    budget: _DiscoveryBudget,
+    archive_depth: int,
 ) -> list[SourceGroup]:
     if path.is_symlink():
         raise ConversionError(f"source symlink is not supported: {path}")
@@ -185,12 +211,20 @@ def _discover_path(
         counter[0] += 1
         extracted = workspace / f"archive-{counter[0]:04d}"
         extracted.mkdir()
-        _safe_extract_zip(path, extracted)
+        nested_depth = archive_depth + 1
+        _safe_extract_zip(
+            path,
+            extracted,
+            budget=budget,
+            nesting_depth=nested_depth,
+        )
         return _discover_path(
             extracted,
             workspace=workspace,
             source_label=f"{source_label}!{path.name}",
             counter=counter,
+            budget=budget,
+            archive_depth=nested_depth,
         )
     if not path.is_dir():
         raise ConversionError(f"input path does not exist: {path}")
@@ -208,6 +242,8 @@ def _discover_path(
                     workspace=workspace,
                     source_label=source_label,
                     counter=counter,
+                    budget=budget,
+                    archive_depth=archive_depth,
                 )
             )
     return groups
@@ -222,6 +258,7 @@ def discover_source_groups(
     workspace.mkdir(parents=True, exist_ok=True)
     groups: list[SourceGroup] = []
     counter = [0]
+    budget = _DiscoveryBudget()
     for raw_input in inputs:
         source = raw_input.expanduser().resolve()
         groups.extend(
@@ -230,6 +267,8 @@ def discover_source_groups(
                 workspace=workspace,
                 source_label=str(source),
                 counter=counter,
+                budget=budget,
+                archive_depth=0,
             )
         )
     by_id: dict[str, SourceGroup] = {}
@@ -424,6 +463,10 @@ def _materialize_avatar(
     if source.suffix.lower() == ".svg":
         target = destination_dir / "avatar.svg"
         source_bytes = source.stat().st_size
+        if source_bytes > _AVATAR_MAX_SVG_BYTES:
+            raise ConversionError(
+                f"SVG avatar exceeds byte budget: {source} ({source_bytes} bytes)"
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         if source.resolve() != target.resolve():
             shutil.copyfile(source, target)

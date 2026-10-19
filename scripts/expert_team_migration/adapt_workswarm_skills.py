@@ -30,6 +30,8 @@ README_ADAPTED_LINE = (
 PLATFORM_TEXT_REPLACEMENTS = {
     "小艺 Work": "WorkSwarm",
     "小艺侧模型路由": "原平台侧模型路由",
+    "mcp_free_search": "free_search",
+    "mcp_fetch_webpage": "fetch_webpage",
     "小艺不可用时明确说明，不使用第三方媒体降级。": (
         "WorkSwarm 媒体生成能力不可用时明确说明，不使用未配置的第三方服务降级。"
     ),
@@ -63,6 +65,8 @@ PORTABILITY_FORBIDDEN_TOKENS = (
     "/.openclaw/skills/",
     "小艺 Work",
     "小艺侧模型路由",
+    "mcp_free_search",
+    "mcp_fetch_webpage",
 )
 ADAPTABLE_TEXT_SUFFIXES = frozenset(
     {".json", ".md", ".rst", ".toml", ".txt", ".yaml", ".yml"}

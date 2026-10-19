@@ -13,6 +13,7 @@ import argparse
 import json
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -34,6 +35,92 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def _replace_directory(source: Path, destination: Path) -> None:
+    """Rename one directory within a filesystem.
+
+    Kept as a narrow seam so commit-failure rollback can be tested without
+    mocking package conversion or filesystem staging.
+    """
+    source.replace(destination)
+
+
+def _commit_output_directory(
+    candidate: Path,
+    destination: Path,
+) -> None:
+    """Install a complete candidate directory and restore the old one on failure."""
+    if not destination.exists():
+        try:
+            _replace_directory(candidate, destination)
+        except OSError as exc:
+            raise MigrationError(
+                f"failed to commit migrated AgentGroup directory: {exc}"
+            ) from exc
+        return
+
+    backup = destination.parent / (
+        f".{destination.name}.workswarm-backup-{uuid.uuid4().hex}"
+    )
+    try:
+        _replace_directory(destination, backup)
+        try:
+            _replace_directory(candidate, destination)
+        except OSError as commit_exc:
+            try:
+                _replace_directory(backup, destination)
+            except OSError as rollback_exc:
+                raise MigrationError(
+                    "failed to commit migrated AgentGroup directory and could not "
+                    f"restore the previous output; recovery copy remains at {backup}: "
+                    f"commit={commit_exc}; rollback={rollback_exc}"
+                ) from commit_exc
+            raise MigrationError(
+                "failed to commit migrated AgentGroup directory; previous output "
+                f"was restored: {commit_exc}"
+            ) from commit_exc
+    except MigrationError:
+        raise
+    except OSError as exc:
+        raise MigrationError(
+            f"failed to prepare migrated AgentGroup directory commit: {exc}"
+        ) from exc
+
+    try:
+        shutil.rmtree(backup)
+    except OSError as exc:
+        raise MigrationError(
+            "migrated AgentGroup directory was committed, but the previous output "
+            f"could not be removed and remains at {backup}: {exc}"
+        ) from exc
+
+
+def _stage_output_directory(
+    *,
+    destination: Path,
+    candidate: Path,
+    pending_outputs: Sequence[tuple[Path, Path]],
+    report: dict[str, Any],
+) -> None:
+    """Build the complete next output directory without mutating destination."""
+    try:
+        if destination.exists():
+            if not destination.is_dir():
+                raise MigrationError(f"output path is not a directory: {destination}")
+            shutil.copytree(destination, candidate, symlinks=True)
+        else:
+            candidate.mkdir()
+
+        for staged_archive, final_archive in pending_outputs:
+            shutil.copyfile(staged_archive, candidate / final_archive.name)
+        _write_json(candidate / "migration-report.json", report)
+    except MigrationError:
+        raise
+    except OSError as exc:
+        raise MigrationError(
+            f"failed to stage migrated AgentGroup output directory: {exc}"
+        ) from exc
+
+
 def migrate_sources(
     inputs: Iterable[Path],
     *,
@@ -47,7 +134,12 @@ def migrate_sources(
     if not source_paths:
         raise MigrationError("at least one input path is required")
     destination = output_dir.expanduser().resolve()
-    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise MigrationError(
+            f"failed to create output parent directory: {exc}"
+        ) from exc
 
     with tempfile.TemporaryDirectory(prefix="workswarm_agent_group_migrate_") as raw:
         workspace = Path(raw)
@@ -93,23 +185,31 @@ def migrate_sources(
                 }
             )
 
-        # No destination ZIP is replaced until every package has passed both
-        # loader checks and Skill adaptation in the temporary workspace.
-        for staged_archive, final_archive in pending_outputs:
-            temporary_output = final_archive.with_suffix(".zip.tmp")
-            temporary_output.unlink(missing_ok=True)
-            shutil.copyfile(staged_archive, temporary_output)
-            temporary_output.replace(final_archive)
+        report = {
+            "schemaVersion": REPORT_SCHEMA_VERSION,
+            "version": version,
+            "inputCount": len(source_paths),
+            "groupCount": len(cases),
+            "runtimeValidated": validate_runtime,
+            "groups": cases,
+        }
 
-    report = {
-        "schemaVersion": REPORT_SCHEMA_VERSION,
-        "version": version,
-        "inputCount": len(source_paths),
-        "groupCount": len(cases),
-        "runtimeValidated": validate_runtime,
-        "groups": cases,
-    }
-    _write_json(destination / "migration-report.json", report)
+        # Build a complete candidate beside the destination so the final rename
+        # stays on one filesystem.  The destination is swapped only after every
+        # package and the report are ready; a failed swap restores the old tree.
+        with tempfile.TemporaryDirectory(
+            prefix=f".{destination.name}.workswarm-commit-",
+            dir=destination.parent,
+        ) as raw_commit:
+            candidate = Path(raw_commit) / "candidate"
+            _stage_output_directory(
+                destination=destination,
+                candidate=candidate,
+                pending_outputs=pending_outputs,
+                report=report,
+            )
+            _commit_output_directory(candidate, destination)
+
     return report
 
 

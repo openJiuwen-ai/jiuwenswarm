@@ -108,7 +108,7 @@ uv run python -m scripts.migrate_xiaoyi_agent_groups \
   --overwrite
 ```
 
-该命令在临时工作区依次执行“发现 → 结构转换 → Skill 适配 → develop loader 校验 → 确定性 ZIP”，只有 10 个包全部通过才替换输出 ZIP，并生成 `migration-report.json`。下面的分步命令主要用于定位问题。
+该命令在临时工作区依次执行“发现 → 结构转换 → Skill 适配 → develop loader 校验 → 确定性 ZIP”，只有 10 个包和 `migration-report.json` 全部准备完成后，才通过同一文件系统上的目录级切换更新整个输出目录；切换失败会恢复旧目录，避免留下新旧混合的交付物。下面的分步命令主要用于定位问题。
 
 ### 5.2 仅批量转换两类源包
 

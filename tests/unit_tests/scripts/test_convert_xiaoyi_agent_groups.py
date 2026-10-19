@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import zipfile
 from pathlib import Path
@@ -114,6 +115,13 @@ def _zip_tree(source: Path, output: Path, *, include_root: bool) -> None:
             if path.is_file():
                 relative = path.relative_to(source.parent if include_root else source)
                 archive.write(path, relative.as_posix())
+
+
+def _zip_payload(member_name: str, payload: bytes) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr(member_name, payload)
+    return output.getvalue()
 
 
 def test_converts_nested_and_direct_deliveries_to_workswarm_packages(
@@ -284,6 +292,24 @@ def test_preserves_supported_svg_avatars(tmp_path: Path) -> None:
     load_agent_group_package_bundle(package_root)
 
 
+def test_rejects_oversized_svg_avatar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "avatar.svg"
+    source.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(converter, "_AVATAR_MAX_SVG_BYTES", source.stat().st_size - 1)
+
+    with pytest.raises(
+        converter.ConversionError, match="SVG avatar exceeds byte budget"
+    ):
+        converter._materialize_avatar(source, destination_dir=tmp_path / "output")
+    assert not (tmp_path / "output" / "avatar.svg").exists()
+
+
 def test_avatar_pixel_budget_and_decompression_bomb_are_conversion_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -401,6 +427,56 @@ def test_safe_extract_rejects_single_total_and_path_depth_limits(
         archive.writestr("one/two/three.txt", "ok")
     with pytest.raises(converter.ConversionError, match="path is too deep"):
         converter._safe_extract_zip(deep, tmp_path / "deep-out")
+
+
+def test_nested_archives_share_archive_and_file_budgets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inner = _zip_payload("payload.txt", b"ok")
+    source = tmp_path / "outer.zip"
+    source.write_bytes(_zip_payload("inner.zip", inner))
+
+    monkeypatch.setattr(converter, "_MAX_DISCOVERY_ARCHIVE_COUNT", 1)
+    with pytest.raises(converter.ConversionError, match="too many archives"):
+        converter.discover_source_groups([source], workspace=tmp_path / "archive-limit")
+
+    monkeypatch.setattr(converter, "_MAX_DISCOVERY_ARCHIVE_COUNT", 256)
+    monkeypatch.setattr(converter, "_MAX_ARCHIVE_FILE_COUNT", 1)
+    with pytest.raises(converter.ConversionError, match="too many files"):
+        converter.discover_source_groups([source], workspace=tmp_path / "file-limit")
+
+
+def test_nested_archives_share_uncompressed_byte_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inner_payload = b"123456"
+    inner = _zip_payload("payload.txt", inner_payload)
+    source = tmp_path / "outer.zip"
+    source.write_bytes(_zip_payload("inner.zip", inner))
+    monkeypatch.setattr(
+        converter,
+        "_MAX_ARCHIVE_TOTAL_BYTES",
+        len(inner) + len(inner_payload) - 1,
+    )
+
+    with pytest.raises(converter.ConversionError, match="uncompressed size"):
+        converter.discover_source_groups([source], workspace=tmp_path / "byte-limit")
+
+
+def test_nested_archive_depth_is_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nested = _zip_payload("leaf.txt", b"ok")
+    nested = _zip_payload("level-2.zip", nested)
+    source = tmp_path / "level-1.zip"
+    source.write_bytes(nested)
+    monkeypatch.setattr(converter, "_MAX_ARCHIVE_NESTING_DEPTH", 1)
+
+    with pytest.raises(converter.ConversionError, match="nesting depth"):
+        converter.discover_source_groups([source], workspace=tmp_path / "depth-limit")
 
 
 def test_preserves_shared_skill_mapping_semantics(tmp_path: Path) -> None:

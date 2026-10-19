@@ -63,8 +63,8 @@ def test_mapping_uses_only_the_four_verified_native_capabilities() -> None:
         "video_generation",
     }
     assert replacements["web_research"]["native_tools"] == [
-        "mcp_free_search",
-        "mcp_fetch_webpage",
+        "free_search",
+        "fetch_webpage",
     ]
     assert replacements["image_understanding"]["native_tools"] == [
         "visual_question_answering"
@@ -216,13 +216,6 @@ def test_delivery_rewrite_removes_html_card_without_granting_member_delivery() -
 
 def test_native_tool_names_exist_in_current_develop_sources() -> None:
     expected_definitions = {
-        "mcp_free_search": (
-            REPO_ROOT
-            / "jiuwenswarm/agents/harness/common/tools/trusted_search_tool_adapter.py"
-        ),
-        "mcp_fetch_webpage": (
-            REPO_ROOT / "jiuwenswarm/agents/harness/common/tools/web_fetch_tools.py"
-        ),
         "visual_question_answering": (
             REPO_ROOT / "jiuwenswarm/agents/harness/common/tools/image_tools.py"
         ),
@@ -243,6 +236,20 @@ def test_native_tool_names_exist_in_current_develop_sources() -> None:
     for tool_name, source_path in expected_definitions.items():
         source = source_path.read_text(encoding="utf-8")
         assert f'name="{tool_name}"' in source
+
+
+def test_web_research_tools_match_team_runtime_whitelist() -> None:
+    from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
+        TOOL_WHITELIST,
+    )
+
+    web_tools = set(
+        _mapping()["capability_replacements"]["web_research"]["native_tools"]
+    )
+
+    assert web_tools == {"free_search", "fetch_webpage"}
+    assert web_tools <= TOOL_WHITELIST
+    assert {"mcp_free_search", "mcp_fetch_webpage"}.isdisjoint(web_tools)
 
 
 def test_shared_external_skills_are_retained_with_explicit_smoke_requirements() -> None:

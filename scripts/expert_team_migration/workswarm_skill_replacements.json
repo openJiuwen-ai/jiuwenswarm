@@ -168,19 +168,19 @@
       "portable_skill_id": "workswarm-web-research",
       "legacy_skill_ids": ["xiaoyi-web-search-win"],
       "strategy": "native_tools",
-      "native_tools": ["mcp_free_search", "mcp_fetch_webpage"],
+      "native_tools": ["free_search", "fetch_webpage"],
       "runtime_prerequisites": [
-        "Enable FREE_SEARCH_DDG_ENABLED or FREE_SEARCH_BING_ENABLED so mcp_free_search is registered.",
+        "Enable FREE_SEARCH_DDG_ENABLED or FREE_SEARCH_BING_ENABLED so free_search is registered in the Team runtime.",
         "Allow outbound HTTPS for result discovery and authoritative-page fetching.",
-        "Treat search snippets only as discovery hints; call mcp_fetch_webpage for claims that require source verification."
+        "Treat search snippets only as discovery hints; call fetch_webpage for claims that require source verification."
       ],
       "call_rewrites": [
         {
           "legacy": "Run xiaoyi-web-search-win/scripts/search.js through CLAW_NODE_EXE and the np://claw-skill proxy.",
-          "replacement": "Call mcp_free_search(query, max_results, timeout_seconds), then call mcp_fetch_webpage(url, max_chars, timeout_seconds) for selected primary sources."
+          "replacement": "Call free_search(query, max_results, timeout_seconds), then call fetch_webpage(url, max_chars, timeout_seconds) for selected primary sources."
         }
       ],
-      "persona_instruction": "Use mcp_free_search only when current external facts can change the answer. Treat its snippets as discovery evidence, fetch the selected authoritative page with mcp_fetch_webpage, retain source date and scope, and return a clearly marked partial result when search or fetch is unavailable.",
+      "persona_instruction": "Use free_search only when current external facts can change the answer. Treat its snippets as discovery evidence, fetch the selected authoritative page with fetch_webpage, retain source date and scope, and return a clearly marked partial result when search or fetch is unavailable.",
       "known_gaps": []
     },
     "image_understanding": {
@@ -258,7 +258,7 @@
       "action": "replace_with_native_tools",
       "groups": ["home-cook", "home-design"],
       "also_referenced_by": ["travel", "personal-styling"],
-      "native_tools": ["mcp_free_search", "mcp_fetch_webpage"],
+      "native_tools": ["free_search", "fetch_webpage"],
       "remove_bundled_skill_directory": true
     },
     {

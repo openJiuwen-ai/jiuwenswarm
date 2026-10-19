@@ -218,7 +218,8 @@ def test_platform_specific_commands_and_paths_are_normalized(tmp_path: Path) -> 
         'openclaw cron add --name "autonomous-tasks" '
         '--message "run autonomous tasks" --every 1h\n'
         "/home/sirius/.openclaw/skills/natural-language-planner\n"
-        "不得继承小艺侧模型路由",
+        "不得继承小艺侧模型路由\n"
+        "Call mcp_free_search, then mcp_fetch_webpage.",
     )
 
     adapter.adapt_package(root, validate_runtime=False)
@@ -230,6 +231,9 @@ def test_platform_specific_commands_and_paths_are_normalized(tmp_path: Path) -> 
     assert "<SKILL_INSTALL_DIR>/natural-language-planner" in text
     assert "小艺侧模型路由" not in text
     assert "原平台侧模型路由" in text
+    assert "mcp_free_search" not in text
+    assert "mcp_fetch_webpage" not in text
+    assert "Call free_search, then fetch_webpage." in text
 
 
 @pytest.mark.parametrize(
