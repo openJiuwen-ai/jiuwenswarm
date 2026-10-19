@@ -93,7 +93,6 @@ export function OfficeDashboardPage({
   const tabs = [
     { value: 'members' as const, label: t('jiuwenmate.office.tabs.members') },
     { value: 'activity' as const, label: t('jiuwenmate.office.tabs.activity') },
-    { value: 'tasks' as const, label: t('jiuwenmate.office.tabs.tasks') },
   ];
 
   return (
