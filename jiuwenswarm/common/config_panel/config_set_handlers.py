@@ -78,6 +78,16 @@ from jiuwenswarm.common.config import (
     update_login_model_settings_in_config,
     validate_persisted_kv_cache_affinity,
 )
+from jiuwenswarm.common.config_panel.external_cli_read import (
+    EXTERNAL_CLI_AGENT_KEY_SUFFIXES,
+    EXTERNAL_CLI_AGENT_KINDS,
+    EXTERNAL_CLI_CUSTOM_AGENTS_KEY,
+    _uploaded_cli_path,
+    custom_agents_config_value,
+    external_cli_agent_key,
+    external_cli_agent_kinds,
+    flatten_external_cli_agents_for_config_panel,
+)
 from jiuwenswarm.common.config_panel.models_handlers import (
     ConfigPanelBadRequest,
     build_models_defaults_from_frontend,
@@ -402,9 +412,6 @@ EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
     "external_cli_agent_codex_use_builtin",
     "external_cli_agent_codex_cli_path",
 })
-EXTERNAL_CLI_AGENT_KINDS = ("claude", "codex")
-EXTERNAL_CLI_AGENT_KEY_SUFFIXES = ("enabled", "use_builtin", "cli_path")
-EXTERNAL_CLI_CUSTOM_AGENTS_KEY = "external_cli_custom_agents"
 DEFAULT_EXTERNAL_CLI_PUBLISH_HOST = "127.0.0.1"
 DEFAULT_EXTERNAL_CLI_PUBLISH_PORT = "19000"
 EXTERNAL_CLI_PUBLISH_PATH = "/ws"
@@ -593,13 +600,6 @@ def flatten_team_dispatch_for_config_panel(raw: dict[str, Any]) -> dict[str, str
     }
 
 
-def external_cli_agent_kinds() -> tuple[str, ...]:
-    """Return Claude, Codex and every installed custom agent."""
-    from jiuwenswarm.common.custom_agent_runtime import custom_agent_names
-
-    return (*EXTERNAL_CLI_AGENT_KINDS, *custom_agent_names())
-
-
 def custom_external_cli_config_keys() -> tuple[str, ...]:
     """Return the settings keys of the installed custom agents."""
     from jiuwenswarm.common.custom_agent_runtime import custom_agent_names
@@ -611,63 +611,9 @@ def custom_external_cli_config_keys() -> tuple[str, ...]:
     )
 
 
-def custom_agents_config_value() -> str:
-    """Describe the installed custom agents for the settings panel, as a JSON string.
-
-    Config values travel as strings; each item carries ``name`` / ``version`` /
-    ``summary`` / ``has_cli`` (whether a CLI executable was uploaded with it).
-    """
-    from jiuwenswarm.common.custom_agent_runtime import list_custom_agents
-
-    return json.dumps(
-        [
-            {"name": agent.name, "version": agent.version, "summary": agent.summary, "has_cli": bool(agent.cli_path)}
-            for agent in list_custom_agents()
-        ],
-        ensure_ascii=False,
-    )
-
-
 def is_external_cli_agent_config_key(key: str) -> bool:
     """Return whether ``key`` is a settings key of a built-in or custom agent."""
     return key in EXTERNAL_CLI_AGENT_CONFIG_KEYS or key in custom_external_cli_config_keys()
-
-
-def _uploaded_cli_path(cli_agent: str) -> str:
-    """Return the CLI executable uploaded with custom agent ``cli_agent``, if any."""
-    if cli_agent in EXTERNAL_CLI_AGENT_KINDS:
-        return ""
-    from jiuwenswarm.common.custom_agent_runtime import get_custom_agent
-
-    agent = get_custom_agent(cli_agent)
-    return agent.cli_path if agent is not None else ""
-
-
-def flatten_external_cli_agents_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
-    agents = get_nested_config_value(raw, EXTERNAL_CLI_AGENTS_CONFIG_PATH, [])
-    configured: dict[str, dict[str, str]] = {}
-    if isinstance(agents, list):
-        for item in agents:
-            if isinstance(item, str):
-                cli_agent = item.strip()
-                cli_path = ""
-            elif isinstance(item, dict):
-                cli_agent = str(item.get("cli_agent") or "").strip()
-                cli_path = str(item.get("cli_path") or item.get("codex_bin") or "").strip()
-            else:
-                continue
-            if cli_agent:
-                configured[cli_agent] = {"cli_path": cli_path}
-    flat: dict[str, str] = {}
-    for cli_agent in external_cli_agent_kinds():
-        entry = configured.get(cli_agent)
-        cli_path = entry.get("cli_path", "") if entry is not None else ""
-        # A custom agent running its uploaded CLI uses the "built-in CLI" choice.
-        builtin = entry is not None and cli_path in {"", _uploaded_cli_path(cli_agent)}
-        flat[external_cli_agent_key(cli_agent, "enabled")] = "true" if entry is not None else "false"
-        flat[external_cli_agent_key(cli_agent, "use_builtin")] = "true" if builtin else "false"
-        flat[external_cli_agent_key(cli_agent, "cli_path")] = "" if builtin else cli_path
-    return flat
 
 
 def parse_config_switch_bool(value: Any) -> bool:
@@ -1084,10 +1030,6 @@ def inject_external_cli_publish_url(params: dict[str, Any]) -> dict[str, Any]:
     if not changed:
         return params
     return {**params, "team": teams}
-
-
-def external_cli_agent_key(cli_agent: str, suffix: str) -> str:
-    return f"external_cli_agent_{cli_agent}_{suffix}"
 
 
 def external_cli_agent_effective_state(

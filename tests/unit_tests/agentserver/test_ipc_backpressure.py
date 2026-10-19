@@ -203,7 +203,7 @@ def _capture_logs(caplog):
 
 
 @asynccontextmanager
-async def _worker(mode, tmp_path, monkeypatch):
+async def _worker(mode, tmp_path, monkeypatch, *, max_restarts=0):
     fixture = Path(__file__).parent / "fixtures" / "diagnostic_worker.py"
     root = Path(__file__).resolve().parents[3]
     python_paths = [str(root)]
@@ -224,7 +224,7 @@ async def _worker(mode, tmp_path, monkeypatch):
         Readiness(),
         forwarder=EventForwarder(),
         socket_path=endpoint,
-        max_restarts=0,
+        max_restarts=max_restarts,
     )
     process = None
     try:
@@ -237,7 +237,7 @@ async def _worker(mode, tmp_path, monkeypatch):
         yield supervisor, process
     finally:
         try:
-            await asyncio.wait_for(supervisor.stop(terminate_worker=True), 15)
+            await asyncio.wait_for(supervisor.stop(terminate_worker=True), 35)
         finally:
             if process is not None and process.returncode is None:
                 await process.stop()
@@ -299,6 +299,7 @@ async def _traffic(supervisor, gateway, client, frames):
             sequence.append(wire["sequence"])
 
     request = _request(frames)
+    request.params["freeze"] = False
     received, _ = await asyncio.wait_for(
         asyncio.gather(
             receive(),
@@ -482,13 +483,16 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
                     json.loads(await asyncio.wait_for(client.recv(), 3))["phase"]
                     == "freezing"
                 )
+                assert process.returncode is None, (
+                    "Fault injection must reach a live hung child"
+                )
                 await asyncio.wait_for(dispatch, 39)
                 assert time.monotonic() - started >= 29.5
                 assert "runtime worker heartbeat timed out" in caplog.text
-                assert process.returncode is None, (
-                    "Fault is a live hung child, not an earlier crash"
-                )
                 assert supervisor._readiness.state is ReadinessState.FAILED
+                assert await process.wait(timeout=10) is not None, (
+                    "A confirmed unhealthy Worker must be retired even without a restart budget"
+                )
                 failure = json.loads(await asyncio.wait_for(client.recv(), 3))
                 assert "WORKER_CLOSED" in json.dumps(failure)
                 stderr = process.stderr_path.read_text(encoding="utf-8")
@@ -509,6 +513,7 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
                         {
                             "case": "live_stalled_worker",
                             "pid": supervisor.worker_pid,
+                            "worker_exit_code": process.returncode,
                             "watchdog_seconds": time.monotonic() - started,
                             "native_stack_dump": "passed",
                             "async_stack_dump": "passed",
@@ -579,15 +584,17 @@ async def test_real_freeze_worker_survives_loop_stall(tmp_path, monkeypatch, cap
 @pytest.mark.skipif(
     os.name != "nt", reason="Windows named-pipe heartbeat fast path"
 )
+@pytest.mark.parametrize("max_restarts", [0, 1])
 async def test_real_sustained_stall_replaces_worker(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch, caplog, max_restarts
 ):
     """Sustained stalls stay detectable: pongs report the stall, we replace."""
     from websockets.asyncio.client import connect as ws_connect
 
     monkeypatch.setattr(supervisor_module, "_WORKER_STALL_RESTART", 40.0)
-    async with _worker("freeze", tmp_path, monkeypatch) as (supervisor, process):
+    async with _worker("freeze", tmp_path, monkeypatch, max_restarts=max_restarts) as (supervisor, process):
         pid = supervisor.worker_pid
+        instance = supervisor.worker_instance
         async with _gateway(supervisor) as (url, gateway, attached):
             async with ws_connect(url) as client:
                 await asyncio.wait_for(attached.wait(), 2)
@@ -605,12 +612,32 @@ async def test_real_sustained_stall_replaces_worker(
                 started = time.monotonic()
                 await asyncio.wait_for(dispatch, 60)
                 assert time.monotonic() - started >= 35
-                assert supervisor.worker_pid != pid or supervisor._restart_count >= 1
                 assert "business loop stalled" in caplog.text
                 assert "heartbeat timed out" not in caplog.text
-                assert supervisor._readiness.state is ReadinessState.FAILED
                 failure = json.loads(await asyncio.wait_for(client.recv(), 3))
                 assert "WORKER_CLOSED" in json.dumps(failure)
+                if max_restarts:
+                    assert await supervisor._readiness.wait_agent_ready(15)
+                    assert supervisor.worker_pid != pid
+                    assert supervisor.worker_instance != instance
+                    assert process.returncode is not None
+                    await _traffic(supervisor, gateway, client, 3)
+                else:
+                    async with asyncio.timeout(10):
+                        while supervisor._readiness.state is not ReadinessState.FAILED:
+                            await asyncio.sleep(0.01)
+                    assert supervisor._restart_count == 0
+                    assert await process.wait(timeout=10) is not None
+                (tmp_path / "acceptance.json").write_text(
+                    json.dumps({"case": "confirmed_stall_retires_unhealthy_worker",
+                                "restart_budget": max_restarts, "old_pid": pid,
+                                "old_instance": instance, "old_exit_code": process.returncode,
+                                "current_pid": supervisor.worker_pid,
+                                "current_instance": supervisor.worker_instance,
+                                "ready": supervisor._readiness.state.value,
+                                "fresh_request": "passed" if max_restarts else "not admitted"}, indent=2),
+                    encoding="utf-8",
+                )
 
 
 @pytest.mark.asyncio

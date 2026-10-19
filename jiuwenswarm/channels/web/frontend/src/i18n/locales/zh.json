@@ -3917,6 +3917,7 @@
     "wsError": "WebSocket 连接异常",
     "connectionClosedWithCode": "连接已关闭 ({{code}})",
     "connectionClosed": "连接已关闭",
+    "workerExecutionInterrupted": "运行进程已重启，原任务已中断。请检查执行结果后重新发起。",
     "connectionUnavailable": "连接不可用",
     "requestTimeout": "请求超时",
     "requestAborted": "请求已取消",

@@ -2589,7 +2589,7 @@ async def test_runtime_owned_extensions_are_reference_counted(monkeypatch) -> No
 
     from jiuwenswarm.extensions.manager import ExtensionManager
     from jiuwenswarm.extensions.registry import ExtensionRegistry
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     ExtensionRegistry.reset_instance()
     load_extensions = AsyncMock()
@@ -2602,7 +2602,7 @@ async def test_runtime_owned_extensions_are_reference_counted(monkeypatch) -> No
     monkeypatch.setattr(Runner, "start", AsyncMock(return_value=True))
     monkeypatch.setattr(Runner, "stop", AsyncMock(return_value=True))
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         AsyncMock(),
     )
@@ -2650,7 +2650,7 @@ async def test_runtime_does_not_close_externally_owned_extensions(monkeypatch) -
 
     from jiuwenswarm.extensions.manager import ExtensionManager
     from jiuwenswarm.extensions.registry import ExtensionRegistry
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     ExtensionRegistry.reset_instance()
     external_registry = ExtensionRegistry.create_instance(
@@ -2667,7 +2667,7 @@ async def test_runtime_does_not_close_externally_owned_extensions(monkeypatch) -
     monkeypatch.setattr(Runner, "start", AsyncMock(return_value=True))
     monkeypatch.setattr(Runner, "stop", AsyncMock(return_value=True))
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         AsyncMock(),
     )
@@ -2701,7 +2701,7 @@ async def test_runtime_does_not_close_externally_owned_extensions(monkeypatch) -
 @pytest.mark.asyncio
 async def test_process_dependencies_are_reference_counted(monkeypatch) -> None:
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     initialize = AsyncMock()
     runner_start = AsyncMock(return_value=True)
@@ -2716,7 +2716,7 @@ async def test_process_dependencies_are_reference_counted(monkeypatch) -> None:
     monkeypatch.setattr(Runner, "start", runner_start)
     monkeypatch.setattr(Runner, "stop", runner_stop)
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         close_checkpointer,
     )
@@ -2745,7 +2745,7 @@ async def test_process_dependency_lease_rolls_back_on_start_failure(
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     monkeypatch.setattr(
         runtime_service_module,
@@ -2757,7 +2757,7 @@ async def test_process_dependency_lease_rolls_back_on_start_failure(
     monkeypatch.setattr(Runner, "start", AsyncMock(return_value=True))
     monkeypatch.setattr(Runner, "stop", runner_stop)
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         close_checkpointer,
     )
@@ -2779,7 +2779,7 @@ async def test_checkpointer_init_error_survives_close_error_and_allows_retry(
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     initialize = AsyncMock(
         side_effect=[ValueError("checkpointer init failed"), None],
@@ -2797,7 +2797,7 @@ async def test_checkpointer_init_error_survives_close_error_and_allows_retry(
     monkeypatch.setattr(Runner, "start", runner_start)
     monkeypatch.setattr(Runner, "stop", runner_stop)
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         close_checkpointer,
     )
@@ -2832,7 +2832,7 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     tmp_path,
 ) -> None:
     from openjiuwen.core.session.checkpointer import CheckpointerFactory
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     dispose_error = RuntimeError("dispose failed")
     dispose = AsyncMock(side_effect=dispose_error)
@@ -2843,13 +2843,13 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     create_checkpointer = AsyncMock(return_value=replacement_checkpointer)
     installed: list[object | None] = []
 
-    monkeypatch.setattr(interface_deep, "_PERSISTENT_CHECKPOINTER_READY", True)
+    monkeypatch.setattr(checkpointer, "_PERSISTENT_CHECKPOINTER_READY", True)
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "PersistenceCheckpointerProvider",
         lambda: None,
     )
-    monkeypatch.setattr(interface_deep, "get_checkpoint_dir", lambda: tmp_path)
+    monkeypatch.setattr(checkpointer, "get_checkpoint_dir", lambda: tmp_path)
     monkeypatch.setattr(
         CheckpointerFactory,
         "get_checkpointer",
@@ -2863,18 +2863,18 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     )
 
     with pytest.raises(RuntimeError, match="dispose failed") as caught:
-        await interface_deep.close_persistent_checkpointer()
+        await checkpointer.close_persistent_checkpointer()
 
     assert caught.value is dispose_error
     dispose.assert_awaited_once()
     assert installed == [None]
-    assert interface_deep._PERSISTENT_CHECKPOINTER_READY is False
+    assert checkpointer._PERSISTENT_CHECKPOINTER_READY is False
 
-    await interface_deep.ensure_persistent_checkpointer()
+    await checkpointer.ensure_persistent_checkpointer()
 
     create_checkpointer.assert_awaited_once()
     assert installed == [None, replacement_checkpointer]
-    assert interface_deep._PERSISTENT_CHECKPOINTER_READY is True
+    assert checkpointer._PERSISTENT_CHECKPOINTER_READY is True
 
 
 @pytest.mark.asyncio
@@ -2882,7 +2882,7 @@ async def test_runner_start_error_survives_checkpointer_rollback_error_and_retri
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     initialize = AsyncMock()
     runner_start = AsyncMock(
@@ -2899,7 +2899,7 @@ async def test_runner_start_error_survives_checkpointer_rollback_error_and_retri
     monkeypatch.setattr(Runner, "start", runner_start)
     monkeypatch.setattr(Runner, "stop", AsyncMock(return_value=True))
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         close_checkpointer,
     )
@@ -2928,7 +2928,7 @@ async def test_runner_start_error_survives_checkpointer_rollback_error_and_retri
 @pytest.mark.asyncio
 async def test_runner_false_start_result_is_rolled_back(monkeypatch) -> None:
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     runner_stop = AsyncMock(return_value=True)
     close_checkpointer = AsyncMock()
@@ -2940,7 +2940,7 @@ async def test_runner_false_start_result_is_rolled_back(monkeypatch) -> None:
     monkeypatch.setattr(Runner, "start", AsyncMock(return_value=False))
     monkeypatch.setattr(Runner, "stop", runner_stop)
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         close_checkpointer,
     )
@@ -2962,7 +2962,7 @@ async def test_runner_false_stop_result_closes_runtime_and_allows_retry(
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.runtime import checkpointer
 
     runner_start = AsyncMock(return_value=True)
     runner_stop = AsyncMock(side_effect=[False, True])
@@ -2975,7 +2975,7 @@ async def test_runner_false_stop_result_closes_runtime_and_allows_retry(
     monkeypatch.setattr(Runner, "start", runner_start)
     monkeypatch.setattr(Runner, "stop", runner_stop)
     monkeypatch.setattr(
-        interface_deep,
+        checkpointer,
         "close_persistent_checkpointer",
         close_checkpointer,
     )

@@ -807,6 +807,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
         self._default_model_name = model_name
         self._model_cache.clear()
+        self._model_recipes = {}
+        self._model_alias_to_key = {}
         self._model_cache[model_name] = model
         self._model_name_to_keys.clear()
         self._model_name_to_keys[model_name] = [model_name]
@@ -1620,6 +1622,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
         previous_agent_name = self._agent_name
         previous_model_state = {
+            "_model_recipes": dict(getattr(self, "_model_recipes", {}) or {}),
+            "_model_alias_to_key": dict(getattr(self, "_model_alias_to_key", {}) or {}),
+            "_global_index_to_cache_key": dict(getattr(self, "_global_index_to_cache_key", {}) or {}),
+            "_model_id_to_key": dict(getattr(self, "_model_id_to_key", {}) or {}),
+            "_model_group_cache": dict(getattr(self, "_model_group_cache", {}) or {}),
+            "_kernel_identity": getattr(self, "_kernel_identity", None),
             "_model": self._model,
             "_model_client_config": self._model_client_config,
             "_model_request_config": self._model_request_config,

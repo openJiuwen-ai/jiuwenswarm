@@ -2835,27 +2835,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter
         SESSION_GET_METADATA），由注入目录读取（O(1)，不扫描目录）。运行态不属于
-        持久化 metadata：由 WebChannel 已维护的 session busy 状态在响应入队前覆盖，
-        这样页面刷新仍能恢复当前会话的停止按钮，并与随后同一 WS 上的状态事件保持顺序。
+        持久化 metadata：由 AgentServer 返回权威执行快照，Gateway 透传，
+        避免 Gateway 重启后用空的本地 busy 缓存覆盖仍在执行的 Worker 状态。
         """
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
-
-        target_session_id = str(
-            params.get("session_id") if isinstance(params, dict) else session_id or ""
-        ).strip()
-
-        def _attach_runtime_status(ok: bool, payload: dict[str, Any]) -> None:
-            if ok:
-                payload["is_processing"] = channel.is_session_busy(target_session_id)
-                # The busy map drives the stop button on page reload; expose
-                # the value it served for that session's metadata request.
-                logger.info(
-                    "[WebHandlers] session.get_metadata runtime status: "
-                    "session_id=%s is_processing=%s",
-                    target_session_id,
-                    payload["is_processing"],
-                )
 
         await proxy_unary_request(
             channel=channel,
@@ -2867,7 +2851,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.SESSION_GET_METADATA,
             label="session.get_metadata",
-            on_done=_attach_runtime_status,
         )
 
     async def _session_message_continue_queued(ws, req_id, params, session_id, user_id=None):

@@ -970,4 +970,3 @@ class TestWorkflowActivityBatching:
         assert {run: by_run[run]["phases"][0]["agents"][0]["activity"][0]["content"] for run in ("r1", "r2")} == {
             "r1": "r1", "r2": "r2",
         }
-

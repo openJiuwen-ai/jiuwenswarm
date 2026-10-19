@@ -12,7 +12,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.front.protocol import encode_response, runtime_warming_frame
-from jiuwenswarm.server.front.request_registry import RequestRegistry, TrackedRequest
+from jiuwenswarm.server.front.request_registry import DuplicateRequestError, RequestRegistry, TrackedRequest
 from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 from jiuwenswarm.server.ws_send import send_wire_payload
 
@@ -91,12 +91,19 @@ class ExecutionAdmission:
             # Recovery path left FAILED behind; fall through so a warming
             # runtime queues the request and a ready one dispatches it.
         backend = self._backend
-        if backend is not None and self._readiness.snapshot()["agent_ready"]:
-            tracked = await self._registry.register(request, queued=False)
+        if backend is not None and (self._readiness.snapshot()["agent_ready"]
+                                    or getattr(backend, "accepts_warming", False)):
+            try:
+                tracked = await self._registry.register(request, queued=False)
+            except DuplicateRequestError:
+                await self._reject(ws, request, send_lock, "DUPLICATE_REQUEST", "duplicate active request_id")
+                return
+            if not self._readiness.snapshot()["agent_ready"]:
+                await self._emit_warming(ws, request, send_lock)
             try:
                 await backend.dispatch_parsed_request(ws, request, send_lock)
             finally:
-                await self._registry.complete(tracked.request_id)
+                await self._registry.complete(tracked.request_id, tracked=tracked)
             return
         async with self._lock:
             if self._waiting >= self._queue_limit:
@@ -109,7 +116,13 @@ class ExecutionAdmission:
                 ws, request, send_lock, "RUNTIME_QUEUE_FULL", "AgentServer runtime queue is full"
             )
             return
-        tracked = await self._registry.register(request, queued=True)
+        try:
+            tracked = await self._registry.register(request, queued=True)
+        except DuplicateRequestError:
+            async with self._lock:
+                self._waiting -= 1
+            await self._reject(ws, request, send_lock, "DUPLICATE_REQUEST", "duplicate active request_id")
+            return
         try:
             await self._emit_warming(ws, request, send_lock)
             ready = await self._wait_ready_or_cancel(tracked)
@@ -120,15 +133,15 @@ class ExecutionAdmission:
             await self._reject(
                 ws, request, send_lock, "REQUEST_CANCELLED", "request cancelled while runtime warming"
             )
-            await self._registry.complete(tracked.request_id)
+            await self._registry.complete(tracked.request_id, tracked=tracked)
             return
         state = self._readiness.state
         if state is ReadinessState.DRAINING:
-            await self._registry.complete(tracked.request_id)
+            await self._registry.complete(tracked.request_id, tracked=tracked)
             await self._reject(ws, request, send_lock, "RUNTIME_DRAINING", "AgentServer is shutting down")
             return
         if state is ReadinessState.FAILED or not ready or self._backend is None:
-            await self._registry.complete(tracked.request_id)
+            await self._registry.complete(tracked.request_id, tracked=tracked)
             code = "RUNTIME_FAILED" if state is ReadinessState.FAILED else "RUNTIME_WARMING"
             message = (
                 "AgentServer runtime failed"
@@ -137,11 +150,11 @@ class ExecutionAdmission:
             )
             await self._reject(ws, request, send_lock, code, message)
             return
-        await self._registry.mark_dispatched(tracked.request_id)
+        await self._registry.mark_dispatched(tracked.request_id, tracked=tracked)
         try:
             await self._backend.dispatch_parsed_request(ws, request, send_lock)
         finally:
-            await self._registry.complete(tracked.request_id)
+            await self._registry.complete(tracked.request_id, tracked=tracked)
 
     async def _dispatch_cancel(
         self,
@@ -151,11 +164,11 @@ class ExecutionAdmission:
     ) -> None:
         """Cancel queued work immediately; forward to Runtime when attached."""
         session_id = str(request.session_id or "").strip()
-        cancelled = await self._registry.cancel_session(session_id) if session_id else []
+        cancelled = await self._registry.cancel_session(session_id, owner=request) if session_id else []
         params = request.params if isinstance(request.params, dict) else {}
         target_id = str(params.get("request_id") or "").strip()
         if target_id:
-            tracked = await self._registry.cancel(target_id)
+            tracked = await self._registry.cancel(target_id, owner=request)
             if tracked is not None and tracked not in cancelled:
                 cancelled.append(tracked)
         backend = self._backend

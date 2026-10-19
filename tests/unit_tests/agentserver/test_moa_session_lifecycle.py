@@ -6,7 +6,7 @@ from __future__ import annotations
 from copy import deepcopy
 from importlib import import_module
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -60,6 +60,7 @@ def router(monkeypatch):
             _session_mcp_reconcile_started=True, _initial_skill_scan_mcp_names=frozenset(),
             _skill_retrieval_session_enabled=False, _moa_enabled=False, _moa_fingerprint=None,
             busy=False, build_overrides=None, cleanup=AsyncMock(), start_interaction=AsyncMock(),
+            configure_initial_execution=Mock(), create_count=0,
             restore_skill_retrieval_session=lambda *_: None,
             persist_skill_retrieval_session_profile=lambda: None,
             mark_session_mcp_reconcile_started=lambda: None,
@@ -71,6 +72,7 @@ def router(monkeypatch):
             assert parent._session_adapter_locks[sid].locked()
             assert kwargs["mode"] == parent._session_instance_mode
             child.build_overrides = overrides
+            child.create_count += 1
             child._instance_overrides = overrides
             child._moa_enabled = overrides["moa_enabled"]
             if child._moa_enabled:
@@ -87,6 +89,7 @@ async def test_first_turn_group_precedes_build_and_restores_history(router):
     parent, config, metadata, built, warmup = router
     child = await parent._get_or_create_session_adapter("chat-a", model_selection=GROUP, history_before_request_id="current")
     assert child is built[0] and child.build_overrides["moa_enabled"] is True
+    assert child.create_count == 1
     assert child.build_overrides["moa_config_snapshot"] == config
     assert metadata["chat-a"]["moa_enabled"] is True
     assert metadata["chat-a"]["model_selection"]["id"] == GROUP["id"]

@@ -15,16 +15,18 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from multiprocessing.connection import Pipe
+from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.ipc.protocol import KIND_HEARTBEAT, KIND_WIRE, encode_frame
 from jiuwenswarm.server.ipc.stream import PipeConnection
-from jiuwenswarm.server.lifecycle import Readiness
+from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 from jiuwenswarm.server.supervisor import runtime_supervisor as module
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 from jiuwenswarm.server.worker.diagnostics import LoopBeat, heartbeat_reply
+from jiuwenswarm.server.worker import diagnostics
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
 from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBridge
 
@@ -77,6 +79,55 @@ async def _until(predicate, *, timeout: float = 1.0) -> None:
     async with asyncio.timeout(timeout):
         while not predicate():
             await asyncio.sleep(0.005)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_restarts", [0, 1])
+@pytest.mark.parametrize("reason", ["runtime worker heartbeat timed out", "worker business loop stalled"])
+async def test_health_failure_publishes_restart_decision_before_completing_requests(
+    monkeypatch, max_restarts, reason,
+) -> None:
+    readiness = Readiness()
+    readiness.mark_agent_ready()
+    supervisor = RuntimeSupervisor(readiness, max_restarts=max_restarts)
+    completion = asyncio.get_running_loop().create_future()
+    supervisor._pending["dispatch"] = completion
+    retiring = asyncio.Event()
+    release_retirement = asyncio.Event()
+    restarts = []
+
+    async def bring_up() -> None:
+        supervisor._conn = _Connection()
+
+    async def pump() -> None:
+        supervisor._unhealthy_reason = reason
+        raise ConnectionError("worker connection closed")
+
+    async def retire() -> None:
+        retiring.set()
+        await release_retirement.wait()
+
+    async def schedule_restart(failure_reason) -> bool:
+        restarts.append(failure_reason)
+        return False
+
+    monkeypatch.setattr(supervisor, "_bring_up", bring_up)
+    monkeypatch.setattr(supervisor, "_pump", pump)
+    monkeypatch.setattr(supervisor, "_retire_unhealthy_worker", retire)
+    monkeypatch.setattr(supervisor, "_schedule_restart", schedule_restart)
+    supervisor._loop_task = asyncio.create_task(supervisor._supervise())
+    try:
+        await asyncio.wait_for(retiring.wait(), 1)
+        assert completion.done() and not completion.result()["ok"]
+        expected = ReadinessState.FAILED if max_restarts == 0 else ReadinessState.RUNTIME_WARMING
+        assert readiness.state is expected
+        assert supervisor._fatal is (max_restarts == 0)
+        assert supervisor._ipc_ready.is_set() is (max_restarts == 0)
+        assert restarts == [], "replacement must wait until the old Worker retires"
+    finally:
+        release_retirement.set()
+        await asyncio.wait_for(supervisor._loop_task, 1)
+    assert restarts == ([reason] if max_restarts else [])
 
 
 def _pong(beat_age: float | None = None) -> dict:
@@ -140,12 +191,14 @@ async def test_fast_path_direct_send_serializes_with_loop_send() -> None:
         parent.close()
 
 
-def test_loop_beat_and_reply_field_semantics() -> None:
+def test_loop_beat_and_reply_field_semantics(monkeypatch) -> None:
+    clock = SimpleNamespace(now=10.0)
+    monkeypatch.setattr(diagnostics, "time", SimpleNamespace(monotonic=lambda: clock.now))
     beat = LoopBeat()
-    time.sleep(0.05)
-    assert beat.age >= 0.05, "a blocked loop must age the beat"
+    clock.now += 0.25
+    assert beat.age == 0.25, "a blocked loop must age the beat"
     beat.beat()
-    assert beat.age < 0.05
+    assert beat.age == 0.0
 
     assert heartbeat_reply(None) == {"kind": KIND_HEARTBEAT, "pid": os.getpid()}
     assert "loop_beat_age" not in heartbeat_reply(None)
@@ -153,15 +206,17 @@ def test_loop_beat_and_reply_field_semantics() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_pong_carries_beat_age() -> None:
+async def test_dispatcher_pong_carries_beat_age(monkeypatch) -> None:
+    clock = SimpleNamespace(now=10.0)
+    monkeypatch.setattr(diagnostics, "time", SimpleNamespace(monotonic=lambda: clock.now))
     bridge = WorkerGatewayBridge(ConnHolder())
     beat = LoopBeat()
-    time.sleep(0.05)
+    clock.now += 0.25
     dispatcher = WorkerDispatcher(bridge, beat=beat)
     conn = _DispatchConn()
     assert await dispatcher.handle({"kind": KIND_HEARTBEAT}, conn)
     assert conn.sent[0]["kind"] == KIND_HEARTBEAT
-    assert conn.sent[0]["loop_beat_age"] >= 0.05
+    assert conn.sent[0]["loop_beat_age"] == 0.25
 
     legacy = _DispatchConn()
     assert await WorkerDispatcher(bridge).handle({"kind": KIND_HEARTBEAT}, legacy)

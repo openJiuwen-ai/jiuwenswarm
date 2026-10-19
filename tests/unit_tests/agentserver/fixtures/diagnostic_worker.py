@@ -108,7 +108,7 @@ class TrafficRuntime:
         if self.mode == "slow-shell":
             await self._slow_shell_request(ws, request)
             return
-        if self.mode == "freeze":
+        if self.mode == "freeze" and request.params.get("freeze", True):
             await ws.send(
                 json.dumps({"request_id": request.request_id, "phase": "freezing"})
             )

@@ -78,7 +78,7 @@ import {
 import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
-import { webRequest } from './services/webClient';
+import { webClient, webRequest } from './services/webClient';
 import { attachTeamSession, resetTeamAttachments } from './services/teamAttach';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
@@ -555,6 +555,11 @@ function AppContent({
   /** 仅用于强制重跑「首屏 history」effect：从会话列表恢复时若 sessionId 未变，也要重新拉 history 并恢复 historyPagerMeta */
   const [historyBootstrapKey, setHistoryBootstrapKey] = useState(0);
   const sessionIdRef = useRef(sessionId);
+  useEffect(() => webClient.on('runtime.history_required', (event) => {
+    if (event.payload.session_id === sessionIdRef.current) {
+      setHistoryBootstrapKey((key) => key + 1);
+    }
+  }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
   const sessionViewIdRef = useRef(generateUuidV4());

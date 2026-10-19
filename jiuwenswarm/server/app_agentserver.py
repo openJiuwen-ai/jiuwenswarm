@@ -86,9 +86,9 @@ def _install_common_providers() -> None:
     mcp_credential 域不经任何功能路径自然加载——不装配则 config.get
     静默回退默认值、config.set 团队模板保存失败、MCP 凭证占位符不解析。
     """
-    from jiuwenswarm.server.runtime.provider_setup import install
+    from jiuwenswarm.server.runtime.provider_setup import install_front
 
-    install()
+    install_front()
 
 
 async def _run(host: str, port: int) -> None:

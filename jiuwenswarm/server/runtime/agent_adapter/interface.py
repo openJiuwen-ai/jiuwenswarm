@@ -1340,7 +1340,6 @@ class JiuWenSwarm:
         if callable(refresher):
             await refresher()
 
-
     def set_permissions_changed_notifier(
         self,
         notifier: Callable[[], None] | None,
@@ -1507,6 +1506,12 @@ class JiuWenSwarm:
             await self._adapter.notify_permissions_changed(config, include_legacy=include_legacy)
         elif include_legacy:
             await self.reload_agent_config(config_base=config, env_overrides={})
+
+    async def prepare_kernel(self, *, mode: str) -> None:
+        adapter = self._ensure_adapter(mode="code" if mode.startswith("code") else "agent")
+        prepare = getattr(adapter, "prepare_kernel", None)
+        if callable(prepare):
+            await prepare()
 
     async def prepare_session(
         self,
@@ -3166,6 +3171,7 @@ class JiuWenSwarm:
         moa_access = getattr(adapter, "moa_access_kwargs", None)
         if callable(moa_access):
             reconcile_kwargs.update(moa_access(request))
+        reconcile_kwargs["execution_request"] = request
         await self.reconcile_session_mcp(
             request.session_id,
             compute_chat_send_mcp_needed(params),
@@ -3330,6 +3336,7 @@ class JiuWenSwarm:
             compute_chat_send_mcp_needed(params),
             model_name=params.get("model_name"),
             history_before_request_id=request.request_id,
+            execution_request=request,
             retain_moa_snapshot=True,
             **({"model_selection": params["model_selection"]} if params.get("model_selection") is not None else {}),
             **({"moa_enabled": params["moa_enabled"]} if "moa_enabled" in params else {}),
@@ -3577,7 +3584,7 @@ class JiuWenSwarm:
         )
 
     async def process_message_stream(
-            self, request: AgentRequest
+        self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
         """处理流式请求.
 
@@ -3788,6 +3795,7 @@ class JiuWenSwarm:
         moa_access = getattr(adapter, "moa_access_kwargs", None)
         if callable(moa_access):
             reconcile_kwargs.update(moa_access(request))
+        reconcile_kwargs["execution_request"] = request
         await self.reconcile_session_mcp(
             request.session_id,
             compute_chat_send_mcp_needed(params),
@@ -5173,6 +5181,7 @@ class JiuWenSwarm:
         *,
         model_name: str | None = None,
         history_before_request_id: str | None = None,
+        execution_request: AgentRequest | None = None,
         runtime_binding: dict[str, Any] | None = None,
         moa_enabled: bool | None = None,
         model_selection: Any = None,
@@ -5217,6 +5226,8 @@ class JiuWenSwarm:
                 supported_kwargs["history_before_request_id"] = (
                     history_before_request_id
                 )
+            if execution_request is not None and "execution_request" in parameters:
+                supported_kwargs["execution_request"] = execution_request
             if "runtime_binding" in parameters or accepts_kwargs:
                 supported_kwargs["runtime_binding"] = runtime_binding
             if model_selection is not None and ("model_selection" in parameters or accepts_kwargs):
@@ -5299,8 +5310,7 @@ class JiuWenSwarm:
         operation: str,
         config_path: str,
     ) -> None:
-        """Propagate a harness package load/unload to all live session adapters.
-        """
+        """Propagate a harness package load/unload to all live session adapters."""
         adapter = self._adapter
         if adapter is None:
             return

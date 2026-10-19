@@ -23,9 +23,20 @@ def default_socket_path() -> str:
     override = os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip()
     if override:
         return override
-    home = os.environ.get("JIUWENSWARM_HOME") or os.path.expanduser("~")
-    name = "runtime-worker.pipe" if os.name == "nt" else "runtime-worker.sock"
-    return str(Path(home) / ".jiuwenswarm" / "run" / name)
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+    from jiuwenswarm.server.supervisor.identity import data_scope
+
+    suffix = "pipe" if os.name == "nt" else "sock"
+    path = get_user_workspace_dir() / "run" / f"runtime-{data_scope()[:16]}.{suffix}"
+    if os.name != "nt" and len(os.fsencode(path)) >= 100:
+        import tempfile
+        directory = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if directory.is_symlink() or directory.stat().st_uid != os.getuid():
+            raise RuntimeError("Runtime IPC directory has an unexpected owner")
+        directory.chmod(0o700)
+        path = directory / f"runtime-{data_scope()[:16]}.sock"
+    return str(path)
 
 
 def build_worker_command(
@@ -113,6 +124,7 @@ class WorkerProcess:
         self._stub_ready_delay = stub_ready_delay
         self._stub_exit_on_request = stub_exit_on_request
         self._proc: subprocess.Popen[bytes] | None = None
+        self.launch_identity: str | None = None
         self._stderr_path = (
             Path(socket_path).parent
             / "worker-logs"
@@ -136,6 +148,12 @@ class WorkerProcess:
         return self._proc.poll()
 
     async def spawn(self) -> None:
+        from jiuwenswarm.server.supervisor.identity import code_identity, launch_identity_payload
+
+        # Verify source once before the spawn, then hand that exact observation
+        # to the child. Reattached resident Workers still require fresh checks.
+        self.launch_identity = await asyncio.to_thread(code_identity)
+        payload = launch_identity_payload(self.launch_identity)
         command = build_worker_command(
             self.socket_path,
             host=self._host,
@@ -144,6 +162,7 @@ class WorkerProcess:
             stub_ready_delay=self._stub_ready_delay,
             stub_exit_on_request=self._stub_exit_on_request,
         )
+        command.append("--identity-from-parent")
         logger.info("[Supervisor] spawning runtime worker: %s", " ".join(command))
         # Popen, not asyncio's subprocess transport: that transport kills the
         # child when the Front event loop closes. A new session keeps the
@@ -154,8 +173,16 @@ class WorkerProcess:
                 command,
                 env=os.environ.copy(),
                 start_new_session=True,
+                stdin=subprocess.PIPE,
                 stderr=stderr,
             )
+        try:
+            self._proc.stdin.write(payload)
+            self._proc.stdin.close()
+        except OSError:
+            self._proc.kill()
+            await self.wait(timeout=5)
+            raise
         logger.info("[Supervisor] worker pid=%s stderr=%s", self.pid, self._stderr_path)
 
     async def wait(self, *, timeout: float | None = None) -> int | None:
@@ -180,9 +207,11 @@ class WorkerProcess:
         proc = self._proc
         if proc is None or proc.poll() is not None:
             return
+        deadline = time.monotonic() + max(0.0, timeout)
         proc.terminate()
-        code = await self.wait(timeout=timeout)
+        code = await self.wait(timeout=max(0.0, deadline - time.monotonic()))
         if code is None:
             logger.warning("[Supervisor] worker did not exit after SIGTERM; killing")
             proc.kill()
-            await self.wait()
+            if await self.wait(timeout=max(0.0, deadline - time.monotonic())) is None:
+                logger.error("[Supervisor] worker exit could not be observed within the shutdown deadline")

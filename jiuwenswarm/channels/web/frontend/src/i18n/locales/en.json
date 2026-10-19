@@ -3940,6 +3940,7 @@
     "wsError": "WebSocket connection error",
     "connectionClosedWithCode": "Connection closed ({{code}})",
     "connectionClosed": "Connection closed",
+    "workerExecutionInterrupted": "The runtime restarted and interrupted this task. Check its results before starting another run.",
     "connectionUnavailable": "Connection unavailable",
     "requestTimeout": "Request timed out",
     "requestAborted": "Request aborted",

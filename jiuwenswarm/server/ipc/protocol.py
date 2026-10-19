@@ -17,7 +17,7 @@ from typing import Any
 from jiuwenswarm.common.schema.agent import AgentRef, AgentRequest, PermissionContext
 from jiuwenswarm.common.schema.message import ReqMethod
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 HEADER = struct.Struct("!I")
 MAX_FRAME_BYTES = 32 * 1024 * 1024
 
@@ -25,6 +25,10 @@ KIND_HELLO = "hello"
 KIND_REQUEST = "request"
 KIND_REQUEST_DONE = "request.done"
 KIND_WIRE = "wire"
+KIND_DELIVERY_ACK = "wire.ack"
+KIND_SUBSCRIBE = "execution.subscribe"
+KIND_SNAPSHOT = "execution.snapshot"
+KIND_SHUTDOWN_DONE = "shutdown.done"
 KIND_READINESS = "readiness"
 KIND_CANCEL = "cancel"
 KIND_HEARTBEAT = "heartbeat"
@@ -118,6 +122,8 @@ def load_agent_request(payload: dict[str, Any]) -> AgentRequest:
 
 def cancel_request(message: dict[str, Any]) -> AgentRequest:
     """Build the execution-owned cancel request from a ``cancel`` frame."""
+    if isinstance(message.get("payload"), dict):
+        return load_agent_request(message["payload"])
     params = message.get("params") if isinstance(message.get("params"), dict) else {}
     request_id = str(message.get("request_id") or params.get("request_id") or "")
     session_id = message.get("session_id") or params.get("session_id")
@@ -152,3 +158,17 @@ def _load_agent_ref(value: Any) -> Any:
         return value
     # AgentRef 为纯数据结构（与 AgentRequest.agent_ref 同源），不依赖 gateway 树。
     return AgentRef(mode=str(value.get("mode") or ""), id=str(value.get("id") or ""))
+
+
+def request_scope(request: AgentRequest) -> tuple[str, ...]:
+    """Resolved caller and conversation identity, never a directory selector."""
+    metadata = request.metadata or {}
+    params = request.params or {}
+    return (
+        str(request.channel_id or ""),
+        str(request.user_id or metadata.get("user_id") or ""),
+        str(metadata.get("app_id") or ""),
+        json.dumps(_dump_agent_ref(request.agent_ref) or {"mode": "agent", "id": "default"},
+                   sort_keys=True, default=str),
+        str(params.get("session_id") or request.session_id or ""),
+    )
