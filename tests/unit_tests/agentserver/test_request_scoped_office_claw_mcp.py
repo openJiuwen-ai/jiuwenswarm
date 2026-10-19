@@ -2112,3 +2112,51 @@ async def test_unshadowed_connector_tool_keeps_raw_name(
     assert buffers.tool_names == ["custom_search"]
     assert adapter._instance.ability_manager.get("custom_search") is not None
     assert len(resource_manager.tools) == 1
+
+
+@pytest.mark.asyncio
+async def test_renamed_tool_is_error_keeps_remote_name_and_failure_schema() -> None:
+    """连接器存在 remote_tool_name 且 isError=True：调用名用远端名，失败标记同时保留。"""
+    from mcp.types import CallToolResult, TextContent
+
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(
+            id="office-claw-request-shadow.doubao-search.doubao_search_web_search",
+            name="doubao_search_web_search",
+            description="renamed connector tool",
+            input_params={},
+        ),
+        {"command": "node", "args": [], "cwd": "."},
+        "req-shadow-error",
+        "doubao-search",
+        remote_tool_name="web_search",
+    )
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=CallToolResult(
+                isError=True,
+                content=[TextContent(type="text", text="boom")],
+            )
+        )
+    )
+
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch(
+            "jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"
+        ),
+        patch(
+            "jiuwenswarm.common.mcp_config.annotate_connector_catalog_result",
+            side_effect=lambda *args, **kwargs: args[2],
+        ) as annotate,
+    ):
+        result = await tool._invoke_with_active_binding({})
+
+    assert session.call_tool.await_args.args[0] == "web_search"
+    assert annotate.call_args.args[0] == "web_search"
+    assert result["status"] == "error"
+    assert result["success"] is False
+    assert result["error_code"] == "mcp_tool_error"
+    assert result["error_message"] == "boom"
+    assert result["result"] == "boom"

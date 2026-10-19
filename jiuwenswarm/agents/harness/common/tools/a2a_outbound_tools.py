@@ -85,10 +85,15 @@ class GatewayA2AOutboundToolBackend:
 
 def _error(code: A2AOutboundErrorCode | str) -> dict[str, Any]:
     value = code.value if isinstance(code, A2AOutboundErrorCode) else str(code)
+    summary = safe_error_summary(value)
+    # success/error 为统一失败标记（消费端探测器依赖）；ok/error_code/
+    # error_summary 为既有契约键，保留兼容。
     return {
+        "success": False,
         "ok": False,
+        "error": summary,
         "error_code": value,
-        "error_summary": safe_error_summary(value),
+        "error_summary": summary,
     }
 
 
