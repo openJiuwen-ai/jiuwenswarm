@@ -1461,6 +1461,38 @@ async def _team_has_unread_messages(session_id: str, handler: Any) -> bool:
         reset_session_id(token)
 
 
+async def _team_has_pending_relay_turn(session_id: str, handler: Any) -> bool:
+    """True when a member still owes a relay turn (@-mentioned/invited, no output).
+
+    Consults the leader's agent-core ``TeamBackend.has_pending_relay_turn`` —
+    the single source of truth shared with the POLL_TASK completion path via
+    ``is_team_completed``. The backend delivers the bounded wake nudge itself,
+    so a ``True`` here also unblocks the round without any jiuwenswarm-side
+    mailbox writes.
+    """
+    monitor = getattr(handler, "_monitor", None)
+    team_agent = getattr(monitor, "_team_agent", None)
+    backend = getattr(team_agent, "team_backend", None) if team_agent is not None else None
+    if backend is None:
+        return False
+    probe = getattr(backend, "has_pending_relay_turn", None)
+    if not callable(probe):
+        return False
+
+    token = set_session_id(session_id)
+    try:
+        return bool(await probe())
+    except Exception:
+        logger.debug(
+            "[TeamHelpers] pending relay check failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return False
+    finally:
+        reset_session_id(token)
+
+
 def _taskless_completion_enabled(session_id: str) -> bool:
     """Read TeamSpec.enable_taskless_completion for the session's team.
 
@@ -1529,6 +1561,13 @@ async def _team_round_settled(channel_id: str | None, session_id: str) -> bool:
             return False
 
         if await _team_has_unread_messages(session_id, handler):
+            return False
+
+        # Relay-turn guard: a member @-mentioned/invited in the
+        # mailbox that never spoke afterwards still owes a turn. Blocks the
+        # edge settle and lets the backend's bounded wake nudge restart the
+        # relay — mirrors the POLL_TASK gate inside is_team_completed.
+        if await _team_has_pending_relay_turn(session_id, handler):
             return False
 
         get_workflow_handler = getattr(team_manager, "get_workflow_handler", None)

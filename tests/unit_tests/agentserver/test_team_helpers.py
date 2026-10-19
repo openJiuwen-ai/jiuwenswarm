@@ -3162,6 +3162,47 @@ async def test_team_round_settled_rejects_unread_messages(monkeypatch):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("relay_pending", [True, False])
+async def test_team_round_settled_honors_pending_relay_turn(monkeypatch, relay_pending):
+    """A pending relay turn blocks the edge settle; a resolved one lets it pass."""
+
+    class _FakeMessageManager:
+        @staticmethod
+        async def has_unread_messages(*, include_broadcast: bool) -> bool:
+            return False
+
+    class _FakeBackend:
+        message_manager = _FakeMessageManager()
+
+        # A SimpleNamespace backend without this attribute (older backend)
+        # still passes: the probe is hasattr/callable-guarded.
+        async def has_pending_relay_turn(self) -> bool:
+            return relay_pending
+
+    class _FakeMonitorHandler:
+        _monitor = SimpleNamespace(
+            _team_agent=SimpleNamespace(team_backend=_FakeBackend())
+        )
+
+        async def get_team_snapshot(self):
+            return {"members": [{"member_id": "leader", "status": "ready"}], "tasks": []}
+
+    class _FakeManager:
+        @staticmethod
+        def get_monitor_handler(session_id: str):
+            return _FakeMonitorHandler()
+
+        @staticmethod
+        def get_workflow_handler(session_id: str):
+            return None
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    settled = await _TeamHelpersTestApi.team_round_settled("officeclaw", "sess-relay")
+    assert settled is (not relay_pending)
+
+
+@pytest.mark.anyio
 async def test_team_round_settled_rejects_active_workflow(monkeypatch):
     class _FakeMonitorHandler:
         async def get_team_snapshot(self):
