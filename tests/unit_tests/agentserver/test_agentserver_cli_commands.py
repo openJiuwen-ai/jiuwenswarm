@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -571,6 +572,47 @@ async def test_handle_command_mcp_list(server, fake_ws, monkeypatch):
             "ok": True,
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [8192, 8193, 9000])
+async def test_handle_command_mcp_list_tools_url_size(server, fake_ws, monkeypatch, size):
+    from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
+    from openjiuwen.harness.security.outbound import policy as host_exit
+
+    # Exercise the real policy and logging; only the allowed connection is fake.
+    monkeypatch.setattr(host_exit, "_state", host_exit.get_host_exit_state())
+    host_exit.publish_host_exit_policy({"net_guard": {"enabled": True, "urls": {}}})
+    base = "https://mcp.invalid/sse?pad="
+    entry = {"name": "url-size-regression", "transport": "sse",
+             "url": base + "a" * (size - len(base))}
+    monkeypatch.setattr(agent_ws_server_module, "get_mcp_server_config", lambda name: entry)
+    calls = []
+
+    class FakeClient:
+        async def connect(self):
+            calls.append("connect")
+            return True
+
+        async def list_tools(self):
+            return []
+
+        async def disconnect(self):
+            calls.append("disconnect")
+
+    monkeypatch.setattr(ToolMgr, "_create_client", staticmethod(lambda config: FakeClient()))
+    request = AgentRequest(
+        request_id="req-mcp-url-size", channel_id="web", req_method=ReqMethod.COMMAND_MCP,
+        params={"action": "list_tools", "name": entry["name"]},
+    )
+    started = time.monotonic()
+    await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
+    assert time.monotonic() - started < 2.0
+    assert calls == (["connect", "disconnect"] if size == 8192 else [])
+    assert fake_ws.sent == [{
+        "response_id": "req-mcp-url-size", "ok": True,
+        "payload": {"type": "tools", "tools": [], "server_name": entry["name"]},
+    }]
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from jiuwenswarm.common import utils
 
 
@@ -345,6 +347,34 @@ class TestAgentCoreLogDirConfigure:
                 (workspace / "logs").rmdir()
             except OSError:
                 pass
+
+
+class TestLogSanitization:
+    @pytest.mark.parametrize("key", [
+        "CAT_CAFE_CALLBACK_TOKEN", "CAT_CAFE_USER_ID", "my_private_key",
+        "service.credential", "service-password", "prefixauthorization",
+        "OPENAI_API_KEY", "a" * 8193 + "_credential",
+    ], ids=["token", "user-id", "private-key", "credential", "password",
+            "authorization", "api-key", "long-key"])
+    @pytest.mark.parametrize("quote", ["'", '"'])
+    def test_named_sensitive_fields_still_masked(self, key, quote):
+        secret = "opaque-value-42"
+        text = f"{{{quote}{key}{quote}: {quote}{secret}{quote}}}"
+        masked = utils.mask_sensitive(text)
+        assert key in masked
+        assert secret not in masked
+        assert f"******(fp:{utils._fingerprint(secret)})" in masked
+        assert utils.mask_sensitive(masked) == masked
+
+    @pytest.mark.parametrize("size", [8192, 8193, 9000])
+    def test_long_url_masking_preserves_evidence_and_secrets(self, size):
+        base = "https://mcp.invalid/sse?pad="
+        url = base + "a" * (size - len(base))
+        text = f'[command.mcp] _fetch skipped: {url} service.credential="opaque-value-42"'
+        masked = utils.mask_sensitive(text)
+        assert url in masked
+        assert "opaque-value-42" not in masked
+        assert f"******(fp:{utils._fingerprint('opaque-value-42')})" in masked
 
 
 class TestSourceRecordMasking:

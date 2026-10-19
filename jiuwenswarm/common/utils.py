@@ -2517,7 +2517,8 @@ _KV_SENSITIVE_PATTERN = re.compile(
 # 3) 值内容（非贪婪）
 # 4) 结束引号（通过 (\2) 强制与起始引号一致）
 _NAMED_SENSITIVE_KV_PATTERN = re.compile(
-    r"(?i)([\"']?[A-Za-z0-9_.-]*"
+    # 只从字段起点匹配，避免在长 URL/连续字符的每个位置重复回溯。
+    r"(?i)(?<![A-Za-z0-9_.-])([\"']?[A-Za-z0-9_.-]*"
     r"(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|"
     r"credential|private[_-]?key|user[_-]?id|userid)"
     r"[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)([\"'])(.*?)(\2)"
