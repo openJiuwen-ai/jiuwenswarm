@@ -1807,6 +1807,20 @@ class FeishuChannel(BaseChannel):
             }
         }
 
+    @staticmethod
+    def _persistent_text_content(text: str, mention_ids: Any) -> str:
+        """Build one Feishu text body, turning accepted mention ids into real at tags."""
+        tags: list[str] = []
+        for item in mention_ids or ():
+            if not isinstance(item, str) or re.fullmatch(r"[A-Za-z0-9:_-]{1,128}", item) is None:
+                continue
+            tag = f'<at user_id="{item}"></at>'
+            if tag in text or tag in tags:
+                continue
+            tags.append(tag)
+        body = f"{' '.join(tags)} {text}" if tags else text
+        return json.dumps({"text": body}, ensure_ascii=False)
+
     async def send_persistent_result(
         self,
         *,
@@ -1816,11 +1830,14 @@ class FeishuChannel(BaseChannel):
         idempotency_key: str,
         file_path: str | None = None,
         file_key: str | None = None,
+        mention_ids: Any = (),
     ) -> dict[str, Any]:
         """Send one JM-09 result and return Feishu's message receipt.
 
-        A text result is one text message. A file result sends its caption, when it
-        has one, then uploads the file unless ``file_key`` names an earlier upload,
+        A text result is one text message. Mention ids from the accepted group
+        message become Feishu ``<at>`` tags in that text, or in a file caption.
+        A file result sends its caption, when it has one, then uploads the file
+        unless ``file_key`` names an earlier upload,
         then sends the file message; its receipt carries the ``file_key`` so a retry
         does not upload again. The personal-agent ``send`` path below keeps its
         existing routing and retry semantics; persistent results use this path.
@@ -1832,13 +1849,21 @@ class FeishuChannel(BaseChannel):
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
         if file_path is None:
             return await self._send_persistent_message(
-                chat_id, "text", json.dumps({"text": text}, ensure_ascii=False), source_message_id, idempotency_key
+                chat_id,
+                "text",
+                self._persistent_text_content(text or "", mention_ids),
+                source_message_id,
+                idempotency_key,
             )
 
         if has_text:
             caption_key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{idempotency_key}:caption"))
             caption = await self._send_persistent_message(
-                chat_id, "text", json.dumps({"text": text}, ensure_ascii=False), source_message_id, caption_key
+                chat_id,
+                "text",
+                self._persistent_text_content(text or "", mention_ids),
+                source_message_id,
+                caption_key,
             )
             if caption.get("outcome") != "delivered":
                 return caption
