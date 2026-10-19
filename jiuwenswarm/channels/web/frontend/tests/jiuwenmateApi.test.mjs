@@ -17,6 +17,7 @@ import {
   toModelCatalog,
   upsertConversation,
   selectableColleagueResources,
+  selectablePluginPackages,
   selectableKnowledgePages,
   toWireSettings,
   withResourceSelection,
@@ -498,6 +499,36 @@ test('installed skill and connected MCP names are the only selectable colleague 
   assert.deepEqual(selected.skills, [{ name: 'report-writer', label: '报告', description: '整理周报' }]);
   assert.deepEqual(selected.connectors, [{ name: 'feishu', label: '飞书', description: '' }]);
   assert.deepEqual(selected.plugins, []);
+  assert.deepEqual(
+    selectablePluginPackages({
+      packages: [
+        {
+          id: '440c3c6e0e654b1eb9ec32c17bcd2923',
+          packageName: 'office-document-toolkit',
+          installed: true,
+          displayName: { zh: '办公文档能力包', en: 'Office Document Toolkit' },
+          displayDescription: { zh: '整理办公文档', en: 'Office documents' },
+        },
+        {
+          id: 'coding-guard',
+          installed: true,
+          displayName: { zh: '编程防护', en: 'Coding Guard' },
+          displayDescription: { zh: '审查代码', en: '' },
+        },
+        { id: 'skill-creator', installed: false, displayName: { zh: '技能创建', en: 'Skill creator' } },
+        { id: '', installed: true, displayName: { zh: '空', en: '' } },
+      ],
+    }),
+    [
+      {
+        name: 'office-document-toolkit',
+        label: '办公文档能力包',
+        description: '整理办公文档',
+        alias: '440c3c6e0e654b1eb9ec32c17bcd2923',
+      },
+      { name: 'coding-guard', label: '编程防护', description: '审查代码' },
+    ],
+  );
 });
 
 test('published personal-context pages are the selectable employee knowledge', () => {

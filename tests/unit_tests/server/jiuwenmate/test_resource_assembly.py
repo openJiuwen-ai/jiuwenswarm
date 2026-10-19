@@ -13,6 +13,7 @@ from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, 
 from jiuwenswarm.server.jiuwenmate.resource_assembly import (
     InstalledResourceCatalog,
     KnowledgeSource,
+    PluginSource,
     SkillSource,
     ConnectorSource,
 )
@@ -53,8 +54,15 @@ class MapCatalog:
     def skill(self, name):
         return self._skills.get(name)
 
+    def plugin(self, name):
+        value = self._plugins.get(name)
+        if value is None:
+            return None
+        return PluginSource(name=name, skills=tuple(value))
+
     def plugin_skills(self, name):
-        return self._plugins.get(name)
+        source = self.plugin(name)
+        return None if source is None else source.skills
 
     def connector(self, name):
         return self._connectors.get(name)
@@ -355,3 +363,94 @@ def test_installed_catalog_reads_a_plugin_from_the_skill_library(tmp_path):
     assert catalog.plugin_skills("report-pack")[0].name == "report-writer"
     assert catalog.skill("absent") is None
     assert catalog.plugin_skills("absent") is None
+
+
+def test_installed_catalog_reads_skills_bundled_in_a_plugin_package(tmp_path):
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    package = tmp_path / "plugins" / "plugin_packages" / "local" / "office-pack"
+    write_skill(package / "skills" / "doc-flow", "doc-flow", "整理办公文档。")
+    (package / "manifest.json").write_text(
+        json.dumps({"package_type": "plugin", "id": "office-pack", "skills": [{"dir": "./skills/doc-flow"}]}),
+        encoding="utf-8",
+    )
+    catalog = InstalledResourceCatalog(skills_dir=skills, builtin_dir=tmp_path / "missing-builtin")
+
+    sources = catalog.plugin_skills("office-pack")
+
+    assert sources is not None and sources[0].name == "doc-flow"
+    assert sources[0].directory == (package / "skills" / "doc-flow").resolve()
+
+
+def test_installed_catalog_resolves_a_hub_asset_id_to_its_package(tmp_path):
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    package = tmp_path / "plugins" / "plugin_packages" / "local" / "office-pack"
+    write_skill(package / "skills" / "doc-flow", "doc-flow", "整理办公文档。")
+    (package / "manifest.json").write_text(
+        json.dumps({"package_type": "plugin", "id": "office-pack", "skills": [{"dir": "./skills/doc-flow"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "plugins" / "plugin_packages" / "hub_state.json").write_text(
+        json.dumps(
+            {
+                "packages": [
+                    {
+                        "asset_id": "440c3c6e0e654b1eb9ec32c17bcd2923",
+                        "kind": "plugin",
+                        "version": "1.0.0",
+                        "checksum_sha256": "abc",
+                        "installed_at": "2026-10-19T00:00:00Z",
+                        "package_id": "office-pack",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    catalog = InstalledResourceCatalog(skills_dir=skills, builtin_dir=tmp_path / "missing-builtin")
+
+    sources = catalog.plugin_skills("440c3c6e0e654b1eb9ec32c17bcd2923")
+
+    assert sources is not None and sources[0].name == "doc-flow"
+
+
+def test_a_plugin_without_skills_publishes_its_tools_and_rails(tmp_path):
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    package = tmp_path / "plugins" / "plugin_packages" / "local" / "coding-guard"
+    (package / "tools").mkdir(parents=True)
+    (package / "rails").mkdir()
+    (package / "tools" / "review.py").write_text("class Review:\n    pass\n", encoding="utf-8")
+    (package / "rails" / "guard.py").write_text("class Guard:\n    pass\n", encoding="utf-8")
+    (package / "manifest.json").write_text(
+        json.dumps(
+            {
+                "package_type": "plugin",
+                "id": "coding-guard",
+                "name": "编程防护",
+                "description": "审查代码",
+                "tools": [{"file": "./tools/review.py", "class": "Review"}],
+                "rails": [{"file": "./rails/guard.py", "class": "Guard"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    host = service(
+        tmp_path,
+        InstalledResourceCatalog(skills_dir=skills, builtin_dir=tmp_path / "missing-builtin"),
+        iter(["mate_guard"]),
+    )
+
+    view = host.create_colleague(
+        NS,
+        settings(capabilities=CapabilitySelection(model="deepseek#0", plugins=("coding-guard",))),
+    )
+    spec = host.current_snapshot(NS, view.agent_id).load_spec()
+
+    assert spec.tools[0].type == "harness.tool.file"
+    assert spec.tools[0].params["class_name"] == "Review"
+    assert spec.tools[0].params["file_path"] == str((package / "tools" / "review.py").resolve())
+    assert spec.rails[0].type == "harness.rail.file"
+    assert spec.rails[0].params["class_name"] == "Guard"
+    assert "已装配插件" in spec.system_prompt

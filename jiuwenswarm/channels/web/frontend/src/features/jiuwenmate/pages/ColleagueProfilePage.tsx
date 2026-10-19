@@ -880,7 +880,12 @@ function ProfileSectionDetail({
             ? 'jiuwenmate.profile.catalogEmptyPlugins'
             : 'jiuwenmate.profile.catalogEmptyKnowledge';
     const selectedOptions = selected.map(
-      (name) => catalog?.find((option) => option.name === name) ?? { name, label: name, description: '' },
+      (name) =>
+        catalog?.find((option) => option.name === name || option.alias === name) ?? {
+          name,
+          label: name,
+          description: '',
+        },
     );
     const pickerItems = (catalog ?? []).map((option) => ({
       id: option.name,
@@ -971,7 +976,9 @@ function ProfileSectionDetail({
             status={!resourceCatalog?.ready ? 'loading' : 'success'}
             items={pickerItems}
             getItemKey={(item) => item.id}
-            initialSelectedIds={[...selected]}
+            initialSelectedIds={selected.map(
+              (name) => catalog?.find((option) => option.name === name || option.alias === name)?.name ?? name,
+            )}
             onClose={() => setResourcePickerOpen(false)}
             onConfirm={(ids) => {
               changeSelected(ids);
