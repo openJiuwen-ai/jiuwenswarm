@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -233,9 +234,24 @@ class ExpertService:
         self._agent_manager = agent_manager
         self._adapter_resolver = adapter_resolver
 
-    async def list_experts(self) -> ExpertOpResult:
+    async def list_experts(self, *, source: str | None = None) -> ExpertOpResult:
+        """默认列出全部来源；source=local 只扫描本地目录，不访问包仓库。"""
+        if source not in (None, "local"):
+            return ExpertOpResult(
+                ok=False, payload={"error": "不支持的专家来源", "code": "BAD_REQUEST"}
+            )
+        if source == "local" and os.environ.get(_expert_store.LOCAL_DIRS_ENV, "1") != "1":
+            return ExpertOpResult(
+                ok=False,
+                payload={"error": "本地专家目录来源已禁用", "code": "LOCAL_SOURCE_DISABLED"},
+            )
         try:
-            summaries = await _expert_store.get_expert_source().list()
+            expert_source = (
+                _expert_store.LocalDirExpertPackageSource()
+                if source == "local"
+                else _expert_store.get_expert_source()
+            )
+            summaries = await expert_source.list()
             return ExpertOpResult(
                 ok=True,
                 payload={"experts": [asdict(s) for s in summaries]},

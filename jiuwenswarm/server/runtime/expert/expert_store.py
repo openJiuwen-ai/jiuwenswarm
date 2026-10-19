@@ -427,7 +427,7 @@ def _extract_zip(content: bytes, target_dir: Path) -> None:
 
 
 class LocalDirExpertPackageSource:
-    """本地目录 dev override（仅 env JIUWEN_EXPERT_LOCAL_DIRS=1 时启用）。"""
+    """当前用户工作区下的本地专家包目录来源。"""
 
     def __init__(self, experts_dir: Path | None = None) -> None:
         self._experts_dir = experts_dir or get_agent_experts_dir()
@@ -451,10 +451,13 @@ class LocalDirExpertPackageSource:
         members: list[dict[str, str]] = []
         pkg_type = "agent"
         try:
-            validate_expert_package(package_dir)
             manifest = json.loads(
                 (package_dir / "manifest.json").read_text(encoding="utf-8")
             )
+            if not isinstance(manifest, dict):
+                raise InvalidExpertPackage("manifest.json 必须是 JSON 对象")
+            raw_metadata = manifest.get("metadata")
+            metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
             if manifest.get("package_type") == "agent_group":
                 # 专家团：无 agentCard，展示名取顶层 name、描述取 leader 子包，
                 # 成员摘要供叠放头像/成员数展示
@@ -467,10 +470,12 @@ class LocalDirExpertPackageSource:
                 group = read_group_display(package_dir)
                 members = read_group_members(package_dir)
             else:
-                card = manifest.get("agentCard") or {}
-                metadata = manifest.get("metadata") or {}
-        except (InvalidExpertPackage, json.JSONDecodeError) as exc:
+                raw_card = manifest.get("agentCard")
+                card = raw_card if isinstance(raw_card, dict) else {}
+            validate_expert_package(package_dir)
+        except (InvalidExpertPackage, json.JSONDecodeError, OSError, UnicodeDecodeError, TypeError, ValueError) as exc:
             reason = str(exc)
+        raw_tags = metadata.get("tags")
         return ExpertSummary(
             id=str(card.get("id") or package_dir.name),
             name=str(card.get("name") or group.get("name") or package_dir.name),
@@ -478,7 +483,7 @@ class LocalDirExpertPackageSource:
             source="local",
             available=not reason,
             unavailable_reason=reason,
-            tags=list(metadata.get("tags") or []),
+            tags=[str(tag) for tag in raw_tags] if isinstance(raw_tags, list) else [],
             type=pkg_type,
             metadata=metadata,
             members=members,

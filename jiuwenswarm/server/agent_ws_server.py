@@ -4420,7 +4420,8 @@ class AgentWebSocketServer:
         return session_id, expert_id
 
     async def _handle_experts_list(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        result = await self._expert_service.list_experts()
+        params = request.params if isinstance(request.params, dict) else {}
+        result = await self._expert_service.list_experts(source=params.get("source"))
         await self._send_expert_response(
             ws, request, send_lock, ok=result.ok, payload=result.payload
         )
