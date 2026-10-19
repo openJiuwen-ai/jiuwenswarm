@@ -145,7 +145,7 @@ sequenceDiagram
 - 前端 `jiuwenmateApi.ts`：新增 `sendMessage`、`history`、`getRequest`，以及状态解释 `chatPhase`、`isPending` 与合并 `mergeChatRequest`。
 - 前端 `usePrivateChat.ts`：历史加载、轮询、重连重查与发送去重；订阅 `jiuwenmate.chat.stream` 并更新当前同事请求的草稿。
 - `HostCommitPort` 观察者、`AgentManager` 的 `on_event` 与 `ReplyDraft`、`web_adapter.StreamPublisher`：见 D-05。
-- 前端 `ColleagueWorkspacePage.tsx`、`ConversationComposer.tsx`：私聊区展示与发送（Enter 发送，Shift+Enter 换行）。
+- 前端 `ColleagueWorkspacePage.tsx`、`ConversationComposer.tsx`：私聊区展示与发送（Enter 发送，Shift+Enter 换行）。输入框右下角显示该员工配置中的模型名称，不显示 Auto。
 
 ### 5.2 接口
 
