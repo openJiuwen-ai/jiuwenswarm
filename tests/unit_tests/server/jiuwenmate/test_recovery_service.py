@@ -80,7 +80,7 @@ async def restart(tmp_path):
         await host.manager.start()
         hosts.append(host)
         recovered = await host.manager.recover(NS)
-        host.core.release("排队")
+        host.core.release("中断", "排队")
         await host.scheduler.drain()
         return host, recovered
 
@@ -120,8 +120,14 @@ async def test_an_interrupted_request_is_paused_awaiting_continuation_and_its_se
     assert [(r.decision, r.outcome, r.execution_id) for r in recovered] == [
         ("awaiting_continuation", "paused", left.execution_id)
     ]
-    assert host.status(left.interrupted) == ("ended", "paused")
-    assert host.core.started == ["排队"]
+    assert host.core.started == ["中断", "排队"]
+    continued = host.core.contexts["中断"].execution
+    assert continued.recovery_ref == left.execution_id
+    assert continued.execution_id != left.execution_id
+    assert host.status(left.interrupted) == ("ended", "completed")
+    assert host.status(left.queued) == ("ended", "completed")
+    link = host.sessions.execution_link(NS, left.interrupted.record.request_id, continued.execution_id)
+    assert link["relation"] == "continuation" and link["predecessor_id"] == left.execution_id
     view = (await host.manager.request_view(NS, left.interrupted.record.request_id)).to_dict()
     assert view["recovery"]["decision"] == "awaiting_continuation"
     assert view["recovery"]["execution_id"] == left.execution_id
@@ -155,7 +161,7 @@ async def test_a_second_restart_neither_judges_nor_closes_again(tmp_path, restar
     second, recovered = await restart(left)
 
     assert recovered == []
-    assert second.status(left.interrupted) == ("ended", "paused")
+    assert second.status(left.interrupted) == ("ended", "completed")
     assert second.core.started == []
 
 
@@ -200,6 +206,6 @@ async def test_tool_calls_without_a_saved_completion_are_recorded_as_unverified(
     host, recovered = await restart(left)
 
     assert recovered[0].unverified_tool_calls == ("call-open",)
-    assert host.core.started == ["排队"]
+    assert host.core.started == ["中断", "排队"]
     view = (await host.manager.request_view(NS, left.interrupted.record.request_id)).to_dict()
     assert view["recovery"]["unverified_tool_calls"] == ["call-open"]

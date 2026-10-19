@@ -283,16 +283,16 @@ def test_context_rule_violations_are_reported_as_contract_errors(snapshot):
         )
 
 
-def test_continuation_is_not_opened(snapshot, host_ports):
-    with pytest.raises(PersistentContractError, match="PA-18") as caught:
-        build_invocation(
-            snapshot,
-            request_for(snapshot),
-            ExecutionRecord(request_id="request-1", execution_id="e-2", recovery_ref="e-1"),
-            ports=host_ports(),
-        )
+def test_continuation_invocation_keeps_the_recovery_ref(snapshot, host_ports):
+    spec, context = build_invocation(
+        snapshot,
+        request_for(snapshot),
+        ExecutionRecord(request_id="request-1", execution_id="e-2", recovery_ref="e-1"),
+        ports=host_ports(),
+    )
 
-    assert caught.value.code == "PERSISTENT_NOT_OPENED"
+    assert context.execution.recovery_ref == "e-1"
+    assert spec.continuation_chain_limit == 8
 
 
 async def test_core_entries_still_reject_values_the_host_cannot_publish(snapshot, host_ports):
