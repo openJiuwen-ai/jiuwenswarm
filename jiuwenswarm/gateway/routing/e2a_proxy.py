@@ -78,6 +78,9 @@ def is_agentos_routing_client(agent_client: Any) -> bool:
     return (
         client_type.__name__ == "AgentOSRouterClient"
         and client_type.__module__.startswith("jiuwenswarm.extensions.agentos.")
+    ) or (
+        client_type.__name__ == "AdxRouterClient"
+        and client_type.__module__ == "jiuwenswarm.extensions.adx.router_client"
     )
 
 

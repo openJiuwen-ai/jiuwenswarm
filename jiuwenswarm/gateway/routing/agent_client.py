@@ -126,6 +126,7 @@ class WebSocketAgentServerClient(AgentServerClient):
 
     def __init__(self, *, ping_interval: float | None = 30.0, ping_timeout: float | None = 300.0) -> None:
         self._uri: str | None = None
+        self._extra_headers: dict[str, str] = {}
         self._ws: Any = None
         self._lock = asyncio.Lock()
         self._reconnect_lock = asyncio.Lock()
@@ -243,6 +244,8 @@ class WebSocketAgentServerClient(AgentServerClient):
             for key, value in dict(extra_headers or {}).items()
             if str(value).strip()
         }
+        # Retain a snapshot for automatic reconnect, including authentication.
+        self._extra_headers = cleaned_headers
         try:
             from websockets.legacy.client import connect as legacy_connect
             connect_fn = legacy_connect
@@ -486,6 +489,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         finally:
             self._ws = None
             self._uri = None
+            self._extra_headers = {}
             self._server_ready = False
             self._agent_ready = False
             self._readiness_state = None
@@ -508,7 +512,7 @@ class WebSocketAgentServerClient(AgentServerClient):
                 "[WebSocketAgentServerClient] WebSocket 已断开，准备按需重连: %s",
                 format_ws_diagnostics(self._diagnostic_state(), uri=uri),
             )
-            await self.connect(uri)
+            await self.connect(uri, extra_headers=dict(self._extra_headers))
 
     async def _send_wire_payload(self, payload: dict[str, Any]) -> None:
         ws = self._ws
