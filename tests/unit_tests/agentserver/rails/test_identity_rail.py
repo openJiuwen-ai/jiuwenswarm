@@ -235,3 +235,17 @@ def test_before_model_call_manages_default_identity_section(tmp_path: Path) -> N
     asyncio.run(rail.before_model_call(MagicMock()))
     added = rail._system_prompt_builder.add_section.call_args[0][0]
     assert "小艺" in added.content["cn"]
+def test_before_model_call_preserves_active_expert_identity(tmp_path: Path) -> None:
+    """专家生效时，工作区 IdentityRail 不能覆盖专家 persona。"""
+    rail = _make_rail(tmp_path, "# 默认身份\n")
+    agent = MagicMock()
+    agent.system_prompt_builder = rail._system_prompt_builder
+    agent._jiuwen_active_expert = True
+    rail.init(agent)
+
+    import asyncio
+
+    asyncio.run(rail.before_model_call(MagicMock()))
+
+    rail._system_prompt_builder.remove_section.assert_not_called()
+    rail._system_prompt_builder.add_section.assert_not_called()

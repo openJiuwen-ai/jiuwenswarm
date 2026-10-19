@@ -74,12 +74,14 @@ class IdentityRail(DeepAgentRail):
         # 与 _default_section 一起构成「可覆盖」集合，其余 identity 一律让路。
         self._installed_section_content: dict | None = None
         self._foreign_identity_yield_logged = False
+        self._agent = None
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def init(self, agent: "DeepAgent") -> None:
+        self._agent = agent
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
         if self._system_prompt_builder is None:
             logger.warning(
@@ -98,6 +100,7 @@ class IdentityRail(DeepAgentRail):
         if self._system_prompt_builder is not None and self._default_section is not None:
             self._system_prompt_builder.add_section(self._default_section)
         self._system_prompt_builder = None
+        self._agent = None
 
     # ------------------------------------------------------------------
     # Public knobs
@@ -121,6 +124,10 @@ class IdentityRail(DeepAgentRail):
         """Refresh the identity section from IDENTITY.md."""
         _ = ctx
         if self._system_prompt_builder is None:
+            return
+
+        # 活跃专家即使尚未绑定 identity section，也不能被工作区身份覆盖。
+        if self._agent is not None and getattr(self._agent, "_jiuwen_active_expert", False):
             return
 
         current = self._system_prompt_builder.get_section(_SECTION_NAME)
