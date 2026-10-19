@@ -44,9 +44,11 @@ class FlashDeliverySummaryRail(SkillTurboDeliverySummaryRail):
             _is_tool_interrupt(ctx)
             or ctx.session is None
             or ctx.exception is not None
-            or (isinstance(result, dict) and result.get("success") is False)
-            or getattr(result, "success", None) is False
         ):
+            clear_pending_ppt_delivery_summary()
+            return
+        result_failed = isinstance(result, dict) and result.get("success") is False
+        if result_failed or getattr(result, "success", None) is False:
             clear_pending_ppt_delivery_summary()
             return
 

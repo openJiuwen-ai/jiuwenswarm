@@ -1159,7 +1159,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         for k, v in self._FLASH_REACT_OVERRIDE.items():
             base_react[k] = self._deep_merge_react_value(base_react.get(k), v)
         if self._flash_turbo_enabled(base_react):
-            base_react["tool_lazy_load"]["eager_tools"].append(_FLASH_TURBO_TOOL_NAME)
+            lazy_config = base_react.setdefault("tool_lazy_load", {})
+            eager_tools = lazy_config.setdefault("eager_tools", [])
+            eager_tools.append(_FLASH_TURBO_TOOL_NAME)
         # eager_tools 是整表替换（设计上 flash 须写全最终名单）：部署配置过的
         # 自定义常驻工具会退到 deferred，这里把差异打出来，避免工具呈现变化
         # 不可观测。
