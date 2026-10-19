@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from weakref import WeakValueDictionary
 
 import pytest
@@ -75,6 +75,20 @@ def _rail(config):
         }},
         session_id="preflight-session",
     )
+
+
+def test_public_permission_snapshot_preserves_invocation_overlay(authorization_session):
+    from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS
+
+    rail = _rail({"tools": {"bash": "ask"}})
+    assert rail is not None
+    assert rail.get_permission_snapshot(session_id="preflight-session")["tools"]["bash"] == "ask"
+    token = RUN_PERMISSIONS.set({"bash": "deny"})
+    try:
+        assert rail.get_permission_snapshot(session_id="preflight-session")["tools"]["bash"] == "deny"
+    finally:
+        RUN_PERMISSIONS.reset(token)
+    assert rail.get_permission_snapshot(session_id="preflight-session")["tools"]["bash"] == "ask"
 
 
 def _action(name="bash", **params):
@@ -296,7 +310,7 @@ async def test_preflight_failure_keeps_action_in_request(authorization_session, 
     elif failure == "engine":
         monkeypatch.setattr(rail._engine, "check_permission", AsyncMock(side_effect=RuntimeError("failed")))
     elif failure == "snapshot":
-        monkeypatch.setattr(rail, "_invoke_permissions_hook", lambda *args, **kwargs: None)
+        monkeypatch.setattr(rail, "get_permission_snapshot", Mock(side_effect=ValueError("snapshot unavailable")))
     else:
         authorization_session.find_valid_intent_token.side_effect = RuntimeError("verification failed")
     action = _action(command="pwd")
