@@ -34,7 +34,9 @@ from openjiuwen.harness.persistent_agent import (
     PersistentPorts,
 )
 
-HOST_OPEN_FEATURES: frozenset[str] = frozenset({"construction", WORKSPACE_READ, WORKSPACE_WRITE})
+HOST_OPEN_FEATURES: frozenset[str] = frozenset(
+    {"construction", WORKSPACE_READ, WORKSPACE_WRITE, "window_management"}
+)
 # How many earlier Executions one continuation may read. A deployment constant, not a per-request choice.
 CONTINUATION_CHAIN_LIMIT = 8
 
