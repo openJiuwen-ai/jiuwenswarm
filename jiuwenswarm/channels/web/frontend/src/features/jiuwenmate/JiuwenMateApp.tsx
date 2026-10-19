@@ -610,7 +610,15 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
       {authorizeColleague && !existingPage ? (
         <ImAuthorizeDialog
           onSkip={() => setState((current) => finishColleagueAuthorization(current, false))}
-          onConfirm={() => setState((current) => finishColleagueAuthorization(current, true))}
+          onConfirm={async ({ appId, appSecret }) => {
+            if (!authorizeColleague) return;
+            await webRequest('channel.feishu.bind_agent', {
+              app_id: appId,
+              app_secret: appSecret,
+              persistent_agent_id: authorizeColleague.id,
+            });
+            setState((current) => finishColleagueAuthorization(current, true));
+          }}
         />
       ) : null}
       {pendingConfirm ? (

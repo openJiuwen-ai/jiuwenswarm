@@ -382,7 +382,7 @@ export function toColleague(value: unknown): JiuwenMateColleague {
       knowledge: texts(capabilities.knowledge),
       starterPrompts: texts(capabilities.starter_prompts),
     },
-    imConfigured: false,
+    imConfigured: wire.im_configured === true,
     disabled: wire.enabled === false,
     joinedAt: text(wire.created_at),
     isDefault: wire.is_default === true,
