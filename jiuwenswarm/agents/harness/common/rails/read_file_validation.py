@@ -315,7 +315,18 @@ def _write_read_file_tool_result(ctx: "AgentCallbackContext", message: str) -> N
     tool_call = ctx.inputs.tool_call
     tool_call_id = getattr(tool_call, "id", "") if tool_call else ""
     text = str(message or "")
-    ctx.inputs.tool_result = text
+    # T1 统一 schema：本函数是 read_file 失败结果的最后一写者——此前写纯文本
+    # 会把归一 rail 产出的成败标记覆盖掉（实测 2026-10-19 会话 f20731340：
+    # read_file 失败帧无 status/success）。前端/断路器读 schema 字段，LLM 视图
+    # （tool_msg.content）保持人读文本不变。
+    ctx.inputs.tool_result = {
+        "status": "error",
+        "success": False,
+        "error_code": "read_file_invalid",
+        "error_message": text,
+        "error": text,
+        "display": text,
+    }
     tool_msg = getattr(ctx.inputs, "tool_msg", None)
     if tool_msg is not None:
         tool_msg.content = text

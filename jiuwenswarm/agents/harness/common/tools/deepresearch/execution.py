@@ -1305,6 +1305,10 @@ async def _execute_workflow(
         return {
             "schema_version": EXECUTION_SCHEMA,
             "kind": "error",
+            # success/error 为统一失败标记（消费端探测器依赖）；kind 保留
+            # 供 deepresearch_execution_rail 等领域消费方使用。
+            "success": False,
+            "error": "DeepResearch 执行上下文不可用。",
             "error_code": "execution_context_missing",
             "content": "DeepResearch 执行上下文不可用。",
             "state": {},

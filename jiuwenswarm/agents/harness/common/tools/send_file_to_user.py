@@ -434,7 +434,13 @@ class SendFileToolkit:
                     msg_parts.append(f"  - {mf}")
             if not msg_parts:
                 msg_parts.append("没有可发送的文件")
-            return "\n".join(msg_parts)
+            result = "\n".join(msg_parts)
+            # 统一失败标记：本轮没有任何文件被投递（且并非"全部为重复跳过"
+            # 的良性情况）时，消费端必须能识别为失败。
+            all_skipped = bool(skipped_files) and not missing_files
+            if not all_skipped:
+                result = "[ERROR]: " + result
+            return result
 
         logger.info(
             "[SendFileToolkit] send_file 开始 session_id=%s 有效文件=%d 缺失=%d 跳过重复=%d",
@@ -542,7 +548,7 @@ class SendFileToolkit:
                     delivered,
                 )
                 return (
-                    "发送文件失败：推送通道无活跃订阅者或投递失败"
+                    "[ERROR]: 发送文件失败：推送通道无活跃订阅者或投递失败"
                     f"（delivered={delivered!r}）。请检查 Gateway/Relay WebSocket 连接后重试。"
                 )
 
@@ -583,7 +589,7 @@ class SendFileToolkit:
                 route.session_id,
                 str(e),
             )
-            return f"提交文件失败: {str(e)}"
+            return f"[ERROR]: 提交文件失败: {str(e)}"
 
     @staticmethod
     def _escape_file_download_via_push() -> bool:
@@ -625,7 +631,7 @@ class SendFileToolkit:
                 request_id=route.request_id,
             )
             return (
-                "发送文件失败：当前请求无可用的流式通道，无法投递企业下载链接。"
+                "[ERROR]: 发送文件失败：当前请求无可用的流式通道，无法投递企业下载链接。"
                 "请确认工具在对话流内执行（session.write_stream）。"
             )
 
@@ -641,7 +647,7 @@ class SendFileToolkit:
                 session_id=route.session_id,
                 request_id=route.request_id,
             )
-            return f"发送文件失败：对象存储未配置或不可用（{exc}）"
+            return f"[ERROR]: 发送文件失败：对象存储未配置或不可用（{exc}）"
 
         files_payload: list[dict[str, Any]] = []
         failed_files: list[dict[str, str]] = []
@@ -676,7 +682,7 @@ class SendFileToolkit:
                 )
 
         if not files_payload:
-            parts = ["发送文件失败：全部文件上传对象存储失败"]
+            parts = ["[ERROR]: 发送文件失败：全部文件上传对象存储失败"]
             for ff in failed_files:
                 parts.append(f"  - {ff['file']}: {ff['error']}")
             _safe_emit_audit_evt(
@@ -718,7 +724,7 @@ class SendFileToolkit:
                 session_id=route.session_id,
                 request_id=route.request_id,
             )
-            return f"发送文件失败：写入对话流失败（{exc}）"
+            return f"[ERROR]: 发送文件失败：写入对话流失败（{exc}）"
 
         _mark_files_sent(route.session_id, sent_ok)
         _safe_emit_audit_ua(
@@ -850,7 +856,13 @@ class SendFileToolkit:
             result_parts.append("以下文件不存在，未发送：")
             for mf in missing_files:
                 result_parts.append(f"  - {mf}")
-        return "\n".join(result_parts) if result_parts else "发送完成"
+        if not result_parts:
+            return "发送完成"
+        joined = "\n".join(result_parts)
+        # 统一失败标记：一个都没发出去（且存在失败项）时必须可被消费端识别
+        if success_count == 0 and failed_files:
+            joined = "[ERROR]: " + joined
+        return joined
 
     def get_tools(self, *, tool_id: str | None = None) -> List[Tool]:
         """Return tools for registration in Runner.
