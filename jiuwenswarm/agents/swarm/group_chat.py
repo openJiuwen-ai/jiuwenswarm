@@ -371,7 +371,9 @@ class RunTeam(_GroupTool):
                             continue
                         event_type = payload.get("event_type")
                         if execution is not None:
-                            await GroupExecutions(self.context.session_id).task_event(execution["execution_id"], payload)
+                            await GroupExecutions(self.context.session_id).task_event(
+                                execution["execution_id"], payload,
+                            )
                             if event_type == "team.runtime_ready" and handler is None:
                                 token = set_session_id(child_session)
                                 try:

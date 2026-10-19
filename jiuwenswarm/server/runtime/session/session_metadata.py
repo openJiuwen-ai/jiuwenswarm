@@ -271,8 +271,9 @@ def _apply_metadata_defaults_with_inference(
             conversation_type = "group_chat"
     if metadata.get("type") != conversation_type:
         metadata["type"] = conversation_type
-        changed = True
-        changed_fields.add("type")
+        if conversation_type == "group_chat":
+            changed = True
+            changed_fields.add("type")
 
     # last_user_message_at: 多级回退
     # 优先用已有时间字段;不能用 ``or`` 短路——合法的 0.0 时间戳是 falsy。
@@ -727,7 +728,8 @@ def _write_metadata_unfenced(
             conversation_type = "group_chat"
         if (fpath.parent / "group.json").is_file():
             conversation_type = "group_chat"
-        to_write["type"] = conversation_type
+        if conversation_type == "group_chat":
+            to_write["type"] = conversation_type
 
         # Atomic write: write a temp file then rename, so that truncation by
         # write_text can never expose empty content to a concurrent reader

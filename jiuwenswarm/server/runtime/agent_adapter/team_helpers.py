@@ -2959,17 +2959,17 @@ async def _process_team_message_stream_locked(
                     # startup ownership before handing control to the caller.
                     await startup.aclose()
                     payload = chunk.payload if isinstance(chunk.payload, dict) else {}
-                    event_type = payload.get("event_type")
+                    chunk_event_type = payload.get("event_type")
                     accepted_events = {
                         "team.group_message.accepted", "team.input.accepted", "chat.processing_status_deferred",
                     }
-                    if event_type in accepted_events:
+                    if chunk_event_type in accepted_events:
                         submitted = True
-                    if execution_ids and event_type == "team.group_message.accepted":
+                    if execution_ids and chunk_event_type == "team.group_message.accepted":
                         from jiuwenswarm.server.runtime.group_execution import GroupExecutions
 
                         await GroupExecutions(session_id).accept_delivery(params.get("client_message_id") or request_id)
-                    if event_type in {"chat.error", "team.error", "team.interact.failed"}:
+                    if chunk_event_type in {"chat.error", "team.error", "team.interact.failed"}:
                         delivery_error = True
                     yield chunk
     except Exception:
