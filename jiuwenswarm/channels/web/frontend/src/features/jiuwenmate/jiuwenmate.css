@@ -2,6 +2,7 @@
   --jm-text: #191919;
   --jm-text-2: #666;
   --jm-text-3: #999;
+  --jm-surface: #fff;
   --jm-border: #ebebeb;
   --jm-border-strong: #dcdcdc;
   --jm-muted: #f5f5f5;
@@ -2147,24 +2148,69 @@
   justify-content: space-between;
   padding: 12px 16px;
   border-radius: 8px;
+  background: var(--jm-muted-2);
+}
+
+.jiuwenmate-schedule-card > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.jiuwenmate-schedule-card strong {
+  color: var(--jm-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.jiuwenmate-schedule-card__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 16px;
 }
 
 .jiuwenmate-schedule-cards small {
+  color: var(--jm-text-3);
+  font-size: 13px;
   display: flex;
   gap: 6px;
   align-items: center;
 }
 
+.jiuwenmate-schedule-cards small svg {
+  width: 16px;
+  height: 16px;
+}
+
 .jiuwenmate-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
   width: 36px;
   height: 20px;
+  padding: 2px;
   border: 0;
   border-radius: 999px;
-  background: #d0d5dd;
+  background: var(--jm-border-strong);
+  transition: background 160ms ease;
+}
+
+.jiuwenmate-switch__thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--jm-surface);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--jm-text) 22%, transparent);
+  transition: transform 160ms ease;
 }
 
 .jiuwenmate-switch[aria-checked='true'] {
-  background: #2f6bff;
+  background: var(--jm-blue);
+}
+
+.jiuwenmate-switch[aria-checked='true'] .jiuwenmate-switch__thumb {
+  transform: translateX(16px);
 }
 
 .jiuwenmate-schedule-modes button[aria-selected='true'] {

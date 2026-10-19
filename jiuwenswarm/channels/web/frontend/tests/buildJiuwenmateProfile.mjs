@@ -20,7 +20,10 @@ const svgReact = {
 
 await esbuild.build({
   absWorkingDir: root,
-  entryPoints: ['src/features/jiuwenmate/pages/ColleagueProfilePage.tsx'],
+  entryPoints: [
+    'src/features/jiuwenmate/pages/ColleagueProfilePage.tsx',
+    'src/features/jiuwenmate/schedules/ScheduleBoard.tsx',
+  ],
   bundle: true,
   splitting: true,
   packages: 'external',
