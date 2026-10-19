@@ -150,10 +150,15 @@ async def runtime(monkeypatch, setup):
         return agent, model
 
     yield create
-    for agent in agents:
-        await agent.stop()
-        await agent.aclose()
-    await Runner.stop()
+    try:
+        for agent in agents:
+            await agent.stop()
+            # The SDK pinned by CI does not expose aclose().
+            aclose = getattr(agent, "aclose", None)
+            if callable(aclose):
+                await aclose()
+    finally:
+        await Runner.stop()
 
 
 async def _turn(agent, query):
