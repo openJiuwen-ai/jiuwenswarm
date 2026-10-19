@@ -42,6 +42,7 @@ class PolicyEvaluation:
     source: str = "permission_engine"
     path_result: SendFilePathGuardResult | None = None
     external_paths: tuple[str, ...] = ()
+    manual_approval_required: bool = False
 
 
 class OpenJiuwenPolicyEvaluator:
@@ -285,6 +286,7 @@ def _evaluation_from_permission_result(result: Any) -> PolicyEvaluation:
         reason=reason,
         matched_rule=matched_rule,
         external_paths=external_paths or (),
+        manual_approval_required=getattr(result, "manual_approval_required", False) is True,
     )
 
 
@@ -349,4 +351,5 @@ def _strictest_evaluation(
         source=strictest.source,
         path_result=path_result,
         external_paths=tuple(external_paths),
+        manual_approval_required=any(item.manual_approval_required for item in candidates),
     )

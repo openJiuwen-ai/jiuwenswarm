@@ -93,7 +93,24 @@ processes and unrelated Web/TUI contexts retain their configuration. A
 resumed session does not restore ephemeral credentials: resend the options
 and retain the key environment variable in the invoking CMD.
 
-## 4. Codex comparison
+## 4. File access approval
+
+With both `permissions.enabled` and `permissions.file_guard.enabled` enabled,
+Process CLI requires explicit approval for each shell command whose file
+accesses cannot be determined, including variable-based command chains,
+redirections, interpreters, and unrecognized programs. Smart Approval cannot
+approve these commands automatically, and approvals are not remembered for
+the session or persisted. Recognized literal paths retain existing path policy.
+A standalone prompt command that cannot receive approval exits with code `4`
+before the tool executes. Machine entry points retain their existing approval
+response contracts.
+
+`--cwd` selects a working directory and `--trusted-dir` adds trusted paths;
+neither provides an operating-system sandbox. Explicitly disabling permissions
+or file protection preserves existing unrestricted behavior. This policy is
+exclusive to `process_cli`; other channels retain their existing behavior.
+
+## 5. Codex comparison
 
 Codex `exec` supports `-m/--model` and `-c/--config key=value`. Provider config
 uses `model_providers.<id>.base_url` and `env_key`. This implementation follows
