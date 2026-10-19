@@ -11,7 +11,7 @@ JiuwenSwarm provides this capability on top of the A4P SDK from the openJiuwen A
 
 ## Enabling and Using
 
-Enable it under **Settings → Experimental features → A4P Preauthorization**. It is off by default and only takes effect in the "default permission" mode; **once enabled, cron job runs also go through the permission guardrail.** You can also configure it in `config.yaml`:
+Enable it under **Settings → Experimental features → A4P Preauthorization**. It is off by default and only takes effect in the "default permission" mode. Smart Approval and Full Access do not inject A4P authorization guidance, expose the preauthorization tool, or use A4P tokens to approve calls. **once enabled, cron job runs also go through the permission guardrail.** You can also configure it in `config.yaml`:
 
 ```yaml
 a4p:
