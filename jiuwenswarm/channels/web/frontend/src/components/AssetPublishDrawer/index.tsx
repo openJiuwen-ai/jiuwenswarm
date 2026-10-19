@@ -12,7 +12,7 @@ import {
 } from '../../utils/gitcodeOAuth';
 import { PUBLISH_RESTORE_KEY, useAssetPublish } from '../../hooks/useAssetPublish';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
-import { canRetrySkillPack, localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
+import { publishOutcome, localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
 import { publishIssueKey } from '../../features/assetPublishErrors';
 import type { AssetPublishOpenRequest, AssetReference, PublishMetadata } from '../../types/assetPublish';
 import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
@@ -489,19 +489,8 @@ function AssetPublishDrawer({
     description: 'descriptionHelp',
     tags: 'tagsHelp',
   };
+  const outcome = state.record ? publishOutcome(state.record) : null;
   const recordState = state.record ? localRecordState(state.record) : null;
-  // The result view is shown when the user opened it, while a submission is in flight, or after a
-  // submission this session started (`attempted` is reset by a definitive rejection, by
-  // invalidate() (edit) and by prepare(), so a failed attempt cannot leave the card armed).
-  const showResult =
-    Boolean(state.record) && (viewingResult || state.submissionLocked || state.attempted);
-  // Both "back to editing" buttons must leave the same way; when only one of them reset the state,
-  // the card could pop back over the form on the next record update.
-  const backToForm = () => {
-    state.edit({});
-    setViewingResult(false);
-    setReview(false);
-  };
   const ResultIcon =
     recordState === 'failed'
       ? CircleAlert
@@ -966,9 +955,7 @@ function AssetPublishDrawer({
             <span className="asset-publish-result-icon" aria-hidden="true" data-testid="asset-publish-result-icon">
               <ResultIcon size={20} />
             </span>
-            <h3 data-testid="asset-publish-result-status">
-              {text(packStageLabels[state.record.stage || ''] || recordState as MessageKey)}
-            </h3>
+            <h3 data-testid="asset-publish-result-status">{text(recordState as MessageKey)}</h3>
           </header>
           <dl className="asset-publish-result-metadata" data-testid="asset-publish-result-metadata">
             {state.record.result?.asset_id && (

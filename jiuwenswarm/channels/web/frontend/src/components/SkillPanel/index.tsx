@@ -1,4 +1,4 @@
-import { matchesAssetName } from '../../features/assetNameSearch';
+import { assetSearchNames, matchesAssetName } from '../../features/assetNameSearch';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
  * SkillPanel 组件
@@ -195,8 +195,7 @@ export function SkillPanel({
   const enterpriseEdition = isEnterprise();
   const [activeTab, setActiveTab] = useState<'my' | 'marketplace' | 'graph'>('marketplace');
   const [marketplaceSubView, setMarketplaceSubView] = useState<MarketplaceSubView>('list');
-  const [mySkillsSubTab, setMySkillsSubTab] = useState<MySkillsSubTab>('all');
-  const [mySkillsKindFilter, setMySkillsKindFilter] = useState<MySkillsKindTab | null>(null);
+  const [mySkillsSubTab, setMySkillsSubTab] = useState<'all' | 'enabled' | 'disabled' | 'builtin'>('all');
   const [marketplaceCategory, setMarketplaceCategory] = useState<(typeof MARKETPLACE_CATEGORIES)[number]>('all');
   const [detailTab, setDetailTab] = useState<'content' | 'files' | 'experience' | 'members'>('content');
   /** 企业版技能广场：按已接入技能源动态生成页签 */
@@ -1010,7 +1009,7 @@ export function SkillPanel({
         break;
     }
     return filtered;
-  }, [visibleSkills, mySkillsSubTab, installedSkillNames, enterpriseEdition]);
+  }, [visibleSkills, mySkillsSubTab, installedSkillNames]);
 
   /**
    * 企业技能源面板安装态对照：只传带 origin 的已装技能 + 需名称回退的 builtin/prebuilt。
@@ -1221,8 +1220,6 @@ export function SkillPanel({
       labelTags.push(t('skills.mySkillsTabs.prebuilt'));
     } else if (builtinCard) {
       labelTags.push(t('skills.mySkillsTabs.builtin'));
-    } else if (localCard) {
-      labelTags.push(t('skills.mySkillsTabs.local'));
     }
 
     const adminManaged = isAdminManagedSkill(skill, enterpriseEdition);
@@ -1484,7 +1481,7 @@ export function SkillPanel({
         <div className="flex items-center gap-3" data-testid="skill-panel-toolbar-actions">
           {activeTab === 'my' && (
             <>
-              {/* 企业版：全部 / 企业预置 / 内置 / 用户自装 / 本地；个人版：全部 / 启用 / 禁用 / 内置 */}
+              {/* 启用/禁用筛选 */}
               <FilterDropdown
                 open={enableFilterOpen}
                 onToggle={(v) => {
