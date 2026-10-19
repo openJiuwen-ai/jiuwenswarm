@@ -15,9 +15,12 @@ config.yaml。父类只提供通用工具工厂与生命周期扩展点，不感
 
 部署组合提示：``flash.enabled`` 是进程级开关，不区分 channel / 请求来源——
 officeclaw 对话与 cron / heartbeat / proactive 等后台流水线同样进入 flash。
-flash 白名单不含 ``_llm_retry_rail`` / ``_context_overflow_recovery_rail`` /
-``_deepresearch_execution_rail`` 等健壮性 rail，长文档 / 弱网任务的容错弱于
-normal；officeclaw 等部署开启 flash 前需评估此影响面，如需按来源豁免应在
+flash 白名单保留 ``_llm_retry_rail``（带通知的 LLM 重试，顶替工厂
+``enable_llm_retry_rail`` 注入的静默基础版——factory 按 issubclass 去重，不叠
+双份）与 ``_context_overflow_recovery_rail``（413 上下文溢出恢复：检测 →
+set_force_compact 触发 ``_context_processor_rail`` 里的 FullCompactProcessor →
+重进模型调用 → 连续失败熔断），与 normal/code 同链对齐；仍不含
+``_deepresearch_execution_rail`` 等其余健壮性 rail。如需按来源豁免应在
 mode 解析 guard（``_shared.resolve_agent_request_mode``）增加 channel 过滤。
 
 flash 行为由类常量定义：
@@ -235,6 +238,19 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_subagent_rail",
         "_permission_rail",
         "_context_processor_rail",
+        # _context_overflow_recovery_rail + _llm_retry_rail：健壮性链，与
+        #   normal/code 对齐（复用父类 builder，见 interface_deep _RailBuildInfo）。
+        #   前者在 413/上下文溢出时 set_force_compact 触发上面
+        #   _context_processor_rail 里 stock config 构建的 FullCompactProcessor
+        #   （该处理器仅溢出恢复路径触发，日常 add 不跑），然后 request_retry
+        #   重进模型调用，连续失败按 max_recovery_attempts 熔断——两者必须与
+        #   _context_processor_rail 成对保留，只留 processor 不留恢复 rail 则
+        #   兜底压缩永远不触发。后者是带通知/瞬时错误重试的宿主版
+        #   NotifyingLLMRetryRail，顶替工厂 enable_llm_retry_rail 注入的静默
+        #   基础版（factory _already_provided 按 issubclass 去重，不叠双份）；
+        #   开关走 execution_guard.llm_retry_rail（同 normal）。
+        "_context_overflow_recovery_rail",
+        "_llm_retry_rail",
         # _filesystem_rail: SlimSysOperationRail（flash override），init() 注册
         #   Read/Write/Edit/Glob/Grep/Bash，不注册 powershell/list_files；
         #   丢掉=无文件/shell 能力。
