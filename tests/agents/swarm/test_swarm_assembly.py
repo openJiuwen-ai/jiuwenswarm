@@ -3458,6 +3458,42 @@ def test_swarm_assembly_hint_from_seed_and_legacy() -> None:
     assert rmb._swarm_assembly_hint(types.SimpleNamespace()) == {}
 
 
+def test_swarm_assembly_hint_carries_cron_marker() -> None:
+    """Team cron runs keep their cron marker across the bootstrap boundary.
+
+    Without the marker the remote teammate rebuilds its spec from mode /
+    project_dir alone, and its members re-expose cron tools inside a cron
+    execution session — nested cron creation (issue #5116).
+    """
+    from jiuwenswarm.agents.harness.team import remote_member_bootstrap as rmb
+
+    cron_meta = {"job_id": "job-1", "run_id": "job-1:1900"}
+    spec = _make_team_spec()
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="__cron___19abc_rand12",
+        mode="team",
+        request_metadata={"mode": "team", "cron": cron_meta},
+    )
+    leader = types.SimpleNamespace(spec=spec)
+    assert rmb._swarm_assembly_hint(leader) == {
+        "mode": "team",
+        "cron": cron_meta,
+    }
+
+    # Ordinary sessions carry no cron marker, so the hint stays minimal.
+    plain = _make_team_spec()
+    enrich_team_spec_for_swarm(
+        plain,
+        session_id="web_19abc",
+        mode="team",
+        request_metadata={"mode": "team"},
+    )
+    assert rmb._swarm_assembly_hint(types.SimpleNamespace(spec=plain)) == {
+        "mode": "team",
+    }
+
+
 def test_browser_key_derivation() -> None:
     """_browser_key composes session+member into a unique, stable key."""
     # Normal: session_id + member_name → "sess-alice"
