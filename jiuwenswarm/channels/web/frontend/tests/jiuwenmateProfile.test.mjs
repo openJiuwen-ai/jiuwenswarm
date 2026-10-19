@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { initReactI18next } from 'react-i18next';
 
 import { ColleagueProfilePage } from '../node_modules/.cache/jiuwenmate-profile/ColleagueProfilePage.js';
+import { ScheduleBoard } from '../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js';
 
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
 await i18n.use(initReactI18next).init({ lng: 'zh', resources: { zh: { translation: zh } }, interpolation: { escapeValue: false } });
@@ -100,7 +101,53 @@ test('schedules can be created on the schedules page', () => {
   assert.match(markup, /晨报/);
   assert.match(markup, /每天 9:00/);
   assert.match(markup, /添加/);
+  assert.match(markup, /class="jiuwenmate-schedule-card"/);
+  assert.match(markup, /jiuwenmate-schedule-card__actions/);
   assert.match(markup, /role="switch"/);
+  assert.match(markup, /class="jiuwenmate-switch__thumb"/);
+});
+
+test('schedule board keeps the executor avatar color selected for the colleague', () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(ScheduleBoard, {
+      schedules: [
+        {
+          id: 'plan-1', agentId: 'agent-1', name: '晨报', prompt: '汇总昨日事项', cronExpr: '0 9 * * *', timezone: 'Asia/Shanghai',
+          enabled: true, nextFireAt: '2026-10-18T01:00:00+00:00', scheduleKind: 'cron', intervalSeconds: null, runAt: null,
+          startsAt: null, endsAt: null, conversationId: 'schedule:plan-1', runCount: 0, lastStatus: 'running',
+        },
+      ],
+      colleagues: [{ id: 'agent-1', name: '小九', category: 'custom', avatarHue: 230 }],
+      onCreate: noop,
+      onUpdate: noop,
+      onSetEnabled: noop,
+      onDelete: noop,
+      onLoadHistory: async () => ({ plan: null, runs: [] }),
+    }),
+  );
+  assert.match(markup, /data-hue="230"[^>]*data-testid="jiuwenmate-colleague-avatar"/);
+  assert.match(markup, /--jm-avatar-hue:230deg/);
+});
+
+test('schedule board keeps the default executor portrait unfiltered', () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(ScheduleBoard, {
+      schedules: [
+        {
+          id: 'plan-default', agentId: 'default-agent', name: '晨报', prompt: '汇总昨日事项', cronExpr: '0 9 * * *', timezone: 'Asia/Shanghai',
+          enabled: true, nextFireAt: '2026-10-18T01:00:00+00:00', scheduleKind: 'cron', intervalSeconds: null, runAt: null,
+          startsAt: null, endsAt: null, conversationId: 'schedule:plan-default', runCount: 0, lastStatus: 'running',
+        },
+      ],
+      colleagues: [{ id: 'default-agent', name: '小九', category: 'custom', isDefault: true }],
+      onCreate: noop,
+      onUpdate: noop,
+      onSetEnabled: noop,
+      onDelete: noop,
+      onLoadHistory: async () => ({ plan: null, runs: [] }),
+    }),
+  );
+  assert.doesNotMatch(markup, /data-hue=/);
 });
 
 test('the overview shows the employee activity instead of an empty log', () => {
