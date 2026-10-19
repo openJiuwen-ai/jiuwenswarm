@@ -35,9 +35,15 @@ from openjiuwen.harness.persistent_agent import (
 )
 
 HOST_OPEN_FEATURES: frozenset[str] = frozenset({"construction", WORKSPACE_READ, WORKSPACE_WRITE})
+# How many earlier Executions one continuation may read. A deployment constant, not a per-request choice.
+CONTINUATION_CHAIN_LIMIT = 8
 
 # Core opens single-round execution only; these values are fixed, not configurable.
-_FIXED_FIELDS: dict[str, Any] = {"enable_task_loop": False, "auto_create_workspace": False}
+_FIXED_FIELDS: dict[str, Any] = {
+    "enable_task_loop": False,
+    "auto_create_workspace": False,
+    "continuation_chain_limit": CONTINUATION_CHAIN_LIMIT,
+}
 _UNOPENED_FLAGS = ("enable_async_subagent", "enable_subagent_runtime", "add_general_purpose_agent")
 _DEFAULT_FEATURES = frozenset({"construction"})
 
@@ -156,8 +162,6 @@ def build_invocation(
         raise PersistentContractError("Request belongs to another Agent")
     if request.config_version != snapshot.config_version or request.config_fingerprint != snapshot.fingerprint:
         raise PersistentContractError("Request was accepted under another configuration version")
-    if execution.recovery_ref is not None:
-        raise PersistentContractError("continuation is not opened yet (PA-18)", code="PERSISTENT_NOT_OPENED")
     backend = ports.window_backend
     if ports.group_chat is not None:
         from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort
@@ -186,4 +190,6 @@ def build_invocation(
         build_context.validate(spec)
     except BaseError as exc:
         raise PersistentContractError(f"invalid PersistentBuildContext: {exc}") from exc
+    if spec.continuation_chain_limit is None:
+        spec = spec.model_copy(update={"continuation_chain_limit": CONTINUATION_CHAIN_LIMIT})
     return spec, build_context

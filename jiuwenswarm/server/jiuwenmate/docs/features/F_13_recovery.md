@@ -7,9 +7,9 @@
 | 建档日期 | 2026-10-15 |
 | 范围 | jiuwenswarm：`server/jiuwenmate/recovery_service.py`（新增）、`session_scheduler.py`（`wake`）、`agent_manager.py`、`web_adapter.py`；前端 `channels/web/frontend/src/features/jiuwenmate/` 与 jiuwenmate 文案 |
 | 方案成熟度 | 已确认（按 jiuwenswarm 仓 `AGENTS.md` 的变更闸门先提交分析与改动方案，2026-10-15 经负责人确认） |
-| 计划条目 | [JM-13](../designs/jiuwenmate-development-plan.md)：续做与恢复服务；本文覆盖“重启扫描与执行异常核对”子范围 |
+| 计划条目 | [JM-13](../designs/jiuwenmate-development-plan.md)：续做与恢复服务；重启扫描、异常核对和中断后续做 |
 | 负责人 | 常钰聪 |
-| 状态 | 进行中（重启扫描与异常核对已实现并通过宿主组件验证；续做执行待 PA-17、PA-18） |
+| 状态 | 进行中（重启扫描、异常核对和中断后续做已接入；停止后继续与条件恢复后的重新排队仍未接入） |
 | 设计依据 | [JiuwenMate 服务端架构设计](../designs/jiuwenmate-architecture.md) 第 6.3、8.2、8.3 节 |
 | 关联 feature | 前置：[F_04 事件提交端口](F_04_commit-port.md)、[F_07 会话调度与执行驱动](F_07_execution-driver.md)、[F_12 执行控制服务](F_12_execution-control.md) |
 | 验证摘要 | 见第 8 节 |
@@ -36,20 +36,16 @@ core 在 `9eb336b4` 对带 `recovery_ref` 的执行仍然拒绝（PA-18 未接�
 ### 2.3 本次范围与非目标
 
 - 本次包含：重启扫描；按执行日志与控制事实结束遗留 Request；恢复判断表；调度器 `wake`；`RequestView.recovery`；页面显示待续做与未确认的工具调用。
-- 本次不包含（依赖未完成的 PA 项，负责人确认暂不实施）：
-  - 续做执行：沿用原 Request 与原 Spec、`recovery_ref` 指向原执行（PA-18）；
-  - 停止后继续、条件恢复后的重新排队，以及“条件未改变时不反复续做”（PA-17、PA-18）；
-  - 修改 agent-core、`spec_provider` 对 `recovery_ref` 的拒绝、`SessionScheduler.resume`（仍返回 `PERSISTENT_NOT_OPENED`）；
-  - 进程仍在运行时写入 Request 结果失败的重试：在下次重启扫描时收尾。
+- 已接入：中断且没有停止或取消时，原 Request 重新排队。新执行的 `recovery_ref` 指向被中断的执行，并在派发前写下执行链接。
+- 仍不包含：停止后继续、条件恢复后的重新排队、确认卡片恢复 `resume_persistent_request`。进程仍在运行时写入 Request 结果失败，仍等到下次重启扫描收尾。
 
 ## 3. 设计约束、假设与待决问题
 
 - **已确认约束与依赖：**
   - `tool.intent`、`execution.paused`、`execution.final` 是关键事件，返回前已落库；其他事件在后台写入，可能缺失（JM-04）。因此终止事件的有无可以作为判断依据，`tool.completed` 的缺失不能。
   - 控制事实由 JM-12 先于中断写入；有控制事实的 Request 不续做。
-- **负责人确认（2026-10-15）：** 无终止事件、无控制事实的中断 Request，在 PA-18 接通前结束为 `paused` 并记为待续做，Session 放行，后续消息继续执行；PA-18 接通后从恢复判断表续做。
+- **负责人确认（2026-10-15，续做已接入）：** 无终止事件、无控制事实的中断 Request 记为待续做，并按原序号重新排队。续做先于同一会话里更晚的消息执行。
 - **关键假设：** 遗留 Request 都有至少一次 Execution（`start_execution` 与置为 `dispatched` 在同一事务中）；缺失时按 `failed` 结束并写日志。
-- **待决问题：** PA-18 接通后，续做与该会话中已执行的后续消息之间的顺序语义。
 
 ## 4. 总体方案与设计取舍
 
@@ -178,7 +174,7 @@ sequenceDiagram
 
 | 遗留项 | 性质 | 影响与现有处置 | 后续入口 |
 | --- | --- | --- | --- |
-| 续做执行 | 未实施 | 待续做的 Request 保持 `paused` | PA-18 |
+| 续做执行 | 已接入 | 中断的 Request 重新排队，新执行的 `recovery_ref` 指向被中断的执行 | 停止后继续与条件恢复仍未接入 |
 | 停止后继续、条件恢复后重新排队 | 未实施 | 无入口 | PA-17、PA-18 |
 | 工具结果核实 | 部分实施 | 只记录未确认的调用，不查询外部系统 | 续做接通时 |
 

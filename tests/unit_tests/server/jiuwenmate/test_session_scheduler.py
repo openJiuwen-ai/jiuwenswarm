@@ -330,11 +330,11 @@ async def test_closed_scheduler_refuses_requests(tmp_path):
     assert excinfo.value.code == "SCHEDULER_CLOSED"
 
 
-async def test_resume_is_not_opened_yet(host):
+async def test_resume_refuses_a_request_that_is_not_awaiting_continuation(host):
     state = await host.send("任务")
     with pytest.raises(PersistentAgentError) as excinfo:
         host.scheduler.resume(state)
-    assert excinfo.value.code == "PERSISTENT_NOT_OPENED"
+    assert excinfo.value.code == "CONTINUATION_NOT_READY"
 
 
 async def test_direct_message_gets_search_port_without_group_trigger_preflight(host, monkeypatch):
