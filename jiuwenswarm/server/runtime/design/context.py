@@ -279,9 +279,6 @@ def get_graph_coordinator(store: Any, graph_id: str) -> Any:
     if coordinator is None:
         from jiuwenswarm.server.runtime.design.run_coordinator import RunCoordinator
 
-        spawner = StoreNodeSpawner(
-            store, graph_id, lambda: get_graph_coordinator(store, graph_id)
-        )
-        coordinator = RunCoordinator(store, graph_id, spawner)
+        coordinator = RunCoordinator(store, graph_id)
         _GRAPH_COORDINATORS[graph_id] = coordinator
     return coordinator

@@ -52,13 +52,17 @@ from jiuwenswarm.common.schema.designer_graph import (
     RUN_SCHEMA_VERSION,
     DesignerExecutionGraph,
 )
-from jiuwenswarm.server.runtime.design.context import StoreNodeSpawner
+from jiuwenswarm.server.runtime.design.context import (
+    get_design_context_registry,
+)
 from jiuwenswarm.server.runtime.design.event_bridge import DesignEventBridge
 from jiuwenswarm.server.runtime.design.graph_compiler import (
     GraphScriptCompiler,
     _descendants,
 )
-from jiuwenswarm.server.runtime.design.worker_backend import DesignerWorkerBackend
+from jiuwenswarm.server.runtime.design.team_worker import (
+    build_worker_backend as _build_team_worker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +76,10 @@ class RunCoordinator:
         self,
         store: Any,
         graph_id: str,
-        spawner: StoreNodeSpawner,
         media_root: "Path | None" = None,
     ) -> None:
         self._store = store
         self._graph_id = graph_id
-        self._spawner = spawner
         # Team-owned media root: set by the bridge binding (the owning team's
         # team-workspace) so worker assets live under the team. None keeps the
         # legacy global designer_media layout.
@@ -277,7 +279,6 @@ class RunCoordinator:
             bridge = DesignEventBridge(
                 run, on_update, store=self._store, graph=graph
             )
-
             script = self._compiler.compile(
                 graph,
                 run.get("node_states") or {},
@@ -309,58 +310,38 @@ class RunCoordinator:
             # (persona + package tools live in the designer AgentGroup package;
             # the claw repo only maps graph nodes to role names). The base spec
             # is bound by the bridge from the live design team (context.worker_
-            # base_spec); the fallback keeps the package-tool path testable.
-            from jiuwenswarm.server.runtime.design.context import (
-                get_design_context_registry,
+            # base_spec); an unbound context is a setup error, not a mode to
+            # silently route around with a legacy executor.
+            context = get_design_context_registry().for_graph(
+                str(graph.get("graph_id") or self._graph_id)
             )
-            from jiuwenswarm.server.runtime.design.team_worker import (
-                build_worker_backend as _build_team_worker,
-            )
-
-            context = get_design_context_registry().for_graph(str(graph.get("graph_id") or self._graph_id))
-            base_spec = getattr(context, "worker_base_spec", None)
-            build_ctx = getattr(context, "worker_build_context", None)
-            expert_specs = getattr(context, "expert_specs", None)
-            team_name = getattr(context, "team_name", None) or f"jiuwen_team_design"
+            if context is None or context.worker_base_spec is None:
+                raise RuntimeError(
+                    "design context not bound for this graph: the session bridge "
+                    "must bind_round (worker base spec) before a trigger starts"
+                )
+            build_ctx = context.worker_build_context
+            expert_specs = context.expert_specs
+            team_name = str(context.team_name or "").strip()
             session_id = str((graph.get("metadata") or {}).get("session_id") or "").strip()
-            if base_spec is not None:
-                if expert_specs is None:
-                    # Bridge bound the base spec but never derived the expert
-                    # table (older binding path / ST direct binding): derive it
-                    # now from the SAME enriched-spec source so agent_template
-                    # names resolve instead of failing as "no group bound".
-                    from jiuwenswarm.agents.harness.team import get_team_manager
-                    from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
-                    from jiuwenswarm.server.runtime.design.team_worker import (
-                        derive_design_expert_specs,
-                    )
-                    worker_spec = await get_team_manager().get_swarm_enriched_team_spec(
-                        session_id=session_id,
-                        mode=NEW_TEAM_DESIGN,
-                        agent_group_name="designer",
-                    )
-                    expert_specs = derive_design_expert_specs(worker_spec)
-                    context.expert_specs = expert_specs
-                backend = _build_team_worker(
-                    team_name=team_name,
-                    worker_base_spec=base_spec,
-                    build_context=build_ctx,
-                    # Worker names (hence their checkpointer keys under the shared
-                    # session) derive from this id; the lifelong run id would mint
-                    # the same name on every rerun and restore the last worker's
-                    # context. The engine's journal keeps the lifelong run id.
-                    run_id=trigger_scope,
-                    session_id=session_id or None,
-                    expert_specs=expert_specs,
+            if not team_name or not session_id:
+                raise RuntimeError(
+                    "design trigger needs its owning team: team_name (bound by "
+                    "the bridge) and the graph's metadata.session_id are both "
+                    f"required, got team_name={team_name!r} session_id={session_id!r}"
                 )
-            else:  # pragma: no cover — bridge not bound (unit path)
-                backend = DesignerWorkerBackend(
-                    graph=graph,
-                    run_id=trigger_scope,
-                    spawner=self._spawner,
-                    event_sink=bridge.on_node_result,
-                    media_root=self.media_root,
-                )
+            backend = _build_team_worker(
+                team_name=team_name,
+                worker_base_spec=context.worker_base_spec,
+                build_context=build_ctx,
+                # Worker names (hence their checkpointer keys under the shared
+                # session) derive from this id; the lifelong run id would mint
+                # the same name on every rerun and restore the last worker's
+                # context. The engine's journal keeps the lifelong run id.
+                run_id=trigger_scope,
+                session_id=session_id,
+                expert_specs=expert_specs,
+            )
             # Host guarantees (plan A, user ruling 2026-10-12): re-arm the old
             # executor's post-turn contract on every worker call — text products
             # get a workspace file ref, media nodes get handler materialization
@@ -381,20 +362,19 @@ class RunCoordinator:
             # the active sink through the design context (graph-keyed); the
             # TeamWorkerBackend path has no event_sink of its own, so register
             # the bridge handler here and clear it when the trigger ends.
-            if context is not None:
-                context.node_result_sink = bridge.on_node_result
-                # Worker-tool live activity (handler-level stage lines): resolved
-                # by manifest tools through the design context like the result sink.
-                context.node_activity_sink = bridge.node_activity_sink
-                # Member tools (the designer bundle's tools/node_tools.py) resolve
-                # their shot tickets against this trigger's graph / run / bridge.
-                context.node_run_env = {
-                    "graph": graph,
-                    "run": run,
-                    "bridge": bridge,
-                    "media_root": self.media_root,
-                    "generations": {},
-                }
+            context.node_result_sink = bridge.on_node_result
+            # Worker-tool live activity (handler-level stage lines): resolved
+            # by manifest tools through the design context like the result sink.
+            context.node_activity_sink = bridge.node_activity_sink
+            # Member tools (the designer bundle's tools/node_tools.py) resolve
+            # their shot tickets against this trigger's graph / run / bridge.
+            context.node_run_env = {
+                "graph": graph,
+                "run": run,
+                "bridge": bridge,
+                "media_root": self.media_root,
+                "generations": {},
+            }
             # Concurrency observability: keep the last trigger's backend alive on
             # the coordinator so STs / diagnostics can read max_in_flight (a
             # parallel wave compiles to engine parallel(); the backend sees the

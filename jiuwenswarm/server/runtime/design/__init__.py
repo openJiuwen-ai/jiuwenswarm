@@ -7,9 +7,6 @@ library); the classes here are the only scheduling surface:
 * :class:`GraphScriptCompiler` — deterministic graph → script compilation
   under the "frozen-once-produced" rule (completed nodes inline as literals,
   only the requested nodes execute, downstream never enters the script).
-* :class:`DesignerWorkerBackend` — engine ``AgentBackend``; each ``agent()``
-  call runs one designer node through ``NodeAgentHost`` (tools/prompts and
-  media materialization fully preserved from the picked package).
 * :class:`RunCoordinator` — one run_id per graph for its whole life, direct
   ``run_workflow`` calls, run record + node history persistence.
 * :class:`DesignEventBridge` — engine progress events → designer run payload.
@@ -24,14 +21,12 @@ from jiuwenswarm.server.runtime.design.context import (
 from jiuwenswarm.server.runtime.design.event_bridge import DesignEventBridge
 from jiuwenswarm.server.runtime.design.graph_compiler import GraphScriptCompiler
 from jiuwenswarm.server.runtime.design.run_coordinator import RunCoordinator
-from jiuwenswarm.server.runtime.design.worker_backend import DesignerWorkerBackend
 
 __all__ = [
     "DesignContextRegistry",
     "DesignEventBridge",
     "GraphScriptCompiler",
     "RunCoordinator",
-    "DesignerWorkerBackend",
     "StoreNodeSpawner",
     "get_design_context_registry",
     "get_graph_coordinator",
