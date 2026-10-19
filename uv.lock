@@ -2366,10 +2366,10 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
-    { name = "openjiuwen-deepsearch", git = "https://gitcode.com/openJiuwen/deepsearch.git?subdirectory=deepsearch&rev=dev-stable" },
+    { name = "openjiuwen", editable = "/Users/developer/bugfix/dev/agent-core" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", editable = "/Users/developer/bugfix/dev/agent-core" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", editable = "/Users/developer/bugfix/dev/agent-core" },
+    { name = "openjiuwen-deepsearch", editable = "/Users/developer/bugfix/dev/deepsearch/deepsearch" },
     { name = "openjiuwen-runtime-foundation", extras = ["link-mtls"], git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&rev=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
@@ -3510,7 +3510,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.16"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#5ee4e38d5c890de2049084bddddc87bedc5a37e4" }
+source = { editable = "/Users/developer/bugfix/dev/agent-core" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
@@ -3554,12 +3554,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-observability = [
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-exporter-otlp-proto-grpc" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-sdk" },
-]
 postgres = [
     { name = "asyncpg" },
 ]
@@ -3568,10 +3562,144 @@ zmq = [
     { name = "tornado" },
 ]
 
+[package.metadata]
+requires-dist = [
+    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'all-a2a'", specifier = "==1.0.0" },
+    { name = "agent-sandbox", marker = "extra == 'sandbox'", specifier = ">=0.0.26" },
+    { name = "agentarts-sdk", marker = "extra == 'agentarts'", specifier = ">=0.1.2,<0.2" },
+    { name = "aioboto3", marker = "extra == 'obs'", specifier = ">=11.0.0" },
+    { name = "aiofiles", specifier = ">=25.1.0" },
+    { name = "aiohttp", specifier = ">=3.11.12" },
+    { name = "aiomysql", marker = "extra == 'mysql'", specifier = ">=0.3.2" },
+    { name = "aiosqlite", marker = "extra == 'sqlite'", specifier = ">=0.22.1" },
+    { name = "alembic", specifier = ">=1.13.1" },
+    { name = "anyio", specifier = ">=4.0.0" },
+    { name = "async-gaussdb", marker = "extra == 'gaussdb'", specifier = "~=0.30.0" },
+    { name = "asyncpg", marker = "extra == 'gaussdb'", specifier = ">=0.29.0" },
+    { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.30.0" },
+    { name = "asyncssh", marker = "extra == 'ssh'", specifier = ">=2.24.0" },
+    { name = "beautifulsoup4", specifier = ">=4.12.0" },
+    { name = "cacheout", specifier = ">=0.16.0" },
+    { name = "charset-normalizer", specifier = ">=3.4.4" },
+    { name = "chromadb", marker = "extra == 'chromadb'", specifier = ">=1.5.4" },
+    { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.2.115" },
+    { name = "click", marker = "extra == 'cli'", specifier = ">=8.0" },
+    { name = "dashscope", specifier = ">=1.25.6" },
+    { name = "docx2txt", specifier = ">=0.8" },
+    { name = "elasticsearch", extras = ["async"], marker = "extra == 'elasticsearch'", specifier = ">=8.0.0" },
+    { name = "fastapi", marker = "extra == 'online-rl'", specifier = ">=0.100" },
+    { name = "fastmcp", specifier = ">=2.14.2,<3.0" },
+    { name = "filelock", specifier = ">=3.25.0,<3.30" },
+    { name = "gitcode-api", specifier = ">=1.2.20" },
+    { name = "httpx", marker = "extra == 'jiuwen-memory'", specifier = ">=0.24" },
+    { name = "httpx", marker = "extra == 'online-rl'", specifier = ">=0.24" },
+    { name = "jiuwenmemory", marker = "extra == 'jiuwen-memory'", specifier = ">=0.1.0" },
+    { name = "json-repair", specifier = ">=0.55.0" },
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "mcp", specifier = ">=1.26.0" },
+    { name = "mem0ai", marker = "extra == 'mem0'", specifier = ">=1.0.0" },
+    { name = "mermaid-py", specifier = ">=0.8.0,<0.9" },
+    { name = "numpy", specifier = "!=2.4.0" },
+    { name = "oauthlib", specifier = ">=3.3.1" },
+    { name = "omegaconf", marker = "extra == 'online-rl'", specifier = ">=2.3.0" },
+    { name = "openai", specifier = ">=1.108.0" },
+    { name = "openai-codex", marker = "extra == 'codex'", specifier = ">=0.144.4" },
+    { name = "openjiuwen", extras = ["all-mq", "all-storage", "all-vector", "all-a2a"], marker = "extra == 'all'" },
+    { name = "openjiuwen", extras = ["pgvector", "chromadb", "gaussvector"], marker = "extra == 'all-vector'" },
+    { name = "openjiuwen", extras = ["pulsar"], marker = "extra == 'all-mq'" },
+    { name = "openjiuwen", extras = ["sqlite", "postgres", "mysql", "gaussdb", "redis", "elasticsearch", "obs"], marker = "extra == 'all-storage'" },
+    { name = "openpyxl", specifier = ">=3.1.0" },
+    { name = "opentelemetry-api", marker = "extra == 'observability'", specifier = ">=1.25.0" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'observability'", specifier = ">=1.25.0" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'observability'", specifier = ">=1.25.0" },
+    { name = "opentelemetry-proto", marker = "extra == 'chromadb'", specifier = ">=1.33.0" },
+    { name = "opentelemetry-sdk", marker = "extra == 'observability'", specifier = ">=1.25.0" },
+    { name = "pandas", marker = "extra == 'online-rl'" },
+    { name = "pdfplumber", specifier = ">=0.11.8" },
+    { name = "pgvector", marker = "extra == 'pgvector'", specifier = ">=0.2.0" },
+    { name = "pillow", marker = "extra == 'mobile-gui'", specifier = ">=10.0.0" },
+    { name = "portalocker", specifier = ">=3.2.0" },
+    { name = "prompt-toolkit", marker = "extra == 'cli'", specifier = ">=3.0" },
+    { name = "protobuf", marker = "extra == 'chromadb'", specifier = ">=5.0,<7.0" },
+    { name = "psycopg2-binary", marker = "extra == 'gaussvector'", specifier = ">=2.9.10" },
+    { name = "pulsar-client", marker = "extra == 'pulsar'", specifier = ">=3.5.0" },
+    { name = "pyarrow", marker = "extra == 'online-rl'" },
+    { name = "pycryptodome", specifier = ">=3.23.0" },
+    { name = "pymilvus", specifier = ">=2.6.2,<2.6.10" },
+    { name = "pyoxigraph", specifier = ">=0.5.8" },
+    { name = "pysbd", specifier = ">=0.3.4" },
+    { name = "python-dateutil", specifier = ">=2.9.0.post0" },
+    { name = "python-docx", specifier = ">=1.2.0" },
+    { name = "python-dotenv", specifier = ">=1.2.1" },
+    { name = "python-pptx", specifier = ">=0.6.23" },
+    { name = "pyyaml", specifier = ">=6.0.2" },
+    { name = "pyzmq", marker = "extra == 'zmq'", specifier = ">=26.0.0" },
+    { name = "redis", marker = "extra == 'redis'", specifier = ">=7.1.0" },
+    { name = "requests", specifier = ">=2.32.3" },
+    { name = "rich", marker = "extra == 'cli'", specifier = ">=13.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.41" },
+    { name = "sqlmodel", specifier = ">=0.0.37" },
+    { name = "tenacity", specifier = ">=9.1.2" },
+    { name = "tiktoken", specifier = ">=0.12.0" },
+    { name = "tornado", marker = "extra == 'zmq'", specifier = ">=6.1" },
+    { name = "trafilatura", specifier = ">=1.6.0" },
+    { name = "transformers", specifier = ">=4.52.4" },
+    { name = "uiautomator2", marker = "extra == 'mobile-gui'", specifier = ">=3.2.0" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'online-rl'" },
+]
+provides-extras = ["all-a2a", "pulsar", "elasticsearch", "redis", "sqlite", "postgres", "mysql", "gaussdb", "pgvector", "gaussvector", "chromadb", "obs", "zmq", "sandbox", "mem0", "jiuwen-memory", "agentarts", "claude", "codex", "ssh", "observability", "mobile-gui", "online-rl", "all-mq", "all-storage", "all-vector", "cli", "default", "all"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.0.0" },
+    { name = "aiosqlite", specifier = ">=0.22.1" },
+    { name = "autodoc-pydantic", specifier = ">=2.2.0" },
+    { name = "codespell", specifier = ">=2.2.4" },
+    { name = "coverage", specifier = ">=7.7.1" },
+    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "mypy", specifier = ">=1.12.0" },
+    { name = "opentelemetry-sdk", specifier = ">=1.25.0" },
+    { name = "pylint", specifier = ">=3.0.0" },
+    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "pytest-asyncio", specifier = ">=1.0.0" },
+    { name = "pytest-cov", specifier = ">=7.0.0" },
+    { name = "pytest-html", specifier = ">=4.1.1" },
+    { name = "pytest-mock", specifier = ">=3.14.0" },
+    { name = "ruff", specifier = ">=0.11.2" },
+    { name = "sse-starlette", specifier = ">=2.1.3" },
+    { name = "types-pyyaml", specifier = ">=6.0.12" },
+    { name = "uvicorn", specifier = ">=0.32.0" },
+]
+docs = [{ name = "autodoc-pydantic", specifier = ">=2.2.0" }]
+intelli-router = [{ name = "intelli-router", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=intelli_router&rev=feature%2FintelliRouter" }]
+lint = [
+    { name = "codespell", specifier = ">=2.2.4" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "mypy", specifier = ">=1.12.0" },
+    { name = "pylint", specifier = ">=3.0.0" },
+    { name = "ruff", specifier = ">=0.11.2" },
+    { name = "types-pyyaml", specifier = ">=6.0.12" },
+]
+test = [
+    { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.0.0" },
+    { name = "aiosqlite", specifier = ">=0.22.1" },
+    { name = "coverage", specifier = ">=7.7.1" },
+    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "opentelemetry-sdk", specifier = ">=1.25.0" },
+    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "pytest-asyncio", specifier = ">=1.0.0" },
+    { name = "pytest-cov", specifier = ">=7.0.0" },
+    { name = "pytest-html", specifier = ">=4.1.1" },
+    { name = "pytest-mock", specifier = ">=3.14.0" },
+    { name = "sse-starlette", specifier = ">=2.1.3" },
+    { name = "uvicorn", specifier = ">=0.32.0" },
+]
+
 [[package]]
 name = "openjiuwen-deepsearch"
 version = "0.1.10"
-source = { git = "https://gitcode.com/openJiuwen/deepsearch.git?subdirectory=deepsearch&rev=dev-stable#05d846214487c603a31022c3d46782675d34d4f9" }
+source = { editable = "/Users/developer/bugfix/dev/deepsearch/deepsearch" }
 dependencies = [
     { name = "aiolimiter" },
     { name = "beautifulsoup4" },
@@ -3585,13 +3713,64 @@ dependencies = [
     { name = "networkx" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "openjiuwen", extra = ["observability"] },
+    { name = "openjiuwen" },
     { name = "pypdfium2" },
     { name = "python-docx" },
     { name = "pyvis" },
     { name = "seaborn" },
     { name = "tenacity" },
     { name = "tldextract" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiolimiter", specifier = "==1.1.0" },
+    { name = "beautifulsoup4", specifier = "==4.14.3" },
+    { name = "jieba", specifier = ">=0.42.1" },
+    { name = "jinja2", specifier = "==3.1.6" },
+    { name = "json-repair", specifier = "==0.58.0" },
+    { name = "latex2mathml", specifier = ">=3.78.1" },
+    { name = "markdown", specifier = ">=3.7,<3.11" },
+    { name = "mathml2omml-as", specifier = "==0.1.0" },
+    { name = "matplotlib" },
+    { name = "networkx", specifier = "==3.4.2" },
+    { name = "numpy", specifier = ">=2.4.2" },
+    { name = "openjiuwen" },
+    { name = "pypdfium2", specifier = "==4.30.0" },
+    { name = "python-docx", specifier = "==1.2.0" },
+    { name = "pyvis", specifier = "==0.3.2" },
+    { name = "seaborn" },
+    { name = "tenacity", specifier = "==9.1.2" },
+    { name = "tldextract", specifier = ">=5.0.0" },
+]
+
+[package.metadata.requires-dev]
+backend = [
+    { name = "aioboto3", specifier = ">=11.0.0" },
+    { name = "aiomysql", specifier = "==0.2.0" },
+    { name = "aiosqlite", specifier = "==0.21.0" },
+    { name = "fastapi", specifier = "==0.115.11" },
+    { name = "markdown2", specifier = "==2.5.4" },
+    { name = "pycryptodome", specifier = "==3.23.0" },
+    { name = "pydantic", specifier = "==2.11.7" },
+    { name = "pydantic-settings", specifier = "==2.5.2" },
+    { name = "python-dotenv", specifier = ">=1.2.1" },
+    { name = "redis", specifier = "==7.1.1" },
+    { name = "requests", specifier = "==2.32.3" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.41,<2.1" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.35" },
+]
+dev = [
+    { name = "coverage", specifier = "==7.8.0" },
+    { name = "fastapi" },
+    { name = "pandas", specifier = "==2.3.3" },
+    { name = "pytest", specifier = "==8.3.5" },
+    { name = "pytest-asyncio", specifier = "==1.2.0" },
+    { name = "pytest-cov", specifier = "==6.0.0" },
+    { name = "pytest-env" },
+    { name = "pytest-mock", specifier = "==3.15.1" },
+    { name = "uvicorn", specifier = "==0.38.0" },
+    { name = "xlsxwriter", specifier = "==3.2.9" },
 ]
 
 [[package]]
