@@ -1,9 +1,13 @@
 import type { ReactNode } from 'react';
-import { colleaguePortrait } from '../colleaguePortraits';
+import { colleaguePortrait, customAvatarHue } from '../colleaguePortraits';
 import type { JiuwenMateColleagueDraft } from '../types';
 
-type ColleagueCardSubject = Pick<JiuwenMateColleagueDraft, 'name' | 'description' | 'tags' | 'category' | 'avatarUrl'> & {
+type ColleagueCardSubject = Pick<
+  JiuwenMateColleagueDraft,
+  'name' | 'description' | 'tags' | 'category' | 'avatarUrl' | 'avatarHue'
+> & {
   id: string;
+  isDefault?: boolean;
 };
 
 interface ColleagueCardProps<TSubject extends ColleagueCardSubject> {
@@ -27,12 +31,15 @@ export function ColleagueCard<TSubject extends ColleagueCardSubject>({
   menu,
   actions = [],
 }: ColleagueCardProps<TSubject>) {
+  const hue = customAvatarHue(colleague);
   return (
     <article
       className={`jiuwenmate-colleague-card${selected ? ' jiuwenmate-colleague-card--selected' : ''}`}
       data-testid="jiuwenmate-colleague-card"
       data-variant={colleague.id}
       data-category={colleague.category}
+      data-hue={hue ?? undefined}
+      style={hue === null ? undefined : { ['--jm-avatar-hue' as string]: `${hue}deg` }}
     >
       <button
         type="button"
@@ -52,7 +59,13 @@ export function ColleagueCard<TSubject extends ColleagueCardSubject>({
         </span>
         <span className="jiuwenmate-colleague-card__art" aria-hidden>
           <span className="jiuwenmate-colleague-card__halo" />
-          <img src={colleaguePortrait(colleague)} alt="" data-testid="jiuwenmate-colleague-avatar" />
+          <img
+            src={colleaguePortrait(colleague)}
+            alt=""
+            data-testid="jiuwenmate-colleague-avatar"
+            data-hue={hue ?? undefined}
+            style={hue === null ? undefined : { ['--jm-avatar-hue' as string]: `${hue}deg` }}
+          />
         </span>
       </button>
       {menu ? <div className="jiuwenmate-colleague-card__menu">{menu}</div> : null}
