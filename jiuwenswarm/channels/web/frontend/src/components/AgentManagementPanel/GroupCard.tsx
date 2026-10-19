@@ -10,6 +10,28 @@ type GroupCardProps = {
   onInstall: (id: string) => void;
 };
 
+export function getAvatarTone(name: string): string {
+  const seed = Array.from(name.trim() || '?').reduce((total, char) => total + char.charCodeAt(0), 0);
+  return ['variant-1', 'variant-2', 'variant-3', 'variant-4', 'variant-5', 'variant-6'][seed % 6];
+}
+
+function GroupAvatar({ item }: { item: Pick<AgentGroupCatalogItem, 'displayName' | 'avatarUrl'> }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const avatarUrl = item.avatarUrl && !imageFailed ? item.avatarUrl : null;
+  return (
+    <span
+      className={`agent-management-avatar agent-group-avatar agent-group-avatar--detail agent-group-avatar--${getAvatarTone(item.displayName)}`}
+      aria-hidden="true"
+    >
+      {avatarUrl ? (
+        <img src={avatarUrl} alt="" onError={() => setImageFailed(true)} />
+      ) : (
+        <span>{item.displayName.trim().slice(0, 1).toUpperCase() || '?'}</span>
+      )}
+    </span>
+  );
+}
+
 export function GroupCard({ item, busy, onOpen, onUse, onInstall }: GroupCardProps) {
   const { t } = useTranslation();
   const canUse = item.installed && item.capabilities.canUse;
