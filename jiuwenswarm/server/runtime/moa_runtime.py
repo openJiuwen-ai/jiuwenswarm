@@ -72,8 +72,8 @@ def resolve_moa_settings(config: dict[str, Any], selection: ModelSelection | dic
         ModelSelection(type="model_group", id=selected.id),
         ModelExecutionContext(can_access=can_access),
     )
-    if len(resolved.routes) < 2 or len({route.route_id for route in resolved.routes}) != len(resolved.routes):
-        raise ValueError("MoA requires at least two enabled model group members with unique route IDs")
+    if len({route.route_id for route in resolved.routes}) != len(resolved.routes):
+        raise ValueError("Model group members must have unique route IDs")
     from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
 
     for route in resolved.routes:
@@ -134,6 +134,11 @@ def build_moa_runtime(config: dict[str, Any], selection: ModelSelection | dict,
     candidate, group, fingerprint = resolve_moa_settings(config, selection, can_access=can_access)
     members = get_model_group_models(group)
     aggregator = members[0]
+    if len(members) == 1:
+        return MoARuntime(
+            aggregator=aggregator.model, config=None,
+            fingerprint=fingerprint, model_name=aggregator.model_name,
+        )
     references = tuple(member.model for member in members[1:])
     verifier = candidate["verifier"]
     scorer = (

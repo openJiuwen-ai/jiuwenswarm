@@ -176,6 +176,43 @@ async def test_moa_create_persists_selection_and_bypasses_normal_warm_pool(monke
 
 
 @pytest.mark.asyncio
+async def test_single_member_group_can_create_agent_session(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    config = {
+        "models": {
+            "defaults": [{
+                "model_id": "member", "is_default": True,
+                "model_client_config": {
+                    "model_name": "member-model", "client_provider": "OpenAI",
+                    "api_base": "https://example.test/v1", "api_key": "test-credential",
+                },
+            }],
+            "groups": [{
+                "model_group_id": "single-group", "enabled": True,
+                "routes": [{"route_id": "primary", "model_id": "member"}],
+            }],
+        },
+        "experimental": {"multi_model_collaboration_enabled": True},
+    }
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: config)
+
+    provisioner = _provisioner(state)
+    prepared = await provisioner.prepare_session_create(
+        _input(model_selection={"type": "model_group", "id": "single-group"}),
+    )
+
+    assert prepared.result.created is True
+    assert prepared.result.moa_enabled is True
+    assert get_session_metadata(prepared.result.session_id)["model_selection"] == {
+        "type": "model_group", "id": "single-group", "route_id": None,
+    }
+    await provisioner.abort_session_provision(prepared)
+
+
+@pytest.mark.asyncio
 async def test_cron_create_replaces_deleted_model_selection(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
