@@ -48,16 +48,34 @@ def _build_toolkit(
 
 
 def test_static_category_table_shape() -> None:
-    """The in-code tree carries the built-in deferred inventory."""
+    """The in-code table carries the built-in deferred inventory."""
 
     paths = [category.path for category in _TOOL_CATEGORIES]
-    assert "scheduling > cron" in paths
-    assert "scheduling > heartbeat" in paths
+    # Flat names only — the two-level ``A > B`` paths are gone.
+    assert all(">" not in path for path in paths)
+    assert "cron" in paths
+    assert "heartbeat" in paths
     assert "terminal" in paths
+    # The settings-page toggles (图片/音频处理、视频理解、视频/图像生成) map to
+    # these deferred tools; toggle-off just leaves them out of the live registry.
+    assert "image-processing" in paths
+    assert "audio-processing" in paths
+    assert "video-understanding" in paths
+    assert "image-generation" in paths
+    assert "video-generation" in paths
+    # agent_evolving family: six deferred tools that previously landed in the
+    # uncategorized fallback block.
+    assert "skill-evolution" in paths
     by_path = {category.path: category for category in _TOOL_CATEGORIES}
     assert "powershell" in by_path["terminal"].tools
-    assert "cron_create_job" in by_path["scheduling > cron"].tools
+    assert "cron_create_job" in by_path["cron"].tools
     assert "read_pdf" in by_path["documents"].tools
+    assert "video_understanding" in by_path["video-understanding"].tools
+    assert "audio_metadata" in by_path["audio-processing"].tools
+    assert "generate_visual" in by_path["image-generation"].tools
+    assert "check_video_status" in by_path["video-generation"].tools
+    assert "prepare_skill_evolution" in by_path["skill-evolution"].tools
+    assert "simplify_skill_experiences" in by_path["skill-evolution"].tools
     # Descriptions are description-only routing text, never tool-name dumps.
     # (Bare words like "cron" may occur naturally; full underscore names
     # must not.)
@@ -98,8 +116,8 @@ def test_root_list_serves_categories_description_only() -> None:
 
     listing = asyncio.run(tool.invoke({"operation": "list"}))
 
-    assert "[category] scheduling > cron:" in listing
-    assert "[category] scheduling > heartbeat:" in listing
+    assert "[category] cron:" in listing
+    assert "[category] heartbeat:" in listing
     # Categorized tools are NOT listed at the root: their names are
     # discovered through the category listing, not a flat dump.
     assert "cron_create_job" not in listing
@@ -114,39 +132,34 @@ def test_category_list_serves_tools_schema_free() -> None:
     tool = toolkit.get_tools()[0]
 
     listing = asyncio.run(
-        tool.invoke({"operation": "list", "category": "scheduling > cron"})
+        tool.invoke({"operation": "list", "category": "cron"})
     )
 
-    assert "## Tools (category: scheduling > cron)" in listing
+    assert "## Tools (category: cron)" in listing
     assert "- [tool] cron_create_job: 创建新的 cron 定时任务" in listing
     assert "- [tool] cron_list_jobs: 列出所有 cron 定时任务" in listing
     assert "heartbeat_run_now" not in listing
     assert '"parameters"' not in listing
 
 
-def test_category_matching_tolerates_spellings_and_parents() -> None:
-    """cid dots, casing and parent paths all resolve to the same category."""
+def test_category_matching_tolerates_casing_only() -> None:
+    """Casing/whitespace resolve; retired two-level spellings error with names."""
 
     toolkit = _build_toolkit()
     tool = toolkit.get_tools()[0]
 
-    dotted = asyncio.run(
-        tool.invoke({"operation": "list", "category": "scheduling.cron"})
-    )
-    assert "## Tools (category: scheduling > cron)" in dotted
-
     cased = asyncio.run(
-        tool.invoke({"operation": "list", "category": "SCHEDULING > CRON"})
+        tool.invoke({"operation": "list", "category": " CRON "})
     )
     assert "cron_create_job" in cased
 
-    # A parent path lists its subcategories, mirroring the root's lines.
-    parent = asyncio.run(
-        tool.invoke({"operation": "list", "category": "scheduling"})
-    )
-    assert "## Tool categories (under: scheduling)" in parent
-    assert "[category] scheduling > cron:" in parent
-    assert "[category] scheduling > heartbeat:" in parent
+    # Two-level spellings from retired prompt snapshots no longer resolve;
+    # the error lists the valid flat names so the model can retry directly.
+    with pytest.raises(ValueError, match="is not a catalogue category") as caught:
+        asyncio.run(
+            tool.invoke({"operation": "list", "category": "scheduling > cron"})
+        )
+    assert "cron, heartbeat" in str(caught.value)
 
 
 def test_unknown_category_error_lists_valid_names() -> None:
@@ -159,7 +172,7 @@ def test_unknown_category_error_lists_valid_names() -> None:
         asyncio.run(tool.invoke({"operation": "list", "category": "nope"}))
     except ValueError as exc:
         # The error carries the valid names so the model can retry directly.
-        assert "scheduling > cron" in str(exc)
+        assert "cron, heartbeat" in str(exc)
 
 
 def test_uncategorized_and_connector_tools_at_root() -> None:
@@ -240,11 +253,11 @@ def test_retired_fields_degrade_instead_of_erroring() -> None:
     legacy = asyncio.run(
         toolkit.tool_search(operation="search", query=["cron"])
     )
-    assert "scheduling > cron" in legacy
+    assert "[category] cron:" in legacy
 
     degraded = asyncio.run(
         toolkit.tool_search(
-            operation="list", category="scheduling > cron", query=["cron"], cursor="x"
+            operation="list", category="cron", query=["cron"], cursor="x"
         )
     )
     assert "cron_create_job" in degraded
@@ -278,7 +291,7 @@ def test_frozen_catalogue_intersects_live_registry() -> None:
 
     assert [category.path for category in snapshot.categories] == [
         "documents",
-        "scheduling > cron",
+        "cron",
     ]
     assert snapshot.categories[1].tools == ("cron_create_job",)
     assert {entry.name for entry in snapshot.flat_entries} == {
