@@ -1,6 +1,7 @@
 import { ChevronDown, Plus, Send, ShieldUser, Square } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import autoIcon from '../../../assets/jiuwenmate/icons/auto.svg';
+import { type JiuwenMateModelCatalog } from '../jiuwenmateApi';
+import { ModelLabel } from './ModelLabel';
 
 interface ConversationComposerProps {
   value: string;
@@ -12,6 +13,10 @@ interface ConversationComposerProps {
   onStop?: () => void;
   /** The stop was requested and the reply has not ended yet. */
   stopping?: boolean;
+  /** Models available on this server, used to name the colleague's configured model. */
+  modelCatalog: JiuwenMateModelCatalog;
+  /** The model saved on the colleague. Empty means the server default. */
+  modelId: string;
 }
 
 export function ConversationComposer({
@@ -21,6 +26,8 @@ export function ConversationComposer({
   sending = false,
   onStop,
   stopping = false,
+  modelCatalog,
+  modelId,
 }: ConversationComposerProps) {
   const { t } = useTranslation();
   const canSend = Boolean(onSend) && !sending && value.trim().length > 0;
@@ -51,10 +58,9 @@ export function ConversationComposer({
         </span>
         <span className="jiuwenmate-composer__right">
           <span className="jiuwenmate-composer__usage" aria-hidden />
-          <button type="button" className="jiuwenmate-composer__auto">
-            <img src={autoIcon} alt="" aria-hidden />
-            <span>{t('jiuwenmate.workspace.autoMode')}</span>
-          </button>
+          <span className="jiuwenmate-composer__model" data-testid="jiuwenmate-composer-model">
+            <ModelLabel catalog={modelCatalog} modelId={modelId} />
+          </span>
           {onStop ? (
             <button
               type="button"

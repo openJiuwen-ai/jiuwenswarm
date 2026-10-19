@@ -30,6 +30,7 @@ import {
   formatSharedFileSize,
   isPending,
   type JiuwenMateChatRequest,
+  type JiuwenMateModelCatalog,
   type JiuwenMateSchedule,
   type JiuwenMateSharedFile,
 } from '../jiuwenmateApi';
@@ -80,7 +81,10 @@ interface ColleagueWorkspacePageProps extends ColleagueListHandlers {
   onDeleteSchedule?: (planId: string) => void | Promise<void>;
   onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
   channelApi?: JiuwenMateChannelApi;
+  modelCatalog?: JiuwenMateModelCatalog;
 }
+
+const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
 
 const PROMPT_ICONS = [ClipboardList, CalendarDays, FileText];
 const FEATURES = [
@@ -118,6 +122,7 @@ export function ColleagueWorkspacePage({
   onDeleteSchedule,
   onLoadScheduleHistory,
   channelApi,
+  modelCatalog = EMPTY_MODEL_CATALOG,
   ...listHandlers
 }: ColleagueWorkspacePageProps) {
   const { t } = useTranslation();
@@ -260,6 +265,8 @@ export function ColleagueWorkspacePage({
         sending={privateChat.sending}
         onStop={running ? () => void privateChat.abort(running.requestId, 'stop') : undefined}
         stopping={running?.control?.status === 'accepted'}
+        modelCatalog={modelCatalog}
+        modelId={colleague?.capabilities.model ?? ''}
       />
     </>
   );
