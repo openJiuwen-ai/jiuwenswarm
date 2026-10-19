@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.scheduled_requests import conversation_of
 from test_session_scheduler import NS, Host
 
@@ -88,6 +89,21 @@ async def test_a_disabled_plan_does_not_backfill_occurrences_from_the_pause(host
     resumed = opened.manager.schedules.set_enabled(NS, plan.plan_id, enabled=True)
     assert resumed.next_fire_at > clock.now
     assert await opened.manager.schedules.sweep() == 0
+
+
+async def test_a_disabled_colleague_skips_due_plans_and_refuses_a_manual_run(host):
+    opened, clock = host
+    plan = opened.manager.schedules.create(NS, "mate_dev", name="早报", prompt="整理早报", cron_expr=HOURLY)
+    opened.service.disabled_agents.add("mate_dev")
+    clock.now = datetime(2026, 10, 14, 10, 30, tzinfo=timezone.utc)
+
+    assert await opened.manager.schedules.sweep() == 0
+    assert opened.sessions.find_session(NS, "mate_dev", conversation_of(plan.plan_id)) is None
+    assert opened.manager.schedules.list(NS, "mate_dev")[0].next_fire_at == datetime(
+        2026, 10, 14, 11, 0, tzinfo=timezone.utc
+    )
+    with pytest.raises(PersistentAgentError, match="disabled colleague"):
+        await opened.manager.schedules.run(NS, plan.plan_id)
 
 
 async def test_an_unpublished_colleague_keeps_the_owed_occurrence(host):

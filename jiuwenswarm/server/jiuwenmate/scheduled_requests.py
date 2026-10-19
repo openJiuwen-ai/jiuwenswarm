@@ -486,9 +486,15 @@ class ScheduleService:
         plan = self._store.get(namespace_id, plan_id)
         return {"plan": self._describe(plan).to_dict(), "runs": self._runs(plan)}
 
+    def _colleague_enabled(self, namespace_id: str, agent_id: str) -> bool:
+        colleague = self._colleagues(namespace_id, agent_id)
+        return getattr(colleague, "enabled", True) is not False
+
     async def run(self, namespace_id: str, plan_id: str) -> str:
         with self._claim(namespace_id, plan_id):
             plan = self._store.get(namespace_id, plan_id)
+            if not self._colleague_enabled(plan.namespace_id, plan.agent_id):
+                raise PersistentAgentError("disabled colleague does not run schedules", code="COLLEAGUE_DISABLED")
             return await self._accept(plan, _utc(self._clock()), manual=True)
 
     async def sweep(self, *, limit: int = CATCH_UP_LIMIT) -> int:
@@ -501,6 +507,16 @@ class ScheduleService:
                 with self._claim(candidate.namespace_id, candidate.plan_id):
                     plan = self._store.get(candidate.namespace_id, candidate.plan_id)
                     if not plan.enabled:
+                        continue
+                    if not self._colleague_enabled(plan.namespace_id, plan.agent_id):
+                        cursor = plan.next_fire_at
+                        made = 0
+                        while cursor is not None and cursor <= now and made < limit:
+                            cursor = self._next(plan, cursor)
+                            made += 1
+                        self._store.save_next(
+                            plan.namespace_id, plan.plan_id, cursor, enabled=cursor is not None
+                        )
                         continue
                     cursor = plan.next_fire_at
                     made = 0
