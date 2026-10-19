@@ -314,6 +314,41 @@ test('Hub request rejection identifies Hub and gives actionable guidance', async
   assert.doesNotMatch(message, /hub_request_failed/i);
   await act(async () => find('asset-publish-close').click());
 });
+test('record errors show the Hub guidance instead of the generic fallback', async () => {
+  const record = {
+    operation_id: 'hub-guidance',
+    execution_status: 'failed',
+    result: null,
+    error: {
+      code: 'hub_request_failed',
+      message: '发布新版本时不能修改 Skill 可见性，请沿用现有设置',
+    },
+  };
+  assetPublishApi.describe = async () => ({ ...description, records: [record] });
+  assetPublishApi.records = async () => ({ records: [record] });
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'hub-guidance' }));
+  await tick();
+  const message = document.querySelector('.asset-publish-result-error').textContent;
+  assert.equal(message, '发布新版本时不能修改 Skill 可见性，请沿用现有设置');
+  assert.doesNotMatch(message, /Retry or sign in again/);
+  await act(async () => find('asset-publish-close').click());
+});
+test('curated local text keeps priority for known codes', async () => {
+  const record = {
+    operation_id: 'version-clash',
+    execution_status: 'failed',
+    result: null,
+    error: { code: 'VERSION_CONFLICT', message: 'hub-only wording' },
+  };
+  assetPublishApi.describe = async () => ({ ...description, records: [record] });
+  assetPublishApi.records = async () => ({ records: [record] });
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'version-clash' }));
+  await tick();
+  const message = document.querySelector('.asset-publish-result-error').textContent;
+  assert.match(message, /This version exists/);
+  assert.doesNotMatch(message, /hub-only wording/);
+  await act(async () => find('asset-publish-close').click());
+});
 test('polling completion updates the matching history row', async () => {
   const queued = { operation_id: 'polled', draft_id: 'draft', execution_status: 'queued', result: null, error: null };
   assetPublishApi.describe = async () => ({ ...description, records: [queued] });
