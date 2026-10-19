@@ -2363,7 +2363,7 @@ def configure_agent_core_log_dir() -> bool:
         except Exception:  # noqa: BLE001 - 清理失败不影响日志配置
             pass
         # configure_log_config 会 reset LogManager：先记录已注册 logger 的
-        # 运行时级别（如 gateway 对 openjiuwen 内部日志的 CRITICAL 压制），
+        # 运行时级别（如 gateway 对 openjiuwen 内部日志的 WARNING 降噪），
         # 覆盖 log_path 后按需重建并恢复，避免日志量行为变化。
         prev_levels = _collect_agent_core_logger_levels()
         snapshot["log_path"] = str(log_dir)

@@ -70,8 +70,9 @@ if _logging_yaml.exists():
 
     configure_log(str(_logging_yaml))
 else:
+    # Reduce internal log noise without suppressing warnings and errors.
     for _lg in LogManager.get_all_loggers().values():
-        _lg.set_level(logging.CRITICAL)
+        _lg.set_level(logging.WARNING)
 
     from jiuwenswarm.common.utils import (
         get_logs_dir,

@@ -126,6 +126,8 @@ The logging system adopts the following rotation strategy:
 
 ## 5. Log Configuration
 
+When `config/logging.yaml` is absent, AgentServer and Gateway set registered agent-core loggers to `WARNING`, preserving WARNING/ERROR/CRITICAL logs; AgentServer permission logs remain at `INFO`. Agent-core logs use their own file routes (such as `run/jiuwen.log` and `interface/jiuwen_interface.log`), separate from JiuwenSwarm component logs. When `logging.yaml` exists, its configuration applies.
+
 ### 5.1 Configuration File
 
 Log levels are mainly configured through the `logging` section in the `config.yaml` file:

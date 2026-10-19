@@ -84,9 +84,9 @@ if _logging_yaml.exists():
 
     configure_log(str(_logging_yaml))
 else:
-    # Reduce openjiuwen internal logs (keep Gateway logs)
+    # Reduce internal log noise without suppressing warnings and errors.
     for _lg in LogManager.get_all_loggers().values():
-        _lg.set_level(logging.CRITICAL)
+        _lg.set_level(logging.WARNING)
 
 # 桌面端统一日志目录：注入 JIUWENSWARM_LOG_DIR 时，agent-core 日志
 # 同样落到统一目录（见 utils.configure_agent_core_log_dir）。
