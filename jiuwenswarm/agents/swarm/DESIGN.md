@@ -186,7 +186,7 @@ _CODE_RAIL_NAMES / _CODE_SHARED_RAIL_NAMES / _CODE_TOOL_NAMES   # code 档
 _role_evolution_rails(config, role)            # leader: 进化+创建；teammate: 成员进化
 ```
 
-`build_member_capability_specs(config, mode, role) -> (rails, tools)` 按 mode 分档；`build_member_subagent_specs` 仅 code 档（explore/plan 常驻，code/browser 受 `react.subagents.<name>.enabled` 门控）；`build_member_deep_agent_spec` 把能力 spec 折叠到 base `DeepAgentSpec`；`build_reviewer_deep_agent_spec` 再把组装好的 teammate spec 按 `_REVIEWER_*` 白名单收窄成调度模式临时 reviewer 的基础 spec（文件工具只读、无 todo / 子代理 / 调度 / Skill 管理 / 权限 rail，继承 MCP）。
+`build_member_capability_specs(config, mode, role) -> (rails, tools)` 按 mode 分档；`build_member_subagent_specs` 仅 code 档（explore/plan 常驻，code/browser 受 `react.subagents.<name>.enabled` 门控）；`build_member_deep_agent_spec` 把能力 spec 折叠到 base `DeepAgentSpec`，**leader 的 subagent 列表强制清空**（成员 sub-agent、browser_agent、YAML base spec 显式配置全部不穿透——openjiuwen 仅对非空 subagent 列表挂 SubagentRail，因此 leader 无 `task_tool` 面，派发走 team 原生 runner 工具 build_team / spawn_teammate）；`build_reviewer_deep_agent_spec` 再把组装好的 teammate spec 按 `_REVIEWER_*` 白名单收窄成调度模式临时 reviewer 的基础 spec（文件工具只读、无 todo / 子代理 / 调度 / Skill 管理 / 权限 rail，继承 MCP）。
 
 ### 7.2 属性烘焙（本模块核心机制）
 
