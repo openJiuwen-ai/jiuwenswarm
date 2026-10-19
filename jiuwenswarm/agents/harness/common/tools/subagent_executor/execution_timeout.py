@@ -6,6 +6,12 @@ stream draining and task-loop children. Normal parent interaction loops and the
 persistent spawn_agent/wait_agent runtime keep their own scheduling policies.
 Cancellation is cooperative: remote work or an OS process may outlive a Python
 task. Pending cleanup stays observed and applies backpressure to new calls.
+
+Failure retirement is instance-scoped and permanent. Retries need a fresh child;
+configuration-based factory paths (e.g. SubAgentConfig) create one per new delegation.
+Integrations registering a prebuilt/shared DeepAgent must replace the failed
+instance themselves; the guard does not reset its unavailable state. Healthy
+or interrupted children may still resume in the same session.
 """
 
 from __future__ import annotations
@@ -37,7 +43,13 @@ class _CompletionDeadline(Exception):
 
 
 def raise_for_subagent_error(result: Any) -> None:
-    """Keep explicit failure reasons; never copy full output into an error."""
+    """Keep explicit failure reasons; never copy full output into an error.
+
+    When called by TaskTool, raising here intentionally leaves succeeded=False.
+    With KV-cache affinity enabled, SDK cleanup then evicts a failed sticky
+    child's cache instead of offloading it for reuse. Successful/interrupt
+    results retain the SDK's existing cache policy.
+    """
     if isinstance(result, dict) and result.get("result_type") != "interrupt":
         if result.get("error") or result.get("result_type") == "error":
             reason = result.get("error") or result.get("message") or "subagent_error"
