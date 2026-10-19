@@ -63,8 +63,13 @@ class OpenJiuwenPolicyEvaluator:
             path_guard_evaluator or SendFilePathGuardEvaluator()
         )
 
-    async def evaluate(self, invocation: Any) -> PolicyEvaluation:
-        """Return the policy-only decision for one tool invocation."""
+    async def evaluate(
+        self,
+        invocation: Any,
+        *,
+        scene_approval_is_final: bool = False,
+    ) -> PolicyEvaluation:
+        """Evaluate without approval UI; manual rails can make scene approval final."""
         normalized_tool_name = self._normalize_tool_name(invocation.tool_name)
         tool_args = self._parse_tool_args(invocation.tool_call, invocation.tool_args)
         engine = getattr(self._base_rail, "_engine", None)
@@ -83,7 +88,9 @@ class OpenJiuwenPolicyEvaluator:
             tool_args=tool_args,
             engine=engine,
         )
-        if scene_decision is not None and scene_decision.level == DENY_LEVEL:
+        if scene_decision is not None and (
+            scene_decision.level == DENY_LEVEL or scene_approval_is_final
+        ):
             return scene_decision
 
         if engine is None:

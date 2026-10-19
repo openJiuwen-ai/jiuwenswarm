@@ -40,7 +40,16 @@ In the following flows, tool-call sequencing assumes the permission rule evaluat
 
 #### Stage 1: Request and confirm authorization
 
-The Agent requests authorization for the currently known operation scope. After the user confirms in the Web card, the A4P Server issues a credential, which the Runtime saves into the current session; rejection or timeout returns a failure reason. Proactively requesting authorization and permission checking at execution time are two separate stages: the current prompts and the request API do not exclude `allow` tools based on permission rules, so such tools may still be included in the authorization request, but at execution time they pass without an A4P token.
+The Agent requests authorization for the currently known operation scope. After the user confirms in the Web card, the A4P Server issues a credential, which the Runtime saves into the current session; rejection or timeout returns a failure reason. Session requests first preflight concrete actions against the installed session permission rail. Actions allowed by current policy or covered by valid session tokens do not require a new approval card. Explicitly denied actions return `A4P_ACTION_POLICY_DENIED` without opening a card, so the Agent must revise its plan. Pattern scopes, unavailable rails, and failed preflight remain in the approval request; authorization patterns are never checked as literal invocations.
+
+The Agent-facing response contains three action lists:
+
+- `permittedActions`: the union of policy-allowed, existing-token-covered, and newly approved actions.
+- `unapprovedActions`: actions still lacking authorization, including unselected, rejected, failed, or not-yet-requested actions when policy denial blocks the request.
+- `deniedActions`: actions explicitly prohibited by current policy, which A4P approval cannot override.
+
+The Agent may only attempt actions in `permittedActions`; cron jobs must stay disabled while any planned action is unapproved or denied. When all actions already satisfy permissions, the result is `ok=true`, `authorizationRequired=false`, and `approved=false`, without issuing a new token. Preflight reflects the state at check time; execution always rechecks policy and token coverage using actual arguments. Cron requests retain their complete future scope and are not filtered using interactive session permissions or tokens. SDK, Runtime, and Web card authorization protocol fields remain unchanged.
+
 
 ```mermaid
 sequenceDiagram

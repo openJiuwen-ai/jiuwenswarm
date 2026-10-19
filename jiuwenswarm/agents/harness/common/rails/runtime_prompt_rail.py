@@ -8,6 +8,7 @@ Request date/time remains in the real user message's JSON envelope.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -38,6 +39,9 @@ from jiuwenswarm.common.utils import (
     get_user_workspace_dir,
     logger,
 )
+
+
+A4P_PROMPT_VERSION = "2026-10-19.1"
 
 
 class RuntimePromptRail(DeepAgentRail):
@@ -731,6 +735,39 @@ class RuntimePromptRail(DeepAgentRail):
 
         return runtime_state
 
+    def _log_a4p_prompt_injection(
+        self,
+        ctx: AgentCallbackContext,
+        *,
+        injected: bool,
+        reason: str,
+        content: str = "",
+    ) -> None:
+        """Record attachment registration, not proof of provider delivery or compliance."""
+        from jiuwenswarm.agents.harness.common.a4p.execution_context import (
+            AUTHORIZATION_EXECUTION_CONTEXTS,
+        )
+
+        session = getattr(ctx, "session", None)
+        session_getter = getattr(session, "get_session_id", None)
+        session_id = (session_getter() if callable(session_getter) else "") or self._session_id or ""
+        execution = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
+        extra = ctx.extra if isinstance(ctx.extra, dict) else {}
+        event = {
+            "event": "a4p.prompt.injection",
+            "version": A4P_PROMPT_VERSION,
+            "session_id": session_id,
+            "request_id": execution.request_id if execution else extra.get("request_id", ""),
+            "model": self._model_name,
+            "channel": self._channel,
+            "language": "en" if self._force_english or self._language != "cn" else "cn",
+            "injected": injected,
+            "reason": reason,
+            "content_chars": len(content),
+            "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest() if content else "",
+        }
+        logger.info("[RuntimePromptRail] %s", json.dumps(event, ensure_ascii=False))
+
     async def _sync_a4p_intent_authorization_attachment(
         self,
         ctx: AgentCallbackContext,
@@ -738,7 +775,12 @@ class RuntimePromptRail(DeepAgentRail):
         section = "a4p.intent_authorization"
         if self._channel != "web" or not self._a4p_authorizer_available:
             await self._clear_prompt_attachment(ctx, section=section)
+            self._log_a4p_prompt_injection(
+                ctx, injected=False,
+                reason="non_web_channel" if self._channel != "web" else "authorizer_unavailable",
+            )
             return
+        resolution_error = False
         try:
             from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_preauthorization_active
             from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
@@ -750,10 +792,14 @@ class RuntimePromptRail(DeepAgentRail):
             action_names = get_a4p_supported_action_names()
         except Exception as exc:
             logger.warning("Failed to resolve A4P intent authorization prompt: %s", exc)
+            resolution_error = True
             enabled = False
             action_names = []
         if not enabled:
             await self._clear_prompt_attachment(ctx, section=section)
+            self._log_a4p_prompt_injection(
+                ctx, injected=False, reason="config_error" if resolution_error else "a4p_disabled",
+            )
             return
 
         actions = "、".join(f"`{name}`" for name in action_names)
@@ -761,135 +807,85 @@ class RuntimePromptRail(DeepAgentRail):
             actions = ", ".join(f"`{name}`" for name in action_names)
             content = (
                 "# A4P Intent Authorization\n\n"
-                "## Authorization boundaries\n"
-                f"- Web: when using {actions}, call `request_a4p_intent_authorization` before the first protected tool "
-                "call. Every protected call must match a valid approved scope, including read-only operations. "
-                "Authorization permits execution; it does not execute actions.\n"
-                "- Unprotected tools may be used first to read necessary information, discover tool capabilities, and "
-                "determine parameters. One authorization may include multiple `actions` covering currently known "
-                "scopes. Use real tool names and security-critical parameters; ordinary parameters not used for "
-                "authorization matching need not be known in advance.\n"
-                "- For Shell tools, authorize each complete exact command by default. Use a narrowly scoped wildcard "
-                "only when one dynamic argument cannot be known in advance and the wildcard cannot absorb whitespace, "
-                "Shell operators, redirections, or extra arguments.\n"
-                "- For read_file/write_file/edit_file, use a concrete file path or a filename glob under a fixed "
-                "directory. Never use a "
-                "bare `*` or substitute a directory path for a file scope. Use dedicated file tools for file writes.\n"
-                "- read_file, list_files, glob and grep require explicit absolute paths in both authorization and "
-                "execution; "
-                "do not omit path, use relative paths or include parent traversal. list_files/glob authorize an exact "
-                "directory; "
-                "grep authorizes an exact file or directory. glob searches filenames recursively; grep may read "
-                "recursive "
-                "content snippets. Keywords and result limits may vary within that root. These are separate "
-                "permissions: "
-                "listing/searching filenames does not authorize read_file, and reading does not authorize writing.\n"
-                "- When paths are known, request reads, creates and edits together before reading the inputs. If "
-                "discovery "
-                "is necessary, authorize listing/search first, then request newly discovered read/edit scopes. Cron "
-                "still "
-                "requires the complete future scope before enabling the job.\n"
-                "\n"
-                "## Planning and convergence\n"
-                "- Choose a feasible plan that satisfies the user request and has explicit authorization scopes. "
-                "Do not "
-                "search for an optimal plan or prove that equivalent alternatives are worse.\n"
-                "- Plan once: identify necessary operations and dependencies; determine tools and scopes for protected "
-                "operations; check requirement coverage, parameter dependencies, and authorization scopes. Once these "
-                "checks pass, immediately make the next tool call.\n"
-                "- Without new information, do not reconsider selected tools, operation grouping, data sources, or "
-                "execution order. Do not restructure a feasible plan to reduce the number of actions.\n"
-                "- Revise only affected steps and their dependencies when requirements change, new facts appear, a "
-                "tool "
-                "returns an error, or a concrete requirement or authorization violation is discovered. Hypothetical "
-                "concerns alone do not justify restarting planning.\n"
-                "\n"
-                "## Unknown information and dynamic parameters\n"
-                "- Use facts already established by context and tool documentation without repeatedly verifying them. "
-                "If missing information affects execution or authorization, obtain it through appropriate tools rather "
-                "than repeatedly guessing tool behavior.\n"
-                "- For values produced at runtime, specify how they will be obtained and used in later parameters; "
-                "their actual values need not be known in advance.\n"
-                "- Plans may describe variables and substitution rules. Authorization requests must use valid concrete "
-                "scopes or supported patterns; actual tool calls must use resolved values, never unresolved "
-                "placeholders.\n"
-                "- Only unknowns affecting feasibility, authorization scope, or correct execution block progress. For "
-                "other implementation choices, select a reasonable option and proceed. If necessary information cannot "
-                "be obtained and no feasible plan with explicit scopes exists, report the specific missing "
-                "information; "
-                "do not guess parameters or broaden authorization to compensate.\n"
-                "\n"
-                "## Interactive sessions and Cron\n"
-                "- Interactive sessions may use staged authorization: authorize and execute a known stage, then "
-                "request "
-                "another authorization only if the later stage is not covered by an approved scope. A runtime value "
-                "becoming known does not itself require another authorization.\n"
-                "- Cron authorization cannot be staged or depend on interactive approval during execution. Runtime "
-                "values may vary, but their construction and allowed scopes must be expressible in advance; otherwise, "
-                "do not enable the job.\n"
-                "- When the user only requests creating a scheduled job, put task execution and necessary preparation "
-                "in the future plan. Execute operations in the current session only if creation or authorization "
-                "actually depends on their results, or the user explicitly requests immediate execution. Otherwise, do "
-                "not trial-run the task or request additional session-level authorization.\n"
-                "- Generate the job `description` and authorization `actions` from the same execution plan. The "
-                "description records execution steps, selected call parameters, and dynamic parameter resolution; "
-                "actions cover corresponding protected calls. Future execution must follow that plan without selecting "
-                "equivalent implementations again.\n"
-                "- Use the system-designated default Cron creation tool. Execute in order: create disabled -> "
-                "authorize "
-                "the complete future scope using the returned `cronJobId` -> enable after `ok=true`. When the "
-                "preceding "
-                "step succeeds, proceed directly to the next step. If authorization fails, is denied, or is "
-                "insufficient, keep the job disabled and handle the actual result; do not repeatedly submit the same "
-                "request.\n"
+                "- FIRST: before reading, listing, searching, writing, or running Shell commands with "
+                f"{actions}, call `request_a4p_intent_authorization` with the known candidate scopes. "
+                "Read-only operations also require this preparation. Do not read or explore first to prepare "
+                "authorization. A user-supplied path is not permission. Only tools outside this list may be "
+                "used first to discover necessary information.\n"
+                "- Submit multiple actions together when input/output paths are known. The backend filters "
+                "policy-allowed and valid-token-covered concrete calls; do not guess which calls need approval. "
+                "Inspect permittedActions, unapprovedActions and deniedActions. Execute only permittedActions; "
+                "unapprovedActions still lack approval and deniedActions require revising the plan. "
+                "ok=true with authorizationRequired=false means no new approval was needed. Authorization "
+                "does not execute actions; actual calls still recheck permissions.\n"
+                "- Session authorization may be staged: authorize discovery first when needed, then newly "
+                "discovered read/write scopes. Reuse approved scopes; resolved runtime values alone do not "
+                "require another request. Do not repeat rejected or failed requests unchanged.\n"
+                "- Use real tool names and security-critical parameters. Shell scopes default to complete exact "
+                "commands; a narrow wildcard for one unknown argument must not absorb whitespace, Shell "
+                "operators, redirections, or extra arguments. File scopes use a concrete file or a filename "
+                "glob under a fixed directory; never a bare * or a directory in place of a file. Use dedicated "
+                "file tools for writes. Unknown/pattern scopes remain in the approval request.\n"
+                "- read_file/list_files/glob/grep require explicit absolute paths without '..' in requests and "
+                "execution. list_files/glob authorize an exact directory; grep an exact file or directory. "
+                "Filename discovery does not authorize read_file; reading does not authorize writing. "
+                "Search keywords and result limits may vary within the root.\n"
+                "- Choose a feasible plan once and proceed; revise only for new facts, changed requirements, "
+                "or actual errors. Ordinary parameters need not be known for authorization; express dynamic "
+                "values through bounded scopes, then execute with resolved values, never placeholders. "
+                "Do not broaden scopes or guess missing information.\n"
+                "- Cron: use the system-designated default creation tool: create disabled -> authorize the "
+                "complete future scope using the returned cronJobId -> enable after ok=true only if every "
+                "planned action is permitted. Keep the job disabled on failure, rejection, or insufficient "
+                "scope. Cron authorization cannot be staged or rely on interactive approval during execution; "
+                "current session permissions/tokens do not filter cron requests. Generate description and "
+                "actions from the same plan, including dynamic argument resolution. When only scheduling is "
+                "requested, put execution/preparation in the future plan; do not trial-run now unless setup "
+                "depends on its results or the user requests immediate execution.\n"
             )
         else:
             content = (
                 "# A4P 意图授权\n\n"
-                "## 授权边界\n"
-                f"- Web：涉及 {actions} 时，在第一个受保护的工具调用前，调用 `request_a4p_intent_authorization` "
-                "获取授权。每个受保护调用必须匹配有效的已批准范围，只读操作也不例外。授权只允许执行，不代表操作已经完成。\n"
-                "- 可先使用受保护列表外的工具读取必要信息、发现工具能力和确定参数。一次授权可通过多个 `actions` 覆盖当前已确定的范围。使用真实工具名及其安全关键参数；无需提前确定不参与授权匹配的普通参数。\n"
-                "- 对 Shell 工具，默认分别授权完整精确命令。只有单个动态参数无法提前确定，且通配不会覆盖空白、Shell 运算符、重定向或额外参数时，才使用窄范围通配。\n"
-                "- 对 read_file/write_file/edit_file，使用具体文件路径，或固定目录下的文件名 glob。不得使用裸 * 或以目录路径代替文件范围。使用专用文件工具完成文件写入。\n"
-                "- read_file、list_files、glob、grep 在申请和执行时均须显式使用绝对路径，不得省略路径、使用相对路径或包含上级目录跳转。list_files/glob 授权具体目录，grep "
-                "授权具体文件或目录。glob 可递归搜索文件名；grep 可递归搜索正文并返回片段。范围内关键词和结果条数可以变化。目录浏览、文件名搜索不包含 read_file 权限，读取不包含写入权限。\n"
-                "- 输入和输出路径已知时，将读取、新建、修改合并申请后再读取资料；必须先发现文件时，先申请浏览或搜索，再对新增读取和修改范围补充授权。定时任务仍须在启用前明确完整未来范围。\n"
-                "\n"
-                "## 规划与收敛\n"
-                "- 选择满足用户需求、权限范围明确且能够执行的方案。无需寻找最优方案，也无需证明其他等价方案更差。\n"
-                "- 完成一次规划：确定必要操作和依赖；确定受保护操作的工具和授权范围；检查需求覆盖、参数依赖和权限范围。三项检查通过后，立即进入下一步工具调用。\n"
-                "- 没有新增信息时，不重新比较已经选定的工具、操作拆分、数据来源或执行顺序。不要为了减少 actions 数量重组已经可行的方案。\n"
-                "- 只有用户需求变化、新获得的事实、工具返回错误，或发现具体的需求或授权约束不满足时，才修改受影响的步骤及其依赖。假设性问题本身不构成重新规划的理由。\n"
-                "\n"
-                "## 未知信息与动态参数\n"
-                "- 直接使用上下文和工具说明中已明确的事实，不重复验证。缺失信息若影响执行或授权，使用必要的信息获取工具确认，不反复猜测工具行为。\n"
-                "- 对运行时产生的信息，在计划中说明获取方式及其如何构成后续参数；无需提前取得实际值。\n"
-                "- 计划可以描述变量和替换关系；提交授权时必须使用有效的具体范围或受支持的模式；实际调用时必须使用已解析的真实参数，不得提交未解析的占位符。\n"
-                "- 只有影响任务可行性、授权范围或正确执行的未知信息需要阻塞下一步。"
-                "其他实现选择选定一种合理方案后继续。"
-                "若必要信息无法获取，且不存在权限范围明确、能够执行的方案，说明具体缺失信息；"
-                "不得以扩大授权或猜测参数代替解决问题。"
-                "\n"
-                "\n"
-                "## 当前会话与定时任务\n"
-                "- 当前交互会话允许分阶段授权：先授权并执行参数已明确的阶段；仅当后续阶段不在已批准范围内时再申请授权。运行时值变为已知，本身不意味着需要再次授权。\n"
-                "- Cron 授权不能分阶段，也不能依赖触发时的交互审批。运行时参数值可以变化，但其构成方式及允许范围必须能够预先表达；无法表达时，不启用任务。\n"
-                "- 用户只要求创建定时任务时，将任务执行及其必要准备操作纳入未来执行计划。"
-                "只有创建或授权本身确实依赖当前操作的结果，或用户明确要求立即执行时，才在当前会话执行相应操作；"
-                "否则不试运行任务或申请额外的会话级授权。"
-                "\n"
-                "- 从同一份执行计划生成任务 description 和授权 actions：description 记录执行步骤、已确定的调用参数及动态参数解析关系；actions "
-                "表达对应的受保护调用范围。未来执行应遵循该计划，不重新选择等价实现。\n"
-                "- 使用系统指定的默认 Cron 创建工具，顺序执行：create disabled -> 使用返回的 cronJobId 一次性授权完整未来范围 -> ok=true 后 "
-                "enable。前一步成功时直接进入下一步。授权失败、被拒绝或范围不足时保持任务禁用，并根据实际结果处理，不反复提交相同请求。\n"
+                f"- 第一步：使用 {actions} 读取、浏览、搜索、写入或执行命令前，必须先调用 "
+                "`request_a4p_intent_authorization` 提交已知候选范围。只读操作也必须先提交；"
+                "不得先读取或搜索文件来准备授权。用户提供路径不等于已授权。只有列表外的工具可先用于获取必要信息。\n"
+                "- 输入输出路径已知时，合并提交多个 actions。后端过滤规则允许或已有有效 token 覆盖的具体操作，"
+                "不要自行猜测哪些操作需要审批。检查 permittedActions、unapprovedActions 和 deniedActions；"
+                "只能执行 permittedActions 中的操作，unapprovedActions 仍缺授权，deniedActions 需要调整计划。"
+                "ok=true 且 authorizationRequired=false 表示无需新增授权。授权不执行操作，实际调用仍重新校验权限。\n"
+                "- 会话允许分阶段授权：必要时先授权浏览或搜索，再补充发现的读取和写入范围。复用已批准范围；"
+                "运行时值变为已知本身不要求重新授权。拒绝或失败后不要原样重复请求。\n"
+                "- 使用真实工具名和安全关键参数。Shell 默认授权完整精确命令；单个未知参数仅允许窄范围通配，"
+                "不得覆盖空白、Shell 运算符、重定向或额外参数。文件使用具体文件或固定目录下的文件名 glob，"
+                "不得使用裸 * 或用目录代替文件范围。使用专用文件工具写入。通配范围或无法预检的操作仍保留申请。\n"
+                "- read_file/list_files/glob/grep 在申请和执行时必须显式使用绝对路径且不含 '..'。"
+                "list_files/glob 授权具体目录，grep 授权具体文件或目录；文件名搜索不包含 read_file 权限，"
+                "读取不包含写入权限。范围内搜索词和结果条数可变化。\n"
+                "- 选定可行计划后执行，仅因新事实、需求变化或实际错误调整。无需提前确定普通参数；"
+                "动态参数用有界范围表达，实际执行使用真实值而非占位符。不扩大范围或猜测缺失信息。\n"
+                "- 定时任务：使用系统指定的默认创建工具，create disabled -> 使用返回的 cronJobId "
+                "一次性授权完整未来范围 -> ok=true 且计划内全部操作获准后 enable。失败、拒绝或范围不足时保持禁用。"
+                "Cron 不能分阶段授权或依赖执行时交互审批，也不按当前会话权限/token 过滤。"
+                "同一计划生成 description 和 actions，包含动态参数解析方式。用户仅要求定时时，准备和执行放入未来计划；"
+                "只有设置依赖当前执行结果或用户要求立即执行时才现在执行，不额外试运行。\n"
             )
-        await self._upsert_prompt_attachment(
-            ctx,
-            section=section,
+        try:
+            injected = await self._upsert_prompt_attachment(
+                ctx,
+                section=section,
+                content=content,
+                kind=PromptAttachmentKind.RUNTIME,
+                priority=94,
+            )
+        except Exception:
+            self._log_a4p_prompt_injection(
+                ctx, injected=False, reason="attachment_error", content=content,
+            )
+            raise
+        self._log_a4p_prompt_injection(
+            ctx, injected=injected,
+            reason="attachment_registered" if injected else "attachment_unavailable",
             content=content,
-            kind=PromptAttachmentKind.RUNTIME,
-            priority=94,
         )
 
     async def _sync_a4p_cron_authorization_scope_attachment(
@@ -1006,13 +1002,13 @@ class RuntimePromptRail(DeepAgentRail):
         content: str,
         kind: PromptAttachmentKind,
         priority: int,
-    ) -> None:
+    ) -> bool:
         if self.attachment_manager is None:
             logger.warning(
                 "[RuntimePromptRail] prompt attachment manager unavailable; skip dynamic section=%s",
                 section,
             )
-            return
+            return False
         try:
             writer = self.attachment_manager.bind_context(ctx)
             await writer.add_section(
@@ -1023,8 +1019,10 @@ class RuntimePromptRail(DeepAgentRail):
                 priority=priority,
                 content_kind="text/markdown",
             )
+            return True
         except ValueError as exc:
             logger.warning("[RuntimePromptRail] skip prompt attachment section=%s: %s", section, exc)
+            return False
 
     async def _clear_prompt_attachment(
         self,

@@ -236,6 +236,10 @@ def build_permission_rail(
     from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
     from jiuwenswarm.common.utils import get_config_file
 
+    from jiuwenswarm.agents.harness.common.a4p.preflight import unregister_preflight_rail
+
+    if session_id:
+        unregister_preflight_rail(str(session_id).strip())
     inline_permissions = config.get("permissions", {})
     if not isinstance(inline_permissions, dict):
         inline_permissions = {}
@@ -899,6 +903,10 @@ def build_permission_rail(
             permission_rail.set_trusted_dirs(None)
 
         installed_permission_rail = permission_rail
+        if not enable_auto_permission and bound_session_id:
+            from jiuwenswarm.agents.harness.common.a4p.preflight import register_preflight_rail
+
+            register_preflight_rail(bound_session_id, permission_rail)
         logger.info(
             "[InterruptHelpers] %s created successfully with tool_names=%s",
             type(permission_rail).__name__,

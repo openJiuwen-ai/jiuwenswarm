@@ -201,16 +201,25 @@ def test_a4p_tool_schema_exposes_only_security_critical_params() -> None:
     action_schema = actions_schema["items"]
     properties = action_schema["properties"]
 
-    assert "Request user approval for one currently known A4P" in tool_card.description
-    assert "bash, mcp_exec_command, create_terminal, write_file, edit_file, acp_chat" in tool_card.description
-    assert "only the current stage" in tool_card.description
-    assert "Runtime-dependent arguments do not require another authorization" in tool_card.description
-    assert "only when a later stage is not covered by an approved scope" in tool_card.description
-    assert "cron authorization cannot be staged" in tool_card.description
-    assert "each token is added" in tool_card.description
-    assert "current Web session" in tool_card.description
-    assert "existing disabled cron job" in tool_card.description
-    assert "does not execute them" in tool_card.description
+    for guidance in (
+        "Before reading, listing, searching, writing or running Shell commands",
+        "Do not read files first to prepare authorization",
+        "filters session actions already allowed by policy or covered by valid tokens",
+        "authorizationRequired=false",
+        "permittedActions, unapprovedActions and deniedActions",
+        "bash, mcp_exec_command, create_terminal, write_file, edit_file, acp_chat",
+        "only the current stage",
+        "Reuse approved scopes when runtime values match",
+        "current Web session",
+        "existing disabled cron job",
+        "cron authorization cannot be staged",
+        "Execute only permittedActions",
+        "until every planned action is permitted",
+        "does not execute actions",
+        "approved may be false",
+        "interactive Web session",
+    ):
+        assert guidance in tool_card.description
     for workflow_rule in (
         "Normal Web selection rule",
         "two or more total calls",
@@ -224,7 +233,8 @@ def test_a4p_tool_schema_exposes_only_security_critical_params() -> None:
     ):
         assert workflow_rule not in tool_card.description
 
-    assert actions_schema["description"] == "Non-empty list of supported tool action scopes."
+    assert "candidate tool action scopes" in actions_schema["description"]
+    assert "the backend filters session requests" in actions_schema["description"]
     assert action_schema["required"] == ["name", "params"]
     assert "allowExtraParams" not in properties
     assert properties["params"]["type"] == "object"
