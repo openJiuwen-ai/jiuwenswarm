@@ -114,18 +114,18 @@ test('office activity reloads when the dashboard is opened again', () => {
   assert.equal(officeActivityLoad('colleague-workspace', 'ready'), 'idle');
 });
 
-test('server colleagues replace the list and keep page-local IM and disabled marks', () => {
+test('server colleagues replace the list and restore persisted IM and disabled marks', () => {
   const xiaojiu = { ...colleague, id: 'xiaojiu', name: '小九', isDefault: true };
   const loaded = replaceColleagues(createInitialJiuwenMateState([]), [xiaojiu]);
   assert.equal(loaded.view, 'office-dashboard');
   assert.equal(loaded.selectedColleagueId, 'xiaojiu');
 
   const marked = setColleagueDisabled(finishColleagueAuthorization(openColleagueAuthorization(loaded, 'xiaojiu'), true), 'xiaojiu', true);
-  const reloaded = replaceColleagues(marked, [{ ...xiaojiu, name: '小九 2' }, colleague]);
+  const reloaded = replaceColleagues(marked, [{ ...xiaojiu, name: '小九 2', imConfigured: false }, colleague]);
   assert.deepEqual(
     reloaded.colleagues.map((item) => [item.id, item.name, item.imConfigured, item.disabled]),
     [
-      ['xiaojiu', '小九 2', true, true],
+      ['xiaojiu', '小九 2', false, true],
       ['brand-advisor', colleague.name, false, false],
     ],
   );

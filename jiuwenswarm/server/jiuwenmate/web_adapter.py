@@ -107,6 +107,19 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _configured_feishu_agent_ids() -> set[str]:
+    """Return the colleague IDs currently bound to an owner Feishu app."""
+    from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import configured_feishu_bindings
+
+    return {binding.agent_id for binding in configured_feishu_bindings()}
+
+
+def _colleague_wire(view) -> dict[str, Any]:
+    payload = view.to_dict()
+    payload["im_configured"] = payload["agent_id"] in _configured_feishu_agent_ids()
+    return payload
+
+
 def _ignore(event: AgentEvent) -> None:
     return None
 
@@ -455,23 +468,23 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         service = self._colleagues()
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT.value:
             view = service.ensure_default_colleague(WEB_NAMESPACE)
-            return {"colleague": None if view is None else view.to_dict()}
+            return {"colleague": None if view is None else _colleague_wire(view)}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_LIST.value:
-            return {"colleagues": [view.to_dict() for view in service.list_colleagues(WEB_NAMESPACE)]}
+            return {"colleagues": [_colleague_wire(view) for view in service.list_colleagues(WEB_NAMESPACE)]}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_CREATE.value:
-            return {"colleague": service.create_colleague(WEB_NAMESPACE, _settings(params)).to_dict()}
+            return {"colleague": _colleague_wire(service.create_colleague(WEB_NAMESPACE, _settings(params)))}
         agent_id = _text_param(params, "agent_id")
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_GET.value:
-            return {"colleague": service.get_colleague(WEB_NAMESPACE, agent_id).to_dict()}
+            return {"colleague": _colleague_wire(service.get_colleague(WEB_NAMESPACE, agent_id))}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_GET.value:
             return {"settings": service.read_settings(WEB_NAMESPACE, agent_id).to_dict()}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_UPDATE.value:
-            return {"colleague": service.update_settings(WEB_NAMESPACE, agent_id, _settings(params)).to_dict()}
+            return {"colleague": _colleague_wire(service.update_settings(WEB_NAMESPACE, agent_id, _settings(params)))}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_PUBLISH.value:
             return {"version": service.publish(WEB_NAMESPACE, agent_id).to_dict()}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_SET_ENABLED.value:
             enabled = params.get("enabled")
             if not isinstance(enabled, bool):
                 raise PersistentAgentError("enabled must be a boolean")
-            return {"colleague": service.set_enabled(WEB_NAMESPACE, agent_id, enabled=enabled).to_dict()}
+            return {"colleague": _colleague_wire(service.set_enabled(WEB_NAMESPACE, agent_id, enabled=enabled))}
         raise PersistentAgentError(f"unsupported method {method!r}")

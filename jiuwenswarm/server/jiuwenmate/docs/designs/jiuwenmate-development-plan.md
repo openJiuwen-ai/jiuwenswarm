@@ -217,7 +217,7 @@
 ### JM-08 飞书接入与群内分发
 
 - **目标与范围：** 为新版 AI 同事接入现有飞书连接能力，新建消息标准化和群内分发逻辑。个人版飞书路由保持原状。
-- **责任与契约：** `server/jiuwenmate/feishu_group_fanout.py` 负责调用绑定解析器、标准化 Feishu 事件并按接收通道 `app_id` 路由到唯一 namespace / Agent；再按平台事件身份生成稳定 `source_ref`，交给 JM-03 受理。入口接入 `message_handler.py` 与 Feishu channel，个人版既有路由保持不变。
+- **责任与契约：** 所有者本地 Feishu 应用配置使用 `persistent_agent_id` 指向 JiuwenMate 同事；Gateway 与 `server/jiuwenmate/feishu_group_fanout.py` 将其映射为运行时 `agent_id`，并按接收通道 `app_id` 路由到唯一 namespace / Agent。随后标准化 Feishu 事件、按平台事件身份生成稳定 `source_ref` 并交给 JM-03 受理。入口接入 `message_handler.py` 与 Feishu channel，个人版既有路由保持不变。
 - **开工硬前置：** JM-02 的同事定义；JM-03 的 Session 定位与受理。
 - **独立验证入口：** `tests/unit_tests/gateway/test_persistent_group_fanout.py`。
 - **独立验证条件：** 组件验证使用飞书事件样本；真机验证须使用测试应用、测试群，并具备应用接收权限。
@@ -586,7 +586,7 @@ flowchart LR
 | JM-05 窗口持久化后端 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S0 | B / S0 | 未排期 | 待验收 | 常钰聪 | — | 宿主组件 18 项测试通过，全目录 104 项，见 [F_05](../features/F_05_window-backend.md)；执行入口注入与定时清理已由 JM-07 完成，AgentServer 接线已由 JM-10 完成（见 [F_10_02](../features/F_10_02_web-private-chat.md)）；联合验证待 PA-10～PA-12 | 2026-10-14；同步 JM-07 |
 | JM-06 模型预算端口 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S0 | B / S0 | 未排期 | 待验收 | 常钰聪 | — | 宿主组件 15 项测试通过，全目录 119 项，见 [F_06](../features/F_06_budget-port.md)；执行入口注入与悬挂预留回收已由 JM-07 完成，AgentServer 接线已由 JM-10 完成（见 [F_10_02](../features/F_10_02_web-private-chat.md)）；联合验证待 PA-05、PA-07、PA-11 | 2026-10-14；同步 JM-07 |
 | JM-07 管理器、排队器与执行驱动 | 特性 / 本期 | 纳入 | 第 2 节全部范围；AgentServer 启停接线已由 JM-10 完成 | 未评估 / 随 S1 | A / S1 | 未排期 | 待验收 | 常钰聪 | — | JM-07-V-01～V-04 → 真实 SQLite 与真实宿主端口，core 执行与中断入口为替身 → 27 项测试通过，全目录 146 项，记录见 [F_07](../features/F_07_execution-driver.md) → 宿主组件通过，联合验收待完成；AgentServer 接线已由 JM-10 完成（见 [F_10_02](../features/F_10_02_web-private-chat.md)）；正式执行入口已在 core `9eb336b4` 下经 JM-10 验收测试跑通（模型为替身，见 [F_10_02](../features/F_10_02_web-private-chat.md)）；`resume` 仍拒绝续做，重启扫描在 JM-13 工作区，续做执行待 PA-17、PA-18 | 2026-10-15 |
-| JM-08 飞书接入与群内分发 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2a | C / S2a | 未排期 | 待验收 | 闫祉君 | — | 提交 `cef26ade`：本地 Feishu 配置的 `app_id → agent_id` 解析、Gateway→AgentServer E2A 入站及 AgentServer JM-07 条件启停已接入；未绑定个人版通道不发 E2A、不改旧路由。另在 JM-07 Request 受理时持久化 `RequestRouteSnapshot` 供 JM-09 按原 Bot / 消息关系回投。JM-08 及消息 / 附件、JM-03/07 聚焦回归 142 项通过；JM-08 路由快照 + JM-09 文本投递联合聚焦 105 项、较宽回归 249 项通过，1 项 Windows SQLite 权限断言排除，见 [F_08](../features/F_08_feishu-group-fanout.md)、[F_09](../features/F_09_web-and-feishu-result-delivery.md)。宿主组件通过，真实 Feishu 应用 / 群联调仍待执行；不新增群白名单或工作空间权限；PA-07 AgentServer 联调后开放群执行 | 2026-10-15；补充 JM-09 入站快照 |
+| JM-08 飞书接入与群内分发 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2a | C / S2a | 未排期 | 待验收 | 闫祉君 | — | 提交 `cef26ade`：本地 Feishu 配置的 `app_id → persistent_agent_id → 运行时 agent_id` 解析、Gateway→AgentServer E2A 入站及 AgentServer JM-07 条件启停已接入；未绑定个人版通道不发 E2A、不改旧路由。另在 JM-07 Request 受理时持久化 `RequestRouteSnapshot` 供 JM-09 按原 Bot / 消息关系回投。原 JM-08 及消息 / 附件、JM-03/07 聚焦回归 142 项通过；JM-08 路由快照 + JM-09 文本投递联合聚焦 105 项、较宽回归 249 项通过，1 项 Windows SQLite 权限断言排除；2026-10-19 补充 `app_id` 与 `persistent_agent_id` 一对一绑定、弹窗保存及状态恢复，3 项后端定向测试、32 项前端测试和生产构建通过，见 [F_08](../features/F_08_feishu-group-fanout.md)、[F_09](../features/F_09_web-and-feishu-result-delivery.md)。宿主组件通过，真实 Feishu 应用 / 群联调仍待执行；不新增群白名单或工作空间权限；PA-07 AgentServer 联调后开放群执行 | 2026-10-19；应用配置一对一绑定与持久化 |
 | JM-09 结果投递服务 | 特性 / 本期 | 纳入 | Web 投递与飞书投递两个子范围 | 未评估 / Web 随 S1，飞书随 S2a | C / S1、S2a | 未排期 | 进行中 | 闫祉君 | — | 文本子范围已实现：JM-04 final + outbox 同事务、Web 结果与状态可查、Feishu Request 固定路由快照、AgentServer→Gateway→Feishu 文本 ACK；初次聚焦 101 项、联合回归 207 项通过；修复断连和 ACK 恢复边界后，最新跨 JM-08/JM-09、个人版 / 附件 / JM-03/07 回归 249 项通过，1 项 Windows SQLite 权限断言排除，详见 [F_09](../features/F_09_web-and-feishu-result-delivery.md)。真实 Feishu 与 Agent 联调待验；群响应需 PA-07 联调；文件需 PA-08；PA-15 只在协作发送作为副作用工具时提供意图记账，不提供发送接口 | 2026-10-15；文本实现与验证 |
 | JM-10 Web 接入与同事页面 | 特性 / 本期 | 纳入 | 同事管理、私聊、历史、状态、流式回复与每个同事多条 Web 会话已接入；回复仍只读候选输出，投递记录留给 JM-09；群记录与执行轨迹已读取 JM-11 公共记录和本员工的执行日志 | 未评估 / 随 S1 | A / S1、S2a | 未排期 | 进行中 | 常钰聪 | — | 同事管理 → 提交 `d934f611`，见 [F_10](../features/F_10_web-colleague-management.md)；私聊、历史、状态与流式 → 提交 `ceae1203`，多会话 → 提交 `c978f512`，见 [F_10_02](../features/F_10_02_web-private-chat.md)。宿主组件与 core `9eb336b4` 正式执行入口已验证（模型为替身）。真实模型浏览器验收待 S1；群记录与执行轨迹已接查询，真实飞书记录待 S2a | 2026-10-15 |
 | JM-11 群公共记录与搜索 | 特性 / 本期 | 纳入 | 每群消息库、宿主访问关系、归档前置、当前群扫描与底层单群搜索 | 未评估 / 随 S2a | C / S2a | 未排期 | 进行中 | 闫祉君 | — | 已实现共享归档、成员与消息实时核验、当前群端口注入及确认出站的只补归档重试；[F_11](../features/F_11_group-public-records.md) 记录验证，[S_01](../specs/S_01_group-public-records.md) 维护宿主契约。真实 core 已用模型替身验证背景进入窗口；真实飞书及生产 PA-18 配置联合验证待完成，JM-21 跨群未开放 | 2026-10-17；实现与本地验证 |
@@ -695,7 +695,8 @@ flowchart TB
 
 **渠道识别。**
 - 用接收事件的渠道实例及其 `app_id` 查新版渠道绑定，得到 `agent_id`；@ 列表只用于说明消息指向谁，不用于反查接收连接。
-- 新版绑定保存自己的 `binding_id`、`platform`、`app_id`、凭据和 `agent_id`，公开响应须脱敏。
+- Feishu 外部应用配置以 `persistent_agent_id` 指向同事；Gateway 和绑定解析器将其映射为上述运行时 `agent_id`，不读取旧配置键 `agent_id`。
+- 飞书绑定直接保存在现有应用配置项中：`app_id`、应用凭据和 `persistent_agent_id`；其中 `persistent_agent_id` 就是同事现有的 `agent_id`。不另建绑定表或持久化绑定 ID，运行时按 `app_id` 解析到唯一同事，公开响应须脱敏。
 - 多个应用接收到同一消息时，公共记录按平台与消息身份只归档一次，各 Agent 的请求分别去重。
 
 **跨仓直接调用。**
@@ -733,6 +734,7 @@ python -m pytest tests/integration_tests/jiuwenmate -q
 
 | 日期 | 条目 / 当时编号 | 变更或阶段产物 | 适用架构 / 验证范围 | 证据、当时遗留及当前替代关系 |
 | --- | --- | --- | --- | --- |
+| 2026-10-19 | JM-08 | Feishu 应用配置采用 `app_id` + `persistent_agent_id` 一对一绑定；创建弹窗保存应用凭据，重复绑定时替换同事旧应用，解析后仍使用运行时 `agent_id`；不兼容旧配置键 | Gateway 配置保存与绑定解析、同事列表状态、前端授权弹窗 | 3 项后端定向测试、32 项前端测试和生产构建通过；真实 Feishu 入站复测待执行，见 [F_08](../features/F_08_feishu-group-fanout.md) |
 | 2026-10-17 | JM-11、JM-21 | 按用户确认编写 F_11、F_21：每群独立消息库与附件目录，无 local 路径层；权限关系在 agents.sqlite3。对齐本地 PA-23 跨群契约，区分当前群扫描与 Agent 级跨群搜索；原负责人和交付分类不变 | 方案设计与只读代码核对；非运行验证 | 两项按“已启动设计”记进行中；代码、测试和真实飞书／跨仓联调未开始。整项完成仍为本期 0/17、扩展 0/1；整体架构文件未修改 |
 | 2026-10-17 | JM-11 | 按 F_11 实现每群共享归档、访问关系、撤回与读取前刷新、内部平台核验、出站补归档重试及 GroupChatPort 注入；定稿契约同步 S_01。审查后补齐撤回触发拦截、换绑关系退休及可见下界重设、补归档分页轮转。JM-21 不实施 | 真实 SQLite、真实 core／模型替身、Gateway 与 SDK 替身，含个人版聚焦回归 | 最终合并回归 412 项通过、4 项既有容量配置／Windows 环境断言排除，详情见 F_11 第 8 节；真实飞书和生产 PA-18 配置验证仍待完成，JM-11 保持进行中；未提交 |
 | 2026-10-17 | JM-21 | 按 F_21 完成跨群宿主子范围：实时授权集合内群名解析、每群固定归档快照、稳定合并与不透明 15 分钟游标、续页重授权／修订复核，以及 private/group 执行中的真实 PA-23 搜索工具接入；同步 S_01 | 本地真实 SQLite、真实 agent-core PA-23 执行与模型／成员服务替身 | JM-21 跨群单测、3 项 ExecutionDriver 接线测试及真实 core 集成共 26 项通过，JM-11 单群端口回归 17 项通过；JiuwenMate 全回归 345 项通过、14 项失败（5 项既有 Windows／本地 core 基线失败，9 项本地 agent-core PA-18 capacity 配置缺口），详见 [F_21](../features/F_21_cross-group-search.md) §8；真实飞书成员核验与 Gateway 联调待完成，JM-21 其他 IM 扩展仍未设计；整项状态保持进行中、扩展 0/1；未提交 |

@@ -163,17 +163,20 @@ def configured_feishu_bindings(
         if not isinstance(app, Mapping):
             return
         app_id = app.get("app_id")
-        agent_id = app.get("agent_id")
-        if not _present(app_id) or not _present(agent_id):
+        persistent_agent_id = app.get("persistent_agent_id")
+        if app.get("enabled", True) is False:
+            return
+        if not _present(app_id) or not _present(persistent_agent_id):
             return
         normalized_app_id = app_id.strip()
+        normalized_agent_id = persistent_agent_id.strip()
         bindings.append(
             FeishuBinding(
                 binding_id=f"feishu:{normalized_app_id}",
                 platform="feishu",
                 app_id=normalized_app_id,
                 namespace_id="local",
-                agent_id=agent_id.strip(),
+                agent_id=normalized_agent_id,
             )
         )
 
@@ -187,7 +190,17 @@ def configured_feishu_bindings(
     if isinstance(enterprise, Mapping):
         for app in enterprise.values():
             add_app(app)
-    return tuple(sorted(bindings, key=lambda item: (item.app_id, item.agent_id)))
+    app_counts: dict[str, int] = {}
+    agent_counts: dict[str, int] = {}
+    for item in bindings:
+        app_counts[item.app_id] = app_counts.get(item.app_id, 0) + 1
+        agent_counts[item.agent_id] = agent_counts.get(item.agent_id, 0) + 1
+    return tuple(
+        sorted(
+            (item for item in bindings if app_counts[item.app_id] == 1 and agent_counts[item.agent_id] == 1),
+            key=lambda item: (item.app_id, item.agent_id),
+        )
+    )
 
 
 def resolve_configured_feishu_bindings(platform: str, app_id: str) -> tuple[FeishuBinding, ...]:

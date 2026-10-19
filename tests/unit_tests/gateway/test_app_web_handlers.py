@@ -4179,6 +4179,57 @@ async def test_channel_feishu_set_conf_apps_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_channel_feishu_bind_agent_persists_one_to_one_persistent_agent_id(monkeypatch, tmp_path):
+    from jiuwenswarm.common import config as config_module
+
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs["feishu"] = {
+        "apps": [
+            {
+                "name": "现有应用",
+                "app_id": "cli_existing",
+                "app_secret": "existing-secret",
+                "persistent_agent_id": "mate_existing",
+            },
+            {
+                "name": "同事的旧应用",
+                "app_id": "cli_old_for_new",
+                "app_secret": "old-secret",
+                "persistent_agent_id": "mate_new",
+            },
+        ]
+    }
+    config_path = tmp_path / "config.yaml"
+    config_module.dump_yaml_round_trip(config_path, {"channels": {"feishu": cm.configs["feishu"]}})
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    await channel.methods["channel.feishu.bind_agent"](
+        object(),
+        "req-bind-agent",
+        {"app_id": "cli_new", "app_secret": "new-secret", "persistent_agent_id": "mate_new"},
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    saved_config = config_module.load_yaml_round_trip(config_path)
+    apps = saved_config["channels"]["feishu"]["apps"]
+    assert [(app["app_id"], app.get("persistent_agent_id")) for app in apps] == [
+        ("cli_existing", "mate_existing"),
+        ("cli_new", "mate_new"),
+    ]
+    new_app = apps[1]
+    assert new_app["app_secret"] == "new-secret"
+    assert "agent_id" not in new_app
+    assert cm.configs["feishu"]["apps"] == apps
+    assert channel.responses[-1]["payload"]["binding"] == {
+        "app_id": "cli_new",
+        "persistent_agent_id": "mate_new",
+    }
+
+
+@pytest.mark.asyncio
 async def test_channel_xiaoyi_set_conf_apps_mode(monkeypatch):
     """xiaoyi.set_conf 带 apps → 写 channels.xiaoyi.apps，返回归一化配置。"""
     channel = FakeWebChannel()

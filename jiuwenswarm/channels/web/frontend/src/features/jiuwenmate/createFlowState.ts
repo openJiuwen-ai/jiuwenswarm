@@ -38,7 +38,7 @@ export function createInitialJiuwenMateState(colleagues: readonly JiuwenMateColl
   };
 }
 
-/** Applies the server list; IM, disabled and uploaded avatars are not stored by the server yet. */
+/** Applies the server list; preserves only page-local disabled and uploaded-avatar state. */
 export function replaceColleagues(state: JiuwenMateState, colleagues: readonly JiuwenMateColleague[]): JiuwenMateState {
   const local = new Map(state.colleagues.map((item) => [item.id, item]));
   const merged = colleagues.map((item) => {
@@ -46,7 +46,6 @@ export function replaceColleagues(state: JiuwenMateState, colleagues: readonly J
     if (!previous) return item;
     return {
       ...item,
-      imConfigured: previous.imConfigured,
       disabled: previous.disabled,
       avatarUrl: item.avatarUrl ?? previous.avatarUrl,
       ...(item.avatarHue != null || previous.avatarHue != null

@@ -7,7 +7,7 @@ import { JiuwenMateDialog } from './JiuwenMateDialog';
 
 interface ImAuthorizeDialogProps {
   onSkip: () => void;
-  onConfirm: () => void;
+  onConfirm: (credentials: { appId: string; appSecret: string }) => Promise<void>;
 }
 
 export function ImAuthorizeDialog({ onSkip, onConfirm }: ImAuthorizeDialogProps) {
@@ -15,7 +15,22 @@ export function ImAuthorizeDialog({ onSkip, onConfirm }: ImAuthorizeDialogProps)
   const [appId, setAppId] = useState('');
   const [secret, setSecret] = useState('');
   const [secretVisible, setSecretVisible] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
   const canConfirm = appId.trim().length > 0 && secret.trim().length > 0;
+
+  const confirm = async () => {
+    if (!canConfirm || saving) return;
+    setSaving(true);
+    setError('');
+    try {
+      await onConfirm({ appId: appId.trim(), appSecret: secret });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <JiuwenMateDialog
@@ -24,10 +39,10 @@ export function ImAuthorizeDialog({ onSkip, onConfirm }: ImAuthorizeDialogProps)
       testId="jiuwenmate-im-authorize-dialog"
       footer={
         <>
-          <button type="button" className="jiuwenmate-outline-button" onClick={onSkip}>
+          <button type="button" className="jiuwenmate-outline-button" onClick={onSkip} disabled={saving}>
             {t('jiuwenmate.common.skip')}
           </button>
-          <button type="button" className="jiuwenmate-dark-button" disabled={!canConfirm} onClick={onConfirm}>
+          <button type="button" className="jiuwenmate-dark-button" disabled={!canConfirm || saving} onClick={() => void confirm()}>
             {t('jiuwenmate.common.confirm')}
           </button>
         </>
@@ -67,6 +82,7 @@ export function ImAuthorizeDialog({ onSkip, onConfirm }: ImAuthorizeDialogProps)
             </button>
           </span>
         </label>
+        {error ? <p className="jiuwenmate-action-error" role="alert">{error}</p> : null}
       </div>
     </JiuwenMateDialog>
   );
