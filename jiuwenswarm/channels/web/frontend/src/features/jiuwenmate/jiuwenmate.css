@@ -2124,16 +2124,6 @@
   align-items: center;
 }
 
-.jiuwenmate-main-empty {
-  flex: 1;
-  flex-direction: column;
-  justify-content: center;
-  padding: 40px 0;
-  color: var(--jm-text-2);
-  font-size: 12px;
-  text-align: center;
-}
-
 .jiuwenmate-schedule-section__bar {
   justify-content: flex-end;
 }
