@@ -133,11 +133,15 @@ def _apply_runtime_entry_patches() -> None:
     from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
         install_shell_tool_safety_hooks,
     )
+    from jiuwenswarm.agents.harness.team.db_bind_race_patch import (
+        apply_team_db_bind_race_patch,
+    )
     from jiuwenswarm.common.llm_provider_compat_patch import apply_provider_compat_patches
     from jiuwenswarm.llm_sse_patch import apply_openai_sse_invoke_patch
 
     install_shell_tool_safety_hooks()
     apply_provider_compat_patches()
+    apply_team_db_bind_race_patch()
     try:
         from jiuwenswarm.common.auth.login_credentials import apply_login_credential_patch
 
