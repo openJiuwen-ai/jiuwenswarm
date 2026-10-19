@@ -376,6 +376,8 @@ class PersistentGroupFanout:
         sender_kind = self._validated_sender_kind(event)
         if sender_kind is None:
             return InboundDisposition.REJECTED
+        if not await self._im_open(binding):
+            return InboundDisposition.HANDLED
 
         try:
             # Keep ordinary personal-mode gateway startup independent of the
@@ -482,6 +484,16 @@ class PersistentGroupFanout:
             return InboundDisposition.REJECTED
 
         return InboundDisposition.HANDLED
+
+    async def _im_open(self, binding: FeishuBinding) -> bool:
+        """A disabled colleague claims the event and does not start a Request."""
+        from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
+        try:
+            view = await asyncio.to_thread(self._service.get_colleague, binding.namespace_id, binding.agent_id)
+        except PersistentAgentError:
+            return False
+        return getattr(view, "enabled", True) is not False
 
     async def _handle_group_change(self, binding: FeishuBinding, event: FeishuInboundEvent) -> InboundDisposition:
         """Lifecycle and recall facts change host records, never create business Requests."""

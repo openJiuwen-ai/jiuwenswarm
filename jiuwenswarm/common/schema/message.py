@@ -424,6 +424,7 @@ def _ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None
     JIUWENMATE_COLLEAGUE_SETTINGS_GET = "jiuwenmate.colleague.settings.get"
     JIUWENMATE_COLLEAGUE_SETTINGS_UPDATE = "jiuwenmate.colleague.settings.update"
     JIUWENMATE_COLLEAGUE_PUBLISH = "jiuwenmate.colleague.publish"
+    JIUWENMATE_COLLEAGUE_SET_ENABLED = "jiuwenmate.colleague.set_enabled"
     JIUWENMATE_COLLEAGUE_DELETE = "jiuwenmate.colleague.delete"
     JIUWENMATE_MODELS_LIST = "jiuwenmate.models.list"
     JIUWENMATE_CHAT_SEND = "jiuwenmate.chat.send"

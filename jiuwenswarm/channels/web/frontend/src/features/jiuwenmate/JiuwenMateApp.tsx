@@ -245,11 +245,21 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     showFeature('office', (current) => openColleagueProfile(current, colleagueId));
   };
 
+  const setColleagueEnabled = async (colleagueId: string, enabled: boolean) => {
+    setActionError('');
+    try {
+      const colleague = await api.setColleagueEnabled(colleagueId, enabled);
+      setState((current) => setColleagueDisabled(current, colleagueId, colleague.disabled));
+    } catch (error) {
+      setActionError(t('jiuwenmate.load.toggleFailed', { reason: errorMessage(error) }));
+    }
+  };
+
   const requestToggleDisabled = (colleagueId: string) => {
     const colleague = state.colleagues.find((item) => item.id === colleagueId);
     if (!colleague) return;
     if (colleague.disabled) {
-      setState((current) => setColleagueDisabled(current, colleagueId, false));
+      void setColleagueEnabled(colleagueId, true);
       return;
     }
     setPendingConfirm({ kind: 'disable', colleague });
@@ -265,7 +275,7 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     const { kind, colleague } = pendingConfirm;
     setPendingConfirm(null);
     if (kind === 'disable') {
-      setState((current) => setColleagueDisabled(current, colleague.id, true));
+      await setColleagueEnabled(colleague.id, false);
       return;
     }
     setActionError('');

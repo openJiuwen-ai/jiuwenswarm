@@ -190,6 +190,16 @@ def _binding(app_id: str, agent_id: str, *, binding_id: str | None = None) -> Fe
 
 
 @pytest.mark.asyncio
+async def test_disabled_colleague_claims_a_feishu_message_without_starting_work(host):
+    agent_id = host.colleague("研发同事")
+    host.service.set_enabled(NS, agent_id, enabled=False)
+    fanout = host.fanout([_binding("app-dev", agent_id)])
+
+    assert await fanout.handle(_event()) is InboundDisposition.HANDLED
+    assert host.row_counts() == (0, 0, 0)
+
+
+@pytest.mark.asyncio
 async def test_unbound_event_is_left_for_the_personal_route_without_creating_state(host):
     fanout = host.fanout([])
 
