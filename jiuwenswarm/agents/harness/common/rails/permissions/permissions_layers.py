@@ -195,14 +195,19 @@ def load_session_permissions(session_id: str | None) -> dict[str, Any]:
         return {}
 
 
-def read_permission_layers_locked(session_id: str | None = None) -> tuple[dict[str, Any], ...]:
+def read_permission_layers_locked(
+    session_id: str | None = None, *,
+    global_permissions: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], ...]:
     """Read strict, fresh layers while the caller owns permission_storage_lock."""
     from copy import deepcopy
 
     from jiuwenswarm.common import config
 
-    global_data = _load_yaml_dict(config.CONFIG_YAML_PATH, strict=True)
-    global_perms = global_data.get("permissions")
+    global_perms = global_permissions
+    if global_perms is None:
+        global_data = _load_yaml_dict(config.CONFIG_YAML_PATH, strict=True)
+        global_perms = global_data.get("permissions")
     if not isinstance(global_perms, dict):
         raise ValueError("Global permissions must contain a mapping")
     user = _as_permissions_section(_load_yaml_dict(user_permissions_path(), strict=True))
@@ -549,6 +554,11 @@ def save_user_permissions(data: dict[str, Any]) -> bool:
 def save_user_permissions_locked(data: dict[str, Any]) -> bool:
     """Save a validated User overlay; caller must hold permission_storage_lock."""
     return _dump_yaml_dict(user_permissions_path(), data)
+
+
+def save_session_permissions_locked(session_id: str, data: dict[str, Any]) -> bool:
+    """Save a validated Session overlay under permission_storage_lock."""
+    return _dump_yaml_dict(session_permissions_path(session_id), data)
 
 
 def update_user_permissions(mutator) -> bool:
