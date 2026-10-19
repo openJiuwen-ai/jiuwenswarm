@@ -1,17 +1,31 @@
 ﻿/* PersonalContextServicesPanel — 上下文内容子页样式（对齐高保真 04） */
 
 .pc-services {
-  width: 100%;
+  /* 左右留白已下沉到常驻子块(head/content/error,见下方分组规则);面板自身铺满父容器 */
+  /* 横向画布最小宽 = 1280 视口 − 72 左侧图标导航栏(.shell--icon-rail 固定列宽,index.css) − 64 左右 margin = 1144px。
+     滚动判定只发生在 .pc-services__content 元素内部(画布 scrollWidth vs 容器 clientWidth),浏览器不看视口,
+     故常量必须扣掉视口到该元素之间的全部固定占宽,触发点才精确落在"视口 1280":
+     视口 ≥1280 内容自适应填充;<1280 锁定此宽被裁剪,出现横向滚动条(阈值处溢出从 0 连续增长,无跳变) */
+  --pc-canvas-min-width: calc(1280px - 72px - 64px);
   flex: 1;
   min-width: 0;
   height: 100%;
   overflow-y: auto;
-  padding: 16px 24px 24px;
+  /* 底部留白:layout 32px padding-bottom + content 包裹层 10px margin-bottom(滚动条离面板底 10px) */
+  padding: 32px 0 0;
   box-sizing: border-box;
   background: #ffffff;
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+/* ── 左右留白(自 .pc-services 下沉):封顶 1400px 居中,容器 ≤1464px 时左右 margin 恰为 32px ── */
+.pc-services__head,
+.pc-services__content,
+.pc-services__error {
+  width: min(1400px, calc(100% - 64px));
+  margin-inline: auto;
 }
 
 .pc-services__error {
@@ -75,7 +89,7 @@
 .pc-services__head {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 32px;
   flex-shrink: 0;
 }
 
@@ -89,7 +103,7 @@
 .pc-services__back {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 1px;
   background: none;
   border: none;
   color: #191919;
@@ -135,12 +149,45 @@
   cursor: not-allowed;
 }
 
+/* ── 内容包裹层:stats 与 layout 同处一个横向滚动容器 ── */
+.pc-services__content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  /* 横向滚动;纵向由内部 layout 的 flex:1 恰好填满,hidden 杜绝意外纵向滚动条 */
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* 卡片 → 32px(layout 自身 padding-bottom) → 横向滚动条 → 10px margin → 面板底(滚动条离底 10px) */
+  margin-bottom: 10px;
+}
+
+/* 细横滚动条:常显(有溢出即见;无溢出时浏览器自然不渲染)。注意:本元素勿声明 scrollbar-width / scrollbar-color,
+   否则 Chromium 会忽略下面全部 ::-webkit-scrollbar* 定制(Chrome 107 基线走 webkit) */
+.pc-services__content::-webkit-scrollbar {
+  height: 6px;
+}
+
+.pc-services__content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.pc-services__content::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--color-scrollbar-thumb);
+}
+
 /* ── 统计卡片：来源 / 知识数 / 正在采集 ── */
 .pc-services__stats {
+  /* 与上方头部间距 32px = .pc-services 的 gap 16px(head→content) + 此 margin 16px */
+  margin-top: 16px;
   display: flex;
   gap: 16px;
   flex-shrink: 0;
   flex-wrap: wrap;
+  /* 画布宽:容器更宽时自适应填充,更窄时锁定 --pc-canvas-min-width 交由 content 裁剪滚动 */
+  min-width: var(--pc-canvas-min-width);
 }
 
 .pc-services__stat-card {
@@ -175,11 +222,17 @@
   align-items: stretch;
   min-height: 0;
   flex: 1;
+  /* 与 stats 同锁画布宽:<1280px 屏幕时被 .pc-services__content 裁剪,横向滚动整体平移 */
+  min-width: var(--pc-canvas-min-width);
+  /* 卡片下沿到横向滚动条 32px(.pc-services 底部留白移交至此) */
+  padding-bottom: 32px;
 }
 
-/* 左侧分类列表 */
+/* 左侧分类列表：basis 随 25vw 收缩(视口 1600px 时 400px),下限 280px;
+   <1280px 屏幕画布锁定后介于 280–320px,list 相应在 880–920px */
 .pc-services__categories {
-  flex: 0 0 400px;
+  flex: 0 1 clamp(280px, 25vw, 400px);
+  min-width: 280px;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -221,6 +274,10 @@
 
 .pc-services__cat.is-disabled {
   color: #c2c2c2;
+}
+
+.pc-services__cat.is-disabled .pc-services__cat-icon {
+  opacity: 0.5;
 }
 
 .pc-services__cat-icon {
@@ -273,7 +330,7 @@
 }
 
 .pc-services__cat.is-active .pc-services__cat-count {
-  background: #1919190C;
+  background: #deecff;
 }
 
 .pc-services__cat-authorize {
@@ -293,7 +350,7 @@
 /* ── 右侧详情面板 ── */
 .pc-services__list {
   flex: 1;
-  min-width: 0;
+  /* 画布锁定 1216px 后 list 恒 ≥ 880px(= 1216 − categories 最大 320 − gap 16),无需单独下限 */
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -415,7 +472,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 24px;
 }
 
 /* 左：采样周期 */
@@ -464,14 +521,14 @@
   visibility: hidden;
 }
 
-.pc-services__card-last-run > span:last-child {
+.pc-services__card-last-run>span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 /* 进度条（正在采集时显示） */
 .pc-services__progress {
-  width: 80px;
+  width: 100px;
   height: 4px;
   border-radius: 2px;
   background: #f0f0f0;
@@ -513,8 +570,15 @@
 }
 
 @keyframes pc-svc-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.4;
+  }
 }
 
 .pc-services__status-text {
@@ -522,21 +586,60 @@
   color: #191919;
 }
 
-.pc-services__status-text--stateCompleted { color: #5CB300; }
-.pc-services__status-text--statePartial { color: var(--color-feedback-warning); }
-.pc-services__status-text--stateStopped { color: #C2C2C2; }
-.pc-services__status-text--stateFailed { color: #F23030; }
-.pc-services__status-text--stateCollecting { color: #5CB300; }
-.pc-services__status-text--stateWaiting { color: #0BB8B2; }
-.pc-services__status-text--stateStopping { color: #808080; }
-.pc-services__status-text--stateCancelled { color: var(--color-text-secondary); }
+.pc-services__status-text--stateCompleted {
+  color: #5CB300;
+}
+
+.pc-services__status-text--statePartial {
+  color: var(--color-feedback-warning);
+}
+
+.pc-services__status-text--stateStopped {
+  color: #C2C2C2;
+}
+
+.pc-services__status-text--stateFailed {
+  color: #F23030;
+}
+
+.pc-services__status-text--stateCollecting {
+  color: #5CB300;
+}
+
+.pc-services__status-text--stateWaiting {
+  color: #0BB8B2;
+}
+
+.pc-services__status-text--stateStopping {
+  color: #808080;
+}
+
+.pc-services__status-text--stateCancelled {
+  color: var(--color-text-secondary);
+}
 
 /* 卡片操作区 */
 .pc-services__card-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
   flex-shrink: 0;
+}
+
+/* 卡片开关(components/Switch):32×16,滑块 12px,左右留 2px,选中位移 18px */
+.pc-services__card-actions button[role='switch'] {
+  width: 32px;
+  height: 16px;
+}
+
+.pc-services__card-actions button[role='switch']>span {
+  width: 12px;
+  height: 12px;
+  transform: translateX(2px);
+}
+
+.pc-services__card-actions button[role='switch'][aria-checked='true']>span {
+  transform: translateX(18px);
 }
 
 .pc-services__action-link {
@@ -569,7 +672,6 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
   padding: 32px 24px;
   flex: 1;
 }
@@ -577,9 +679,13 @@
 .pc-services__empty-icon {
   flex-shrink: 0;
 }
+
 .pc-services__empty-text {
   font-size: 14px;
-  color: #808080;
+  font-weight: 600;
+  color: #191919;
+  padding-top: 8px;
+  padding-bottom: 16px;
 }
 
 .pc-services__add {
@@ -679,5 +785,7 @@
 }
 
 @keyframes pc-svc-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
