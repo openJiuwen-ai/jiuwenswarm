@@ -15,8 +15,8 @@ config.yaml。父类只提供通用工具工厂与生命周期扩展点，不感
 
 部署组合提示：``flash.enabled`` 是进程级开关，不区分 channel / 请求来源——
 officeclaw 对话与 cron / heartbeat / proactive 等后台流水线同样进入 flash。
-flash 白名单不含 ``_llm_retry_rail`` / ``_context_overflow_recovery_rail`` /
-``_deepresearch_execution_rail`` 等健壮性 rail，长文档 / 弱网任务的容错弱于
+flash 白名单不含 ``_llm_retry_rail`` / ``_context_overflow_recovery_rail``
+等健壮性 rail，长文档 / 弱网任务的容错弱于
 normal；officeclaw 等部署开启 flash 前需评估此影响面，如需按来源豁免应在
 mode 解析 guard（``_shared.resolve_agent_request_mode``）增加 channel 过滤。
 
@@ -229,6 +229,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_runtime_prompt_rail",
         "_response_prompt_rail",
         "_stream_event_rail",
+        # deepresearch_execute 依赖此 rail 绑定执行上下文并桥接原生 HITL。
+        "_deepresearch_execution_rail",
         "_task_planning_rail",
         "_security_rail",
         "_heartbeat_rail",
