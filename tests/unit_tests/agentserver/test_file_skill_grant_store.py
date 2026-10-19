@@ -345,16 +345,18 @@ def test_corruption_never_serves_old_authorization(
     if corruption == "invalid-json":
         path.write_text("{")
     elif corruption == "bad-grant":
-        doc = json.loads(path.read_text())
+        # state.json is UTF-8 (ensure_ascii=False); pin the encoding so
+        # GBK-locale hosts run the assertion instead of UnicodeDecodeError.
+        doc = json.loads(path.read_text(encoding="utf-8"))
         doc["grants"]["main"] = [{"unexpected": True}]
         path.write_text(json.dumps(doc))
     elif corruption == "bad-map":
-        doc = json.loads(path.read_text())
+        doc = json.loads(path.read_text(encoding="utf-8"))
         doc["grants"] = []
         path.write_text(json.dumps(doc))
     else:
         replacement = tmp_path / "forged"
-        replacement.write_text(path.read_text())
+        replacement.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
         path.unlink()
         path.symlink_to(replacement)
     assert b.get_active("session", "main") is None
@@ -660,3 +662,118 @@ async def test_child_skill_approval_rechecks_persisted_session_version(
             assert (grant is not None) == (change == "allow")
     finally:
         file_store._session_file_context.reset(token)
+
+
+def test_fresh_activation_revives_task_cancelled_main_scope(stores):
+    """One task cancel must not permanently kill skill_tool activation.
+
+    Regression: interrupt(cancel) -> revoke_grants(sid, "main") writes
+    ``main`` into the session file's invalidated list; ``operate`` then
+    silently dropped every later ``update_active_skill_state`` activation
+    in the SAME session (the "activated" log still printed), so
+    SKILL_GATE kept blocking bash with active=None forever. This mirrors
+    the production incident: the dynamic-authorization feature flag is
+    off (no grants at all), so there is no approval path to drop the
+    breaker. A fresh explicit skill_tool call must re-open the credential
+    window, while a late callback without a fresh skill_tool call stays
+    dropped.
+    """
+    a, b = stores
+    # No grants exist (feature flag off, production incident shape).
+    # Task cancel path invalidates the main scope (late-callback guard).
+    b.revoke_grants("session", "main")
+    # Late callback from the cancelled round cannot restore it (unchanged).
+    a.update_active_skill_state(
+        "session", lambda _: {"active_skill": "huawei-cloud-skill-submit"}
+    )
+    assert b.get_active_skill_state("session") is None
+    # A fresh skill_tool call revives the scope before its after-callback.
+    a.revive_scope("session", "main")
+    # The fresh activation now persists for every reader.
+    a.update_active_skill_state(
+        "session", lambda _: {"active_skill": "huawei-cloud-skill-submit"}
+    )
+    assert b.get_active_skill_state("session") == {
+        "active_skill": "huawei-cloud-skill-submit"
+    }
+
+
+def test_revive_scope_never_resurrects_revoked_grants(stores, manifest):
+    """revive_scope only drops the breaker; revoked grants stay revoked."""
+    a, b = stores
+    a.create_pending_grant(
+        "session",
+        "main",
+        manifest,
+        decision=GrantDecision.LOCAL,
+        approval_tool_call_id="load-1",
+    )
+    assert a.activate_pending(
+        "session",
+        "main",
+        manifest.skill_name,
+        manifest,
+        approval_tool_call_id="load-1",
+    )
+    # Task cancel revokes the grant and invalidates the scope.
+    b.revoke_grants("session", "main")
+    assert a.get_grant("session", "main", manifest.skill_name) is None
+    assert a.get_active("session", "main") is None
+    # Revival drops only the invalidation breaker.
+    a.revive_scope("session", "main")
+    assert a.get_grant("session", "main", manifest.skill_name) is None
+    assert a.get_active("session", "main") is None
+    # Yet a fresh activation persists again for every reader.
+    a.update_active_skill_state(
+        "session", lambda _: {"active_skill": manifest.skill_name}
+    )
+    assert b.get_active_skill_state("session") == {
+        "active_skill": manifest.skill_name
+    }
+
+
+def test_revive_scope_skips_missing_session_silently(stores):
+    """A missing session directory is skipped silently, never created."""
+    a, _ = stores
+    a.revive_scope("officeclaw_ghost_session", "main")
+    assert not (a.sessions_root() / "officeclaw_ghost_session").exists()
+
+
+def test_is_scope_invalidated_readonly_probe(stores):
+    """The read-only probe reports breaker state without side effects."""
+    a, b = stores
+    assert a.is_scope_invalidated("session", "main") is False
+    b.revoke_grants("session", "main")
+    assert a.is_scope_invalidated("session", "main") is True
+    assert a.is_scope_invalidated("officeclaw_ghost_session", "main") is False
+
+
+def test_atomic_revive_main_drops_breaker_and_persists_activation(stores):
+    """update_active_skill_state(revive_main=True) is one transaction.
+
+    The breaker drop and the activation persist atomically: a reader
+    between two store instances never sees the breaker gone without the
+    activation (or vice versa), and a non-activation (None skill) update
+    never drops the breaker.
+    """
+    a, b = stores
+    b.revoke_grants("session", "main")
+    assert b.is_scope_invalidated("session", "main") is True
+    # A completion-style update (active_skill=None) must NOT revive.
+    a.update_active_skill_state(
+        "session",
+        lambda _: {"active_skill": None},
+        revive_main=True,
+    )
+    assert b.is_scope_invalidated("session", "main") is True
+    assert b.get_active_skill_state("session") is None
+    # A real activation drops the breaker and persists in one transaction.
+    a.update_active_skill_state(
+        "session",
+        lambda _: {"active_skill": "huawei-cloud-skill-submit"},
+        revive_main=True,
+    )
+    assert b.is_scope_invalidated("session", "main") is False
+    assert b.get_active_skill_state("session") == {
+        "active_skill": "huawei-cloud-skill-submit"
+    }
