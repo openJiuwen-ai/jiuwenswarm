@@ -21,6 +21,8 @@ from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_i
 from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES
 
 _FILE_DELIVERED = frozenset({"delivered", "available"})
+_HISTORY_LIMIT = 200
+_CHANNEL_KINDS = frozenset({"group", "im_direct"})
 
 
 def _aware(value: str) -> datetime:
@@ -34,6 +36,46 @@ def _minutes(started: datetime, ended: datetime) -> int:
     return max(0, int((ended - started).total_seconds() // 60))
 
 
+def _optional(row: Mapping[str, str | None], key: str) -> str | None:
+    try:
+        value = row[key]
+    except (KeyError, IndexError):
+        return None
+    return None if value is None else str(value)
+
+
+def _plan_id(source_ref: str) -> str:
+    parts = source_ref.split(":", 2)
+    return parts[1] if len(parts) >= 2 and parts[0] == "schedule" else ""
+
+
+def _work_kind(source_ref: str, session: Mapping[str, str] | None) -> str:
+    if source_ref.startswith("schedule:"):
+        return "schedule"
+    if session is not None and session["kind"] in _CHANNEL_KINDS:
+        return "channel"
+    return "conversation"
+
+
+def _history_title(
+    source_ref: str,
+    session: Mapping[str, str] | None,
+    *,
+    conversation_titles: Mapping[tuple[str, str], str],
+    plan_names: Mapping[str, str],
+    group_names: Mapping[str, Mapping[str, str]],
+) -> str:
+    plan = _plan_id(source_ref)
+    if plan:
+        return plan_names.get(plan, "")
+    if session is None:
+        return ""
+    if session["kind"] == "group":
+        mapped = group_names.get(session["conversation_key"])
+        return str(mapped["platform_chat_id"]) if mapped is not None else ""
+    return conversation_titles.get((session["agent_id"], session["conversation_key"]), "")
+
+
 def assemble_activity(
     *,
     colleagues: Sequence[Mapping[str, str]],
@@ -44,12 +86,16 @@ def assemble_activity(
     deliveries: Sequence[Mapping[str, str]],
     groups: Sequence[Mapping[str, str]],
     now: datetime,
+    conversation_titles: Mapping[tuple[str, str], str] | None = None,
+    plan_names: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Fold stored rows into one member record per colleague. ``now`` must be timezone-aware."""
     if now.tzinfo is None:
         raise PersistentAgentError("activity clock must be timezone-aware", code="ACTIVITY_INVALID")
     moment = now.astimezone(timezone.utc)
     today = moment.date()
+    titles = {} if conversation_titles is None else conversation_titles
+    plans = {} if plan_names is None else plan_names
     by_session = {row["session_id"]: row for row in sessions}
     starts: dict[str, datetime] = {}
     execution_request: dict[str, str] = {}
@@ -75,6 +121,9 @@ def assemble_activity(
         hour_minutes: dict[tuple[str, int], int] = defaultdict(int)
         hour_tasks: dict[tuple[str, int], int] = defaultdict(int)
         hour_tokens: dict[tuple[str, int], int] = defaultdict(int)
+        request_tokens: dict[str, int] = defaultdict(int)
+        day_kinds: dict[str, dict[str, int]] = defaultdict(lambda: {"conversation": 0, "channel": 0, "schedule": 0})
+        history_rows: list[dict[str, object]] = []
         channels: dict[str, dict[str, int]] = {}
         group_rows: dict[str, dict[str, object]] = {}
 
@@ -123,6 +172,27 @@ def assemble_activity(
             day_minutes[day] += spent
             hour_minutes[(day, started.hour)] += spent
             hour_tasks[(day, started.hour)] += 1
+            source_ref = _optional(request, "source_ref") or ""
+            kind = _work_kind(source_ref, session)
+            day_kinds[day][kind] += 1
+            updated_at = _optional(request, "updated_at")
+            history_rows.append(
+                {
+                    "request_id": request_id,
+                    "title": _history_title(
+                        source_ref,
+                        session,
+                        conversation_titles=titles,
+                        plan_names=plans,
+                        group_names=group_names,
+                    ),
+                    "kind": kind,
+                    "channel": channel_name,
+                    "status": str(outcome or request["status"] or ""),
+                    "updated_at": updated_at,
+                    "started_at": started.isoformat(),
+                }
+            )
             if channel_name:
                 bucket = channel_bucket(channel_name)
                 bucket["tasks"] += 1
@@ -158,6 +228,7 @@ def assemble_activity(
             amount = charged if isinstance(charged, int) and not isinstance(charged, bool) else 0
             calls_total += 1
             tokens_total += amount
+            request_tokens[request_id] += amount
             started = starts[request_id]
             day = started.date().isoformat()
             day_calls[day] += 1
@@ -184,6 +255,9 @@ def assemble_activity(
             group = group_bucket(session)
             group["artifacts"] = int(group["artifacts"]) + 1
 
+        for item in history_rows:
+            item["tokens"] = request_tokens.get(str(item["request_id"]), 0)
+        history_rows.sort(key=lambda item: str(item["updated_at"] or item["started_at"]), reverse=True)
         days = [
             {
                 "date": day,
@@ -216,6 +290,8 @@ def assemble_activity(
                 "companion_days": companion_days,
                 "last_response_at": None if last_response is None else last_response.isoformat(),
                 "days": days,
+                "kinds": [{"date": day, **day_kinds[day]} for day in sorted(day_kinds)],
+                "history": history_rows[:_HISTORY_LIMIT],
                 "hours": hours,
                 "channels": [
                     {"channel": name, **bucket}
@@ -243,10 +319,25 @@ class ActivityQuery:
                     (namespace_id,),
                 ).fetchall()
                 requests = conn.execute(
-                    "SELECT request_id, agent_id, session_id, status, outcome, updated_at "
+                    "SELECT request_id, agent_id, session_id, source_ref, status, outcome, updated_at "
                     "FROM requests WHERE namespace_id = ?",
                     (namespace_id,),
                 ).fetchall()
+                conversation_titles = {
+                    (row["agent_id"], row["conversation_id"]): str(row["title"] or "")
+                    for row in conn.execute(
+                        "SELECT agent_id, conversation_id, title FROM web_conversations "
+                        "WHERE namespace_id = ? AND deleted_at IS NULL",
+                        (namespace_id,),
+                    )
+                }
+                plan_names = {
+                    row["plan_id"]: str(row["name"] or "")
+                    for row in conn.execute(
+                        "SELECT plan_id, name FROM scheduled_plans WHERE namespace_id = ?",
+                        (namespace_id,),
+                    )
+                }
                 executions = conn.execute(
                     "SELECT execution_id, request_id, started_at FROM executions WHERE namespace_id = ?",
                     (namespace_id,),
@@ -289,4 +380,6 @@ class ActivityQuery:
             deliveries=deliveries,
             groups=groups,
             now=now,
+            conversation_titles=conversation_titles,
+            plan_names=plan_names,
         )

@@ -289,6 +289,15 @@
         "actions": "操作"
       },
       "historyEmpty": "暂无执行记录",
+      "historyStatus": {
+        "completed": "已完成",
+        "failed": "失败",
+        "paused": "已暂停",
+        "stopped": "已停止",
+        "queued": "排队中",
+        "running": "执行中",
+        "dispatched": "执行中"
+      },
       "workspaceDir": "办公目录",
       "workspaceDirHint": "把文件放入此目录后，员工可以查看和读取；员工不能修改目录中的文件。"
     },

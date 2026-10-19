@@ -289,6 +289,15 @@
         "actions": "Actions"
       },
       "historyEmpty": "No execution records",
+      "historyStatus": {
+        "completed": "Completed",
+        "failed": "Failed",
+        "paused": "Paused",
+        "stopped": "Stopped",
+        "queued": "Queued",
+        "running": "Running",
+        "dispatched": "Running"
+      },
       "workspaceDir": "Office directory",
       "workspaceDirHint": "The employee can list and read the files placed in this directory, but cannot change them."
     },

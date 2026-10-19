@@ -6,6 +6,7 @@ export interface JiuwenMateMenuItem {
   label: string;
   icon?: LucideIcon;
   iconSrc?: string;
+  iconHue?: number;
   disabled?: boolean;
   onSelect: () => void;
 }
@@ -80,7 +81,19 @@ export function ActionMenu({ label, items, emptyLabel, trigger, className, align
                 data-variant={item.key}
               >
                 {Icon ? <Icon aria-hidden /> : null}
-                {item.iconSrc ? <img src={item.iconSrc} alt="" aria-hidden /> : null}
+                {item.iconSrc ? (
+                  <img
+                    src={item.iconSrc}
+                    alt=""
+                    aria-hidden
+                    data-hue={item.iconHue}
+                    style={
+                      item.iconHue === undefined
+                        ? undefined
+                        : { ['--jm-avatar-hue' as string]: `${item.iconHue}deg` }
+                    }
+                  />
+                ) : null}
                 <span>{item.label}</span>
               </button>
             );

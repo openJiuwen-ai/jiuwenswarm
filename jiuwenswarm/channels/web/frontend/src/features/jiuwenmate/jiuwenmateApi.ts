@@ -1,10 +1,13 @@
+import { avatarHueToken, readAvatarHue } from './avatarHue';
 import type { Schedule, ScheduleDraft, ScheduleRun } from './schedules/types';
 import type {
   JiuwenMateActivity,
   JiuwenMateActivityChannel,
   JiuwenMateActivityDay,
   JiuwenMateActivityGroup,
+  JiuwenMateActivityHistoryItem,
   JiuwenMateActivityHour,
+  JiuwenMateActivityKindDay,
   JiuwenMateActivityMember,
   JiuwenMateCategory,
   JiuwenMateChannel,
@@ -335,13 +338,15 @@ export function toColleague(value: unknown): JiuwenMateColleague {
   const capabilities = record(wire.capabilities);
   const category = text(wire.category) as JiuwenMateCategory;
   const avatarUrl = text(wire.avatar_url);
+  const avatarHue = readAvatarHue(avatarUrl);
   return {
     id: text(wire.agent_id),
     name: text(wire.name),
     description: text(wire.description),
     tags: texts(wire.tags),
     category: CATEGORIES.includes(category) ? category : 'custom',
-    ...(avatarUrl ? { avatarUrl } : {}),
+    ...(avatarHue !== null ? { avatarHue } : {}),
+    ...(avatarHue === null && avatarUrl ? { avatarUrl } : {}),
     capabilities: {
       model: text(capabilities.model),
       skills: texts(capabilities.skills),
@@ -367,12 +372,14 @@ export function toWireSettings(
 ): JiuwenMateWireSettings {
   const { capabilities } = draft;
   const avatarUrl = draft.avatarUrl ?? '';
+  const hueToken = avatarHueToken(draft.avatarHue ?? -1);
+  const persistable = avatarUrl && !avatarUrl.startsWith('data:') && avatarUrl.length <= MAX_AVATAR_URL;
   return {
     name: draft.name.trim(),
     description: draft.description.trim(),
     tags: filled(draft.tags),
     category: draft.category,
-    avatar_url: avatarUrl.startsWith('data:') || avatarUrl.length > MAX_AVATAR_URL ? '' : avatarUrl,
+    avatar_url: persistable ? avatarUrl : hueToken,
     capabilities: {
       model: models.some((item) => item.id === capabilities.model) ? capabilities.model : null,
       skills: filled(capabilities.skills),
@@ -563,6 +570,36 @@ export function findModel(catalog: JiuwenMateModelCatalog, id: string): JiuwenMa
   return catalog.models.find((item) => item.id === (id || catalog.defaultModelId)) ?? null;
 }
 
+function toActivityKind(value: unknown): JiuwenMateActivityKindDay | null {
+  const row = record(value);
+  const date = text(row.date);
+  if (!date) return null;
+  return {
+    date,
+    conversation: count(row.conversation),
+    channel: count(row.channel),
+    schedule: count(row.schedule),
+  };
+}
+
+function toActivityHistory(value: unknown): JiuwenMateActivityHistoryItem | null {
+  const row = record(value);
+  const requestId = text(row.request_id);
+  const startedAt = text(row.started_at);
+  if (!requestId || !startedAt) return null;
+  const kind = text(row.kind);
+  return {
+    requestId,
+    title: text(row.title),
+    kind: kind === 'channel' || kind === 'schedule' ? kind : 'conversation',
+    channel: text(row.channel),
+    status: text(row.status),
+    tokens: count(row.tokens),
+    updatedAt: text(row.updated_at) || null,
+    startedAt,
+  };
+}
+
 function toActivityDay(value: unknown): JiuwenMateActivityDay | null {
   const row = record(value);
   const date = text(row.date);
@@ -622,6 +659,14 @@ function toActivityMember(value: unknown): JiuwenMateActivityMember | null {
     days: (Array.isArray(row.days) ? row.days : []).flatMap((item) => {
       const day = toActivityDay(item);
       return day ? [day] : [];
+    }),
+    kinds: (Array.isArray(row.kinds) ? row.kinds : []).flatMap((item) => {
+      const kind = toActivityKind(item);
+      return kind ? [kind] : [];
+    }),
+    history: (Array.isArray(row.history) ? row.history : []).flatMap((item) => {
+      const entry = toActivityHistory(item);
+      return entry ? [entry] : [];
     }),
     hours: (Array.isArray(row.hours) ? row.hours : []).flatMap((item) => {
       const hour = toActivityHour(item);

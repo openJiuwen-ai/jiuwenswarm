@@ -38,6 +38,7 @@ import {
   type JiuwenMateSchedule,
 } from './jiuwenmateApi';
 import type { ScheduleDraft } from './schedules/types';
+import { customAvatarHue } from './colleaguePortraits';
 import { emptyCapabilities } from './mockData';
 import { ColleagueCreatePage } from './pages/ColleagueCreatePage';
 import { ColleagueEmptyPage } from './pages/ColleagueEmptyPage';
@@ -294,7 +295,11 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     setActionError('');
     try {
       const created = await api.createColleague(draft, modelCatalog.models);
-      const colleague: JiuwenMateColleague = { ...created, avatarUrl: created.avatarUrl ?? draft.avatarUrl };
+      const colleague: JiuwenMateColleague = {
+        ...created,
+        avatarUrl: created.avatarUrl ?? draft.avatarUrl,
+        avatarHue: created.avatarHue ?? draft.avatarHue,
+      };
       setProfileIntent((current) => ({ nonce: current.nonce + 1, section: 'overview' }));
       setActiveRailView('office');
       setState((current) => completeColleagueCreation(current, colleague));
@@ -411,6 +416,10 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             source={state.creationSource}
             detailTemplateId={state.detailTemplateId}
             customDialogOpen={state.customDialogOpen}
+            usedAvatarHues={state.colleagues.flatMap((item) => {
+              const hue = customAvatarHue(item);
+              return hue === null ? [] : [hue];
+            })}
             draft={state.draft}
             modelCatalog={modelCatalog}
             knowledgeCatalog={resourceCatalog.knowledge}
@@ -439,13 +448,14 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             }
             onOpenCustom={startCustomCreation}
             onCloseCustom={() => setState((current) => closeCustomColleagueDialog(current))}
-            onConfirmCustom={({ name, description }) =>
+            onConfirmCustom={({ name, description, avatarHue }) =>
               setState((current) =>
                 startColleagueRefinement(current, 'custom', {
                   name,
                   description,
                   tags: [],
                   category: 'custom',
+                  avatarHue,
                   capabilities: emptyCapabilities(),
                 }),
               )
@@ -504,6 +514,7 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
                 })
                 .finally(() => setSavingResources(false));
             }}
+            activity={activity?.members.find((item) => item.agentId === selectedColleague.id) ?? null}
             schedules={schedules.filter((plan) => plan.agentId === selectedColleague.id)}
             savingSchedule={savingSchedule}
             onCreateSchedule={(draft) => createSchedule(selectedColleague.id, draft)}

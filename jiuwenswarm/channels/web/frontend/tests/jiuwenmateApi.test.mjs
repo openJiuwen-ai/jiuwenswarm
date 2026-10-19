@@ -124,6 +124,11 @@ test('draft settings trim blanks, drop uploaded images and keep only listed mode
   const unlisted = toWireSettings({ ...draft, capabilities: { ...draft.capabilities, model: 'deepseek-v3.2' } }, models);
   assert.equal(unlisted.capabilities.model, null);
   assert.equal(toWireSettings({ ...draft, avatarUrl: '/assets/bee.png' }, models).avatar_url, '/assets/bee.png');
+  assert.equal(toWireSettings({ ...draft, avatarUrl: undefined, avatarHue: 110 }, models).avatar_url, 'hue:110');
+  assert.equal(toWireSettings({ ...draft, avatarHue: 110 }, models).avatar_url, 'hue:110');
+  const tinted = toColleague({ ...wireColleague, is_default: false, avatar_url: 'hue:110' });
+  assert.equal(tinted.avatarHue, 110);
+  assert.equal(tinted.avatarUrl, undefined);
 });
 
 test('loading colleagues ensures the default colleague before listing', async () => {
@@ -434,6 +439,19 @@ test('activity payload keeps counts and drops a member without an id', () => {
         hours: [{ date: '2026-10-16', hour: 10, minutes: 0, tasks: 1, tokens: 65 }],
         channels: [{ channel: 'web', calls: 2, tokens: 65, tasks: 2, replies: 1, failures: 1 }],
         groups: [],
+        kinds: [{ date: '2026-10-16', conversation: 1, channel: 0, schedule: 1 }],
+        history: [
+          {
+            request_id: 'req_plan',
+            title: '喝水提醒',
+            kind: 'schedule',
+            channel: 'web',
+            status: 'completed',
+            tokens: 12,
+            updated_at: '2026-10-16T03:01:00+00:00',
+            started_at: '2026-10-16T03:00:00+00:00',
+          },
+        ],
       },
       { calls: 9 },
     ],
@@ -443,6 +461,19 @@ test('activity payload keeps counts and drops a member without an id', () => {
   assert.equal(activity.members[0].replies, 1);
   assert.equal(activity.members[0].failures, 1);
   assert.deepEqual(activity.members[0].hours, [{ date: '2026-10-16', hour: 10, minutes: 0, tasks: 1, tokens: 65 }]);
+  assert.deepEqual(activity.members[0].kinds, [{ date: '2026-10-16', conversation: 1, channel: 0, schedule: 1 }]);
+  assert.deepEqual(activity.members[0].history, [
+    {
+      requestId: 'req_plan',
+      title: '喝水提醒',
+      kind: 'schedule',
+      channel: 'web',
+      status: 'completed',
+      tokens: 12,
+      updatedAt: '2026-10-16T03:01:00+00:00',
+      startedAt: '2026-10-16T03:00:00+00:00',
+    },
+  ]);
 });
 
 test('installed skill and connected MCP names are the only selectable colleague resources', () => {

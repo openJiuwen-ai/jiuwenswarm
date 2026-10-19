@@ -23,7 +23,7 @@ import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ColleagueCard } from '../components/ColleagueCard';
 import { SegmentedTabs } from '../components/SegmentedTabs';
-import { colleaguePortrait } from '../colleaguePortraits';
+import { colleaguePortrait, customAvatarHue } from '../colleaguePortraits';
 import { JIUWENMATE_TASKS } from '../mockData';
 import {
   activeChannelCount,
@@ -259,6 +259,7 @@ function ColleagueSelect({
         key: colleague.id,
         label: colleague.name,
         iconSrc: colleaguePortrait(colleague),
+        iconHue: customAvatarHue(colleague) ?? undefined,
         onSelect: () => onSelect(colleague.id),
       }))}
     />

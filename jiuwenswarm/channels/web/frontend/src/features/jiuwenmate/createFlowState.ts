@@ -49,6 +49,9 @@ export function replaceColleagues(state: JiuwenMateState, colleagues: readonly J
       imConfigured: previous.imConfigured,
       disabled: previous.disabled,
       avatarUrl: item.avatarUrl ?? previous.avatarUrl,
+      ...(item.avatarHue != null || previous.avatarHue != null
+        ? { avatarHue: item.avatarHue ?? previous.avatarHue }
+        : {}),
     };
   });
   const selectedColleagueId = merged.some((item) => item.id === state.selectedColleagueId)
@@ -68,13 +71,13 @@ export function openOffice(state: JiuwenMateState): JiuwenMateState {
   return { ...state, ...RESET_CREATION, view: officeView(state) };
 }
 
-/** Load activity on first ready, and again whenever the office dashboard is opened. */
+/** Load activity on first ready, and again when the office or an employee profile is opened. */
 export function officeActivityLoad(
   view: JiuwenMateView,
   status: 'loading' | 'ready' | 'failed',
 ): 'initial' | 'refresh' | 'idle' {
   if (status !== 'ready') return 'initial';
-  return view === 'office-dashboard' ? 'refresh' : 'idle';
+  return view === 'office-dashboard' || view === 'colleague-profile' ? 'refresh' : 'idle';
 }
 
 export function openColleagueMessages(state: JiuwenMateState): JiuwenMateState {

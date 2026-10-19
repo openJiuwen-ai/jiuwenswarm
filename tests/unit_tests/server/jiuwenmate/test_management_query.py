@@ -67,6 +67,16 @@ CREATE TABLE group_chats (
     platform_chat_id TEXT NOT NULL, created_at TEXT NOT NULL,
     PRIMARY KEY (namespace_id, group_chat_id)
 );
+CREATE TABLE web_conversations (
+    namespace_id TEXT NOT NULL, agent_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
+    title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT,
+    PRIMARY KEY (namespace_id, agent_id, conversation_id)
+);
+CREATE TABLE scheduled_plans (
+    namespace_id TEXT NOT NULL, plan_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+    name TEXT NOT NULL, prompt TEXT NOT NULL,
+    PRIMARY KEY (namespace_id, plan_id)
+);
 """
 
 
@@ -179,6 +189,80 @@ def test_subminute_execution_keeps_its_hourly_activity_and_tokens():
     )
 
     assert report["members"][0]["hours"] == [{"date": "2026-10-16", "hour": 10, "minutes": 0, "tasks": 1, "tokens": 42}]
+
+
+def test_history_names_the_plan_and_conversation_without_the_message_text():
+    report = assemble_activity(
+        colleagues=[{"agent_id": "mate_a", "created_at": "2026-10-16T00:00:00+00:00"}],
+        requests=[
+            {
+                "request_id": "req_plan",
+                "agent_id": "mate_a",
+                "session_id": "sess_a",
+                "source_ref": "schedule:plan_water:2026-10-16T03:00:00+00:00",
+                "status": "ended",
+                "outcome": "completed",
+                "updated_at": "2026-10-16T03:01:00+00:00",
+            },
+            {
+                "request_id": "req_chat",
+                "agent_id": "mate_a",
+                "session_id": "sess_a",
+                "source_ref": "web:message",
+                "status": "ended",
+                "outcome": "failed",
+                "updated_at": "2026-10-16T10:01:00+00:00",
+            },
+            {
+                "request_id": "req_skip",
+                "agent_id": "mate_a",
+                "session_id": "sess_a",
+                "source_ref": "web:ignored",
+                "status": "ended",
+                "outcome": "ignored",
+                "updated_at": "2026-10-16T11:00:00+00:00",
+            },
+        ],
+        executions=[
+            {"execution_id": "exe_plan", "request_id": "req_plan", "started_at": "2026-10-16T03:00:00+00:00"},
+            {"execution_id": "exe_chat", "request_id": "req_chat", "started_at": "2026-10-16T10:00:00+00:00"},
+            {"execution_id": "exe_skip", "request_id": "req_skip", "started_at": "2026-10-16T10:30:00+00:00"},
+        ],
+        sessions=[{"session_id": "sess_a", "agent_id": "mate_a", "kind": "web_direct", "channel": "web", "conversation_key": "conv"}],
+        calls=[{"status": "settled", "charged_tokens": 12, "ref": {"execution_id": "exe_plan"}}],
+        deliveries=[],
+        groups=[],
+        conversation_titles={("mate_a", "conv"): "你有哪些skill"},
+        plan_names={"plan_water": "喝水提醒"},
+        now=NOW,
+    )
+    member = report["members"][0]
+    assert member["kinds"] == [
+        {"date": "2026-10-16", "conversation": 1, "channel": 0, "schedule": 1},
+    ]
+    assert member["history"] == [
+        {
+            "request_id": "req_chat",
+            "title": "你有哪些skill",
+            "kind": "conversation",
+            "channel": "web",
+            "status": "failed",
+            "updated_at": "2026-10-16T10:01:00+00:00",
+            "started_at": "2026-10-16T10:00:00+00:00",
+            "tokens": 0,
+        },
+        {
+            "request_id": "req_plan",
+            "title": "喝水提醒",
+            "kind": "schedule",
+            "channel": "web",
+            "status": "completed",
+            "updated_at": "2026-10-16T03:01:00+00:00",
+            "started_at": "2026-10-16T03:00:00+00:00",
+            "tokens": 12,
+        },
+    ]
+    assert "提醒我喝水" not in json.dumps(report)
 
 
 def test_group_file_delivery_is_an_artifact_and_other_namespace_is_hidden(tmp_path):
