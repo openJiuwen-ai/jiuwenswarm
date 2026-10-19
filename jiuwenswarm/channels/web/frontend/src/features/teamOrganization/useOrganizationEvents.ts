@@ -106,7 +106,6 @@ export function useOrganizationEvents(): void {
       'chat.final',
       'chat.error',
       'chat.processing_status',
-      'chat.interrupt_result',
       'org.turn_completed',
       'chat.tool_call',
       'chat.tool_result',
@@ -209,11 +208,9 @@ export function useOrganizationEvents(): void {
               streams.delete(pendingKey);
             }
           }
-          const requestFinished = finishExpertRequest(key, roundId);
-          if ((event === 'org.turn_completed' || terminalError) && requestFinished) {
-            chat.closeReasoning(key);
-            chat.setThinking(key, false);
-          }
+          chat.closeReasoning(key);
+          chat.setThinking(key, false);
+          chat.setProcessing(key, false);
           if (event === 'org.turn_completed') return;
         }
         if ((event === 'chat.delta' || event === 'chat.final') && content) {
@@ -270,8 +267,6 @@ export function useOrganizationEvents(): void {
             timestamp: new Date().toISOString(),
             teamId,
           });
-          // Request bookkeeping above owns busy state; a stale error must not
-          // clear another active request for the same expert.
         }
       }),
     );
