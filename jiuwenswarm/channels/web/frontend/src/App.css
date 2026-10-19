@@ -331,6 +331,7 @@
   padding: 1.5rem;
 }
 
+/*去掉浏览器默认的密码框样式*/
 input[type="password"]::-ms-reveal {
   display: none;
 }
