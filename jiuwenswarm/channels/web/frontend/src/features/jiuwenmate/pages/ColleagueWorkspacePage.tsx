@@ -126,7 +126,7 @@ export function ColleagueWorkspacePage({
   const [query, setQuery] = useState('');
   const [board, setBoard] = useState(false);
   const [scheduleId, setScheduleId] = useState<string | null>(null);
-  const [scheduleEditor, setScheduleEditor] = useState<JiuwenMateSchedule | undefined>(undefined);
+  const [scheduleEditor, setScheduleEditor] = useState<JiuwenMateSchedule | null | undefined>(undefined);
   const [draft, setDraft] = useState('');
   // A conversation id not used yet; it becomes a listed conversation when its first message is sent.
   const [freshId, setFreshId] = useState(newId);
@@ -448,7 +448,7 @@ export function ColleagueWorkspacePage({
             type="button"
             className="jiuwenmate-icon-button"
             aria-label={t('jiuwenmate.schedule.createTitle')}
-            onClick={() => onCreateSchedule(colleague.id)}
+            onClick={() => setScheduleEditor(null)}
           >
             <Plus aria-hidden />
           </button>
@@ -725,15 +725,15 @@ export function ColleagueWorkspacePage({
         ) : null}
         {renderMain()}
       </main> : null}
-      {scheduleEditor && onUpdateSchedule ? (
+      {scheduleEditor !== undefined && onSaveSchedule && onUpdateSchedule ? (
         <ScheduleDialog
-          key={scheduleEditor.id}
+          key={scheduleEditor?.id ?? 'new'}
           open
           plan={scheduleEditor}
           executorId={colleague.id}
           saving={savingSchedule}
           onClose={() => setScheduleEditor(undefined)}
-          onSubmit={(_executor, draft) => onUpdateSchedule(scheduleEditor.id, draft)}
+          onSubmit={(_executor, draft) => (scheduleEditor ? onUpdateSchedule(scheduleEditor.id, draft) : onSaveSchedule(colleague.id, draft))}
         />
       ) : null}
     </div>
