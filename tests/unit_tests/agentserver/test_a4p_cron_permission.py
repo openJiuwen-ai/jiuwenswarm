@@ -267,3 +267,30 @@ async def test_background_web_request_does_not_inspect_session_a4p_token(
     response = await rail._host.request_permission_confirmation(_permission_request())
 
     assert response == "interrupt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["web", "__cron__"])
+async def test_smart_approval_does_not_consume_a4p_tokens(monkeypatch, channel):
+    permissions = {"enabled": True, "mode": "auto", "tools": {"bash": "ask"}}
+    # Global settings may change before the active turn installs its next policy.
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"a4p": {"enabled": True}, "permissions": {"enabled": True, "mode": "manual"}},
+    )
+
+    def unexpected_runtime():
+        pytest.fail("Smart Approval must not inspect A4P tokens")
+
+    monkeypatch.setattr(a4p_runtime, "get_a4p_runtime", unexpected_runtime)
+    AUTHORIZATION_EXECUTION_CONTEXTS.activate(
+        AuthorizationExecutionContext(
+            request_id="smart-request", session_id="cron-session",
+            channel_id=channel, agent_id="agent-1",
+            metadata={"cron": {"job_id": "job-1"}} if channel == "__cron__" else {},
+            authorizer_route=_web_authorizer_route() if channel == "web" else None,
+        )
+    )
+    rail = build_permission_rail({"permissions": permissions})
+    response = await rail._host.request_permission_confirmation(_permission_request())
+    assert response == "interrupt"

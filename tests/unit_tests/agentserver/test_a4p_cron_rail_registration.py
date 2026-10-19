@@ -59,6 +59,12 @@ def test_cron_rail_registration(config, variant, a4p_enabled, permissions_enable
     assert (_build(config, variant) is not None) == (a4p_enabled and permissions_enabled)
 
 
+@pytest.mark.parametrize("variant", ["single", "team-channel", "team-metadata"])
+def test_cron_smart_approval_does_not_install_a4p_rail(config, variant):
+    config["permissions"]["mode"] = "auto"
+    assert _build(config, variant) is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("variant", ["single", "team-channel", "team-metadata"])
 @pytest.mark.parametrize("rule,token_matches", [("allow", False), ("deny", True), ("ask", True), ("ask", False)])

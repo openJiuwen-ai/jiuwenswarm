@@ -7015,7 +7015,7 @@ class JiuWenSwarmDeepAdapter:
         session_id: str | None,
     ) -> None:
         """Expose A4P only when this session has an interactive Web authorizer."""
-        from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_enabled
+        from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_preauthorization_active
         from jiuwenswarm.agents.harness.common.tools.a4p_tools import get_tools
 
         execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
@@ -7027,7 +7027,7 @@ class JiuWenSwarmDeepAdapter:
         self._a4p_tools, self._a4p_tools_registered = self._sync_tool_group(
             current_tools=self._a4p_tools,
             registered=self._a4p_tools_registered,
-            enabled=is_a4p_enabled(config_base) and authorizer_available,
+            enabled=is_a4p_preauthorization_active(config_base) and authorizer_available,
             create_fn=lambda: get_tools(session_id=session_id),
             warn_label="A4P intent authorization tool",
         )
@@ -10446,9 +10446,9 @@ class JiuWenSwarmDeepAdapter:
         """Cron uses ordinary permission rules only while A4P is enabled."""
         if not getattr(self, "_is_cron_execution", False):
             return False
-        from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_enabled
+        from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_preauthorization_active
 
-        return not is_a4p_enabled(config_base or {})
+        return not is_a4p_preauthorization_active(config_base or {})
 
     def _permission_interrupt_rail_infos(
         self, config_base: dict[str, Any],

@@ -740,13 +740,13 @@ class RuntimePromptRail(DeepAgentRail):
             await self._clear_prompt_attachment(ctx, section=section)
             return
         try:
-            from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_enabled
+            from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_preauthorization_active
             from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
                 get_a4p_supported_action_names,
             )
             from jiuwenswarm.common.config import get_config
 
-            enabled = is_a4p_enabled(get_config())
+            enabled = is_a4p_preauthorization_active(get_config())
             action_names = get_a4p_supported_action_names()
         except Exception as exc:
             logger.warning("Failed to resolve A4P intent authorization prompt: %s", exc)
@@ -906,15 +906,14 @@ class RuntimePromptRail(DeepAgentRail):
         try:
             from jiuwenswarm.agents.harness.common.a4p.runtime import (
                 get_a4p_runtime,
-                is_a4p_enabled,
+                is_a4p_preauthorization_active,
             )
             from jiuwenswarm.common.config import get_config
 
-            summary = (
-                get_a4p_runtime().cron_intent_authorization_summary(job_id)
-                if is_a4p_enabled(get_config())
-                else None
-            )
+            if not is_a4p_preauthorization_active(get_config()):
+                await self._clear_prompt_attachment(ctx, section=section)
+                return
+            summary = get_a4p_runtime().cron_intent_authorization_summary(job_id)
         except Exception as exc:
             logger.warning("Failed to resolve A4P cron authorization scope: %s", exc)
             summary = None

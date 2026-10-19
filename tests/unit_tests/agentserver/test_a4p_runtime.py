@@ -158,6 +158,40 @@ def test_a4p_enabled_is_the_only_feature_flag() -> None:
     )
 
 
+@pytest.mark.parametrize("permissions,expected", [
+    ({}, True),
+    ({"enabled": True, "mode": "manual"}, True),
+    ({"enabled": True, "mode": "auto"}, False),
+    ({"enabled": True, "mode": " AUTO "}, False),
+    ({"enabled": False, "mode": "manual"}, False),
+    ({"enabled": False, "mode": "auto"}, False),
+])
+def test_a4p_preauthorization_requires_default_permissions(permissions, expected):
+    config = {"a4p": {"enabled": True}, "permissions": permissions}
+    assert a4p_runtime.is_a4p_preauthorization_active(config) is expected
+    assert is_a4p_enabled(config) is True
+    config["a4p"]["enabled"] = False
+    assert a4p_runtime.is_a4p_preauthorization_active(config) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("permissions", [
+    {"enabled": True, "mode": "auto"},
+    {"enabled": False, "mode": "manual"},
+])
+async def test_a4p_tool_rejects_nondefault_permissions(monkeypatch, permissions):
+    monkeypatch.setattr(
+        a4p_tools_module, "get_config",
+        lambda: {"a4p": {"enabled": True}, "permissions": permissions},
+    )
+    result = await request_a4p_intent_authorization(
+        actions=[{"name": "bash", "params": {"command": "pwd"}}],
+        _session_id="session-1",
+    )
+    assert result["ok"] is False
+    assert result["code"] == "A4P_DISABLED"
+
+
 def test_a4p_tool_schema_exposes_only_security_critical_params() -> None:
     tool_card = get_tools()[0].card
     assert tool_card.exposure is ToolExposure.DIRECT
