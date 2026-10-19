@@ -7,7 +7,7 @@ import { CapabilitySection, CollapsibleSection, type CapabilityKind } from '../c
 import { ColleagueCard } from '../components/ColleagueCard';
 import { CustomCreateDialog } from '../components/CustomCreateDialog';
 import { TemplateDetailDrawer } from '../components/TemplateDetailDrawer';
-import { colleaguePortrait } from '../colleaguePortraits';
+import { colleaguePortrait, customAvatarHue } from '../colleaguePortraits';
 import type { ColleagueResourceOption, JiuwenMateModelCatalog } from '../jiuwenmateApi';
 import { ModelLabel } from '../components/ModelLabel';
 import {
@@ -34,6 +34,7 @@ export interface ColleagueCreatePageProps {
   source: JiuwenMateCreationSource;
   detailTemplateId: string | null;
   customDialogOpen: boolean;
+  usedAvatarHues?: readonly number[];
   draft: JiuwenMateColleagueDraft | null;
   modelCatalog: JiuwenMateModelCatalog;
   knowledgeCatalog?: readonly ColleagueResourceOption[] | null;
@@ -44,7 +45,7 @@ export interface ColleagueCreatePageProps {
   onChooseTemplate: (template: JiuwenMateTemplate) => void;
   onOpenCustom: () => void;
   onCloseCustom: () => void;
-  onConfirmCustom: (basics: { name: string; description: string }) => void;
+  onConfirmCustom: (basics: { name: string; description: string; avatarHue: number }) => void;
   onOpenPlaza: () => void;
   onDraftChange: (patch: Partial<JiuwenMateColleagueDraft>) => void;
   onCancel: () => void;
@@ -107,7 +108,12 @@ export function ColleagueCreatePage(props: ColleagueCreatePageProps) {
         <TemplateDetailDrawer template={detailTemplate} onClose={props.onCloseTemplateDetail} onChoose={props.onChooseTemplate} />
       ) : null}
       {props.customDialogOpen ? (
-        <CustomCreateDialog onCancel={props.onCloseCustom} onConfirm={props.onConfirmCustom} onOpenPlaza={props.onOpenPlaza} />
+        <CustomCreateDialog
+          usedHues={props.usedAvatarHues}
+          onCancel={props.onCloseCustom}
+          onConfirm={props.onConfirmCustom}
+          onOpenPlaza={props.onOpenPlaza}
+        />
       ) : null}
     </section>
   );
@@ -140,6 +146,7 @@ function ColleagueRefineForm({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const canSubmit = !submitting && draft.name.trim().length > 0 && draft.description.trim().length > 0;
+  const hue = customAvatarHue(draft);
   const updateCapabilities = (patch: Partial<JiuwenMateCapabilities>) =>
     onDraftChange({ capabilities: { ...draft.capabilities, ...patch } });
 
@@ -202,6 +209,8 @@ function ColleagueRefineForm({
                 type="button"
                 className="jiuwenmate-avatar jiuwenmate-avatar--medium"
                 aria-label={t('jiuwenmate.create.changeAvatar')}
+                data-hue={hue ?? undefined}
+                style={hue === null ? undefined : { ['--jm-avatar-hue' as string]: `${hue}deg` }}
                 onClick={() => fileInputRef.current?.click()}
               >
                 <img src={colleaguePortrait(draft)} alt="" />
@@ -250,7 +259,12 @@ function ColleagueRefineForm({
           </div>
 
           <aside className="jiuwenmate-create__preview" data-category={draft.category} aria-label={t('jiuwenmate.create.preview')}>
-            <img src={colleaguePortrait(draft)} alt="" />
+            <img
+              src={colleaguePortrait(draft)}
+              alt=""
+              data-hue={hue ?? undefined}
+              style={hue === null ? undefined : { ['--jm-avatar-hue' as string]: `${hue}deg` }}
+            />
             <h3>{draft.name || t('jiuwenmate.create.previewName')}</h3>
             <p>{draft.description || t('jiuwenmate.create.previewDescription')}</p>
             <span className="jiuwenmate-colleague-card__tags">

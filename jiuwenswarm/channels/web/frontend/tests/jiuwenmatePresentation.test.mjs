@@ -13,6 +13,8 @@ import {
   JIUWENMATE_TEMPLATES,
   JIUWENMATE_TRACE_ROWS,
 } from '../node_modules/.cache/jiuwenmate-presentation/mockData.js';
+import { CUSTOM_AVATAR_HUES, pickAvatarHue } from '../node_modules/.cache/jiuwenmate-presentation/avatarHue.js';
+import { ColleagueAvatar } from '../node_modules/.cache/jiuwenmate-presentation/components/ColleagueAvatar.js';
 import { ColleagueCard } from '../node_modules/.cache/jiuwenmate-presentation/components/ColleagueCard.js';
 import { ActivityHeatmap, HeatmapLegend } from '../node_modules/.cache/jiuwenmate-presentation/components/ActivityHeatmap.js';
 import { yearHeatmap } from '../node_modules/.cache/jiuwenmate-presentation/officeState.js';
@@ -35,6 +37,46 @@ test('templates follow the eight designed roles with their category art', () => 
   );
   assert.equal(new Set(JIUWENMATE_TEMPLATES.map((item) => item.category)).size, JIUWENMATE_TEMPLATES.length);
   assert.ok(JIUWENMATE_TEMPLATES.every((item) => item.coreAbilities.length === 3));
+});
+
+test('a custom colleague takes a different avatar hue from the default colleague', () => {
+  const markup = (colleague) => renderToStaticMarkup(React.createElement(ColleagueAvatar, { colleague }));
+  const hueOf = (html) => html.match(/data-hue="(\d+)"/)?.[1];
+  const original = markup({ id: 'mate-default', name: '小九', category: 'custom', isDefault: true });
+  const first = markup({ id: 'mate-a', name: '甲', category: 'custom' });
+  const renamed = markup({ id: 'mate-a', name: '完全不同的名字', category: 'custom' });
+  const second = markup({ id: 'mate-b', name: '乙', category: 'custom' });
+  const namedOnly = markup({ name: '甲', category: 'custom' });
+  const chosen = markup({ id: 'mate-b', name: '乙', category: 'custom', avatarHue: 110 });
+  const uploaded = markup({
+    id: 'mate-a',
+    name: '甲',
+    category: 'custom',
+    avatarUrl: 'https://example/a.png',
+    avatarHue: 110,
+  });
+  assert.doesNotMatch(original, /data-hue=/);
+  assert.doesNotMatch(namedOnly, /data-hue=/);
+  assert.doesNotMatch(uploaded, /data-hue=/);
+  assert.equal(hueOf(first), hueOf(renamed));
+  assert.notEqual(hueOf(first), hueOf(second));
+  assert.equal(hueOf(chosen), '110');
+  assert.equal(pickAvatarHue(), CUSTOM_AVATAR_HUES[0]);
+  assert.equal(pickAvatarHue([55, 110, 155]), 190);
+  assert.equal(pickAvatarHue([155, 155, 110]), 55);
+  const card = renderToStaticMarkup(
+    React.createElement(ColleagueCard, {
+      colleague: {
+        id: 'mate-a',
+        name: '甲',
+        description: '整理日程',
+        tags: [],
+        category: 'custom',
+        capabilities: { model: '', skills: [], connectors: [], plugins: [], knowledge: [], starterPrompts: [] },
+      },
+    }),
+  );
+  assert.match(card, /data-testid="jiuwenmate-colleague-card"[^>]*data-hue="\d+"/);
 });
 
 test('colleague card renders the identity, badge and category art', () => {

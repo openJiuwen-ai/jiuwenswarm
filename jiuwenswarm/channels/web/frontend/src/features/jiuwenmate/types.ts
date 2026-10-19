@@ -44,6 +44,8 @@ export interface JiuwenMateColleagueDraft {
   tags: string[];
   category: JiuwenMateCategory;
   avatarUrl?: string;
+  /** Palette shift of the default custom portrait. Saved as an avatar address of the form hue:N. */
+  avatarHue?: number;
   capabilities: JiuwenMateCapabilities;
 }
 
@@ -118,6 +120,26 @@ export interface JiuwenMateActivityDay {
   tokens: number;
 }
 
+export interface JiuwenMateActivityKindDay {
+  date: string;
+  conversation: number;
+  channel: number;
+  schedule: number;
+}
+
+export type JiuwenMateActivityTaskKind = 'conversation' | 'channel' | 'schedule';
+
+export interface JiuwenMateActivityHistoryItem {
+  requestId: string;
+  title: string;
+  kind: JiuwenMateActivityTaskKind;
+  channel: string;
+  status: string;
+  tokens: number;
+  updatedAt: string | null;
+  startedAt: string;
+}
+
 export interface JiuwenMateActivityHour {
   date: string;
   hour: number;
@@ -155,6 +177,8 @@ export interface JiuwenMateActivityMember {
   companionDays: number;
   lastResponseAt: string | null;
   days: JiuwenMateActivityDay[];
+  kinds: JiuwenMateActivityKindDay[];
+  history: JiuwenMateActivityHistoryItem[];
   hours: JiuwenMateActivityHour[];
   channels: JiuwenMateActivityChannel[];
   groups: JiuwenMateActivityGroup[];

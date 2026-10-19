@@ -54,7 +54,11 @@ test('custom creation opens the dialog and refinement keeps the draft editable',
   assert.equal(refining.creationStep, 'refine');
   assert.equal(refining.creationSource, 'custom');
   assert.equal(refining.customDialogOpen, false);
-  assert.equal(updateColleagueDraft(refining, { name: '售后群助理' }).draft.name, '售后群助理');
+  const renamed = updateColleagueDraft(refining, { name: '售后群助理' });
+  assert.equal(renamed.draft.name, '售后群助理');
+
+  const tinted = startColleagueRefinement(dialog, 'custom', { ...draft, avatarHue: 110 });
+  assert.equal(updateColleagueDraft(tinted, { name: '售后群助理' }).draft.avatarHue, 110);
 });
 
 test('completing creation opens the profile with the IM authorization prompt once', () => {
@@ -106,6 +110,7 @@ test('office activity reloads when the dashboard is opened again', () => {
   assert.equal(officeActivityLoad('office-dashboard', 'loading'), 'initial');
   assert.equal(officeActivityLoad('colleague-workspace', 'failed'), 'initial');
   assert.equal(officeActivityLoad('office-dashboard', 'ready'), 'refresh');
+  assert.equal(officeActivityLoad('colleague-profile', 'ready'), 'refresh');
   assert.equal(officeActivityLoad('colleague-workspace', 'ready'), 'idle');
 });
 

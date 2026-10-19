@@ -537,6 +537,7 @@
 .jiuwenmate-avatar[data-category='legal'] { background: #eee6ff; }
 .jiuwenmate-avatar[data-category='commerce'] { background: #d9f6f8; }
 .jiuwenmate-avatar[data-category='content'] { background: #ffe5f2; }
+.jiuwenmate-avatar[data-hue] { filter: hue-rotate(var(--jm-avatar-hue)); }
 
 /* Segmented tabs */
 .jiuwenmate-segmented-tabs {
@@ -1097,6 +1098,30 @@
 .jiuwenmate-colleague-card[data-category='content'] { --jm-card-tint: #ffe1f0; --jm-card-ring: #ffacd5; }
 .jiuwenmate-colleague-card[data-category='custom'] { --jm-card-tint: #dce6ff; --jm-card-ring: #9fbaff; }
 
+.jiuwenmate-colleague-card[data-hue] { background: #fff; }
+
+.jiuwenmate-colleague-card[data-hue]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(150deg, #fff 30%, #dce6ff 100%);
+  filter: hue-rotate(var(--jm-avatar-hue));
+  pointer-events: none;
+}
+
+.jiuwenmate-colleague-card[data-hue] .jiuwenmate-colleague-card__halo { filter: hue-rotate(var(--jm-avatar-hue)); }
+
+.jiuwenmate-colleague-card[data-hue] .jiuwenmate-colleague-card__select {
+  position: relative;
+  z-index: 1;
+}
+
+.jiuwenmate-colleague-card[data-hue] .jiuwenmate-colleague-card__menu,
+.jiuwenmate-colleague-card[data-hue] .jiuwenmate-colleague-card__actions {
+  z-index: 1;
+}
+
 .jiuwenmate-colleague-card:hover,
 .jiuwenmate-colleague-card--selected {
   border-color: var(--jm-border-strong);
@@ -1199,6 +1224,10 @@
   background: radial-gradient(circle, var(--jm-card-tint) 0 46%, var(--jm-card-ring) 47% 64%, var(--jm-card-tint) 65% 100%);
   opacity: 0.9;
 }
+
+.jiuwenmate-colleague-card__art img[data-hue],
+.jiuwenmate-menu__list img[data-hue] { filter: hue-rotate(var(--jm-avatar-hue)); }
+.jiuwenmate-create__preview img[data-hue] { filter: hue-rotate(var(--jm-avatar-hue)); }
 
 .jiuwenmate-colleague-card__art img {
   position: absolute;

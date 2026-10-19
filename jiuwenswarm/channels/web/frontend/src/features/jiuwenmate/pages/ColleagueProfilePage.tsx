@@ -1,4 +1,5 @@
 import {
+  ArrowUp,
   CalendarDays,
   ChartLine,
   ChevronDown,
@@ -14,7 +15,7 @@ import {
   UsersRound,
   type LucideIcon,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import feishuIcon from '../../../assets/jiuwenmate/icons/feishu.svg';
 import { ConnectorPickerDrawer } from '../../../components/ConnectorMarket/ConnectorPickerDrawer';
@@ -27,8 +28,23 @@ import type { ColleagueResourceOption, JiuwenMateModelCatalog, JiuwenMateSchedul
 import type { ScheduleDraft, ScheduleRun } from '../schedules/types';
 import { ScheduleSection } from '../schedules/ScheduleSection';
 import { JIUWENMATE_WORK_DOMAINS } from '../mockData';
-import { halfYearHeatmap } from '../officeState';
-import type { JiuwenMateColleague } from '../types';
+import {
+  activeChannelCount,
+  formatSummaryTokens,
+  groupsInPeriod,
+  halfYearHeatmap,
+  mergeDailyActivity,
+  minutesSince,
+  responseAge,
+  usageChange,
+} from '../officeState';
+import type {
+  JiuwenMateActivityHistoryItem,
+  JiuwenMateActivityKindDay,
+  JiuwenMateActivityMember,
+  JiuwenMateActivityTaskKind,
+  JiuwenMateColleague,
+} from '../types';
 
 export type JiuwenMateProfileSection =
   | 'overview'
@@ -98,6 +114,7 @@ interface ColleagueProfilePageProps {
   onDeleteSchedule?: (planId: string) => void | Promise<void>;
   onRunSchedule?: (planId: string) => void | Promise<void>;
   onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
+  activity?: JiuwenMateActivityMember | null;
   onOpenOffice: () => void;
   onChat: () => void;
   onConfigureIm: () => void;
@@ -137,6 +154,7 @@ export function ColleagueProfilePage({
   onDeleteSchedule,
   onRunSchedule,
   onLoadScheduleHistory,
+  activity = null,
   onOpenOffice,
   onChat,
   onConfigureIm,
@@ -238,7 +256,7 @@ export function ColleagueProfilePage({
                   onSave={() => saveSettings({ name: name.trim(), description: description.trim(), tags: [...tags] })}
                 />
               ) : null}
-              <ProfileOverview colleague={colleague} today={today} onConfigureIm={onConfigureIm} />
+              <ProfileOverview colleague={colleague} activity={activity} today={today} onConfigureIm={onConfigureIm} />
             </>
           ) : (
             <ProfileSectionDetail
@@ -282,12 +300,57 @@ export function ColleagueProfilePage({
   );
 }
 
+function halfBounds(year: number, half: 1 | 2): { start: string; end: string } {
+  return half === 1
+    ? { start: `${year}-01-01`, end: `${year}-06-30` }
+    : { start: `${year}-07-01`, end: `${year}-12-31` };
+}
+
+function tasksInHalf(
+  kinds: readonly JiuwenMateActivityKindDay[],
+  year: number,
+  half: 1 | 2,
+): Record<JiuwenMateActivityTaskKind, number> {
+  const bounds = halfBounds(year, half);
+  const totals: Record<JiuwenMateActivityTaskKind, number> = { conversation: 0, channel: 0, schedule: 0 };
+  for (const day of kinds) {
+    if (day.date < bounds.start || day.date > bounds.end) continue;
+    totals.conversation += day.conversation;
+    totals.channel += day.channel;
+    totals.schedule += day.schedule;
+  }
+  return totals;
+}
+
+function channelLabel(t: (key: string) => string, channel: string): string {
+  if (!channel) return '—';
+  const key = `cron.targets.${channel}`;
+  const label = t(key);
+  return label === key ? channel : label;
+}
+
+function historyStatusLabel(t: (key: string) => string, status: string): string {
+  if (!status) return '—';
+  const key = `jiuwenmate.profile.historyStatus.${status}`;
+  const label = t(key);
+  return label === key ? status : label;
+}
+
+function lastResponseText(t: (key: string, options?: Record<string, unknown>) => string, iso: string | null, today: Date): string {
+  const minutes = minutesSince(iso, today);
+  if (minutes === null) return t('jiuwenmate.office.noResponse');
+  const age = responseAge(minutes);
+  return t(`jiuwenmate.office.${age.unit}Ago`, { count: age.count });
+}
+
 function ProfileOverview({
   colleague,
+  activity,
   today,
   onConfigureIm,
 }: {
   colleague: JiuwenMateColleague;
+  activity: JiuwenMateActivityMember | null;
   today: Date;
   onConfigureIm: () => void;
 }) {
@@ -296,14 +359,38 @@ function ProfileOverview({
   const [half, setHalf] = useState<1 | 2>(today.getMonth() < 6 ? 1 : 2);
   const [hoveredCellId, setHoveredCellId] = useState<string | null>(null);
   const year = today.getFullYear();
-  const heatmap = useMemo(() => halfYearHeatmap(year, half, []), [year, half]);
+  const days = activity?.days ?? [];
+  const usage = usageChange(days, period, today);
+  const percent = usage.percent === null ? '—' : `${usage.percent}%`;
+  const daily = useMemo(() => mergeDailyActivity(activity ? [activity] : []), [activity]);
+  const heatmap = useMemo(() => halfYearHeatmap(year, half, daily), [year, half, daily]);
+  const taskKinds = tasksInHalf(activity?.kinds ?? [], year, half);
+  const taskTotal = taskKinds.conversation + taskKinds.channel + taskKinds.schedule;
 
-  const metrics: { key: string; value: number; icon: LucideIcon }[] = [
-    { key: 'weeklyUsage', value: 0, icon: ChartLine },
-    { key: 'resources', value: 0, icon: HardDrive },
-    { key: 'joinedDays', value: joinedDays(colleague.joinedAt, today), icon: CalendarDays },
-    { key: 'channels', value: colleague.imConfigured ? 1 : 0, icon: Monitor },
-    { key: 'groupChats', value: 0, icon: UsersRound },
+  const metrics: { key: string; value: ReactNode; icon: LucideIcon }[] = [
+    {
+      key: 'weeklyUsage',
+      value: (
+        <>
+          {percent}
+          {usage.percent !== null && usage.percent > 0 ? <ArrowUp aria-hidden className="jiuwenmate-trend-up" /> : null}
+        </>
+      ),
+      icon: ChartLine,
+    },
+    {
+      key: 'resources',
+      value: (
+        <>
+          {formatSummaryTokens(usage.tokens)}
+          <small>tokens</small>
+        </>
+      ),
+      icon: HardDrive,
+    },
+    { key: 'joinedDays', value: activity?.companionDays ?? joinedDays(colleague.joinedAt, today), icon: CalendarDays },
+    { key: 'channels', value: activity ? activeChannelCount(activity) : 0, icon: Monitor },
+    { key: 'groupChats', value: groupsInPeriod(activity?.groups ?? [], period, today), icon: UsersRound },
   ];
 
   return (
@@ -394,8 +481,8 @@ function ProfileOverview({
             <HeatmapLegend />
           </div>
           <div className="jiuwenmate-task-ring">
-            <span className="jiuwenmate-task-ring__circle">
-              <strong>0</strong>
+            <span className="jiuwenmate-task-ring__circle" data-testid="jiuwenmate-profile-task-count">
+              <strong>{taskTotal}</strong>
               <small>{t('jiuwenmate.profile.taskCount')}</small>
             </span>
             <dl>
@@ -404,7 +491,7 @@ function ProfileOverview({
                 <dd key={kind} data-kind={kind}>
                   <i />
                   <span>{t(`jiuwenmate.profile.taskKinds.${kind}`)}</span>
-                  <strong>0</strong>
+                  <strong>{taskKinds[kind]}</strong>
                 </dd>
               ))}
             </dl>
@@ -412,28 +499,68 @@ function ProfileOverview({
         </div>
       </section>
 
-      <ExecutionHistory />
+      <ExecutionHistory history={activity?.history ?? []} today={today} />
     </>
   );
 }
 
-function ExecutionHistory() {
+function ExecutionHistory({ history, today }: { history: readonly JiuwenMateActivityHistoryItem[]; today: Date }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
+  const [channel, setChannel] = useState('');
+  const [status, setStatus] = useState('');
   const columns = ['task', 'channel', 'status', 'tokens', 'lastResponse', 'actions'] as const;
+  const channels = [...new Set(history.map((item) => item.channel).filter(Boolean))];
+  const statuses = [...new Set(history.map((item) => item.status).filter(Boolean))];
+  const keyword = query.trim();
+  const rows = history.filter((item) => {
+    if (channel && item.channel !== channel) return false;
+    if (status && item.status !== status) return false;
+    if (!keyword) return true;
+    const title = item.title || t(`jiuwenmate.profile.taskKinds.${item.kind}`);
+    return title.includes(keyword);
+  });
   return (
     <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-history">
       <header>
         <h2>{t('jiuwenmate.profile.history')}</h2>
         <span className="jiuwenmate-profile__filters">
-          <button type="button" className="jiuwenmate-select-button">
-            {t('jiuwenmate.profile.allChannels')}
-            <ChevronDown aria-hidden />
-          </button>
-          <button type="button" className="jiuwenmate-select-button">
-            {t('jiuwenmate.profile.allStatus')}
-            <ChevronDown aria-hidden />
-          </button>
+          <ActionMenu
+            label={t('jiuwenmate.profile.allChannels')}
+            className="jiuwenmate-select-menu"
+            trigger={
+              <>
+                <span>{channel ? channelLabel(t, channel) : t('jiuwenmate.profile.allChannels')}</span>
+                <ChevronDown aria-hidden />
+              </>
+            }
+            items={[
+              { key: 'all', label: t('jiuwenmate.profile.allChannels'), onSelect: () => setChannel('') },
+              ...channels.map((item) => ({
+                key: item,
+                label: channelLabel(t, item),
+                onSelect: () => setChannel(item),
+              })),
+            ]}
+          />
+          <ActionMenu
+            label={t('jiuwenmate.profile.allStatus')}
+            className="jiuwenmate-select-menu"
+            trigger={
+              <>
+                <span>{status ? historyStatusLabel(t, status) : t('jiuwenmate.profile.allStatus')}</span>
+                <ChevronDown aria-hidden />
+              </>
+            }
+            items={[
+              { key: 'all', label: t('jiuwenmate.profile.allStatus'), onSelect: () => setStatus('') },
+              ...statuses.map((item) => ({
+                key: item,
+                label: historyStatusLabel(t, item),
+                onSelect: () => setStatus(item),
+              })),
+            ]}
+          />
           <label className="jiuwenmate-search">
             <Search aria-hidden />
             <input
@@ -454,11 +581,24 @@ function ExecutionHistory() {
           </tr>
         </thead>
         <tbody>
-          <tr>
-            <td colSpan={columns.length} className="jiuwenmate-table__empty">
-              {t('jiuwenmate.profile.historyEmpty')}
-            </td>
-          </tr>
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={columns.length} className="jiuwenmate-table__empty">
+                {t('jiuwenmate.profile.historyEmpty')}
+              </td>
+            </tr>
+          ) : (
+            rows.map((item) => (
+              <tr key={item.requestId} data-testid="jiuwenmate-profile-history-row">
+                <td>{item.title || t(`jiuwenmate.profile.taskKinds.${item.kind}`)}</td>
+                <td>{channelLabel(t, item.channel)}</td>
+                <td>{historyStatusLabel(t, item.status)}</td>
+                <td>{formatSummaryTokens(item.tokens)}</td>
+                <td>{lastResponseText(t, item.updatedAt, today)}</td>
+                <td />
+              </tr>
+            ))
+          )}
         </tbody>
       </table>
     </section>

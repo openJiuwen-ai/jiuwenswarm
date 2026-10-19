@@ -103,6 +103,46 @@ test('schedules can be created on the schedules page', () => {
   assert.match(markup, /role="switch"/);
 });
 
+test('the overview shows the employee activity instead of an empty log', () => {
+  const markup = renderProfile({
+    today: new Date('2026-10-19T12:00:00+08:00'),
+    activity: {
+      agentId: 'agent-1',
+      calls: 1,
+      tokens: 12,
+      tasks: 2,
+      replies: 1,
+      failures: 1,
+      companionDays: 6,
+      lastResponseAt: '2026-10-16T10:01:00+00:00',
+      days: [{ date: '2026-10-16', tasks: 2, minutes: 1, calls: 1, tokens: 12 }],
+      kinds: [{ date: '2026-10-16', conversation: 1, channel: 0, schedule: 1 }],
+      history: [
+        {
+          requestId: 'req-plan',
+          title: '喝水提醒',
+          kind: 'schedule',
+          channel: 'web',
+          status: 'completed',
+          tokens: 12,
+          updatedAt: '2026-10-16T03:01:00+00:00',
+          startedAt: '2026-10-16T03:00:00+00:00',
+        },
+      ],
+      hours: [],
+      channels: [{ channel: 'web', calls: 1, tokens: 12, tasks: 2, replies: 1, failures: 1 }],
+      groups: [],
+    },
+  });
+  assert.match(markup, /data-testid="jiuwenmate-profile-metrics"/);
+  assert.match(markup, /data-level="1"[^>]*data-variant="2026-10-16"/);
+  assert.match(markup, /data-testid="jiuwenmate-profile-task-count"[\s\S]*?<strong>2<\/strong>/);
+  assert.match(markup, /data-kind="schedule"[\s\S]*?<strong>1<\/strong>/);
+  assert.match(markup, /data-testid="jiuwenmate-profile-history-row"[\s\S]*?喝水提醒/);
+  assert.match(markup, /已完成/);
+  assert.doesNotMatch(markup, /暂无执行记录/);
+});
+
 test('the pencil edits the current page and stays there', () => {
   const overview = renderProfile({ initialSection: 'overview', initialEditing: true });
   assert.match(overview, /aria-current="true"[^>]*data-variant="overview"/);
