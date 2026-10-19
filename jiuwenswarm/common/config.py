@@ -54,6 +54,10 @@ _BUILTIN_EXTERNAL_CLI_AGENTS = ("claude", "codex")
 # Keep progressive tool search enabled by default for existing user workspaces
 # whose config.yaml predates this switch.
 DEFAULT_PROGRESSIVE_TOOL_ENABLED = False
+# Opt-in gate for the tool_search retrieval layer: the layer mounts only when
+# progressive_tool_enabled (AbilityManager deferred assignment) and this switch
+# are both true.
+DEFAULT_PROGRESSIVE_TOOL_OPTIMIZE = False
 # Check if user workspace exists and use it if configured via env
 _user_config = os.getenv("JIUWENSWARM_CONFIG_DIR")
 if _user_config:
@@ -433,16 +437,35 @@ def get_progressive_tool_enabled(config: dict[str, Any] | None = None) -> bool:
     return bool(value)
 
 
+def get_progressive_tool_optimize(config: dict[str, Any] | None = None) -> bool:
+    """Return the top-level ``progressive_tool_optimize`` switch.
+
+    Opt-in companion to ``progressive_tool_enabled``: the ``tool_search``
+    retrieval layer requires both switches so AbilityManager's deferred
+    assignment can stay armed while the retrieval layer stays off.
+    """
+    if not isinstance(config, dict):
+        return DEFAULT_PROGRESSIVE_TOOL_OPTIMIZE
+
+    value = config.get("progressive_tool_optimize", DEFAULT_PROGRESSIVE_TOOL_OPTIMIZE)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return bool(value)
+
+
 def is_tool_retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether the ``tool_search`` progressive disclosure is enabled.
 
-    Reuses the single top-level ``progressive_tool_enabled`` switch (the same
-    one historically documented for the deferred-tool pipeline). ``true`` means
-    our skill_index-framework ``tool_search`` is mounted and deferred tools are
-    hidden until discovered; ``false`` disables it and every tool stays direct.
+    True only when both top-level switches are true: ``progressive_tool_enabled``
+    (AbilityManager deferred assignment) and ``progressive_tool_optimize`` (the
+    retrieval layer itself). ``true`` means our skill_index-framework
+    ``tool_search`` is mounted and deferred tools are hidden until discovered;
+    ``false`` disables it and every tool stays direct.
     """
 
-    return False
+    return get_progressive_tool_enabled(config) and get_progressive_tool_optimize(config)
 
 
 def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict[str, str]:

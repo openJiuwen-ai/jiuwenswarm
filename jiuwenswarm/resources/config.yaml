@@ -10,6 +10,10 @@ preferred_language: zh
 # false：不挂载 ProgressiveToolRail，未显式声明 exposure 的工具按 direct 暴露。
 # ToolCard 自己显式声明的 exposure 优先级更高。
 progressive_tool_enabled: true
+# tool_search 渐进式披露优化开关：仅当 progressive_tool_enabled 与本开关同时为
+# true 时才挂载 tool_search（分类目录 + get_schema）检索层；
+# false 时 deferred 判定保留，但检索层关闭、工具全部直达。
+progressive_tool_optimize: false
 
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:
