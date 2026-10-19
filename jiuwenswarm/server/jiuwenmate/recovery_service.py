@@ -1,13 +1,13 @@
 """Restart scan of the Requests a previous process left dispatched.
 
-Each one is judged from its latest Execution's saved log, never re-run:
+Each one is judged from its latest Execution's saved log:
 
-- a saved final or paused event decides the outcome, even if closing the
-  Request failed afterwards;
+- a saved final or paused event decides the outcome and is not run again;
 - otherwise a stop or cancel the sender gave decides it (JM-12), and such a
   Request is never continued;
-- otherwise the Execution was interrupted: the Request ends ``paused`` and is
-  recorded as awaiting continuation, which core opens with PA-18.
+- otherwise the Execution was interrupted: the judgment is awaiting continuation,
+  and the same Request is queued again with ``recovery_ref`` pointing at that
+  Execution. Confirmation resume is not this path.
 
 ``tool.completed`` is written in the background, so an intent without a saved
 completion is recorded as unverified, not as a tool that did not run. Every
@@ -180,6 +180,8 @@ class RecoveryService:
         log = self._sessions.read_execution_log(namespace_id, record.session_id, record.request_id, latest.execution_id)
         recovery = self._recoveries.claim(namespace_id, self._judge(namespace_id, record.request_id, latest, log))
         self._sessions.finish_request(namespace_id, record.request_id, recovery.outcome, now=self._clock())
+        if recovery.decision == "awaiting_continuation":
+            self._sessions.reopen_for_continuation(namespace_id, record.request_id, now=self._clock())
         logger.info(
             "[JiuwenMate] left request closed: request=%s decision=%s outcome=%s unverified=%s",
             record.request_id,

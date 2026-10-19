@@ -26,6 +26,7 @@ from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionReposito
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
 from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, OutputFileStore
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType, ExecutionContext
+from openjiuwen.harness.persistent_agent.schema.port_results import ExecutionLink
 
 logger = logging.getLogger(__name__)
 
@@ -206,3 +207,16 @@ class HostCommitPort:
             execution.request_id,
             execution_id,
         )
+
+    async def read_execution_link(self, execution: ExecutionContext, execution_id: str) -> ExecutionLink:
+        """The predecessor saved before dispatch; a missing link is an error, not an empty chain."""
+        require_identifier("execution_id", execution_id)
+        row = await asyncio.to_thread(
+            self._repository.execution_link,
+            execution.namespace_id,
+            execution.request_id,
+            execution_id,
+        )
+        if row is None or row["session_id"] != execution.session_id:
+            raise PersistentAgentError("execution link not found", code="NOT_FOUND")
+        return ExecutionLink.model_validate(row)

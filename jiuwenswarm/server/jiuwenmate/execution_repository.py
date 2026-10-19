@@ -123,6 +123,16 @@ CREATE INDEX IF NOT EXISTS result_deliveries_by_status
 CREATE TABLE IF NOT EXISTS group_delivery_archives (
     namespace_id TEXT NOT NULL, delivery_id TEXT NOT NULL, PRIMARY KEY(namespace_id, delivery_id)
 );
+CREATE TABLE IF NOT EXISTS execution_links (
+    namespace_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    execution_id TEXT NOT NULL,
+    predecessor_id TEXT,
+    relation TEXT NOT NULL,
+    PRIMARY KEY (namespace_id, execution_id)
+);
 """
 _TERMINAL_EVENTS = (EventType.EXECUTION_PAUSED.value, EventType.EXECUTION_FINAL.value)
 
@@ -355,16 +365,92 @@ class ExecutionRepository(SQLiteStore):
             ).fetchone()
             if busy is not None:
                 raise PersistentAgentError("session already has a dispatched request", code="SESSION_BUSY")
-            execution = ExecutionRecord(request_id=request_id, execution_id=self._execution_id())
-            conn.execute(
-                "INSERT INTO executions VALUES (?, ?, ?, NULL, ?)",
-                (namespace_id, execution.execution_id, request_id, now.isoformat()),
+            execution = ExecutionRecord(
+                request_id=request_id,
+                execution_id=self._execution_id(),
+                recovery_ref=self._pending_continuation(conn, namespace_id, request_id),
             )
+            conn.execute(
+                "INSERT INTO executions VALUES (?, ?, ?, ?, ?)",
+                (namespace_id, execution.execution_id, request_id, execution.recovery_ref, now.isoformat()),
+            )
+            self._save_link(conn, row, execution)
             conn.execute(
                 "UPDATE requests SET status = 'dispatched', updated_at = ? WHERE namespace_id = ? AND request_id = ?",
                 (now.isoformat(), namespace_id, request_id),
             )
         return execution
+
+    def reopen_for_continuation(self, namespace_id: str, request_id: str, *, now: datetime) -> bool:
+        """Queue a paused Request again when its latest interruption has not been continued.
+
+        A saved final, a stop or a cancel stays ended. The same interrupted Execution
+        is continued at most once; a later interruption is a new judgment.
+        """
+        with self._transaction() as conn:
+            row = self._require_request(conn, namespace_id, request_id)
+            if row["status"] != "ended" or row["outcome"] != "paused":
+                return False
+            if self._pending_continuation(conn, namespace_id, request_id) is None:
+                return False
+            conn.execute(
+                "UPDATE requests SET status = 'queued', outcome = NULL, updated_at = ? "
+                "WHERE namespace_id = ? AND request_id = ? AND status = 'ended'",
+                (now.isoformat(), namespace_id, request_id),
+            )
+        return True
+
+    def execution_link(self, namespace_id: str, request_id: str, execution_id: str) -> dict[str, object] | None:
+        """The link saved before that Execution was dispatched, when it belongs to this Request."""
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM execution_links WHERE namespace_id = ? AND execution_id = ?",
+                (namespace_id, execution_id),
+            ).fetchone()
+        if row is None or row["request_id"] != request_id:
+            return None
+        return {
+            "namespace_id": row["namespace_id"],
+            "agent_id": row["agent_id"],
+            "session_id": row["session_id"],
+            "request_id": row["request_id"],
+            "execution_id": row["execution_id"],
+            "predecessor_id": row["predecessor_id"],
+            "relation": row["relation"],
+        }
+
+    @staticmethod
+    def _pending_continuation(conn: sqlite3.Connection, namespace_id: str, request_id: str) -> str | None:
+        try:
+            row = conn.execute(
+                "SELECT execution_id FROM request_recoveries WHERE namespace_id = ? AND request_id = ? "
+                "AND decision = 'awaiting_continuation' ORDER BY decided_at DESC, rowid DESC LIMIT 1",
+                (namespace_id, request_id),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if row is None:
+            return None
+        taken = conn.execute(
+            "SELECT 1 FROM executions WHERE namespace_id = ? AND request_id = ? AND recovery_ref = ?",
+            (namespace_id, request_id, row["execution_id"]),
+        ).fetchone()
+        return None if taken is not None else row["execution_id"]
+
+    @staticmethod
+    def _save_link(conn: sqlite3.Connection, request_row: sqlite3.Row, execution: ExecutionRecord) -> None:
+        conn.execute(
+            "INSERT INTO execution_links VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                request_row["namespace_id"],
+                request_row["agent_id"],
+                request_row["session_id"],
+                execution.request_id,
+                execution.execution_id,
+                execution.recovery_ref,
+                "first" if execution.recovery_ref is None else "continuation",
+            ),
+        )
 
     def finish_request(self, namespace_id: str, request_id: str, outcome: str, *, now: datetime) -> RequestState:
         """Close a queued or dispatched Request; finishing it again with the same outcome is a no-op."""

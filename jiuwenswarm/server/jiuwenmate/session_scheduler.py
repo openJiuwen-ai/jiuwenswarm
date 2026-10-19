@@ -97,8 +97,16 @@ class SessionScheduler:
         return accepted
 
     def resume(self, state: RequestState) -> None:
-        """Entry for continuing a Request; continuation is opened by JM-13."""
-        raise PersistentAgentError("continuation is not opened yet (JM-13)", code="PERSISTENT_NOT_OPENED")
+        """Queue one paused Request again when its interruption is still awaiting continuation.
+
+        The caller pumps the scheduler afterwards. A stop, a cancel, a saved final
+        and a confirmation pause are not continued here.
+        """
+        record = state.record
+        self._require_open(record.namespace_id, record.agent_id)
+        opened = self._sessions.reopen_for_continuation(record.namespace_id, record.request_id, now=self._clock())
+        if not opened:
+            raise PersistentAgentError("request is not awaiting continuation", code="CONTINUATION_NOT_READY")
 
     async def recover(self, namespace_id: str) -> list[RequestState]:
         """Schedule queued Requests again; return dispatched ones left by a previous process."""
