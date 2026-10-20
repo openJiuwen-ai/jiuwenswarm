@@ -43,13 +43,14 @@ async def test_lists_only_installed_packages_with_a_directory(roots: dict) -> No
         marketplace,
         {"id": "finance", "installed": True, "source": "builtin"},
         {"id": "mine", "installed": True},
+        {"id": "mine", "installed": True},
         {"id": "uninstalled", "installed": False},
         {"id": "ghost", "installed": True},
         {"id": "../escape", "installed": True},
     )
     locations = await JiuwenExpertCatalog().list_expert_packages()
     assert [(item.name, item.source) for item in locations] == [("finance", "builtin"), ("mine", "local")]
-    assert locations[0].path == (built_in / "finance").absolute()
+    assert locations[0].path == (built_in / "finance").resolve()
 
 
 @pytest.mark.asyncio

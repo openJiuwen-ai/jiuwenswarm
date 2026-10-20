@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -29,6 +30,9 @@ if TYPE_CHECKING:
     from openjiuwen.agent_teams.experts import PackageLocation
 
 logger = logging.getLogger(__name__)
+
+# aiofiles has no realpath; ``wrap`` is its documented way to add one.
+_realpath = aiofiles.os.wrap(os.path.realpath)
 
 PackageType = Literal["agent_template", "agent_group"]
 _SOURCES = frozenset({"builtin", "local", "hub"})
@@ -65,10 +69,11 @@ async def _marketplace_entries(path: Path) -> list[dict]:
 
 
 async def _package_dir(root: Path, name: str) -> Path | None:
+    """The resolved package directory, as ``resolve_agent_group_dir`` / ``resolve_agent_template_dir`` give it."""
     candidate = root / name
     if not await aiofiles.os.path.isdir(candidate):
         return None
-    return candidate.absolute()
+    return Path(await _realpath(candidate))
 
 
 async def _location(package_type: PackageType, entry: dict) -> "PackageLocation":
@@ -93,9 +98,11 @@ async def _location(package_type: PackageType, entry: dict) -> "PackageLocation"
 async def _list_installed(package_type: PackageType) -> list["PackageLocation"]:
     marketplace, _, _ = expert_package_roots(package_type)
     locations = []
+    seen: set[object] = set()
     for entry in await _marketplace_entries(marketplace):
-        if not entry.get("installed"):
+        if not entry.get("installed") or entry.get("id") in seen:
             continue
+        seen.add(entry.get("id"))
         try:
             locations.append(await _location(package_type, entry))
         except ValueError as exc:
