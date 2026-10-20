@@ -28,10 +28,12 @@ export const QWEN_OMNI_TOOL_INSTRUCTIONS = [
 ].join('\n');
 
 export const TASK_ACCEPTED_INSTRUCTIONS =
-  'This receipt confirms acceptance only. Briefly say the task was accepted and the user will be notified when it finishes. Do not infer execution has started or provide a result. queued means it was waiting for capacity when this receipt was generated; query this job_id for current progress.';
+  'This receipt confirms task acceptance, not a task result. Acknowledge naturally in your own words. You may mention the task, its target, requested output and user constraints from accepted_instruction, and say the user will be notified when a result is available. Describe these as the accepted requirements, not as work already performed. Report execution progress only if explicitly confirmed by the receipt. Do not invent findings, answers, estimates, file paths, completed actions or success claims. queued means it was waiting for capacity when this receipt was generated; query this job_id if the user asks for current progress.';
 
 export const TASK_OPERATION_INSTRUCTIONS = [
-  'Continue the original request using the latest tool receipt. If a query needs a subsequent modification or answer, call that tool; never create a duplicate task. Copy receipt parameters exactly and do not increment revision.',
+  `For task acceptance receipts only: ${TASK_ACCEPTED_INSTRUCTIONS}`,
+  'Use the latest tool receipt to report only confirmed facts. For task acceptance, give a brief, task-specific acknowledgement and then end this response; no fixed wording is required. Wait for a separate result for that task before answering the delegated question or reporting its outcome.',
+  'Only when a task query requires a subsequent modification or an answer to an observed pending Agent question, call the corresponding tool; never create a duplicate task. Copy receipt parameters exactly and do not increment revision.',
   'State only confirmed facts: accepted/pending means accepted; followup means a linked revision with the original result unchanged; an accepted answer is not task completion; cancelling does not mean stopped.',
   'If status is completed/failed/cancelled, files=[] and artifact_status=not_confirmed, clearly say the task has ended, no file is currently available, and there is no need to keep waiting for this task. Do not claim files are being generated or will arrive later.',
 ].join('\n');

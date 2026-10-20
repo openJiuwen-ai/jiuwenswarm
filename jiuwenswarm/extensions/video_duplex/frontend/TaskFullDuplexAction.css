@@ -15,10 +15,10 @@
 }
 
 .task-full-duplex-orb {
-  position: absolute;
-  bottom: calc(100% + 12px);
+  position: fixed;
+  bottom: 140px;
   left: 50%;
-  z-index: 2;
+  z-index: 100;
   display: flex;
   align-items: center;
   flex-direction: column;

@@ -54,6 +54,7 @@ await build({
             ? `
           import { forwardRef, useImperativeHandle } from 'react';
           export const VideoLivePanel = forwardRef(function Panel(props, ref) {
+            globalThis.__duplexHarness.panelProps = props;
             useImperativeHandle(ref, () => ({
               async startScreenDuplex(id, shareScreen, visualSource) {
                 globalThis.__duplexHarness.sharingRequests.push(shareScreen);
@@ -66,7 +67,7 @@ await build({
               setMicrophoneMuted(value) { globalThis.__duplexHarness.mic.push(value); },
               setSpeakerMuted(value) { globalThis.__duplexHarness.speaker.push(value); },
               stopScreenSharing() { props.onScreenSharingChange(false); },
-              stop() { props.onRuntimeState('idle'); },
+              stop() { globalThis.__duplexHarness.stops += 1; props.onRuntimeState('idle'); },
               deliverToolResult(payload) { globalThis.__duplexHarness.mediaResults.push(payload); }
             }));
             return null;
@@ -128,6 +129,7 @@ beforeEach(async () => {
   };
   window.clearInterval = (id) => timers.delete(id);
   harness = {
+    stops: 0,
     starts: [],
     sharingRequests: [],
     visualSources: [],
@@ -297,6 +299,43 @@ test('switching conversations keeps old jobs attached to their owner and never p
   assert.equal(harness.messages[1][0], 'conversation-b');
   assert.equal(harness.mediaResults.length, 1);
   assert.equal(harness.mediaResults[0].job_id, 'job-b');
+});
+
+test('navigation preserves voice, controls and result delivery to the original conversation', async () => {
+  const renderPage = async (sessionId) => act(async () => root.render(createElement('div', null,
+    createElement(TaskFullDuplexRuntime, { ...props, sessionId }),
+    createElement('section', { 'data-testid': 'navigation-page' }, sessionId || 'Settings'),
+  )));
+  await act(async () => root.render(null));
+  await renderPage('conversation-a');
+  const scopeA = await start();
+  const stopsBefore = harness.stops;
+  await event('started', job(scopeA));
+  for (const sessionId of ['conversation-b', null, 'conversation-a']) {
+    await renderPage(sessionId);
+    assert.equal(harness.stops, stopsBefore);
+    assert.ok(document.querySelector('[data-testid="chat-panel-duplex-orb"]'));
+  }
+  await renderPage('conversation-b');
+  await act(async () => harness.panelProps.onConversationItem('user', 'Still talking to A'));
+  await event('completed', job(scopeA, { status: 'completed', result: 'Result for A' }));
+  assert.equal(harness.messages.at(-2)[0], 'conversation-a');
+  assert.equal(harness.messages.at(-1)[0], 'conversation-a');
+  assert.equal(harness.mediaResults.at(-1).job_id, 'job-a');
+  await act(async () => document.querySelector('[data-testid="chat-panel-duplex-exit"]').click());
+  assert.equal(harness.stops, stopsBefore + 1);
+  assert.equal(document.querySelector('[data-testid="chat-panel-duplex-orb"]'), null);
+});
+
+test('starting full-duplex in another conversation replaces the previous media run', async () => {
+  await start();
+  const stopsBefore = harness.stops;
+  await act(async () => root.render(createElement(TaskFullDuplexRuntime, { ...props, sessionId: 'conversation-b' })));
+  assert.equal(harness.stops, stopsBefore);
+  await start('conversation-b');
+  assert.equal(harness.stops, stopsBefore + 1);
+  await act(async () => harness.panelProps.onConversationItem('user', 'Talking to B now'));
+  assert.equal(harness.messages.at(-1)[0], 'conversation-b');
 });
 
 test('unregistered plugin sessions cannot inject results into the visible task', async () => {

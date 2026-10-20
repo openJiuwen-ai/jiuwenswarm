@@ -9,6 +9,7 @@ export type TaskFullDuplexRuntimeState = "idle" | "starting" | "active";
 
 interface TaskFullDuplexRuntimeSnapshot {
   state: TaskFullDuplexRuntimeState;
+  sessionId: string | null;
   error: string;
   microphoneMuted: boolean;
   speakerMuted: boolean;
@@ -17,8 +18,10 @@ interface TaskFullDuplexRuntimeSnapshot {
 
 let controller: VideoLivePanelHandle | null = null;
 let bindSession: ((sessionId: string) => string) | null = null;
+let startGeneration = 0;
 let snapshot: TaskFullDuplexRuntimeSnapshot = {
   state: "idle",
+  sessionId: null,
   error: "",
   microphoneMuted: false,
   speakerMuted: false,
@@ -66,6 +69,7 @@ export function setTaskFullDuplexRuntimeState(
     state === "idle"
       ? {
           state,
+          sessionId: null,
           microphoneMuted: false,
           speakerMuted: false,
           screenSharing: false,
@@ -83,27 +87,35 @@ export async function startTaskFullDuplex(sessionId?: string, visualSource?: 'sc
     publish({ state: "idle", error: "全双工运行时尚未就绪，请稍后重试。" });
     return;
   }
+  // End the old media run before binding the replacement conversation.
+  if (snapshot.state !== "idle") stopTaskFullDuplex();
+  const generation = ++startGeneration;
   const searchSessionId = sessionId ? bindSession?.(sessionId) : undefined;
-  publish({ state: "starting", error: "" });
+  publish({ state: "starting", sessionId: sessionId ?? null, error: "" });
   try {
     const started = await controller.startScreenDuplex(
       searchSessionId,
       isTaskDuplexScreenSharingEnabled(),
       visualSource,
     );
-    if (!started) publish({ state: "idle" });
+    if (generation !== startGeneration) return;
+    if (!started) setTaskFullDuplexRuntimeState("idle");
   } catch (error) {
+    if (generation !== startGeneration) return;
     publish({
       state: "idle",
+      sessionId: null,
       error: error instanceof Error ? error.message : "无法启动全双工会话。",
     });
   }
 }
 
 export function stopTaskFullDuplex(): void {
+  startGeneration += 1;
   controller?.stop();
   publish({
     state: "idle",
+    sessionId: null,
     error: "",
     microphoneMuted: false,
     speakerMuted: false,
