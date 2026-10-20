@@ -1868,13 +1868,17 @@ class AgentRuntime:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
                 if (
-                    request.params.get("source") in {"ask_user_interrupt", "confirm_interrupt"}
+                    request.params.get("source") in {
+                        "ask_user_interrupt", "confirm_interrupt", "permission_interrupt",
+                    }
                     and self._session_coordinator.control_target_work_kind(
                         request.session_id or "default", self._control_request_id(request)
                     ) is not SessionWorkKind.HEARTBEAT
                 ):
                     async with aclosing(self._stream_with_runtime_context(
-                        self._stream_question_answer(request)
+                        self._stream_question_answer(
+                            request, on_control_event=on_control_event,
+                        )
                     )) as events:
                         async for event in events:
                             yield event
@@ -2361,8 +2365,10 @@ class AgentRuntime:
     async def _stream_question_answer(
         self,
         request: AgentRequest,
+        *,
+        on_control_event: Callable[[RuntimeEvent], Awaitable[None]] | None = None,
     ) -> AsyncIterator[RuntimeEvent]:
-        """Stream a compatibility question or confirmation under control admission.
+        """Stream question, confirmation or permission replies under control admission.
 
         The unary control API deliberately collects a complete turn. WebSocket
         chat.send answers must instead expose each event while the turn runs.
@@ -2384,7 +2390,10 @@ class AgentRuntime:
             )
             async with aclosing(stream):
                 async for event in stream:
-                    yield event
+                    if on_control_event is not None and self._is_permission_control_ack(request, event):
+                        await on_control_event(event)
+                    else:
+                        yield event
         except BaseException:
             if self._session_coordinator.has_control_target(session_id, request_id):
                 await self._mark_pending_interaction_id(session_id, request_id)
@@ -2468,19 +2477,6 @@ class AgentRuntime:
         deliver = getattr(agent, "deliver_control_input", None)
         if not callable(deliver):
             raise RuntimeError("active agent does not accept control input")
-        params = request.params if isinstance(request.params, dict) else {}
-        answers = params.get("answers")
-        card_id = (
-            answers[0].get("card_id")
-            if isinstance(answers, list) and len(answers) == 1
-            and isinstance(answers[0], dict) else None
-        )
-        # This selects transport timing, not permission. Only the adapter's
-        # actual handoff acknowledgement can settle the submitted answer.
-        forward_permission_ack = (
-            params.get("source") == "permission_interrupt"
-            and isinstance(card_id, str) and 0 < len(card_id.strip()) <= 128
-        )
         events: list[RuntimeEvent] = []
         response_stream = deliver(request)
         try:
@@ -2492,16 +2488,7 @@ class AgentRuntime:
                     session_id=request.session_id,
                     default_agent_ref=request.agent_ref,
                 )
-                matching_ack = False
-                if forward_permission_ack and on_control_event is not None:
-                    matching_ack = (
-                        event.event_type == "runtime.accepted"
-                        and event.request_id == request.request_id
-                        and event.session_id == request.session_id
-                        and event.payload.get("request_id") == request.request_id
-                        and event.payload.get("session_id", event.session_id) == request.session_id
-                    )
-                if matching_ack:
+                if on_control_event is not None and self._is_permission_control_ack(request, event):
                     await on_control_event(event)
                 else:
                     events.append(event)
@@ -2510,6 +2497,27 @@ class AgentRuntime:
             if callable(close_stream):
                 await close_stream()
         return events
+
+    @staticmethod
+    def _is_permission_control_ack(request: AgentRequest, event: RuntimeEvent) -> bool:
+        params = request.params if isinstance(request.params, dict) else {}
+        answers = params.get("answers")
+        card_id = (
+            answers[0].get("card_id")
+            if isinstance(answers, list) and len(answers) == 1
+            and isinstance(answers[0], dict) else None
+        )
+        # This selects transport timing, not permission. Only the adapter's
+        # actual handoff acknowledgement can settle the submitted answer.
+        return (
+            params.get("source") == "permission_interrupt"
+            and isinstance(card_id, str) and 0 < len(card_id.strip()) <= 128
+            and event.event_type == "runtime.accepted"
+            and event.request_id == request.request_id
+            and event.session_id == request.session_id
+            and event.payload.get("request_id") == request.request_id
+            and event.payload.get("session_id", event.session_id) == request.session_id
+        )
 
     async def _stream_control_started(
         self,
