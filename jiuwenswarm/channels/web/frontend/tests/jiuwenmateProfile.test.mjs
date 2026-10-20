@@ -10,12 +10,14 @@ import { ColleagueProfilePage } from '../node_modules/.cache/jiuwenmate-profile/
 import { ScheduleBoard } from '../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js';
 
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
+const profileStyles = readFileSync(new URL('../src/features/jiuwenmate/jiuwenmate.css', import.meta.url), 'utf8');
 await i18n.use(initReactI18next).init({ lng: 'zh', resources: { zh: { translation: zh } }, interpolation: { escapeValue: false } });
 
 const colleague = {
   id: 'agent-1',
   name: '小九',
   description: '通用办公助理',
+  persona: '角色：群客服智能体\n规则：准确回答问题。',
   tags: ['效率提升'],
   category: 'custom',
   capabilities: {
@@ -81,12 +83,50 @@ test('skills can be changed on the skills page without the pencil', () => {
   assert.match(markup, /data-testid="jiuwenmate-profile-detail"[^>]*data-variant="skills"/);
   assert.match(markup, /添加技能/);
   assert.match(markup, /old-skill/);
-  assert.match(markup, /class="card-grid-auto"/);
+  assert.match(markup, /class="jiuwenmate-profile__resource-grid"/);
   assert.match(markup, /data-testid="jiuwenmate-profile-resource-card"/);
   assert.match(markup, /暂无描述/);
   assert.doesNotMatch(markup, /jiuwenmate-profile__resource-picker/);
   assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-edit"/);
   assert.doesNotMatch(markup, /AI 员工名称/);
+});
+
+test('configuration pages use the design-specific persona, model, and resource layouts', () => {
+  const persona = renderProfile({ initialSection: 'persona' });
+  assert.match(persona, /class="jiuwenmate-profile__persona-editor"/);
+  assert.match(persona, /data-section="persona"/);
+  assert.match(persona, /角色：群客服智能体/);
+  assert.doesNotMatch(persona, /value="通用办公助理"/);
+  assert.match(profileStyles, /data-section\]:not\(\[data-section='overview'\]\) > \.jiuwenmate-profile__header/);
+  assert.match(profileStyles, /\.jiuwenmate-profile__persona-editor textarea[\s\S]*?min-height: 500px/);
+
+  const model = renderProfile({
+    initialSection: 'model',
+    modelCatalog: { models: [{ id: 'deepseek#0', label: 'DeepSeek V3', provider: 'DeepSeek' }], defaultModelId: '', defaultModelLabel: '' },
+  });
+  assert.match(model, /class="jiuwenmate-profile__model-list"/);
+  assert.match(model, /class="jiuwenmate-profile__model-icon"/);
+  assert.match(model, /选择模型/);
+  assert.doesNotMatch(model, /name="jiuwenmate-profile-model"[^>]*disabled/);
+  assert.match(model, /jiuwenmate-profile__save-button/);
+  assert.doesNotMatch(model, /data-testid="jiuwenmate-profile-edit"/);
+  assert.match(model, /DeepSeek V3/);
+
+  for (const section of ['skills', 'connectors', 'plugins']) {
+    const markup = renderProfile({
+      initialSection: section,
+      colleague: { ...colleague, capabilities: { ...colleague.capabilities, [section]: ['configured-item'] } },
+    });
+    assert.match(markup, /class="jiuwenmate-profile__resource-grid"/);
+  }
+
+  const knowledgeEmpty = renderProfile({ initialSection: 'knowledge' });
+  assert.match(knowledgeEmpty, /class="jiuwenmate-profile__knowledge-empty"/);
+  const knowledgePopulated = renderProfile({
+    initialSection: 'knowledge',
+    colleague: { ...colleague, capabilities: { ...colleague.capabilities, knowledge: ['topics/description.md'] } },
+  });
+  assert.match(knowledgePopulated, /class="jiuwenmate-profile__knowledge-list"/);
 });
 
 test('schedules can be created on the schedules page', () => {
@@ -120,6 +160,10 @@ test('schedules can be created on the schedules page', () => {
   assert.match(markup, /晨报/);
   assert.match(markup, /每天 9:00/);
   assert.match(markup, /添加/);
+  assert.match(markup, /jiuwenmate-schedule-section__bar[\s\S]*?<h2>定时任务<\/h2>[\s\S]*?data-testid="jiuwenmate-schedule-add"/);
+  assert.match(markup, /data-testid="jiuwenmate-schedule-add"/);
+  assert.match(markup, /class="jiuwenmate-outline-button jiuwenmate-schedule-add"[^>]*data-testid="jiuwenmate-schedule-add"/);
+  assert.match(markup, /lucide-plus/);
   assert.match(markup, /class="jiuwenmate-schedule-card"/);
   assert.match(markup, /jiuwenmate-schedule-card__actions/);
   assert.match(markup, /role="switch"/);
@@ -222,12 +266,12 @@ test('the pencil edits the current page and stays there', () => {
     modelCatalog: { models: [{ id: 'deepseek#0', label: 'DeepSeek', provider: 'DeepSeek' }], defaultModelId: 'deepseek#0', defaultModelLabel: 'DeepSeek' },
   });
   assert.match(model, /aria-current="true"[^>]*data-variant="model"/);
-  assert.match(model, /aria-label="编辑模型"/);
+  assert.doesNotMatch(model, /aria-label="编辑模型"/);
   assert.match(model, /data-testid="jiuwenmate-profile-detail"[^>]*data-variant="model"/);
-  assert.match(model, /data-testid="jiuwenmate-profile-model-select"/);
+  assert.match(model, /type="radio"/);
 });
 
-test('knowledge can be chosen from published pages and still shows the office directory', () => {
+test('knowledge uses the compact page list without exposing the office directory', () => {
   const markup = renderProfile({
     initialSection: 'knowledge',
     colleague: {
@@ -239,8 +283,8 @@ test('knowledge can be chosen from published pages and still shows the office di
   assert.match(markup, /data-variant="knowledge"/);
   assert.match(markup, /添加知识/);
   assert.match(markup, /topics\/description\.md/);
-  assert.match(markup, /\/tmp\/office/);
-  assert.match(markup, /个人上下文已发布的页面/);
+  assert.match(markup, /class="jiuwenmate-profile__knowledge-list"/);
+  assert.doesNotMatch(markup, /\/tmp\/office/);
 });
 
 test('an empty knowledge catalog tells the user to publish a page first', () => {

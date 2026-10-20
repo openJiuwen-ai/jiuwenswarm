@@ -705,6 +705,7 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             initialSection={profileIntent.section}
             resourceCatalog={resourceCatalog}
             savingResources={savingResources}
+            onLoadSettings={api.readSettings}
             onSaveSettings={(edit) => {
               setSavingResources(true);
               setActionError('');

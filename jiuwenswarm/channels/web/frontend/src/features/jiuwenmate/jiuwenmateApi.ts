@@ -219,6 +219,8 @@ export interface ColleagueResourceOption {
   name: string;
   label: string;
   description: string;
+  source?: string;
+  updatedAt?: string;
   /** Marketplace asset id, when the saved name must stay the package directory. */
   alias?: string;
 }
@@ -311,7 +313,13 @@ export function selectableKnowledgePages(payload: unknown): ColleagueResourceOpt
     rows(record(payload).pages).flatMap((item: unknown) => {
       const row = record(item);
       const option = resourceOption(text(row.name), text(row.label), text(row.description));
-      return option ? [option] : [];
+      return option
+        ? [{
+            ...option,
+            source: text(row.source) || text(row.source_type) || text(row.origin),
+            updatedAt: text(row.updated_at) || text(row.updatedAt) || text(row.updated_time),
+          }]
+        : [];
     }),
   );
 }
@@ -333,6 +341,7 @@ export function withColleagueEdit(
   edit: {
     name?: string;
     description?: string;
+    persona?: string;
     tags?: readonly string[];
     model?: string;
     skills?: readonly string[];
@@ -346,6 +355,7 @@ export function withColleagueEdit(
       ...colleague,
       name: edit.name ?? colleague.name,
       description: edit.description ?? colleague.description,
+      persona: edit.persona ?? colleague.persona,
       tags: [...(edit.tags ?? colleague.tags)],
       capabilities: {
         ...colleague.capabilities,
@@ -370,6 +380,7 @@ export function toColleague(value: unknown): JiuwenMateColleague {
     id: text(wire.agent_id),
     name: text(wire.name),
     description: text(wire.description),
+    ...(typeof wire.persona === 'string' ? { persona: wire.persona } : {}),
     tags: texts(wire.tags),
     category: CATEGORIES.includes(category) ? category : 'custom',
     ...(avatarHue !== null ? { avatarHue } : {}),
@@ -404,6 +415,7 @@ export function toWireSettings(
   return {
     name: draft.name.trim(),
     description: draft.description.trim(),
+    ...(draft.persona !== undefined ? { persona: draft.persona.trim() } : {}),
     tags: filled(draft.tags),
     category: draft.category,
     avatar_url: persistable ? avatarUrl : hueToken,
