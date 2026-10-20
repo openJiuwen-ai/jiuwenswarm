@@ -7,14 +7,15 @@
   gap: 16px;
   min-height: 80px;
   margin-bottom: 0;
-  padding: 16px;
+  /* Leave a little room for the hexagon, but keep CTA near the right edge */
+  padding: 16px 40px 16px 16px;
   overflow: hidden;
   color: var(--color-text-primary);
   border-radius: var(--radius-xl);
   background-color: var(--color-free-models-banner-mid);
-  background-image: url('../../../../assets/settings/models/free-models-background.svg');
+  background-image: url('../../../../assets/settings/models/free-models-background.png');
   background-repeat: no-repeat;
-  background-position: 0 0;
+  background-position: center;
   background-size: 100% 100%;
 }
 
@@ -267,6 +268,7 @@
   .free-models-banner {
     flex-direction: column;
     align-items: flex-start;
+    padding-right: 16px;
   }
 
   .free-models-card {

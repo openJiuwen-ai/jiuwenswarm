@@ -390,7 +390,7 @@
     "title": "设置",
     "freeModels": {
       "title": "免费模型",
-      "bannerDescription": "开启后可使用免费模型，免费模型可能有限流、限窗口大小等限制。免费模型来源于 OpenCode Zen。",
+      "bannerDescription": "使用华为账号登录，获取九问限时免费限量模型",
       "goAuthorize": "去授权",
       "loginTitle": "华为账号登录",
       "loginDescription": "使用华为账号登录，获取九问限时免费限量模型",

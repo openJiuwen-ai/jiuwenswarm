@@ -397,7 +397,7 @@
     "title": "Settings",
     "freeModels": {
       "title": "Free models",
-      "bannerDescription": "Enable free models to use them in chat. Free models may have rate limits and smaller context windows. Sourced from OpenCode Zen.",
+      "bannerDescription": "Sign in with your Huawei Cloud account to get JiuwenSwarm's limited-time free models",
       "goAuthorize": "Authorize",
       "loginTitle": "Sign in with Huawei Cloud",
       "loginDescription": "Sign in with your Huawei Cloud account to get JiuwenSwarm's limited-time free models",
