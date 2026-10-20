@@ -197,3 +197,28 @@ def test_derive_user_overlay_delta_ratchets_against_disk() -> None:
     )
     assert payload_deny["deny_tools"] == ["legacy_tool"]
     assert "_file_guard_paths_added" not in payload_deny
+
+
+def test_derive_user_overlay_delta_excludes_composed_path_floor() -> None:
+    # round-027：_compose_effective_local 注入的敏感路径底线不落磁盘层，
+    # 同值项不得被当作增量复制进 user 层（真实部署 global/template paths
+    # 均为空时的实证场景）。
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        _derive_user_overlay_delta,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        _SENSITIVE_PATH_FLOOR,
+    )
+
+    empty_bases = [{"file_guard": {"paths": []}}, {}, {}]
+    cfg = {
+        "file_guard": {
+            "paths": [dict(entry) for entry in _SENSITIVE_PATH_FLOOR]
+            + [{"path": "C:/Users/issuser/Documents/Note", "read": "allow"}],
+        },
+    }
+
+    payload = _derive_user_overlay_delta(cfg, empty_bases)
+    added = {e["path"] for e in payload.get("_file_guard_paths_added", [])}
+    assert added == {"C:/Users/issuser/Documents/Note"}
+    assert all(e["path"] not in {f["path"] for f in _SENSITIVE_PATH_FLOOR} for e in payload.get("_file_guard_paths_added", []))

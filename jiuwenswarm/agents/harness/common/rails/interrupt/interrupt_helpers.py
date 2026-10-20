@@ -673,11 +673,10 @@ def _derive_user_overlay_delta(
         return str(value or "").replace("\\", "/").rstrip("/")
 
     disk_axes: dict[str, dict[str, int]] = {}
-    for base in disk_bases:
-        fg = base.get("file_guard") if isinstance(base, dict) else None
-        paths = fg.get("paths") if isinstance(fg, dict) else None
+
+    def _fold_guard_paths(paths: Any) -> None:
         if not isinstance(paths, list):
-            continue
+            return
         for entry in paths:
             if not isinstance(entry, dict):
                 continue
@@ -689,6 +688,20 @@ def _derive_user_overlay_delta(
                 level = str(entry.get(axis) or "").strip().lower()
                 if level in _LEVEL_RANK:
                     axes[axis] = max(axes.get(axis, 0), _LEVEL_RANK[level])
+
+    for base in disk_bases:
+        fg = base.get("file_guard") if isinstance(base, dict) else None
+        _fold_guard_paths(fg.get("paths") if isinstance(fg, dict) else None)
+    # 组合期注入的敏感路径底线（CR-2 floor）不落任何磁盘层，仅存在于
+    # _compose_effective_local 合成结果中；不并入基线会把同值项当作
+    # 增量整段复制进 user 层（round-027 实证 **/.ssh/** ask 落盘）。
+    try:
+        from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+            _SENSITIVE_PATH_FLOOR,
+        )
+        _fold_guard_paths(_SENSITIVE_PATH_FLOOR)
+    except Exception:  # noqa: BLE001 — 底线常量缺失时按无基线处理
+        logger.warning("[InterruptHelpers] sensitive path floor load failed", exc_info=True)
     cfg_fg = permissions.get("file_guard")
     cfg_paths = cfg_fg.get("paths") if isinstance(cfg_fg, dict) else None
     if isinstance(cfg_paths, list):
