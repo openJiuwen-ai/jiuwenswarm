@@ -245,14 +245,13 @@ async def test_first_mcp_reconcile_forwards_group_before_instance_build(router):
     assert built[0]._moa_enabled is True
 
 
-@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+# A3g：gateway.embedded.runtime 副本已删除（gateway 生产走 provider 注入的
+# server 实现），双侧对等校验收敛为 server 单侧。
+@pytest.mark.parametrize("runtime", ["server.runtime"])
 def test_metadata_updates_keep_moa_and_ordinary_selection_independent(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
-    if runtime == "server.runtime":
-        # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
-        store = import_module("jiuwenswarm.common.model_selection_store")
-    else:
-        store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
+    store = import_module("jiuwenswarm.common.model_selection_store")
     projection = import_module(f"jiuwenswarm.{runtime}.session.session_info").to_session_info
     from jiuwenswarm.common.model_selection import ModelSelection
 

@@ -295,14 +295,12 @@ async def test_config_adapter_registers_resource_methods(catalog_state):
         assert response.ok, response.payload
 
 
-@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+# A3g：gateway.embedded.runtime 副本已删除，双侧对等校验收敛为 server 单侧。
+@pytest.mark.parametrize("runtime", ["server.runtime"])
 def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
-    if runtime == "server.runtime":
-        # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
-        store = import_module("jiuwenswarm.common.model_selection_store")
-    else:
-        store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
+    store = import_module("jiuwenswarm.common.model_selection_store")
     from jiuwenswarm.server.runtime.session.session_info import to_session_info
 
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
@@ -317,14 +315,12 @@ def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch, r
     assert to_session_info(latest)["model_selection"] == selection
 
 
-@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+# A3g：gateway.embedded.runtime 副本已删除，双侧对等校验收敛为 server 单侧。
+@pytest.mark.parametrize("runtime", ["server.runtime"])
 def test_model_selection_accepts_cron_session_id(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
-    if runtime == "server.runtime":
-        # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
-        store = import_module("jiuwenswarm.common.model_selection_store")
-    else:
-        store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
+    store = import_module("jiuwenswarm.common.model_selection_store")
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)
     session_id = "__cron___1a1231c0004_53dd13fcf709"
