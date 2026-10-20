@@ -4232,7 +4232,7 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
 
 
 @pytest.mark.anyio
-async def test_process_team_message_stream_rejects_orphaned_interactive_input(monkeypatch):
+async def test_prepare_first_team_request_routes_orphaned_ask_user_to_cold_resume(monkeypatch):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
     ask_answer_input = InteractiveInput()
@@ -4246,55 +4246,55 @@ async def test_process_team_message_stream_rejects_orphaned_interactive_input(mo
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
-        def is_runtime_active(session_id: str) -> bool:
+        async def wait_for_resumable_runtime(session_id: str, **_kwargs) -> bool:
             assert session_id == "sess-team-orphan-answer"
             return False
 
-        @staticmethod
-        def is_runtime_pending(session_id: str) -> bool:
-            assert session_id == "sess-team-orphan-answer"
-            return False
-
-        @staticmethod
-        def has_stream_task(session_id, *, generation: int | None = None) -> bool:
-            assert session_id == "sess-team-orphan-answer"
-            return False
-
-        @staticmethod
-        async def get_swarm_enriched_team_spec(**_kwargs):
-            pytest.fail("orphaned interactive inputs should not recreate team runtime")
-
-        @staticmethod
-        async def prepare_runtime_activation(*_args, **_kwargs):
-            pytest.fail("orphaned interactive inputs should not activate team runtime")
-
-        @staticmethod
-        async def interact(*_args, **_kwargs):
-            pytest.fail("orphaned interactive inputs cannot resume a missing runtime")
-
-    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
-
-    request = AgentRequest(
+    preparation = await team_helpers._prepare_first_team_request(
+        team_manager=_FakeManager(),
         session_id="sess-team-orphan-answer",
-        request_id="req-team-orphan-answer",
         channel_id="web",
-        metadata=None,
-        params={"mode": "team.plan", "source": "ask_user_interrupt"},
+        request_id="req-team-orphan-answer",
+        query=ask_answer_input,
+        allow_cold_ask_user_resume=True,
     )
 
-    chunks = []
-    async for chunk in team_helpers.process_team_message_stream(
-        request,
-        {"query": ask_answer_input},
-        object(),
-    ):
-        chunks.append(chunk)
+    assert preparation.error_chunks is None
+    assert preparation.recovered_runtime is False
+    assert preparation.query == ""
+    assert preparation.interrupt_input is ask_answer_input
 
-    assert chunks[0].payload == {
+
+@pytest.mark.anyio
+async def test_prepare_first_team_request_rejects_non_ask_user_interactive_input():
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    approval_input = InteractiveInput()
+    approval_input.update(
+        "exit_plan_mode_call_1",
+        {"approved": True, "auto_confirm": False, "feedback": ""},
+    )
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        async def wait_for_resumable_runtime(session_id: str, **_kwargs) -> bool:
+            assert session_id == "sess-team-orphan-approval"
+            return False
+
+    preparation = await team_helpers._prepare_first_team_request(
+        team_manager=_FakeManager(),
+        session_id="sess-team-orphan-approval",
+        channel_id="web",
+        request_id="req-team-orphan-approval",
+        query=approval_input,
+    )
+
+    assert preparation.interrupt_input is None
+    assert preparation.error_chunks is not None
+    assert preparation.error_chunks[0].payload == {
         "event_type": "chat.error",
         "error": "Team runtime is not active, please restart the task",
     }
-    assert chunks[-1].is_complete is True
 
 
 @pytest.mark.anyio
