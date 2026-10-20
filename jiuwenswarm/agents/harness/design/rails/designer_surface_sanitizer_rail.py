@@ -83,6 +83,10 @@ _KEEP_TOOL_NAMES: frozenset[str] = frozenset({
     "audio_transcription",
     "audio_question_answering",
     "audio_metadata",
+    # Web lookup (design profile tool group; paid_search self-gates on key).
+    "free_search",
+    "fetch_webpage",
+    "paid_search",
     # Base sys_operation support (user decision 2026-10-10).
     "list_files",
     "glob",
