@@ -504,6 +504,14 @@ class ReqMethod(Enum):
     RSI_HARNESS_VERSIONS_LIST = "rsi.harness.versions.list"
     RSI_HARNESS_ROLLBACK = "rsi.harness.rollback"
 
+    # Trajectory diagnosis: the Gateway proxies these to the Worker-hosted service
+    DIAGNOSIS_RUN = "diagnosis.run"
+    DIAGNOSIS_LIST = "diagnosis.list"
+    DIAGNOSIS_GET = "diagnosis.get"
+    DIAGNOSIS_CANCEL = "diagnosis.cancel"
+    DIAGNOSIS_DELETE = "diagnosis.delete"
+    DIAGNOSIS_TTSE_TRIGGER = "diagnosis.ttse.trigger"
+
     # Schedule task management
     SCHEDULE_CHECK_CONFIG = "schedule.check_config"
     SCHEDULE_UPDATE_CONFIG = "schedule.update_config"

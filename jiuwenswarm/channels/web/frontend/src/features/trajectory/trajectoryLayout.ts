@@ -18,7 +18,7 @@ export function shouldInsetTrajectoryForFloatingTasks(
   taskPanelExpanded: boolean,
 ): boolean {
   return (mode === 'agent' || mode === 'team')
-    && activeView === 'trajectory'
+    && (activeView === 'trajectory' || activeView === 'diagnosis')
     && taskPanelAvailable
     && !taskPanelHidden
     && !taskPanelExpanded;

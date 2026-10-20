@@ -1,0 +1,138 @@
+.row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: end;
+  padding: 8px 0 10px;
+  overflow: auto;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-1);
+  scrollbar-gutter: stable;
+  user-select: none;
+  touch-action: none;
+}
+
+.row[data-selectable='true'][data-disabled='false'] {
+  cursor: crosshair;
+}
+
+.label {
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 12px;
+  padding-right: 6px;
+  color: #8a8a8a;
+  font: var(--dsw-font-xxxs-11);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.plot {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bounds {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  height: 16px;
+  pointer-events: none;
+}
+
+.boundStart,
+.boundEnd,
+.selectionStart,
+.selectionEnd,
+.selectionCombined {
+  color: #000;
+  font: var(--dsw-font-xxxs-11);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+}
+
+.track {
+  position: relative;
+  height: 12px;
+  border-radius: 999px;
+  background: #e8e8e8;
+  pointer-events: none;
+}
+
+.track::before,
+.track::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  z-index: 2;
+  width: 6px;
+  height: 12px;
+  background: #a3a3a3;
+  pointer-events: none;
+}
+
+.track::before {
+  left: 0;
+  border-radius: 6px 0 0 6px;
+}
+
+.track::after {
+  right: 0;
+  border-radius: 0 6px 6px 0;
+}
+
+.selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: #a9c7f1;
+  pointer-events: none;
+}
+
+.selection::before,
+.selection::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  z-index: 1;
+  width: 4px;
+  height: 12px;
+  background: #1877ff;
+  pointer-events: none;
+}
+
+.selection::before {
+  left: 0;
+  border-radius: 4px 0 0 4px;
+}
+
+.selection::after {
+  right: 0;
+  border-radius: 0 4px 4px 0;
+}
+
+.selectionStart,
+.selectionEnd,
+.selectionCombined {
+  position: absolute;
+  bottom: 20px;
+  white-space: nowrap;
+}
+
+.selectionStart,
+.selectionCombined {
+  left: 0;
+  transform: translateX(-50%);
+}
+
+.selectionEnd {
+  right: 0;
+  transform: translateX(50%);
+}

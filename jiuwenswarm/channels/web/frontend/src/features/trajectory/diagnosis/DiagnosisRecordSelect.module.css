@@ -1,0 +1,230 @@
+.root {
+  display: flex;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.caption {
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  white-space: nowrap;
+}
+
+.field {
+  position: relative;
+  width: min(32rem, 100%);
+  min-width: 0;
+}
+
+.trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--color-border-input);
+  border-radius: 0.5rem;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  padding: 0.4375rem 0.75rem;
+  text-align: left;
+}
+
+.trigger:hover:not(:disabled) {
+  border-color: var(--color-border-hover);
+}
+
+.trigger:focus-visible,
+.triggerOpen {
+  border-color: var(--color-border-focus);
+  outline: 1px solid var(--color-border-focus);
+}
+
+.trigger:disabled {
+  color: var(--color-text-disabled);
+  cursor: default;
+}
+
+.placeholder {
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--color-text-secondary);
+}
+
+.time {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.label {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--color-text-secondary);
+}
+
+.triggerOpen .chevron {
+  transform: rotate(180deg);
+}
+
+.panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 0.25rem);
+  right: 0;
+  left: 0;
+  display: flex;
+  max-height: 20rem;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.5rem;
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-shadow-lg);
+  padding: 0.5rem;
+}
+
+.search {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--color-border-default);
+  color: var(--color-text-secondary);
+  padding: 0.25rem 0.5rem 0.5rem;
+}
+
+.search input {
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 0.8125rem;
+  outline: 0;
+}
+
+.search input::placeholder {
+  color: var(--color-text-secondary);
+}
+
+.list {
+  min-height: 0;
+  flex: 1 1 auto;
+  margin: 0.25rem 0 0;
+  overflow-y: auto;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.option {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  padding: 0.4375rem 0.5rem;
+}
+
+.optionActive {
+  background: var(--color-surface-hover);
+}
+
+.optionSelected .time {
+  font-weight: 600;
+}
+
+.delete {
+  display: inline-flex;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.delete:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-feedback-danger);
+}
+
+.delete:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.delete:focus-visible,
+.confirmButton:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 1px;
+}
+
+.confirm {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.25rem;
+}
+
+.confirmButton {
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.375rem;
+  background: var(--color-action-secondary);
+  color: var(--color-action-secondary-text);
+  cursor: pointer;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  padding: 0.125rem 0.5rem;
+}
+
+.confirmDanger {
+  color: var(--color-feedback-danger);
+}
+
+.empty {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  padding: 1rem 0.5rem;
+  text-align: center;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

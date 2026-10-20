@@ -194,6 +194,12 @@ interface ChatPanelProps {
    * 仅在停靠模式下回调；收起时上报 0。
    */
   onComposerHeightChange?: (height: number) => void;
+  /** 是否显示头部的“轨迹分析”入口（诊断视图）。 */
+  diagnosisEntryAvailable?: boolean;
+  /** 诊断视图当前是否打开，决定入口按钮的选中态。 */
+  diagnosisActive?: boolean;
+  /** 点击“轨迹分析”入口：打开诊断视图，再次点击回到对话。 */
+  onToggleDiagnosis?: () => void;
 }
 
 // 邀请指令只对 human_agent 成员存在（见 upsertHumanShareCommandFromEvent 的
@@ -1085,6 +1091,9 @@ export const ChatPanel = React.memo(function ChatPanel({
   composerCollapsed = false,
   onToggleComposerCollapsed,
   onComposerHeightChange,
+  diagnosisEntryAvailable = false,
+  diagnosisActive = false,
+  onToggleDiagnosis,
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
@@ -1859,6 +1868,19 @@ export const ChatPanel = React.memo(function ChatPanel({
             )}
           </div>
           <div className="chat-panel-header__actions" data-testid="chat-panel-header-actions">
+            {diagnosisEntryAvailable && onToggleDiagnosis && (
+              <button
+                type="button"
+                className={`chat-header-icon-btn ${diagnosisActive ? 'chat-header-icon-btn--active' : ''}`}
+                data-testid="chat-panel-header-diagnosis-toggle"
+                aria-pressed={diagnosisActive}
+                title={t('trajectory.diagnosis.entry')}
+                aria-label={t('trajectory.diagnosis.entry')}
+                onClick={onToggleDiagnosis}
+              >
+                <ClipboardList size={16} strokeWidth={2} aria-hidden />
+              </button>
+            )}
             {composerDockVisible && onToggleComposerCollapsed && (
               <button
                 type="button"

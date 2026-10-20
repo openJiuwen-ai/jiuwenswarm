@@ -928,6 +928,10 @@
         "title": "Enable trajectory UI",
         "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path."
       },
+      "trajectory_ui_diagnosis_enabled": {
+        "title": "Enable trajectory diagnosis",
+        "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically, with no need to enable the trajectory UI; only data recorded after it is turned on can be diagnosed."
+      },
       "team_organization_ui_enabled": {
         "title": "Enable Team Organization",
         "description": "Enable organization views and backend organization tools. Fully restart the backend and create a new session after changing this setting; existing organization tasks are not stopped immediately."
@@ -1036,6 +1040,181 @@
     "team": {
       "memberLanes": "Member trajectory lanes",
       "members": "Members"
+    },
+    "analysis": {
+      "back": "Back to chat",
+      "diagnose": "Diagnose trajectory",
+      "selection": {
+        "fullScope": "Entire trajectory",
+        "notePlaceholder": "Enter user feedback (optional)",
+        "cancel": "Cancel",
+        "start": "Start",
+        "starting": "Starting…",
+        "summary": "{{count}} agent(s) selected, {{nodes}} node(s)",
+        "emptyNodes": "The selection has no complete step to diagnose. Steps that are not fully covered were left out.",
+        "lastTurn": "The selection includes the main agent's last turn. Artifact evaluation and process-anomaly diagnosis will be attempted.",
+        "nodeLimit": "The selection contains {{count}} nodes, over the limit of {{limit}}. Narrow the range.",
+        "running": "A diagnosis is already in progress",
+        "noData": "There is no trajectory to diagnose yet"
+      },
+      "summary": "{{traces}} traces · {{spans}} OTel spans",
+      "toolbar": {
+        "scale": "Trajectory scale",
+        "time": "Time",
+        "equal": "Equal width",
+        "tokens": "Tokens",
+        "duration": "Duration",
+        "turns": "Turns",
+        "tools": "Tools",
+        "folds": "Turns/Tools",
+        "expandTurns": "Expand all turns",
+        "collapseTurns": "Collapse all turns",
+        "expandTools": "Expand all tool calls",
+        "collapseTools": "Collapse all tool calls",
+        "import": "Import",
+        "export": "Export",
+        "attribution": "Open-source attribution",
+        "search": "Search trajectory",
+        "searchPlaceholder": "Search by keyword"
+      },
+      "tabs": {
+        "aria": "Trajectory analysis sub-pages",
+        "trajectory": "Trajectory",
+        "diagnosis": "Diagnosis"
+      }
+    },
+    "diagnosis": {
+      "entry": "Trajectory analysis",
+      "noteLabel": "Note (optional)",
+      "fullScopeBusy": "The session is running; the full trajectory cannot be diagnosed",
+      "cancel": "Cancel diagnosis",
+      "selectionHint": "Drag a range on the time axis or any lane, and check the members to diagnose.",
+      "includeAgent": "Diagnose {{name}}",
+      "timeAxis": "Time axis",
+      "records": "Diagnosis records",
+      "noRecords": "No diagnosis yet",
+      "delete": "Delete",
+      "deleteConfirm": "Delete this diagnosis record?",
+      "scopeKind": {
+        "full": "Full trajectory",
+        "selection": "Selected range"
+      },
+      "status": {
+        "running": "Running",
+        "completed": "Completed",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "interrupted": "Interrupted"
+      },
+      "outletsPending": "Suggestions appear here once the diagnosis finishes",
+      "stageStatus": {
+        "pending": "Waiting",
+        "running": "Running",
+        "completed": "Done",
+        "failed": "Failed",
+        "skipped": "Skipped"
+      },
+      "rootCauses": "Findings",
+      "category": {
+        "skill_defect": "Skill defect",
+        "ttse_success": "Experience (succeeded)",
+        "ttse_partial": "Experience (partly done)",
+        "ttse_fail": "Experience (failed)",
+        "tool_or_env": "Tool or environment",
+        "model_capability": "Model capability",
+        "requirement_unclear": "Unclear requirement",
+        "other": "Other"
+      },
+      "confidence": "Confidence {{value}}%",
+      "highlight": "Highlight in trajectory",
+      "suggestions": "Diagnosis suggestions",
+      "noSuggestions": "This diagnosis has no actionable suggestions",
+      "details": "Diagnosis details",
+      "dismiss": "Dismiss",
+      "note": "Diagnosis note",
+      "object": "Diagnosis target",
+      "objectAgents": "Agents",
+      "objectFull": "Entire trajectory",
+      "objectTime": "Time",
+      "emptyHint": "No diagnosis yet. Select \"Diagnose trajectory\" at the top right to start.",
+      "loadingRecord": "Loading diagnosis…",
+      "plannedStage": {
+        "task_parse": "Parse task",
+        "diagnose": "Diagnose",
+        "attribute": "Attribute causes"
+      },
+      "recordSelect": {
+        "aria": "Diagnosis records",
+        "history": "Diagnosis history",
+        "placeholder": "Select a diagnosis",
+        "search": "Search by time or keyword",
+        "noMatch": "No matching diagnosis",
+        "confirmDelete": "Confirm delete",
+        "cancelDelete": "Cancel",
+        "deleteRunning": "A diagnosis in progress cannot be deleted"
+      },
+      "rewardDimensions": "{{count}} scored dimensions, {{perfect}} of them need no improvement; select a category to see its dimensions, the rest are broken down in the findings",
+      "rewardTotal": "Total {{score}}",
+      "artifactFix": "Artifact fix",
+      "skills": "Skill evolution",
+      "ttse": "Experience",
+      "fillInput": "Fill into composer",
+      "filled": "Filled into the composer",
+      "expandAll": "Show all",
+      "collapse": "Show less",
+      "signalTier": {
+        "perfect": "Met",
+        "fair": "Needs work",
+        "weak": "Not met"
+      },
+      "signalSource": {
+        "keyword_tool": "Tool output hit",
+        "keyword_user": "User message hit",
+        "reward": "Reward score"
+      },
+      "signalScore": "Score {{score}}",
+      "signalSurfacedAt": "Surfaced at {{nodes}}",
+      "causeAt": "At {{nodes}}",
+      "evidence": "Based on",
+      "findingsIssuesOnly": "{{issues}} issues",
+      "findingsIssuesAndExperience": "{{issues}} issues, plus {{experience}} experience verdict(s)",
+      "findingsExperienceOnly": "{{experience}} experience verdict(s)",
+      "requestCount": "{{count}} model requests",
+      "objectSteps": "Steps",
+      "objectStepsCount": "{{count}} trajectory steps",
+      "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
+      "objectTask": "Task",
+      "suggestionsUnfinished": "The diagnosis did not finish, so there are no suggestions",
+      "process": "Diagnosis process",
+      "processSteps": "{{count}} steps",
+      "triggerTtse": "Trigger experience generation",
+      "triggeringTtse": "Triggering…",
+      "ttseOutcome": {
+        "success": "Task completed",
+        "fail": "Task not completed",
+        "partial": "Task partly completed"
+      },
+      "ttseHint": "Extract reusable experience from this trajectory; TTSE generates and saves it in the background",
+      "ttseReady": "Experience available",
+      "skillFillPrefix": "Evolve the relevant skill according to the following suggestions:",
+      "ttseResult": {
+        "triggered": "Triggered; TTSE is generating and saving the experience in the background",
+        "failed": "Trigger failed"
+      },
+      "blocked": "Unavailable: {{reason}}",
+      "errors": {
+        "FEATURE_DISABLED": "Trajectory diagnosis is turned off",
+        "UNSUPPORTED_SESSION_MODE": "This session mode does not support diagnosis",
+        "SESSION_NOT_FOUND": "Session not found",
+        "DIAGNOSIS_ALREADY_RUNNING": "A diagnosis is already running",
+        "FULL_SCOPE_WHILE_BUSY": "The session is running; the full trajectory cannot be diagnosed",
+        "EMPTY_SCOPE": "No diagnosable steps in the selected range",
+        "MODEL_UNAVAILABLE": "Diagnosis model unavailable; configure a model first",
+        "AGENT_UNAVAILABLE": "Agent is unavailable",
+        "TTSE_NOT_SUPPORTED": "This session does not support TTSE experience generation",
+        "TTSE_UNAVAILABLE": "TTSE is not enabled for this session",
+        "default": "Operation failed"
+      }
     },
     "composer": {
       "collapse": "Collapse composer",
