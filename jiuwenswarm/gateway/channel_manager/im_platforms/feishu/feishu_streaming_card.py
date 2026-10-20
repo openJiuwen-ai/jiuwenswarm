@@ -9,6 +9,10 @@ from typing import Any
 
 import requests
 
+from jiuwenswarm.gateway.channel_manager.im_platforms.platform_adapter.streaming_session import (
+    StreamingSession,
+)
+
 
 FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
 TOKEN_REFRESH_MARGIN_SECONDS = 60
@@ -161,7 +165,26 @@ class FeishuCardKitClient:
         return data
 
 
-class FeishuStreamingSession:
+class _CardKitSurface:
+    """Address one CardKit card through the shared streaming session."""
+
+    def __init__(self, cardkit: FeishuCardKitClient) -> None:
+        self._cardkit = cardkit
+
+    async def open(self, text: str) -> str:
+        # A CardKit card is always created empty: its content element is filled
+        # by the first update, so there is nothing to do with ``text`` here.
+        del text
+        return await self._cardkit.create_card()
+
+    async def write(self, handle: str, text: str, sequence: int) -> None:
+        await self._cardkit.update_content(handle, text, sequence)
+
+    async def close(self, handle: str, text: str, sequence: int) -> None:
+        await self._cardkit.close_card(handle, text, sequence)
+
+
+class FeishuStreamingSession(StreamingSession):
     """Accumulate model output and update exactly one CardKit card."""
 
     def __init__(
@@ -171,93 +194,15 @@ class FeishuStreamingSession:
         *,
         debounce_ms: int = 150,
     ) -> None:
-        self._cardkit = cardkit
-        self._send_card = send_card
-        self._debounce_ms = debounce_ms
-        self._card_id = ""
-        self._text = ""
-        self._sequence = 0
-        self._closed = False
-        self._closing = False
-        self._flush_task: asyncio.Task[None] | None = None
-        self._write_lock = asyncio.Lock()
-
-    @property
-    def rendered_text(self) -> str:
-        return self._text
-
-    @property
-    def is_active(self) -> bool:
-        return bool(self._card_id) and not self._closed and not self._closing
-
-    async def start(self) -> None:
-        self._card_id = await self._cardkit.create_card()
-        try:
-            await self._send_card(
-                json.dumps({"type": "card", "data": {"card_id": self._card_id}})
-            )
-        except Exception:
-            try:
-                await self._cardkit.close_card(self._card_id, "", self._next_sequence())
-            except CardKitError:
-                pass
-            raise
-
-    def replace(self, text: str) -> None:
-        if self.is_active:
-            self._text = text
-            self._schedule_flush()
-
-    async def finalize(self, final_text: str = "") -> str:
-        if self._closed:
-            return self._text
-        self._closing = True
-        if final_text:
-            self._text = _merge_streamed_and_final(self._text, final_text)
-        if self._flush_task is not None:
-            await asyncio.shield(self._flush_task)
-        try:
-            await self._write_snapshot(self._text)
-            await self._cardkit.close_card(
-                self._card_id,
-                self._text,
-                self._next_sequence(),
-            )
-            return self._text
-        finally:
-            self._closed = True
-
-    def _schedule_flush(self) -> None:
-        if self._flush_task is None or self._flush_task.done():
-            self._flush_task = asyncio.create_task(self._flush_after_delay())
-
-    async def _flush_after_delay(self) -> None:
-        await asyncio.sleep(self._debounce_ms / 1000)
-        if self.is_active:
-            snapshot = self._text
-            await self._write_snapshot(snapshot)
-            if self.is_active and snapshot != self._text:
-                self._flush_task = None
-                self._schedule_flush()
-
-    async def _write_snapshot(self, text: str) -> None:
-        async with self._write_lock:
-            await self._cardkit.update_content(
-                self._card_id,
-                text,
-                self._next_sequence(),
+        async def announce(card_id: str) -> None:
+            # Creating the card does not show it to anyone; that takes an
+            # ordinary interactive message referencing the card id.
+            await send_card(
+                json.dumps({"type": "card", "data": {"card_id": card_id}})
             )
 
-    def _next_sequence(self) -> int:
-        self._sequence += 1
-        return self._sequence
-
-
-def _merge_streamed_and_final(streamed: str, final: str) -> str:
-    if not final.strip():
-        return streamed
-    if not streamed.strip() or final.startswith(streamed):
-        return final
-    if streamed.startswith(final):
-        return streamed
-    return final if len(final) >= len(streamed) else streamed
+        super().__init__(
+            _CardKitSurface(cardkit),
+            announce=announce,
+            debounce_ms=debounce_ms,
+        )
