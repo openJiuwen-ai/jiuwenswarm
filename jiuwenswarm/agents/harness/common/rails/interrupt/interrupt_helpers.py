@@ -595,6 +595,123 @@ def resolve_permission_workspace_dir() -> Path:
     return get_workspace_dir()
 
 
+_LEVEL_RANK = {"deny": 0, "ask": 1, "allow": 2}
+
+
+def _derive_user_overlay_delta(
+    permissions: dict[str, Any],
+    disk_bases: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """从 rail 整段合并 cfg diff 出 user 层增量键。
+
+    上游 rail 的 ``tools`` map 与 ``file_guard.paths`` 是生效全集（含全局
+    preset），persist_user_overlay_from_effective 只认增量键且该键历史上
+    无生产方（round-024 allow-always 假阳性落盘根因）。此处仅保留比磁盘
+    生效值更放行的项（棘轮），避免整段复制全局层到 user 层。
+    """
+    payload = dict(permissions)
+
+    # tools 增量：磁盘现值 = 各层 tools map + allow/ask/deny_tools 列表的棘轮合成
+    disk_tools: dict[str, str] = {}
+
+    def _fold_tool(tool: Any, level: str) -> None:
+        name = str(tool).strip()
+        if not name or level not in _LEVEL_RANK:
+            return
+        current = disk_tools.get(name)
+        if current is None or _LEVEL_RANK[level] > _LEVEL_RANK.get(current, 0):
+            disk_tools[name] = level
+
+    for base in disk_bases:
+        if not isinstance(base, dict):
+            continue
+        base_tools = base.get("tools")
+        if isinstance(base_tools, dict):
+            for name, level in base_tools.items():
+                _fold_tool(name, str(level).strip().lower())
+        for key, level in (
+            ("allow_tools", "allow"),
+            ("ask_tools", "ask"),
+            ("deny_tools", "deny"),
+        ):
+            values = base.get(key)
+            if isinstance(values, list):
+                for name in values:
+                    _fold_tool(name, level)
+    cfg_tools = permissions.get("tools")
+    if isinstance(cfg_tools, dict):
+        added_by_level: dict[str, list[str]] = {"allow": [], "ask": [], "deny": []}
+        for name, level in cfg_tools.items():
+            tool = str(name).strip()
+            value = str(level).strip().lower()
+            if not tool or value not in _LEVEL_RANK:
+                continue
+            current = disk_tools.get(tool)
+            # 未配置视为无基线（任何显式等级都是增量）；
+            # 已配置则仅放行方向放大项入增量
+            if current is not None and _LEVEL_RANK[value] <= _LEVEL_RANK[current]:
+                continue
+            added_by_level[value].append(tool)
+        if added_by_level["allow"]:
+            payload["_allow_tools_added"] = added_by_level["allow"]
+        for key in ("ask_tools", "deny_tools"):
+            if added_by_level[key.removesuffix("_tools")]:
+                # persist 侧按整表替换，先并上 user 层现值防丢
+                existing: list[str] = []
+                for base in disk_bases:
+                    if base is disk_bases[-1]:  # 末位为 user 层
+                        values = base.get(key)
+                        if isinstance(values, list):
+                            existing = [str(v) for v in values]
+                merged = existing + [
+                    n for n in added_by_level[key.removesuffix("_tools")] if n not in existing
+                ]
+                payload[key] = merged
+
+    # file_guard.paths 增量：按归一化 path 聚合磁盘生效轴值，仅轴放大项入增量
+    def _norm_path(value: Any) -> str:
+        return str(value or "").replace("\\", "/").rstrip("/")
+
+    disk_axes: dict[str, dict[str, int]] = {}
+    for base in disk_bases:
+        fg = base.get("file_guard") if isinstance(base, dict) else None
+        paths = fg.get("paths") if isinstance(fg, dict) else None
+        if not isinstance(paths, list):
+            continue
+        for entry in paths:
+            if not isinstance(entry, dict):
+                continue
+            key = _norm_path(entry.get("path"))
+            if not key:
+                continue
+            axes = disk_axes.setdefault(key, {})
+            for axis in ("read", "write", "exec"):
+                level = str(entry.get(axis) or "").strip().lower()
+                if level in _LEVEL_RANK:
+                    axes[axis] = max(axes.get(axis, 0), _LEVEL_RANK[level])
+    cfg_fg = permissions.get("file_guard")
+    cfg_paths = cfg_fg.get("paths") if isinstance(cfg_fg, dict) else None
+    if isinstance(cfg_paths, list):
+        added_paths = []
+        for entry in cfg_paths:
+            if not isinstance(entry, dict):
+                continue
+            key = _norm_path(entry.get("path"))
+            if not key:
+                continue
+            axes = disk_axes.get(key, {})
+            escalated = any(
+                _LEVEL_RANK.get(str(entry.get(axis) or "").strip().lower(), 0) > axes.get(axis, 0)
+                for axis in ("read", "write", "exec")
+            )
+            if escalated:
+                added_paths.append(entry)
+        if added_paths:
+            payload["_file_guard_paths_added"] = added_paths
+
+    return payload
+
+
 def build_permission_rail(
     config: dict[str, Any],
     llm: Any = None,
@@ -719,8 +836,36 @@ def build_permission_rail(
     )
     try:
         def _persist_allow_rule(permissions: dict[str, Any]) -> bool:
-            """永久允许：写入 user_permissions.yaml（pattern / file_guard / allow_tools）。"""
-            return persist_user_overlay_from_effective(permissions)
+            """永久允许：写入 user_permissions.yaml（pattern / file_guard / allow_tools）。
+
+            上游 rail 传整段合并 cfg（``tools`` map 与 ``file_guard.paths``
+            为生效全集），persist_user_overlay_from_effective 只认增量键
+            （``_file_guard_paths_added`` 全库无生产方，直传必落空段）。
+            此处按磁盘现值 diff 出真增量，仅棘轮放大项入 user 层。
+            """
+            try:
+                from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+                    get_shipped_template_permissions_config,
+                )
+                from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                    load_global_permissions,
+                    load_user_permissions,
+                )
+
+                disk_bases = [
+                    load_global_permissions(),
+                    get_shipped_template_permissions_config(),
+                    load_user_permissions(),
+                ]
+            except Exception:  # noqa: BLE001 — 底座读取失败退回直传
+                logger.warning(
+                    "[InterruptHelpers] persist_allow_rule disk base read failed",
+                    exc_info=True,
+                )
+                return persist_user_overlay_from_effective(dict(permissions))
+
+            payload = _derive_user_overlay_delta(permissions, disk_bases)
+            return persist_user_overlay_from_effective(payload)
 
         def _persist_session_allow_rule(permissions: dict[str, Any]) -> bool:
             """会话内记住：写入 session_permissions.yaml。"""
