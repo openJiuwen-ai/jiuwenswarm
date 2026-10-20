@@ -213,16 +213,20 @@ def resolve_configured_feishu_bindings(platform: str, app_id: str) -> tuple[Feis
 def resolve_feishu_access(
     _binding: FeishuBinding, event: FeishuInboundEvent
 ) -> AccessSnapshot:
-    """Record the Feishu principal without granting workspace scopes."""
+    """Record the Feishu principal and grant only selected-knowledge reads to direct messages."""
     from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot
+    from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_KNOWLEDGE_READ
 
     sender_type = str(event.sender_type or "unknown").strip().lower()
     sender_id = event.sender_app_id if sender_type in {"bot", "app", "agent"} and _present(event.sender_app_id) else event.sender_id
+    scope = {"chat"}
+    if event.chat_type == "p2p":
+        scope.add(WORKSPACE_KNOWLEDGE_READ)
     return AccessSnapshot(
         principal_ref=f"feishu:{sender_type}:{sender_id}",
-        startup_scope=frozenset({"chat"}),
-        source_scope=frozenset({"chat"}),
-        policy_revision="jm08-feishu-v1",
+        startup_scope=frozenset(scope),
+        source_scope=frozenset(scope),
+        policy_revision="jm08-feishu-v2",
     )
 
 

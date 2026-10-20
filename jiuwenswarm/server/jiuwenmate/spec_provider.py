@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import json
+import re
 from typing import Any, Literal, get_args, get_origin
 
 from pydantic import ValidationError
@@ -37,6 +39,7 @@ from openjiuwen.harness.persistent_agent import (
 HOST_OPEN_FEATURES: frozenset[str] = frozenset(
     {"construction", WORKSPACE_READ, WORKSPACE_WRITE, "window_management"}
 )
+_PUBLISHED_KNOWLEDGE_ROOT = re.compile(r"`(resources/knowledge/[a-f0-9]{16})/`")
 # How many earlier Executions one continuation may read. A deployment constant, not a per-request choice.
 CONTINUATION_CHAIN_LIMIT = 8
 
@@ -72,6 +75,7 @@ class ConfigSnapshot:
     spec_json: str
     fingerprint: str
     enabled_features: frozenset[str]
+    knowledge_root: str | None = None
 
     def load_spec(self) -> PersistentAgentSpec:
         """Revalidate the stored Spec and refuse it if it no longer hashes to the published fingerprint."""
@@ -85,6 +89,8 @@ class ConfigSnapshot:
             raise PersistentContractError("stored Spec does not match its fingerprint")
         if spec.enabled_features != self.enabled_features:
             raise PersistentContractError("stored Spec does not match its capability snapshot")
+        if self.knowledge_root is not None and f"`{self.knowledge_root}/`" not in spec.system_prompt:
+            raise PersistentContractError("stored Spec does not match its knowledge scope")
         return spec
 
     def to_dict(self) -> dict[str, Any]:
@@ -94,16 +100,31 @@ class ConfigSnapshot:
             "spec_json": self.spec_json,
             "fingerprint": self.fingerprint,
             "enabled_features": sorted(self.enabled_features),
+            "knowledge_root": self.knowledge_root,
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ConfigSnapshot:
         fields = dict(data)
         fields["enabled_features"] = frozenset(fields["enabled_features"])
+        if fields.get("knowledge_root") is None:
+            try:
+                prompt = json.loads(fields["spec_json"]).get("system_prompt", "")
+            except (KeyError, TypeError, ValueError):
+                prompt = ""
+            roots = set(_PUBLISHED_KNOWLEDGE_ROOT.findall(prompt)) if isinstance(prompt, str) else set()
+            if len(roots) == 1:
+                fields["knowledge_root"] = roots.pop()
         return cls(**fields)
 
 
-def publish_spec(agent_id: str, config_version: str, spec_fields: Mapping[str, Any]) -> ConfigSnapshot:
+def publish_spec(
+    agent_id: str,
+    config_version: str,
+    spec_fields: Mapping[str, Any],
+    *,
+    knowledge_root: str | None = None,
+) -> ConfigSnapshot:
     """Validate colleague configuration against core and freeze it as one version."""
     if not isinstance(agent_id, str) or not agent_id.strip():
         raise PersistentContractError("missing agent_id")
@@ -145,6 +166,7 @@ def publish_spec(agent_id: str, config_version: str, spec_fields: Mapping[str, A
         spec_json=spec.model_dump_json(),
         fingerprint=fingerprint,
         enabled_features=spec.enabled_features,
+        knowledge_root=knowledge_root,
     )
 
 

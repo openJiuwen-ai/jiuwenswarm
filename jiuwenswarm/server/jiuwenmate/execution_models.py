@@ -275,6 +275,18 @@ def build_execution_context(
     """Rebuild the immutable core identity of one Execution from host records."""
     if execution.request_id != request.request_id:
         raise PersistentContractError("Execution belongs to another Request")
+    startup_scope = request.access.startup_scope
+    source_scope = request.access.source_scope
+    if (
+        request.request_input.kind == "direct_message"
+        and request.access.principal_ref.startswith("feishu:")
+        and request.access.policy_revision == "jm08-feishu-v1"
+        and "chat" in startup_scope
+        and "chat" in source_scope
+    ):
+        # Recover only the direct-message permission for Requests persisted before JM-08-v2.
+        startup_scope = startup_scope | frozenset({"workspace_knowledge_read"})
+        source_scope = source_scope | frozenset({"workspace_knowledge_read"})
     try:
         return ExecutionContext(
             namespace_id=request.namespace_id,
@@ -286,8 +298,8 @@ def build_execution_context(
             config_version=request.config_version,
             config_fingerprint=request.config_fingerprint,
             principal_ref=request.access.principal_ref,
-            startup_scope=request.access.startup_scope,
-            source_scope=request.access.source_scope,
+            startup_scope=startup_scope,
+            source_scope=source_scope,
             policy_revision=request.access.policy_revision,
             capability_snapshot=capability_snapshot,
             recovery_ref=execution.recovery_ref,
