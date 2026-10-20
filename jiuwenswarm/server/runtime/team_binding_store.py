@@ -157,6 +157,7 @@ class TeamBindingStore:
         template_id: str,
         template_snapshot: dict[str, Any] | None = None,
         legacy: bool = False,
+        created_at: float | None = None,
     ) -> TeamBinding:
         normalized_name = validate_team_name(team_name)
         normalized_template = str(template_id or "").strip()
@@ -164,6 +165,11 @@ class TeamBindingStore:
             raise TeamBindingStoreError("template_id is required", code="BAD_REQUEST")
 
         now = time.time()
+        created = (
+            float(created_at)
+            if isinstance(created_at, (int, float)) and float(created_at) > 0
+            else now
+        )
         with self._lock:
             data = self._read_unlocked()
             if normalized_name in data:
@@ -171,7 +177,7 @@ class TeamBindingStore:
             binding = TeamBinding(
                 team_name=normalized_name,
                 template_id=normalized_template,
-                created_at=now,
+                created_at=created,
                 updated_at=now,
                 legacy=legacy,
                 template_snapshot=deepcopy(template_snapshot) if isinstance(template_snapshot, dict) else None,
@@ -325,3 +331,46 @@ def get_team_binding_store() -> TeamBindingStore:
             if _DEFAULT_STORE is None:
                 _DEFAULT_STORE = TeamBindingStore()
     return _DEFAULT_STORE
+
+
+def ensure_binding_for_entity(
+    entity: Any,
+    *,
+    store: TeamBindingStore | None = None,
+) -> TeamBinding | None:
+    """Backfill a binding from a persisted team entity when one is missing.
+
+    Heals the upgrade dead-state ``entity ∧ ¬binding``. Session linkage stays
+    empty until ``bind_session``; identity and template come from the entity.
+
+    The written binding is a normal (non-legacy) entry so ``team.bindings.list``
+    can enrich from the existing entity and keep the team selectable.
+    """
+    team_name = str(getattr(entity, "team_name", "") or "").strip()
+    template_id = str(getattr(entity, "template_id", "") or "").strip()
+    if not team_name or not template_id:
+        return None
+
+    binding_store = store or get_team_binding_store()
+    existing = binding_store.get(team_name)
+    if existing is not None:
+        return existing
+
+    template_snapshot = getattr(entity, "template_snapshot", None)
+    created_at = getattr(entity, "created_at", None)
+    try:
+        return binding_store.create(
+            team_name=team_name,
+            template_id=template_id,
+            template_snapshot=(
+                deepcopy(template_snapshot) if isinstance(template_snapshot, dict) else None
+            ),
+            created_at=float(created_at) if isinstance(created_at, (int, float)) else None,
+        )
+    except TeamBindingStoreError as exc:
+        if exc.code != "CONFLICT":
+            raise
+        raced = binding_store.get(team_name)
+        if raced is not None:
+            return raced
+        raise
