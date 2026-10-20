@@ -49,7 +49,12 @@ const [
   { webClient },
   { buildConversationModelPayload, isConversationModelGroupBlocked },
   { registerCreatedConversation, resetNewConversationRuntime, forgetCreatedConversation },
-  { buildModelGroupUpsertPayload },
+  {
+    buildModelGroupUpsertPayload,
+    findModelGroupReferencesForModel,
+    formatModelSelectionReferenceScopes,
+    extractModelSelectionReferences,
+  },
   { setMultiModelCollaborationEnabled, isMultiModelCollaborationEnabled },
   { ModelGroupDialog },
   { SettingsServicesProvider },
@@ -712,6 +717,57 @@ test('single-agent collaboration displays the group default while retaining a le
     assert.equal(byId('chat-panel-model-selector-group-option').getAttribute('aria-checked'), 'true');
     assert.deepEqual(useSessionStore.getState().getOutgoingModelParams(sessionId), {
       model_selection: { type: 'model_group', id: 'mgp-stable', route_id: 'rte-b' },
+    });
+  });
+});
+
+test('model delete reference warnings prefer display names over mgp_/mdl_ ids', () => {
+  const groups = [
+    {
+      model_group_id: 'mgp_hidden',
+      display_name: '编码模型池',
+      routes: [{ route_id: 'rte_a', model_id: 'mdl_a' }],
+    },
+  ];
+  const models = [{ model_id: 'mdl_a', alias: '主模型', model_name: 'gpt-test' }];
+  const refs = findModelGroupReferencesForModel('mdl_a', groups);
+  assert.deepEqual(refs, [{ scope: 'model_group', scope_id: 'mgp_hidden', label: '编码模型池' }]);
+  assert.equal(formatModelSelectionReferenceScopes(refs, models, groups), '编码模型池');
+  assert.equal(
+    formatModelSelectionReferenceScopes(
+      extractModelSelectionReferences({
+        payload: { references: [{ scope: 'model_group', scope_id: 'mgp_hidden', label: '编码模型池' }] },
+      }),
+      models,
+      groups,
+    ),
+    '编码模型池',
+  );
+});
+
+test('deleted model groups fall back to a default model instead of showing model_group_id', async (t) => {
+  const persisted = [];
+  t.mock.method(webClient, 'request', async (method, params) => {
+    assert.equal(method, 'session.selection.set');
+    persisted.push(params);
+    return { success: true };
+  });
+  await withFixture(async ({ mount, byId }) => {
+    setupStableCatalog();
+    setMultiModelCollaborationEnabled(true);
+    useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model_group', id: 'mgp-deleted' });
+    await act(async () => useSessionStore.getState().setAvailableModelGroups([]));
+    await mount(createElement(ChatModelSelector));
+    await act(async () => {});
+    assert.doesNotMatch(byId('chat-panel-model-selector-label').textContent, /mgp-deleted/);
+    assert.equal(byId('chat-panel-model-selector-label').textContent, 'Primary connection');
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, {
+      type: 'model',
+      id: 'mdl-a',
+    });
+    assert.deepEqual(persisted.at(-1), {
+      session_id: sessionId,
+      model_selection: { type: 'model', id: 'mdl-a' },
     });
   });
 });

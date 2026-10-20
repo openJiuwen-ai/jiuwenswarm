@@ -117,39 +117,6 @@ class TestBuildTuiSessionCreateChannelMetadata:
         assert build_tui_session_create_channel_metadata({}, resolved_project_dir="") is None
 
 
-class TestInitSessionMetadataChannelMetadata:
-    @pytest.fixture()
-    def sessions_dir(self, tmp_path, monkeypatch):
-        d = tmp_path / "sessions"
-        d.mkdir()
-        monkeypatch.setattr(
-            "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_agent_sessions_dir",
-            lambda: d,
-        )
-        from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import _METADATA_CACHE
-
-        _METADATA_CACHE.clear()
-        return d
-
-    def test_persists_channel_metadata_on_init(self, sessions_dir: Path):
-        from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import init_session_metadata
-
-        init_session_metadata(
-            session_id="tui_new",
-            channel_id="tui",
-            project_dir=r"E:\jiuwenswarm",
-            channel_metadata={
-                "project_dir": r"E:\jiuwenswarm",
-                "cwd": r"E:\jiuwenswarm",
-            },
-        )
-        data = json.loads(
-            (sessions_dir / "tui_new" / "metadata.json").read_text(encoding="utf-8")
-        )
-        assert data["project_dir"] == r"E:\jiuwenswarm"
-        assert data["channel_metadata"]["cwd"] == r"E:\jiuwenswarm"
-
-
 @pytest.mark.asyncio
 async def test_session_create_uses_server_allocated_project_path_for_resume(
     monkeypatch: pytest.MonkeyPatch,
@@ -166,10 +133,10 @@ async def test_session_create_uses_server_allocated_project_path_for_resume(
         "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_agent_sessions_dir",
+        "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
         lambda: sessions_root,
     )
-    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import _METADATA_CACHE
+    from jiuwenswarm.server.runtime.session.session_metadata import _METADATA_CACHE
 
     _METADATA_CACHE.clear()
 
@@ -184,7 +151,7 @@ async def test_session_create_uses_server_allocated_project_path_for_resume(
 
         async def send_request(self, env):
             self.requests.append(env)
-            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import init_session_metadata
+            from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
 
             init_session_metadata(
                 session_id="tui_6a601aa3_f4ed87",

@@ -333,49 +333,7 @@ class DesignTeamBridge:
         # teammate spec (same enriched-spec source the team chain uses;
         # idempotent — same session/mode/agent_group inputs), cached on the
         # design context for every later trigger.
-        if context.worker_base_spec is None:
-            try:
-                from jiuwenswarm.agents.harness.team import get_team_manager
-
-                team_manager = get_team_manager()
-                worker_spec = await team_manager.get_swarm_enriched_team_spec(
-                    session_id=session_id,
-                    mode=NEW_TEAM_DESIGN,
-                    agent_group_name=DESIGNER_AGENT_GROUP,
-                )
-                context.worker_base_spec = (
-                    worker_spec.agents.get("teammate") or worker_spec.agents.get("leader")
-                )
-                context.worker_build_context = worker_spec.build_context
-                context.team_name = worker_spec.team_name
-                # SDD-0030 expert table (2026-10-14): derived once from the
-                # same enriched spec — bare member names resolve against it
-                # in the engine (fail-closed), replacing the per-call
-                # spec_resolver path (dropped).
-                try:
-                    from jiuwenswarm.server.runtime.design.team_worker import (
-                        derive_design_expert_specs,
-                    )
-
-                    context.expert_specs = derive_design_expert_specs(worker_spec)
-                except Exception:
-                    # Without the group package the table stays empty: plain
-                    # workers keep running; agent_template names fail closed.
-                    logger.debug(
-                        "[DesignTeamBridge] expert table derivation failed: session_id=%s",
-                        session_id,
-                        exc_info=True,
-                    )
-                    context.expert_specs = {}
-            except Exception:
-                # Unit/ST environments run without a team manager; the worker
-                # path is simply unavailable for this round.
-                logger.debug(
-                    "[DesignTeamBridge] worker base spec unavailable: session_id=%s",
-                    session_id,
-                    exc_info=True,
-                )
-                context.worker_base_spec = None
+        await ensure_worker_base_spec(context, session_id)
         # Channel binding for tool-emitted canvas events: the authoring tool
         # (designer_graph_autorun) pushes its stage/graph frames on this
         # channel so they ride the same websocket as the chat stream.
@@ -390,10 +348,101 @@ class DesignTeamBridge:
         return _DesignRoundBindings(context, channel_id, session_id)
 
 
+async def ensure_worker_base_spec(context: Any, session_id: str) -> None:
+    """Derive the TeamWorkerBackend base spec onto a bound design context.
+
+    Idempotent — contexts that already carry a spec are left alone. Unit/ST
+    environments without a team manager simply keep the spec unset (the
+    worker path stays unavailable for that round).
+    """
+    if context.worker_base_spec is not None:
+        return
+    try:
+        from jiuwenswarm.agents.harness.team import get_team_manager
+
+        team_manager = get_team_manager()
+        worker_spec = await team_manager.get_swarm_enriched_team_spec(
+            session_id=session_id,
+            mode=NEW_TEAM_DESIGN,
+            agent_group_name=DESIGNER_AGENT_GROUP,
+        )
+        context.worker_base_spec = (
+            worker_spec.agents.get("teammate") or worker_spec.agents.get("leader")
+        )
+        context.worker_build_context = worker_spec.build_context
+        context.team_name = worker_spec.team_name
+        # SDD-0030 expert table (2026-10-14): derived once from the
+        # same enriched spec — bare member names resolve against it
+        # in the engine (fail-closed), replacing the per-call
+        # spec_resolver path (dropped).
+        try:
+            from jiuwenswarm.server.runtime.design.team_worker import (
+                derive_design_expert_specs,
+            )
+
+            context.expert_specs = derive_design_expert_specs(worker_spec)
+        except Exception:
+            # Without the group package the table stays empty: plain
+            # workers keep running; agent_template names fail closed.
+            logger.debug(
+                "[DesignTeamBridge] expert table derivation failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            context.expert_specs = {}
+    except Exception:
+        # Unit/ST environments run without a team manager; the worker
+        # path is simply unavailable for this round.
+        logger.debug(
+            "[DesignTeamBridge] worker base spec unavailable: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        context.worker_base_spec = None
+
+
+async def ensure_design_context(graph: Any) -> None:
+    """Bind a graph's design context when the in-process registry is cold.
+
+    The chat round's ``bind_round`` is the normal binder and the binding
+    lives for the whole process; a canvas rerun right after a server
+    restart reaches the run RPC with no chat turn behind it, so the
+    trigger would find no worker base spec. Bind from the graph's own
+    metadata (a graph serves one session) and derive the same spec
+    ``bind_round`` would have. Best-effort: a real setup failure still
+    surfaces as the coordinator's "not bound" RuntimeError.
+    """
+    from jiuwenswarm.server.runtime.design.context import (
+        get_design_context_registry,
+        get_graph_coordinator,
+    )
+    from jiuwenswarm.server.runtime.designer.graph_store import DesignerGraphStore
+
+    graph_id = str((graph or {}).get("graph_id") or "").strip()
+    session_id = str(((graph or {}).get("metadata") or {}).get("session_id") or "").strip()
+    if not graph_id or not session_id:
+        return
+    ensure_designer_agent_group_installed()
+    store = DesignerGraphStore()
+    registry = get_design_context_registry()
+    context = registry.for_graph(graph_id)
+    if context is None:
+        context = registry.bind(session_id, graph_id)
+    # Worker media assets land where the canvas keeps its outputs: the
+    # project directory, or the per-session workspace without a project.
+    coordinator = get_graph_coordinator(store, graph_id)
+    if coordinator.media_root is None:
+        from jiuwenswarm.server.runtime.designer.handlers.common import canvas_output_dir
+
+        coordinator.media_root = canvas_output_dir(graph)
+    await ensure_worker_base_spec(context, session_id)
+
+
 __all__ = [
     "DESIGNER_AGENT_GROUP",
     "activity_text",
     "DesignTeamBridge",
+    "ensure_design_context",
     "ensure_designer_agent_group_installed",
     "push_graph_update",
     "push_leader_activity",

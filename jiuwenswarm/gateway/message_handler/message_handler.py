@@ -3497,9 +3497,6 @@ class MessageHandler(ABC):
             if isinstance(request_metadata, dict)
             else ""
         )
-        from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-
-        is_agentos = is_agentos_routing_client(self.agent_client)
         owner_user_id = str(user_id or "").strip()
 
         async def _get_owned_job(job_id: str) -> dict[str, Any] | None:
@@ -3561,10 +3558,10 @@ class MessageHandler(ABC):
                 request_mode = self._stream_modes.get(request_id)
                 if request_mode:
                     params["mode"] = request_mode
-                # project 已在 AgentServer 的用户目录中完成解析；Gateway 侧目录
-                # 与用户目录隔离时，允许 controller 跳过其本地反查。
-                if is_agentos:
-                    params["_agentos_project_binding_verified"] = True
+                # A3g：agent 工具链路的 project 已由目标 AgentServer 在其目录
+                # 完成解析（CronTools 校验），controller 跳过本地反查——不再
+                # 区分 AgentOS/legacy，gateway 本地 project_store 反查已删除。
+                params["_agentos_project_binding_verified"] = True
                 data = await cc.create_job(params)
             elif action == "update":
                 job_id = str(params.get("job_id") or "")
@@ -3574,8 +3571,7 @@ class MessageHandler(ABC):
                 patch.pop("_auth_session", None)
                 if auth_session:
                     patch["_auth_session"] = auth_session
-                if is_agentos:
-                    patch["_agentos_project_binding_verified"] = True
+                patch["_agentos_project_binding_verified"] = True
                 data = await cc.update_job(job_id, patch)
             elif action == "delete":
                 job_id = str(params.get("job_id") or "")

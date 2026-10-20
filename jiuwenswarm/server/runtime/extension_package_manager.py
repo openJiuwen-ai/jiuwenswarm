@@ -1356,6 +1356,11 @@ def normalize_agent_group_display_identity(
 def resolve_agent_group_display_identity(name: Any) -> dict[str, Any] | None:
     """Resolve the stable catalog identity of an installed AgentGroup."""
     package_dir = resolve_agent_group_dir(name)
+    return _agent_group_display_identity_from_dir(package_dir)
+
+
+def _agent_group_display_identity_from_dir(package_dir: Path) -> dict[str, Any] | None:
+    """Read the display snapshot while the package body is still available."""
     manifest = _read_package_manifest(package_dir)
     if manifest is None:
         return None
@@ -4368,6 +4373,13 @@ def uninstall_agent_group(params: dict) -> None:
         kind=_AGENT_GROUP_KIND,
         kind_label="agent_group",
     )
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        preserve_agent_group_display_identity,
+    )
+
+    identity = _agent_group_display_identity_from_dir(pkg_dir)
+    if identity is not None:
+        preserve_agent_group_display_identity(package_id, identity)
     _rmtree(pkg_dir)
     remove_agent_group_marketplace_entry(package_id)
     if record is not None:

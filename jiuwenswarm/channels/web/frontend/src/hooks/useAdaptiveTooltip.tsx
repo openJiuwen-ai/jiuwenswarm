@@ -116,19 +116,31 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
     const height = el.offsetHeight;
     const { left, right, top, bottom } = state.buttonRect;
     const buttonWidth = right - left;
-    const maxLeft = window.innerWidth - VIEWPORT_MARGIN - width;
-    const viewportHeight = window.innerHeight;
+    // Modal <dialog> is top-layer; keep tips inside its box so overflow:hidden
+    // on form-dialog-surface does not clip them, and so body portals are not
+    // painted underneath the dialog.
+    const dialogRect = triggerRef.current?.closest('dialog')?.getBoundingClientRect();
+    const minTop = dialogRect ? dialogRect.top + VIEWPORT_MARGIN : VIEWPORT_MARGIN;
+    const maxBottom = dialogRect
+      ? dialogRect.bottom - VIEWPORT_MARGIN
+      : window.innerHeight - VIEWPORT_MARGIN;
+    const minLeft = dialogRect ? dialogRect.left + VIEWPORT_MARGIN : VIEWPORT_MARGIN;
+    const maxLeftBound = dialogRect
+      ? dialogRect.right - VIEWPORT_MARGIN
+      : window.innerWidth - VIEWPORT_MARGIN;
+    const maxLeft = Math.max(minLeft, maxLeftBound - width);
+    const viewportHeight = maxBottom;
     let finalTop: number;
     if (state.placement === 'right') {
-      finalTop = Math.max(VIEWPORT_MARGIN, Math.min(top + (bottom - top - height) / 2, viewportHeight - VIEWPORT_MARGIN - height));
+      finalTop = Math.max(minTop, Math.min(top + (bottom - top - height) / 2, viewportHeight - height));
     } else if (state.placement === 'top') {
       const topPos = top - TOOLTIP_GAP - height;
       const spaceBelow = viewportHeight - bottom - TOOLTIP_GAP;
-      finalTop = topPos >= VIEWPORT_MARGIN ? topPos : (spaceBelow >= height ? bottom + TOOLTIP_GAP : topPos);
+      finalTop = topPos >= minTop ? topPos : (spaceBelow >= height ? bottom + TOOLTIP_GAP : topPos);
     } else {
       const bottomPos = bottom + TOOLTIP_GAP;
-      const spaceAbove = top - TOOLTIP_GAP;
-      finalTop = bottomPos + height <= viewportHeight - VIEWPORT_MARGIN ? bottomPos : (spaceAbove >= height ? top - TOOLTIP_GAP - height : bottomPos);
+      const spaceAbove = top - TOOLTIP_GAP - minTop;
+      finalTop = bottomPos + height <= viewportHeight ? bottomPos : (spaceAbove >= height ? top - TOOLTIP_GAP - height : bottomPos);
     }
 
     let finalLeft: number;
@@ -137,23 +149,27 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
       const leftPos = left - TOOLTIP_GAP - width;
       finalLeft = rightPos <= maxLeft
         ? rightPos
-        : Math.max(VIEWPORT_MARGIN, Math.min(leftPos, maxLeft));
+        : Math.max(minLeft, Math.min(leftPos, maxLeft));
     } else if (align === 'left') {
-      finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(left, maxLeft));
+      finalLeft = Math.max(minLeft, Math.min(left, maxLeft));
     } else if (align === 'right') {
-      finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(right - width, maxLeft));
+      finalLeft = Math.max(minLeft, Math.min(right - width, maxLeft));
     } else {
       const shift = (buttonWidth * offsetPct) / 100;
       const centered = left + buttonWidth / 2 - width / 2 - shift;
-      if (centered < VIEWPORT_MARGIN) {
-        finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(left - shift, maxLeft));
+      if (centered < minLeft) {
+        finalLeft = Math.max(minLeft, Math.min(left - shift, maxLeft));
       } else if (centered > maxLeft) {
-        finalLeft = Math.min(Math.max(right - width - shift, VIEWPORT_MARGIN), maxLeft);
+        finalLeft = Math.min(Math.max(right - width - shift, minLeft), maxLeft);
       } else {
         finalLeft = centered;
       }
     }
-    setPosition({ top: finalTop + offsetY, left: finalLeft, visible: true });
+    setPosition({
+      top: Math.max(minTop, Math.min(finalTop + offsetY, viewportHeight - height)),
+      left: Math.max(minLeft, Math.min(finalLeft, maxLeft)),
+      visible: true,
+    });
   }, [state, offsetPct, offsetY, align]);
 
   useEffect(() => {
@@ -196,6 +212,7 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
     };
   }, [state]);
 
+  const portalHost = triggerRef.current?.closest('dialog') ?? document.body;
   const tooltip = state
     ? createPortal(
         <div
@@ -215,7 +232,7 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
         >
           {state.text}
         </div>,
-        containerRef?.current ?? document.body
+        containerRef?.current ?? portalHost,
       )
     : null;
 

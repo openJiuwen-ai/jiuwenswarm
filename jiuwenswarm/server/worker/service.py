@@ -14,7 +14,7 @@ import os
 import time
 from typing import Any
 
-from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN_DONE, PROTOCOL_VERSION
+from jiuwenswarm.server.ipc.protocol import IpcError, KIND_HELLO, KIND_SHUTDOWN_DONE, PROTOCOL_VERSION
 from jiuwenswarm.server.ipc.server import IpcServer
 from jiuwenswarm.server.ipc.stream import IpcConnection
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
@@ -96,8 +96,8 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
             except WorkerForceExit as exc:
                 fatal = exc
                 break
-            except (OSError, asyncio.IncompleteReadError):
-                logger.info("[Worker] supervisor disconnected; runtime stays resident")
+            except (OSError, asyncio.IncompleteReadError, IpcError) as exc:
+                logger.info("[Worker] supervisor disconnected; runtime stays resident: %r", exc)
                 await _retire_session(holder, dispatcher)
                 await conn.close()
                 continue

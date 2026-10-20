@@ -295,14 +295,12 @@ async def test_config_adapter_registers_resource_methods(catalog_state):
         assert response.ok, response.payload
 
 
-@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+# A3g：gateway.embedded.runtime 副本已删除，双侧对等校验收敛为 server 单侧。
+@pytest.mark.parametrize("runtime", ["server.runtime"])
 def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
-    if runtime == "server.runtime":
-        # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
-        store = import_module("jiuwenswarm.common.model_selection_store")
-    else:
-        store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
+    store = import_module("jiuwenswarm.common.model_selection_store")
     from jiuwenswarm.server.runtime.session.session_info import to_session_info
 
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
@@ -317,14 +315,12 @@ def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch, r
     assert to_session_info(latest)["model_selection"] == selection
 
 
-@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+# A3g：gateway.embedded.runtime 副本已删除，双侧对等校验收敛为 server 单侧。
+@pytest.mark.parametrize("runtime", ["server.runtime"])
 def test_model_selection_accepts_cron_session_id(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
-    if runtime == "server.runtime":
-        # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
-        store = import_module("jiuwenswarm.common.model_selection_store")
-    else:
-        store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
+    store = import_module("jiuwenswarm.common.model_selection_store")
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)
     session_id = "__cron___1a1231c0004_53dd13fcf709"
@@ -396,13 +392,26 @@ def test_resource_delete_ignores_session_references(catalog_state, monkeypatch):
     assert [entry["model_id"] for entry in catalog_state["models"]["defaults"]] == ["mdl_b"]
 
 
-def test_delete_keeps_model_group_routes_valid(catalog_state):
+def test_delete_model_prunes_group_routes_instead_of_failing(catalog_state):
     catalog_state["models"]["groups"] = [{
-        "model_group_id": "mgp_a", "routes": [{"route_id": "rte_a", "model_id": "mdl_a"}],
+        "model_group_id": "mgp_a",
+        "display_name": "Coding Pool",
+        "routes": [
+            {"route_id": "rte_a", "model_id": "mdl_a"},
+            {"route_id": "rte_b", "model_id": "mdl_b"},
+        ],
+    }, {
+        "model_group_id": "mgp_only_a",
+        "display_name": "Solo",
+        "routes": [{"route_id": "rte_c", "model_id": "mdl_a"}],
     }]
-    with pytest.raises(ModelSelectionError, match="references missing model_id"):
-        config_module.delete_model_resource("model", "mdl_a")
-    assert len(catalog_state["models"]["defaults"]) == 2
+    assert config_module.delete_model_resource("model", "mdl_a")
+    assert [entry["model_id"] for entry in catalog_state["models"]["defaults"]] == ["mdl_b"]
+    assert catalog_state["models"]["groups"] == [{
+        "model_group_id": "mgp_a",
+        "display_name": "Coding Pool",
+        "routes": [{"route_id": "rte_b", "model_id": "mdl_b"}],
+    }]
 
 
 def test_deleted_session_selection_uses_current_default(catalog_state, monkeypatch):

@@ -11,13 +11,12 @@ from jiuwenswarm.server.runtime.design.media_guarantee import MediaGuaranteeBack
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeResult
 
 
-@pytest.mark.parametrize("single", [True, False])
 @pytest.mark.parametrize("kind", ["image", "video"])
-async def test_handler_produces_assets_without_calling_an_agent(monkeypatch, tmp_path, single, kind):
+async def test_handler_produces_assets_without_calling_an_agent(monkeypatch, tmp_path, kind):
     node = {"id": "n_comfy", "type": kind, "config": {"delegate": "handler", "is_comfyui": True, "role": kind}}
     graph = {"graph_id": "g_handler", "nodes": [node], "edges": []}
     run = {"run_id": "run_handler", "node_states": {}}
-    bridge = DesignEventBridge(run, None, single=single, graph=graph)
+    bridge = DesignEventBridge(run, None, graph=graph)
     inner = SimpleNamespace(run=AsyncMock(side_effect=AssertionError("agent must not run")))
     suffix = "png" if kind == "image" else "mp4"
     (tmp_path / f"out.{suffix}").write_bytes(b"media" * 256)
@@ -36,8 +35,11 @@ async def test_handler_produces_assets_without_calling_an_agent(monkeypatch, tmp
     assert ctx.graph is graph
     assert ctx.run is run
     assert ctx.media_dir == tmp_path
-    field = "candidate_output_ref" if single else "output_ref"
-    assert run["node_states"]["n_comfy"][field] == ref
+    # Unified write: the handler's product lands in the node's current slots
+    # for every trigger type (no candidate fields anymore).
+    state = run["node_states"]["n_comfy"]
+    assert state["output_ref"] == ref
+    assert state["output_refs"] == [ref]
 
 
 async def test_handler_failure_is_reported_without_retrying_an_agent(monkeypatch):
@@ -58,26 +60,42 @@ async def test_handler_failure_is_reported_without_retrying_an_agent(monkeypatch
     assert run["node_states"]["n_comfy"]["error"] == "vLLM service unavailable"
 
 
-@pytest.mark.parametrize("team_bound", [False, True])
-async def test_coordinator_executes_real_comfyui_handler_and_repeats_single_node(monkeypatch, tmp_path, team_bound):
+async def test_coordinator_executes_real_comfyui_handler_and_repeats_single_node(monkeypatch, tmp_path):
     from jiuwenswarm.common.schema.designer_graph import normalize_execution_graph
-    from jiuwenswarm.server.runtime.design import context, run_coordinator, team_worker
-    from jiuwenswarm.server.runtime.design.worker_backend import DesignerWorkerBackend
+    from jiuwenswarm.server.runtime.design import run_coordinator, team_worker
     from jiuwenswarm.server.runtime.designer import graph_store
     from jiuwenswarm.server.runtime.designer.handlers import comfyui_nodes
 
-    for name in ("graphs", "runs", "journals", "workspace"):
+    for name in ("graphs", "runs", "workspace", "workflows"):
         (tmp_path / name).mkdir()
     monkeypatch.setattr(graph_store, "_graphs_dir", lambda: tmp_path / "graphs")
     monkeypatch.setattr(graph_store, "_runs_dir", lambda: tmp_path / "runs")
-    monkeypatch.setattr(run_coordinator, "_journal_dir", lambda _: tmp_path / "journals")
+    # Native swarmflow layout: journals / WAL / compiled scripts stay in the
+    # test tree instead of the owning team's session directory.
+    monkeypatch.setattr(run_coordinator, "workflow_run_dir", lambda *args: tmp_path / "workflows")
+    monkeypatch.setattr(
+        run_coordinator, "workflow_run_journal_path", lambda *args, **kwargs: tmp_path / "journal.jsonl"
+    )
+    monkeypatch.setattr(
+        run_coordinator, "workflow_run_wal_path", lambda *args, **kwargs: tmp_path / "wal.log"
+    )
     monkeypatch.setattr(comfyui_nodes, "graph_workspace_dir", lambda _: tmp_path / "workspace")
     for name in ("IMAGE_GEN_API_KEY", "IMAGE_GEN_API_BASE", "IMAGE_GEN_MODEL_NAME", "IMAGE_GEN_PROTOCOL"):
         monkeypatch.delenv(name, raising=False)
-    bound = SimpleNamespace(worker_base_spec=object(), expert_specs={}) if team_bound else None
-    monkeypatch.setattr(context, "get_design_context_registry", lambda: SimpleNamespace(for_graph=lambda _: bound))
-    worker = DesignerWorkerBackend(graph={"nodes": []}, run_id="unused_worker", spawner=None)
-    monkeypatch.setattr(worker, "run", AsyncMock(side_effect=AssertionError("agent must not run")))
+    # The legacy executor is gone: the coordinator only runs with a bound
+    # design context (the strict post-refactor contract). The registry name
+    # is imported into run_coordinator's own namespace, so patch there.
+    bound = SimpleNamespace(
+        worker_base_spec=object(),
+        worker_build_context=None,
+        expert_specs={},
+        team_name="ut_team",
+    )
+    monkeypatch.setattr(
+        run_coordinator, "get_design_context_registry",
+        lambda: SimpleNamespace(for_graph=lambda _: bound),
+    )
+    worker = SimpleNamespace(run=AsyncMock(side_effect=AssertionError("agent must not run")))
     monkeypatch.setattr(team_worker, "build_worker_backend", lambda **kwargs: worker)
     calls = []
 
@@ -94,6 +112,7 @@ async def test_coordinator_executes_real_comfyui_handler_and_repeats_single_node
     graph = normalize_execution_graph({
         "schema_version": "designer-execution-graph.v1", "graph_id": "g_comfy_engine",
         "project_id": "p_comfy_engine", "title": "ComfyUI handler",
+        "metadata": {"session_id": "ut_session"},
         "nodes": [{"id": "n_comfy", "type": "image", "config": {
             "is_comfyui": True, "role": "image", "delegate": "handler",
             "generate": {"prompt": "a red boat"},
@@ -104,7 +123,7 @@ async def test_coordinator_executes_real_comfyui_handler_and_repeats_single_node
     })
     store = graph_store.DesignerGraphStore()
     store.save_graph(graph)
-    coordinator = run_coordinator.RunCoordinator(store, graph["graph_id"], spawner=None, media_root=tmp_path)
+    coordinator = run_coordinator.RunCoordinator(store, graph["graph_id"], media_root=tmp_path)
     first = await coordinator.start(graph)
     assert first["status"] == "completed", first
     assert first["node_states"]["n_comfy"]["output_ref"]["uri"].endswith("generated-1.png")
@@ -113,8 +132,11 @@ async def test_coordinator_executes_real_comfyui_handler_and_repeats_single_node
     assert second["run_id"] == first["run_id"]
     state = second["node_states"]["n_comfy"]
     assert state["version"] == 2
-    assert state["output_ref"]["uri"].endswith("generated-1.png")
-    assert state["candidate_output_ref"]["uri"].endswith("generated-2.png")
+    # Single-node rerun: the fresh product replaces the current slots and the
+    # previous version is archived into history.
+    assert state["output_ref"]["uri"].endswith("generated-2.png")
+    assert state["output_refs"][0]["uri"].endswith("generated-2.png")
+    assert state["history"][-1]["output_ref"]["uri"].endswith("generated-1.png")
     assert len(calls) == 2
     assert all(call[1]["api_base"] == "http://omni.test/v1" for call in calls)
     worker.run.assert_not_called()

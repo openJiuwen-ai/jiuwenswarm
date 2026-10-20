@@ -2,6 +2,11 @@ import { useLayoutEffect, useRef } from 'react';
 import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import './HelpTips.css';
 
+/**
+ * Form-field "?" hint. Uses a portaled adaptive tooltip instead of the native
+ * `title` attribute so tips stay visible near modal dialog edges / scroll areas
+ * (see GitCode #5248).
+ */
 export function HelpTips({ content }: { content: string }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   // 表单可能位于 showModal 打开的 <dialog>（top layer）内，提示必须挂进 dialog 自身，
@@ -12,7 +17,12 @@ export function HelpTips({ content }: { content: string }) {
   }, []);
   // 不再依赖浏览器原生 title 提示（约 1 秒延迟、鼠标轻微移动即消失，表现为"有的区域能显示有的不能"），
   // 统一走 useAdaptiveTooltip：hover 立即显示并自动避让视口边缘。
-  const { tooltip, handlers } = useAdaptiveTooltip({ placement: 'top', containerRef });
+  const { tooltip, handlers } = useAdaptiveTooltip({
+    placement: 'top',
+    maxWidth: 320,
+    multiline: true,
+    containerRef,
+  });
   return (
     <button
       ref={buttonRef}

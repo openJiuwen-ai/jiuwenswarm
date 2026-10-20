@@ -1843,6 +1843,7 @@ class JiuWenSwarmDeepAdapter:
         self._model_request_config: ModelRequestConfig | None = None
         self._last_resolved_model: Model | None = None
         self._active_request_model: Model | None = None
+        self._context_model_binding: tuple[Any, Model, tuple[Any, ...]] | None = None
         self._selected_model_context_window_tokens: int | None = None
         self._config_base_cache: dict[str, Any] | None = None
         self._config_cache: dict[str, Any] = {}
@@ -8285,8 +8286,22 @@ class JiuWenSwarmDeepAdapter:
                 config.context_engine_config = context_config
                 context_engine = getattr(react_agent, "context_engine", None)
                 rebind_context_model = getattr(context_engine, "rebind_context_model", None)
+                binding = (
+                    context_config.model_dump(mode="python"),
+                    model.model_config.model_dump(mode="python"),
+                    model.model_client_config.model_dump(mode="python"),
+                    session_id,
+                )
+                previous_binding = getattr(self, "_context_model_binding", None)
+                unchanged = (
+                    previous_binding is not None
+                    and previous_binding[0] is context_engine
+                    and previous_binding[1] is model
+                    and previous_binding[2] == binding
+                )
                 rebound = 0
-                if callable(rebind_context_model):
+                if callable(rebind_context_model) and not unchanged:
+                    self._context_model_binding = None
                     rebound = rebind_context_model(
                         context_config,
                         session_id=session_id,
@@ -8294,7 +8309,12 @@ class JiuWenSwarmDeepAdapter:
                         model_config=model.model_config,
                         model_client_config=model.model_client_config,
                     )
-                logger.info(
+                    # Zero also means the contexts already match, or none have
+                    # been created yet. New contexts use the published config.
+                    # A partial failure must also invalidate the old snapshot.
+                    self._context_model_binding = (context_engine, model, binding)
+                log_binding = logger.debug if unchanged else logger.info
+                log_binding(
                     "[JiuWenSwarmDeepAdapter] synchronized context model=%s provider=%s "
                     "session_id=%s rebound_contexts=%s",
                     context_config.model_name,
