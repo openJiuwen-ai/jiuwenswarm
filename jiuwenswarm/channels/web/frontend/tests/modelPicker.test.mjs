@@ -32,6 +32,8 @@ try {
     vite.ssrLoadModule('/src/multi-session/state/newConversationLifecycle.ts'),
     vite.ssrLoadModule('/src/features/settings/modules/models/modelGroupAdapters.ts'),
     vite.ssrLoadModule('/src/features/multiModelCollaboration/featureConfig.ts'),
+    vite.ssrLoadModule('/src/features/settings/modules/models/ModelGroupDialog.tsx'),
+    vite.ssrLoadModule('/src/features/settings/services/SettingsServicesProvider'),
   ]);
 } finally {
   await vite.close();
@@ -54,6 +56,8 @@ const [
     extractModelSelectionReferences,
   },
   { setMultiModelCollaborationEnabled, isMultiModelCollaborationEnabled },
+  { ModelGroupDialog },
+  { SettingsServicesProvider },
 ] = modules;
 
 const resources = Object.fromEntries(
@@ -89,6 +93,8 @@ async function withFixture(run, language = 'en') {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'http://localhost/',
   });
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   if (!dom.window.ResizeObserver) {
     dom.window.ResizeObserver = class {
       observe() {}
@@ -763,5 +769,128 @@ test('deleted model groups fall back to a default model instead of showing model
       session_id: sessionId,
       model_selection: { type: 'model', id: 'mdl-a' },
     });
+  });
+});
+
+function groupEditor(models, routes, onSave, groupOverrides = {}) {
+  return createElement(
+    SettingsServicesProvider,
+    { isConnected: true, connectionState: 'connected', request: async () => ({}) },
+    createElement(ModelGroupDialog, {
+      models,
+      group: { display_name: 'Test group', routes, ...groupOverrides },
+      onClose() {},
+      onSave,
+    }),
+  );
+}
+
+function groupElement(action, variant) {
+  return document.querySelector(`[data-testid="settings-model-group-dialog-${action}"]${
+    variant ? `[data-variant="${variant}"]` : ''
+  }`);
+}
+
+test('model group dialog adds each configured model ID once, including identical display names', async () => {
+  await withFixture(async ({ mount, click }) => {
+    const saved = [];
+    const models = stableCatalog.map((model) => ({ ...model, alias: '' }));
+    await mount(groupEditor([
+      { model_id: 'free', model_name: 'free', is_free: true },
+      ...models,
+    ], [], async (payload) => saved.push(payload)));
+    await click(groupElement('add-route-btn'));
+    await click(groupElement('add-route-btn'));
+    assert.equal(groupElement('add-route-btn').disabled, true);
+    await click(groupElement('add-route-btn'));
+    assert.equal(document.querySelectorAll('[data-testid="settings-model-group-dialog-route-row"]').length, 2);
+    await click(groupElement('save-btn'));
+    assert.deepEqual(saved[0].routes.map((route) => route.model_id), ['mdl-a', 'mdl-b']);
+  });
+});
+
+test('model group dialog prevents flat-menu duplicates and releases a replaced model', async () => {
+  await withFixture(async ({ mount, click }) => {
+    const saved = [];
+    await mount(groupEditor([
+      ...stableCatalog, { model_id: 'mdl-c', model_name: 'Third connection' },
+    ], stableGroup.routes, async (payload) => saved.push(payload)));
+    await click(groupElement('route-row', 'rte-a').querySelector('button'));
+    assert.equal(groupElement('model-option', 'mdl-a').disabled, false);
+    assert.equal(groupElement('model-option', 'mdl-b').disabled, true);
+    await click(groupElement('model-option', 'mdl-c'));
+    await click(groupElement('route-row', 'rte-b').querySelector('button'));
+    assert.equal(groupElement('model-option', 'mdl-a').disabled, false);
+    assert.equal(groupElement('model-option', 'mdl-b').disabled, false);
+    assert.equal(groupElement('model-option', 'mdl-c').disabled, true);
+    await click(groupElement('save-btn'));
+    assert.deepEqual(saved[0].routes.map((route) => route.model_id), ['mdl-c', 'mdl-b']);
+  });
+});
+
+for (const plan of ['coding_plan', 'token_plan']) {
+  test(`model group dialog prevents duplicate selection in the ${plan} submenu`, async () => {
+    await withFixture(async ({ mount, click }) => {
+      const saved = [];
+      const models = ['a', 'b', 'c'].map((suffix) => ({
+        model_id: `mdl-${suffix}`, model_name: `Model ${suffix}`, vendor_key: 'zhipu', plan,
+      }));
+      await mount(groupEditor(models, stableGroup.routes, async (payload) => saved.push(payload)));
+      await click(groupElement('route-row', 'rte-a').querySelector('button'));
+      await click(groupElement('plan-option', `${plan}:zhipu`));
+      assert.equal(groupElement('plan-model-option', 'mdl-a').disabled, false);
+      assert.equal(groupElement('plan-model-option', 'mdl-b').disabled, true);
+      assert.equal(groupElement('plan-model-option', 'mdl-c').disabled, false);
+      await click(groupElement('plan-model-option', 'mdl-b'));
+      assert.equal(groupElement('plan-model-option', 'mdl-a').getAttribute('aria-checked'), 'true');
+      await click(groupElement('plan-model-option', 'mdl-c'));
+      await click(groupElement('save-btn'));
+      assert.deepEqual(saved[0].routes.map((route) => route.model_id), ['mdl-c', 'mdl-b']);
+    });
+  });
+}
+
+test('model group dialog only allows re-adding a legacy duplicate after its last route is deleted', async () => {
+  await withFixture(async ({ mount, click }) => {
+    const saved = [];
+    await mount(groupEditor(stableCatalog, [
+      ...stableGroup.routes,
+      { route_id: 'rte-a-second', model_id: 'mdl-a' },
+    ], async (payload) => saved.push(payload)));
+    assert.equal(groupElement('add-route-btn').disabled, true);
+    await click(groupElement('route-delete', 'rte-a'));
+    assert.equal(groupElement('add-route-btn').disabled, true);
+    await click(groupElement('route-row', 'rte-b').querySelector('button'));
+    assert.equal(groupElement('model-option', 'mdl-a').disabled, true);
+    await click(groupElement('route-delete', 'rte-a-second'));
+    assert.equal(groupElement('model-option', 'mdl-a').disabled, false);
+    assert.equal(groupElement('add-route-btn').disabled, false);
+    await click(groupElement('add-route-btn'));
+    assert.equal(groupElement('add-route-btn').disabled, true);
+    await click(groupElement('save-btn'));
+    assert.deepEqual(saved[0].routes.map((route) => route.model_id), ['mdl-b', 'mdl-a']);
+  });
+});
+
+test('model group dialog preserves existing duplicate route identities and overrides when saving', async () => {
+  await withFixture(async ({ mount, click }) => {
+    const saved = [];
+    const routes = [
+      ...stableGroup.routes,
+      { route_id: 'rte-a-second', model_id: 'mdl-a', enabled: false,
+        request_overrides: { temperature: 0.9 }, tpm: 1200, rpm: 10, timeout: 40 },
+    ];
+    await mount(groupEditor(stableCatalog, routes, async (payload) => saved.push(payload), {
+      model_group_id: 'mgp-stable', request_config: { temperature: 0.5 },
+    }));
+    await click(groupElement('route-row', 'rte-a-second').querySelector('button'));
+    assert.equal(groupElement('model-option', 'mdl-a').disabled, false);
+    assert.equal(groupElement('model-option', 'mdl-a').getAttribute('aria-checked'), 'true');
+    assert.equal(groupElement('model-option', 'mdl-b').disabled, true);
+    await click(groupElement('model-option', 'mdl-a'));
+    await click(groupElement('save-btn'));
+    assert.deepEqual(saved[0].routes, routes);
+    assert.equal(saved[0].model_group_id, 'mgp-stable');
+    assert.deepEqual(saved[0].request_config, { temperature: 0.5 });
   });
 });
