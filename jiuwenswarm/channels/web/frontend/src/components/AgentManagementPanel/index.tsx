@@ -1108,6 +1108,7 @@ export function AgentManagementPanel({
         setGroupCreateError(t('agentManagement.group.states.duplicateName'));
         return;
       }
+      const displayName = groupDraft.name.trim();
       const result = await groupClient.createGroup({
         ...groupDraft,
         id: groupDraft.id || deriveAgentGroupId(groupDraft.name),
@@ -1117,7 +1118,12 @@ export function AgentManagementPanel({
       setGroupMineQuery('');
       setMineKind('group');
       setView('mine');
-      showActionNotice(t('agentManagement.group.states.createSuccess', { id: result.id }));
+      // Toast must use the user-facing display name, not package id (#5470).
+      showActionNotice(
+        t('agentManagement.group.states.createSuccess', {
+          name: displayName || result.id,
+        }),
+      );
     } catch (error) {
       setGroupCreateError(formatActionError(error, t('agentManagement.group.form.saveError')));
     } finally {

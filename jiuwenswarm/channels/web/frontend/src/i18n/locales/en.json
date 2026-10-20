@@ -3577,7 +3577,7 @@
         "membersInvalid": "The Expert Team members are invalid. Choose a leader and distinct members.",
         "memberUnavailable": "A selected Expert is unavailable or not Team-compatible.",
         "packageValidationError": "Expert Team package validation failed: {{reason}}",
-        "createSuccess": "Expert Team package {{id}} was created.",
+        "createSuccess": "Expert Team \"{{name}}\" was created.",
         "uploadSuccess": "Expert Team package {{id}} was imported. Review it in My Expert Teams.",
         "uploadError": "Unable to import the Expert Team package. Check the file and try again.",
         "catalogEmpty": "No Expert Teams to show",
