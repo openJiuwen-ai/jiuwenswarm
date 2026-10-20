@@ -742,74 +742,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         # A remote non-AgentOS extension (for example YuanRong) also has an
         # isolated user directory.  Only the stock local WebSocket client may
         # use the historical shared-directory fallback.
-        legacy_shared_dir = is_legacy_shared_directory_client(real_client)
-
-        async def _rebind_from_shared_dir() -> None:
-            """Pre-AgentOS behavior, valid only when both processes share one dir."""
-            from jiuwenswarm.gateway.embedded.runtime.session.project_store import (
-                find_or_create_code_project_for_tui_params,
-            )
-            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import (
-                get_session_metadata,
-                rebind_session_project,
-            )
-
-            if not get_session_metadata(target):
-                await channel.send_response(
-                    ws, req_id, ok=False, error="session not found", code="NOT_FOUND"
-                )
-                return
-            try:
-                project = find_or_create_code_project_for_tui_params(
-                    {"project_dir": candidate_dir}
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[tui] session.rebind_project: resolve project failed: %s", exc
-                )
-                await channel.send_response(
-                    ws, req_id, ok=False, error=str(exc), code="PROJECT_RESOLVE_FAILED"
-                )
-                return
-            if project is None:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="project_dir must be a non-empty absolute path",
-                    code="BAD_REQUEST",
-                )
-                return
-            updated = rebind_session_project(
-                session_id=target,
-                project_id=project.project_id,
-                project_dir=project.project_dir,
-                work_mode=project.work_mode,
-            )
-            if not updated:
-                await channel.send_response(
-                    ws, req_id, ok=False, error="session not found", code="NOT_FOUND"
-                )
-                return
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=True,
-                payload={
-                    "session_id": target,
-                    "project_id": project.project_id,
-                    "project_dir": project.project_dir,
-                    "project_name": project.name,
-                    "work_mode": project.work_mode,
-                },
-            )
+        # A2g：legacy 本地 rebib 删除，统一走 E2A。
 
         # 与 e2a_proxy 的判定语义对齐：兼容/扩展 client 可能不暴露
         # ``server_ready``，缺省视为可达，只有显式 False 才视为不可达。
         if real_client is None or getattr(real_client, "server_ready", True) is False:
-            if legacy_shared_dir:
-                await _rebind_from_shared_dir()
-                return
             await channel.send_response(
                 ws, req_id, ok=False,
                 error="AgentServer is unavailable", code="SERVICE_UNAVAILABLE",
@@ -833,9 +770,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             logger.warning(
                 "[tui] session.rebind_project forward to agent failed: %s", exc
             )
-            if legacy_shared_dir:
-                await _rebind_from_shared_dir()
-                return
             await channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code="SERVICE_UNAVAILABLE",
             )
@@ -1976,14 +1910,13 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             is_agentos = is_agentos_routing_client(_resolve_agent_client(agent_client))
             # 共享目录单用户才可在 Gateway 读取 session metadata 补齐项目目录。
             # AgentOS 用户 session 不在 Gateway 部署目录，不能在这里作本地反查。
-            if (
-                is_legacy_shared_directory_client(_resolve_agent_client(agent_client))
-                and "project_dir" not in params
-                and session_id
-            ):
+            if "project_dir" not in params and session_id:
                 try:
-                    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
-                    meta = get_session_metadata(session_id, cache_bust=True)
+                    from jiuwenswarm.common.external_providers import provider
+
+                    meta = provider("session_metadata").get_session_metadata(
+                        session_id, cache_bust=True
+                    )
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")
                         if isinstance(pd, str) and pd.strip():
@@ -2147,7 +2080,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 return
             await channel.send_response(ws, req_id, ok=True, payload={"deleted": True})
         except Exception as exc:
-            from jiuwenswarm.gateway.embedded.runtime.session.lifecycle import LifecycleError
+            from jiuwenswarm.common.lifecycle_errors import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "INTERNAL_ERROR")
             logger.warning("[cron.job.delete] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=code)

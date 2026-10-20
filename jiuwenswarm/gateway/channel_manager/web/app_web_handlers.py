@@ -1792,26 +1792,6 @@ def _project_info_payload(
     }
 
 
-def _persist_media_locally(
-    data: bytes, safe_session_id: str, filename: str
-) -> tuple[bool, dict[str, Any]]:
-    """Write large media bytes directly to the shared user directory.
-
-    Used in legacy single-user mode where the AgentServer has no HTTP upload
-    listener.  The path matches ``media_attachments._store_image_item`` so the
-    AgentServer-side ``_persisted`` passthrough recognizes the file.
-    """
-    from jiuwenswarm.common.utils import get_agent_sessions_dir
-    from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import atomic_write_unique
-
-    try:
-        upload_dir = get_agent_sessions_dir() / safe_session_id / "uploads"
-        path = atomic_write_unique(upload_dir / filename, data)
-        return True, {"path": str(path)}
-    except Exception as exc:  # noqa: BLE001
-        return False, {"error": str(exc), "code": "UPLOAD_FAILED"}
-
-
 async def _upload_document_item_via_http(
     item: dict[str, Any],
     data: bytes,
@@ -1828,15 +1808,12 @@ async def _upload_document_item_via_http(
     返回带 ``_persisted`` 标记的落盘记录，AgentServer 侧直接透传、不重复解码。
     上传失败返回 ``None``（调用方保留原 base64 项）。
     """
-    from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
-    from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
+    from jiuwenswarm.common.attachment_safety import (
         is_forbidden_document,
-    )
-    from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
         safe_session_dirname,
         safe_upload_filename,
     )
+    from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
 
     filename = safe_upload_filename(
         str(item.get("filename") or f"document-{index + 1}"),
@@ -1847,20 +1824,17 @@ async def _upload_document_item_via_http(
         return None
     safe_session_id = safe_session_dirname(session_id)
     rel_path = f"agent/sessions/{safe_session_id}/uploads/{filename}"
-    if is_agentos_routing_client(agent_client):
-        ok, payload = await upload_file_bytes_via_e2a(
-            data,
-            rel_path,
-            agent_client=agent_client,
-            user_id=user_id,
-            channel_id="web",
-            session_id=session_id,
-        )
-    else:
-        # Legacy single-user mode: the AgentServer has no HTTP upload listener.
-        # Write directly to the shared user directory using the same path the
-        # AgentServer ``_store_document_item`` would use.
-        ok, payload = _persist_media_locally(data, safe_session_id, filename)
+    # A1g：legacy/AgentOS 统一走 E2A 分块上传（FILE_UPLOAD_CHUNK 由
+    # WorkspaceFileAdapter 处理，任意 AgentServer 形态可用；旧分支的
+    # "AgentServer 无 HTTP 上传监听"是 HTTP bridge 时代的前提，已不成立）。
+    ok, payload = await upload_file_bytes_via_e2a(
+        data,
+        rel_path,
+        agent_client=agent_client,
+        user_id=user_id,
+        channel_id="web",
+        session_id=session_id,
+    )
     if not ok:
         logger.warning("[document.persist] 大文档上传失败: %s", payload.get("error"))
         return None
@@ -1893,9 +1867,7 @@ async def _pre_persist_large_documents(
     可能超内部 WS 帧限制。
     """
     from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
-    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
-        _strip_data_uri_prefix,
-    )
+    from jiuwenswarm.common.attachment_safety import strip_data_uri_prefix as _strip_data_uri_prefix
 
     try:
         base_payload = {k: v for k, v in params.items() if k not in ("documents", "media_items")}
@@ -1969,19 +1941,19 @@ async def _upload_media_item_via_http(
     （``agent/sessions/<safe_session_id>/uploads/<safe_filename>``，同名去重）。
     上传失败返回 ``None``（调用方保留原 base64 项，由下游链路处理）。
     """
-    from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
-    from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-    from jiuwenswarm.gateway.embedded.runtime.attachments import media_attachments as _ma
-    from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
+    from jiuwenswarm.common.attachment_safety import (
+        ensure_image_upload_filename,
+        image_suffix_for_mime,
         safe_session_dirname,
         safe_upload_filename,
     )
+    from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
 
     mime_type = str(item.get("mimeType") or item.get("mime_type") or "").lower().strip()
-    suffix = _ma.image_suffix_for_mime(mime_type)
+    suffix = image_suffix_for_mime(mime_type)
     if suffix is None:
         return None
-    filename = _ma.ensure_image_upload_filename(
+    filename = ensure_image_upload_filename(
         safe_upload_filename(
             str(item.get("filename") or f"image-{index + 1}{suffix}"),
             fallback=f"image-{index + 1}{suffix}",
@@ -1990,23 +1962,15 @@ async def _upload_media_item_via_http(
     )
     safe_session_id = safe_session_dirname(session_id)
     rel_path = f"agent/sessions/{safe_session_id}/uploads/{filename}"
-    if is_agentos_routing_client(agent_client):
-        ok, payload = await upload_file_bytes_via_e2a(
-            data,
-            rel_path,
-            agent_client=agent_client,
-            user_id=user_id,
-            channel_id="web",
-            session_id=session_id,
-        )
-    else:
-        # Legacy single-user mode: the AgentServer has no HTTP upload
-        # listener (its upload endpoint would be on ws_port+1, which is
-        # never started).  Write directly to the shared user directory
-        # using the same path the AgentServer ``_store_image_item`` would
-        # use, avoiding a doomed HTTP attempt that always fails with
-        # ConnectionRefused.
-        ok, payload = _persist_media_locally(data, safe_session_id, filename)
+    # A1g：同 document.persist——统一 E2A 分块上传，legacy 不再本地写盘。
+    ok, payload = await upload_file_bytes_via_e2a(
+        data,
+        rel_path,
+        agent_client=agent_client,
+        user_id=user_id,
+        channel_id="web",
+        session_id=session_id,
+    )
     if not ok:
         logger.warning("[media.persist] 大图上传失败: %s", payload.get("error"))
         return None
@@ -2035,9 +1999,7 @@ async def _pre_persist_large_media(
     import json as _json
 
     from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
-    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
-        _strip_data_uri_prefix,
-    )
+    from jiuwenswarm.common.attachment_safety import strip_data_uri_prefix as _strip_data_uri_prefix
 
     try:
         base_payload = {k: v for k, v in params.items() if k != "media_items"}
@@ -2348,8 +2310,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _session_selection_set(ws, req_id, params, session_id):
         from jiuwenswarm.common.model_selection import ModelSelection
-        from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver
-        from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import set_session_model_selection
+        from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
+        from jiuwenswarm.common.model_selection_store import set_session_model_selection
         try:
             target = str((params or {}).get("session_id") or session_id or "")
             selection = ModelSelection.model_validate((params or {}).get("model_selection"))
@@ -2790,34 +2752,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
         real_client = _resolve(agent_client)
-        # Only the default local WebSocket client shares Gateway's directory.
-        # Other extension clients may be remote; never substitute deployment
-        # state for their user state when they are unavailable.
-        if (
-            is_legacy_shared_directory_client(real_client)
-            and not getattr(real_client, "server_ready", True)
-        ):
-            from jiuwenswarm.gateway.embedded.runtime.parse_int import parse_int_param
-            from jiuwenswarm.gateway.embedded.runtime.session.session_info import to_session_info
-            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_all_sessions_metadata
-
-            raw_params = params if isinstance(params, dict) else {}
-            limit = parse_int_param(raw_params, "limit", 20, minimum=1, maximum=200)
-            offset = parse_int_param(raw_params, "offset", 0, minimum=0, maximum=10**9)
-            sessions, total = get_all_sessions_metadata(limit=limit, offset=offset)
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=True,
-                payload={
-                    "sessions": [to_session_info(item) for item in sessions],
-                    "total": total,
-                    "limit": limit,
-                    "offset": offset,
-                },
-            )
-            return
-
+        # A2g：legacy 本地列表删除，统一走 E2A（SESSION_LIST 由
+        # session_adapter 处理；不可达即报错，与 PR-1R 已接受语义一致）。
         await proxy_unary_request(
             channel=channel,
             agent_client=real_client,
@@ -2944,25 +2880,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
 
         real_client = _resolve(agent_client)
-        # Only the default local WebSocket client shares the Gateway directory.
-        if (
-            is_legacy_shared_directory_client(real_client)
-            and not getattr(real_client, "server_ready", True)
-        ):
-            from jiuwenswarm.gateway.embedded.runtime.session.session_rename import apply_session_rename
-
-            ok, payload, error, code = apply_session_rename(
-                params if isinstance(params, dict) else {},
-                session_id,
-                init_channel_id=channel.channel_id,
-            )
-            await channel.send_response(
-                ws, req_id, ok=ok, payload=payload or {},
-                error=None if ok else error or "session.rename failed",
-                code=None if ok else code,
-            )
-            return
-
+        # A2g：legacy 本地 rename 删除，统一走 E2A。
         await proxy_unary_request(
             channel=channel,
             agent_client=real_client,
@@ -2988,29 +2906,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
         real_client = _resolve(agent_client)
-        if (
-            is_legacy_shared_directory_client(real_client)
-            and not getattr(real_client, "server_ready", True)
-        ):
-            raw_params = params if isinstance(params, dict) else {}
-            sid = raw_params.get("session_id")
-            pinned = raw_params.get("pinned")
-            if not isinstance(sid, str) or not sid.strip():
-                await channel.send_response(ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST")
-                return
-            if not isinstance(pinned, bool):
-                await channel.send_response(ws, req_id, ok=False, error="pinned must be boolean", code="BAD_REQUEST")
-                return
-            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import set_session_pinned
-
-            result = await asyncio.to_thread(set_session_pinned, sid.strip(), pinned)
-            if result is None:
-                await channel.send_response(ws, req_id, ok=False, error="session not found", code="NOT_FOUND")
-                return
-            new_pinned, new_order = result
-            await channel.send_response(ws, req_id, ok=True, payload={"pinned": new_pinned, "pin_order": new_order})
-            return
-
+        # A2g：legacy 本地 pin 删除，统一走 E2A。
         await proxy_unary_request(
             channel=channel,
             agent_client=real_client,
@@ -4887,14 +4783,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # AgentOS 下 metadata 在目标 AgentServer 用户目录，Gateway 读部署目录会
             # 误把任务归到默认项目；缺省时让目标 AgentServer / 显式 project_id 决定。
             # 注意：显式传空串 "" 等价于归默认项目，不可覆盖——用 key presence 区分。
-            if (
-                is_legacy_shared_directory_client(_resolve(agent_client))
-                and "project_dir" not in params
-                and session_id
-            ):
+            if "project_dir" not in params and session_id:
+                # A2g：经注入点读 metadata（AgentServer 侧写入），不再
+                # 直读 gateway 本地文件
                 try:
-                    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
-                    meta = get_session_metadata(session_id, cache_bust=True)
+                    from jiuwenswarm.common.external_providers import provider
+
+                    meta = provider("session_metadata").get_session_metadata(
+                        session_id, cache_bust=True
+                    )
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")
                         if isinstance(pd, str) and pd.strip():
@@ -5057,7 +4954,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             deleted = await cc.delete_job(job_id)
         except Exception as exc:
-            from jiuwenswarm.gateway.embedded.runtime.session.lifecycle import LifecycleError
+            from jiuwenswarm.common.lifecycle_errors import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
             await channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code=code

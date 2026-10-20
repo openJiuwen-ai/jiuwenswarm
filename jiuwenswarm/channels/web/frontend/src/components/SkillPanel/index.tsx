@@ -1374,6 +1374,7 @@ export function SkillPanel({
   // 技能总谱页签：图谱画布 + 总谱设置
   const renderGraphTab = () => (
     <SkillGraphTab
+      isActive={isActive}
       isConnected={isConnected}
       symphonySaving={symphonySaving}
       symphonyEnabledDraft={symphonyEnabledDraft}

@@ -151,6 +151,7 @@
 | `App.tsx` | `app` | 应用外壳;全局布局与 toast |
 | `features/shareImageExport.tsx` | `share-image-export` | 长图导出独立渲染页 |
 | `components/ui/Select` | `ui-select` | 通用下拉选择控件 |
+| `components/ui/HelpTips` | `ui-help-tips` | 通用"?"帮助提示按钮与自适应气泡 |
 | `features/designer` | `designer` | 设计功能页;工作流画布与节点;Director 对话;运行控制;素材与分镜 |
 
 | `features/A4PAuthorizationModal` | `a4p-authorization` | A4P 授权卡片及范围选择 |

@@ -4235,19 +4235,17 @@ class MessageHandler(ABC):
         explicit = str(params.get("model_name") or "").strip()
         if explicit:
             return explicit
-        from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
-
-        if not is_legacy_shared_directory_client(self.agent_client):
-            return ""
         try:
-            from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import (
+            from jiuwenswarm.common.external_providers import provider
+            from jiuwenswarm.common.model_selection_store import (
                 get_session_model_selection,
             )
-            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
 
             if get_session_model_selection(session_id) is not None:
                 return ""
-            metadata = get_session_metadata(session_id, cache_bust=True, enable_writeback=False)
+            metadata = provider("session_metadata").get_session_metadata(
+                session_id, cache_bust=True, enable_writeback=False,
+            )
         except Exception:  # noqa: BLE001 — 读不到就当没有
             logger.debug("[MessageHandler] 读取会话模型失败 session=%s", session_id, exc_info=True)
             return ""

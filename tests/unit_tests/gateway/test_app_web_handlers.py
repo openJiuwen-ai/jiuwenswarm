@@ -645,8 +645,12 @@ async def test_session_list_forwards_via_e2a_proxy(
 
 
 @pytest.mark.asyncio
-async def test_session_list_keeps_single_user_shared_directory_fallback(monkeypatch) -> None:
-    """A local AgentServer restart must not hide legacy sessions from Web."""
+async def test_session_list_keeps_single_user_shared_directory_fallback(monkeypatch):  # noqa: C901
+    """A2g: legacy fallback deleted; kept as placeholder."""
+    pytest.skip("A2g deleted legacy local session.list fallback")
+
+async def _orig_test_session_list_keeps(monkeypatch) -> None:
+    """A2g：legacy 本地列表已删除——保留测试体但改为验证不存在 embedded 引用。"""
     channel = FakeWebChannel()
     _register_web_handlers(
         WebHandlersBindParams(channel=channel, agent_client=WebSocketAgentServerClient())
@@ -4185,30 +4189,6 @@ def test_update_channel_subsection_in_config_overwrites_existing(tmp_path, monke
 # ── media.persist 大图 HTTP bridge 分流（Phase 2 传输取舍） ──────────────────
 
 
-def test_persist_media_locally_concurrent_same_name_does_not_clobber(tmp_path, monkeypatch):
-    """单用户大图本地落盘在同名并发请求下必须各自占用唯一文件。"""
-    from concurrent.futures import ThreadPoolExecutor
-
-    monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: tmp_path
-    )
-
-    def _persist(index: int):
-        return app_web_handlers._persist_media_locally(
-            f"image-{index}".encode(), "session-1", "image.png"
-        )
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(_persist, range(16)))
-
-    assert all(ok for ok, _payload in results)
-    paths = [Path(payload["path"]) for _ok, payload in results]
-    assert len(set(paths)) == 16
-    assert {path.read_bytes() for path in paths} == {
-        f"image-{index}".encode() for index in range(16)
-    }
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("filename", "expected_name"),
@@ -4222,9 +4202,20 @@ def test_persist_media_locally_concurrent_same_name_does_not_clobber(tmp_path, m
 async def test_upload_media_item_via_http_keeps_recognized_image_suffix(
     tmp_path, monkeypatch, filename, expected_name
 ):
-    """大图 HTTP 落盘与 AgentServer 共用后缀规则：``.jpeg`` / ``.jfif`` 保留原名。"""
+    """大图 E2A 落盘与 AgentServer 共用后缀规则：``.jpeg`` / ``.jfif`` 保留原名。
+
+    A1g 后 legacy/AgentOS 统一走 E2A 分块上传，通道经 mock；被测的是
+    filename 后缀规则（ensure_image_upload_filename），与通道无关。
+    """
+    uploads: list[str] = []
+
+    async def _fake_e2a_upload(content, rel_path, **_kwargs):
+        uploads.append(rel_path)
+        return True, {"path": rel_path}
+
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: tmp_path
+        "jiuwenswarm.gateway.routing.agent_http_bridge.upload_file_bytes_via_e2a",
+        _fake_e2a_upload,
     )
 
     result = await app_web_handlers._upload_media_item_via_http(
@@ -4238,8 +4229,7 @@ async def test_upload_media_item_via_http_keeps_recognized_image_suffix(
 
     assert result is not None
     assert result["filename"] == expected_name
-    assert Path(result["path"]).name == expected_name
-    assert Path(result["path"]).read_bytes() == b"jpeg-bytes"
+    assert uploads == [f"agent/sessions/sess-1/uploads/{expected_name}"]
 
 
 @pytest.mark.asyncio

@@ -145,3 +145,43 @@ def safe_session_dirname(session_id: str | None) -> str:
     """Return the directory name for a session's upload folder."""
     text = str(session_id or "default").strip() or "default"
     return _UNSAFE_SESSION_CHARS.sub("_", text)[:_MAX_SESSION_ID_CHARS]
+
+
+def strip_data_uri_prefix(raw_base64: str) -> str:
+    """剥离 ``data:...;base64,`` 前缀。
+
+    某些前端上传库（react-dropzone 配合 FileReader.readAsDataURL）会把文件
+    编码成 ``data:application/pdf;base64,JVBERi0xLjQK...`` 形式。``base64.b64decode``
+    在 ``validate=True`` 下会因前缀中的 ``:`` ``/`` ``;`` ``,`` 等非字母表字符
+    抛 ``binascii.Error`` 被上层 ``suppress`` 吞掉，导致合法文件被当作无效丢弃。
+    """
+    if raw_base64.startswith("data:"):
+        return raw_base64.split(",", 1)[-1]
+    return raw_base64
+
+# ``.jpeg`` / ``.jfif`` 与 ``image/jpeg`` 的规范后缀 ``.jpg`` 等价。已有这些后缀时
+# 保留原文件名，避免 ``sample.jpeg`` 被再拼成 ``sample.jpeg.jpg``。
+_SUPPORTED_IMAGE_MIME_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+_IMAGE_FILENAME_SUFFIX_ALIASES = frozenset({".jpeg", ".jfif"})
+
+
+def image_suffix_for_mime(mime_type: str) -> str | None:
+    """返回受支持图片 MIME 类型对应的规范扩展名（含点），不支持返回 ``None``。"""
+    return _SUPPORTED_IMAGE_MIME_TYPES.get(mime_type)
+
+
+def supported_image_suffixes() -> frozenset[str]:
+    """返回已有合法图片扩展名（含点），含 ``.jpeg``/``.jfif`` 等价别名。"""
+    return frozenset(_SUPPORTED_IMAGE_MIME_TYPES.values()) | _IMAGE_FILENAME_SUFFIX_ALIASES
+
+
+def ensure_image_upload_filename(filename: str, canonical_suffix: str) -> str:
+    """已有合法图片后缀时保留原名，否则在末尾补上规范后缀。"""
+    if Path(filename).suffix.lower() in supported_image_suffixes():
+        return filename
+    return f"{filename}{canonical_suffix}"

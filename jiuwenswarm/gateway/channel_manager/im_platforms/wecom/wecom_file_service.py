@@ -19,9 +19,6 @@ from loguru import logger
 from jiuwenswarm.gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
-from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
-    atomic_write_unique,
-)
 
 
 # 文件魔数映射（用于格式检测）
@@ -143,20 +140,9 @@ class WecomFileService:
                 raise
             except Exception as exc:  # noqa: BLE001
                 raise AttachmentPersistError(str(exc)) from exc
-        download_dir = self._get_download_dir(category)
-        # 本地回落（仅单用户 / 无 AgentServer 上下文）：用原子独占创建落盘，
-        # 同名文件自动取 stem-N 后缀，并发下载与既有文件均不会被覆盖
-        # （修复秒级时间戳重命名在同秒并发下仍会相互覆盖的 P1）。
-        # 经钩子落盘（AgentServer 注入目录）时由 AgentServer 侧去重
-        # （unique_upload_path），此处不重复处理。
-        path = atomic_write_unique(Path(download_dir) / filename, content)
-        return {"path": str(path), "name": path.name, "size": len(content)}
-
-    def _get_download_dir(self, file_category: str) -> str:
-        """获取下载目录路径。"""
-        base_dir = os.path.join(self.workspace_dir, "wecom_files", "downloads", file_category)
-        os.makedirs(base_dir, exist_ok=True)
-        return base_dir
+        raise AttachmentPersistError(
+            "IM 附件落盘钩子未注入（AgentServer 上下文缺失）"
+        )
 
     @staticmethod
     def _safe_filename(name: str) -> str:

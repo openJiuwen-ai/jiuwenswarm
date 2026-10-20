@@ -90,7 +90,7 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod, Message, Mode
-from jiuwenswarm.gateway.embedded.runtime.attachments.media_attachments import (
+from jiuwenswarm.gateway.channel_manager.web.media import (
     normalize_chat_media_attachments,
 )
 _mark_startup_import_phase("gateway_core_imports_loaded")
@@ -2303,10 +2303,16 @@ async def _run(
         )
     )
 
+    async def _media_normalizer(params: dict[str, Any], session_id: str | None) -> None:
+        # A1g：小图落盘经 E2A 到 AgentServer，闭包捕获启动装配的 client
+        await normalize_chat_media_attachments(
+            params, session_id, agent_client=client, user_id=None
+        )
+
     extension_registry.bind_application_plugins(
         web_channel,
         agent_client=client,
-        media_attachment_normalizer=normalize_chat_media_attachments,
+        media_attachment_normalizer=_media_normalizer,
     )
     log_startup_stage("web_handlers_registered")
 
