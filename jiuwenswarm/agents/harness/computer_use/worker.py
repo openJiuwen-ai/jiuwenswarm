@@ -88,9 +88,8 @@ def main() -> None:
         raise RuntimeError("cua_repl requires Python 3.12+. Set react.subagents.cua_agent.repl_python.")
     executable = prepare_native()
     if args.prepare_native:
-        # This is a machine-readable reply consumed by MacOSBackend, not a log.
+        # MacOSBackend parses this single JSON response at subprocess EOF.
         json.dump({"executable": str(executable)}, sys.stdout)
-        sys.stdout.write("\n")
         return
     from computer_use.mcp.server import cli
 

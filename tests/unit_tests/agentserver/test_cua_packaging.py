@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -172,6 +173,16 @@ sys.stdout.write(str(loaded.value))
     result = subprocess.run([sys.executable, "-c", script, str(tmp_path)], capture_output=True,
                             text=True, encoding="utf-8", timeout=15, check=True, cwd=ROOT)
     assert result.stdout == "42"
+
+
+def test_prepare_native_cli_returns_one_machine_readable_response(monkeypatch, capsys, tmp_path):
+    executable = tmp_path / "Computer Use Driver"
+    monkeypatch.setattr(worker, "prepare_native", lambda: executable)
+    monkeypatch.setattr(sys, "argv", ["worker", "--prepare-native"])
+    worker.main()
+    output = capsys.readouterr()
+    assert json.loads(output.out) == {"executable": str(executable)}
+    assert output.err == ""
 
 
 @pytest.mark.parametrize("closed", [False, True])
