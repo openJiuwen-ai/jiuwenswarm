@@ -18,8 +18,10 @@ Covers the review findings on PR6431:
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
+from opentelemetry import trace
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -29,6 +31,15 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
     JiuwenSwarmFlashAdapter,
 )
+
+
+def _span_context(*, trace_id: int, span_id: int) -> SpanContext:
+    return SpanContext(
+        trace_id=trace_id,
+        span_id=span_id,
+        is_remote=False,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +218,55 @@ async def test_update_rails_for_mode_does_not_call_update_agent_rails():
         await adapter._update_rails_for_mode("flash")
 
     assert called["n"] == 0
+
+
+def test_flash_rail_snapshot_is_stable_and_fingerprint_is_stable():
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._task_planning_rail = object()
+    adapter._memory_rail = object()
+    adapter._context_assemble_rail = object()
+
+    snapshot = adapter._rail_snapshot()
+    fingerprint = adapter._profile_fingerprint()
+
+    assert snapshot == "task_planning_rail,memory_rail"
+    assert fingerprint == adapter._profile_fingerprint()
+    assert len(fingerprint) == 12
+
+
+def test_rail_snapshot_failure_degrades_silently(monkeypatch):
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+
+    def fail_snapshot():
+        raise RuntimeError("rail snapshot unavailable")
+
+    monkeypatch.setattr(adapter, "_rail_observability_snapshot", fail_snapshot)
+    adapter._refresh_rail_observability_snapshot()
+
+
+def test_rail_snapshot_binds_attributes_to_current_trace(monkeypatch):
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._task_planning_rail = object()
+    adapter._memory_rail = object()
+    span_registry = SimpleNamespace(bind_trace_attributes=Mock())
+    monkeypatch.setattr(
+        "jiuwenswarm.telemetry.get_telemetry_runtime",
+        lambda: SimpleNamespace(
+            is_unified_active=lambda: True,
+            span_registry=span_registry,
+        ),
+    )
+    context = _span_context(trace_id=0xABC, span_id=0x123)
+    with trace.use_span(NonRecordingSpan(context), end_on_exit=False):
+        adapter._refresh_rail_observability_snapshot()
+
+    span_registry.bind_trace_attributes.assert_called_once_with(
+        0xABC,
+        {
+            "jiuwenclaw.agent.rails": "task_planning_rail,memory_rail",
+            "jiuwenclaw.agent.profile": f"flash:{adapter._profile_fingerprint()}",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

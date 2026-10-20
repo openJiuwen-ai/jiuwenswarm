@@ -73,6 +73,7 @@ skill_credential / skill_active_state / disabled_tools）全部在 keep 白名�
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 import os
 from contextlib import contextmanager
@@ -149,6 +150,10 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     wiki_ingest,
     wiki_lint,
     wiki_query,
+)
+from jiuwenswarm.telemetry.attributes import (
+    JIUWENCLAW_AGENT_PROFILE,
+    JIUWENCLAW_AGENT_RAILS,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
@@ -879,6 +884,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         self._last_mode = mode
         await self._handle_memory_rail_by_config("agent")
         await self._drop_non_whitelist_dynamic_rails()
+        self._refresh_rail_observability_snapshot()
 
     async def try_start_dreaming(self, busy_checker=None) -> None:
         """no-op：flash 不启 memory dreaming.
@@ -1260,6 +1266,78 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         ("_evolution_interrupt_rail", "EvolutionInterruptRail"),
         ("_skill_create_rail", "SkillCreateRail"),
     )
+
+    def _rail_snapshot(self) -> str:
+        """Return the live rail names in stable adapter-attribute order."""
+        attrs = (
+            item[0]
+            for item in self._DYNAMIC_RAIL_ATTRS
+            if item[0] in self._FLASH_RAIL_KEEP
+        )
+        attrs = (
+            *attrs,
+            *sorted(
+                self._FLASH_RAIL_KEEP
+                - {item[0] for item in self._DYNAMIC_RAIL_ATTRS}
+            ),
+            *sorted(self._PROFILE_PROTECTED_RAILS),
+        )
+        names = [attr.lstrip("_") for attr in attrs if getattr(self, attr, None) is not None]
+        return ",".join(names)
+
+    def _profile_fingerprint(self) -> str:
+        """Return a stable hash of the profile-defining class constants."""
+        payload = "\n".join(
+            (
+                ",".join(sorted(self._FLASH_RAIL_KEEP)),
+                ",".join(sorted(self._PROFILE_PROTECTED_RAILS)),
+                ",".join(sorted(self._FLASH_TOOL_CARD_DROP_NAMES)),
+                ",".join(
+                    self._FLASH_REACT_OVERRIDE.get("tool_lazy_load", {}).get(
+                        "eager_tools", []
+                    )
+                ),
+            )
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+    def _rail_observability_snapshot(self) -> tuple[str, str]:
+        return self._rail_snapshot(), f"flash:{self._profile_fingerprint()}"
+
+    def _refresh_rail_observability_snapshot(self) -> None:
+        """Expose the flash rail set through trace-inherited attributes.
+
+        Rail updates happen before the run root span starts, so spans started
+        later inherit these values through the trace binding.
+        """
+        try:
+            from opentelemetry import trace
+
+            from jiuwenswarm.telemetry import get_telemetry_runtime
+
+            span_context = trace.get_current_span().get_span_context()
+            if not span_context.is_valid:
+                return
+            runtime = get_telemetry_runtime()
+            if not runtime.is_unified_active():
+                return
+            span_registry = runtime.span_registry
+            if span_registry is None:
+                return
+            names, profile = self._rail_observability_snapshot()
+            span_registry.bind_trace_attributes(
+                span_context.trace_id,
+                {
+                    JIUWENCLAW_AGENT_RAILS: names,
+                    JIUWENCLAW_AGENT_PROFILE: profile,
+                },
+            )
+        except Exception as error:
+            logger.debug(
+                "[JiuwenSwarmFlashAdapter] rail observability snapshot failed: %s",
+                error,
+                exc_info=True,
+            )
 
     async def _drop_non_whitelist_dynamic_rails(self) -> None:
         """Unregister any dynamically-registered rail outside the flash whitelist.
