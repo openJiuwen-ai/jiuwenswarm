@@ -233,6 +233,44 @@ class TestUpdateSessionMetadata:
         assert data["agent_group_name"] == "sample-expert-group"
 
     @staticmethod
+    def test_agent_group_display_identity_is_written_once(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            init_session_metadata,
+            update_session_metadata,
+        )
+
+        first_identity = {
+            "id": "hub-asset-123",
+            "name": "group-a",
+            "display_name": "中文专家团",
+            "avatar": "",
+        }
+        init_session_metadata(session_id="sess_group_identity", channel_id="web")
+        update_session_metadata(
+            session_id="sess_group_identity",
+            agent_group_name="group-a",
+            team_group_identity=first_identity,
+            touch_last_message_at=False,
+            sync_write=True,
+        )
+        update_session_metadata(
+            session_id="sess_group_identity",
+            team_group_identity={
+                "id": "changed-asset",
+                "name": "group-a",
+                "display_name": "Changed Team",
+                "avatar": "",
+            },
+            touch_last_message_at=False,
+            sync_write=True,
+        )
+
+        data = _read_json(
+            sessions_dir / "sess_group_identity" / "metadata.json"
+        )
+        assert data["team_group_identity"] == first_identity
+
+    @staticmethod
     def test_fallback_create_when_no_metadata(sessions_dir):
         """外部渠道隐式创建 session 时,metadata 不存在,应自动创建"""
         from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -474,6 +512,59 @@ class TestGetSessionMetadata:
         assert data["model"] == ""
         assert data["status"] == "idle"
         assert data["last_user_message_at"] == 1000.0  # 回退到 created_at
+
+    @staticmethod
+    def test_backfills_bound_agent_group_display_identity(sessions_dir, monkeypatch):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_CACHE,
+            _METADATA_QUEUE,
+            _write_metadata_sync,
+            get_session_metadata,
+        )
+
+        identity = {
+            "id": "hub-asset-123",
+            "name": "group-a",
+            "display_name": "中文专家团",
+            "display_name_i18n": {"zh": "中文专家团", "en": "Expert Team"},
+            "avatar": "https://example.test/group.png",
+        }
+        _write_metadata_sync("sess_legacy_group", {
+            "session_id": "sess_legacy_group",
+            "channel_id": "web",
+            "created_at": 1000.0,
+            "last_message_at": 1000.0,
+            "title": "legacy group",
+            "message_count": 1,
+            "mode": "team.work.normal",
+            "team_name": "team-a",
+            "agent_group_name": "group-a",
+            "round_id": 1,
+        })
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_display_identity",
+            lambda name: identity if name == "group-a" else None,
+        )
+
+        data = get_session_metadata("sess_legacy_group", cache_bust=True)
+        assert data["team_group_identity"] == identity
+        _METADATA_QUEUE.join()
+        assert _read_json(
+            sessions_dir / "sess_legacy_group" / "metadata.json"
+        )["team_group_identity"] == identity
+
+        # A later restart after uninstall reads the persisted snapshot without
+        # consulting the package that no longer exists.
+        def package_removed(_name):
+            raise ValueError("package removed")
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_display_identity",
+            package_removed,
+        )
+        _METADATA_CACHE.pop("sess_legacy_group", None)
+        restored = get_session_metadata("sess_legacy_group", cache_bust=True)
+        assert restored["team_group_identity"] == identity
 
 
 # ===========================================================================
