@@ -176,6 +176,7 @@ def build_invocation(
     execution: ExecutionRecord,
     *,
     ports: PersistentPorts,
+    system_prompt_addendum: str | None = None,
 ) -> tuple[PersistentAgentSpec, PersistentBuildContext]:
     """Create the Spec and the single-use build context for one Execution.
 
@@ -210,7 +211,12 @@ def build_invocation(
     context = build_execution_context(request, execution, capability_snapshot=snapshot.enabled_features)
     session = create_agent_session(session_id=request.session_id, card=spec.card, checkpointer=NoopCheckpointer())
     try:
-        build_context = PersistentBuildContext(execution=context, session=session, ports=ports)
+        build_context = PersistentBuildContext(
+            execution=context,
+            session=session,
+            ports=ports,
+            system_prompt_addendum=system_prompt_addendum,
+        )
         build_context.validate(spec)
     except BaseError as exc:
         raise PersistentContractError(f"invalid PersistentBuildContext: {exc}") from exc

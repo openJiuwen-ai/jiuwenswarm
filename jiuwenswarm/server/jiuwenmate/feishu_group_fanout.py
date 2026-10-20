@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
     from openjiuwen.harness.persistent_agent import RequestInput
 
+from jiuwenswarm.server.jiuwenmate.group_collaboration import waits_for_named_colleague
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +53,8 @@ class FeishuInboundEvent:
     event_id: str | None = None
     changed_at: datetime | None = None
     group_name: str | None = None
+    # The delivery archive may already hold this platform id with the raw handoff token.
+    allow_existing_message: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         """Return JSON-safe normalized facts for the internal Gateway E2A request."""
@@ -275,13 +279,24 @@ def create_default_persistent_group_fanout(
                     access.namespace_id, access.agent_id):
                 return "unknown"
             facts = await verify_membership(access.app_id, group.platform_chat_id)
-            if facts.get("status") == "left":
+            status = facts.get("status", "unknown")
+            if status == "left":
                 await asyncio.to_thread(groups.update_membership, access.namespace_id, access.agent_id,
                                        access.group_id, access.app_id, status="left",
                                        observed_at=datetime.now(timezone.utc), source_ref="membership:live")
-            if facts.get("status") == "active" and facts.get("group_name"):
+                return "left"
+            if status == "active" and facts.get("group_name"):
                 await asyncio.to_thread(groups.set_name, access.namespace_id, access.group_id, facts["group_name"])
-            return facts.get("status", "unknown")
+            if status == "active":
+                return "active"
+            # Feishu sometimes does not answer during a reconnect. That is not proof the Bot left.
+            if access.status == "active":
+                logger.warning(
+                    "[JiuwenMate] group membership check inconclusive, keeping the active binding: app_id=%s",
+                    access.app_id,
+                )
+                return "active"
+            return "unknown"
         manager.verify_group_membership = verify
 
         async def refresh(access, group, messages):
@@ -317,6 +332,8 @@ def create_default_persistent_group_fanout(
         resolve_bindings=resolve_configured_feishu_bindings,
         resolve_access=resolve_feishu_access,
     )
+    if delivery_service is not None:
+        delivery_service.set_handoff_handler(fanout.continue_handoff)
     return fanout, manager
 
 
@@ -453,16 +470,31 @@ class PersistentGroupFanout:
                     self._groups.observe_access, binding.namespace_id, binding.agent_id, group.group_chat_id,
                     binding.app_id, observed_at=received_at, source_ref=f"feishu:message:{event.message_id}",
                 )
-                await asyncio.to_thread(
-                    self._agent_manager.group_archive.append, binding.namespace_id, group.group_chat_id,
-                    request_input.source, source_ref=f"feishu:message:{event.message_id}", changed_at=event.changed_at,
-                )
+                from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
+                presented_text = request_input.text
+                archived = False
+                try:
+                    await asyncio.to_thread(
+                        self._agent_manager.group_archive.append, binding.namespace_id, group.group_chat_id,
+                        request_input.source, source_ref=f"feishu:message:{event.message_id}", changed_at=event.changed_at,
+                    )
+                    archived = True
+                except PersistentAgentError as exc:
+                    # Delivery reconciliation stores the raw token under this id before the handoff runs.
+                    if not event.allow_existing_message or exc.code != "CONFLICT":
+                        raise
                 current, = await asyncio.to_thread(self._agent_manager.group_archive.current_messages,
                     binding.namespace_id, group.group_chat_id, (event.message_id,))
                 if current.status in {"recalled", "unavailable"}:
                     return InboundDisposition.HANDLED
-                request_input = request_input.model_copy(update={"source": current,
-                    "text": current.text or ("[附件消息]" if current.attachment_refs else "[群消息正文为空]"),
+                source = current
+                text = current.text or ("[附件消息]" if current.attachment_refs else "[群消息正文为空]")
+                if event.allow_existing_message and not archived and isinstance(presented_text, str) and presented_text:
+                    source = current.model_copy(update={"text": presented_text})
+                    text = presented_text
+                request_input = request_input.model_copy(update={"source": source,
+                    "text": text,
                     "attachment_refs": current.attachment_refs})
                 if event.receiver_bot_mentioned:
                     # Keep the shared archive's Feishu open_id intact. PA-07 consumes the
@@ -475,6 +507,18 @@ class PersistentGroupFanout:
                         }
                     )
                     request_input = request_input.model_copy(update={"source": request_source})
+                else:
+                    roster = await asyncio.to_thread(
+                        self._agent_manager.group_participant_roster,
+                        binding.namespace_id,
+                        group.group_chat_id,
+                    )
+                    if waits_for_named_colleague(request_input.text or "", roster, binding.agent_id):
+                        logger.info(
+                            "[JiuwenMate] group message waits for the named colleague: agent_id=%s",
+                            binding.agent_id,
+                        )
+                        return InboundDisposition.HANDLED
                 if event.group_name:
                     await asyncio.to_thread(self._groups.set_name, binding.namespace_id, group.group_chat_id, event.group_name)
             else:
@@ -508,9 +552,10 @@ class PersistentGroupFanout:
             )
         except Exception as exc:
             logger.warning(
-                "[JiuwenMate] Feishu event rejected: app_id=%s error_type=%s",
+                "[JiuwenMate] Feishu event rejected: app_id=%s error_type=%s error=%s",
                 event.receiving_app_id,
                 type(exc).__name__,
+                exc,
             )
             return InboundDisposition.REJECTED
 
@@ -552,6 +597,63 @@ class PersistentGroupFanout:
         except Exception:
             return InboundDisposition.REJECTED
         return InboundDisposition.HANDLED
+
+    async def continue_handoff(
+        self,
+        job: Mapping[str, object],
+        mentions: Sequence[Mapping[str, Any]],
+        external_message_id: str | None,
+    ) -> None:
+        """Start the named colleague from a delivered public reply.
+
+        Feishu does not push that Bot reply back as a new inbound event. The
+        target still enters through the same group Request path, keyed by the
+        platform message id so a later callback does not start a second one.
+        """
+        if job.get("is_direct_message") is True or len(mentions) != 1:
+            return
+        if not isinstance(external_message_id, str) or not external_message_id.strip():
+            return
+        target = mentions[0]
+        agent_id = target.get("agent_id")
+        name = target.get("name")
+        app_ids = target.get("app_ids")
+        sender_id = job.get("agent_id")
+        namespace_id = job.get("namespace_id")
+        chat_id = job.get("target_id")
+        sender_app_id = job.get("app_id")
+        if (
+            not isinstance(agent_id, str)
+            or not isinstance(name, str)
+            or not isinstance(app_ids, list)
+            or len(app_ids) != 1
+            or not isinstance(app_ids[0], str)
+            or not isinstance(sender_id, str)
+            or not isinstance(namespace_id, str)
+            or not isinstance(chat_id, str)
+            or not isinstance(sender_app_id, str)
+        ):
+            return
+        colleague = await asyncio.to_thread(self._service.get_colleague, namespace_id, sender_id)
+        reply_to = job.get("source_message_id")
+        text = str(job.get("text") or "").replace(f"[[agent:{agent_id}]]", f"@{name}")
+        event = FeishuInboundEvent(
+            receiving_app_id=app_ids[0],
+            expected_agent_id=agent_id,
+            message_id=external_message_id.strip(),
+            chat_id=chat_id,
+            chat_type="group",
+            sender_type="bot",
+            sender_id=sender_id,
+            sender_name=colleague.name,
+            sender_app_id=sender_app_id,
+            received_at=self._clock(),
+            text=text,
+            receiver_bot_mentioned=True,
+            reply_to=reply_to if isinstance(reply_to, str) and reply_to.strip() else None,
+            allow_existing_message=True,
+        )
+        await self.handle(event)
 
     async def _call(self, callback: Callable[..., Any], *args: Any) -> Any:
         result = await asyncio.to_thread(callback, *args)

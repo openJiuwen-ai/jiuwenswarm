@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType
 
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
+from jiuwenswarm.server.jiuwenmate.group_collaboration import resolve_group_mentions
 
 logger = logging.getLogger(__name__)
 
 GatewaySend = Callable[[dict[str, object]], Awaitable[Mapping[str, Any] | None]]
+MentionRosterSource = Callable[[dict[str, object]], Sequence[Mapping[str, Any]]]
 # A file send uploads up to the published share_file limit before the message is sent.
 FILE_SEND_TIMEOUT = 180.0
 # How long AgentServer waits for Gateway's ACK; shorter than the service timeouts above.
@@ -40,10 +42,15 @@ class ResultDeliveryService:
         send_timeout: float = 30.0,
         archive_delivery: Callable[[dict[str, object]], Awaitable[None]] | None = None,
         file_send_timeout: float = FILE_SEND_TIMEOUT,
+        mention_roster: MentionRosterSource | None = None,
+        handoff_handler: Callable[[dict[str, object], Sequence[Mapping[str, Any]], str | None], Awaitable[None]]
+        | None = None,
     ) -> None:
         if poll_interval <= 0 or send_timeout <= 0 or file_send_timeout <= 0:
             raise ValueError("delivery intervals must be positive")
         self._file_send_timeout = file_send_timeout
+        self._mention_roster = mention_roster
+        self._handoff_handler = handoff_handler
         self._repository = repository
         self._namespace_id = namespace_id
         self._send_delivery = send_delivery
@@ -54,6 +61,17 @@ class ResultDeliveryService:
         self._send_timeout = send_timeout
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+
+    def set_mention_roster(self, resolver: MentionRosterSource) -> None:
+        """Attach the host's current-group membership resolver after runtime assembly."""
+        self._mention_roster = resolver
+
+    def set_handoff_handler(
+        self,
+        handler: Callable[[dict[str, object], Sequence[Mapping[str, Any]], str | None], Awaitable[None]],
+    ) -> None:
+        """Start the next colleague after a public handoff has a platform receipt."""
+        self._handoff_handler = handler
 
     async def start(self) -> None:
         """Mark interrupted sends unknown and resume only definitely pending rows."""
@@ -104,9 +122,32 @@ class ResultDeliveryService:
             job = jobs[0]
             delivery_id = str(job["delivery_id"])
             attempted_delivery_ids.append(delivery_id)
+            text = job.get("text")
+            if isinstance(text, str) and "[[agent:" in text:
+                roster = []
+                if self._mention_roster is not None and job.get("is_direct_message") is not True:
+                    try:
+                        roster = await asyncio.to_thread(self._mention_roster, dict(job))
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuwenMate] handoff roster unavailable: request=%s error_type=%s",
+                            job.get("request_id"),
+                            type(exc).__name__,
+                        )
+                cleaned_text, mentions = resolve_group_mentions(
+                    text,
+                    roster,
+                    sender_agent_id=str(job.get("agent_id") or ""),
+                )
+                job["text"] = cleaned_text
+                if mentions:
+                    job["mention_targets"] = mentions
             timeout = self._file_send_timeout if "file" in job else self._send_timeout
             try:
-                ack = await asyncio.wait_for(self._send_delivery(dict(job)), timeout=timeout)
+                gateway_job = dict(job)
+                for field in ("namespace_id", "agent_id", "session_id", "request_kind"):
+                    gateway_job.pop(field, None)
+                ack = await asyncio.wait_for(self._send_delivery(gateway_job), timeout=timeout)
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
@@ -131,6 +172,18 @@ class ResultDeliveryService:
                 file_key=self._file_key(job, ack),
             )
             dispatched += 1
+            if outcome == "delivered" and job.get("mention_targets") and self._handoff_handler is not None:
+                try:
+                    await self._handoff_handler(
+                        job,
+                        job["mention_targets"],
+                        external_message_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "[JiuwenMate] group handoff was not accepted: delivery_id=%s",
+                        delivery_id,
+                    )
         await self.reconcile_archives()
         return dispatched
 

@@ -498,6 +498,88 @@ async def test_delivery_service_persists_the_gateway_receipt(host):
     assert row["status"] == "delivered" and row["external_message_id"] == "om_reply"
 
 
+async def test_delivery_service_attaches_only_current_group_handoff_targets(host):
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    repository, _, port = host
+    groups = GroupChatRepository(repository.db_path)
+    group = groups.resolve(NS, "feishu", "oc_group", now=NOW)
+    groups.observe_access(NS, "agent-peer", group.group_chat_id, "app-peer", observed_at=NOW, source_ref="joined:peer")
+    session = repository.resolve_session(NS, AGENT, ConversationRef.group(group.group_chat_id), now=NOW)
+    route = RequestRouteSnapshot(
+        channel="feishu", app_id="app-sender", target_id="oc_group", source_message_id="om_source"
+    )
+    state, _ = repository.accept_request(
+        session,
+        snapshot=SNAPSHOT,
+        source_ref="feishu:om_source",
+        access=ACCESS,
+        request_input=core.RequestInput(
+            kind="group_message",
+            text="请交接",
+            reply_target="oc_group",
+            source=core.GroupMessage(
+                message_id="om_source", sender_id="human", sender_name="用户", sender_kind="human",
+                received_at=NOW, text="请交接",
+            ),
+        ),
+        received_at=NOW,
+        route_snapshot=route,
+    )
+    execution = repository.start_execution(NS, state.record.request_id, now=NOW)
+    context = build_execution_context(state.record, execution, capability_snapshot=SNAPSHOT.enabled_features)
+    await port.record(context, candidate(context, 1, text="请继续 [[agent:agent-peer]]"))
+    await port.record(context, final(context, 2))
+    sent = []
+
+    async def send(job):
+        sent.append(job)
+        return {"delivery_id": job["delivery_id"], "stage": "send", "outcome": "delivered"}
+
+    service = ResultDeliveryService(
+        repository,
+        namespace_id=NS,
+        send_delivery=send,
+        clock=lambda: NOW,
+        mention_roster=lambda job: [{"agent_id": "agent-peer", "name": "执行同事"}],
+    )
+
+    assert await service.dispatch_pending() == 1
+    assert sent[0]["text"] == "请继续 [[agent:agent-peer]]"
+    assert sent[0]["mention_targets"] == [{"agent_id": "agent-peer", "name": "执行同事"}]
+    assert not {"namespace_id", "agent_id", "session_id", "request_kind"}.intersection(sent[0])
+
+
+async def test_delivery_service_strips_handoff_tokens_from_private_messages(host):
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    repository, _, port = host
+    route = RequestRouteSnapshot(
+        channel="feishu", app_id="cli_bound", target_id="oc_dm", source_message_id="om_source"
+    )
+    execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route, request_kind="direct_message")
+    await port.record(execution, candidate(execution, 1, text="不应接力 [[agent:agent-peer]]"))
+    await port.record(execution, final(execution, 2))
+    sent = []
+
+    async def send(job):
+        sent.append(job)
+        return {"delivery_id": job["delivery_id"], "stage": "send", "outcome": "delivered"}
+
+    service = ResultDeliveryService(
+        repository,
+        namespace_id=NS,
+        send_delivery=send,
+        clock=lambda: NOW,
+        mention_roster=lambda job: [{"agent_id": "agent-peer", "name": "执行同事"}],
+    )
+
+    assert await service.dispatch_pending() == 1
+    assert sent[0]["text"] == "不应接力 "
+    assert "mention_targets" not in sent[0]
+
+
 async def test_jm11_confirmed_reply_archive_retries_without_resending(host, tmp_path):
     from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
     from jiuwenswarm.server.jiuwenmate.conversation_resources import ConversationResources
