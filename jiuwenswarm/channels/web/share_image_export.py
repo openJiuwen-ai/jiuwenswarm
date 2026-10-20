@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import logging
 import os
@@ -21,7 +22,7 @@ import zipfile
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Callable
+from typing import Any, Callable
 from urllib.parse import quote
 
 from jiuwenswarm.common.config import get_config, resolve_env_vars
@@ -405,6 +406,7 @@ class _ShareImageJob:
     progress: int | None = None
     download_claimed_at: float | None = None
     download_attempt_id: str | None = None
+    upload_in_progress: bool = False
 
 
 class ShareImageExportManager:
@@ -637,28 +639,38 @@ class ShareImageExportManager:
         job_id: str,
         token: str,
         filename: str,
-        stream: BinaryIO,
+        stream: io.BufferedIOBase,
         size: int,
     ) -> dict[str, Any]:
-        job = self._get_job(job_id)
-        if job is None:
-            raise FileNotFoundError("job_not_found")
-        if job.renderer != "browser" or not secrets.compare_digest(job.client_token.encode(), token.encode()):
-            raise PermissionError("share_export_client_not_authorized")
-        if not re.fullmatch(r"[A-Za-z0-9._-]+\.(?:png|zip)", filename, re.IGNORECASE) or not 0 < size <= 1024**3:
-            raise ValueError("share_export_result_invalid")
         with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise FileNotFoundError("job_not_found")
+            if job.renderer != "browser" or not secrets.compare_digest(job.client_token.encode(), token.encode()):
+                raise PermissionError("share_export_client_not_authorized")
+            if not re.fullmatch(r"[A-Za-z0-9._-]+\.(?:png|zip)", filename, re.IGNORECASE) or not 0 < size <= 1024**3:
+                raise ValueError("share_export_result_invalid")
             if job.state in {"completed", "failed"}:
                 raise ValueError("share_export_job_already_finished")
+            if job.upload_in_progress:
+                raise ValueError("share_export_upload_in_progress")
+            job.upload_in_progress = True
+            job.updated_at = time.time()
         result = job.directory / filename
         temporary = job.directory / f"{uuid.uuid4().hex}.partial"
         try:
             with temporary.open("wb") as output:
                 remaining = size
                 while remaining:
-                    chunk = stream.read(min(remaining, 1024 * 1024))
+                    # read1 returns available bytes instead of waiting to fill
+                    # a 1 MiB buffer. The HTTP handler bounds socket idle time.
+                    chunk = stream.read1(min(remaining, 1024 * 1024))
                     if not chunk:
                         raise ValueError("share_export_upload_incomplete")
+                    with self._lock:
+                        if job.state in {"completed", "failed"}:
+                            raise ValueError("share_export_job_already_finished")
+                        job.updated_at = time.time()
                     output.write(chunk)
                     remaining -= len(chunk)
             (_validate_png if result.suffix.lower() == ".png" else _validate_zip)(temporary)
@@ -671,7 +683,16 @@ class ShareImageExportManager:
                 job.updated_at = time.time()
                 return self._status(job)
         finally:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            finally:
+                # Release ownership only after all file handles have closed.
+                # A failed request must unlock the session without a client beacon.
+                with self._lock:
+                    if job.state not in {"completed", "failed"}:
+                        job.state, job.phase, job.error = "failed", "failed", "share_export_upload_failed"
+                    job.upload_in_progress = False
+                    job.updated_at = time.time()
 
     def mark_browser_download_started(self, job_id: str, attempt_id: str | None) -> bool:
         with self._lock:
@@ -752,10 +773,14 @@ class ShareImageExportManager:
         expired: list[_ShareImageJob] = []
         with self._lock:
             for job_id, job in list(self._jobs.items()):
-                if (
-                    job.updated_at < cutoff and job.state in {"queued", "completed", "failed"}
-                    and job.phase != "download_started"
-                ):
+                # Browser renderers report heartbeats; server renderers own
+                # their lifecycle. Uploads own their files through validation
+                # and release them after completion or a socket idle timeout.
+                if job.upload_in_progress or job.phase == "download_started":
+                    continue
+                if job.state == "running" and job.renderer != "browser":
+                    continue
+                if job.updated_at < cutoff:
                     expired_job = self._jobs.pop(job_id)
                     if self._active_job_ids_by_session.get(expired_job.session_id) == job_id:
                         self._active_job_ids_by_session.pop(expired_job.session_id, None)
