@@ -123,6 +123,8 @@ class _Model:
 async def runtime(monkeypatch, setup):
     adapter, config, _ = setup
     agents = []
+    # Own the Runner lifecycle on this fixture's event loop.
+    await Runner.start()
 
     async def create(*, enabled=True, disabled=False, report_type="professional"):
         monkeypatch.setattr(deepresearch, "enable_deepresearch", lambda: enabled)
