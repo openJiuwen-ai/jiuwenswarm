@@ -38,6 +38,15 @@ import {
   type JiuwenMateModelCatalog,
   type JiuwenMateSchedule,
 } from './jiuwenmateApi';
+import {
+  buildTemplateSkillSearchQuery,
+  recommendInstalledTemplateSkills,
+  recommendMarketplaceTemplateSkills,
+  splitAvailableColleagueCapabilities,
+  type MutableColleagueCapabilitySelections,
+  type SkillInstallCandidate,
+  type TemplateSkillRecommendations,
+} from './colleagueCapabilities';
 import type { ScheduleDraft } from './schedules/types';
 import { customAvatarHue } from './colleaguePortraits';
 import { emptyCapabilities } from './mockData';
@@ -51,7 +60,12 @@ import {
 import { ColleagueWorkspacePage, type JiuwenMateWorkspaceIntent } from './pages/ColleagueWorkspacePage';
 import { OfficeDashboardPage } from './pages/OfficeDashboardPage';
 import { OfficeIntroPage } from './pages/OfficeIntroPage';
-import type { JiuwenMateActivity, JiuwenMateColleague, JiuwenMateExistingPage } from './types';
+import type {
+  JiuwenMateActivity,
+  JiuwenMateColleague,
+  JiuwenMateExistingPage,
+  JiuwenMateTemplate,
+} from './types';
 import './jiuwenmate.css';
 
 export interface JiuwenMateAppProps {
@@ -65,6 +79,27 @@ type LoadStatus = 'loading' | 'ready' | 'failed';
 
 const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
 const SCHEDULE_REFRESH_INTERVAL_MS = 5_000;
+const EMPTY_MISSING_CAPABILITIES: MutableColleagueCapabilitySelections = {
+  skills: [],
+  connectors: [],
+  plugins: [],
+  knowledge: [],
+};
+const EMPTY_TEMPLATE_SKILL_RECOMMENDATIONS: TemplateSkillRecommendations = {
+  status: 'idle',
+  local: [],
+  plaza: [],
+  error: null,
+};
+
+interface SkillInstallReply {
+  success?: boolean;
+  pending?: boolean;
+  install_id?: string;
+  status?: string;
+  detail?: string;
+  skill?: { name?: string };
+}
 
 export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettings }: JiuwenMateAppProps) {
   const { t } = useTranslation();
@@ -102,6 +137,10 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     knowledge: [],
     ready: false,
   });
+  const [resourceCatalogEpoch, setResourceCatalogEpoch] = useState(0);
+  const [missingTemplateCapabilities, setMissingTemplateCapabilities] = useState(EMPTY_MISSING_CAPABILITIES);
+  const [skillRecommendations, setSkillRecommendations] = useState(EMPTY_TEMPLATE_SKILL_RECOMMENDATIONS);
+  const skillRecommendationRequest = useRef(0);
   const [savingResources, setSavingResources] = useState(false);
   const [activity, setActivity] = useState<JiuwenMateActivity | null>(null);
   const [activityStatus, setActivityStatus] = useState<LoadStatus>('loading');
@@ -215,7 +254,7 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     return () => {
       active = false;
     };
-  }, [connectionEpoch, state.view]);
+  }, [connectionEpoch, resourceCatalogEpoch, state.view]);
 
   useEffect(() => {
     let active = true;
@@ -254,8 +293,102 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
   };
 
   const openPlaza = () => handleOpenExistingPage('agents', 'jiuwenmate.nav.plaza');
-  const startCreation = () => setState((current) => openColleagueCreation(current));
-  const startCustomCreation = () => setState((current) => openCustomColleagueCreation(current));
+  const startCreation = () => {
+    skillRecommendationRequest.current += 1;
+    setActionError('');
+    setMissingTemplateCapabilities(EMPTY_MISSING_CAPABILITIES);
+    setSkillRecommendations(EMPTY_TEMPLATE_SKILL_RECOMMENDATIONS);
+    setState((current) => openColleagueCreation(current));
+  };
+  const startCustomCreation = () => {
+    skillRecommendationRequest.current += 1;
+    setActionError('');
+    setMissingTemplateCapabilities(EMPTY_MISSING_CAPABILITIES);
+    setSkillRecommendations(EMPTY_TEMPLATE_SKILL_RECOMMENDATIONS);
+    setState((current) => openCustomColleagueCreation(current));
+  };
+
+  const chooseTemplate = (template: JiuwenMateTemplate) => {
+    if (!resourceCatalog.ready) {
+      setActionError(t('jiuwenmate.profile.catalogLoading'));
+      return;
+    }
+    const { available, missing } = splitAvailableColleagueCapabilities(
+      template.capabilities,
+      resourceCatalog,
+    );
+    const requestId = skillRecommendationRequest.current + 1;
+    skillRecommendationRequest.current = requestId;
+    const localRecommendations = recommendInstalledTemplateSkills(
+      template.skillSearchTerms ?? [],
+      resourceCatalog.skills ?? [],
+    );
+    setSkillRecommendations({
+      status: 'loading',
+      local: localRecommendations,
+      plaza: [],
+      error: null,
+    });
+    setActionError('');
+    setMissingTemplateCapabilities(missing);
+    setState((current) =>
+      startColleagueRefinement(current, 'template', {
+        name: template.name,
+        description: template.description,
+        tags: [...template.tags],
+        category: template.category,
+        avatarUrl: template.avatarUrl,
+        capabilities: {
+          ...template.capabilities,
+          skills: available.skills,
+          connectors: available.connectors,
+          plugins: available.plugins,
+          knowledge: available.knowledge,
+          starterPrompts: [...template.capabilities.starterPrompts],
+        },
+      }),
+    );
+    void webRequest<{
+      success?: boolean;
+      detail?: string;
+      items?: unknown[];
+    }>(
+      'skills.online_search.search',
+      { q: buildTemplateSkillSearchQuery(template), limit: 50 },
+      { timeoutMs: 45_000 },
+    )
+      .then((search) => {
+        if (requestId !== skillRecommendationRequest.current) return;
+        if (!search.success) {
+          setSkillRecommendations({
+            status: 'error',
+            local: localRecommendations,
+            plaza: [],
+            error: search.detail || t('jiuwenmate.create.skillSearchFailed'),
+          });
+          return;
+        }
+        const plazaRecommendations = recommendMarketplaceTemplateSkills(
+          search,
+          (resourceCatalog.skills ?? []).map((skill) => skill.name),
+        );
+        setSkillRecommendations({
+          status: plazaRecommendations.length > 0 ? 'ready' : 'error',
+          local: localRecommendations,
+          plaza: plazaRecommendations,
+          error: plazaRecommendations.length > 0 ? null : t('jiuwenmate.create.skillSearchNoResults'),
+        });
+      })
+      .catch((error) => {
+        if (requestId !== skillRecommendationRequest.current) return;
+        setSkillRecommendations({
+          status: 'error',
+          local: localRecommendations,
+          plaza: [],
+          error: errorMessage(error) || t('jiuwenmate.create.skillSearchFailed'),
+        });
+      });
+  };
 
   const openWorkspace = (colleagueId: string, intent: JiuwenMateWorkspaceIntent | null = null) => {
     setWorkspaceIntent((current) => ({ nonce: current.nonce + 1, intent }));
@@ -323,12 +456,46 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
       };
       setProfileIntent((current) => ({ nonce: current.nonce + 1, section: 'overview' }));
       setActiveRailView('office');
+      skillRecommendationRequest.current += 1;
+      setSkillRecommendations(EMPTY_TEMPLATE_SKILL_RECOMMENDATIONS);
+      setMissingTemplateCapabilities(EMPTY_MISSING_CAPABILITIES);
       setState((current) => completeColleagueCreation(current, colleague));
     } catch (error) {
       setActionError(t('jiuwenmate.load.createFailed', { reason: errorMessage(error) }));
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const installTemplateSkill = async (candidate: SkillInstallCandidate): Promise<string> => {
+    const installParams: Record<string, unknown> = {
+      source: candidate.source,
+      identifier: candidate.identifier,
+      display_name: candidate.display_name,
+      ...(candidate.owner_handle ? { owner_handle: candidate.owner_handle } : {}),
+    };
+    let result = await webRequest<SkillInstallReply>(
+      'skills.online_search.install',
+      installParams,
+      { timeoutMs: 180_000 },
+    );
+    const startedAt = Date.now();
+    while (result.pending && result.install_id) {
+      if (Date.now() - startedAt > 15 * 60 * 1000) {
+        throw new Error(t('jiuwenmate.create.skillInstallTimeout'));
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 800));
+      result = await webRequest<SkillInstallReply>(
+        'skills.skillnet.install_status',
+        { install_id: result.install_id },
+        { timeoutMs: 30_000 },
+      );
+      if (result.status === 'failed') break;
+    }
+    if (!result.success) throw new Error(result.detail || t('jiuwenmate.create.skillInstallFailed'));
+
+    setResourceCatalogEpoch((current) => current + 1);
+    return result.skill?.name?.trim() || candidate.name;
   };
 
   const listHandlers = {
@@ -477,30 +644,18 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             })}
             draft={state.draft}
             modelCatalog={modelCatalog}
-            knowledgeCatalog={resourceCatalog.knowledge}
-            knowledgeCatalogReady={resourceCatalog.ready}
+            resourceCatalog={resourceCatalog}
+            resourceCatalogReady={resourceCatalog.ready}
+            missingTemplateCapabilities={missingTemplateCapabilities}
+            skillRecommendations={skillRecommendations}
+            onDismissSkillRecommendationError={() =>
+              setSkillRecommendations((current) => ({ ...current, error: null }))
+            }
+            onInstallSkill={installTemplateSkill}
             submitting={submitting}
             onOpenTemplateDetail={(id) => setState((current) => selectColleagueTemplate(current, id))}
             onCloseTemplateDetail={() => setState((current) => closeTemplateDetail(current))}
-            onChooseTemplate={(template) =>
-              setState((current) =>
-                startColleagueRefinement(current, 'template', {
-                  name: template.name,
-                  description: template.description,
-                  tags: [...template.tags],
-                  category: template.category,
-                  avatarUrl: template.avatarUrl,
-                  capabilities: {
-                    ...template.capabilities,
-                    skills: [...template.capabilities.skills],
-                    connectors: [...template.capabilities.connectors],
-                    plugins: [...template.capabilities.plugins],
-                    knowledge: [...template.capabilities.knowledge],
-                    starterPrompts: [...template.capabilities.starterPrompts],
-                  },
-                }),
-              )
-            }
+            onChooseTemplate={chooseTemplate}
             onOpenCustom={startCustomCreation}
             onCloseCustom={() => setState((current) => closeCustomColleagueDialog(current))}
             onConfirmCustom={({ name, description, avatarHue }) =>
@@ -517,7 +672,12 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             }
             onOpenPlaza={openPlaza}
             onDraftChange={(patch) => setState((current) => updateColleagueDraft(current, patch))}
-            onCancel={() => setState((current) => cancelColleagueCreation(current))}
+            onCancel={() => {
+              skillRecommendationRequest.current += 1;
+              setSkillRecommendations(EMPTY_TEMPLATE_SKILL_RECOMMENDATIONS);
+              setMissingTemplateCapabilities(EMPTY_MISSING_CAPABILITIES);
+              setState((current) => cancelColleagueCreation(current));
+            }}
             onComplete={() => void completeCreation()}
           />
         );

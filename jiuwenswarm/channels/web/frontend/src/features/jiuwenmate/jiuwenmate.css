@@ -2938,6 +2938,132 @@
   font-size: 12px;
 }
 
+.jiuwenmate-create__unavailable {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--jm-border);
+  border-radius: 10px;
+  background: #fffaf0;
+  color: var(--jm-text-2);
+  font-size: 12px;
+}
+
+.jiuwenmate-create__unavailable > strong {
+  color: #222;
+}
+
+.jiuwenmate-create__unavailable > p {
+  line-height: 1.6;
+}
+
+.jiuwenmate-create__unavailable-item {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 6px 0 0;
+  padding: 4px 7px;
+  border: 1px solid var(--jm-border);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.jiuwenmate-create__unavailable-item small {
+  color: var(--jm-text-2);
+}
+
+.jiuwenmate-create__unavailable-name {
+  color: var(--jm-text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.jiuwenmate-create__install-button {
+  min-height: 24px;
+  padding: 0 8px;
+  border-color: var(--jm-border);
+  color: var(--jm-text-2);
+  font-size: 11px;
+}
+
+.jiuwenmate-create__skill-recommendations {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--jm-border);
+  border-radius: 10px;
+  background: #fafbfc;
+}
+
+.jiuwenmate-create__skill-recommendations > div:first-child strong,
+.jiuwenmate-create__skill-group h3 {
+  color: var(--jm-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.jiuwenmate-create__skill-recommendations > div:first-child p,
+.jiuwenmate-create__skill-recommendations-status {
+  margin-top: 4px;
+  color: var(--jm-text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.jiuwenmate-create__skill-group {
+  display: grid;
+  gap: 8px;
+}
+
+.jiuwenmate-create__skill-group h3 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.jiuwenmate-create__skill-recommendation-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--jm-border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.jiuwenmate-create__skill-recommendation-item > div {
+  min-width: 0;
+}
+
+.jiuwenmate-create__skill-name {
+  color: var(--jm-text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.jiuwenmate-create__skill-recommendation-item small {
+  margin-left: 8px;
+  color: var(--jm-text-2);
+  font-size: 10px;
+}
+
+.jiuwenmate-create__skill-recommendation-item p {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--jm-text-2);
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+}
+
+.jiuwenmate-create__skill-action {
+  min-height: 25px;
+  flex: 0 0 auto;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
 .jiuwenmate-create__footer {
   position: sticky;
   bottom: -40px;

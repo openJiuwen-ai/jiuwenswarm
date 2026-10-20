@@ -263,6 +263,17 @@ def test_rejected_creation_leaves_nothing_behind(tmp_path, kwargs, code):
     assert list((tmp_path / "templates").iterdir()) == []
 
 
+def test_initial_publish_failure_rolls_back_the_colleague_and_template(tmp_path):
+    service = make_service(tmp_path)
+    value = settings(capabilities=CapabilitySelection(model="deepseek#0", skills=("not-installed",)))
+
+    with pytest.raises(PersistentAgentError):
+        service.create_colleague(NS, value)
+
+    assert service.list_colleagues(NS) == []
+    assert list((tmp_path / "templates").iterdir()) == []
+
+
 def test_settings_change_only_affects_requests_after_publication(tmp_path):
     service = make_service(tmp_path)
     view = service.create_colleague(NS, settings())
@@ -356,7 +367,7 @@ def test_publication_refuses_a_tokenizer_that_cannot_be_cached(tmp_path, monkeyp
         service.create_colleague(NS, settings(capabilities=CapabilitySelection(model="deepseek-flash#0")))
 
     assert caught.value.code == "INVALID_CONFIG"
-    assert service.list_colleagues(NS)[0].current_version is None
+    assert service.list_colleagues(NS) == []
 
 
 def test_publication_keeps_a_configured_output_reserve(tmp_path):
@@ -376,7 +387,7 @@ def test_an_output_reserve_that_fills_the_window_is_refused(tmp_path):
         service.create_colleague(NS, settings())
 
     assert caught.value.code == "INVALID_CONFIG"
-    assert service.list_colleagues(NS)[0].current_version is None
+    assert service.list_colleagues(NS) == []
 
 
 def test_publishing_unchanged_settings_keeps_the_version(tmp_path):
