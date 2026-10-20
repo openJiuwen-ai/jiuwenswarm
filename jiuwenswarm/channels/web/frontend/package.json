@@ -27,6 +27,7 @@
     "test:qwen-barge-in": "esbuild ../../../extensions/video_duplex/frontend/VideoLivePanel/qwenOmniSession.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/realtime-duplex/realtimeDuplex.mjs --define:import.meta.env.DEV=false && esbuild src/utils/speechDetection/speechGate.ts src/utils/speechDetection/sileroVad.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/realtime-duplex --out-extension:.js=.mjs && esbuild ../../../extensions/video_duplex/frontend/VideoLivePanel/qwenOmniProtocol.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/realtime-duplex/replyLanguageProtocol.mjs && node --test ../../../extensions/video_duplex/tests/frontend/disconnectNotice.test.mjs ../../../extensions/video_duplex/tests/frontend/replyLanguage.test.mjs ../../../extensions/video_duplex/tests/frontend/realtimeDuplex.test.mjs ../../../extensions/video_duplex/tests/frontend/speechDetection.test.mjs",
     "test:i18n-locales": "node --test tests/i18nLocales.test.mjs",
     "test:auth-store": "node --test tests/authStore.test.mjs",
+    "test:workspace-store": "node --test tests/workspaceStore.test.mjs",
     "test:chat-error": "node --test tests/chatError.test.mjs",
     "test:quota-reset": "node --test tests/quotaReset.test.mjs",
     "test:frontend-platform": "tsc src/utils/frontendPlatform.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/frontend-platform --skipLibCheck --noEmitOnError && node --test tests/frontendPlatform.test.mjs",
