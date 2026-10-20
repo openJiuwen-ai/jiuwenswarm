@@ -2489,7 +2489,15 @@ class JiuWenSwarm:
                 session_id=session_id,
             )
 
-        adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
+        # An interrupt targets the session's already-running adapter. Deriving
+        # the mode from request params (e.g. mode='agent.plan') mismatches a
+        # flash session (current='flash') and the strict adapter-mode check
+        # would reject every supplement interrupt in flash mode. Only fall
+        # back to the request-derived mode when no adapter exists yet.
+        if getattr(self, "_adapter_mode", None) is None:
+            adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
+        else:
+            adapter = self._ensure_adapter()
 
         if intent == "pause":
             # 暂停：不取消任务，只暂停 ReAct 循环
