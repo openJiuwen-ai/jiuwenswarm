@@ -2688,12 +2688,13 @@ async def _run(
                         continue
 
                     app_id = str(app.get("app_id") or "").strip()
+                    persistent_agent_id = str(app.get("persistent_agent_id") or "").strip()
                     channel_id = "feishu"
 
                     feishu_config = FeishuConfig(
                         enabled=True,
                         app_id=app_id,
-                        agent_id=str(app.get("persistent_agent_id") or "").strip(),
+                        agent_id=persistent_agent_id,
                         app_secret=str(app.get("app_secret") or "").strip(),
                         encrypt_key=str(app.get("encrypt_key") or "").strip(),
                         verification_token=str(app.get("verification_token") or "").strip(),
@@ -2703,6 +2704,7 @@ async def _run(
                         channel_id=channel_id,
                         last_chat_id=str(app.get("last_chat_id") or "").strip(),
                         last_open_id=str(app.get("last_open_id") or "").strip(),
+                        bot_open_id=str(app.get("bot_open_id") or "").strip() if persistent_agent_id else "",
                         group_digital_avatar=bool(app.get("group_digital_avatar", False)),
                         my_user_id=str(app.get("my_user_id") or app.get("my_open_id") or "").strip(),
                         bot_name=str(app.get("bot_name") or "").strip(),
@@ -2770,11 +2772,12 @@ async def _run(
 
                     bot_key = bot_key.strip()
                     app_id = str(bot_conf.get("app_id") or "").strip()
+                    persistent_agent_id = str(bot_conf.get("persistent_agent_id") or "").strip()
                     channel_id = f"feishu_enterprise:{app_id}"
                     feishu_config = FeishuConfig(
                         enabled=True,
                         app_id=app_id,
-                        agent_id=str(bot_conf.get("persistent_agent_id") or "").strip(),
+                        agent_id=persistent_agent_id,
                         app_secret=str(bot_conf.get("app_secret") or "").strip(),
                         encrypt_key=str(bot_conf.get("encrypt_key") or "").strip(),
                         verification_token=str(bot_conf.get("verification_token") or "").strip(),
@@ -2785,6 +2788,7 @@ async def _run(
                         bot_key=bot_key,
                         last_chat_id=str(bot_conf.get("last_chat_id") or "").strip(),
                         last_open_id=str(bot_conf.get("last_open_id") or "").strip(),
+                        bot_open_id=str(bot_conf.get("bot_open_id") or "").strip() if persistent_agent_id else "",
                         my_user_id=str(bot_conf.get("my_user_id") or "").strip(),
                         bot_name=str(bot_conf.get("bot_name") or "").strip(),
                         group_digital_avatar=bool(bot_conf.get("group_digital_avatar", False)),

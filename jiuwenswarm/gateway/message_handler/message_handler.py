@@ -3493,7 +3493,8 @@ class MessageHandler(ABC):
         try:
             if callable(handler):
                 candidate = await handler(payload)
-                if isinstance(candidate, dict) and candidate.get("status") in {"active", "left", "unknown"}:
+                statuses = {"ok", "unknown"} if payload.get("message_ids") else {"active", "left", "unknown"}
+                if isinstance(candidate, dict) and candidate.get("status") in statuses:
                     result = candidate
             await self.agent_client.send_request(E2AEnvelope(
                 request_id=f"jm11_{query_id}", channel="feishu", method=ReqMethod.JIUWENMATE_GROUP_RESPONSE.value,

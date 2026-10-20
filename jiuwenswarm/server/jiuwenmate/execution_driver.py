@@ -168,7 +168,11 @@ class ExecutionDriver:
                 trigger = await ports.group_chat.current_trigger(context.execution, inputs.trigger_message_id)
                 if trigger.status in {"recalled", "unavailable"}:
                     raise PersistentAgentError("group trigger is no longer readable", code="TRIGGER_UNAVAILABLE")
-                inputs = inputs.model_copy(update={"source": trigger,
+                source = trigger
+                if inputs.source is not None:
+                    # Refresh content, not the audience already verified by JM-08.
+                    source = trigger.model_copy(update={"mention_ids": inputs.source.mention_ids})
+                inputs = inputs.model_copy(update={"source": source,
                     "text": trigger.text or ("[附件消息]" if trigger.attachment_refs else "[群消息正文为空]"),
                     "attachment_refs": trigger.attachment_refs})
             terminal = None

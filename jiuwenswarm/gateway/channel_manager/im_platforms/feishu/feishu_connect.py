@@ -236,6 +236,7 @@ class FeishuChannel(BaseChannel):
         self._ws_thread_loop: asyncio.AbstractEventLoop | None = None  # WebSocket线程事件循环
         self._message_callback: Callable[[Message], None] | None = None  # 网关模式回调
         self._persistent_group_fanout_callback: Callable[[FeishuInboundEvent], Any] | None = None
+        self._persistent_group_names: OrderedDict[str, tuple[float, str]] = OrderedDict()
         self._im_platform_adapter = im_platform_adapter
         self._message_storage = MessageStore(api_client=None, platform_adapter=self._im_platform_adapter)
         self._pending_message_batches: dict[tuple[str, str], dict[str, Any]] = {}
@@ -293,31 +294,13 @@ class FeishuChannel(BaseChannel):
         self._persistent_group_fanout_callback = callback
 
     async def inspect_persistent_group(self, chat_id: str, message_ids: tuple[str, ...] = ()) -> dict[str, Any]:
-        """Query the receiving Bot's live membership, without granting workspace access."""
+        """Check live membership, or refresh messages between the host's access checks."""
         if not getattr(self.config, "agent_id", None) or self._api_client is None:
             return {"status": "unknown"}
-        from lark_oapi.api.im.v1 import IsInChatChatMembersRequest, GetChatRequest
+        from lark_oapi.api.im.v1 import IsInChatChatMembersRequest, GetChatRequest, GetMessageRequest
 
         try:
-            response = await self._api_client.im.v1.chat_members.ais_in_chat(
-                IsInChatChatMembersRequest.builder().chat_id(chat_id).build()
-            )
-            present = getattr(getattr(response, "data", None), "is_in_chat", None)
-            if not response.success() or type(present) is not bool:
-                return {"status": "unknown"}
-            if not present:
-                return {"status": "left"}
-            result = {"status": "active"}
-            try:
-                info = await self._api_client.im.v1.chat.aget(GetChatRequest.builder().chat_id(chat_id).build())
-                name = getattr(getattr(info, "data", None), "name", None)
-                if info.success() and isinstance(name, str) and name.strip():
-                    result["group_name"] = name
-            except Exception:
-                pass
             if message_ids:
-                from lark_oapi.api.im.v1 import GetMessageRequest
-
                 semaphore = asyncio.Semaphore(4)
 
                 async def read_message(message_id):
@@ -346,7 +329,33 @@ class FeishuChannel(BaseChannel):
                         except Exception:
                             return message_id, {"status": "unavailable"}
 
-                result["messages"] = dict(await asyncio.gather(*(read_message(mid) for mid in message_ids)))
+                return {"status": "ok", "messages": dict(await asyncio.gather(
+                    *(read_message(mid) for mid in message_ids)))}
+
+            response = await self._api_client.im.v1.chat_members.ais_in_chat(
+                IsInChatChatMembersRequest.builder().chat_id(chat_id).build()
+            )
+            present = getattr(getattr(response, "data", None), "is_in_chat", None)
+            if not response.success() or type(present) is not bool:
+                return {"status": "unknown"}
+            if not present:
+                return {"status": "left"}
+            result = {"status": "active"}
+            cached = self._persistent_group_names.get(chat_id)
+            if cached is not None and time.monotonic() - cached[0] < 300:
+                result["group_name"] = cached[1]
+                return result
+            try:
+                info = await self._api_client.im.v1.chat.aget(GetChatRequest.builder().chat_id(chat_id).build())
+                name = getattr(getattr(info, "data", None), "name", None)
+                if info.success() and isinstance(name, str) and name.strip():
+                    result["group_name"] = name
+                    self._persistent_group_names[chat_id] = (time.monotonic(), name)
+                    self._persistent_group_names.move_to_end(chat_id)
+                    if len(self._persistent_group_names) > 256:
+                        self._persistent_group_names.popitem(last=False)
+            except Exception:
+                pass
             return result
         except Exception:
             return {"status": "unknown"}
@@ -515,6 +524,11 @@ class FeishuChannel(BaseChannel):
             ),
             text=self._persistent_text(content, message),
             mention_ids=tuple(mentions),
+            receiver_bot_mentioned=(
+                self._persistent_event_value(message, "chat_type") == "group"
+                and bool(self.config.bot_open_id)
+                and self.config.bot_open_id in mentions
+            ),
             reply_to=reply_to,
             attachment_refs=self._persistent_attachment_refs(message_id, content),
         )
@@ -743,11 +757,16 @@ class FeishuChannel(BaseChannel):
                 )
                 # 持久化到配置文件（多应用模式下写入对应 app 条目）
                 try:
-                    from jiuwenswarm.common.config import update_channel_app_field
-                    ok = update_channel_app_field(
-                        "feishu", self.config.app_id,
-                        {"bot_open_id": bot_open_id},
-                    )
+                    if self.config.channel_id.startswith("feishu_enterprise:") and self.config.bot_key:
+                        from jiuwenswarm.common.config import update_channel_subsection_in_config
+
+                        ok = update_channel_subsection_in_config(
+                            "feishu_enterprise", self.config.bot_key, {"bot_open_id": bot_open_id}
+                        )
+                    else:
+                        from jiuwenswarm.common.config import update_channel_app_field
+
+                        ok = update_channel_app_field("feishu", self.config.app_id, {"bot_open_id": bot_open_id})
                     if not ok:
                         logger.debug(
                             "[_fetch_bot_open_id] 未找到 app=%s 条目，bot_open_id 未持久化",
@@ -1852,25 +1871,6 @@ class FeishuChannel(BaseChannel):
             }
         }
 
-    @staticmethod
-    def _persistent_text_content(text: str, mention_ids: Any) -> str:
-        """Build one Feishu text body, turning accepted mention ids into real at tags."""
-        tags: list[str] = []
-        for item in mention_ids or ():
-            if not isinstance(item, str) or re.fullmatch(r"[A-Za-z0-9:_-]{1,128}", item) is None:
-                continue
-            tag = f'<at user_id="{item}"></at>'
-            if tag in text or tag in tags:
-                continue
-            tags.append(tag)
-        body = f"{' '.join(tags)} {text}" if tags else text
-        return json.dumps({"text": body}, ensure_ascii=False)
-
-    def _persistent_markdown_content(self, text: str, mention_ids: Any) -> str:
-        """Build a native Feishu card so JiuwenMate Markdown is rendered as rich text."""
-        body = json.loads(self._persistent_text_content(text, mention_ids))["text"]
-        return self._build_card_content(body)
-
     async def send_persistent_result(
         self,
         *,
@@ -1880,12 +1880,10 @@ class FeishuChannel(BaseChannel):
         idempotency_key: str,
         file_path: str | None = None,
         file_key: str | None = None,
-        mention_ids: Any = (),
     ) -> dict[str, Any]:
         """Send one JM-09 result and return Feishu's message receipt.
 
-        A text result is one text message. Mention ids from the accepted group
-        message become Feishu ``<at>`` tags in that text, or in a file caption.
+        A text result is one Markdown card, without copying inbound mentions.
         A file result sends its caption, when it has one, then uploads the file
         unless ``file_key`` names an earlier upload,
         then sends the file message; its receipt carries the ``file_key`` so a retry
@@ -1901,7 +1899,7 @@ class FeishuChannel(BaseChannel):
             return await self._send_persistent_message(
                 chat_id,
                 "interactive",
-                self._persistent_markdown_content(text or "", mention_ids),
+                self._build_card_content(text or ""),
                 source_message_id,
                 idempotency_key,
             )
@@ -1911,7 +1909,7 @@ class FeishuChannel(BaseChannel):
             caption = await self._send_persistent_message(
                 chat_id,
                 "interactive",
-                self._persistent_markdown_content(text or "", mention_ids),
+                self._build_card_content(text or ""),
                 source_message_id,
                 caption_key,
             )
@@ -1982,6 +1980,12 @@ class FeishuChannel(BaseChannel):
 
         if not response.success():
             code = getattr(response, "code", None)
+            logger.warning(
+                "[Feishu] JM-09 message rejected: app_id=%s code=%s msg=%s",
+                self.config.app_id,
+                code,
+                getattr(response, "msg", None),
+            )
             return {
                 "outcome": "failed",
                 "error_code": f"FEISHU_{code}" if code is not None else "FEISHU_REJECTED",
@@ -3167,6 +3171,14 @@ class FeishuChannel(BaseChannel):
             # event is terminal here and can never fall through to personal mode.
             if self._persistent_group_fanout_callback is not None:
                 try:
+                    # Resolve the Feishu-issued Bot identity before JM-08 consumes the event.
+                    # The personal route used to do this later, after the persistent callback.
+                    if (
+                        self.config.agent_id
+                        and not self.config.bot_open_id
+                        and self._persistent_event_value(message, "mentions", None)
+                    ):
+                        await asyncio.to_thread(self._fetch_bot_open_id)
                     disposition = await self._persistent_group_fanout_callback(
                         self._normalize_persistent_event(data)
                     )

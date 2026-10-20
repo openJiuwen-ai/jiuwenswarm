@@ -83,6 +83,43 @@ async def test_jm11_server_rejects_wrong_app_response_and_cleans_up_query(monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("message_ids,channel_status,expected", [
+    ((), "active", "active"), (("m1",), "ok", "ok"),
+    ((), "ok", "unknown"), (("m1",), "active", "unknown"),
+])
+async def test_jm11_query_crosses_gateway_forwarding_and_returns_to_server(
+    monkeypatch, message_ids, channel_status, expected,
+):
+    from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+
+    server = object.__new__(_agent_websocket_server_type())
+    monkeypatch.setattr("jiuwenswarm.server.agent_ws_server.send_wire_payload", AsyncMock())
+    handler = object.__new__(MessageHandler)
+    manager = ChannelManager(handler)
+    channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
+    messages = {"m1": {"status": "normal", "text": "current"}}
+    channel.inspect_persistent_group = AsyncMock(return_value={"status": channel_status, "messages": messages})
+    manager.register_channel(channel)
+    handler._jm11_group_handler = manager.inspect_jm11_group
+
+    async def respond(envelope):
+        request = SimpleNamespace(request_id=envelope.request_id, channel_id="feishu", params=envelope.params)
+        await server._handle_jm11_group_response(object(), request, asyncio.Lock())
+
+    async def push(message):
+        await handler._handle_agent_server_push(build_server_push_wire(message))
+        return True
+
+    handler.agent_client = SimpleNamespace(send_request=respond)
+    server.send_push = push
+    result = await server._inspect_jm11_group("cli_bound", "oc_group", message_ids)
+    assert result["status"] == expected
+    if expected == "ok":
+        assert result["messages"] == messages
+    assert server._jm11_group_waiters == {}
+
+
+@pytest.mark.asyncio
 async def test_jm11_channel_checks_live_bot_membership_and_fails_closed():
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
     response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(is_in_chat=False))
@@ -93,6 +130,55 @@ async def test_jm11_channel_checks_live_bot_membership_and_fails_closed():
     assert (await channel.inspect_persistent_group("oc_group"))["status"] == "active"
     response.data.is_in_chat = None
     assert (await channel.inspect_persistent_group("oc_group"))["status"] == "unknown"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message_ids,valid_status,wrong_status", [
+    ((), "active", "ok"), (("m1",), "ok", "active"),
+])
+async def test_jm11_response_must_match_query_kind(monkeypatch, message_ids, valid_status, wrong_status):
+    server = object.__new__(_agent_websocket_server_type())
+    monkeypatch.setattr("jiuwenswarm.server.agent_ws_server.send_wire_payload", AsyncMock())
+
+    async def push(message):
+        payload = message["payload"]
+        response = SimpleNamespace(request_id="response", channel_id="feishu", params={
+            "query_id": payload["query_id"], "app_id": "cli_bound", "chat_id": "oc_group",
+            "status": wrong_status, "messages": {},
+        })
+        await server._handle_jm11_group_response(object(), response, asyncio.Lock())
+        assert not server._jm11_group_waiters[payload["query_id"]][0].done()
+        response.params["status"] = valid_status
+        await server._handle_jm11_group_response(object(), response, asyncio.Lock())
+        return True
+
+    server.send_push = push
+    assert (await server._inspect_jm11_group("cli_bound", "oc_group", message_ids))["status"] == valid_status
+    assert server._jm11_group_waiters == {}
+
+
+@pytest.mark.asyncio
+async def test_jm11_caches_group_name_but_not_membership(monkeypatch):
+    channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
+    now = [0.0]
+    monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect.time.monotonic",
+                        lambda: now[0])
+    membership = SimpleNamespace(success=lambda: True, data=SimpleNamespace(is_in_chat=True))
+    member_api = AsyncMock(return_value=membership)
+    name_api = AsyncMock(return_value=SimpleNamespace(success=lambda: True, data=SimpleNamespace(name="Project")))
+    channel._api_client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(
+        chat_members=SimpleNamespace(ais_in_chat=member_api), chat=SimpleNamespace(aget=name_api))))
+
+    assert (await channel.inspect_persistent_group("oc_group"))["group_name"] == "Project"
+    assert (await channel.inspect_persistent_group("oc_group"))["group_name"] == "Project"
+    assert member_api.await_count == 2
+    assert name_api.await_count == 1
+    now[0] = 301.0
+    assert (await channel.inspect_persistent_group("oc_group"))["group_name"] == "Project"
+    assert name_api.await_count == 2
+    membership.data.is_in_chat = False
+    assert (await channel.inspect_persistent_group("oc_group")) == {"status": "left"}
+    assert member_api.await_count == 4
 
 
 @pytest.mark.asyncio
@@ -112,6 +198,8 @@ async def test_jm11_gateway_refreshes_edited_and_recalled_bodies_in_the_target_g
         chat_members=SimpleNamespace(ais_in_chat=AsyncMock(return_value=membership)),
         message=SimpleNamespace(aget=read))))
     result = await channel.inspect_persistent_group("oc_group", ("m1", "m2"))
+    assert result["status"] == "ok"
+    channel._api_client.im.v1.chat_members.ais_in_chat.assert_not_awaited()
     assert result["messages"]["m1"]["text"] == "new body"
     assert result["messages"]["m2"] == {"status": "recalled"}
     edited.chat_id = "other-group"
@@ -216,11 +304,12 @@ def test_production_binding_resolver_uses_owner_config_and_receiver_app_id(monke
 
 
 def test_feishu_event_payload_round_trip_preserves_normalized_message_and_binding_hint():
-    event = _event()
+    event = _event(receiver_bot_mentioned=True)
 
     restored = FeishuInboundEvent.from_payload(event.to_payload())
 
     assert restored == event
+    assert restored.receiver_bot_mentioned is True
 
 
 def test_feishu_access_snapshot_identifies_sender_without_workspace_scopes():
@@ -247,6 +336,30 @@ async def test_default_jm08_runtime_uses_one_owner_sqlite_store_and_closes_manag
     await manager.aclose()
 
     assert (tmp_path / "jiuwenmate" / "agents.sqlite3").is_file()
+
+
+@pytest.mark.asyncio
+async def test_default_runtime_consumes_message_refresh_without_rechecking_membership(tmp_path):
+    from openjiuwen.harness import persistent_agent as core
+
+    lookup = AsyncMock(return_value={"status": "ok", "messages": {
+        "m1": {"status": "edited", "text": "updated", "changed_at": NOW.isoformat()},
+    }})
+    _fanout, manager = create_default_persistent_group_fanout(tmp_path / "jiuwenmate", verify_membership=lookup)
+    group = manager.group_chats.resolve("local", "feishu", "oc_group", now=NOW)
+    manager.group_chats.observe_access("local", "mate_1", group.group_chat_id, "cli_bound",
+                                       observed_at=NOW, source_ref="joined:1")
+    access = manager.group_chats.access_for("local", "mate_1", group.group_chat_id)
+    message = core.GroupMessage(message_id="m1", sender_id="ou_alice", sender_name="Alice",
+                                sender_kind="human", received_at=NOW, text="original")
+    manager.group_archive.append("local", group.group_chat_id, message, source_ref="event:m1")
+    try:
+        refreshed = await manager.refresh_group_messages(access, group, (message,))
+        assert refreshed[0].text == "updated"
+        assert manager.group_archive.current_messages("local", group.group_chat_id, ("m1",))[0].text == "updated"
+        lookup.assert_awaited_once_with("cli_bound", "oc_group", ("m1",))
+    finally:
+        await manager.aclose()
 
 
 @pytest.mark.asyncio
@@ -503,7 +616,6 @@ async def test_channel_manager_routes_jm09_delivery_only_to_exact_feishu_app():
         text="final answer",
         source_message_id="om_source",
         idempotency_key="stable-key",
-        mention_ids=(),
     )
     wrong_app.send_persistent_result.assert_not_awaited()
     assert result["outcome"] == "delivered"
@@ -533,7 +645,6 @@ async def test_channel_manager_sends_direct_message_without_quoting_source():
         text="你好",
         source_message_id=None,
         idempotency_key="stable-key",
-        mention_ids=(),
     )
 
 

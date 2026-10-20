@@ -348,7 +348,7 @@ async def test_claimed_feishu_delivery_carries_the_accepted_route_and_can_be_ack
     assert jobs[0]["source_message_id"] == "om_source" and jobs[0]["source_reply_to"] == "om_parent"
     assert jobs[0]["is_direct_message"] is False
     assert jobs[0]["text"] == "进展如下" and jobs[0]["attempt_count"] == 1
-    assert jobs[0]["mention_ids"] == []
+    assert "mention_ids" not in jobs[0]
     delivery_id = jobs[0]["delivery_id"]
     repository.update_result_delivery(
         NS,
@@ -388,7 +388,7 @@ async def test_claimed_feishu_direct_message_delivery_is_not_a_reply(host):
     assert job["source_message_id"] is None
 
 
-async def test_claimed_group_delivery_keeps_mentions_other_than_the_author(host):
+async def test_claimed_group_delivery_does_not_copy_inbound_mentions(host):
     repository, _, port = host
     route = RequestRouteSnapshot(channel="feishu", app_id="cli_a", target_id="oc_group", source_message_id="om_1")
     session = repository.resolve_session(NS, AGENT, ConversationRef.group("group-1"), now=NOW)
@@ -421,7 +421,8 @@ async def test_claimed_group_delivery_keeps_mentions_other_than_the_author(host)
 
     job = repository.claim_pending_result_deliveries(NS, limit=10, now=NOW)[0]
 
-    assert job["mention_ids"] == ["ou_b"]
+    assert "mention_ids" not in job
+    assert state.record.request_input.source.mention_ids == ("ou_author", "ou_b", "ou_b", "ou.b")
 
 
 async def test_sending_delivery_after_restart_becomes_unknown_not_retriable(host):

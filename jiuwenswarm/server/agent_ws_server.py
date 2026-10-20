@@ -2174,7 +2174,7 @@ class AgentWebSocketServer:
         if waiters is None:
             waiters = self._jm11_group_waiters = {}
         future = asyncio.get_running_loop().create_future()
-        waiters[query_id] = (future, app_id, chat_id)
+        waiters[query_id] = (future, app_id, chat_id, bool(message_ids))
         try:
             sent = await self.send_push({"request_id": f"jm11_{query_id}", "channel_id": "feishu", "payload": {
                 "event_type": "jiuwenmate.group.inspect", "query_id": query_id, "app_id": app_id, "chat_id": chat_id,
@@ -2192,7 +2192,7 @@ class AgentWebSocketServer:
         params = request.params if isinstance(request.params, dict) else {}
         pending = getattr(self, "_jm11_group_waiters", {}).get(params.get("query_id"))
         ok = bool(pending and (pending[1], pending[2]) == (params.get("app_id"), params.get("chat_id"))
-                  and params.get("status") in {"active", "left", "unknown"})
+                  and params.get("status") in ({"ok", "unknown"} if pending[3] else {"active", "left", "unknown"}))
         if ok and not pending[0].done():
             pending[0].set_result(dict(params))
         response = AgentResponse(request_id=request.request_id, channel_id=request.channel_id, ok=ok,
@@ -2228,7 +2228,6 @@ class AgentWebSocketServer:
                 "source_reply_to": job.get("source_reply_to"),
                 "idempotency_key": job.get("idempotency_key"),
                 "text": job.get("text"),
-                "mention_ids": list(job.get("mention_ids") or ()),
             },
         }
         if isinstance(job.get("file"), dict):

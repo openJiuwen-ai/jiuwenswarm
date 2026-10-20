@@ -311,6 +311,21 @@ async def test_group_event_maps_core_fields_and_persists_one_request(host):
 
 
 @pytest.mark.asyncio
+async def test_receiver_bot_mention_adds_internal_agent_id_only_to_request_source(host):
+    agent_id = host.colleague("研发同事")
+    fanout = host.fanout([_binding("app-dev", agent_id)])
+    source = _event(receiver_bot_mentioned=True)
+
+    assert await fanout.handle(source) is InboundDisposition.HANDLED
+
+    request = host.request_states(agent_id, source)[0].record.request_input
+    group = host.groups.resolve(NS, "feishu", source.chat_id, now=NOW)
+    archived, = host.manager.group_archive.current_messages(NS, group.group_chat_id, (source.message_id,))
+    assert request.source.mention_ids == ("ou_dev", agent_id)
+    assert archived.mention_ids == ("ou_dev",), "shared archive keeps Feishu's original mention IDs"
+
+
+@pytest.mark.asyncio
 async def test_configured_agent_mismatch_is_rejected_without_personal_fallback(host):
     agent_id = host.colleague("研发同事")
     fanout = host.fanout([_binding("app-dev", agent_id)])
@@ -518,8 +533,9 @@ async def test_jm09_feishu_result_replies_to_source_with_stable_uuid_and_receipt
 
 
 @pytest.mark.asyncio
-async def test_jm09_feishu_result_renders_source_mentions_as_at_tags():
-    channel = _feishu_channel()
+async def test_jm09_feishu_result_only_contains_the_answer():
+    channel = _feishu_channel(agent_id="mate_dev")
+    channel.config.bot_open_id = "ou_self"
     response = SimpleNamespace(
         success=lambda: True,
         data=SimpleNamespace(message=SimpleNamespace(message_id="om_sent")),
@@ -534,11 +550,10 @@ async def test_jm09_feishu_result_renders_source_mentions_as_at_tags():
         text="请核对这个数字",
         source_message_id="om_source",
         idempotency_key="delivery-key",
-        mention_ids=("ou_b", "bad id", "ou_b"),
     )
 
     content = json.loads(api_method.call_args.args[0].request_body.content)
-    assert content["elements"][0]["text"]["content"] == '<at user_id="ou_b"></at> 请核对这个数字'
+    assert content["elements"][0]["text"]["content"] == "请核对这个数字"
     assert content["elements"][0]["text"]["tag"] == "lark_md"
 
 
@@ -572,7 +587,9 @@ async def test_jm09_feishu_result_uses_chat_create_when_no_source_message():
     assert result == {"outcome": "delivered", "external_message_id": "om_new"}
 
 
-def _raw_feishu_event(*, sender_type="user", message_type="text", content=None, message_id="om_001"):
+def _raw_feishu_event(
+    *, sender_type="user", message_type="text", content=None, message_id="om_001", mention_ids=("ou_dev",)
+):
     message = SimpleNamespace(
         message_id=message_id,
         chat_id="oc_project",
@@ -580,7 +597,7 @@ def _raw_feishu_event(*, sender_type="user", message_type="text", content=None, 
         create_time=str(int(NOW.timestamp() * 1000)),
         message_type=message_type,
         content=content if content is not None else json.dumps({"text": "请看一下"}),
-        mentions=[SimpleNamespace(id=SimpleNamespace(open_id="ou_dev"), name="研发同事")],
+        mentions=[SimpleNamespace(id=SimpleNamespace(open_id=item), name="研发同事") for item in mention_ids],
         parent_id="om_parent",
         root_id="om_root",
     )
@@ -595,6 +612,7 @@ def _raw_feishu_event(*, sender_type="user", message_type="text", content=None, 
 @pytest.mark.asyncio
 async def test_bound_attachment_event_is_claimed_before_personal_download_and_dedup():
     channel = _feishu_channel()
+    channel.config.bot_open_id = "ou_dev"
     received = []
 
     async def handle(event):
@@ -620,8 +638,47 @@ async def test_bound_attachment_event_is_claimed_before_personal_download_and_de
     assert received[0].received_at == NOW
     assert received[0].text is None
     assert received[0].mention_ids == ("ou_dev",)
+    assert received[0].receiver_bot_mentioned is True
     assert received[0].reply_to == "om_parent"
     assert received[0].attachment_refs == ("feishu:attachment:om_001:img_key_1",)
+
+
+@pytest.mark.asyncio
+async def test_persistent_route_resolves_bot_open_id_before_normalizing_mention(monkeypatch):
+    channel = _feishu_channel(agent_id="mate_dev")
+    order = []
+
+    def fetch_bot_open_id():
+        order.append("resolve")
+        channel.config.bot_open_id = "ou_dev"
+
+    async def handle(event):
+        order.append("callback")
+        assert event.receiver_bot_mentioned is True
+        return InboundDisposition.HANDLED
+
+    monkeypatch.setattr(channel, "_fetch_bot_open_id", fetch_bot_open_id)
+    channel.set_persistent_group_fanout_callback(handle)
+
+    await channel._on_message(_raw_feishu_event())
+
+    assert order == ["resolve", "callback"]
+
+
+@pytest.mark.asyncio
+async def test_mention_of_another_bot_does_not_mark_receiving_bot_mentioned():
+    channel = _feishu_channel(agent_id="mate_dev")
+    channel.config.bot_open_id = "ou_dev"
+    received = []
+
+    async def handle(event):
+        received.append(event)
+        return InboundDisposition.HANDLED
+
+    channel.set_persistent_group_fanout_callback(handle)
+    await channel._on_message(_raw_feishu_event(mention_ids=("ou_other",)))
+
+    assert received[0].receiver_bot_mentioned is False
 
 
 @pytest.mark.asyncio
