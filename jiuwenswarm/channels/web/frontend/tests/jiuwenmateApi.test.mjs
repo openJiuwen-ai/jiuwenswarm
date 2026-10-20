@@ -20,6 +20,7 @@ import {
   selectablePluginPackages,
   selectableKnowledgePages,
   toWireSettings,
+  withColleagueEdit,
   withResourceSelection,
 } from '../node_modules/.cache/jiuwenmate-api/jiuwenmateApi.js';
 
@@ -89,6 +90,7 @@ function recorder(responses) {
 test('server colleagues map to page colleagues with the persisted enabled state', () => {
   const colleague = toColleague(wireColleague);
   assert.equal(colleague.id, 'agent-1');
+  assert.equal(colleague.persona, '你是小九');
   assert.equal(colleague.capabilities.model, '');
   assert.deepEqual(colleague.capabilities.starterPrompts, ['帮我整理本周工作进展。']);
   assert.equal(colleague.avatarUrl, undefined);
@@ -122,6 +124,7 @@ test('draft settings trim blanks, drop uploaded images and keep only listed mode
   assert.equal(settings.capabilities.model, 'kimi#1');
   assert.deepEqual(settings.capabilities.starter_prompts, ['写一份周报']);
   assert.equal('persona' in settings, false);
+  assert.equal(withColleagueEdit(toColleague(wireColleague), models, { persona: '新的人设' }).persona, '新的人设');
 
   const unlisted = toWireSettings({ ...draft, capabilities: { ...draft.capabilities, model: 'deepseek-v3.2' } }, models);
   assert.equal(unlisted.capabilities.model, null);
@@ -536,12 +539,12 @@ test('published personal-context pages are the selectable employee knowledge', (
   assert.deepEqual(
     selectableKnowledgePages({
       pages: [
-        { name: 'topics/description.md', label: 'topics/description.md' },
+        { name: 'topics/description.md', label: 'topics/description.md', source: '知乎专栏', updated_at: '2026-08-20 16:38:24' },
         { name: '', label: '空' },
         { name: 'topics/description.md', label: '重复' },
       ],
     }),
-    [{ name: 'topics/description.md', label: 'topics/description.md', description: '' }],
+    [{ name: 'topics/description.md', label: 'topics/description.md', description: '', source: '知乎专栏', updatedAt: '2026-08-20 16:38:24' }],
   );
 });
 

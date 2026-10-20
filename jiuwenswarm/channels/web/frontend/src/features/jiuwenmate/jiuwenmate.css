@@ -2133,7 +2133,15 @@
 }
 
 .jiuwenmate-schedule-section__bar {
-  justify-content: flex-end;
+  justify-content: space-between;
+}
+
+.jiuwenmate-schedule-add {
+  width: 72px;
+  min-height: 32px;
+  gap: 6px;
+  padding: 0;
+  font-size: 12px;
 }
 
 .jiuwenmate-schedule-cards {
@@ -3474,6 +3482,22 @@
   padding: 20px 24px 28px;
 }
 
+.jiuwenmate-profile__content[data-section]:not([data-section='overview']) {
+  grid-template-rows: minmax(0, 1fr);
+  align-content: stretch;
+  padding-top: 12px;
+}
+
+.jiuwenmate-profile__content[data-section]:not([data-section='overview']) > .jiuwenmate-profile__header {
+  display: none;
+}
+
+.jiuwenmate-profile__content[data-section='persona'] > .jiuwenmate-profile__block {
+  grid-template-rows: min-content minmax(0, 1fr) auto;
+  align-content: stretch;
+  min-height: 0;
+}
+
 .jiuwenmate-profile__header {
   display: flex;
   align-items: center;
@@ -3573,7 +3597,165 @@
 
 .jiuwenmate-profile__block {
   display: grid;
+  align-content: start;
   gap: 12px;
+}
+
+.jiuwenmate-profile__save-button {
+  min-height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.jiuwenmate-profile__persona-editor textarea {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 500px;
+  padding: 18px 20px;
+  border: 1px solid var(--jm-border);
+  border-radius: 10px;
+  outline: 0;
+  background: var(--jm-surface);
+  color: var(--jm-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.8;
+  resize: vertical;
+}
+
+.jiuwenmate-profile__persona-editor textarea:focus {
+  border-color: var(--jm-border-strong);
+}
+
+.jiuwenmate-profile__model-list {
+  display: grid;
+  gap: 10px;
+}
+
+.jiuwenmate-profile__model-option {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border: 1px solid var(--jm-border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.jiuwenmate-profile__model-option[data-selected='true'] {
+  border-color: var(--jm-blue);
+  background: var(--jm-blue-soft);
+}
+
+.jiuwenmate-profile__model-option input {
+  accent-color: var(--jm-blue);
+}
+
+.jiuwenmate-profile__model-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  object-fit: contain;
+}
+
+.jiuwenmate-profile__model-option-copy {
+  display: grid;
+  gap: 5px;
+}
+
+.jiuwenmate-profile__model-option-copy strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.jiuwenmate-profile__model-option-copy small {
+  color: var(--jm-text-2);
+  font-size: 12px;
+}
+
+.jiuwenmate-profile__resource-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.jiuwenmate-profile__knowledge-list {
+  display: grid;
+  gap: 12px;
+}
+
+.jiuwenmate-profile__knowledge-item {
+  display: flex;
+  min-height: 82px;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border: 1px solid var(--jm-border);
+  border-radius: 10px;
+}
+
+.jiuwenmate-profile__knowledge-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--jm-muted);
+  color: var(--jm-text-2);
+  font-weight: 600;
+}
+
+.jiuwenmate-profile__knowledge-copy {
+  display: grid;
+  flex: 1;
+  gap: 5px;
+  min-width: 0;
+}
+
+.jiuwenmate-profile__knowledge-copy strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jiuwenmate-profile__knowledge-copy small {
+  overflow: hidden;
+  color: var(--jm-text-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jiuwenmate-profile__knowledge-empty {
+  display: grid;
+  min-height: 300px;
+  align-content: center;
+  justify-items: center;
+  gap: 16px;
+  color: var(--jm-text-2);
+  text-align: center;
+}
+
+.jiuwenmate-profile__knowledge-empty > p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.jiuwenmate-profile__knowledge-empty > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (max-width: 760px) {
+  .jiuwenmate-profile__resource-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .jiuwenmate-profile__resource-actions {
@@ -3610,6 +3792,10 @@
 .jiuwenmate-office__section-head h2 {
   font-size: 13px;
   font-weight: 600;
+}
+
+.jiuwenmate-profile__content[data-section='persona'] .jiuwenmate-profile__block h2 {
+  font-size: 16px;
 }
 
 .jiuwenmate-profile__block--card {

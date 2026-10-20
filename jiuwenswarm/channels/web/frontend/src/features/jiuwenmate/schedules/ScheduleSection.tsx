@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Clock3, History, PencilLine, Play, Trash2 } from 'lucide-react';
+import { Clock3, History, PencilLine, Play, Plus, Trash2 } from 'lucide-react';
 import scheduleEmpty from '../../../assets/jiuwenmate/illustrations/schedule-empty.png';
 import { ActionMenu } from '../components/ActionMenu';
 import { ScheduleDialog } from './ScheduleDialog';
@@ -9,6 +9,7 @@ import { scheduleSummary } from './state';
 import type { Schedule, ScheduleDraft, ScheduleRun } from './types';
 
 export function ScheduleSection({
+  title,
   schedules,
   saving,
   onCreate,
@@ -18,6 +19,7 @@ export function ScheduleSection({
   onRun,
   onLoadHistory,
 }: {
+  title?: string;
   schedules: readonly Schedule[];
   saving?: boolean;
   onCreate?: (draft: ScheduleDraft) => void | Promise<void>;
@@ -40,8 +42,9 @@ export function ScheduleSection({
   return (
     <div className="jiuwenmate-schedule-section" data-testid="jiuwenmate-schedule-section">
       <div className="jiuwenmate-schedule-section__bar">
-        <span />
-        <button type="button" className="jiuwenmate-outline-button jiuwenmate-outline-button--small" onClick={() => setEditing(null)}>
+        {title ? <h2>{title}</h2> : null}
+        <button type="button" className="jiuwenmate-outline-button jiuwenmate-schedule-add" onClick={() => setEditing(null)} data-testid="jiuwenmate-schedule-add">
+          <Plus size={14} aria-hidden />
           {t('jiuwenmate.schedule.add')}
         </button>
       </div>
