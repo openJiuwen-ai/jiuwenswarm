@@ -1338,6 +1338,13 @@ def complete_cli_auth(name: str, step_index: int, *, install_only: bool = False)
     return _connect_cli(n, idx + 1, install_only=install_only)
 
 
+def complete_oauth_callback(query: dict[str, Any]) -> bool:
+    """Expose callback completion through the existing registered MCP facade."""
+    from jiuwenswarm.server.runtime.mcp.oauth_flow import complete_oauth_flow
+
+    return complete_oauth_flow(query)
+
+
 def complete_host_oauth_auth(name: str) -> dict[str, Any]:
     """Finish a host-managed OAuth MCP connect after the callback succeeded.
 
@@ -1582,6 +1589,7 @@ __all__ = [
     "connect_mcp",
     "disconnect_mcp",
     "complete_cli_auth",
+    "complete_oauth_callback",
     "complete_host_oauth_auth",
     "register_custom_mcp",
     "delete_custom_mcp",

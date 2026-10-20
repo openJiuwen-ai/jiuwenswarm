@@ -8,6 +8,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 import threading
 import time
@@ -17,6 +18,7 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 
+from jiuwenswarm.common.mcp_oauth import McpOAuthError
 from jiuwenswarm.common.utils import get_workspace_dir
 from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
 
@@ -24,6 +26,8 @@ from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
 _FLOW_TTL_S = 10 * 60
 _HTTP_TIMEOUT_S = 20.0
 _PROTECTED_RESOURCE_PATH = "/.well-known/oauth-protected-resource"
+
+logger = logging.getLogger(__name__)
 
 # Canva is currently the only package using this flow. Keeping the provider
 # metadata in code avoids shipping a client registration or token endpoint in
@@ -56,10 +60,6 @@ _PROVIDERS: dict[str, dict[str, Any]] = {
 }
 
 _TOKEN_KEYS = ("access_token", "refresh_token", "expires_in", "token_type", "scope")
-
-
-class McpOAuthError(RuntimeError):
-    """A user-facing OAuth flow failure."""
 
 
 @dataclass
@@ -162,17 +162,16 @@ def _register_client(
 
 
 def _parse_callback_url(callback_url: str) -> tuple[str, int]:
-    parsed = urlsplit(callback_url)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname != "127.0.0.1"
-        or not parsed.port
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
+    try:
+        parsed = urlsplit(callback_url)
+        port = parsed.port
+    except ValueError as exc:
+        raise McpOAuthError("OAuth callback must be a loopback base URL") from exc
+    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not port:
         raise McpOAuthError("OAuth callback must be a loopback base URL")
-    return parsed.hostname, parsed.port
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise McpOAuthError("OAuth callback must be a loopback base URL")
+    return parsed.hostname, port
 
 
 def load_oauth_credentials(name: str) -> OAuthCredentials | None:
@@ -218,30 +217,35 @@ class OAuthFlowManager:
         try:
             raw = json.loads(self._flow_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return
-        except Exception:
-            return
-        flows = raw.get("flows") if isinstance(raw, dict) else None
-        if not isinstance(flows, dict):
-            return
-        for flow_id, payload in flows.items():
-            if not isinstance(payload, dict):
-                continue
-            try:
-                self._flows[str(flow_id)] = OAuthFlow(
-                    name=str(payload["name"]),
-                    provider=dict(payload["provider"]),
-                    metadata=dict(payload["metadata"]),
-                    client_id=str(payload["client_id"]),
-                    redirect_uri=str(payload["redirect_uri"]),
-                    state=str(payload["state"]),
-                    code_verifier=str(payload["code_verifier"]),
-                    created_at=float(payload["created_at"]),
-                    status=str(payload.get("status") or "pending"),
-                    result=payload.get("result"),
-                )
-            except Exception:
-                continue
+            logger.debug("[MCP OAuth] No persisted flows to restore")
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            logger.warning("[MCP OAuth] Cannot restore persisted flows (%s)", type(exc).__name__)
+        else:
+            flows = raw.get("flows") if isinstance(raw, dict) else None
+            if not isinstance(flows, dict):
+                logger.warning("[MCP OAuth] Persisted flows have an invalid structure")
+                return
+            for flow_id, payload in flows.items():
+                if not isinstance(payload, dict):
+                    logger.warning("[MCP OAuth] Skipping a persisted flow with an invalid structure")
+                    continue
+                try:
+                    flow = OAuthFlow(
+                        name=str(payload["name"]),
+                        provider=dict(payload["provider"]),
+                        metadata=dict(payload["metadata"]),
+                        client_id=str(payload["client_id"]),
+                        redirect_uri=str(payload["redirect_uri"]),
+                        state=str(payload["state"]),
+                        code_verifier=str(payload["code_verifier"]),
+                        created_at=float(payload["created_at"]),
+                        status=str(payload.get("status") or "pending"),
+                        result=payload.get("result"),
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    logger.warning("[MCP OAuth] Skipping an invalid persisted flow (%s)", type(exc).__name__)
+                else:
+                    self._flows[str(flow_id)] = flow
 
     def _save_flows(self) -> None:
         payload = {
@@ -285,7 +289,8 @@ class OAuthFlowManager:
             if now - flow.created_at > _FLOW_TTL_S or flow.status in {"complete", "failed"}:
                 del self._flows[key]
 
-    def _provider(self, name: str) -> dict[str, Any]:
+    @staticmethod
+    def _provider(name: str) -> dict[str, Any]:
         provider = _PROVIDERS.get(name)
         if provider is None:
             raise McpOAuthError(f"MCP '{name}' does not support host OAuth")

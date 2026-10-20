@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 
-from jiuwenswarm.server.runtime.mcp.oauth_flow import McpOAuthError, complete_oauth_flow
+from jiuwenswarm.common.mcp_oauth import McpOAuthError, complete_oauth_flow
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,6 @@ def attach_mcp_oauth_routes(app: FastAPI) -> None:
             logger.warning("[MCP OAuth] callback failed: %s", exc)
             return _landing(False, "授权未完成", str(exc), 400)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("[MCP OAuth] callback crashed")
-            return _landing(False, "授权未完成", f"回调处理失败：{exc}", 500)
+            logger.error("[MCP OAuth] callback crashed (%s)", type(exc).__name__)
+            return _landing(False, "授权未完成", "回调处理失败，请检查服务状态后重新连接。", 500)
         return _landing(True, "授权成功", "请回到 JiuwenSwarm 继续使用；本页面会自动关闭。")

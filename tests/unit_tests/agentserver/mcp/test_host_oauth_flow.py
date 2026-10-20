@@ -4,11 +4,21 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
-from jiuwenswarm.server.runtime.mcp.oauth_flow import OAuthFlowManager
+from jiuwenswarm.server.runtime.mcp.oauth_flow import McpOAuthError, OAuthFlowManager, _parse_callback_url
+
+
+@pytest.fixture(autouse=True)
+def capture_oauth_logs(caplog, monkeypatch):
+    target = logging.getLogger("jiuwenswarm.server.runtime.mcp.oauth_flow")
+    monkeypatch.setattr(target, "handlers", [caplog.handler])
+    caplog.set_level(logging.DEBUG, logger=target.name)
 
 
 class _FakeResponse:
@@ -184,3 +194,141 @@ def test_complete_host_oauth_auth_writes_connecting_record(workspace: Path):
     assert rec["integration_type"] == "remote-mcp"
     assert item["transport"] == "streamable-http"
     assert item["url"] == "https://mcp.canva.cn/mcp"
+
+
+@pytest.mark.parametrize("callback_url,expected", [
+    ("http://127.0.0.1:19000", ("127.0.0.1", 19000)),
+    ("http://127.0.0.1:12345/", ("127.0.0.1", 12345)),
+])
+def test_callback_url_accepts_only_loopback_origins(callback_url, expected):
+    assert _parse_callback_url(callback_url) == expected
+
+
+@pytest.mark.parametrize("callback_url", [
+    "https://127.0.0.1:19000",
+    "http://example.test:19000",
+    "http://localhost:19000",
+    "http://127.0.0.1",
+    "http://127.0.0.1:0",
+    "http://127.0.0.1:19000/mcp/oauth/callback",
+    "http://127.0.0.1:19000?code=mock-private-code",
+    "http://127.0.0.1:19000#mock-private-code",
+    "http://127.0.0.1:invalid",
+    "http://127.0.0.1:65536",
+    "http://[invalid:19000",
+])
+def test_callback_url_rejects_invalid_origins_without_echoing_input(callback_url):
+    with pytest.raises(McpOAuthError, match="OAuth callback must be a loopback base URL") as error:
+        _parse_callback_url(callback_url)
+    assert callback_url not in str(error.value)
+
+
+@pytest.mark.parametrize("contents", [b'{"mock-private-state":', b'\xffmock-private-verifier'])
+def test_unreadable_flow_json_is_diagnosed_without_exposing_contents(tmp_path, caplog, contents):
+    path = tmp_path / "mcp/oauth_flows.json"
+    path.parent.mkdir()
+    path.write_bytes(contents)
+
+    with caplog.at_level(logging.WARNING):
+        manager = OAuthFlowManager(workspace_dir=tmp_path)
+
+    assert manager._flows == {}
+    assert "Cannot restore persisted flows" in caplog.text
+    assert "mock-private" not in caplog.text
+    assert path.read_bytes() == contents
+
+
+def test_flow_read_error_is_diagnosed_without_logging_exception_details(tmp_path, monkeypatch, caplog):
+    def fail_read(*args, **kwargs):
+        raise PermissionError("mock-private-path-and-token")
+
+    monkeypatch.setattr(Path, "read_text", fail_read)
+    with caplog.at_level(logging.WARNING):
+        manager = OAuthFlowManager(workspace_dir=tmp_path)
+
+    assert manager._flows == {}
+    assert "Cannot restore persisted flows (PermissionError)" in caplog.text
+    assert "mock-private" not in caplog.text
+
+
+@pytest.mark.parametrize("contents", ["[]", '{"flows": []}'])
+def test_invalid_flow_document_is_diagnosed(tmp_path, caplog, contents):
+    path = tmp_path / "mcp/oauth_flows.json"
+    path.parent.mkdir()
+    path.write_text(contents, encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        manager = OAuthFlowManager(workspace_dir=tmp_path)
+
+    assert manager._flows == {}
+    assert "Persisted flows have an invalid structure" in caplog.text
+
+
+@pytest.mark.parametrize("invalid_field,value", [
+    ("name", None),
+    ("provider", 12),
+    ("created_at", "mock-private-verifier"),
+])
+def test_invalid_flow_record_does_not_hide_valid_flows(tmp_path, caplog, invalid_field, value):
+    valid = {
+        "name": "canva",
+        "provider": {"mcp_url": "https://mcp.canva.cn/mcp"},
+        "metadata": {"token_endpoint": "https://mcp.canva.cn/token"},
+        "client_id": "mock-client",
+        "redirect_uri": "http://127.0.0.1:19000/mcp/oauth/callback",
+        "state": "mock-private-state",
+        "code_verifier": "mock-private-verifier",
+        "created_at": 100,
+    }
+    invalid = {**valid, invalid_field: value}
+    if invalid_field == "name":
+        invalid.pop("name")
+    path = tmp_path / "mcp/oauth_flows.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"flows": {
+        "mock-private-invalid-flow-id": invalid,
+        "mock-private-invalid-shape": "mock-private-payload",
+        "valid": valid,
+    }}), encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        manager = OAuthFlowManager(workspace_dir=tmp_path, time_fn=lambda: 100)
+
+    assert list(manager._flows) == ["valid"]
+    assert manager._flows["valid"].state == valid["state"]
+    assert "Skipping an invalid persisted flow" in caplog.text
+    assert "Skipping a persisted flow with an invalid structure" in caplog.text
+    assert "mock-private" not in caplog.text
+
+
+def test_missing_flow_file_is_an_expected_first_start(tmp_path, caplog):
+    with caplog.at_level(logging.DEBUG):
+        manager = OAuthFlowManager(workspace_dir=tmp_path)
+
+    assert manager._flows == {}
+    assert "No persisted flows to restore" in caplog.text
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+
+def test_provider_lookup_has_no_instance_dependency():
+    assert OAuthFlowManager._provider("canva")["mcp_url"] == "https://mcp.canva.cn/mcp"
+    with pytest.raises(McpOAuthError, match="does not support host OAuth"):
+        OAuthFlowManager._provider("unknown-provider")
+
+
+def test_registry_callback_preserves_query_and_shared_error_identity(monkeypatch):
+    from jiuwenswarm.common.mcp_oauth import McpOAuthError as SharedOAuthError
+    from jiuwenswarm.server.runtime.mcp import oauth_flow, registry
+
+    query = {"code": "mock-code:part+value/=", "state": "mock-state"}
+    manager = Mock()
+    manager.complete.return_value = True
+    monkeypatch.setattr(oauth_flow, "_manager", manager)
+
+    assert McpOAuthError is SharedOAuthError
+    assert registry.complete_oauth_callback(query) is True
+    manager.complete.assert_called_once_with(query)
+
+    manager.complete.side_effect = SharedOAuthError("OAuth flow is unknown or expired")
+    with pytest.raises(SharedOAuthError, match="unknown or expired"):
+        registry.complete_oauth_callback(query)
