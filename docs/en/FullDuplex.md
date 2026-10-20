@@ -29,12 +29,14 @@ On restart, recent turns and bounded, source-backed excerpts of older history re
 references and user constraints. Task status is read separately from current task state.
 Qwen receives this background during session initialization; JoyAI receives it on real
 user turns, with refreshed task status. Restoration does not repeat historical requests
-or task acceptances. Qwen text stays buffered until the response finishes. As a temporary
-latency policy, audio streams once `response.output_item.added` identifies a `message`
+or task acceptances. As a temporary latency policy, both text and audio stream once
+`response.output_item.added` identifies a `message`
 item. A `function_call` item suppresses subsequent output; execution still waits for
 complete, validated arguments and acknowledgement follows the actual acceptance receipt.
-If a message is followed by a tool call, speech already played cannot be retracted.
-When item types are missing, audio retains the response-completion buffering fallback.
+If a message is followed by a tool call, text already shown and speech already played
+cannot be retracted. Text updates share one stream and finalize once; tool calls,
+interruption, failure and stopping media also close any visible partial text.
+When item types are missing, text and audio retain the response-completion buffering fallback.
 
 Qwen may close a connection with `response_idle_timeout` after 300 seconds without a
 generated response. Full-duplex automatically renews that connection, restores context,
