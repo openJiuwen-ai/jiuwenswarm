@@ -41,6 +41,11 @@
   background: var(--dsw-alias-bg-layer-1);
 }
 
+.laneRow[data-highlighted='true'] :global([role='toolbar']),
+.laneRowExpanded[data-highlighted='true'] :global([role='toolbar']) {
+  background: #ddecff;
+}
+
 .memberCluster {
   display: inline-flex;
   min-width: 0;

@@ -1053,11 +1053,11 @@
         "equal": "等比例",
         "turns": "轮次",
         "tools": "工具",
+        "folds": "轮次/工具",
         "expandTurns": "展开所有轮次",
         "collapseTurns": "折叠所有轮次",
         "expandTools": "展开所有工具调用",
         "collapseTools": "折叠所有工具调用",
-        "text": "文本",
         "download": "下载轨迹",
         "search": "搜索轨迹",
         "searchPlaceholder": "请输入关键字搜索"

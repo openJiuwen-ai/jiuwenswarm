@@ -115,6 +115,8 @@ export interface TrajectoryExplorerProps {
   onSharedViewportChange?: (viewport: TrajectoryTimeRange | null) => void
   /** Latest shared window for a wheel burst. */
   sharedViewportRef?: RefObject<TrajectoryTimeRange | null>
+  /** How a controlled brush is drawn. Diagnosis uses a light-blue region. */
+  timelineRangeAppearance?: 'focus' | 'region'
   className?: string
 }
 
@@ -233,6 +235,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   sharedViewport = null,
   onSharedViewportChange,
   sharedViewportRef,
+  timelineRangeAppearance = 'focus',
   className,
 }: TrajectoryExplorerProps) {
   const turns = snapshot?.turns ?? staticTurns
@@ -260,6 +263,11 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   const [tokenView, setTokenView] = useState(false)
   const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<number>>(EMPTY_TURN_IDS)
   const [collapsedAssistants, setCollapsedAssistants] =
+    useState<ReadonlySet<string>>(EMPTY_RECORD_IDS)
+  // When the analysis page forces every turn/tool fold via viewState, a timeline
+  // click still needs to open the owning fold so the ledger can scroll to it.
+  const [revealedTurns, setRevealedTurns] = useState<ReadonlySet<number>>(EMPTY_TURN_IDS)
+  const [revealedAssistants, setRevealedAssistants] =
     useState<ReadonlySet<string>>(EMPTY_RECORD_IDS)
   const [localSearchQuery, setLocalSearchQuery] = useState('')
   const searchQuery = controlledSearchQuery ?? localSearchQuery
@@ -396,34 +404,64 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
     && collapsibleTurnIds.every(turn => collapsedTurns.has(turn))
   const allAssistantsCollapsed = collapsibleAssistantIds.length > 0
     && collapsibleAssistantIds.every(id => collapsedAssistants.has(id))
-  const displayedCollapsedTurns = useMemo<ReadonlySet<number>>(
-    () => viewState === undefined
-      ? collapsedTurns
-      : viewState.turnsCollapsed ? new Set(collapsibleTurnIds) : EMPTY_TURN_IDS,
-    [collapsedTurns, collapsibleTurnIds, viewState],
-  )
-  const displayedCollapsedAssistants = useMemo<ReadonlySet<string>>(
-    () => viewState === undefined
-      ? collapsedAssistants
-      : viewState.callsCollapsed ? new Set(collapsibleAssistantIds) : EMPTY_RECORD_IDS,
-    [collapsedAssistants, collapsibleAssistantIds, viewState],
-  )
+  const displayedCollapsedTurns = useMemo<ReadonlySet<number>>(() => {
+    if (viewState === undefined) return collapsedTurns
+    if (!viewState.turnsCollapsed) return EMPTY_TURN_IDS
+    const next = new Set(collapsibleTurnIds)
+    for (const turn of revealedTurns) next.delete(turn)
+    return next
+  }, [collapsedTurns, collapsibleTurnIds, revealedTurns, viewState])
+  const displayedCollapsedAssistants = useMemo<ReadonlySet<string>>(() => {
+    if (viewState === undefined) return collapsedAssistants
+    if (!viewState.callsCollapsed) return EMPTY_RECORD_IDS
+    const next = new Set(collapsibleAssistantIds)
+    for (const id of revealedAssistants) next.delete(id)
+    return next
+  }, [collapsedAssistants, collapsibleAssistantIds, revealedAssistants, viewState])
+  useEffect(() => {
+    if (viewState?.turnsCollapsed !== true && revealedTurns.size > 0) {
+      setRevealedTurns(EMPTY_TURN_IDS)
+    }
+  }, [revealedTurns.size, viewState?.turnsCollapsed])
+  useEffect(() => {
+    if (viewState?.callsCollapsed !== true && revealedAssistants.size > 0) {
+      setRevealedAssistants(EMPTY_RECORD_IDS)
+    }
+  }, [revealedAssistants.size, viewState?.callsCollapsed])
   const toggleTurn = useCallback((turn: number) => {
+    if (viewState?.turnsCollapsed === true) {
+      setRevealedTurns((current) => {
+        const next = new Set(current)
+        if (next.has(turn)) next.delete(turn)
+        else next.add(turn)
+        return next
+      })
+      return
+    }
     setCollapsedTurns((current) => {
       const next = new Set(current)
       if (next.has(turn)) next.delete(turn)
       else next.add(turn)
       return next
     })
-  }, [])
+  }, [viewState?.turnsCollapsed])
   const toggleAssistant = useCallback((id: string) => {
+    if (viewState?.callsCollapsed === true) {
+      setRevealedAssistants((current) => {
+        const next = new Set(current)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      })
+      return
+    }
     setCollapsedAssistants((current) => {
       const next = new Set(current)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }, [])
+  }, [viewState?.callsCollapsed])
   const toggleAllTurns = useCallback(() => {
     setCollapsedTurns((current) => {
       const next = new Set(current)
@@ -497,6 +535,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             sharedViewport={sharedViewport}
             {...(onSharedViewportChange === undefined ? {} : { onViewportChange: onSharedViewportChange })}
             {...(sharedViewportRef === undefined ? {} : { sharedViewportRef })}
+            rangeAppearance={timelineRangeAppearance}
             onRecordSelect={(index) => {
               preferRecordScrollRef.current = true
               if (!lockTimelineViewport) setTimelineRange(null)

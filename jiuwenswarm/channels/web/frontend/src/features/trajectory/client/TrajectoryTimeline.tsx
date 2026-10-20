@@ -251,6 +251,11 @@ export interface TrajectoryTimelineProps {
   onViewportChange?: (viewport: TrajectoryTimeRange | null) => void
   /** Latest shared window, so a wheel burst does not wait for the next render. */
   sharedViewportRef?: RefObject<TrajectoryTimeRange | null>
+  /**
+   * `region` paints the brush as a light-blue band and leaves the other spans
+   * at full strength. `focus` dims everything outside the brush.
+   */
+  rangeAppearance?: 'focus' | 'region'
 }
 
 function minimumZoomDomain(mode: TrajectoryTimelineMode): number {
@@ -390,6 +395,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   sharedViewport = null,
   onViewportChange,
   sharedViewportRef,
+  rangeAppearance = 'focus',
 }: TrajectoryTimelineProps) {
   const model = useMemo(
     () => withSharedWallClockDomain(
@@ -863,7 +869,12 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   }
 
   return (
-    <section ref={rootRef} className={css.root} aria-label="Trajectory timeline">
+    <section
+      ref={rootRef}
+      className={css.root}
+      aria-label="Trajectory timeline"
+      data-range-appearance={rangeAppearance === 'region' ? 'region' : undefined}
+    >
       <div className={css.plot}>
         <LaneLabels mode={mode} />
         <div
@@ -986,7 +997,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
                       data-highlight={pinnedIndexes !== null && pinnedIndexes.has(span.index)
                         ? 'true'
                         : undefined}
-                      data-selected={activeRange === null
+                      data-selected={rangeAppearance === 'region' || activeRange === null
                         ? undefined
                         : span.start <= activeRange.end && span.end >= activeRange.start
                           ? 'true'

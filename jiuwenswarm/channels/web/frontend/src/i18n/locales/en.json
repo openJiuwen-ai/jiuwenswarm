@@ -1069,11 +1069,11 @@
         "equal": "Equal",
         "turns": "Turns",
         "tools": "Tools",
+        "folds": "Turns/Tools",
         "expandTurns": "Expand all turns",
         "collapseTurns": "Collapse all turns",
         "expandTools": "Expand all tool calls",
         "collapseTools": "Collapse all tool calls",
-        "text": "Text",
         "download": "Download trajectory",
         "search": "Search trajectory",
         "searchPlaceholder": "Search by keyword"

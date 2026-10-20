@@ -1632,6 +1632,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                 agentSelection: {
                   isIncluded: (subjectId: string) => isAgentIncluded(selection.state, subjectId),
                   onToggle: (subjectId: string) => selection.onChange(current => toggleAgent(current, subjectId)),
+                  isHighlighted: (subjectId: string) => laneRangeOf(selection.state, subjectId) !== null,
                 },
               }),
           }
@@ -1686,6 +1687,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                     sharedTimeDomain: timeAxis.sharedTimeDomain,
                     ...(timeAxis.mapSharedTime === undefined ? {} : { mapSharedTime: timeAxis.mapSharedTime }),
                     timelineRange: selecting ? laneVisualRange(subjectId) : null,
+                    timelineRangeAppearance: 'region',
                     onTimelineRangeChange: selecting
                       ? (range: TrajectoryTimeRange | null) => selectOnLaneRange(subjectId, range)
                       : ignoreTimelineRange,

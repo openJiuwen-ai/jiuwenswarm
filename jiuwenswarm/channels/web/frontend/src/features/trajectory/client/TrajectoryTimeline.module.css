@@ -346,3 +346,17 @@
     transparent
   );
 }
+
+.root[data-range-appearance='region'] .selection,
+.root[data-range-appearance='region'] .selection[data-dragging='true'] {
+  background: #b9d5ff;
+  box-shadow: none;
+}
+
+.root[data-range-appearance='region'] .selectionEdges::before,
+.root[data-range-appearance='region'] .selectionEdges::after,
+.root[data-range-appearance='region'] .selectionEdges[data-dragging='true']::before,
+.root[data-range-appearance='region'] .selectionEdges[data-dragging='true']::after {
+  width: 2px;
+  background: #2e74e4;
+}

@@ -37,6 +37,8 @@ export interface TeamTrajectoryWorkspaceProps {
   agentSelection?: {
     isIncluded: (subjectId: string) => boolean;
     onToggle: (subjectId: string) => void;
+    /** Checked agents that currently own a time window. */
+    isHighlighted?: (subjectId: string) => boolean;
   };
 }
 
@@ -192,6 +194,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
               role="listitem"
               className={`${css.laneRow} ${expanded ? css.laneRowExpanded : ''}`}
               data-member-subject={lane.subjectId}
+              data-highlighted={agentSelection?.isHighlighted?.(lane.subjectId) === true ? 'true' : 'false'}
               data-testid="team-trajectory-lane-row"
             >
               {memberView(lane.subjectId, {

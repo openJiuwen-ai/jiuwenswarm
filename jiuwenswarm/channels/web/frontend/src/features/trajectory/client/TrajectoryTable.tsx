@@ -2291,6 +2291,9 @@ export function TrajectoryTable({
   useEffect(() => {
     const id = pendingScrollRecordId.current
     if (id === null) return
+    // The ledger stays visibility:hidden until the first layout settles. Scrolling
+    // before that can read a zero-height pane and clear the pending target too early.
+    if (!tableScrollReady) return
     const position = records.findIndex(record =>
       trajectoryRecordId(record.cell) === id && record.collapsedSummary === undefined)
     if (position === -1) return
@@ -2307,12 +2310,19 @@ export function TrajectoryTable({
     const row = recordIndex === undefined || pane === null
       ? null
       : pane.querySelector<HTMLElement>(`tr[data-record-index="${recordIndex}"]`)
-    if (row === null || pane === null) return
+    if (row === null || pane === null || pane.clientHeight <= 0) return
     pendingScrollRecordId.current = null
     const paneRect = pane.getBoundingClientRect()
     const rowRect = row.getBoundingClientRect()
     pane.scrollTop += rowRect.top - paneRect.top - (pane.clientHeight - rowRect.height) / 2
-  }, [records, rowVirtualizer, scrollGeneration, virtualIndexByRecordId, virtualizationEnabled])
+  }, [
+    records,
+    rowVirtualizer,
+    scrollGeneration,
+    tableScrollReady,
+    virtualIndexByRecordId,
+    virtualizationEnabled,
+  ])
   useEffect(() => {
     if (timelineFocusIndexes === null || timelineFocusIndexes.size === 0) return
     const focusedPositions = records.flatMap((record, position) =>
@@ -2407,8 +2417,13 @@ export function TrajectoryTable({
   // Host-requested jump to the newest record (e.g. every time the trajectory
   // view becomes visible again). Reuses the tail-follow state so records that
   // stream in after the signal still keep the view pinned to the bottom.
+  // A timeline click that already named a row must win: the explorer can also
+  // mark the ledger active on that same click, and that must not yank the view
+  // back to the newest record after the row scroll runs.
   useEffect(() => {
     if (scrollToEndSignal === 0) return
+    if (pendingScrollRecordId.current !== null) return
+    if (recordSelection !== null || recordFocus !== null) return
     const pane = tablePaneRef.current
     if (pane === null) return
     followsTableTail.current = true
@@ -2416,7 +2431,13 @@ export function TrajectoryTable({
     setTableScrollReady(true)
     if (virtualizationEnabled) rowVirtualizer.scrollToEnd({ behavior: 'auto' })
     else pane.scrollTop = pane.scrollHeight
-  }, [rowVirtualizer, scrollToEndSignal, virtualizationEnabled])
+  }, [
+    recordFocus,
+    recordSelection,
+    rowVirtualizer,
+    scrollToEndSignal,
+    virtualizationEnabled,
+  ])
 
   const showInitialLoading = historyLoading || !tableScrollReady
 
