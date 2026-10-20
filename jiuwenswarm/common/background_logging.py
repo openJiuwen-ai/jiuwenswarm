@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import logging
 import queue
+import sys
 import threading
 from logging.handlers import QueueHandler
 
@@ -17,6 +18,8 @@ class BackgroundLogWriter:
     def __init__(self, capacity: int = 512) -> None:
         self.queue: queue.Queue = queue.Queue(maxsize=capacity)
         self.dropped = 0
+        self.sink_failures: dict[str, int] = {"emit": 0, "close": 0}
+        self.diagnostic_failures = 0
         self._stopping = threading.Event()
         self._handlers: set[logging.Handler] = set()
         self._owners: dict[logging.Handler, int] = {}
@@ -76,24 +79,14 @@ class BackgroundLogWriter:
                 self._close_retired()
                 continue
             try:
-                for handler in handlers:
-                    if record.levelno >= handler.level:
-                        try:
-                            handler.handle(record)
-                        except Exception:  # A broken sink must not stop other sinks.
-                            continue
+                self._emit(handlers, record)
                 if self.dropped > reported_drops:
                     summary = logging.LogRecord(
                         "jiuwenswarm.server.worker.logging", logging.WARNING,
                         __file__, 0, "Worker log queue full: dropped=%s", (self.dropped,), None,
                     )
                     reported_drops = self.dropped
-                    for handler in handlers:
-                        if summary.levelno >= handler.level:
-                            try:
-                                handler.handle(summary)
-                            except Exception:
-                                continue
+                    self._emit(handlers, summary)
             finally:
                 self.queue.task_done()
             if self.queue.empty():
@@ -101,6 +94,34 @@ class BackgroundLogWriter:
         with self._lock:
             self._retired.update(self._handlers)
         self._close_retired()
+
+    def _emit(self, handlers: tuple[logging.Handler, ...], record: logging.LogRecord) -> None:
+        for handler in handlers:
+            if record.levelno >= handler.level:
+                try:
+                    handler.handle(record)
+                except Exception as exc:
+                    self._report_sink_failure("emit", handler, exc)
+
+    def _report_sink_failure(self, operation: str, handler: logging.Handler, exc: Exception) -> None:
+        count = self.sink_failures[operation] + 1
+        self.sink_failures[operation] = count
+        if count != 1 and count % 100:
+            return
+        # The logging queue may contain the failing handler. Use only safe
+        # metadata on this background thread to avoid recursion or secret leaks.
+        stream = sys.stderr
+        if stream is None:
+            self.diagnostic_failures += 1
+            return
+        try:
+            stream.write(
+                f"[WorkerLogging] sink failure operation={operation} "
+                f"handler={type(handler).__name__} error={type(exc).__name__} count={count}\n"
+            )
+        except Exception:
+            # Keep a visible counter even when the fallback stream is broken.
+            self.diagnostic_failures += 1
 
     def _close_retired(self) -> None:
         with self._lock:
@@ -110,8 +131,8 @@ class BackgroundLogWriter:
         for handler in retired:
             try:
                 handler.close()
-            except Exception:
-                continue
+            except Exception as exc:
+                self._report_sink_failure("close", handler, exc)
 
 
 class _QueuedHandler(QueueHandler):

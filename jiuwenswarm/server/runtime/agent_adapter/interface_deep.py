@@ -1843,6 +1843,7 @@ class JiuWenSwarmDeepAdapter:
         self._model_request_config: ModelRequestConfig | None = None
         self._last_resolved_model: Model | None = None
         self._active_request_model: Model | None = None
+        self._context_model_binding: tuple[Any, Model, tuple[Any, ...]] | None = None
         self._selected_model_context_window_tokens: int | None = None
         self._config_base_cache: dict[str, Any] | None = None
         self._config_cache: dict[str, Any] = {}

@@ -7,6 +7,8 @@ import logging
 import threading
 import time
 
+import pytest
+
 from jiuwenswarm.common.background_logging import BackgroundLogWriter
 
 
@@ -131,3 +133,86 @@ def test_worker_flushes_repeat_counts_before_stopping_queue(monkeypatch):
         logger.error(message)
     assert background_logging.stop_background_logging()
     assert "total=2 suppressed=1" in output.getvalue()
+
+
+def test_failed_emit_reports_counts_without_stopping_healthy_sinks(capsys):
+    class BrokenHandler(logging.Handler):
+        def emit(self, record):
+            raise OSError("api_key=secret-in-exception")
+
+    output = io.StringIO()
+    target = logging.Logger("broken-sink", logging.INFO)
+    target.handlers = [BrokenHandler(), logging.StreamHandler(output)]
+    writer = BackgroundLogWriter()
+    writer.wrap(target)
+    for index in range(101):
+        target.info("record %s", index)
+    assert writer.stop(timeout=2)
+    diagnostic = capsys.readouterr().err
+    assert writer.sink_failures == {"emit": 101, "close": 0}
+    assert len(output.getvalue().splitlines()) == 101
+    assert "operation=emit handler=BrokenHandler error=OSError count=1\n" in diagnostic
+    assert "count=100\n" in diagnostic
+    assert len(diagnostic.splitlines()) == 2
+    assert "secret-in-exception" not in diagnostic
+
+
+def test_failed_overflow_summary_and_close_are_reported(capsys):
+    started = threading.Event()
+    release = threading.Event()
+    output = io.StringIO()
+
+    class BrokenSummaryHandler(logging.Handler):
+        def emit(self, record):
+            if "Worker log queue full" in record.getMessage():
+                raise OSError("summary failed")
+            started.set()
+            release.wait(5)
+
+        def close(self):
+            super().close()
+            raise OSError("close failed")
+
+    target = logging.Logger("broken-summary", logging.INFO)
+    target.handlers = [BrokenSummaryHandler(), logging.StreamHandler(output)]
+    writer = BackgroundLogWriter(capacity=1)
+    writer.wrap(target)
+    try:
+        target.info("first")
+        assert started.wait(1)
+        target.info("second")
+        target.info("dropped")
+    finally:
+        release.set()
+        assert writer.stop(timeout=2)
+    diagnostic = capsys.readouterr().err
+    assert writer.dropped == 1
+    assert writer.sink_failures == {"emit": 1, "close": 1}
+    assert "operation=emit" in diagnostic
+    assert "operation=close" in diagnostic
+    assert output.getvalue().splitlines() == ["first", "Worker log queue full: dropped=1", "second"]
+
+
+@pytest.mark.parametrize("missing_stream", [False, True])
+def test_unavailable_diagnostic_stream_does_not_stop_fanout(monkeypatch, missing_stream):
+    from jiuwenswarm.common import background_logging
+
+    class BrokenHandler(logging.Handler):
+        def emit(self, record):
+            raise OSError("emit failed")
+
+    class BrokenStderr:
+        def write(self, text):
+            raise OSError("stderr failed")
+
+    output = io.StringIO()
+    target = logging.Logger("broken-stderr", logging.INFO)
+    target.handlers = [BrokenHandler(), logging.StreamHandler(output)]
+    writer = BackgroundLogWriter()
+    writer.wrap(target)
+    with monkeypatch.context() as context:
+        context.setattr(background_logging.sys, "stderr", None if missing_stream else BrokenStderr())
+        target.info("survives")
+        assert writer.stop(timeout=2)
+    assert output.getvalue() == "survives\n"
+    assert writer.sink_failures["emit"] == writer.diagnostic_failures == 1
