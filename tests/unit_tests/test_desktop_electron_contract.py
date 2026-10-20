@@ -689,9 +689,12 @@ def test_windows_electron_signs_payload_installer_and_uninstaller() -> None:
         "RequireSigning",
     ):
         assert setting in source
-    rcedit_index = source.index("& $Rcedit $ShellExePath")
-    rcedit_end_index = source.index("if ($LASTEXITCODE -ne 0)", rcedit_index)
-    rcedit_command = source[rcedit_index:rcedit_end_index]
+    # Icon and version resources are applied in two rcedit passes on a temp copy
+    # (one-pass icon+version can corrupt the PE on Windows).
+    icon_index = source.index("& $Rcedit $RceditTemp --set-icon $LogoIco")
+    version_index = source.index("& $Rcedit $RceditTemp `", icon_index)
+    rcedit_end_index = source.index("if ($LASTEXITCODE -ne 0)", version_index)
+    rcedit_command = source[icon_index:rcedit_end_index]
     for argument in (
         "--set-icon $LogoIco",
         "--set-version-string FileDescription $BuildDisplayName",
@@ -702,10 +705,11 @@ def test_windows_electron_signs_payload_installer_and_uninstaller() -> None:
         "--set-product-version $BuildVersion",
     ):
         assert argument in rcedit_command
+    assert "Copy-Item -LiteralPath $RceditTemp -Destination $ShellExePath" in source
     payload_sign_index = source.index("Invoke-CodeSigning", rcedit_end_index)
     iscc_index = source.index("& $Iscc @IsccArguments")
     verify_index = source.index("Assert-ValidEmbeddedSignature", iscc_index)
-    assert rcedit_index < payload_sign_index < iscc_index < verify_index
+    assert icon_index < payload_sign_index < iscc_index < verify_index
     assert "$BatchSize = 20" in source
     assert "Invoke-SignToolBatchVerification" in source
     assert "-ForceResignPaths @($ShellExePath)" in source
