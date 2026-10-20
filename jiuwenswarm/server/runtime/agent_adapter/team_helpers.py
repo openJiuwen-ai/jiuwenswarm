@@ -1138,9 +1138,9 @@ class _TeamDeltaCoalescer:
         event: dict[str, Any],
     ) -> None:
         """缓冲增量；其它事件先把该说话人的增量发出，再原样广播。"""
-        event_type = str(event.get("event_type") or "")
-        if event_type not in _TEAM_DELTA_EVENT_TYPES:
-            if event_type in _TEAM_DELTA_TERMINAL_EVENTS:
+        kind = str(event.get("event_type") or "")
+        if kind not in _TEAM_DELTA_EVENT_TYPES:
+            if kind in _TEAM_DELTA_TERMINAL_EVENTS:
                 await self.flush_all(channel_id, session_id)
             else:
                 await self._flush_speaker(channel_id, session_id, event)
