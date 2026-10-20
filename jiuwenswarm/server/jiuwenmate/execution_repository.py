@@ -12,7 +12,6 @@ of the event that first proposed it, and a file candidate's file is retained by
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 import uuid
 from collections.abc import Callable, Sequence
@@ -135,28 +134,6 @@ CREATE TABLE IF NOT EXISTS execution_links (
 );
 """
 _TERMINAL_EVENTS = (EventType.EXECUTION_PAUSED.value, EventType.EXECUTION_FINAL.value)
-
-
-_FEISHU_MENTION_ID = re.compile(r"^[A-Za-z0-9:_-]{1,128}$")
-
-
-def delivery_mention_ids(source: object) -> list[str]:
-    """Mention ids to keep on a Feishu result, excluding the message author.
-
-    The reply relationship already addresses the author. The remaining ids are
-    the structured mentions on the accepted group message, so the result can
-    mention those participants without the sender executing them.
-    """
-    mention_ids = getattr(source, "mention_ids", ())
-    sender_id = getattr(source, "sender_id", None)
-    kept: list[str] = []
-    for item in mention_ids:
-        if not isinstance(item, str) or _FEISHU_MENTION_ID.fullmatch(item) is None:
-            continue
-        if item == sender_id or item in kept:
-            continue
-        kept.append(item)
-    return kept
 
 
 def _deliverable(share_mode: str, payload: dict[str, object]) -> bool:
@@ -746,7 +723,6 @@ class ExecutionRepository(SQLiteStore):
                     "source_reply_to": route.source_reply_to,
                     "is_direct_message": record.request_input.kind == "direct_message",
                     "text": text,
-                    "mention_ids": delivery_mention_ids(record.request_input.source),
                     "idempotency_key": row["idempotency_key"],
                     "attempt_count": row["attempt_count"] + 1,
                 }

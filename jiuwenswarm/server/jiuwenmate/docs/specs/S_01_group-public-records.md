@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / group-public-records |
 | 关联模块 | `jiuwenswarm.server.jiuwenmate` 群归档、访问关系与 `ports.group_chat` |
-| 最近一次修订日期 | 2026-10-17 |
+| 最近一次修订日期 | 2026-10-20 |
 | 关联 feature | [F_11](../features/F_11_group-public-records.md)、[F_21](../features/F_21_cross-group-search.md) |
 
 本规约维护 JM-11 已实现的宿主契约；验证证据、未完成的生产验证及交付状态见 F_11 和开发计划。
@@ -70,7 +70,7 @@
 
 AgentServer 经已连接 Gateway 发送 `jiuwenmate.group.inspect` 推送，携带 `query_id`、`app_id`、`chat_id`，以及可选 `message_ids`。Gateway 只选择唯一对应 app 的 JiuwenMate 飞书渠道；消息 ID 最多 500 个，每个长度 1～512。
 
-Gateway 使用当前渠道凭据查询 Bot 是否在群、群名及指定消息，并以内部 E2A 方法 `jiuwenmate.group.response` 回传。AgentServer 只接收与待查询 query ID、app、chat 一致的响应。Gateway 超时 8 秒，服务端等待 10 秒；断连、异常、格式不明返回 `unknown`，不是授权成功。此方法不开放给 Web 通用转发。
+Gateway 使用当前渠道凭据查询，并以内部 E2A 方法 `jiuwenmate.group.response` 回传：无 `message_ids` 时实时核验 Bot 成员资格，返回 `active/left/unknown`，active 可附群名；有消息 ID 时只读取指定消息，返回 `status=ok` 与逐条消息状态，`ok` 不表示成员授权成功。消息刷新必须位于宿主读取前后两次实时授权核验之间。AgentServer 只接收与待查询 query ID、app、chat 及查询类型一致的响应；消息结果不得用于放行成员授权。群名仅成功获取后缓存 300 秒，每渠道最多保留 256 群，重启清空；成员资格不缓存，过期名称会在下次核验成功时刷新。Gateway 超时 8 秒，服务端等待 10 秒；断连、异常、格式不明返回 `unknown`，不是授权成功。此方法不开放给 Web 通用转发。
 
 成员事实为 `active/left/unknown`。退群立即落库；相同时间戳冲突不得把已撤权关系恢复为 active。历史普通消息不能重新激活已退群关系。重新入群须有更新可信成员事实。
 
