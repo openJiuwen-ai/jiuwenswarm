@@ -390,6 +390,7 @@ def test_is_team_mode(mode, expected):
 @pytest.mark.parametrize(
     "mode",
     [
+        "flash",
         NEW_AGENT_WORK_NORMAL,
         NEW_AGENT_WORK_PLAN,
         NEW_AGENT_CODE_NORMAL,

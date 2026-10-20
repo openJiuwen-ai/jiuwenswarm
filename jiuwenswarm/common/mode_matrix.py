@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 # ── 新三段命名：8 种 canonical 模式 ──
 # 提前到这里定义，因为下面的 WEB_COMPOSABLE_MODES 需要引用其中的两个
 # agent.work.* 串（P6.4：让组合分支接住 Web 前端 wireMode.ts 产出的新串）。
+NEW_AGENT_FLASH = "flash"
 NEW_AGENT_WORK_NORMAL = "agent.work.normal"
 NEW_AGENT_WORK_PLAN = "agent.work.plan"
 NEW_AGENT_CODE_NORMAL = "agent.code.normal"
@@ -114,6 +115,7 @@ TEAM_CANONICAL_MODES: frozenset[str] = frozenset(
 # instead of becoming readable merely because they are not known Team modes.
 SINGLE_AGENT_CANONICAL_MODES: frozenset[str] = frozenset(
     {
+        NEW_AGENT_FLASH,
         NEW_AGENT_WORK_NORMAL,
         NEW_AGENT_WORK_PLAN,
         NEW_AGENT_CODE_NORMAL,
