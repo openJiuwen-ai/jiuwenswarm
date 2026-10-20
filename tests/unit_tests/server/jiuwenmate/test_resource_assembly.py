@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from itertools import count
 
+from jiuwenswarm.server.jiuwenmate.execution_models import PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import CapabilitySelection, ColleagueSettings, PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.resource_assembly import (
@@ -160,6 +162,7 @@ def test_selected_knowledge_pages_are_copied_and_other_pages_stay_out(tmp_path):
         settings(capabilities=CapabilitySelection(model="deepseek#0", knowledge=("topics/description.md",))),
     )
     spec = host.current_snapshot(NS, view.agent_id).load_spec()
+    snapshot = host.current_snapshot(NS, view.agent_id)
     office = host.workspaces.path(NS, view.agent_id)
     copies = list((office / "resources" / "knowledge").glob("*/topics/description.md"))
 
@@ -167,6 +170,14 @@ def test_selected_knowledge_pages_are_copied_and_other_pages_stay_out(tmp_path):
     assert copies[0].read_text(encoding="utf-8") == "# 产品手册\n\n退货规则。\n"
     assert "已装配知识" in spec.system_prompt
     assert "topics/description.md" in spec.system_prompt
+    assert "飞书私聊仅可读取本目录中的已选知识副本" in spec.system_prompt
+    assert snapshot.knowledge_root == copies[0].parent.parent.relative_to(office).as_posix()
+    assert type(snapshot).from_dict(snapshot.to_dict()).knowledge_root == snapshot.knowledge_root
+    legacy_snapshot = snapshot.to_dict()
+    legacy_snapshot.pop("knowledge_root")
+    assert type(snapshot).from_dict(legacy_snapshot).knowledge_root == snapshot.knowledge_root
+    with pytest.raises(PersistentContractError, match="knowledge scope"):
+        replace(snapshot, knowledge_root="resources/knowledge/0102030405060708").load_spec()
     assert not any((office / "resources" / "knowledge").rglob("private.md"))
     assert not any((office / "resources" / "knowledge").rglob("linked.md"))
     copies[0].write_text("只改员工副本", encoding="utf-8")

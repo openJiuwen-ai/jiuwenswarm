@@ -116,6 +116,7 @@ class AssembledResources:
     spec_fields: dict[str, Any]
     prompt: str
     skill_root: Path | None = None
+    knowledge_root: str | None = None
 
 
 def assemble_resources(
@@ -143,6 +144,7 @@ def assemble_resources(
     fields: dict[str, Any] = {}
     prompt = ""
     skill_root = None
+    knowledge_root_relative = None
     if skills:
         skill_root = _materialize_skills(office, skills)
         relative = skill_root.relative_to(office).as_posix()
@@ -192,14 +194,21 @@ def assemble_resources(
     if pages:
         knowledge_root = _materialize_knowledge(office, pages)
         relative = knowledge_root.relative_to(office).as_posix()
+        knowledge_root_relative = relative
         names = "、".join(f"`{item.name}`" for item in pages)
         prompt += (
             "\n\n## 已装配知识\n\n"
             f"所选个人上下文页面的副本在办公目录的 `{relative}/` 下，页面为 {names}。"
             "用相对路径读取这些副本。未选择的个人上下文页面不在这个目录中，不要到个人上下文目录里继续读取。"
+            "飞书私聊仅可读取本目录中的已选知识副本，不能读取办公目录其他内容；飞书群聊没有文件读取权限。"
             "这些副本只属于这个同事，修改它们不会改动个人上下文原件。"
         )
-    return AssembledResources(spec_fields=fields, prompt=prompt, skill_root=skill_root)
+    return AssembledResources(
+        spec_fields=fields,
+        prompt=prompt,
+        skill_root=skill_root,
+        knowledge_root=knowledge_root_relative,
+    )
 
 
 def _connector_configs(agent_id: str, connectors: tuple[ConnectorSource, ...]) -> list[dict[str, Any]]:

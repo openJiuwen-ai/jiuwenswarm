@@ -8,7 +8,7 @@
 - 交付分类：本期 18 项（JM-01～JM-14、JM-16、JM-18、JM-19、JM-22）；扩展 1 项（JM-21）。已移出的 SW-15、SW-17、SW-20 不复用，见附录 B。
 - 本轮安排：本期 18 项均为纳入；JM-21 跨群子范围已实现，其他 IM 扩展仍未排期，不计入本期节点。
 - 维护人：常钰聪。
-- 更新日期：2026-10-17。
+- 更新日期：2026-10-20。
 - 设计依据：
   - 本仓：[JiuwenMate 设计概览](jiuwenmate-overview.md)、[JiuwenMate 服务端架构设计](jiuwenmate-architecture.md)。
   - 对端：agent-core 仓 `jiuwenmate` 分支 `openjiuwen/harness/persistent_agent/docs/designs/` 下的 [Persistent Agent 开发计划](https://gitcode.com/huenrui_/agent-core/blob/jiuwenmate/openjiuwen/harness/persistent_agent/docs/designs/persistent-agent-development-plan.md) 与 [Persistent Agent 架构设计](https://gitcode.com/huenrui_/agent-core/blob/jiuwenmate/openjiuwen/harness/persistent_agent/docs/designs/persistent-agent-architecture.md)。
@@ -413,10 +413,10 @@
 
 ### JM-22 员工知识选择
 
-- **目标与范围：** 让员工详情的「知识」分区选择已经发布的个人上下文页面。发布时只把所选页面复制到该员工办公目录，之后的新任务用现有办公目录读取能力查看这些副本。不接入 core 的可选知识端口，不实现学习、来源失效或知识版本撤权。
+- **目标与范围：** 让员工详情的「知识」分区选择已经发布的个人上下文页面。发布时只把所选页面复制到该员工办公目录；Web 私聊使用现有目录读取能力，飞书私聊仅读取其接受时发布版本中所选副本。飞书群聊及办公目录其他位置仍不可读。不接入 core 的可选知识端口，不实现学习、来源失效或知识版本撤权。
 - **责任与契约：** `resource_assembly.py` 按保存的相对路径复制页面；`jiuwenmate.knowledge.list` 列出当前个人上下文中的普通 Markdown 页面。未发布或越出上下文根目录的名称拒绝发布。个人上下文原件和其他员工的副本保持不变。
 - **开工硬前置：** JM-02 的能力选择记录；JM-14 的办公目录与发布装配。
-- **独立验证入口：** `tests/unit_tests/server/jiuwenmate/test_resource_assembly.py`；前端 `npm run test:jiuwenmate-profile`、`npm run test:jiuwenmate-api`。
+- **独立验证入口：** `tests/unit_tests/server/jiuwenmate/test_resource_assembly.py`、`test_resource_scope.py`、`test_feishu_group_production_wiring.py`；前端 `npm run test:jiuwenmate-profile`、`npm run test:jiuwenmate-api`。
 - **独立验证条件：** 用临时上下文目录和可控目录验证复制、隔离与拒绝；浏览器验收未执行。
 - **验收标准：**
   1. JM-22-V-01：只复制所选页面；同目录中未选择的页面、符号链接和上下文根目录之外的文件不进入该员工办公目录。
@@ -596,7 +596,7 @@ flowchart LR
 | JM-16 管理查询 | 特性 / 本期 | 纳入 | 活跃数据子范围；任务中心不在本轮 | 未评估 / 活跃数据随 S2b | D / S2b | 未排期 | 进行中 | 常钰聪 | — | 活跃数据：JM-16-V-02、V-03 → 真实 SQLite 只读汇总 → `test_management_query.py` 4 passed；前端 `test:jiuwenmate-office` 7 passed、`test:jiuwenmate-api` 19 passed → 见 [F_16](../features/F_16_management-query.md)。任务中心保持样例，JM-16-V-01 本轮不验收 | 2026-10-16；接入活跃数据 |
 | JM-18 新版联合验收 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S3 | E / S3 | 未排期 | 待开始 | 常钰聪 | — | 未执行；开工限制为 S2a、S2b、S2c 通过 | 2026-10-13；编号更名 |
 | JM-19 定时任务 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2b | D / S2b | 未排期 | 进行中 | 常钰聪 | — | JM-19-V-01、V-03 → 可控时钟与真实 SQLite → `test_scheduled_requests.py` 4 passed；前端详情页可保存计划。浏览器与真实模型未执行。见 [F_19](../features/F_19_scheduled-requests.md) | 2026-10-17；接入计划与扫描 |
-| JM-22 员工知识选择 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2b | D / S2b | 未排期 | 进行中 | 常钰聪 | — | 所选页面复制到员工办公目录，未选页面和越界路径不进入；详情页可从已发布页面中选择。浏览器与真实模型未执行。见 [F_22](../features/F_22_employee-knowledge.md) | 2026-10-17；接入知识选择 |
+| JM-22 员工知识选择 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2b | D / S2b | 未排期 | 进行中 | 常钰聪 | — | 所选页面复制到员工办公目录，未选页面和越界路径不进入；飞书私聊仅能读取所接受版本选定的知识副本，群聊及其他办公文件不可读；兼容旧发布 Spec 与既有私聊请求。6 个回归测试文件排除 2 项既有失败用例后 167 项通过；真实飞书与模型未执行。见 [F_22](../features/F_22_employee-knowledge.md)、[F_14](../features/F_14_workspace-read.md) | 2026-10-20；修复 Feishu DM 知识只读范围兼容 |
 | JM-21 跨群搜索与 IM 扩展 | 特性 / 扩展 | 未排期 | 跨群搜索宿主子范围已实现；其他 IM 扩展仍未设计 | 未评估 / — | 扩展 / — | 未排期 | 进行中 | 常钰聪 | — | 跨群授权、群名精确解析、稳定合并／分页、逐页重授权及 direct-message／group-message PA-23 接线 → 真实 SQLite、真实 core 与模型／成员服务替身；跨群、3 个执行链测试和真实 core 集成共 26 passed，JM-11 `test_group_chat_port.py` 回归 17 passed；JiuwenMate 全目录回归 345 passed、14 failed（5 项既有 Windows／本地 core 基线失败，9 项本地 agent-core PA-18 capacity 配置缺口），详见 [F_21](../features/F_21_cross-group-search.md) §8。真实飞书成员核验／Gateway 联调和其他 IM 扩展待验证／设计；未调整负责人、扩展分类或纳入本期节点 | 2026-10-17；宿主跨群子范围实现 |
 | S0 契约与宿主基线 | 节点 / 本期 | 纳入 | JM-01～JM-06 组件验证；对端 PA-04 当前契约 | 顺序 1 | A、B / — | 未排期 | 进行中 | 常钰聪 | — | JM-01～JM-06 宿主组件均已通过，见各行证据 → 节点验收待核对替身清单与 PA-04 当前契约 | 2026-10-13 |
 | S1 私聊闭环 | 节点 / 本期 | 纳入 | JM-07、JM-10、JM-12；JM-09 Web 投递；JM-14 最小只读配置 | 顺序 2 | A、B、C、D / — | 未排期 | 待开始 | 常钰聪 | — | JM-07、JM-10、JM-12 已接入，并在 core `9eb336b4` 下以模型替身跑通收消息、回复、停止与取消；JM-14 最小只读配置已在工作区实现，Web 请求可读取同事办公目录；JM-09 Web 投递未开始；浏览器验收与节点联合验收未完成 | 2026-10-15 |

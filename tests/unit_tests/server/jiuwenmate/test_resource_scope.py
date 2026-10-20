@@ -153,6 +153,41 @@ async def test_a_request_without_the_read_scope_is_forbidden(office, scope):
     assert denied.value.status == "forbidden"
 
 
+async def test_feishu_direct_message_can_read_only_the_published_knowledge_copy(office):
+    store, root = office
+    selected = root / "resources" / "knowledge" / "a1b2c3d4e5f60708"
+    selected.mkdir(parents=True)
+    (selected / "guide.md").write_text("selected", encoding="utf-8")
+    other_version = root / "resources" / "knowledge" / "0102030405060708"
+    other_version.mkdir()
+    (other_version / "private.md").write_text("unselected", encoding="utf-8")
+    (root / "private.md").write_text("office private", encoding="utf-8")
+    access = HostWorkspaceAccess(store, NS, AGENT, knowledge_root="resources/knowledge/a1b2c3d4e5f60708")
+    direct = execution(
+        principal_ref="feishu:user:ou_alice",
+        scope=frozenset({"chat", "workspace_knowledge_read"}),
+        capability_snapshot=frozenset({"construction", "workspace_read"}),
+    )
+
+    resolved = await resolve(access, direct, "resources/knowledge/a1b2c3d4e5f60708/guide.md")
+
+    assert resolved.path == (selected / "guide.md").resolve()
+    for path in (".", "private.md", "resources/knowledge/old-hash/private.md"):
+        with pytest.raises(WorkspacePathError) as denied:
+            await resolve(access, direct, path)
+        assert denied.value.status == "forbidden"
+    assert (await access.resolve_write_scope(direct)).status == "forbidden"
+
+    group = execution(
+        principal_ref="feishu:user:ou_alice",
+        scope=frozenset({"chat"}),
+        capability_snapshot=frozenset({"construction", "workspace_read"}),
+    )
+    with pytest.raises(WorkspacePathError) as denied:
+        await resolve(access, group, "resources/knowledge/a1b2c3d4e5f60708/guide.md")
+    assert denied.value.status == "forbidden"
+
+
 async def test_the_read_scope_needs_both_startup_and_source_scope(office):
     store, _ = office
     access = HostWorkspaceAccess(store, NS, AGENT)

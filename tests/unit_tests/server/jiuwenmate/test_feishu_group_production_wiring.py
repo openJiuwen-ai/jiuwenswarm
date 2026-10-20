@@ -232,6 +232,13 @@ def test_feishu_access_snapshot_identifies_sender_without_workspace_scopes():
     assert access.policy_revision
 
 
+def test_feishu_direct_message_gets_only_the_selected_knowledge_read_scope():
+    access = resolve_feishu_access(None, _event(chat_type="p2p", reply_to=None))
+
+    assert access.startup_scope == frozenset({"chat", "workspace_knowledge_read"})
+    assert access.source_scope == frozenset({"chat", "workspace_knowledge_read"})
+
+
 @pytest.mark.asyncio
 async def test_default_jm08_runtime_uses_one_owner_sqlite_store_and_closes_manager(tmp_path):
     _fanout, manager = create_default_persistent_group_fanout(tmp_path / "jiuwenmate")
