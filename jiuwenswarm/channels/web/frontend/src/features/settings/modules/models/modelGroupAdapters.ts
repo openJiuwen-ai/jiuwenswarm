@@ -77,6 +77,49 @@ export function extractModelSelectionReferences(error: unknown): ModelSelectionR
   return parseModelSelectionReferences(error);
 }
 
+/** Groups that still route to ``modelId`` (local catalog check before delete). */
+export function findModelGroupReferencesForModel(
+  modelId: string | undefined,
+  groups: readonly ModelGroup[],
+): ModelSelectionReference[] {
+  const normalized = modelId?.trim();
+  if (!normalized) return [];
+  return groups
+    .filter((group) => group.routes.some((route) => route.model_id === normalized))
+    .map((group) => {
+      const scopeId = group.model_group_id?.trim() || '';
+      const label = getModelGroupDisplayName(group) || scopeId;
+      const reference: ModelSelectionReference = { scope: 'model_group' };
+      if (scopeId) reference.scope_id = scopeId;
+      if (label) reference.label = label;
+      return reference;
+    });
+}
+
+/** Prefer display labels over stable mgp_/mdl_ business ids in delete warnings. */
+export function formatModelSelectionReferenceScopes(
+  references: readonly ModelSelectionReference[],
+  models: readonly ModelEntry[],
+  groups: readonly ModelGroup[],
+): string {
+  return references
+    .map((reference) => {
+      const labeled = reference.label?.trim();
+      if (labeled) return labeled;
+      if (reference.scope === 'model_group' && reference.scope_id) {
+        const group = groups.find((item) => item.model_group_id === reference.scope_id);
+        if (group) return getModelGroupDisplayName(group) || reference.scope_id;
+      }
+      if ((reference.scope === 'model' || reference.scope === 'model_id') && reference.scope_id) {
+        const model = models.find((item) => item.model_id === reference.scope_id);
+        if (model) return model.alias?.trim() || model.model_name || reference.scope_id;
+      }
+      return reference.scope_id || reference.scope;
+    })
+    .filter(Boolean)
+    .join(', ');
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -127,6 +170,7 @@ export function parseModelSelectionReferences(value: unknown): ModelSelectionRef
       if (!isPlainObject(item) || typeof item.scope !== 'string') return null;
       const reference: ModelSelectionReference = { scope: item.scope };
       if (typeof item.scope_id === 'string') reference.scope_id = item.scope_id;
+      if (typeof item.label === 'string' && item.label.trim()) reference.label = item.label.trim();
       return reference;
     })
     .filter((item): item is ModelSelectionReference => item !== null);

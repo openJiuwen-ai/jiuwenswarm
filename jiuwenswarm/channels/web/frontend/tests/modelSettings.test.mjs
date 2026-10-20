@@ -513,6 +513,7 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(page, /request<ModelResourceResult>\(\s*'models\.upsert'/);
   assert.match(page, /request\('models\.get', \{ model_id: nextDialog\.model\.model_id \}\)/);
   assert.doesNotMatch(page, /models\.references|MODEL_SELECTION_REFERENCED/);
+  assert.match(page, /formatModelSelectionReferenceScopes|extractModelSelectionReferences/);
   assert.match(page, /request\('models\.delete', \{ model_id: confirmation\.model\.model_id \}/);
   assert.doesNotMatch(page, /models\.replace_all/);
   assert.match(page, /const refreshedPayload = await request\('models\.list'\)/);

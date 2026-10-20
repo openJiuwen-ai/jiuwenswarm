@@ -177,6 +177,8 @@ export type ModelGroup = {
 export type ModelSelectionReference = {
   scope: string;
   scope_id?: string;
+  /** User-facing label when the backend resolved a display name (#5477). */
+  label?: string;
 };
 
 export interface VendorPreset {
