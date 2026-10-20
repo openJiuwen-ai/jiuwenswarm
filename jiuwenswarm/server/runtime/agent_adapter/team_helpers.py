@@ -783,6 +783,7 @@ class _FirstTeamRequestPreparation:
     query: Any
     hide_dm: bool
     debug: bool
+    interrupt_input: Any | None = None
     error_chunks: list[AgentResponseChunk] | None = None
 
 
@@ -793,13 +794,13 @@ async def _prepare_first_team_request(
     channel_id: str | None,
     request_id: str,
     query: Any,
+    allow_cold_ask_user_resume: bool = False,
 ) -> _FirstTeamRequestPreparation:
     """Apply first-request preprocessing shared by cold starts and fallback starts."""
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
     hide_dm = False
     debug = False
-
     if isinstance(query, InteractiveInput):
         wait_for_resumable = getattr(team_manager, "wait_for_resumable_runtime", None)
         restored = False
@@ -826,6 +827,21 @@ async def _prepare_first_team_request(
                 query=query,
                 hide_dm=hide_dm,
                 debug=debug,
+            )
+
+        if allow_cold_ask_user_resume:
+            logger.warning(
+                "[TeamHelpers] interactive input will cold-resume team runtime: "
+                "channel_id=%s session_id=%s",
+                _resolve_channel_id(channel_id),
+                session_id,
+            )
+            return _FirstTeamRequestPreparation(
+                recovered_runtime=False,
+                query="",
+                hide_dm=hide_dm,
+                debug=debug,
+                interrupt_input=query,
             )
 
         logger.warning(
@@ -2766,6 +2782,7 @@ async def _start_team_stream_round(
     attach_waiter: bool = True,
     run_context: object | None = None,
     cross_session_marker: dict[str, Any] | None = None,
+    interrupt_input: Any | None = None,
 ) -> asyncio.Queue | None:
     """Start a team stream round and register its waiter queue."""
     # Sync team observability with current config before streaming.
@@ -2825,6 +2842,7 @@ async def _start_team_stream_round(
         query,
         generation=generation,
         run_context=run_context,
+        interrupt_input=interrupt_input,
         **stream_kwargs,
     )
     stream_task = asyncio.create_task(stream)
@@ -3250,6 +3268,14 @@ async def _process_team_message_stream(
 
     hide_dm = False
     debug = False
+    interrupt_input: Any | None = None
+    request_params = getattr(request, "params", None)
+    if isinstance(request_params, dict):
+        from .interface import _is_ask_user_answer_resume
+
+        allow_cold_ask_user_resume = _is_ask_user_answer_resume(request_params)
+    else:
+        allow_cold_ask_user_resume = False
     if is_first_request:
         preparation = await _prepare_first_team_request(
             team_manager=team_manager,
@@ -3257,6 +3283,7 @@ async def _process_team_message_stream(
             channel_id=channel_id,
             request_id=rid,
             query=query,
+            allow_cold_ask_user_resume=allow_cold_ask_user_resume,
         )
         if preparation.error_chunks is not None:
             for chunk in preparation.error_chunks:
@@ -3267,6 +3294,7 @@ async def _process_team_message_stream(
             await startup.aclose()
         else:
             query = preparation.query
+            interrupt_input = preparation.interrupt_input
             query_text = query if isinstance(query, str) else ""
             hide_dm = preparation.hide_dm
             debug = preparation.debug
@@ -3807,6 +3835,7 @@ async def _process_team_message_stream(
                             channel_id=channel_id,
                             request_id=rid,
                             query=query,
+                            allow_cold_ask_user_resume=allow_cold_ask_user_resume,
                         )
                         if preparation.error_chunks is not None:
                             for chunk in preparation.error_chunks:
@@ -3818,6 +3847,7 @@ async def _process_team_message_stream(
                         if is_first_request:
                             first_request_source = "follow-up fallback"
                             query = preparation.query
+                            interrupt_input = preparation.interrupt_input
                             hide_dm = preparation.hide_dm
                             debug = preparation.debug
                             logger.info(
@@ -4017,6 +4047,7 @@ async def _process_team_message_stream(
                     cross_session_marker=(
                         cross_session_marker if isinstance(cross_session_marker, dict) else None
                     ),
+                    interrupt_input=interrupt_input,
                 )
             except BaseException:
                 _remove_team_waiter(
@@ -4329,6 +4360,7 @@ async def _consume_stream_with_query(
     run_context: object | None = None,
     round_request_id: str | None = None,
     cross_session_marker: dict[str, Any] | None = None,
+    interrupt_input: Any | None = None,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
     _envs = envs or {}
@@ -4436,7 +4468,17 @@ async def _consume_stream_with_query(
             session_id=session_id,
             kv_cache_runtime=get_kv_cache_runtime(),
         )
-        if run_context is None:
+        if interrupt_input is not None:
+            runner_stream = Runner.resume_agent_team_interrupt_streaming(
+                agent_team=team_spec,
+                user_input=interrupt_input,
+                session=team_session,
+                envs=envs,
+                stream_logger=lg,
+                background_task_controller=get_background_task_controller(session_id),
+                run_context=run_context,
+            )
+        elif run_context is None:
             runner_stream = Runner.run_agent_team_streaming(
                 agent_team=team_spec,
                 inputs={"query": initial_query},

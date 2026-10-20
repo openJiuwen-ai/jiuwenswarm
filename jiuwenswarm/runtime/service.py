@@ -1364,6 +1364,15 @@ class AgentRuntime:
         token = set_runtime_context(self, self._agent_manager)
         try:
             work_kind = self.session_work_kind(request)
+            if (
+                work_kind is SessionWorkKind.CONTROL_INPUT
+                and self._defer_stale_ask_user_to_chat(request)
+            ):
+                work_kind = (
+                    SessionWorkKind.CHAT_STREAM
+                    if request.is_stream
+                    else SessionWorkKind.CHAT_UNARY
+                )
             if work_kind is not None:
                 await self._ensure_session_registered(request)
                 if work_kind is SessionWorkKind.CONTROL_INPUT:
@@ -1689,7 +1698,9 @@ class AgentRuntime:
             for event in events:
                 yield event
             return
-        if self.session_work_kind(request) is SessionWorkKind.CONTROL_INPUT:
+        if self.session_work_kind(request) is SessionWorkKind.CONTROL_INPUT and not (
+            self._defer_stale_ask_user_to_chat(request)
+        ):
             await self._ensure_session_registered(request)
             stream = self._session_coordinator.deliver_control_stream(
                 request.session_id or "default",
@@ -1831,6 +1842,15 @@ class AgentRuntime:
             if snapshot and snapshot.state in {RuntimeSessionState.CLOSED, RuntimeSessionState.QUIESCING}:
                 raise RuntimeStateError("session is closing or closed")
         work_kind = self.session_work_kind(request, background=background)
+        if (
+            work_kind is SessionWorkKind.CONTROL_INPUT
+            and self._defer_stale_ask_user_to_chat(request)
+        ):
+            work_kind = (
+                SessionWorkKind.CHAT_STREAM
+                if request.is_stream
+                else SessionWorkKind.CHAT_UNARY
+            )
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
@@ -2985,6 +3005,33 @@ class AgentRuntime:
         )
 
         return is_interrupt_resume_payload(request.params)
+
+    @staticmethod
+    def _is_stale_ask_user_answer(params: object) -> bool:
+        """A leftover ask_user answer: source=ask_user_interrupt with answers."""
+        if not isinstance(params, dict):
+            return False
+        if str(params.get("source") or "").strip() != "ask_user_interrupt":
+            return False
+        answers = params.get("answers")
+        return isinstance(answers, list) and bool(answers)
+
+    def _defer_stale_ask_user_to_chat(self, request: AgentRequest) -> bool:
+        """Route a post-restart ask_user answer to a normal chat round.
+
+        No live execution is waiting for this control input (e.g. after a
+        service restart), so the answer re-enters through the regular chat
+        path: the adapter cold-starts, the checkpoint restores the pending
+        interrupt, and the InteractiveInput resumes it. Only ask_user answers
+        take this path; other interrupt answers still require a live
+        execution.
+        """
+        if not self._is_stale_ask_user_answer(request.params):
+            return False
+        return not self._session_coordinator.has_control_target(
+            request.session_id or "default",
+            self._control_request_id(request),
+        )
 
     @staticmethod
     def _event_confirms_user_turn(event: RuntimeEvent) -> bool:
