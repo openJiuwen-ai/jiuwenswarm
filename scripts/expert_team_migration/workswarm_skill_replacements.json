@@ -360,7 +360,7 @@
         "Only the leader sends the final file to the user."
       ],
       "call_rewrites": [],
-      "persona_instruction": "Use workswarm-single-html-delivery to write and validate the exact promised self-contained HTML filename. Keep core content static, embed validated raster assets, exclude local paths and temporary files, and return the internal path to the leader without sending it directly.",
+      "persona_instruction": "Use workswarm-single-html-delivery to write and validate the exact promised self-contained HTML filename. Keep core content static, embed validated raster assets, exclude local paths and temporary files, and return the internal path to the leader without sending it directly. Perform one bounded static inspection only; do not create ad-hoc test scripts, browser harnesses, screenshots or launch a browser directly. If visual QA is explicitly requested and a dedicated web-page test Skill is assigned, use one bounded Skill call instead of the static inspection and do not repeat it with other tools.",
       "known_gaps": []
     },
     "video_generation": {

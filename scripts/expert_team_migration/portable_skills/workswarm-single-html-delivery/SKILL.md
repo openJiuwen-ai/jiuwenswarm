@@ -14,9 +14,12 @@ prices or facts, or replace a failed domain task with model guesses.
    the core content.
 3. Use inline CSS and JavaScript. Remove remote dependencies and machine-local paths.
    Embed required validated raster assets as `data:image/png|jpeg|webp|gif;base64,...`.
-4. Re-open the file and verify the expected sections, closing tags, static content,
-   absence of local paths, and required embedded assets. Use the available web-page test
-   Skill when the member has it.
+4. Re-open the file once and perform one bounded static inspection: verify the expected
+   sections, closing tags, static content, absence of machine-local paths, and required
+   embedded assets. Do not create ad-hoc test scripts, browser harnesses, screenshots, or
+   launch a browser directly. When visual QA is explicitly requested and a dedicated
+   web-page test Skill is assigned, replace the static inspection with one bounded call
+   to that Skill; do not repeat tests through other tools.
 5. Keep source scripts, screenshots, JSON, CSV, temporary checks, and test files internal.
    The successful user-visible deliverable is the one primary HTML file.
 

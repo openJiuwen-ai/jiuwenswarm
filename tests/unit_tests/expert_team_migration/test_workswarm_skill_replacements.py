@@ -355,6 +355,22 @@ def test_every_mapped_portable_skill_has_valid_local_template() -> None:
     assert "unless the user explicitly asks for" in web_skill
     assert "deep or exhaustive research" in web_skill
 
+    html_skill = (
+        portable_root / "workswarm-single-html-delivery" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "one bounded static inspection" in html_skill
+    assert "Do not create ad-hoc test scripts" in html_skill
+    assert "launch a browser directly" in html_skill
+    assert "replace the static inspection with one bounded call" in html_skill
+    assert "do not repeat tests through other tools" in html_skill
+
+    html_mapping = _mapping()["capability_replacements"]["single_html_delivery"]
+    assert "one bounded static inspection only" in html_mapping["persona_instruction"]
+    assert (
+        "do not create ad-hoc test scripts" in html_mapping["persona_instruction"]
+    )
+    assert "do not repeat it with other tools" in html_mapping["persona_instruction"]
+
 
 def test_shared_external_skills_are_retained_with_explicit_smoke_requirements() -> None:
     policies = {
