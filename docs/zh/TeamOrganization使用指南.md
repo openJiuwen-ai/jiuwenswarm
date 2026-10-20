@@ -232,3 +232,18 @@ uv run --no-sync jiuwenswarm-start dev
 这些检查不能代替真实模型联调。自动化回归通过后，仍需使用可用模型、合法 AgentGroup 包和独立测试会话完成上述流程。
 
 
+| 现象 | 检查项 |
+|------|--------|
+| 同一专家团在新会话创建组织报 `organization already belongs to team` | 组织 ID 在共享 `team.db` 中全局唯一，旧会话遗留组织未解散会占用同名 ID。升级 agent-core 后框架会自动为冲突 ID 追加 `-N` 后缀，以 `org_create_organization` 返回的实际 `organization_id` 为准；旧数据也可先回原会话调用 `org_dissolve_organization` 清理 |
+| `org_list_expert_groups` 返回空 | AgentGroup manifest、安装状态以及同名冲突；按能力过滤时还需检查 capabilities |
+| 前端看不到已安装的专家团 | 手动创建是否成功、是否已安装、当前是否为 Team 模式；刷新模板列表并检查实际工作区 |
+| 输入区不能选择专家团模板 | 是否已在当前会话构建 Team；新建未发送消息的会话再选模板 |
+| `npm run dev` 启动失败或端口已占用 | 是否执行过 `npm ci`、是否又手动启动了前端；`jiuwenswarm-start dev` 已包含前端启动 |
+| 专家团可见但无法匹配领域任务 | 检查专家目录返回的实际能力；未配置 capabilities 的模板使用领域标签，显式 capabilities 优先；介绍文字不作为能力，修改模板后使用新 Team 会话 |
+| 专家 Team 创建后未入组 | Team 是否成功激活、是否共享 Owner 的 `TeamDatabase` |
+| Summary Team 启动失败 | 默认模型是否可解析，Owner Team 是否已有数据库和 workspace |
+| 子任务完成但父任务无法结束 | 子任务是否已有 `ACCEPTED` 审核，修复任务是否正确关联 |
+| 最终文件找不到 | workspace 是否启用；组织本机工作空间和任务中的产物路径是否一致 |
+| 重启后没有继续执行 | 是否使用同一 session 和持久化 storage，Team 是否已重新激活 |
+
+排障时保留启动终端输出，并检查当前用户工作区的 `logs/`。优先查找 `ExpertGroupCatalog`、`ExpertTeamLauncher`、`SummaryTeamLauncher` 相关日志，结合组织面板的任务状态区分“尚未完成”和“已完成但待验收”；不要为了重试直接删除原有工作区或数据库。
