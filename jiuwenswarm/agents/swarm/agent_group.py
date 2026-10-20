@@ -136,6 +136,10 @@ def _persona_dir(
 
 
 def _agent_names(payload: dict[str, Any]) -> list[str]:
+    # Imported lazily, like group_chat: the team package is heavy and this
+    # loader is also used by catalog scans that never assemble a team.
+    from openjiuwen.agent_teams.tools.tool_permissions import _MEMBER_NAME_PATTERN
+
     raw_agents = payload.get("agents")
     if not isinstance(raw_agents, list) or not raw_agents:
         raise ValueError("agent_group manifest agents must be a non-empty list")
@@ -143,6 +147,14 @@ def _agent_names(payload: dict[str, Any]) -> list[str]:
     seen: set[str] = set()
     for raw_name in raw_agents:
         name = _safe_component(raw_name, label="agent name")
+        # The agent name becomes the team member_name, which is reused as a
+        # message routing key and a filesystem path segment. Enforce the same
+        # rule spawn_teammate applies so a predefined member cannot bypass it.
+        if not _MEMBER_NAME_PATTERN.fullmatch(name):
+            raise ValueError(
+                f"invalid agent name in agent_group manifest: {name!r}; must start with a "
+                "lowercase ASCII letter (a-z), followed by lowercase letters, digits (0-9) or hyphen (-)"
+            )
         if name in seen:
             raise ValueError(f"duplicate agent name in agent_group manifest: {name}")
         seen.add(name)

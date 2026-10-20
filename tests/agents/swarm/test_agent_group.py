@@ -234,3 +234,30 @@ def test_load_agent_group_rejects_invalid_roster(
 
     with pytest.raises(ValueError):
         load_agent_group_package(group)
+
+
+@pytest.mark.parametrize("member_name", ["Member1", "member_1", "1member", "成员"])
+def test_load_agent_group_rejects_member_name_outside_routing_pattern(
+    tmp_path: Path,
+    member_name: str,
+) -> None:
+    group = _minimal_group(tmp_path)
+    (group / "agents" / "member1").rename(group / "agents" / member_name)
+    manifest = json.loads((group / "manifest.json").read_text(encoding="utf-8"))
+    manifest["agents"] = ["leader", member_name]
+    _write_json(group / "manifest.json", manifest)
+
+    with pytest.raises(ValueError, match="invalid agent name in agent_group manifest"):
+        load_agent_group_package(group)
+
+
+def test_load_agent_group_accepts_kebab_case_member_name(tmp_path: Path) -> None:
+    group = _minimal_group(tmp_path)
+    (group / "agents" / "member1").rename(group / "agents" / "backend-dev-1")
+    manifest = json.loads((group / "manifest.json").read_text(encoding="utf-8"))
+    manifest["agents"] = ["leader", "backend-dev-1"]
+    _write_json(group / "manifest.json", manifest)
+
+    templates = load_agent_group_package(group)
+
+    assert set(templates) == {"leader", "backend-dev-1"}
