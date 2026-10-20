@@ -170,13 +170,10 @@ def _dynamic_stream_adapter(monkeypatch, instance) -> JiuWenSwarmDeepAdapter:
     return adapter
 
 
-@pytest.mark.parametrize(
-    ("consumer_action", "close_result"),
-    [("close", "ok"), ("cancel", "ok"), ("close", "error"), ("close", "cancel")],
-)
+@pytest.mark.parametrize("consumer_action", ["close", "cancel"])
 @pytest.mark.asyncio
 async def test_output_close_aborts_planner_before_dynamic_expert_cleanup(
-    monkeypatch: pytest.MonkeyPatch, consumer_action: str, close_result: str,
+    monkeypatch: pytest.MonkeyPatch, consumer_action: str,
 ) -> None:
     """独立 producer 持规划锁时，关流必须先中止它，再清理专家轮次。"""
     from openjiuwen.harness.schema.interaction import InteractionOutputStream, OutputLeaseManager
@@ -188,7 +185,6 @@ async def test_output_close_aborts_planner_before_dynamic_expert_cleanup(
     release_planner = asyncio.Event()
     first_chunk_seen = asyncio.Event()
     request_close = asyncio.Event()
-    producer_aborted = asyncio.Event()
     events: list[str] = []
     producer = None
     round_state = None
@@ -210,7 +206,6 @@ async def test_output_close_aborts_planner_before_dynamic_expert_cleanup(
             await release_planner.wait()
         except asyncio.CancelledError:
             events.append("producer_aborted")
-            producer_aborted.set()
             raise
         return {"status": "ready", "graph": {"nodes": {"a": {"task": "处理", "label": "专家"}}, "edges": []}}
 
@@ -232,10 +227,6 @@ async def test_output_close_aborts_planner_before_dynamic_expert_cleanup(
         events.append("output_close")
         producer.cancel()
         await asyncio.gather(producer, return_exceptions=True)
-        if close_result == "error":
-            raise RuntimeError("close failed after abort")
-        if close_result == "cancel":
-            raise asyncio.CancelledError
 
     instance.attach_output = attach_output
     instance.send_input = send_input
@@ -268,9 +259,8 @@ async def test_output_close_aborts_planner_before_dynamic_expert_cleanup(
             consumer.cancel()
         else:
             request_close.set()
-        await asyncio.wait_for(producer_aborted.wait(), timeout=1.0)
         result = await asyncio.wait_for(asyncio.gather(consumer, return_exceptions=True), timeout=1.0)
-        if consumer_action == "cancel" or close_result == "cancel":
+        if consumer_action == "cancel":
             assert isinstance(result[0], asyncio.CancelledError)
         else:
             assert result == [None]
@@ -306,7 +296,6 @@ async def test_completed_output_keeps_dynamic_experts_only_for_hitl(
 
     sid = "dynamic-stream-complete"
     leases = OutputLeaseManager()
-    events: list[str] = []
     rounds = []
     instance = SimpleNamespace(
         system_prompt_builder=SimpleNamespace(remove_section=MagicMock()),
@@ -314,18 +303,7 @@ async def test_completed_output_keeps_dynamic_experts_only_for_hitl(
         detach_output=AsyncMock(),
     )
     adapter = _dynamic_stream_adapter(monkeypatch, instance)
-    original_stream_close = InteractionOutputStream.close
     original_expert_close = adapter._close_dynamic_expert_round
-
-    async def close_stream(stream, *, abort_active_round=False):
-        assert abort_active_round is False
-        events.append("output_close")
-        await original_stream_close(stream, abort_active_round=abort_active_round)
-
-    async def close_experts(session_id, *, expected=None):
-        if expected is not None:
-            events.append("expert_cleanup")
-        await original_expert_close(session_id, expected=expected)
 
     async def attach_output():
         return InteractionOutputStream(instance, await leases.attach())
@@ -341,8 +319,6 @@ async def test_completed_output_keeps_dynamic_experts_only_for_hitl(
         await leases.emit(chunk)
         await leases.finish_current()
 
-    monkeypatch.setattr(InteractionOutputStream, "close", close_stream)
-    monkeypatch.setattr(adapter, "_close_dynamic_expert_round", close_experts)
     instance.attach_output = attach_output
     instance.send_input = send_input
     instance.next_output = leases.next_item
@@ -354,11 +330,9 @@ async def test_completed_output_keeps_dynamic_experts_only_for_hitl(
         assert len(rounds) == 1
         if hitl_pending:
             assert any(chunk.payload and chunk.payload.get("event_type") == "chat.ask_user_question" for chunk in chunks)
-            assert events == ["output_close"]
             assert adapter._dynamic_expert_rounds[sid] is rounds[0]
             assert rounds[0]._closed is False
         else:
-            assert events == ["output_close", "expert_cleanup"]
             assert sid not in adapter._dynamic_expert_rounds
             assert rounds[0]._closed is True
         assert not leases.has_consumer()

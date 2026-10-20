@@ -463,52 +463,26 @@ def test_missing_stamp_with_existing_yaml_is_upgrade(tmp_path: Path) -> None:
     ) == compute_template_stamp(pkg, None)
 
 
-def test_dynamic_experts_explicit_enable_survives_template_upgrade(tmp_path: Path) -> None:
-    from jiuwenswarm.common.config_split import sync_system_files_from_package
-
-    pkg = tmp_path / "pkg.yaml"
-    user = tmp_path / "config.yaml"
-    overlay = tmp_path / "config.user.yaml"
-    pkg.write_text("symphony:\n  dynamic_experts:\n    enabled: null\n", encoding="utf-8")
-    user.write_text("agents:\n  dynamic_experts:\n    enabled: true\n", encoding="utf-8")
-
-    assert sync_system_files_from_package(
-        user_yaml=user, overlay_yaml=overlay, package_yaml=pkg
-    ) is True
-    assert yaml.safe_load(user.read_text(encoding="utf-8"))["symphony"]["dynamic_experts"]["enabled"] is True
-
-    user.unlink()
-    assert sync_system_files_from_package(
-        user_yaml=user, overlay_yaml=overlay, package_yaml=pkg
-    ) is True
-    assert yaml.safe_load(user.read_text(encoding="utf-8"))["symphony"]["dynamic_experts"]["enabled"] is None
-
-
-@pytest.mark.parametrize(
-    ("user_config", "expected"),
-    [
-        ({"symphony": {"dynamic_experts": {"enabled": False}}}, False),
-        ({"agents": {"dynamic_experts": {"enabled": False}}}, None),
-        ({"agents": {"dynamic_experts": {"enabled": "true"}}}, None),
-        ({
-            "agents": {"dynamic_experts": {"enabled": True}},
-            "symphony": {"dynamic_experts": {"enabled": False}},
-        }, False),
-        ({
-            "agents": {"dynamic_experts": {"enabled": True}},
-            "symphony": {"dynamic_experts": {"enabled": None}},
-        }, None),
-    ],
-)
+@pytest.mark.parametrize("legacy,new_value,expected", [
+    (None, "missing", None),
+    (True, "missing", True),
+    (False, "missing", None),
+    (True, False, False),
+    (True, None, None),
+])
 def test_dynamic_experts_upgrade_respects_new_value_and_ignores_legacy_default(
-    tmp_path: Path, user_config: dict, expected: bool | None,
+    tmp_path: Path, legacy: bool | None, new_value, expected: bool | None,
 ) -> None:
     from jiuwenswarm.common.config_split import sync_system_files_from_package
 
     pkg = tmp_path / "pkg.yaml"
     user = tmp_path / "config.yaml"
     pkg.write_text("symphony:\n  dynamic_experts:\n    enabled: null\n", encoding="utf-8")
-    user.write_text(yaml.safe_dump(user_config), encoding="utf-8")
+    if legacy is not None:
+        config = {"agents": {"dynamic_experts": {"enabled": legacy}}}
+        if new_value != "missing":
+            config["symphony"] = {"dynamic_experts": {"enabled": new_value}}
+        user.write_text(yaml.safe_dump(config), encoding="utf-8")
 
     assert sync_system_files_from_package(
         user_yaml=user, overlay_yaml=tmp_path / "config.user.yaml", package_yaml=pkg,

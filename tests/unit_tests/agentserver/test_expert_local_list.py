@@ -3,6 +3,8 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -20,21 +22,11 @@ def _make_local_agent(root: Path, name: str) -> None:
     package = root / name
     (package / "persona").mkdir(parents=True)
     (package / "persona" / "AGENT.md").write_text("# 专家", encoding="utf-8")
-    (package / "manifest.json").write_text(
-        json.dumps(
-            {
-                "packageType": "agent_template",
-                "agentCard": {
-                    "id": name,
-                    "name": "本地专家",
-                    "description": "离线可用",
-                },
-                "persona": {"dir": "persona"},
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+    (package / "manifest.json").write_text(json.dumps({
+        "packageType": "agent_template",
+        "agentCard": {"id": name, "name": "本地专家", "description": "离线可用"},
+        "persona": {"dir": "persona"},
+    }, ensure_ascii=False), encoding="utf-8")
 
 
 def _service() -> ExpertService:
@@ -44,17 +36,8 @@ def _service() -> ExpertService:
 @pytest.mark.asyncio
 async def test_ws_forwards_local_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     server = server_module.AgentWebSocketServer()
-    seen: list[str | None] = []
-
-    async def _list_experts(*, source: str | None = None) -> ExpertOpResult:
-        seen.append(source)
-        return ExpertOpResult(ok=True, payload={"experts": []})
-
-    class _WebSocket:
-        async def send(self, payload: str) -> None:
-            json.loads(payload)
-
-    monkeypatch.setattr(server._expert_service, "list_experts", _list_experts)
+    list_experts = AsyncMock(return_value=ExpertOpResult(ok=True, payload={"experts": []}))
+    monkeypatch.setattr(server._expert_service, "list_experts", list_experts)
     monkeypatch.setattr(
         server_module,
         "encode_agent_response_for_wire",
@@ -67,8 +50,8 @@ async def test_ws_forwards_local_scope(monkeypatch: pytest.MonkeyPatch) -> None:
         params={"source": "local"},
     )
 
-    await server._handle_experts_list(_WebSocket(), request, asyncio.Lock())
-    assert seen == ["local"]
+    await server._handle_experts_list(SimpleNamespace(send=AsyncMock()), request, asyncio.Lock())
+    list_experts.assert_awaited_once_with(source="local")
 
 
 @pytest.mark.asyncio
@@ -106,17 +89,11 @@ async def test_local_scope_respects_explicit_disable(
 async def test_local_team_keeps_type_and_tags_when_invalid(tmp_path: Path) -> None:
     package = tmp_path / "local-team"
     package.mkdir()
-    (package / "manifest.json").write_text(
-        json.dumps(
-            {
-                "package_type": "agent_group",
-                "name": "local-team",
-                "metadata": {"displayName": "本地专家团", "tags": ["本地"]},
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+    (package / "manifest.json").write_text(json.dumps({
+        "package_type": "agent_group",
+        "name": "local-team",
+        "metadata": {"displayName": "本地专家团", "tags": ["本地"]},
+    }, ensure_ascii=False), encoding="utf-8")
     (summary,) = await expert_store.LocalDirExpertPackageSource(
         experts_dir=tmp_path
     ).list()

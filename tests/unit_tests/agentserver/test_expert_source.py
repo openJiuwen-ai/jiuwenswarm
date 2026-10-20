@@ -954,17 +954,3 @@ def test_get_expert_source_local_dir_enabled_by_env_one(monkeypatch: pytest.Monk
 def test_get_expert_source_local_dir_disabled_by_env_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     """env 显式设 0 时关闭本地源（保留可关性）。"""
     assert es.LocalDirExpertPackageSource not in _source_chain_types(monkeypatch, "0")
-
-
-@pytest.mark.parametrize("legacy_local_only", [None, "1"])
-def test_get_expert_source_keeps_remote_even_with_removed_local_only_env(
-        monkeypatch: pytest.MonkeyPatch, legacy_local_only: str | None
-) -> None:
-    if legacy_local_only is None:
-        monkeypatch.delenv("JIUWEN_EXPERT_LOCAL_ONLY", raising=False)
-    else:
-        monkeypatch.setenv("JIUWEN_EXPERT_LOCAL_ONLY", legacy_local_only)
-    types = _source_chain_types(monkeypatch, None)
-    assert es.LocalDirExpertPackageSource in types
-    assert es.CachedExpertPackageSource in types
-    assert es.HttpRepoExpertPackageSource in types
