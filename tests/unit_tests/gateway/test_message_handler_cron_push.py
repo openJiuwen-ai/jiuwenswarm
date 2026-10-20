@@ -15,18 +15,25 @@ class _CapturingCronController:
     def __init__(self) -> None:
         self.create_params: dict | None = None
         self.update_patch: dict | None = None
+        self.request_route: tuple[str, str | None] | None = None
         self.user_id = ""
 
-    async def create_job(self, params: dict) -> dict:
+    async def create_job(
+        self, params: dict, *, request_channel_id: str = "", request_session_id: str | None = None
+    ) -> dict:
         self.create_params = dict(params)
+        self.request_route = request_channel_id, request_session_id
         return {"id": "job-1"}
 
     async def get_job(self, job_id: str) -> dict:
         return {"id": job_id, "user_id": self.user_id}
 
-    async def update_job(self, job_id: str, patch: dict) -> dict:
+    async def update_job(
+        self, job_id: str, patch: dict, *, request_channel_id: str = "", request_session_id: str | None = None
+    ) -> dict:
         _ = job_id
         self.update_patch = dict(patch)
+        self.request_route = request_channel_id, request_session_id
         return {"id": "job-1"}
 
 
@@ -97,6 +104,7 @@ async def test_single_user_cron_push_keeps_local_project_validation() -> None:
     )
 
     assert controller.create_params is not None
+    assert controller.request_route == ("web", "sess-1")
     assert "_agentos_project_binding_verified" not in controller.create_params
 
 
