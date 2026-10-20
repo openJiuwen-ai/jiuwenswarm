@@ -4,7 +4,6 @@ import { MarkdownRenderer } from '../../MarkdownRenderer';
 import { CodePreview } from '../../ArtifactsPanel/CodePreview';
 import { inlineDownloadUrl } from '../../ArtifactsPanel/filePreviewModel';
 import FileCopyIcon from '../../../assets/agent-management/file-copy.svg?react';
-import { writeClipboard } from '../../../utils/writeClipboard';
 import {
   downloadPreviewFile,
   formatJsonContent,
@@ -81,11 +80,33 @@ export function FilePreviewContent({
     [file?.downloadUrl],
   );
 
+  const copyWithFallback = async (text: string): Promise<boolean> => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // alert() and OS save dialogs can leave the document unfocused, which makes
+      // the async Clipboard API reject with "Document is not focused".
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      try {
+        return document.execCommand('copy');
+      } catch {
+        return false;
+      } finally {
+        textarea.remove();
+      }
+    }
+  };
+
   const handleCopy = async () => {
     if (!file?.content) return;
-    // Prefer writeClipboard so Electron still has an execCommand fallback after
-    // a failed native save dialog (navigator.clipboard alone can stay denied).
-    const ok = await writeClipboard(getPreviewCopyText(file.path, file.content));
+    const ok = await copyWithFallback(getPreviewCopyText(file.path, file.content));
     setCopyState(ok ? 'copied' : 'failed');
     window.setTimeout(() => setCopyState('idle'), 1600);
   };

@@ -27,7 +27,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator
-from urllib.parse import quote
+from urllib.parse import quote, unquote_to_bytes
 
 from logging.handlers import RotatingFileHandler
 
@@ -1920,22 +1920,26 @@ class DesktopRuntime:
         return False
 
     @staticmethod
-    def _bytes_from_download_data_url(url: str) -> bytes:
-        """Decode a FileReader-style data URL used by file-preview text downloads."""
-        if not isinstance(url, str) or not url.startswith("data:"):
-            raise ValueError("not_data_url")
-        _header, separator, payload = url.partition(",")
-        if not separator:
-            raise ValueError("invalid_data_url")
-        metadata = _header[5:].split(";")
-        if metadata and metadata[-1].lower() == "base64":
-            return base64.b64decode(payload, validate=True)
-        from urllib.parse import unquote_to_bytes
-
-        return unquote_to_bytes(payload)
+    def _decode_data_url(data_url: str) -> bytes:
+        """Decode a data URL (base64 or percent-encoded) into raw bytes."""
+        header, separator, encoded = data_url.partition(",")
+        if not separator or not header.startswith("data:"):
+            raise ValueError("invalid data URL")
+        metadata = [part.strip().lower() for part in header[5:].split(";")]
+        if "base64" in metadata[1:]:
+            return base64.b64decode(encoded, validate=True)
+        return unquote_to_bytes(encoded)
 
     def download_file(self, url: str, filename: str) -> DesktopSaveResult:
         """选择保存位置并在实际写入完成后返回结果。"""
+        payload: bytes | None = None
+        if url.startswith("data:"):
+            try:
+                payload = self._decode_data_url(url)
+            except (ValueError, TypeError) as exc:
+                logger.error("[desktop] failed to decode data URL: %s", exc)
+                return _desktop_save_result(False)
+
         try:
             target_path = self._select_save_path(filename, ())
         except (OSError, RuntimeError, ValueError) as exc:
@@ -1948,8 +1952,6 @@ class DesktopRuntime:
 
         temp_path: Path | None = None
         try:
-            import urllib.request
-
             temp_fd, temp_name = tempfile.mkstemp(
                 dir=target_path.parent,
                 prefix=f".{target_path.name}.",
@@ -1957,10 +1959,11 @@ class DesktopRuntime:
             )
             os.close(temp_fd)
             temp_path = Path(temp_name)
-            # File-preview text downloads (e.g. manifest.json) pass a data: URL.
-            if isinstance(url, str) and url.startswith("data:"):
-                temp_path.write_bytes(self._bytes_from_download_data_url(url))
+            if payload is not None:
+                temp_path.write_bytes(payload)
             else:
+                import urllib.request
+
                 urllib.request.urlretrieve(url, temp_path)
             os.replace(temp_path, target_path)
             temp_path = None
