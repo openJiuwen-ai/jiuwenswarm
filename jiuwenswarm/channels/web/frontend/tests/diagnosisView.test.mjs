@@ -2,21 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  attributionCauses,
   causeNodeLabel,
   diagnosisTarget,
   filterRecords,
+  findingEvidence,
+  findingTag,
   formatElapsed,
   formatRecordTime,
   formatTimeWindow,
-  groupCausesBySignal,
   isStageExpanded,
   looksLikePath,
+  orderFindings,
   processDefaultOpen,
   processSummary,
   recordIconKind,
   recordLabel,
-  rewardDimensionGroups,
   rewardOverview,
   rewardTier,
   showCategoryBadge,
@@ -208,36 +208,44 @@ test('the category badge hides when it says nothing', () => {
   assert.equal(showCategoryBadge({ category: 'ttse_fail' }), false);
 });
 
-test('attribution causes leave out the experience verdict', () => {
-  const causes = attributionCauses({
-    root_causes: [cause('a'), cause('b', { category: 'ttse_partial' })],
+test('findings read the experience verdict first and keep the reported order after it', () => {
+  const findings = orderFindings([
+    cause('a'),
+    cause('b', { category: 'ttse_partial' }),
+    cause('c'),
+  ]);
+  assert.deepEqual(findings.map(item => item.id), ['b', 'a', 'c']);
+});
+
+test('the lead tag is the verdict, the signal tier, or the signal source', () => {
+  assert.deepEqual(findingTag(cause('a', { category: 'ttse_partial' })), {
+    kind: 'experience',
+    tier: 'fair',
+    outcome: 'partial',
   });
-  assert.deepEqual(causes.map(item => item.id), ['a']);
+  assert.deepEqual(findingTag(cause('b', { signal: { id: 's', source: 'reward', score: 60 } })), {
+    kind: 'signal',
+    tier: 'weak',
+    source: null,
+  });
+  assert.deepEqual(findingTag(cause('c', { signal: { id: 's', source: 'keyword_tool', tier: 'uncertain' } })), {
+    kind: 'signal',
+    tier: null,
+    source: 'keyword_tool',
+  });
+  assert.equal(findingTag(cause('d')), null);
 });
 
-test('causes group by signal id and keep first-seen order', () => {
-  const groups = groupCausesBySignal([
-    cause('a', { signal: { id: 's1', source: 'reward' }, evidence: 'e1' }),
-    cause('b', { signal: { id: 's2', source: 'keyword_tool' }, evidence: 'e2' }),
-    cause('c', { signal: { id: 's1', source: 'reward' }, evidence: 'e1' }),
-  ]);
-  assert.deepEqual(groups.map(group => [group.key, group.causes.map(item => item.id)]), [
-    ['signal:s1', ['a', 'c']],
-    ['signal:s2', ['b']],
-  ]);
-  assert.equal(groups[0].evidence, 'e1');
-});
-
-test('records without signal references group by identical evidence', () => {
-  const groups = groupCausesBySignal([
-    cause('a', { evidence: 'same' }),
-    cause('b', { evidence: 'same' }),
-    cause('c', { evidence: 'other' }),
-    cause('d', { evidence: '' }),
-    cause('e', { evidence: '' }),
-  ]);
-  assert.deepEqual(groups.map(group => group.causes.map(item => item.id)), [['a', 'b'], ['c'], ['d'], ['e']]);
-  assert.equal(groups[0].signal, null);
+test('the evidence of a finding is its signal: the Reward requirement and comment, or the raw rule hit', () => {
+  assert.deepEqual(
+    findingEvidence(cause('a', { signal: { id: 's', source: 'reward' }, evidence: '测试应当通过\n仍有 2 个失败' })),
+    { requirement: '测试应当通过', text: '仍有 2 个失败' },
+  );
+  assert.deepEqual(
+    findingEvidence(cause('b', { signal: { id: 's', source: 'keyword_tool' }, evidence: 'Error: boom' })),
+    { requirement: '', text: 'Error: boom' },
+  );
+  assert.equal(findingEvidence(cause('c', { category: 'ttse_fail', evidence: '' })), null);
 });
 
 test('the node label joins distinct node ids with an arrow', () => {
@@ -262,23 +270,6 @@ test('a Skill key that reads as a path is recognised', () => {
   assert.equal(looksLikePath('skills/demo/SKILL.md'), true);
   assert.equal(looksLikePath('C:\\skills\\demo'), true);
   assert.equal(looksLikePath('README.MD'), true);
-});
-
-test('Reward dimensions group by category with their tiers', () => {
-  const groups = rewardDimensionGroups({
-    dimensions: [
-      { category: '正确性', requirement: 'r1', comment: 'c1', score: 95 },
-      { category: '完整性', requirement: 'r2', comment: 'c2', score: 60 },
-      { category: '正确性', requirement: 'r3', comment: 'c3', score: 80 },
-    ],
-  });
-  assert.deepEqual(
-    groups.map(group => [group.category, group.dimensions.map(item => [item.requirement, item.tier])]),
-    [
-      ['正确性', [['r1', 'perfect'], ['r3', 'fair']]],
-      ['完整性', [['r2', 'weak']]],
-    ],
-  );
 });
 
 test('the suggestion card tells running, unfinished and finished apart', () => {
@@ -333,22 +324,40 @@ test('processSummary counts stages and adds their durations', () => {
   );
 });
 
-test('rewardOverview keeps scored categories and counts what the details hold', () => {
+test('rewardOverview lists every category with its dimensions and counts the perfect ones', () => {
   const overview = rewardOverview({
     schema_version: 'v1',
     overall: { comment: '  基本完成 ', total_score: 87 },
-    categories: [{ name: 'A', score: 93 }, { name: 'B' }, { name: 'C', score: 70 }],
+    categories: [{ name: 'A', score: 93, comment: ' 不错 ' }, { name: 'B' }, { name: 'C', score: 70 }],
     dimensions: [
-      { category: 'A', requirement: 'r1', comment: '', score: 93 },
+      { category: 'A', requirement: ' r1 ', comment: ' c1 ', score: 93 },
       { category: 'D', requirement: 'r2', comment: '', score: 80 },
+      { category: 'D', requirement: 'r3', comment: '', score: 90 },
     ],
   });
   assert.equal(overview.totalScore, 87);
   assert.equal(overview.comment, '基本完成');
+  // B has neither a score nor a dimension and says nothing; D only owns dimensions.
   assert.deepEqual(overview.categories, [
-    { name: 'A', score: 93, tier: 'perfect' },
-    { name: 'C', score: 70, tier: 'weak' },
+    {
+      name: 'A',
+      score: 93,
+      tier: 'perfect',
+      comment: '不错',
+      dimensions: [{ requirement: 'r1', comment: 'c1', score: 93, tier: 'perfect' }],
+    },
+    { name: 'C', score: 70, tier: 'weak', comment: '', dimensions: [] },
+    {
+      name: 'D',
+      score: null,
+      tier: null,
+      comment: '',
+      dimensions: [
+        { requirement: 'r2', comment: '', score: 80, tier: 'fair' },
+        { requirement: 'r3', comment: '', score: 90, tier: 'perfect' },
+      ],
+    },
   ]);
-  assert.equal(overview.categoryCount, 4);
-  assert.equal(overview.dimensionCount, 2);
+  assert.equal(overview.dimensionCount, 3);
+  assert.equal(overview.perfectCount, 2);
 });

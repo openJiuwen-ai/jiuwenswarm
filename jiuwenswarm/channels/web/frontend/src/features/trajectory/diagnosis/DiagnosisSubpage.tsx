@@ -24,7 +24,7 @@ import {
   type StageViewStatus,
 } from './diagnosisView';
 import { FillButton } from './DiagnosisFillButton';
-import { RewardDetails, RewardSummary } from './DiagnosisReward';
+import { RewardSummary } from './DiagnosisReward';
 import { RootCauses } from './DiagnosisRootCauses';
 import { DiagnosisStatusIcon } from './DiagnosisStatusIcon';
 import { FoldedMarkdown, PlainFold } from './DiagnosisText';
@@ -198,15 +198,13 @@ function RecordCards({ record, session, subjectLabels, focusedCauseId, onFocusCa
           <p className={css.headline} data-testid="trajectory-diagnosis-headline">{record.headline}</p>
         )}
         {done && reward !== null ? <RewardSummary reward={reward} /> : null}
-        {done ? (
-          <RootCauses
-            record={record}
-            subjectLabels={subjectLabels}
-            focusedCauseId={focusedCauseId}
-            onFocusCause={onFocusCause}
-          />
-        ) : null}
-        {done && reward !== null ? <RewardDetails reward={reward} /> : null}
+        {/* Findings appear as the attribution reports them, not only once the run is over. */}
+        <RootCauses
+          record={record}
+          subjectLabels={subjectLabels}
+          focusedCauseId={focusedCauseId}
+          onFocusCause={onFocusCause}
+        />
       </Card>
 
       <Card title={t('trajectory.diagnosis.suggestions')} testId="trajectory-diagnosis-suggestions">

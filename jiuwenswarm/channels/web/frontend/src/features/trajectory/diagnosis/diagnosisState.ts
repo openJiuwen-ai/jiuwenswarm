@@ -73,6 +73,16 @@ function replaceStage(
   return next;
 }
 
+/** Replace the root causes of one signal with its latest set, keeping the rest in order. */
+function replaceSignalCauses(
+  causes: readonly RootCause[],
+  signalId: string | undefined,
+  latest: readonly RootCause[],
+): RootCause[] {
+  const rest = signalId === undefined ? causes : causes.filter(cause => cause.signal?.id !== signalId);
+  return [...rest, ...latest];
+}
+
 /**
  * Apply one progress event to a record.
  *
@@ -83,6 +93,16 @@ export function applyProgressEvent(record: DiagnosisRecord, event: DiagnosisProg
   if (event.diagnosis_id !== record.diagnosis_id) return { record, refetch: false };
   if (event.seq <= record.seq) return { record, refetch: false };
   if (event.seq !== record.seq + 1) return { record, refetch: true };
+  if (event.kind === 'root_causes') {
+    return {
+      record: {
+        ...record,
+        seq: event.seq,
+        root_causes: replaceSignalCauses(record.root_causes, event.signal_id, event.root_causes ?? []),
+      },
+      refetch: false,
+    };
+  }
   const stages = replaceStage(record.stages, event.stage_id, (stage) => {
     const base: DiagnosisStage = stage ?? {
       stage_id: event.stage_id,

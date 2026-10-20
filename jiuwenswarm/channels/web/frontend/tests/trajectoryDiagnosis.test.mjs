@@ -79,6 +79,48 @@ test('progress events build a stage in order', () => {
   ]);
 });
 
+test('root cause events fill the record while it runs and replace what a signal held', () => {
+  const cause = (id, signalId) => ({
+    id,
+    category: 'other',
+    subject_id: 'main',
+    refs: [ref('1')],
+    summary: id,
+    evidence: '',
+    signal: { id: signalId, source: 'keyword_tool' },
+  });
+  let current = record({ seq: 1 });
+  const events = [
+    progress(2, 'root_causes', { stage_id: 'attribute', signal_id: 'sig-1', root_causes: [cause('a', 'sig-1')] }),
+    progress(3, 'root_causes', { stage_id: 'attribute', signal_id: 'sig-2', root_causes: [cause('b', 'sig-2')] }),
+    progress(4, 'root_causes', {
+      stage_id: 'attribute',
+      signal_id: 'sig-1',
+      root_causes: [cause('a2', 'sig-1'), cause('a3', 'sig-1')],
+    }),
+  ];
+  for (const event of events) {
+    const outcome = applyProgressEvent(current, event);
+    assert.equal(outcome.refetch, false);
+    current = outcome.record;
+  }
+  assert.equal(current.seq, 4);
+  assert.deepEqual(current.root_causes.map(item => item.id), ['b', 'a2', 'a3']);
+  // No stage is invented for an update that is not about a stage.
+  assert.deepEqual(current.stages, []);
+});
+
+test('an empty root cause update clears the causes of its signal', () => {
+  const kept = { id: 'k', category: 'other', subject_id: 'main', refs: [], summary: 'k', evidence: '' };
+  const gone = { ...kept, id: 'g', signal: { id: 'sig-1', source: 'reward' } };
+  const base = record({ seq: 3, root_causes: [kept, gone] });
+  const outcome = applyProgressEvent(
+    base,
+    progress(4, 'root_causes', { stage_id: 'attribute', signal_id: 'sig-1', root_causes: [] }),
+  );
+  assert.deepEqual(outcome.record.root_causes.map(item => item.id), ['k']);
+});
+
 test('events at or below the record seq are dropped', () => {
   const base = record({ seq: 5 });
   const outcome = applyProgressEvent(base, progress(5, 'output_delta', { text_delta: 'x' }));

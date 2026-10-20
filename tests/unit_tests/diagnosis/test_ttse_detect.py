@@ -124,6 +124,22 @@ def test_tool_error_reason_is_one_short_line_around_the_matched_keyword() -> Non
     assert len(detail) < 300
 
 
+def test_summary_quotes_raw_tool_output_so_markdown_leaves_it_alone() -> None:
+    nodes = [
+        _node(0, "user", "run it"),
+        *_tool_round(1, "Error: OPENAI_IMAGE_MODEL `x` [single] a | b"),
+        _node(3, "assistant", "x"),
+    ]
+
+    cause = _run_detect(nodes, _FakeModel(), locale="en")
+
+    assert cause is not None
+    quoted = cause.summary.split(": ", 1)[1]
+    assert quoted.startswith("`") and quoted.endswith("`")
+    assert quoted.count("`") == 2
+    assert "OPENAI_IMAGE_MODEL 'x' [single] a | b" in quoted
+
+
 def test_several_tool_errors_are_counted_in_the_headline() -> None:
     nodes = [
         _node(0, "user", "run it"),

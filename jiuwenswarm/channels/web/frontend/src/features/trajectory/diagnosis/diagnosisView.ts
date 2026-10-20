@@ -12,7 +12,6 @@ import type {
   DiagnosisStage,
   DiagnosisStatus,
   DiagnosisSummary,
-  RewardDimension,
   RewardPayload,
   RootCause,
   SignalRef,
@@ -204,43 +203,48 @@ export function showCategoryBadge(cause: Pick<RootCause, 'category' | 'confidenc
   return !(cause.category === 'other' && (cause.confidence === undefined || cause.confidence === null));
 }
 
-/** Root causes found by attribution, without the TTSE experience verdict. */
-export function attributionCauses(record: Pick<DiagnosisRecord, 'root_causes'>): RootCause[] {
-  return record.root_causes.filter(cause => !isTtseCategory(cause.category));
-}
-
-export interface CauseGroup {
-  key: string;
-  /** The signal the group answers; `null` when the record predates signal references. */
-  signal: SignalRef | null;
-  /** Signal text shared by the group, shown once. */
-  evidence: string;
-  causes: RootCause[];
-}
-
 /**
- * Group root causes by the signal they answer, in order of first appearance.
- *
- * Records written before signal references fall back to identical evidence
- * text, which is the signal text; a cause with neither stands alone.
+ * The findings of a diagnosis in reading order: the experience verdict on the whole stretch
+ * first, then the attribution root causes as they were reported. Every finding is one root cause.
  */
-export function groupCausesBySignal(causes: readonly RootCause[]): CauseGroup[] {
-  const groups: CauseGroup[] = [];
-  const byKey = new Map<string, CauseGroup>();
-  for (const cause of causes) {
-    const signal = cause.signal ?? null;
-    const key = signal !== null
-      ? `signal:${signal.id}`
-      : cause.evidence === '' ? `cause:${cause.id}` : `evidence:${cause.evidence}`;
-    let group = byKey.get(key);
-    if (group === undefined) {
-      group = { key, signal, evidence: cause.evidence, causes: [] };
-      byKey.set(key, group);
-      groups.push(group);
-    }
-    group.causes.push(cause);
+export function orderFindings(causes: readonly RootCause[]): RootCause[] {
+  return [
+    ...causes.filter(cause => isTtseCategory(cause.category)),
+    ...causes.filter(cause => !isTtseCategory(cause.category)),
+  ];
+}
+
+/** What the lead tag of a finding says: the experience verdict, or how its signal fared. */
+export type FindingTag =
+  | { kind: 'experience'; tier: RewardTier; outcome: string }
+  | { kind: 'signal'; tier: RewardTier | null; source: string | null };
+
+/** The lead tag of a finding; a Reward signal carries a tier, a rule signal only its source. */
+export function findingTag(cause: Pick<RootCause, 'category' | 'signal'>): FindingTag | null {
+  if (isTtseCategory(cause.category)) {
+    return { kind: 'experience', tier: ttseTier(cause.category), outcome: cause.category.slice('ttse_'.length) };
   }
-  return groups;
+  const signal = cause.signal ?? null;
+  if (signal === null) return null;
+  const known = signal.source === 'keyword_tool' || signal.source === 'keyword_user';
+  return { kind: 'signal', tier: signalTier(signal), source: known ? signal.source : null };
+}
+
+export interface FindingEvidence {
+  /** Requirement a Reward signal was scored against; empty for a rule signal. */
+  requirement: string;
+  /** The signal text a finding stands on: the Reward comment, or the raw rule hit. */
+  text: string;
+}
+
+/** The signal behind a finding, or `null` when it has none (the experience verdict). */
+export function findingEvidence(cause: Pick<RootCause, 'evidence' | 'signal'>): FindingEvidence | null {
+  if (cause.evidence.trim() === '') return null;
+  if (cause.signal?.source === 'reward') {
+    const { requirement, comment } = splitRewardSignalText(cause.evidence);
+    return { requirement, text: comment };
+  }
+  return { requirement: '', text: cause.evidence };
 }
 
 /** Root cause range, "main:23 → main:30", or a single node; empty when no node ids exist. */
@@ -264,29 +268,6 @@ export function formatElapsed(ms: number | undefined): string {
 /** Whether a Skill key reads as a file path rather than a Skill name. */
 export function looksLikePath(key: string): boolean {
   return key.includes('/') || key.includes('\\') || key.toLowerCase().endsWith('.md');
-}
-
-export interface RewardDimensionView extends RewardDimension {
-  tier: RewardTier;
-}
-
-export interface RewardCategoryGroup {
-  category: string;
-  dimensions: RewardDimensionView[];
-}
-
-/** Reward dimensions grouped by category in order of first appearance, each with its tier. */
-export function rewardDimensionGroups(reward: Pick<RewardPayload, 'dimensions'>): RewardCategoryGroup[] {
-  const groups: RewardCategoryGroup[] = [];
-  for (const dimension of reward.dimensions) {
-    let group = groups.find(item => item.category === dimension.category);
-    if (group === undefined) {
-      group = { category: dimension.category, dimensions: [] };
-      groups.push(group);
-    }
-    group.dimensions.push({ ...dimension, tier: rewardTier(dimension.score) });
-  }
-  return groups;
 }
 
 export type SuggestionsState = 'pending' | 'unfinished' | 'ready';
@@ -357,33 +338,69 @@ export function processSummary(stages: readonly DiagnosisStage[]): ProcessSummar
   return { count: stages.length, elapsed: timed.length === 0 ? '' : formatElapsed(total) };
 }
 
-export interface RewardCategoryScore {
-  name: string;
+/** One scored dimension of a category. */
+export interface RewardDimensionScore {
+  requirement: string;
+  comment: string;
   score: number;
   tier: RewardTier;
+}
+
+export interface RewardCategoryScore {
+  name: string;
+  /** `null` for a category the evaluator gave dimensions but no score of its own. */
+  score: number | null;
+  tier: RewardTier | null;
+  /** The evaluator's comment on the category. */
+  comment: string;
+  dimensions: RewardDimensionScore[];
 }
 
 export interface RewardOverview {
   totalScore: number;
   comment: string;
-  /** Categories that carry a score, in the evaluator's order. */
+  /** Categories in the evaluator's order: those with a score, then any that only own dimensions. */
   categories: RewardCategoryScore[];
-  /** Categories and dimensions behind the score, for the folded details. */
-  categoryCount: number;
+  /** Dimensions the evaluator scored, and how many of them are perfect and need no attribution. */
   dimensionCount: number;
+  perfectCount: number;
 }
 
-/** What the conclusion shows of a Reward evaluation: total, comment and category scores. */
+/**
+ * What the conclusion shows of a Reward evaluation: total, comment, and per category its score,
+ * comment and dimensions, which the reader opens one category at a time.
+ */
 export function rewardOverview(reward: RewardPayload): RewardOverview {
-  const categoryNames = new Set<string>(reward.categories.map(item => item.name));
-  for (const dimension of reward.dimensions) categoryNames.add(dimension.category);
+  const dimensionsOf = (name: string): RewardDimensionScore[] => reward.dimensions
+    .filter(item => item.category === name)
+    .map(item => ({
+      requirement: item.requirement.trim(),
+      comment: item.comment.trim(),
+      score: item.score,
+      tier: rewardTier(item.score),
+    }));
+  const categories: RewardCategoryScore[] = [];
+  for (const item of reward.categories) {
+    const dimensions = dimensionsOf(item.name);
+    if (typeof item.score !== 'number' && dimensions.length === 0) continue;
+    categories.push({
+      name: item.name,
+      score: typeof item.score === 'number' ? item.score : null,
+      tier: typeof item.score === 'number' ? rewardTier(item.score) : null,
+      comment: (item.comment ?? '').trim(),
+      dimensions,
+    });
+  }
+  const known = new Set(reward.categories.map(item => item.name));
+  for (const name of new Set(reward.dimensions.map(item => item.category))) {
+    if (known.has(name)) continue;
+    categories.push({ name, score: null, tier: null, comment: '', dimensions: dimensionsOf(name) });
+  }
   return {
     totalScore: reward.overall.total_score,
     comment: reward.overall.comment.trim(),
-    categories: reward.categories
-      .filter((item): item is { name: string; score: number; comment?: string } => typeof item.score === 'number')
-      .map(item => ({ name: item.name, score: item.score, tier: rewardTier(item.score) })),
-    categoryCount: categoryNames.size,
+    categories,
     dimensionCount: reward.dimensions.length,
+    perfectCount: reward.dimensions.filter(item => rewardTier(item.score) === 'perfect').length,
   };
 }

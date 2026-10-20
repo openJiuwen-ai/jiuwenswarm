@@ -62,6 +62,7 @@ from jiuwenswarm.diagnosis.models import (
     SkillSuggestion,
     StepRef,
 )
+from jiuwenswarm.diagnosis.node_anchor import anchor_assistant_nodes
 from jiuwenswarm.diagnosis.snapshot import TrajectorySnapshot
 
 logger = logging.getLogger(__name__)
@@ -236,7 +237,10 @@ def _prepare_nodes(inputs: EngineInputs) -> dict[str, list[Any]]:
     nodes = build_nodes_from_snapshot(snapshot)
     assigned, _mapping = assign_node_ids(nodes, {})
     ranges = [(item.subject_id, item.start_nano, item.end_nano) for item in inputs.ranges]
-    return slice_nodes_by_range(assigned, ranges)
+    sliced = slice_nodes_by_range(assigned, ranges)
+    # Root causes and the experience verdict highlight these nodes' spans, so an assistant
+    # message must point at the model call that wrote it, not at a later context commit.
+    return anchor_assistant_nodes(sliced, snapshot)
 
 
 def _render_llm_line(event: Any, text: dict[str, str]) -> str:
@@ -383,14 +387,17 @@ class _StreamingRuntime(NodeBackedRuntime):
 
     The core agent only hands over its results when the run ends; the tool
     callbacks, however, run on the event loop while the agent works, so the
-    attribute stage can show each submission live. Stored state is unchanged:
-    the root causes are still built from the final ``attributions`` mapping.
+    attribute stage can show each submission live, and report the root causes
+    of a signal as soon as the agent has submitted them. Stored state is
+    unchanged: the final root causes are still built from the ``attributions``
+    mapping, which has the last word.
 
     Args:
         nodes_by_subagent: Sliced trajectory nodes of the run.
         language: Output language of the core tools.
         queue: Engine event queue drained by the single writer.
         text: Localized text table.
+        signals: Core signals of the run, to attach each cause to its signal.
     """
 
     def __init__(
@@ -399,10 +406,27 @@ class _StreamingRuntime(NodeBackedRuntime):
         language: str,
         queue: asyncio.Queue[EngineEvent | None],
         text: dict[str, str],
+        signals: list[Any] | None = None,
     ) -> None:
         super().__init__(nodes_by_subagent, language)
         self._queue = queue
         self._text = text
+        self._node_index = _node_index(nodes_by_subagent)
+        self._signals_by_id = {signal.signal_id: signal for signal in signals or []}
+
+    def _report_causes(self, signal_id: str) -> None:
+        """Push the root causes now held for one signal, replacing earlier ones."""
+        evidence = self._signals_by_id.get(signal_id)
+        causes = [
+            _entry_root_cause(entry, self._node_index, evidence)
+            for entry in self.attributions.get(signal_id, [])
+        ]
+        try:
+            self._queue.put_nowait(
+                EngineEvent("attribute", "root_causes", signal_id=signal_id, root_causes=causes),
+            )
+        except Exception:  # noqa: BLE001 - a lost update must not break the run
+            logger.debug("[diagnosis] root cause update dropped", exc_info=True)
 
     def _log(self, line: str) -> None:
         try:
@@ -418,6 +442,7 @@ class _StreamingRuntime(NodeBackedRuntime):
         prefix = self._updated(status)
         for entry in self.attributions.get(signal_id, []):
             self._log(prefix + _attribution_entry_line(entry, self._text))
+        self._report_causes(signal_id)
         return status
 
     def mark_signal_invalid(self, signal_id: str) -> str:
@@ -451,6 +476,60 @@ def _signal_ref(signal: Any) -> SignalRef:
     )
 
 
+def _node_index(nodes: dict[str, list[Any]]) -> dict[str, Any]:
+    """Index the nodes of every subject by node id."""
+    index: dict[str, Any] = {}
+    for subject_nodes in nodes.values():
+        for node in subject_nodes:
+            index[node.node_id] = node
+    return index
+
+
+def _entry_root_cause(entry: Mapping[str, Any], index: dict[str, Any], evidence: Any | None) -> RootCause:
+    """Turn one attribution entry into a root cause anchored on the nodes it names.
+
+    Args:
+        entry: Attribution entry submitted by the core agent.
+        index: Nodes of the run by node id.
+        evidence: The core signal the entry answers, if it is known.
+
+    Returns:
+        The root cause; its ``refs`` stay empty when no named node can be
+        highlighted in the trajectory.
+    """
+    refs: list[StepRef] = []
+    for node_id in (entry.get("start_node_id"), entry.get("end_node_id")):
+        if not node_id:
+            continue
+        node = index.get(str(node_id))
+        if node is None or not node.trace_id or not node.span_id:
+            continue
+        try:
+            refs.append(
+                StepRef(
+                    trace_id=node.trace_id,
+                    span_id=node.span_id,
+                    subject_id=node.subagent_key,
+                    node_id=node.node_id,
+                ),
+            )
+        except ValueError:
+            continue
+    subject_id = str(entry.get("start_node_id") or "").rpartition(":")[0]
+    if not subject_id and refs:
+        subject_id = refs[0].subject_id
+    return RootCause(
+        id=str(entry.get("attr_id") or f"attr-{uuid.uuid4().hex[:8]}"),
+        category=RootCauseCategory.OTHER,
+        subject_id=subject_id,
+        refs=refs,
+        summary=str(entry.get("text_md") or ""),
+        evidence=evidence.text if evidence is not None else "",
+        confidence=None,
+        signal=_signal_ref(evidence) if evidence is not None else None,
+    )
+
+
 def _translate_attribution(
     nodes: dict[str, list[Any]],
     runtime: NodeBackedRuntime,
@@ -466,50 +545,15 @@ def _translate_attribution(
         The root causes, the suggestions and the number of root causes that
         cannot be anchored in the trajectory.
     """
-    index: dict[str, Any] = {}
-    for subject_nodes in nodes.values():
-        for node in subject_nodes:
-            index[node.node_id] = node
+    index = _node_index(nodes)
     signals_by_id = {signal.signal_id: signal for signal in signals}
     root_causes: list[RootCause] = []
     dropped = 0
     for signal_id, entries in runtime.attributions.items():
-        evidence = signals_by_id.get(signal_id)
         for entry in entries:
-            refs: list[StepRef] = []
-            for node_id in (entry.get("start_node_id"), entry.get("end_node_id")):
-                if not node_id:
-                    continue
-                node = index.get(str(node_id))
-                if node is None or not node.trace_id or not node.span_id:
-                    continue
-                try:
-                    refs.append(
-                        StepRef(
-                            trace_id=node.trace_id,
-                            span_id=node.span_id,
-                            subject_id=node.subagent_key,
-                            node_id=node.node_id,
-                        ),
-                    )
-                except ValueError:
-                    continue
-            subject_id = str(entry.get("start_node_id") or "").rpartition(":")[0]
-            if not subject_id and refs:
-                subject_id = refs[0].subject_id
-            root_causes.append(
-                RootCause(
-                    id=str(entry.get("attr_id") or f"attr-{uuid.uuid4().hex[:8]}"),
-                    category=RootCauseCategory.OTHER,
-                    subject_id=subject_id,
-                    refs=refs,
-                    summary=str(entry.get("text_md") or ""),
-                    evidence=evidence.text if evidence is not None else "",
-                    confidence=None,
-                    signal=_signal_ref(evidence) if evidence is not None else None,
-                ),
-            )
-            if not refs:
+            cause = _entry_root_cause(entry, index, signals_by_id.get(signal_id))
+            root_causes.append(cause)
+            if not cause.refs:
                 dropped += 1
     suggestions = DiagnosisSuggestions()
     if runtime.artifact_improvement:
@@ -885,7 +929,7 @@ class AttributionCoreEngine:
         queue.put_nowait(EngineEvent("attribute", "stage_started", title=text["stage_attribute"]))
         language = inputs.locale
         # Entries are logged as the agent submits them, not after the run.
-        runtime = _StreamingRuntime(nodes, language, queue, text)
+        runtime = _StreamingRuntime(nodes, language, queue, text, diagnosis.signals)
         outcome = await run_attribution(
             model=model,
             nodes_by_subagent=nodes,

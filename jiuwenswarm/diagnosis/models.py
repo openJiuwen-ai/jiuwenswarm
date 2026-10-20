@@ -411,13 +411,16 @@ class DiagnosisProgressEvent(_Model):
     diagnosis_id: str
     seq: int
     stage_id: str
-    kind: Literal["stage_started", "output_delta", "stage_finished"]
+    kind: Literal["stage_started", "output_delta", "stage_finished", "root_causes"]
     title: str | None = None
     text_delta: str | None = None
     status: Literal["completed", "failed", "skipped"] | None = None
     summary: str | None = None
     skip_reason: str | None = None
     elapsed_ms: int | None = None
+    # ``root_causes`` events: the causes now known for one signal, replacing earlier ones.
+    signal_id: str | None = None
+    root_causes: list[RootCause] | None = None
 
 
 class DiagnosisStatusEvent(_Model):

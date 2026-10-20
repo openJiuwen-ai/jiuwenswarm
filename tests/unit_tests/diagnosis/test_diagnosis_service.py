@@ -33,6 +33,7 @@ from jiuwenswarm.diagnosis.models import (
     RootCauseCategory,
     SelectionRange,
     SelectionScope,
+    SignalRef,
     SkillSuggestion,
     StepRef,
 )
@@ -87,6 +88,45 @@ class _GatedEngine:
         await self.release.wait()
         await emit(EngineEvent("evidence", "stage_finished", status="completed"))
         return EngineResult()
+
+
+class _StreamingCausesEngine:
+    """Engine that reports root causes while its stage runs, then waits to be released."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.reported = asyncio.Event()
+
+    @staticmethod
+    def _cause(cause_id: str, index: int, signal: SignalRef) -> RootCause:
+        return RootCause(
+            id=cause_id,
+            category=RootCauseCategory.OTHER,
+            subject_id="main",
+            refs=[_ref(index)],
+            summary=cause_id,
+            signal=signal,
+        )
+
+    async def run(self, inputs: EngineInputs, emit: Any) -> EngineResult:
+        first = SignalRef(id="sig-1", source="keyword_tool")
+        second = SignalRef(id="sig-2", source="keyword_tool")
+        await emit(EngineEvent("attribution", "stage_started", title="Attribution"))
+        await emit(EngineEvent("attribution", "root_causes", signal_id="sig-1", root_causes=[
+            self._cause("rc-1", 2, first),
+            self._cause("rc-out", 99, first),
+        ]))
+        await emit(EngineEvent("attribution", "root_causes", signal_id="sig-2", root_causes=[
+            self._cause("rc-2", 3, second),
+        ]))
+        # A resubmission replaces what the signal held before.
+        await emit(EngineEvent("attribution", "root_causes", signal_id="sig-1", root_causes=[
+            self._cause("rc-1b", 1, first),
+        ]))
+        self.reported.set()
+        await self.release.wait()
+        await emit(EngineEvent("attribution", "stage_finished", status="completed"))
+        return EngineResult(root_causes=[self._cause("rc-final", 2, first)])
 
 
 class _FailingEngine:
@@ -332,6 +372,34 @@ async def test_start_runs_to_completion_with_ordered_events(tmp_path: Path) -> N
     assert push.of(STATUS_EVENT)[-1]["seq"] == finished.seq
     stored = DiagnosisStore(tmp_path).load(SESSION_ID, started.diagnosis_id)
     assert stored is not None and stored.status is DiagnosisStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_root_causes_are_visible_and_pushed_while_the_run_goes_on(tmp_path: Path) -> None:
+    engine = _StreamingCausesEngine()
+    service, push = _service(tmp_path, engine=engine)
+
+    started = await service.start(SESSION_ID, _full_request())
+    await asyncio.wait_for(engine.reported.wait(), _ENGINE_DONE_TIMEOUT)
+
+    live = service.get_record(SESSION_ID, started.diagnosis_id)
+    assert live.status is DiagnosisStatus.RUNNING
+    # Out-of-scope causes are filtered like in the final result; a resubmission replaces its signal's causes.
+    assert sorted(cause.id for cause in live.root_causes) == ["rc-1b", "rc-2"]
+
+    updates = [payload for payload in push.of(PROGRESS_EVENT) if payload["kind"] == "root_causes"]
+    assert [(item["signal_id"], [cause["id"] for cause in item["root_causes"]]) for item in updates] == [
+        ("sig-1", ["rc-1"]),
+        ("sig-2", ["rc-2"]),
+        ("sig-1", ["rc-1b"]),
+    ]
+    sequences = [payload["seq"] for payload in push.of(PROGRESS_EVENT)]
+    assert sequences == list(range(1, len(sequences) + 1))
+
+    engine.release.set()
+    finished = await _wait_finished(service, started.diagnosis_id)
+    # The final result has the last word.
+    assert [cause.id for cause in finished.root_causes] == ["rc-final"]
 
 
 @pytest.mark.asyncio

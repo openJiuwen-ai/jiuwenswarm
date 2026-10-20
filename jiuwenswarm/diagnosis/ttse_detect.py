@@ -384,6 +384,18 @@ def _clip(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[:limit] + "..."
 
 
+def _inline_code(value: str) -> str:
+    """Quote raw text as Markdown inline code.
+
+    The summary is rendered as Markdown like every other root cause; tool output and user
+    words carry ``_``, ``|`` and brackets that Markdown would otherwise read as syntax.
+    """
+    if not value:
+        return value
+    safe = value.replace("`", "'")
+    return f"`{safe}`"
+
+
 def _tool_error_verdict(failures: Sequence[tuple[TrajectoryNode, str, str]], text: dict[str, str]) -> _Verdict:
     """Build the ``partial`` verdict of failing tool rows, naming the first failure.
 
@@ -400,7 +412,7 @@ def _tool_error_verdict(failures: Sequence[tuple[TrajectoryNode, str, str]], tex
     if len(failures) > _MAX_EVIDENCE_LINES:
         evidence.append(text["summary_tool_error_more"].format(count=len(failures) - _MAX_EVIDENCE_LINES).strip())
     first_tool = failures[0][1] or text["unknown_tool"]
-    snippet = _clip(_failure_detail(failures[0][2])[1], _SUMMARY_SNIPPET_CHARS)
+    snippet = _inline_code(_clip(_failure_detail(failures[0][2])[1], _SUMMARY_SNIPPET_CHARS))
     summary = text["summary_tool_error"].format(tool=first_tool, snippet=snippet)
     if len(failures) > 1:
         summary += text["summary_tool_error_more"].format(count=len(failures) - 1)
@@ -442,7 +454,7 @@ async def _detect(
         verdict = _Verdict(
             outcome="partial",
             anchors=[node] if node is not None else [],
-            summary=text["summary_user_feedback"].format(excerpt=quote),
+            summary=text["summary_user_feedback"].format(excerpt=_inline_code(quote)),
             evidence=[text["basis_user_feedback"], text["evidence_user_feedback"].format(excerpt=quote)],
         )
         return verdict, kept

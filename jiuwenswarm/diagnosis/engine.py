@@ -29,12 +29,17 @@ from jiuwenswarm.diagnosis.models import (
 )
 from jiuwenswarm.diagnosis.snapshot import SubjectRange, TrajectorySnapshot
 
-EngineEventKind = Literal["stage_started", "output_delta", "stage_finished"]
+EngineEventKind = Literal["stage_started", "output_delta", "stage_finished", "root_causes"]
 
 
 @dataclass(frozen=True, slots=True)
 class EngineEvent:
-    """One progress notification produced by an engine."""
+    """One progress notification produced by an engine.
+
+    A ``root_causes`` event carries the root causes found so far for one signal
+    (``signal_id``); it replaces what the host holds for that signal, so an
+    engine can report findings while the stage is still running.
+    """
 
     stage_id: str
     kind: EngineEventKind
@@ -43,6 +48,8 @@ class EngineEvent:
     status: Literal["completed", "failed", "skipped"] | None = None
     summary: str | None = None
     skip_reason: str | None = None
+    signal_id: str | None = None
+    root_causes: list[RootCause] | None = None
 
 
 EmitFn = Callable[[EngineEvent], Awaitable[None]]

@@ -511,6 +511,52 @@ def _drain(queue: asyncio.Queue[EngineEvent | None]) -> list[EngineEvent]:
     return events
 
 
+def _lines(queue: asyncio.Queue[EngineEvent | None]) -> list[str | None]:
+    """Log lines of the drained events; root cause updates are not log lines."""
+    return [event.text_delta for event in _drain(queue) if event.kind == "output_delta"]
+
+
+def test_streaming_runtime_reports_root_causes_per_signal() -> None:
+    from jiuwenswarm.diagnosis.attribution_engine import _TEXTS, _StreamingRuntime
+
+    queue: asyncio.Queue[EngineEvent | None] = asyncio.Queue()
+    signal = _signal("diag-1")
+    runtime = _StreamingRuntime(_single_node(), "zh", queue, _TEXTS["zh"], [signal])
+
+    runtime.record_attribution("diag-1", [{"attr_id": "attr-1", "text_md": "原因 A", "start_node_id": "main:0"}])
+    first = [event for event in _drain(queue) if event.kind == "root_causes"]
+    assert len(first) == 1
+    assert first[0].stage_id == "attribute"
+    assert first[0].signal_id == "diag-1"
+    cause = first[0].root_causes[0]
+    assert cause.id == "attr-1"
+    assert cause.summary == "原因 A"
+    assert cause.evidence == "信号 diag-1"
+    assert cause.signal is not None and cause.signal.id == "diag-1"
+    assert cause.refs == [StepRef(trace_id=TRACE_A, span_id=span_id(0), subject_id="main", node_id="main:0")]
+
+    # A resubmission reports everything now held for the signal, so the host can replace it.
+    runtime.record_attribution("diag-1", [
+        {"attr_id": "attr-2", "text_md": "新", "start_node_id": "main:0"},
+        {"attr_id": "attr-3", "text_md": "另一处", "start_node_id": "main:0"},
+    ])
+    second = [event for event in _drain(queue) if event.kind == "root_causes"]
+    assert [item.id for item in second[0].root_causes] == ["attr-2", "attr-3"]
+
+
+def test_streaming_runtime_reports_causes_without_a_known_signal() -> None:
+    from jiuwenswarm.diagnosis.attribution_engine import _TEXTS, _StreamingRuntime
+
+    queue: asyncio.Queue[EngineEvent | None] = asyncio.Queue()
+    runtime = _StreamingRuntime(_single_node(), "zh", queue, _TEXTS["zh"])
+
+    runtime.record_attribution("diag-9", [{"attr_id": "attr-1", "text_md": "原因", "start_node_id": "main:0"}])
+
+    event = next(item for item in _drain(queue) if item.kind == "root_causes")
+    assert event.root_causes[0].signal is None
+    assert event.root_causes[0].evidence == ""
+
+
 def test_streaming_runtime_logs_each_submission_as_it_happens() -> None:
     from jiuwenswarm.diagnosis.attribution_engine import _TEXTS, _StreamingRuntime
 
@@ -518,12 +564,12 @@ def test_streaming_runtime_logs_each_submission_as_it_happens() -> None:
     runtime = _StreamingRuntime(_single_node(), "zh", queue, _TEXTS["zh"])
 
     runtime.record_attribution("diag-1", [{"attr_id": "attr-1", "text_md": "原因 A", "start_node_id": "main:0"}])
-    assert [event.text_delta for event in _drain(queue)] == ["[attr-1] 原因 A（main:0）"]
+    assert _lines(queue) == ["[attr-1] 原因 A（main:0）"]
 
     runtime.mark_signal_invalid("diag-2")
     runtime.record_artifact_improvement("改进")
     runtime.record_skill_improvement("demo-skill", "改进")
-    lines = [event.text_delta for event in _drain(queue)]
+    lines = _lines(queue)
     assert lines == ["标记无效：diag-2", "已提交产物改进意见", "已提交 Skill 改进：demo-skill"]
     # The stored state still feeds the root causes.
     assert runtime.invalid_signals == {"diag-2"}
@@ -543,7 +589,7 @@ def test_streaming_runtime_marks_resubmissions_as_updated() -> None:
     runtime.record_artifact_improvement("一")
     runtime.record_artifact_improvement("二")
 
-    lines = [event.text_delta for event in _drain(queue)]
+    lines = _lines(queue)
     assert lines == [
         "[attr-1] 旧（main:0）",
         "（更新）[attr-2] 新（main:0 → main:3）",

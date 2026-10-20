@@ -156,6 +156,47 @@ def derive_mode_profile(metadata: Mapping[str, Any]) -> SessionContext:
     )
 
 
+def filter_root_causes(
+    causes: list[RootCause],
+    *,
+    index: ScopeIndex,
+    profile: ModeProfile,
+) -> list[RootCause]:
+    """Keep the root causes that the diagnosed scope and the mode profile admit.
+
+    Step references outside the scope are dropped, and a root cause left
+    without any reference, or of a category the profile does not support, is
+    discarded.
+
+    Args:
+        causes: Raw root causes of an engine.
+        index: Lookup over the records and ranges the diagnosis was fixed to.
+        profile: Mode profile of the session.
+
+    Returns:
+        Filtered copies that are safe to persist and push.
+    """
+
+    def scoped(refs: list[StepRef]) -> list[StepRef]:
+        seen: set[tuple[str, str, str | None]] = set()
+        kept: list[StepRef] = []
+        for ref in refs:
+            identity = (ref.subject_id, ref.key, ref.node_id)
+            if index.admits(ref) and identity not in seen:
+                seen.add(identity)
+                kept.append(ref)
+        return kept
+
+    allowed = _ALLOWED_CATEGORIES[profile]
+    kept_causes: list[RootCause] = []
+    for cause in causes:
+        refs = scoped(cause.refs)
+        if cause.category not in allowed or not refs:
+            continue
+        kept_causes.append(cause.model_copy(update={"refs": refs, "subject_id": refs[0].subject_id}))
+    return kept_causes
+
+
 def filter_engine_result(
     result: EngineResult,
     *,
@@ -177,24 +218,7 @@ def filter_engine_result(
     Returns:
         A filtered copy that is safe to persist.
     """
-
-    def scoped(refs: list[StepRef]) -> list[StepRef]:
-        seen: set[tuple[str, str, str | None]] = set()
-        kept: list[StepRef] = []
-        for ref in refs:
-            identity = (ref.subject_id, ref.key, ref.node_id)
-            if index.admits(ref) and identity not in seen:
-                seen.add(identity)
-                kept.append(ref)
-        return kept
-
-    allowed = _ALLOWED_CATEGORIES[profile]
-    root_causes: list[RootCause] = []
-    for cause in result.root_causes:
-        refs = scoped(cause.refs)
-        if cause.category not in allowed or not refs:
-            continue
-        root_causes.append(cause.model_copy(update={"refs": refs, "subject_id": refs[0].subject_id}))
+    root_causes = filter_root_causes(result.root_causes, index=index, profile=profile)
     surviving = {cause.id for cause in root_causes}
 
     source = result.suggestions
@@ -464,6 +488,9 @@ class DiagnosisService:
 
     async def _on_engine_event(self, session_id: str, state: _RunState, event: EngineEvent) -> None:
         record = state.record
+        if event.kind == "root_causes":
+            await self._on_root_causes(session_id, state, event)
+            return
         stage = next((item for item in record.stages if item.stage_id == event.stage_id), None)
         elapsed_ms: int | None = None
         if event.kind == "stage_started":
@@ -510,6 +537,36 @@ class DiagnosisService:
                 await self._persist(session_id, record)
             except Exception:  # noqa: BLE001
                 logger.warning("[diagnosis] stage persist failed: session_id=%s", session_id, exc_info=True)
+
+    async def _on_root_causes(self, session_id: str, state: _RunState, event: EngineEvent) -> None:
+        """Keep the root causes an engine reports while it still runs.
+
+        The causes pass the same scope filter as the final result and replace
+        those already held for the signal; the final result still has the last
+        word when the engine returns.
+        """
+        record = state.record
+        admitted = filter_root_causes(
+            event.root_causes or [],
+            index=state.index,
+            profile=state.context.mode_profile,
+        )
+        kept = [
+            cause for cause in record.root_causes
+            if cause.signal is None or cause.signal.id != event.signal_id
+        ]
+        record.root_causes = [*kept, *admitted]
+        record.seq += 1
+        payload = DiagnosisProgressEvent(
+            session_id=session_id,
+            diagnosis_id=record.diagnosis_id,
+            seq=record.seq,
+            stage_id=event.stage_id,
+            kind=event.kind,
+            signal_id=event.signal_id,
+            root_causes=admitted,
+        )
+        await self._safe_push(session_id, PROGRESS_EVENT, payload.model_dump(mode="json", exclude_none=True))
 
     async def _persist(self, session_id: str, record: DiagnosisRecord) -> None:
         """Save a record of a running diagnosis unless its session was removed meanwhile.
@@ -789,4 +846,5 @@ __all__ = [
     "SessionContext",
     "derive_mode_profile",
     "filter_engine_result",
+    "filter_root_causes",
 ]

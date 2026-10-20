@@ -228,13 +228,16 @@ export interface DiagnosisProgressEvent {
   diagnosis_id: string;
   seq: number;
   stage_id: string;
-  kind: 'stage_started' | 'output_delta' | 'stage_finished';
+  kind: 'stage_started' | 'output_delta' | 'stage_finished' | 'root_causes';
   title?: string;
   text_delta?: string;
   status?: 'completed' | 'failed' | 'skipped';
   summary?: string;
   skip_reason?: string;
   elapsed_ms?: number;
+  /** `root_causes` events: the signal whose causes `root_causes` now holds in full. */
+  signal_id?: string;
+  root_causes?: RootCause[];
 }
 
 export interface DiagnosisStatusEvent {
