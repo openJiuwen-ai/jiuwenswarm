@@ -136,13 +136,14 @@ def response_language_instruction(value: object = "match") -> str:
     )
 
 
-def ground_user_instruction(instruction: str, tool_context: str = "", reply_language: object = "match") -> str:
+def ground_user_instruction(instruction: str, tool_context: str = "", reply_language: object = "match", *, restore_instructions: str = "") -> str:
     """Add per-turn grounding rules without changing frame-only or tool turns."""
     instruction = str(instruction or "").strip()
     if not instruction:
         return ""
     tool_context = str(tool_context or "").strip()
     confirmed_context = ""
+    historical_context = restore_instructions + "\n\n" if restore_instructions else ""
     if tool_context:
         confirmed_context = (
             "【已确认的九问工具结果】\n"
@@ -151,7 +152,7 @@ def ground_user_instruction(instruction: str, tool_context: str = "", reply_lang
             f"{tool_context}\n\n"
         )
     return (
-        f"{confirmed_context}【用户原话】{instruction}\n\n"
+        f"{historical_context}{confirmed_context}【用户原话】{instruction}\n\n"
         f"{response_language_instruction(reply_language)}\n{_USER_KNOWLEDGE_GUARD}"
         f"{JOYAI_TASK_INSTRUCTIONS}"
     )

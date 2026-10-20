@@ -15,6 +15,7 @@ import { createQwenOmniOperationResponseEvent, createQwenOmniToolOutputEvent } f
 import type { SileroVad, SpeechDetection } from '../../../../channels/web/frontend/src/utils/speechDetection/sileroVad';
 
 export interface RealtimeDuplexConfig {
+  restoreInstructions?: string;
   url: string;
   voice?: string;
   tools?: Array<Record<string, unknown>>;
@@ -126,6 +127,7 @@ export class RealtimeDuplexSession {
   private pendingSamples = 0;
   private sendTimer: number | null = null;
   private sessionReady = false;
+  private cancelSocketStartup: (() => void) | null = null;
   private responseId: string | null = null;
   private pendingOperations: Array<{ callId: string; output: unknown }> = [];
   private pendingQuestions: Array<{ jobId: string; interaction: unknown }> = [];
@@ -260,6 +262,7 @@ export class RealtimeDuplexSession {
     const source = this.captureContext.createMediaStreamSource(this.microphone);
     this.captureNode = new AudioWorkletNode(this.captureContext, 'jiuwen-duplex-capture');
     this.captureNode.port.onmessage = ({ data }) => {
+      if (this.config.restoreInstructions && !this.sessionReady) return;
       const input = new Int16Array(data);
       if (this.microphoneMuted) input.fill(0);
       const pcm = resample(input, this.captureContext?.sampleRate || INPUT_RATE, INPUT_RATE);
@@ -299,6 +302,7 @@ export class RealtimeDuplexSession {
 
   stop(): void {
     this.lifecycle += 1;
+    this.cancelSocketStartup?.();
     this.vad?.stop();
     this.vad = null;
     if (this.sendTimer !== null) window.clearInterval(this.sendTimer);
@@ -468,15 +472,18 @@ export class RealtimeDuplexSession {
       const resolveOnce = () => {
         if (settled) return;
         settled = true;
+        this.cancelSocketStartup = null;
         window.clearTimeout(initTimeout);
         resolve();
       };
       const rejectOnce = (error: Error) => {
         if (settled) return;
         settled = true;
+        this.cancelSocketStartup = null;
         window.clearTimeout(initTimeout);
         reject(error);
       };
+      this.cancelSocketStartup = () => rejectOnce(new Error('Realtime startup cancelled'));
       const sendInit = async () => {
         if (initSent) return;
         initSent = true;
@@ -485,6 +492,7 @@ export class RealtimeDuplexSession {
             voice: this.config.voice,
             tools: this.config.tools,
             replyLanguage: this.config.replyLanguage,
+            restoreInstructions: this.config.restoreInstructions,
             inputRate: INPUT_RATE,
             outputRate: OUTPUT_RATE,
           }),
@@ -495,7 +503,7 @@ export class RealtimeDuplexSession {
         void sendInit();
         // Match the official client: microphone upload begins as soon as the
         // native duplex socket is open instead of waiting for session.created.
-        resolveOnce();
+        if (!this.config.restoreInstructions) resolveOnce();
       };
       socket.onmessage = ({ data }) => {
         if (this.socket !== socket) return;
@@ -533,13 +541,17 @@ export class RealtimeDuplexSession {
             return;
           }
           if (type === 'session.updated' || type === 'session.created') {
+            if (this.config.restoreInstructions && type !== 'session.updated') return;
             this.sessionReady = true;
+            resolveOnce();
+            if (this.config.restoreInstructions) this.callbacks.onState('listening');
             this.emitDiagnostic('realtime_session_ready', {});
           }
           if (type === 'error' && !this.sessionReady) {
             reportedStartupError = true;
             rejectOnce(new Error(readableError(event.error || event)));
           }
+          if (this.config.restoreInstructions && !this.sessionReady) return;
           this.handleEvent(event, data);
         } catch {
           this.callbacks.onError('Realtime 返回了无效事件');

@@ -525,8 +525,9 @@ export function TaskFullDuplexRuntime({
 
   const setPanelRef = useCallback((panel: VideoLivePanelHandle | null) => {
     panelRef.current = panel;
-    registerTaskFullDuplexController(panel, (targetSessionId) => {
+    registerTaskFullDuplexController(panel, async (targetSessionId) => {
       runtimeSessionIdRef.current = targetSessionId;
+      await flushConversationHistory(targetSessionId);
       return conversationJobsRef.current.bind(targetSessionId);
     });
   }, []);

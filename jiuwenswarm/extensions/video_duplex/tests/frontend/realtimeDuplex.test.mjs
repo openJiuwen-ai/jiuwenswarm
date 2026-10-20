@@ -1103,3 +1103,68 @@ test('remote close without a reason has a fallback, while manual stop stays sile
   local.socket.onclose({ code: 1000, reason: '' });
   assert.deepEqual(local.errors, []);
 });
+
+function contextSocket() {
+  let socket;
+  class Socket {
+    static OPEN = 1;
+    readyState = 1;
+    sent = [];
+    constructor() { socket = this; }
+    send(message) { this.sent.push(JSON.parse(message)); }
+    close() {}
+  }
+  globalThis.window = globalThis;
+  globalThis.WebSocket = Socket;
+  const texts = [], calls = [], states = [];
+  const session = new RealtimeDuplexSession({
+    url: 'ws://example.test/realtime',
+    restoreInstructions: 'Do not acknowledge this background\n' + JSON.stringify({ session_id: 'conversation-a', memory: [{ role: 'user', text: 'My name is Alice' }] }),
+  }, {
+    getVideoFrame: () => null, onAssistantText: text => texts.push(text),
+    onUserText() {}, onError() {}, onState: state => states.push(state),
+    onFunctionCall: call => calls.push(call),
+  });
+  const opening = session.openSocket();
+  socket.onopen();
+  return { session, socket, opening, texts, calls, states };
+}
+
+test('context restore initializes silently and waits for session.updated', async () => {
+  const { session, socket, opening, texts, calls } = contextSocket();
+  let ready = false;
+  opening.then(() => { ready = true; });
+  const event = value => socket.onmessage({ data: JSON.stringify(value) });
+  assert.equal(socket.sent.length, 1);
+  assert.equal(socket.sent[0].type, 'session.update');
+  assert.match(socket.sent[0].session.instructions, /My name is Alice/);
+  assert.match(socket.sent[0].session.instructions, /Do not acknowledge this background/);
+  event({ type: 'session.created' });
+  event({ type: 'response.created', response: { id: 'unsolicited' } });
+  event({ type: 'response.text.done', response_id: 'unsolicited', text: 'I remember Alice' });
+  event({ type: 'response.function_call_arguments.done', name: 'jiuwen_delegate', call_id: 'historical', arguments: '{"task":"Repeat old task"}' });
+  event({ type: 'response.done', response: { id: 'unsolicited', status: 'completed' } });
+  await Promise.resolve();
+  assert.equal(ready, false);
+  assert.equal(session.sessionReady, false);
+  assert.deepEqual(texts, []);
+  assert.deepEqual(calls, []);
+  event({ type: 'session.updated' });
+  await opening;
+  assert.equal(session.sessionReady, true);
+  assert.deepEqual(socket.sent.map(item => item.type), ['session.update']);
+  event({ type: 'response.created', response: { id: 'new-answer' } });
+  event({ type: 'response.text.done', response_id: 'new-answer', text: 'Hello Alice' });
+  event({ type: 'response.done', response: { id: 'new-answer', status: 'completed' } });
+  assert.deepEqual(texts, ['Hello Alice']);
+});
+
+test('cancelling context initialization rejects the old startup and ignores late acknowledgement', async () => {
+  const { session, socket, opening, states } = contextSocket();
+  const rejected = assert.rejects(opening, /cancelled/);
+  session.stop();
+  await rejected;
+  socket.onmessage({ data: JSON.stringify({ type: 'session.updated' }) });
+  assert.equal(session.sessionReady, false);
+  assert.equal(states.at(-1), 'closed');
+});

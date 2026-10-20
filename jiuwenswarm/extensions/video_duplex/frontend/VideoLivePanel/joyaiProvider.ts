@@ -70,6 +70,7 @@ export class JoyAIProvider {
   private rateLimitStrikes = 0;
   private framePollingPausedUntil = 0;
   private pendingToolContext: JoyAIToolContextEntry[] = [];
+  private restoreToken = '';
 
   constructor(callbacks: JoyAIProviderCallbacks, replyLanguage: ReplyLanguage = 'match') {
     this.callbacks = callbacks;
@@ -95,8 +96,9 @@ export class JoyAIProvider {
     this.voice?.setSpeakerMuted(muted);
   }
 
-  async start(): Promise<void> {
+  async start(restoreToken = ''): Promise<void> {
     if (this.active) return;
+    this.restoreToken = restoreToken;
     const sessionId = crypto.randomUUID();
     this.sessionId = sessionId;
     this.userSpeechActive = false;
@@ -163,6 +165,7 @@ export class JoyAIProvider {
     this.ttsQueue = Promise.resolve();
     this.searchDeliveryQueue = Promise.resolve();
     this.sessionId = '';
+    this.restoreToken = '';
     this.requestQueue = Promise.resolve();
     this.queuedRequestCount = 0;
     this.promptLifecycle.reset();
@@ -384,6 +387,7 @@ export class JoyAIProvider {
             search_session_id: searchSessionId,
             frame_time_range: frameTimeRange,
             ...(toolContext.text ? { tool_context: toolContext.text } : {}),
+            ...(requestKind === 'user' && this.restoreToken ? { restore_token: this.restoreToken } : {}),
           },
           { timeoutMs: 60_000 },
         );

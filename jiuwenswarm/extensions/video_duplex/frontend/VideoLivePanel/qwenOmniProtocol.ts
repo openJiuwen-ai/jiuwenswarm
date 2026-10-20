@@ -29,6 +29,7 @@ export interface QwenOmniSessionOptions {
   inputRate: number;
   outputRate: number;
   replyLanguage?: string;
+  restoreInstructions?: string;
 }
 
 export interface QwenOmniMediaBatch {
@@ -48,7 +49,7 @@ export function createQwenOmniSessionUpdate(options: QwenOmniSessionOptions): Re
     session: {
       modalities: ['audio', 'text'],
       voice: options.voice || 'Tina',
-      instructions: QWEN_SESSION_INSTRUCTIONS + "\n" + speakLanguageInstruction(normalizeReplyLanguage(options.replyLanguage)),
+      instructions: [QWEN_SESSION_INSTRUCTIONS, speakLanguageInstruction(normalizeReplyLanguage(options.replyLanguage)), options.restoreInstructions].filter(Boolean).join('\n'),
       audio: {
         input: { format: { type: 'pcm', sample_rate: options.inputRate } },
         output: { format: { type: 'pcm', sample_rate: options.outputRate } },

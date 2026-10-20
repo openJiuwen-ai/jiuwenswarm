@@ -829,7 +829,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       reportRealtimeEvent('realtime_config_requested');
       try {
         searchSessionRef.current = conversationSearchSessionRef.current || crypto.randomUUID();
-        const config = await webRequest<VideoSessionConfig>('video.realtime.config', {});
+        const config = await webRequest<VideoSessionConfig>('video.realtime.config', {
+          search_session_id: searchSessionRef.current,
+        });
         if (mediaGeneration !== mediaGenerationRef.current) return;
         if (config.provider === 'qwen_omni') {
           reportRealtimeEvent('qwen_local_asr_disabled', {
@@ -842,7 +844,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         });
         setModel(config.model);
         if (config.provider === 'joyai') {
-          await getJoyAIProvider(config.reply_language).start();
+          await getJoyAIProvider(config.reply_language).start(config.context_restore?.token);
           return;
         }
         const videoFrames = new RealtimeVideoFrameScheduler(1_000);
@@ -852,6 +854,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             voice: config.voice,
             tools: config.tools,
             replyLanguage: config.reply_language,
+            restoreInstructions: config.context_restore?.instructions,
           },
           {
             getVideoFrame: () => {

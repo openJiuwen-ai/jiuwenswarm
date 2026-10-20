@@ -338,6 +338,23 @@ test('starting full-duplex in another conversation replaces the previous media r
   assert.equal(harness.messages.at(-1)[0], 'conversation-b');
 });
 
+test('restart waits for saved conversation history and cancellation prevents a delayed start', async () => {
+  await start();
+  const request = harness.request.bind(harness);
+  let finishWrite;
+  harness.request = (method, params) => method === 'video.conversation.append'
+    ? new Promise(resolve => { finishWrite = resolve; })
+    : request(method, params);
+  await act(async () => harness.panelProps.onConversationItem('user', 'Remember Cedar'));
+  assert.equal(typeof finishWrite, 'function');
+  let restarting;
+  await act(async () => { restarting = startTaskFullDuplex('conversation-a'); });
+  assert.equal(harness.starts.length, 1, 'history must be saved before the new transport starts');
+  await act(async () => stopTaskFullDuplex());
+  await act(async () => { finishWrite({ persisted: true }); await restarting; });
+  assert.equal(harness.starts.length, 1, 'cancelled preparation must not reopen the microphone');
+});
+
 test('unregistered plugin sessions cannot inject results into the visible task', async () => {
   await start();
   await event('completed', job('standalone-plugin-session', { status: 'completed', result: 'unrelated' }));

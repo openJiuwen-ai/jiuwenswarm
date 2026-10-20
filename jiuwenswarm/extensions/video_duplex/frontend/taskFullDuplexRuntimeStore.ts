@@ -17,7 +17,7 @@ interface TaskFullDuplexRuntimeSnapshot {
 }
 
 let controller: VideoLivePanelHandle | null = null;
-let bindSession: ((sessionId: string) => string) | null = null;
+let bindSession: ((sessionId: string) => string | Promise<string>) | null = null;
 let startGeneration = 0;
 let snapshot: TaskFullDuplexRuntimeSnapshot = {
   state: "idle",
@@ -56,7 +56,7 @@ function publish(update: Partial<TaskFullDuplexRuntimeSnapshot>): void {
 
 export function registerTaskFullDuplexController(
   next: VideoLivePanelHandle | null,
-  nextBindSession?: ((sessionId: string) => string) | null,
+  nextBindSession?: ((sessionId: string) => string | Promise<string>) | null,
 ): void {
   controller = next;
   bindSession = next ? (nextBindSession ?? null) : null;
@@ -90,9 +90,10 @@ export async function startTaskFullDuplex(sessionId?: string, visualSource?: 'sc
   // End the old media run before binding the replacement conversation.
   if (snapshot.state !== "idle") stopTaskFullDuplex();
   const generation = ++startGeneration;
-  const searchSessionId = sessionId ? bindSession?.(sessionId) : undefined;
   publish({ state: "starting", sessionId: sessionId ?? null, error: "" });
   try {
+    const searchSessionId = sessionId ? await bindSession?.(sessionId) : undefined;
+    if (generation !== startGeneration) return;
     const started = await controller.startScreenDuplex(
       searchSessionId,
       isTaskDuplexScreenSharingEnabled(),
