@@ -1792,26 +1792,6 @@ def _project_info_payload(
     }
 
 
-def _persist_media_locally(
-    data: bytes, safe_session_id: str, filename: str
-) -> tuple[bool, dict[str, Any]]:
-    """Write large media bytes directly to the shared user directory.
-
-    Used in legacy single-user mode where the AgentServer has no HTTP upload
-    listener.  The path matches ``media_attachments._store_image_item`` so the
-    AgentServer-side ``_persisted`` passthrough recognizes the file.
-    """
-    from jiuwenswarm.common.utils import get_agent_sessions_dir
-    from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import atomic_write_unique
-
-    try:
-        upload_dir = get_agent_sessions_dir() / safe_session_id / "uploads"
-        path = atomic_write_unique(upload_dir / filename, data)
-        return True, {"path": str(path)}
-    except Exception as exc:  # noqa: BLE001
-        return False, {"error": str(exc), "code": "UPLOAD_FAILED"}
-
-
 async def _upload_document_item_via_http(
     item: dict[str, Any],
     data: bytes,
@@ -1828,15 +1808,12 @@ async def _upload_document_item_via_http(
     返回带 ``_persisted`` 标记的落盘记录，AgentServer 侧直接透传、不重复解码。
     上传失败返回 ``None``（调用方保留原 base64 项）。
     """
-    from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
-    from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
+    from jiuwenswarm.common.attachment_safety import (
         is_forbidden_document,
-    )
-    from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
         safe_session_dirname,
         safe_upload_filename,
     )
+    from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
 
     filename = safe_upload_filename(
         str(item.get("filename") or f"document-{index + 1}"),
@@ -1847,20 +1824,17 @@ async def _upload_document_item_via_http(
         return None
     safe_session_id = safe_session_dirname(session_id)
     rel_path = f"agent/sessions/{safe_session_id}/uploads/{filename}"
-    if is_agentos_routing_client(agent_client):
-        ok, payload = await upload_file_bytes_via_e2a(
-            data,
-            rel_path,
-            agent_client=agent_client,
-            user_id=user_id,
-            channel_id="web",
-            session_id=session_id,
-        )
-    else:
-        # Legacy single-user mode: the AgentServer has no HTTP upload listener.
-        # Write directly to the shared user directory using the same path the
-        # AgentServer ``_store_document_item`` would use.
-        ok, payload = _persist_media_locally(data, safe_session_id, filename)
+    # A1g：legacy/AgentOS 统一走 E2A 分块上传（FILE_UPLOAD_CHUNK 由
+    # WorkspaceFileAdapter 处理，任意 AgentServer 形态可用；旧分支的
+    # "AgentServer 无 HTTP 上传监听"是 HTTP bridge 时代的前提，已不成立）。
+    ok, payload = await upload_file_bytes_via_e2a(
+        data,
+        rel_path,
+        agent_client=agent_client,
+        user_id=user_id,
+        channel_id="web",
+        session_id=session_id,
+    )
     if not ok:
         logger.warning("[document.persist] 大文档上传失败: %s", payload.get("error"))
         return None
@@ -1893,9 +1867,7 @@ async def _pre_persist_large_documents(
     可能超内部 WS 帧限制。
     """
     from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
-    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
-        _strip_data_uri_prefix,
-    )
+    from jiuwenswarm.common.attachment_safety import strip_data_uri_prefix as _strip_data_uri_prefix
 
     try:
         base_payload = {k: v for k, v in params.items() if k not in ("documents", "media_items")}
@@ -1969,19 +1941,19 @@ async def _upload_media_item_via_http(
     （``agent/sessions/<safe_session_id>/uploads/<safe_filename>``，同名去重）。
     上传失败返回 ``None``（调用方保留原 base64 项，由下游链路处理）。
     """
-    from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
-    from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-    from jiuwenswarm.gateway.embedded.runtime.attachments import media_attachments as _ma
-    from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
+    from jiuwenswarm.common.attachment_safety import (
+        ensure_image_upload_filename,
+        image_suffix_for_mime,
         safe_session_dirname,
         safe_upload_filename,
     )
+    from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
 
     mime_type = str(item.get("mimeType") or item.get("mime_type") or "").lower().strip()
-    suffix = _ma.image_suffix_for_mime(mime_type)
+    suffix = image_suffix_for_mime(mime_type)
     if suffix is None:
         return None
-    filename = _ma.ensure_image_upload_filename(
+    filename = ensure_image_upload_filename(
         safe_upload_filename(
             str(item.get("filename") or f"image-{index + 1}{suffix}"),
             fallback=f"image-{index + 1}{suffix}",
@@ -1990,23 +1962,15 @@ async def _upload_media_item_via_http(
     )
     safe_session_id = safe_session_dirname(session_id)
     rel_path = f"agent/sessions/{safe_session_id}/uploads/{filename}"
-    if is_agentos_routing_client(agent_client):
-        ok, payload = await upload_file_bytes_via_e2a(
-            data,
-            rel_path,
-            agent_client=agent_client,
-            user_id=user_id,
-            channel_id="web",
-            session_id=session_id,
-        )
-    else:
-        # Legacy single-user mode: the AgentServer has no HTTP upload
-        # listener (its upload endpoint would be on ws_port+1, which is
-        # never started).  Write directly to the shared user directory
-        # using the same path the AgentServer ``_store_image_item`` would
-        # use, avoiding a doomed HTTP attempt that always fails with
-        # ConnectionRefused.
-        ok, payload = _persist_media_locally(data, safe_session_id, filename)
+    # A1g：同 document.persist——统一 E2A 分块上传，legacy 不再本地写盘。
+    ok, payload = await upload_file_bytes_via_e2a(
+        data,
+        rel_path,
+        agent_client=agent_client,
+        user_id=user_id,
+        channel_id="web",
+        session_id=session_id,
+    )
     if not ok:
         logger.warning("[media.persist] 大图上传失败: %s", payload.get("error"))
         return None
@@ -2035,9 +1999,7 @@ async def _pre_persist_large_media(
     import json as _json
 
     from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
-    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
-        _strip_data_uri_prefix,
-    )
+    from jiuwenswarm.common.attachment_safety import strip_data_uri_prefix as _strip_data_uri_prefix
 
     try:
         base_payload = {k: v for k, v in params.items() if k != "media_items"}
