@@ -1,9 +1,15 @@
-# beta3 动态专家轻量配对
+# beta3 cloud 动态专家轻量配对
 
-本改动基于 JiuwenSwarm `xiaoyi_0.2.4.beta3`，配对基于
+本改动以 JiuwenSwarm `xiaoyi_0.2.4.beta3_cloud` 为合入目标，当前上游基线为
+`42340468e00147417f7dfa580d059a18fec08002`，配对基于
 `br_0.1.16.post2.hotfix` 的 Core。Core 只增加 `ExpertCandidate`、
 `OrchestrationPlan`、`plan_experts` 及其内部规划辅助逻辑。Swarm 保留 beta3
 原技能 Symphony 的 score 配置、构建、规划、RPC、工具和 Rail 实现。
+
+原发布分支 `feat/beta3-symphony-merge-ready` 保持不变，通过合并 cloud
+基线调整合入目标。以 cloud 为基线核对后，产品源码与原动态专家增量一致；
+cloud 的安全、云连接和定时任务改动完整保留。此前 `xiaoyi_0.2.4.beta3`
+版本的提交仍保留在历史中，后续 PR 应以 cloud 的最终差异为准。
 
 ## 依赖与合入顺序
 
@@ -20,7 +26,7 @@ Core [PR #3298](https://gitcode.com/openJiuwen/agent-core/pull/3298) 已于
 其余包源与依赖版本保持不变。
 
 下一步将 `lin-xiaoyu/jiuwenswarm:feat/beta3-symphony-merge-ready` 合入
-`openJiuwen/jiuwenswarm:xiaoyi_0.2.4.beta3`。本分支以追加提交撤回了早期
+`openJiuwen/jiuwenswarm:xiaoyi_0.2.4.beta3_cloud`。本分支以追加提交撤回了早期
 完整 Symphony 迁移，应审查并合入当前分支的最终差异，建议 Squash；
 不要单独挑选历史中的完整迁移提交。桌面专用面板可在后端合入后按需选择。
 
