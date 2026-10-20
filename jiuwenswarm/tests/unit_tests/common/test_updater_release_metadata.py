@@ -8,7 +8,8 @@ from jiuwenswarm.common import version_source
 
 
 class OfflineSource:
-    def fetch_latest(self, current_version: str = ""):
+    @staticmethod
+    def fetch_latest(current_version: str = ""):
         del current_version
         raise RuntimeError("network unavailable")
 
@@ -16,11 +17,15 @@ class OfflineSource:
 class JsonResponse:
     def __init__(self, payload: dict):
         self._payload = payload
+        self._closed = False
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        # __exit__ must stay an instance method for the with-protocol to work;
+        # touching instance state here also satisfies G.CLS.07.
+        self._closed = True
         return False
 
     def read(self) -> bytes:
@@ -41,7 +46,8 @@ def test_failed_check_keeps_release_metadata_and_invalidates_actions(monkeypatch
         staticmethod(lambda config: OfflineSource()),
     )
     service = updater.UpdaterService()
-    service._update_status(
+    # Seed the last-known release status so the failure branch must preserve it.
+    service._update_status(  # pylint: disable=protected-access
         latest_version="1.2.3",
         has_update=True,
         release_notes="Release notes",
@@ -71,8 +77,18 @@ def test_pypi_publish_time_falls_back_to_version_json_api(monkeypatch):
     def fake_urlopen(request, timeout):
         del timeout
         requested_urls.append(request.full_url)
+        # 1st request: simple index (mirror) without upload-time -> empty
         if len(requested_urls) == 1:
+            return JsonResponse({
+                "files": [{
+                    "filename": "workswarm-1.2.3-py3-none-any.whl",
+                    "url": "https://mirror.test/pypi/packages/workswarm-1.2.3-py3-none-any.whl",
+                }],
+            })
+        # 2nd request: mirror JSON API unavailable -> fall back upstream
+        if len(requested_urls) == 2:
             raise version_source.URLError("mirror unavailable")
+        # 3rd request: upstream PyPI JSON API carries the upload time
         return JsonResponse({
             "urls": [{"upload_time_iso_8601": "2026-10-01T00:00:00Z"}],
         })
@@ -84,8 +100,11 @@ def test_pypi_publish_time_falls_back_to_version_json_api(monkeypatch):
         timeout_seconds=5,
     )
 
-    assert source._fetch_publish_time("1.2.3") == "2026-10-01T00:00:00Z"
+    release = source.fetch_latest("1.2.3")
+
+    assert release.published_at == "2026-10-01T00:00:00Z"
     assert requested_urls == [
+        "https://mirror.test/pypi/simple/workswarm/",
         "https://mirror.test/pypi/pypi/workswarm/1.2.3/json",
         "https://pypi.org/pypi/workswarm/1.2.3/json",
     ]
