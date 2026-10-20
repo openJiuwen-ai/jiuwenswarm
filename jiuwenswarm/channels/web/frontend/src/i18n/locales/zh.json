@@ -3554,7 +3554,8 @@
       "updating": "保存中…"
     },
     "confirm": {
-      "deleteMessage": "确定要删除专家「{{name}}」吗？此操作不可恢复。"
+      "deleteMessage": "确定要删除专家「{{name}}」吗？此操作不可恢复。",
+      "uninstallGroupMessage": "确定要卸载专家团「{{name}}」吗？"
     },
     "card": { "open": "查看 {{name}} 详情", "actions": "{{name}} 操作", "moreTagsTooltip": "更多标签：{{tags}}" },
     "states": {

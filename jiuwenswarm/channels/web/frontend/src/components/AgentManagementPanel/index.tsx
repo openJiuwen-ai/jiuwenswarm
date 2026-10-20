@@ -995,11 +995,13 @@ export function AgentManagementPanel({
   };
 
   const handleUninstallGroup = async (id: string) => {
+    const before = groupDetail?.id === id ? groupDetail : [...groupCatalogRef.current, ...groupMineRef.current].find(item => item.id === id);
+    const confirmed = window.confirm(t('agentManagement.confirm.uninstallGroupMessage', { name: before?.displayName ?? id }));
+    if (!confirmed) return;
     markBusy(id);
     setActionNotice(null);
     try {
       const fromDetail = view === 'group-detail' && groupSelectedId === id;
-      const before = groupDetail?.id === id ? groupDetail : [...groupCatalogRef.current, ...groupMineRef.current].find(item => item.id === id);
       const result = await groupClient.uninstallGroup(id);
       await Promise.all([loadGroups('catalog'), loadGroups('mine')]);
       if (fromDetail && before?.source === 'local') {

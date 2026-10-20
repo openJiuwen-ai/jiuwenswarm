@@ -3570,7 +3570,8 @@
       "updating": "Saving…"
     },
     "confirm": {
-      "deleteMessage": "Delete the Expert “{{name}}”? This cannot be undone."
+      "deleteMessage": "Delete the Expert “{{name}}”? This cannot be undone.",
+      "uninstallGroupMessage": "Uninstall the Expert Team “{{name}}”?"
     },
     "card": {
       "open": "Open {{name}} details",
