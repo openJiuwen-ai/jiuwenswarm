@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  resolveAvailableModelSelection,
   resolveChatModelSelection,
   resolveConfiguredModelName,
   resolveNewConversationModelSelection,
@@ -50,11 +51,21 @@ test('new conversations restore a valid cached model or model-group route', () =
   );
 });
 
-test('invalid cached selections fall back custom -> free -> empty', () => {
+test('invalid cached selections fall back default-group -> custom -> free -> empty', () => {
   const custom = { ...models[0], model_id: 'mdl-custom', is_free: false };
   const free = { ...models[1], model_id: 'mdl-free', is_free: true };
   const missing = { type: 'model', id: 'missing' };
+  const defaultGroup = {
+    model_group_id: 'grp-default',
+    is_default: true,
+    enabled: true,
+    routes: [{ route_id: 'route-main', model_id: 'mdl-custom', enabled: true }],
+  };
 
+  assert.deepEqual(
+    resolveNewConversationModelSelection([free, custom], [defaultGroup], { type: 'model_group', id: 'grp-gone' }),
+    { type: 'model_group', id: 'grp-default' },
+  );
   assert.deepEqual(resolveNewConversationModelSelection([free, custom], [], missing), {
     type: 'model', id: 'mdl-custom',
   });
@@ -62,6 +73,17 @@ test('invalid cached selections fall back custom -> free -> empty', () => {
     type: 'model', id: 'mdl-free',
   });
   assert.equal(resolveNewConversationModelSelection([], [], missing), null);
+});
+
+test('deleted historical model_group selections resolve to the catalog fallback', () => {
+  const custom = { ...models[0], model_id: 'mdl-custom', is_free: false };
+  const dead = { type: 'model_group', id: 'mgp-deleted' };
+  assert.deepEqual(resolveAvailableModelSelection(dead, [custom], []), {
+    type: 'model', id: 'mdl-custom',
+  });
+  assert.equal(resolveAvailableModelSelection(dead, [custom], [
+    { model_group_id: 'mgp-deleted', enabled: true, routes: [{ model_id: 'mdl-custom' }] },
+  ])?.id, 'mgp-deleted');
 });
 
 test('sending a group selection and recreating a conversation preserves the cached group', () => {
@@ -99,7 +121,10 @@ test('sending a group selection and recreating a conversation preserves the cach
     assert.deepEqual(store.getRuntime('new').selectedModelSelection, selection);
     assert.equal(store.getRuntime('new').selectedModelName, null);
 
-    // A deleted cached group must not retain an unrelated draft selection.
+    // Draft groups survive catalog refresh; after the user picks a model, invalid
+    // cache falls back custom -> free -> empty.
+    store.setAvailableModelGroups([]);
+    assert.deepEqual(store.getRuntime('new').selectedModelSelection, selection);
     store.setSelectedModelName('new', 'single-agent-model');
     store.setAvailableModelGroups([]);
     assert.deepEqual(store.getRuntime('new').selectedModelSelection, { type: 'model', id: 'mdl-main' });

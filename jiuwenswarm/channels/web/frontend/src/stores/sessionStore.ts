@@ -92,7 +92,7 @@ export function cacheLastModelSelection(selection: ModelSelection): void {
   try { localStorage.setItem(MODEL_SELECTION_STORAGE_KEY, JSON.stringify(selection)); } catch { /* noop */ }
 }
 
-/** New chats restore the last stable selection, then fall back custom -> free -> empty. */
+/** New chats restore the last stable selection, then fall back default-group -> custom -> free -> empty. */
 export function resolveNewConversationModelSelection(
   models: ModelEntry[],
   groups: ModelGroup[],
@@ -114,12 +114,27 @@ export function resolveNewConversationModelSelection(
       }
     }
   }
+  const defaultGroup = groups.find(
+    (group) => group.is_default === true && group.enabled !== false && Boolean(group.model_group_id?.trim()),
+  );
+  if (defaultGroup?.model_group_id) {
+    return { type: 'model_group', id: defaultGroup.model_group_id };
+  }
   const fallback = models.find((model) => model.is_free !== true && Boolean(model.model_id?.trim()))
     ?? models.find((model) => model.is_free === true && Boolean(model.model_id?.trim()));
   return fallback?.model_id ? { type: 'model', id: fallback.model_id } : null;
 }
 
-function isModelSelectionAvailable(
+/** Keep a still-valid selection; otherwise resolve the same fallback as a new conversation. */
+export function resolveAvailableModelSelection(
+  selection: ModelSelection | null,
+  models: ModelEntry[],
+  groups: ModelGroup[],
+): ModelSelection | null {
+  return resolveNewConversationModelSelection(models, groups, selection);
+}
+
+export function isModelSelectionAvailable(
   selection: ModelSelection | null,
   models: ModelEntry[],
   groups: ModelGroup[],
@@ -132,12 +147,30 @@ function isModelSelectionAvailable(
   return !routeId || group.routes.some((route) => route.route_id === routeId && route.enabled !== false);
 }
 
+function applyResolvedModelSelection(
+  runtime: SessionRuntime,
+  selection: ModelSelection | null,
+  models: ModelEntry[],
+): SessionRuntime {
+  const selectedModel = selection?.type === 'model'
+    ? models.find((model) => model.model_id === selection.id)
+    : null;
+  return {
+    ...runtime,
+    selectedModelSelection: selection,
+    selectedModelName: selection?.type === 'model_group'
+      ? null
+      : selectedModel?.model_name ?? (selection ? runtime.selectedModelName : null),
+  };
+}
+
 function restoreNewConversationSelection(
   runtime: SessionRuntime,
   models: ModelEntry[],
   groups: ModelGroup[],
 ): SessionRuntime {
-  // Catalog changes must not silently replace a group already selected in an unsent draft.
+  // Catalog refresh can briefly omit groups; keep the draft group until the user
+  // changes it. Historical sessions heal via ChatModelSelector / session restore.
   if (runtime.selectedModelSelection?.type === 'model_group') return runtime;
   const cached = loadLastModelSelection();
   const selection = isModelSelectionAvailable(cached, models, groups)
@@ -145,14 +178,7 @@ function restoreNewConversationSelection(
     : !cached && isModelSelectionAvailable(runtime.selectedModelSelection, models, groups)
       ? runtime.selectedModelSelection
       : resolveNewConversationModelSelection(models, groups, cached);
-  const selectedModel = selection?.type === 'model'
-    ? models.find((model) => model.model_id === selection.id)
-    : null;
-  return {
-    ...runtime,
-    selectedModelSelection: selection,
-    selectedModelName: selectedModel?.model_name ?? null,
-  };
+  return applyResolvedModelSelection(runtime, selection, models);
 }
 
 function clearStoredAgentSelection(sessionId: string): void {
@@ -2177,6 +2203,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const pendingNewRuntime = state.runtimes[TRANSIENT_NEW_CONVERSATION_ID];
       if (!pendingNewRuntime) return { availableModelGroups: groups };
+      // Historical sessions keep a dead selection until ChatModelSelector /
+      // session restore can fall back and persist session.selection.set (#5424).
       return {
         availableModelGroups: groups,
         runtimes: {

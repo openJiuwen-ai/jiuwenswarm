@@ -709,3 +709,30 @@ test('single-agent collaboration displays the group default while retaining a le
     });
   });
 });
+
+test('deleted model groups fall back to a default model instead of showing model_group_id', async (t) => {
+  const persisted = [];
+  t.mock.method(webClient, 'request', async (method, params) => {
+    assert.equal(method, 'session.selection.set');
+    persisted.push(params);
+    return { success: true };
+  });
+  await withFixture(async ({ mount, byId }) => {
+    setupStableCatalog();
+    setMultiModelCollaborationEnabled(true);
+    useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model_group', id: 'mgp-deleted' });
+    await act(async () => useSessionStore.getState().setAvailableModelGroups([]));
+    await mount(createElement(ChatModelSelector));
+    await act(async () => {});
+    assert.doesNotMatch(byId('chat-panel-model-selector-label').textContent, /mgp-deleted/);
+    assert.equal(byId('chat-panel-model-selector-label').textContent, 'Primary connection');
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, {
+      type: 'model',
+      id: 'mdl-a',
+    });
+    assert.deepEqual(persisted.at(-1), {
+      session_id: sessionId,
+      model_selection: { type: 'model', id: 'mdl-a' },
+    });
+  });
+});

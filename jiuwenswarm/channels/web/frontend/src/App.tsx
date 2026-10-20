@@ -92,9 +92,11 @@ import {
   UserAnswer,
   ModelEntry,
   type MessageForkPoint,
+  type ModelSelection,
   type Session,
 } from './types';
 import { parseModelGroups, parseModelSelection } from './features/settings/modules/models/modelGroupAdapters';
+import { resolveAvailableModelSelection } from './stores/sessionStore';
 import type { WorkMode } from './features/workspace/projectTypes';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
@@ -246,6 +248,46 @@ type LoadedHistoryBatch = {
   hasMore: boolean;
   result: FetchHistoryCursorBatchResult;
 };
+
+function isSameModelSelection(left: ModelSelection, right: ModelSelection): boolean {
+  return left.type === right.type
+    && left.id === right.id
+    && (left.type !== 'model_group' || left.route_id === right.route_id);
+}
+
+/** Restore session model_selection; replace deleted groups with the catalog fallback (#5424). */
+function restoreSessionModelSelection(
+  sessionId: string,
+  modelSelection: unknown,
+  modelName?: string | null,
+): void {
+  const store = useSessionStore.getState();
+  const restoredSelection = parseModelSelection(modelSelection);
+  if (restoredSelection) {
+    const resolved = resolveAvailableModelSelection(
+      restoredSelection,
+      store.chatAvailableModels,
+      store.availableModelGroups,
+    );
+    if (!resolved) {
+      store.setSelectedModelSelection(sessionId, null);
+      return;
+    }
+    store.setSelectedModelSelection(sessionId, resolved);
+    if (!isSameModelSelection(restoredSelection, resolved)) {
+      void webRequest('session.selection.set', {
+        session_id: sessionId,
+        model_selection: resolved,
+      }).catch(() => {
+        // ChatModelSelector will retry when the session is active.
+      });
+    }
+    return;
+  }
+  if (modelName) {
+    store.setSelectedModelName(sessionId, modelName);
+  }
+}
 
 function getWorkContextForSession(sessionId: string): {
   project_id?: string;
@@ -1765,12 +1807,7 @@ function AppContent({
         // 覆盖"targetSession 为空、走 loadSessionMetadata"这条恢复路径（如从 cron 触发
         // 会话列表点进来的占位 session 之后补全元数据的场景，bug002）。
         // Prefer stable model_selection when present; never restore a group from active_model/model name.
-        const restoredSelection = parseModelSelection(session?.model_selection);
-        if (restoredSelection) {
-          useSessionStore.getState().setSelectedModelSelection(targetSessionId, restoredSelection);
-        } else if (session?.model) {
-          useSessionStore.getState().setSelectedModelName(targetSessionId, session.model);
-        }
+        restoreSessionModelSelection(targetSessionId, session?.model_selection, session?.model);
         // 恢复会话时同步 swarmflow 开关 + budget：后端 metadata 里的
         // session_swarmflow_config 是上次会话持久化的配置，刷新/重进后读回。
         const sfConfig = (session as unknown as Record<string, unknown> | null)?.session_swarmflow_config;
@@ -3526,12 +3563,7 @@ function AppContent({
         // 由后端落盘），写进 runtime.selectedModelName——单 Agent 与集群（team）会话
         // 同样恢复，保证刷新页面后模型选择不回退到默认模型。
         // Prefer stable model_selection when present; never restore a group from active_model/model name.
-        const restoredSelection = parseModelSelection(targetSession.model_selection);
-        if (restoredSelection) {
-          useSessionStore.getState().setSelectedModelSelection(targetSessionId, restoredSelection);
-        } else if (targetSession.model) {
-          useSessionStore.getState().setSelectedModelName(targetSessionId, targetSession.model);
-        }
+        restoreSessionModelSelection(targetSessionId, targetSession.model_selection, targetSession.model);
       } else {
         setCurrentSession(null);
       }
