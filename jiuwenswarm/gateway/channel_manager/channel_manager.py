@@ -138,15 +138,19 @@ class ChannelManager(ABC):
             return {"outcome": "failed", "error_code": "FEISHU_APP_AMBIGUOUS"}
 
         try:
-            return await matches[0].send_persistent_result(
-                chat_id=chat_id,
-                text=text,
-                source_message_id=(
+            mention_targets = self._jm09_mention_targets(payload.get("mention_targets"), matches[0])
+            send_kwargs: dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": text,
+                "source_message_id": (
                     None if payload.get("is_direct_message") is True else payload.get("source_message_id")
                 ),
-                idempotency_key=idempotency_key,
+                "idempotency_key": idempotency_key,
                 **file_args,
-            )
+            }
+            if mention_targets:
+                send_kwargs["mention_targets"] = mention_targets
+            return await matches[0].send_persistent_result(**send_kwargs)
         except Exception as exc:
             logger.warning(
                 "[ChannelManager] JM-09 Feishu send outcome unknown: app_id=%s error_type=%s",
@@ -154,6 +158,39 @@ class ChannelManager(ABC):
                 type(exc).__name__,
             )
             return {"outcome": "unknown", "error_code": "FEISHU_SEND_ERROR"}
+
+    def _jm09_mention_targets(self, value: Any, sender_channel: Any) -> list[dict[str, Any]]:
+        """Map validated employee IDs to one connected Bot identity without guessing."""
+        if not isinstance(value, list):
+            return []
+        sender_id = getattr(getattr(sender_channel, "config", None), "agent_id", None)
+        targets: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            agent_id = item.get("agent_id")
+            name = item.get("name")
+            if not isinstance(agent_id, str) or not agent_id.strip() or agent_id == sender_id:
+                continue
+            if not isinstance(name, str) or not name.strip():
+                continue
+            app_ids = item.get("app_ids")
+            if not isinstance(app_ids, list):
+                app_ids = []
+            allowed_app_ids = {value for value in app_ids if isinstance(value, str) and value.strip()}
+            candidates = [
+                (key, channel)
+                for key, channel in self._channels.items()
+                if key.app_id in allowed_app_ids
+                and getattr(getattr(channel, "config", None), "agent_id", None) == agent_id
+            ]
+            target: dict[str, Any] = {"agent_id": agent_id, "name": name, "app_ids": sorted(allowed_app_ids)}
+            if len(candidates) == 1:
+                open_id = getattr(getattr(candidates[0][1], "config", None), "bot_open_id", None)
+                if isinstance(open_id, str) and open_id.strip():
+                    target["open_id"] = open_id.strip()
+            targets.append(target)
+        return targets
 
     @staticmethod
     def _jm09_output_file(file: dict[str, Any]) -> Path | None:

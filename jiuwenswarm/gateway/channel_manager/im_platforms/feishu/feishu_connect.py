@@ -2,6 +2,7 @@
 
 import asyncio
 import concurrent.futures
+import html
 import json
 import logging
 import math
@@ -337,6 +338,12 @@ class FeishuChannel(BaseChannel):
             )
             present = getattr(getattr(response, "data", None), "is_in_chat", None)
             if not response.success() or type(present) is not bool:
+                logger.warning(
+                    "[JM-11] Feishu membership check unavailable: app_id=%s code=%s msg=%s",
+                    getattr(self.config, "app_id", ""),
+                    getattr(response, "code", None),
+                    getattr(response, "msg", None),
+                )
                 return {"status": "unknown"}
             if not present:
                 return {"status": "left"}
@@ -357,7 +364,12 @@ class FeishuChannel(BaseChannel):
             except Exception:
                 pass
             return result
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "[JM-11] Feishu membership check unavailable: app_id=%s error_type=%s",
+                getattr(self.config, "app_id", ""),
+                type(exc).__name__,
+            )
             return {"status": "unknown"}
 
     @staticmethod
@@ -1880,6 +1892,7 @@ class FeishuChannel(BaseChannel):
         idempotency_key: str,
         file_path: str | None = None,
         file_key: str | None = None,
+        mention_targets: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Send one JM-09 result and return Feishu's message receipt.
 
@@ -1896,20 +1909,22 @@ class FeishuChannel(BaseChannel):
         if not chat_id.strip() or not idempotency_key.strip() or not (has_text or file_path):
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
         if file_path is None:
+            card_text = self._render_persistent_mentions(text or "", mention_targets or [])
             return await self._send_persistent_message(
                 chat_id,
                 "interactive",
-                self._build_card_content(text or ""),
+                self._build_card_content(card_text),
                 source_message_id,
                 idempotency_key,
             )
 
         if has_text:
             caption_key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{idempotency_key}:caption"))
+            card_text = self._render_persistent_mentions(text or "", mention_targets or [])
             caption = await self._send_persistent_message(
                 chat_id,
                 "interactive",
-                self._build_card_content(text or ""),
+                self._build_card_content(card_text),
                 source_message_id,
                 caption_key,
             )
@@ -1923,6 +1938,24 @@ class FeishuChannel(BaseChannel):
             chat_id, "file", json.dumps({"file_key": file_key}, ensure_ascii=False), source_message_id, idempotency_key
         )
         return {**result, "file_key": file_key}
+
+    @staticmethod
+    def _render_persistent_mentions(text: str, targets: list[dict[str, str]]) -> str:
+        """Render validated handoff tokens as Feishu-native Bot mentions in JM-09 cards."""
+        rendered = text
+        for target in targets:
+            agent_id = target.get("agent_id")
+            name = target.get("name")
+            if not isinstance(agent_id, str) or not isinstance(name, str):
+                continue
+            token = f"[[agent:{agent_id}]]"
+            open_id = target.get("open_id")
+            if isinstance(open_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,256}", open_id):
+                replacement = f"<at id={open_id}></at>"
+            else:
+                replacement = f"@{html.escape(name)}"
+            rendered = rendered.replace(token, replacement)
+        return re.sub(r"\[\[agent:[^\]]*\]\]", "", rendered)
 
     async def _send_persistent_message(
         self,

@@ -13,15 +13,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import aclosing
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 from jiuwenswarm.server.jiuwenmate.conversation_search import ConversationSearch
 from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+from jiuwenswarm.server.jiuwenmate.group_collaboration import build_group_collaboration_guidance
 from jiuwenswarm.server.jiuwenmate.group_search_cursor_repository import GroupSearchCursorRepository
 from jiuwenswarm.server.jiuwenmate.execution_models import ExecutionRecord, RequestState
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
@@ -40,6 +41,7 @@ AbortReason = Literal["cancel", "stop"]
 ExecuteEntry = Callable[..., AsyncIterator[core.AgentEvent]]
 AbortEntry = Callable[..., Awaitable[None]]
 SnapshotSource = Callable[[str, str, str], ConfigSnapshot]
+GroupRosterSource = Callable[[str, str, str], Sequence[Mapping[str, Any]]]
 
 _TERMINAL = frozenset({core.EventType.EXECUTION_FINAL, core.EventType.EXECUTION_PAUSED})
 
@@ -101,6 +103,7 @@ class ExecutionDriver:
         sessions: ExecutionRepository | None = None,
         verify_group_membership: MembershipVerifier = unavailable_membership,
         refresh_group_messages=None,
+        group_roster: GroupRosterSource | None = None,
         execute: ExecuteEntry = _default_execute,
         abort: AbortEntry = _default_abort,
         clock: Callable[[], datetime] = _utc_now,
@@ -121,6 +124,7 @@ class ExecutionDriver:
         self._sessions = sessions
         self._verify_group_membership = verify_group_membership
         self._refresh_group_messages = refresh_group_messages
+        self._group_roster = group_roster
         self._execute = execute
         self._abort = abort
         self._clock = clock
@@ -161,7 +165,36 @@ class ExecutionDriver:
                 workspace_write_access=workspace,
                 group_chat=group_chat_port,
             )
-            spec, context = build_invocation(snapshot, record, execution, ports=ports)
+            guidance = None
+            if (
+                record.request_input.kind == "group_message"
+                and self._group_roster is not None
+                and self._sessions is not None
+            ):
+                session = await asyncio.to_thread(self._sessions.get_session, record.namespace_id, record.session_id)
+                if session.conversation.kind == "group":
+                    try:
+                        roster = await asyncio.to_thread(
+                            self._group_roster,
+                            record.namespace_id,
+                            session.conversation.key,
+                            record.agent_id,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuwenMate] group collaboration roster unavailable: request=%s error_type=%s",
+                            record.request_id,
+                            type(exc).__name__,
+                        )
+                        roster = []
+                    guidance = build_group_collaboration_guidance(roster)
+            spec, context = build_invocation(
+                snapshot,
+                record,
+                execution,
+                ports=ports,
+                system_prompt_addendum=guidance or None,
+            )
             await handle._attach(context)
             inputs = record.request_input
             if record.request_input.kind == "group_message" and ports.group_chat is not None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
@@ -52,6 +53,9 @@ class FakeService:
             return type("DisabledColleague", (), {"enabled": False})()
         return None
 
+    def list_colleagues(self, namespace_id: str):
+        return []
+
     def delete_colleague(self, namespace_id: str, agent_id: str) -> None:
         self.deleted.append((agent_id, self._core.live))
 
@@ -70,6 +74,7 @@ class FakeCore:
         self.ended: list[str] = []
         self.aborts: list[tuple[str, str]] = []
         self.contexts: dict[str, core.PersistentBuildContext] = {}
+        self.specs: dict[str, object] = {}
         self.inputs: dict[str, core.RequestInput] = {}
         self.abort_gate: asyncio.Event | None = None
         self.live = 0
@@ -100,6 +105,7 @@ class FakeCore:
         text, execution = inputs.text, context.execution
         self._rid[text] = execution.request_id
         self.contexts[text] = context
+        self.specs[text] = spec
         self.inputs[text] = inputs
         self.started.append(text)
         self.live += 1
@@ -212,6 +218,32 @@ async def test_requests_of_one_session_run_one_at_a_time_in_order(host):
     assert host.core.started == ["一", "二", "三"]
     assert host.core.peak == 1
     assert [host.status(s) for s in states] == [("ended", "completed")] * 3
+
+
+async def test_group_collaboration_roster_contains_only_published_active_members_of_that_group(tmp_path):
+    host = Host(tmp_path)
+    first = host.manager.group_chats.resolve(NS, "feishu", "chat-first", now=NOW)
+    second = host.manager.group_chats.resolve(NS, "feishu", "chat-second", now=NOW)
+    host.manager.group_chats.observe_access(
+        NS, "mate_peer", first.group_chat_id, "app-peer", observed_at=NOW, source_ref="joined:peer"
+    )
+    host.manager.group_chats.observe_access(
+        NS, "mate_elsewhere", second.group_chat_id, "app-other", observed_at=NOW, source_ref="joined:other"
+    )
+    host.manager.group_chats.update_membership(
+        NS, "mate_left", first.group_chat_id, "app-left", status="left", observed_at=NOW, source_ref="left"
+    )
+    host.service.list_colleagues = lambda namespace_id: [
+        SimpleNamespace(agent_id="mate_peer", name="可用同事", enabled=True, current_version="v1"),
+        SimpleNamespace(agent_id="mate_elsewhere", name="其他群同事", enabled=True, current_version="v1"),
+        SimpleNamespace(agent_id="mate_left", name="已离群同事", enabled=True, current_version="v1"),
+        SimpleNamespace(agent_id="mate_unpublished", name="未发布同事", enabled=True, current_version=None),
+    ]
+
+    roster = host.manager.group_collaboration_roster(NS, first.group_chat_id, "mate_sender")
+
+    assert roster == [{"agent_id": "mate_peer", "name": "可用同事", "app_ids": ["app-peer"]}]
+    await host.manager.aclose()
 
 
 async def test_running_executions_respect_global_and_per_colleague_limits(tmp_path):
@@ -453,6 +485,12 @@ async def test_group_execution_preserves_verified_bot_mention_after_trigger_refr
     host.manager.group_chats.observe_access(
         NS, "mate_dev", group.group_chat_id, "app-mate-dev", observed_at=NOW, source_ref="joined:group"
     )
+    host.manager.group_chats.observe_access(
+        NS, "mate_peer", group.group_chat_id, "app-peer", observed_at=NOW, source_ref="joined:peer"
+    )
+    host.service.list_colleagues = lambda namespace_id: [
+        SimpleNamespace(agent_id="mate_peer", name="动态同事", enabled=True, current_version="v1")
+    ]
     host.manager.group_archive.append(
         NS, group.group_chat_id, archived_trigger, source_ref="event:mentioned-trigger"
     )
@@ -479,6 +517,13 @@ async def test_group_execution_preserves_verified_bot_mention_after_trigger_refr
 
     assert host.status(state) == ("ended", "completed")
     assert host.core.inputs["请处理这个问题"].source.mention_ids == ("ou_feishu_bot", "mate_dev")
+    spec = host.core.specs["请处理这个问题"]
+    context = host.core.contexts["请处理这个问题"]
+    assert spec.fingerprint() == context.execution.config_fingerprint
+    assert spec.system_prompt is None
+    assert "动态同事" in context.system_prompt_addendum
+    enriched_text = host.core.inputs["请处理这个问题"].text
+    assert "请处理这个问题" in enriched_text
 
 
 # JM-07-V-04 lifecycle, outcomes and cleanup
