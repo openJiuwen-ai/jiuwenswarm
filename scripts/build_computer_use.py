@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 
+from jiuwenswarm.agents.harness.computer_use import import_engine
+
 
 RESOURCE_DESTINATION = "computer_use/_resources"
 
@@ -19,7 +21,7 @@ def bundle_data(project_root: Path) -> list[tuple[str, str]]:
     if sys.version_info < (3, 12):
         raise RuntimeError("Desktop packages with cua_repl must be built using Python 3.12+.")
     root = project_root / "jiuwenswarm" / "cua_engine"
-    sys.path.insert(0, str(root / "src"))
+    import_engine(root)
     from computer_use.scripts.native import build_native
 
     executable = build_native(root=root, configuration="release")
@@ -52,4 +54,4 @@ def finalize_macos_bundle(project_root: Path, collection_root: Path, app_bundle:
         shutil.copytree(source, destination, symlinks=True)
     # The installer scripts apply the release identity later. Keep the local
     # frozen app's ad-hoc seal valid after adding this nested application.
-    subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(app_bundle)], check=True)
+    subprocess.run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app_bundle)], check=True)

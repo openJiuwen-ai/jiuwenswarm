@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwenswarm.agents.harness.computer_use import engine_root
+from jiuwenswarm.agents.harness.computer_use import engine_root, import_engine
 from jiuwenswarm.agents.harness.computer_use import worker
 
 
@@ -63,8 +63,13 @@ def test_packaging_collects_complete_native_runtime_without_compiler_inputs(tmp_
     source_code.write_text("compiler input", encoding="utf-8")
     builder = Mock(return_value=executable)
     monkeypatch.setattr(native, "build_native", builder)
+    loader = Mock()
+    monkeypatch.setattr(BUILD, "import_engine", loader)
+    # This is a mocked builder contract, independent of the test host Python.
+    monkeypatch.setattr(sys, "version_info", (3, 12, 0))
     monkeypatch.setattr(sys, "platform", platform)
     data = BUILD.bundle_data(tmp_path / "project")
+    loader.assert_called_once_with(source)
     builder.assert_called_once_with(root=source, configuration="release")
     destination = tmp_path / "installed"
     for filename, target in data:
@@ -103,19 +108,23 @@ def test_windows_packaging_refuses_an_incomplete_driver_bundle(tmp_path, monkeyp
     executable = make_driver(source, "win32")
     executable.with_name("computer-use-capture.exe").unlink()
     monkeypatch.setattr(native, "build_native", Mock(return_value=executable))
+    monkeypatch.setattr(BUILD, "import_engine", Mock())
+    monkeypatch.setattr(sys, "version_info", (3, 12, 0))
     monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(RuntimeError, match="computer-use-capture.exe"):
         BUILD.bundle_data(tmp_path)
 
 
 @pytest.mark.parametrize("missing", [False, True])
-def test_installed_worker_never_builds_or_copies_sources(tmp_path, monkeypatch, sdk, missing):
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_installed_worker_never_builds_or_copies_sources(tmp_path, monkeypatch, sdk, missing, platform):
     _, native = sdk
     resources = tmp_path / "computer_use/_resources"
-    executable = make_driver(resources, sys.platform)
+    executable = make_driver(resources, platform)
     if missing:
         executable.unlink()
     forbidden = Mock(side_effect=AssertionError("Installed apps must not compile or copy build inputs"))
+    monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(worker, "engine_root", lambda: resources)
     monkeypatch.setattr(worker, "prepare_bundle", forbidden)
@@ -133,6 +142,36 @@ def test_desktop_build_rejects_python_311_before_compiling(tmp_path, monkeypatch
     monkeypatch.setattr(sys, "version_info", (3, 11, 0))
     with pytest.raises(RuntimeError, match="Python 3.12"):
         BUILD.bundle_data(tmp_path)
+
+
+def test_sdk_import_uses_the_owned_path_without_shadowing_packages(tmp_path, sdk):
+    original_path = list(sys.path)
+    loaded = import_engine(ROOT / "jiuwenswarm/cua_engine")
+    assert loaded is sys.modules["computer_use"]
+    with pytest.raises(RuntimeError, match="different location"):
+        import_engine(tmp_path)
+    assert sys.modules["computer_use"] is loaded
+    assert sys.path == original_path
+
+
+def test_sdk_import_in_a_fresh_process_resolves_its_own_submodules(tmp_path):
+    package = tmp_path / "src/computer_use"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("from .marker import value\n", encoding="utf-8")
+    (package / "marker.py").write_text("value = 42\n", encoding="utf-8")
+    script = """import pathlib, sys
+from jiuwenswarm.agents.harness.computer_use import import_engine
+root = pathlib.Path(sys.argv[1]).resolve()
+original_path = list(sys.path)
+loaded = import_engine(root)
+assert loaded.__file__ == str(root / 'src/computer_use/__init__.py')
+assert import_engine(root) is loaded
+assert sys.path == original_path
+sys.stdout.write(str(loaded.value))
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(tmp_path)], capture_output=True,
+                            text=True, encoding="utf-8", timeout=15, check=True, cwd=ROOT)
+    assert result.stdout == "42"
 
 
 @pytest.mark.parametrize("closed", [False, True])

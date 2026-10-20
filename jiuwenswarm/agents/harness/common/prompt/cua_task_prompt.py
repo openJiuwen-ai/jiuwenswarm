@@ -44,7 +44,8 @@ _CUA_TASK_PROMPT = {
         "- Do not use Bash, PowerShell, code execution, subprocesses, AppleScript, AutoHotkey, "
         "pyautogui, or similar to drive application windows; desktop automation goes through "
         "cua_agent only. Its cua_repl is the supported programmatic desktop entry point; let the "
-        "subagent choose it for multi-step workflows. Plain file and shell work that needs no GUI stays with your own tools.\n"
+        "subagent choose it for multi-step workflows. Plain file and shell work that needs no GUI "
+        "stays with your own tools.\n"
         "- If `task_tool` or `cua_agent` is unavailable, state that clearly; do not fall back to "
         "scripting the GUI from the command line."
     ),

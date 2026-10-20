@@ -32,7 +32,8 @@ CUA_AGENT_CARD_DESCRIPTION = {
     "en": (
         "Dedicated desktop subagent that controls host application windows through "
         "screenshots, accessibility and mouse/keyboard input. Use individual tools for simple "
-        "observations; prefer Python cua_repl for multi-step workflows. Supports launching apps, clicking / typing / pressing hotkeys / "
+        "observations; prefer Python cua_repl for multi-step workflows. Supports launching apps, "
+        "clicking / typing / pressing hotkeys / "
         "scrolling inside native windows (Office, IDEs, chat clients, system dialogs), "
         "reading what a window currently shows, and listing open apps and windows. "
         "Use it for any action on this machine's GUI instead of scripting the UI yourself."
@@ -74,7 +75,7 @@ def resolve_cua_factory_options(sub_cfg: Any) -> dict[str, Any]:
     options: dict[str, Any] = {}
 
     raw_repl = cfg.get("repl_enabled")
-    if type(raw_repl) is bool:
+    if isinstance(raw_repl, bool):
         options["cua_repl_enabled"] = raw_repl
     elif raw_repl is not None:
         logger.warning("[cua_agent] ignoring repl_enabled=%r (need true/false)", raw_repl)

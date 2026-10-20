@@ -38,6 +38,8 @@ class CuaExtensionRail(AgentRail):
         self.progress, = agent.find_rails_by_type((CuaProgressRail,))
         # Core pins CuaDesktop inside its factory. Adapt only that instance;
         # its original tools and runtime/preflight rail keep the same holder.
+        # The pinned runtime rail has no public desktop accessor.
+        # pylint: disable-next=protected-access
         self.desktop = self.native_rail._desktop
         if sys.platform == "darwin":
             install_macos_backend(self.desktop, self.python)
@@ -80,12 +82,16 @@ class CuaExtensionRail(AgentRail):
         if isinstance(inputs, ToolCallInputs) and inputs.tool_name == "cua_repl":
             result = inputs.tool_result
             if getattr(result, "success", None) is False:
+                # Core's progress hook is private; keep its blocker semantics.
+                # pylint: disable-next=protected-access
                 self.progress._note_blocker("cua_repl", str(result.error))
 
     async def close(self):
         try:
             await self.runtime.close()
         finally:
+            # Inspect without lazily creating an unused native backend.
+            # pylint: disable-next=protected-access
             backend = self.desktop._backend if self.desktop is not None else None
             if isinstance(backend, MacOSBackend):
                 try:
@@ -93,14 +99,16 @@ class CuaExtensionRail(AgentRail):
                 except Exception as error:
                     desktop_lane().blocker = str(error)
                     raise
-                self.desktop._backend = None
+                self.desktop._backend = None  # pylint: disable=protected-access
                 self.desktop.zoom_origins.clear()
-                self.native_rail._verified = False
+                self.native_rail._verified = False  # pylint: disable=protected-access
 
     def uninit(self, agent):
         self.runtime.request_close()
         try:
             asyncio.get_running_loop().create_task(self.close())
         except RuntimeError:
+            # Synchronous teardown must not create a backend or event loop.
+            # pylint: disable-next=protected-access
             if self.desktop is not None and isinstance(self.desktop._backend, MacOSBackend):
-                self.desktop._backend.close()
+                self.desktop._backend.close()  # pylint: disable=protected-access

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,7 +15,7 @@ import portalocker
 
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
-from . import engine_root
+from . import engine_root, import_engine
 
 
 def prepare_bundle(source: Path, cache: Path) -> Path:
@@ -55,8 +55,7 @@ def prepare_native() -> Path:
     root = engine_root()
     if not frozen:
         root = prepare_bundle(root, Path(get_user_workspace_dir()) / "computer_use/runtime")
-        # Only this owned process sees the bundled top-level SDK package.
-        sys.path.insert(0, str(root / "src"))
+        import_engine(root)
         os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(root / "src"), os.environ.get("PYTHONPATH")]))
     from computer_use.paths import native_driver
 
@@ -89,7 +88,9 @@ def main() -> None:
         raise RuntimeError("cua_repl requires Python 3.12+. Set react.subagents.cua_agent.repl_python.")
     executable = prepare_native()
     if args.prepare_native:
-        print(json.dumps({"executable": str(executable)}))
+        # This is a machine-readable reply consumed by MacOSBackend, not a log.
+        json.dump({"executable": str(executable)}, sys.stdout)
+        sys.stdout.write("\n")
         return
     from computer_use.mcp.server import cli
 

@@ -86,7 +86,9 @@ class ReplRuntime:
         cleanup_confirmed = True
         try:
             async with stdio_client(self._parameters()) as (read, write):
-                async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=self.call_timeout)) as client:
+                async with ClientSession(
+                    read, write, read_timeout_seconds=timedelta(seconds=self.call_timeout),
+                ) as client:
                     await client.initialize()
                     listing = await client.list_tools()
                     if not {"computer_use", "computer_use_reset"}.issubset(t.name for t in listing.tools):
@@ -118,7 +120,9 @@ class ReplRuntime:
         await self.open()
         async with self.call_lock:
             if self.client is None or self.closing:
-                raise RuntimeError("REPL connection ended; earlier actions may have executed. Observe before continuing.")
+                raise RuntimeError(
+                    "REPL connection ended; earlier actions may have executed. Observe before continuing."
+                )
             self.used = True
             # No retained-history capability is advertised: engine reads stay full.
             arguments = {"code": code}

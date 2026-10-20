@@ -7,7 +7,9 @@ The REPL's own mode, namespace and capture bindings are never changed.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+from functools import partial
 import json
 import os
 import queue
@@ -15,11 +17,10 @@ import subprocess
 import sys
 import threading
 
-from openjiuwen.harness.tools.cua.backend import WindowInfo
-from openjiuwen.harness.tools.cua.desktop_tools import CuaToolError
-from openjiuwen.harness.tools.cua.desktop_tools import CuaDesktop
 from openjiuwen.core.foundation.tool import Tool
 from openjiuwen.core.foundation.tool.schema import ToolOutput
+from openjiuwen.harness.tools.cua.backend import WindowInfo
+from openjiuwen.harness.tools.cua.desktop_tools import CuaDesktop, CuaToolError
 
 
 class MacOSBackend:
@@ -90,7 +91,9 @@ class MacOSBackend:
             reply = self.responses.get(timeout=25)
         except (OSError, queue.Empty) as error:
             self.close()
-            raise CuaToolError("Native delivery is unknown; observe before continuing. No input was replayed.") from error
+            raise CuaToolError(
+                "Native delivery is unknown; observe before continuing. No input was replayed."
+            ) from error
         finally:
             self.inflight = None
         if isinstance(reply, BaseException):
@@ -166,7 +169,8 @@ class MacOSBackend:
     def launch_application(self, arguments):
         return self._call("launch", **arguments)
 
-    def kill(self, pid):
+    @staticmethod
+    def kill(pid):
         raise CuaToolError("Force termination is not exposed by this desktop subagent.")
 
     def close(self):
@@ -191,7 +195,8 @@ class MacOSBackend:
         if self.process is not None and identifier and self.session:
             try:
                 with self.write_lock:
-                    self.process.stdin.write(json.dumps(dict(version=5, session=self.session, cancel=identifier)) + "\n")
+                    request = dict(version=5, session=self.session, cancel=identifier)
+                    self.process.stdin.write(json.dumps(request) + "\n")
                     self.process.stdin.flush()
             except OSError:
                 pass  # The owning call still waits for cleanup/EOF, never replays.
@@ -217,9 +222,11 @@ def normalize_key(key, modifiers):
 
 def install_macos_backend(desktop: CuaDesktop, python=None):
     """Bridge the pinned core's missing desktop-factory hook, per agent only."""
+    # The pinned CuaDesktop has no public backend replacement API.
+    # pylint: disable-next=protected-access
     if desktop._backend is not None:
         raise RuntimeError("Install the macOS desktop adapter before core CUA preflight.")
-    desktop._backend_factory = lambda: MacOSBackend(python)
+    desktop._backend_factory = partial(MacOSBackend, python)  # pylint: disable=protected-access
 
 
 class MacOSLaunchTool(Tool):
@@ -227,21 +234,30 @@ class MacOSLaunchTool(Tool):
 
     def __init__(self, original, desktop):
         card = original.card.model_copy(deep=True)
-        card.description = "Launch a macOS app by name, bundle_id or absolute .app path; optional additional_arguments. Returns its real window-owner PIDs."
-        card.input_params["properties"]["bundle_id"]["description"] = "macOS bundle identifier, e.g. com.apple.calculator."
-        card.input_params["properties"]["name"]["description"] = "An installed application's exact name. Use an absolute .app path if ambiguous."
+        card.description = (
+            "Launch a macOS app by name, bundle_id or absolute .app path; optional additional_arguments. "
+            "Returns its real window-owner PIDs."
+        )
+        card.input_params["properties"]["bundle_id"]["description"] = (
+            "macOS bundle identifier, e.g. com.apple.calculator."
+        )
+        card.input_params["properties"]["name"]["description"] = (
+            "An installed application's exact name. Use an absolute .app path if ambiguous."
+        )
         card.input_params["properties"]["path"]["description"] = "Absolute .app bundle path on this Mac."
         super().__init__(card)
         self.desktop = self._desktop = desktop
 
     async def invoke(self, inputs, **kwargs):
-        import asyncio
         try:
             value = await asyncio.to_thread(self.desktop.backend.launch_application, dict(inputs))
             windows = [WindowInfo(**row).to_dict() for row in value["windows"]]
             pid = windows[0]["pid"] if windows else value["pid"]
             note = "" if windows else " No window appeared within 10s; call list_windows to inspect it."
-            content = "✅ Launched application (pid " + str(pid) + ")." + note + "\n" + json.dumps({"windows": windows}, ensure_ascii=False)
+            content = (
+                "✅ Launched application (pid " + str(pid) + ")." + note + "\n"
+                + json.dumps({"windows": windows}, ensure_ascii=False)
+            )
             return ToolOutput(success=True, data={"content": content})
         except Exception as error:
             return ToolOutput(success=False, error="❌ launch_app: " + str(error))

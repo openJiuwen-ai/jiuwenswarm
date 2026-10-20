@@ -58,11 +58,14 @@ class CuaReplTool(Tool):
         if not isinstance(inputs, dict) or set(inputs).difference({"code", "title"}):
             return self._error("cua_repl expects code and an optional title. No code was executed.")
         code, title = inputs.get("code"), inputs.get("title", "")
-        if (not isinstance(code, str) or not code.strip() or len(code) > 65536
-                or not isinstance(title, str) or len(title) > 200):
+        if not isinstance(code, str) or not code.strip() or len(code) > 65536:
+            return self._error("Invalid code or title. No code was executed.")
+        if not isinstance(title, str) or len(title) > 200:
             return self._error("Invalid code or title. No code was executed.")
         if code == self.last_failed_code and self.same_failures >= 3:
-            return self._error("This exact code failed three times. Observe and correct the request; no code was replayed.")
+            return self._error(
+                "This exact code failed three times. Observe and correct the request; no code was replayed."
+            )
         try:
             async with desktop_lane().acquire():
                 await self.wait_for_idle()
@@ -75,7 +78,9 @@ class CuaReplTool(Tool):
             await asyncio.shield(self.runtime.close())
             raise
         except Exception as error:
-            result = self._error(str(error) + " Earlier actions may have executed; observe before continuing. No automatic retry.")
+            result = self._error(
+                str(error) + " Earlier actions may have executed; observe before continuing. No automatic retry."
+            )
         if not result.success:
             self.same_failures = self.same_failures + 1 if code == self.last_failed_code else 1
             self.last_failed_code = code
@@ -116,7 +121,9 @@ class NativeTool(Tool):
             try:
                 await self.preflight()
             except Exception as error:
-                return ToolOutput(success=False, error="❌ Original desktop backend unavailable; no input sent. " + str(error))
+                return ToolOutput(
+                    success=False, error="❌ Original desktop backend unavailable; no input sent. " + str(error),
+                )
             task = asyncio.create_task(self.original.invoke(inputs, **kwargs))
             try:
                 result = await asyncio.shield(task)
@@ -125,7 +132,8 @@ class NativeTool(Tool):
                     desktop = getattr(self.original, "_desktop", None)
                     if isinstance(getattr(desktop, "_backend", None), MacOSBackend):
                         result.data["content"] = result.data["content"].replace(
-                            "Main display", "Desktop screenshot canvas").replace("physical pixels", "PNG pixels (Retina-normalized)")
+                            "Main display", "Desktop screenshot canvas",
+                        ).replace("physical pixels", "PNG pixels (Retina-normalized)")
                 return result
             except asyncio.CancelledError:
                 from .macos_backend import MacOSBackend
