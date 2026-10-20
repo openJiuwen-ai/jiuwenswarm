@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 from jiuwenswarm.common._build_config import PACKAGE_NAME
+from jiuwenswarm.common.build_info import get_runtime_build_info
 from jiuwenswarm.common.config import get_config_raw
 from jiuwenswarm.common.version import __version__, get_runtime_version
 from jiuwenswarm.common.upgrade_executor import create_executor
@@ -126,6 +127,11 @@ class UpdaterService:
             status = asdict(self._status)
         status["platform"] = sys.platform
         status["platform_supported"] = True
+        status["build_info"] = (
+            get_runtime_build_info()
+            if getattr(sys, "frozen", False) and sys.platform in ("win32", "darwin")
+            else {}
+        )
         return status
 
     def get_runtime_config(self) -> dict[str, Any]:
