@@ -127,6 +127,50 @@ def test_download_file_reports_destination_write_failure(monkeypatch, tmp_path):
     assert target_path.exists() is False
 
 
+def test_download_file_decodes_base64_data_url_without_network(monkeypatch, tmp_path):
+    import base64
+
+    runtime = _runtime()
+    target_path = tmp_path / "manifest.json"
+    completed = []
+    payload = b'{"name": "demo"}'
+
+    monkeypatch.setattr(
+        runtime, "_select_save_path", lambda filename, file_types: target_path
+    )
+    monkeypatch.setattr(runtime, "_show_download_complete", completed.append)
+
+    def unexpected_download(url: str, path: Path) -> None:
+        raise AssertionError("urlretrieve must not be used for data URLs")
+
+    monkeypatch.setattr(urllib.request, "urlretrieve", unexpected_download)
+
+    data_url = "data:application/json;base64," + base64.b64encode(payload).decode()
+    result = runtime.download_file(data_url, "manifest.json")
+
+    assert result == {"ok": True, "cancelled": False}
+    assert target_path.read_bytes() == payload
+    assert list(tmp_path.glob(".*.part")) == []
+    assert completed == [str(target_path)]
+
+
+def test_download_file_rejects_malformed_data_url_before_prompting(monkeypatch):
+    runtime = _runtime()
+    prompted = False
+
+    def unexpected_prompt(filename: str, file_types: tuple[str, ...]) -> Path:
+        nonlocal prompted
+        prompted = True
+        raise AssertionError("save dialog must not open for a malformed data URL")
+
+    monkeypatch.setattr(runtime, "_select_save_path", unexpected_prompt)
+
+    result = runtime.download_file("data:application/json;base64", "manifest.json")
+
+    assert result == {"ok": False, "cancelled": False}
+    assert prompted is False
+
+
 @pytest.mark.parametrize("language", [None, "zh", "en", "en-US"])
 @pytest.mark.parametrize("confirmed", [False, True])
 def test_download_confirmation_is_a_sheet_on_the_macos_window(
