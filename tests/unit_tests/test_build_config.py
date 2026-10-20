@@ -211,16 +211,15 @@ def test_electron_build_config_sync_precedes_dependency_installation(
 
 
 def test_desktop_release_builds_exclude_optional_cli_dependencies() -> None:
-    # The Windows builds bundle the cua extra: unlike the CLI runtimes there is
-    # no on-demand installer for it, so a bundle without it cannot drive the
-    # desktop at all. The macOS builds leave it out: cua has no macOS backend.
+    # Desktop installers bundle CUA on both platforms and use Python 3.12 for
+    # the persistent REPL. Optional CLI runtimes remain separate downloads.
     expected_sync_commands = {
-        "scripts/build-macos.sh": "uv sync --extra dev",
-        "scripts/build-exe.ps1": "uv sync --extra dev --extra cua",
-        "scripts/build-exe.bat": "uv sync --extra dev --extra cua",
-        "scripts/build-electron-exe.sh": "uv sync --locked --extra dev",
+        "scripts/build-macos.sh": "uv sync --extra dev --extra cua --python 3.12",
+        "scripts/build-exe.ps1": "uv sync --extra dev --extra cua --python 3.12",
+        "scripts/build-exe.bat": "uv sync --extra dev --extra cua --python 3.12",
+        "scripts/build-electron-exe.sh": "uv sync --locked --extra dev --extra cua --python 3.12",
         "scripts/build-electron-exe.ps1": (
-            "uv sync --locked --extra dev --extra cua --python-platform x86_64-pc-windows-msvc"
+            "uv sync --locked --extra dev --extra cua --python-platform x86_64-pc-windows-msvc --python 3.12"
         ),
     }
     for relative_path, expected_sync_command in expected_sync_commands.items():
