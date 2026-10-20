@@ -6900,6 +6900,7 @@ class AgentWebSocketServer:
                         leader_id=getattr(backend, "leader_member_name", None),
                         organization_id=organization_id,
                         agent_group_name=spec_metadata.get("agent_group_name"),
+                        team_group_identity=spec_metadata.get("team_group_identity"),
                         source="pool",
                     )
             except Exception as e:

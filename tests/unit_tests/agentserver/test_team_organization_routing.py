@@ -225,6 +225,37 @@ async def test_team_list_without_owner_binding_marks_no_owner(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_team_list_returns_expert_snapshot_from_spec_without_package(monkeypatch):
+    server = object.__new__(AgentWebSocketServer)
+    identity = {"id": "asset", "name": "expert-group", "display_name": "专家团"}
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda _: team_manager_marker(),
+    )
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    entry = SimpleNamespace(
+        team_name="expert", state=SimpleNamespace(value="paused"),
+        agent=SimpleNamespace(
+            team_backend=SimpleNamespace(is_leader=True),
+            spec=SimpleNamespace(metadata={
+                "agent_group_name": "expert-group", "team_group_identity": identity,
+            }),
+        ),
+    )
+    pool = SimpleNamespace(teams_for_session=AsyncMock(return_value=[entry]))
+    monkeypatch.setattr("openjiuwen.core.runner.runner.GLOBAL_RUNNER", SimpleNamespace(
+        _team_runtime_manager=SimpleNamespace(pool=pool),
+    ))
+
+    teams = await server._team_list_entries("session", "web")
+
+    expert = next(team for team in teams if team["team_id"] == "expert")
+    assert expert["team_group_identity"] == identity
+    assert expert["is_owner"] is False
+    assert "team_group_identity" not in next(team for team in teams if team["is_owner"])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("description", [None, "", "short description", "x" * 400])
 async def test_org_snapshot_handles_empty_description(monkeypatch, description):
     from openjiuwen.agent_teams.organization import pool

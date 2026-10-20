@@ -632,11 +632,18 @@ class JiuwenExpertTeamLauncher:
         """Base Team Spec from config, then AgentGroup overlay via assembly."""
         from jiuwenswarm.agents.harness.team.team_manager import TeamManager
         from jiuwenswarm.agents.swarm.assembly import enrich_team_spec_for_swarm
+        from jiuwenswarm.server.runtime.extension_package_manager import (
+            resolve_agent_group_display_identity,
+        )
 
         spec = TeamManager.load_default_team_spec(session_id)
         updates: dict[str, Any] = {"team_name": team_id, "lifecycle": "persistent"}
         metadata = dict(getattr(spec, "metadata", None) or {})
         metadata["agent_group_name"] = agent_group_name
+        identity = resolve_agent_group_display_identity(agent_group_name)
+        if identity is not None:
+            # Team specs are checkpointed by the runtime, including metadata.
+            metadata["team_group_identity"] = identity
         metadata["expert_team"] = True
         metadata["capabilities"] = list(agent_group_package.capabilities)
         if channel_id:
