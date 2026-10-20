@@ -3749,6 +3749,7 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
         round_request_id=None,
         cross_session_marker=None,
         run_context=None,
+        interrupt_input=None,
         round_id: int,
         envs: dict | None = None,
     ) -> None:
@@ -3849,6 +3850,7 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
         round_request_id=None,
         cross_session_marker=None,
         run_context=None,
+        interrupt_input=None,
         round_id: int,
         envs: dict | None = None,
     ) -> None:
@@ -4423,6 +4425,7 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
         round_request_id=None,
         cross_session_marker=None,
         run_context=None,
+        interrupt_input=None,
         round_id: int,
         envs: dict | None = None,
     ) -> None:
@@ -4556,6 +4559,7 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
         round_request_id=None,
         cross_session_marker=None,
         run_context=None,
+        interrupt_input=None,
         round_id: int,
         envs: dict | None = None,
     ) -> None:
@@ -4622,6 +4626,7 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
         round_request_id=None,
         cross_session_marker=None,
         run_context=None,
+        interrupt_input=None,
         round_id: int,
         envs: dict | None = None,
     ) -> None:
