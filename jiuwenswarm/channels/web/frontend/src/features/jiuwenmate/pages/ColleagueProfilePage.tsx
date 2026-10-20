@@ -423,23 +423,25 @@ function ProfileOverview({
       <p className="jiuwenmate-profile__joined">
         {t('jiuwenmate.profile.joinedAt', { time: formatJoinedAt(colleague.joinedAt) })}
       </p>
-      <section className="jiuwenmate-profile__im" data-testid="jiuwenmate-profile-quick-im">
-        <header>
-          <strong>{t('jiuwenmate.profile.quickIm')}</strong>
-          <button type="button" className="jiuwenmate-link-button" onClick={onConfigureIm}>
-            <SquareArrowOutUpRight aria-hidden />
-            {colleague.imConfigured ? t('common.modify') : t('jiuwenmate.profile.goConfigure')}
-          </button>
-        </header>
-        <div className="jiuwenmate-profile__im-row">
-          <img src={feishuIcon} alt="" aria-hidden />
-          <span>
-            <strong>{t('jiuwenmate.im.feishu')}</strong>
-            <small>{t('jiuwenmate.profile.feishuHint')}</small>
-          </span>
-          <ImBindingAction configured={colleague.imConfigured} onConfigure={onConfigureIm} />
-        </div>
-      </section>
+      {!colleague.imConfigured ? (
+        <section className="jiuwenmate-profile__im" data-testid="jiuwenmate-profile-quick-im">
+          <header>
+            <strong>{t('jiuwenmate.profile.quickIm')}</strong>
+            <button type="button" className="jiuwenmate-link-button" onClick={onConfigureIm}>
+              <SquareArrowOutUpRight aria-hidden />
+              {t('jiuwenmate.profile.goConfigure')}
+            </button>
+          </header>
+          <div className="jiuwenmate-profile__im-row">
+            <img src={feishuIcon} alt="" aria-hidden />
+            <span>
+              <strong>{t('jiuwenmate.im.feishu')}</strong>
+              <small>{t('jiuwenmate.profile.feishuHint')}</small>
+            </span>
+            <ImBindingAction configured={false} onConfigure={onConfigureIm} />
+          </div>
+        </section>
+      ) : null}
 
       <section className="jiuwenmate-profile__block">
         <header>
