@@ -14,6 +14,8 @@ from typing import Any, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
+
+from jiuwenswarm.common.mode_matrix import resolve_adapter_mode
 from jiuwenswarm.agents.harness.team import get_team_manager
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.edition import is_enterprise
@@ -677,7 +679,14 @@ class AgentManager:
                 setter(self._personal_context_runtime_enabled)
             await agent.create_instance(
                 config,
-                mode=mode_key,
+                # create_instance 的 mode 是**实现选型**（DeepAdapter/CodeAdapter/
+                # FlashAdapter），不是 manager 级业务模式。team facade 的 manager
+                # 模式是 'team'，但其底层实现与单专家相同（DeepAdapter，即 'agent'）；
+                # 传原始 mode_key 会让 adapter 以 mode='team' 登记，随后聊天请求按
+                # _adapter_mode_for_request 推导出 'agent'，触发 !8416 的严格模式
+                # 校验（current='team', requested='agent'），整个专家团不可用。
+                # cache_key 与 _jiuwenswarm_agent_mode 仍保留 manager 模式不变。
+                mode=resolve_adapter_mode(mode_key),
                 sub_mode=sub_mode_key or None,
                 config_base=self._latest_config_base,
             )
