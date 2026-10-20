@@ -42,6 +42,14 @@ class ToolCategory(NamedTuple):
 # the live registry are skipped at render time.
 _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
     ToolCategory(
+        path="coding-memory",
+        description=(
+            "读写项目编码记忆（coding_memory/ 下的 markdown）：跨会话沉淀"
+            "代码经验、事实与决策，支持分页读取与精确字符串替换。"
+        ),
+        tools=("coding_memory_edit", "coding_memory_read", "coding_memory_write"),
+    ),
+    ToolCategory(
         path="documents",
         description="读取 PDF 文档的文本内容，支持按页与分块读取。",
         tools=("read_pdf",),
@@ -94,6 +102,11 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         path="video-generation",
         description="文生视频：提交视频生成任务，按任务号轮询进度并下载结果。",
         tools=("generate_video", "check_video_status"),
+    ),
+    ToolCategory(
+        path="lsp",
+        description="通过语言服务器（LSP）获取代码智能：定义、引用、诊断等。",
+        tools=("lsp",),
     ),
     ToolCategory(
         path="modes",
@@ -176,6 +189,19 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
             "支持超时与后台运行。"
         ),
         tools=("powershell",),
+    ),
+    ToolCategory(
+        path="user-todos",
+        description="管理用户个人待办与日程：任务、会议、提醒、计划。",
+        tools=("user_todos",),
+    ),
+    ToolCategory(
+        path="worktree",
+        description=(
+            "创建或恢复隔离的 git worktree 并切换当前会话工作目录；"
+            "退出时还原到原目录。"
+        ),
+        tools=("enter_worktree", "exit_worktree"),
     ),
 )
 

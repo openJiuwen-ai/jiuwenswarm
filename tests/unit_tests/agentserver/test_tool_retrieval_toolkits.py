@@ -66,6 +66,12 @@ def test_static_category_table_shape() -> None:
     # agent_evolving family: six deferred tools that previously landed in the
     # uncategorized fallback block.
     assert "skill-evolution" in paths
+    # Code-mode rails/registrations: coding memory, LSP, worktree, user todos
+    # also previously landed in the uncategorized fallback block.
+    assert "coding-memory" in paths
+    assert "lsp" in paths
+    assert "worktree" in paths
+    assert "user-todos" in paths
     by_path = {category.path: category for category in _TOOL_CATEGORIES}
     assert "powershell" in by_path["terminal"].tools
     assert "cron_create_job" in by_path["cron"].tools
@@ -74,6 +80,9 @@ def test_static_category_table_shape() -> None:
     assert "audio_metadata" in by_path["audio-processing"].tools
     assert "generate_visual" in by_path["image-generation"].tools
     assert "check_video_status" in by_path["video-generation"].tools
+    assert "coding_memory_write" in by_path["coding-memory"].tools
+    assert "enter_worktree" in by_path["worktree"].tools
+    assert "user_todos" in by_path["user-todos"].tools
     assert "prepare_skill_evolution" in by_path["skill-evolution"].tools
     assert "simplify_skill_experiences" in by_path["skill-evolution"].tools
     # Descriptions are description-only routing text, never tool-name dumps.
