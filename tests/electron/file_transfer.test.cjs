@@ -19,7 +19,7 @@ async function fixture(t, response = () => new Response('complete')) {
   const calls = { fetched: [], revealed: [], dialogs: [] };
   let choice = { canceled: false, filePath: target };
   const context = vm.createContext({
-    fs, path, randomUUID, Readable, pipeline, URL, Date, console,
+    fs, path, randomUUID, Readable, pipeline, URL, Date, console, Buffer, decodeURIComponent,
     process: { env: { JIUWENSWARM_DATA_DIR: root } },
     app: { getPath: () => root }, mainWindow: {}, currentFrontendUrl: 'http://127.0.0.1:5173',
     net: { fetch: async url => { calls.fetched.push(url.toString()); return response(); } },
@@ -72,6 +72,16 @@ test('HTTP failure leaves no output and local protocols are rejected before the 
   assert.equal(f.calls.dialogs.length, 0);
   await assert.rejects(f.save('/artifact', 'file.txt'), /HTTP 503/);
   assert.deepEqual(await fs.readdir(f.root), []);
+});
+
+test('file-preview text downloads can save FileReader data URLs without net.fetch', async t => {
+  const f = await fixture(t);
+  const payload = Buffer.from('{"name":"demo"}', 'utf8').toString('base64');
+  const result = await f.save(`data:text/plain;charset=utf-8;base64,${payload}`, 'manifest.json');
+  assert.equal(result.ok, true);
+  assert.equal(await fs.readFile(f.target, 'utf8'), '{"name":"demo"}');
+  assert.deepEqual(f.calls.fetched, []);
+  assert.deepEqual(f.calls.revealed, [f.target]);
 });
 
 test('rename failure removes only this download temporary file', async t => {
