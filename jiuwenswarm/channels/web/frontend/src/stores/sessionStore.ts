@@ -95,22 +95,6 @@ function loadLastLegacyModelName(): string | null {
   try { return localStorage.getItem(LEGACY_MODEL_STORAGE_KEY)?.trim() || null; } catch { return null; }
 }
 
-function cacheLastLegacyModelName(name: string): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(LEGACY_MODEL_STORAGE_KEY, name);
-    localStorage.removeItem(MODEL_SELECTION_STORAGE_KEY);
-  } catch { /* noop */ }
-}
-
-export function cacheLastModelSelection(selection: ModelSelection): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(MODEL_SELECTION_STORAGE_KEY, JSON.stringify(selection));
-    localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY);
-  } catch { /* noop */ }
-}
-
 /** New chats restore the last stable selection, then fall back default-group -> custom -> free -> empty. */
 export function resolveNewConversationModelSelection(
   models: ModelEntry[],
@@ -153,16 +137,6 @@ export function resolveAvailableModelSelection(
   return resolveNewConversationModelSelection(models, groups, selection);
 }
 
-/**
- * True while models.list / groups have not arrived yet.
- * An empty catalog must not be treated as “selection deleted” (#5860): refresh during
- * goal execution often restores metadata before the catalog, and clearing then falls
- * back to the default model.
- */
-export function isModelCatalogPending(models: ModelEntry[], groups: ModelGroup[]): boolean {
-  return models.length === 0 && groups.length === 0;
-}
-
 export function isModelSelectionAvailable(
   selection: ModelSelection | null,
   models: ModelEntry[],
@@ -191,6 +165,23 @@ function applyResolvedModelSelection(
       ? null
       : selectedModel?.model_name ?? (selection ? runtime.selectedModelName : null),
   };
+}
+
+function restoreNewConversationSelection(
+  runtime: SessionRuntime,
+  selection: ModelSelection | null,
+  models: ModelEntry[],
+): SessionRuntime {
+  // Catalog refresh can briefly omit groups; keep the draft group until the user
+  // changes it. Historical sessions heal via ChatModelSelector / session restore.
+  if (runtime.selectedModelSelection?.type === 'model_group') return runtime;
+  const cached = loadLastModelSelection();
+  const selection = isModelSelectionAvailable(cached, models, groups)
+    ? cached
+    : !cached && isModelSelectionAvailable(runtime.selectedModelSelection, models, groups)
+      ? runtime.selectedModelSelection
+      : resolveNewConversationModelSelection(models, groups, cached);
+  return applyResolvedModelSelection(runtime, selection, models);
 }
 
 function restoreNewConversationSelection(
