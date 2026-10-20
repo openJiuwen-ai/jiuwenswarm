@@ -6,7 +6,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { initReactI18next } from 'react-i18next';
 
-import { ColleagueProfilePage } from '../node_modules/.cache/jiuwenmate-profile/ColleagueProfilePage.js';
+import { ColleagueProfilePage } from '../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js';
 import { ScheduleBoard } from '../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js';
 
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
@@ -56,6 +56,21 @@ function renderProfile(extra) {
     }),
   );
 }
+
+test('a bound channel stays editable from the employee profile', () => {
+  const channels = renderProfile({
+    initialSection: 'channels',
+    colleague: { ...colleague, imConfigured: true },
+  });
+  assert.match(channels, /data-variant="channels"/);
+  assert.match(channels, /已授权/);
+  assert.match(channels, /data-testid="jiuwenmate-profile-im-modify"/);
+  assert.match(channels, />修改</);
+
+  const overview = renderProfile({ colleague: { ...colleague, imConfigured: true } });
+  assert.match(overview, /data-testid="jiuwenmate-profile-quick-im"/);
+  assert.match(overview, /data-testid="jiuwenmate-profile-im-modify"/);
+});
 
 test('skills can be changed on the skills page without the pencil', () => {
   const markup = renderProfile({ initialSection: 'skills' });

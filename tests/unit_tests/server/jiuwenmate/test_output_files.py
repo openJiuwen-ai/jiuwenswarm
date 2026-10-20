@@ -301,7 +301,7 @@ async def test_feishu_file_result_sends_caption_then_uploads_once_and_reports_fi
 
     assert result == {"outcome": "delivered", "external_message_id": "om_file", "file_key": "fk_new"}
     caption_call, file_call = channel._send_persistent_message.await_args_list
-    assert caption_call.args[1] == "text" and caption_call.args[4] != "key-1"
+    assert caption_call.args[1] == "interactive" and caption_call.args[4] != "key-1"
     assert file_call.args[1] == "file" and file_call.args[4] == "key-1"
     assert '"fk_new"' in file_call.args[2]
     channel._upload_file.assert_called_once()

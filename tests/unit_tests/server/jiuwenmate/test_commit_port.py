@@ -61,14 +61,30 @@ def accept_and_start(
     source_ref: str,
     *,
     route_snapshot: RequestRouteSnapshot | None = None,
+    request_kind: str = "scheduled",
 ):
     session = repository.resolve_session(NS, AGENT, ConversationRef.web(conversation_key), now=NOW)
+    source = (
+        core.DirectMessageSource(
+            message_id=source_ref,
+            sender_id="user-1",
+            sender_name="用户",
+            received_at=NOW,
+        )
+        if request_kind == "direct_message"
+        else None
+    )
     state, _ = repository.accept_request(
         session,
         snapshot=SNAPSHOT,
         source_ref=source_ref,
         access=ACCESS,
-        request_input=core.RequestInput(kind="scheduled", text="整理进展", reply_target="reply-1"),
+        request_input=core.RequestInput(
+            kind=request_kind,
+            text="整理进展",
+            reply_target="reply-1",
+            source=source,
+        ),
         received_at=NOW,
         route_snapshot=route_snapshot,
     )
@@ -330,6 +346,7 @@ async def test_claimed_feishu_delivery_carries_the_accepted_route_and_can_be_ack
     assert len(jobs) == 1
     assert jobs[0]["app_id"] == "cli_bound" and jobs[0]["target_id"] == "oc_group"
     assert jobs[0]["source_message_id"] == "om_source" and jobs[0]["source_reply_to"] == "om_parent"
+    assert jobs[0]["is_direct_message"] is False
     assert jobs[0]["text"] == "进展如下" and jobs[0]["attempt_count"] == 1
     assert jobs[0]["mention_ids"] == []
     delivery_id = jobs[0]["delivery_id"]
@@ -352,6 +369,23 @@ async def test_claimed_feishu_delivery_carries_the_accepted_route_and_can_be_ack
 
     row = repository.result_deliveries(NS, execution.request_id)[0]
     assert row["status"] == "delivered" and row["external_message_id"] == "om_reply"
+
+
+async def test_claimed_feishu_direct_message_delivery_is_not_a_reply(host):
+    repository, _, port = host
+    route = RequestRouteSnapshot(
+        channel="feishu", app_id="cli_bound", target_id="oc_dm", source_message_id="om_source"
+    )
+    execution = accept_and_start(
+        repository, "conv-dm", "msg-dm", route_snapshot=route, request_kind="direct_message"
+    )
+    await port.record(execution, candidate(execution, 1))
+    await port.record(execution, final(execution, 2))
+
+    job = repository.claim_pending_result_deliveries(NS, now=NOW)[0]
+
+    assert job["is_direct_message"] is True
+    assert job["source_message_id"] is None
 
 
 async def test_claimed_group_delivery_keeps_mentions_other_than_the_author(host):

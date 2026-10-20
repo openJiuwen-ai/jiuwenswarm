@@ -3429,6 +3429,12 @@
   gap: 2px;
 }
 
+.jiuwenmate-profile__im-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .jiuwenmate-profile__im-row strong {
   font-size: 13px;
   font-weight: 600;
