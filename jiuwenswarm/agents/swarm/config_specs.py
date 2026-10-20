@@ -259,25 +259,20 @@ def _is_code_mode(mode: str) -> bool:
 
 # Design profile (team.design) capability set. The design leader is a
 # conversation surface over the design canvas and the workers are per-node
-# executors: skill/symphony/task-planning rails and the generic media tools
-# are out (the designer graph tools arrive via the agent_group leader
-# template, not the profile). Web search/fetch is leader-only, so the
-# per-node executors stay on their node inputs. Everything else —
-# runtime/response prompts, streaming, security, anomaly detection,
-# heartbeat, context — stays because the team runtime's session mechanics
-# depend on them.
+# executors: skill/symphony/task-planning rails and the generic web/media
+# tools are out (the designer graph tools arrive via the agent_group leader
+# template, not the profile). Everything else — runtime/response prompts,
+# streaming, security, anomaly detection, heartbeat, context — stays because
+# the team runtime's session mechanics depend on them.
 _DESIGN_RAIL_NAMES: tuple[str, ...] = (
     registry.RUNTIME_PROMPT,
     registry.RESPONSE_PROMPT,
     registry.STREAM_EVENT,
     registry.SECURITY,
     registry.MODEL_ANOMALY_DETECTION,
-    registry.HEARTBEAT,
-    registry.AVATAR_PROMPT,
     registry.MULTIMODAL_IMAGE,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.CONTEXT_PROCESSOR,
-    registry.PERSONAL_CONTEXT,
 )
 
 _DESIGN_TOOL_NAMES: tuple[str, ...] = (
