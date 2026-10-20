@@ -10,13 +10,19 @@
 当前 `pyproject.toml` 三处直接依赖与 `uv.lock` 锁定：
 
 ```text
-git+ssh://git@gitcode.com/lin-xiaoyu/agent-core.git@aaa582eaf8044afb4e4ad9a2a6665213a8747fff
+git+ssh://git@gitcode.com/openJiuwen/agent-core.git@618a5fb0f28265c4cdaca3d3e3cb86f667c651b8
 ```
 
-先将 Core 轻量改动合入 `br_0.1.16.post2.hotfix`，再合入本 Swarm 改动。
-上游若通过 squash 或其他方式生成新提交，须先把上述来源与所有依赖声明
-改成官方仓库的实际合入 SHA，并重新生成 `uv.lock`；不能把 fork SHA 当作
-官方已合入的证明。更新锁文件时沿用现有包源，核对无关依赖没有变化。
+Core [PR #3298](https://gitcode.com/openJiuwen/agent-core/pull/3298) 已于
+2026-10-20 合入官方 `br_0.1.16.post2.hotfix`，合并提交为上述 SHA。
+该合并保留原提交历史，专家规划源码与此前 fork 的 `aaa582eaf` 一致；
+上游另外包含日志日内大小上限调整。依赖声明与锁文件已切换到官方仓库，
+其余包源与依赖版本保持不变。
+
+下一步将 `lin-xiaoyu/jiuwenswarm:feat/beta3-symphony-merge-ready` 合入
+`openJiuwen/jiuwenswarm:xiaoyi_0.2.4.beta3`。本分支以追加提交撤回了早期
+完整 Symphony 迁移，应审查并合入当前分支的最终差异，建议 Squash；
+不要单独挑选历史中的完整迁移提交。桌面专用面板可在后端合入后按需选择。
 
 ## 配置
 

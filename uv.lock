@@ -1991,9 +1991,9 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0" },
-    { name = "openjiuwen", git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git?rev=aaa582eaf8044afb4e4ad9a2a6665213a8747fff" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git?rev=aaa582eaf8044afb4e4ad9a2a6665213a8747fff" },
-    { name = "openjiuwen", extras = ["claude", "codex"], marker = "extra == 'cli-agents'", git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git?rev=aaa582eaf8044afb4e4ad9a2a6665213a8747fff" },
+    { name = "openjiuwen", git = "ssh://git@gitcode.com/openJiuwen/agent-core.git?rev=618a5fb0f28265c4cdaca3d3e3cb86f667c651b8" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "ssh://git@gitcode.com/openJiuwen/agent-core.git?rev=618a5fb0f28265c4cdaca3d3e3cb86f667c651b8" },
+    { name = "openjiuwen", extras = ["claude", "codex"], marker = "extra == 'cli-agents'", git = "ssh://git@gitcode.com/openJiuwen/agent-core.git?rev=618a5fb0f28265c4cdaca3d3e3cb86f667c651b8" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
     { name = "opentelemetry-api", specifier = ">=1.28.0" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
@@ -2934,7 +2934,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.16"
-source = { git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git?rev=aaa582eaf8044afb4e4ad9a2a6665213a8747fff#aaa582eaf8044afb4e4ad9a2a6665213a8747fff" }
+source = { git = "ssh://git@gitcode.com/openJiuwen/agent-core.git?rev=618a5fb0f28265c4cdaca3d3e3cb86f667c651b8#618a5fb0f28265c4cdaca3d3e3cb86f667c651b8" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
