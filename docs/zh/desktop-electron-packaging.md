@@ -82,6 +82,8 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 
 ### Computer Use 原生驱动
 
+`cua_engine/hosting.py` 负责 SDK 加载、源码缓存和驱动构建，`cua_engine/desktop.py` 负责原生协议通信与进程清理，二者不依赖 Agent 框架。`agents/harness/computer_use/` 只负责接入原有桌面子代理、工具与生命周期；构建脚本直接调用引擎，不经过 Agent 接入层。
+
 Windows 和 macOS 的完整安装包共用 `scripts/jiuwenswarm.spec`：构建机使用 Python 3.12 安装 `cua` 依赖，并由 `scripts/build_computer_use.py` 编译本机驱动。macOS 构建机需要 Swift 6 工具链；Windows 构建机需要 .NET Framework 4.8 编译器和 Windows 10 1903+ 的 WinRT 元数据。正式 macOS 发布仍只提供 ARM64 包。
 
 冻结包内置 Python SDK、Skill 和已编译的驱动。Windows 同时包含截图辅助程序和 UIA 互操作程序集；不会把 Swift/C# 编译输入或 UIA 构建工具放进运行资源。安装版直接执行包内驱动，不在用户电脑编译，也不复制到源码构建缓存；驱动缺失时报告安装包损坏。源码运行仍保留首次使用自动编译的流程。

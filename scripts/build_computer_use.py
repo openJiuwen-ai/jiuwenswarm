@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 
-from jiuwenswarm.agents.harness.computer_use import import_engine
+from jiuwenswarm.cua_engine.hosting import import_engine
 
 
 RESOURCE_DESTINATION = "computer_use/_resources"
