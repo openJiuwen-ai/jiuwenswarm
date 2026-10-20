@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 from jiuwenswarm.common.config import resolve_env_vars
@@ -269,11 +270,26 @@ class ConfigAdapter(GatewayAdapter):
                 channel,
                 on_config_saved=self._on_config_saved,
             )
-            register_models_handlers(channel, user_id=request.user_id)
+            # models/model_groups 域的写操作同样触发 server 侧 in-process reload
+            # （models.replace_all / upsert / delete 改动模型配置后 agent 需热生效；
+            # 原先只给 config.set/save_all 接回调，E2A 路径漏掉了模型域）
+            register_models_handlers(
+                channel,
+                on_config_saved=self._on_config_saved,
+                user_id=request.user_id,
+            )
         handler = channel.methods.get(request.req_method.value)
         if handler is None:
             return build_error_response(request, "unsupported config method", code="BAD_REQUEST")
-        await handler(object(), request.request_id, request.params or {}, request.session_id)
+        # 登录会话 id 由 Gateway 从受认证连接属性注入（键约定见
+        # e2a.constants.E2A_AUTH_SESSION_PARAM_KEY）；本地构造 ws 上下文还原，
+        # models.list 据此合并登录送的免费模型（common handler 读 ws 属性）。
+        handler_params = dict(request.params or {})
+        from jiuwenswarm.common.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+
+        auth_session = str(handler_params.pop(E2A_AUTH_SESSION_PARAM_KEY, "") or "").strip()
+        handler_ws = SimpleNamespace(_jiuwen_auth_session=auth_session)
+        await handler(handler_ws, request.request_id, handler_params, request.session_id)
         response = channel.response
         if response is None:
             return build_error_response(request, "config handler produced no response")

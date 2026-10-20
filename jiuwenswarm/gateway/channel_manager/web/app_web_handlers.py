@@ -2184,12 +2184,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     if callable(register_disconnect):
         register_disconnect(_on_disconnect)
 
-    async def _config_get(ws, req_id, params, session_id):
-        """config.get 实现已下沉 ``common.config_panel.config_set_handlers``。"""
-        await config_set_handlers.config_get_handler(
-            channel, ws, req_id, params, session_id
-        )
-
     async def _external_cli_detect(ws, req_id, params, session_id):
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
@@ -2248,79 +2242,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from jiuwenswarm.gateway.zen_query import request_zen_warmup
 
         await request_zen_warmup(_resolve(agent_client))
-
-    async def _config_set(ws, req_id, params, session_id):
-        """config.set 实现已下沉 ``common.config_panel.config_set_handlers``。"""
-        await config_set_handlers.config_set_handler(
-            channel, ws, req_id, params, session_id,
-            on_config_saved=on_config_saved,
-            agent_client=_resolve(agent_client),
-            ensure_codex_dependency=_ensure_codex_dependency_available_or_start_install,
-            ensure_claude_dependency=_ensure_claude_dependency_available_or_start_install,
-            on_free_models_toggled=_request_zen_warmup,
-        )
-
-    async def _config_validate_model(ws, req_id, params, session_id, max_tokens_bounds=None):
-        """models/config 域实现已下沉 ``jiuwenswarm.common.config_panel.models_handlers``。"""
-        await models_handlers.config_validate_model_handler(
-            channel, ws, req_id, params, max_tokens_bounds
-        )
-
-    # ── models.* handlers ────────────────────────────────────────
-
-    async def _models_list(ws, req_id, params, session_id):
-        from jiuwenswarm.gateway.zen_query import fetch_zen_free_model_rows
-
-        zen_rows = await fetch_zen_free_model_rows(_resolve(agent_client))
-        await models_handlers.models_list_handler(
-            channel, ws, req_id, params, session_id, zen_rows=zen_rows,
-        )
-
-    async def _models_replace_all(ws, req_id, params, session_id):
-        """原子地用提交的列表整体替换 models.defaults（实现见下沉模块）。"""
-        await models_handlers.models_replace_all_handler(
-            channel, ws, req_id, params, session_id,
-            on_config_saved=on_config_saved,
-            agent_client=_resolve(agent_client),
-        )
-
-
-    async def _config_save_all(ws, req_id, params, session_id):
-        """config.save_all 实现已下沉 ``common.config_panel.config_set_handlers``。"""
-        await config_set_handlers.config_save_all_handler(
-            channel, ws, req_id, params, session_id,
-            on_config_saved=on_config_saved,
-            agent_client=_resolve(agent_client),
-            ensure_codex_dependency=_ensure_codex_dependency_available_or_start_install,
-            ensure_claude_dependency=_ensure_claude_dependency_available_or_start_install,
-            on_free_models_toggled=_request_zen_warmup,
-        )
-
-    async def _models_validate(ws, req_id, params, session_id):
-        """测试指定模型配置是否可用（复用 config.validate_model 逻辑）。"""
-        await _config_validate_model(ws, req_id, params, session_id)
-
-    async def _model_resource_rpc(ws, req_id, params, session_id, operation):
-        from jiuwenswarm.common.config_panel.model_resource_handlers import model_resource_handler
-
-        await model_resource_handler(
-            channel, ws, req_id, params, session_id, operation=operation,
-            on_config_saved=on_config_saved, agent_client=_resolve(agent_client),
-        )
-
-    async def _session_selection_set(ws, req_id, params, session_id):
-        from jiuwenswarm.common.model_selection import ModelSelection
-        from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
-        from jiuwenswarm.common.model_selection_store import set_session_model_selection
-        try:
-            target = str((params or {}).get("session_id") or session_id or "")
-            selection = ModelSelection.model_validate((params or {}).get("model_selection"))
-            ModelSelectionResolver().resolve(selection)
-            set_session_model_selection(target, selection)
-            await channel.send_response(ws, req_id, ok=True, payload={"model_selection": selection.model_dump()})
-        except Exception as exc:
-            code = getattr(exc, "code", "BAD_REQUEST")
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=code)
 
     async def _channel_get(ws, req_id, params, session_id):
         """返回已注册的 channel 列表."""
@@ -5078,16 +4999,82 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="config",
         )
 
-    def _register_config_proxy(method_name, req_method, local_handler):
+    def _external_cli_install_gate(params: dict[str, Any]) -> dict[str, Any] | None:
+        """外部 CLI 依赖安装门控（原 config.set 本地执行的 ensure 回调语义）。
+
+        这是前端"一键安装"的唯一触发通道（``external_cli.install`` 无前端调用
+        方），安装器与状态轮询（``external_cli.install_status``）都是 gateway
+        本地能力，须随 A4g 保留。命中 codex/claude 相关键且依赖未就绪时启动
+        安装并返回状态 payload——调用方据此短路本次 config.set（安装完成前
+        不写配置，与原本地语义一致，前端装完后重发）。已就绪/未命中返回
+        None，请求正常经 E2A 转发。触发条件为简化版 key 前缀判定：相比本地
+        执行少了"当前配置中该 agent 已启用"的前置检查，误触发的代价仅是
+        ensure 幂等空转（已装即返回 None）。
+        """
+        from jiuwenswarm.common.config_panel.config_set_handlers import (
+            team_payload_requests_codex,
+        )
+
+        codex_touched = any(
+            key.startswith("external_cli_agent_codex_") for key in params
+        ) or (
+            ("agents" in params or "team" in params)
+            and team_payload_requests_codex(params)
+        )
+        claude_touched = any(
+            key.startswith("external_cli_agent_claude_") for key in params
+        )
+        installs: dict[str, Any] = {}
+        if codex_touched:
+            install = _ensure_codex_dependency_available_or_start_install()
+            if install is not None:
+                installs["codex"] = install
+        if claude_touched:
+            install = _ensure_claude_dependency_available_or_start_install()
+            if install is not None:
+                installs["claude"] = install
+        if not installs:
+            return None
+        return {
+            "updated": [],
+            "applied_without_restart": False,
+            "external_cli_dependency_installs": installs,
+        }
+
+    def _register_config_proxy(method_name, req_method, local_handler=None):
+        # A4g：配置读写统一经目标 AgentServer 执行（ConfigAdapter 在注入目录
+        # 本地执行，自带 in-process reload / zen warmup / config_changed 标记
+        # 等后置行为），删除 legacy 单用户的 gateway 本地执行回落。
+        # 保留的唯一 gateway 侧门控：外部 CLI 依赖安装——仅共享目录单用户
+        # 触发（AgentOS 用户目录在目标沙箱，gateway 主机安装无意义，保持
+        # 既有零变化）。local_handler 参数保留为兼容签名，不再使用。
+        del local_handler
+
         async def _handler(ws, req_id, params, session_id, user_id=None):
-            # 单用户共享目录：本地执行（保留 on_config_saved 热更新与原有写回语义）。
-            # AgentOS 多用户：经 E2A 在目标 AgentServer 注入目录执行（与 command.model 同模式）。
             from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
-            resolved_client = _resolve(agent_client)
-            if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
-                await local_handler(ws, req_id, params, session_id)
-                return
+            # 登录会话 id 随请求转发（硬规则：客户端传来的键先删，只信连接属性）：
+            # models.list 经目标 AgentServer 执行时无法看到 Gateway 连接，登录送的
+            # 免费模型合并需要会话 id（AgentOS 既有缺口，A4g 统一后对 legacy 同样关键）。
+            if isinstance(params, dict):
+                from jiuwenswarm.common.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+
+                forwarded = dict(params)
+                forwarded.pop(E2A_AUTH_SESSION_PARAM_KEY, None)
+                auth_session = str(getattr(ws, "_jiuwen_auth_session", "") or "").strip()
+                if auth_session:
+                    forwarded[E2A_AUTH_SESSION_PARAM_KEY] = auth_session
+                params = forwarded
+            if req_method in (
+                _ConfigReq.CONFIG_SET,
+                _ConfigReq.CONFIG_SAVE_ALL,
+            ) and isinstance(params, dict):
+                resolved_client = _resolve(agent_client)
+                if resolved_client is not None and is_legacy_shared_directory_client(resolved_client):
+                    install_payload = _external_cli_install_gate(params)
+                    if install_payload is not None:
+                        await channel.send_response(ws, req_id, ok=True, payload=install_payload)
+                        return
             await _proxy_config_request(
                 ws, req_id, params, session_id, user_id, req_method=req_method
             )
@@ -5102,28 +5089,21 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     channel.register_method("config.moa_status", _config_moa_status)
-    _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
-    _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
-    _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)
-    _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL, _config_validate_model)
-    _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
-    _register_config_proxy("models.get", _ConfigReq.MODELS_GET,
-                           lambda ws, rid, p, sid: _model_resource_rpc(ws, rid, p, sid, "models.get"))
-    _register_config_proxy("models.replace_all", _ConfigReq.MODELS_REPLACE_ALL, _models_replace_all)
-    _register_config_proxy("models.validate", _ConfigReq.MODELS_VALIDATE, _models_validate)
-    _register_config_proxy("models.upsert", _ConfigReq.MODELS_UPSERT,
-                           lambda *a: _model_resource_rpc(*a, "models.upsert"))
-    _register_config_proxy("models.delete", _ConfigReq.MODELS_DELETE,
-                           lambda *a: _model_resource_rpc(*a, "models.delete"))
-    _register_config_proxy("models.references", _ConfigReq.MODELS_REFERENCES,
-                           lambda *a: _model_resource_rpc(*a, "models.references"))
-    _register_config_proxy("model_groups.list", _ConfigReq.MODEL_GROUPS_LIST,
-                           lambda *a: _model_resource_rpc(*a, "groups.list"))
-    _register_config_proxy("model_groups.upsert", _ConfigReq.MODEL_GROUPS_UPSERT,
-                           lambda *a: _model_resource_rpc(*a, "groups.upsert"))
-    _register_config_proxy("model_groups.delete", _ConfigReq.MODEL_GROUPS_DELETE,
-                           lambda *a: _model_resource_rpc(*a, "groups.delete"))
-    _register_config_proxy("session.selection.set", _ConfigReq.SESSION_SELECTION_SET, _session_selection_set)
+    _register_config_proxy("config.get", _ConfigReq.CONFIG_GET)
+    _register_config_proxy("config.set", _ConfigReq.CONFIG_SET)
+    _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL)
+    _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL)
+    _register_config_proxy("models.list", _ConfigReq.MODELS_LIST)
+    _register_config_proxy("models.get", _ConfigReq.MODELS_GET)
+    _register_config_proxy("models.replace_all", _ConfigReq.MODELS_REPLACE_ALL)
+    _register_config_proxy("models.validate", _ConfigReq.MODELS_VALIDATE)
+    _register_config_proxy("models.upsert", _ConfigReq.MODELS_UPSERT)
+    _register_config_proxy("models.delete", _ConfigReq.MODELS_DELETE)
+    _register_config_proxy("models.references", _ConfigReq.MODELS_REFERENCES)
+    _register_config_proxy("model_groups.list", _ConfigReq.MODEL_GROUPS_LIST)
+    _register_config_proxy("model_groups.upsert", _ConfigReq.MODEL_GROUPS_UPSERT)
+    _register_config_proxy("model_groups.delete", _ConfigReq.MODEL_GROUPS_DELETE)
+    _register_config_proxy("session.selection.set", _ConfigReq.SESSION_SELECTION_SET)
 
     # vendors.* 为本分支新增的厂商选择接口，不经 config proxy（无 AgentOS 多用户注入目录语义），
     # 直接走本地 handler。
