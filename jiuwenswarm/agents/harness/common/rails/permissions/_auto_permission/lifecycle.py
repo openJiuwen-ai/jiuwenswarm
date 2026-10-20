@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -22,6 +21,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.policy_eval import (
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.trusted_search_urls import (
     SessionTrustedSearchUrls,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import (
+    SessionDenyStore,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.sandbox_profile import (
     SandboxDescriptor,

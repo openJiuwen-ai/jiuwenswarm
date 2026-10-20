@@ -25,7 +25,9 @@ async def run(root: Path, permanent: bool, phase: str) -> None:
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.common import config
     from jiuwenswarm.common.utils import get_checkpoint_dir
-    from jiuwenswarm.runtime.checkpointer import ensure_persistent_checkpointer, close_persistent_checkpointer
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        ensure_persistent_checkpointer, close_persistent_checkpointer,
+    )
     from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
     from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import RootPermissionQueue
     from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
@@ -53,7 +55,7 @@ async def run(root: Path, permanent: bool, phase: str) -> None:
                     await rail.before_tool_call(ctx)
                 except AbortError as interrupted:
                     ctx.exception = interrupted
-                    await queue_rail.after_tool_call(ctx)
+                    await queue_rail.on_tool_exception(ctx)
                     interrupt = interrupted.cause
                 else:
                     raise AssertionError("initial call must require approval")
@@ -62,7 +64,7 @@ async def run(root: Path, permanent: bool, phase: str) -> None:
                     [(interrupt, None)], [ctx.inputs.tool_call],
                     AssistantMessage(tool_calls=[ctx.inputs.tool_call]), 0,
                 )
-                assert interrupt.request.auto_confirm_key == ""
+                assert state.auto_confirm_mapping == {ctx.inputs.tool_call.id: ""}
                 handler.save(state, session)
                 snapshot = {
                     "result_type": "interrupt", "interrupt_ids": [ctx.inputs.tool_call.id],
@@ -70,7 +72,7 @@ async def run(root: Path, permanent: bool, phase: str) -> None:
                 }
                 card = queue.reconcile(snapshot, root_session_id=session.get_session_id()).cards[0]
                 answer = InteractiveInput()
-                answer.update(card.key.tool_call_id, {"approved": True, "auto_confirm": True, "persist_allow": permanent})
+                answer.update(card.key.invocation_id, {"approved": True, "auto_confirm": True, "persist_allow": permanent})
                 reserved = queue.reserve_answer(session.get_session_id(), answer)
                 calls = []
                 async def execute(resume_ctx, tool_calls, sdk_session, _context):

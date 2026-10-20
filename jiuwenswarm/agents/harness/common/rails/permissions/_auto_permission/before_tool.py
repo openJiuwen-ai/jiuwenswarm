@@ -96,6 +96,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract imp
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context_rail import (
     root_context_failure_from_context,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import (
+    evaluate_session_deny,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
     optional_root_permission_queue,
     consume_permission_wrapper_resume,
@@ -623,7 +626,6 @@ class AutoPermissionBeforeToolMixin:
             domain_route is not None and domain_route.reason in {
                 "subagent_runtime_control_binding_unverified",
                 "readonly_tool_binding_unverified",
-                "readonly_tool_arguments_unverified",
             }
         )
         if policy_evaluation.level == ALLOW_LEVEL and not binding_unverified:
