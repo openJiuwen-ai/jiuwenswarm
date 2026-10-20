@@ -322,6 +322,16 @@ def _compose_effective_local(
         file_guard = source.get("file_guard")
         if isinstance(file_guard, dict) and isinstance(file_guard.get("paths"), list):
             _merge_file_guard_path_entries(out, file_guard["paths"])
+    # Skill 动态授权开关段：上游 rail 以快照承载该键判定 overlay
+    # 是否生效（is_skill_authorization_enabled），白名单重建必须
+    # 往返，丢键即 overlay 静默失效（round-022 交互面回归）。
+    # 从原始段读取（migrate 的 agent-core 控制器路径不保证透传
+    # 未知键）；global 优先，user/session 兜底。
+    for source in (global_cfg, user_cfg, session_cfg):
+        section = source.get("skill_authorization") if isinstance(source, dict) else None
+        if isinstance(section, dict):
+            out["skill_authorization"] = deepcopy(section)
+            break
     if deny_unique:
         out["deny_tools"] = deny_unique
     if ask_unique:
@@ -420,6 +430,24 @@ def load_global_permissions() -> dict[str, Any]:
     return deepcopy(perms) if isinstance(perms, dict) else {}
 
 
+def _load_effective_global_permissions() -> dict[str, Any]:
+    """全局层取 config_loader 生效段：yaml 缓存、企业版内存 ingest、
+    Agent 模板 body（PERMISSIONS_AGENT_BASE）优先均在此收敛，与
+    快照注入点对齐；不可用时回落 yaml 直读。"""
+    try:
+        from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+            get_effective_permissions_config,
+        )
+
+        return deepcopy(get_effective_permissions_config())
+    except Exception:
+        logger.warning(
+            "[PermissionsLayers] effective_global_load_failed; fallback to yaml",
+            exc_info=True,
+        )
+        return load_global_permissions()
+
+
 def load_user_permissions() -> dict[str, Any]:
     return _permissions_section(_load_yaml(get_user_permissions_path()))
 
@@ -440,7 +468,11 @@ def compose_host_effective_permissions(
     global_permissions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """合成 Host 侧 EffectivePermissions.permissions（含 mode 注入字段）。"""
-    global_cfg = global_permissions if isinstance(global_permissions, dict) else load_global_permissions()
+    global_cfg = (
+        global_permissions
+        if isinstance(global_permissions, dict)
+        else _load_effective_global_permissions()
+    )
     user_cfg = load_user_permissions()
     session_cfg = load_session_permissions(session_id)
     compose_fn = _import_core_compose()
