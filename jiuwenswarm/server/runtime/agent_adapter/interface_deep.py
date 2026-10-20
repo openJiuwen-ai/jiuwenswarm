@@ -6779,6 +6779,7 @@ class JiuWenSwarmDeepAdapter:
     ) -> None:
         """Sync progressive tool retrieval registration after config reload."""
         enabled = self._tool_retrieval_tools_enabled_for_runtime(config_base)
+        was_registered = self._tool_retrieval_tools_registered
         tools, registered = self._sync_tool_group(
             current_tools=self._tool_retrieval_tools,
             registered=self._tool_retrieval_tools_registered,
@@ -6790,7 +6791,13 @@ class JiuWenSwarmDeepAdapter:
         self._tool_retrieval_tools_registered = registered
         if not enabled:
             self._tool_retrieval_toolkit = None
-            self._drop_tool_names_from_runtime(_TOOL_RETRIEVAL_TOOL_NAMES)
+            # Clean the meta-tool names only when this layer owned them. With
+            # the optimize switch off from session start, ``tool_search`` /
+            # ``tool_call`` belong to the engine's bundled ProgressiveToolRail
+            # (the pre-optimize behavior) — a by-name drop here would strip
+            # the bundled rail's meta tools on every config reload.
+            if was_registered:
+                self._drop_tool_names_from_runtime(_TOOL_RETRIEVAL_TOOL_NAMES)
 
     async def _sync_skill_retrieval_prompt_rail_for_runtime(
         self,
