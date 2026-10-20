@@ -113,8 +113,23 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     setLoadStatus('loading');
     setLoadError('');
     try {
-      const colleagues = await api.loadColleagues();
-      setState((current) => replaceColleagues(current, colleagues));
+      const [colleagues, bindingResult] = await Promise.all([
+        api.loadColleagues(),
+        webRequest<{ agent_ids?: string[] }>('channel.feishu.get_bindings').then(
+          (value) => ({ ok: true as const, value }),
+          () => ({ ok: false as const, value: null }),
+        ),
+      ]);
+      setState((current) =>
+        replaceColleagues(
+          current,
+          colleagues.map((colleague) =>
+            bindingResult.ok
+              ? { ...colleague, imConfigured: (bindingResult.value.agent_ids ?? []).includes(colleague.id) }
+              : colleague,
+          ),
+        ),
+      );
       setLoadStatus('ready');
     } catch (error) {
       setLoadError(errorMessage(error));
@@ -327,6 +342,29 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
 
   const selectedColleague = state.colleagues.find((item) => item.id === state.selectedColleagueId) ?? null;
   const authorizeColleague = state.colleagues.find((item) => item.id === state.authorizeColleagueId) ?? null;
+  const [boundAppId, setBoundAppId] = useState('');
+  const authorizeId = authorizeColleague?.id ?? '';
+  const authorizeConfigured = authorizeColleague?.imConfigured === true;
+
+  useEffect(() => {
+    if (!authorizeId || !authorizeConfigured) {
+      setBoundAppId('');
+      return undefined;
+    }
+    let cancelled = false;
+    webRequest<{ config?: { apps?: { app_id?: unknown; persistent_agent_id?: unknown }[] } }>('channel.feishu.get_conf')
+      .then((payload) => {
+        const match = payload.config?.apps?.find((app) => app.persistent_agent_id === authorizeId);
+        const appId = typeof match?.app_id === 'string' ? match.app_id : '';
+        if (!cancelled) setBoundAppId(appId);
+      })
+      .catch(() => {
+        if (!cancelled) setBoundAppId('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authorizeConfigured, authorizeId]);
 
   useEffect(() => {
     if (state.view !== 'colleague-profile' && state.view !== 'colleague-workspace') {
@@ -609,6 +647,8 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
       ) : null}
       {authorizeColleague && !existingPage ? (
         <ImAuthorizeDialog
+          created={!authorizeConfigured}
+          initialAppId={boundAppId}
           onSkip={() => setState((current) => finishColleagueAuthorization(current, false))}
           onConfirm={async ({ appId, appSecret }) => {
             if (!authorizeColleague) return;

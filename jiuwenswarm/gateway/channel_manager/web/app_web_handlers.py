@@ -4312,6 +4312,33 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             logger.exception("[channel.feishu.get_conf] 异常, req_id=%s: %s", req_id, e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
+    async def _channel_feishu_get_bindings(ws, req_id, params, session_id):
+        """Return bound colleague IDs without exposing Feishu credentials."""
+        cm = _resolve(channel_manager)
+        if cm is None:
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="channel manager not available",
+                code="SERVICE_UNAVAILABLE",
+            )
+            return
+        try:
+            conf = _normalize_feishu_conf(cm.get_conf("feishu"))
+            from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import configured_feishu_bindings
+
+            bindings = configured_feishu_bindings({"channels": {"feishu": conf}})
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=True,
+                payload={"agent_ids": sorted({binding.agent_id for binding in bindings})},
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("[channel.feishu.get_bindings] 异常, req_id=%s: %s", req_id, e)
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
     async def _channel_feishu_bind_agent(ws, req_id, params, session_id):
         """Persist the one-to-one Feishu app and JiuwenMate colleague binding."""
         cm = _resolve(channel_manager)
@@ -5571,6 +5598,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("heartbeat.get_conf", _health_check_get_conf)
     channel.register_method("heartbeat.set_conf", _health_check_set_conf)
     channel.register_method("channel.feishu.get_conf", _channel_feishu_get_conf)
+    channel.register_method("channel.feishu.get_bindings", _channel_feishu_get_bindings)
     channel.register_method("channel.feishu.set_conf", _channel_feishu_set_conf)
     channel.register_method("channel.feishu.bind_agent", _channel_feishu_bind_agent)
     channel.register_method("channel.xiaoyi.get_conf", _channel_xiaoyi_get_conf)

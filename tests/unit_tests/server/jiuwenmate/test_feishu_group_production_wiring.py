@@ -503,6 +503,34 @@ async def test_channel_manager_routes_jm09_delivery_only_to_exact_feishu_app():
 
 
 @pytest.mark.asyncio
+async def test_channel_manager_sends_direct_message_without_quoting_source():
+    handler = object.__new__(MessageHandler)
+    manager = ChannelManager(handler)
+    channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound"), MagicMock())
+    channel.send_persistent_result = AsyncMock(return_value={"outcome": "delivered"})
+    manager.register_channel(channel)
+
+    await manager.deliver_jm09_persistent_result(
+        {
+            "app_id": "cli_bound",
+            "chat_id": "oc_dm",
+            "source_message_id": "om_source",
+            "is_direct_message": True,
+            "idempotency_key": "stable-key",
+            "text": "你好",
+        }
+    )
+
+    channel.send_persistent_result.assert_awaited_once_with(
+        chat_id="oc_dm",
+        text="你好",
+        source_message_id=None,
+        idempotency_key="stable-key",
+        mention_ids=(),
+    )
+
+
+@pytest.mark.asyncio
 async def test_channel_manager_keeps_delivery_pending_while_bound_app_is_disconnected():
     handler = object.__new__(MessageHandler)
     manager = ChannelManager(handler)

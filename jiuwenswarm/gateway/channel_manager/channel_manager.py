@@ -141,7 +141,9 @@ class ChannelManager(ABC):
             return await matches[0].send_persistent_result(
                 chat_id=chat_id,
                 text=text,
-                source_message_id=payload.get("source_message_id"),
+                source_message_id=(
+                    None if payload.get("is_direct_message") is True else payload.get("source_message_id")
+                ),
                 idempotency_key=idempotency_key,
                 mention_ids=payload.get("mention_ids") or (),
                 **file_args,

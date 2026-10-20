@@ -507,8 +507,13 @@ async def test_jm09_feishu_result_replies_to_source_with_stable_uuid_and_receipt
     request = api_method.call_args.args[0]
     assert request.message_id == "om_source"
     assert request.request_body.uuid == "delivery-key"
-    assert request.request_body.msg_type == "text"
-    assert json.loads(request.request_body.content) == {"text": "已完成"}
+    assert request.request_body.msg_type == "interactive"
+    card = json.loads(request.request_body.content)
+    assert any(
+        element.get("text", {}).get("content") == "已完成"
+        and element.get("text", {}).get("tag") == "lark_md"
+        for element in card["elements"]
+    )
     assert result == {"outcome": "delivered", "external_message_id": "om_sent"}
 
 
@@ -533,7 +538,8 @@ async def test_jm09_feishu_result_renders_source_mentions_as_at_tags():
     )
 
     content = json.loads(api_method.call_args.args[0].request_body.content)
-    assert content == {"text": '<at user_id="ou_b"></at> 请核对这个数字'}
+    assert content["elements"][0]["text"]["content"] == '<at user_id="ou_b"></at> 请核对这个数字'
+    assert content["elements"][0]["text"]["tag"] == "lark_md"
 
 
 @pytest.mark.asyncio
@@ -559,6 +565,10 @@ async def test_jm09_feishu_result_uses_chat_create_when_no_source_message():
     assert request.receive_id_type == "chat_id"
     assert request.request_body.receive_id == "oc_project"
     assert request.request_body.uuid == "delivery-key"
+    assert request.request_body.msg_type == "interactive"
+    card = json.loads(request.request_body.content)
+    assert card["elements"][0]["text"]["content"] == "已完成"
+    assert card["elements"][0]["text"]["tag"] == "lark_md"
     assert result == {"outcome": "delivered", "external_message_id": "om_new"}
 
 

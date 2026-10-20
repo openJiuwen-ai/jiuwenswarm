@@ -30,7 +30,7 @@
 | 场景 / 触发条件 | 当前行为 | 目标行为 / 可观察变化 |
 | --- | --- | --- |
 | Web 请求产生 final 输出 | 可从候选读文本 | final 与候选同事务持久化，并在 `request.get` / `chat.history` 返回 `available` 状态；WebSocket 仅尽力通知，不等待浏览器 ACK |
-| 飞书请求产生 final 文本输出 | 无 JM-09 专用出站路径 | 持久 outbox 依赖该 Request 的路由快照，按唯一 `app_id` 发送并将 SDK `message_id` ACK 持久化 |
+| 飞书请求产生 final 文本输出 | 无 JM-09 专用出站路径 | 持久 outbox 依赖该 Request 的路由快照，按唯一 `app_id` 发送 Markdown 卡片并将 SDK `message_id` ACK 持久化；私聊新建消息不引用用户原消息，群聊仍回复来源消息 |
 | 发送超时、重投或进程重启 | 无法区分未发送、已发送但回执丢失 | 用持久幂等键及回执核对；无法确认时保持 `unknown`，不盲目换新键重发，也不重跑 Agent |
 | final 引用文件候选 | PA-08 尚未提供完整的文件交接适配 | 通过 PA-08 的受控 `file_ref` 解析文件；上传与可见消息分别记录，失败只恢复投递步骤 |
 | Agent 主动发起中途群协作消息（如纳入产品范围） | 尚无触发工具 / 调用契约 | 先明确目标、结构化 mention 与调用方式，再定义独立投递事实；若由有副作用工具触发，再接入 PA-15 意图记账 |
@@ -234,7 +234,7 @@ JM-04 同一 `agents.sqlite3` 已新增 `result_deliveries` 表，不复制候�
 2. Agent Core 提交 `output.proposed`；JM-04 保存候选。随后提交 `execution.final` 时验证每个 output ref，并在同一事务中写 final 与 delivery rows。非终态事件不建终态投递。
 3. Web delivery row 标记 `available`；`RequestView.deliveries` 随 `request.get` / `chat.history` 返回状态。WebSocket 可通知页面，但页面断线后通过历史查询补齐。
 4. `AgentManager` 在 final 事务成功后观察事件并唤醒 `ResultDeliveryService`。服务按路由快照领取 Feishu pending，经 E2A server-push 交给 Gateway；Gateway 只匹配唯一 `app_id` 的 FeishuChannel。
-5. 当前文本使用 Feishu reply API 回复本 Request 的 `source_message_id`；缺少该 ID 时才按 `chat_id` 新建消息。来源的 `reply_to` 只作为上下文保存，不替代目标会话或来源消息 ID。群消息来源上、除作者以外的 `mention_ids` 会写成飞书 `<at user_id>`，使被提及员工收到真实提及事件并走自己的 JM-08 入站；发送方不代为执行对方。执行中途的协作发送仍没有触发契约，不在终态投递之外另发消息。PA-15 不提供发送接口。
+5. 文本结果使用含 `lark_md` 元素的 Feishu interactive 卡片，以便渲染 Markdown。群聊通过 reply API 回复本 Request 的 `source_message_id`；私聊使用 create API 直接向 `chat_id` 发送，不附带原消息引用。历史来源的 `reply_to` 仍只作为上下文保存，不替代目标会话或来源消息 ID。群消息来源上、除作者以外的 `mention_ids` 会写成飞书 `<at user_id>`，使被提及员工收到真实提及事件并走自己的 JM-08 入站；发送方不代为执行对方。执行中途的协作发送仍没有触发契约，不在终态投递之外另发消息。PA-15 不提供发送接口。
 6. 文件结果沿同一发送路径上传并发送可见文件消息；回执里的 `file_key` 使重试不再重复上传。
 7. Gateway 返回 `message_id` ACK 后，AgentServer 先持久化 receipt 再结束发送等待；迟到 ACK 可更新 unknown；Request final 状态不回滚、不重新执行。
 
