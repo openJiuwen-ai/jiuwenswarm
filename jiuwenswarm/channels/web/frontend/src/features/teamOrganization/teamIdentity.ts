@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { createAgentGroupManagementClient } from '../agentManagement/groupClient';
 import type { AgentGroupCatalogItem, AgentGroupIdentity } from '../agentManagement/types';
 import type { RuntimeTeamInfo } from '../../stores/teamSelectorStore';
+import { normalizeTeamGroupIdentity } from '../teamGroupIdentity';
 
 /** Resolve display metadata without changing the session's AgentGroup binding. */
 export function resolveOrganizationTeamIdentity(
@@ -13,10 +14,11 @@ export function resolveOrganizationTeamIdentity(
 ): AgentGroupIdentity | null {
   const groupName = team?.agent_group_name?.trim();
   if (!groupName) return null;
+  const stored = normalizeTeamGroupIdentity(team?.team_group_identity) ?? snapshot;
   const group = groups.find((item) => item.name === groupName || item.id === groupName);
   return group
     ? { id: group.id, name: group.name, displayName: group.displayName, avatarUrl: group.avatarUrl }
-    : snapshot && (snapshot.name === groupName || snapshot.id === groupName) ? snapshot : null;
+    : stored && (stored.name === groupName || stored.id === groupName) ? stored : null;
 }
 
 /** The organization panel loads the installed directory only while it is displaying an organization. */

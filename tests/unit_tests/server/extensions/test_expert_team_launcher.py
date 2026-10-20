@@ -262,6 +262,27 @@ def test_align_spec_storage_uses_donor_connection_string(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+async def test_expert_spec_snapshots_group_name_without_changing_team_alias(monkeypatch):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    from jiuwenswarm.agents.swarm import assembly
+    from jiuwenswarm.server.runtime import extension_package_manager as catalog
+
+    identity = {"id": "asset", "name": "expert-group", "display_name": "专家团"}
+    monkeypatch.setattr(TeamManager, "load_default_team_spec", lambda _: _FakeSpec("owner"))
+    monkeypatch.setattr(catalog, "resolve_agent_group_display_identity", lambda _: identity)
+    monkeypatch.setattr(assembly, "enrich_team_spec_for_swarm", lambda *args, **kwargs: None)
+    spec = await JiuwenExpertTeamLauncher()._build_enriched_spec(
+        team_id="expert", session_id="session", agent_group_name="expert-group",
+        agent_group_package=SimpleNamespace(capabilities=("analysis",)),
+        display_name="Team alias",
+    )
+    assert spec.metadata["team_group_identity"] == identity
+    assert spec.metadata["agent_group_name"] == "expert-group"
+    assert spec.metadata["display_name"] == "Team alias"
+    assert spec.metadata["capabilities"] == ["analysis"]
+
+
+@pytest.mark.asyncio
 async def test_launch_creates_resolvable_team(
     monkeypatch: pytest.MonkeyPatch, agent_group_loader
 ) -> None:

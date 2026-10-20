@@ -431,18 +431,29 @@ test('Team selector shows all group logos and names, switches identity, and hide
   );
 });
 
-test('uninstalled Team labels reuse only their own matching conversation snapshots', async () => {
+test('uninstalled Team labels recover from server facts with empty conversation caches', async () => {
+  const restoredTeams = {
+    ...organizationTeams,
+    teams: organizationTeams.teams.map((team, index) => ({
+      ...team,
+      team_group_identity: {
+        id: groupIdentities[index].id,
+        name: groupIdentities[index].name,
+        display_name: groupIdentities[index].displayName,
+        avatar: groupIdentities[index].avatarUrl,
+      },
+    })),
+  };
   await withOrganizationPanel(
-    (method, params) => method === 'team.list' ? organizationTeams
+    (method, params) => method === 'team.list' ? restoredTeams
       : method === 'org.snapshot' ? boundSnapshot
       : { team_id: params.team_id, members: [], tasks: [] },
     async ({ root }) => {
-      for (const [index, team] of organizationTeams.teams.entries()) {
-        useSessionStore.getState().setTeamGroupIdentity(
-          team.is_owner ? 'session' : `session::${team.team_id}`,
-          groupIdentities[index],
-        );
+      for (const team of organizationTeams.teams) {
+        useSessionStore.getState().removeRuntime(team.is_owner ? 'session' : `session::${team.team_id}`);
       }
+      useSessionStore.getState().ensureRuntime('session');
+      const ownerRuntime = useSessionStore.getState().runtimes.session;
       await act(async () => root.render(React.createElement(TeamSelector, { sessionId: 'session', groups: [] })));
       for (const [index, team] of organizationTeams.teams.entries()) {
         await act(async () => document.querySelector('[data-testid="chat-panel-team-select-trigger"]').click());
@@ -451,7 +462,16 @@ test('uninstalled Team labels reuse only their own matching conversation snapsho
         await act(async () => option.click());
         assert.match(document.querySelector('[data-testid="chat-panel-team-select-value"]').textContent,
           new RegExp(groupIdentities[index].displayName));
+        if (!team.is_owner) {
+          const runtime = useSessionStore.getState().runtimes[`session::${team.team_id}`];
+          assert.equal(runtime.agentGroupBinding, null);
+          assert.equal(runtime.teamGroupIdentity.displayName, groupIdentities[index].displayName);
+        }
       }
+      assert.equal(useSessionStore.getState().runtimes.session.teamGroupIdentity, ownerRuntime.teamGroupIdentity);
+      assert.equal(resolveOrganizationTeamIdentity({
+        ...restoredTeams.teams[1], team_group_identity: restoredTeams.teams[0].team_group_identity,
+      }, []), null);
       assert.equal(resolveOrganizationTeamIdentity(organizationTeams.teams[1], [], groupIdentities[0]), null);
       assert.equal(resolveOrganizationTeamIdentity({ team_id: 'summary' }, [], groupIdentities[0]), null);
       for (const team of organizationTeams.teams) {
