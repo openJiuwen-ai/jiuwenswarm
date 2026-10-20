@@ -219,6 +219,9 @@ class FeishuChannel(BaseChannel):
         self._sent_file_paths_by_req: dict[str, set[str]] = {}
         # 自演进用户确认卡片, key=request_id, value=query card
         self._user_question_card: dict[str, dict] = {}
+        # request_id -> 提问时的会话上下文（session_id / chat_id / 平台身份 metadata），
+        # 用于卡片回调时把答案路由回原会话。
+        self._user_question_context: dict[str, dict] = {}
 
     @property
     def channel_id(self) -> str:
@@ -2604,6 +2607,23 @@ class FeishuChannel(BaseChannel):
             self._user_question_card[request_id] = card
             # 发送卡片
             receive_id, id_type = self._extract_receive_info(msg)
+            # 记录提问时的会话上下文，供卡片回调回填：
+            # gateway 用 (provider, chat_id, bot_id, user_id) 定位 SessionMap 中的已有会话，
+            # 回调若缺 chat_id 会被当作新会话，导致答案送不到正在等待的 ask_user 调用。
+            _out_meta = msg.metadata if isinstance(msg.metadata, dict) else {}
+            self._user_question_context[request_id] = {
+                "session_id": str(msg.session_id or ""),
+                "chat_id": str(
+                    _out_meta.get("feishu_chat_id")
+                    or msg.chat_id
+                    or receive_id
+                    or ""
+                ),
+                "metadata": {
+                    k: v for k, v in _out_meta.items()
+                    if k in ("feishu_chat_id", "feishu_open_id", "feishu_chat_type")
+                },
+            }
             card_json = json.dumps(card, ensure_ascii=False)
 
             await self._create_and_send_message(
@@ -2943,7 +2963,15 @@ class FeishuChannel(BaseChannel):
         operator_id: str,
     ) -> None:
         """
-        异步处理卡片回调，将回调转换为 chat.user_answer 事件。
+        异步处理卡片回调，将回调转换为用户答案事件。
+
+        ask_user 提问卡片的答案按「中断恢复」语义投递：Web/CLI 对 ask_user
+        答案统一走 chat.send + source=ask_user_interrupt（流式），Runtime 据此把
+        InteractiveInput 注入正在等待该问题的会话（deliver_control_input）。
+        若走 chat.user_answer，handle_user_answer 只消费
+        symphony/evolution/permission 等审批类 request_id，ask_user 的
+        call_xxx 会直接返回空响应——原会话永远等不到答案，飞书侧一直显示
+        "正在回复"。
 
         Args:
             token: 卡片 token
@@ -2957,31 +2985,89 @@ class FeishuChannel(BaseChannel):
             # 构建用户响应（符合 evolution service 期望的格式）
             answers = [{"selected_options": list(action_value.values())}] if action_value else []
 
+            # 取回提问时的会话上下文，确保答案路由回原会话而不是新建会话
+            ctx = self._user_question_context.pop(request_id, None) or {}
+            ctx_session_id = str(ctx.get("session_id") or "").strip()
+            ctx_chat_id = str(ctx.get("chat_id") or "").strip()
+            ctx_meta = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+            if not ctx_session_id:
+                logger.warning(
+                    "[FeishuChannel] 卡片回调未找到提问上下文，回退为 operator_id 路由: request_id=%s",
+                    request_id,
+                )
+            # 与普通入站消息一致：session_id 用平台侧 chat_id，由 gateway 的
+            # SessionMap 按 (provider, chat_id, bot_id, user_id) 解析回内部会话；
+            # 拿不到 chat_id 时退回内部 session_id，再退化到 operator_id。
+            session_id = ctx_chat_id or ctx_session_id or operator_id
+            chat_id = ctx_chat_id or operator_id
+
             logger.info(
-                "[FeishuChannel] 发送用户答案: token=%s, answer=%s",
+                "[FeishuChannel] 发送用户答案: token=%s, answer=%s, session_id=%s, chat_id=%s",
                 token,
                 action_value,
+                session_id,
+                chat_id,
             )
-            msg = Message(
+            metadata: dict[str, Any] = {
+                "request_id": token,
+                "answers": answers,
+            }
+            metadata.update(ctx_meta)
+            if operator_id and "feishu_open_id" not in metadata:
+                metadata["feishu_open_id"] = operator_id
+            if ctx_session_id and answers:
+                # ask_user 答案：chat.send + source=ask_user_interrupt（流式），
+                # 恢复被 ask_user 中断的回合。supports_user_interaction 让恢复后的
+                # 回合保留再次提问的能力。
+                resume_params: dict[str, Any] = {
+                    "content": "",
+                    "query": "",
+                    "request_id": request_id,
+                    "answers": answers,
+                    "source": "ask_user_interrupt",
+                    "supports_user_interaction": True,
+                }
+                msg = Message(
                     id=token,
-                    type="event",
+                    type="req",
                     channel_id=self.channel_id,
-                    session_id=operator_id,
-                    params={"answers": answers, "request_id": request_id},
+                    session_id=session_id,
+                    params=resume_params,
                     timestamp=time.time(),
                     ok=True,
-                    req_method=ReqMethod.CHAT_ANSWER,
+                    req_method=ReqMethod.CHAT_SEND,
                     provider=self.name,
-                    chat_id="",  # 卡片回调不直接关联特定chat_id
+                    chat_id=chat_id,
                     user_id=operator_id,
                     bot_id=self.config.app_id,
-                    event_type=None,  # 不使用特定事件类型，通过 params 传递答案
-                    metadata={
-                        "request_id": token,
-                        "answers": answers,
-                    },
+                    app_id=self.config.app_id,
+                    is_stream=True,
+                    event_type=None,
+                    metadata=metadata,
+                    enable_memory=self.config.enable_memory,
+                    enable_streaming=self.config.enable_streaming,
                 )
-            # 发送 chat.user_answer 事件到 gateway
+            else:
+                # 无提问上下文（如服务重启后点击旧卡片）或空答案：保持旧的
+                # chat.user_answer 行为，至少给出 accepted 回执。
+                msg = Message(
+                        id=token,
+                        type="event",
+                        channel_id=self.channel_id,
+                        session_id=session_id,
+                        params={"answers": answers, "request_id": request_id},
+                        timestamp=time.time(),
+                        ok=True,
+                        req_method=ReqMethod.CHAT_ANSWER,
+                        provider=self.name,
+                        chat_id=chat_id,
+                        user_id=operator_id,
+                        bot_id=self.config.app_id,
+                        app_id=self.config.app_id,
+                        event_type=None,  # 不使用特定事件类型，通过 params 传递答案
+                        metadata=metadata,
+                    )
+            # 发送用户答案事件到 gateway
             if self._message_callback:
                 # 构建 Message 对象
                 self._message_callback(msg)
