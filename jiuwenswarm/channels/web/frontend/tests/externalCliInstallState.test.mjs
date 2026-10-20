@@ -196,8 +196,8 @@ test('saving an edited path validates it with a throwaway detect before committi
     'utf8',
   );
 
-  assert.match(sectionSource, /const probe = await onDetect\(cliAgent, requestedPath, false\)/);
-  assert.match(sectionSource, /if \(probe\.status !== 'ok' && probe\.status !== 'warning'\)/);
+  assert.match(sectionSource, /const probe = await detect\(cliAgent, requestedPath, false\)/);
+  assert.match(sectionSource, /if \(!probe \|\| \(probe\.status !== 'ok' && probe\.status !== 'warning'\)\)/);
   assert.match(
     sectionSource,
     /await commit\(cliAgent, \{ enabled: true, useBuiltin: false, cliPath: requestedPath \}\)/,
@@ -273,7 +273,7 @@ test('installed cards keep the detect+install pair and not-installed ones show t
   // A force install on an already-installed agent finishes silently backend-side,
   // so installNow must always toast the outcome to stay responsive.
   assert.match(sectionSource, /showHint\(t\('config\.externalCli\.installSucceeded'\)\)/);
-  assert.match(sectionSource, /!installed && \(!result \|\| !detectingNow\)/);
+  assert.match(sectionSource, /!installed && enabled && \(!result \|\| !detectingNow\)/);
   assert.doesNotMatch(sectionSource, /manualDetectAgents/);
   // Built-in mode shows the actual built-in CLI path from detection instead of
   // the generic placeholder text.
@@ -343,8 +343,10 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(section, /title=\{t\('config\.externalCli\.redetectHint'\)\}/);
   assert.match(section, /disabled=\{disabled \|\| !onDetect \|\| editing\[cliAgent\]\}/);
   assert.match(section, /!onCommitAgent \|\| agentInstalling \|\| editing\[cliAgent\]/);
-  assert.match(section, /!installed \|\| agentInstalling \|\| editing\[cliAgent\]/);
-  assert.match(section, /committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]/);
+  // The enable switch must stay clickable even when the CLI is reported
+  // missing (e.g. right after a page reload, before the auto-detect runs),
+  // otherwise the user gets locked out of re-enabling a disabled agent.
+  assert.match(section, /disabled=\{disabled \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
 });
 
 test('uploaded custom agents are listed after Claude and Codex', async () => {
