@@ -326,6 +326,118 @@ async def test_receiver_bot_mention_adds_internal_agent_id_only_to_request_sourc
 
 
 @pytest.mark.asyncio
+async def test_later_named_colleague_waits_for_the_first_public_reply(host):
+    life = host.colleague("生活小助手")
+    study = host.colleague("agent学习小助手")
+    fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
+    group = host.groups.resolve(NS, "feishu", "oc_project", now=NOW)
+    for agent_id, app_id in ((life, "app-life"), (study, "app-study")):
+        host.groups.update_membership(
+            NS, agent_id, group.group_chat_id, app_id,
+            status="active", observed_at=NOW, source_ref=f"test:{app_id}",
+        )
+    text = "生活小助手你再想一个生活中的痛点，然后让Agent学习助手想一下怎么用Agent解决"
+    life_event = _event(receiving_app_id="app-life", text=text, mention_ids=(), reply_to=None)
+    study_event = _event(receiving_app_id="app-study", text=text, mention_ids=(), reply_to=None)
+
+    assert await fanout.handle(life_event) is InboundDisposition.HANDLED
+    assert await fanout.handle(study_event) is InboundDisposition.HANDLED
+
+    assert len(host.request_states(life, life_event)) == 1
+    assert host.request_states(study, study_event) == []
+
+    mentioned = _event(
+        receiving_app_id="app-study",
+        message_id="om_reply",
+        text="这个痛点交给你",
+        mention_ids=("ou_study",),
+        receiver_bot_mentioned=True,
+        reply_to="om_001",
+        sender_type="bot",
+        sender_id=life,
+        sender_name="生活小助手",
+        sender_app_id="app-life",
+    )
+    assert await fanout.handle(mentioned) is InboundDisposition.HANDLED
+    assert len(host.request_states(study, mentioned)) == 1
+
+
+@pytest.mark.asyncio
+async def test_delivered_handoff_starts_only_the_named_colleague(host):
+    life = host.colleague("生活小助手")
+    study = host.colleague("agent学习小助手")
+    fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
+
+    await fanout.continue_handoff(
+        {
+            "namespace_id": NS,
+            "agent_id": life,
+            "is_direct_message": False,
+            "target_id": "oc_project",
+            "app_id": "app-life",
+            "source_message_id": "om_user",
+            "text": f"到期日记不住，交给你 [[agent:{study}]]",
+        },
+        [{"agent_id": study, "name": "agent学习小助手", "app_ids": ["app-study"]}],
+        "om_reply",
+    )
+
+    reply = _event(receiving_app_id="app-study", message_id="om_reply", chat_id="oc_project")
+    states = host.request_states(study, reply)
+    assert len(states) == 1
+    request = states[0].record.request_input
+    assert study in request.source.mention_ids
+    assert request.source.reply_to == "om_user"
+    assert "到期日记不住" in request.text
+    assert f"[[agent:{study}]]" not in request.text
+    assert host.request_states(life, reply) == []
+
+
+@pytest.mark.asyncio
+async def test_delivered_handoff_starts_when_delivery_already_archived_the_reply(host):
+    life = host.colleague("生活小助手")
+    study = host.colleague("agent学习小助手")
+    fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
+    seeded = _event(
+        receiving_app_id="app-life",
+        message_id="om_reply",
+        sender_type="bot",
+        sender_id=life,
+        sender_name="生活小助手",
+        sender_app_id="app-life",
+        text=f"到期日记不住，交给你 [[agent:{study}]]",
+        mention_ids=(),
+        reply_to="om_user",
+    )
+
+    assert await fanout.handle(seeded) is InboundDisposition.HANDLED
+    assert host.request_states(life, seeded) == []
+
+    await fanout.continue_handoff(
+        {
+            "namespace_id": NS,
+            "agent_id": life,
+            "is_direct_message": False,
+            "target_id": "oc_project",
+            "app_id": "app-life",
+            "source_message_id": "om_user",
+            "text": f"到期日记不住，交给你 [[agent:{study}]]",
+        },
+        [{"agent_id": study, "name": "agent学习小助手", "app_ids": ["app-study"]}],
+        "om_reply",
+    )
+
+    reply = _event(receiving_app_id="app-study", message_id="om_reply", chat_id="oc_project")
+    states = host.request_states(study, reply)
+    assert len(states) == 1
+    request = states[0].record.request_input
+    assert study in request.source.mention_ids
+    assert "到期日记不住" in request.text
+    assert f"[[agent:{study}]]" not in request.text
+    assert "@agent学习小助手" in request.text
+
+
+@pytest.mark.asyncio
 async def test_configured_agent_mismatch_is_rejected_without_personal_fallback(host):
     agent_id = host.colleague("研发同事")
     fanout = host.fanout([_binding("app-dev", agent_id)])
@@ -555,6 +667,54 @@ async def test_jm09_feishu_result_only_contains_the_answer():
     content = json.loads(api_method.call_args.args[0].request_body.content)
     assert content["elements"][0]["text"]["content"] == "请核对这个数字"
     assert content["elements"][0]["text"]["tag"] == "lark_md"
+
+
+@pytest.mark.asyncio
+async def test_jm09_feishu_result_renders_a_native_bot_mention_for_group_handoff():
+    channel = _feishu_channel(agent_id="agent-sender")
+    response = SimpleNamespace(
+        success=lambda: True,
+        data=SimpleNamespace(message=SimpleNamespace(message_id="om_sent")),
+    )
+    api_method = MagicMock(return_value=response)
+    channel._api_client = SimpleNamespace(
+        im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(reply=api_method)))
+    )
+
+    await channel.send_persistent_result(
+        chat_id="oc_project",
+        text="请继续 [[agent:agent-target]]",
+        source_message_id="om_source",
+        idempotency_key="delivery-key",
+        mention_targets=[{"agent_id": "agent-target", "name": "研究同事", "open_id": "ou_target"}],
+    )
+
+    content = json.loads(api_method.call_args.args[0].request_body.content)
+    assert content["elements"][0]["text"]["content"] == "请继续 <at id=ou_target></at>"
+
+
+@pytest.mark.asyncio
+async def test_jm09_feishu_result_keeps_a_readable_name_when_target_bot_is_unavailable():
+    channel = _feishu_channel(agent_id="agent-sender")
+    response = SimpleNamespace(
+        success=lambda: True,
+        data=SimpleNamespace(message=SimpleNamespace(message_id="om_sent")),
+    )
+    api_method = MagicMock(return_value=response)
+    channel._api_client = SimpleNamespace(
+        im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(reply=api_method)))
+    )
+
+    await channel.send_persistent_result(
+        chat_id="oc_project",
+        text="请继续 [[agent:agent-target]]",
+        source_message_id="om_source",
+        idempotency_key="delivery-key",
+        mention_targets=[{"agent_id": "agent-target", "name": "研究同事"}],
+    )
+
+    content = json.loads(api_method.call_args.args[0].request_body.content)
+    assert content["elements"][0]["text"]["content"] == "请继续 @研究同事"
 
 
 @pytest.mark.asyncio

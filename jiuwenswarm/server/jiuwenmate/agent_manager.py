@@ -184,6 +184,8 @@ class AgentManager:
         self._delivery_service = delivery_service
         self.group_chats = GroupChatRepository(sessions.db_path)
         self.group_archive = ConversationArchive(sessions.db_path.parent / "group_messages", self.group_chats)
+        if self._delivery_service is not None:
+            self._delivery_service.set_mention_roster(self._delivery_mention_roster)
         self.verify_group_membership = unavailable_membership
         self.refresh_group_messages = None
         self._files = files or OutputFileStore(sessions.db_path.parent / OUTPUTS_DIR, service.workspaces)
@@ -207,6 +209,7 @@ class AgentManager:
             sessions=sessions,
             verify_group_membership=self._verify_group_membership,
             refresh_group_messages=self._refresh_group_messages,
+            group_roster=self.group_collaboration_roster,
             execute=execute,
             abort=abort,
             clock=clock,
@@ -225,6 +228,53 @@ class AgentManager:
         )
         self._purge_task: asyncio.Task[None] | None = None
         self._schedule_task: asyncio.Task[None] | None = None
+
+    def group_participant_roster(self, namespace_id: str, group_id: str) -> list[dict[str, Any]]:
+        """Return every published colleague with an active Bot binding in this group."""
+        return self._group_roster(namespace_id, group_id, exclude_agent_id=None)
+
+    def group_collaboration_roster(
+        self,
+        namespace_id: str,
+        group_id: str,
+        sender_agent_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return published colleagues with an active Bot binding in this group only."""
+        return self._group_roster(namespace_id, group_id, exclude_agent_id=sender_agent_id)
+
+    def _group_roster(
+        self,
+        namespace_id: str,
+        group_id: str,
+        *,
+        exclude_agent_id: str | None,
+    ) -> list[dict[str, Any]]:
+        active_apps: dict[str, set[str]] = {}
+        for access in self.group_chats.active_group_members(namespace_id, group_id):
+            if access.agent_id != exclude_agent_id:
+                active_apps.setdefault(access.agent_id, set()).add(access.app_id)
+        return [
+            {
+                "agent_id": colleague.agent_id,
+                "name": colleague.name,
+                "app_ids": sorted(active_apps[colleague.agent_id]),
+            }
+            for colleague in self._service.list_colleagues(namespace_id)
+            if colleague.agent_id in active_apps and colleague.enabled and colleague.current_version is not None
+        ]
+
+    def _delivery_mention_roster(self, job: dict[str, object]) -> list[dict[str, Any]]:
+        if job.get("request_kind") != "group_message":
+            return []
+        namespace_id = job.get("namespace_id")
+        session_id = job.get("session_id")
+        sender_agent_id = job.get("agent_id")
+        if not all(isinstance(value, str) and value for value in (namespace_id, session_id, sender_agent_id)):
+            return []
+        session = self._sessions.get_session(namespace_id, session_id)
+        if session.conversation.kind != "group":
+            return []
+        return self.group_collaboration_roster(namespace_id, session.conversation.key, sender_agent_id)
 
     async def _verify_group_membership(self, access, group):
         return await self.verify_group_membership(access, group)

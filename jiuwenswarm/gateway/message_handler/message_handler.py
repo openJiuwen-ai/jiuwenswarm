@@ -3346,7 +3346,14 @@ class MessageHandler(ABC):
             isinstance(chunk.payload, dict)
             and chunk.payload.get("event_type") == "jiuwenmate.group.inspect"
         ):
-            await self._handle_jm11_group_push(chunk.payload)
+            # Feishu membership and message reads can take seconds. They must not
+            # hold the ordered push lock, or the next colleague's check times out.
+            tasks = getattr(self, "_jm11_inspect_tasks", None)
+            if tasks is None:
+                tasks = self._jm11_inspect_tasks = set()
+            task = asyncio.create_task(self._handle_jm11_group_push(chunk.payload))
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
             return
         if (
             isinstance(chunk.payload, dict)

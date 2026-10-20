@@ -40,6 +40,21 @@ def test_active_accesses_are_scoped_sorted_and_keep_multiple_apps(tmp_path):
     )
 
 
+def test_active_group_members_are_scoped_and_exclude_retired_bindings(tmp_path):
+    groups = GroupChatRepository(tmp_path / "agents.sqlite3", id_factory=iter(("grp_a", "grp_b")).__next__)
+    first = groups.resolve("ns-1", "feishu", "chat-a", now=NOW)
+    second = groups.resolve("ns-1", "feishu", "chat-b", now=NOW)
+    groups.observe_access("ns-1", "agent-a", first.group_chat_id, "app-a", observed_at=NOW, source_ref="joined:a")
+    groups.observe_access("ns-1", "agent-a", second.group_chat_id, "app-b", observed_at=NOW, source_ref="joined:b")
+    groups.observe_access("ns-1", "agent-b", first.group_chat_id, "app-c", observed_at=NOW, source_ref="joined:c")
+    groups.update_membership("ns-1", "agent-c", first.group_chat_id, "app-d", status="left",
+                             observed_at=NOW, source_ref="left:d")
+
+    accesses = groups.active_group_members("ns-1", first.group_chat_id)
+
+    assert tuple((item.agent_id, item.app_id) for item in accesses) == (("agent-a", "app-a"), ("agent-b", "app-c"))
+
+
 def test_binding_retired_unknown_access_is_not_an_unresolved_membership(tmp_path):
     groups = GroupChatRepository(tmp_path / "agents.sqlite3", id_factory=lambda: "grp_a")
     group = groups.resolve("ns-1", "feishu", "chat-a", now=NOW)

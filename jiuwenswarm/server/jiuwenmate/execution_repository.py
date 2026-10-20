@@ -711,6 +711,10 @@ class ExecutionRepository(SQLiteStore):
                     continue
                 job: dict[str, object] = {
                     "delivery_id": row["delivery_id"],
+                    "namespace_id": record.namespace_id,
+                    "agent_id": record.agent_id,
+                    "session_id": record.session_id,
+                    "request_kind": record.request_input.kind,
                     "request_id": row["request_id"],
                     "execution_id": row["execution_id"],
                     "output_id": row["output_id"],

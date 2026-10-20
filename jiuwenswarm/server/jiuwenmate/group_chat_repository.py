@@ -201,6 +201,17 @@ class GroupChatRepository(SQLiteStore):
             ).fetchall()
         return tuple(self._access(row) for row in rows)
 
+    def active_group_members(self, namespace_id: str, group_id: str) -> tuple[GroupAccess, ...]:
+        """Return active Agent bindings for one group without exposing other conversations."""
+        self.get(namespace_id, group_id)
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT * FROM agent_group_access WHERE namespace_id=? AND group_id=? AND status='active' "
+                "ORDER BY agent_id, app_id",
+                (namespace_id, group_id),
+            ).fetchall()
+        return tuple(self._access(row) for row in rows)
+
     def unresolved_accesses(self, namespace_id: str, agent_id: str) -> tuple[GroupAccess, ...]:
         """Return unknown memberships that are not known retired Bot bindings."""
         with self._transaction() as conn:

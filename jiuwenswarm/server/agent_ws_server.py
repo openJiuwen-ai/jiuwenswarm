@@ -2230,6 +2230,9 @@ class AgentWebSocketServer:
                 "text": job.get("text"),
             },
         }
+        mentions = job.get("mention_targets")
+        if isinstance(mentions, list) and mentions:
+            push["payload"]["mention_targets"] = mentions
         if isinstance(job.get("file"), dict):
             push["payload"]["file"] = dict(job["file"])
         from jiuwenswarm.server.jiuwenmate.delivery_service import GATEWAY_ACK_TIMEOUT, GATEWAY_FILE_ACK_TIMEOUT
