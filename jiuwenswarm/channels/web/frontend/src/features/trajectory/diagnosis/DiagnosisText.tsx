@@ -1,9 +1,9 @@
 /** Text blocks of the diagnosis page: Markdown written by the model, and plain signal text. */
 
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MarkdownText } from '../primitives/index.ts';
-import { splitLeadParagraph } from './diagnosisView';
+import { splitLeadParagraph, stripLeadingHeading } from './diagnosisView';
 import css from './DiagnosisSubpage.module.css';
 
 function FoldToggle({ expanded, onToggle, testId }: { expanded: boolean; onToggle: () => void; testId: string }) {
@@ -45,6 +45,41 @@ export function FoldedMarkdown({ text }: { text: string }) {
   );
 }
 
+/**
+ * Markdown that may be long, held to a few lines with a fade. The toggle only appears once the
+ * clamp really hides something, and nothing is cut at a paragraph break, so a leading heading never
+ * stands in for the content.
+ */
+export function ClampedMarkdown({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = box.current;
+    if (element !== null && !expanded) setOverflows(element.scrollHeight > element.clientHeight + 1);
+  }, [text, expanded]);
+  const body = stripLeadingHeading(text);
+  if (body === '') return null;
+  const clamped = !expanded;
+  return (
+    <div className={`${css.markdownBox} ${css.suggestionBody}`} data-testid="trajectory-diagnosis-markdown">
+      <div
+        ref={box}
+        className={`${css.clampBox} ${clamped ? css.clampBoxClosed : ''} ${clamped && overflows ? css.clampBoxFade : ''}`}
+      >
+        <MarkdownText text={body} />
+      </div>
+      {overflows || expanded ? (
+        <FoldToggle
+          expanded={expanded}
+          onToggle={() => setExpanded(value => !value)}
+          testId="trajectory-diagnosis-markdown-toggle"
+        />
+      ) : null}
+    </div>
+  );
+}
+
 /** Markdown shown whole, without folding. */
 export function WholeMarkdown({ text }: { text: string }) {
   if (text.trim() === '') return null;
@@ -55,23 +90,35 @@ export function WholeMarkdown({ text }: { text: string }) {
   );
 }
 
-const PLAIN_FOLD_LENGTH = 200;
-const PLAIN_FOLD_LINES = 4;
+/** Text as written, never rendered as Markdown, shown whole. */
+export function PlainText({ text }: { text: string }) {
+  if (text.trim() === '') return null;
+  return <p className={css.plainText} data-testid="trajectory-diagnosis-plain-text">{text}</p>;
+}
 
-/** Signal text as written, never rendered as Markdown; long text folds to a few lines. */
+/**
+ * Text as written, never rendered as Markdown; text taller than a few lines folds, and the toggle
+ * only appears once the clamp actually hides something.
+ */
 export function PlainFold({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
-  const foldable = text.length > PLAIN_FOLD_LENGTH || text.split('\n').length > PLAIN_FOLD_LINES;
+  const [overflows, setOverflows] = useState(false);
+  const paragraph = useRef<HTMLParagraphElement>(null);
+  useLayoutEffect(() => {
+    const element = paragraph.current;
+    if (element !== null && !expanded) setOverflows(element.scrollHeight > element.clientHeight + 1);
+  }, [text, expanded]);
   if (text.trim() === '') return null;
   return (
     <div className={css.plainBox}>
       <p
-        className={`${css.plainText} ${foldable && !expanded ? css.plainClamped : ''}`}
+        ref={paragraph}
+        className={`${css.plainText} ${expanded ? '' : css.plainClamped}`}
         data-testid="trajectory-diagnosis-plain-text"
       >
         {text}
       </p>
-      {foldable ? (
+      {overflows || expanded ? (
         <FoldToggle
           expanded={expanded}
           onToggle={() => setExpanded(value => !value)}

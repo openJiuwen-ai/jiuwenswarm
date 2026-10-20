@@ -336,7 +336,7 @@ async def test_engine_emits_three_stages_in_order_with_llm_lines(monkeypatch: py
     finished_attribute = next(
         event for event in events if event.stage_id == "attribute" and event.kind == "stage_finished"
     )
-    assert finished_attribute.summary == "定位 1 处 · 来自 1 条信号 · 标无效 0 条 · 改进意见 1 条"
+    assert finished_attribute.summary == "定位 1 处 · 来自 1 条信号 · 标无效 0 条 · 产物修复建议 1 条"
     assert result.error is None
     assert result.root_causes[0].id == "attr-12345678"
     assert result.root_causes[0].category is RootCauseCategory.OTHER

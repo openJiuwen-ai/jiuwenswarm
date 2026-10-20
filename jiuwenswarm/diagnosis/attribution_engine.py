@@ -125,7 +125,7 @@ _TEXTS: dict[str, dict[str, str]] = {
         "attribute_failed_tokens": "归因未完成：超出 token 预算",
         "attribute_failed_error": "归因未完成：运行出错",
         "attribute_failed_incomplete": "归因未完成：仍有信号未收口",
-        "attribute_summary": "定位 {entries} 处 · 来自 {attributed} 条信号 · 标无效 {invalid} 条 · 改进意见 1 条",
+        "attribute_summary": "定位 {entries} 处 · 来自 {attributed} 条信号 · 标无效 {invalid} 条 · 产物修复建议 1 条",
         "attribute_summary_no_fix": "定位 {entries} 处 · 来自 {attributed} 条信号 · 标无效 {invalid} 条",
         "attribute_summary_dropped": " · {dropped} 条无法定位已省略",
         "dropped_anchors": "有 {count} 条归因的锚点无法在轨迹中定位，其根因已从列表剔除",
@@ -175,7 +175,7 @@ _TEXTS: dict[str, dict[str, str]] = {
         "attribute_failed_tokens": "Attribution did not finish: token budget exceeded",
         "attribute_failed_error": "Attribution did not finish: run failed",
         "attribute_failed_incomplete": "Attribution did not finish: signals remain open",
-        "attribute_summary": "{entries} located · from {attributed} signals · {invalid} invalid · 1 improvement",
+        "attribute_summary": "{entries} located · from {attributed} signals · {invalid} invalid · 1 artifact fix",
         "attribute_summary_no_fix": "{entries} located · from {attributed} signals · {invalid} invalid",
         "attribute_summary_dropped": " · {dropped} omitted (cannot be located)",
         "dropped_anchors": (

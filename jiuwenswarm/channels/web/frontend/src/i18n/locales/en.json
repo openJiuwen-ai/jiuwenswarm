@@ -1154,17 +1154,13 @@
         "cancelDelete": "Cancel",
         "deleteRunning": "A diagnosis in progress cannot be deleted"
       },
-      "rewardDimensions": "{{count}} scored dimensions, {{perfect}} of them perfect; select a category to see its dimensions, the rest are broken down in the findings",
+      "rewardDimensions": "{{count}} scored dimensions, {{perfect}} of them need no improvement; select a category to see its dimensions, the rest are broken down in the findings",
       "rewardTotal": "Total {{score}}",
       "artifactFix": "Artifact fix",
       "skills": "Skill evolution",
-      "ttse": "TTSE experience generation",
+      "ttse": "Experience",
       "fillInput": "Fill into composer",
       "filled": "Filled into the composer",
-      "fillConflict": "The composer already has text",
-      "fillReplace": "Replace",
-      "fillAppend": "Append",
-      "fillCancel": "Cancel",
       "expandAll": "Show all",
       "collapse": "Show less",
       "signalTier": {
@@ -1181,7 +1177,9 @@
       "signalSurfacedAt": "Surfaced at {{nodes}}",
       "causeAt": "At {{nodes}}",
       "evidence": "Based on",
-      "experience": "Task experience verdict",
+      "findingsIssuesOnly": "{{issues}} issues",
+      "findingsIssuesAndExperience": "{{issues}} issues, plus {{experience}} experience verdict(s)",
+      "findingsExperienceOnly": "{{experience}} experience verdict(s)",
       "requestCount": "{{count}} model requests",
       "objectSteps": "Steps",
       "objectStepsCount": "{{count}} trajectory steps",
@@ -1193,10 +1191,12 @@
       "triggerTtse": "Trigger experience generation",
       "triggeringTtse": "Triggering…",
       "ttseOutcome": {
-        "success": "Task succeeded",
-        "fail": "Task failed",
-        "partial": "Partly done"
+        "success": "Task completed",
+        "fail": "Task not completed",
+        "partial": "Task partly completed"
       },
+      "ttseHint": "Extract reusable experience from this trajectory; TTSE generates and saves it in the background",
+      "ttseReady": "Experience available",
       "ttseResult": {
         "triggered": "Triggered; TTSE is generating and saving the experience in the background",
         "failed": "Trigger failed"

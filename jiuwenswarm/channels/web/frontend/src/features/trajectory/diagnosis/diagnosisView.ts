@@ -6,7 +6,6 @@
  */
 
 import { isTtseCategory } from './diagnosisState';
-import { asRewardPayload } from './diagnosisTypes';
 import type {
   DiagnosisRecord,
   DiagnosisStage,
@@ -60,13 +59,19 @@ export function stageViews(stages: readonly DiagnosisStage[], running: boolean):
 /**
  * Whether a stage body is open.
  *
- * Without a user choice, running, failed and skipped stages are open and
- * completed ones fold away. A waiting stage has no body.
+ * Without a user choice, every stage is open while the diagnosis runs, so
+ * the whole process can be followed; once it is over, completed stages fold
+ * to their summary line while failed and skipped ones stay open. A waiting
+ * stage has no body.
  */
-export function isStageExpanded(status: StageViewStatus, userChoice: boolean | undefined): boolean {
+export function isStageExpanded(
+  status: StageViewStatus,
+  userChoice: boolean | undefined,
+  running: boolean,
+): boolean {
   if (status === 'pending') return false;
   if (userChoice !== undefined) return userChoice;
-  return status !== 'completed';
+  return running || status !== 'completed';
 }
 
 export type StatusIconKind = 'running' | 'completed' | 'failed';
@@ -197,6 +202,19 @@ export function splitLeadParagraph(text: string): { lead: string; rest: string }
   return { lead: trimmed.slice(0, match.index).trim(), rest: trimmed.slice(match.index + match[0].length).trim() };
 }
 
+/**
+ * Drop a heading the model opened its Markdown with. A suggestion card already says what it is
+ * about in its top row, so a leading "## ... 改进意见" only repeats it. A heading that is all there
+ * is stays, and headings further down are left alone.
+ */
+export function stripLeadingHeading(text: string): string {
+  const trimmed = text.trim();
+  const match = /^#{1,6}[ \t]+[^\n]*\n/.exec(trimmed);
+  if (match === null) return trimmed;
+  const rest = trimmed.slice(match[0].length).trim();
+  return rest === '' ? trimmed : rest;
+}
+
 /** Whether to draw the category badge: `other` without a confidence says nothing. */
 export function showCategoryBadge(cause: Pick<RootCause, 'category' | 'confidence'>): boolean {
   if (isTtseCategory(cause.category)) return false;
@@ -204,14 +222,39 @@ export function showCategoryBadge(cause: Pick<RootCause, 'category' | 'confidenc
 }
 
 /**
- * The findings of a diagnosis in reading order: the experience verdict on the whole stretch
- * first, then the attribution root causes as they were reported. Every finding is one root cause.
+ * The findings of a diagnosis in reading order: the attribution root causes as they were reported,
+ * then the experience verdict on the whole stretch, which only arrives once attribution is done.
+ * Every finding is one root cause.
  */
 export function orderFindings(causes: readonly RootCause[]): RootCause[] {
   return [
-    ...causes.filter(cause => isTtseCategory(cause.category)),
     ...causes.filter(cause => !isTtseCategory(cause.category)),
+    ...causes.filter(cause => isTtseCategory(cause.category)),
   ];
+}
+
+export interface FindingCounts {
+  /** Problems the attribution located; this is the number the headline reports. */
+  issues: number;
+  /** Experience verdicts, which judge the whole stretch and are not problems. */
+  experience: number;
+}
+
+/** How many of the findings are problems and how many are experience verdicts. */
+export function findingCounts(causes: readonly RootCause[]): FindingCounts {
+  const experience = causes.filter(cause => isTtseCategory(cause.category)).length;
+  return { issues: causes.length - experience, experience };
+}
+
+/**
+ * Break an evaluator comment into the points it makes, one per line or per full-width semicolon.
+ * Only those two break a comment, so text that merely contains `;` (commands, code) stays whole.
+ */
+export function commentPoints(text: string): string[] {
+  return text
+    .split(/\r?\n|；/)
+    .map(point => point.replace(/^\s*[-*•]\s+/, '').trim())
+    .filter(point => point !== '');
 }
 
 /** What the lead tag of a finding says: the experience verdict, or how its signal fared. */
@@ -310,18 +353,6 @@ export function splitStageOutput(output: string): StageOutputView {
 export function ttseTier(category: string): RewardTier {
   if (category === 'ttse_success') return 'perfect';
   return category === 'ttse_partial' ? 'fair' : 'weak';
-}
-
-/**
- * Whether the process section starts open.
- *
- * The process only matters while it runs, when it did not finish, or when it
- * is all there is to read: a finished diagnosis with neither root causes nor a
- * Reward evaluation explains itself through its stage summaries.
- */
-export function processDefaultOpen(record: Pick<DiagnosisRecord, 'status' | 'root_causes' | 'reward'>): boolean {
-  if (record.status !== 'completed') return true;
-  return record.root_causes.length === 0 && asRewardPayload(record.reward) === null;
 }
 
 export interface ProcessSummary {

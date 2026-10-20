@@ -5,12 +5,13 @@ import { useTranslation } from 'react-i18next';
 import type { DiagnosisRecord, RootCause } from './diagnosisTypes';
 import {
   causeNodeLabel,
+  findingCounts,
   findingEvidence,
   findingTag,
   orderFindings,
   showCategoryBadge,
 } from './diagnosisView';
-import { FoldedMarkdown, PlainFold } from './DiagnosisText';
+import { FoldedMarkdown, PlainText } from './DiagnosisText';
 import css from './DiagnosisSubpage.module.css';
 
 interface CauseListProps {
@@ -46,10 +47,12 @@ function LeadTag({ cause }: { cause: RootCause }) {
   if (tag === null) return null;
   if (tag.kind === 'experience') {
     return (
-      <span className={`${css.tag} ${css[`tier_${tag.tier}`]}`} data-testid="trajectory-diagnosis-finding-tag">
-        {t('trajectory.diagnosis.experience')}
-        {' · '}
-        {t(`trajectory.diagnosis.ttseOutcome.${tag.outcome}`)}
+      <span
+        className={`${css.tag} ${css.tagExperience}`}
+        title={t(`trajectory.diagnosis.ttseOutcome.${tag.outcome}`)}
+        data-testid="trajectory-diagnosis-finding-tag"
+      >
+        {t('trajectory.diagnosis.ttseReady')}
       </span>
     );
   }
@@ -89,7 +92,7 @@ function EvidenceFold({ cause }: { cause: RootCause }) {
         {surfaced === '' ? null : (
           <p className={css.hint}>{t('trajectory.diagnosis.signalSurfacedAt', { nodes: surfaced })}</p>
         )}
-        <PlainFold text={evidence.text} />
+        <PlainText text={evidence.text} />
       </div>
     </details>
   );
@@ -144,15 +147,26 @@ function FindingCard({ cause, subjectLabels, focused, onFocusCause }: {
 /**
  * Everything the diagnosis found, one card per root cause with the same parts: a lead tag and where
  * it sits, the finding itself, and the signal it stands on. The experience verdict on the whole
- * stretch comes first. Nothing is drawn when there is none; the headline already says so.
+ * stretch comes last, since it only arrives once attribution is done. The title counts problems the
+ * way the headline does and counts the verdict apart. Nothing is drawn when there is none; the
+ * headline already says so.
  */
 export function RootCauses({ record, subjectLabels, focusedCauseId, onFocusCause }: CauseListProps) {
   const { t } = useTranslation();
   const findings = useMemo(() => orderFindings(record.root_causes), [record.root_causes]);
+  const counts = useMemo(() => findingCounts(record.root_causes), [record.root_causes]);
   if (findings.length === 0) return null;
+  const countKey = counts.issues === 0
+    ? 'findingsExperienceOnly'
+    : counts.experience === 0 ? 'findingsIssuesOnly' : 'findingsIssuesAndExperience';
   return (
     <div className={css.block} data-testid="trajectory-diagnosis-root-causes">
-      <h4 className={css.blockTitle}>{t('trajectory.diagnosis.rootCauses')}</h4>
+      <div className={css.row}>
+        <h4 className={css.blockTitle}>{t('trajectory.diagnosis.rootCauses')}</h4>
+        <span className={css.hint} data-testid="trajectory-diagnosis-findings-count">
+          {t(`trajectory.diagnosis.${countKey}`, { issues: counts.issues, experience: counts.experience })}
+        </span>
+      </div>
       {findings.map(cause => (
         <FindingCard
           key={cause.id}

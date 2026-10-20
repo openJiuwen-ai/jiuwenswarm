@@ -58,10 +58,8 @@ export interface DiagnosisSession {
   open: (diagnosisId: string) => Promise<void>;
   remove: (diagnosisId: string) => Promise<void>;
   triggerTtse: (rootCauseId: string) => Promise<void>;
-  /** Put text into the chat composer of the session, replacing or appending to what is there. */
-  fillComposer: (text: string, mode?: 'replace' | 'append') => void;
-  /** Whether the composer of the session already holds text. */
-  composerHasText: () => boolean;
+  /** Put text into the chat composer of the session, replacing what is there. */
+  fillComposer: (text: string) => void;
   dismissNotice: () => void;
 }
 
@@ -241,19 +239,10 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
     }
   }, [fail]);
 
-  const composerHasText = useCallback(
-    () => (useChatStore.getState().runtimes[sessionRef.current]?.inputValue ?? '').trim() !== '',
-    [],
-  );
-
-  const fillComposer = useCallback((text: string, mode: 'replace' | 'append' = 'replace') => {
+  const fillComposer = useCallback((text: string) => {
     const sid = sessionRef.current;
-    const current = useChatStore.getState().runtimes[sid]?.inputValue ?? '';
-    const value = mode === 'append' && current.trim() !== ''
-      ? `${current}${current.endsWith('\n') ? '' : '\n\n'}${text}`
-      : text;
-    useChatStore.getState().setInputValue(sid, value);
-    window.dispatchEvent(new CustomEvent('chat-input-sync', { detail: { sessionId: sid, value } }));
+    useChatStore.getState().setInputValue(sid, text);
+    window.dispatchEvent(new CustomEvent('chat-input-sync', { detail: { sessionId: sid, value: text } }));
   }, []);
 
   const triggerTtse = useCallback(async (causeId: string) => {
@@ -298,7 +287,6 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
     remove,
     triggerTtse,
     fillComposer,
-    composerHasText,
     dismissNotice,
   };
 }

@@ -15,7 +15,6 @@ import {
   formatTimeWindow,
   isStageExpanded,
   looksLikePath,
-  processDefaultOpen,
   processSummary,
   splitStageOutput,
   stageViews,
@@ -27,7 +26,7 @@ import { FillButton } from './DiagnosisFillButton';
 import { RewardSummary } from './DiagnosisReward';
 import { RootCauses } from './DiagnosisRootCauses';
 import { DiagnosisStatusIcon } from './DiagnosisStatusIcon';
-import { FoldedMarkdown, PlainFold } from './DiagnosisText';
+import { ClampedMarkdown, PlainFold } from './DiagnosisText';
 import type { DiagnosisSession } from './useDiagnosisSession';
 import css from './DiagnosisSubpage.module.css';
 
@@ -217,65 +216,72 @@ function RecordCards({ record, session, subjectLabels, focusedCauseId, onFocusCa
         ) : (
           <>
             {suggestions.artifact_fix === undefined ? null : (
-              <div className={css.suggestion} data-testid="trajectory-diagnosis-artifact-fix">
-                <strong>{t('trajectory.diagnosis.artifactFix')}</strong>
-                <FoldedMarkdown text={suggestions.artifact_fix.instruction} />
-                <FillButton
-                  text={suggestions.artifact_fix.instruction}
-                  composerHasText={session.composerHasText}
-                  onFill={session.fillComposer}
-                  testId="trajectory-diagnosis-artifact-fix-fill"
-                />
-              </div>
+              <SuggestionCard
+                tone="artifact"
+                kind={t('trajectory.diagnosis.artifactFix')}
+                testId="trajectory-diagnosis-artifact-fix"
+                action={(
+                  <FillButton
+                    text={suggestions.artifact_fix.instruction}
+                    onFill={session.fillComposer}
+                    testId="trajectory-diagnosis-artifact-fix-fill"
+                  />
+                )}
+              >
+                <ClampedMarkdown text={suggestions.artifact_fix.instruction} />
+              </SuggestionCard>
             )}
             {suggestions.skills.map(skill => (
-              <div className={css.suggestion} key={skill.id} data-testid="trajectory-diagnosis-skill">
-                <strong>
-                  {t('trajectory.diagnosis.skills')}
-                  {': '}
-                  <span className={looksLikePath(skill.skill_name) ? css.mono : undefined}>{skill.skill_name}</span>
-                </strong>
-                <FoldedMarkdown text={skill.change_summary} />
+              <SuggestionCard
+                key={skill.id}
+                tone="skill"
+                kind={t('trajectory.diagnosis.skills')}
+                title={skill.skill_name}
+                mono={looksLikePath(skill.skill_name)}
+                testId="trajectory-diagnosis-skill"
+                action={skill.selectable ? (
+                  <FillButton text={skill.message} onFill={session.fillComposer} testId="trajectory-diagnosis-skill-fill" />
+                ) : (
+                  <span className={css.hint}>{t('trajectory.diagnosis.blocked', { reason: skill.blocked_reason ?? '' })}</span>
+                )}
+              >
+                <ClampedMarkdown text={skill.change_summary} />
                 {skill.rationale === '' || skill.rationale === skill.change_summary ? null : (
                   <p className={css.hint}>{skill.rationale}</p>
                 )}
-                {skill.selectable ? (
-                  <FillButton
-                    text={skill.message}
-                    composerHasText={session.composerHasText}
-                    onFill={session.fillComposer}
-                    testId="trajectory-diagnosis-skill-fill"
-                  />
-                ) : (
-                  <p className={css.hint}>{t('trajectory.diagnosis.blocked', { reason: skill.blocked_reason ?? '' })}</p>
-                )}
-              </div>
+              </SuggestionCard>
             ))}
             {ttseCauses.map((cause) => {
               const triggered = record.ttse_trigger[cause.id];
               const triggering = session.triggeringTtse.has(cause.id);
               return (
-                <div className={css.suggestion} key={cause.id} data-testid="trajectory-diagnosis-ttse">
-                  <strong>
-                    {t('trajectory.diagnosis.ttse')} · {t(`trajectory.diagnosis.ttseOutcome.${cause.category.slice('ttse_'.length)}`)}
-                  </strong>
-                  <div className={css.row}>
-                    <button
-                      type="button"
-                      className={css.button}
-                      disabled={triggering || (triggered !== undefined && triggered.result !== 'failed')}
-                      onClick={() => { void session.triggerTtse(cause.id); }}
-                      data-testid="trajectory-diagnosis-ttse-trigger"
-                    >
-                      {triggering ? t('trajectory.diagnosis.triggeringTtse') : t('trajectory.diagnosis.triggerTtse')}
-                    </button>
-                    {triggered === undefined ? null : (
-                      <span className={css.hint} data-testid="trajectory-diagnosis-ttse-result">
-                        {t(`trajectory.diagnosis.ttseResult.${triggered.result}`)}
-                      </span>
-                    )}
-                  </div>
-                </div>
+                <SuggestionCard
+                  key={cause.id}
+                  tone="experience"
+                  kind={t('trajectory.diagnosis.ttse')}
+                  title={t('trajectory.diagnosis.ttseReady')}
+                  testId="trajectory-diagnosis-ttse"
+                  action={(
+                    <span className={css.row}>
+                      {triggered === undefined ? null : (
+                        <span className={css.hint} data-testid="trajectory-diagnosis-ttse-result">
+                          {t(`trajectory.diagnosis.ttseResult.${triggered.result}`)}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className={css.actionButton}
+                        disabled={triggering || (triggered !== undefined && triggered.result !== 'failed')}
+                        onClick={() => { void session.triggerTtse(cause.id); }}
+                        data-testid="trajectory-diagnosis-ttse-trigger"
+                      >
+                        {triggering ? t('trajectory.diagnosis.triggeringTtse') : t('trajectory.diagnosis.triggerTtse')}
+                      </button>
+                    </span>
+                  )}
+                >
+                  <p className={css.hint}>{t('trajectory.diagnosis.ttseHint')}</p>
+                </SuggestionCard>
               );
             })}
             {suggestions.artifact_fix === undefined && suggestions.skills.length === 0 && ttseCauses.length === 0 ? (
@@ -285,6 +291,31 @@ function RecordCards({ record, session, subjectLabels, focusedCauseId, onFocusCa
         )}
       </Card>
     </>
+  );
+}
+
+/** One suggestion: what kind it is and what it is about on top, the action beside them, the detail below. */
+function SuggestionCard({ tone, kind, title, mono = false, action, testId, children }: {
+  tone: 'artifact' | 'skill' | 'experience';
+  kind: string;
+  title?: string;
+  mono?: boolean;
+  action: ReactNode;
+  testId: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`${css.suggestion} ${css[`tone_${tone}`]}`} data-testid={testId}>
+      <div className={css.suggestionHead}>
+        <span className={css.suggestionKind}>{kind}</span>
+        {title === undefined ? null : (
+          <strong className={`${css.suggestionTitle} ${mono ? css.mono : ''}`}>{title}</strong>
+        )}
+        <span className={css.spacer} />
+        {action}
+      </div>
+      {children}
+    </div>
   );
 }
 
@@ -303,8 +334,8 @@ function AgentLine({ labels }: { labels: readonly string[] }) {
 }
 
 /**
- * How the diagnosis ran. Open while it runs, when it did not finish, or when it is the only thing to
- * read; otherwise one folded line above the conclusion, so the result is what the card is about.
+ * How the diagnosis ran. Open to its stage list from the start and after it ends; while it runs every
+ * stage shows its detail, and afterwards each folds to its summary line.
  */
 function ProcessSection({ record, running }: { record: DiagnosisRecord; running: boolean }) {
   const { t } = useTranslation();
@@ -312,7 +343,7 @@ function ProcessSection({ record, running }: { record: DiagnosisRecord; running:
   const summary = useMemo(() => processSummary(record.stages), [record.stages]);
   // A starting run has no stage yet, but its waiting placeholders are worth showing.
   if (record.stages.length === 0 && !running) return null;
-  const open = choice ?? processDefaultOpen(record);
+  const open = choice ?? true;
   const meta = running
     ? ''
     : [t('trajectory.diagnosis.processSteps', { count: summary.count }), summary.elapsed]
@@ -353,7 +384,7 @@ function StageList({ record, running }: { record: DiagnosisRecord; running: bool
           <StageItem
             key={view.stageId}
             view={view}
-            expanded={isStageExpanded(view.status, userChoice)}
+            expanded={isStageExpanded(view.status, userChoice, running)}
             onToggle={toggle}
           />
         );

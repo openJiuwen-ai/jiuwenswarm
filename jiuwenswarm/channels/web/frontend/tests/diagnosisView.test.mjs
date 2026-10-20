@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import {
   causeNodeLabel,
+  commentPoints,
   diagnosisTarget,
   filterRecords,
+  findingCounts,
   findingEvidence,
   findingTag,
   formatElapsed,
@@ -13,7 +15,6 @@ import {
   isStageExpanded,
   looksLikePath,
   orderFindings,
-  processDefaultOpen,
   processSummary,
   recordIconKind,
   recordLabel,
@@ -25,6 +26,7 @@ import {
   splitRewardSignalText,
   splitStageOutput,
   stageViews,
+  stripLeadingHeading,
   suggestionsState,
   ttseTier,
   unixNanoToMs,
@@ -59,18 +61,25 @@ test('a finished diagnosis lists only the stages the engine reported', () => {
   assert.deepEqual(stageViews([], false), []);
 });
 
-test('completed stages fold away while the rest stay open', () => {
-  assert.equal(isStageExpanded('completed', undefined), false);
-  assert.equal(isStageExpanded('running', undefined), true);
-  assert.equal(isStageExpanded('failed', undefined), true);
-  assert.equal(isStageExpanded('skipped', undefined), true);
+test('while the diagnosis runs every stage with a body is open', () => {
+  assert.equal(isStageExpanded('completed', undefined, true), true);
+  assert.equal(isStageExpanded('running', undefined, true), true);
+  assert.equal(isStageExpanded('failed', undefined, true), true);
+  assert.equal(isStageExpanded('skipped', undefined, true), true);
+});
+
+test('once the diagnosis is over completed stages fold away while the rest stay open', () => {
+  assert.equal(isStageExpanded('completed', undefined, false), false);
+  assert.equal(isStageExpanded('failed', undefined, false), true);
+  assert.equal(isStageExpanded('skipped', undefined, false), true);
 });
 
 test('a waiting stage never opens and a user choice beats the default', () => {
-  assert.equal(isStageExpanded('pending', undefined), false);
-  assert.equal(isStageExpanded('pending', true), false);
-  assert.equal(isStageExpanded('completed', true), true);
-  assert.equal(isStageExpanded('running', false), false);
+  assert.equal(isStageExpanded('pending', undefined, true), false);
+  assert.equal(isStageExpanded('pending', true, true), false);
+  assert.equal(isStageExpanded('completed', true, false), true);
+  assert.equal(isStageExpanded('running', false, true), false);
+  assert.equal(isStageExpanded('completed', false, true), false);
 });
 
 test('record icons separate running, completed and everything else', () => {
@@ -200,6 +209,13 @@ test('Markdown folds at the first blank line only', () => {
   assert.deepEqual(splitLeadParagraph('a\n \n\nb'), { lead: 'a', rest: 'b' });
 });
 
+test('a heading the suggestion opens with is dropped, but never the only content', () => {
+  assert.equal(stripLeadingHeading('## 技能改进意见\n\n- **a**：b\n\n- **c**：d'), '- **a**：b\n\n- **c**：d');
+  assert.equal(stripLeadingHeading('- 无标题\n\n## 后面的标题\n内容'), '- 无标题\n\n## 后面的标题\n内容');
+  assert.equal(stripLeadingHeading('## 只有标题'), '## 只有标题');
+  assert.equal(stripLeadingHeading('  正文  '), '正文');
+});
+
 test('the category badge hides when it says nothing', () => {
   assert.equal(showCategoryBadge({ category: 'other' }), false);
   assert.equal(showCategoryBadge({ category: 'other', confidence: null }), false);
@@ -208,13 +224,27 @@ test('the category badge hides when it says nothing', () => {
   assert.equal(showCategoryBadge({ category: 'ttse_fail' }), false);
 });
 
-test('findings read the experience verdict first and keep the reported order after it', () => {
+test('findings keep the reported order and close with the experience verdict', () => {
   const findings = orderFindings([
     cause('a'),
     cause('b', { category: 'ttse_partial' }),
     cause('c'),
   ]);
-  assert.deepEqual(findings.map(item => item.id), ['b', 'a', 'c']);
+  assert.deepEqual(findings.map(item => item.id), ['a', 'c', 'b']);
+});
+
+test('only attribution findings count as problems, the experience verdict is counted apart', () => {
+  assert.deepEqual(
+    findingCounts([cause('a'), cause('b', { category: 'ttse_fail' }), cause('c')]),
+    { issues: 2, experience: 1 },
+  );
+  assert.deepEqual(findingCounts([]), { issues: 0, experience: 0 });
+});
+
+test('a comment breaks into points at line breaks and full-width semicolons only', () => {
+  assert.deepEqual(commentPoints('画面一致；细节丰富\n - 色调温暖\n\n'), ['画面一致', '细节丰富', '色调温暖']);
+  assert.deepEqual(commentPoints('run a; b; c'), ['run a; b; c']);
+  assert.deepEqual(commentPoints('  '), []);
 });
 
 test('the lead tag is the verdict, the signal tier, or the signal source', () => {
@@ -299,17 +329,6 @@ test('ttseTier reads success as met, partial as fair and failure as missed', () 
   assert.equal(ttseTier('ttse_success'), 'perfect');
   assert.equal(ttseTier('ttse_partial'), 'fair');
   assert.equal(ttseTier('ttse_fail'), 'weak');
-});
-
-test('the process starts open unless a finished diagnosis has results to read', () => {
-  const reward = { schema_version: 'v1', overall: { comment: 'ok', total_score: 90 }, categories: [], dimensions: [] };
-  const cause = { id: 'a', category: 'other', summary: 's', refs: [] };
-  assert.equal(processDefaultOpen({ status: 'running', root_causes: [], reward: null }), true);
-  assert.equal(processDefaultOpen({ status: 'failed', root_causes: [cause], reward }), true);
-  assert.equal(processDefaultOpen({ status: 'cancelled', root_causes: [], reward: null }), true);
-  assert.equal(processDefaultOpen({ status: 'completed', root_causes: [], reward: null }), true);
-  assert.equal(processDefaultOpen({ status: 'completed', root_causes: [cause], reward: null }), false);
-  assert.equal(processDefaultOpen({ status: 'completed', root_causes: [], reward }), false);
 });
 
 test('processSummary counts stages and adds their durations', () => {

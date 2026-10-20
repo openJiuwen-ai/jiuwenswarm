@@ -1138,17 +1138,13 @@
         "cancelDelete": "取消",
         "deleteRunning": "诊断进行中，无法删除"
       },
-      "rewardDimensions": "共 {{count}} 项评分维度，其中 {{perfect}} 项满分；点击类别查看各维度评分，未满分的在诊断发现中展开",
+      "rewardDimensions": "共 {{count}} 项评分维度，其中 {{perfect}} 项无需优化；点击类别查看各维度评分，需优化的在诊断发现中展开",
       "rewardTotal": "总分 {{score}}",
       "artifactFix": "产物修复建议",
       "skills": "Skill 进化建议",
-      "ttse": "TTSE 经验生成",
+      "ttse": "经验沉淀",
       "fillInput": "填入输入框",
       "filled": "已填入输入框",
-      "fillConflict": "输入框里已有内容",
-      "fillReplace": "覆盖",
-      "fillAppend": "追加",
-      "fillCancel": "取消",
       "expandAll": "展开全文",
       "collapse": "收起",
       "signalTier": {
@@ -1165,7 +1161,9 @@
       "signalSurfacedAt": "问题露出于 {{nodes}}",
       "causeAt": "位于 {{nodes}}",
       "evidence": "依据",
-      "experience": "任务经验判定",
+      "findingsIssuesOnly": "{{issues}} 处问题",
+      "findingsIssuesAndExperience": "{{issues}} 处问题，另有 {{experience}} 条经验判定",
+      "findingsExperienceOnly": "{{experience}} 条经验判定",
       "requestCount": "模型请求 {{count}} 次",
       "objectSteps": "步骤",
       "objectStepsCount": "{{count}} 个轨迹步骤",
@@ -1177,10 +1175,12 @@
       "triggerTtse": "触发经验生成",
       "triggeringTtse": "触发中…",
       "ttseOutcome": {
-        "success": "任务成功",
-        "fail": "任务失败",
-        "partial": "部分完成"
+        "success": "任务完成",
+        "fail": "任务未完成",
+        "partial": "任务部分完成"
       },
+      "ttseHint": "从这次轨迹中提取可复用的经验，由 TTSE 在后台生成并保存",
+      "ttseReady": "可生成经验",
       "ttseResult": {
         "triggered": "已触发，TTSE 正在后台生成并保存经验",
         "failed": "触发失败"
