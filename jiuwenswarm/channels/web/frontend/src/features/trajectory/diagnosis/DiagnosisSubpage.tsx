@@ -240,7 +240,11 @@ function RecordCards({ record, session, subjectLabels, focusedCauseId, onFocusCa
                 mono={looksLikePath(skill.skill_name)}
                 testId="trajectory-diagnosis-skill"
                 action={skill.selectable ? (
-                  <FillButton text={skill.message} onFill={session.fillComposer} testId="trajectory-diagnosis-skill-fill" />
+                  <FillButton
+                    text={`${t('trajectory.diagnosis.skillFillPrefix')}\n\n${skill.message}`}
+                    onFill={session.fillComposer}
+                    testId="trajectory-diagnosis-skill-fill"
+                  />
                 ) : (
                   <span className={css.hint}>{t('trajectory.diagnosis.blocked', { reason: skill.blocked_reason ?? '' })}</span>
                 )}
