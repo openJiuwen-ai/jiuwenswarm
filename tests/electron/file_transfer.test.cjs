@@ -84,6 +84,49 @@ test('file-preview text downloads can save FileReader data URLs without net.fetc
   assert.deepEqual(f.calls.revealed, [f.target]);
 });
 
+test('data URL write failure removes the leftover .part and preserves the target', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'electron-transfer-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const target = path.join(root, 'chosen.txt');
+  await fs.writeFile(target, 'original');
+  const calls = { fetched: [], revealed: [], dialogs: [] };
+  const realOpen = fs.open.bind(fs);
+  const context = vm.createContext({
+    fs: {
+      ...fs,
+      open: async (filePath, flags) => {
+        const handle = await realOpen(filePath, flags);
+        if (!String(filePath).endsWith('.part')) return handle;
+        return {
+          writeFile: async () => { throw new Error('ENOSPC'); },
+          createWriteStream: handle.createWriteStream.bind(handle),
+          close: () => handle.close(),
+        };
+      },
+    },
+    path, randomUUID, Readable, pipeline, URL, Date, console, Buffer, decodeURIComponent,
+    process: { env: { JIUWENSWARM_DATA_DIR: root } },
+    app: { getPath: () => root }, mainWindow: {}, currentFrontendUrl: 'http://127.0.0.1:5173',
+    net: { fetch: async url => { calls.fetched.push(url.toString()); return new Response('complete'); } },
+    dialog: {
+      showSaveDialog: async (_window, options) => {
+        calls.dialogs.push(options);
+        return { canceled: false, filePath: target };
+      },
+    },
+    shell: { showItemInFolder: file => calls.revealed.push(file) },
+  });
+  vm.runInContext(helpers, context);
+  const payload = Buffer.from('{"name":"demo"}', 'utf8').toString('base64');
+  await assert.rejects(
+    context.saveDownloadedFile(`data:text/plain;base64,${payload}`, 'manifest.json'),
+    /ENOSPC/,
+  );
+  assert.equal(await fs.readFile(target, 'utf8'), 'original');
+  assert.deepEqual(await fs.readdir(root), ['chosen.txt']);
+  assert.deepEqual(calls.revealed, []);
+});
+
 test('rename failure removes only this download temporary file', async t => {
   const f = await fixture(t);
   await fs.mkdir(f.target);

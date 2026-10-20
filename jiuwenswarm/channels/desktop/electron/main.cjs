@@ -1738,8 +1738,15 @@ async function saveDownloadedFile(url, filename) {
   let temporaryCreated = false;
   try {
     if (inlineBytes) {
-      await fs.writeFile(temporaryPath, inlineBytes, { flag: 'wx' });
+      // Mark created as soon as the exclusive create succeeds so a mid-write
+      // failure (e.g. ENOSPC) still removes the leftover .part in finally.
+      const handle = await fs.open(temporaryPath, 'wx');
       temporaryCreated = true;
+      try {
+        await handle.writeFile(inlineBytes);
+      } finally {
+        await handle.close().catch(() => {});
+      }
     } else {
       const response = await net.fetch(targetUrl);
       if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
