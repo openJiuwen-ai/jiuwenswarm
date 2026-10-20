@@ -1793,6 +1793,10 @@ const BLOB_EXPORT_SPECS = {
   'image/svg+xml': { suffixes: ['.svg'], parameters: ['charset=utf-8'], filter: { name: 'SVG Image', extensions: ['svg'] } },
   'text/plain': { suffixes: ['.mmd'], parameters: ['charset=utf-8'], filter: { name: 'Mermaid Diagram', extensions: ['mmd'] } },
   'application/json': { suffixes: ['.json'], parameters: ['charset=utf-8'], filter: { name: 'JSON Archive', extensions: ['json'] } },
+  // Trajectory panel exports (.trajectory.zip / .trajectory.jsonl). Keep in sync
+  // with DATA_URL_EXPORT_SPECS in desktop_app.py (contract test enforces this).
+  'application/zip': { suffixes: ['.zip'], parameters: [], filter: { name: 'ZIP Archive', extensions: ['zip'] } },
+  'application/jsonl': { suffixes: ['.jsonl'], parameters: ['charset=utf-8'], filter: { name: 'JSONL Archive', extensions: ['jsonl'] } },
 };
 const BASE64_CHUNK_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 const blobSaveTransfers = new Map();

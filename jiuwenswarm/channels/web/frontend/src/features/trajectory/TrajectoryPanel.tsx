@@ -1191,8 +1191,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       const sourceSession = replayArchive?.header.session_id ?? sessionId;
       const safeSession = sourceSession.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80) || 'session';
       const extension = replayArchive?.container === 'jsonl' ? 'jsonl' : 'zip';
+      // Desktop blob-save whitelist keys off mime + suffix. Server zip archives
+      // are application/zip; replay File blobs may have an empty/wrong type.
+      const mimeType = extension === 'jsonl' ? 'application/jsonl' : 'application/zip';
+      const exportBlob = blob.type.split(';', 1)[0] === mimeType
+        ? blob
+        : new Blob([blob], { type: mimeType });
       const result = await saveBlobWithResult(
-        blob,
+        exportBlob,
         `trajectory-${safeSession}.trajectory.${extension}`,
       );
       if (result.outcome === 'failed') throw new Error(copy.exportFailed);

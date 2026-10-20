@@ -220,6 +220,18 @@ DATA_URL_EXPORT_SPECS = {
         allowed_parameters=frozenset({"charset=utf-8"}),
         file_types=("JSON Archive (*.json)",),
     ),
+    # Trajectory panel exports (.trajectory.zip / .trajectory.jsonl). Keep in
+    # sync with BLOB_EXPORT_SPECS in electron/main.cjs (contract test).
+    "application/zip": _DataUrlExportSpec(
+        allowed_suffixes=frozenset({".zip"}),
+        allowed_parameters=frozenset(),
+        file_types=("ZIP Archive (*.zip)",),
+    ),
+    "application/jsonl": _DataUrlExportSpec(
+        allowed_suffixes=frozenset({".jsonl"}),
+        allowed_parameters=frozenset({"charset=utf-8"}),
+        file_types=("JSONL Archive (*.jsonl)",),
+    ),
 }
 DesktopSaveResult = dict[str, bool]
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".jfif"})
