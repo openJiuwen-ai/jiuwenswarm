@@ -205,7 +205,10 @@ def resolve_agent_request_mode(
         if _wm != "code":
             try:
                 if bool((get_config() or {}).get("flash", {}).get("enabled", False)):
-                    return "flash", None, "flash"
+                    # Flash is an implementation choice.  Keep the business
+                    # canonical as normal agent so history / UI / plan checks
+                    # continue to see the same office mode.
+                    return "flash", None, "agent"
             except Exception:
                 logger.debug(
                     "[resolve_agent_request_mode] flash config read failed, not injecting",
@@ -312,8 +315,8 @@ def resolve_request_runtime_mode(
                 resolved,
                 manager_mode="flash",
                 sub_mode=None,
-                canonical_mode="flash",
-                normal_mode="flash",
+                adapter_mode="flash",
+                adapter_source="flash_enabled_default",
             )
     return resolved
 
@@ -328,6 +331,8 @@ def _apply_resolved_mode_to_request(
         if isinstance(raw_mode, str) and raw_mode.strip():
             setattr(request, "_original_mode", canonicalize_mode_text(raw_mode))
     resolved = resolve_request_runtime_mode(request, work_mode=work_mode)
+    request._resolved_adapter_mode = resolved.adapter_mode
+    request._resolved_adapter_source = resolved.adapter_source
     if isinstance(request.params, dict):
         request.params["mode"] = resolved.canonical_mode
     return resolved.manager_mode, resolved.sub_mode
@@ -474,6 +479,7 @@ def _sync_chat_request_metadata(
     project_dir: str | None,
     mode: str,
     explicit_mode_provided: bool = False,
+    adapter_mode: str | None = None,
 ) -> str | None:
     """将本次 chat 请求的参数同步到会话元数据，返回生效的 project_dir。
 
@@ -551,6 +557,7 @@ def _sync_chat_request_metadata(
             explicit_mode_provided=explicit_mode_provided,
             explicit_model_provided=explicit_model_provided,
             work_mode=params.get("work_mode"),
+            adapter_mode=adapter_mode,
             sessions_root=_sessions_dir_for_request(request),
         )
     except (OSError, ValueError) as exc:

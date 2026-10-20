@@ -948,6 +948,7 @@ class AgentManager:
         project_dir: str | None,
         work_mode: str,
         is_swarm: bool,
+        adapter_mode: str = "agent",
         prewarm_eligible: bool = True,
         create_token: str | None = None,
     ):
@@ -958,6 +959,7 @@ class AgentManager:
             project_dir=project_dir,
             work_mode=work_mode,
             is_swarm=is_swarm,
+            adapter_mode=adapter_mode,
         )
         create_signature = (key, bool(prewarm_eligible))
         token_key = (key.channel_id, token)
@@ -1984,12 +1986,17 @@ class AgentManager:
         Must match ``AgentWebSocketServer._prepare_code_mode_chat_turn`` so the
         tenant-pool path reuses the same cached instance after plan-mode sync.
         """
-        from jiuwenswarm.server.handlers._shared import resolve_agent_request_mode
+        from jiuwenswarm.server.handlers._shared import resolve_request_runtime_mode
 
         params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
-        mode_full = self._resolve_request_mode(request, params)
-        mode, sub_mode, _canonical = resolve_agent_request_mode(mode_full)
+        # This helper restores the durable mode for interrupt continuations.
+        # It may write ``params["mode"]`` from session metadata before the
+        # runtime resolver below picks the matching manager/facade.
+        self._resolve_request_mode(request, params)
+        resolved = resolve_request_runtime_mode(request)
+        mode, sub_mode = resolved.manager_mode, resolved.sub_mode
         agent_mode = "agent" if mode == "auto_harness" else mode
+        request._resolved_adapter_mode = resolved.adapter_mode
         project_dir = (
             params.get("project_dir")
             or params.get("workspace_dir")

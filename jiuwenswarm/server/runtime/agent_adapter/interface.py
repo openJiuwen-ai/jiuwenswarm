@@ -1141,6 +1141,7 @@ class JiuWenSwarm:
         skill_manager: SkillManager | None = None,
     ) -> None:
         self._adapter: AgentAdapter | None = None
+        self._adapter_mode: str | None = None
         # PersonalContext Rail follows the Host runtime switch.  Keep the
         # latest snapshot on the facade so a lazily-created adapter inherits
         # the current state before its first rail synchronization.
@@ -1314,17 +1315,19 @@ class JiuWenSwarm:
         logger.info("[JiuWenSwarm] SkillDevService 初始化完成")
         return self._skilldev_service
 
-    def _ensure_adapter(self, *, mode: str = "agent") -> AgentAdapter:
+    def _ensure_adapter(self, *, mode: str | None = None) -> AgentAdapter:
         """确保 adapter 已初始化，如果未初始化则根据环境变量和 mode 创建."""
+        selected_mode = mode or self._adapter_mode or "agent"
         if self._adapter is None:
             self._sdk_name = resolve_sdk_choice()
             self._adapter = create_adapter(
                 self._sdk_name,
-                mode=mode,
+                mode=selected_mode,
                 workspace_dir=self._workspace_dir,
                 agent_id=self._agent_id,
                 service_id=self._service_id,
             )
+            self._adapter_mode = selected_mode
             if hasattr(self._adapter, "set_skill_manager"):
                 self._adapter.set_skill_manager(self._skill_manager)
             setter = getattr(
@@ -1338,12 +1341,25 @@ class JiuWenSwarm:
             logger.info(
                 "[JiuWenSwarm] Initialized adapter: sdk=%s, mode=%s, workspace_dir=%s",
                 self._sdk_name,
-                mode,
+                selected_mode,
                 self._workspace_dir,
+            )
+            return self._adapter
+
+        # Facade is intentionally one adapter per cache key.  A request that
+        # explicitly asks for a different implementation must not silently use
+        # the existing Deep/Flash adapter; the manager is responsible for
+        # selecting a separate facade.
+        if self._adapter_mode is None:
+            self._adapter_mode = selected_mode
+        if mode is not None and selected_mode != self._adapter_mode:
+            raise RuntimeError(
+                "JiuWenSwarm adapter mode mismatch: "
+                f"current={self._adapter_mode!r}, requested={selected_mode!r}"
             )
         return self._adapter
 
-    def ensure_adapter(self, *, mode: str = "agent") -> AgentAdapter:
+    def ensure_adapter(self, *, mode: str | None = None) -> AgentAdapter:
         """Public wrapper for ``_ensure_adapter`` (used by AgentManager reload)."""
         return self._ensure_adapter(mode=mode)
 
@@ -1536,6 +1552,9 @@ class JiuWenSwarm:
         ``code`` 走 CodeAdapter，``work`` 走 DeepAdapter。TUI 等历史客户端不带
         ``work_mode``，继续按完整 mode 串判定，行为不变。
         """
+        resolved_adapter_mode = getattr(request, "_resolved_adapter_mode", None)
+        if resolved_adapter_mode in {"agent", "code", "flash"}:
+            return resolved_adapter_mode
         params = request.params if isinstance(request.params, dict) else {}
         work_mode = read_request_work_mode(params)
         raw_mode = params.get("mode", "")
@@ -1564,7 +1583,7 @@ class JiuWenSwarm:
         self,
         config: dict[str, Any] | None = None,
         *,
-        mode: str = "agent",
+        mode: str | None = None,
         sub_mode: str = None,
         config_base: dict[str, Any] | None = None,
     ) -> None:
@@ -1575,17 +1594,18 @@ class JiuWenSwarm:
             mode: 实例化模式，"claw"（默认）或 "code"，透传给底层 adapter.
             sub_mode: 子模式
         """
-        adapter = self._ensure_adapter(mode=mode)
+        selected_mode = mode or self._adapter_mode or "agent"
+        adapter = self._ensure_adapter(mode=selected_mode)
         setattr(adapter, "_env_service_id", getattr(self, "_env_service_id", "default"))
         setattr(adapter, "_env_agent_id", getattr(self, "_env_agent_id", "default"))
         setattr(adapter, "_workspace_key", getattr(self, "_workspace_key", "default"))
-        create_kwargs: dict[str, Any] = {"mode": mode, "sub_mode": sub_mode}
+        create_kwargs: dict[str, Any] = {"mode": selected_mode, "sub_mode": sub_mode}
         if config_base is not None:
             create_kwargs["config_base"] = config_base
         await adapter.create_instance(config, **create_kwargs)
         logger.info(
             "[JiuWenSwarm] Agent instance created: sdk=%s, mode=%s, sub_mode=%s",
-            self._sdk_name, mode, sub_mode,
+            self._sdk_name, selected_mode, sub_mode,
         )
 
         sm = self._session_manager
@@ -1703,9 +1723,19 @@ class JiuWenSwarm:
         channel_id: str,
         mode: str,
         project_dir: str | None = None,
+        adapter_mode: str | None = None,
     ) -> None:
-        """Initialize and start the session-owned DeepAgent without sending input."""
-        adapter = self._ensure_adapter(mode="code" if mode.startswith("code") else "agent")
+        """Initialize and start the session-owned adapter without sending input.
+
+        ``mode`` remains the business canonical mode; ``adapter_mode`` is the
+        implementation selection (Deep / Code / Flash).  Prewarm callers that
+        omit ``adapter_mode`` retain the previous Deep/Code fallback for
+        compatibility.
+        """
+        selected_adapter_mode = adapter_mode or (
+            "code" if mode.startswith("code") else "agent"
+        )
+        adapter = self._ensure_adapter(mode=selected_adapter_mode)
         prepare = getattr(adapter, "prepare_session", None)
         if not callable(prepare):
             raise RuntimeError("active adapter does not support session prewarming")

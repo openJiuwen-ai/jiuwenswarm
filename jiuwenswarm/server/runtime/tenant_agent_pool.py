@@ -1206,6 +1206,7 @@ class TenantAgentPool:
         session_id: str | None,
         channel_id: str = "",
         mode: str = "agent",
+        adapter_mode: str | None = None,
         project_dir: str | None = None,
     ) -> None:
         """[PERF 优化③] session.create 成功后后台预热该会话(租户池路径)。
@@ -1238,9 +1239,12 @@ class TenantAgentPool:
                 manager = await self.get_agent_manager(
                     agent_id, service_id, workspace_key
                 )
+                selected_adapter_mode = adapter_mode or (
+                    "code" if str(mode).startswith("code") else "agent"
+                )
                 agent = await manager.get_agent(
                     channel_id=channel_id or "default",
-                    mode=mode,
+                    mode=selected_adapter_mode,
                     project_dir=project_dir,
                     sub_mode=None,
                     request=request,
@@ -1250,7 +1254,8 @@ class TenantAgentPool:
                 await agent.prepare_session(
                     session_id=session_id,
                     channel_id=channel_id or "default",
-                    mode=("code.normal" if str(mode).startswith("code") else "agent"),
+                    mode=mode,
+                    adapter_mode=selected_adapter_mode,
                     project_dir=project_dir,
                 )
                 logger.info(
