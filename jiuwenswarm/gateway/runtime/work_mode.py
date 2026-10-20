@@ -4,8 +4,9 @@
 通道默认推断、严格请求解析、旧项目兜底推断、``session.create`` 参数归一化。
 
 设计要点:本模块只做参数解析与归一化,**不反查 ProjectStore**;
-Project 存在性与 ``work_mode`` 一致性校验由调用方通过
-``ProjectStore.resolve_session_project_binding`` 完成。
+Project 存在性与 ``work_mode`` 一致性校验由目标 AgentServer 在
+``session.create`` 链路完成（server 侧 ``resolve_session_project_binding``；
+A3g 起 gateway 无本地反查）。
 """
 from __future__ import annotations
 
@@ -162,8 +163,9 @@ def resolve_session_work_mode_params(
                 )
             work_mode = DEFAULT_TUI_WORK_MODE
             normalized_default_id = DEFAULT_PROJECT_ID_CODE
-        # 保留 project_dir:默认项目无 project_dir,但调用方传入的 project_dir 需透传给
-        # resolve_session_project_binding,由其拒绝"仅传 project_dir 无真实 project_id"的请求
+        # 保留 project_dir:默认项目无 project_dir,但调用方传入的 project_dir 需
+        # 随请求透传,由目标 AgentServer 在 session.create 链路拒绝"仅传
+        # project_dir 无真实 project_id"的请求（server 侧规则,gateway 不反查）
         return SessionWorkModeParams(
             project_id=normalized_default_id,
             project_dir=project_dir,
