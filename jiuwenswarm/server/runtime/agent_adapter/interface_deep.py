@@ -7661,6 +7661,7 @@ class JiuWenSwarmDeepAdapter:
     ) -> None:
         """Sync progressive tool retrieval registration after config reload."""
         enabled = self._tool_retrieval_tools_enabled_for_runtime(config_base)
+        was_registered = self._tool_retrieval_tools_registered
         tools, registered = self._sync_tool_group(
             current_tools=self._tool_retrieval_tools,
             registered=self._tool_retrieval_tools_registered,
@@ -7672,88 +7673,13 @@ class JiuWenSwarmDeepAdapter:
         self._tool_retrieval_tools_registered = registered
         if not enabled:
             self._tool_retrieval_toolkit = None
-            # No by-name cleanup here: ``_sync_tool_group`` removes this
-            # layer's own instances (instance-based) and the rail unmount
-            # owns the tool_call envelope. A name-based drop would also kill
-            # the bundled ProgressiveToolRail's freshly re-registered
-            # ``tool_search`` on the very reload that turns this layer off —
-            # leaving the model with no top-level tool_search at all (the
-            # off-transition deadlock).
-
-    async def _sync_tool_retrieval_prompt_rail_for_runtime(
-        self,
-        config_base: dict[str, Any] | None = None,
-    ) -> None:
-        """Keep the catalogue rail mounted exactly while the switches pass.
-
-        Off: unmount — the meta tools are already dropped by
-        ``_sync_tool_retrieval_tools_for_runtime``, but the prompt rail itself
-        keeps injecting the catalogue + get_schema rules, leaving the model
-        probing schemas while openjiuwen's bundled disclosure takes over.
-        On again (a frozen-on session cycled off→on): remount live. Sessions
-        frozen off at build keep going through the rebuild path instead.
-
-        The cached handle only records which rail instance is ours (queued or
-        mounted); membership on the instance is the truth. A handle whose rail
-        left the instance without us (external strip, full reconfigure) is
-        stale: heal by remounting instead of trusting the attribute, or the
-        session silently loses the catalogue layer for its whole life.
-        """
-
-        if self._instance is None:
-            return
-        enabled = self._tool_retrieval_tools_enabled_for_runtime(config_base)
-        rail = getattr(self, "_tool_retrieval_prompt_rail", None)
-        mounted = False
-        if rail is not None:
-            from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import (
-                ToolRetrievalPromptRail,
-            )
-
-            existing_rails = self._instance.find_rails_by_type(
-                (ToolRetrievalPromptRail,)
-            )
-            mounted = any(existing is rail for existing in existing_rails)
-        if not enabled:
-            if rail is None:
-                return
-            # The rail may still be queued-only (create path queues, a reload
-            # can sync before ensure_initialized consumes it): drop the
-            # queued copy too, or it mounts later with the layer off.
-            remove_pending = getattr(self._instance, "remove_pending_rail", None)
-            if callable(remove_pending):
-                remove_pending(rail)
-            if mounted:
-                try:
-                    await self._instance.unregister_rail(rail)
-                except Exception as exc:
-                    logger.warning(
-                        "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail unmount failed: %s",
-                        exc,
-                    )
-                    return
-            self._tool_retrieval_prompt_rail = None
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail unmounted: optimize off"
-            )
-            return
-        if mounted:
-            return
-        new_rail = self._build_tool_retrieval_prompt_rail()
-        if new_rail is None:
-            return
-        try:
-            await self._instance.register_rail(new_rail)
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail remount failed: %s",
-                exc,
-            )
-            return
-        self._tool_retrieval_prompt_rail = new_rail
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail remounted: optimize on"
-        )
+            # Clean the meta-tool names only when this layer owned them. With
+            # the optimize switch off from session start, ``tool_search`` /
+            # ``tool_call`` belong to the engine's bundled ProgressiveToolRail
+            # (the pre-optimize behavior) — a by-name drop here would strip
+            # the bundled rail's meta tools on every config reload.
+            if was_registered:
+                self._drop_tool_names_from_runtime(_TOOL_RETRIEVAL_TOOL_NAMES)
 
     async def _sync_skill_retrieval_prompt_rail_for_runtime(
         self,

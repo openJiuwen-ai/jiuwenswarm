@@ -153,12 +153,6 @@ def _build_code_tool_bundle(
     # after materialization updates the AbilityManager owner.
     for tool in tools:
         register_tool(tool, agent_id)
-    if include_multimodal:
-        with adapter._code_spec_config_scope(ctx.config_base):  # pylint: disable=protected-access
-            tools.extend(adapter._register_multimodal_tools(  # pylint: disable=protected-access
-                agent_id,
-                fail_on_error=adapter._instance is not None,  # pylint: disable=protected-access
-            ))
 
     # tool_search: progressive disclosure of explicitly-deferred tools.
     # Gate-driven (not list-driven) and delegated to the adapter — mirror of
