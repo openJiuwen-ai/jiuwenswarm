@@ -2829,10 +2829,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _session_create(ws, req_id, params, session_id, user_id=None):
         """创建一个新 session（在 agent/sessions 下创建一个新目录）。
 
-        project_id / project_dir / work_mode 绑定规则:
+        project_id / project_dir / work_mode 绑定规则（A3g）:
           - work_mode 归一化(详见 resolve_session_work_mode_params):未传时按通道
             推断(Web→work,TUI→code);显式传非法值返回 BAD_REQUEST;
-          - project_id / project_dir 绑定规则(详见 project_store.resolve_session_project_binding):
+          - project_id / project_dir 绑定在目标 AgentServer 解析（经
+            resolve_session_work_mode_params 归一后随 session.create E2A 请求
+            转发,由 server 侧按注入目录的项目表完成绑定与校验）:
             两者皆空(或 project_id 为 "default"/"default_code" 且 path 为空)→ 默认项目;
             仅传 project_id → 按项目记录自动补齐 project_dir;
             同时传 project_id + project_dir → 校验与项目绑定路径一致,不一致报错;

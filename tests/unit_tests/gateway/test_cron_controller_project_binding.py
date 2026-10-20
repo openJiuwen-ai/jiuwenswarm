@@ -297,7 +297,7 @@ async def test_update_job_rejects_unresolved_project_fields() -> None:
 async def test_update_job_rejects_work_mode_only_patch() -> None:
     """work_mode 单独 patch 沿用原规则拒绝（仅能伴随项目重解析生效）。"""
     cc = _make_controller()
-    with pytest.raises(ValueError, match="invalid work_mode"):
+    with pytest.raises(ValueError, match="requires project re-resolution"):
         await cc.update_job("job-1", {"work_mode": "code"})
 
 

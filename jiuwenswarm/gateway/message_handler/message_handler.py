@@ -3497,9 +3497,6 @@ class MessageHandler(ABC):
             if isinstance(request_metadata, dict)
             else ""
         )
-        from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-
-        is_agentos = is_agentos_routing_client(self.agent_client)
         owner_user_id = str(user_id or "").strip()
 
         async def _get_owned_job(job_id: str) -> dict[str, Any] | None:

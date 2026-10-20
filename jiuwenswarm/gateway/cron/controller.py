@@ -485,8 +485,9 @@ class CronController:
                 raise ValueError(
                     "cron project binding must be resolved by the target AgentServer"
                 )
+            # 值本身可能合法，真正原因是 work_mode 不能脱离项目重解析单独 patch
             raise ValueError(
-                f"invalid work_mode: {patch.get('work_mode')!r}"
+                "work_mode patch requires project re-resolution via target AgentServer"
             )
         patch["work_mode"] = (
             caller_work_mode
