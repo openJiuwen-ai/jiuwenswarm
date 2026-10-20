@@ -61,13 +61,21 @@ make check-genai-semconv
 
 `trajectoryArchive.ts` 是同一条流水线的离线入口：把 zip 内 `trajectory.jsonl`（v3，content-addressed JSONL）流式解开后喂给 `applyTrajectoryDetailRecords`，供回放已归档 session。
 
-### 三个宿主
+### 宿主
+
+- **`TrajectoryAnalysisPage.tsx`** — 「轨迹分析」页（对话头部剪贴板图标进入，`SingleAgentSurface` 的 `diagnosis` 视图）。两个子页：「轨迹」直接嵌 `TrajectoryPanel`，「诊断」是 `diagnosis/DiagnosisSubpage.tsx`（诊断对象 / 说明 / 详情 / 建议四张卡片；`DiagnosisRecordSelect` 记录下拉放在页签栏右侧，由 `TrajectoryAnalysisPage` 渲染）。详情卡自上而下：诊断过程（`ProcessSection`，始终展开阶段列表：运行中每个阶段的详情都展开，便于跟随；结束后已完成的阶段折回摘要行，失败和跳过的保持展开，整段不再折成一行）、标题、Reward 总评和类别分数（`DiagnosisReward.tsx` 的 `RewardSummary`，每个类别分数是可点开的标签，一次只展开一个，展开后给出类别评语和该类别下每个维度的卡片：得分与要求，评语按换行和全角分号拆成要点，不再单设原始数据入口）、诊断发现。诊断发现在归因运行期间就随 `root_causes` 进度事件逐步出现，不必等到结束。它是一个列表，每条 `root_cause` 一张同构卡片（`DiagnosisRootCauses.tsx` 的 `FindingCard`，不再按信号分组）：头部是前导标签（TTSE 经验判定 / Reward 档位 / 规则信号来源）、信号类别与得分、归因类别、Agent、位置、置信度和「高亮」；正文是 `summary`，一律按 Markdown 渲染（经验判定的 `summary` 由后端把原始输出包成行内代码，避免被当成 Markdown 语法）；底部「依据」默认折叠，放它所依据的信号正文（Reward 信号折叠标题带要求原文，信号正文一律纯文本）。归因根因按上报顺序排在前面，TTSE 经验判定在归因结束后到达，排在最后；标题旁计数口径与标题结论一致，只数归因问题，经验判定单独计为「另有 N 条经验判定」（见 `diagnosisView.ts` 的 `orderFindings` / `findingTag` / `findingEvidence`）。产物修复、Skill 建议和经验沉淀统一用 `DiagnosisSubpage.tsx` 的 `SuggestionCard`（按类型配色：产物修复蓝、Skill 青、经验沉淀琥珀，色条、类型标签和主按钮同色，卡片底色只带极淡的同色调；顶行是类型标签、对象名和右侧主操作，下方是详情）；详情按 Markdown 渲染并去掉开头重复的标题，用 `.suggestionBody` 收紧列表、段落和行内代码的间距（覆盖共享 Markdown 样式），并限高，只有真正被截断时才出现「展开全文」（`DiagnosisText.tsx` 的 `ClampedMarkdown`），Reward 评分区块在 `DiagnosisReward.tsx`。「填入输入框」（`DiagnosisFillButton.tsx`）直接覆盖输入框内容，不再二次确认或追加，只给一句「已填入输入框」的短暂提示。经验判定的标签和经验沉淀卡片的标题统一写「可生成经验」（只有 TTSE 没有跳过才会产生经验判定），具体是完成、未完成还是部分完成放在标签的悬停提示里。数据只有 `TrajectoryPanel` 一份读取逻辑。
+  - **共享时间轴与泳道。** 页面给 `TrajectoryPanel` 传 `sharedTimeAxis`：Team 和单 Agent 会话都画成泳道（单 Agent 为主 Agent 加各子 Agent），按 `diagnosis/useSharedTimeAxis.ts` 的压缩墙钟时间轴对齐，轴由 `diagnosis/SharedTimeAxis.tsx` 画。不传该参数时，对话页的轨迹页签保持原样（Team 泳道、单 Agent 页签栏）。
+  - **选择模式。** 页头「诊断轨迹」按钮进入，期间两个子页签禁用，Esc、「取消」、页面隐藏、切换会话都会退出。页面持有选区状态并只通过 `TrajectoryPanel` 的 `selection` 属性下发，有它泳道才可选取，没有它泳道只读。选区状态与换算在纯模块 `diagnosis/diagnosisSelection.ts`：时间轴上拖选作用于所有勾选的 Agent，在某条泳道上选取会清掉时间轴选区、改为各 Agent 各自的窗口，两种形态互斥；落到请求时都是 `selection.ranges`（每个 Agent 一段）。底部配置栏是 `diagnosis/DiagnosisSelectionBar.tsx`。
+  - **状态来源。** 诊断记录、实时进度、取消、删除、TTSE 的状态与事件订阅都在 `diagnosis/useDiagnosisSession.ts`，页面和「诊断」子页共用同一个实例。阶段占位、展开收起规则、记录下拉的时间与过滤等纯逻辑在 `diagnosis/diagnosisView.ts`。
+  - **`data-testid` 前缀。** 页面框架、选择模式与时间轴用 `trajectory-analysis-*`，诊断内容与记录下拉用 `trajectory-diagnosis-*`，对话头部入口用 `chat-panel-*`。
 
 - **`SingleAgentSurface.tsx`** — chat / trajectory 的 tab 边界。chat 子树常驻挂载，trajectory 子树在首次显式请求前不挂载；只有 `agent` 和 `team` 模式暴露它。
 - **`TrajectoryPanel.tsx`** — session 级 transport 宿主，唯一有副作用的大文件。它持有 window state、sequence cache、v2 reducer、subject view cache，订阅 `webClient` 的 `trace.updated` 提示与终态事件（`chat.final` / `chat.error` / `harness.session_finished` 等）触发补拉，管理归档回放模式与 raw OTel inspector。
 - **`TeamTrajectoryWorkspace.tsx`** — team 模式下的成员泳道，复用同一套原生 overview/ledger，`teamTrajectoryLanes.ts` 提供泳道读模型。
 
 挂载点在 `src/App.tsx`（`lazy(() => import('./features/trajectory/TrajectoryPanel'))`）；`featureConfig.ts` 是通过 `useSyncExternalStore` 暴露的开关，由实验设置写入。
+
+「启用轨迹界面」（`trajectory_ui.enabled`）与「启用轨迹诊断」（`trajectory_ui.diagnosis_enabled`）是两个独立开关：前者控制「对话 / 轨迹」tab 与轨迹页，后者控制聊天头部的诊断入口与诊断页，二者在前端互不依赖。后端“是否记录轨迹数据”取两者的或（`load_trajectory_store_settings`），所以只开诊断也会录制并允许 Gateway 读取，但只能诊断开启之后产生的记录；诊断开关的变更与轨迹界面开关一样会触发 `agent_runtime` 范围的热更新。
 
 ### 输入框停靠
 

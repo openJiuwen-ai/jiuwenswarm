@@ -417,6 +417,9 @@ def get_panel() -> dict[str, Any]:
             payload["a2ui_enabled"] = "false"
         trajectory_cfg = raw.get("trajectory_ui") or {}
         payload["trajectory_ui_enabled"] = _bool_text(trajectory_cfg.get("enabled"), False)
+        payload["trajectory_ui_diagnosis_enabled"] = _bool_text(
+            trajectory_cfg.get("diagnosis_enabled"), False
+        )
         experimental_cfg = raw.get("experimental") or {}
         payload["team_organization_ui_enabled"] = _bool_text(
             experimental_cfg.get("team_organization_ui_enabled"), False
@@ -465,6 +468,7 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("memory_forbidden_description", "")
         payload.setdefault("a2ui_enabled", "false")
         payload.setdefault("trajectory_ui_enabled", "false")
+        payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
         payload.setdefault("swarmflow_enabled", "false")
         payload.setdefault("team_scheduled_dispatch_enabled", "false")

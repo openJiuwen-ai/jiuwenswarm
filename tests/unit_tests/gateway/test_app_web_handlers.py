@@ -1566,6 +1566,10 @@ async def test_trajectory_ui_switch_round_trips_through_config_rpc(monkeypatch):
     assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_enabled"]
     change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_enabled"])
     assert change_set.reload_scopes == {"agent_runtime", "web_ui"}
+    # Diagnosis switches the trajectory data plane on too, so it needs the same
+    # runtime sync as the trajectory view switch.
+    diagnosis_change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_diagnosis_enabled"])
+    assert diagnosis_change_set.reload_scopes == {"agent_runtime", "web_ui"}
 
 
 @pytest.mark.asyncio
