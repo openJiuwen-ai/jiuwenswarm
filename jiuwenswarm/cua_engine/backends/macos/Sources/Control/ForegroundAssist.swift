@@ -17,7 +17,7 @@ struct ForegroundAssist {
         return BackgroundEvents.nativeWindowID(unsafeDowncast(raw, to: AXUIElement.self))
     }
 
-    private static func nativeWindow(_ pid: pid_t, _ id: CGWindowID) throws -> AXUIElement? {
+    static func nativeWindow(_ pid: pid_t, _ id: CGWindowID) throws -> AXUIElement? {
         guard let info = WindowServerInfo.window(id),
               (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid else {
             throw DriverError("foreground target window disappeared or changed owner", code: .staleTarget)

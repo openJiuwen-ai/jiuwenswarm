@@ -13,6 +13,8 @@ final class Driver {
     private var cancellationCode: String?
     private let requests = RequestLifetime()
     private let state: NativeDesktopState
+    private lazy var cuaDesktop = CuaDesktopBackend(state: state)
+    private let cuaBackendEnabled = CommandLine.arguments.contains("--cua-backend")
     init() {
         let state = NativeDesktopState()
         self.state = state
@@ -109,7 +111,7 @@ final class Driver {
                 }
                 handshaken = true
                 reply(id, ["result": ["platform": "macos", "desktopMode": mode, "maxTimeoutMs": 120_000,
-                    "capabilities": ["cancel", "requestDedup", "desktopCoordination", "nativeOperations", "nativeBoundContracts", "nativeUnitReadinessV2", "nativeDirectory", "nativeApplicationRoots", "nativeMenuActions", "nativeCapture", "nativeCaptureKinds", "nativeDesktopInput", "nativeRelations", "nativeNodePages", "nativeNodeDepthBudget", "nativeRelationPages", "nativeCapturedText", "nativeActionIntents", "nativeWindowScope", "nativeKeyboardIntents", "nativeTextInput", "nativeActuators", "nativeTextReplacement", "nativeSelectedText", "nativeEditorPreparation", "nativePointer", "nativeElementPointer", "nativeElementScroll", "nativeSelectionBasis", "nativeControlParts", "nativeTableFacts", "nativeBusyFacts", "nativeVirtualFocus", "nativeFocusMembers", "nativeAdvertisedFields", "nativeFollowRelations", "nativeLaunch", "nativeScroll"]]])
+                    "capabilities": ["cancel", "requestDedup", "desktopCoordination", "nativeOperations", "nativeBoundContracts", "nativeUnitReadinessV2", "nativeDirectory", "nativeApplicationRoots", "nativeMenuActions", "nativeCapture", "nativeCaptureKinds", "nativeDesktopInput", "nativeRelations", "nativeNodePages", "nativeNodeDepthBudget", "nativeRelationPages", "nativeCapturedText", "nativeActionIntents", "nativeWindowScope", "nativeKeyboardIntents", "nativeTextInput", "nativeActuators", "nativeTextReplacement", "nativeSelectedText", "nativeEditorPreparation", "nativePointer", "nativeElementPointer", "nativeElementScroll", "nativeSelectionBasis", "nativeControlParts", "nativeTableFacts", "nativeBusyFacts", "nativeVirtualFocus", "nativeFocusMembers", "nativeAdvertisedFields", "nativeFollowRelations", "nativeLaunch", "nativeScroll"] + (cuaBackendEnabled ? ["cuaDesktopBackend"] : [])]])
                 return
             }
             _ = try object(raw, keys: ["version", "session", "id", "method", "params", "timeoutMs"])
@@ -165,12 +167,14 @@ final class Driver {
             // Native units own their availability checks. A session never
             // enters the retired high-level read/input strategy, and finish
             // remains callable to release resources when desktop access is lost.
-            guard NativeExecution.methods.contains(method) else {
+            guard NativeExecution.methods.contains(method) || cuaBackendEnabled && method == "cuaDesktop" else {
                 throw DriverError("method '\(method)' is not supported by protocol v5", code: .invalidRequest,
                     next: "use begin, inspect, capture, execute and finish in this native session")
             }
             let remaining = max(1, Int((deadline - ProcessInfo.processInfo.systemUptime) * 1000))
-            let result = try await native.perform(method, raw["params"], timeoutMs: remaining)
+            let result: [String: Any]
+            if method == "cuaDesktop" { result = try await cuaDesktop.perform(raw["params"]) }
+            else { result = try await native.perform(method, raw["params"], timeoutMs: remaining) }
             if !requests.stopping { reply(id, ["result": result], remember: true) }
 
         } catch {

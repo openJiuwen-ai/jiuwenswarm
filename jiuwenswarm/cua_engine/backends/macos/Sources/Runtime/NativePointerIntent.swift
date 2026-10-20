@@ -14,6 +14,16 @@ struct NativePointerIntent {
     let direction: String?
     let pages: Double?
 
+    // Internal foreground desktop adapter. The public SDK keeps its existing
+    // click-count and left-drag contract; no extra model API is introduced.
+    init(desktopKind: Kind, button: String, count: Int = 1) throws {
+        guard ["left", "right", "middle"].contains(button), (1...3).contains(count) else {
+            throw DriverError("invalid desktop pointer button/count", code: .invalidRequest)
+        }
+        kind = desktopKind; self.button = button; self.count = count
+        start = nil; end = nil; direction = nil; pages = nil
+    }
+
     init(unit: String, kind: String, parameters: Any?, foreground: Bool, element: Bool = false) throws {
         guard let kind = Kind(rawValue: kind), ["prepare_receiver", "pointer_sequence"].contains(unit),
               !foreground || unit == "prepare_receiver" else {
