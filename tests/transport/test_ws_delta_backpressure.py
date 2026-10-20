@@ -32,7 +32,7 @@ class _Ws:
 def _chunk(event_type: str) -> AgentResponseChunk:
     return AgentResponseChunk(
         request_id="r1",
-        channel_id="officeclaw",
+        channel_id="web",
         payload={"event_type": event_type, "content": "x"},
     )
 
