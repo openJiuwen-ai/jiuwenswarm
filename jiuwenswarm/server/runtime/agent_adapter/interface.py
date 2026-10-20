@@ -2868,6 +2868,20 @@ class JiuWenSwarm:
                                 session_id,
                                 exc_info=True,
                             )
+                    # 作答消费销毁（挂起表转移）：guard 放行（含 fail-open）=
+                    # 该卡应答被接受为当前代，摘除 base 挂起表条目。迁自
+                    # _try_skill_turbo_resume（删 Path A 后公共入口在此）。
+                    _consume = getattr(hook_adapter, "_consume_hitl_live_card_for_answer", None)
+                    if callable(_consume):
+                        try:
+                            _consume(request)
+                        except Exception:
+                            logger.warning(
+                                "[JiuWenClaw] ask_user consume live card failed "
+                                "session_id=%s (fail-open)",
+                                session_id,
+                                exc_info=True,
+                            )
                 for hook_name, log_name in (
                     ("prepare_plan_pause_for_request", "prepare_plan_pause"),
                     ("prepare_interrupt_resume_for_request", "prepare_interrupt_resume"),
@@ -3288,6 +3302,20 @@ class JiuWenSwarm:
                             logger.warning(
                                 "[JiuWenClaw] stream ask_user stale guard failed session_id=%s "
                                 "(fail-open)",
+                                session_id,
+                                exc_info=True,
+                            )
+                    # 作答消费销毁（挂起表转移）：guard 放行（含 fail-open）=
+                    # 该卡应答被接受为当前代，摘除 base 挂起表条目。迁自
+                    # _try_skill_turbo_resume（删 Path A 后公共入口在此）。
+                    _consume = getattr(hook_adapter, "_consume_hitl_live_card_for_answer", None)
+                    if callable(_consume):
+                        try:
+                            _consume(request)
+                        except Exception:
+                            logger.warning(
+                                "[JiuWenClaw] stream ask_user consume live card failed "
+                                "session_id=%s (fail-open)",
                                 session_id,
                                 exc_info=True,
                             )

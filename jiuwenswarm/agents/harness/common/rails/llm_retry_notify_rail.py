@@ -26,6 +26,14 @@ _TRANSIENT_MESSAGE_MARKERS = (
     "read timeout",
     "connect timeout",
 )
+# Observed wrapper: agent-core OpenAIModelClient.stream() exception text.
+# Require all markers to avoid broadening retries to bare or unrelated 404s.
+# Wrapper wording drift disables this extra 404 rule; generic retry rules remain.
+_MEMBER_NETWORK_404_MARKERS = (
+    "async stream error",
+    "notfounderror",
+    "error code: 404",
+)
 # Per-call budget lives on ctx.extra so concurrent call_llm/stream_llm that
 # share one rail instance (SkillTurbo PPT page gather) cannot steal or reset
 # each other's retry counts. Instance attrs are mirrored for observability only.
@@ -265,4 +273,15 @@ class NotifyingLLMRetryRail(LLMRetryRail):
             )
 
 
-__all__ = ["NotifyingLLMRetryRail"]
+class TeamMemberNotifyingLLMRetryRail(NotifyingLLMRetryRail):
+    """Retry the observed async-stream 404 transport error only for team members."""
+
+    @classmethod
+    def _looks_like_transient_invoke(cls, exc: BaseException | None) -> bool:
+        if super()._looks_like_transient_invoke(exc):
+            return True
+        message = str(exc or "").lower()
+        return all(marker in message for marker in _MEMBER_NETWORK_404_MARKERS)
+
+
+__all__ = ["NotifyingLLMRetryRail", "TeamMemberNotifyingLLMRetryRail"]

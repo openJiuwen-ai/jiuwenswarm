@@ -265,6 +265,25 @@ _PPT_DELIVERY_SUMMARY_POST_TOOL_HINT = {
     ),
 }
 
+# 续跑版：外层存在多项 todo 时，PPT 成功交付后引导模型先标记当前项完成再继续下一项，
+# 而非一刀切终止本轮。必须显式"产物已交付"（防 R7 变体），必须含"先标记完成再继续"
+# （对齐串行 todo 语义 _has_earlier_incomplete）。
+_PPT_DELIVERY_SUMMARY_CONTINUE_HINT = {
+    "cn": (
+        "\n\n[SYSTEM] PPT 任务已完成且产物已由内部流水线交付，无需重复交付。"
+        "请先将当前待办标记为完成（todo_modify），再继续执行下一待办项"
+        "（下一项：{next_summary}）。"
+        "禁止对本任务重调 skill_acceleration_exec / skill_tool / send_file_to_user。"
+    ),
+    "en": (
+        "\n\n[SYSTEM] The PPT task is complete and the artifact has been delivered "
+        "by the internal pipeline; do NOT re-deliver. First mark the current todo as "
+        "completed (todo_modify), then proceed to the next todo item "
+        "(next item: {next_summary}). "
+        "Do NOT re-invoke skill_acceleration_exec / skill_tool / send_file_to_user for this task."
+    ),
+}
+
 _EN_LANGUAGE_VALUES = frozenset({"en", "en-us", "english"})
 _CN_LANGUAGE_VALUES = frozenset({"zh", "cn", "zh-cn", "chinese"})
 
@@ -493,6 +512,27 @@ def get_skill_turbo_outer_todo_active() -> bool | None:
 
 def reset_skill_turbo_outer_todo_active(token: Token) -> None:
     _skill_turbo_outer_todo_active.reset(token)
+
+
+# 外层 todo 当前绑定项之后的未完成项快照（供停止提示条件化）。
+# task_execution_rail.before_tool_call 导出，context_binding 绑定到此 ContextVar，
+# _wrap_skill_turbo_result 读取后选择续跑版 / 停止版停止提示。
+# 值形态：{"count": N, "next_summary": "..."} 或 None（无后续未完成项）。
+_skill_turbo_outer_todo_pending: ContextVar[dict[str, Any] | None] = ContextVar(
+    "skill_turbo_outer_todo_pending", default=None
+)
+
+
+def set_skill_turbo_outer_todo_pending(pending: dict[str, Any] | None) -> Token:
+    return _skill_turbo_outer_todo_pending.set(pending)
+
+
+def get_skill_turbo_outer_todo_pending() -> dict[str, Any] | None:
+    return _skill_turbo_outer_todo_pending.get()
+
+
+def reset_skill_turbo_outer_todo_pending(token: Token) -> None:
+    _skill_turbo_outer_todo_pending.reset(token)
 
 # ── ContextVar：SkillTurbo HITL 中断信号 ──
 # skill_turbo_tools catch AbortError 后提取 ToolInterruptException 存入此 ContextVar，
@@ -824,7 +864,17 @@ def _wrap_skill_turbo_result(
             # 骨架不进 tool_result 正文、也不在流水线内提前 chat.delta；
             # 挂到 ContextVar，由 after_tool_call 在外层 tool_result 之后流式发出。
             set_pending_ppt_delivery_summary(ppt_summary)
-            parts.append(_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT[lang])
+            # 外层存在多项 todo 时，引导模型先标记当前项完成再继续下一项，
+            # 而非一刀切终止本轮（防外层 todo 续跑阻断）。
+            pending = get_skill_turbo_outer_todo_pending()
+            if pending and pending.get("count"):
+                parts.append(
+                    _PPT_DELIVERY_SUMMARY_CONTINUE_HINT[lang].format(
+                        next_summary=pending.get("next_summary") or "见待办列表"
+                    )
+                )
+            else:
+                parts.append(_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT[lang])
         else:
             clear_pending_ppt_delivery_summary()
             if _generic_delivery_confirmed(artifact_holder):
@@ -1147,6 +1197,14 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
 
     if isinstance(request_metadata, dict):
         inputs["metadata"] = request_metadata
+        # 用户上传附件：从 metadata 提取 files 并传入 inputs["files"]，
+        # 供流水线 intent_classify 检测文档路径（has_documents 门控 P3 文档解析）。
+        # files 源于 request.params["files"]，由 _update_runtime_config 注入 metadata。
+        # 可能为 dict（平台 files.uploaded 格式）或 list（结构化附件）；
+        # intent_classify._collect_files_paths 统一展平，此处原样透传。
+        _files = request_metadata.get("files")
+        if _files is not None:
+            inputs["files"] = _files
 
     turbo_session = None
     resume_ctx = None
@@ -1156,6 +1214,7 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
             from openjiuwen.core.session.agent import create_agent_session
             from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
                 load_resume_ctx,
+                mark_resume_in_flight,
                 set_skill_turbo_id,
             )
 
@@ -1230,6 +1289,10 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
 
     hitl_interrupt = False
 
+    # 仅当本次请求实际调用了 mark_resume_in_flight 时才在 finally 清除，防重复
+    # 作答（resume_in_flight 命中提前返回）误清原始请求设置的 in-flight 标志。
+    _did_mark_in_flight = False
+
     release_checkpoint = False    # Only persist-clear the checkpoint when this invocation consumed it
     # (resume finished) or it cannot be reused (SkillTurboNotHandled).
     # Transient failures must keep the last HITL checkpoint; do not post_run
@@ -1241,6 +1304,28 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
                 apply_interactive_ask_to_inputs,
                 resolve_resume_interactive_ask,
             )
+
+            # 防重：resume_in_flight 命中 = 双击/网关重试作答，跳过本次避免
+            # 两次 resume_stream 重复生成（对齐 Path A 的 resume_in_flight 防重）。
+            if resume_ctx.get("resume_in_flight"):
+                logger.warning(
+                    "[SkillTurboTool] duplicate resume answers while in flight; ignoring"
+                )
+                # 裸 dict 返回，不经 _wrap_skill_turbo_result：本分支的
+                # SkillTurbo 是 fresh 实例（artifact_holder 为空），wrap 必然
+                # 追加 NEUTRAL 停止提示（"任务已结束…不要声称文件已发送"），
+                # 与"任务正在处理中"语义矛盾——原始请求仍在执行、稍后会交付。
+                # 且不携带 success 键：stream_event_rail._emit_tool_result 仅在
+                # _infer_tool_result_error 可判定时才写帧级 success，本 dict 形态
+                # 判 None → chat.tool_result 帧不带 success 字段 → 上层应用侧
+                # isSuccessfulPptTurboToolResult（结构匹配 success===true）不会
+                # 把占位帧误判成 PPT turbo 成功、替换最终正文（[[B_01]]）。
+                return {
+                    "result": "任务正在处理中，本次重复作答已忽略，请等待原始请求完成",
+                }
+            # mark in_flight（防重起点）：resume 处理期间第二次作答会被上方判重
+            await mark_resume_in_flight(turbo_session, resume_ctx)
+            _did_mark_in_flight = True
 
             raw_ia = None
             if isinstance(request_metadata, dict) and (
@@ -1403,6 +1488,20 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
             artifact_holder=skill_turbo_inst.artifact_holder,
         )
     finally:
+        # clear in_flight：无论 resume 成功/中断/失败都必须清除，防下次作答被误判
+        # 重复（意外异常后重试作答场景）。isolated 通道强制落盘，失败 warning 可观测。
+        if turbo_session is not None and resume_ctx is not None and _did_mark_in_flight:
+            from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
+                clear_resume_in_flight,
+            )
+
+            try:
+                await clear_resume_in_flight(turbo_session)
+            except Exception:
+                logger.warning(
+                    "[SkillTurboTool] clear_resume_in_flight failed",
+                    exc_info=True,
+                )
         if turbo_session is not None and not hitl_interrupt and release_checkpoint:
             if resume_ctx is not None:
                 from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (

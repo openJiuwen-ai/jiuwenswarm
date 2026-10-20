@@ -38,6 +38,17 @@ DEEPRESEARCH_EXECUTION_ALIAS_KEY = "deepresearch_execution_aliases"
 _TOKENS_KEY = "__deepresearch_execution_context_tokens__"
 _TOOL_NAME = "deepresearch_execute"
 
+# HITL 暂停占位文案（interaction 分支写入 tool_msg）。必须注册进
+# StreamEventRail 的占位模板白名单（_is_legacy_tool_interrupt_placeholder_text）：
+# resume 完成后占位与 completed tool_msg 挂同一原始 tool_call_id，
+# 白名单识别使孤儿清理按"占位被真实结果替换"收敛，而非 duplicate
+# 规则保留占位删掉完成态（后者会让历史停留在"等待答复"）。
+DEEPRESEARCH_INTERACTION_PLACEHOLDER = (
+    "DeepResearch 已暂停并向用户发起结构化问答，正在等待用户答复。"
+    "用户答复后本工具将自动恢复执行并返回后续结果；请勿代替用户"
+    "作答，也无需重复调用本工具轮询进度。"
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,6 +106,21 @@ def _save_aliases(session: Any, aliases: dict[str, str]) -> None:
 
 def _workflow_id(session: Any, tool_call_id: str) -> str:
     return _load_aliases(session).get(tool_call_id, tool_call_id)
+
+
+def _history_tool_call_id(tool_call_id: str, workflow_id: str) -> str:
+    """tool_msg 应挂的历史 tool_call_id：须与 assistant 消息 tool_calls
+    的原始 id 对齐，否则被 StreamEventRail 孤儿清理删除。
+
+    resume 执行时 ctx.inputs.tool_call 是 TIE 克隆件，id 已被改写为
+    interaction_id（{workflow_id}_interaction_N），须映射回原始 id。
+    bridge 场景（模型换新 id 重试被桥接旧 state）例外：本次调用 id
+    本身就是历史 id，原样保留——故按 interaction 后缀模式判断，而非
+    "是否在 aliases 中"（bridge 的 alias 不带该后缀）。
+    """
+    if workflow_id and tool_call_id.startswith(f"{workflow_id}_interaction_"):
+        return workflow_id
+    return tool_call_id
 
 
 # 修复点3.2：error 相位入桥候选。取消转译的 stopped 写入（phase=new）
@@ -304,6 +330,9 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 return
             tool_call_id = _tool_call_id(ctx)
             workflow_id = _workflow_id(ctx.session, tool_call_id)
+            # tool_msg 必须挂历史原始 id（resume 时 ctx 携带的是 TIE
+            # 克隆件的 interaction_id），否则被孤儿清理删除
+            history_id = _history_tool_call_id(tool_call_id, workflow_id)
             state = payload.get("state")
             states = _load_states(ctx.session)
             if isinstance(state, Mapping):
@@ -340,12 +369,8 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 # 保持不变，打断/恢复流程不受影响。tool_call_id 必须用原始
                 # 调用 id，与 assistant 消息中的 tool_calls 对齐。
                 ctx.inputs.tool_msg = ToolMessage(
-                    content=(
-                        "DeepResearch 已暂停并向用户发起结构化问答，正在等待"
-                        "用户答复。用户答复后本工具将自动恢复执行并返回后续"
-                        "结果；请勿代替用户作答，也无需重复调用本工具轮询进度。"
-                    ),
-                    tool_call_id=tool_call_id,
+                    content=DEEPRESEARCH_INTERACTION_PLACEHOLDER,
+                    tool_call_id=history_id,
                 )
                 return
 
@@ -375,7 +400,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
                         "主题，同样会自动认领）。恢复将从停止处继续，已完成"
                         "阶段不会重跑。"
                     ),
-                    tool_call_id=tool_call_id,
+                    tool_call_id=history_id,
                 )
                 return
 
@@ -388,6 +413,30 @@ class DeepResearchExecutionRail(DeepAgentRail):
             }
             _save_aliases(ctx.session, aliases)
             content = payload.get("content")
+
+            if payload.get("kind") == "completed":
+                # 完成态回写：completed 结果不再以原始 JSON payload（含
+                # state/revision/timing/token usage 等内部字段，由框架默认
+                # 序列化成 tool_msg）裸入 LLM 历史，改为与 interaction/
+                # stopped 同口径的短文案。旁路自恢复（用户答复交互卡后的
+                # interrupt continuation）不重入 LLM 主循环，本次执行的
+                # tool_msg 是完成态进入历史的唯一通道——若不显式改写，
+                # 历史中该 tool_call_id 下最后一条 tool 消息会停留在暂停
+                # 占位文案，后续轮模型误判任务未完成（实测事故：任务已
+                # 完成，模型答"还在第一阶段暂停等待用户答复"）。payload
+                # content 即完成摘要（报告名/章节结构/交付说明），短载荷
+                # 同时避开部署版按体积拒收 llm_context 的守卫；前端交付
+                # 不受影响——chat.tool_result 帧使用 tool_result 原始
+                # payload（StreamEventRail），与 tool_msg 解耦。
+                ctx.inputs.tool_msg = ToolMessage(
+                    content=(
+                        content.strip()
+                        if isinstance(content, str) and content.strip()
+                        else "DeepResearch 任务已完成，报告已交付。"
+                    ),
+                    tool_call_id=history_id,
+                )
+
             if isinstance(content, str) and content.strip():
                 ctx.request_force_finish(
                     {"output": content.strip(), "result_type": "answer"}
@@ -404,5 +453,6 @@ class DeepResearchExecutionRail(DeepAgentRail):
 __all__ = [
     "DEEPRESEARCH_EXECUTION_ALIAS_KEY",
     "DEEPRESEARCH_EXECUTION_STATE_KEY",
+    "DEEPRESEARCH_INTERACTION_PLACEHOLDER",
     "DeepResearchExecutionRail",
 ]

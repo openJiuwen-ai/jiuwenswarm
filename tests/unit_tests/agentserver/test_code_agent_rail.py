@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from openjiuwen.core.session.agent import Session
@@ -72,8 +73,10 @@ class TestAgentTool:
 
     @pytest.mark.asyncio
     async def test_invoke_sync_creates_and_runs_subagent(self):
-        mock_subagent = MagicMock()
-        mock_subagent.invoke = AsyncMock(return_value={"output": "done"})
+        mock_subagent = SimpleNamespace(
+            deep_config=SimpleNamespace(completion_timeout=30),
+            invoke=AsyncMock(return_value={"output": "done"}),
+        )
 
         parent = MagicMock()
         agent_def = _make_agent_def(
@@ -97,7 +100,10 @@ class TestAgentTool:
 
     @pytest.mark.asyncio
     async def test_invoke_background_returns_async_launched(self):
-        mock_subagent = MagicMock()
+        mock_subagent = SimpleNamespace(
+            deep_config=SimpleNamespace(completion_timeout=30),
+            invoke=AsyncMock(return_value={"output": "done"}),
+        )
 
         parent = MagicMock()
         agent_def = _make_agent_def(name="reviewer")
@@ -135,9 +141,9 @@ class TestAgentTool:
 
     @pytest.mark.asyncio
     async def test_invoke_with_subagent_execution_failure_raises(self):
-        mock_subagent = MagicMock()
-        mock_subagent.invoke = AsyncMock(
-            side_effect=RuntimeError("execution failed")
+        mock_subagent = SimpleNamespace(
+            deep_config=SimpleNamespace(completion_timeout=30),
+            invoke=AsyncMock(side_effect=RuntimeError("execution failed")),
         )
 
         parent = MagicMock()
@@ -154,6 +160,7 @@ class TestAgentTool:
                     session=session,
                 )
         assert "execution failed" in str(exc.value)
+        mock_subagent.invoke.assert_awaited_once()
 
 
 class TestCodeAgentRail:
