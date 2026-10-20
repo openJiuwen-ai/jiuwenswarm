@@ -2560,7 +2560,9 @@ _SENSITIVE_PATTERNS: list[re.Pattern[str]] = [
     # 匹配 GitLab Personal Access Token（glpat- 前缀）。
     re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
     # 匹配邮箱地址（避免日志中泄露个人身份信息）。
-    re.compile(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b"),
+    # A word boundary retries after every '+'/'%' in a long non-email run.
+    # Start only at the beginning of a complete local-part token.
+    re.compile(r"(?<![a-zA-Z0-9._%+-])[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b"),
     # 匹配中国大陆手机号（可带 +86 或 86 前缀，支持空格/短横线分隔）。
     re.compile(r"(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)"),
     # 匹配中国身份证号（18 位，最后一位可为 X/x）。
@@ -2807,7 +2809,7 @@ class SensitiveDataFilter(logging.Filter):
         sanitized = True
         try:
             message = record.getMessage()
-            record.msg = _sanitize_log_text(message)
+            record.msg = _sanitize_record_text(message)
             record.args = ()
         except Exception:
             # Never block logging because of desensitization failure.
@@ -2829,10 +2831,10 @@ class SensitiveDataFilter(logging.Filter):
                 # 兼容层，未来版本可能移除；改用 exc_info[1]（异常实例）是
                 # 官方推荐写法，面向未来且行为等价（None 时输出 "NoneType: None"）。
                 formatted = "".join(_traceback.format_exception(exc_info[1]))
-                record.exc_text = _sanitize_log_text(formatted)
+                record.exc_text = _sanitize_record_text(formatted)
                 record.exc_info = None
             elif record.exc_text:
-                record.exc_text = _sanitize_log_text(record.exc_text)
+                record.exc_text = _sanitize_record_text(record.exc_text)
         except Exception:
             # 同样不因脱敏失败而阻断日志输出。
             sanitized = False
@@ -2884,7 +2886,7 @@ def install_source_record_masking() -> None:
         try:
             # message 脱敏（含 %s/format 格式化后的最终文本）。
             msg = record.getMessage()
-            record.msg = _sanitize_log_text(msg)
+            record.msg = _sanitize_record_text(msg)
             record.args = ()
             # traceback 脱敏：traceback 由 Formatter.formatException 从
             # record.exc_text 单独渲染，getMessage 覆盖不到。此处提前渲染并脱敏，
@@ -2894,10 +2896,10 @@ def install_source_record_masking() -> None:
                 import traceback as _tb
 
                 formatted = "".join(_tb.format_exception(exc_info[1]))
-                record.exc_text = _sanitize_log_text(formatted)
+                record.exc_text = _sanitize_record_text(formatted)
                 record.exc_info = None
             elif record.exc_text:
-                record.exc_text = _sanitize_log_text(record.exc_text)
+                record.exc_text = _sanitize_record_text(record.exc_text)
             record.jiuwen_sensitive_sanitized = True
         except Exception:
             # 永不因脱敏失败而阻断日志输出。但记录失败（计数 + 首次 stderr 提示），
@@ -2916,6 +2918,25 @@ def install_source_record_masking() -> None:
 
     logging.setLogRecordFactory(_sanitizing_record_factory)
     _source_record_masking_installed = True
+
+
+def _sanitize_record_text(text: str) -> str:
+    """Bound regex/JSON work per log record without truncating a credential.
+
+    Oversized payloads belong in session history rather than operational logs.
+    Omitting the whole payload also avoids breaking serialized JSON or exposing
+    a partial credential at a truncation boundary. Public mask_sensitive keeps
+    its full-text behavior.
+    """
+    if len(text) > 64 * 1024:
+        if text.lstrip().startswith(("{", "[")):
+            return json.dumps({
+                "log_payload_omitted": True,
+                "original_characters": len(text),
+                "character_limit": 64 * 1024,
+            }, separators=(",", ":"))
+        return f"[log payload omitted: {len(text)} characters exceeds 65536 character limit]"
+    return _sanitize_log_text(text)
 
 
 def _reconfigure_stdio_utf8() -> None:
@@ -3034,6 +3055,9 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     # 源头脱敏：覆盖 jiuwenswarm 命名空间之外的第三方 logger（openjiuwen/openai/
     # httpx 等），在 LogRecord 创建时统一脱敏，保证任何来源的 api_key 都不明文落盘。
     install_source_record_masking()
+    from jiuwenswarm.common.background_logging import wrap_log_handlers
+
+    wrap_log_handlers(root)
     return root
 
 
