@@ -23,6 +23,7 @@ MAX_RELEASE_PAGES = 100
 GITHUB_API = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
 GITCODE_API = "https://api.gitcode.com/api/v5/repos/{owner}/{repo}/releases/latest"
 PYPI_SIMPLE_API = "https://pypi.org/simple/{package}/"
+PYPI_VERSION_JSON_API = "https://pypi.org/pypi/{package}/{version}/json"
 
 # Matches pre-release markers: 0.2.0-beta1, 0.2.0.beta.1, 0.2.0alpha, 0.2.0rc2, 0.2.0.dev0, etc.
 _PRERELEASE_PATTERN = re.compile(
@@ -594,6 +595,11 @@ class PyPIVersionSource(VersionSource):
         latest_whl = latest_whls[-1] if latest_whls else whl_entries[-1]
 
         published_at = str(latest_whl.get("upload-time") or "")
+        if not published_at:
+            # Simple-index mirrors (e.g. aliyun) often only serve the HTML
+            # index, which carries no timestamps. Fall back to the JSON API for
+            # the release upload time so the UI can display it.
+            published_at = self._fetch_publish_time(latest_version)
         assets = [
             ReleaseAsset(
                 name=str(e.get("filename", "")),
@@ -635,6 +641,48 @@ class PyPIVersionSource(VersionSource):
                 "url": href,
             })
         return {"files": files}
+
+    def _fetch_publish_time(self, version: str) -> str:
+        """Best-effort lookup of a release's upload time via the PyPI JSON API.
+
+        The simple index only exposes filenames and URLs, so mirrors that serve
+        just the HTML index cannot provide a publish time. Query the
+        version-scoped JSON API (mirror first, then upstream PyPI) to recover
+        it without downloading metadata for every release.
+        """
+        candidates = [
+            urljoin(self._base_url + "/", f"pypi/{self._name}/{version}/json")
+        ]
+        default_url = PYPI_VERSION_JSON_API.format(
+            package=self._name,
+            version=version,
+        )
+        if default_url not in candidates:
+            candidates.append(default_url)
+        for url in candidates:
+            try:
+                req = Request(url)
+                req.add_header("Accept", "application/json")
+                with urlopen(req, timeout=self._timeout) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+            except (HTTPError, URLError, json.JSONDecodeError, OSError, ValueError):
+                continue
+            entries = None
+            if isinstance(payload, dict):
+                releases = payload.get("releases")
+                if isinstance(releases, dict):
+                    entries = releases.get(version)
+                if not entries and isinstance(payload.get("urls"), list):
+                    entries = payload["urls"]
+            timestamps = [
+                str(entry.get("upload_time_iso_8601") or entry.get("upload_time") or "")
+                for entry in (entries or [])
+                if isinstance(entry, dict)
+            ]
+            timestamps = [stamp for stamp in timestamps if stamp]
+            if timestamps:
+                return min(timestamps)
+        return ""
 
     def _resolve_url(self, url: str) -> str:
         return urljoin(self._api_url, url)
