@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import subprocess
-import tomllib
 from pathlib import Path
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM_URL = "https://gitcode.com/openJiuwen/jiuwenswarm.git"
 OUTPUT = ROOT / "jiuwenswarm" / "resources" / "build-info.json"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
+logger = logging.getLogger(__name__)
 
 
 def _git(*args: str) -> str:
@@ -32,7 +34,21 @@ def _git(*args: str) -> str:
 def upstream_branch() -> str:
     branch = os.getenv("JIUWENSWARM_UPSTREAM_BRANCH", "").strip()
     if not branch:
-        branch = _git("branch", "--show-current")
+        parents = _git("show", "-s", "--format=%P", "HEAD").split()
+        if len(parents) == 2:
+            # CI builds a synthetic merge whose first parent is the target tip.
+            refs = _git("for-each-ref", "--format=%(refname:short) %(objectname)", "refs/remotes/origin")
+            targets = set()
+            for line in refs.splitlines():
+                parts = line.split()
+                if len(parts) == 2:
+                    ref, commit = parts
+                    if commit == parents[0] and ref.startswith("origin/") and ref != "origin/HEAD":
+                        targets.add(ref.removeprefix("origin/"))
+            if len(targets) == 1:
+                branch = targets.pop()
+        if not branch:
+            branch = _git("branch", "--show-current")
     if not branch or _git("check-ref-format", "--branch", branch) != branch:
         raise ValueError("Set JIUWENSWARM_UPSTREAM_BRANCH to an upstream branch name")
     return branch
@@ -93,10 +109,11 @@ def main(*, require_agent_core_branch: bool = False) -> None:
     OUTPUT.unlink(missing_ok=True)
     payload = generate(require_agent_core_branch=require_agent_core_branch)
     OUTPUT.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"Build source: {payload['jiuwenswarm']['branch']} @ {payload['jiuwenswarm']['commit_id']}")
+    logger.info("Build source: %s @ %s", payload["jiuwenswarm"]["branch"], payload["jiuwenswarm"]["commit_id"])
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--require-agent-core-branch", action="store_true")
     args = parser.parse_args()

@@ -11,6 +11,23 @@ COMMIT = "a" * 40
 CORE_COMMIT = "b" * 40
 
 
+def test_ci_merge_uses_target_branch_instead_of_pull_request_branch(monkeypatch) -> None:
+    monkeypatch.delenv("JIUWENSWARM_UPSTREAM_BRANCH", raising=False)
+    target_commit = "c" * 40
+
+    def fake_git(*args: str) -> str:
+        if args[:3] == ("show", "-s", "--format=%P"):
+            return f"{target_commit} {COMMIT}"
+        if args[0] == "for-each-ref":
+            return f"origin/develop {target_commit}\norigin/HEAD {target_commit}"
+        if args[:2] == ("check-ref-format", "--branch"):
+            return "develop"
+        raise AssertionError(f"Unexpected Git call: {args}")
+
+    monkeypatch.setattr(generate_build_info, "_git", fake_git)
+    assert generate_build_info.upstream_branch() == "develop"
+
+
 def test_generate_reads_upstream_branch_and_locked_core(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nversion = "0.2.8"\n', encoding="utf-8",
