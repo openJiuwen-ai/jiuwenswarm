@@ -97,10 +97,15 @@ class JiuwenHarnessFetchWebpageTool(Tool):
             "[JiuwenHarnessWebTools] LLM tool name=fetch_webpage (card_id=%s)",
             self.card.id,
         )
+        # The auto-extracted LLM schema leaks the DI ``cache`` param from
+        # ``mcp_fetch_webpage_impl``; drop it from LLM inputs before
+        # injecting the harness cache, or both land in the call as
+        # ``cache`` and the invoke fails with a duplicate keyword error.
+        payload = {k: v for k, v in inputs.items() if k != "cache"}
         if self._cache is not None:
             kwargs["cache"] = self._cache
         return await mcp_fetch_webpage_impl(
-            **inputs, **{k: v for k, v in kwargs.items() if k in ("cache",)}
+            **payload, **{k: v for k, v in kwargs.items() if k in ("cache",)}
         )
 
     async def stream(self, inputs: Dict[str, Any], **kwargs) -> AsyncIterator[Any]:
