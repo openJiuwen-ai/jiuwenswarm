@@ -358,7 +358,7 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
         else:
             from jiuwenswarm.common.model_selection import ModelSelection
             selection = ModelSelection.model_validate(raw_selection)
-            from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+            from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
             ModelSelectionResolver().resolve(selection)
             updated = replace(updated, model_selection=selection.model_dump())
     if "credential_ref" in patch:

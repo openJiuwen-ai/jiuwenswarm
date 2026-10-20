@@ -78,7 +78,7 @@ async def test_model_selection_preserved_when_not_overridden_by_name(
         })
         resolver = ModelSelectionResolver(catalog)
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.model_routing_registry.ModelSelectionResolver",
+            "jiuwenswarm.common.model_routing_registry.ModelSelectionResolver",
             lambda: resolver,
         )
         patch.update(model_name="new-config-model", model_selection=selection)

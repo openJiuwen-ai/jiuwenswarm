@@ -73,6 +73,8 @@ KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
     },
     # 过渡桥接（B1'）：gateway 与 AgentServer 同机部署期间的直连实现，
     # gateway 独立成仓时整体删除并由 A-API HTTP 实现替代。
+    # cron_store_factory → runtime.cron.factory：B2.5 后 gateway 侧注册
+    # gateway/runtime 副本的 factory（原位 re-export common.cron_settings）。
     "jiuwenswarm.gateway.server_store_bridge": {
         "jiuwenswarm.server.runtime.mcp.state_store",
         "jiuwenswarm.server.runtime.mcp.registry",
@@ -81,6 +83,7 @@ KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
         "jiuwenswarm.server.runtime.team_binding_store",
         "jiuwenswarm.server.runtime.team_entity_store",
         "jiuwenswarm.server.runtime.session.session_metadata",
+        "jiuwenswarm.runtime.cron.factory",
     },
 }
 KNOWN_R4_EMBEDDED_FOREIGN: dict[str, set[str]] = {}
@@ -89,12 +92,11 @@ KNOWN_R4_EMBEDDED_FOREIGN: dict[str, set[str]] = {}
 BASELINE = {
     # hard 闭包 = 从 gateway 出发仅沿模块级 import 可达的外部（非 gateway/common）模块数。
     # 根包单文件（dotenv_early、llm_provider_compat_patch）计入其所属顶级名。
-    # 2026-10-19 rebase 8e0f173b4 实测（上游持续演进 + web_proxy_connect 修后）：
-    # hard 171（server 57：上游新提交再削 3；llm_provider_compat_patch 随 A5'-a
-    # 下沉 common 后从外部依赖消失）
+    # B2.5 后（rebase 1372eda94 实测，含 B2 合入后的 extensions 状态）：
+    # 四大包（agents/server/runtime/symphony）hard 闭包全部归零。
+    # extensions 30 = B2 吸收后的框架件 + AgentOS 客户端 + 上游回流。
     "closure_hard": {
-        "agents": 39, "server": 57, "runtime": 32, "extensions": 32,
-        "observability": 10, "symphony": 0,
+        "extensions": 30, "observability": 10,
         "dotenv_early": 1, "llm_provider_compat_patch": 0,
     },
     # lazy 闭包 = 含函数内延迟 import 的可达模块数
@@ -111,7 +113,7 @@ BASELINE = {
     "embedded_files": 27,
     "embedded_loc": 8702,
     # gateway 直接 import 的外部（非 gateway/common）模块数
-    "gateway_direct_foreign": 35,
+    "gateway_direct_foreign": 23,
 }
 
 
@@ -324,8 +326,8 @@ def run_rules(graph: ImportGraph) -> int:
         KNOWN_R2_SERVER_TO_GATEWAY,
     )
     exit_code |= _check_rule(
-        graph, "R3 gateway 禁止 import server/agents/channels",
-        (f"{PKG}.gateway.",), ("server", "agents", "channels"),
+        graph, "R3 gateway 禁止 import server/agents/channels/runtime/symphony",
+        (f"{PKG}.gateway.",), ("server", "agents", "channels", "runtime", "symphony"),
         KNOWN_R3_GATEWAY_FOREIGN,
     )
     exit_code |= _check_rule(

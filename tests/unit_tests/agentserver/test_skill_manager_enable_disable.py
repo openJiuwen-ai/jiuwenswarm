@@ -233,12 +233,13 @@ def test_builtin_scan_uses_directory_name_without_frontmatter(monkeypatch, tmp_p
     """Built-in marketplace entries should not appear as the generic SKILL name."""
     skills_dir = tmp_path / "skills"
     builtin_dir = tmp_path / "builtin"
-    _make_skill_dir(builtin_dir, "builtin-no-frontmatter")
+    # Must be on the UI whitelist to appear in _scan_builtin_skills.
+    _make_skill_dir(builtin_dir, "skill-creator")
 
     manager = _init_manager_with_skills_dir(monkeypatch, skills_dir, builtin_dir)
 
     listed = manager._scan_builtin_skills()
-    assert [s.get("name") for s in listed] == ["builtin-no-frontmatter"]
+    assert [s.get("name") for s in listed] == ["skill-creator"]
 
 
 # ---------------------------------------------------------------------------
@@ -250,10 +251,11 @@ def test_builtin_proprietary_flag_follows_registry(monkeypatch, tmp_path):
     """未安装内置技能：名单内标记 proprietary=true，名单外与无名单均为 false（默认三方）."""
     skills_dir = tmp_path / "skills"
     builtin_dir = tmp_path / "builtin"
-    _make_skill_dir(builtin_dir, "proprietary-skill")
-    _make_skill_dir(builtin_dir, "third-party-skill")
+    # Must be on the UI whitelist to appear in _scan_builtin_skills.
+    _make_skill_dir(builtin_dir, "skill-creator")
+    _make_skill_dir(builtin_dir, "gitcode-api")
     (builtin_dir / "_proprietary_skills.json").write_text(
-        json.dumps({"proprietary": ["proprietary-skill"]}), encoding="utf-8"
+        json.dumps({"proprietary": ["skill-creator"]}), encoding="utf-8"
     )
 
     manager = _init_manager_with_skills_dir(monkeypatch, skills_dir, builtin_dir)
@@ -261,8 +263,8 @@ def test_builtin_proprietary_flag_follows_registry(monkeypatch, tmp_path):
         # 前置测试可能已填充名单缓存，先重置确保读到本测试的名单文件
         jiuwenswarm_skill_manager._PROPRIETARY_NAMES_CACHE = None
         listed = {s["name"]: s for s in manager._scan_builtin_skills()}
-        assert listed["proprietary-skill"]["proprietary"] is True
-        assert listed["third-party-skill"]["proprietary"] is False
+        assert listed["skill-creator"]["proprietary"] is True
+        assert listed["gitcode-api"]["proprietary"] is False
 
         # 名单文件缺失 → 全部按默认三方
         (builtin_dir / "_proprietary_skills.json").unlink()

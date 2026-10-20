@@ -75,6 +75,13 @@
     "loadErrorTitle": "加载失败",
     "loadErrorFallback": "无法读取设计工作流，请稍后重试。",
     "attachmentsBlocked": "设计模式暂不支持附件，请先移除附件后再发送。",
+    "models": {
+      "chatMissing": "对话模型未配置，请先在「设置」中配置模型后再使用设计。",
+      "videoOff": "视频生成已在「设置 > Agent」中关闭。",
+      "videoMissing": "视频生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。",
+      "imageOff": "图像生成已在「设置 > Agent」中关闭。",
+      "imageMissing": "图像生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。"
+    },
     "activity": {
       "thinking": "思考中",
       "toolCall": "正在调用 {{tool}}",
@@ -1988,7 +1995,9 @@
       "useBuiltin": "使用内置 CLI",
       "detect": "检测",
       "toggleEnable": "启用/禁用 {{agent}}",
-      "detectHint": "未填写路径时从系统 PATH 查找；填写路径后检测指定的 CLI 可执行文件并校验版本",
+      "detectHint": "检测 CLI 可执行文件并校验版本；未填写路径时从系统 PATH 查找",
+      "redetectHint": "重新检测当前 CLI 可执行文件并校验版本",
+      "installSucceeded": "安装完成",
       "selectFile": "选择文件",
       "selectFileTitle": "选择 {{agent}} 命令",
       "selectFileFailed": "选择文件失败",

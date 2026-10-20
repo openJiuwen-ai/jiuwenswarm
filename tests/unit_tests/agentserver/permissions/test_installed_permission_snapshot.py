@@ -10,7 +10,7 @@ from openjiuwen.harness.security import PermissionSceneHookInput
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
 from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
-from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import normalize_permissions_for_runtime
+from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import compose_host_effective_permissions
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import AutoPermissionInterruptRail
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     cleanup_permission_context,
@@ -45,11 +45,10 @@ def overlays(tmp_path, monkeypatch):
     return user_path, session_path
 
 
-def test_installed_snapshot_owns_base_auto_and_host_after_inputs_change(tmp_path, overlays):
-    snapshot = _policy()
+def test_initial_snapshot_is_copied_and_host_reloads_shared_overlays(tmp_path, overlays):
+    snapshot = compose_host_effective_permissions(global_permissions=_policy(), auto_mode=True)
     caller = {"permissions": _policy()}
-    caller["permissions"]["tools"] = {"caller_only": "deny"}
-    expected = normalize_permissions_for_runtime(deepcopy(snapshot))
+    expected = deepcopy(snapshot)
     rail = build_permission_rail(
         caller, session_id="bound", enable_auto_permission=True,
         installed_permissions=snapshot, workspace_root=tmp_path,
@@ -67,17 +66,20 @@ def test_installed_snapshot_owns_base_auto_and_host_after_inputs_change(tmp_path
         config.dump_yaml_round_trip(path, {"deny_tools": ["bash"]})
 
     host = rail.base_rail._host
-    assert host.get_permissions_snapshot(session_id="different") == expected
+    assert host.get_permissions_snapshot(session_id="different")["tools"]["bash"] == "deny"
     host_snapshot = host.get_permissions_snapshot()
-    host_snapshot["tools"]["bash"] = "deny"
-    assert host.get_permissions_snapshot() == expected
+    host_snapshot["tools"]["bash"] = "allow"
+    assert host.get_permissions_snapshot()["tools"]["bash"] == "deny"
     assert rail.base_rail.installed_permission_config() == expected
     assert rail.installed_permission_config() == expected
 
 
-def test_installed_snapshot_never_reloads_overlays(tmp_path, monkeypatch):
+def test_initial_snapshot_avoids_build_reads_but_host_refreshes_overlays(tmp_path, monkeypatch):
+    built = False
     def unexpected_read(*_args, **_kwargs):
-        raise AssertionError("installed snapshot must not reload any layer")
+        if not built:
+            raise AssertionError("installed snapshot must not reload any layer")
+        return {}
 
     monkeypatch.setattr(layers, "load_user_permissions", unexpected_read)
     monkeypatch.setattr(layers, "load_session_permissions", unexpected_read)
@@ -86,6 +88,7 @@ def test_installed_snapshot_never_reloads_overlays(tmp_path, monkeypatch):
         {"permissions": _policy()}, enable_auto_permission=True,
         installed_permissions=_policy(), workspace_root=tmp_path,
     )
+    built = True
     assert rail.base_rail._host.get_permissions_snapshot()["tools"]["bash"] == "ask"
     token = setup_permission_context(SimpleNamespace(
         channel_id="web", metadata={"principal_user_id": "principal"},
@@ -149,7 +152,7 @@ def test_auto_without_installed_snapshot_keeps_composed_build(overlays, tmp_path
     before = rail.base_rail._host.get_permissions_snapshot()
     assert "user_tool" in before["tools"] and "session_tool" in before["tools"]
     config.dump_yaml_round_trip(overlays[0], {"deny_tools": ["user_tool"]})
-    assert rail.base_rail._host.get_permissions_snapshot() == before
+    assert rail.base_rail._host.get_permissions_snapshot()["tools"]["user_tool"] == "deny"
 
 
 @pytest.mark.parametrize("snapshot", [[], "policy", 1, False])

@@ -27,7 +27,7 @@ from openjiuwen.harness.rails.evolution import (
 )
 from openjiuwen.symphony.flow import SkillPackAdapter, SkillPackNotInstallableError
 
-from jiuwenswarm.runtime.host_services import (
+from jiuwenswarm.common.host_services import (
     install_runtime_push_handler,
     restore_runtime_push_handler,
 )

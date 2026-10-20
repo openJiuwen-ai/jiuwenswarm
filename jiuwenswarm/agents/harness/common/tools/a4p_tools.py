@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from jiuwenswarm.agents.harness.common.a4p.file_scope import normalize_read_path_params
+from jiuwenswarm.agents.harness.common.a4p.preflight import evaluate_action, is_concrete_action
 from jiuwenswarm.agents.harness.common.a4p.runtime import (
     get_a4p_runtime,
     is_a4p_preauthorization_active,
@@ -325,6 +326,73 @@ async def request_a4p_intent_authorization(
             }
 
     runtime = get_a4p_runtime()
+    preflight: dict[str, Any] = {
+        "permittedActions": [],
+        "unapprovedActions": [],
+        "deniedActions": [],
+    }
+    pending_actions: list[dict[str, Any]] = []
+    for action in normalized_actions:
+        # Future cron runs cannot inherit this interactive session's permissions.
+        # Keep their complete scope, including when replacing an existing token.
+        if cron_job_id:
+            pending_actions.append(action)
+            continue
+        public_action = {"name": action["name"], "params": action["params"]}
+        level = await evaluate_action(session_id, action)
+        if level == "deny":
+            preflight["deniedActions"].append(public_action)
+            continue
+        if level == "allow":
+            preflight["permittedActions"].append(public_action)
+            continue
+        # Verification accepts concrete calls, not set containment of patterns.
+        if level == "ask" and is_concrete_action(action):
+            try:
+                token = await runtime.find_valid_intent_token(
+                    session_id=session_id,
+                    identity=identity,
+                    action=action["name"],
+                    params=action["params"],
+                )
+            except Exception:
+                token = None
+            if token is not None:
+                preflight["permittedActions"].append(public_action)
+                continue
+        pending_actions.append(action)
+
+    preflight["unapprovedActions"] = [
+        {"name": action["name"], "params": action["params"]}
+        for action in pending_actions
+    ]
+    if preflight["deniedActions"]:
+        error = "Permission policy denies candidate actions; revise the plan before requesting authorization"
+        AUTHORIZATION_EXECUTION_CONTEXTS.set_attempt(
+            session_id, request_id=execution_context.request_id,
+            status="failed", error=error,
+        )
+        return {
+            "ok": False,
+            "code": "A4P_ACTION_POLICY_DENIED",
+            "error": error,
+            "authorizationRequired": False,
+            **preflight,
+        }
+    if not pending_actions:
+        AUTHORIZATION_EXECUTION_CONTEXTS.set_attempt(
+            session_id, request_id=execution_context.request_id,
+            status="approved",
+        )
+        return {
+            "ok": True,
+            "authorizationRequired": False,
+            "approved": False,
+            "partial": False,
+            "token": None,
+            "cronJobId": None,
+            **preflight,
+        }
     AUTHORIZATION_EXECUTION_CONTEXTS.set_attempt(
         session_id,
         request_id=execution_context.request_id,
@@ -335,7 +403,7 @@ async def request_a4p_intent_authorization(
             session_id=session_id,
             channel_id=channel_id,
             identity=identity,
-            actions=normalized_actions,
+            actions=pending_actions,
             cron_job_id=cron_job_id or None,
             cron_authorization_target=cron_target,
             validity_seconds=validity,
@@ -353,6 +421,8 @@ async def request_a4p_intent_authorization(
             "ok": False,
             "error": f"A4P intent authorization failed: {exc}",
             "code": "A4P_AUTHORIZATION_FAILED",
+            "authorizationRequired": True,
+            **preflight,
         }
     token = payload.get("intentToken") if isinstance(payload.get("intentToken"), dict) else {}
     approved = bool(payload.get("approved")) and bool(token)
@@ -362,13 +432,28 @@ async def request_a4p_intent_authorization(
         status="approved" if approved else "rejected",
         error=str(payload.get("rejectReason") or ""),
     )
+    if approved:
+        newly_authorized = payload.get("authorizedActions")
+        if newly_authorized is None:
+            newly_authorized = (token.get("intent") or {}).get("actions", [])
+        newly_authorized = [
+            {"name": action["name"], "params": action["params"]}
+            for action in newly_authorized
+        ]
+        pending_public = preflight["unapprovedActions"]
+        preflight["permittedActions"].extend(
+            action for action in pending_public if action in newly_authorized
+        )
+        preflight["unapprovedActions"] = [
+            action for action in pending_public if action not in newly_authorized
+        ]
     result = {
         "ok": approved,
+        "authorizationRequired": True,
+        **preflight,
         "requestId": payload.get("requestId"),
         "approved": bool(payload.get("approved")),
         "partial": bool(payload.get("partial")),
-        "authorizedActions": payload.get("authorizedActions", []),
-        "unselectedActions": payload.get("unselectedActions", []),
         "rejectReason": payload.get("rejectReason"),
         "token": {
             "tokenId": token.get("tokenId"),
@@ -402,23 +487,29 @@ def get_tools(session_id: str | None = None) -> list[Any]:
         exposure=ToolExposure.DIRECT,
         parallel_safe=False,
         description=(
-            "Request user approval for one currently known A4P intent-authorization stage covering calls to "
-            f"{supported_actions}. Actions may cover all known protected calls or only the current stage; request "
-            "another authorization only when a later stage is not covered by an approved scope. Without cronJobId, "
-            "each token is added to the current Web session, where staged authorization is supported. With cronJobId, "
-            "one complete future scope is bound to an existing disabled cron job; cron authorization cannot be staged "
-            "or depend on interactive approval during execution. Runtime-dependent arguments do not require another "
-            "authorization if their actual values match an approved scope. This tool authorizes actions but does not "
-            "execute them. Users may select only some requested actions; inspect partial, authorizedActions and "
-            "unselectedActions before continuing or enabling a cron job. Unselected actions are not newly authorized. "
-            "A4P must be enabled to request authorization through an interactive Web route."
+            "Before reading, listing, searching, writing or running Shell commands, submit candidate scopes for "
+            f"{supported_actions}. Do not read files first to prepare authorization. The backend filters session "
+            "actions already allowed by policy or covered by valid tokens; uncertain scopes still require approval.\n\n"
+            "Without cronJobId, authorization belongs to the current Web session and may cover only the current "
+            "stage. Reuse approved scopes when runtime values match. With cronJobId, authorize the complete future "
+            "scope of an existing disabled cron job; cron authorization cannot be staged or rely on interactive "
+            "approval during execution.\n\n"
+            "Inspect permittedActions, unapprovedActions and deniedActions: permittedActions combines policy-allowed, "
+            "token-covered and newly approved actions; unapprovedActions still lack approval, "
+            "including user-unselected actions; deniedActions are prohibited by policy. Execute only permittedActions. "
+            "Keep a cron job disabled until every planned action is permitted.\n\n"
+            "This tool prepares authorization and does not execute actions. ok=true with authorizationRequired=false "
+            "means no new approval or token was needed; approved may be false. Actual calls still check permissions. "
+            "Requires A4P enabled and an interactive Web session."
         ),
         input_params={
             "type": "object",
             "properties": {
                 "actions": {
                     "type": "array",
-                    "description": "Non-empty list of supported tool action scopes.",
+                    "description": (
+                        "Non-empty list of candidate tool action scopes; the backend filters session requests."
+                    ),
                     "items": {
                         "type": "object",
                         "properties": {

@@ -71,6 +71,7 @@ class _ColdBuild:
         global_layer = deepcopy(self.raw["permissions"])
         effective = compose_host_effective_permissions(
             global_permissions=global_layer, user_permissions=self.user, session_permissions=self.session,
+            auto_mode=global_layer.get("mode") == "auto",
         )
         return f"cold-{self.revision}", global_layer, effective
 
@@ -185,13 +186,17 @@ async def cold(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_cold_create_uses_one_snapshot_and_consistent_model_session_sysop(cold, monkeypatch):
     h = cold
+    built = False
 
     def unexpected_read(*_args, **_kwargs):
-        raise AssertionError("cold installed policy reloaded an overlay")
+        if not built:
+            raise AssertionError("cold installed policy reloaded an overlay")
+        return {}
 
     monkeypatch.setattr(permissions_layers, "load_user_permissions", unexpected_read)
     monkeypatch.setattr(permissions_layers, "load_session_permissions", unexpected_read)
     await h.create()
+    built = True
     adapter, instance = h.adapter, h.adapter._instance
     assert isinstance(instance, DeepAgent) and instance in h.instances
     assert h.events.index("tool_registered_before_instance") < h.events.index("configure")

@@ -376,7 +376,7 @@ async def test_policy_only_refreshes_config_snapshot() -> None:
     result = await evaluator.evaluate(_invocation())
 
     assert result.level == "allow"
-    assert base.config_updates == [snapshot]
+    assert base.config_updates == [snapshot, snapshot]
     assert engine.config_updates == []
 
 
@@ -393,7 +393,7 @@ async def test_policy_only_prefers_runtime_config_over_host_snapshot() -> None:
     result = await evaluator.evaluate(_invocation("bash", {"cmd": "pytest tests"}))
 
     assert result.level == "ask"
-    assert base.config_updates == [runtime_config]
+    assert base.config_updates == [runtime_config, runtime_config]
     assert engine.config_updates == []
 
 

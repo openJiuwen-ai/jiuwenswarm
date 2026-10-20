@@ -187,6 +187,10 @@ jiuwenswarm = [
     "extensions/**/*.yaml",
     "extensions/**/*.yml",
     "extensions/**/*.md",
+    # Designer 内嵌 skills：scenarios / agents / orchestration / subjects /
+    # styles markdown 与 index.json，运行期由 designer.skills_loader 读取
+    "server/runtime/designer/skills/*",
+    "server/runtime/designer/skills/**/*",
 ]
 jiuwenbox = [
     "configs/**/*",

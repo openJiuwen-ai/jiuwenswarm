@@ -26,12 +26,12 @@ from jiuwenswarm.gateway.cron.models import (
 )
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
-from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES
+from jiuwenswarm.gateway.runtime.events import TERMINAL_ERROR_EVENT_TYPES
 from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
-from jiuwenswarm.runtime.cron.cron_expr import next_cron_datetime
+from jiuwenswarm.gateway.runtime.cron.cron_expr import next_cron_datetime
 
 logger = logging.getLogger(__name__)
 

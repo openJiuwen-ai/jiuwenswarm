@@ -75,6 +75,13 @@
     "loadErrorTitle": "Failed to load",
     "loadErrorFallback": "Could not load the design workflow. Please try again later.",
     "attachmentsBlocked": "Design mode does not support attachments yet. Remove attachments and try again.",
+    "models": {
+      "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
+      "videoOff": "Video generation is switched off in Settings > Agent.",
+      "videoMissing": "Video generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "imageOff": "Image generation is switched off in Settings > Agent.",
+      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent."
+    },
     "activity": {
       "thinking": "Thinking",
       "toolCall": "Using {{tool}}",
@@ -2004,7 +2011,9 @@
       "useBuiltin": "Use built-in CLI",
       "detect": "Detect",
       "toggleEnable": "Enable/disable {{agent}}",
-      "detectHint": "Leave the path empty to search the system PATH, or enter a CLI executable path to validate it and check its version",
+      "detectHint": "Validate the CLI executable and check its version; leave the path empty to search the system PATH",
+      "redetectHint": "Re-check the current CLI executable and validate its version",
+      "installSucceeded": "Install completed",
       "selectFile": "Choose file",
       "selectFileTitle": "Choose {{agent}} command",
       "selectFileFailed": "Failed to choose file",

@@ -15,6 +15,7 @@ import { useChatStore, useSessionStore } from '../../stores';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import type { TeamLeaderIdentity } from '../../features/teamLeaderIdentity';
+import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import type { ReasoningSegment } from '../../stores/chatStore';
 import { filterPublishedHistoryBatch } from '../../features/historyPagination';
 import { projectTimelineItems, type TimelineDisplayItem } from '../../features/chatTimeline/projectTimelineItems';
@@ -153,12 +154,13 @@ function TeamGroupDisplay({
   leaderIdentity?: TeamLeaderIdentity | null;
   className?: string;
 }) {
+  const { i18n } = useTranslation();
   if (identity) {
     return (
       <AgentAvatar
         identityOverride={{
           agentTemplateId: identity.id,
-          displayName: identity.displayName,
+          displayName: resolveTeamGroupDisplayName(identity, i18n.language),
           ...(identity.avatarUrl ? { avatar: identity.avatarUrl } : {}),
         }}
         alt=""

@@ -1624,7 +1624,7 @@ async def _push_shutdown_cleanup_notice(
     deleted: bool,
 ) -> None:
     try:
-        from jiuwenswarm.runtime.host_services import RuntimeHostPushTransport
+        from jiuwenswarm.common.host_services import RuntimeHostPushTransport
         from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 
         request_id = f"team_shutdown_cleanup_{session_id}"

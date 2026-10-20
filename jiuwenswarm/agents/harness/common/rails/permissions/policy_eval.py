@@ -63,13 +63,21 @@ class OpenJiuwenPolicyEvaluator:
             path_guard_evaluator or SendFilePathGuardEvaluator()
         )
 
-    async def evaluate(self, invocation: Any) -> PolicyEvaluation:
-        """Return the policy-only decision for one tool invocation."""
+    async def evaluate(
+        self,
+        invocation: Any,
+        *,
+        scene_approval_is_final: bool = False,
+    ) -> PolicyEvaluation:
+        """Evaluate without approval UI; manual rails can make scene approval final."""
         normalized_tool_name = self._normalize_tool_name(invocation.tool_name)
         tool_args = self._parse_tool_args(invocation.tool_call, invocation.tool_args)
         engine = getattr(self._base_rail, "_engine", None)
         effective_config = self._effective_permission_config()
-        refresh_failed = False
+        refresh_failed = bool(
+            effective_config is None
+            and callable(getattr(getattr(self._base_rail, "_host", None), "get_permissions_snapshot", None))
+        )
         if engine is not None and effective_config is not None:
             try:
                 self._apply_config(engine, effective_config)
@@ -83,7 +91,9 @@ class OpenJiuwenPolicyEvaluator:
             tool_args=tool_args,
             engine=engine,
         )
-        if scene_decision is not None and scene_decision.level == DENY_LEVEL:
+        if scene_decision is not None and (
+            scene_decision.level == DENY_LEVEL or scene_approval_is_final
+        ):
             return scene_decision
 
         if engine is None:
@@ -100,6 +110,10 @@ class OpenJiuwenPolicyEvaluator:
             )
         else:
             try:
+                # A scene hook may await another callback. Reapply this call's
+                # captured input before the synchronous Core policy pipelines.
+                if effective_config is not None:
+                    self._apply_config(engine, effective_config)
                 result = await engine.check_permission(
                     tool_name=normalized_tool_name,
                     tool_args=tool_args,
@@ -216,12 +230,18 @@ class OpenJiuwenPolicyEvaluator:
         host = getattr(self._base_rail, "_host", None)
         snapshot_getter = getattr(host, "get_permissions_snapshot", None)
         try:
-            snapshot = snapshot_getter() if callable(snapshot_getter) else None
+            invoke = getattr(self._base_rail, "_invoke_permissions_hook", None)
+            snapshot = (
+                invoke(snapshot_getter) if callable(snapshot_getter) and callable(invoke)
+                else snapshot_getter() if callable(snapshot_getter) else None
+            )
         except Exception:
             logger.exception("[PolicyEval] permission snapshot refresh failed")
             snapshot = None
         if isinstance(snapshot, Mapping):
             return overlay_run_permissions(dict(snapshot))
+        if callable(snapshot_getter):
+            return None
 
         static_config = getattr(self._base_rail, "_static_config", None)
         if isinstance(static_config, Mapping):

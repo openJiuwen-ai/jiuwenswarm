@@ -10,6 +10,9 @@ prune jiuwenswarm/resources/agent/workspace/skills/project-maintainer
 recursive-include jiuwenswarm/agents/harness/code/rails/sdd/design_rail *.yaml
 recursive-include jiuwenswarm/agents/harness/code/rails/sdd/design_rail/skills *
 
+# Designer 内嵌 skills（scenarios / agents / orchestration / subjects / styles + index.json）
+recursive-include jiuwenswarm/server/runtime/designer/skills *
+
 # 排除 node_modules，避免打包进 wheel
 prune jiuwenswarm/channels/web/frontend/node_modules
 global-exclude node_modules

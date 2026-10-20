@@ -2,6 +2,6 @@
 
 import sys
 
-from jiuwenswarm.runtime.cron import store_base as _implementation
+from jiuwenswarm.gateway.runtime.cron import store_base as _implementation
 
 sys.modules[__name__] = _implementation
